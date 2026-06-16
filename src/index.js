@@ -24,6 +24,10 @@ const {
   addAllowedCommandChannel,
   removeAllowedCommandChannel,
   listAllowedCommandChannels,
+ normalizeYoutubeName,
+  getYoutubeChannels,
+  addYoutubeChannel,
+  removeYoutubeChannel,
 
   upsertLevelRole,
   deleteLevelRole,
@@ -37,6 +41,7 @@ const { levelFromXp } = require("./xp");
 const { syncMemberRoles } = require("./roles");
 const { startVoiceTicker } = require("./voiceTicker");
 const { startDecayScheduler } = require("./decay");
+const { startYoutubeTicker, fetchChannelInfo } = require("./youtubeTicker");
 
 const MAX_XP_AWARD = 1_000_000_000;
 
@@ -104,6 +109,10 @@ client.once(Events.ClientReady, () => {
 
   // Start scheduled daily decay (4 AM server local time).
   startDecayScheduler(client);
+
+  // Start YouTube RSS feed polling
+  // Start YouTube Data API v3 polling for live streams
+  startYoutubeTicker(client);
 
   // Periodic cleanup of cooldown maps so memory stays bounded.
   // We keep a generous window so we don't accidentally delete active entries.
@@ -187,13 +196,38 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
 // Slash commands
 client.on(Events.InteractionCreate, async (interaction) => {
+  // Handle autocomplete interactions
+  if (interaction.isAutocomplete()) {
+    const guildId = interaction.guild.id;
+      const channels = getYoutubeChannels(guildId);
+    
+    const focusedValue = interaction.options.getFocused().toLowerCase();
+    // Deduplicate by normalized channel name, keeping first occurrence
+    const seenNames = new Set();
+    const deduped = channels.filter(c => {
+      const normalizedName = normalizeYoutubeName(c.channel_name).toLowerCase();
+      if (seenNames.has(normalizedName)) return false;
+      seenNames.add(normalizedName);
+      return true;
+    });
+    
+    const filtered = deduped.filter(c => 
+      normalizeYoutubeName(c.channel_name).toLowerCase().includes(focusedValue)
+    ).slice(0, 25); // Discord limit is 25 choices
+    
+    await interaction.respond(
+      filtered.map(c => ({ name: "@" + normalizeYoutubeName(c.channel_name), value: c.id }))
+    );
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.guild) return;
 
   try {
     if (!commandsAllowed(interaction)) {
       await interaction.reply({
-        content: "Commands aren’t enabled in this channel.",
+        content: "Commands aren't enabled in this channel.",
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -459,6 +493,214 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.reply({
           content: `**Allowed command channels:**\n${lines.join("\n")}`,
                                 flags: MessageFlags.Ephemeral,
+       });
+        return;
+      }
+    }
+
+    // /youtube (admin/mod)
+    if (interaction.commandName === "youtube") {
+      if (!admin) {
+        await interaction.reply({ content: "You don't have permission to use this.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+   const sub = interaction.options.getSubcommand();
+
+      if (sub === "add") {
+        const url = interaction.options.getString("url", true);
+        
+        let channelId = "";
+        let channelName = "";
+        
+      if (url.includes("youtube.com/@")) {
+          const match = url.match(/youtube\.com\/@([^/?]+)/);
+          if (match) {
+            // Normalize to just the username
+            channelId = match[1];
+            channelName = "@" + match[1];
+            fullUrl = `https://www.youtube.com/@${channelId}`;
+          }
+        } else if (url.startsWith("@")) {
+          // Bare @username - normalize to remove leading @
+          const username = url.substring(1);
+          channelId = username;
+          channelName = "@" + username;
+          fullUrl = `https://www.youtube.com/@${username}`;
+        } else if (url.includes("youtube.com/channel/")) {
+          const match = url.match(/youtube\.com\/channel\/([^/?]+)/);
+          if (match) {
+            channelId = match[1];
+            channelName = `Channel ID: ${channelId}`;
+          }
+        } else if (url.startsWith("UC") || url.startsWith("HC")) {
+          channelId = url;
+          channelName = `Channel ID: ${url}`;
+          fullUrl = `https://www.youtube.com/channel/${url}`;
+        } else {
+          await interaction.reply({
+            content: "Invalid YouTube URL. Please use:\n- Full channel URL with @username: `https://www.youtube.com/@SomeChannel`\n- Full channel URL with ID: `https://www.youtube.com/channel/UCxxxxxxxxxxxxx`\n- Numeric channel ID: `UCxxxxxxxxxxxxx`",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+       const normalizedChannelName = normalizeYoutubeName(channelName);
+          const thumbnail = !channelId || channelId.startsWith("@") 
+            ? ""
+            : `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
+
+          try {
+            addYoutubeChannel(guildId, channelId, normalizedChannelName, url, thumbnail);
+            
+            let replyMsg = `Subscribed to **@${normalizedChannelName}**. I'll notify when they go live.`;
+          if (channelId.startsWith("@")) {
+            replyMsg += "\n\nNote: @username detected. I will attempt to resolve the actual channel ID from YouTube.";
+          }
+          
+          await interaction.reply({
+            content: replyMsg,
+            flags: MessageFlags.Ephemeral,
+          });
+        } catch (err) {
+          console.error("[youtube] Add error:", err);
+          await interaction.reply({
+            content: "Failed to add subscription. Check logs.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        return;
+      }
+
+      if (sub === "remove") {
+        const channelId = interaction.options.getString("channel", true);
+        
+    // Get channel by ID
+       let foundChannel = null;
+      const channels = getYoutubeChannels(guildId);
+       for (const c of channels) {
+         if (normalizeYoutubeName(c.id) === normalizeYoutubeName(channelId) && c.guild_id === guildId) {
+           foundChannel = c;
+           break;
+         }
+       }
+
+        if (!foundChannel) {
+          await interaction.reply({
+            content: "No subscription found.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+           const channelsBefore = getYoutubeChannels(guildId).length;
+            
+            let removed = false;
+            try {
+              removed = removeYoutubeChannel(guildId, channelId);
+              console.log(`[youtube] Remove debug:`, { 
+                guildId, 
+                channelId, 
+                foundChannel: foundChannel?.channel_name,
+                channelsBefore, 
+                removed,
+                error: null
+              });
+            } catch (err) {
+              console.error("[youtube] Remove error:", err);
+            }
+            
+            const channelsAfter = getYoutubeChannels(guildId).length;
+            if (!removed && channelsAfter < channelsBefore) {
+              // Actually removed but function returned false - DB issue?
+              removed = true;
+            }
+            
+            if (removed) {
+              await interaction.reply({
+                content: `Unsubscribed from **${foundChannel.channel_name}**.`,
+                flags: MessageFlags.Ephemeral,
+              });
+        } else {
+          await interaction.reply({
+            content: "Failed to unsubscribe.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        return;
+      }
+
+      if (sub === "list") {
+        const channels = getYoutubeChannels(guildId);
+        
+        if (!channels.length) {
+          await interaction.reply({
+            content: "No YouTube channels subscribed.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        const guildSettings = getGuildSettings(guildId);
+        const notificationChannel = guildSettings.youtube_notification_channel_id
+          ? `<#${guildSettings.youtube_notification_channel_id}>`
+          : ":white_medium_square: Not configured";
+
+        const lines = channels.map(c => {
+          const channelNameDisplay = "@" + normalizeYoutubeName(c.channel_name);
+          let info = `- **${channelNameDisplay}**`;
+          
+          if (c.id.startsWith("@")) {
+            info += ` (*@username detected, resolving at runtime*)\n  URL: <${c.channel_url}>`;
+          } else {
+            info += `\n  ID: ${c.id}\n  URL: <${c.channel_url}>`;
+          }
+          
+          return info;
+        });
+        
+        await interaction.reply({
+          content: `**Subscribed Channels (${channels.length}):**\n\nNotification Channel: ${notificationChannel}\n__Channels:__\n${lines.join("\n")}`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+    }
+
+    // /setyoutube (admin/mod)
+    if (interaction.commandName === "setyoutube") {
+      if (!admin) {
+        await interaction.reply({ content: "You don't have permission to use this.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "channel") {
+        const ch = interaction.options.getChannel("channel", true);
+        updateGuildSettings(guildId, { youtube_notification_channel_id: ch.id });
+        
+        await interaction.reply({
+          content: `YouTube notifications will be sent to <#${ch.id}>.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === "interval") {
+        const minutes = interaction.options.getInteger("minutes", true);
+        if (minutes < 1 || minutes > 60) {
+          await interaction.reply({
+            content: "Polling interval must be between 1 and 60 minutes.",
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        updateGuildSettings(guildId, { youtube_polling_interval_minutes: minutes });
+        
+        await interaction.reply({
+          content: `YouTube polling interval set to **${minutes}** minute(s).`,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -467,7 +709,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // Fallback so Discord never times out
     await interaction.reply({
       content: `Unhandled command: \`/${interaction.commandName}\` (handler missing).`,
-                            flags: MessageFlags.Ephemeral,
+            flags: MessageFlags.Ephemeral,
     });
   } catch (err) {
     console.error("Interaction handler error:", err);

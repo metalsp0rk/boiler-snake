@@ -173,11 +173,71 @@ const commands = [
       sc.setName("list").setDescription("List allowed command channels.")
     ),
 
-  new SlashCommandBuilder()
+new SlashCommandBuilder()
     .setName("settings")
     .setDescription("Show current guild settings.")
     .setDefaultMemberPermissions(adminPerms),
-].map((c) => c.toJSON());
+
+  new SlashCommandBuilder()
+    .setName("youtube")
+    .setDescription("Manage YouTube channel subscriptions (admin only).")
+    .setDefaultMemberPermissions(adminPerms)
+    .addSubcommand((sc) =>
+      sc
+        .setName("add")
+        .setDescription("Subscribe to a YouTube channel.")
+        .addStringOption((opt) =>
+          opt
+            .setName("url")
+            .setDescription("YouTube channel URL or @username")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("remove")
+        .setDescription("Unsubscribe from a YouTube channel.")
+        .addStringOption((opt) =>
+          opt
+            .setName("channel")
+            .setDescription("YouTube channel to unsubscribe from")
+            .setRequired(true)
+            .setAutocomplete(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc.setName("list").setDescription("List all subscribed channels.")
+    ),
+
+  new SlashCommandBuilder()
+    .setName("setyoutube")
+    .setDescription("Configure YouTube notification settings (admin only).")
+    .setDefaultMemberPermissions(adminPerms)
+    .addSubcommand((sc) =>
+      sc
+        .setName("channel")
+        .setDescription("Set channel for YouTube notifications.")
+        .addChannelOption((opt) =>
+          opt
+            .setName("channel")
+            .setDescription("Channel to send notifications to")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("interval")
+        .setDescription("Set RSS polling interval.")
+        .addIntegerOption((opt) =>
+          opt
+            .setName("minutes")
+            .setDescription("Polling interval in minutes (1-60)")
+            .setRequired(true)
+            .setMinValue(1)
+            .setMaxValue(60)
+        )
+    ),
+  ].map((c) => c.toJSON());
 
 async function main() {
   const token = process.env.DISCORD_TOKEN;

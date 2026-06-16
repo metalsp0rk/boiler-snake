@@ -52,3 +52,9 @@ Thumbs.db
 ############################
 dist/
 coverage/
+
+###
+
+*.sqlite-*
+
+package-lock.json

@@ -150,6 +150,45 @@ CREATE TABLE IF NOT EXISTS allowed_command_channels (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (guild_id, channel_id)
 );
+
+-- YouTube channel subscriptions
+CREATE TABLE IF NOT EXISTS youtube_channels (
+  id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  channel_name TEXT NOT NULL,
+  channel_url TEXT NOT NULL,
+  thumbnail_url TEXT,
+  last_video_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(guild_id, channel_name)
+);
+
+-- Track sent notifications to prevent duplicates
+CREATE TABLE IF NOT EXISTS youtube_notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  video_title TEXT NOT NULL,
+  published_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_youtube_notif_channel ON youtube_notifications (guild_id, channel_id, video_id);
+CREATE INDEX IF NOT EXISTS idx_youtube_notif_time ON youtube_notifications (created_at);
+
+-- Separate table for upload notifications (non-live videos)
+CREATE TABLE IF NOT EXISTS youtube_upload_notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  video_title TEXT NOT NULL,
+  published_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_youtube_upload_notif_channel ON youtube_upload_notifications (guild_id, channel_id, video_id);
+CREATE INDEX IF NOT EXISTS idx_youtube_upload_notif_time ON youtube_upload_notifications (created_at);
 `);
 
 /**
@@ -167,6 +206,18 @@ CREATE TABLE IF NOT EXISTS allowed_command_channels (
     "guild_settings",
     "reaction_cooldown_sec",
     "reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10"
+  );
+
+  // YouTube notification settings
+  addColumnIfMissing(
+    "guild_settings",
+    "youtube_notification_channel_id",
+    "youtube_notification_channel_id TEXT"
+  );
+  addColumnIfMissing(
+    "guild_settings",
+    "youtube_polling_interval_minutes",
+    "youtube_polling_interval_minutes INTEGER NOT NULL DEFAULT 5"
   );
 
   // Cleanup pass: clamp any bad/overflow XP already stored (Infinity/NaN/too big/negative)
@@ -241,6 +292,8 @@ function updateGuildSettings(guildId, patch) {
     "decay_min_messages",
     "decay_percent",
     "level_xp_factor",
+    "youtube_notification_channel_id",
+    "youtube_polling_interval_minutes",
   ]);
 
   const keys = Object.keys(patch).filter(k => allowed.has(k));
@@ -529,6 +582,123 @@ function listAllowedCommandChannels(guildId) {
   `).all(guildId);
 }
 
+/**
+ * YouTube subscriptions
+ */
+// Normalize YouTube @username to remove leading @ for consistent storage
+// Normalize YouTube @username to remove leading @ for consistent storage, but add it back for display
+function normalizeYoutubeName(name) {
+  return name.startsWith("@") ? name.substring(1) : name;
+}
+
+function getYoutubeChannels(guildId) {
+  return db.prepare(`
+  SELECT id, guild_id, channel_name, channel_url, thumbnail_url, last_video_id
+  FROM youtube_channels
+  WHERE guild_id=?
+  ORDER BY created_at ASC
+  `).all(guildId);
+}
+
+function getAllYoutubeChannels() {
+  return db.prepare(`
+  SELECT id, guild_id, channel_name, channel_url, thumbnail_url, last_video_id
+  FROM youtube_channels
+  ORDER BY created_at ASC
+  `).all();
+}
+
+function getYoutubeChannelById(guildId, channelId) {
+  const normalized = normalizeYoutubeName(channelId);
+  return db.prepare(`
+  SELECT id, guild_id, channel_name, channel_url, thumbnail_url, last_video_id
+  FROM youtube_channels
+  WHERE guild_id=? AND (id=? OR channel_url LIKE '%/' || ? || '/')
+  `).get(guildId, normalized, normalized);
+}
+
+function addYoutubeChannel(guildId, channelId, channelName, channelUrl, thumbnailUrl) {
+ const t = now();
+  
+ // Normalize: strip @ from name for consistent storage
+    const normalizedId = normalizeYoutubeName(channelId);
+    const normalizedChannelName = normalizeYoutubeName(channelName);
+    
+    // Skip if exact same data already exists (avoid unnecessary updates)
+   const existing = getYoutubeChannelById(guildId, normalizedId);
+   if (existing && existing.channel_name === normalizedChannelName && existing.channel_url === channelUrl) {
+     return existing;
+   }
+  
+ const stmt = db.prepare(`
+    INSERT INTO youtube_channels (id, guild_id, channel_name, channel_url, thumbnail_url, last_video_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+    ON CONFLICT(guild_id, channel_name) DO UPDATE SET
+      id=excluded.id,
+      channel_url=excluded.channel_url,
+      thumbnail_url=excluded.thumbnail_url,
+      updated_at=excluded.updated_at
+  `);
+  
+  try {
+    stmt.run(normalizedId, guildId, normalizedChannelName, channelUrl, thumbnailUrl || null, t, t);
+  } catch (err) {
+    console.error(`[youtube] DB error:`, err.message);
+    throw err;
+  }
+   
+   return getYoutubeChannelById(guildId, normalizedId);
+ }
+
+function removeYoutubeChannel(guildId, channelId) {
+  db.prepare(`DELETE FROM youtube_channels WHERE guild_id=? AND id=?`).run(guildId, channelId);
+  return !!db.prepare(`SELECT changes()`).get().changes;
+}
+
+function updateYoutubeChannelLastVideo(channelId, lastVideoId) {
+  const t = now();
+  db.prepare(`
+  UPDATE youtube_channels
+  SET last_video_id=?, updated_at=?
+  WHERE id=?
+  `).run(lastVideoId, t, channelId);
+  
+  return getYoutubeChannelById(null, channelId);
+}
+
+function getYoutubeNotifications(channelId, limit = 50) {
+  return db.prepare(`
+  SELECT video_id, video_title, published_at
+  FROM youtube_notifications
+  WHERE channel_id=?
+  ORDER BY created_at DESC
+  LIMIT ?
+  `).all(channelId, limit);
+}
+
+function addYoutubeNotification(guildId, channelId, videoId, videoTitle, publishedAt) {
+  const t = now();
+  
+  const exists = db.prepare(`
+  SELECT COUNT(*) as c FROM youtube_notifications
+  WHERE guild_id=? AND channel_id=? AND video_id=?
+  `).get(guildId, channelId, videoId);
+  
+  if (exists.c > 0) return null;
+  
+  db.prepare(`
+  INSERT INTO youtube_notifications (guild_id, channel_id, video_id, video_title, published_at, created_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+  `).run(guildId, channelId, videoId, videoTitle, publishedAt, t);
+  
+  return true;
+}
+
+function cleanupOldNotifications(thresholdDays = 30) {
+  const cutoff = now() - thresholdDays * 24 * 60 * 60 * 1000;
+  db.prepare(`DELETE FROM youtube_notifications WHERE created_at < ?`).run(cutoff);
+}
+
 module.exports = {
   db,
   now,
@@ -567,4 +737,42 @@ module.exports = {
   addAllowedCommandChannel,
   removeAllowedCommandChannel,
   listAllowedCommandChannels,
+
+  // YouTube subscriptions
+   normalizeYoutubeName,
+   getYoutubeChannels,
+   getAllYoutubeChannels,
+   getYoutubeChannelById,
+   addYoutubeChannel,
+   removeYoutubeChannel,
+   updateYoutubeChannelLastVideo,
+   getYoutubeNotifications,
+   addYoutubeNotification,
+   cleanupOldNotifications,
+
+  // upload notifications
+  getYoutubeUploadNotifications,
+  addYoutubeUploadNotification,
 };
+
+function getYoutubeUploadNotifications(channelId, limit = 50) {
+   return db.prepare(`
+     SELECT video_id, video_title, published_at
+     FROM youtube_upload_notifications
+     WHERE channel_id=?
+     ORDER BY created_at DESC
+     LIMIT ?
+   `).all(channelId, limit);
+}
+
+function addYoutubeUploadNotification(guildId, channelId, videoId, title, publishedAt) {
+  const t = now();
+  db.prepare(`
+    INSERT INTO youtube_upload_notifications (guild_id, channel_id, video_id, video_title, published_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(guildId, channelId, videoId, title, publishedAt, t);
+}
+
+function cleanupOldUploadNotifications(cutoff) {
+  db.prepare(`DELETE FROM youtube_upload_notifications WHERE created_at < ?`).run(cutoff);
+}
