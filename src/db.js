@@ -318,9 +318,12 @@ function updateGuildSettings(guildId, patch) {
   UPDATE guild_settings
   SET ${sets}, updated_at=@updated_at
   WHERE guild_id=@guild_id
-  `).run({ guild_id: guildId, updated_at: now(), ...safePatch });
-
-  return getGuildSettings(guildId);
+ `).run({ guild_id: guildId, updated_at: now(), ...safePatch });
+  
+  // Cleanup malformed channel entries (e.g., before normalization fix)
+  cleanupMalformedYoutubeChannels();
+  
+   return getGuildSettings(guildId);
 }
 
 /**
@@ -699,6 +702,19 @@ function cleanupOldNotifications(thresholdDays = 30) {
   db.prepare(`DELETE FROM youtube_notifications WHERE created_at < ?`).run(cutoff);
 }
 
+// Cleanup malformed YouTube channel entries (non-numeric IDs from before normalization fix)
+function cleanupMalformedYoutubeChannels() {
+   const rows = db.prepare("SELECT guild_id, channel_name FROM youtube_channels WHERE NOT id LIKE 'UC%' AND NOT id LIKE 'HC%'").all();
+  
+  if (!rows.length) return;
+  
+  console.log(`[youtube] Cleaning up ${rows.length} malformed channel entries...`);
+  
+  for (const row of rows) {
+     db.prepare("DELETE FROM youtube_channels WHERE guild_id=? AND channel_name=?").run(row.guild_id, row.channel_name);
+  }
+}
+
 module.exports = {
   db,
   now,
@@ -748,12 +764,13 @@ module.exports = {
    updateYoutubeChannelLastVideo,
    getYoutubeNotifications,
    addYoutubeNotification,
-   cleanupOldNotifications,
+  cleanupOldNotifications,
+   cleanupMalformedYoutubeChannels,
 
   // upload notifications
-  getYoutubeUploadNotifications,
-  addYoutubeUploadNotification,
-};
+   getYoutubeUploadNotifications,
+   addYoutubeUploadNotification,
+ };
 
 function getYoutubeUploadNotifications(channelId, limit = 50) {
    return db.prepare(`

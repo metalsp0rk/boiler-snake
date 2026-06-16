@@ -482,4 +482,4 @@ async function fetchChannelInfo(channelId) {
   return null;
 }
 
-module.exports = { startYoutubeTicker, fetchChannelInfo };
+module.exports = { startYoutubeTicker, fetchChannelInfo, lookupChannelByName };

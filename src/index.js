@@ -41,7 +41,7 @@ const { levelFromXp } = require("./xp");
 const { syncMemberRoles } = require("./roles");
 const { startVoiceTicker } = require("./voiceTicker");
 const { startDecayScheduler } = require("./decay");
-const { startYoutubeTicker, fetchChannelInfo } = require("./youtubeTicker");
+const { startYoutubeTicker, fetchChannelInfo, lookupChannelByName } = require("./youtubeTicker");
 
 const MAX_XP_AWARD = 1_000_000_000;
 
@@ -513,20 +513,36 @@ client.on(Events.InteractionCreate, async (interaction) => {
         let channelId = "";
         let channelName = "";
         
-      if (url.includes("youtube.com/@")) {
-          const match = url.match(/youtube\.com\/@([^/?]+)/);
-          if (match) {
-            // Normalize to just the username
-            channelId = match[1];
-            channelName = "@" + match[1];
-            fullUrl = `https://www.youtube.com/@${channelId}`;
-          }
-        } else if (url.startsWith("@")) {
-          // Bare @username - normalize to remove leading @
-          const username = url.substring(1);
-          channelId = username;
-          channelName = "@" + username;
-          fullUrl = `https://www.youtube.com/@${username}`;
+if (url.includes("youtube.com/@")) {
+      const match = url.match(/youtube\.com\/@([^/?]+)/);
+      if (match) {
+        // Normalize to just the username
+        channelId = match[1];
+        channelName = "@" + match[1];
+        fullUrl = `https://www.youtube.com/@${channelId}`;
+        
+        // Resolve @username to numeric ID immediately
+        const resolved = await lookupChannelByName(channelId);
+        if (resolved) {
+          channelId = resolved.id;
+          channelName = normalizedYoutubeName(resolved.name);  // Store without @ prefix
+          fullUrl = `https://www.youtube.com/channel/${channelId}`;
+        }
+      }
+    } else if (url.startsWith("@")) {
+      // Bare @username - normalize to remove leading @
+      const username = url.substring(1);
+      channelId = username;
+      channelName = "@" + username;
+      fullUrl = `https://www.youtube.com/@${username}`;
+      
+      // Resolve @username to numeric ID immediately  
+      const resolved = await lookupChannelByName(username);
+      if (resolved) {
+        channelId = resolved.id;
+        channelName = normalizedYoutubeName(resolved.name);  // Store without @ prefix
+        fullUrl = `https://www.youtube.com/channel/${channelId}`;
+      }
         } else if (url.includes("youtube.com/channel/")) {
           const match = url.match(/youtube\.com\/channel\/([^/?]+)/);
           if (match) {
