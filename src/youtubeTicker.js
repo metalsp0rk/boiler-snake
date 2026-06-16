@@ -1,4 +1,5 @@
 const https = require("https");
+const { normalizeYoutubeName } = require("./db");
 
 async function lookupChannelByName(username) {
   if (!process.env.YOUTUBE_API_KEY) {
