@@ -4,6 +4,8 @@ const {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  Client,
+  GatewayIntentBits,
 } = require("discord.js");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
@@ -43,7 +45,7 @@ const commands = [
     .addIntegerOption((opt) =>
       opt
         .setName("reaction")
-        .setDescription("XP per reaction")
+        .setDescription("Reaction XP per message")
         .setMinValue(0)
         .setRequired(false)
     )
@@ -128,17 +130,16 @@ const commands = [
             .setRequired(true)
         )
     )
-    .addSubcommand((sc) =>
-      sc
-        .setName("remove")
-        .setDescription("Remove a mapping for a role.")
-        .addRoleOption((opt) =>
-          opt
-            .setName("role")
-            .setDescription("Role to unmanage")
-            .setRequired(true)
-        )
-    )
+    .addSubcommand((sc) => {
+      const sub = sc.setName("remove").setDescription("Remove a mapping for a role.");
+      sub.addRoleOption((opt) =>
+        opt
+          .setName("role")
+          .setDescription("Role to unmanage")
+          .setRequired(true)
+      );
+      return sub;
+    })
     .addSubcommand((sc) =>
       sc.setName("list").setDescription("List current level->role mappings.")
     ),
@@ -173,7 +174,7 @@ const commands = [
       sc.setName("list").setDescription("List allowed command channels.")
     ),
 
-new SlashCommandBuilder()
+ new SlashCommandBuilder()
     .setName("settings")
     .setDescription("Show current guild settings.")
     .setDefaultMemberPermissions(adminPerms),
@@ -193,18 +194,17 @@ new SlashCommandBuilder()
             .setRequired(true)
         )
     )
-    .addSubcommand((sc) =>
-      sc
-        .setName("remove")
-        .setDescription("Unsubscribe from a YouTube channel.")
-        .addStringOption((opt) =>
-          opt
-            .setName("channel")
-            .setDescription("YouTube channel to unsubscribe from")
-            .setRequired(true)
-            .setAutocomplete(true)
-        )
-    )
+    .addSubcommand((sc) => {
+      const sub = sc.setName("remove").setDescription("Unsubscribe from a YouTube channel.");
+      sub.addStringOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("YouTube channel to unsubscribe from")
+          .setRequired(true)
+          .setAutocomplete(true)
+      );
+      return sub;
+    })
     .addSubcommand((sc) =>
       sc.setName("list").setDescription("List all subscribed channels.")
     ),
@@ -213,31 +213,31 @@ new SlashCommandBuilder()
     .setName("setyoutube")
     .setDescription("Configure YouTube notification settings (admin only).")
     .setDefaultMemberPermissions(adminPerms)
-    .addSubcommand((sc) =>
-      sc
-        .setName("channel")
-        .setDescription("Set channel for YouTube notifications.")
-        .addChannelOption((opt) =>
-          opt
-            .setName("channel")
-            .setDescription("Channel to send notifications to")
-            .setRequired(true)
-        )
-    )
-    .addSubcommand((sc) =>
-      sc
-        .setName("interval")
-        .setDescription("Set RSS polling interval.")
-        .addIntegerOption((opt) =>
-          opt
-            .setName("minutes")
-            .setDescription("Polling interval in minutes (1-60)")
-            .setRequired(true)
-            .setMinValue(1)
-            .setMaxValue(60)
-        )
-    ),
+    .addSubcommand((sc) => {
+      const sub = sc.setName("channel").setDescription("Set channel for YouTube notifications.");
+      sub.addChannelOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("Channel to send notifications to")
+          .setRequired(true)
+      );
+      return sub;
+    })
+    .addSubcommand((sc) => {
+      const sub = sc.setName("interval").setDescription("Set RSS polling interval.");
+      sub.addIntegerOption((opt) =>
+        opt
+          .setName("minutes")
+          .setDescription("Polling interval in minutes (1-60)")
+          .setRequired(true)
+          .setMinValue(1)
+          .setMaxValue(60)
+      );
+      return sub;
+    }),
   ].map((c) => c.toJSON());
+
+module.exports = { commands };
 
 async function main() {
   const token = process.env.DISCORD_TOKEN;
@@ -256,12 +256,34 @@ async function main() {
       body: commands,
     });
     console.log(`Registered commands to DEV guild ${devGuildId}.`);
-  } else {
-    await rest.put(Routes.applicationCommands(clientId), { body: commands });
-    console.log(
-      "Registered global commands. (May take time to propagate to all guilds.)"
-    );
+    return;
   }
+
+  const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  await client.login(token);
+
+  const guilds = await client.guilds.fetch();
+  console.log(`Found ${guilds.size} guild(s)`);
+
+  let successCount = 0;
+  let failCount = 0;
+
+  for (const [, guild] of guilds) {
+    try {
+      await rest.put(Routes.applicationGuildCommands(clientId, guild.id), {
+        body: commands,
+      });
+      console.log(`Registered commands to guild: ${guild.name} (${guild.id})`);
+      successCount++;
+    } catch (err) {
+      console.error(`Failed to register to ${guild.name} (${guild.id}):`, err?.message || err);
+      failCount++;
+    }
+  }
+
+  console.log(`\nRegistration complete: ${successCount} succeeded, ${failCount} failed`);
+
+  await client.destroy();
 }
 
 main().catch((err) => {

@@ -9,6 +9,8 @@ const {
   MessageFlags,
   AttachmentBuilder,
   PermissionFlagsBits,
+  REST,
+  Routes,
 } = require("discord.js");
 
 const {
@@ -24,7 +26,7 @@ const {
   addAllowedCommandChannel,
   removeAllowedCommandChannel,
   listAllowedCommandChannels,
- normalizeYoutubeName,
+  normalizeYoutubeName,
   getYoutubeChannels,
   addYoutubeChannel,
   removeYoutubeChannel,
@@ -101,8 +103,46 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-client.once(Events.ClientReady, () => {
+async function registerCommandsOnAllGuilds(client) {
+  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+  const clientId = process.env.CLIENT_ID;
+
+  if (!clientId) {
+    console.warn("CLIENT_ID not set, skipping command registration");
+    return;
+  }
+
+  try {
+    const guilds = await client.guilds.fetch();
+    console.log(`Registering commands to ${guilds.size} guild(s)...`);
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const [, guild] of guilds) {
+      try {
+        await rest.put(Routes.applicationGuildCommands(clientId, guild.id), {
+          body: require("./register-commands").commands,
+        });
+        console.log(`✓ Registered to ${guild.name}`);
+        successCount++;
+      } catch (err) {
+        console.error(`✗ Failed to register to ${guild.name}:`, err?.message || err);
+        failCount++;
+      }
+    }
+
+    console.log(`Command registration complete: ${successCount} succeeded, ${failCount} failed`);
+  } catch (err) {
+    console.error("Error fetching guilds for command registration:", err?.message || err);
+  }
+}
+
+client.once(Events.ClientReady, async () => {
   console.log(`HeisenXP-Bot logged in as ${client.user.tag}`);
+
+  // Uncomment this to update commands
+  // await registerCommandsOnAllGuilds(client);
 
   // Start the per-minute voice XP ticker.
   startVoiceTicker(client);
@@ -199,8 +239,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
   // Handle autocomplete interactions
   if (interaction.isAutocomplete()) {
     const guildId = interaction.guild.id;
-      const channels = getYoutubeChannels(guildId);
-    
+    const channels = getYoutubeChannels(guildId);
+
     const focusedValue = interaction.options.getFocused().toLowerCase();
     // Deduplicate by normalized channel name, keeping first occurrence
     const seenNames = new Set();
@@ -210,11 +250,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       seenNames.add(normalizedName);
       return true;
     });
-    
-    const filtered = deduped.filter(c => 
+
+    const filtered = deduped.filter(c =>
       normalizeYoutubeName(c.channel_name).toLowerCase().includes(focusedValue)
     ).slice(0, 25); // Discord limit is 25 choices
-    
+
     await interaction.respond(
       filtered.map(c => ({ name: "@" + normalizeYoutubeName(c.channel_name), value: c.id }))
     );
@@ -244,7 +284,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.reply({
         content: `${target.username}: **${xp} XP** (Level **${level}**)`,
-                              flags: MessageFlags.Ephemeral,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -281,7 +321,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.reply({
         content: "**Leaderboard (Top 10)**",
-                              files: [file],
+        files: [file],
       });
       return;
     }
@@ -298,23 +338,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const chans = listAllowedCommandChannels(guildId);
       const chanText = chans.length
-      ? chans.map(r => `<#${r.channel_id}>`).join(", ")
-      : "All channels (no restriction set)";
+        ? chans.map(r => `<#${r.channel_id}>`).join(", ")
+        : "All channels (no restriction set)";
 
       const roles = listLevelRoles(guildId);
       const roleText = roles.length
-      ? roles.map(r => `<@&${r.role_id}> @ Lvl ${r.level_required} (drop after ${r.drop_grace_days}d)`).join("\n")
-      : "(none configured)";
+        ? roles.map(r => `<@&${r.role_id}> @ Lvl ${r.level_required} (drop after ${r.drop_grace_days}d)`).join("\n")
+        : "(none configured)";
 
       await interaction.reply({
         content:
-        `**HeisenXP-Bot Settings**\n` +
-        `**XP:** msg=${settings.msg_xp}, reaction=${settings.reaction_xp}, voice/min=${settings.voice_xp_per_min}\n` +
-        `**Cooldowns:** msg=${settings.msg_cooldown_sec}s, reaction=${settings.reaction_cooldown_sec}s\n` +
-        `**Decay:** enabled=${!!settings.decay_enabled}, threshold=${settings.decay_min_messages} msgs / ${settings.decay_window_days} days, percent=${Math.round((Number(settings.decay_percent) || 0) * 100)}%\n` +
-        `**Level curve factor:** ${settings.level_xp_factor} (Level L starts at L²×factor)\n` +
-        `**Commands allowed in:** ${chanText}\n` +
-        `**Level→Role mappings:**\n${roleText}`,
+          `**HeisenXP-Bot Settings**\n` +
+          `**XP:** msg=${settings.msg_xp}, reaction=${settings.reaction_xp}, voice/min=${settings.voice_xp_per_min}\n` +
+          `**Cooldowns:** msg=${settings.msg_cooldown_sec}s, reaction=${settings.reaction_cooldown_sec}s\n` +
+          `**Decay:** enabled=${!!settings.decay_enabled}, threshold=${settings.decay_min_messages} msgs / ${settings.decay_window_days} days, percent=${Math.round((Number(settings.decay_percent) || 0) * 100)}%\n` +
+          `**Level curve factor:** ${settings.level_xp_factor} (Level L starts at L²×factor)\n` +
+          `**Commands allowed in:** ${chanText}\n` +
+          `**Level→Role mappings:**\n${roleText}`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -335,8 +375,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const errors = [
         validateXpValue(msg, "Message"),
-          validateXpValue(reaction, "Reaction"),
-          validateXpValue(voice, "Voice"),
+        validateXpValue(reaction, "Reaction"),
+        validateXpValue(voice, "Voice"),
       ].filter(Boolean);
 
       if (errors.length) {
@@ -355,12 +395,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.reply({
         content:
-        `Updated XP settings:\n` +
-        `- msg_xp: **${updated.msg_xp}**\n` +
-        `- reaction_xp: **${updated.reaction_xp}**\n` +
-        `- voice_xp_per_min: **${updated.voice_xp_per_min}**\n` +
-        `- msg_cooldown_sec: **${updated.msg_cooldown_sec}**\n` +
-        `- reaction_cooldown_sec: **${updated.reaction_cooldown_sec}**`,
+          `Updated XP settings:\n` +
+          `- msg_xp: **${updated.msg_xp}**\n` +
+          `- reaction_xp: **${updated.reaction_xp}**\n` +
+          `- voice_xp_per_min: **${updated.voice_xp_per_min}**\n` +
+          `- msg_cooldown_sec: **${updated.msg_cooldown_sec}**\n` +
+          `- reaction_cooldown_sec: **${updated.reaction_cooldown_sec}**`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -389,11 +429,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.reply({
         content:
-        `Updated decay settings:\n` +
-        `- enabled: **${!!updated.decay_enabled}**\n` +
-        `- threshold: **${updated.decay_min_messages} messages** in **${updated.decay_window_days} days**\n` +
-        `- percent: **${Math.round((Number(updated.decay_percent) || 0) * 100)}%**`,
-                              flags: MessageFlags.Ephemeral,
+          `Updated decay settings:\n` +
+          `- enabled: **${!!updated.decay_enabled}**\n` +
+          `- threshold: **${updated.decay_min_messages} messages** in **${updated.decay_window_days} days**\n` +
+          `- percent: **${Math.round((Number(updated.decay_percent) || 0) * 100)}%**`,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -416,7 +456,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         await interaction.reply({
           content: `Mapped ${role} to **Lvl ${level}** (remove after **${dropdays}** day(s) below).`,
-                                flags: MessageFlags.Ephemeral,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -445,7 +485,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const lines = rows.map(r => `- <@&${r.role_id}> @ **Lvl ${r.level_required}** (drop after **${r.drop_grace_days}d**)`);
         await interaction.reply({
           content: `**Level→Role mappings:**\n${lines.join("\n")}`,
-                                flags: MessageFlags.Ephemeral,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -492,8 +532,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const lines = rows.map(r => `- <#${r.channel_id}>`);
         await interaction.reply({
           content: `**Allowed command channels:**\n${lines.join("\n")}`,
-                                flags: MessageFlags.Ephemeral,
-       });
+          flags: MessageFlags.Ephemeral,
+        });
         return;
       }
     }
@@ -505,44 +545,45 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
-   const sub = interaction.options.getSubcommand();
+      const sub = interaction.options.getSubcommand();
 
       if (sub === "add") {
         const url = interaction.options.getString("url", true);
-        
+
         let channelId = "";
         let channelName = "";
-        
-if (url.includes("youtube.com/@")) {
-      const match = url.match(/youtube\.com\/@([^/?]+)/);
-      if (match) {
-        // Normalize to just the username
-        channelId = match[1];
-        channelName = "@" + match[1];
-        fullUrl = `https://www.youtube.com/@${channelId}`;
-        
-        // Resolve @username to numeric ID immediately
-        const resolved = await lookupChannelByName(channelId);
-        if (resolved) {
-          channelId = resolved.id;
-          channelName = normalizedYoutubeName(resolved.name);  // Store without @ prefix
-          fullUrl = `https://www.youtube.com/channel/${channelId}`;
-        }
-      }
-    } else if (url.startsWith("@")) {
-      // Bare @username - normalize to remove leading @
-      const username = url.substring(1);
-      channelId = username;
-      channelName = "@" + username;
-      fullUrl = `https://www.youtube.com/@${username}`;
-      
-      // Resolve @username to numeric ID immediately  
-      const resolved = await lookupChannelByName(username);
-      if (resolved) {
-        channelId = resolved.id;
-        channelName = normalizedYoutubeName(resolved.name);  // Store without @ prefix
-        fullUrl = `https://www.youtube.com/channel/${channelId}`;
-      }
+
+        if (url.includes("youtube.com/@")) {
+          const match = url.match(/youtube\.com\/@([^/?]+)/);
+          if (match) {
+            // Normalize to just the username
+            channelId = match[1];
+            channelName = "@" + match[1];
+            fullUrl = `https://www.youtube.com/@${channelId}`;
+
+            // Resolve @username to numeric ID immediately
+            const resolved = await lookupChannelByName(channelId);
+            if (resolved) {
+              channelId = resolved.id;
+              channelName = normalizeYoutubeName(resolved.name);  // Store without @ prefix
+              fullUrl = `https://www.youtube.com/channel/${channelId}`;
+            }
+          }
+        } else if (url.startsWith("@")) {
+          // Bare @username - normalize to remove leading @
+          const username = url.substring(1);
+          channelId = username;
+          channelName = "@" + username;
+          fullUrl = `https://www.youtube.com/@${username}`;
+
+          // Resolve @username to numeric ID immediately  
+          const resolved = await lookupChannelByName(username);
+          console.log(resolved)
+          if (resolved) {
+            channelId = resolved.id;
+            channelName = normalizeYoutubeName(resolved.name);  // Store without @ prefix
+            fullUrl = `https://www.youtube.com/channel/${channelId}`;
+          }
         } else if (url.includes("youtube.com/channel/")) {
           const match = url.match(/youtube\.com\/channel\/([^/?]+)/);
           if (match) {
@@ -561,19 +602,19 @@ if (url.includes("youtube.com/@")) {
           return;
         }
 
-       const normalizedChannelName = normalizeYoutubeName(channelName);
-          const thumbnail = !channelId || channelId.startsWith("@") 
-            ? ""
-            : `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
+        const normalizedChannelName = normalizeYoutubeName(channelName);
+        const thumbnail = !channelId || channelId.startsWith("@")
+          ? ""
+          : `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
 
-          try {
-            addYoutubeChannel(guildId, channelId, normalizedChannelName, url, thumbnail);
-            
-            let replyMsg = `Subscribed to **@${normalizedChannelName}**. I'll notify when they go live.`;
+        try {
+          addYoutubeChannel(guildId, channelId, normalizedChannelName, url, thumbnail);
+
+          let replyMsg = `Subscribed to **@${normalizedChannelName}**. I'll notify when they go live.`;
           if (channelId.startsWith("@")) {
             replyMsg += "\n\nNote: @username detected. I will attempt to resolve the actual channel ID from YouTube.";
           }
-          
+
           await interaction.reply({
             content: replyMsg,
             flags: MessageFlags.Ephemeral,
@@ -590,16 +631,16 @@ if (url.includes("youtube.com/@")) {
 
       if (sub === "remove") {
         const channelId = interaction.options.getString("channel", true);
-        
-    // Get channel by ID
-       let foundChannel = null;
-      const channels = getYoutubeChannels(guildId);
-       for (const c of channels) {
-         if (normalizeYoutubeName(c.id) === normalizeYoutubeName(channelId) && c.guild_id === guildId) {
-           foundChannel = c;
-           break;
-         }
-       }
+
+        // Get channel by ID
+        let foundChannel = null;
+        const channels = getYoutubeChannels(guildId);
+        for (const c of channels) {
+          if (normalizeYoutubeName(c.id) === normalizeYoutubeName(channelId) && c.guild_id === guildId) {
+            foundChannel = c;
+            break;
+          }
+        }
 
         if (!foundChannel) {
           await interaction.reply({
@@ -609,34 +650,34 @@ if (url.includes("youtube.com/@")) {
           return;
         }
 
-           const channelsBefore = getYoutubeChannels(guildId).length;
-            
-            let removed = false;
-            try {
-              removed = removeYoutubeChannel(guildId, channelId);
-              console.log(`[youtube] Remove debug:`, { 
-                guildId, 
-                channelId, 
-                foundChannel: foundChannel?.channel_name,
-                channelsBefore, 
-                removed,
-                error: null
-              });
-            } catch (err) {
-              console.error("[youtube] Remove error:", err);
-            }
-            
-            const channelsAfter = getYoutubeChannels(guildId).length;
-            if (!removed && channelsAfter < channelsBefore) {
-              // Actually removed but function returned false - DB issue?
-              removed = true;
-            }
-            
-            if (removed) {
-              await interaction.reply({
-                content: `Unsubscribed from **${foundChannel.channel_name}**.`,
-                flags: MessageFlags.Ephemeral,
-              });
+        const channelsBefore = getYoutubeChannels(guildId).length;
+
+        let removed = false;
+        try {
+          removed = removeYoutubeChannel(guildId, channelId);
+          console.log(`[youtube] Remove debug:`, {
+            guildId,
+            channelId,
+            foundChannel: foundChannel?.channel_name,
+            channelsBefore,
+            removed,
+            error: null
+          });
+        } catch (err) {
+          console.error("[youtube] Remove error:", err);
+        }
+
+        const channelsAfter = getYoutubeChannels(guildId).length;
+        if (!removed && channelsAfter < channelsBefore) {
+          // Actually removed but function returned false - DB issue?
+          removed = true;
+        }
+
+        if (removed) {
+          await interaction.reply({
+            content: `Unsubscribed from **${foundChannel.channel_name}**.`,
+            flags: MessageFlags.Ephemeral,
+          });
         } else {
           await interaction.reply({
             content: "Failed to unsubscribe.",
@@ -648,7 +689,7 @@ if (url.includes("youtube.com/@")) {
 
       if (sub === "list") {
         const channels = getYoutubeChannels(guildId);
-        
+
         if (!channels.length) {
           await interaction.reply({
             content: "No YouTube channels subscribed.",
@@ -665,16 +706,16 @@ if (url.includes("youtube.com/@")) {
         const lines = channels.map(c => {
           const channelNameDisplay = "@" + normalizeYoutubeName(c.channel_name);
           let info = `- **${channelNameDisplay}**`;
-          
+
           if (c.id.startsWith("@")) {
             info += ` (*@username detected, resolving at runtime*)\n  URL: <${c.channel_url}>`;
           } else {
             info += `\n  ID: ${c.id}\n  URL: <${c.channel_url}>`;
           }
-          
+
           return info;
         });
-        
+
         await interaction.reply({
           content: `**Subscribed Channels (${channels.length}):**\n\nNotification Channel: ${notificationChannel}\n__Channels:__\n${lines.join("\n")}`,
           flags: MessageFlags.Ephemeral,
@@ -695,7 +736,7 @@ if (url.includes("youtube.com/@")) {
       if (sub === "channel") {
         const ch = interaction.options.getChannel("channel", true);
         updateGuildSettings(guildId, { youtube_notification_channel_id: ch.id });
-        
+
         await interaction.reply({
           content: `YouTube notifications will be sent to <#${ch.id}>.`,
           flags: MessageFlags.Ephemeral,
@@ -713,7 +754,7 @@ if (url.includes("youtube.com/@")) {
           return;
         }
         updateGuildSettings(guildId, { youtube_polling_interval_minutes: minutes });
-        
+
         await interaction.reply({
           content: `YouTube polling interval set to **${minutes}** minute(s).`,
           flags: MessageFlags.Ephemeral,
@@ -725,7 +766,7 @@ if (url.includes("youtube.com/@")) {
     // Fallback so Discord never times out
     await interaction.reply({
       content: `Unhandled command: \`/${interaction.commandName}\` (handler missing).`,
-            flags: MessageFlags.Ephemeral,
+      flags: MessageFlags.Ephemeral,
     });
   } catch (err) {
     console.error("Interaction handler error:", err);
@@ -734,12 +775,12 @@ if (url.includes("youtube.com/@")) {
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({
           content: "Something went wrong handling that command (check bot logs).",
-                                   flags: MessageFlags.Ephemeral,
+          flags: MessageFlags.Ephemeral,
         });
       } else {
         await interaction.reply({
           content: "Something went wrong handling that command (check bot logs).",
-                                flags: MessageFlags.Ephemeral,
+          flags: MessageFlags.Ephemeral,
         });
       }
     } catch {
