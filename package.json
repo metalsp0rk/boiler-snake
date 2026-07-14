@@ -6,7 +6,8 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "register": "node src/register-commands.js"
+    "register": "node src/register-commands.js",
+    "ensure-role": "node scripts/ensure-role.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.67",

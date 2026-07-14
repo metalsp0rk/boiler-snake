@@ -70,6 +70,7 @@ const {
   NO_PING_MENTIONS,
   buildPanelEmbed,
   refreshPanelMessage,
+  deployPanelToChannel,
   handleReactionRoleAdd,
   handleReactionRoleRemove,
   setPendingOptionAdd,
@@ -1304,7 +1305,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const group = interaction.options.getSubcommandGroup(false);
       const sub = interaction.options.getSubcommand();
 
-      // /reactionrole panel [create|edit|delete|list]
+      // /reactionrole panel [create|edit|deploy|delete|list]
       if (group === "panel") {
         if (sub === "create") {
           const ch = interaction.options.getChannel("channel", true);
@@ -1392,6 +1393,47 @@ client.on(Events.InteractionCreate, async (interaction) => {
               : `Saved text, but refresh failed: ${result.error}`,
             flags: MessageFlags.Ephemeral,
           });
+          return;
+        }
+
+        if (sub === "deploy") {
+          const messageId = interaction.options.getString("message_id", true).trim();
+          const ch = interaction.options.getChannel("channel", true);
+
+          if (typeof ch.isTextBased === "function" && !ch.isTextBased()) {
+            await interaction.reply({
+              content: "That channel cannot receive messages.",
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          if (typeof ch.send !== "function") {
+            await interaction.reply({
+              content: "That channel cannot receive messages.",
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+
+          // May post + react several times
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+          const result = await deployPanelToChannel(interaction.guild, messageId, ch);
+          if (!result.ok) {
+            await interaction.editReply({ content: result.error });
+            return;
+          }
+
+          const n = result.optionCount ?? 0;
+          let content =
+            `Deployed panel from \`${messageId}\` → <#${ch.id}>.\n` +
+            `New message ID: \`${result.message.id}\`\n` +
+            `Jump: ${result.message.url}\n` +
+            `Copied **${n}** option${n === 1 ? "" : "s"} (source panel left in place).`;
+          if (result.error) {
+            content += `\n⚠️ ${result.error}`;
+          }
+          await interaction.editReply({ content });
           return;
         }
 
@@ -1604,7 +1646,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         content:
           `Unknown reactionrole subcommand: \`/${interaction.commandName}` +
           `${group ? ` ${group}` : ""} ${sub || ""}\`.\n` +
-          `Use \`/reactionrole panel create|edit|delete|list\`, \`/reactionrole option add|remove|list\`, or \`/reactionrole sync\`.`,
+          `Use \`/reactionrole panel create|edit|deploy|delete|list\`, \`/reactionrole option add|remove|list\`, or \`/reactionrole sync\`.`,
         flags: MessageFlags.Ephemeral,
       });
       return;

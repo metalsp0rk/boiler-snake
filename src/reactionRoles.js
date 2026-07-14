@@ -4,6 +4,7 @@
 const { EmbedBuilder } = require("discord.js");
 const {
   getReactionRolePanel,
+  createReactionRolePanel,
   listReactionRoleOptions,
   getReactionRoleOption,
   isReactionRolePanel,
@@ -300,6 +301,96 @@ async function fetchPanelMessage(guild, panel) {
   const channel = await guild.channels.fetch(panel.channel_id).catch(() => null);
   if (!channel || typeof channel.messages?.fetch !== "function") return null;
   return channel.messages.fetch(panel.message_id).catch(() => null);
+}
+
+/**
+ * Copy a panel (title, description, options) into a new message in destChannel.
+ * Source panel is left unchanged.
+ *
+ * @param {import('discord.js').Guild} guild
+ * @param {string} sourceMessageId
+ * @param {import('discord.js').GuildTextBasedChannel} destChannel
+ * @returns {Promise<{ ok: boolean, error?: string, message?: import('discord.js').Message, panel?: object, optionCount?: number }>}
+ */
+async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
+  if (!guild || !sourceMessageId || !destChannel) {
+    return { ok: false, error: "Missing guild, source message ID, or destination channel." };
+  }
+
+  const guildId = guild.id;
+  const source = getReactionRolePanel(guildId, sourceMessageId);
+  if (!source) {
+    return { ok: false, error: `No reaction-role panel with message ID \`${sourceMessageId}\`.` };
+  }
+
+  if (typeof destChannel.isTextBased === "function" && !destChannel.isTextBased()) {
+    return { ok: false, error: "That channel cannot receive messages." };
+  }
+  if (typeof destChannel.send !== "function") {
+    return { ok: false, error: "That channel cannot receive messages." };
+  }
+
+  const options = listReactionRoleOptions(guildId, sourceMessageId);
+  const embed = buildPanelEmbed(source, options);
+
+  let msg;
+  try {
+    msg = await destChannel.send({
+      embeds: [embed],
+      allowedMentions: NO_PING_MENTIONS,
+    });
+  } catch (err) {
+    return { ok: false, error: `Could not post panel: ${err?.message || err}` };
+  }
+
+  try {
+    createReactionRolePanel(
+      guildId,
+      destChannel.id,
+      msg.id,
+      source.title,
+      source.description
+    );
+
+    for (const opt of options) {
+      upsertReactionRoleOption(
+        guildId,
+        msg.id,
+        opt.emoji_key,
+        opt.emoji_display,
+        opt.role_id,
+        opt.min_level,
+        Number(opt.removable) !== 0
+      );
+    }
+  } catch (err) {
+    // Best-effort cleanup of the orphan Discord message
+    try {
+      await msg.delete();
+    } catch {
+      // ignore
+    }
+    return { ok: false, error: `Posted message but failed to save config: ${err?.message || err}` };
+  }
+
+  const newPanel = getReactionRolePanel(guildId, msg.id);
+  const refresh = await refreshPanelMessage(guild, newPanel);
+  if (!refresh.ok) {
+    return {
+      ok: true,
+      message: msg,
+      panel: newPanel,
+      optionCount: options.length,
+      error: `Deployed, but finishing reactions/embed failed: ${refresh.error}`,
+    };
+  }
+
+  return {
+    ok: true,
+    message: msg,
+    panel: newPanel,
+    optionCount: options.length,
+  };
 }
 
 /**
@@ -817,6 +908,7 @@ module.exports = {
   emojiKeyFromReaction,
   buildPanelEmbed,
   fetchPanelMessage,
+  deployPanelToChannel,
   refreshPanelMessage,
   handleReactionRoleAdd,
   handleReactionRoleRemove,

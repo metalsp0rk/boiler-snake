@@ -339,7 +339,7 @@ const commands = [
     .addSubcommandGroup((group) =>
       group
         .setName("panel")
-        .setDescription("Create, edit, list, or delete reaction-role panels.")
+        .setDescription("Create, edit, list, deploy, or delete reaction-role panels.")
         .addSubcommand((sc) =>
           sc
             .setName("create")
@@ -388,6 +388,23 @@ const commands = [
                 .setDescription("New embed description")
                 .setRequired(false)
                 .setMaxLength(1000)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("deploy")
+            .setDescription("Copy a panel (config + options) into another channel.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the source panel to copy")
+                .setRequired(true)
+            )
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Destination channel for the new panel")
+                .setRequired(true)
             )
         )
         .addSubcommand((sc) =>

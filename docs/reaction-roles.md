@@ -30,11 +30,14 @@ All subcommands require **Manage Server** (`ManageGuild`).
 ```bash
 /reactionrole panel create channel:#roles title:Self Roles description:Pick what fits you
 /reactionrole panel edit message_id:123456789 title:Updated Title
+/reactionrole panel deploy message_id:123456789 channel:#roles-public
 /reactionrole panel list
 /reactionrole panel delete message_id:123456789
 ```
 
 `panel create` replies with the panel **message ID** (needed for options) and a jump link.
+
+**`panel deploy`** copies title, description, and all options into a **new** message in the destination channel (source left unchanged). Use this to ship a configured panel from a staging channel to a public one.
 
 ### Options
 

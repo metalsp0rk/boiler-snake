@@ -358,6 +358,14 @@ Posts an embed and returns the panel **message ID** for option commands.
 /reactionrole panel edit message_id:123456789 title:New Title
 ```
 
+##### `panel deploy` - Copy Panel to Another Channel
+
+```bash
+/reactionrole panel deploy message_id:123456789 channel:#roles
+```
+
+Copies title, description, and all emoji→role options into a new message in the destination channel (source left in place). Returns the new message ID.
+
 ##### `panel list` - List Panels
 
 ```bash
@@ -438,6 +446,7 @@ Then send the emoji to remove as your **next message** (or type `stop` to cancel
 | `/honeypot exempt del` | ManageGuild | Yes |
 | `/reactionrole panel create` | ManageGuild | Yes |
 | `/reactionrole panel edit` | ManageGuild | Yes |
+| `/reactionrole panel deploy` | ManageGuild | Yes |
 | `/reactionrole panel delete` | ManageGuild | Yes |
 | `/reactionrole panel list` | ManageGuild | Yes |
 | `/reactionrole option add` | ManageGuild | Yes |
