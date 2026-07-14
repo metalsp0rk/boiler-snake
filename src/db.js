@@ -187,6 +187,14 @@ CREATE TABLE IF NOT EXISTS honeypot_exempt_roles (
   PRIMARY KEY (guild_id, role_id)
 );
 
+-- Ban roles: anyone who receives one of these roles is banned (unless exempt)
+CREATE TABLE IF NOT EXISTS honeypot_ban_roles (
+  guild_id TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, role_id)
+);
+
 -- Bot-owned reaction role panel messages
 CREATE TABLE IF NOT EXISTS reaction_role_panels (
   guild_id TEXT NOT NULL,
@@ -275,6 +283,18 @@ CREATE TABLE IF NOT EXISTS reaction_role_options (
     "warning_message_id TEXT"
   );
 
+  // Staff-facing log channels (nullable when not configured)
+  addColumnIfMissing(
+    "guild_settings",
+    "audit_log_channel_id",
+    "audit_log_channel_id TEXT"
+  );
+  addColumnIfMissing(
+    "guild_settings",
+    "message_log_channel_id",
+    "message_log_channel_id TEXT"
+  );
+
   // Cleanup pass: clamp any bad/overflow XP already stored (Infinity/NaN/too big/negative)
 
   // Cleanup pass: clamp any bad/overflow XP already stored (Infinity/NaN/too big/negative)
@@ -332,6 +352,8 @@ function getGuildSettings(guildId) {
       youtube_notification_channel_id: null,
       youtube_polling_interval_minutes: 5,
       youtube_upload_role_id: null,
+      audit_log_channel_id: null,
+      message_log_channel_id: null,
       updated_at: now(),
     };
   }
@@ -355,6 +377,8 @@ function updateGuildSettings(guildId, patch) {
     "youtube_notification_channel_id",
     "youtube_polling_interval_minutes",
     "youtube_upload_role_id",
+    "audit_log_channel_id",
+    "message_log_channel_id",
   ]);
 
   const keys = Object.keys(patch).filter(k => allowed.has(k));
@@ -850,6 +874,55 @@ function memberHasHoneypotExemptRole(guildId, memberRoleIds) {
 }
 
 /**
+ * Honeypot ban roles — assign role → ban
+ */
+function addHoneypotBanRole(guildId, roleId) {
+  db.prepare(`
+  INSERT OR IGNORE INTO honeypot_ban_roles (guild_id, role_id, created_at)
+  VALUES (?, ?, ?)
+  `).run(guildId, roleId, now());
+}
+
+function removeHoneypotBanRole(guildId, roleId) {
+  const result = db.prepare(`
+  DELETE FROM honeypot_ban_roles
+  WHERE guild_id=? AND role_id=?
+  `).run(guildId, roleId);
+  return result.changes > 0;
+}
+
+function listHoneypotBanRoles(guildId) {
+  return db.prepare(`
+  SELECT role_id
+  FROM honeypot_ban_roles
+  WHERE guild_id=?
+  ORDER BY created_at ASC
+  `).all(guildId);
+}
+
+function isHoneypotBanRole(guildId, roleId) {
+  const row = db.prepare(`
+  SELECT 1 AS ok
+  FROM honeypot_ban_roles
+  WHERE guild_id=? AND role_id=?
+  `).get(guildId, roleId);
+  return !!row;
+}
+
+/**
+ * @param {string} guildId
+ * @param {string[]} roleIds role IDs the member just received (or currently holds)
+ * @returns {string[]} matching honeypot ban role IDs
+ */
+function findHoneypotBanRolesAmong(guildId, roleIds) {
+  if (!roleIds?.length) return [];
+  const configured = listHoneypotBanRoles(guildId);
+  if (!configured.length) return [];
+  const banSet = new Set(configured.map((r) => r.role_id));
+  return roleIds.filter((id) => banSet.has(id));
+}
+
+/**
  * Reaction role panels
  */
 function createReactionRolePanel(guildId, channelId, messageId, title, description) {
@@ -1069,6 +1142,11 @@ module.exports = {
   removeHoneypotExemptRole,
   listHoneypotExemptRoles,
   memberHasHoneypotExemptRole,
+  addHoneypotBanRole,
+  removeHoneypotBanRole,
+  listHoneypotBanRoles,
+  isHoneypotBanRole,
+  findHoneypotBanRolesAmong,
 
   // reaction roles
   createReactionRolePanel,

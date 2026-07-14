@@ -29,6 +29,7 @@ HeisenXP-Bot/
 | `youtube_channels` | YouTube subscriptions and metadata |
 | `honeypot_channels` | Channels that ban non-exempt users who post |
 | `honeypot_exempt_roles` | Roles exempt from honeypot bans |
+| `honeypot_ban_roles` | Roles that ban a member when granted |
 | `reaction_role_panels` | Bot-owned reaction-role panel messages |
 | `reaction_role_options` | Emoji → role options on panels |
 
@@ -153,6 +154,9 @@ CREATE TABLE guild_settings (
 
   youtube_notification_channel_id TEXT,          -- NULL when not configured
   youtube_polling_interval_minutes INTEGER NOT NULL DEFAULT 5,
+
+  audit_log_channel_id TEXT,                     -- NULL when not configured
+  message_log_channel_id TEXT,                   -- NULL when not configured
   
   updated_at INTEGER NOT NULL
 );
@@ -167,6 +171,8 @@ CREATE TABLE guild_settings (
 | `msg_cooldown_sec` | 20 | Seconds between messages |
 | `reaction_cooldown_sec` | 10 | Seconds between reactions |
 | `decay_enabled` | 1 | Enable decay (boolean) |
+| `audit_log_channel_id` | NULL | Staff audit log channel |
+| `message_log_channel_id` | NULL | Deleted-message log channel |
 | `decay_window_days` | 7 | Time window for activity check |
 | `decay_min_messages` | 20 | Minimum messages to avoid decay |
 | `decay_percent` | 0.10 | XP reduction fraction (10%) |
@@ -408,10 +414,38 @@ DELETE FROM honeypot_exempt_roles WHERE guild_id=? AND role_id=?
 
 **Notes**:
 - A member is exempt if they have **any** role present in this table
+- Applies to both honeypot **channels** and honeypot **ban roles**
 - There is no automatic exemption for Manage Server / Administrator
 - Tables are created via `CREATE TABLE IF NOT EXISTS` on startup (no separate migration step)
 
-### 11. `reaction_role_panels`
+### 11. `honeypot_ban_roles`
+
+Roles that ban a non-exempt member when **granted** (not retroactive for existing holders).
+
+```sql
+CREATE TABLE honeypot_ban_roles (
+  guild_id TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,   -- ms epoch when added
+  PRIMARY KEY (guild_id, role_id)
+);
+```
+
+**Query patterns**:
+```javascript
+// Add ban role
+INSERT OR IGNORE INTO honeypot_ban_roles (guild_id, role_id, created_at)
+VALUES (?, ?, ?)
+
+// List ban roles
+SELECT role_id FROM honeypot_ban_roles WHERE guild_id=?
+ORDER BY created_at ASC
+
+// Remove ban role
+DELETE FROM honeypot_ban_roles WHERE guild_id=? AND role_id=?
+```
+
+### 12. `reaction_role_panels`
 
 Bot-owned panel messages for self-serve reaction roles.
 
@@ -428,7 +462,7 @@ CREATE TABLE reaction_role_panels (
 );
 ```
 
-### 12. `reaction_role_options`
+### 13. `reaction_role_options`
 
 Emoji → role mappings on a panel.
 

@@ -16,6 +16,11 @@ const {
   getGuildSettings,
 } = require("./db");
 const { levelFromXp } = require("./xp");
+const {
+  logReactionRoleChange,
+  logLevelRoleChanges,
+  logConfigChange,
+} = require("./auditLog");
 
 const MAX_OPTIONS_PER_PANEL = 20;
 /** How long admins have to send an emoji after option add/remove. */
@@ -483,7 +488,7 @@ async function tryDmUser(user, content) {
  * @param {number} level current level after XP change
  * @returns {Promise<{ removed: string[] }>} role IDs removed
  */
-async function syncMemberReactionRoles(member, level) {
+async function syncMemberReactionRoles(member, level, { client = null, logSource = null } = {}) {
   const guildId = member.guild.id;
   const requirements = listReactionRoleLevelRequirements(guildId);
   if (!requirements.length) return { removed: [] };
@@ -506,6 +511,14 @@ async function syncMemberReactionRoles(member, level) {
       );
     } catch (err) {
       logRoleError("remove", err, { guildId, userId: member.id, roleId });
+    }
+  }
+
+  // Staff audit log (batched per user)
+  if (removed.length && logSource) {
+    const c = client || member.client;
+    if (c) {
+      await logLevelRoleChanges(c, member, { granted: [], removed }, lvl, logSource).catch(() => {});
     }
   }
 
@@ -565,6 +578,18 @@ async function handleReactionRoleAdd(reaction, user) {
   if (!member.roles.cache.has(option.role_id)) {
     try {
       await member.roles.add(option.role_id);
+      const panel = getReactionRolePanel(guildId, messageId);
+      await logReactionRoleChange(reaction.client, {
+        member,
+        user,
+        roleId: option.role_id,
+        emoji: option.emoji_display || emojiKey,
+        action: "add",
+        panelMessageId: messageId,
+        panelChannelId: panel?.channel_id || reaction.message.channelId,
+        minLevel,
+        removable: option.removable,
+      }).catch(() => {});
     } catch (err) {
       logRoleError("add", err, { guildId, userId: user.id, roleId: option.role_id });
       await removeUserReaction(reaction, user.id);
@@ -611,6 +636,18 @@ async function handleReactionRoleRemove(reaction, user) {
   if (member.roles.cache.has(option.role_id)) {
     try {
       await member.roles.remove(option.role_id);
+      const panel = getReactionRolePanel(guildId, messageId);
+      await logReactionRoleChange(reaction.client, {
+        member,
+        user,
+        roleId: option.role_id,
+        emoji: option.emoji_display || emojiKey,
+        action: "remove",
+        panelMessageId: messageId,
+        panelChannelId: panel?.channel_id || reaction.message.channelId,
+        minLevel: option.min_level,
+        removable: option.removable,
+      }).catch(() => {});
     } catch (err) {
       logRoleError("remove", err, { guildId, userId: user.id, roleId: option.role_id });
     }
@@ -847,6 +884,15 @@ async function handlePendingOptionEmojiMessage(message) {
       channel,
       `Removed ${removed.display} from panel \`${session.messageId}\`.`
     );
+    await logConfigChange(message.client, guildId, {
+      title: "Reaction-role option removed",
+      command: "/reactionrole option remove",
+      actor: message.author,
+      changes: [
+        `Panel: \`${session.messageId}\``,
+        `Emoji: ${removed.display}`,
+      ],
+    }).catch(() => {});
     return { handled: true };
   }
 
@@ -891,6 +937,18 @@ async function handlePendingOptionEmojiMessage(message) {
     `Configured ${applied.display} → <@&${session.roleId}> ` +
       `(Level ${session.level}+, ${remText}) on panel \`${session.messageId}\`.`
   );
+  await logConfigChange(message.client, guildId, {
+    title: "Reaction-role option added",
+    command: "/reactionrole option add",
+    actor: message.author,
+    changes: [
+      `Panel: \`${session.messageId}\``,
+      `Emoji: ${applied.display}`,
+      `Role: <@&${session.roleId}> (\`${session.roleId}\`)`,
+      `Min level: **${session.level}**`,
+      `Removable: **${session.removable ? "yes" : "no"}**`,
+    ],
+  }).catch(() => {});
 
   return { handled: true };
 }

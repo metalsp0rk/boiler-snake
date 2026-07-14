@@ -17,6 +17,7 @@ src/
 ├── xp.js                 # Level calculation utilities (formula: sqrt(xp/factor))
 ├── roles.js              # Role grant/drop logic with grace periods
 ├── reactionRoles.js      # Reaction-role panels (embed + emoji options)
+├── auditLog.js           # Staff audit + message log embeds and message cache
 ├── voiceTicker.js        # Per-minute voice XP ticker
 ├── youtubeTicker.js      # YouTube channel monitoring & notifications
 ├── decay.js              # Daily cron job for XP decay scheduling
@@ -37,9 +38,11 @@ package.json            # Dependencies and scripts
 - Discord client initialization with intents and partials
 - Event handlers for:
   - `ClientReady`: Start tickers (voice, decay, YouTube)
-  - `MessageCreate`: Honeypot enforcement, then message XP with cooldowns
+  - `MessageCreate`: Cache for message log, honeypot enforcement, then message XP with cooldowns
   - `MessageReactionAdd`: Reaction-role panels first, then reaction XP
   - `MessageReactionRemove`: Drop removable reaction roles
+  - `MessageDelete` / `MessageBulkDelete`: Message log channel embeds
+  - `GuildBanAdd` / `GuildMemberRemove`: Audit log bans and kicks
   - `InteractionCreate`: Slash command routing
 
 **Key Functions**:
@@ -107,8 +110,19 @@ Honeypot tables (`honeypot_channels`, `honeypot_exempt_roles`) and reaction-role
 - Strip unconfigured reactions on managed panels
 - Remove roles on reaction remove when the option is `removable`
 - `syncMemberReactionRoles`: after XP decay, strip reaction-claim roles below min level
+- Posts audit-log embeds when roles actually change (via `auditLog.js`)
 
 See [Reaction Roles](reaction-roles.md) for admin usage.
+
+### `auditLog.js` - Staff Logs
+
+**Responsibilities**:
+- Resolve per-guild `audit_log_channel_id` / `message_log_channel_id`
+- In-memory message content cache for verbose delete logs
+- Embed builders + send helpers for deletes, bans, kicks, reaction roles, level-role changes
+- Best-effort Discord audit-log lookup for executors (View Audit Log permission)
+
+See [Audit Log & Message Log](audit-log.md).
 
 ---
 

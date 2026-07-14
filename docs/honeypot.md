@@ -1,8 +1,10 @@
-# Honeypot Channels
+# Honeypot Channels & Ban Roles
 
-Catch spam accounts and raiders by marking decoy channels as honeypots. Anyone who posts in a honeypot channel is banned immediately (unless they have an exempt role).
+Catch spam accounts and raiders with decoy **channels** and/or **roles**. Non-exempt users who trigger a honeypot are banned immediately.
 
 ## Overview
+
+### Honeypot channels
 
 A **honeypot channel** looks like a normal channel but is only meant to trap bots and malicious accounts that auto-join and post everywhere. Legitimate members are never told about these channels (or are blocked from seeing them via Discord permissions).
 
@@ -13,7 +15,22 @@ When a non-exempt user posts in a honeypot channel, the bot:
 3. **Bans** them from the guild
 4. **Skips** XP awards for that message
 
-Staff and other trusted roles can be marked **exempt** so they are not banned if they post while testing or cleaning up.
+### Honeypot ban roles
+
+A **honeypot ban role** is a normal Discord role that, when **granted** to a member, causes an immediate ban. Typical uses:
+
+- A decoy role name that raiders self-assign via another bot or a public role menu
+- Manual staff assignment as a one-click ban workflow
+- Any integration that applies the role to suspicious accounts
+
+When a non-exempt member **receives** a configured ban role, the bot:
+
+1. **DMs** them with the ban reason (if DMs are open)
+2. **Bans** them from the guild
+
+Members who **already** hold the role when you run `/honeypot banrole add` are **not** retroactively banned—only new grants (via `GuildMemberUpdate`) trigger the ban.
+
+Staff and other trusted roles can be marked **exempt** so they are not banned if they post in honeypot channels or receive a ban role while testing.
 
 ## Bot Permissions
 
@@ -30,6 +47,7 @@ Also ensure:
 
 - The bot’s **highest role is above** any role it needs to ban
 - The bot is **not** blocked from the honeypot channel by channel overwrites
+- **Server Members Intent** is enabled (required for ban-role detection via member updates)
 - You re-register slash commands after updates: `npm run register`
 
 ## Recommended Setup
@@ -65,16 +83,45 @@ The bot immediately posts a **warning notice** in that channel:
 
 Removing a honeypot with `/honeypot channel del` also deletes that warning message when possible.
 
-### 4. Verify
+### 4. (Optional) Ban role
+
+```bash
+/honeypot banrole add role:@Raid-Bait
+```
+
+Anyone granted that role is banned (same exempt list as channels).
+
+### 5. Verify
 
 ```bash
 /honeypot channel list
+/honeypot banrole list
 /honeypot exempt list
 ```
 
 ## Commands
 
 All honeypot commands require **Manage Guild** and reply **ephemerally**.
+
+### `/honeypot banrole add`
+
+Mark a role as a honeypot ban role.
+
+```bash
+/honeypot banrole add role:@Honeypot
+```
+
+### `/honeypot banrole list`
+
+List configured ban roles.
+
+### `/honeypot banrole del`
+
+Stop banning when a role is granted.
+
+```bash
+/honeypot banrole del role:@Honeypot
+```
 
 ### `/honeypot channel add`
 

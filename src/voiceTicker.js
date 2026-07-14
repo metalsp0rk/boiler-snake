@@ -1,6 +1,7 @@
 const { getGuildSettings, addXp, logActivity, getXp } = require("./db");
 const { levelFromXp } = require("./xp");
 const { syncMemberRoles } = require("./roles");
+const { logLevelRoleChanges } = require("./auditLog");
 
 function isMutedOrDeafened(voiceState) {
   return !!(
@@ -53,7 +54,8 @@ async function runVoiceTick(client) {
 
           const xp = getXp(guildId, member.id);
           const lvl = levelFromXp(xp, settings.level_xp_factor);
-          await syncMemberRoles(member, lvl);
+          const changes = await syncMemberRoles(member, lvl);
+          await logLevelRoleChanges(client, member, changes, lvl, "xp_sync").catch(() => {});
         } catch (err) {
           console.error(
             `[voiceTicker] Failed awarding voice XP in guild ${guildId} for user ${member.id} in channel ${channelId}: ${err?.message || err}`

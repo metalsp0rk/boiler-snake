@@ -15,12 +15,17 @@ function logRoleError(action, err, { guildId, userId, roleId }) {
   );
 }
 
-// Grant when level >= required.
-// Remove only after user has been below required for > drop_grace_days.
+/**
+ * Grant when level >= required.
+ * Remove only after user has been below required for > drop_grace_days.
+ * @returns {Promise<{ granted: string[], removed: string[] }>}
+ */
 async function syncMemberRoles(member, level) {
+  const granted = [];
+  const removed = [];
   const guildId = member.guild.id;
   const mappings = listLevelRoles(guildId);
-  if (!mappings.length) return;
+  if (!mappings.length) return { granted, removed };
 
   for (const m of mappings) {
     const roleId = m.role_id;
@@ -34,6 +39,7 @@ async function syncMemberRoles(member, level) {
       if (!hasRole) {
         try {
           await member.roles.add(roleId);
+          granted.push(roleId);
         } catch (err) {
           logRoleError("add", err, { guildId, userId: member.id, roleId });
         }
@@ -62,12 +68,15 @@ async function syncMemberRoles(member, level) {
     if (hasRole && (now() - belowSince) > graceMs) {
       try {
         await member.roles.remove(roleId);
+        removed.push(roleId);
       } catch (err) {
         logRoleError("remove", err, { guildId, userId: member.id, roleId });
       }
       setRoleBelowSince(guildId, member.id, roleId, null);
     }
   }
+
+  return { granted, removed };
 }
 
 module.exports = { syncMemberRoles };

@@ -68,10 +68,32 @@ Display current XP rates, decay settings, role mappings, and allowed command cha
 **Cooldowns:** msg=20s, reaction=10s
 **Decay:** enabled=true, threshold=20 msgs / 7 days, percent=10%
 **Level curve factor:** 100 (Level L starts at L²×factor)
+**Logs:** audit=<#…>, message=<#…>
 **Commands allowed in:** <#123456789>, All channels (no restriction set)
 **Level→Role mappings:**
 - <@&123456789> @ Lvl 5 (drop after 3d)
 ```
+
+### `/setlog` - Configure Audit & Message Log Channels
+
+Set separate channels for staff audit embeds and deleted-message embeds. See [Audit Log & Message Log](../audit-log.md).
+
+**Usage**:
+```bash
+/setlog audit channel:#staff-audit
+/setlog message channel:#message-deletes
+/setlog show
+/setlog audit clear:true
+```
+
+**Subcommands**:
+- `audit` — bans, kicks, reaction-role and level-role changes
+- `message` — single and bulk message deletes
+- `show` — current channel configuration
+
+**Options** (on `audit` / `message`):
+- `channel`: Target text channel (optional if clearing)
+- `clear`: Set true to disable that log stream
 
 ### `/setxp` - Configure XP Settings
 

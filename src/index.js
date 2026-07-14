@@ -47,6 +47,11 @@ const {
   removeHoneypotExemptRole,
   listHoneypotExemptRoles,
   memberHasHoneypotExemptRole,
+  addHoneypotBanRole,
+  removeHoneypotBanRole,
+  listHoneypotBanRoles,
+  isHoneypotBanRole,
+  findHoneypotBanRolesAmong,
 
   createReactionRolePanel,
   getReactionRolePanel,
@@ -78,6 +83,16 @@ const {
   clearPendingOptionEmoji,
   handlePendingOptionEmojiMessage,
 } = require("./reactionRoles");
+const {
+  cacheMessage,
+  logMessageDelete,
+  logMessageBulkDelete,
+  logBan,
+  logKickIfApplicable,
+  logLevelRoleChanges,
+  logConfigChange,
+  diffConfigLines,
+} = require("./auditLog");
 
 const MAX_XP_AWARD = 1_000_000_000;
 
@@ -148,79 +163,148 @@ async function ensureHoneypotWarning(guild, channelId) {
 }
 
 /**
+ * Shared honeypot ban: DM (optional copy) then guild ban.
+ * Uses honeypotBanning to avoid double-processing.
+ * @returns {Promise<boolean>} true if a ban was attempted (or already in flight)
+ */
+async function executeHoneypotBan(guild, user, {
+  reason,
+  dmText,
+  deleteMessage = null,
+} = {}) {
+  if (!guild || !user?.id) return false;
+  if (user.bot) return false;
+
+  const banKey = key(guild.id, user.id);
+  if (honeypotBanning.has(banKey)) return true;
+  honeypotBanning.add(banKey);
+
+  try {
+    const guildName = guild.name;
+    const shortReason = reason || "Honeypot trigger";
+
+    // DM first — ban can prevent later contact via the guild
+    try {
+      await user.send(
+        dmText ||
+          `You have been **banned** from **${guildName}**.\n\n` +
+            `**Reason:** ${shortReason}. ` +
+            `If you believe this was a mistake, contact the server staff through another channel.`
+      );
+    } catch (e) {
+      console.warn(
+        `[honeypot] Could not DM ${user.id} in ${guild.id}:`,
+        e?.message || e
+      );
+    }
+
+    if (deleteMessage) {
+      try {
+        if (deleteMessage.deletable) await deleteMessage.delete();
+      } catch (e) {
+        console.warn(
+          `[honeypot] Could not delete message in ${guild.id}:`,
+          e?.message || e
+        );
+      }
+    }
+
+    try {
+      await guild.members.ban(user.id, {
+        reason: `Honeypot: ${shortReason}`,
+        deleteMessageSeconds: 0,
+      });
+      console.log(
+        `[honeypot] Banned ${user.tag || user.username} (${user.id}) in ${guildName} (${guild.id}): ${shortReason}`
+      );
+    } catch (e) {
+      console.error(
+        `[honeypot] Failed to ban ${user.id} in ${guild.id}:`,
+        e?.message || e
+      );
+    }
+  } finally {
+    setTimeout(() => honeypotBanning.delete(banKey), 10_000);
+  }
+
+  return true;
+}
+
+/**
  * If the message is in a honeypot channel, ban the author (unless exempt).
  * Returns true when the message was handled as honeypot traffic (caller should not award XP).
  */
 async function handleHoneypotMessage(message) {
   if (!isHoneypotChannel(message.guild.id, message.channel.id)) return false;
 
-  const banKey = key(message.guild.id, message.author.id);
-  if (honeypotBanning.has(banKey)) return true;
-  honeypotBanning.add(banKey);
-
-  try {
-    let member = message.member;
-    if (!member) {
-      member = await message.guild.members.fetch(message.author.id).catch(() => null);
-    }
-
-    // Exempt roles (staff, etc.) — leave their message alone
-    if (member) {
-      const roleIds = [...member.roles.cache.keys()];
-      if (memberHasHoneypotExemptRole(message.guild.id, roleIds)) {
-        return true;
-      }
-    }
-
-    const guildName = message.guild.name;
-    const reason = "Posted in a honeypot channel";
-
-    // DM first — ban can prevent later contact via the guild
-    try {
-      await message.author.send(
-        `You have been **banned** from **${guildName}**.\n\n` +
-          `**Reason:** You posted in a restricted channel that is used to catch spam accounts and raids. ` +
-          `If you believe this was a mistake, contact the server staff through another channel.`
-      );
-    } catch (e) {
-      // DMs closed / blocked — continue with ban
-      console.warn(
-        `[honeypot] Could not DM ${message.author.id} in ${message.guild.id}:`,
-        e?.message || e
-      );
-    }
-
-    // Delete the triggering message if possible
-    try {
-      if (message.deletable) await message.delete();
-    } catch (e) {
-      console.warn(
-        `[honeypot] Could not delete message in ${message.guild.id}/${message.channel.id}:`,
-        e?.message || e
-      );
-    }
-
-    // Ban
-    try {
-      await message.guild.members.ban(message.author.id, {
-        reason: `Honeypot: ${reason}`,
-        deleteMessageSeconds: 0,
-      });
-      console.log(
-        `[honeypot] Banned ${message.author.tag} (${message.author.id}) in ${guildName} (${message.guild.id})`
-      );
-    } catch (e) {
-      console.error(
-        `[honeypot] Failed to ban ${message.author.id} in ${message.guild.id}:`,
-        e?.message || e
-      );
-    }
-  } finally {
-    // Keep key briefly so concurrent MessageCreate events don't re-trigger
-    setTimeout(() => honeypotBanning.delete(banKey), 10_000);
+  let member = message.member;
+  if (!member) {
+    member = await message.guild.members.fetch(message.author.id).catch(() => null);
   }
 
+  // Exempt roles (staff, etc.) — leave their message alone
+  if (member) {
+    const roleIds = [...member.roles.cache.keys()];
+    if (memberHasHoneypotExemptRole(message.guild.id, roleIds)) {
+      return true;
+    }
+  }
+
+  await executeHoneypotBan(message.guild, message.author, {
+    reason: "Posted in a honeypot channel",
+    dmText:
+      `You have been **banned** from **${message.guild.name}**.\n\n` +
+      `**Reason:** You posted in a restricted channel that is used to catch spam accounts and raids. ` +
+      `If you believe this was a mistake, contact the server staff through another channel.`,
+    deleteMessage: message,
+  });
+
   return true;
+}
+
+/**
+ * If the member was granted a honeypot ban role, ban them (unless exempt).
+ */
+async function handleHoneypotBanRole(oldMember, newMember) {
+  if (!newMember?.guild) return;
+  if (newMember.user?.bot) return;
+
+  const guildId = newMember.guild.id;
+  const oldRoles = oldMember?.roles?.cache ?? new Map();
+  const newRoles = newMember.roles?.cache ?? new Map();
+
+  const addedRoleIds = [];
+  for (const roleId of newRoles.keys()) {
+    if (roleId === guildId) continue; // @everyone
+    if (!oldRoles.has(roleId)) addedRoleIds.push(roleId);
+  }
+  if (!addedRoleIds.length) return;
+
+  const matched = findHoneypotBanRolesAmong(guildId, addedRoleIds);
+  if (!matched.length) return;
+
+  const allRoleIds = [...newRoles.keys()];
+  if (memberHasHoneypotExemptRole(guildId, allRoleIds)) {
+    console.log(
+      `[honeypot] Skip ban-role for exempt member ${newMember.id} in ${guildId} ` +
+        `(roles: ${matched.join(", ")})`
+    );
+    return;
+  }
+
+  const roleMentions = matched.map((id) => `<@&${id}>`).join(", ");
+  await executeHoneypotBan(newMember.guild, newMember.user, {
+    reason: `Received honeypot ban role (${matched.join(", ")})`,
+    dmText:
+      `You have been **banned** from **${newMember.guild.name}**.\n\n` +
+      `**Reason:** You were assigned a restricted role that is used to catch spam accounts and raids. ` +
+      `If you believe this was a mistake, contact the server staff through another channel.`,
+  });
+
+  // Log which roles triggered (console; Discord audit log gets ban reason)
+  console.log(
+    `[honeypot] Ban-role trigger for ${newMember.id} in ${guildId}: ${roleMentions}`
+  );
 }
 
 function isAdminOrMod(interaction) {
@@ -267,8 +351,10 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildModeration, // bans
+    GatewayIntentBits.GuildMembers, // kicks (privileged — enable Server Members Intent in portal)
   ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User, Partials.GuildMember],
 });
 
 async function registerCommandsOnAllGuilds(client) {
@@ -337,6 +423,9 @@ client.on(Events.MessageCreate, async (message) => {
     if (!message.guild) return;
     if (message.author?.bot) return;
 
+    // Cache for verbose message-delete logs
+    cacheMessage(message);
+
     // Reaction-role option add/remove: admin is awaiting an emoji message
     const pendingRr = await handlePendingOptionEmojiMessage(message);
     if (pendingRr.handled) return;
@@ -362,7 +451,8 @@ client.on(Events.MessageCreate, async (message) => {
     const member = await message.guild.members.fetch(message.author.id).catch(() => null);
     if (member) {
       const lvl = levelFromXp(newXp, settings.level_xp_factor);
-      await syncMemberRoles(member, lvl);
+      const changes = await syncMemberRoles(member, lvl);
+      await logLevelRoleChanges(client, member, changes, lvl, "xp_sync").catch(() => {});
     }
   } catch (e) {
     console.error("[MessageCreate] error:", e?.message || e);
@@ -406,7 +496,8 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     const member = await guild.members.fetch(user.id).catch(() => null);
     if (member) {
       const lvl = levelFromXp(newXp, settings.level_xp_factor);
-      await syncMemberRoles(member, lvl);
+      const changes = await syncMemberRoles(member, lvl);
+      await logLevelRoleChanges(client, member, changes, lvl, "xp_sync").catch(() => {});
     }
   } catch (e) {
     console.error("[ReactionAdd] error:", e?.message || e);
@@ -429,6 +520,57 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
     await handleReactionRoleRemove(reaction, user);
   } catch (e) {
     console.error("[ReactionRemove] error:", e?.message || e);
+  }
+});
+
+// Message log: single delete
+client.on(Events.MessageDelete, async (message) => {
+  try {
+    if (!message.guild) return;
+    // Partial messages may lack content — cache + fetch best-effort
+    if (message.partial) {
+      try { await message.fetch(); } catch { /* often fails for deletes */ }
+    }
+    await logMessageDelete(client, message);
+  } catch (e) {
+    console.error("[MessageDelete] error:", e?.message || e);
+  }
+});
+
+// Message log: bulk delete
+client.on(Events.MessageBulkDelete, async (messages, channel) => {
+  try {
+    await logMessageBulkDelete(client, messages, channel);
+  } catch (e) {
+    console.error("[MessageBulkDelete] error:", e?.message || e);
+  }
+});
+
+// Audit log: bans (honeypot + moderator / Discord UI)
+client.on(Events.GuildBanAdd, async (ban) => {
+  try {
+    await logBan(client, ban);
+  } catch (e) {
+    console.error("[GuildBanAdd] error:", e?.message || e);
+  }
+});
+
+// Audit log: kicks only (correlated with Discord audit log)
+client.on(Events.GuildMemberRemove, async (member) => {
+  try {
+    if (!member?.guild) return;
+    await logKickIfApplicable(client, member);
+  } catch (e) {
+    console.error("[GuildMemberRemove] error:", e?.message || e);
+  }
+});
+
+// Honeypot ban roles: ban when a configured role is granted
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  try {
+    await handleHoneypotBanRole(oldMember, newMember);
+  } catch (e) {
+    console.error("[GuildMemberUpdate] honeypot banrole error:", e?.message || e);
   }
 });
 
@@ -544,6 +686,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ? roles.map(r => `<@&${r.role_id}> @ Lvl ${r.level_required} (drop after ${r.drop_grace_days}d)`).join("\n")
         : "(none configured)";
 
+      const auditLogCh = settings.audit_log_channel_id
+        ? `<#${settings.audit_log_channel_id}>`
+        : "Not configured";
+      const messageLogCh = settings.message_log_channel_id
+        ? `<#${settings.message_log_channel_id}>`
+        : "Not configured";
+
       await interaction.reply({
         content:
           `**HeisenXP-Bot Settings**\n` +
@@ -551,11 +700,92 @@ client.on(Events.InteractionCreate, async (interaction) => {
           `**Cooldowns:** msg=${settings.msg_cooldown_sec}s, reaction=${settings.reaction_cooldown_sec}s\n` +
           `**Decay:** enabled=${!!settings.decay_enabled}, threshold=${settings.decay_min_messages} msgs / ${settings.decay_window_days} days, percent=${Math.round((Number(settings.decay_percent) || 0) * 100)}%\n` +
           `**Level curve factor:** ${settings.level_xp_factor} (Level L starts at L²×factor)\n` +
+          `**Logs:** audit=${auditLogCh}, message=${messageLogCh}\n` +
           `**Commands allowed in:** ${chanText}\n` +
           `**Level→Role mappings:**\n${roleText}`,
         flags: MessageFlags.Ephemeral,
       });
       return;
+    }
+
+    // /setlog (admin/mod) — audit log + message log channels
+    if (interaction.commandName === "setlog") {
+      if (!admin) {
+        await interaction.reply({ content: "You don’t have permission to use this.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const sub = interaction.options.getSubcommand();
+
+      if (sub === "show") {
+        const auditLogCh = settings.audit_log_channel_id
+          ? `<#${settings.audit_log_channel_id}> (\`${settings.audit_log_channel_id}\`)`
+          : "Not configured";
+        const messageLogCh = settings.message_log_channel_id
+          ? `<#${settings.message_log_channel_id}> (\`${settings.message_log_channel_id}\`)`
+          : "Not configured";
+        await interaction.reply({
+          content:
+            `**Log channels**\n` +
+            `• **Audit log** (bans, kicks, role changes): ${auditLogCh}\n` +
+            `• **Message log** (deleted messages): ${messageLogCh}`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (sub === "audit" || sub === "message") {
+        const clear = interaction.options.getBoolean("clear") === true;
+        const ch = interaction.options.getChannel("channel", false);
+        const field = sub === "audit" ? "audit_log_channel_id" : "message_log_channel_id";
+        const label = sub === "audit" ? "Audit log" : "Message log";
+        const beforeId = settings[field];
+
+        if (clear) {
+          // Log while the audit channel still exists (if clearing audit itself)
+          await logConfigChange(client, guildId, {
+            title: `${label} channel cleared`,
+            command: `/setlog ${sub}`,
+            actor: interaction.user,
+            changes: [
+              beforeId
+                ? `${label}: <#${beforeId}> → *none*`
+                : `${label}: was already unset`,
+            ],
+          }).catch(() => {});
+          updateGuildSettings(guildId, { [field]: null });
+          await interaction.reply({
+            content: `${label} channel cleared. That log stream is disabled until set again.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (!ch) {
+          await interaction.reply({
+            content: `Provide a \`channel\`, or set \`clear:true\` to disable the ${label.toLowerCase()}.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        updateGuildSettings(guildId, { [field]: ch.id });
+        await logConfigChange(client, guildId, {
+          title: `${label} channel set`,
+          command: `/setlog ${sub}`,
+          actor: interaction.user,
+          changes: [
+            beforeId
+              ? `${label}: <#${beforeId}> → <#${ch.id}>`
+              : `${label}: *none* → <#${ch.id}>`,
+          ],
+        }).catch(() => {});
+        await interaction.reply({
+          content: `${label} will be sent to <#${ch.id}>.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
     }
 
     // /setxp (admin/mod)
@@ -589,7 +819,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (msgcooldown !== null) patch.msg_cooldown_sec = msgcooldown;
       if (reactioncooldown !== null) patch.reaction_cooldown_sec = reactioncooldown;
 
+      if (!Object.keys(patch).length) {
+        await interaction.reply({
+          content: "No XP settings provided to update.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const before = settings;
       const updated = updateGuildSettings(guildId, patch);
+      const lines = diffConfigLines(before, updated, Object.keys(patch));
+      if (lines.length) {
+        await logConfigChange(client, guildId, {
+          title: "XP settings updated",
+          command: "/setxp",
+          actor: interaction.user,
+          changes: lines,
+        }).catch(() => {});
+      }
 
       await interaction.reply({
         content:
@@ -623,7 +871,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (days !== null) patch.decay_window_days = Math.max(1, days);
       if (percent !== null) patch.decay_percent = Math.max(0, Math.min(0.95, percent / 100));
 
+      if (!Object.keys(patch).length) {
+        await interaction.reply({
+          content: "No decay settings provided to update.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const before = settings;
       const updated = updateGuildSettings(guildId, patch);
+      const lines = diffConfigLines(before, updated, Object.keys(patch), (k, v) => {
+        if (k === "decay_enabled") return "`decay_enabled`";
+        if (k === "decay_percent") return "`decay_percent`";
+        return `\`${k}\``;
+      }).map((line) => {
+        // Show percent as human % in the after value if we can
+        if (line.includes("decay_percent")) {
+          const pctBefore = Math.round((Number(before.decay_percent) || 0) * 100);
+          const pctAfter = Math.round((Number(updated.decay_percent) || 0) * 100);
+          return `\`decay_percent\`: ${pctBefore}% → **${pctAfter}%**`;
+        }
+        if (line.includes("decay_enabled")) {
+          return `\`decay_enabled\`: ${!!before.decay_enabled} → **${!!updated.decay_enabled}**`;
+        }
+        return line;
+      });
+      if (lines.length) {
+        await logConfigChange(client, guildId, {
+          title: "Decay settings updated",
+          command: "/setdecay",
+          actor: interaction.user,
+          changes: lines,
+        }).catch(() => {});
+      }
 
       await interaction.reply({
         content:
@@ -651,6 +932,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const dropdays = interaction.options.getInteger("dropdays", true);
 
         upsertLevelRole(guildId, role.id, Math.max(0, level), Math.max(0, dropdays));
+        await logConfigChange(client, guildId, {
+          title: "Level→role mapping set",
+          command: "/leveltorole set",
+          actor: interaction.user,
+          changes: [
+            `Role: ${role} (\`${role.id}\`)`,
+            `Level required: **${level}**`,
+            `Drop grace: **${dropdays}** day(s)`,
+          ],
+        }).catch(() => {});
 
         await interaction.reply({
           content: `Mapped ${role} to **Lvl ${level}** (remove after **${dropdays}** day(s) below).`,
@@ -662,6 +953,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (sub === "remove") {
         const role = interaction.options.getRole("role", true);
         deleteLevelRole(guildId, role.id);
+        await logConfigChange(client, guildId, {
+          title: "Level→role mapping removed",
+          command: "/leveltorole remove",
+          actor: interaction.user,
+          changes: [`Role: ${role} (\`${role.id}\`)`],
+        }).catch(() => {});
 
         await interaction.reply({
           content: `Removed mapping for ${role}.`,
@@ -701,6 +998,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (sub === "add") {
         const ch = interaction.options.getChannel("channel", true);
         addAllowedCommandChannel(guildId, ch.id);
+        await logConfigChange(client, guildId, {
+          title: "Command channel allowed",
+          command: "/setcommandchannel add",
+          actor: interaction.user,
+          changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
+        }).catch(() => {});
         await interaction.reply({
           content: `Commands are now allowed in <#${ch.id}>.`,
           flags: MessageFlags.Ephemeral,
@@ -711,6 +1014,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (sub === "remove") {
         const ch = interaction.options.getChannel("channel", true);
         removeAllowedCommandChannel(guildId, ch.id);
+        await logConfigChange(client, guildId, {
+          title: "Command channel restriction removed",
+          command: "/setcommandchannel remove",
+          actor: interaction.user,
+          changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
+        }).catch(() => {});
         await interaction.reply({
           content: `Removed <#${ch.id}> from allowed command channels.`,
           flags: MessageFlags.Ephemeral,
@@ -822,6 +1131,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
             replyMsg += "\n\nNote: @username detected. I will attempt to resolve the actual channel ID from YouTube.";
           }
 
+          await logConfigChange(client, guildId, {
+            title: "YouTube subscription added",
+            command: "/youtube add",
+            actor: interaction.user,
+            changes: [
+              `Channel: **@${normalizedChannelName}**`,
+              `ID: \`${channelId}\``,
+              `URL: ${url}`,
+            ],
+          }).catch(() => {});
+
           await interaction.reply({
             content: replyMsg,
             flags: MessageFlags.Ephemeral,
@@ -881,6 +1201,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
 
         if (removed) {
+          await logConfigChange(client, guildId, {
+            title: "YouTube subscription removed",
+            command: "/youtube remove",
+            actor: interaction.user,
+            changes: [
+              `Channel: **${foundChannel.channel_name}**`,
+              `ID: \`${foundChannel.id || channelId}\``,
+            ],
+          }).catch(() => {});
           await interaction.reply({
             content: `Unsubscribed from **${foundChannel.channel_name}**.`,
             flags: MessageFlags.Ephemeral,
@@ -942,7 +1271,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (sub === "channel") {
         const ch = interaction.options.getChannel("channel", true);
+        const before = settings.youtube_notification_channel_id;
         updateGuildSettings(guildId, { youtube_notification_channel_id: ch.id });
+        await logConfigChange(client, guildId, {
+          title: "YouTube notification channel set",
+          command: "/setyoutube channel",
+          actor: interaction.user,
+          changes: [
+            before
+              ? `Channel: <#${before}> → <#${ch.id}>`
+              : `Channel: *none* → <#${ch.id}>`,
+          ],
+        }).catch(() => {});
 
         await interaction.reply({
           content: `YouTube notifications will be sent to <#${ch.id}>.`,
@@ -960,7 +1300,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
           });
           return;
         }
+        const before = settings.youtube_polling_interval_minutes;
         updateGuildSettings(guildId, { youtube_polling_interval_minutes: minutes });
+        await logConfigChange(client, guildId, {
+          title: "YouTube polling interval set",
+          command: "/setyoutube interval",
+          actor: interaction.user,
+          changes: [`Interval: ${before} → **${minutes}** minute(s)`],
+        }).catch(() => {});
 
         await interaction.reply({
           content: `YouTube polling interval set to **${minutes}** minute(s).`,
@@ -971,8 +1318,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (sub === "uploadrole") {
         const role = interaction.options.getRole("role", false);
-
+        const before = settings.youtube_upload_role_id;
         updateGuildSettings(guildId, { youtube_upload_role_id: role ? role.id : null });
+        const afterLabel = role ? `<@&${role.id}>` : "*none*";
+        const beforeLabel = before ? `<@&${before}>` : "*none*";
+        await logConfigChange(client, guildId, {
+          title: "YouTube upload mention role set",
+          command: "/setyoutube uploadrole",
+          actor: interaction.user,
+          changes: [`Role: ${beforeLabel} → ${afterLabel}`],
+        }).catch(() => {});
 
         await interaction.reply({
           content: role
@@ -1181,6 +1536,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
           addHoneypotChannel(guildId, ch.id);
           const warningStatus = await ensureHoneypotWarning(interaction.guild, ch.id);
+          await logConfigChange(client, guildId, {
+            title: "Honeypot channel added",
+            command: "/honeypot channel add",
+            actor: interaction.user,
+            changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
+            details: warningStatus,
+          }).catch(() => {});
           await interaction.reply({
             content:
               `Marked <#${ch.id}> as a **honeypot** channel.\n` +
@@ -1212,6 +1574,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
             }
           }
 
+          if (removed) {
+            await logConfigChange(client, guildId, {
+              title: "Honeypot channel removed",
+              command: "/honeypot channel del",
+              actor: interaction.user,
+              changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
+              details: warningNote.trim() || undefined,
+            }).catch(() => {});
+          }
+
           await interaction.reply({
             content: removed
               ? `Removed <#${ch.id}> from the honeypot list.${warningNote}`
@@ -1239,13 +1611,107 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
       }
 
+      // /honeypot banrole [add|list|del]
+      if (group === "banrole") {
+        if (sub === "add") {
+          const role = interaction.options.getRole("role", true);
+
+          if (role.id === guildId) {
+            await interaction.reply({
+              content: "You cannot use @everyone as a honeypot ban role.",
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          if (role.managed) {
+            await interaction.reply({
+              content:
+                "That role is managed by an integration. Prefer a normal server role for ban-role honeypots.",
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          if (isHoneypotBanRole(guildId, role.id)) {
+            await interaction.reply({
+              content: `${role} is already a honeypot ban role.`,
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+
+          addHoneypotBanRole(guildId, role.id);
+          await logConfigChange(client, guildId, {
+            title: "Honeypot ban role added",
+            command: "/honeypot banrole add",
+            actor: interaction.user,
+            changes: [`Role: ${role} (\`${role.id}\`)`],
+          }).catch(() => {});
+          await interaction.reply({
+            content:
+              `Marked ${role} as a **honeypot ban role**.\n` +
+              `Anyone who is **granted** this role will be banned immediately ` +
+              `(except members with honeypot exempt roles).\n` +
+              `Tip: configure \`/honeypot exempt\` for staff first. ` +
+              `Members who already have the role are not retroactively banned.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === "del") {
+          const role = interaction.options.getRole("role", true);
+          const removed = removeHoneypotBanRole(guildId, role.id);
+          if (removed) {
+            await logConfigChange(client, guildId, {
+              title: "Honeypot ban role removed",
+              command: "/honeypot banrole del",
+              actor: interaction.user,
+              changes: [`Role: ${role} (\`${role.id}\`)`],
+            }).catch(() => {});
+          }
+          await interaction.reply({
+            content: removed
+              ? `Removed ${role} from the honeypot ban-role list.`
+              : `${role} was not a honeypot ban role.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === "list") {
+          const rows = listHoneypotBanRoles(guildId);
+          if (!rows.length) {
+            await interaction.reply({
+              content: "No honeypot ban roles configured.",
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          const lines = rows.map((r) => `- <@&${r.role_id}>`);
+          await interaction.reply({
+            content:
+              `**Honeypot ban roles** (granting these bans the member):\n${lines.join("\n")}`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+      }
+
       // /honeypot exempt [add|list|del]
       if (group === "exempt") {
         if (sub === "add") {
           const role = interaction.options.getRole("role", true);
           addHoneypotExemptRole(guildId, role.id);
+          await logConfigChange(client, guildId, {
+            title: "Honeypot exempt role added",
+            command: "/honeypot exempt add",
+            actor: interaction.user,
+            changes: [`Role: ${role} (\`${role.id}\`)`],
+          }).catch(() => {});
           await interaction.reply({
-            content: `Added ${role} to honeypot exempt roles. Members with this role will not be banned for posting in honeypot channels.`,
+            content:
+              `Added ${role} to honeypot exempt roles. Members with this role will not be banned ` +
+              `for posting in honeypot channels or receiving honeypot ban roles.`,
             flags: MessageFlags.Ephemeral,
           });
           return;
@@ -1254,6 +1720,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (sub === "del") {
           const role = interaction.options.getRole("role", true);
           const removed = removeHoneypotExemptRole(guildId, role.id);
+          if (removed) {
+            await logConfigChange(client, guildId, {
+              title: "Honeypot exempt role removed",
+              command: "/honeypot exempt del",
+              actor: interaction.user,
+              changes: [`Role: ${role} (\`${role.id}\`)`],
+            }).catch(() => {});
+          }
           await interaction.reply({
             content: removed
               ? `Removed ${role} from honeypot exempt roles.`
@@ -1267,7 +1741,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
           const rows = listHoneypotExemptRoles(guildId);
           if (!rows.length) {
             await interaction.reply({
-              content: "No honeypot exempt roles configured. Staff who post in honeypot channels will be banned.",
+              content:
+                "No honeypot exempt roles configured. Staff who hit honeypots will be banned.",
               flags: MessageFlags.Ephemeral,
             });
             return;
@@ -1286,7 +1761,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         content:
           `Unknown honeypot subcommand: \`/${interaction.commandName}` +
           `${group ? ` ${group}` : ""} ${sub || ""}\`.\n` +
-          `Use \`/honeypot channel add|list|del\` or \`/honeypot exempt add|list|del\`.`,
+          `Use \`/honeypot channel add|list|del\`, \`/honeypot banrole add|list|del\`, or \`/honeypot exempt add|list|del\`.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -1351,6 +1826,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
           }
 
           createReactionRolePanel(guildId, ch.id, msg.id, title, description);
+          await logConfigChange(client, guildId, {
+            title: "Reaction-role panel created",
+            command: "/reactionrole panel create",
+            actor: interaction.user,
+            changes: [
+              `Channel: <#${ch.id}>`,
+              `Message ID: \`${msg.id}\``,
+              `Title: ${title}`,
+            ],
+            details: msg.url,
+          }).catch(() => {});
           await interaction.reply({
             content:
               `Created reaction-role panel in <#${ch.id}>.\n` +
@@ -1387,6 +1873,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
           updateReactionRolePanelText(guildId, messageId, title, description);
           const updated = getReactionRolePanel(guildId, messageId);
           const result = await refreshPanelMessage(interaction.guild, updated);
+          const changeLines = [];
+          if (title != null) changeLines.push(`Title: ${panel.title} → **${updated.title}**`);
+          if (description != null) {
+            changeLines.push(
+              `Description updated (${String(panel.description || "").length} → ${String(updated.description || "").length} chars)`
+            );
+          }
+          await logConfigChange(client, guildId, {
+            title: "Reaction-role panel edited",
+            command: "/reactionrole panel edit",
+            actor: interaction.user,
+            changes: [`Panel: \`${messageId}\``, ...changeLines],
+          }).catch(() => {});
           await interaction.reply({
             content: result.ok
               ? `Updated panel \`${messageId}\`.`
@@ -1433,6 +1932,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
           if (result.error) {
             content += `\n⚠️ ${result.error}`;
           }
+          await logConfigChange(client, guildId, {
+            title: "Reaction-role panel deployed",
+            command: "/reactionrole panel deploy",
+            actor: interaction.user,
+            changes: [
+              `Source panel: \`${messageId}\``,
+              `New channel: <#${ch.id}>`,
+              `New message ID: \`${result.message.id}\``,
+              `Options copied: **${n}**`,
+            ],
+            details: result.message.url,
+          }).catch(() => {});
           await interaction.editReply({ content });
           return;
         }
@@ -1457,6 +1968,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
             } catch {
               note = " (Could not delete Discord message — remove it manually if needed.)";
             }
+          }
+
+          if (removed) {
+            await logConfigChange(client, guildId, {
+              title: "Reaction-role panel deleted",
+              command: "/reactionrole panel delete",
+              actor: interaction.user,
+              changes: [
+                `Message ID: \`${messageId}\``,
+                channel_id ? `Channel: <#${channel_id}>` : null,
+              ].filter(Boolean),
+              details: note.trim() || undefined,
+            }).catch(() => {});
           }
 
           await interaction.reply({
@@ -1633,6 +2157,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
 
         const result = await refreshPanelMessage(interaction.guild, panel);
+        if (result.ok) {
+          await logConfigChange(client, guildId, {
+            title: "Reaction-role panel synced",
+            command: "/reactionrole sync",
+            actor: interaction.user,
+            changes: [`Panel: \`${messageId}\``],
+          }).catch(() => {});
+        }
         await interaction.reply({
           content: result.ok
             ? `Synced panel \`${messageId}\` (embed + bot reactions).`

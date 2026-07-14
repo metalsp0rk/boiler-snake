@@ -17,9 +17,8 @@ Go to [Discord Developer Portal](https://discord.com/developers/applications) an
 ### 2. Add a Bot
 - Click "Add Bot" in the left sidebar
 - Under "Privileged Gateway Intents", enable:
-  - ✅ **Message Content Intent** (required for reliable message tracking)
-  - ✅ **Guild Members** (recommended for member data)
-  - ✅ **Server Members** (if you need full member lists)
+  - ✅ **Message Content Intent** (required for reliable message tracking and delete logs)
+  - ✅ **Server Members Intent** (recommended; required for kick audit logging)
 
 ### 3. Copy Credentials
 Copy your credentials to `.env` file (see Step 4):
@@ -96,6 +95,7 @@ Use Discord's [OAuth2 URL Generator](https://discord.com/developers/applications
 - ✅ Use External Emoji
 - ✅ Ban Members *(required for [honeypot channels](honeypot.md))*
 - ✅ Manage Messages *(recommended so honeypot messages can be deleted, and so [reaction-role](reaction-roles.md) panels can strip unconfigured reactions)*
+- ✅ View Audit Log *(recommended for [audit / message logs](audit-log.md) — attribute bans, kicks, and deletes)*
 
 ### Add Bot to Server
 

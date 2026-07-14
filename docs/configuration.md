@@ -76,6 +76,10 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `decay_percent` | 0.10 | XP reduction (10%) |
 | `level_xp_factor` | 100 | Level formula factor |
 | `youtube_polling_interval_minutes` | 5 | YouTube API check frequency |
+| `audit_log_channel_id` | *(none)* | Channel for bans, kicks, role-change embeds |
+| `message_log_channel_id` | *(none)* | Channel for deleted-message embeds |
+
+See [Audit Log & Message Log](audit-log.md) for setup and event details.
 
 ---
 
@@ -97,6 +101,15 @@ Each Discord server (guild) has its own settings stored in SQLite.
 **Commands allowed in:** All channels (no restriction set)
 **Level→Role mappings:**
 - <@&123456789> @ Lvl 5 (drop after 3d)
+```
+
+### Configure Staff Log Channels
+
+```bash
+/setlog audit channel:#staff-audit
+/setlog message channel:#message-deletes
+/setlog show
+/setlog audit clear:true
 ```
 
 ### Configure XP Awards

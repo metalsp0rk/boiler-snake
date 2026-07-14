@@ -210,6 +210,50 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName("setlog")
+    .setDescription("Configure audit log and message log channels (admin only).")
+    .setDefaultMemberPermissions(adminPerms)
+    .addSubcommand((sc) => {
+      const sub = sc
+        .setName("audit")
+        .setDescription("Set the channel for bans, kicks, and role-change logs.");
+      sub.addChannelOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("Channel for audit log embeds")
+          .setRequired(false)
+      );
+      sub.addBooleanOption((opt) =>
+        opt
+          .setName("clear")
+          .setDescription("Clear the audit log channel (disable stream)")
+          .setRequired(false)
+      );
+      return sub;
+    })
+    .addSubcommand((sc) => {
+      const sub = sc
+        .setName("message")
+        .setDescription("Set the channel for deleted-message logs.");
+      sub.addChannelOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("Channel for message delete embeds")
+          .setRequired(false)
+      );
+      sub.addBooleanOption((opt) =>
+        opt
+          .setName("clear")
+          .setDescription("Clear the message log channel (disable stream)")
+          .setRequired(false)
+      );
+      return sub;
+    })
+    .addSubcommand((sc) =>
+      sc.setName("show").setDescription("Show current audit and message log channels.")
+    ),
+
+  new SlashCommandBuilder()
     .setName("setyoutube")
     .setDescription("Configure YouTube notification settings (admin only).")
     .setDefaultMemberPermissions(adminPerms)
@@ -265,7 +309,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("honeypot")
-    .setDescription("Configure honeypot channels that ban users who post (admin only).")
+    .setDescription("Configure honeypot channels and ban roles (admin only).")
     .setDefaultMemberPermissions(adminPerms)
     .addSubcommandGroup((group) =>
       group
@@ -295,6 +339,38 @@ const commands = [
               opt
                 .setName("channel")
                 .setDescription("Channel to remove from honeypot list")
+                .setRequired(true)
+            )
+        )
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName("banrole")
+        .setDescription("Manage roles that ban a user when assigned.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("add")
+            .setDescription("Mark a role as a honeypot ban role (assigning it bans the member).")
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role that triggers an automatic ban when granted")
+                .setRequired(true)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List honeypot ban roles.")
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("del")
+            .setDescription("Remove a role from the honeypot ban-role list.")
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role to remove from the ban-role list")
                 .setRequired(true)
             )
         )
