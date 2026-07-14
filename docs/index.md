@@ -11,6 +11,7 @@ HeisenXP-Bot is a feature-rich Discord bot that helps you gamify your server wit
 - **Automatic role management**: Grant or revoke roles based on level with grace periods
 - **Daily XP decay**: Incentivize active participation
 - **YouTube notifications**: Get alerted when subscribed channels go live or upload videos
+- **Honeypot channels**: Auto-ban users who post in decoy channels (with staff role exemptions)
 - **Leaderboard visualization**: Beautiful PNG leaderboards with gradients and rankings
 
 ## Quick Start
@@ -47,6 +48,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 
 ### Advanced Features
 - [YouTube Notifications](youtube-notifications.md) - Monitor channels for live streams and uploads
+- [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
 - [Leaderboard Rendering](leaderboard.md) - Beautiful PNG leaderboards with gradients
 - [Command Restrictions](command-restrictions.md) - Control where commands can be used
 
@@ -73,6 +75,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 | **Daily Decay** | Reduce XP for inactive users based on message count thresholds |
 | **Command Channels** | Restrict where commands can be used per guild |
 | **YouTube Alerts** | Monitor subscribed channels for live streams and uploads |
+| **Honeypot Channels** | Ban users who post in configured decoy channels; exempt roles for staff |
 
 ## License
 

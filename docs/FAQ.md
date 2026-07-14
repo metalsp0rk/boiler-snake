@@ -13,6 +13,7 @@ Common questions and answers for HeisenXP-Bot users and administrators.
 - Level-based role granting
 - Daily XP decay for inactive users
 - YouTube notifications for streams/uploads
+- Honeypot channels (auto-ban decoy-channel posters)
 - Beautiful PNG leaderboards
 
 ---
@@ -44,8 +45,23 @@ If database migrations are included in the update:
 - Role mappings
 - YouTube subscriptions
 - Command channel restrictions
+- Honeypot channels and exempt roles
 
 Install once, add to multiple servers using the OAuth2 URL.
+
+---
+
+### Q: How do honeypot channels work?
+
+**A**: Mark a decoy channel with `/honeypot channel add`. Anyone who posts there is DM'd (if possible), the message is deleted, and they are banned—unless they have a role from `/honeypot exempt add`.
+
+**Important**:
+- Exempt staff roles **before** enabling honeypots
+- The bot needs **Ban Members** (and ideally **Manage Messages**)
+- The bot’s role must be **above** members it needs to ban
+- Bots are ignored; only human posters trigger bans
+
+Full guide: [Honeypot Channels](honeypot.md).
 
 ---
 
@@ -367,11 +383,12 @@ With daily decay:
 
 **A**: Yes! See [`ROADMAP.md`](../ROADMAP.md) in the project root:
 
-**Planned features**:
-- Honeypot channels (auto-ban spambots)
+**Planned features** (see roadmap if present):
 - Ticket system (support requests)
 - Activity analytics dashboard
 - XP transfer between servers
+
+**Recently added**: [Honeypot channels](honeypot.md) (auto-ban decoy-channel posters with exempt roles)
 
 ---
 

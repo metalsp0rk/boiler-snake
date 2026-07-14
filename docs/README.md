@@ -46,6 +46,11 @@ Welcome to the comprehensive documentation for HeisenXP-Bot.
   - Subscribing to channels
   - Configuration commands
 
+- **[Honeypot Channels](honeypot.md)**
+  - Decoy channels that ban anyone who posts
+  - Exempt roles for staff
+  - Setup order, permissions, and troubleshooting
+
 - **[Leaderboard Rendering](leaderboard.md)**
   - PNG generation details
   - Color scheme and fonts
@@ -116,7 +121,7 @@ Welcome to the comprehensive documentation for HeisenXP-Bot.
 ## 🔗 Additional Resources
 
 - [README.md](../README.md) - Project overview and installation summary
-- [ROADMAP.md](../ROADMAP.md) - Future features (honeypot channels, ticket system)
+- [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; staff exempt roles
 - [GitHub Repository](https://github.com/zombienerd/HeisenXP-Bot)
 
 ---
@@ -128,6 +133,6 @@ Everything you need is in this documentation:
 1. **Install** the bot following [Setup Guide](setup.md)
 2. **Configure** settings per your server's needs ([Configuration Guide](configuration.md))
 3. **Test** XP and leveling features
-4. **Customize** roles, decay, YouTube alerts as needed
+4. **Customize** roles, decay, YouTube alerts, honeypots as needed
 
 Good luck, and enjoy gamifying your Discord community! 🚀

@@ -94,6 +94,8 @@ Use Discord's [OAuth2 URL Generator](https://discord.com/developers/applications
 - ✅ Manage Roles
 - ✅ Read Message History
 - ✅ Use External Emoji
+- ✅ Ban Members *(required for [honeypot channels](honeypot.md))*
+- ✅ Manage Messages *(recommended so honeypot messages can be deleted)*
 
 ### Add Bot to Server
 

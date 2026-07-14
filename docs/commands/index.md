@@ -286,6 +286,56 @@ Set how often the bot checks for updates (1-60 minutes).
 - Lower intervals = faster alerts but more API quota usage
 - Recommended: 5-30 minutes for most servers
 
+### `/honeypot` - Honeypot Channel Management
+
+Configure decoy channels that ban users who post, and roles that are exempt from those bans. See [Honeypot Channels](../honeypot.md) for full setup guidance.
+
+#### Subcommand group: `channel` - Manage Honeypot Channels
+
+##### `channel add` - Mark Channel as Honeypot
+
+```bash
+/honeypot channel add channel:#trap-channel
+```
+
+**Effect**: Non-exempt users who post in the channel are DM'd, the message is deleted if possible, and they are banned.
+
+##### `channel list` - List Honeypot Channels
+
+```bash
+/honeypot channel list
+```
+
+##### `channel del` - Remove Honeypot Marking
+
+```bash
+/honeypot channel del channel:#trap-channel
+```
+
+Does not delete the Discord channel—only removes honeypot enforcement.
+
+#### Subcommand group: `exempt` - Manage Exempt Roles
+
+##### `exempt add` - Exempt a Role
+
+```bash
+/honeypot exempt add role:@Moderator
+```
+
+Members with this role will not be banned for posting in honeypot channels. Configure exempt roles **before** enabling honeypots.
+
+##### `exempt list` - List Exempt Roles
+
+```bash
+/honeypot exempt list
+```
+
+##### `exempt del` - Remove Role Exemption
+
+```bash
+/honeypot exempt del role:@Moderator
+```
+
 ---
 
 ## Permission Matrix
@@ -308,6 +358,12 @@ Set how often the bot checks for updates (1-60 minutes).
 | `/youtube list` | ManageGuild | Yes |
 | `/setyoutube channel` | ManageGuild | Yes |
 | `/setyoutube interval` | ManageGuild | Yes |
+| `/honeypot channel add` | ManageGuild | Yes |
+| `/honeypot channel list` | ManageGuild | Yes |
+| `/honeypot channel del` | ManageGuild | Yes |
+| `/honeypot exempt add` | ManageGuild | Yes |
+| `/honeypot exempt list` | ManageGuild | Yes |
+| `/honeypot exempt del` | ManageGuild | Yes |
 
 ---
 
@@ -356,4 +412,6 @@ ADMIN/MOD:
 /setcommandchannel add/remove/list → Command restrictions
 /youtube add/remove/list        → YouTube subscriptions
 /setyoutube channel/interval    → YouTube settings
+/honeypot channel add/list/del  → Honeypot channels
+/honeypot exempt add/list/del   → Honeypot exempt roles
 ```

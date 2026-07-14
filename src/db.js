@@ -170,6 +170,22 @@ CREATE TABLE IF NOT EXISTS youtube_channels (
   UNIQUE(guild_id, channel_name)
 );
 
+-- Honeypot channels: anyone who posts is banned (unless exempt)
+CREATE TABLE IF NOT EXISTS honeypot_channels (
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, channel_id)
+);
+
+-- Roles exempt from honeypot bans (e.g. staff)
+CREATE TABLE IF NOT EXISTS honeypot_exempt_roles (
+  guild_id TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, role_id)
+);
+
 `);
 
 /**
@@ -708,6 +724,77 @@ function cleanupMalformedYoutubeChannels() {
   }
 }
 
+/**
+ * Honeypot channels
+ */
+function addHoneypotChannel(guildId, channelId) {
+  db.prepare(`
+  INSERT OR IGNORE INTO honeypot_channels (guild_id, channel_id, created_at)
+  VALUES (?, ?, ?)
+  `).run(guildId, channelId, now());
+}
+
+function removeHoneypotChannel(guildId, channelId) {
+  const result = db.prepare(`
+  DELETE FROM honeypot_channels
+  WHERE guild_id=? AND channel_id=?
+  `).run(guildId, channelId);
+  return result.changes > 0;
+}
+
+function listHoneypotChannels(guildId) {
+  return db.prepare(`
+  SELECT channel_id
+  FROM honeypot_channels
+  WHERE guild_id=?
+  ORDER BY created_at ASC
+  `).all(guildId);
+}
+
+function isHoneypotChannel(guildId, channelId) {
+  const row = db.prepare(`
+  SELECT 1 AS ok
+  FROM honeypot_channels
+  WHERE guild_id=? AND channel_id=?
+  `).get(guildId, channelId);
+  return !!row;
+}
+
+/**
+ * Honeypot exempt roles
+ */
+function addHoneypotExemptRole(guildId, roleId) {
+  db.prepare(`
+  INSERT OR IGNORE INTO honeypot_exempt_roles (guild_id, role_id, created_at)
+  VALUES (?, ?, ?)
+  `).run(guildId, roleId, now());
+}
+
+function removeHoneypotExemptRole(guildId, roleId) {
+  const result = db.prepare(`
+  DELETE FROM honeypot_exempt_roles
+  WHERE guild_id=? AND role_id=?
+  `).run(guildId, roleId);
+  return result.changes > 0;
+}
+
+function listHoneypotExemptRoles(guildId) {
+  return db.prepare(`
+  SELECT role_id
+  FROM honeypot_exempt_roles
+  WHERE guild_id=?
+  ORDER BY created_at ASC
+  `).all(guildId);
+}
+
+function memberHasHoneypotExemptRole(guildId, memberRoleIds) {
+  if (!memberRoleIds?.length) return false;
+  const rows = listHoneypotExemptRoles(guildId);
+  if (!rows.length) return false;
+  const exempt = new Set(rows.map(r => r.role_id));
+  return memberRoleIds.some(id => exempt.has(id));
+}
+
 module.exports = {
   db,
   now,
@@ -748,16 +835,26 @@ module.exports = {
   listAllowedCommandChannels,
 
   // YouTube subscriptions
-   normalizeYoutubeName,
-   getYoutubeChannels,
-   getAllYoutubeChannels,
-   getYoutubeChannelById,
-   addYoutubeChannel,
-   removeYoutubeChannel,
-updateYoutubeChannelLastChecked,
-cleanupOldNotifications,
-   cleanupMalformedYoutubeChannels
- };
+  normalizeYoutubeName,
+  getYoutubeChannels,
+  getAllYoutubeChannels,
+  getYoutubeChannelById,
+  addYoutubeChannel,
+  removeYoutubeChannel,
+  updateYoutubeChannelLastChecked,
+  cleanupOldNotifications,
+  cleanupMalformedYoutubeChannels,
+
+  // honeypot
+  addHoneypotChannel,
+  removeHoneypotChannel,
+  listHoneypotChannels,
+  isHoneypotChannel,
+  addHoneypotExemptRole,
+  removeHoneypotExemptRole,
+  listHoneypotExemptRoles,
+  memberHasHoneypotExemptRole,
+};
 
 
 

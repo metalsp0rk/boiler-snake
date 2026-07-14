@@ -223,6 +223,27 @@ Range: 1-60 minutes. Lower = faster alerts but more API quota usage.
 /youtube remove channel:UCxxxxxxxxxxx
 ```
 
+### Honeypot Channels
+
+Decoy channels that ban users who post (except exempt roles). Full guide: [Honeypot Channels](honeypot.md).
+
+**Setup order** (important):
+
+```bash
+# 1. Exempt staff first
+/honeypot exempt add role:@Moderator
+/honeypot exempt add role:@Admin
+
+# 2. Then mark decoy channels
+/honeypot channel add channel:#trap-channel
+
+# 3. Verify
+/honeypot channel list
+/honeypot exempt list
+```
+
+Requires bot **Ban Members** permission (and **Manage Messages** to delete honeypot posts).
+
 ---
 
 ## Level Curve Configuration

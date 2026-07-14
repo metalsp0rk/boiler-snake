@@ -36,6 +36,15 @@ const {
   listLevelRoles,
   getRoleDropState,
   setRoleBelowSince,
+
+  addHoneypotChannel,
+  removeHoneypotChannel,
+  listHoneypotChannels,
+  isHoneypotChannel,
+  addHoneypotExemptRole,
+  removeHoneypotExemptRole,
+  listHoneypotExemptRoles,
+  memberHasHoneypotExemptRole,
 } = require("./db");
 
 const { renderLeaderboardPng } = require("./renderLeaderboard");
@@ -51,8 +60,87 @@ const MAX_XP_AWARD = 1_000_000_000;
 const msgCooldown = new Map();      // key: guildId:userId => lastTs
 const reactionCooldown = new Map(); // key: guildId:userId => lastTs
 
+// In-flight honeypot bans to avoid double-processing rapid messages
+const honeypotBanning = new Set(); // key: guildId:userId
+
 function key(guildId, userId) {
   return `${guildId}:${userId}`;
+}
+
+/**
+ * If the message is in a honeypot channel, ban the author (unless exempt).
+ * Returns true when the message was handled as honeypot traffic (caller should not award XP).
+ */
+async function handleHoneypotMessage(message) {
+  if (!isHoneypotChannel(message.guild.id, message.channel.id)) return false;
+
+  const banKey = key(message.guild.id, message.author.id);
+  if (honeypotBanning.has(banKey)) return true;
+  honeypotBanning.add(banKey);
+
+  try {
+    let member = message.member;
+    if (!member) {
+      member = await message.guild.members.fetch(message.author.id).catch(() => null);
+    }
+
+    // Exempt roles (staff, etc.) — leave their message alone
+    if (member) {
+      const roleIds = [...member.roles.cache.keys()];
+      if (memberHasHoneypotExemptRole(message.guild.id, roleIds)) {
+        return true;
+      }
+    }
+
+    const guildName = message.guild.name;
+    const reason = "Posted in a honeypot channel";
+
+    // DM first — ban can prevent later contact via the guild
+    try {
+      await message.author.send(
+        `You have been **banned** from **${guildName}**.\n\n` +
+          `**Reason:** You posted in a restricted channel that is used to catch spam accounts and raids. ` +
+          `If you believe this was a mistake, contact the server staff through another channel.`
+      );
+    } catch (e) {
+      // DMs closed / blocked — continue with ban
+      console.warn(
+        `[honeypot] Could not DM ${message.author.id} in ${message.guild.id}:`,
+        e?.message || e
+      );
+    }
+
+    // Delete the triggering message if possible
+    try {
+      if (message.deletable) await message.delete();
+    } catch (e) {
+      console.warn(
+        `[honeypot] Could not delete message in ${message.guild.id}/${message.channel.id}:`,
+        e?.message || e
+      );
+    }
+
+    // Ban
+    try {
+      await message.guild.members.ban(message.author.id, {
+        reason: `Honeypot: ${reason}`,
+        deleteMessageSeconds: 0,
+      });
+      console.log(
+        `[honeypot] Banned ${message.author.tag} (${message.author.id}) in ${guildName} (${message.guild.id})`
+      );
+    } catch (e) {
+      console.error(
+        `[honeypot] Failed to ban ${message.author.id} in ${message.guild.id}:`,
+        e?.message || e
+      );
+    }
+  } finally {
+    // Keep key briefly so concurrent MessageCreate events don't re-trigger
+    setTimeout(() => honeypotBanning.delete(banKey), 10_000);
+  }
+
+  return true;
 }
 
 function isAdminOrMod(interaction) {
@@ -163,11 +251,14 @@ client.once(Events.ClientReady, async () => {
   }, 10 * 60 * 1000);
 });
 
-// Message XP
+// Message XP (+ honeypot enforcement)
 client.on(Events.MessageCreate, async (message) => {
   try {
     if (!message.guild) return;
     if (message.author?.bot) return;
+
+    // Honeypot: ban non-exempt users who post in configured channels
+    if (await handleHoneypotMessage(message)) return;
 
     const settings = getGuildSettings(message.guild.id);
     const gain = Number(settings.msg_xp) || 0;
@@ -951,6 +1042,117 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({
         content: content,
         embeds: embeds,
+      });
+      return;
+    }
+
+    // /honeypot (admin/mod) — channel + exempt subcommand groups
+    if (interaction.commandName === "honeypot") {
+      if (!admin) {
+        await interaction.reply({
+          content: "You don't have permission to use this.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const group = interaction.options.getSubcommandGroup(false);
+      const sub = interaction.options.getSubcommand();
+
+      // /honeypot channel [add|list|del]
+      if (group === "channel") {
+        if (sub === "add") {
+          const ch = interaction.options.getChannel("channel", true);
+          addHoneypotChannel(guildId, ch.id);
+          await interaction.reply({
+            content:
+              `Marked <#${ch.id}> as a **honeypot** channel.\n` +
+              `Anyone who posts there will be banned immediately (except members with exempt roles).\n` +
+              `Tip: use \`/honeypot exempt add\` for staff roles so they are not banned by mistake.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === "del") {
+          const ch = interaction.options.getChannel("channel", true);
+          const removed = removeHoneypotChannel(guildId, ch.id);
+          await interaction.reply({
+            content: removed
+              ? `Removed <#${ch.id}> from the honeypot list.`
+              : `<#${ch.id}> was not a honeypot channel.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === "list") {
+          const rows = listHoneypotChannels(guildId);
+          if (!rows.length) {
+            await interaction.reply({
+              content: "No honeypot channels configured.",
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          const lines = rows.map((r) => `- <#${r.channel_id}>`);
+          await interaction.reply({
+            content: `**Honeypot channels:**\n${lines.join("\n")}`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+      }
+
+      // /honeypot exempt [add|list|del]
+      if (group === "exempt") {
+        if (sub === "add") {
+          const role = interaction.options.getRole("role", true);
+          addHoneypotExemptRole(guildId, role.id);
+          await interaction.reply({
+            content: `Added ${role} to honeypot exempt roles. Members with this role will not be banned for posting in honeypot channels.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === "del") {
+          const role = interaction.options.getRole("role", true);
+          const removed = removeHoneypotExemptRole(guildId, role.id);
+          await interaction.reply({
+            content: removed
+              ? `Removed ${role} from honeypot exempt roles.`
+              : `${role} was not on the honeypot exempt list.`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        if (sub === "list") {
+          const rows = listHoneypotExemptRoles(guildId);
+          if (!rows.length) {
+            await interaction.reply({
+              content: "No honeypot exempt roles configured. Staff who post in honeypot channels will be banned.",
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+          const lines = rows.map((r) => `- <@&${r.role_id}>`);
+          await interaction.reply({
+            content: `**Honeypot exempt roles:**\n${lines.join("\n")}`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+      }
+
+      // Always answer /honeypot so we never fall through as "handler missing"
+      await interaction.reply({
+        content:
+          `Unknown honeypot subcommand: \`/${interaction.commandName}` +
+          `${group ? ` ${group}` : ""} ${sub || ""}\`.\n` +
+          `Use \`/honeypot channel add|list|del\` or \`/honeypot exempt add|list|del\`.`,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }

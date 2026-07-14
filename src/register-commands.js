@@ -262,6 +262,75 @@ const commands = [
         .setDescription("Use simple text-based embed instead of rich embed")
         .setRequired(false)
     ),
+
+  new SlashCommandBuilder()
+    .setName("honeypot")
+    .setDescription("Configure honeypot channels that ban users who post (admin only).")
+    .setDefaultMemberPermissions(adminPerms)
+    .addSubcommandGroup((group) =>
+      group
+        .setName("channel")
+        .setDescription("Manage honeypot channels.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("add")
+            .setDescription("Mark a channel as a honeypot (anyone who posts is banned).")
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Channel to mark as a honeypot")
+                .setRequired(true)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List configured honeypot channels.")
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("del")
+            .setDescription("Remove a channel from the honeypot list.")
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Channel to remove from honeypot list")
+                .setRequired(true)
+            )
+        )
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName("exempt")
+        .setDescription("Manage roles exempt from honeypot bans.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("add")
+            .setDescription("Add a role that is exempt from honeypot bans.")
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role to exempt (e.g. staff)")
+                .setRequired(true)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List roles exempt from honeypot bans.")
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("del")
+            .setDescription("Remove a role from the honeypot exempt list.")
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role to remove from exempt list")
+                .setRequired(true)
+            )
+        )
+    ),
   ].map((c) => c.toJSON());
 
 module.exports = { commands };

@@ -27,6 +27,8 @@ HeisenXP-Bot/
 | `role_drop_state` | Track when users dropped below role thresholds |
 | `allowed_command_channels` | Command channel restrictions per guild |
 | `youtube_channels` | YouTube subscriptions and metadata |
+| `honeypot_channels` | Channels that ban non-exempt users who post |
+| `honeypot_exempt_roles` | Roles exempt from honeypot bans |
 
 ---
 
@@ -336,6 +338,72 @@ VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?) ON CONFLICT(...) DO UPDATE SET ...
 UPDATE youtube_channels SET last_checked=?, last_video_id=?, updated_at=?
 WHERE id=?
 ```
+
+---
+
+### 9. `honeypot_channels`
+
+Channels configured as honeypots. Non-exempt users who post are banned.
+
+```sql
+CREATE TABLE honeypot_channels (
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,   -- ms epoch when marked as honeypot
+  PRIMARY KEY (guild_id, channel_id)
+);
+```
+
+**Query patterns**:
+```javascript
+// Add honeypot channel
+INSERT OR IGNORE INTO honeypot_channels (guild_id, channel_id, created_at)
+VALUES (?, ?, ?)
+
+// Check if channel is a honeypot
+SELECT 1 FROM honeypot_channels WHERE guild_id=? AND channel_id=?
+
+// List honeypot channels
+SELECT channel_id FROM honeypot_channels WHERE guild_id=?
+ORDER BY created_at ASC
+
+// Remove honeypot
+DELETE FROM honeypot_channels WHERE guild_id=? AND channel_id=?
+```
+
+---
+
+### 10. `honeypot_exempt_roles`
+
+Roles whose members are not banned for posting in honeypot channels (e.g. staff).
+
+```sql
+CREATE TABLE honeypot_exempt_roles (
+  guild_id TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,   -- ms epoch when added to exempt list
+  PRIMARY KEY (guild_id, role_id)
+);
+```
+
+**Query patterns**:
+```javascript
+// Add exempt role
+INSERT OR IGNORE INTO honeypot_exempt_roles (guild_id, role_id, created_at)
+VALUES (?, ?, ?)
+
+// List exempt roles
+SELECT role_id FROM honeypot_exempt_roles WHERE guild_id=?
+ORDER BY created_at ASC
+
+// Remove exempt role
+DELETE FROM honeypot_exempt_roles WHERE guild_id=? AND role_id=?
+```
+
+**Notes**:
+- A member is exempt if they have **any** role present in this table
+- There is no automatic exemption for Manage Server / Administrator
+- Tables are created via `CREATE TABLE IF NOT EXISTS` on startup (no separate migration step)
 
 ## Database Migrations
 

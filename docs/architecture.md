@@ -36,13 +36,14 @@ package.json            # Dependencies and scripts
 - Discord client initialization with intents and partials
 - Event handlers for:
   - `ClientReady`: Start tickers (voice, decay, YouTube)
-  - `MessageCreate`: Message XP tracking with cooldowns
+  - `MessageCreate`: Honeypot enforcement, then message XP with cooldowns
   - `MessageReactionAdd`: Reaction XP tracking
   - `InteractionCreate`: Slash command routing
 
 **Key Functions**:
 ```javascript
 key(guildId, userId)           // Cooldown map key generator
+handleHoneypotMessage(message) // Ban non-exempt posters in honeypot channels
 isAdminOrMod(interaction)      // Permission check helper
 commandsAllowed(interaction)   // Command channel restriction logic
 validateXpValue(value, label)  // XP value validation (capped to 1B)
@@ -81,6 +82,8 @@ db.pragma("journal_mode = WAL");  // Write-Ahead Logging for concurrency
 | `topUsers(guildId, limit)` | Top users by XP for leaderboard |
 | `getGuildSettings(guildId)` | Get guild configuration |
 | `updateGuildSettings(guildId, patch)` | Update guild config safely |
+| `isHoneypotChannel(guildId, channelId)` | Whether a channel is a honeypot |
+| `memberHasHoneypotExemptRole(...)` | Whether member roles include a honeypot exemption |
 
 **Database Migrations**:
 Applied on startup in `runMigrations()`:
@@ -88,6 +91,8 @@ Applied on startup in `runMigrations()`:
 2. Recreated `youtube_channels` with composite primary key
 3. Added `last_checked` column for YouTube channels
 4. Cleanup malformed XP values (Infinity/NaN/>
+
+Honeypot tables (`honeypot_channels`, `honeypot_exempt_roles`) are created via base schema `CREATE TABLE IF NOT EXISTS` on startup.
 
 ---
 
