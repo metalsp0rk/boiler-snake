@@ -266,6 +266,40 @@ function emojiKeyFromReaction(reaction) {
 }
 
 /**
+ * Normalize unicode emoji keys for comparison (strip VS16, etc.).
+ * Custom emoji snowflake IDs are left unchanged.
+ */
+function normalizeEmojiKey(key) {
+  if (key == null) return "";
+  const s = String(key);
+  if (/^\d{17,20}$/.test(s)) return s;
+  // Variation selector-16 (emoji presentation), zero-width joiner kept for ZWJ sequences
+  return s.replace(/\uFE0F/g, "");
+}
+
+/**
+ * Resolve a panel option for a reaction key, with unicode normalization fallback.
+ */
+function resolveReactionRoleOption(guildId, messageId, emojiKey) {
+  if (!emojiKey) return null;
+  const direct = getReactionRoleOption(guildId, messageId, emojiKey);
+  if (direct) return direct;
+
+  const norm = normalizeEmojiKey(emojiKey);
+  if (norm && norm !== emojiKey) {
+    const byNorm = getReactionRoleOption(guildId, messageId, norm);
+    if (byNorm) return byNorm;
+  }
+
+  const options = listReactionRoleOptions(guildId, messageId);
+  for (const opt of options) {
+    if (normalizeEmojiKey(opt.emoji_key) === norm) return opt;
+    if (opt.emoji_display && normalizeEmojiKey(opt.emoji_display) === norm) return opt;
+  }
+  return null;
+}
+
+/**
  * Build the panel embed from DB panel + options.
  */
 function buildPanelEmbed(panel, options) {
@@ -444,13 +478,36 @@ async function refreshPanelMessage(guild, panel) {
     }
   }
 
-  // Remove bot reactions that are no longer configured
+  // Remove reactions that are no longer configured (everyone, not just the bot).
+  // Requires Manage Messages. Falls back to removing only the bot's reaction.
   try {
+    // Prefer a fresh reaction list when possible
+    if (typeof message.reactions?.fetch === "function") {
+      try {
+        await message.reactions.fetch();
+      } catch {
+        // cache-only path
+      }
+    }
+
+    const wantedNorm = new Set([...wantedKeys].map(normalizeEmojiKey));
     for (const reaction of message.reactions.cache.values()) {
       const key = emojiKeyFromReaction(reaction);
-      if (!key || wantedKeys.has(key)) continue;
-      if (reaction.me) {
-        await reaction.users.remove(guild.client.user.id).catch(() => null);
+      if (!key) continue;
+      if (wantedKeys.has(key) || wantedNorm.has(normalizeEmojiKey(key))) continue;
+
+      try {
+        // Wipe this emoji from the message entirely
+        await reaction.remove();
+      } catch (err) {
+        // Fallback: at least drop the bot's own reaction
+        if (reaction.me && guild.client?.user?.id) {
+          await reaction.users.remove(guild.client.user.id).catch(() => null);
+        }
+        console.warn(
+          `[reactionRoles] Could not remove unconfigured reaction ${key} on ${panel.message_id}:`,
+          err?.message || err
+        );
       }
     }
   } catch (err) {
@@ -460,15 +517,57 @@ async function refreshPanelMessage(guild, panel) {
   return { ok: true };
 }
 
+/**
+ * Remove one user's reaction. Requires Manage Messages (or the user themselves).
+ */
 async function removeUserReaction(reaction, userId) {
+  if (!reaction || !userId) return false;
   try {
+    if (reaction.partial) {
+      try {
+        await reaction.fetch();
+      } catch {
+        // continue with best effort
+      }
+    }
     await reaction.users.remove(userId);
+    return true;
   } catch (err) {
     console.warn(
       `[reactionRoles] Could not remove reaction for ${userId}:`,
+      err?.message || err,
+      "(bot needs Manage Messages on the panel channel)"
+    );
+    return false;
+  }
+}
+
+/**
+ * Remove an unconfigured emoji from a panel message entirely.
+ * Prefer wiping the reaction (all users); fall back to removing just this user.
+ */
+async function stripExtraneousReaction(reaction, userId) {
+  if (!reaction) return false;
+
+  try {
+    if (reaction.partial) {
+      try {
+        await reaction.fetch();
+      } catch {
+        /* ignore */
+      }
+    }
+    // Full wipe — correct for emojis that should never appear on the panel
+    await reaction.remove();
+    return true;
+  } catch (err) {
+    console.warn(
+      `[reactionRoles] reaction.remove() failed (need Manage Messages?):`,
       err?.message || err
     );
   }
+
+  return removeUserReaction(reaction, userId);
 }
 
 async function tryDmUser(user, content) {
@@ -526,14 +625,36 @@ async function syncMemberReactionRoles(member, level, { client = null, logSource
 }
 
 /**
+ * Resolve guild for a reaction (partials / uncached message).
+ */
+function guildFromReaction(reaction) {
+  if (reaction?.message?.guild) return reaction.message.guild;
+  const gid = reaction?.message?.guildId;
+  if (gid && reaction.client?.guilds?.cache) {
+    return reaction.client.guilds.cache.get(gid) || null;
+  }
+  return null;
+}
+
+/**
  * Handle MessageReactionAdd for reaction-role panels.
  * @returns {Promise<{ handled: boolean }>} handled=true means skip reaction XP
  */
 async function handleReactionRoleAdd(reaction, user) {
-  if (!reaction?.message?.guild) return { handled: false };
   if (user?.bot) return { handled: false };
 
-  const guild = reaction.message.guild;
+  // Ensure message is as complete as possible for panel lookup
+  if (reaction?.message?.partial) {
+    try {
+      await reaction.message.fetch();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const guild = guildFromReaction(reaction);
+  if (!guild || !reaction?.message?.id) return { handled: false };
+
   const guildId = guild.id;
   const messageId = reaction.message.id;
 
@@ -543,14 +664,14 @@ async function handleReactionRoleAdd(reaction, user) {
 
   const emojiKey = emojiKeyFromReaction(reaction);
   if (!emojiKey) {
-    await removeUserReaction(reaction, user.id);
+    await stripExtraneousReaction(reaction, user.id);
     return { handled: true };
   }
 
-  const option = getReactionRoleOption(guildId, messageId, emojiKey);
+  const option = resolveReactionRoleOption(guildId, messageId, emojiKey);
   if (!option) {
-    // Unconfigured reaction on a managed panel → strip it
-    await removeUserReaction(reaction, user.id);
+    // Unconfigured reaction on a managed panel → strip entirely
+    await stripExtraneousReaction(reaction, user.id);
     return { handled: true };
   }
 
@@ -608,10 +729,19 @@ async function handleReactionRoleAdd(reaction, user) {
  * @returns {Promise<{ handled: boolean }>}
  */
 async function handleReactionRoleRemove(reaction, user) {
-  if (!reaction?.message?.guild) return { handled: false };
   if (user?.bot) return { handled: false };
 
-  const guild = reaction.message.guild;
+  if (reaction?.message?.partial) {
+    try {
+      await reaction.message.fetch();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const guild = guildFromReaction(reaction);
+  if (!guild || !reaction?.message?.id) return { handled: false };
+
   const guildId = guild.id;
   const messageId = reaction.message.id;
 
@@ -622,7 +752,7 @@ async function handleReactionRoleRemove(reaction, user) {
   const emojiKey = emojiKeyFromReaction(reaction);
   if (!emojiKey) return { handled: true };
 
-  const option = getReactionRoleOption(guildId, messageId, emojiKey);
+  const option = resolveReactionRoleOption(guildId, messageId, emojiKey);
   if (!option) return { handled: true };
 
   // Only strip role when removable is set
@@ -964,6 +1094,8 @@ module.exports = {
   parseEmojiInput,
   resolveEmojiShortcode,
   emojiKeyFromReaction,
+  normalizeEmojiKey,
+  resolveReactionRoleOption,
   buildPanelEmbed,
   fetchPanelMessage,
   deployPanelToChannel,
@@ -971,6 +1103,7 @@ module.exports = {
   handleReactionRoleAdd,
   handleReactionRoleRemove,
   syncMemberReactionRoles,
+  stripExtraneousReaction,
   validateEmojiForGuild,
   setPendingOptionEmoji,
   setPendingOptionAdd,

@@ -462,22 +462,28 @@ client.on(Events.MessageCreate, async (message) => {
 // Reaction roles + reaction XP (add)
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   try {
-    if (!reaction.message?.guild) return;
     if (user?.bot) return;
 
-    // Ensure partials are resolved
+    // Resolve partials BEFORE guild checks — uncached panel messages often
+    // lack guild until message.fetch() completes.
     if (reaction.partial) {
       try { await reaction.fetch(); } catch { return; }
     }
-    if (reaction.message.partial) {
-      try { await reaction.message.fetch(); } catch { /* ignore */ }
+    if (reaction.message?.partial) {
+      try { await reaction.message.fetch(); } catch { /* may still lack content */ }
     }
+
+    const guild =
+      reaction.message?.guild ||
+      (reaction.message?.guildId
+        ? client.guilds.cache.get(reaction.message.guildId)
+        : null);
+    if (!guild) return;
 
     // Reaction-role panels: grant/strip; never award XP on panels
     const rr = await handleReactionRoleAdd(reaction, user);
     if (rr.handled) return;
 
-    const guild = reaction.message.guild;
     const settings = getGuildSettings(guild.id);
     const gain = Number(settings.reaction_xp) || 0;
     const cdSec = Math.max(0, Number(settings.reaction_cooldown_sec) || 0);
@@ -507,15 +513,21 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 // Reaction roles (remove → drop role when removable)
 client.on(Events.MessageReactionRemove, async (reaction, user) => {
   try {
-    if (!reaction.message?.guild) return;
     if (user?.bot) return;
 
     if (reaction.partial) {
       try { await reaction.fetch(); } catch { return; }
     }
-    if (reaction.message.partial) {
+    if (reaction.message?.partial) {
       try { await reaction.message.fetch(); } catch { /* ignore */ }
     }
+
+    const guild =
+      reaction.message?.guild ||
+      (reaction.message?.guildId
+        ? client.guilds.cache.get(reaction.message.guildId)
+        : null);
+    if (!guild) return;
 
     await handleReactionRoleRemove(reaction, user);
   } catch (e) {

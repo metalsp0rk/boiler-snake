@@ -10,10 +10,14 @@ Bot-owned **panel messages** where members claim roles by reacting with configur
 4. When a member reacts:
    - **Configured emoji** + level met → role granted
    - **Configured emoji** + level too low → reaction removed; bot tries to DM the requirement
-   - **Unconfigured emoji** → reaction removed immediately
+   - **Unconfigured emoji** → reaction is stripped from the panel (requires **Manage Messages**)
 5. When a member removes a reaction on a **removable** option → role removed
 
+`/reactionrole sync` and panel refresh also wipe any leftover unconfigured reactions from the message.
+
 Reaction XP is **not** awarded for reactions on managed panels.
+
+**Permission note:** Stripping other users’ reactions needs **Manage Messages** on the panel channel. Without it, grant/remove roles may still work, but extra emojis will stick.
 
 Panel embeds show roles as `@Role` for readability, but the bot always sends/edits with **`allowedMentions` disabled** so members are **not** pinged when options are added or the panel is refreshed.
 
