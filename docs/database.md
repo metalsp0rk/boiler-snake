@@ -29,6 +29,8 @@ HeisenXP-Bot/
 | `youtube_channels` | YouTube subscriptions and metadata |
 | `honeypot_channels` | Channels that ban non-exempt users who post |
 | `honeypot_exempt_roles` | Roles exempt from honeypot bans |
+| `reaction_role_panels` | Bot-owned reaction-role panel messages |
+| `reaction_role_options` | Emoji → role options on panels |
 
 ---
 
@@ -408,6 +410,59 @@ DELETE FROM honeypot_exempt_roles WHERE guild_id=? AND role_id=?
 - A member is exempt if they have **any** role present in this table
 - There is no automatic exemption for Manage Server / Administrator
 - Tables are created via `CREATE TABLE IF NOT EXISTS` on startup (no separate migration step)
+
+### 11. `reaction_role_panels`
+
+Bot-owned panel messages for self-serve reaction roles.
+
+```sql
+CREATE TABLE reaction_role_panels (
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT 'Reaction Roles',
+  description TEXT NOT NULL DEFAULT 'React to get a role. Remove your reaction to drop it (if allowed).',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, message_id)
+);
+```
+
+### 12. `reaction_role_options`
+
+Emoji → role mappings on a panel.
+
+```sql
+CREATE TABLE reaction_role_options (
+  guild_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  emoji_key TEXT NOT NULL,       -- unicode string, or custom emoji id
+  emoji_display TEXT NOT NULL,   -- unicode or <:name:id> for embed/react
+  role_id TEXT NOT NULL,
+  min_level INTEGER NOT NULL DEFAULT 0,
+  removable INTEGER NOT NULL DEFAULT 1,  -- 1 = remove role when reaction removed
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, message_id, emoji_key)
+);
+```
+
+**Query patterns**:
+```javascript
+// Look up option for a reaction
+SELECT * FROM reaction_role_options
+WHERE guild_id=? AND message_id=? AND emoji_key=?
+
+// List options for panel refresh
+SELECT * FROM reaction_role_options
+WHERE guild_id=? AND message_id=?
+ORDER BY created_at ASC
+```
+
+**Notes**:
+- Deleting a panel also deletes its options
+- Max 20 options per panel (enforced in application code)
+- Tables are created via `CREATE TABLE IF NOT EXISTS` on startup
 
 ## Database Migrations
 

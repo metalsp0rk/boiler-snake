@@ -9,6 +9,7 @@ HeisenXP-Bot is a feature-rich Discord bot that helps you gamify your server wit
 - **Multi-source XP tracking**: Messages, reactions, and voice channel activity
 - **Customizable leveling system**: Configurable XP formulas and thresholds
 - **Automatic role management**: Grant or revoke roles based on level with grace periods
+- **Reaction roles**: Self-serve emoji panels with min-level gates and optional removable roles
 - **Daily XP decay**: Incentivize active participation
 - **YouTube notifications**: Get alerted when subscribed channels go live or upload videos
 - **Honeypot channels**: Auto-ban users who post in decoy channels (with staff role exemptions)
@@ -44,6 +45,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [XP and Leveling System](xp-and-leveling.md) - Multi-source XP tracking and level calculation
 - [Voice XP System](voice-xp.md) - Voice channel activity tracking with eligibility rules
 - [Role Management](roles.md) - Automatic role grants and drops with grace periods
+- [Reaction Roles](reaction-roles.md) - Self-serve emoji panels with min-level gates
 - [Daily XP Decay](decay.md) - Incentivize activity through daily XP reduction
 
 ### Advanced Features
@@ -71,6 +73,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 | **Reaction XP** | Give points for reacting to messages (reactions, reactions, and more reactions!) |
 | **Voice XP** | Earn XP while in voice channels (requires ≥2 eligible humans) |
 | **Level-Up Roles** | Automatically grant roles when users reach specific levels |
+| **Reaction Roles** | Self-serve panels: react for a role (optional min level / removable) |
 | **Role Drop Grace** | Keep roles temporarily after dropping below threshold (configurable days) |
 | **Daily Decay** | Reduce XP for inactive users based on message count thresholds |
 | **Command Channels** | Restrict where commands can be used per guild |

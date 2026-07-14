@@ -60,6 +60,9 @@ Admin/mod commands (requires **Manage Guild** by default):
 - `/leveltorole set role:<role> level:<int> dropdays:<int>`
 - `/leveltorole remove role:<role>`
 - `/leveltorole list`
+- `/reactionrole panel create|edit|delete|list` — bot-owned self-serve role panels
+- `/reactionrole option add|remove|list` — emoji → role (add: send emoji as next message)
+- `/reactionrole sync` — repair panel embed + bot reactions
 - `/setcommandchannel add channel:<channel>`
 - `/setcommandchannel remove channel:<channel>`
 - `/setcommandchannel list`
@@ -86,6 +89,7 @@ cp xpbot.sqlite.backup xpbot.sqlite
 ## Notes
 
 - Bot must have **Manage Roles** permission and its highest role must be **above** roles it manages.
+- Reaction-role panels also need **Add Reactions**; **Manage Messages** is recommended so the bot can strip unconfigured reactions.
 - Voice XP is awarded once per minute for **eligible** users:
   - not muted/deafened (self or server)
   - and in a voice channel with **at least 2 eligible human users**

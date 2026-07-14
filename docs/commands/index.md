@@ -338,6 +338,76 @@ Members with this role will not be banned for posting in honeypot channels. Conf
 /honeypot exempt del role:@Moderator
 ```
 
+### `/reactionrole` - Reaction Role Panels
+
+Bot-managed embeds where members claim roles by reacting. See [Reaction Roles](../reaction-roles.md) for full behavior (level gates, removable flag, unconfigured reaction stripping).
+
+#### Subcommand group: `panel`
+
+##### `panel create` - Post a New Panel
+
+```bash
+/reactionrole panel create channel:#roles title:Self Roles description:React to claim a role
+```
+
+Posts an embed and returns the panel **message ID** for option commands.
+
+##### `panel edit` - Update Title/Description
+
+```bash
+/reactionrole panel edit message_id:123456789 title:New Title
+```
+
+##### `panel list` - List Panels
+
+```bash
+/reactionrole panel list
+```
+
+##### `panel delete` - Delete Panel
+
+```bash
+/reactionrole panel delete message_id:123456789
+```
+
+Removes DB rows and tries to delete the Discord message.
+
+#### Subcommand group: `option`
+
+##### `option add` - Map Emoji → Role
+
+```bash
+/reactionrole option add message_id:123 role:@Gamer level:5 removable:true
+```
+
+Then send the emoji as your **next message** (or type `stop` to cancel). The bot updates the panel, confirms, and deletes your emoji message.
+
+**Parameters**:
+- `message_id`: Panel message ID (required)
+- `role`: Role to grant (required)
+- `level`: Minimum level (default 0)
+- `removable`: Remove role when reaction removed (default true)
+
+##### `option remove` - Remove Mapping
+
+```bash
+/reactionrole option remove message_id:123
+```
+
+Then send the emoji to remove as your **next message** (or type `stop` to cancel).
+
+##### `option list` - List Options
+
+```bash
+/reactionrole option list message_id:123
+```
+
+#### Subcommand: `sync` - Repair Embed + Reactions
+
+```bash
+/reactionrole sync message_id:123456789
+```
+
 ---
 
 ## Permission Matrix
@@ -366,6 +436,14 @@ Members with this role will not be banned for posting in honeypot channels. Conf
 | `/honeypot exempt add` | ManageGuild | Yes |
 | `/honeypot exempt list` | ManageGuild | Yes |
 | `/honeypot exempt del` | ManageGuild | Yes |
+| `/reactionrole panel create` | ManageGuild | Yes |
+| `/reactionrole panel edit` | ManageGuild | Yes |
+| `/reactionrole panel delete` | ManageGuild | Yes |
+| `/reactionrole panel list` | ManageGuild | Yes |
+| `/reactionrole option add` | ManageGuild | Yes |
+| `/reactionrole option remove` | ManageGuild | Yes |
+| `/reactionrole option list` | ManageGuild | Yes |
+| `/reactionrole sync` | ManageGuild | Yes |
 
 ---
 
@@ -416,4 +494,5 @@ ADMIN/MOD:
 /setyoutube channel/interval    → YouTube settings
 /honeypot channel add/list/del  → Honeypot channels
 /honeypot exempt add/list/del   → Honeypot exempt roles
+/reactionrole panel|option|sync → Reaction-role panels
 ```

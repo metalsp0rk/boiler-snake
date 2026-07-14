@@ -74,10 +74,23 @@ for each guild {
       setXp(guildId, userId, newXp)
       
       // Sync roles (may drop below thresholds)
-      syncMemberRoles(member, levelFromXp(newXp))
+      level = levelFromXp(newXp)
+      syncMemberRoles(member, level)           // /leveltorole (+ grace period)
+      syncMemberReactionRoles(member, level) // reaction-role min_level (immediate)
     }
   }
 }
+
+### Role checks after decay
+
+For every user who **actually loses XP**, the bot re-evaluates roles at the new level:
+
+| System | Behavior after decay |
+|--------|----------------------|
+| **`/leveltorole`** | Existing grace-period logic: role is kept until the user has been below the required level longer than `dropdays` |
+| **Reaction roles** | If the member holds a reaction-claim role and their level is below that role’s **minimum** configured `min_level` (lowest among all options granting that role), the role is **removed immediately** |
+
+Reaction-role removal on decay does **not** remove the user’s reaction on the panel message (they can re-react once they meet the level again).
 ```
 
 ### Activity Log Integration

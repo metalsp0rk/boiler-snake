@@ -331,6 +331,148 @@ const commands = [
             )
         )
     ),
+
+  new SlashCommandBuilder()
+    .setName("reactionrole")
+    .setDescription("Manage reaction-role panels (admin only).")
+    .setDefaultMemberPermissions(adminPerms)
+    .addSubcommandGroup((group) =>
+      group
+        .setName("panel")
+        .setDescription("Create, edit, list, or delete reaction-role panels.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("create")
+            .setDescription("Post a new reaction-role panel in a channel.")
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Channel to post the panel in")
+                .setRequired(true)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("title")
+                .setDescription("Embed title")
+                .setRequired(false)
+                .setMaxLength(256)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("description")
+                .setDescription("Embed description (intro text above the role list)")
+                .setRequired(false)
+                .setMaxLength(1000)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("edit")
+            .setDescription("Update a panel's title and/or description.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("title")
+                .setDescription("New embed title")
+                .setRequired(false)
+                .setMaxLength(256)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("description")
+                .setDescription("New embed description")
+                .setRequired(false)
+                .setMaxLength(1000)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("delete")
+            .setDescription("Delete a panel (DB + Discord message).")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc.setName("list").setDescription("List reaction-role panels in this server.")
+        )
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName("option")
+        .setDescription("Map emojis to roles on a panel.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("add")
+            .setDescription("Start adding an option; then send the emoji as your next message.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true)
+            )
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role to grant")
+                .setRequired(true)
+            )
+            .addIntegerOption((opt) =>
+              opt
+                .setName("level")
+                .setDescription("Minimum level required (default 0)")
+                .setMinValue(0)
+                .setRequired(false)
+            )
+            .addBooleanOption((opt) =>
+              opt
+                .setName("removable")
+                .setDescription("Remove role when reaction is removed (default true)")
+                .setRequired(false)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("remove")
+            .setDescription("Start removing an option; then send the emoji as your next message.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List emoji→role options on a panel.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true)
+            )
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("sync")
+        .setDescription("Re-apply embed text and bot reactions for a panel.")
+        .addStringOption((opt) =>
+          opt
+            .setName("message_id")
+            .setDescription("Message ID of the panel")
+            .setRequired(true)
+        )
+    ),
   ].map((c) => c.toJSON());
 
 module.exports = { commands };

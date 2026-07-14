@@ -7,6 +7,7 @@ const {
 } = require("./db");
 const { levelFromXp } = require("./xp");
 const { syncMemberRoles } = require("./roles");
+const { syncMemberReactionRoles } = require("./reactionRoles");
 
 // Daily at 4 AM server local time.
 const DECAY_CRON = "0 4 * * *";
@@ -23,6 +24,11 @@ function startDecayScheduler(client) {
   });
 }
 
+/**
+ * Apply daily XP decay for one guild, then re-check level-gated roles for users who lost XP.
+ * - /leveltorole mappings: syncMemberRoles (grant/drop with grace period)
+ * - Reaction-role options: syncMemberReactionRoles (strip immediately if below min_level)
+ */
 async function runDecayForGuild(client, guildId) {
   const settings = getGuildSettings(guildId);
   if (!settings.decay_enabled) return;
@@ -44,14 +50,23 @@ async function runDecayForGuild(client, guildId) {
     const newXp = Math.floor(u.xp * (1 - pct));
     if (newXp === u.xp) continue;
 
+    const oldLvl = levelFromXp(u.xp, settings.level_xp_factor);
     setXp(guildId, u.user_id, newXp);
 
     const member = await guild.members.fetch(u.user_id).catch(() => null);
     if (member) {
       const lvl = levelFromXp(newXp, settings.level_xp_factor);
+      // Level→role mappings (grace-period drops)
       await syncMemberRoles(member, lvl);
+      // Reaction-claim roles: remove if new level is below the option min_level
+      await syncMemberReactionRoles(member, lvl);
+      if (lvl < oldLvl) {
+        console.log(
+          `[decay] ${guildId}/${u.user_id}: XP ${u.xp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`
+        );
+      }
     }
   }
 }
 
-module.exports = { startDecayScheduler };
+module.exports = { startDecayScheduler, runDecayForGuild };

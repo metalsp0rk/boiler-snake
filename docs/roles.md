@@ -2,6 +2,8 @@
 
 Automatically grant and revoke Discord roles based on user levels with configurable grace periods.
 
+For **self-serve emoji panels** (react to claim a role with optional min level), see [Reaction Roles](reaction-roles.md).
+
 ## How It Works
 
 ### Role Mappings

@@ -16,6 +16,7 @@ src/
 ├── db.js                 # SQLite wrapper + migrations + XP operations
 ├── xp.js                 # Level calculation utilities (formula: sqrt(xp/factor))
 ├── roles.js              # Role grant/drop logic with grace periods
+├── reactionRoles.js      # Reaction-role panels (embed + emoji options)
 ├── voiceTicker.js        # Per-minute voice XP ticker
 ├── youtubeTicker.js      # YouTube channel monitoring & notifications
 ├── decay.js              # Daily cron job for XP decay scheduling
@@ -37,7 +38,8 @@ package.json            # Dependencies and scripts
 - Event handlers for:
   - `ClientReady`: Start tickers (voice, decay, YouTube)
   - `MessageCreate`: Honeypot enforcement, then message XP with cooldowns
-  - `MessageReactionAdd`: Reaction XP tracking
+  - `MessageReactionAdd`: Reaction-role panels first, then reaction XP
+  - `MessageReactionRemove`: Drop removable reaction roles
   - `InteractionCreate`: Slash command routing
 
 **Key Functions**:
@@ -92,7 +94,21 @@ Applied on startup in `runMigrations()`:
 3. Added `last_checked` column for YouTube channels
 4. Cleanup malformed XP values (Infinity/NaN/>
 
-Honeypot tables (`honeypot_channels`, `honeypot_exempt_roles`) are created via base schema `CREATE TABLE IF NOT EXISTS` on startup.
+Honeypot tables (`honeypot_channels`, `honeypot_exempt_roles`) and reaction-role tables (`reaction_role_panels`, `reaction_role_options`) are created via base schema `CREATE TABLE IF NOT EXISTS` on startup.
+
+---
+
+### `reactionRoles.js` - Reaction Role Panels
+
+**Responsibilities**:
+- Build and refresh bot-owned panel embeds
+- Parse unicode/custom emoji keys for stable matching
+- Grant roles on configured reactions when min level is met
+- Strip unconfigured reactions on managed panels
+- Remove roles on reaction remove when the option is `removable`
+- `syncMemberReactionRoles`: after XP decay, strip reaction-claim roles below min level
+
+See [Reaction Roles](reaction-roles.md) for admin usage.
 
 ---
 
