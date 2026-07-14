@@ -43,7 +43,7 @@ const { levelFromXp } = require("./xp");
 const { syncMemberRoles } = require("./roles");
 const { startVoiceTicker } = require("./voiceTicker");
 const { startDecayScheduler } = require("./decay");
-const { startYoutubeTicker, fetchChannelInfo, lookupChannelByName } = require("./youtubeTicker");
+const { startYoutubeTicker, createSimpleUploadEmbed, fetchChannelInfo, lookupChannelByName, isLiveVideo, isVideoUpload, extractVideoInfo, createLiveEmbed, createUploadEmbed, fetchYouTubeFeed } = require("./youtubeTicker");
 
 const MAX_XP_AWARD = 1_000_000_000;
 
@@ -603,9 +603,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
 
         const normalizedChannelName = normalizeYoutubeName(channelName);
-        const thumbnail = !channelId || channelId.startsWith("@")
-          ? ""
-          : `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
+        let thumbnail = "";
+        if (channelId && !channelId.startsWith("@")) {
+          const channelInfo = await fetchChannelInfo(channelId);
+          console.log(`[youtube] /youtube add - fetchChannelInfo result for ${channelId}:`, JSON.stringify(channelInfo, null, 2));
+          if (channelInfo && channelInfo.thumbnail_url) {
+            thumbnail = channelInfo.thumbnail_url;
+            console.log(`[youtube] Using API thumbnail: ${thumbnail}`);
+          } else {
+            thumbnail = `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
+            console.log(`[youtube] Using fallback thumbnail: ${thumbnail}`);
+          }
+        }
 
         try {
           addYoutubeChannel(guildId, channelId, normalizedChannelName, url, thumbnail);
@@ -761,6 +770,189 @@ client.on(Events.InteractionCreate, async (interaction) => {
         });
         return;
       }
+
+      if (sub === "uploadrole") {
+        const role = interaction.options.getRole("role", false);
+
+        updateGuildSettings(guildId, { youtube_upload_role_id: role ? role.id : null });
+
+        await interaction.reply({
+          content: role
+            ? `Upload notifications will mention <@&${role.id}>.`
+            : `Upload notifications will no longer mention a role.`,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+    }
+
+    // /testnotification (admin/mod)
+    if (interaction.commandName === "testnotification") {
+      if (!admin) {
+        await interaction.reply({ content: "You don't have permission to use this.", flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const url = interaction.options.getString("channel", true);
+
+      let channelId = "";
+      let channelName = "";
+      let channelUrl = "";
+
+      if (url.includes("youtube.com/@")) {
+        const match = url.match(/youtube\.com\/@([^/?]+)/);
+        if (match) {
+          channelId = match[1];
+          channelName = "@" + match[1];
+          channelUrl = `https://www.youtube.com/@${channelId}`;
+
+          const resolved = await lookupChannelByName(channelId);
+          if (resolved) {
+            channelId = resolved.id;
+            channelName = normalizeYoutubeName(resolved.name);
+            channelUrl = `https://www.youtube.com/channel/${channelId}`;
+          }
+        }
+      } else if (url.startsWith("@")) {
+        const username = url.substring(1);
+        channelId = username;
+        channelName = "@" + username;
+        channelUrl = `https://www.youtube.com/@${username}`;
+
+        const resolved = await lookupChannelByName(username);
+        if (resolved) {
+          channelId = resolved.id;
+          channelName = normalizeYoutubeName(resolved.name);
+          channelUrl = `https://www.youtube.com/channel/${channelId}`;
+        }
+      } else if (url.includes("youtube.com/channel/")) {
+        const match = url.match(/youtube\.com\/channel\/([^/?]+)/);
+        if (match) {
+          channelId = match[1];
+          channelName = `Channel ID: ${channelId}`;
+          channelUrl = url;
+        }
+      } else if (url.startsWith("UC") || url.startsWith("HC")) {
+        channelId = url;
+        channelName = `Channel ID: ${url}`;
+        channelUrl = `https://www.youtube.com/channel/${url}`;
+      } else {
+        await interaction.reply({
+          content: "Invalid YouTube URL.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const channels = getYoutubeChannels(guildId);
+      let existingChannel = null;
+      for (const c of channels) {
+        if (normalizeYoutubeName(c.channel_name).toLowerCase() === normalizeYoutubeName(channelName).toLowerCase()) {
+          existingChannel = c;
+          break;
+        }
+      }
+
+      if (!existingChannel) {
+        let thumbnail = "";
+        if (channelId && !channelId.startsWith("@")) {
+          const channelInfo = await fetchChannelInfo(channelId);
+          console.log(`[youtube] /testnotification add - fetchChannelInfo result for ${channelId}:`, JSON.stringify(channelInfo, null, 2));
+          if (channelInfo && channelInfo.thumbnail_url) {
+            thumbnail = channelInfo.thumbnail_url;
+            console.log(`[youtube] Using API thumbnail: ${thumbnail}`);
+          } else {
+            thumbnail = `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
+            console.log(`[youtube] Using fallback thumbnail: ${thumbnail}`);
+          }
+        }
+        addYoutubeChannel(guildId, channelId, normalizeYoutubeName(channelName), channelUrl, thumbnail);
+
+        existingChannel = getYoutubeChannels(guildId).find(c =>
+          normalizeYoutubeName(c.channel_name) === normalizeYoutubeName(channelName)
+        );
+      }
+
+      console.log(`[testnotification] Channel data from DB:`, JSON.stringify(existingChannel, null, 2));
+
+      if (!existingChannel || !existingChannel.id) {
+        await interaction.reply({
+          content: "Could not find or subscribe to the channel.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const feed = await fetchYouTubeFeed(existingChannel.id);
+      if (!feed || !feed.items || !feed.items.length) {
+        await interaction.reply({
+          content: "Could not fetch videos from this channel.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const entry = feed.items[0];
+      const videoInfo = extractVideoInfo(entry);
+
+      if (!videoInfo || !videoInfo.videoId) {
+        await interaction.reply({
+          content: "Could not extract video information.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      let isLive, notificationType;
+      if (isLiveVideo(entry)) {
+        isLive = true;
+        notificationType = "live";
+      } else if (isVideoUpload(entry)) {
+        isLive = false;
+        notificationType = "upload";
+      } else {
+        await interaction.reply({
+          content: "Latest video entry type could not be determined.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      console.log(`[testnotification] Channel thumbnail URL:`, existingChannel.thumbnail_url);
+
+      const useSimpleEmbed = interaction.options.getBoolean("simple") || false;
+
+      let content = `Test ${notificationType} notification for **${channelName}**`;
+      let embeds = [];
+
+      if (notificationType === "live") {
+        embeds = [createLiveEmbed(existingChannel, videoInfo, channelUrl)];
+      } else {
+        const settings = getGuildSettings(guildId);
+        const uploadRoleId = settings.youtube_upload_role_id;
+
+        if (useSimpleEmbed) {
+          const simpleResult = createSimpleUploadEmbed(existingChannel, videoInfo, channelUrl);
+          let roleMention = "";
+          if (uploadRoleId) {
+            roleMention = `<@&${uploadRoleId}> `;
+          }
+          content = `${roleMention}${simpleResult.content}`;
+        } else {
+          embeds = [createUploadEmbed(existingChannel, videoInfo, channelUrl)];
+          let roleMention = "";
+          if (uploadRoleId) {
+            roleMention = `<@&${uploadRoleId}> `;
+          }
+          content = `${roleMention}${channelName} uploaded a new video!`;
+        }
+      }
+
+      await interaction.reply({
+        content: content,
+        embeds: embeds,
+      });
+      return;
     }
 
     // Fallback so Discord never times out

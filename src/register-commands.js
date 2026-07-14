@@ -234,7 +234,34 @@ const commands = [
           .setMaxValue(60)
       );
       return sub;
+    })
+    .addSubcommand((sc) => {
+      const sub = sc.setName("uploadrole").setDescription("Set role to mention for video uploads.");
+      sub.addRoleOption((opt) =>
+        opt
+          .setName("role")
+          .setDescription("Role to mention when videos are uploaded (leave empty to disable)")
+          .setRequired(false)
+      );
+      return sub;
     }),
+
+  new SlashCommandBuilder()
+    .setName("testnotification")
+    .setDescription("Send a test notification for a YouTube channel (admin only).")
+    .setDefaultMemberPermissions(adminPerms)
+    .addStringOption((opt) =>
+      opt
+        .setName("channel")
+        .setDescription("YouTube channel URL to test")
+        .setRequired(true)
+    )
+    .addBooleanOption((opt) =>
+      opt
+        .setName("simple")
+        .setDescription("Use simple text-based embed instead of rich embed")
+        .setRequired(false)
+    ),
   ].map((c) => c.toJSON());
 
 module.exports = { commands };

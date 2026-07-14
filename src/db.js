@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS guild_settings (
 
   youtube_notification_channel_id TEXT,
   youtube_polling_interval_minutes INTEGER NOT NULL DEFAULT 5,
+  youtube_upload_role_id TEXT,
 
   updated_at INTEGER NOT NULL
 );
@@ -217,6 +218,13 @@ CREATE TABLE IF NOT EXISTS youtube_channels (
     "last_checked INTEGER"
   );
 
+  // Add youtube_upload_role_id column for guild settings
+  addColumnIfMissing(
+    "guild_settings",
+    "youtube_upload_role_id",
+    "youtube_upload_role_id TEXT"
+  );
+
   // Cleanup pass: clamp any bad/overflow XP already stored (Infinity/NaN/too big/negative)
 
   // Cleanup pass: clamp any bad/overflow XP already stored (Infinity/NaN/too big/negative)
@@ -271,6 +279,9 @@ function getGuildSettings(guildId) {
       decay_min_messages: 20,
       decay_percent: 0.10,
       level_xp_factor: 100,
+      youtube_notification_channel_id: null,
+      youtube_polling_interval_minutes: 5,
+      youtube_upload_role_id: null,
       updated_at: now(),
     };
   }
@@ -293,6 +304,7 @@ function updateGuildSettings(guildId, patch) {
     "level_xp_factor",
     "youtube_notification_channel_id",
     "youtube_polling_interval_minutes",
+    "youtube_upload_role_id",
   ]);
 
   const keys = Object.keys(patch).filter(k => allowed.has(k));

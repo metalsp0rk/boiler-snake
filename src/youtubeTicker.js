@@ -1,5 +1,5 @@
 const https = require("https");
-const { normalizeYoutubeName, getAllYoutubeChannels, getGuildSettings, getYoutubeChannelById, addYoutubeChannel, updateYoutubeChannelLastChecked } = require("./db");
+const { normalizeYoutubeName, getAllYoutubeChannels, getGuildSettings, getYoutubeChannelById, addYoutubeChannel, updateYoutubeChannelLastChecked, updateGuildSettings } = require("./db");
 
 async function lookupChannelByName(username) {
   if (!process.env.YOUTUBE_API_KEY) {
@@ -324,7 +324,8 @@ async function processChannel(client, guildId, channelData) {
 
     foundUploadInWindow = true;
 
-    await sendNotification(client, guildId, settings.youtube_notification_channel_id, channelData, info, channelUrl, notificationType);
+    const useSimpleEmbed = notificationType === "upload";
+    await sendNotification(client, guildId, settings.youtube_notification_channel_id, channelData, info, channelUrl, notificationType, useSimpleEmbed);
   }
 
   // Update last-checked time and store the most recent video ID
@@ -344,7 +345,7 @@ function createLiveEmbed(channelData, videoInfo, channelUrl) {
     })
     .setTitle(videoInfo.title)
     .setDescription(`[Watch Live](https://youtu.be/${videoInfo.videoId})`)
-    .setThumbnail(videoInfo.thumbnail || undefined)
+    .setThumbnail(channelData.thumbnail_url || undefined)
     .setImage(videoInfo.thumbnail ? videoInfo.thumbnail.replace(/=s\d+/, "=s1280") : undefined)
     .addFields([
       { name: "Channel", value: `[${channelData.channel_name}](${channelUrl})`, inline: true },
@@ -355,8 +356,20 @@ function createLiveEmbed(channelData, videoInfo, channelUrl) {
       text: "YouTube Notification",
       iconURL: "https://www.youtube.com/img/desktop/yt_120x64.png"
     });
+  console.log(`[createLiveEmbed] Channel thumbnail URL:`, channelData.thumbnail_url);
 
   return embed;
+}
+
+function createSimpleUploadEmbed(channelData, videoInfo, channelUrl) {
+  const discord = require("discord.js");
+
+  const channelName = channelData.channel_name || "Unknown Channel";
+  const videoTitle = videoInfo.title || "Untitled Video";
+
+  const content = `${channelName} uploaded a new video!\nhttps://youtu.be/${videoInfo.videoId}`;
+
+  return { content, embed: null };
 }
 
 function createUploadEmbed(channelData, videoInfo, channelUrl) {
@@ -365,28 +378,25 @@ function createUploadEmbed(channelData, videoInfo, channelUrl) {
   const embed = new discord.EmbedBuilder()
     .setColor("#FFA500")
     .setAuthor({
-      name: `${channelData.channel_name} uploaded a new video`,
+      name: `${channelData.channel_name}`,
       url: channelUrl,
       iconURL: channelData.thumbnail_url || undefined
     })
     .setTitle(videoInfo.title)
     .setDescription(`[Watch Video](https://youtu.be/${videoInfo.videoId})`)
-    .setThumbnail(videoInfo.thumbnail || undefined)
+    .setThumbnail(channelData.thumbnail_url || undefined)
     .setImage(videoInfo.thumbnail ? videoInfo.thumbnail.replace(/=s\d+/, "=s1280") : undefined)
-    .addFields([
-      { name: "Channel", value: `[${channelData.channel_name}](${channelUrl})`, inline: true },
-      { name: "Video ID", value: videoInfo.videoId, inline: true }
-    ])
     .setTimestamp(new Date(videoInfo.published))
     .setFooter({
-      text: "YouTube Notification",
+      text: "YouTube",
       iconURL: "https://www.youtube.com/img/desktop/yt_120x64.png"
     });
+  console.log(`[createUploadEmbed] Channel thumbnail URL:`, channelData.thumbnail_url);
 
   return embed;
 }
 
-async function sendNotification(client, guildId, channelId, channelData, videoInfo, channelUrl, notificationType) {
+async function sendNotification(client, guildId, channelId, channelData, videoInfo, channelUrl, notificationType, useSimpleEmbed = true) {
   try {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) {
@@ -394,18 +404,35 @@ async function sendNotification(client, guildId, channelId, channelData, videoIn
       return;
     }
 
-    const embed = notificationType === "live"
-      ? createLiveEmbed(channelData, videoInfo, channelUrl)
-      : createUploadEmbed(channelData, videoInfo, channelUrl);
+    let content = "";
+    let embeds = [];
 
-    const content = notificationType === "live"
-      ? `@everyone ${channelData.channel_name} just went live!`
-      : `${channelData.channel_name} uploaded a new video!`;
+    const settings = getGuildSettings(guildId);
+    const uploadRoleId = settings.youtube_upload_role_id;
+
+    if (notificationType === "live") {
+      content = `@everyone ${channelData.channel_name} just went live!`;
+      embeds = [createLiveEmbed(channelData, videoInfo, channelUrl)];
+    } else {
+      let roleMention = "";
+      if (uploadRoleId) {
+        roleMention = `<@&${uploadRoleId}> `;
+      }
+
+      if (useSimpleEmbed) {
+        const simpleResult = createSimpleUploadEmbed(channelData, videoInfo, channelUrl);
+        content = `${roleMention}${simpleResult.content}`;
+        embeds = [];
+      } else {
+        content = `${roleMention}${channelData.channel_name} uploaded a new video!`;
+        embeds = [createUploadEmbed(channelData, videoInfo, channelUrl)];
+      }
+    }
 
     const message = await channel.send({
-      content: "",
+      content: content,
       allowedMentions: { parse: [] },
-      embeds: [embed]
+      embeds: embeds
     });
 
     console.log(`[youtube] Sent notification for ${videoInfo.title} in guild ${guildId}`);
@@ -500,10 +527,13 @@ async function fetchChannelInfo(channelId) {
 
     if (response.items && response.items.length > 0) {
       const snippet = response.items[0].snippet;
+      const thumbnails = snippet.thumbnails || {};
+      console.log(`[youtube] fetchChannelInfo raw thumbnails:`, JSON.stringify(thumbnails, null, 2));
       return {
         id: channelId,
         name: snippet.title,
         url: `https://www.youtube.com/channel/${channelId}`,
+        thumbnail_url: thumbnails.default?.url || thumbnails.medium?.url || thumbnails.high?.url || "",
       };
     }
   } catch (err) {
@@ -513,4 +543,4 @@ async function fetchChannelInfo(channelId) {
   return null;
 }
 
-module.exports = { startYoutubeTicker, fetchChannelInfo, lookupChannelByName };
+module.exports = { startYoutubeTicker, createSimpleUploadEmbed, fetchChannelInfo, lookupChannelByName, isLiveVideo, isVideoUpload, extractVideoInfo, createLiveEmbed, createUploadEmbed, createSimpleUploadEmbed, fetchYouTubeFeed };
