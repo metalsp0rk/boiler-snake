@@ -22,8 +22,9 @@ The bot needs these Discord permissions for honeypots to work:
 | Permission | Why |
 |------------|-----|
 | **Ban Members** | Issue the ban |
-| **Manage Messages** | Delete the honeypot message |
-| **Send Messages** / **View Channel** | Operate in the channel (view messages) |
+| **Manage Messages** | Delete bait messages; pin/delete the warning notice |
+| **Send Messages** / **View Channel** | Post the warning notice; read messages |
+| **Attach Files** | Attach the warning image |
 
 Also ensure:
 
@@ -54,6 +55,15 @@ Typical approaches:
 ```bash
 /honeypot channel add channel:#free-nitro
 ```
+
+The bot immediately posts a **warning notice** in that channel:
+
+- Red **embed** with a clear “do not post” message
+- **Modal-style PNG image** with the same warning (text is not in plain message content)
+- Message is **pinned** when the bot has Manage Messages
+- Simple scrapers that only read `message.content` see an empty body
+
+Removing a honeypot with `/honeypot channel del` also deletes that warning message when possible.
 
 ### 4. Verify
 

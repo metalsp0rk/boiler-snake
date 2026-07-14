@@ -349,6 +349,7 @@ Channels configured as honeypots. Non-exempt users who post are banned.
 CREATE TABLE honeypot_channels (
   guild_id TEXT NOT NULL,
   channel_id TEXT NOT NULL,
+  warning_message_id TEXT,       -- bot-posted warning message in the channel
   created_at INTEGER NOT NULL,   -- ms epoch when marked as honeypot
   PRIMARY KEY (guild_id, channel_id)
 );
@@ -360,11 +361,14 @@ CREATE TABLE honeypot_channels (
 INSERT OR IGNORE INTO honeypot_channels (guild_id, channel_id, created_at)
 VALUES (?, ?, ?)
 
+// Store / update warning message id
+UPDATE honeypot_channels SET warning_message_id=? WHERE guild_id=? AND channel_id=?
+
 // Check if channel is a honeypot
 SELECT 1 FROM honeypot_channels WHERE guild_id=? AND channel_id=?
 
 // List honeypot channels
-SELECT channel_id FROM honeypot_channels WHERE guild_id=?
+SELECT channel_id, warning_message_id FROM honeypot_channels WHERE guild_id=?
 ORDER BY created_at ASC
 
 // Remove honeypot

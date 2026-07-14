@@ -9,6 +9,7 @@ const {
   MessageFlags,
   AttachmentBuilder,
   PermissionFlagsBits,
+  EmbedBuilder,
   REST,
   Routes,
 } = require("discord.js");
@@ -38,6 +39,8 @@ const {
   setRoleBelowSince,
 
   addHoneypotChannel,
+  getHoneypotChannel,
+  setHoneypotWarningMessage,
   removeHoneypotChannel,
   listHoneypotChannels,
   isHoneypotChannel,
@@ -48,6 +51,7 @@ const {
 } = require("./db");
 
 const { renderLeaderboardPng } = require("./renderLeaderboard");
+const { renderHoneypotWarningPng } = require("./renderHoneypotWarning");
 const { levelFromXp } = require("./xp");
 const { syncMemberRoles } = require("./roles");
 const { startVoiceTicker } = require("./voiceTicker");
@@ -65,6 +69,78 @@ const honeypotBanning = new Set(); // key: guildId:userId
 
 function key(guildId, userId) {
   return `${guildId}:${userId}`;
+}
+
+/**
+ * Post a human-facing honeypot warning (embed + modal-style image).
+ * No plain-text content — simplistic bots that only scrape `content` see nothing useful.
+ * Pins the message when possible and returns the sent Message.
+ */
+async function postHoneypotWarning(channel) {
+  const png = renderHoneypotWarningPng();
+  const file = new AttachmentBuilder(png, { name: "honeypot-warning.png" });
+
+  const embed = new EmbedBuilder()
+    .setColor(0xed4245)
+    .setTitle("⚠️ DO NOT POST IN THIS CHANNEL")
+    .setDescription(
+      [
+        "This channel is **restricted**.",
+        "",
+        "**Any message you send here will result in an immediate permanent ban.**",
+        "",
+        "If you can see this notice, leave the channel without posting.",
+        "Staff and exempt roles are not affected.",
+      ].join("\n")
+    )
+    .setImage("attachment://honeypot-warning.png")
+    .setFooter({ text: "Anti-spam honeypot · human notice" })
+    .setTimestamp();
+
+  const msg = await channel.send({
+    // Intentionally omit plain `content` so scrapers get an empty body.
+    embeds: [embed],
+    files: [file],
+  });
+
+  try {
+    await msg.pin().catch(() => null);
+  } catch {
+    // Pin is best-effort (needs Manage Messages)
+  }
+
+  return msg;
+}
+
+/**
+ * Ensure a honeypot channel has a bot warning message. Reuses existing one if still present.
+ * Returns a short status string for the admin reply.
+ */
+async function ensureHoneypotWarning(guild, channelId) {
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel || typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
+    return "Channel cannot receive messages — warning not posted.";
+  }
+  if (typeof channel.send !== "function") {
+    return "Channel cannot receive messages — warning not posted.";
+  }
+
+  const existing = getHoneypotChannel(guild.id, channelId);
+  if (existing?.warning_message_id) {
+    const old = await channel.messages.fetch(existing.warning_message_id).catch(() => null);
+    if (old) {
+      return "Warning notice already present (left in place).";
+    }
+  }
+
+  try {
+    const msg = await postHoneypotWarning(channel);
+    setHoneypotWarningMessage(guild.id, channelId, msg.id);
+    return "Warning notice posted and pinned (embed + image; no plain text).";
+  } catch (e) {
+    console.error(`[honeypot] Failed to post warning in ${guild.id}/${channelId}:`, e?.message || e);
+    return `Could not post warning notice: ${e?.message || e}`;
+  }
 }
 
 /**
@@ -1064,10 +1140,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (sub === "add") {
           const ch = interaction.options.getChannel("channel", true);
           addHoneypotChannel(guildId, ch.id);
+          const warningStatus = await ensureHoneypotWarning(interaction.guild, ch.id);
           await interaction.reply({
             content:
               `Marked <#${ch.id}> as a **honeypot** channel.\n` +
               `Anyone who posts there will be banned immediately (except members with exempt roles).\n` +
+              `${warningStatus}\n` +
               `Tip: use \`/honeypot exempt add\` for staff roles so they are not banned by mistake.`,
             flags: MessageFlags.Ephemeral,
           });
@@ -1076,10 +1154,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
         if (sub === "del") {
           const ch = interaction.options.getChannel("channel", true);
-          const removed = removeHoneypotChannel(guildId, ch.id);
+          const { removed, warning_message_id } = removeHoneypotChannel(guildId, ch.id);
+
+          let warningNote = "";
+          if (removed && warning_message_id) {
+            try {
+              const channel = await interaction.guild.channels.fetch(ch.id).catch(() => null);
+              if (channel?.messages) {
+                const msg = await channel.messages.fetch(warning_message_id).catch(() => null);
+                if (msg) {
+                  await msg.delete().catch(() => null);
+                  warningNote = " Warning notice removed.";
+                }
+              }
+            } catch {
+              warningNote = " (Could not delete warning notice — remove it manually if needed.)";
+            }
+          }
+
           await interaction.reply({
             content: removed
-              ? `Removed <#${ch.id}> from the honeypot list.`
+              ? `Removed <#${ch.id}> from the honeypot list.${warningNote}`
               : `<#${ch.id}> was not a honeypot channel.`,
             flags: MessageFlags.Ephemeral,
           });

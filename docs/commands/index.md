@@ -298,7 +298,9 @@ Configure decoy channels that ban users who post, and roles that are exempt from
 /honeypot channel add channel:#trap-channel
 ```
 
-**Effect**: Non-exempt users who post in the channel are DM'd, the message is deleted if possible, and they are banned.
+**Effect**:
+- Non-exempt users who post are DM'd, their message is deleted if possible, and they are banned
+- The bot posts a **pinned warning** (red embed + modal-style image, no plain text body) so humans see the risk; simple content scrapers do not
 
 ##### `channel list` - List Honeypot Channels
 

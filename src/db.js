@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS youtube_channels (
 CREATE TABLE IF NOT EXISTS honeypot_channels (
   guild_id TEXT NOT NULL,
   channel_id TEXT NOT NULL,
+  warning_message_id TEXT,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (guild_id, channel_id)
 );
@@ -239,6 +240,13 @@ CREATE TABLE IF NOT EXISTS honeypot_exempt_roles (
     "guild_settings",
     "youtube_upload_role_id",
     "youtube_upload_role_id TEXT"
+  );
+
+  // Honeypot warning message id (bot-posted notice in the channel)
+  addColumnIfMissing(
+    "honeypot_channels",
+    "warning_message_id",
+    "warning_message_id TEXT"
   );
 
   // Cleanup pass: clamp any bad/overflow XP already stored (Infinity/NaN/too big/negative)
@@ -734,17 +742,37 @@ function addHoneypotChannel(guildId, channelId) {
   `).run(guildId, channelId, now());
 }
 
+function getHoneypotChannel(guildId, channelId) {
+  return db.prepare(`
+  SELECT channel_id, warning_message_id
+  FROM honeypot_channels
+  WHERE guild_id=? AND channel_id=?
+  `).get(guildId, channelId) || null;
+}
+
+function setHoneypotWarningMessage(guildId, channelId, messageIdOrNull) {
+  db.prepare(`
+  UPDATE honeypot_channels
+  SET warning_message_id=?
+  WHERE guild_id=? AND channel_id=?
+  `).run(messageIdOrNull, guildId, channelId);
+}
+
 function removeHoneypotChannel(guildId, channelId) {
+  const existing = getHoneypotChannel(guildId, channelId);
   const result = db.prepare(`
   DELETE FROM honeypot_channels
   WHERE guild_id=? AND channel_id=?
   `).run(guildId, channelId);
-  return result.changes > 0;
+  return {
+    removed: result.changes > 0,
+    warning_message_id: existing?.warning_message_id || null,
+  };
 }
 
 function listHoneypotChannels(guildId) {
   return db.prepare(`
-  SELECT channel_id
+  SELECT channel_id, warning_message_id
   FROM honeypot_channels
   WHERE guild_id=?
   ORDER BY created_at ASC
@@ -847,6 +875,8 @@ module.exports = {
 
   // honeypot
   addHoneypotChannel,
+  getHoneypotChannel,
+  setHoneypotWarningMessage,
   removeHoneypotChannel,
   listHoneypotChannels,
   isHoneypotChannel,
