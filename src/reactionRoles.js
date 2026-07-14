@@ -579,6 +579,22 @@ async function tryDmUser(user, content) {
 }
 
 /**
+ * Role mentions (<@&id>) do not resolve in DMs — use a plain name for user-facing DMs.
+ * @param {import('discord.js').Guild} guild
+ * @param {string} roleId
+ * @returns {Promise<string>}
+ */
+async function roleNameForDm(guild, roleId) {
+  if (!guild || !roleId) return "that role";
+  let role = guild.roles.cache.get(roleId);
+  if (!role) {
+    role = await guild.roles.fetch(roleId).catch(() => null);
+  }
+  if (role?.name) return `**${role.name}**`;
+  return `role \`${roleId}\``;
+}
+
+/**
  * After XP loss (e.g. decay): remove reaction-claim roles whose min level the member no longer meets.
  * Uses the lowest min_level among all panel options that grant each role.
  * Does not re-add roles or touch reactions on the panel message.
@@ -688,9 +704,10 @@ async function handleReactionRoleAdd(reaction, user) {
 
   if (level < minLevel) {
     await removeUserReaction(reaction, user.id);
+    const roleLabel = await roleNameForDm(guild, option.role_id);
     await tryDmUser(
       user,
-      `You need **Level ${minLevel}** to claim <@&${option.role_id}> in **${guild.name}**. ` +
+      `You need **Level ${minLevel}** to claim ${roleLabel} in **${guild.name}**. ` +
         `(You are currently Level ${level}.)`
     );
     return { handled: true };

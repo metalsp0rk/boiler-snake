@@ -25,6 +25,8 @@ Panel embeds show roles as `@Role` for readability, but the bot always sends/edi
 
 Discord only allows ephemeral messages as replies to **interactions** (slash commands, buttons, selects). Reactions are gateway events, so the bot cannot send an ephemeral notice. Under-level users get a **DM** when possible; otherwise the reaction is simply removed.
 
+DMs use the **role name** (not a `<@&role>` mention), because Discord does not resolve role mentions outside the server.
+
 ## Commands
 
 All subcommands require **Manage Server** (`ManageGuild`).
