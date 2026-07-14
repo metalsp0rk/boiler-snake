@@ -300,7 +300,7 @@ Configure decoy channels that ban users who post, and roles that are exempt from
 
 **Effect**:
 - Non-exempt users who post are DM'd, their message is deleted if possible, and they are banned
-- The bot posts a **pinned warning** (red embed + modal-style image, no plain text body) so humans see the risk; simple content scrapers do not
+- The bot posts a **pinned image-only warning** (large “DO NOT POST HERE” + honeypot explanation baked into the PNG; no plain text for scrapers)
 
 ##### `channel list` - List Honeypot Channels
 

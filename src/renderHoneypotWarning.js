@@ -14,98 +14,130 @@ const FONT_STACK = [
 
 /**
  * Render a modal-style honeypot warning as a PNG buffer.
- * Text lives in the image (not plain message content) so simplistic scrapers miss it.
+ * All human-readable text lives in the image so scrapers that only
+ * read message/embed text get nothing useful.
  * @returns {Buffer}
  */
 function renderHoneypotWarningPng() {
-  const width = 720;
-  const height = 360;
+  const width = 800;
+  // ~1.5 body lines taller so the footer strip doesn't collide with gray copy
+  const height = 522;
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
 
   // Backdrop
-  ctx.fillStyle = "#0a0a0c";
+  ctx.fillStyle = "#07070a";
   ctx.fillRect(0, 0, width, height);
 
-  // Dim vignette
-  const grad = ctx.createRadialGradient(width / 2, height / 2, 40, width / 2, height / 2, width * 0.7);
-  grad.addColorStop(0, "rgba(237, 66, 69, 0.18)");
-  grad.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = grad;
+  // Soft red glow behind the card
+  const glow = ctx.createRadialGradient(width / 2, height / 2, 20, width / 2, height / 2, width * 0.55);
+  glow.addColorStop(0, "rgba(237, 66, 69, 0.22)");
+  glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = glow;
   ctx.fillRect(0, 0, width, height);
 
   // Modal card
-  const mx = 48;
-  const my = 36;
+  const mx = 40;
+  const my = 32;
   const mw = width - mx * 2;
   const mh = height - my * 2;
-  const radius = 16;
+  const radius = 18;
 
-  // Card shadow
-  ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
-  roundRect(ctx, mx + 6, my + 8, mw, mh, radius);
+  // Drop shadow
+  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  roundRect(ctx, mx + 8, my + 10, mw, mh, radius);
   ctx.fill();
 
   // Card body
   const cardGrad = ctx.createLinearGradient(mx, my, mx, my + mh);
-  cardGrad.addColorStop(0, "#1a1214");
-  cardGrad.addColorStop(1, "#12090b");
+  cardGrad.addColorStop(0, "#1c1215");
+  cardGrad.addColorStop(0.5, "#140c0e");
+  cardGrad.addColorStop(1, "#0f090a");
   ctx.fillStyle = cardGrad;
   roundRect(ctx, mx, my, mw, mh, radius);
   ctx.fill();
 
   // Red border
   ctx.strokeStyle = "#ed4245";
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 3.5;
   roundRect(ctx, mx, my, mw, mh, radius);
   ctx.stroke();
 
   // Top accent bar
   ctx.fillStyle = "#ed4245";
-  roundRectTop(ctx, mx, my, mw, 10, radius);
+  roundRectTop(ctx, mx, my, mw, 12, radius);
   ctx.fill();
 
-  // Icon circle
   const cx = width / 2;
-  const cy = my + 78;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  // Warning icon circle
+  const iconY = my + 72;
   ctx.beginPath();
-  ctx.arc(cx, cy, 36, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(237, 66, 69, 0.2)";
+  ctx.arc(cx, iconY, 34, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(237, 66, 69, 0.18)";
   ctx.fill();
   ctx.strokeStyle = "#ed4245";
   ctx.lineWidth = 3;
   ctx.stroke();
 
   ctx.fillStyle = "#ed4245";
-  ctx.font = `bold 42px ${FONT_STACK}`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("!", cx, cy + 2);
+  ctx.font = `bold 40px ${FONT_STACK}`;
+  ctx.fillText("!", cx, iconY + 2);
 
-  // Title
+  // Primary headline — large
   ctx.fillStyle = "#ffffff";
-  ctx.font = `bold 32px ${FONT_STACK}`;
-  ctx.fillText("DO NOT POST HERE", cx, cy + 72);
+  ctx.font = `bold 48px ${FONT_STACK}`;
+  ctx.fillText("DO NOT POST HERE", cx, iconY + 78);
 
-  // Subtitle
+  // Thin divider under headline
+  const divY = iconY + 108;
+  const divW = 280;
+  ctx.strokeStyle = "rgba(237, 66, 69, 0.65)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx - divW / 2, divY);
+  ctx.lineTo(cx + divW / 2, divY);
+  ctx.stroke();
+
+  // Honeypot label — medium/smaller
   ctx.fillStyle = "#f2a0a2";
-  ctx.font = `bold 20px ${FONT_STACK}`;
-  ctx.fillText("Restricted channel — human notice", cx, cy + 108);
+  ctx.font = `bold 22px ${FONT_STACK}`;
+  ctx.fillText("This is a honeypot channel.", cx, divY + 36);
 
-  // Body lines
+  // Body copy — smaller, all warning detail lives in the image
   ctx.fillStyle = "#d4d4d8";
   ctx.font = `18px ${FONT_STACK}`;
-  const lines = [
-    "Any message sent in this channel will result in",
-    "an immediate permanent ban from this server.",
+  const bodyLines = [
+    "This channel is a decoy used to catch spam accounts and raiders.",
+    "Any message sent here results in an immediate permanent ban",
+    "from this server.",
     "",
-    "If you can read this, leave without posting.",
+    "If you can read this notice, leave without posting.",
+    "Staff with exempt roles will not be banned.",
   ];
-  let y = cy + 148;
-  for (const line of lines) {
+
+  let y = divY + 78;
+  for (const line of bodyLines) {
+    if (line === "") {
+      y += 12;
+      continue;
+    }
     ctx.fillText(line, cx, y);
-    y += 26;
+    y += 28;
   }
+
+  // Bottom strip emphasis
+  const stripH = 44;
+  const stripY = my + mh - stripH;
+  ctx.fillStyle = "rgba(237, 66, 69, 0.16)";
+  roundRectBottom(ctx, mx + 2, stripY, mw - 4, stripH - 2, radius - 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ed4245";
+  ctx.font = `bold 16px ${FONT_STACK}`;
+  ctx.fillText("POSTING HERE = INSTANT BAN", cx, stripY + stripH / 2 - 1);
 
   return canvas.toBuffer("image/png");
 }
@@ -130,6 +162,18 @@ function roundRectTop(ctx, x, y, w, h, r) {
   ctx.lineTo(x, y + h);
   ctx.lineTo(x, y + rr);
   ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function roundRectBottom(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + w, y);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.lineTo(x, y);
   ctx.closePath();
 }
 

@@ -58,10 +58,10 @@ Typical approaches:
 
 The bot immediately posts a **warning notice** in that channel:
 
-- Red **embed** with a clear “do not post” message
-- **Modal-style PNG image** with the same warning (text is not in plain message content)
+- **Image-only message** (no plain text body, no embed copy)
+- Modal-style PNG with large **DO NOT POST HERE**, smaller honeypot explanation, and ban warning
 - Message is **pinned** when the bot has Manage Messages
-- Simple scrapers that only read `message.content` see an empty body
+- Scrapers that only read `message.content` / embed fields get nothing useful
 
 Removing a honeypot with `/honeypot channel del` also deletes that warning message when possible.
 

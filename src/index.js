@@ -9,7 +9,6 @@ const {
   MessageFlags,
   AttachmentBuilder,
   PermissionFlagsBits,
-  EmbedBuilder,
   REST,
   Routes,
 } = require("discord.js");
@@ -80,26 +79,9 @@ async function postHoneypotWarning(channel) {
   const png = renderHoneypotWarningPng();
   const file = new AttachmentBuilder(png, { name: "honeypot-warning.png" });
 
-  const embed = new EmbedBuilder()
-    .setColor(0xed4245)
-    .setTitle("⚠️ DO NOT POST IN THIS CHANNEL")
-    .setDescription(
-      [
-        "This channel is **restricted**.",
-        "",
-        "**Any message you send here will result in an immediate permanent ban.**",
-        "",
-        "If you can see this notice, leave the channel without posting.",
-        "Staff and exempt roles are not affected.",
-      ].join("\n")
-    )
-    .setImage("attachment://honeypot-warning.png")
-    .setFooter({ text: "Anti-spam honeypot · human notice" })
-    .setTimestamp();
-
+  // Image only — no content/embed text for scrapers to parse.
+  // All human-facing copy is baked into the PNG.
   const msg = await channel.send({
-    // Intentionally omit plain `content` so scrapers get an empty body.
-    embeds: [embed],
     files: [file],
   });
 
@@ -136,7 +118,7 @@ async function ensureHoneypotWarning(guild, channelId) {
   try {
     const msg = await postHoneypotWarning(channel);
     setHoneypotWarningMessage(guild.id, channelId, msg.id);
-    return "Warning notice posted and pinned (embed + image; no plain text).";
+    return "Warning notice posted and pinned (image only — no plain text).";
   } catch (e) {
     console.error(`[honeypot] Failed to post warning in ${guild.id}/${channelId}:`, e?.message || e);
     return `Could not post warning notice: ${e?.message || e}`;
