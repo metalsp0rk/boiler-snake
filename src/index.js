@@ -67,6 +67,7 @@ const { startYoutubeTicker, createSimpleUploadEmbed, fetchChannelInfo, lookupCha
 const {
   MAX_OPTIONS_PER_PANEL,
   PENDING_EMOJI_TTL_MS,
+  NO_PING_MENTIONS,
   buildPanelEmbed,
   refreshPanelMessage,
   handleReactionRoleAdd,
@@ -1338,7 +1339,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
           let msg;
           try {
-            msg = await ch.send({ embeds: [embed] });
+            // Role names may appear later in the embed as mentions — never ping
+            msg = await ch.send({ embeds: [embed], allowedMentions: NO_PING_MENTIONS });
           } catch (e) {
             await interaction.reply({
               content: `Could not post panel: ${e?.message || e}`,
@@ -1500,6 +1502,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
               }).\n` +
               `Type **\`stop\`** to cancel. Expires in ${mins} minutes.`,
             flags: MessageFlags.Ephemeral,
+            allowedMentions: NO_PING_MENTIONS,
           });
           return;
         }
@@ -1569,6 +1572,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           await interaction.reply({
             content: `**Options for panel \`${messageId}\`:**\n${lines.join("\n")}`,
             flags: MessageFlags.Ephemeral,
+            allowedMentions: NO_PING_MENTIONS,
           });
           return;
         }

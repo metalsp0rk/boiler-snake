@@ -15,6 +15,8 @@ Bot-owned **panel messages** where members claim roles by reacting with configur
 
 Reaction XP is **not** awarded for reactions on managed panels.
 
+Panel embeds show roles as `@Role` for readability, but the bot always sends/edits with **`allowedMentions` disabled** so members are **not** pinged when options are added or the panel is refreshed.
+
 ## Why not ephemeral “level too low” replies?
 
 Discord only allows ephemeral messages as replies to **interactions** (slash commands, buttons, selects). Reactions are gateway events, so the bot cannot send an ephemeral notice. Under-level users get a **DM** when possible; otherwise the reaction is simply removed.

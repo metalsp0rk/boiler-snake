@@ -20,6 +20,9 @@ const MAX_OPTIONS_PER_PANEL = 20;
 /** How long admins have to send an emoji after option add/remove. */
 const PENDING_EMOJI_TTL_MS = 5 * 60 * 1000;
 
+/** Never ping @everyone / @here / roles / users from panel text or embeds. */
+const NO_PING_MENTIONS = { parse: [] };
+
 // guildId:userId → pending option add/remove session (in-memory)
 // session.action: "add" | "remove"
 const pendingOptionEmoji = new Map();
@@ -314,7 +317,12 @@ async function refreshPanelMessage(guild, panel) {
 
   const embed = buildPanelEmbed(panel, options);
   try {
-    await message.edit({ embeds: [embed], content: null });
+    // Embeds list roles as <@&id> for display only — suppress notifications
+    await message.edit({
+      embeds: [embed],
+      content: null,
+      allowedMentions: NO_PING_MENTIONS,
+    });
   } catch (err) {
     return { ok: false, error: `Could not edit panel message: ${err?.message || err}` };
   }
@@ -654,7 +662,7 @@ async function deleteAdminEmojiMessage(message) {
 async function sendChannelConfirm(channel, content) {
   try {
     if (channel && typeof channel.send === "function") {
-      await channel.send({ content, allowedMentions: { parse: [] } });
+      await channel.send({ content, allowedMentions: NO_PING_MENTIONS });
     }
   } catch {
     // ignore
@@ -682,7 +690,7 @@ async function handlePendingOptionEmojiMessage(message) {
     try {
       await message.reply({
         content: "Cancelled — no longer waiting for an emoji.",
-        allowedMentions: { parse: [] },
+        allowedMentions: NO_PING_MENTIONS,
       });
     } catch {
       // ignore
@@ -708,7 +716,7 @@ async function handlePendingOptionEmojiMessage(message) {
     try {
       await message.reply({
         content: `${emojiErr}\n\n_Still waiting for an emoji ${waitingFor}. Send an emoji, or type \`stop\` to cancel._`,
-        allowedMentions: { parse: [] },
+        allowedMentions: NO_PING_MENTIONS,
       });
     } catch {
       // ignore
@@ -733,7 +741,7 @@ async function handlePendingOptionEmojiMessage(message) {
           content: removed.hardFail
             ? `${removed.error}\n_No longer waiting for an emoji._`
             : `${removed.error}\n\n_Still waiting — try another emoji, or type \`stop\` to cancel._`,
-          allowedMentions: { parse: [] },
+          allowedMentions: NO_PING_MENTIONS,
         });
       } catch {
         // ignore
@@ -774,7 +782,7 @@ async function handlePendingOptionEmojiMessage(message) {
         content: hardFail
           ? `${applied.error}\n_No longer waiting for an emoji._`
           : `${applied.error}\n\n_Still waiting — try another emoji, or type \`stop\` to cancel._`,
-        allowedMentions: { parse: [] },
+        allowedMentions: NO_PING_MENTIONS,
       });
     } catch {
       // ignore
@@ -802,6 +810,7 @@ const handlePendingOptionAddMessage = handlePendingOptionEmojiMessage;
 module.exports = {
   MAX_OPTIONS_PER_PANEL,
   PENDING_EMOJI_TTL_MS,
+  NO_PING_MENTIONS,
   EMOJI_INPUT_HELP,
   parseEmojiInput,
   resolveEmojiShortcode,
