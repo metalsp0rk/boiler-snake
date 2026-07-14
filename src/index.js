@@ -1121,6 +1121,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (group === "channel") {
         if (sub === "add") {
           const ch = interaction.options.getChannel("channel", true);
+
+          if (isHoneypotChannel(guildId, ch.id)) {
+            await interaction.reply({
+              content: `<#${ch.id}> is already set up as a honeypot channel.`,
+              flags: MessageFlags.Ephemeral,
+            });
+            return;
+          }
+
           addHoneypotChannel(guildId, ch.id);
           const warningStatus = await ensureHoneypotWarning(interaction.guild, ch.id);
           await interaction.reply({
