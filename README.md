@@ -13,6 +13,11 @@ Includes:
 - **Command restriction** to allowed channels per guild
 - Admin/mod commands for configuration
 
+## Architecture
+
+Modular monolith: feature modules under `src/features/`, shared `src/core/` + `src/db/`, thin `src/index.js`.  
+See [docs/architecture.md](docs/architecture.md) and [AGENTS.md](AGENTS.md).
+
 ## Setup
 
 Requirements: **Node.js 18+** (Discord.js 14; Node 13.x will not work)
@@ -60,7 +65,7 @@ docker compose up -d
 
 3) Register slash commands once:
 ```bash
-docker compose run --rm bot node src/register-commands.js
+docker compose run --rm bot node src/commands/register.js
 ```
 
 Image: `ghcr.io/metalsp0rk/boiler-snake` (tags: `latest`, `vX.Y.Z`).

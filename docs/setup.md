@@ -126,7 +126,7 @@ If you run via Compose instead of bare Node:
 ```bash
 # From repo root, with .env already filled in
 docker compose up -d --build
-docker compose run --rm bot node src/register-commands.js
+docker compose run --rm bot node src/commands/register.js
 ```
 
 SQLite is stored on the `bot-data` volume at `/data/xpbot.sqlite`. Published images: `ghcr.io/metalsp0rk/boiler-snake`.

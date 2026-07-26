@@ -500,24 +500,17 @@ ORDER BY created_at ASC
 
 ## Database Migrations
 
-Migrations run automatically on bot startup (defined in `db.js`):
+Migrations run automatically when the db module loads (`src/db/migrate.js` via `src/db.js` / `src/db/index.js`). Steps live under `src/db/migrations/` and are written to be **idempotent**.
 
-### Currently Applied Migrations:
+| Id | Purpose |
+|----|---------|
+| `001_base_schema` | `CREATE TABLE IF NOT EXISTS` for all domains |
+| `002_guild_settings_columns` | reaction XP/cooldown, upload role, audit/message log channels |
+| `003_youtube_composite_pk` | Rebuild `youtube_channels` **only if** PK is still single-column `id` |
+| `004_youtube_and_honeypot_columns` | `last_checked`, honeypot `warning_message_id` |
+| `005_clamp_bad_xp` | Clamp Infinity/NaN/out-of-range user XP |
 
-1. **Reaction XP Support**
-   - Added `reaction_xp` column to `guild_settings`
-   - Added `reaction_cooldown_sec` column to `guild_settings`
-
-2. **YouTube Channel Key Change**
-   - Recreated `youtube_channels` table with composite primary key `(guild_id, id)` instead of just `id`
-   - Allows same YouTube channel ID across different guilds
-
-3. **Last Checked Timestamp**
-   - Added `last_checked` column to `youtube_channels`
-
-4. **XP Data Cleanup**
-   - Normalizes all XP values: clamps Infinity/NaN/too large/negative
-   - Ensures data integrity with safe JavaScript integer limits
+Public API remains available via `require("./db")` (facade over repositories).
 
 ## Common Queries for Self-Hosters
 

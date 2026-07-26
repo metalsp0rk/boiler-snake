@@ -10,13 +10,13 @@ Docker:
 ```bash
 cp .env.example .env   # set DISCORD_TOKEN, CLIENT_ID
 docker compose up -d --build
-docker compose run --rm bot node src/register-commands.js
+docker compose run --rm bot node src/commands/register.js
 ```
 
 ## Critical Setup Notes
 
 - **Database**: SQLite (`xpbot.sqlite`). Default: project root. Override with `DATA_DIR` (dir) or `DB_PATH` (full file path). Docker compose uses `DATA_DIR=/data` + named volume.
-- **Environment**: `.env` is ignored. Required values: `DISCORD_TOKEN`, `CLIENT_ID`. Optional: `DEV_GUILD_ID` for instant command registration.
+- **Environment**: `.env` is ignored. Required: `DISCORD_TOKEN`, `CLIENT_ID`. Optional: `DEV_GUILD_ID` for instant command registration.
 - **Discord Intents**: Enable "Message Content Intent" in Developer Portal for reliable message tracking.
 - **Releases**: Conventional Commits + release-please on `main` → GitHub Release + GHCR image (`ghcr.io/metalsp0rk/boiler-snake`).
 
@@ -24,55 +24,43 @@ docker compose run --rm bot node src/register-commands.js
 
 | Command | Description |
 |---------|-------------|
-| `npm start` | Run bot (entrypoint: `src/index.js`) |
-| `npm run register` | Register slash commands (global or DEV_GUILD_ID) |
+| `npm start` | Run bot (`src/index.js`) |
+| `npm run register` | Register slash commands (`src/commands/register.js`) |
+| `npm test` | Unit tests (`node --test`) |
 | `docker compose up -d` | Run bot in container (volume for SQLite) |
 
 ## Architecture Highlights
 
-- **Entry**: `src/index.js` — Discord client setup, event handlers, command router
-- **Database**: `src/db.js` — SQLite wrapper with WAL mode and migrations
-- **XP Logic**: `src/xp.js`—Level = floor(sqrt(xp / factor))
-- **Voice XP**: `src/voiceTicker.js` — Per-minute ticker; requires ≥2 eligible humans per channel (non-muted/deafened)
-- **Roles**: `src/roles.js` — Auto-grant on level-up; auto-revoke after grace period
-- **Decay**: `src/decay.js` — Daily cron at 4 AM server time; reduces XP for inactive users
+| Path | Role |
+|------|------|
+| `src/index.js` | Thin entry: client, feature boot, ordered pipelines, login |
+| `src/features/*` | Product modules (commands, handlers, events/start) |
+| `src/commands/` | Registry, router, registration CLI |
+| `src/core/` | XP math, cooldowns, permissions, interaction helpers |
+| `src/services/awardXp.js` | Unified XP award + role sync + audit |
+| `src/db/` | Connection, migrations, repositories (`src/db.js` facade) |
+| `src/bot/pipelines.js` | Ordered MessageCreate / ReactionAdd pipelines |
+| `src/render/leaderboard.js` | Leaderboard PNG |
+
+**Features:** settings, commandChannels, xp, decay, voice, levelRoles, logs, youtube, honeypot, reactionRoles.
+
+See [docs/architecture.md](docs/architecture.md) for the full layout and boot sequence.
 
 ## Intentions & Constraints
 
-1. **CoDOWNS**:
-   - Message: configurable (default 20s)
-   - Reaction: configurable (default 10s)
-
-2. **Voice XP Rules**:
-   - Ignores AFK channel
-   - Requires at least 2 eligible humans in voice channel
-   - Not awarded if muted/deafened
-
-3. **Command Restriction**:
-   - Per-guild config via `/setcommandchannel`
-   - If empty list: commands allowed everywhere
-   - Exception: `/setcommandchannel` always accessible for admins (prevents lockout)
-
-4. **Admin Gate**: `/xp`, `/leaderboard` are public; all others require `ManageGuild` permission
-
-5. **Bot Permissions Must**:
-   - Have `Manage Roles`
-   - Position its own role ABOVE roles it manages in Discord guild settings
-
-6. **XP Safety Caps**:
-   - Max XP awarded per event: 1,000,000,000 (clamped)
-   - DB stores capped values to prevent Infinity/overflow
-   - JS-safe cap: `Number.MAX_SAFE_INTEGER`
-
-7. **Level→Role Drop Logic**: User keeps role for configured grace days after dropping below level threshold
-
-8. **Leaderboard**: Top 10 only; renders PNG with `@napi-rs/canvas`
+1. **Cooldowns**: message (default 20s), reaction (default 10s) — configurable per guild
+2. **Voice XP**: ignore AFK; ≥2 eligible humans; no XP if muted/deafened
+3. **Command channels**: empty allow-list → everywhere; `/setcommandchannel` always for admins
+4. **Admin gate**: `/xp`, `/leaderboard` public; others need `ManageGuild`
+5. **Bot role** must be above roles it manages
+6. **XP caps**: max award 1e9 per event; DB/JS-safe totals
+7. **Level→role drop**: grace days after falling below threshold
+8. **Leaderboard**: top 10 PNG via `@napi-rs/canvas`
 
 ## Known Gotchas
 
-- Global slash commands can take time to propagate (DEV_GUILD_ID preferred for dev)
-- Voice xp ticker runs on minute boundaries; initial delay calculated from current time
-- If DB schema changes, migrations in `db.js` run automatically on startup
-- For emoji rendering: ensure fonts installed (`fonts-noto-core`, `fonts-dejavu-core`, `fonts-noto-color-emoji`); Docker image includes them
-- Persist the whole data directory in Docker (WAL creates `xpbot.sqlite-wal` / `-shm` beside the DB)
-- Use Conventional Commit prefixes (`feat:`, `fix:`, …) so release-please can cut versions
+- Global slash commands can be slow to propagate (`DEV_GUILD_ID` for dev)
+- Voice ticker aligns to minute boundaries
+- Migrations under `src/db/migrations/` run automatically on db load
+- Docker: persist the whole data dir (WAL files beside the DB)
+- Use Conventional Commit prefixes (`feat:`, `fix:`, …) for release-please

@@ -385,6 +385,8 @@ With daily decay:
 
 **Planned features** (see roadmap if present):
 - Ticket system (support requests)
+- Scheduled event reminders
+- Twitch stream notifications (multi-channel go-live alerts + dedicated ping role)
 - Activity analytics dashboard
 - XP transfer between servers
 

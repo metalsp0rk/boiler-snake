@@ -30,7 +30,8 @@ pnpm-debug.log*
 ############################
 # Logs
 ############################
-logs/
+# App runtime log dirs (not src/features/logs product module)
+/logs/
 *.log
 
 ############################
