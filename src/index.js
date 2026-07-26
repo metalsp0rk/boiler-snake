@@ -43,6 +43,8 @@ const {
   removeHoneypotChannel,
   listHoneypotChannels,
   isHoneypotChannel,
+  isHoneypotWarningMessage,
+  listAllHoneypotWarnings,
   addHoneypotExemptRole,
   removeHoneypotExemptRole,
   listHoneypotExemptRoles,
@@ -231,7 +233,101 @@ async function executeHoneypotBan(guild, user, {
 }
 
 /**
- * If the message is in a honeypot channel, ban the author (unless exempt).
+ * Strip one reaction emoji from a honeypot warning notice (full wipe when possible).
+ */
+async function stripHoneypotWarningReaction(reaction) {
+  if (!reaction) return false;
+  try {
+    if (reaction.partial) {
+      try {
+        await reaction.fetch();
+      } catch {
+        /* continue with best effort */
+      }
+    }
+    await reaction.remove();
+    return true;
+  } catch (err) {
+    // Fall back to removing individual reactors (still needs Manage Messages for others)
+    try {
+      if (reaction.users?.cache?.size) {
+        for (const userId of reaction.users.cache.keys()) {
+          await reaction.users.remove(userId).catch(() => null);
+        }
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
+    console.warn(
+      `[honeypot] Could not strip reaction on warning notice:`,
+      err?.message || err
+    );
+    return false;
+  }
+}
+
+/**
+ * If the reaction is on a honeypot warning notice, remove it and return true.
+ * Runs for any user (including bots) so the notice stays reaction-free.
+ */
+async function handleHoneypotWarningReaction(reaction) {
+  const message = reaction?.message;
+  if (!message) return false;
+
+  const guildId = message.guildId || message.guild?.id;
+  const messageId = message.id;
+  if (!isHoneypotWarningMessage(guildId, messageId)) return false;
+
+  await stripHoneypotWarningReaction(reaction);
+  return true;
+}
+
+/**
+ * Sweep all honeypot warning notices and clear any leftover reactions
+ * (e.g. added while the bot was offline, or missed by the live handler).
+ */
+async function sweepHoneypotWarningReactions(client) {
+  const rows = listAllHoneypotWarnings();
+  if (!rows.length) return;
+
+  for (const row of rows) {
+    try {
+      const guild =
+        client.guilds.cache.get(row.guild_id) ||
+        (await client.guilds.fetch(row.guild_id).catch(() => null));
+      if (!guild) continue;
+
+      const channel = await guild.channels.fetch(row.channel_id).catch(() => null);
+      if (!channel || typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
+        continue;
+      }
+
+      const msg = await channel.messages.fetch(row.warning_message_id).catch(() => null);
+      if (!msg) continue;
+
+      const count = msg.reactions?.cache?.size || 0;
+      if (count === 0) continue;
+
+      try {
+        await msg.reactions.removeAll();
+      } catch {
+        for (const reaction of msg.reactions.cache.values()) {
+          await reaction.remove().catch(() => null);
+        }
+      }
+    } catch (e) {
+      console.warn(
+        `[honeypot] Warning reaction sweep failed for ${row.guild_id}/${row.channel_id}:`,
+        e?.message || e
+      );
+    }
+  }
+}
+
+/**
+ * If the message is in a honeypot channel, delete it and ban the author (unless exempt).
+ * Exempt users still have their message deleted, but are not banned.
  * Returns true when the message was handled as honeypot traffic (caller should not award XP).
  */
 async function handleHoneypotMessage(message) {
@@ -242,10 +338,18 @@ async function handleHoneypotMessage(message) {
     member = await message.guild.members.fetch(message.author.id).catch(() => null);
   }
 
-  // Exempt roles (staff, etc.) — leave their message alone
+  // Exempt roles (staff, etc.) — no ban, but still delete the message so the channel stays empty
   if (member) {
     const roleIds = [...member.roles.cache.keys()];
     if (memberHasHoneypotExemptRole(message.guild.id, roleIds)) {
+      try {
+        if (message.deletable) await message.delete();
+      } catch (e) {
+        console.warn(
+          `[honeypot] Could not delete exempt message in ${message.guild.id}:`,
+          e?.message || e
+        );
+      }
       return true;
     }
   }
@@ -408,6 +512,16 @@ client.once(Events.ClientReady, async () => {
   // Start YouTube Data API v3 polling for live streams
   startYoutubeTicker(client);
 
+  // Clear any reactions already on honeypot warning notices, then sweep periodically.
+  sweepHoneypotWarningReactions(client).catch((e) =>
+    console.warn("[honeypot] Initial warning reaction sweep failed:", e?.message || e)
+  );
+  setInterval(() => {
+    sweepHoneypotWarningReactions(client).catch((e) =>
+      console.warn("[honeypot] Warning reaction sweep failed:", e?.message || e)
+    );
+  }, 10 * 60 * 1000); // every 10 minutes
+
   // Periodic cleanup of cooldown maps so memory stays bounded.
   // We keep a generous window so we don't accidentally delete active entries.
   setInterval(() => {
@@ -462,8 +576,6 @@ client.on(Events.MessageCreate, async (message) => {
 // Reaction roles + reaction XP (add)
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   try {
-    if (user?.bot) return;
-
     // Resolve partials BEFORE guild checks — uncached panel messages often
     // lack guild until message.fetch() completes.
     if (reaction.partial) {
@@ -472,6 +584,12 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (reaction.message?.partial) {
       try { await reaction.message.fetch(); } catch { /* may still lack content */ }
     }
+
+    // Honeypot warning notice: strip any reaction (including bots); no XP.
+    // Uses message guildId — does not require a cached Guild object.
+    if (await handleHoneypotWarningReaction(reaction)) return;
+
+    if (user?.bot) return;
 
     const guild =
       reaction.message?.guild ||

@@ -8,12 +8,11 @@ Catch spam accounts and raiders with decoy **channels** and/or **roles**. Non-ex
 
 A **honeypot channel** looks like a normal channel but is only meant to trap bots and malicious accounts that auto-join and post everywhere. Legitimate members are never told about these channels (or are blocked from seeing them via Discord permissions).
 
-When a non-exempt user posts in a honeypot channel, the bot:
+When anyone posts in a honeypot channel, the bot **deletes** the message (if it can). Exempt roles are not banned; non-exempt users are:
 
-1. **DMs** them with the ban reason (if DMs are open)
-2. **Deletes** the triggering message (if the bot can)
-3. **Bans** them from the guild
-4. **Skips** XP awards for that message
+1. **DMed** with the ban reason (if DMs are open)
+2. **Banned** from the guild
+3. **Skipped** for XP awards
 
 ### Honeypot ban roles
 
@@ -30,7 +29,7 @@ When a non-exempt member **receives** a configured ban role, the bot:
 
 Members who **already** hold the role when you run `/honeypot banrole add` are **not** retroactively banned—only new grants (via `GuildMemberUpdate`) trigger the ban.
 
-Staff and other trusted roles can be marked **exempt** so they are not banned if they post in honeypot channels or receive a ban role while testing.
+Staff and other trusted roles can be marked **exempt** so they are not banned if they post in honeypot channels or receive a ban role while testing. Messages from exempt members in honeypot channels are still deleted.
 
 ## Bot Permissions
 
@@ -39,7 +38,7 @@ The bot needs these Discord permissions for honeypots to work:
 | Permission | Why |
 |------------|-----|
 | **Ban Members** | Issue the ban |
-| **Manage Messages** | Delete bait messages; pin/delete the warning notice |
+| **Manage Messages** | Delete bait messages; pin/delete the warning notice; strip reactions on the notice |
 | **Send Messages** / **View Channel** | Post the warning notice; read messages |
 | **Attach Files** | Attach the warning image |
 
@@ -80,6 +79,7 @@ The bot immediately posts a **warning notice** in that channel:
 - Modal-style PNG with large **DO NOT POST HERE**, smaller honeypot explanation, and ban warning
 - Message is **pinned** when the bot has Manage Messages
 - Scrapers that only read `message.content` / embed fields get nothing useful
+- **Reactions are stripped** from the notice as soon as they appear, and again on a 10-minute sweep (so leftovers from downtime are cleared)
 
 Removing a honeypot with `/honeypot channel del` also deletes that warning message when possible.
 
@@ -179,8 +179,8 @@ Remove a role from the exempt list.
 
 | Case | Result |
 |------|--------|
-| Bot or webhook message | Ignored (no ban) |
-| Human with exempt role | Message kept; no ban; no XP |
+| Bot or webhook message | Ignored (no ban, no delete) |
+| Human with exempt role | Message deleted; no ban; no XP |
 | Human without exempt role | DM → delete message → ban; no XP |
 | DM closed / blocked | Ban still proceeds; failure logged |
 | Bot lacks Ban Members / role hierarchy | Ban fails; error logged; message may still be deleted |
@@ -219,6 +219,12 @@ Users who can receive DMs get a message explaining they were banned for posting 
 
 - Bot needs **Manage Messages**
 - Message may already be gone, or channel overwrites block the bot
+
+### Reactions stick on the warning notice
+
+- Bot needs **Manage Messages** in the honeypot channel
+- Live strip runs on every reaction; a full sweep also runs every 10 minutes
+- Restart the bot after deploy so the reaction handler and sweep are loaded
 
 ### DM not received
 

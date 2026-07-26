@@ -838,6 +838,26 @@ function isHoneypotChannel(guildId, channelId) {
   return !!row;
 }
 
+/** True if this message is the bot-posted honeypot warning notice. */
+function isHoneypotWarningMessage(guildId, messageId) {
+  if (!guildId || !messageId) return false;
+  const row = db.prepare(`
+  SELECT 1 AS ok
+  FROM honeypot_channels
+  WHERE guild_id=? AND warning_message_id=?
+  `).get(guildId, messageId);
+  return !!row;
+}
+
+/** All honeypot warning notices (for reaction sweeps). */
+function listAllHoneypotWarnings() {
+  return db.prepare(`
+  SELECT guild_id, channel_id, warning_message_id
+  FROM honeypot_channels
+  WHERE warning_message_id IS NOT NULL AND warning_message_id != ''
+  `).all();
+}
+
 /**
  * Honeypot exempt roles
  */
@@ -1138,6 +1158,8 @@ module.exports = {
   removeHoneypotChannel,
   listHoneypotChannels,
   isHoneypotChannel,
+  isHoneypotWarningMessage,
+  listAllHoneypotWarnings,
   addHoneypotExemptRole,
   removeHoneypotExemptRole,
   listHoneypotExemptRoles,
