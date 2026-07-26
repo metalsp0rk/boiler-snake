@@ -4,8 +4,8 @@ Step-by-step guide to get HeisenXP-Bot running on your server.
 
 ## Prerequisites
 
-- Node.js 16+ (Discord.js v14 requirement)
-- npm or yarn package manager
+- Node.js 18+ (Discord.js v14 requirement), **or** Docker / Docker Compose
+- npm or yarn package manager (if not using Docker)
 - Discord Bot Token
 - Google Cloud Project (optional, for YouTube notifications)
 
@@ -62,10 +62,14 @@ DISCORD_TOKEN=your_bot_token_here
 CLIENT_ID=your_application_id_here
 ```
 
-**Optional Variables** (for YouTube notifications):
+**Optional Variables**:
 ```env
 YOUTUBE_API_KEY=your_google_cloud_api_key
 DEV_GUILD_ID=server_id_for_fast_registration  # For development
+
+# SQLite location (default: project root). Docker compose sets DATA_DIR=/data
+# DATA_DIR=/data
+# DB_PATH=/data/xpbot.sqlite
 ```
 
 ### Get DEV_GUILD_ID
@@ -115,6 +119,18 @@ npm run register
 
 **Note**: Global commands can take up to 1 hour to propagate. Using `DEV_GUILD_ID` registers instantly.
 
+### Docker alternative
+
+If you run via Compose instead of bare Node:
+
+```bash
+# From repo root, with .env already filled in
+docker compose up -d --build
+docker compose run --rm bot node src/register-commands.js
+```
+
+SQLite is stored on the `bot-data` volume at `/data/xpbot.sqlite`. Published images: `ghcr.io/metalsp0rk/heisenxp-bot`.
+
 ## Step 6: Configure Bot Role Position
 
 ⚠️ **Critical**: The bot's role MUST be positioned above roles it manages.
@@ -127,7 +143,7 @@ npm run register
 
 ## Step 7: Install Fonts (Ubuntu/Debian)
 
-Only needed if you plan to use `/leaderboard` and see emoji properly.
+Only needed for bare-metal installs if you plan to use `/leaderboard` and see emoji properly. **Not required for Docker** (fonts are in the image).
 
 ```bash
 sudo apt update
@@ -143,6 +159,12 @@ sudo apk add noto-fonts ttf-dejavu
 
 ```bash
 npm start
+```
+
+Or with Docker Compose:
+
+```bash
+docker compose up -d
 ```
 
 You should see:

@@ -1,0 +1,13 @@
+services:
+  bot:
+    image: ghcr.io/metalsp0rk/heisenxp-bot:latest
+    build: .
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - bot-data:/data
+    restart: unless-stopped
+
+volumes:
+  bot-data:

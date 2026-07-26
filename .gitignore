@@ -56,5 +56,3 @@ coverage/
 ###
 
 *.sqlite-*
-
-package-lock.json

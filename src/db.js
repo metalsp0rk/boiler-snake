@@ -1,8 +1,17 @@
 // src/db.js
 const Database = require("better-sqlite3");
+const fs = require("fs");
 const path = require("path");
 
-const db = new Database(path.join(__dirname, "..", "xpbot.sqlite"));
+// DB location (Docker-friendly):
+// - DB_PATH: full path to the .sqlite file
+// - DATA_DIR: directory for xpbot.sqlite (default: project root)
+const defaultDataDir = path.join(__dirname, "..");
+const dataDir = process.env.DATA_DIR || defaultDataDir;
+const dbPath = process.env.DB_PATH || path.join(dataDir, "xpbot.sqlite");
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
 
 function now() {

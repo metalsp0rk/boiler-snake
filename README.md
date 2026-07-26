@@ -15,7 +15,9 @@ Includes:
 
 ## Setup
 
-Requirements: Node.js, Discord.js 14+ (13.x will not work)
+Requirements: **Node.js 18+** (Discord.js 14; Node 13.x will not work)
+
+### Option A: Node (local)
 
 1) Install dependencies
 ```bash
@@ -40,6 +42,37 @@ npm run register
 ```bash
 npm start
 ```
+
+### Option B: Docker Compose
+
+1) Create `.env` with `DISCORD_TOKEN` and `CLIENT_ID` (see `.env.example`).
+
+2) Build and start (SQLite persists on the `bot-data` volume under `/data`):
+```bash
+docker compose up -d --build
+```
+
+Or pull a published image from GHCR (after a release):
+```bash
+docker compose pull
+docker compose up -d
+```
+
+3) Register slash commands once:
+```bash
+docker compose run --rm bot node src/register-commands.js
+```
+
+Image: `ghcr.io/metalsp0rk/heisenxp-bot` (tags: `latest`, `vX.Y.Z`).
+
+### Database path
+
+By default the DB is `xpbot.sqlite` in the project root. Override with:
+
+| Variable | Meaning |
+|----------|---------|
+| `DATA_DIR` | Directory for `xpbot.sqlite` (Docker sets `/data`) |
+| `DB_PATH` | Full path to the database file (wins over `DATA_DIR`) |
 
 ## Required Discord Developer Portal settings
 
@@ -70,12 +103,18 @@ Admin/mod commands (requires **Manage Guild** by default):
 
 ## Database Backup
 
-The bot stores all data in `xpbot.sqlite`. Regular backups are recommended:
+The bot stores all data in `xpbot.sqlite` (or under `DATA_DIR` / `DB_PATH`). Regular backups are recommended:
 ```bash
-# Manual backup
+# Manual backup (local)
 cp xpbot.sqlite xpbot.sqlite.backup
 
-# Automated daily backup (cron)
+# Docker volume backup example
+docker compose stop bot
+docker run --rm -v heisenxp-bot_bot-data:/data -v "$(pwd)":/backup alpine \
+  cp /data/xpbot.sqlite /backup/xpbot-$(date +%Y%m%d).sqlite
+docker compose start bot
+
+# Automated daily backup (cron, local path)
 0 0 * * * cp /path/to/xpbot.sqlite /backups/xpbot-$(date +\%Y\%m\%d).sqlite
 ```
 
@@ -86,6 +125,19 @@ cp xpbot.sqlite.backup xpbot.sqlite
 # Restart the bot
 ```
 
+## Releases
+
+Versions follow [SemVer](https://semver.org/) via [release-please](https://github.com/googleapis/release-please) and [Conventional Commits](https://www.conventionalcommits.org/):
+
+| Commit prefix | Release bump |
+|---------------|--------------|
+| `feat:` | minor |
+| `fix:` | patch |
+| `feat!:` / `BREAKING CHANGE:` | major |
+| `chore:`, `docs:`, `ci:` | no version bump (by default) |
+
+Merging to `main` opens/updates a Release PR. Merging that PR tags `vX.Y.Z`, publishes a GitHub Release, and triggers a multi-arch (`linux/amd64`, `linux/arm64`) image push to GHCR.
+
 ## Notes
 
 - Bot must have **Manage Roles** permission and its highest role must be **above** roles it manages.
@@ -93,8 +145,8 @@ cp xpbot.sqlite.backup xpbot.sqlite
 - Voice XP is awarded once per minute for **eligible** users:
   - not muted/deafened (self or server)
   - and in a voice channel with **at least 2 eligible human users**
-- SQLite DB file (`xpbot.sqlite`) is created automatically in the project root.
-- Ensure you have a font installed that handles symbols and emoji. (sudo apt install fonts-noto-core fonts-noto fonts-dejavu-core fonts-noto-color-emoji)
+- SQLite DB file is created automatically (project root, or `DATA_DIR` / `DB_PATH`).
+- Ensure you have a font installed that handles symbols and emoji. (sudo apt install fonts-noto-core fonts-noto fonts-dejavu-core fonts-noto-color-emoji). The Docker image includes these fonts.
 - Roles for auto-granting must be BELOW the bot's role in the discord server's role settings (Drag bot's role above the desired roles to grant)
 
 
