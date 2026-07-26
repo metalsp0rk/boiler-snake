@@ -8,6 +8,7 @@ const { getGuildSettings } = require("./db");
 const COLOR_DELETE = 0xe74c3c; // red
 const COLOR_BULK_DELETE = 0xc0392b; // darker red
 const COLOR_BAN = 0x8b0000; // dark red
+const COLOR_HONEYPOT = 0x922b21; // deep red — honeypot-specific bans
 const COLOR_KICK = 0xe67e22; // orange
 const COLOR_ROLE_ADD = 0x2ecc71; // green
 const COLOR_ROLE_REMOVE = 0x95a5a6; // grey
@@ -323,6 +324,102 @@ function buildBanEmbed({ user, executor, reason, viaBot }) {
   return embed;
 }
 
+/**
+ * Rich embed for honeypot enforcement (channel post or ban-role grant).
+ * @param {object} opts
+ * @param {import('discord.js').User} opts.user
+ * @param {"channel"|"ban_role"} opts.trigger
+ * @param {string} [opts.channelId]
+ * @param {string[]} [opts.roleIds]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.banned]
+ * @param {boolean|null} [opts.dmSent] true/false when known; null/undefined = not reported
+ * @param {string} [opts.error] ban failure message
+ */
+function buildHoneypotEmbed({
+  user,
+  trigger,
+  channelId,
+  roleIds,
+  reason,
+  banned,
+  dmSent,
+  error,
+}) {
+  const embed = new EmbedBuilder()
+    .setColor(COLOR_HONEYPOT)
+    .setTitle(banned ? "Honeypot ban" : "Honeypot ban failed")
+    .setTimestamp(new Date())
+    .addFields(
+      { name: "User", value: userLabel(user), inline: true },
+      {
+        name: "Trigger",
+        value:
+          trigger === "ban_role"
+            ? "Ban role granted"
+            : trigger === "channel"
+              ? "Posted in honeypot channel"
+              : truncate(String(trigger || "Unknown"), 64),
+        inline: true,
+      },
+      {
+        name: "Ban",
+        value: banned ? "Succeeded" : "Failed",
+        inline: true,
+      }
+    );
+
+  if (trigger === "channel" || channelId) {
+    embed.addFields({
+      name: "Channel",
+      value: channelId ? `<#${channelId}> (\`${channelId}\`)` : "Unknown",
+      inline: true,
+    });
+  }
+
+  if (trigger === "ban_role" || (roleIds && roleIds.length)) {
+    const roles =
+      roleIds?.length
+        ? roleIds.map((id) => `<@&${id}> (\`${id}\`)`).join("\n")
+        : "Unknown";
+    embed.addFields({
+      name: "Ban role(s)",
+      value: truncate(roles, FIELD_TRUNCATE),
+      inline: true,
+    });
+  }
+
+  if (dmSent === true || dmSent === false) {
+    embed.addFields({
+      name: "DM",
+      value: dmSent ? "Sent" : "Failed / closed",
+      inline: true,
+    });
+  }
+
+  embed.addFields({
+    name: "Reason",
+    value: truncate(reason || "*No reason provided*", FIELD_TRUNCATE),
+  });
+
+  if (error && !banned) {
+    embed.addFields({
+      name: "Error",
+      value: truncate(String(error), FIELD_TRUNCATE),
+    });
+  }
+
+  if (user?.displayAvatarURL) {
+    try {
+      embed.setThumbnail(user.displayAvatarURL({ size: 128 }));
+    } catch {
+      // ignore
+    }
+  }
+
+  return embed;
+}
+
 function buildKickEmbed({ user, executor, reason }) {
   const embed = new EmbedBuilder()
     .setColor(COLOR_KICK)
@@ -581,7 +678,30 @@ async function logBan(client, ban) {
     viaBot = true;
   }
 
+  // Honeypot bans are logged with richer context via logHoneypotTrigger
+  // (channel / ban-role, DM status, success/failure). Skip the generic ban embed.
+  if (
+    reason &&
+    /honeypot/i.test(reason) &&
+    viaBot &&
+    (!executor || executor.id === client.user?.id)
+  ) {
+    return;
+  }
+
   const embed = buildBanEmbed({ user, executor, reason, viaBot });
+  await sendAuditLog(client, guild.id, { embeds: [embed] });
+}
+
+/**
+ * Staff audit log for a honeypot enforcement action.
+ * @param {import('discord.js').Client} client
+ * @param {import('discord.js').Guild} guild
+ * @param {object} opts See buildHoneypotEmbed
+ */
+async function logHoneypotTrigger(client, guild, opts) {
+  if (!client || !guild?.id) return;
+  const embed = buildHoneypotEmbed(opts || {});
   await sendAuditLog(client, guild.id, { embeds: [embed] });
 }
 
@@ -721,6 +841,7 @@ module.exports = {
   buildMessageDeleteEmbed,
   buildMessageBulkDeleteEmbed,
   buildBanEmbed,
+  buildHoneypotEmbed,
   buildKickEmbed,
   buildReactionRoleEmbed,
   buildLevelRoleChangeEmbed,
@@ -730,6 +851,7 @@ module.exports = {
   logMessageDelete,
   logMessageBulkDelete,
   logBan,
+  logHoneypotTrigger,
   logKickIfApplicable,
   logReactionRoleChange,
   logLevelRoleChanges,

@@ -197,7 +197,7 @@ Users who can receive DMs get a message explaining they were banned for posting 
 1. **Exempt before enable** — add staff roles first.
 2. **Hide honeypots from real members** when possible (channel permissions), so only scrapers and raiders post.
 3. **Don’t put honeypots in command-allowed channels** if you use `/setcommandchannel`; staff may still need slash commands elsewhere.
-4. **Log review** — watch console for `[honeypot]` lines (successful bans, DM/delete/ban failures).
+4. **Log review** — configure `/setlog audit` so honeypot bans post rich embeds (user, channel/role, DM status, success/failure). Also watch console for `[honeypot]` lines.
 5. **False positives** — if a real user is banned, unban them in Discord and tighten channel visibility or exempt roles.
 
 ## Troubleshooting
@@ -230,9 +230,25 @@ Users who can receive DMs get a message explaining they were banned for posting 
 
 - User has DMs closed to server members; ban still applies
 
+## Audit log
+
+When an **audit log channel** is set (`/setlog audit`), each honeypot enforcement posts a **Honeypot ban** embed (or **Honeypot ban failed** if Discord rejects the ban):
+
+| Field | Meaning |
+|-------|---------|
+| User | Who was banned |
+| Trigger | Posted in honeypot channel, or ban role granted |
+| Channel / Ban role(s) | Where or how they triggered |
+| Ban | Succeeded / Failed |
+| DM | Sent, or failed/closed |
+| Reason | Short ban reason |
+
+Config changes (`/honeypot channel|banrole|exempt add|del`) also appear as purple configuration embeds. See [Audit Log](audit-log.md).
+
 ## Related
 
 - [Commands Reference](commands/index.md) — full slash command docs
 - [Database Schema](database.md) — `honeypot_channels` and `honeypot_exempt_roles` tables
 - [Architecture Overview](architecture.md) — `MessageCreate` enforcement path
+- [Audit Log](audit-log.md) — staff embeds for honeypot bans
 - [Setup](setup.md) — bot permissions

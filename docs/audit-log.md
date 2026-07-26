@@ -74,7 +74,14 @@ npm run register
 
 **Member banned**
 - Target, executor, reason
-- Marks bans performed by this bot (e.g. honeypot) when the audit log executor is the bot or the reason mentions honeypot
+- Marks bans performed by this bot when the Discord audit log executor is the bot
+- **Honeypot bans are not duplicated here** — they use the dedicated honeypot embed below
+
+**Honeypot ban** (or **Honeypot ban failed**)
+- Fired when the bot enforces a honeypot (channel post or ban-role grant)
+- User, trigger type, channel and/or ban role(s), ban success/failure, DM status, reason
+- Failed bans still post (permissions / hierarchy issues) so staff can fix setup
+- Requires `audit_log_channel_id` configured via `/setlog audit`
 
 **Member kicked**
 - Only when Discord’s audit log shows a Kick for that user within a short window

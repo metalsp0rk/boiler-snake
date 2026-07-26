@@ -90,6 +90,7 @@ const {
   logMessageDelete,
   logMessageBulkDelete,
   logBan,
+  logHoneypotTrigger,
   logKickIfApplicable,
   logLevelRoleChanges,
   logConfigChange,
@@ -167,12 +168,16 @@ async function ensureHoneypotWarning(guild, channelId) {
 /**
  * Shared honeypot ban: DM (optional copy) then guild ban.
  * Uses honeypotBanning to avoid double-processing.
+ * Posts a staff audit-log embed via logHoneypotTrigger (richer than the generic ban log).
  * @returns {Promise<boolean>} true if a ban was attempted (or already in flight)
  */
 async function executeHoneypotBan(guild, user, {
   reason,
   dmText,
   deleteMessage = null,
+  trigger = "channel",
+  channelId = null,
+  roleIds = null,
 } = {}) {
   if (!guild || !user?.id) return false;
   if (user.bot) return false;
@@ -181,9 +186,13 @@ async function executeHoneypotBan(guild, user, {
   if (honeypotBanning.has(banKey)) return true;
   honeypotBanning.add(banKey);
 
+  let dmSent = null;
+  let banned = false;
+  let banError = null;
+  const shortReason = reason || "Honeypot trigger";
+
   try {
     const guildName = guild.name;
-    const shortReason = reason || "Honeypot trigger";
 
     // DM first — ban can prevent later contact via the guild
     try {
@@ -193,7 +202,9 @@ async function executeHoneypotBan(guild, user, {
             `**Reason:** ${shortReason}. ` +
             `If you believe this was a mistake, contact the server staff through another channel.`
       );
+      dmSent = true;
     } catch (e) {
+      dmSent = false;
       console.warn(
         `[honeypot] Could not DM ${user.id} in ${guild.id}:`,
         e?.message || e
@@ -216,12 +227,40 @@ async function executeHoneypotBan(guild, user, {
         reason: `Honeypot: ${shortReason}`,
         deleteMessageSeconds: 0,
       });
+      banned = true;
       console.log(
         `[honeypot] Banned ${user.tag || user.username} (${user.id}) in ${guildName} (${guild.id}): ${shortReason}`
       );
     } catch (e) {
+      banError = e?.message || String(e);
       console.error(
         `[honeypot] Failed to ban ${user.id} in ${guild.id}:`,
+        banError
+      );
+    }
+
+    // Staff audit channel (if configured) — dedicated honeypot embed
+    try {
+      const client = guild.client;
+      if (client) {
+        await logHoneypotTrigger(client, guild, {
+          user,
+          trigger,
+          channelId:
+            channelId ||
+            deleteMessage?.channel?.id ||
+            deleteMessage?.channelId ||
+            null,
+          roleIds: roleIds || null,
+          reason: shortReason,
+          banned,
+          dmSent,
+          error: banError,
+        });
+      }
+    } catch (e) {
+      console.warn(
+        `[honeypot] Audit log failed for ${user.id} in ${guild.id}:`,
         e?.message || e
       );
     }
@@ -361,6 +400,8 @@ async function handleHoneypotMessage(message) {
       `**Reason:** You posted in a restricted channel that is used to catch spam accounts and raids. ` +
       `If you believe this was a mistake, contact the server staff through another channel.`,
     deleteMessage: message,
+    trigger: "channel",
+    channelId: message.channel?.id || message.channelId,
   });
 
   return true;
@@ -403,9 +444,10 @@ async function handleHoneypotBanRole(oldMember, newMember) {
       `You have been **banned** from **${newMember.guild.name}**.\n\n` +
       `**Reason:** You were assigned a restricted role that is used to catch spam accounts and raids. ` +
       `If you believe this was a mistake, contact the server staff through another channel.`,
+    trigger: "ban_role",
+    roleIds: matched,
   });
 
-  // Log which roles triggered (console; Discord audit log gets ban reason)
   console.log(
     `[honeypot] Ban-role trigger for ${newMember.id} in ${guildId}: ${roleMentions}`
   );
