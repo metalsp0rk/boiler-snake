@@ -6,6 +6,7 @@ const {
   Events,
 } = require("discord.js");
 const {
+  getGuildSettings,
   isHoneypotChannel,
   isHoneypotWarningMessage,
   listAllHoneypotWarnings,

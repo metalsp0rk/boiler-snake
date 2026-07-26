@@ -26,7 +26,9 @@ docker compose run --rm bot node src/commands/register.js
 |---------|-------------|
 | `npm start` | Run bot (`src/index.js`) |
 | `npm run register` | Register slash commands (`src/commands/register.js`) |
-| `npm test` | Unit tests (`node --test`) |
+| `npm test` | Unit + integration tests (`node --test`) |
+| `npm run test:unit` | Unit tests only |
+| `npm run test:integration` | Offline full-stack integration tests (mocked Discord I/O, real SQLite) |
 | `docker compose up -d` | Run bot in container (volume for SQLite) |
 
 ## Architecture Highlights

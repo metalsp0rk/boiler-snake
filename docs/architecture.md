@@ -6,6 +6,13 @@ Technical deep dive into Boiler Snake for developers and contributors.
 
 Boiler Snake is a [Discord.js](https://discord.js.org/) v14 bot with a SQLite backend. The codebase is a **modular monolith**: product areas live under `src/features/`, shared infrastructure under `src/core/`, `src/db/`, and `src/services/`, with a thin entrypoint.
 
+## Testing
+
+- **Unit** (`npm run test:unit`): pure math, cooldowns, registry, DB smoke — `test/*.test.js`
+- **Integration** (`npm run test:integration`): full stack offline with temp SQLite and mocked Discord I/O — `test/integration/*.test.js`
+- Harness: `test/helpers/` (`createIntegrationEnv`). See `test/README.md`.
+- Pipeline handlers (`onMessageCreate`, etc.), `runVoiceTick`, and YouTube `processChannel`/`runYoutubeTick` are exported for direct invocation without gateway login.
+
 ---
 
 ## File Structure

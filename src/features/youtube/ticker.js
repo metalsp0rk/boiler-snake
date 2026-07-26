@@ -202,7 +202,31 @@ function extractVideoInfo(entry) {
   return { videoId, title, published, thumbnail };
 }
 
-async function processChannel(client, guildId, channelData) {
+/**
+ * Optional deps for tests (network stubs). Production uses default implementations.
+ * @typedef {object} YoutubeTickerDeps
+ * @property {(channelId: string) => Promise<object|null>} [fetchYouTubeFeed]
+ * @property {(username: string) => Promise<object|null>} [lookupChannelByName]
+ * @property {(channelId: string) => Promise<object|null>} [fetchChannelInfo]
+ */
+
+/** @type {YoutubeTickerDeps} */
+const defaultDeps = {
+  fetchYouTubeFeed,
+  lookupChannelByName,
+  fetchChannelInfo,
+};
+
+/**
+ * @param {import("discord.js").Client} client
+ * @param {string} guildId
+ * @param {object} channelData
+ * @param {YoutubeTickerDeps} [deps]
+ */
+async function processChannel(client, guildId, channelData, deps = defaultDeps) {
+  const fetchFeed = deps.fetchYouTubeFeed || fetchYouTubeFeed;
+  const resolveName = deps.lookupChannelByName || lookupChannelByName;
+
   const settings = getGuildSettings(guildId);
 
   if (!settings.youtube_notification_channel_id) {
@@ -221,7 +245,7 @@ async function processChannel(client, guildId, channelData) {
     const username = normalizeYoutubeName(channelName);
     console.log(`[youtube] Resolving @${username}...`);
 
-    const resolved = await lookupChannelByName(username);
+    const resolved = await resolveName(username);
     if (resolved) {
       channelId = resolved.id;
       addYoutubeChannel(guildId, channelId, resolved.name, resolved.url, "");
@@ -247,7 +271,7 @@ async function processChannel(client, guildId, channelData) {
 
   console.log(`[youtube] Checking ${displayName} (${channelId}) - last checked: ${lastChecked ? new Date(lastChecked).toISOString() : 'never'}`);
 
-  const feed = await fetchYouTubeFeed(channelId);
+  const feed = await fetchFeed(channelId);
   if (!feed) return;
 
   if (!feed.items || !feed.items.length) {
@@ -441,10 +465,14 @@ async function sendNotification(client, guildId, channelId, channelData, videoIn
   }
 }
 
-async function runYoutubeTick(client) {
+/**
+ * @param {import("discord.js").Client} client
+ * @param {YoutubeTickerDeps & { skipApiKeyCheck?: boolean }} [deps]
+ */
+async function runYoutubeTick(client, deps = defaultDeps) {
   console.log(`[youtube] Running tick`);
-  // Check for API key before doing any work
-  if (!process.env.YOUTUBE_API_KEY) {
+  // Check for API key before doing any work (tests may pass skipApiKeyCheck + stubs)
+  if (!deps.skipApiKeyCheck && !process.env.YOUTUBE_API_KEY) {
     console.log(`[youtube] YouTube Data API v3: YOUTUBE_API_KEY not configured - live notifications disabled`);
     return;
   }
@@ -471,7 +499,7 @@ async function runYoutubeTick(client) {
 
   for (const channel of channels) {
     try {
-      await processChannel(client, channel.guild_id, channel);
+      await processChannel(client, channel.guild_id, channel, deps);
     } catch (err) {
       console.error(`[youtube] Error processing channel ${channel.channel_name}:`, err?.message || err);
     }
@@ -543,4 +571,18 @@ async function fetchChannelInfo(channelId) {
   return null;
 }
 
-module.exports = { startYoutubeTicker, createSimpleUploadEmbed, fetchChannelInfo, lookupChannelByName, isLiveVideo, isVideoUpload, extractVideoInfo, createLiveEmbed, createUploadEmbed, fetchYouTubeFeed };
+module.exports = {
+  startYoutubeTicker,
+  createSimpleUploadEmbed,
+  fetchChannelInfo,
+  lookupChannelByName,
+  isLiveVideo,
+  isVideoUpload,
+  extractVideoInfo,
+  createLiveEmbed,
+  createUploadEmbed,
+  fetchYouTubeFeed,
+  processChannel,
+  runYoutubeTick,
+  defaultDeps,
+};

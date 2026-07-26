@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
 const {
+  getGuildSettings,
   createReactionRolePanel,
   getReactionRolePanel,
   listReactionRolePanels,
