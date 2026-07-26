@@ -1,6 +1,6 @@
 # Configuration Guide
 
-Configure HeisenXP-Bot for your server's needs using environment variables and in-game commands.
+Configure Boiler Snake for your server's needs using environment variables and in-game commands.
 
 ## Table of Contents
 
@@ -93,7 +93,7 @@ See [Audit Log & Message Log](audit-log.md) for setup and event details.
 
 **Output**:
 ```
-**HeisenXP-Bot Settings**
+**Boiler Snake Settings**
 **XP:** msg=5, reaction=2, voice/min=1
 **Cooldowns:** msg=20s, reaction=10s
 **Decay:** enabled=true, threshold=20 msgs / 7 days, percent=10%

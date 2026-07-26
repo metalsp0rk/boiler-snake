@@ -1,6 +1,6 @@
 # Database Schema
 
-Deep dive into HeisenXP-Bot's SQLite database structure and how data is organized.
+Deep dive into Boiler Snake's SQLite database structure and how data is organized.
 
 ## Overview
 
@@ -9,7 +9,7 @@ The bot uses **SQLite** with **WAL mode** for reliable concurrent access. All da
 ## Database Location
 
 ```
-HeisenXP-Bot/
+boiler-snake/
 ├── xpbot.sqlite          # Main database file
 └── xpbot.sqlite-wal      # Write-ahead log (SQLite WAL mode)
 └── xpbot.sqlite-shm      # Shared memory file (WAL mode)

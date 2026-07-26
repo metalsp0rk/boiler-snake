@@ -4,7 +4,7 @@ Control where slash commands can be used within your Discord guild.
 
 ## Overview
 
-By default, all HeisenXP-Bot commands are accessible anywhere in the server. You can restrict this to specific channels using `/setcommandchannel`.
+By default, all Boiler Snake commands are accessible anywhere in the server. You can restrict this to specific channels using `/setcommandchannel`.
 
 ### Why Use Command Restrictions?
 

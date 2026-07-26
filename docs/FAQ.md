@@ -1,10 +1,10 @@
 # Frequently Asked Questions (FAQ)
 
-Common questions and answers for HeisenXP-Bot users and administrators.
+Common questions and answers for Boiler Snake users and administrators.
 
 ## General Questions
 
-### Q: What is HeisenXP-Bot?
+### Q: What is Boiler Snake?
 
 **A**: A Discord bot that tracks user XP through messages, reactions, and voice activity, with automatic role management based on levels. It's designed to gamify your server and reward participation.
 
@@ -38,7 +38,7 @@ If database migrations are included in the update:
 
 ### Q: Can I use this bot across multiple servers?
 
-**A**: Yes! HeisenXP-Bot supports multi-guild operation. Each server has its own:
+**A**: Yes! Boiler Snake supports multi-guild operation. Each server has its own:
 
 - XP data (separate user databases)
 - Settings (XP rates, decay configs, etc.)
@@ -276,7 +276,7 @@ const FONT_STACK = [
 
 **A**: All data is in a SQLite database file:
 ```
-HeisenXP-Bot/xpbot.sqlite
+boiler-snake/xpbot.sqlite
 ```
 
 This single file contains:
@@ -320,7 +320,7 @@ crontab -e
 
 **Alternatives**:
 - Use one bot instance with multiple servers (supported natively)
-- Deploy separate HeisenXP-Bot installations in different directories with separate `.env` and database files
+- Deploy separate Boiler Snake installations in different directories with separate `.env` and database files
 
 ---
 

@@ -1,6 +1,6 @@
 services:
   bot:
-    image: ghcr.io/metalsp0rk/heisenxp-bot:latest
+    image: ghcr.io/metalsp0rk/boiler-snake:latest
     build: .
     env_file: .env
     environment:

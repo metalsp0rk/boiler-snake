@@ -39,7 +39,7 @@ function sanitizeDisplayName(name) {
 }
 
 /**
- * Render a leaderboard as a PNG buffer (dark theme + HeisenXP colors).
+ * Render a leaderboard as a PNG buffer (dark theme + Boiler Snake colors).
  *
  * entries: Array<{ rank: number, name: string, xp: number, level: number }>
  * factor: number (XP curve factor, default 100). XP needed for level L is L^2 * factor.
@@ -274,7 +274,7 @@ function renderLeaderboardPng(entries, factor = 100) {
     ctx.font = `800 34px ${FONT_STACK}`;
     ctx.textBaseline = "top";
     ctx.textAlign = "left";
-    ctx.fillText("HeisenXP Leaderboard", headerX + 28, headerY + 22);
+    ctx.fillText("Boiler Snake Leaderboard", headerX + 28, headerY + 22);
 
     // Subtitle
     ctx.fillStyle = subtext;

@@ -539,7 +539,7 @@ async function registerCommandsOnAllGuilds(client) {
 }
 
 client.once(Events.ClientReady, async () => {
-  console.log(`HeisenXP-Bot logged in as ${client.user.tag}`);
+  console.log(`Boiler Snake logged in as ${client.user.tag}`);
 
   // Uncomment this to update commands
   // await registerCommandsOnAllGuilds(client);
@@ -829,7 +829,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       });
 
       const png = renderLeaderboardPng(entries, factor);
-      const file = new AttachmentBuilder(png, { name: "heisenxp-leaderboard.png" });
+      const file = new AttachmentBuilder(png, { name: "boiler-snake-leaderboard.png" });
 
       await interaction.reply({
         content: "**Leaderboard (Top 10)**",
@@ -867,7 +867,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       await interaction.reply({
         content:
-          `**HeisenXP-Bot Settings**\n` +
+          `**Boiler Snake Settings**\n` +
           `**XP:** msg=${settings.msg_xp}, reaction=${settings.reaction_xp}, voice/min=${settings.voice_xp_per_min}\n` +
           `**Cooldowns:** msg=${settings.msg_cooldown_sec}s, reaction=${settings.reaction_cooldown_sec}s\n` +
           `**Decay:** enabled=${!!settings.decay_enabled}, threshold=${settings.decay_min_messages} msgs / ${settings.decay_window_days} days, percent=${Math.round((Number(settings.decay_percent) || 0) * 100)}%\n` +

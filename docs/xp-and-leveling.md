@@ -1,6 +1,6 @@
 # XP and Leveling System
 
-The core feature of HeisenXP-Bot is its customizable XP and leveling system, which奖励s participation across multiple activity types.
+The core feature of Boiler Snake is its customizable XP and leveling system, which奖励s participation across multiple activity types.
 
 ## XP Sources
 

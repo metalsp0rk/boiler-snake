@@ -1,8 +1,8 @@
 {
-  "name": "heisenxp-bot",
+  "name": "boiler-snake",
   "version": "1.2.0",
   "license": "MIT",
-  "description": "HeisenXP-Bot: XP + leveling + roles with per-guild settings.",
+  "description": "Boiler Snake: XP + leveling + roles with per-guild settings.",
   "main": "src/index.js",
   "engines": {
     "node": ">=18"
@@ -19,5 +19,13 @@
     "dotenv": "^16.4.5",
     "node-cron": "^3.0.3",
     "rss-parser": "^3.13.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/metalsp0rk/boiler-snake.git"
+  },
+  "bugs": {
+    "url": "https://github.com/metalsp0rk/boiler-snake/issues"
+  },
+  "homepage": "https://github.com/metalsp0rk/boiler-snake#readme"
 }

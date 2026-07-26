@@ -4,7 +4,7 @@ Staff-facing Discord channel logs for moderation and role activity.
 
 ## Overview
 
-HeisenXP-Bot can post rich embeds to **two independently configured channels**:
+Boiler Snake can post rich embeds to **two independently configured channels**:
 
 | Stream | Setting | Events |
 |--------|---------|--------|

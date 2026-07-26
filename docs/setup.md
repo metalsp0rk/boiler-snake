@@ -1,6 +1,6 @@
 # Setup and Installation
 
-Step-by-step guide to get HeisenXP-Bot running on your server.
+Step-by-step guide to get Boiler Snake running on your server.
 
 ## Prerequisites
 
@@ -29,8 +29,8 @@ Copy your credentials to `.env` file (see Step 4):
 
 ```bash
 # Clone the repository
-git clone https://github.com/zombienerd/HeisenXP-Bot.git
-cd HeisenXP-Bot
+git clone https://github.com/metalsp0rk/boiler-snake.git
+cd boiler-snake
 
 # Install dependencies
 npm install
@@ -129,7 +129,7 @@ docker compose up -d --build
 docker compose run --rm bot node src/register-commands.js
 ```
 
-SQLite is stored on the `bot-data` volume at `/data/xpbot.sqlite`. Published images: `ghcr.io/metalsp0rk/heisenxp-bot`.
+SQLite is stored on the `bot-data` volume at `/data/xpbot.sqlite`. Published images: `ghcr.io/metalsp0rk/boiler-snake`.
 
 ## Step 6: Configure Bot Role Position
 
@@ -169,7 +169,7 @@ docker compose up -d
 
 You should see:
 ```
-HeisenXP-Bot logged in as YourBot#1234
+Boiler Snake logged in as YourBot#1234
 ```
 
 ## First-Time Setup Wizard
@@ -221,7 +221,7 @@ Add to crontab:
 crontab -e
 
 # Add line for daily 12:00 AM backup
-0 0 * * * cp /path/to/HeisenXP-Bot/xpbot.sqlite /backup/location/xpbot-$(date +\%Y\%m\%d).sqlite
+0 0 * * * cp /path/to/boiler-snake/xpbot.sqlite /backup/location/xpbot-$(date +\%Y\%m\%d).sqlite
 ```
 
 ### Restore from Backup

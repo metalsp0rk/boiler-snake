@@ -1,6 +1,6 @@
 # Commands Reference
 
-Complete guide to all HeisenXP-Bot slash commands, organized by permission level.
+Complete guide to all Boiler Snake slash commands, organized by permission level.
 
 ## Table of Contents
 
@@ -44,7 +44,7 @@ Display the top 10 users by XP with a generated PNG leaderboard.
 **Options**:
 - `limit`: Maximum number of users to query (max: 20)
 
-**Response**: PNG image attachment titled "heisenxp-leaderboard.png"
+**Response**: PNG image attachment titled "boiler-snake-leaderboard.png"
 
 ---
 
@@ -63,7 +63,7 @@ Display current XP rates, decay settings, role mappings, and allowed command cha
 
 **Response**:
 ```
-**HeisenXP-Bot Settings**
+**Boiler Snake Settings**
 **XP:** msg=5, reaction=2, voice/min=1
 **Cooldowns:** msg=20s, reaction=10s
 **Decay:** enabled=true, threshold=20 msgs / 7 days, percent=10%

@@ -1,10 +1,10 @@
-# HeisenXP-Bot Documentation
+# Boiler Snake Documentation
 
 A Discord bot for tracking user XP, levels, roles, and more with extensive per-guild configuration.
 
 ## Overview
 
-HeisenXP-Bot is a feature-rich Discord bot that helps you gamify your server with:
+Boiler Snake is a feature-rich Discord bot that helps you gamify your server with:
 
 - **Multi-source XP tracking**: Messages, reactions, and voice channel activity
 - **Customizable leveling system**: Configurable XP formulas and thresholds

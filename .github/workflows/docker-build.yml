@@ -30,6 +30,6 @@ jobs:
           context: .
           push: false
           load: true
-          tags: heisenxp-bot:pr
+          tags: boiler-snake:pr
           cache-from: type=gha
           cache-to: type=gha,mode=max

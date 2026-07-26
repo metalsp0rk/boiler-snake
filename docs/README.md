@@ -1,6 +1,6 @@
-# HeisenXP-Bot Documentation Index
+# Boiler Snake Documentation Index
 
-Welcome to the comprehensive documentation for HeisenXP-Bot.
+Welcome to the comprehensive documentation for Boiler Snake.
 
 ## 📚 Documentation Structure
 
@@ -91,7 +91,7 @@ Welcome to the comprehensive documentation for HeisenXP-Bot.
 
 ## 🔍 Quick Navigation by Use Case
 
-**New to HeisenXP-Bot?**
+**New to Boiler Snake?**
 → Start with [Setup Guide](setup.md)
 
 **Want to configure XP rates?**
@@ -122,7 +122,7 @@ Welcome to the comprehensive documentation for HeisenXP-Bot.
 
 - [README.md](../README.md) - Project overview and installation summary
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; staff exempt roles
-- [GitHub Repository](https://github.com/zombienerd/HeisenXP-Bot)
+- [GitHub Repository](https://github.com/metalsp0rk/boiler-snake)
 
 ---
 

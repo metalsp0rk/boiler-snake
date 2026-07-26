@@ -9,7 +9,7 @@ The leaderboard system generates professional-grade images using the `@napi-rs/c
 ## Features
 
 - **Top 10 display**: Shows best performers in a guild
-- **Dark theme**: Modern blue gradient background matching HeisenXP branding
+- **Dark theme**: Modern blue gradient background matching Boiler Snake branding
 - **Gradient bars**: Visual XP progression with cyan/green colors
 - **Trophy icons**: Gold/silver/bronze for top 3
 - **Level integration**: Shows level alongside raw XP

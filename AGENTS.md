@@ -1,4 +1,4 @@
-# HeisenXP-Bot AGENTS.md
+# Boiler Snake AGENTS.md
 
 ## Quick Start
 
@@ -18,7 +18,7 @@ docker compose run --rm bot node src/register-commands.js
 - **Database**: SQLite (`xpbot.sqlite`). Default: project root. Override with `DATA_DIR` (dir) or `DB_PATH` (full file path). Docker compose uses `DATA_DIR=/data` + named volume.
 - **Environment**: `.env` is ignored. Required values: `DISCORD_TOKEN`, `CLIENT_ID`. Optional: `DEV_GUILD_ID` for instant command registration.
 - **Discord Intents**: Enable "Message Content Intent" in Developer Portal for reliable message tracking.
-- **Releases**: Conventional Commits + release-please on `main` → GitHub Release + GHCR image (`ghcr.io/metalsp0rk/heisenxp-bot`).
+- **Releases**: Conventional Commits + release-please on `main` → GitHub Release + GHCR image (`ghcr.io/metalsp0rk/boiler-snake`).
 
 ## Key Commands
 

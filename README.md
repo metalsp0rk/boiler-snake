@@ -1,4 +1,4 @@
-# Heisen-XP Bot (discord.js v14)
+# Boiler Snake (discord.js v14)
 # MIT LICENSE
 
 Per-guild configurable XP/level bot that tracks:
@@ -63,7 +63,7 @@ docker compose up -d
 docker compose run --rm bot node src/register-commands.js
 ```
 
-Image: `ghcr.io/metalsp0rk/heisenxp-bot` (tags: `latest`, `vX.Y.Z`).
+Image: `ghcr.io/metalsp0rk/boiler-snake` (tags: `latest`, `vX.Y.Z`).
 
 ### Database path
 
@@ -79,7 +79,7 @@ By default the DB is `xpbot.sqlite` in the project root. Override with:
 - Enable the **Message Content Intent** if you want `messageCreate` to fire reliably for all message events.
   - Without it, the bot may not receive message content and (depending on gateway/intents configuration) may not receive message events as expected.
 - Create Bot & Token from Discord Developer Portal.  Bot must have the following permissions:
-![Bot Permissions](https://github.com/zombienerd/HeisenXP-Bot/blob/main/bot_settings.png "Bot Permissions")
+![Bot Permissions](https://github.com/metalsp0rk/boiler-snake/blob/main/bot_settings.png "Bot Permissions")
 
 ## Commands
 
@@ -110,7 +110,7 @@ cp xpbot.sqlite xpbot.sqlite.backup
 
 # Docker volume backup example
 docker compose stop bot
-docker run --rm -v heisenxp-bot_bot-data:/data -v "$(pwd)":/backup alpine \
+docker run --rm -v boiler-snake_bot-data:/data -v "$(pwd)":/backup alpine \
   cp /data/xpbot.sqlite /backup/xpbot-$(date +%Y%m%d).sqlite
 docker compose start bot
 

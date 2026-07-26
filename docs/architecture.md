@@ -1,10 +1,10 @@
 # Architecture Overview
 
-Technical deep dive into HeisenXP-Bot's architecture, for developers and contributors.
+Technical deep dive into Boiler Snake's architecture, for developers and contributors.
 
 ## Overview
 
-HeisenXP-Bot is a [Discord.js](https://discord.js.org/) v14 bot with SQLite database backend. The codebase emphasizes modularity, safety, and zero-dependency configuration for self-hosting.
+Boiler Snake is a [Discord.js](https://discord.js.org/) v14 bot with SQLite database backend. The codebase emphasizes modularity, safety, and zero-dependency configuration for self-hosting.
 
 ---
 
