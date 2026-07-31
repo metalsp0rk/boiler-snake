@@ -33,6 +33,19 @@ async function handleInteraction(interaction, ctx) {
     return;
   }
 
+  if (interaction.isModalSubmit()) {
+    if (!interaction.guild) return;
+    try {
+      const fn = registry.getModalHandler(interaction.customId);
+      if (!fn) return;
+      await fn(interaction, ctx);
+    } catch (err) {
+      console.error("Modal submit handler error:", err);
+      await safeErrorReply(interaction);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.guild) return;
 

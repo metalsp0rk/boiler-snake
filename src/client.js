@@ -18,6 +18,7 @@ function createClient() {
       GatewayIntentBits.GuildMessageReactions,
       GatewayIntentBits.GuildModeration, // bans
       GatewayIntentBits.GuildMembers, // kicks (privileged — enable Server Members Intent)
+      GatewayIntentBits.GuildScheduledEvents, // event reminder interest sync
     ],
     partials: [
       Partials.Message,

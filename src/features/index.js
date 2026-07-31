@@ -12,4 +12,5 @@ module.exports = [
   require("./youtube"),
   require("./honeypot"),
   require("./reactionRoles"),
+  require("./eventReminders"),
 ];

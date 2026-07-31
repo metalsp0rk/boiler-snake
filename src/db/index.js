@@ -21,6 +21,7 @@ const commandChannels = require("./repositories/commandChannels");
 const youtube = require("./repositories/youtube");
 const honeypot = require("./repositories/honeypot");
 const reactionRoles = require("./repositories/reactionRoles");
+const eventReminders = require("./repositories/eventReminders");
 
 module.exports = {
   db,
@@ -103,4 +104,24 @@ module.exports = {
   getReactionRoleOption: reactionRoles.getReactionRoleOption,
   countReactionRoleOptions: reactionRoles.countReactionRoleOptions,
   listReactionRoleLevelRequirements: reactionRoles.listReactionRoleLevelRequirements,
+
+  // scheduled event reminders
+  getEventReminderSettings: eventReminders.getEventReminderSettings,
+  createEventReminderConfig: eventReminders.createEventReminderConfig,
+  getEventReminderConfigById: eventReminders.getEventReminderConfigById,
+  getConfigByScheduledEventId: eventReminders.getConfigByScheduledEventId,
+  getAnyConfigByScheduledEventId: eventReminders.getAnyConfigByScheduledEventId,
+  getConfigByShortname: eventReminders.getConfigByShortname,
+  listEventReminderConfigs: eventReminders.listEventReminderConfigs,
+  listAllActiveEventReminderConfigs: eventReminders.listAllActiveEventReminderConfigs,
+  updateEventReminderConfig: eventReminders.updateEventReminderConfig,
+  clearEventReminderConfig: eventReminders.clearEventReminderConfig,
+  clearEventReminderConfigById: eventReminders.clearEventReminderConfigById,
+  setOffsetFireTimes: eventReminders.setOffsetFireTimes,
+  claimDueReminders: eventReminders.claimDueReminders,
+  markReminderSent: eventReminders.markReminderSent,
+  isEventReminderOptedOut: eventReminders.isEventReminderOptedOut,
+  setEventReminderOptOut: eventReminders.setEventReminderOptOut,
+  clearEventReminderOptOut: eventReminders.clearEventReminderOptOut,
+  listActiveEventReminderRoleIds: eventReminders.listActiveEventReminderRoleIds,
 };

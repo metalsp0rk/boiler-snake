@@ -13,6 +13,7 @@ const migrations = [
   require("./migrations/003_youtube_composite_pk"),
   require("./migrations/004_youtube_and_honeypot_columns"),
   require("./migrations/005_clamp_bad_xp"),
+  require("./migrations/006_event_reminders"),
 ];
 
 const helpers = {

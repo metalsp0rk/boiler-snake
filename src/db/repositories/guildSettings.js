@@ -36,6 +36,7 @@ function getGuildSettings(guildId) {
       youtube_upload_role_id: null,
       audit_log_channel_id: null,
       message_log_channel_id: null,
+      event_reminder_channel_id: null,
       updated_at: now(),
     };
   }
@@ -61,6 +62,7 @@ function updateGuildSettings(guildId, patch) {
     "youtube_upload_role_id",
     "audit_log_channel_id",
     "message_log_channel_id",
+    "event_reminder_channel_id",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
