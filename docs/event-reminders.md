@@ -50,17 +50,17 @@ stateDiagram-v2
 sequenceDiagram
   participant Staff
   participant Bot
-  participant Discord as Discord API
+  participant Discord as DiscordAPI
   participant Members
-  participant Role as event-shortname
+  participant Role as EventRole
 
   Staff->>Discord: Create one-time scheduled event
-  Note over Discord: status Scheduled; no role yet
+  Note over Discord: status is Scheduled and no role yet
 
   Staff->>Bot: eventreminder create plus modal
   Bot->>Role: Create role
   Bot->>Discord: Fetch Interested users
-  Bot->>Role: Assign to Interested, skip opt-outs
+  Bot->>Role: Assign to Interested skip opt-outs
   Note over Bot: Config and offsets saved in SQLite
 
   loop While event is Scheduled
@@ -125,15 +125,15 @@ stateDiagram-v2
 sequenceDiagram
   participant Staff
   participant Bot
-  participant Discord as Discord API
-  participant Role as event-shortname
+  participant Discord as DiscordAPI
+  participant Role as EventRole
 
   Staff->>Discord: Create recurring scheduled event
   Note over Discord: Occurrence 1 Scheduled
 
   Staff->>Bot: eventreminder create for Occ1 id
   Bot->>Role: Create role and sync Interested
-  Note over Bot: SQLite config.scheduled_event_id equals Occ1
+  Note over Bot: SQLite config uses Occ1 event id
 
   loop Countdown to Occ1
     Bot->>Bot: cron fires due offsets
@@ -151,7 +151,7 @@ sequenceDiagram
   Note over Bot: No config for Occ2 yet
 
   Staff->>Bot: eventreminder create for Occ2 id
-  Bot->>Role: Create event-shortname again
+  Bot->>Role: Create EventRole again
   Note over Bot: Fresh config and offsets for Occ2
 
   Discord->>Discord: Occ2 becomes Completed
