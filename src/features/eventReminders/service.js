@@ -20,7 +20,7 @@ const MAX_OFFSETS = 8;
 const MAX_OFFSET_MINUTES = 30 * 24 * 60; // 30 days
 const ROLE_PREFIX = "event-";
 const DEFAULT_MESSAGE =
-  "Reminder: **{event}** starts {starts_in} ({starts_at}). {role}";
+  "Reminder: **{event}** starts {starts_in} ({starts_at}) in {location}. {role}";
 
 /** Preset offset options for the create/edit modal (minutes → label). */
 const OFFSET_PRESETS = [
@@ -194,12 +194,20 @@ function formatEventLocation(scheduledEvent) {
 function renderReminderMessage(template, ctx) {
   const startUnix = Math.floor(ctx.startMs / 1000);
   const body = (template && String(template).trim()) || DEFAULT_MESSAGE;
-  return body
+  let out = body
     .replaceAll("{event}", ctx.eventName || "Event")
     .replaceAll("{starts_in}", `<t:${startUnix}:R>`)
     .replaceAll("{starts_at}", `<t:${startUnix}:F>`)
     .replaceAll("{role}", `<@&${ctx.roleId}>`)
     .replaceAll("{location}", ctx.location ?? "");
+
+  // Drop awkward " in " when location is empty (default template and similar).
+  out = out
+    .replace(/\s+in\s+(?=[.!?])/g, "")
+    .replace(/\s+in\s+$/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+  return out;
 }
 
 /**

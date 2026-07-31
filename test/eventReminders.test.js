@@ -71,10 +71,27 @@ describe("eventReminders service helpers", () => {
       eventName: "Raid",
       startMs,
       roleId: "99",
+      location: "<#42>",
     });
     assert.match(msg, /Raid/);
     assert.match(msg, /<@&99>/);
+    assert.match(msg, /in <#42>/);
     assert.match(msg, new RegExp(`<t:${Math.floor(startMs / 1000)}:R>`));
+  });
+
+  it("default template omits empty location clause", () => {
+    const startMs = 1_700_000_000_000;
+    const msg = renderReminderMessage(null, {
+      eventName: "Raid",
+      startMs,
+      roleId: "99",
+      location: "",
+    });
+    assert.equal(
+      msg,
+      `Reminder: **Raid** starts <t:${Math.floor(startMs / 1000)}:R> (<t:${Math.floor(startMs / 1000)}:F>). <@&99>`
+    );
+    assert.doesNotMatch(msg, /\bin\b/);
   });
 
   it("formatEventLocation mentions channel-hosted events", () => {

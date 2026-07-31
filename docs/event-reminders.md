@@ -197,6 +197,10 @@ Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and abili
 
 **`{location}`:** if the scheduled event is hosted in a voice/stage channel, expands to a channel mention (`<#id>`). For external events, expands to the external location text. Empty when unset.
 
+**Default message:**  
+`Reminder: **{event}** starts {starts_in} ({starts_at}) in {location}. {role}`  
+When `{location}` is empty, the trailing ` in ` clause is dropped automatically.
+
 Offsets already in the past relative to the event start are skipped. Max **8** offsets; max lookback **30 days**.
 
 ## Opt-out
