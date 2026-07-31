@@ -144,8 +144,11 @@ function createGuild(opts = {}) {
   const id = opts.id || IDS.guild;
   const membersById = new Map();
   const channelsById = new Map();
+  const rolesById = new Map();
+  const scheduledEventsById = new Map();
   const bans = [];
   const voiceStates = new Map();
+  let roleSeq = 1;
 
   const guild = {
     id,
@@ -179,6 +182,39 @@ function createGuild(opts = {}) {
         return null;
       },
     },
+    roles: {
+      cache: rolesById,
+      create: async (data) => {
+        const roleId = data.id || `role-${roleSeq++}`;
+        const role = {
+          id: roleId,
+          name: data.name || roleId,
+          mentionable: !!data.mentionable,
+          hoist: !!data.hoist,
+          guild,
+          members: new Map(),
+          setName: async (name) => {
+            role.name = name;
+            return role;
+          },
+          delete: async () => {
+            rolesById.delete(roleId);
+          },
+        };
+        rolesById.set(roleId, role);
+        return role;
+      },
+      fetch: async (roleId) => rolesById.get(roleId) || null,
+    },
+    scheduledEvents: {
+      cache: scheduledEventsById,
+      fetch: async (arg) => {
+        if (typeof arg === "string") {
+          return scheduledEventsById.get(arg) || null;
+        }
+        return scheduledEventsById;
+      },
+    },
     voiceStates: {
       cache: voiceStates,
     },
@@ -193,11 +229,56 @@ function createGuild(opts = {}) {
       channelsById.set(channel.id, channel);
       return channel;
     },
+    addScheduledEvent(event) {
+      event.guild = guild;
+      event.guildId = guild.id;
+      scheduledEventsById.set(event.id, event);
+      return event;
+    },
     setVoiceState(userId, state) {
       voiceStates.set(userId, state);
     },
   };
   return guild;
+}
+
+/**
+ * @param {object} opts
+ * @param {object} opts.guild
+ * @param {string} [opts.id]
+ * @param {string} [opts.name]
+ * @param {number} [opts.scheduledStartTimestamp]
+ * @param {number} [opts.status] GuildScheduledEventStatus
+ * @param {string} [opts.creatorId]
+ * @param {string[]} [opts.subscriberIds]
+ */
+function createScheduledEvent(opts) {
+  const guild = opts.guild;
+  const id = opts.id || `evt-${Date.now()}`;
+  const subscriberIds = opts.subscriberIds ? [...opts.subscriberIds] : [];
+  const subscribers = new Map();
+  for (const uid of subscriberIds) {
+    subscribers.set(uid, { user: { id: uid } });
+  }
+
+  const event = {
+    id,
+    name: opts.name || "Test Event",
+    guild,
+    guildId: guild?.id,
+    creatorId: opts.creatorId || null,
+    status: opts.status != null ? opts.status : 1, // Scheduled
+    scheduledStartTimestamp:
+      opts.scheduledStartTimestamp != null
+        ? opts.scheduledStartTimestamp
+        : Date.now() + 3 * 24 * 60 * 60 * 1000,
+    fetchSubscribers: async () => subscribers,
+    setSubscribers(ids) {
+      subscribers.clear();
+      for (const uid of ids) subscribers.set(uid, { user: { id: uid } });
+    },
+  };
+  return event;
 }
 
 /**
@@ -332,6 +413,8 @@ function createChatInputInteraction(opts) {
     },
   };
 
+  const modals = [];
+
   const interaction = {
     commandName: opts.commandName,
     guild,
@@ -345,8 +428,10 @@ function createChatInputInteraction(opts) {
     replies,
     followUps,
     responds,
+    modals,
     isChatInputCommand: () => !isAutocomplete,
     isAutocomplete: () => isAutocomplete,
+    isModalSubmit: () => false,
     options: {
       getSubcommand: (required = true) => {
         if (subcommand == null && required) throw new Error("No subcommand");
@@ -414,6 +499,11 @@ function createChatInputInteraction(opts) {
       replies.push({ ...payload, _edited: true });
       return payload;
     },
+    showModal: async (modal) => {
+      modals.push(modal);
+      interaction.replied = true;
+      return modal;
+    },
     respond: async (choices) => {
       responds.push(choices);
     },
@@ -422,6 +512,102 @@ function createChatInputInteraction(opts) {
     },
   };
 
+  return interaction;
+}
+
+/**
+ * Build a ModalSubmitInteraction-like object.
+ *
+ * @param {object} opts
+ * @param {string} opts.customId
+ * @param {object} opts.guild
+ * @param {object} opts.user
+ * @param {object} [opts.member]
+ * @param {object} [opts.fields] map customId → value(s)
+ *   text: string, stringSelect: string[], channelSelect: Map|object
+ * @param {boolean} [opts.admin]
+ */
+function createModalSubmitInteraction(opts) {
+  const guild = opts.guild ?? null;
+  const user = opts.user;
+  const member = opts.member;
+  const fieldMap = opts.fields || {};
+  const replies = [];
+  let admin =
+    opts.admin != null
+      ? opts.admin
+      : member
+        ? member.permissions.has(PermissionFlagsBits.ManageGuild)
+        : false;
+
+  const memberPermissions = {
+    has: (flag) => {
+      if (admin && flag === PermissionFlagsBits.ManageGuild) return true;
+      if (member?.permissions) return member.permissions.has(flag);
+      return false;
+    },
+  };
+
+  const fields = {
+    getTextInputValue: (id) => {
+      const v = fieldMap[id];
+      if (v == null) throw new Error(`Missing text field ${id}`);
+      return typeof v === "string" ? v : String(v.value ?? "");
+    },
+    getStringSelectValues: (id) => {
+      const v = fieldMap[id];
+      if (v == null) throw new Error(`Missing select ${id}`);
+      if (Array.isArray(v)) return v;
+      return v.values || [];
+    },
+    getSelectedChannels: (id, required = false) => {
+      const v = fieldMap[id];
+      if (v == null) {
+        if (required) throw new Error(`Missing channels ${id}`);
+        return null;
+      }
+      if (v instanceof Map) return v;
+      if (v && v.channels) return v.channels;
+      if (v && v.id) {
+        const m = new Map([[v.id, v]]);
+        m.first = () => v;
+        return m;
+      }
+      return null;
+    },
+  };
+
+  const interaction = {
+    customId: opts.customId,
+    guild,
+    guildId: guild?.id ?? null,
+    user,
+    member: member || null,
+    memberPermissions,
+    fields,
+    client: opts.client || null,
+    replied: false,
+    deferred: false,
+    replies,
+    isChatInputCommand: () => false,
+    isAutocomplete: () => false,
+    isModalSubmit: () => true,
+    reply: async (payload) => {
+      interaction.replied = true;
+      replies.push(payload);
+      return payload;
+    },
+    deferReply: async () => {
+      interaction.deferred = true;
+    },
+    editReply: async (payload) => {
+      replies.push({ ...payload, _edited: true });
+      return payload;
+    },
+    setAdmin(isAdmin) {
+      admin = isAdmin;
+    },
+  };
   return interaction;
 }
 
@@ -451,10 +637,12 @@ module.exports = {
   createMember,
   createTextChannel,
   createGuild,
+  createScheduledEvent,
   createClient,
   createMessage,
   createReaction,
   createChatInputInteraction,
+  createModalSubmitInteraction,
   lastReplyContent,
   lastReplyEphemeral,
   MessageFlags,
