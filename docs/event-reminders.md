@@ -20,25 +20,22 @@ Configs are keyed by Discord’s `scheduled_event_id`. The bot-managed role `eve
 stateDiagram-v2
   direction TB
 
-  [*] --> NoRole: Discord event created\n(status: Scheduled)
+  [*] --> NoRole: Discord event created<br>(status: Scheduled)
 
-  NoRole --> RoleExists: /eventreminder create\ncreate role event-shortname\ngrant Interested ∩ ¬opt-out
+  NoRole --> RoleExists: /eventreminder create<br>create role event-shortname<br>grant Interested ∩ ¬opt-out
 
   state RoleExists {
     [*] --> Syncing
-    Syncing --> Syncing: Interest add → grant role\nInterest remove → strip role\noptout strips / optin re-grants\n/eventreminder sync
-    Syncing --> Firing: cron every 60s\nfire_at ≤ now → one message\nmention @event-shortname
+    Syncing --> Syncing: Interest add → grant role<br>Interest remove → strip role<br>optout strips / optin re-grants<br>/eventreminder sync
+    Syncing --> Firing: cron every 60s<br>fire_at ≤ now → one message<br>mention @event-shortname
     Firing --> Syncing: more unsent offsets
-    Firing --> WaitingEnd: all offsets sent\nor past
+    Firing --> WaitingEnd: all offsets sent<br>or past
     Syncing --> WaitingEnd: event start reached
   }
 
-  RoleExists --> NoRole: Event → Active → Completed\nOR Scheduled → Canceled\nOR event deleted\nOR /eventreminder clear\nOR safety cleanup after start
+  RoleExists --> NoRole: Event → Active → Completed<br>OR Scheduled → Canceled<br>OR event deleted<br>OR /eventreminder clear<br>OR safety cleanup after start
   note right of RoleExists
-    Optional path while Scheduled:
-    start time change → recompute
-    unsent fire_at only
-    (role kept)
+    Optional path while Scheduled:<br>start time change → recompute<br>unsent fire_at only<br>(role kept)
   end note
 
   NoRole --> [*]: shortname free again
@@ -92,31 +89,29 @@ Discord can attach a **recurrence rule** to a scheduled event. The bot still bin
 stateDiagram-v2
   direction TB
 
-  [*] --> SeriesExists: Staff creates recurring\nDiscord scheduled event
+  [*] --> SeriesExists: Staff creates recurring<br>Discord scheduled event
 
-  SeriesExists --> OccN_NoRole: Occurrence N visible\n(status: Scheduled)
+  SeriesExists --> OccN_NoRole: Occurrence N visible<br>(status: Scheduled)
 
-  OccN_NoRole --> OccN_Role: /eventreminder create\non this occurrence's id\ncreate event-shortname
+  OccN_NoRole --> OccN_Role: /eventreminder create<br>on this occurrence's id<br>create event-shortname
 
   state OccN_Role {
     [*] --> Live
-    Live --> Live: Interest sync\ncron reminder fires\nreschedule if start moves
+    Live --> Live: Interest sync<br>cron reminder fires<br>reschedule if start moves
   }
 
-  OccN_Role --> OccN_Cleaned: Occurrence N ends\n(Completed / Canceled / Delete)\nor /clear or safety cleanup
+  OccN_Role --> OccN_Cleaned: Occurrence N ends<br>(Completed / Canceled / Delete)<br>or /clear or safety cleanup
   note right of OccN_Cleaned
-    Role deleted
-    Config for that event id deleted
-    shortname freed
+    Role deleted<br>Config for that event id deleted<br>shortname freed
   end note
 
-  OccN_Cleaned --> OccN1_NoRole: Discord surfaces next\noccurrence (often new or\nreset scheduled_event identity)
+  OccN_Cleaned --> OccN1_NoRole: Discord surfaces next<br>occurrence (often new or<br>reset scheduled_event identity)
 
-  OccN1_NoRole --> OccN1_Role: Staff must run\n/eventreminder create again\n(new role for next cycle)
-  OccN1_Role --> OccN1_Cleaned: Same cleanup path\nas occurrence N
+  OccN1_NoRole --> OccN1_Role: Staff must run<br>/eventreminder create again<br>(new role for next cycle)
+  OccN1_Role --> OccN1_Cleaned: Same cleanup path<br>as occurrence N
   OccN1_Cleaned --> OccN1_NoRole: Further occurrences…
 
-  OccN1_NoRole --> [*]: Series ends or\nno further create
+  OccN1_NoRole --> [*]: Series ends or<br>no further create
 ```
 
 **Timeline view (recurring, two occurrences):**
