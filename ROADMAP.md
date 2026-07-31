@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, scheduled-event reminders, and (planned) help tickets and Twitch stream notifications. This roadmap documents **planned** features and their implementation stages.
+Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, scheduled-event reminders, and (planned) a guild-wide staff-role admin gate, help tickets, Twitch stream notifications, staff notes, and user warnings. This roadmap documents **planned** features and their implementation stages.
 
-**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders.
+**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles (incl. exempt-role list to be generalized), scheduled event reminders.
 
 ---
 
@@ -24,18 +24,17 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 
 | Command | Description |
 |---------|-------------|
-| `/ticket setstaff <role>` | Role that counts as staff for tickets (access + staff commands) |
-| `/ticket unsetstaff` | Clear staff role (falls back to members with `ManageGuild`) |
 | `/ticket setcategory <category>` | Category where ticket channels are created |
 | `/ticket setarchive <channel>` | Channel that receives close-summary embeds + transcript links (staff-only channel recommended) |
 | `/ticket setratelimit <minutes>` | Min minutes between self-created tickets per user (default **60** = 1/hour). `0` = disable |
-| `/ticket settings` | Show current ticket configuration |
+| `/ticket settings` | Show current ticket configuration (incl. which guild **staff roles** apply) |
+
+**Staff access** for ticket commands and open-ticket channel overwrites comes from the guild-wide [staff roles](#4-guild-staff-roles-admin-gate) list — **not** a ticket-only role. Configure with `/staff role add|remove|list`.
 
 **Stored in `guild_settings`:**
 
 | Column | Purpose |
 |--------|---------|
-| `ticket_staff_role` | Optional staff role ID |
 | `ticket_category_id` | Parent category for open tickets |
 | `ticket_archive_channel_id` | Staff-visible channel for archive posts |
 | `ticket_rate_limit_minutes` | Cooldown for member self-create; default `60` |
@@ -77,10 +76,10 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 |---------|--------|
 | `@everyone` | Deny `ViewChannel` |
 | Ticket **members** (creator + users added via `/ticket adduser`) | Allow view, send, attach, history; deny manage messages |
-| **Staff role** (or ManageGuild holders if role unset—prefer explicit role) | Full staff access (view, send, manage messages, etc.) |
+| **Each guild staff role** (from `staff_roles` / generalized honeypot exempt list) | Full staff access (view, send, manage messages, etc.) |
 | Bot | Full channel management |
 
-Any staff with the role can join and help.
+Any member with a configured staff role (or ManageGuild for commands) can help. If **no** staff roles are configured, only ManageGuild holders pass the command gate; channel overwrites still need at least one staff role for non-admin staff to see tickets—admins should run `/staff role add` first.
 
 #### Sensitive ticket
 
@@ -100,12 +99,12 @@ Everyone else, including other staff-role members, **cannot** view the channel.
 | `/ticket addstaff <user>` | Allow-list another staff user on this ticket (especially useful when sensitive) |
 | `/ticket removestaff <user>` | Remove a named staff allow-list entry (cannot remove last owner without transfer) |
 | `/ticket sensitive` | Mark sensitive and **rewrite overwrites**. Requires a staff owner: if none, **auto-claim** the invoker; if invoker is not owner and owner exists, only owner (or ManageGuild—see below) may flip |
-| `/ticket unsensitive` | Restore default staff-role visibility. **Staff owner** or **ManageGuild** only |
+| `/ticket unsensitive` | Restore default staff-role visibility. **Staff owner** or **staff gate** (ManageGuild / staff role) only |
 
 **Overwrite strategy when sensitive:**
 
 1. Keep `@everyone` deny view.
-2. **Remove allow / explicitly deny** the staff role on this channel.
+2. **Remove allow / explicitly deny** every guild staff role on this channel.
 3. Allow only: each ticket member user + staff owner + each `/ticket addstaff` user + bot.
 4. Set `is_sensitive = 1` on the ticket row.
 
@@ -297,10 +296,10 @@ CREATE TABLE IF NOT EXISTS ticket_messages (
 CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_id);
 
 -- guild_settings:
---   ticket_staff_role TEXT
 --   ticket_category_id TEXT
 --   ticket_archive_channel_id TEXT
 --   ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60
+-- Staff roles for overwrites + command gate: see staff_roles (generalized honeypot_exempt_roles)
 ```
 
 ---
@@ -334,9 +333,9 @@ Channel create is **bot-driven**.
 
 ### 1.9 Implementation Order
 
-1. **Schema + settings** — migrations; setstaff / setcategory / setarchive / setratelimit / settings  
-2. **Create paths** — `/ticket create`, `/ticket for`, overwrites, rate limit  
-3. **Claim / adduser / addstaff / sensitive** — overwrite rewrite  
+1. **Schema + settings** — migrations; setcategory / setarchive / setratelimit / settings (depends on [staff roles](#4-guild-staff-roles-admin-gate) for gate + overwrites)  
+2. **Create paths** — `/ticket create`, `/ticket for`, overwrites for **all** staff roles, rate limit  
+3. **Claim / adduser / addstaff / sensitive** — overwrite rewrite (deny all staff roles when sensitive)  
 4. **Close (sensitive branch)** — metadata + required archive-channel stub + delete channel  
 5. **Close (archive branch)** — fetch, HTML, UUID route HTTP server, archive embed (stats fallback)  
 6. **AI summary** — non-sensitive only; graceful fallback  
@@ -357,7 +356,8 @@ Channel create is **bot-driven**.
 | 7 | **Rate limit:** configurable per guild; **default 60 minutes** (1 self-create per hour); staff `/ticket for` not subject to member cooldown |
 | 8 | **No concurrent open-ticket cap** per user — rate limit only throttles new self-creates |
 | 9 | **Sensitive close stub required** in the archive channel (metadata only; no transcript) |
-| 10 | **`/ticket unsensitive`:** staff **owner** or any member with **ManageGuild** |
+| 10 | **`/ticket unsensitive`:** staff **owner** or anyone passing the [staff/admin gate](#4-guild-staff-roles-admin-gate) |
+| 11 | **No ticket-only staff role** — use guild `staff_roles` (generalized `honeypot_exempt_roles`) for commands + channel overwrites |
 
 ---
 
@@ -803,7 +803,7 @@ CREATE TABLE IF NOT EXISTS twitch_channels (
 | 5 | **Polling Helix** for MVP (matches existing YouTube ticker ops model). EventSub webhooks = post-MVP if we want lower latency / less quota. |
 | 6 | **Dedup by stream id** on offline→live; re-notify only for a new stream session. |
 | 7 | **Separate notify channel** from YouTube (`twitch_notification_channel_id`). |
-| 8 | **Admin gate:** ManageGuild for all Twitch config/subscribe commands. |
+| 8 | **Admin gate:** guild [staff roles](#4-guild-staff-roles-admin-gate) (`requireStaff`) for all Twitch config/subscribe commands (ManageGuild or staff role once §4 ships; ManageGuild-only until then). |
 
 **Still open (non-blocking):**
 
@@ -813,7 +813,563 @@ CREATE TABLE IF NOT EXISTS twitch_channels (
 
 ---
 
-## 4. Database Migration Summary
+## 4. Guild Staff Roles (Admin Gate)
+
+### Purpose
+
+One guild-scoped **multi-role allow-list** that powers the bot’s **admin/staff gate** for every feature that today checks `ManageGuild` (config, honeypot ops, logs, YouTube, tickets, notes, warnings, …).
+
+Built by **generalizing the existing honeypot exempt-role store** (`honeypot_exempt_roles`) — same shape, same “these roles are trusted staff” meaning, expanded purpose. No parallel per-feature staff lists.
+
+### Status
+
+**Planned** — design decisions locked (see [4.8](#48-design-decisions-locked)). **Foundational:** ship before (or in the same milestone as) tickets / notes / warnings so those features never invent their own role tables.
+
+---
+
+### 4.1 Existing data structure (reuse)
+
+Shipped today for honeypot exemption:
+
+```sql
+-- src/db/migrations/001_base_schema.js (current name)
+CREATE TABLE IF NOT EXISTS honeypot_exempt_roles (
+  guild_id TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, role_id)
+);
+```
+
+API already in `src/db/repositories/honeypot.js`:
+
+| Function | Behavior |
+|----------|----------|
+| `addHoneypotExemptRole(guildId, roleId)` | `INSERT OR IGNORE` |
+| `removeHoneypotExemptRole` | Delete row |
+| `listHoneypotExemptRoles` | Ordered by `created_at` |
+| `memberHasHoneypotExemptRole(guildId, memberRoleIds)` | True if **any** member role is listed |
+
+**MVP migration:** rename table → `staff_roles` (data preserved). Keep thin honeypot wrappers or re-export under staff names so honeypot exemption **is** “member has a staff role” — one source of truth.
+
+Optional columns later (not required for rename): `added_by TEXT` — skip for MVP to avoid rewriting every row; `created_at` already records when the role was trusted.
+
+---
+
+### 4.2 Permission model (admin gate)
+
+Replace the narrow check in `src/core/permissions.js`:
+
+```
+// Today
+isAdminOrMod(interaction) ⇔ member has ManageGuild
+
+// Target
+isStaff(interaction) ⇔
+    member has ManageGuild
+    OR member holds any role in staff_roles for this guild
+```
+
+| Helper | Use |
+|--------|-----|
+| `isStaff(interaction \| member, guildId)` | Gate for staff/config commands (successor to `isAdminOrMod`) |
+| `requireStaff(interaction)` | Ephemeral deny if not staff (successor to `requireAdmin`) |
+| `listStaffRoles(guildId)` / `addStaffRole` / `removeStaffRole` | CRUD on `staff_roles` |
+| `memberHasStaffRole(guildId, roleIds)` | Pure DB check (honeypot + tickets) |
+
+**Who may edit the staff role list:** **`ManageGuild` only** (true Discord admins). Staff-role holders get feature access but **cannot** grant or revoke staff roles (no privilege escalation).
+
+**Empty `staff_roles`:** only ManageGuild passes the gate — same practical default as today for command access. Honeypot still has **no** automatic ManageGuild exemption (unchanged product rule): only listed roles skip honeypot bans; admins without a listed role can still be banned if they trip a honeypot. Document clearly.
+
+**Two related but distinct rules:**
+
+| Context | Rule |
+|---------|------|
+| **Slash / bot admin gate** | ManageGuild **or** staff role |
+| **Honeypot ban exemption** | Staff role only (not bare ManageGuild) — preserves current honeypot safety |
+
+---
+
+### 4.3 Commands
+
+| Command | Who | Description |
+|---------|-----|-------------|
+| `/staff role add role:<role>` | ManageGuild | Trust this role as staff (insert into `staff_roles`) |
+| `/staff role remove role:<role>` | ManageGuild | Remove from staff list |
+| `/staff role list` | Staff gate | List trusted staff roles |
+| `/staff settings` | Staff gate | Show staff roles + short “used by: admin gate, honeypot exempt, tickets, …” |
+
+**Honeypot UX compatibility:**
+
+| Approach | Detail |
+|----------|--------|
+| **Preferred** | `/honeypot exempt add\|list\|del` become **aliases** of staff role CRUD (same table). Help text: “Guild staff roles — also used for honeypot exemption.” |
+| **Or** | Deprecate exempt subcommands after `/staff` ships; migrate docs only. |
+
+Do **not** keep two tables.
+
+---
+
+### 4.4 Discord slash visibility
+
+Today many commands set `setDefaultMemberPermissions(ManageGuild)`, which **hides** them from non-admins in the Discord UI even if the bot would allow staff roles in code.
+
+**MVP approach (pick one; recommend A):**
+
+| Option | Behavior |
+|--------|----------|
+| **A (recommended)** | Clear or lower `defaultMemberPermissions` on staff-gated commands; **always** enforce `requireStaff` in handlers. Server Integration overrides remain available. |
+| **B** | Keep Discord-level ManageGuild default; document that guild owners must grant command access to staff roles under **Server Settings → Integrations → Boiler Snake**. |
+
+Option A matches “staff roles are first-class admin gate.” Public commands (`/xp`, `/leaderboard`, `/warn mine`) stay unrestricted.
+
+---
+
+### 4.5 What uses the gate
+
+| Area | How staff roles apply |
+|------|------------------------|
+| **Core permissions** | `isStaff` / `requireStaff` for all current `isAdminOrMod` call sites |
+| **Honeypot** | Exempt list **is** `staff_roles` (rename + same semantics) |
+| **Tickets** | Command gate + **channel overwrites** for every staff role on open tickets |
+| **Staff notes** | Ops gate via `requireStaff` — no note-specific role table |
+| **Warnings** | Staff ops via `requireStaff` — no warn-specific role table |
+| **Settings, logs, YouTube, Twitch, reaction roles, decay config, …** | Same staff gate as today but staff-role aware |
+| **Event reminders** | Keep **ManageGuild or event creator** for create/edit (creator exception stays); guild default channel may stay ManageGuild-only **or** staff — prefer **staff gate** for consistency unless product wants stricter |
+
+**Not gated by staff roles:** public XP/leaderboard; member `/warn mine`; ticket self-create; eventreminder opt-out/in.
+
+---
+
+### 4.6 Module layout
+
+| Path | Responsibility |
+|------|----------------|
+| `src/db/repositories/staffRoles.js` | CRUD + `memberHasStaffRole` (migrated from honeypot exempt helpers) |
+| `src/core/permissions.js` | `isStaff`, `requireStaff`; deprecate/alias `isAdminOrMod` → `isStaff` |
+| `src/features/staff/` (or `staffRoles/`) | `/staff` slash commands |
+| Honeypot feature | Exempt commands → staff repo; ban path uses `memberHasStaffRole` |
+
+**Migration sketch:**
+
+```sql
+ALTER TABLE honeypot_exempt_roles RENAME TO staff_roles;
+-- SQLite supports RENAME TABLE; app code switches queries.
+```
+
+Repository facade exports both names temporarily if needed:
+
+- `addStaffRole` / `listStaffRoles` / `memberHasStaffRole` (canonical)
+- `addHoneypotExemptRole` = alias of `addStaffRole` during transition
+
+---
+
+### 4.7 Implementation order
+
+1. Migration rename `honeypot_exempt_roles` → `staff_roles`; move repo to `staffRoles.js`; honeypot imports staff helpers  
+2. Upgrade `permissions.js` (`isStaff` / `requireStaff`); swap call sites  
+3. `/staff role add|remove|list` + `/staff settings`  
+4. Alias or rewire `/honeypot exempt *` to the same store; update honeypot docs  
+5. Adjust `defaultMemberPermissions` strategy (prefer option A)  
+6. Tests: ManageGuild passes; staff role passes; neither fails; honeypot exempt still works after rename; empty list = ManageGuild-only for gate  
+
+---
+
+### 4.8 Design decisions (locked)
+
+| # | Decision |
+|---|----------|
+| 1 | **Single table:** generalize `honeypot_exempt_roles` → `staff_roles`; no per-feature access-role tables. |
+| 2 | **Admin gate:** ManageGuild **or** any staff role for staff/config commands. |
+| 3 | **Only ManageGuild** may add/remove staff roles. |
+| 4 | **Honeypot exemption** = staff role membership only (not bare ManageGuild) — keep current honeypot safety. |
+| 5 | **Tickets / notes / warnings** consume this module; they do not define their own staff role lists. |
+| 6 | **Empty list:** command gate = ManageGuild only; honeypot bans anyone without a listed role. |
+| 7 | **Modular:** one permissions + repository module; features call `requireStaff` / `listStaffRoles` only. |
+
+**Still open (non-blocking):**
+
+- Keep `/honeypot exempt` as permanent alias vs deprecate after one release.  
+- Whether event-reminder **guild** defaults require staff gate vs ManageGuild-only.  
+- Optional future **capabilities** (e.g. role may warn but not edit honeypot) — **out of MVP**; all staff roles are full admin-gate equivalents.
+
+---
+
+## 5. Staff Notes System
+
+### Purpose
+
+Private, staff-only notes about a guild member. Informal institutional memory for moderators—context that is **not** a formal disciplinary action and is **never** shown to the member.
+
+Paired with the [Warning System](#6-warning-system): notes hold soft context; warnings are the **permanent formal record**.
+
+**Access:** [guild staff roles / admin gate](#4-guild-staff-roles-admin-gate) — not a notes-specific role list.
+
+### Status
+
+**Planned** — design decisions locked (see [5.6](#56-design-decisions-locked)); ready to implement once staff roles (§4) exist. Prefer shipping **before or with** warnings.
+
+---
+
+### 5.1 Core behavior
+
+```
+Staff adds a note on a user
+        → requireStaff (ManageGuild or staff role)
+        → store in SQLite (guild-scoped)
+        → staff can list / edit / soft-delete notes for that user
+        → member never sees notes via bot commands or DMs
+        → optional staff log channel embed on create/edit/delete
+```
+
+| Rule | Detail |
+|------|--------|
+| Audience | **Staff gate** only ([§4](#4-guild-staff-roles-admin-gate)) |
+| Visibility | Never DM’d; never exposed on member-facing commands |
+| Mutability | Editable and soft-deletable (unlike warnings) |
+| Scope | Per guild + user |
+| Purpose | Context, history, “watch for X”, prior conversations—not a strike count |
+
+---
+
+### 5.2 Commands
+
+| Command | Description |
+|---------|-------------|
+| `/note add user:<member> content:<text>` | Create a staff note (text option or modal if long) |
+| `/note list user:<member>` | List notes for a member (newest first; paginate if many) |
+| `/note edit id:<note_id> content:<text>` | Replace note body; record `edited_at` / `edited_by` |
+| `/note delete id:<note_id>` | Soft-delete (`deleted_at`); keep row for audit |
+| `/note info id:<note_id>` | Single note detail (author, timestamps, body) |
+| `/note settings` | Brief status; points at `/staff role list` for access |
+
+**Permission:** `requireStaff` for all note commands (no separate `/note role *`).
+
+**UX notes:**
+- Prefer a **modal** for long `content`.
+- Ephemeral replies for all note commands.
+- List embeds: note id, snippet, author, relative time; deleted notes only if “include deleted” (default: active only).
+
+---
+
+### 5.3 Database schema (working draft)
+
+```sql
+CREATE TABLE IF NOT EXISTS staff_notes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id     TEXT NOT NULL,
+    note_number  INTEGER NOT NULL,          -- sequential per guild (N-12)
+    user_id      TEXT NOT NULL,            -- subject
+    author_id    TEXT NOT NULL,            -- staff who created
+    content      TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    edited_at    INTEGER,
+    edited_by    TEXT,
+    deleted_at   INTEGER,                  -- soft delete; null = active
+    deleted_by   TEXT,
+    UNIQUE (guild_id, note_number)
+);
+CREATE INDEX IF NOT EXISTS idx_staff_notes_user
+  ON staff_notes(guild_id, user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_staff_notes_active
+  ON staff_notes(guild_id, user_id) WHERE deleted_at IS NULL;
+```
+
+**Repositories / db facade (sketch):**
+
+- `createStaffNote({ guildId, userId, authorId, content })`
+- `listStaffNotes(guildId, userId, { includeDeleted })`
+- `getStaffNote(guildId, noteNumberOrId)`
+- `updateStaffNote(id, { content, editedBy })`
+- `softDeleteStaffNote(id, deletedBy)`
+
+Access checks live in `permissions.js` / staff roles — **not** a notes access-role table.
+
+---
+
+### 5.4 Integration points
+
+| Area | Change |
+|------|--------|
+| `src/features/staffNotes/` | Feature module (commands + handlers) |
+| `src/commands/` registry | Register `/note` subcommands |
+| `src/db/` | Migration + repository + facade |
+| `src/core/permissions.js` | `requireStaff` on every handler |
+| Audit / staff log | Optional embeds on create/edit/delete when audit log channel is set |
+| Docs | `docs/staff-notes.md` |
+
+---
+
+### 5.5 Implementation order
+
+1. Depends on §4 staff roles / `requireStaff`  
+2. Migration + repository  
+3. `/note add` + `/note list`  
+4. `/note edit` + `/note delete` + `/note info` + `/note settings`  
+5. Optional audit embeds  
+6. Docs + tests (CRUD, soft-delete, staff role vs outsider, ManageGuild)
+
+---
+
+### 5.6 Design decisions (locked)
+
+| # | Decision |
+|---|----------|
+| 1 | **Staff-only:** notes never DMed or shown to the subject member. |
+| 2 | **Soft-delete only** in MVP; hard delete not exposed. |
+| 3 | **Editable** — notes are working memory, not a legal-style record. |
+| 4 | **Separate from warnings** — no automatic promotion of notes into warnings. |
+| 5 | **Access via guild staff roles** ([§4](#4-guild-staff-roles-admin-gate)) — no `staff_note_access_roles` table. |
+| 6 | **Per-guild sequential `note_number`** for human-friendly refs (`N-12`). |
+
+**Still open (non-blocking):**
+
+- Whether `/note list` without a user lists recent guild-wide notes (recommend **yes**, capped, staff-only).  
+- Max content length (recommend **2000** chars).
+
+---
+
+## 6. Warning System
+
+### Purpose
+
+Formal, **permanent** disciplinary record for guild members. Complements [staff notes](#5-staff-notes-system): notes are private working memory; warnings are countable, auditable strikes that staff and (optionally) the member can see. Built for long-term history—voidable with a paper trail, **not** casually deleted.
+
+**Staff ops access:** same [guild staff roles / admin gate](#4-guild-staff-roles-admin-gate).
+
+### Status
+
+**Planned** — design decisions locked (see [6.9](#69-design-decisions-locked)); ready once staff roles (§4) exist. Best shipped **with or after** staff notes.
+
+---
+
+### 6.1 Notes vs warnings (product contract)
+
+| | Staff notes | Warnings |
+|--|-------------|----------|
+| Intent | Informal context | Formal disciplinary action |
+| Member visibility | Never | Active warnings listable by subject; optional DM on issue |
+| Mutability | Edit + soft-delete | **No edit of reason** after issue; **void** only (keeps row) |
+| Counting | Not counted | Active count drives history / future auto-mod |
+| Permanence | Soft-deleted notes hidden by default | **Permanent record** — voided still appears in full history |
+| Human id | `N-{n}` | `W-{n}` |
+| Staff access | Guild staff roles (§4) | Guild staff roles (§4) |
+
+Staff should use **notes** for soft context and **warnings** when the action is on the record.
+
+---
+
+### 6.2 Core behavior
+
+```
+Staff issues /warn add @user reason
+        → requireStaff
+        → allocate sequential warning_number (W-n)
+        → persist row (active; never hard-deleted by bot commands)
+        → optional DM to member (guild setting; default ON)
+        → optional embed to audit / warn-log channel
+        → ephemeral confirm to staff with active count
+
+Staff voids /warn void id reason
+        → set voided_at / voided_by / void_reason
+        → row remains queryable forever as voided
+        → optional DM + staff log “warning voided”
+
+Staff / member lists history
+        → active by default; full history includes voided
+```
+
+| Rule | Detail |
+|------|--------|
+| Permanence | No hard-delete command. Void = soft cancel with reason. |
+| Reason | **Required** on issue and on void |
+| Scope | Per guild + user |
+| Active count | `COUNT(*) WHERE voided_at IS NULL` for that guild/user |
+| Self-service | Members may view **their own** warnings (`/warn mine`) without staff role |
+| Staff access | `requireStaff` ([§4](#4-guild-staff-roles-admin-gate)) |
+| Escalation | Threshold auto-kick/ban = **post-MVP** |
+
+---
+
+### 6.3 Commands
+
+#### Staff ops (`requireStaff`)
+
+| Command | Description |
+|---------|-------------|
+| `/warn add user:<member> reason:<text> [silent:<bool>]` | Issue a warning. `silent` skips member DM for this issue only. |
+| `/warn list user:<member> [include_voided:<bool>]` | History for a member (default active only) |
+| `/warn info id:<warning_id\|W-n>` | Full detail: reason, issuer, timestamps, void metadata |
+| `/warn void id:<…> reason:<text>` | Void a warning (permanent row; marks inactive) |
+| `/warn count user:<member>` | Active warning count (+ optional recent snippet) |
+| `/warn settings` | DM flag, log target; points at `/staff role list` for access |
+
+#### Config (ManageGuild only — same meta-privilege as staff role config)
+
+| Command | Description |
+|---------|-------------|
+| `/setwarn dm <true\|false>` | Toggle member DMs on issue/void (default true) |
+
+#### Everyone
+
+| Command | Description |
+|---------|-------------|
+| `/warn mine [include_voided:<bool>]` | View your own warnings in this guild (ephemeral) |
+
+Ephemeral replies for all `/warn` commands (staff logs are separate channel posts).
+
+**Reason length:** non-empty trimmed text; max **1000** chars (MVP). Longer narratives belong in a linked staff note.
+
+---
+
+### 6.4 Member notification & staff log
+
+#### DM to member (default on)
+
+When a warning is issued and DMs are open:
+
+- Embed title: `Warning issued in {guild name}`
+- Fields: warning id (`W-n`), reason, issuer (display name), active count after issue, timestamp
+- Footer: how to view history (`/warn mine`)
+
+On void (if DM on): short notice that `W-n` was voided and by whom (optional reason).
+
+Guild setting `warn_dm_members` (default **1**). Per-issue `silent:true` overrides DM off for that issue only (staff still get confirm).
+
+#### Staff / audit channel
+
+When `audit_log_channel_id` is set (reuse existing audit stream) **or** optional dedicated `warn_log_channel_id`:
+
+| Event | Embed |
+|-------|--------|
+| Warning issued | Target, issuer, `W-n`, reason, new active count |
+| Warning voided | Target, voider, `W-n`, void reason, remaining active count |
+
+**MVP preference:** post to existing **audit log** channel when set; dedicated warn channel = post-MVP.
+
+---
+
+### 6.5 Configuration
+
+| Setting / command | Description |
+|-------------------|-------------|
+| Guild staff roles | Access control via [§4](#4-guild-staff-roles-admin-gate) (`/staff role *`) |
+| `/warn settings` | DM flag, log target |
+| `/setwarn dm <true\|false>` | Toggle member DMs (ManageGuild) |
+
+**Stored in `guild_settings`:**
+
+| Column | Purpose |
+|--------|---------|
+| `warn_dm_members` | `1` (default) / `0` — DM subject on issue/void |
+
+**Later (not MVP):** `warn_log_channel_id`, auto-mod thresholds, warn-expiry timers.
+
+---
+
+### 6.6 Database schema (working draft)
+
+```sql
+-- guild_settings.warn_dm_members INTEGER NOT NULL DEFAULT 1
+-- Access roles: staff_roles (see §4) — no warn_access_roles table
+
+CREATE TABLE IF NOT EXISTS warnings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        TEXT NOT NULL,
+    warning_number  INTEGER NOT NULL,       -- sequential per guild (W-12)
+    user_id         TEXT NOT NULL,         -- subject
+    issuer_id       TEXT NOT NULL,         -- staff who issued
+    reason          TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    voided_at       INTEGER,
+    voided_by       TEXT,
+    void_reason     TEXT,
+    related_note_id INTEGER REFERENCES staff_notes(id) ON DELETE SET NULL,
+    UNIQUE (guild_id, warning_number)
+);
+CREATE INDEX IF NOT EXISTS idx_warnings_user
+  ON warnings(guild_id, user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_warnings_active
+  ON warnings(guild_id, user_id) WHERE voided_at IS NULL;
+```
+
+**Repositories / db facade (sketch):**
+
+- `createWarning({ guildId, userId, issuerId, reason, relatedNoteId? })`
+- `listWarnings(guildId, userId, { includeVoided })`
+- `getWarning(guildId, warningNumberOrId)`
+- `voidWarning(id, { voidedBy, voidReason })`
+- `countActiveWarnings(guildId, userId)`
+- `updateGuildSettings` key `warn_dm_members`
+
+**Integrity rules:**
+
+- `void` requires non-empty `void_reason`.
+- Cannot “un-void” in MVP (re-issue if needed).
+- `related_note_id` is optional; soft-deleting a note does not remove the warning.
+
+---
+
+### 6.7 Integration points
+
+| Area | Change |
+|------|--------|
+| `src/features/warnings/` | Feature module (commands + DM/log helpers) |
+| `src/commands/` registry | Register `/warn`, `/setwarn` |
+| `src/db/` | Migration + repository + facade; optional FK to `staff_notes` |
+| `src/core/permissions.js` | `requireStaff` on staff ops; `/warn mine` public |
+| `src/features/logs/` / audit | Issue/void embeds on audit channel |
+| Command channels | Honor existing allow-list for slash commands |
+| Docs | `docs/warnings.md` (cross-link staff notes + staff roles) |
+
+**Bot permissions:** Send Messages + Embed Links in audit channel; DM failure does not roll back the warning.
+
+---
+
+### 6.8 Implementation order
+
+1. Depends on §4 `requireStaff`  
+2. Migration + repository (`warnings` + `warn_dm_members`)  
+3. `/warn add` + `/warn list` + `/warn count` + `/warn info`  
+4. `/warn void`  
+5. `/warn mine` (no staff role required)  
+6. DM + audit embeds; `/setwarn dm` + `/warn settings`  
+7. Optional `related_note_id` once staff notes exist  
+8. Docs + tests: issue, void, count, DM-off, staff role / outsider, permanence  
+
+---
+
+### 6.9 Design decisions (locked)
+
+| # | Decision |
+|---|----------|
+| 1 | **Permanent record:** never hard-delete via bot commands; **void** only, with reason and actor. |
+| 2 | **Reason immutable** after issue — void + re-issue, not silent edit. |
+| 3 | **Complement to staff notes:** informal context in notes; formal strikes in warnings. |
+| 4 | **DM members by default**; guild toggle + per-issue `silent`. DM failure does not roll back. |
+| 5 | **Member self-view** via `/warn mine` (no staff role required). |
+| 6 | **Access via guild staff roles** ([§4](#4-guild-staff-roles-admin-gate)) — no `warn_access_roles` table. |
+| 7 | **`/setwarn dm`:** ManageGuild only (meta config). |
+| 8 | **Human ids** sequential per guild (`W-n`); stable forever including after void. |
+| 9 | **No auto-mod escalation in MVP**. |
+| 10 | **Audit stream:** reuse `audit_log_channel_id` when set. |
+
+**Still open (non-blocking):**
+
+- Whether void DMs use the same toggle as issue DMs (recommend **yes**).  
+- Cross-link UX: `/warn add` optional `note:` from staff notes.  
+- Export / prune policy for left members (recommend **keep forever**).
+
+---
+
+## 7. Database Migration Summary
+
+### Guild staff roles (admin gate)
+
+| Table / change | Notes |
+|----------------|-------|
+| `honeypot_exempt_roles` → `staff_roles` | Rename only; same columns (`guild_id`, `role_id`, `created_at`, PK). Existing exempt rows become staff roles. |
+| — | No per-feature access-role tables for notes/warns/tickets |
 
 ### Tickets
 
@@ -821,9 +1377,9 @@ CREATE TABLE IF NOT EXISTS twitch_channels (
 |----------------|-------|
 | `tickets` | Lifecycle, sensitive flag, UUID transcript token, `archived` |
 | `ticket_members` | Extra member participants |
-| `ticket_staff` | Owner + named staff allow-list |
+| `ticket_staff` | Named staff allow-list on a ticket (sensitive / extras) — **not** the guild staff role list |
 | `ticket_messages` | Only for fully archived (non-sensitive) tickets |
-| `guild_settings.ticket_*` | staff role, category, archive channel, rate limit |
+| `guild_settings.ticket_*` | category, archive channel, rate limit (**no** `ticket_staff_role`) |
 
 ### Event reminders
 
@@ -843,11 +1399,30 @@ CREATE TABLE IF NOT EXISTS twitch_channels (
 | `guild_settings.twitch_notify_role_id` | Optional ping role (≠ YouTube roles) |
 | `guild_settings.twitch_polling_interval_minutes` | Poll interval (default 2) |
 
-**Removed from roadmap:** Honeypot (implemented — see `docs/honeypot.md`).
+### Staff notes
+
+| Table / change | Notes |
+|----------------|-------|
+| `staff_notes` | Per-guild sequential notes; soft-delete; edit metadata |
+
+### Warnings
+
+| Table / change | Notes |
+|----------------|-------|
+| `warnings` | Permanent rows; void metadata; optional `related_note_id` → `staff_notes` |
+| `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void |
+
+**Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
 ---
 
-## 5. Post-MVP TODOs
+## 8. Post-MVP TODOs
+
+### Guild staff roles
+
+- [ ] Optional capability flags per role (warn-only, config-only, …) — MVP is full admin-gate equivalence  
+- [ ] `added_by` column on `staff_roles`  
+- [ ] Audit embed when staff roles are added/removed  
 
 ### Tickets
 
@@ -869,5 +1444,19 @@ CREATE TABLE IF NOT EXISTS twitch_channels (
 - [ ] Custom go-live message templates  
 - [ ] Optional go-offline message (default off)  
 - [ ] Clip / VOD hooks (out of scope for stream-live MVP)  
+
+### Staff notes
+
+- [ ] Guild-wide recent notes feed without targeting a user  
+- [ ] Attach note from ticket close flow  
+
+### Warnings
+
+- [ ] Auto-mod thresholds (e.g. 3 active → timeout / kick / ban with configurable actions)  
+- [ ] Dedicated `warn_log_channel_id` separate from general audit log  
+- [ ] Warning expiry / auto-void after N days (opt-in; default still permanent)  
+- [ ] Export user record (notes + warnings) for staff handoff  
+- [ ] Un-void / re-activate (only if product needs it; prefer re-issue)  
+- [ ] Evidence attachments or message-link field on issue  
 
 ---
