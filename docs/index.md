@@ -84,4 +84,4 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 
 ## License
 
-MIT License - see [LICENSE](../LICENSE) file for details.
+MIT License — see the [`LICENSE`](https://github.com/metalsp0rk/boiler-snake/blob/main/LICENSE) file for details.

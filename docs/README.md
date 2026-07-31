@@ -120,7 +120,7 @@ Welcome to the comprehensive documentation for Boiler Snake.
 
 ## 🔗 Additional Resources
 
-- [README.md](../README.md) - Project overview and installation summary
+- [Project README](https://github.com/metalsp0rk/boiler-snake#readme) - Project overview and installation summary
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; staff exempt roles
 - [GitHub Repository](https://github.com/metalsp0rk/boiler-snake)
 

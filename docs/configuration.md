@@ -351,14 +351,14 @@ Verify XP rates and cooldowns match expectations.
 
 ### Issue: Role not being granted
 
-1. Check [`/settings`](/docs/commands/index.md) output for role mappings
+1. Check [`/settings`](./commands/) output for role mappings
 2. Verify bot has **Manage Roles** permission
 3. Ensure bot's highest role is **above** the role it manages
 4. Confirm user has reached required level (check with `/xp [user]`)
 
 ### Issue: Decay not reducing XP
 
-1. Check decay settings are enabled in [`/settings`](/docs/commands/index.md)
+1. Check decay settings are enabled in [`/settings`](./commands/)
 2. Verify user sent enough messages in time window
 3. Wait for 4:00 AM server time (when decay runs)
 

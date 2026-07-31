@@ -366,9 +366,9 @@ With daily decay:
 
 **Resources**:
 
-1. Read this documentation: `/docs/`
-2. Check the README.md in project root
-3. Review GitHub issues for similar problems
+1. Read this documentation (home / sidebar)
+2. Check the [project README](https://github.com/metalsp0rk/boiler-snake#readme)
+3. Review [GitHub issues](https://github.com/metalsp0rk/boiler-snake/issues) for similar problems
 4. Examine logs when bot starts: `npm start`
 
 **When asking for help**:
@@ -381,7 +381,7 @@ With daily decay:
 
 ### Q: Is there a roadmap for future features?
 
-**A**: Yes! See [`ROADMAP.md`](../ROADMAP.md) in the project root:
+**A**: Yes! See [`ROADMAP.md`](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md) in the project root:
 
 **Planned features** (see roadmap if present):
 - Ticket system (support requests)
@@ -412,7 +412,7 @@ With daily decay:
 
 ### Q: What license is this under?
 
-**A**: MIT License. See [`LICENSE`](../LICENSE) file for details.
+**A**: MIT License. See the [`LICENSE`](https://github.com/metalsp0rk/boiler-snake/blob/main/LICENSE) file for details.
 
 **Key points**:
 - Free to use and modify

@@ -13,7 +13,10 @@
     "ensure-role": "node scripts/ensure-role.js",
     "test": "node --test test/*.test.js test/integration/*.test.js",
     "test:unit": "node --test test/*.test.js",
-    "test:integration": "node --test test/integration/*.test.js"
+    "test:integration": "node --test test/integration/*.test.js",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.67",
@@ -30,5 +33,12 @@
   "bugs": {
     "url": "https://github.com/metalsp0rk/boiler-snake/issues"
   },
-  "homepage": "https://github.com/metalsp0rk/boiler-snake#readme"
+  "homepage": "https://github.com/metalsp0rk/boiler-snake#readme",
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true,
+    "better-sqlite3@12.11.1": true
+  }
 }

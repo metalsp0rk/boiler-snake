@@ -18,6 +18,8 @@ Includes:
 Modular monolith: feature modules under `src/features/`, shared `src/core/` + `src/db/`, thin `src/index.js`.  
 See [docs/architecture.md](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
+**Documentation site:** [metalsp0rk.github.io/boiler-snake](https://metalsp0rk.github.io/boiler-snake/) (built from `docs/` with VitePress).
+
 ## Setup
 
 Requirements: **Node.js 18+** (Discord.js 14; Node 13.x will not work)
