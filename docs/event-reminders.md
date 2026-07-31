@@ -193,7 +193,9 @@ Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and abili
 | Offsets (multi-select) | Presets: 1 week, 1 day, 1 hour, 30 min, 15 min, 5 min (defaults: 1d, 1h, 15m) |
 | Extra custom offsets | Freeform `2h, 10m` (`(\d+)(m\|h\|d)`) |
 | Channel override | Optional; empty uses guild default |
-| Custom message | Placeholders: `{event}`, `{starts_in}`, `{starts_at}`, `{role}` |
+| Custom message | Placeholders: `{event}`, `{location}`, `{starts_in}`, `{starts_at}`, `{role}` |
+
+**`{location}`:** if the scheduled event is hosted in a voice/stage channel, expands to a channel mention (`<#id>`). For external events, expands to the external location text. Empty when unset.
 
 Offsets already in the past relative to the event start are skipped. Max **8** offsets; max lookback **30 days**.
 

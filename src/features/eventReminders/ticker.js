@@ -11,6 +11,7 @@ const {
 } = require("../../db");
 const {
   renderReminderMessage,
+  formatEventLocation,
   resolveNotifyChannelId,
   cleanupEventReminderByConfigId,
   isEventTerminal,
@@ -93,10 +94,12 @@ async function deliverOne(client, row) {
     eventName: scheduledEvent.name || "Event",
     startMs,
     roleId: row.role_id,
+    location: formatEventLocation(scheduledEvent),
   });
 
   const msg = await channel.send({
     content,
+    // Role pings must be allow-listed; channel mentions (location) do not need it.
     allowedMentions: { roles: [row.role_id] },
   });
 

@@ -269,7 +269,9 @@ function buildReminderModal(opts) {
         .setChannelSelectMenuComponent(channelSelect),
       new LabelBuilder()
         .setLabel("Custom message (optional)")
-        .setDescription("Placeholders: {event} {starts_in} {starts_at} {role}")
+        .setDescription(
+          "Placeholders: {event} {location} {starts_in} {starts_at} {role}"
+        )
         .setTextInputComponent(messageInput)
     );
 }

@@ -167,8 +167,29 @@ function formatOffsetMinutes(minutes) {
 }
 
 /**
+ * Resolve a display string for an event's location.
+ * - Voice/stage (channel-hosted): channel mention `<#id>`
+ * - External: plain `entityMetadata.location` text
+ * - Unknown / unset: empty string (so templates can omit awkwardly empty spots)
+ *
+ * @param {{ channelId?: string|null, entityMetadata?: { location?: string|null }|null }|null} scheduledEvent
+ * @returns {string}
+ */
+function formatEventLocation(scheduledEvent) {
+  if (!scheduledEvent) return "";
+  const channelId = scheduledEvent.channelId ?? scheduledEvent.channel_id ?? null;
+  if (channelId) return `<#${channelId}>`;
+  const external =
+    scheduledEvent.entityMetadata?.location ??
+    scheduledEvent.entity_metadata?.location ??
+    null;
+  if (external && String(external).trim()) return String(external).trim();
+  return "";
+}
+
+/**
  * @param {string|null|undefined} template
- * @param {{ eventName: string, startMs: number, roleId: string }} ctx
+ * @param {{ eventName: string, startMs: number, roleId: string, location?: string }} ctx
  */
 function renderReminderMessage(template, ctx) {
   const startUnix = Math.floor(ctx.startMs / 1000);
@@ -177,7 +198,8 @@ function renderReminderMessage(template, ctx) {
     .replaceAll("{event}", ctx.eventName || "Event")
     .replaceAll("{starts_in}", `<t:${startUnix}:R>`)
     .replaceAll("{starts_at}", `<t:${startUnix}:F>`)
-    .replaceAll("{role}", `<@&${ctx.roleId}>`);
+    .replaceAll("{role}", `<@&${ctx.roleId}>`)
+    .replaceAll("{location}", ctx.location ?? "");
 }
 
 /**
@@ -504,6 +526,7 @@ module.exports = {
   resolveOffsetMinutes,
   buildOffsetRows,
   formatOffsetMinutes,
+  formatEventLocation,
   renderReminderMessage,
   canConfigureEventReminder,
   resolveNotifyChannelId,

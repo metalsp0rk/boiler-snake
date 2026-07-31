@@ -451,7 +451,7 @@ We do **not** need absolute date/time pickers for MVP: reminders are **offsets r
 | **String select** `offsets` (multi) | Preset times before start | `1 week`, `1 day`, `1 hour`, `30 min`, `15 min`, `5 min` — **default selection:** `1 day`, `1 hour`, `15 min` |
 | **Text** `offsets_custom` (optional) | Extra freeform offsets | `2h, 10m` grammar `(\d+)(m\|h\|d)` |
 | **Channel select** `channel` (optional) | Notify channel override | empty / unset → guild default |
-| **Text** `message` (optional) | Custom body; placeholders `{event}`, `{starts_in}`, `{role}` | default template if empty |
+| **Text** `message` (optional) | Custom body; placeholders `{event}`, `{location}`, `{starts_in}`, `{role}` | default template if empty |
 
 4. On submit:
    - Union selected presets + parsed custom offsets; dedupe; reject empty set; cap count (e.g. 8) and max lookback (e.g. 30d).

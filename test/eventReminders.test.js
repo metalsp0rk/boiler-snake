@@ -8,6 +8,7 @@ const {
   buildOffsetRows,
   formatOffsetMinutes,
   renderReminderMessage,
+  formatEventLocation,
   canConfigureEventReminder,
 } = require("../src/features/eventReminders/service");
 const { PermissionFlagsBits } = require("discord.js");
@@ -74,6 +75,31 @@ describe("eventReminders service helpers", () => {
     assert.match(msg, /Raid/);
     assert.match(msg, /<@&99>/);
     assert.match(msg, new RegExp(`<t:${Math.floor(startMs / 1000)}:R>`));
+  });
+
+  it("formatEventLocation mentions channel-hosted events", () => {
+    assert.equal(
+      formatEventLocation({ channelId: "111" }),
+      "<#111>"
+    );
+    assert.equal(
+      formatEventLocation({
+        channelId: null,
+        entityMetadata: { location: "Community Center" },
+      }),
+      "Community Center"
+    );
+    assert.equal(formatEventLocation({}), "");
+  });
+
+  it("renderReminderMessage substitutes {location}", () => {
+    const msg = renderReminderMessage("Meet in {location} for {event}", {
+      eventName: "Raid",
+      startMs: Date.now(),
+      roleId: "1",
+      location: "<#555>",
+    });
+    assert.equal(msg, "Meet in <#555> for Raid");
   });
 
   it("canConfigureEventReminder allows ManageGuild or creator", () => {
