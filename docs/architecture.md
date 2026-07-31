@@ -45,7 +45,8 @@ src/
 │   ├── youtube/             # YouTube commands + RSS/API ticker
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
 │   ├── reactionRoles/       # /reactionrole + panel service
-│   └── eventReminders/      # /eventreminder + modal + ticker + gateway
+│   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
+│   └── staffNotes/          # /note staff-only private notes
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch
@@ -126,6 +127,7 @@ Migrations on load:
 | `004_youtube_and_honeypot_columns` | last_checked, warning_message_id |
 | `005_clamp_bad_xp` | sanitize bad XP rows |
 | `006_event_reminders` | event reminder tables + default channel column |
+| `007_staff_notes` | staff_notes table (soft-delete, per-guild note_number) |
 
 ### Core XP API
 
@@ -178,7 +180,7 @@ npm run register   # node src/commands/register.js
 
 Router: `commands/router.js` → autocomplete / modal submit / chat input → channel restriction (chat) → handler.
 
-Public: `/xp`, `/leaderboard`, `/eventreminder` opt-out/status (and create for event creators). Admin (ManageGuild): most config. `/setcommandchannel` always allowed for admins (lockout escape).
+Public: `/xp`, `/leaderboard`, `/eventreminder` opt-out/status (and create for event creators). Admin/staff (ManageGuild today via `requireStaff` / `isAdminOrMod`): most config, including `/note`. `/setcommandchannel` always allowed for admins (lockout escape).
 
 ---
 

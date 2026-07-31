@@ -14,6 +14,7 @@ const migrations = [
   require("./migrations/004_youtube_and_honeypot_columns"),
   require("./migrations/005_clamp_bad_xp"),
   require("./migrations/006_event_reminders"),
+  require("./migrations/007_staff_notes"),
 ];
 
 const helpers = {

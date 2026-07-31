@@ -438,6 +438,44 @@ Then send the emoji to remove as your **next message** (or type `stop` to cancel
 /reactionrole sync message_id:123456789
 ```
 
+### `/note` - Staff Notes
+
+Private staff-only notes about members. Never shown to the subject. See [Staff Notes](../staff-notes.md).
+
+**Permission**: Manage Server (`ManageGuild`) today; will include guild staff roles when that feature ships.
+
+#### Subcommand: `add`
+
+```bash
+/note add user:@SomeUser content:Watch for repeated spam in #general
+```
+
+#### Subcommand: `list`
+
+```bash
+/note list user:@SomeUser
+/note list user:@SomeUser page:2 include_deleted:true
+/note list                          # recent guild-wide notes
+```
+
+#### Subcommand: `edit` / `delete` / `info`
+
+```bash
+/note edit id:12 content:Updated context
+/note delete id:12
+/note info id:12
+```
+
+`id` is the per-guild note number (**N-12**), not an internal database id.
+
+#### Subcommand: `settings`
+
+```bash
+/note settings
+```
+
+Shows active/soft-deleted counts and access info.
+
 ---
 
 ## Permission Matrix
@@ -475,6 +513,12 @@ Then send the emoji to remove as your **next message** (or type `stop` to cancel
 | `/reactionrole option remove` | ManageGuild | Yes |
 | `/reactionrole option list` | ManageGuild | Yes |
 | `/reactionrole sync` | ManageGuild | Yes |
+| `/note add` | ManageGuild (staff gate) | Yes |
+| `/note list` | ManageGuild (staff gate) | Yes |
+| `/note edit` | ManageGuild (staff gate) | Yes |
+| `/note delete` | ManageGuild (staff gate) | Yes |
+| `/note info` | ManageGuild (staff gate) | Yes |
+| `/note settings` | ManageGuild (staff gate) | Yes |
 
 ---
 

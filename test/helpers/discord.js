@@ -615,10 +615,41 @@ function createModalSubmitInteraction(opts) {
  * @param {object} interaction
  * @returns {string}
  */
+/**
+ * Flatten embed JSON (plain object or EmbedBuilder-like) into searchable text.
+ * @param {object} embed
+ * @returns {string}
+ */
+function embedToSearchText(embed) {
+  if (!embed) return "";
+  // discord.js EmbedBuilder exposes data via .data or toJSON()
+  const data =
+    typeof embed.toJSON === "function"
+      ? embed.toJSON()
+      : embed.data || embed;
+  const parts = [];
+  if (data.title) parts.push(String(data.title));
+  if (data.description) parts.push(String(data.description));
+  if (data.footer?.text) parts.push(String(data.footer.text));
+  if (Array.isArray(data.fields)) {
+    for (const f of data.fields) {
+      if (f?.name) parts.push(String(f.name));
+      if (f?.value) parts.push(String(f.value));
+    }
+  }
+  return parts.join("\n");
+}
+
 function lastReplyContent(interaction) {
   const r = interaction.replies[interaction.replies.length - 1];
   if (!r) return "";
-  return typeof r === "string" ? r : r.content || "";
+  if (typeof r === "string") return r;
+  const content = r.content || "";
+  const embedText = Array.isArray(r.embeds)
+    ? r.embeds.map(embedToSearchText).filter(Boolean).join("\n")
+    : "";
+  if (content && embedText) return `${content}\n${embedText}`;
+  return content || embedText || "";
 }
 
 /**

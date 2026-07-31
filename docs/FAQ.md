@@ -387,11 +387,11 @@ With daily decay:
 - Guild staff roles (admin gate; generalizes honeypot exempt roles)
 - Ticket system (support requests)
 - Twitch stream notifications (multi-channel go-live alerts + dedicated ping role)
-- Staff notes (private mod context) + warning system (permanent formal record)
+- Warning system (permanent formal record; pairs with staff notes)
 - Activity analytics dashboard
 - XP transfer between servers
 
-**Recently added**: [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
+**Recently added**: [Staff notes](staff-notes.md); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
 
 ---
 

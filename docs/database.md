@@ -35,6 +35,7 @@ boiler-snake/
 | `event_reminder_configs` | Scheduled event ↔ reminder role/channel config |
 | `event_reminder_offsets` | Per-offset fire times and sent state |
 | `event_reminder_optouts` | Per-guild user opt-out from event reminder pings |
+| `staff_notes` | Private staff notes about members (soft-delete) |
 
 ---
 
@@ -501,6 +502,43 @@ ORDER BY created_at ASC
 - Max 20 options per panel (enforced in application code)
 - Tables are created via `CREATE TABLE IF NOT EXISTS` on startup
 
+### `staff_notes`
+
+Private staff-only notes about guild members. Soft-delete only; sequential `note_number` per guild (refs like N-12).
+
+```sql
+CREATE TABLE staff_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  note_number INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  author_id TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  edited_at INTEGER,
+  edited_by TEXT,
+  deleted_at INTEGER,
+  deleted_by TEXT,
+  UNIQUE (guild_id, note_number)
+);
+CREATE INDEX idx_staff_notes_user
+  ON staff_notes(guild_id, user_id, created_at DESC);
+CREATE INDEX idx_staff_notes_active
+  ON staff_notes(guild_id, user_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_staff_notes_guild_recent
+  ON staff_notes(guild_id, created_at DESC);
+```
+
+| Column | Description |
+|--------|-------------|
+| `note_number` | Human-friendly id within the guild (`/note edit id:12` → N-12) |
+| `user_id` | Subject member |
+| `author_id` | Staff who created the note |
+| `content` | Note body (max 2000 chars in app) |
+| `deleted_at` | Soft-delete timestamp; `NULL` = active |
+
+See [Staff Notes](staff-notes.md).
+
 ## Database Migrations
 
 Migrations run automatically when the db module loads (`src/db/migrate.js` via `src/db.js` / `src/db/index.js`). Steps live under `src/db/migrations/` and are written to be **idempotent**.
@@ -512,6 +550,8 @@ Migrations run automatically when the db module loads (`src/db/migrate.js` via `
 | `003_youtube_composite_pk` | Rebuild `youtube_channels` **only if** PK is still single-column `id` |
 | `004_youtube_and_honeypot_columns` | `last_checked`, honeypot `warning_message_id` |
 | `005_clamp_bad_xp` | Clamp Infinity/NaN/out-of-range user XP |
+| `006_event_reminders` | Event reminder tables + default channel column |
+| `007_staff_notes` | `staff_notes` table + indexes |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

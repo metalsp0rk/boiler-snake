@@ -22,6 +22,7 @@ const youtube = require("./repositories/youtube");
 const honeypot = require("./repositories/honeypot");
 const reactionRoles = require("./repositories/reactionRoles");
 const eventReminders = require("./repositories/eventReminders");
+const staffNotes = require("./repositories/staffNotes");
 
 module.exports = {
   db,
@@ -124,4 +125,16 @@ module.exports = {
   setEventReminderOptOut: eventReminders.setEventReminderOptOut,
   clearEventReminderOptOut: eventReminders.clearEventReminderOptOut,
   listActiveEventReminderRoleIds: eventReminders.listActiveEventReminderRoleIds,
+
+  // staff notes
+  MAX_NOTE_CONTENT: staffNotes.MAX_NOTE_CONTENT,
+  normalizeNoteContent: staffNotes.normalizeNoteContent,
+  createStaffNote: staffNotes.createStaffNote,
+  getStaffNoteById: staffNotes.getStaffNoteById,
+  getStaffNote: staffNotes.getStaffNote,
+  listStaffNotes: staffNotes.listStaffNotes,
+  listRecentStaffNotes: staffNotes.listRecentStaffNotes,
+  countStaffNotes: staffNotes.countStaffNotes,
+  updateStaffNote: staffNotes.updateStaffNote,
+  softDeleteStaffNote: staffNotes.softDeleteStaffNote,
 };

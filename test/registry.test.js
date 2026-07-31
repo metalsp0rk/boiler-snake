@@ -4,12 +4,13 @@ const { buildDefaultRegistry, createRegistry } = require("../src/commands/regist
 const features = require("../src/features");
 
 describe("command definitions via registry", () => {
-  it("exports 14 slash commands with unique names", () => {
+  it("exports 15 slash commands with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 14);
+    assert.equal(commands.length, 15);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
+    assert.ok(names.includes("note"));
   });
 });
 
@@ -53,10 +54,11 @@ describe("buildDefaultRegistry", () => {
       "honeypot",
       "reactionRoles",
       "eventReminders",
+      "staffNotes",
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 11);
+    assert.equal(features.length, 12);
   });
 });
 

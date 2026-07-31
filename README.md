@@ -108,6 +108,7 @@ Admin/mod commands (requires **Manage Guild** by default):
 - `/setcommandchannel list`
 - `/settings` (shows current guild settings, role mappings, allowed channels)
 - `/eventreminder create|edit|list|clear|sync|setchannel|optout|optin|status` — scheduled event reminder pings
+- `/note add|list|edit|delete|info|settings` — private staff notes about members
 
 ## Database Backup
 

@@ -1007,7 +1007,7 @@ Paired with the [Warning System](#6-warning-system): notes hold soft context; wa
 
 ### Status
 
-**Planned** — design decisions locked (see [5.6](#56-design-decisions-locked)); ready to implement once staff roles (§4) exist. Prefer shipping **before or with** warnings.
+**Shipped (MVP)** — `/note` commands, soft-delete, sequential `note_number`, audit embeds. Access uses `requireStaff` (ManageGuild only until [§4 staff roles](#4-guild-staff-roles-admin-gate) land). Design decisions in [5.6](#56-design-decisions-locked).
 
 ---
 
@@ -1403,7 +1403,7 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 
 | Table / change | Notes |
 |----------------|-------|
-| `staff_notes` | Per-guild sequential notes; soft-delete; edit metadata |
+| `staff_notes` | Per-guild sequential notes; soft-delete; edit metadata (**shipped**) |
 
 ### Warnings
 
@@ -1447,8 +1447,10 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 
 ### Staff notes
 
-- [ ] Guild-wide recent notes feed without targeting a user  
+- [x] Guild-wide recent notes feed without targeting a user (`/note list` without `user`)  
 - [ ] Attach note from ticket close flow  
+- [ ] Content modal for long notes (MVP uses slash string option, max 2000)  
+- [ ] Wire access to full staff roles once §4 ships (`isStaff` already the call site)  
 
 ### Warnings
 

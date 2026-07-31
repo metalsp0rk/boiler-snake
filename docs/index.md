@@ -14,6 +14,7 @@ Boiler Snake is a feature-rich Discord bot that helps you gamify your server wit
 - **YouTube notifications**: Get alerted when subscribed channels go live or upload videos
 - **Honeypot channels**: Auto-ban users who post in decoy channels (with staff role exemptions)
 - **Scheduled event reminders**: Pre-event pings for Interested members via dedicated roles
+- **Staff notes**: Private staff-only notes about members (never shown to the subject)
 - **Audit & message logs**: Staff channels for bans/kicks/role changes and deleted messages
 - **Leaderboard visualization**: Beautiful PNG leaderboards with gradients and rankings
 
@@ -54,6 +55,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [YouTube Notifications](youtube-notifications.md) - Monitor channels for live streams and uploads
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
 - [Scheduled Event Reminders](event-reminders.md) - Pre-event pings for Interested members
+- [Staff Notes](staff-notes.md) - Private staff-only notes about members
 - [Audit Log & Message Log](audit-log.md) - Staff channels for moderation and role activity
 - [Leaderboard Rendering](leaderboard.md) - Beautiful PNG leaderboards with gradients
 - [Command Restrictions](command-restrictions.md) - Control where commands can be used

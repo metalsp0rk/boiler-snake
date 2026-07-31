@@ -13,4 +13,5 @@ module.exports = [
   require("./honeypot"),
   require("./reactionRoles"),
   require("./eventReminders"),
+  require("./staffNotes"),
 ];
