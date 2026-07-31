@@ -44,7 +44,8 @@ src/
 │   ├── logs/                # /setlog + auditLog + delete/ban/kick
 │   ├── youtube/             # YouTube commands + RSS/API ticker
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
-│   └── reactionRoles/       # /reactionrole + panel service
+│   ├── reactionRoles/       # /reactionrole + panel service
+│   └── eventReminders/      # /eventreminder + modal + ticker + gateway
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch
@@ -124,6 +125,7 @@ Migrations on load:
 | `003_youtube_composite_pk` | rebuild youtube_channels only if PK is legacy |
 | `004_youtube_and_honeypot_columns` | last_checked, warning_message_id |
 | `005_clamp_bad_xp` | sanitize bad XP rows |
+| `006_event_reminders` | event reminder tables + default channel column |
 
 ### Core XP API
 
@@ -159,6 +161,7 @@ Used by message XP, reaction XP, and voice ticker:
 | **youtube** | RSS + optional Data API; guild notification channel |
 | **honeypot** | Channel posts / ban-roles; warning PNG; exempt roles |
 | **reactionRoles** | Bot panels, min level, removable options |
+| **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |
 
 ---
 
@@ -173,9 +176,9 @@ npm run register   # node src/commands/register.js
 - `DEV_GUILD_ID` set → that guild only (instant)
 - else → every guild the bot is in
 
-Router: `commands/router.js` → channel restriction → `registry.getHandler(name)`.
+Router: `commands/router.js` → autocomplete / modal submit / chat input → channel restriction (chat) → handler.
 
-Public: `/xp`, `/leaderboard`. Admin (ManageGuild): everything else. `/setcommandchannel` always allowed for admins (lockout escape).
+Public: `/xp`, `/leaderboard`, `/eventreminder` opt-out/status (and create for event creators). Admin (ManageGuild): most config. `/setcommandchannel` always allowed for admins (lockout escape).
 
 ---
 
@@ -195,7 +198,7 @@ Public: `/xp`, `/leaderboard`. Admin (ManageGuild): everything else. `/setcomman
 npm test   # node --test
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), and command registry (13 commands, feature list).
+Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event reminder helpers, and command registry (14 commands, feature list).
 
 ---
 

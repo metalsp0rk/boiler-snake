@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, and (planned) help tickets, scheduled-event reminders, and Twitch stream notifications. This roadmap documents **planned** features and their implementation stages.
+Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, scheduled-event reminders, and (planned) help tickets and Twitch stream notifications. This roadmap documents **planned** features and their implementation stages.
 
-**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles.
+**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders.
 
 ---
 
@@ -369,7 +369,7 @@ Send configurable pre-event reminder pings for Discord’s built-in **Guild Sche
 
 ### Status
 
-**Planned** — design decisions locked (see [2.11](#211-design-decisions-locked)); ready to implement once scheduled.
+**Shipped** — implemented in `src/features/eventReminders/` (see [docs/event-reminders.md](docs/event-reminders.md)). Design decisions in [2.11](#211-design-decisions-locked) remain the product contract.
 
 ---
 
@@ -480,7 +480,7 @@ Pings are `@event-<shortname>` in the notify channel. Only role holders are noti
 
 ### 2.5 Delivery ticker & cleanup
 
-- Background interval (e.g. every **30–60s**).
+- Background **node-cron** every **60s** (`* * * * *`; shipped).
 - Query pending rows: `fire_at <= now` and `sent_at IS NULL`.
 - For each due offset (**one message per offset**):
   1. Resolve channel, role, event; skip if missing/canceled.
@@ -829,10 +829,10 @@ CREATE TABLE IF NOT EXISTS twitch_channels (
 
 | Table / change | Notes |
 |----------------|-------|
-| `event_reminder_configs` | Event ↔ role ↔ channel ↔ template |
-| `event_reminder_offsets` | Each “X before” fire + sent state |
-| `event_reminder_optouts` | Per-guild user opt-out |
-| `guild_settings.event_reminder_channel_id` | Default notify channel |
+| `event_reminder_configs` | Event ↔ role ↔ channel ↔ template (**shipped**, migration `006`) |
+| `event_reminder_offsets` | Each “X before” fire + sent state (**shipped**) |
+| `event_reminder_optouts` | Per-guild user opt-out (**shipped**) |
+| `guild_settings.event_reminder_channel_id` | Default notify channel (**shipped**) |
 
 ### Twitch stream notifications
 

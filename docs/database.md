@@ -32,6 +32,9 @@ boiler-snake/
 | `honeypot_ban_roles` | Roles that ban a member when granted |
 | `reaction_role_panels` | Bot-owned reaction-role panel messages |
 | `reaction_role_options` | Emoji → role options on panels |
+| `event_reminder_configs` | Scheduled event ↔ reminder role/channel config |
+| `event_reminder_offsets` | Per-offset fire times and sent state |
+| `event_reminder_optouts` | Per-guild user opt-out from event reminder pings |
 
 ---
 
