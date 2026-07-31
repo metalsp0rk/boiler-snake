@@ -22,7 +22,7 @@ stateDiagram-v2
 
   [*] --> NoRole: Discord event created<br>(status: Scheduled)
 
-  NoRole --> RoleExists: /eventreminder create<br>create role event-shortname<br>grant Interested ∩ ¬opt-out
+  NoRole --> RoleExists: /eventreminder create<br>create role event-shortname<br>grant Interested NE opt-out
 
   state RoleExists {
     [*] --> Syncing
