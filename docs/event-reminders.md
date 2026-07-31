@@ -50,34 +50,38 @@ stateDiagram-v2
 sequenceDiagram
   participant Staff
   participant Bot
-  participant Discord as Discord (event + role)
+  participant Discord as Discord API
   participant Members
+  participant Role as event-shortname
 
   Staff->>Discord: Create one-time scheduled event
-  Note over Discord: status = Scheduled<br/>role does not exist yet
+  Note over Discord: status Scheduled; no role yet
 
-  Staff->>Bot: /eventreminder create + modal
-  Bot->>Discord: Create role event-shortname
+  Staff->>Bot: eventreminder create plus modal
+  Bot->>Role: Create role
   Bot->>Discord: Fetch Interested users
-  Bot->>Discord: Assign role (skip opt-outs)
-  Note over Bot,Discord: Config + offsets stored in SQLite
+  Bot->>Role: Assign to Interested, skip opt-outs
+  Note over Bot: Config and offsets saved in SQLite
 
-  loop While Scheduled (before start)
-    Members->>Discord: Mark / unmark Interested
-    Discord-->>Bot: GuildScheduledEventUserAdd/Remove
-    Bot->>Discord: Grant or remove event-shortname
+  loop While event is Scheduled
+    Members->>Discord: Mark or unmark Interested
+    Discord-->>Bot: GuildScheduledEventUserAdd or Remove
+    Bot->>Role: Grant or remove membership
     Bot->>Bot: node-cron every 60s
-    alt fire_at due and not sent
-      Bot->>Discord: Post reminder mentioning @event-shortname
+    alt Offset fire_at is due and unsent
+      Bot->>Discord: Post reminder message
+      Note over Discord,Role: Message mentions the role
+    else No offset due this minute
+      Bot->>Bot: Idle until next cron tick
     end
   end
 
-  Discord->>Discord: status → Active (event starts)
-  Discord->>Discord: status → Completed
-  Discord-->>Bot: GuildScheduledEventUpdate (terminal)
-  Bot->>Discord: Delete role event-shortname
-  Bot->>Bot: Delete config + offsets
-  Note over Bot,Discord: Role gone; shortname reusable
+  Discord->>Discord: status becomes Active
+  Discord->>Discord: status becomes Completed
+  Discord-->>Bot: GuildScheduledEventUpdate terminal
+  Bot->>Role: Delete role
+  Bot->>Bot: Delete config and offsets
+  Note over Bot,Role: Shortname free for reuse
 ```
 
 ### Recurring event (series)
@@ -121,36 +125,36 @@ stateDiagram-v2
 sequenceDiagram
   participant Staff
   participant Bot
-  participant Discord as Discord (series)
-  participant Role as event-shortname role
+  participant Discord as Discord API
+  participant Role as event-shortname
 
   Staff->>Discord: Create recurring scheduled event
-  Note over Discord: Occurrence 1 · Scheduled
+  Note over Discord: Occurrence 1 Scheduled
 
-  Staff->>Bot: /eventreminder create (event id = Occ1)
-  Bot->>Role: Create + sync Interested
-  Note over Bot: SQLite config.scheduled_event_id = Occ1
+  Staff->>Bot: eventreminder create for Occ1 id
+  Bot->>Role: Create role and sync Interested
+  Note over Bot: SQLite config.scheduled_event_id equals Occ1
 
   loop Countdown to Occ1
     Bot->>Bot: cron fires due offsets
-    Bot->>Discord: Ping @event-shortname
+    Bot->>Discord: Post reminder mentioning role
   end
 
-  Discord->>Discord: Occ1 → Completed
-  Discord-->>Bot: Update (terminal) / Delete
+  Discord->>Discord: Occ1 becomes Completed
+  Discord-->>Bot: Update terminal or Delete
   Bot->>Role: Delete role
   Bot->>Bot: Delete config for Occ1
   Note over Role: Role no longer exists
 
   Discord->>Discord: Series advances to Occ2
-  Note over Discord: New/next occurrence (new or rotated id)
+  Note over Discord: Next occurrence may use new event id
   Note over Bot: No config for Occ2 yet
 
-  Staff->>Bot: /eventreminder create (event id = Occ2)
+  Staff->>Bot: eventreminder create for Occ2 id
   Bot->>Role: Create event-shortname again
-  Note over Bot: Fresh config + offsets for Occ2
+  Note over Bot: Fresh config and offsets for Occ2
 
-  Discord->>Discord: Occ2 → Completed
+  Discord->>Discord: Occ2 becomes Completed
   Bot->>Role: Delete role again
 ```
 
