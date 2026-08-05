@@ -8,7 +8,7 @@ const {
   updateGuildSettings,
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff } = require("../../core/permissions");
 const { syncMemberRoles } = require("../levelRoles/sync");
 const { syncMemberReactionRoles } = require("../reactionRoles/service");
 const { logLevelRoleChanges, logConfigChange, diffConfigLines } = require("../logs/auditLog");
@@ -42,7 +42,7 @@ const commands = [
 
 async function handleSetDecay(interaction, ctx) {
   const { client } = ctx;
-  if (!isAdminOrMod(interaction)) {
+  if (!isStaff(interaction)) {
     await interaction.reply({
       content: "You don’t have permission to use this.",
       flags: MessageFlags.Ephemeral,

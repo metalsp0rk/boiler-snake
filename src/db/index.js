@@ -22,6 +22,7 @@ const youtube = require("./repositories/youtube");
 const honeypot = require("./repositories/honeypot");
 const reactionRoles = require("./repositories/reactionRoles");
 const eventReminders = require("./repositories/eventReminders");
+const staffRoles = require("./repositories/staffRoles");
 const staffNotes = require("./repositories/staffNotes");
 
 module.exports = {
@@ -73,7 +74,13 @@ module.exports = {
   cleanupOldNotifications: youtube.cleanupOldNotifications,
   cleanupMalformedYoutubeChannels: youtube.cleanupMalformedYoutubeChannels,
 
-  // honeypot
+  // staff roles (generalized from honeypot_exempt_roles)
+  addStaffRole: staffRoles.addStaffRole,
+  removeStaffRole: staffRoles.removeStaffRole,
+  listStaffRoles: staffRoles.listStaffRoles,
+  memberHasStaffRole: staffRoles.memberHasStaffRole,
+
+  // honeypot (exempt-role aliases → same table as staff_roles)
   addHoneypotChannel: honeypot.addHoneypotChannel,
   getHoneypotChannel: honeypot.getHoneypotChannel,
   setHoneypotWarningMessage: honeypot.setHoneypotWarningMessage,
@@ -82,10 +89,10 @@ module.exports = {
   isHoneypotChannel: honeypot.isHoneypotChannel,
   isHoneypotWarningMessage: honeypot.isHoneypotWarningMessage,
   listAllHoneypotWarnings: honeypot.listAllHoneypotWarnings,
-  addHoneypotExemptRole: honeypot.addHoneypotExemptRole,
-  removeHoneypotExemptRole: honeypot.removeHoneypotExemptRole,
-  listHoneypotExemptRoles: honeypot.listHoneypotExemptRoles,
-  memberHasHoneypotExemptRole: honeypot.memberHasHoneypotExemptRole,
+  addHoneypotExemptRole: staffRoles.addStaffRole,
+  removeHoneypotExemptRole: staffRoles.removeStaffRole,
+  listHoneypotExemptRoles: staffRoles.listStaffRoles,
+  memberHasHoneypotExemptRole: staffRoles.memberHasStaffRole,
   addHoneypotBanRole: honeypot.addHoneypotBanRole,
   removeHoneypotBanRole: honeypot.removeHoneypotBanRole,
   listHoneypotBanRoles: honeypot.listHoneypotBanRoles,

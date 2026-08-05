@@ -4,7 +4,7 @@ const {
   listAllowedCommandChannels,
   listLevelRoles,
 } = require("../../db");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff } = require("../../core/permissions");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -16,7 +16,7 @@ const commands = [
 ];
 
 async function handleSettings(interaction) {
-  if (!isAdminOrMod(interaction)) {
+  if (!isStaff(interaction)) {
     await interaction.reply({
       content: "You don’t have permission to use this.",
       flags: MessageFlags.Ephemeral,

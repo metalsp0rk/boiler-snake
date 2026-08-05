@@ -545,9 +545,7 @@ async function handleSettings(interaction) {
       `Active notes: **${active}**` +
       (deleted > 0 ? ` · soft-deleted: **${deleted}**` : "") +
       `\nMax content length: **${MAX_NOTE_CONTENT}** characters\n` +
-      `\n**Access:** staff gate (\`Manage Server\` today). ` +
-      `When guild staff roles ship, use \`/staff role list\` — notes share that gate ` +
-      `(no note-specific roles).\n` +
+      `\n**Access:** staff gate — Manage Server or any role in \`/staff role list\`.\n` +
       `\n**Commands:** \`/note add\` · \`list\` · \`edit\` · \`delete\` · \`info\`\n` +
       `Notes are **never** DMed or shown to the subject member. Soft-delete only; no hard delete.`,
     flags: MessageFlags.Ephemeral,

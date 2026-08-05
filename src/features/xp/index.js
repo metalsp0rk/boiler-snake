@@ -12,7 +12,7 @@ const {
 } = require("../../db");
 const { levelFromXp, validateXpValue } = require("../../core/xpMath");
 const { key, isOnCooldown, sweepCooldownMap } = require("../../core/cooldowns");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff } = require("../../core/permissions");
 const { awardXp } = require("../../services/awardXp");
 const { renderLeaderboardPng } = require("../../render/leaderboard");
 const { logConfigChange, diffConfigLines } = require("../logs/auditLog");
@@ -128,7 +128,7 @@ async function handleLeaderboard(interaction) {
 
 async function handleSetXp(interaction, ctx) {
   const { client } = ctx;
-  if (!isAdminOrMod(interaction)) {
+  if (!isStaff(interaction)) {
     await interaction.reply({
       content: "You don’t have permission to use this.",
       flags: MessageFlags.Ephemeral,

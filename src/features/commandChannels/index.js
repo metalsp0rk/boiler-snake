@@ -4,7 +4,7 @@ const {
   removeAllowedCommandChannel,
   listAllowedCommandChannels,
 } = require("../../db");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
@@ -38,7 +38,7 @@ const commands = [
 async function handleSetCommandChannel(interaction, ctx) {
   const { client } = ctx;
 
-  if (!isAdminOrMod(interaction)) {
+  if (!isStaff(interaction)) {
     await interaction.reply({
       content: "You don’t have permission to use this.",
       flags: MessageFlags.Ephemeral,

@@ -75,37 +75,8 @@ function listAllHoneypotWarnings() {
   `).all();
 }
 
-function addHoneypotExemptRole(guildId, roleId) {
-  db.prepare(`
-  INSERT OR IGNORE INTO honeypot_exempt_roles (guild_id, role_id, created_at)
-  VALUES (?, ?, ?)
-  `).run(guildId, roleId, now());
-}
-
-function removeHoneypotExemptRole(guildId, roleId) {
-  const result = db.prepare(`
-  DELETE FROM honeypot_exempt_roles
-  WHERE guild_id=? AND role_id=?
-  `).run(guildId, roleId);
-  return result.changes > 0;
-}
-
-function listHoneypotExemptRoles(guildId) {
-  return db.prepare(`
-  SELECT role_id
-  FROM honeypot_exempt_roles
-  WHERE guild_id=?
-  ORDER BY created_at ASC
-  `).all(guildId);
-}
-
-function memberHasHoneypotExemptRole(guildId, memberRoleIds) {
-  if (!memberRoleIds?.length) return false;
-  const rows = listHoneypotExemptRoles(guildId);
-  if (!rows.length) return false;
-  const exempt = new Set(rows.map((r) => r.role_id));
-  return memberRoleIds.some((id) => exempt.has(id));
-}
+// Exempt-role functions moved to staffRoles.js (migration 008).
+// Aliases are re-exported from the db facade.
 
 function addHoneypotBanRole(guildId, roleId) {
   db.prepare(`
@@ -162,10 +133,6 @@ module.exports = {
   isHoneypotChannel,
   isHoneypotWarningMessage,
   listAllHoneypotWarnings,
-  addHoneypotExemptRole,
-  removeHoneypotExemptRole,
-  listHoneypotExemptRoles,
-  memberHasHoneypotExemptRole,
   addHoneypotBanRole,
   removeHoneypotBanRole,
   listHoneypotBanRoles,

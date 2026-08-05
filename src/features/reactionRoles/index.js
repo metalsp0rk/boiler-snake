@@ -9,7 +9,7 @@ const {
   listReactionRoleOptions,
   countReactionRoleOptions,
 } = require("../../db");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const {
   MAX_OPTIONS_PER_PANEL,
@@ -194,7 +194,7 @@ async function handleReactionrole(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
   const settings = getGuildSettings(guildId);
-  const admin = isAdminOrMod(interaction);
+  const admin = isStaff(interaction);
 
   if (!admin) {
     await interaction.reply({

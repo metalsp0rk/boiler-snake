@@ -32,7 +32,7 @@ const {
   clearEventReminderOptOut,
   listActiveEventReminderRoleIds,
 } = require("../../db");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff, isAdminOrMod } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const {
   OFFSET_PRESETS,

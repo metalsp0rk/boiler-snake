@@ -7,7 +7,7 @@ const {
   addYoutubeChannel,
   removeYoutubeChannel,
 } = require("../../db");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const {
   startYoutubeTicker,
@@ -114,7 +114,7 @@ async function handleYoutube(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
   const settings = getGuildSettings(guildId);
-  const admin = isAdminOrMod(interaction);
+  const admin = isStaff(interaction);
 
   if (!admin) {
     await interaction.reply({ content: "You don't have permission to use this.", flags: MessageFlags.Ephemeral });
@@ -333,7 +333,7 @@ async function handleSetYoutube(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
   const settings = getGuildSettings(guildId);
-  const admin = isAdminOrMod(interaction);
+  const admin = isStaff(interaction);
 
   if (!admin) {
     await interaction.reply({ content: "You don't have permission to use this.", flags: MessageFlags.Ephemeral });
@@ -416,7 +416,7 @@ async function handleTestNotification(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
   const settings = getGuildSettings(guildId);
-  const admin = isAdminOrMod(interaction);
+  const admin = isStaff(interaction);
 
   if (!admin) {
     await interaction.reply({ content: "You don't have permission to use this.", flags: MessageFlags.Ephemeral });

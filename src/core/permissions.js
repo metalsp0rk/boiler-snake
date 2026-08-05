@@ -1,5 +1,5 @@
 const { PermissionFlagsBits, MessageFlags } = require("discord.js");
-const { listAllowedCommandChannels } = require("../db");
+const { listAllowedCommandChannels, memberHasStaffRole } = require("../db");
 
 /**
  * Guild admin/mod gate used by most config commands (Manage Guild).
@@ -13,17 +13,18 @@ function isAdminOrMod(interaction) {
 /**
  * Staff / admin gate for staff-facing features (notes, future warnings, …).
  *
- * Today: Manage Guild only (same as {@link isAdminOrMod}).
- * When guild staff roles ship (ROADMAP §4), this becomes ManageGuild **or**
- * any role in `staff_roles`. New features should call {@link isStaff} /
- * {@link requireStaff} so call sites do not need a second pass.
+ * Manage Guild **or** any role in `staff_roles`.
+ * New features should call {@link isStaff} / {@link requireStaff} so call sites
+ * do not need a second pass.
  *
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  * @returns {boolean}
  */
 function isStaff(interaction) {
-  // ManageGuild always passes. Staff-role membership will be OR'd here when §4 lands.
-  return isAdminOrMod(interaction);
+  if (isAdminOrMod(interaction)) return true;
+  const guildId = interaction.guildId;
+  const memberRoleIds = [...(interaction.member?.roles?.cache?.keys() ?? [])];
+  return memberHasStaffRole(guildId, memberRoleIds);
 }
 
 /**

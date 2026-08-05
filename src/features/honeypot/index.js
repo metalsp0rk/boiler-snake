@@ -10,16 +10,16 @@ const {
   isHoneypotChannel,
   isHoneypotWarningMessage,
   listAllHoneypotWarnings,
-  memberHasHoneypotExemptRole,
+  memberHasStaffRole,
   findHoneypotBanRolesAmong,
   getHoneypotChannel,
   setHoneypotWarningMessage,
   addHoneypotChannel,
   removeHoneypotChannel,
   listHoneypotChannels,
-  addHoneypotExemptRole,
-  removeHoneypotExemptRole,
-  listHoneypotExemptRoles,
+  addStaffRole,
+  removeStaffRole,
+  listStaffRoles,
   addHoneypotBanRole,
   removeHoneypotBanRole,
   listHoneypotBanRoles,
@@ -111,7 +111,7 @@ const commands = [
           .addSubcommand((sc) =>
             sc
               .setName("add")
-              .setDescription("Add a role that is exempt from honeypot bans.")
+              .setDescription("Add a role that is exempt from honeypot bans (same as /staff role add).")
               .addRoleOption((opt) =>
                 opt
                   .setName("role")
@@ -408,7 +408,7 @@ async function handleHoneypotMessage(message) {
   // Exempt roles (staff, etc.) — no ban, but still delete the message so the channel stays empty
   if (member) {
     const roleIds = [...member.roles.cache.keys()];
-    if (memberHasHoneypotExemptRole(message.guild.id, roleIds)) {
+    if (memberHasStaffRole(message.guild.id, roleIds)) {
       try {
         if (message.deletable) await message.delete();
       } catch (e) {
@@ -457,7 +457,7 @@ async function handleHoneypotBanRole(oldMember, newMember) {
   if (!matched.length) return;
 
   const allRoleIds = [...newRoles.keys()];
-  if (memberHasHoneypotExemptRole(guildId, allRoleIds)) {
+  if (memberHasStaffRole(guildId, allRoleIds)) {
     console.log(
       `[honeypot] Skip ban-role for exempt member ${newMember.id} in ${guildId} ` +
         `(roles: ${matched.join(", ")})`
@@ -526,7 +526,7 @@ async function handleHoneypot(interaction, ctx) {
           `Marked <#${ch.id}> as a **honeypot** channel.\n` +
           `Anyone who posts there will be banned immediately (except members with exempt roles).\n` +
           `${warningStatus}\n` +
-          `Tip: use \`/honeypot exempt add\` for staff roles so they are not banned by mistake.`,
+          `Tip: use \`/staff role add\` (or \`/honeypot exempt add\`) to configure staff roles so they are not banned by mistake.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -629,7 +629,7 @@ async function handleHoneypot(interaction, ctx) {
           `Marked ${role} as a **honeypot ban role**.\n` +
           `Anyone who is **granted** this role will be banned immediately ` +
           `(except members with honeypot exempt roles).\n` +
-          `Tip: configure \`/honeypot exempt\` for staff first. ` +
+          `Tip: configure \`/staff role add\` (or \`/honeypot exempt add\`) for staff first. ` +
           `Members who already have the role are not retroactively banned.`,
         flags: MessageFlags.Ephemeral,
       });
@@ -679,7 +679,7 @@ async function handleHoneypot(interaction, ctx) {
   if (group === "exempt") {
     if (sub === "add") {
       const role = interaction.options.getRole("role", true);
-      addHoneypotExemptRole(guildId, role.id);
+      addStaffRole(guildId, role.id);
       await logConfigChange(client, guildId, {
         title: "Honeypot exempt role added",
         command: "/honeypot exempt add",
@@ -688,8 +688,8 @@ async function handleHoneypot(interaction, ctx) {
       }).catch(() => {});
       await interaction.reply({
         content:
-          `Added ${role} to honeypot exempt roles. Members with this role will not be banned ` +
-          `for posting in honeypot channels or receiving honeypot ban roles.`,
+          `Added ${role} as a staff role (also used for honeypot exemption). ` +
+          `Members with this role will not be banned for posting in honeypot channels or receiving honeypot ban roles.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -697,7 +697,7 @@ async function handleHoneypot(interaction, ctx) {
 
     if (sub === "del") {
       const role = interaction.options.getRole("role", true);
-      const removed = removeHoneypotExemptRole(guildId, role.id);
+      const removed = removeStaffRole(guildId, role.id);
       if (removed) {
         await logConfigChange(client, guildId, {
           title: "Honeypot exempt role removed",
@@ -708,26 +708,26 @@ async function handleHoneypot(interaction, ctx) {
       }
       await interaction.reply({
         content: removed
-          ? `Removed ${role} from honeypot exempt roles.`
-          : `${role} was not on the honeypot exempt list.`,
+          ? `Removed ${role} from staff roles (also removes honeypot exemption).`
+          : `${role} is not a configured staff role.`,
         flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (sub === "list") {
-      const rows = listHoneypotExemptRoles(guildId);
+      const rows = listStaffRoles(guildId);
       if (!rows.length) {
         await interaction.reply({
           content:
-            "No honeypot exempt roles configured. Staff who hit honeypots will be banned.",
+            "No staff roles configured. Staff who hit honeypots will be banned.",
           flags: MessageFlags.Ephemeral,
         });
         return;
       }
       const lines = rows.map((r) => `- <@&${r.role_id}>`);
       await interaction.reply({
-        content: `**Honeypot exempt roles:**\n${lines.join("\n")}`,
+        content: `**Staff roles (also used for honeypot exemption):**\n${lines.join("\n")}`,
         flags: MessageFlags.Ephemeral,
       });
       return;

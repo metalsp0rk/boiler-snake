@@ -15,6 +15,7 @@ const migrations = [
   require("./migrations/005_clamp_bad_xp"),
   require("./migrations/006_event_reminders"),
   require("./migrations/007_staff_notes"),
+  require("./migrations/008_staff_roles"),
 ];
 
 const helpers = {

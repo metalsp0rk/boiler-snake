@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags, Events } = require("discord.js");
 const { getGuildSettings, updateGuildSettings } = require("../../db");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff } = require("../../core/permissions");
 const {
   cacheMessage,
   logMessageDelete,
@@ -65,7 +65,7 @@ async function handleSetlog(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
   const settings = getGuildSettings(guildId);
-  const admin = isAdminOrMod(interaction);
+  const admin = isStaff(interaction);
 
   if (!admin) {
     await interaction.reply({ content: "You don’t have permission to use this.", flags: MessageFlags.Ephemeral });
