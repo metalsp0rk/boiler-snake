@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.0.0...v1.1.0) (2026-08-05)
+
+
+### Features
+
+* **eventReminders:** add {location} message placeholder ([c446b2c](https://github.com/metalsp0rk/boiler-snake/commit/c446b2ca482748cb63693897fa300613e6d4afce))
+* **eventReminders:** include location in default reminder message ([cacbe13](https://github.com/metalsp0rk/boiler-snake/commit/cacbe1384c7f4672119b5ecfe47e08e8e471e4bd))
+* **staffNotes:** add private staff notes (/note) ([c847388](https://github.com/metalsp0rk/boiler-snake/commit/c8473884903bfc3efbe2617a2d91892989bc7200))
+* **staffRoles:** guild staff roles power isStaff gate ([65228cc](https://github.com/metalsp0rk/boiler-snake/commit/65228cc22f1bbcc5966a9a42748c4a49bb2f533a))
+
+
+### Bug Fixes
+
+* **db:** make staff_roles migration idempotent on re-run ([6e706ee](https://github.com/metalsp0rk/boiler-snake/commit/6e706ee65d9d0b901ea1511f2919f394afd3f2fc))
+* **docs:** use GitHub URLs for ROADMAP links in staff-notes ([851990a](https://github.com/metalsp0rk/boiler-snake/commit/851990abb589b11566961303e579de8ce54deb8a))
+
 ## 1.0.0 (2026-07-31)
 
 
