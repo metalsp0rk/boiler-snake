@@ -2,7 +2,7 @@
 
 Private, staff-only notes about guild members. Informal institutional memory for moderators—context that is **not** a formal disciplinary action and is **never** shown to the member.
 
-Paired with the planned [Warning System](../ROADMAP.md#6-warning-system): notes hold soft context; warnings will be the permanent formal record.
+Paired with the planned [Warning System](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#6-warning-system): notes hold soft context; warnings will be the permanent formal record.
 
 ## How it works
 
@@ -50,7 +50,7 @@ Each guild has a sequential **note number** (human-friendly refs like **N-12**).
 | Who | Access |
 |-----|--------|
 | Manage Server | Full note CRUD |
-| Guild staff roles (planned) | Same gate once [ROADMAP §4](../ROADMAP.md#4-guild-staff-roles-admin-gate) ships |
+| Guild staff roles (planned) | Same gate once [ROADMAP §4](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) ships |
 | Subject member | **None** — notes are never shown to them |
 
 There is **no** notes-specific role table. Access will share the guild staff-role list when that feature lands (`/staff role list`). Until then, only Manage Server holders can use `/note`.
@@ -91,7 +91,7 @@ See [Database Schema](database.md) for indexes and migration id `007_staff_notes
 
 ## Related
 
-- [ROADMAP — Staff Notes](../ROADMAP.md#5-staff-notes-system)
-- [ROADMAP — Guild staff roles](../ROADMAP.md#4-guild-staff-roles-admin-gate)
+- [ROADMAP — Staff Notes](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#5-staff-notes-system)
+- [ROADMAP — Guild staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate)
 - [Audit Log](audit-log.md)
 - [Commands reference](commands/index.md)
