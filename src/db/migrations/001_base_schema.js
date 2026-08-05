@@ -111,8 +111,9 @@ CREATE TABLE IF NOT EXISTS honeypot_channels (
   PRIMARY KEY (guild_id, channel_id)
 );
 
--- Roles exempt from honeypot bans (e.g. staff)
-CREATE TABLE IF NOT EXISTS honeypot_exempt_roles (
+-- Guild staff roles (admin gate + honeypot exemption). Legacy name was
+-- honeypot_exempt_roles; migration 008 renames existing DBs.
+CREATE TABLE IF NOT EXISTS staff_roles (
   guild_id TEXT NOT NULL,
   role_id TEXT NOT NULL,
   created_at INTEGER NOT NULL,
