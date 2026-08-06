@@ -427,6 +427,20 @@ async function openTicketChannel(opts) {
       deny: MEMBER_DENY,
     },
   ];
+  // Staff who open on behalf of a member get named (user) access immediately —
+  // required for junior staff / admins without a senior role overwrite.
+  if (openedByStaffId && openedByStaffId !== creatorUserId) {
+    baseOverwrites.push({
+      id: openedByStaffId,
+      allow: STAFF_ALLOW,
+    });
+  } else if (openedByStaffId && openedByStaffId === creatorUserId) {
+    // Staff opened for themselves: still grant staff-level access on their user overwrite
+    baseOverwrites[baseOverwrites.length - 1] = {
+      id: creatorUserId,
+      allow: STAFF_ALLOW,
+    };
+  }
   for (const roleId of staffRoleIds) {
     baseOverwrites.push({
       id: roleId,

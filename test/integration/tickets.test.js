@@ -227,7 +227,7 @@ describe("integration: tickets", () => {
     }
   });
 
-  it("/ticket for bypasses rate limit + sensitive close then archive (no content)", async () => {
+  it("/ticket for adds staff opener as exclusive named owner + bypasses rate limit", async () => {
     env.db.updateGuildSettings(env.guild.id, { ticket_rate_limit_minutes: 60 });
 
     const ticket = await openViaStaff({
@@ -235,6 +235,18 @@ describe("integration: tickets", () => {
       reason: "Staff pull-in sensitive",
     });
     const chId = ticket.channel_id;
+
+    // Staff who opened on behalf of the member is claimed as staff owner
+    // and listed as named staff (user overwrite access).
+    const row = env.db.getTicketById(ticket.id);
+    assert.equal(row.opened_by_staff_id, IDS.admin);
+    assert.equal(row.staff_owner_id, IDS.admin);
+    assert.ok(
+      env.db.listTicketStaff(ticket.id).some(
+        (s) => s.user_id === IDS.admin && s.is_owner === 1
+      ),
+      "opener must be named staff owner on the ticket"
+    );
 
     const sens = await env.runCommand({
       commandName: "ticket",

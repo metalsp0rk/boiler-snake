@@ -221,10 +221,13 @@ function buildTicketOverwrites(opts) {
   const memberIds = new Set(members.map((m) => m.user_id));
   memberIds.add(ticket.creator_user_id);
 
-  // Named staff (owner + addstaff) — always staff, even if also listed as members
+  // Named staff (owner + addstaff + staff who opened for a member) —
+  // always staff-level user overwrites, even if also listed as members.
+  // opened_by_staff_id is included so older rows without ticket_staff still work.
   const staffRows = listTicketStaff(ticket.id);
   const namedStaff = new Set(staffRows.map((s) => s.user_id));
   if (ticket.staff_owner_id) namedStaff.add(ticket.staff_owner_id);
+  if (ticket.opened_by_staff_id) namedStaff.add(ticket.opened_by_staff_id);
 
   if (!excludeMembers) {
     for (const userId of memberIds) {

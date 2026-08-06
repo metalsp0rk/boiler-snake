@@ -44,7 +44,7 @@ describe("tickets repository", () => {
     assert.ok(blocked.retryAfterMs > 0);
 
     // staff-opened does not count for self-create rate limit
-    db.createTicket({
+    const staffOpened = db.createTicket({
       guildId: "g1",
       creatorUserId: "u3",
       channelId: "ch-3",
@@ -52,6 +52,14 @@ describe("tickets repository", () => {
     });
     const ok = db.canUserCreateTicket("g1", "u3");
     assert.equal(ok.ok, true);
+
+    // opener is staff owner + named staff exclusively on that ticket
+    assert.equal(staffOpened.opened_by_staff_id, "staff-1");
+    assert.equal(staffOpened.staff_owner_id, "staff-1");
+    const staffList = db.listTicketStaff(staffOpened.id);
+    assert.equal(staffList.length, 1);
+    assert.equal(staffList[0].user_id, "staff-1");
+    assert.equal(staffList[0].is_owner, 1);
   });
 
   it("rate limit disabled when minutes is 0", () => {
@@ -312,6 +320,48 @@ describe("tickets overwrites", () => {
     db.addStaffRole("g-ow", "role-staff-a", "senior");
     db.addStaffRole("g-ow", "role-staff-b", "senior");
     db.addStaffRole("g-ow", "role-staff-junior", "junior");
+
+    // Staff-opened: opener gets named staff overwrite even without senior role
+    const staffOpenedTicket = db.createTicket({
+      guildId: "g-ow",
+      creatorUserId: "member-req",
+      channelId: "ch-ow-staff-for",
+      openedByStaffId: "junior-opener",
+    });
+    const forOw = buildTicketOverwrites({
+      guildId: "g-ow",
+      everyoneId: "g-ow",
+      botUserId: "bot-1",
+      ticket: db.getTicketById(staffOpenedTicket.id),
+      sensitive: false,
+      staffRoleIds: ["role-staff-a", "role-staff-b"],
+    });
+    const forById = (id) => forOw.find((o) => o.id === id);
+    assert.ok(forById("member-req")?.allow, "requester member access");
+    assert.ok(
+      forById("junior-opener")?.allow,
+      "staff opener must have exclusive named staff access"
+    );
+    assert.ok(forById("role-staff-a")?.allow, "senior staff roles still apply");
+    // legacy row: opened_by_staff_id without ticket_staff / staff_owner still grants access
+    const legacyOw = buildTicketOverwrites({
+      guildId: "g-ow",
+      everyoneId: "g-ow",
+      botUserId: "bot-1",
+      ticket: {
+        id: -1, // no ticket_staff / members rows
+        creator_user_id: "member-req",
+        staff_owner_id: null,
+        opened_by_staff_id: "legacy-opener",
+        is_sensitive: 0,
+      },
+      sensitive: false,
+      staffRoleIds: [],
+    });
+    assert.ok(
+      legacyOw.find((o) => o.id === "legacy-opener")?.allow,
+      "opened_by_staff_id alone grants named staff overwrite"
+    );
 
     const ticket = db.createTicket({
       guildId: "g-ow",
