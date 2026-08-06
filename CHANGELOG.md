@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.3.0...v1.4.0) (2026-08-06)
+
+
+### Features
+
+* **staffNotes:** content modals and ticket-close note attach ([5233b90](https://github.com/metalsp0rk/boiler-snake/commit/5233b90bd32f4c391d3514dc8aee1b243c81370e))
+* **staffNotes:** content modals and ticket-close note attach ([e60ed73](https://github.com/metalsp0rk/boiler-snake/commit/e60ed73917947b032d00379bcd8920a081e69099))
+* **userActivity:** configurable max_pages and backfill cancel ([3505a1f](https://github.com/metalsp0rk/boiler-snake/commit/3505a1f6965f51ff931d9f19af1d59be53aca4b5))
+* **userActivity:** guild-wide single-pass history backfill ([fdca80b](https://github.com/metalsp0rk/boiler-snake/commit/fdca80ba7ab0f62b4da1489f7a42a76649769a33))
+* **userActivity:** guild-wide single-pass history backfill ([becdf07](https://github.com/metalsp0rk/boiler-snake/commit/becdf0728d037abe610e503c410f67766fc8f1d5))
+* **userActivity:** staff channel/category activity summary ([e1894a0](https://github.com/metalsp0rk/boiler-snake/commit/e1894a0100599728099569dc2295706743f83800))
+* **userActivity:** staff channel/category activity summary ([4e7ce23](https://github.com/metalsp0rk/boiler-snake/commit/4e7ce2333a07dd40d72fa5d418153ca9cfa7c583))
+
 ## [1.3.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.2.0...v1.3.0) (2026-08-06)
 
 
