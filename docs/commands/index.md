@@ -46,11 +46,25 @@ Display the top 10 users by XP with a generated PNG leaderboard.
 
 **Response**: PNG image attachment titled "boiler-snake-leaderboard.png"
 
+### `/warn mine` - View Your Warnings
+
+View your own formal warnings in this server. See [Warning System](../warnings.md).
+
+**Usage**:
+```bash
+/warn mine
+/warn mine include_voided:true
+```
+
+**Response**: Ephemeral list of your active (or full) warnings with `W-n` ids and reasons.
+
+Other `/warn` subcommands require the staff gate (below).
+
 ---
 
 ## Admin/Mod Commands
 
-Require the **Manage Guild** permission. All responses are ephemeral.
+Require the **Manage Guild** permission, or a configured **staff role** for staff-gated commands (`/note`, `/warn` staff ops, etc.). All responses are ephemeral unless noted.
 
 ### `/settings` - Show Guild Configuration
 
@@ -442,7 +456,7 @@ Then send the emoji to remove as your **next message** (or type `stop` to cancel
 
 Private staff-only notes about members. Never shown to the subject. See [Staff Notes](../staff-notes.md).
 
-**Permission**: Manage Server (`ManageGuild`) today; will include guild staff roles when that feature ships.
+**Permission**: Staff gate — Manage Server or a role from `/staff role list`.
 
 #### Subcommand: `add`
 
@@ -476,6 +490,46 @@ Private staff-only notes about members. Never shown to the subject. See [Staff N
 
 Shows active/soft-deleted counts and access info.
 
+### `/warn` - Formal Warnings
+
+Permanent disciplinary records. See [Warning System](../warnings.md).
+
+**Permission**: Staff gate for all subcommands except `mine` (public). `/setwarn` is Manage Server only.
+
+#### Subcommand: `add`
+
+```bash
+/warn add user:@SomeUser reason:Repeated spam in #general
+/warn add user:@SomeUser reason:Escalation silent:true note:12
+```
+
+#### Subcommand: `list` / `count` / `info` / `void`
+
+```bash
+/warn list user:@SomeUser
+/warn list user:@SomeUser include_voided:true
+/warn count user:@SomeUser
+/warn info id:12
+/warn void id:12 reason:Appeal accepted
+```
+
+`id` is the per-guild warning number (**W-12**), not an internal database id.
+
+#### Subcommand: `settings`
+
+```bash
+/warn settings
+```
+
+### `/setwarn` - Warning Configuration
+
+```bash
+/setwarn dm enabled:false
+/setwarn dm enabled:true
+```
+
+**Permission**: Manage Server only.
+
 ---
 
 ## Permission Matrix
@@ -484,6 +538,7 @@ Shows active/soft-deleted counts and access info.
 |---------|---------------------|-------------------|
 | `/xp` [user] | None (public) | Yes |
 | `/leaderboard` | None (public) | No (but uses attachments) |
+| `/warn mine` | None (public) | Yes |
 | `/settings` | ManageGuild | Yes |
 | `/setxp` | ManageGuild | Yes |
 | `/setdecay` | ManageGuild | Yes |
@@ -513,12 +568,19 @@ Shows active/soft-deleted counts and access info.
 | `/reactionrole option remove` | ManageGuild | Yes |
 | `/reactionrole option list` | ManageGuild | Yes |
 | `/reactionrole sync` | ManageGuild | Yes |
-| `/note add` | ManageGuild (staff gate) | Yes |
-| `/note list` | ManageGuild (staff gate) | Yes |
-| `/note edit` | ManageGuild (staff gate) | Yes |
-| `/note delete` | ManageGuild (staff gate) | Yes |
-| `/note info` | ManageGuild (staff gate) | Yes |
-| `/note settings` | ManageGuild (staff gate) | Yes |
+| `/note add` | Staff gate | Yes |
+| `/note list` | Staff gate | Yes |
+| `/note edit` | Staff gate | Yes |
+| `/note delete` | Staff gate | Yes |
+| `/note info` | Staff gate | Yes |
+| `/note settings` | Staff gate | Yes |
+| `/warn add` | Staff gate | Yes |
+| `/warn list` | Staff gate | Yes |
+| `/warn info` | Staff gate | Yes |
+| `/warn void` | Staff gate | Yes |
+| `/warn count` | Staff gate | Yes |
+| `/warn settings` | Staff gate | Yes |
+| `/setwarn dm` | ManageGuild | Yes |
 
 ---
 

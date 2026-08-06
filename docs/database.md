@@ -36,6 +36,7 @@ boiler-snake/
 | `event_reminder_offsets` | Per-offset fire times and sent state |
 | `event_reminder_optouts` | Per-guild user opt-out from event reminder pings |
 | `staff_notes` | Private staff notes about members (soft-delete) |
+| `warnings` | Formal permanent warnings (voidable; sequential W-n) |
 
 ---
 
@@ -539,6 +540,44 @@ CREATE INDEX idx_staff_notes_guild_recent
 
 See [Staff Notes](staff-notes.md).
 
+### `warnings`
+
+Formal permanent disciplinary records. Void only (no hard delete); sequential `warning_number` per guild (refs like W-12). Optional link to a staff note.
+
+```sql
+CREATE TABLE warnings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  warning_number INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  issuer_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  voided_at INTEGER,
+  voided_by TEXT,
+  void_reason TEXT,
+  related_note_id INTEGER REFERENCES staff_notes(id) ON DELETE SET NULL,
+  UNIQUE (guild_id, warning_number)
+);
+CREATE INDEX idx_warnings_user
+  ON warnings(guild_id, user_id, created_at DESC);
+CREATE INDEX idx_warnings_active
+  ON warnings(guild_id, user_id) WHERE voided_at IS NULL;
+```
+
+| Column | Description |
+|--------|-------------|
+| `warning_number` | Human-friendly id within the guild (`/warn void id:12` → W-12) |
+| `user_id` | Subject member |
+| `issuer_id` | Staff who issued the warning |
+| `reason` | Immutable after issue (max 1000 chars in app) |
+| `voided_at` | Void timestamp; `NULL` = active |
+| `related_note_id` | Optional FK to `staff_notes.id` |
+
+Guild setting: `warn_dm_members` (`1` default / `0`) — DM subject on issue/void.
+
+See [Warning System](warnings.md).
+
 ## Database Migrations
 
 Migrations run automatically when the db module loads (`src/db/migrate.js` via `src/db.js` / `src/db/index.js`). Steps live under `src/db/migrations/` and are written to be **idempotent**.
@@ -552,6 +591,8 @@ Migrations run automatically when the db module loads (`src/db/migrate.js` via `
 | `005_clamp_bad_xp` | Clamp Infinity/NaN/out-of-range user XP |
 | `006_event_reminders` | Event reminder tables + default channel column |
 | `007_staff_notes` | `staff_notes` table + indexes |
+| `008_staff_roles` | Rename/generalize honeypot exempt roles → `staff_roles` |
+| `009_warnings` | `warnings` table + `warn_dm_members` column |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

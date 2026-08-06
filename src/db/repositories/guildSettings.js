@@ -37,6 +37,7 @@ function getGuildSettings(guildId) {
       audit_log_channel_id: null,
       message_log_channel_id: null,
       event_reminder_channel_id: null,
+      warn_dm_members: 1,
       updated_at: now(),
     };
   }
@@ -63,6 +64,7 @@ function updateGuildSettings(guildId, patch) {
     "audit_log_channel_id",
     "message_log_channel_id",
     "event_reminder_channel_id",
+    "warn_dm_members",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));

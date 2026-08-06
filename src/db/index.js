@@ -24,6 +24,7 @@ const reactionRoles = require("./repositories/reactionRoles");
 const eventReminders = require("./repositories/eventReminders");
 const staffRoles = require("./repositories/staffRoles");
 const staffNotes = require("./repositories/staffNotes");
+const warnings = require("./repositories/warnings");
 
 module.exports = {
   db,
@@ -144,4 +145,15 @@ module.exports = {
   countStaffNotes: staffNotes.countStaffNotes,
   updateStaffNote: staffNotes.updateStaffNote,
   softDeleteStaffNote: staffNotes.softDeleteStaffNote,
+
+  // warnings
+  MAX_WARN_REASON: warnings.MAX_WARN_REASON,
+  normalizeWarnReason: warnings.normalizeWarnReason,
+  createWarning: warnings.createWarning,
+  getWarningById: warnings.getWarningById,
+  getWarning: warnings.getWarning,
+  listWarnings: warnings.listWarnings,
+  countWarnings: warnings.countWarnings,
+  countActiveWarnings: warnings.countActiveWarnings,
+  voidWarning: warnings.voidWarning,
 };

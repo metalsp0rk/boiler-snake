@@ -2,13 +2,13 @@
 
 Private, staff-only notes about guild members. Informal institutional memory for moderators—context that is **not** a formal disciplinary action and is **never** shown to the member.
 
-Paired with the planned [Warning System](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#6-warning-system): notes hold soft context; warnings will be the permanent formal record.
+Paired with the [Warning System](warnings.md): notes hold soft context; warnings are the permanent formal record.
 
 ## How it works
 
 ```
 Staff adds a note on a user
-        → requireStaff (Manage Server today; staff roles when they ship)
+        → requireStaff (Manage Server or guild staff role)
         → store in SQLite (guild-scoped)
         → staff can list / edit / soft-delete notes for that user
         → member never sees notes via bot commands or DMs
@@ -25,7 +25,7 @@ Staff adds a note on a user
 
 ## Commands
 
-All subcommands require the **staff gate** (`Manage Server` / `ManageGuild` today). Replies are always **ephemeral**.
+All subcommands require the **staff gate** (`Manage Server` or a role from `/staff role list`). Replies are always **ephemeral**.
 
 | Command | Description |
 |---------|-------------|
@@ -50,10 +50,10 @@ Each guild has a sequential **note number** (human-friendly refs like **N-12**).
 | Who | Access |
 |-----|--------|
 | Manage Server | Full note CRUD |
-| Guild staff roles (planned) | Same gate once [ROADMAP §4](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) ships |
+| Guild staff roles | Same gate via `/staff role list` |
 | Subject member | **None** — notes are never shown to them |
 
-There is **no** notes-specific role table. Access will share the guild staff-role list when that feature lands (`/staff role list`). Until then, only Manage Server holders can use `/note`.
+There is **no** notes-specific role table. Access shares the guild staff-role list (`/staff role list`).
 
 ## Audit log
 
@@ -91,6 +91,7 @@ See [Database Schema](database.md) for indexes and migration id `007_staff_notes
 
 ## Related
 
+- [Warning System](warnings.md)
 - [ROADMAP — Staff Notes](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#5-staff-notes-system)
 - [ROADMAP — Guild staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate)
 - [Audit Log](audit-log.md)

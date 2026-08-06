@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, scheduled-event reminders, and (planned) a guild-wide staff-role admin gate, help tickets, Twitch stream notifications, staff notes, and user warnings. This roadmap documents **planned** features and their implementation stages.
+Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, and (planned) help tickets and Twitch stream notifications. This roadmap documents **planned** features and their implementation stages.
 
-**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles (incl. exempt-role list to be generalized), scheduled event reminders.
+**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings.
 
 ---
 
@@ -823,7 +823,7 @@ Built by **generalizing the existing honeypot exempt-role store** (`honeypot_exe
 
 ### Status
 
-**Planned** — design decisions locked (see [4.8](#48-design-decisions-locked)). **Foundational:** ship before (or in the same milestone as) tickets / notes / warnings so those features never invent their own role tables.
+**Shipped** — implemented in `src/features/staffRoles/` with migration `008_staff_roles` and `isStaff` / `requireStaff` in `src/core/permissions.js`. Design decisions in [4.8](#48-design-decisions-locked) remain the product contract.
 
 ---
 
@@ -1139,7 +1139,7 @@ Formal, **permanent** disciplinary record for guild members. Complements [staff 
 
 ### Status
 
-**Planned** — design decisions locked (see [6.9](#69-design-decisions-locked)); ready once staff roles (§4) exist. Best shipped **with or after** staff notes.
+**Shipped (MVP)** — `/warn` + `/setwarn`, permanent rows, void with reason, member `/warn mine`, optional note link, DMs + audit embeds. Design decisions in [6.9](#69-design-decisions-locked).
 
 ---
 
@@ -1409,8 +1409,8 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 
 | Table / change | Notes |
 |----------------|-------|
-| `warnings` | Permanent rows; void metadata; optional `related_note_id` → `staff_notes` |
-| `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void |
+| `warnings` | Permanent rows; void metadata; optional `related_note_id` → `staff_notes` (**shipped**, migration `009`) |
+| `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void (**shipped**) |
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
@@ -1450,10 +1450,11 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 - [x] Guild-wide recent notes feed without targeting a user (`/note list` without `user`)  
 - [ ] Attach note from ticket close flow  
 - [ ] Content modal for long notes (MVP uses slash string option, max 2000)  
-- [ ] Wire access to full staff roles once §4 ships (`isStaff` already the call site)  
+- [x] Wire access to full staff roles once §4 ships (`isStaff` already the call site)  
 
 ### Warnings
 
+- [x] MVP: issue / list / info / void / count / mine + `/setwarn dm` + audit + optional note link  
 - [ ] Auto-mod thresholds (e.g. 3 active → timeout / kick / ban with configurable actions)  
 - [ ] Dedicated `warn_log_channel_id` separate from general audit log  
 - [ ] Warning expiry / auto-void after N days (opt-in; default still permanent)  

@@ -384,14 +384,12 @@ With daily decay:
 **A**: Yes! See [`ROADMAP.md`](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md) in the project root:
 
 **Planned features** (see roadmap if present):
-- Guild staff roles (admin gate; generalizes honeypot exempt roles)
 - Ticket system (support requests)
 - Twitch stream notifications (multi-channel go-live alerts + dedicated ping role)
-- Warning system (permanent formal record; pairs with staff notes)
 - Activity analytics dashboard
 - XP transfer between servers
 
-**Recently added**: [Staff notes](staff-notes.md); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
+**Recently added**: [Warnings](warnings.md); [Staff notes](staff-notes.md); guild staff roles (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
 
 ---
 

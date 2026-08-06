@@ -46,7 +46,9 @@ src/
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
 │   ├── reactionRoles/       # /reactionrole + panel service
 │   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
-│   └── staffNotes/          # /note staff-only private notes
+│   ├── staffRoles/          # /staff role gate (isStaff / requireStaff)
+│   ├── staffNotes/          # /note staff-only private notes
+│   └── warnings/            # /warn + /setwarn formal disciplinary records
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch

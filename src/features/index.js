@@ -15,4 +15,5 @@ module.exports = [
   require("./eventReminders"),
   require("./staffRoles"),
   require("./staffNotes"),
+  require("./warnings"),
 ];
