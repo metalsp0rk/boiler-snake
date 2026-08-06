@@ -23,6 +23,13 @@ The core feature of Boiler Snake is its customizable XP and leveling system, whi
   - At least 2 eligible humans required in the channel
   - Bots are excluded
 
+### 4. Admin grant (`/grantxp`)
+- **Manage Server only** (staff roles do not grant access)
+- Adds a fixed amount of XP to a member (not bots)
+- Runs the same pipeline as natural XP: level roles + level-role audit
+- Optional `reason` is recorded in the config audit log
+- Logged in `activity_log` as kind `admin_grant` (does **not** count toward decay message thresholds)
+
 ## Level Calculation Formula
 
 Levels are calculated using a square root formula:
@@ -89,6 +96,7 @@ All XP-earning activities are logged in the `activity_log` table for analysis an
 | `message` | Message-based XP earnings |
 | `reaction` | Reaction-based XP earnings |
 | `voice_minute` | Voice channel XP awards |
+| `admin_grant` | Manual grants via `/grantxp` (ignored by decay message counts) |
 
 This data enables:
 - Decay calculations (counting messages in time windows)

@@ -96,6 +96,7 @@ Three gates appear across the bot:
 | [Honeypot](honeypot.md) exemption | Any staff role (not bare Manage Server) |
 | Honeypot config (`/honeypot channel\|banrole\|exempt …`) | Manage Server only (not staff gate) |
 | XP/config (`/settings`, `/setxp`, `/setdecay`, `/setlog`, `/leveltorole`, YouTube, reaction roles, `/setcommandchannel`) | Staff gate (handlers); Discord may hide behind Manage Server |
+| Manual XP grant (`/grantxp`) | Manage Server only |
 | Public `/xp`, `/leaderboard`, `/ticket create` | Everyone (subject to command-channel rules) |
 
 There are **no** per-feature staff tables (no `warn_access_roles`, no notes-only roles). Everything shares `staff_roles`.

@@ -240,6 +240,29 @@ Conservative (low inflation):
 /setxp message:3 reaction:1 voice:1 msgcooldown:60 reactioncooldown:30
 ```
 
+### `/grantxp` - Grant XP to a User
+
+Manually grant XP to a member (Manage Server only). Runs the full award pipeline (level roles + audit).
+
+**Permission**: **ManageGuild** only. Staff roles do **not** grant access.
+
+**Usage**:
+```bash
+/grantxp user:@SomeUser amount:500
+/grantxp user:@SomeUser amount:100 reason:Contest winner
+```
+
+**Options**:
+- `user`: Member to grant XP to (required)
+- `amount`: XP to add, 1–1,000,000,000 (required)
+- `reason`: Optional note for the audit log (max 200 characters)
+
+**Notes**:
+- Bots cannot receive XP
+- Ephemeral reply shows new total XP and level
+- Posts an audit-log embed when `/setlog audit` is configured
+- Does **not** count toward decay message activity
+
 ### `/setdecay` - Configure XP Decay
 
 Set up daily XP reduction for inactive users.
@@ -827,6 +850,7 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/setwarn dm\|log` | ManageGuild | Yes |
 | `/activityconfig` | ManageGuild | Yes |
+| `/grantxp` | ManageGuild | Yes |
 | `/ticket panel\|setcategory\|setarchive\|setratelimit` | ManageGuild | Yes |
 | `/honeypot channel\|banrole\|exempt …` | ManageGuild | Yes |
 | `/eventreminder setchannel` | ManageGuild | Yes |
@@ -842,7 +866,7 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 | `/testnotification` | Staff gate¹ | No |
 | `/reactionrole panel\|option\|sync` | Staff gate¹ | Yes |
 
-¹ Discord may hide the command behind **Manage Server** (`defaultMemberPermissions`); handlers accept the **staff gate** when invoked (except true ManageGuild-only rows above: honeypot, setwarn, activityconfig, ticket admin, staff mutations, eventreminder setchannel).  
+¹ Discord may hide the command behind **Manage Server** (`defaultMemberPermissions`); handlers accept the **staff gate** when invoked (except true ManageGuild-only rows above: honeypot, setwarn, activityconfig, grantxp, ticket admin, staff mutations, eventreminder setchannel).  
 ² `/setcommandchannel` channel-restriction **bypass** applies only to **Manage Server** holders (lockout prevention). Staff without Manage Server still need an allowed command channel when a list is configured.
 
 ---
@@ -911,6 +935,7 @@ MANAGE SERVER ONLY (or event creator where noted):
 /staff role add|remove|setlevel    → Configure staff roles
 /setwarn dm|log                    → Warning DMs + log channel
 /activityconfig ignore|status|backfill
+/grantxp user amount [reason]      → Manually grant XP
 /ticket panel|setcategory|setarchive|setratelimit
 /honeypot channel|banrole|exempt …
 /eventreminder create|edit|clear|sync  → creator OR Manage Server
