@@ -17,5 +17,6 @@ module.exports = [
   require("./staffNotes"),
   require("./warnings"),
   require("./userinfo"),
+  require("./userActivity"),
   require("./tickets"),
 ];

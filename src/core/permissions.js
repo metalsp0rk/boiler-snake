@@ -2,6 +2,7 @@ const { PermissionFlagsBits, MessageFlags } = require("discord.js");
 const {
   listAllowedCommandChannels,
   memberHasStaffRole,
+  memberHasSeniorStaffRole,
   getTicketByChannel,
 } = require("../db");
 
@@ -29,6 +30,20 @@ function isStaff(interaction) {
   const guildId = interaction.guildId;
   const memberRoleIds = [...(interaction.member?.roles?.cache?.keys() ?? [])];
   return memberHasStaffRole(guildId, memberRoleIds);
+}
+
+/**
+ * Senior staff / admin gate (Manage Guild **or** a senior `staff_roles` role).
+ * Used for sensitive staff tools such as `/userinfo` Activity.
+ *
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @returns {boolean}
+ */
+function isSeniorStaff(interaction) {
+  if (isAdminOrMod(interaction)) return true;
+  const guildId = interaction.guildId;
+  const memberRoleIds = [...(interaction.member?.roles?.cache?.keys() ?? [])];
+  return memberHasSeniorStaffRole(guildId, memberRoleIds);
 }
 
 /**
@@ -83,10 +98,32 @@ async function requireStaff(interaction) {
   return false;
 }
 
+/**
+ * Reply with a standard permission denial if the invoker is not senior staff.
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @returns {Promise<boolean>} true if the caller may proceed
+ */
+async function requireSeniorStaff(interaction) {
+  if (isSeniorStaff(interaction)) return true;
+  const payload = {
+    content:
+      "Activity requires **senior** staff (or Manage Server). Ask an admin to set your role with `/staff role setlevel`.",
+    flags: MessageFlags.Ephemeral,
+  };
+  if (interaction.replied || interaction.deferred) {
+    await interaction.followUp(payload);
+  } else if (typeof interaction.reply === "function") {
+    await interaction.reply(payload);
+  }
+  return false;
+}
+
 module.exports = {
   isAdminOrMod,
   isStaff,
+  isSeniorStaff,
   commandsAllowed,
   requireAdmin,
   requireStaff,
+  requireSeniorStaff,
 };

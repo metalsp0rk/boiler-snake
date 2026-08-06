@@ -26,6 +26,7 @@ const staffRoles = require("./repositories/staffRoles");
 const staffNotes = require("./repositories/staffNotes");
 const warnings = require("./repositories/warnings");
 const tickets = require("./repositories/tickets");
+const userChannelActivity = require("./repositories/userChannelActivity");
 
 module.exports = {
   db,
@@ -44,9 +45,34 @@ module.exports = {
   topUsers: users.topUsers,
   allUsersInGuild: users.allUsersInGuild,
 
-  // activity
+  // activity (XP / decay)
   logActivity: activity.logActivity,
   countMessagesInWindow: activity.countMessagesInWindow,
+
+  // user channel activity (staff analytics — not XP-gated)
+  IGNORE_KINDS: userChannelActivity.IGNORE_KINDS,
+  BACKFILL_STATUSES: userChannelActivity.BACKFILL_STATUSES,
+  utcDayKey: userChannelActivity.utcDayKey,
+  utcDayKeyDaysAgo: userChannelActivity.utcDayKeyDaysAgo,
+  normalizeIgnoreKind: userChannelActivity.normalizeIgnoreKind,
+  ensureGuildActivitySettings: userChannelActivity.ensureGuildActivitySettings,
+  getGuildActivitySettings: userChannelActivity.getGuildActivitySettings,
+  incrementDaily: userChannelActivity.incrementDaily,
+  addActivityIgnore: userChannelActivity.addActivityIgnore,
+  removeActivityIgnore: userChannelActivity.removeActivityIgnore,
+  listActivityIgnore: userChannelActivity.listActivityIgnore,
+  isActivityIgnored: userChannelActivity.isActivityIgnored,
+  getActivityIgnoreSets: userChannelActivity.getActivityIgnoreSets,
+  sumByChannel: userChannelActivity.sumByChannel,
+  totalPosts: userChannelActivity.totalPosts,
+  totalChannelPosts: userChannelActivity.totalPosts,
+  earliestTrackedDay: userChannelActivity.earliestTrackedDay,
+  guildActivityStats: userChannelActivity.guildActivityStats,
+  getUserActivityMeta: userChannelActivity.getUserActivityMeta,
+  upsertUserActivityMeta: userChannelActivity.upsertUserActivityMeta,
+  getBackfillCursor: userChannelActivity.getBackfillCursor,
+  upsertBackfillCursor: userChannelActivity.upsertBackfillCursor,
+  guildHasActiveBackfill: userChannelActivity.guildHasActiveBackfill,
 
   // voice sessions
   upsertVoiceSession: voiceSessions.upsertVoiceSession,

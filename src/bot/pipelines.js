@@ -10,13 +10,15 @@ const {
   handleReactionRoleRemove,
   handlePendingOptionEmojiMessage,
 } = require("../features/reactionRoles");
+const { recordUserChannelMessage } = require("../features/userActivity");
 
 /**
  * MessageCreate pipeline (exported for integration tests):
  * 1. message cache (logs)
  * 2. reaction-role pending emoji capture
  * 3. honeypot channel enforcement
- * 4. message XP
+ * 4. user channel activity counters (all human messages)
+ * 5. message XP
  *
  * @param {import("discord.js").Client} client
  * @param {import("discord.js").Message} message
@@ -32,6 +34,9 @@ async function onMessageCreate(client, message) {
     if (pendingRr.handled) return;
 
     if (await handleHoneypotMessage(message)) return;
+
+    // Count real message volume by channel (not XP-cooldown gated)
+    recordUserChannelMessage(message);
 
     await tryAwardMessageXp(client, message);
   } catch (e) {
