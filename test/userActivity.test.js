@@ -10,6 +10,9 @@ describe("userActivity math & ids", () => {
   let sinceDayForWindow;
   let parseActivityButtonCustomId;
   let activityButtonCustomId;
+  let normalizeMaxPagesPerChannel;
+  let MAX_PAGES_PER_CHANNEL;
+  let ABS_MAX_PAGES_PER_CHANNEL;
 
   before(() => {
     // Fresh DB + rebind src modules before requiring feature code
@@ -25,6 +28,11 @@ describe("userActivity math & ids", () => {
       parseActivityButtonCustomId,
       activityButtonCustomId,
     } = require("../src/features/userActivity/render"));
+    ({
+      normalizeMaxPagesPerChannel,
+      MAX_PAGES_PER_CHANNEL,
+      ABS_MAX_PAGES_PER_CHANNEL,
+    } = require("../src/features/userActivity/backfill"));
   });
 
   it("weeksSinceJoin floors at 1", () => {
@@ -84,6 +92,19 @@ describe("userActivity math & ids", () => {
       activityButtonCustomId("aw", "1", { win: "30", page: "ch" }),
       "ui:aw:30:ch:1"
     );
+  });
+
+  it("normalizeMaxPagesPerChannel clamps and defaults", () => {
+    assert.equal(normalizeMaxPagesPerChannel(null), MAX_PAGES_PER_CHANNEL);
+    assert.equal(normalizeMaxPagesPerChannel(undefined), MAX_PAGES_PER_CHANNEL);
+    assert.equal(normalizeMaxPagesPerChannel(100), 100);
+    assert.equal(normalizeMaxPagesPerChannel(0), 1);
+    assert.equal(normalizeMaxPagesPerChannel(-5), 1);
+    assert.equal(
+      normalizeMaxPagesPerChannel(9999),
+      ABS_MAX_PAGES_PER_CHANNEL
+    );
+    assert.equal(normalizeMaxPagesPerChannel(50.9), 50);
   });
 
   it("activity component custom ids are unique across rows", () => {

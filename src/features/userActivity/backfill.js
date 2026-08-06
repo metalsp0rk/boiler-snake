@@ -7,6 +7,7 @@
  * Modes:
  * - Per-user: scan channels counting only one author (Activity button)
  * - Guild-wide: single pass per channel counting all human authors (/activityconfig backfill all)
+ * - Cancel: cooperative stop between pages/channels (/activityconfig backfill cancel)
  */
 
 const { ChannelType } = require("discord.js");
@@ -25,18 +26,49 @@ const {
   upsertGuildChannelBackfillCursor,
   getActivityIgnoreSets,
   isHoneypotChannel,
+  db,
 } = require("../../db");
 const { shouldSkipChannel } = require("./service");
 
 const PAGE_SIZE = 100;
+/** Default pages per channel when not overridden (100 msgs/page → ~5k). */
 const MAX_PAGES_PER_CHANNEL = 50;
+/** Absolute floor / ceiling for the max_pages option. */
+const MIN_PAGES_PER_CHANNEL = 1;
+const ABS_MAX_PAGES_PER_CHANNEL = 500;
 const DELAY_MS = 1100;
 
-/** @type {Map<string, Promise<void>>} */
+/**
+ * Active job per guild.
+ * @type {Map<string, { promise: Promise<void>, kind: "guild"|"user", userId: string|null, cancelled: boolean }>}
+ */
 const guildJobs = new Map();
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Clamp max pages per channel for a backfill run.
+ * @param {number|null|undefined} value
+ * @returns {number}
+ */
+function normalizeMaxPagesPerChannel(value) {
+  if (value == null || !Number.isFinite(Number(value))) {
+    return MAX_PAGES_PER_CHANNEL;
+  }
+  const n = Math.floor(Number(value));
+  if (n < MIN_PAGES_PER_CHANNEL) return MIN_PAGES_PER_CHANNEL;
+  if (n > ABS_MAX_PAGES_PER_CHANNEL) return ABS_MAX_PAGES_PER_CHANNEL;
+  return n;
+}
+
+/**
+ * @param {string} guildId
+ * @returns {boolean}
+ */
+function isBackfillCancelled(guildId) {
+  return guildJobs.get(guildId)?.cancelled === true;
 }
 
 /**
@@ -76,10 +108,19 @@ function listBackfillChannels(guild, guildId) {
  * @param {number} opts.watermarkMs
  * @param {string|null} opts.onlyUserId if set, only count this author
  * @param {"user"|"guild"} opts.cursorMode
- * @returns {Promise<{ counted: number, complete: boolean, partial: boolean }>}
+ * @param {number} [opts.maxPagesPerChannel]
+ * @param {() => boolean} [opts.isCancelled]
+ * @returns {Promise<{ counted: number, complete: boolean, partial: boolean, cancelled?: boolean }>}
  */
 async function backfillChannelHistory(opts) {
-  const { channel, watermarkMs, onlyUserId = null, cursorMode } = opts;
+  const {
+    channel,
+    watermarkMs,
+    onlyUserId = null,
+    cursorMode,
+    isCancelled = () => false,
+  } = opts;
+  const maxPages = normalizeMaxPagesPerChannel(opts.maxPagesPerChannel);
   const guildId = channel.guildId || channel.guild?.id;
   let counted = 0;
   let pages = 0;
@@ -107,7 +148,11 @@ async function backfillChannelHistory(opts) {
     }
   }
 
-  while (pages < MAX_PAGES_PER_CHANNEL) {
+  while (pages < maxPages) {
+    if (isCancelled()) {
+      return { counted, complete: false, partial: true, cancelled: true };
+    }
+
     const fetchOpts = { limit: PAGE_SIZE };
     if (before) fetchOpts.before = before;
 
@@ -171,13 +216,17 @@ async function backfillChannelHistory(opts) {
     pages += 1;
     await sleep(DELAY_MS);
 
+    if (isCancelled()) {
+      return { counted, complete: false, partial: true, cancelled: true };
+    }
+
     if (batch.size < PAGE_SIZE) {
       complete = true;
       break;
     }
   }
 
-  if (pages >= MAX_PAGES_PER_CHANNEL && !complete) {
+  if (pages >= maxPages && !complete) {
     partial = true;
   }
 
@@ -196,6 +245,23 @@ async function backfillChannelHistory(opts) {
   }
 
   return { counted, complete, partial };
+}
+
+/**
+ * @param {string} guildId
+ * @returns {string|null} userId if a per-user job is marked running in DB
+ */
+function findRunningUserBackfill(guildId) {
+  const row = db
+    .prepare(
+      `
+  SELECT user_id FROM user_activity_meta
+  WHERE guild_id=? AND backfill_status IN ('queued', 'running')
+  LIMIT 1
+  `
+    )
+    .get(guildId);
+  return row?.user_id || null;
 }
 
 /**
@@ -239,18 +305,36 @@ async function startUserBackfill(guild, userId) {
     tracking_since_ms: meta?.tracking_since_ms ?? null,
   });
 
+  /** @type {{ promise: Promise<void>, kind: "user", userId: string, cancelled: boolean }} */
+  const jobState = {
+    promise: null,
+    kind: "user",
+    userId,
+    cancelled: false,
+  };
+
   const job = (async () => {
     let anyPartial = false;
     let error = null;
     let done = 0;
+    let cancelled = false;
     try {
       for (const ch of channels) {
+        if (jobState.cancelled) {
+          cancelled = true;
+          break;
+        }
         const result = await backfillChannelHistory({
           channel: ch,
           watermarkMs,
           onlyUserId: userId,
           cursorMode: "user",
+          isCancelled: () => jobState.cancelled,
         });
+        if (result.cancelled) {
+          cancelled = true;
+          break;
+        }
         done += 1;
         if (result.partial || !result.complete) anyPartial = true;
         upsertUserActivityMeta(guildId, userId, {
@@ -263,7 +347,13 @@ async function startUserBackfill(guild, userId) {
       error = e?.message || String(e);
       console.error("[userActivity] user backfill job failed:", error);
     } finally {
-      const status = error ? "failed" : anyPartial ? "partial" : "done";
+      const status = cancelled
+        ? "cancelled"
+        : error
+          ? "failed"
+          : anyPartial
+            ? "partial"
+            : "done";
       upsertUserActivityMeta(guildId, userId, {
         backfill_status: status,
         backfill_finished_at: Date.now(),
@@ -276,7 +366,8 @@ async function startUserBackfill(guild, userId) {
     }
   })();
 
-  guildJobs.set(guildId, job);
+  jobState.promise = job;
+  guildJobs.set(guildId, jobState);
   job.catch((e) =>
     console.error("[userActivity] user backfill unhandled:", e)
   );
@@ -288,13 +379,17 @@ async function startUserBackfill(guild, userId) {
  * Guild-wide single-pass backfill: each channel scanned once for all authors.
  * Prefer this over N× per-user runs.
  * @param {import("discord.js").Guild} guild
- * @returns {Promise<{ started: boolean, reason?: string, channels?: number }>}
+ * @param {{ maxPagesPerChannel?: number }} [opts]
+ * @returns {Promise<{ started: boolean, reason?: string, channels?: number, maxPagesPerChannel?: number }>}
  */
-async function startGuildBackfill(guild) {
+async function startGuildBackfill(guild, opts = {}) {
   const guildId = guild.id;
   ensureGuildActivitySettings(guildId);
   const settings = getGuildActivitySettings(guildId);
   const watermarkMs = settings?.collect_from_ms ?? Date.now();
+  const maxPagesPerChannel = normalizeMaxPagesPerChannel(
+    opts.maxPagesPerChannel
+  );
 
   if (guildHasActiveBackfill(guildId) || guildJobs.has(guildId)) {
     return {
@@ -314,19 +409,38 @@ async function startGuildBackfill(guild) {
     guild_backfill_messages_counted: 0,
   });
 
+  /** @type {{ promise: Promise<void>, kind: "guild", userId: null, cancelled: boolean }} */
+  const jobState = {
+    promise: null,
+    kind: "guild",
+    userId: null,
+    cancelled: false,
+  };
+
   const job = (async () => {
     let anyPartial = false;
     let error = null;
     let done = 0;
     let messagesCounted = 0;
+    let cancelled = false;
     try {
       for (const ch of channels) {
+        if (jobState.cancelled) {
+          cancelled = true;
+          break;
+        }
         const result = await backfillChannelHistory({
           channel: ch,
           watermarkMs,
           onlyUserId: null,
           cursorMode: "guild",
+          maxPagesPerChannel,
+          isCancelled: () => jobState.cancelled,
         });
+        if (result.cancelled) {
+          cancelled = true;
+          break;
+        }
         done += 1;
         messagesCounted += result.counted || 0;
         if (result.partial || !result.complete) anyPartial = true;
@@ -341,7 +455,13 @@ async function startGuildBackfill(guild) {
       error = e?.message || String(e);
       console.error("[userActivity] guild backfill job failed:", error);
     } finally {
-      const status = error ? "failed" : anyPartial ? "partial" : "done";
+      const status = cancelled
+        ? "cancelled"
+        : error
+          ? "failed"
+          : anyPartial
+            ? "partial"
+            : "done";
       patchGuildActivitySettings(guildId, {
         guild_backfill_status: status,
         guild_backfill_finished_at: Date.now(),
@@ -354,12 +474,93 @@ async function startGuildBackfill(guild) {
     }
   })();
 
-  guildJobs.set(guildId, job);
+  jobState.promise = job;
+  guildJobs.set(guildId, jobState);
   job.catch((e) =>
     console.error("[userActivity] guild backfill unhandled:", e)
   );
 
-  return { started: true, channels: channels.length };
+  return {
+    started: true,
+    channels: channels.length,
+    maxPagesPerChannel,
+  };
+}
+
+/**
+ * Request cancel of the in-process backfill for a guild (guild-wide or per-user).
+ * Cooperative: stops after the current page fetch / sleep at latest.
+ * Also clears stale "running" DB rows if no in-memory job (e.g. after restart).
+ *
+ * @param {string} guildId
+ * @returns {{ cancelled: boolean, kind?: "guild"|"user"|null, reason?: string }}
+ */
+function cancelBackfill(guildId) {
+  const job = guildJobs.get(guildId);
+  if (job) {
+    job.cancelled = true;
+    return {
+      cancelled: true,
+      kind: job.kind,
+      reason:
+        "Cancel requested. The job will stop after the current page (usually within ~1–2s).",
+    };
+  }
+
+  // Stale status after process restart: nothing to stop in memory
+  ensureGuildActivitySettings(guildId);
+  const settings = getGuildActivitySettings(guildId);
+  const guildRunning =
+    settings?.guild_backfill_status === "running" ||
+    settings?.guild_backfill_status === "queued";
+  const runningUserId = findRunningUserBackfill(guildId);
+
+  if (!guildRunning && !runningUserId) {
+    return {
+      cancelled: false,
+      kind: null,
+      reason: "No backfill is running in this server.",
+    };
+  }
+
+  if (guildRunning) {
+    patchGuildActivitySettings(guildId, {
+      guild_backfill_status: "cancelled",
+      guild_backfill_finished_at: Date.now(),
+      guild_backfill_error: "Cancelled (no active worker — process may have restarted).",
+    });
+  }
+  if (runningUserId) {
+    upsertUserActivityMeta(guildId, runningUserId, {
+      backfill_status: "cancelled",
+      backfill_finished_at: Date.now(),
+      backfill_error: "Cancelled (no active worker — process may have restarted).",
+    });
+  }
+
+  return {
+    cancelled: true,
+    kind: guildRunning ? "guild" : "user",
+    reason:
+      "Cleared stale running status (no in-process job). Safe to start a new backfill.",
+  };
+}
+
+/**
+ * @param {string} guildId
+ * @returns {{ active: boolean, kind: "guild"|"user"|null, userId: string|null, cancelling: boolean }}
+ */
+function getBackfillJobInfo(guildId) {
+  const job = guildJobs.get(guildId);
+  if (job) {
+    return {
+      active: true,
+      kind: job.kind,
+      userId: job.userId,
+      cancelling: job.cancelled,
+    };
+  }
+  return { active: false, kind: null, userId: null, cancelling: false };
 }
 
 /** @deprecated use backfillChannelHistory — kept for tests */
@@ -375,10 +576,16 @@ async function backfillChannel(channel, userId, watermarkMs) {
 module.exports = {
   PAGE_SIZE,
   MAX_PAGES_PER_CHANNEL,
+  MIN_PAGES_PER_CHANNEL,
+  ABS_MAX_PAGES_PER_CHANNEL,
   DELAY_MS,
+  normalizeMaxPagesPerChannel,
   listBackfillChannels,
   startUserBackfill,
   startGuildBackfill,
+  cancelBackfill,
+  getBackfillJobInfo,
+  isBackfillCancelled,
   backfillChannel,
   backfillChannelHistory,
 };

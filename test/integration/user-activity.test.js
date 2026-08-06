@@ -142,6 +142,7 @@ describe("integration: user activity", () => {
       subcommandGroup: "backfill",
       subcommand: "all",
       admin: true,
+      options: { max_pages: 10 },
     });
     // defer + editReply path
     const texts = [
@@ -153,16 +154,82 @@ describe("integration: user activity", () => {
       texts,
       /Guild backfill started|already running|Could not start/i
     );
+    if (/Guild backfill started/i.test(texts)) {
+      assert.match(texts, /10.*pages|pages\/channel/i);
+    }
 
     // Wait briefly for background job to settle
     await new Promise((r) => setTimeout(r, 50));
     const settings = env.db.getGuildActivitySettings(env.guild.id);
     assert.ok(settings);
     assert.ok(
-      ["running", "done", "partial", "failed", "none"].includes(
+      ["running", "done", "partial", "failed", "none", "cancelled"].includes(
         settings.guild_backfill_status || "none"
       )
     );
+  });
+
+  it("/activityconfig backfill cancel with no job", async () => {
+    const interaction = await env.runCommand({
+      commandName: "activityconfig",
+      subcommandGroup: "backfill",
+      subcommand: "cancel",
+      admin: true,
+    });
+    assertEphemeralReply(interaction, /No backfill|not running|cancel/i);
+  });
+
+  it("/activityconfig backfill cancel stops a running job", async () => {
+    // Prior tests may have marked channels guild-complete (empty history) — clear
+    env.db.db
+      .prepare(`DELETE FROM guild_channel_backfill_cursor WHERE guild_id=?`)
+      .run(env.guild.id);
+    env.db.patchGuildActivitySettings(env.guild.id, {
+      guild_backfill_status: "none",
+      guild_backfill_error: null,
+    });
+
+    // Non-empty pages + slow fetch so the job is still active when we cancel
+    for (const ch of Object.values(env.channels)) {
+      if (!ch.messages) ch.messages = {};
+      let n = 0;
+      ch.messages.fetch = async () => {
+        n += 1;
+        await new Promise((r) => setTimeout(r, 150));
+        const batch = new Map();
+        // Full page so the walker does not treat history as exhausted
+        for (let i = 0; i < 100; i++) {
+          const id = `${ch.id}-p${n}-m${i}`;
+          batch.set(id, {
+            id,
+            createdTimestamp: Date.now() - 14 * 86400000,
+            author: { id: IDS.member, bot: false },
+          });
+        }
+        return batch;
+      };
+    }
+
+    await env.runCommand({
+      commandName: "activityconfig",
+      subcommandGroup: "backfill",
+      subcommand: "all",
+      admin: true,
+      options: { max_pages: 20 },
+    });
+
+    const cancelIx = await env.runCommand({
+      commandName: "activityconfig",
+      subcommandGroup: "backfill",
+      subcommand: "cancel",
+      admin: true,
+    });
+    assertEphemeralReply(cancelIx, /Cancel requested|Cleared stale|cancel/i);
+
+    // Cooperative stop: after current page + delay (~1.1s)
+    await new Promise((r) => setTimeout(r, 2500));
+    const settings = env.db.getGuildActivitySettings(env.guild.id);
+    assert.equal(settings?.guild_backfill_status, "cancelled");
   });
 
   it("Activity button requires senior staff; admin can open", async () => {

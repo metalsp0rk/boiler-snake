@@ -256,9 +256,11 @@ function buildActivityControlRows(userId, win, page, meta = null) {
       ? "Backfill ✓"
       : meta?.backfill_status === "partial"
         ? "Backfill (partial)"
-        : meta?.backfill_status === "failed"
-          ? "Retry backfill"
-          : "Backfill history";
+        : meta?.backfill_status === "cancelled"
+          ? "Backfill (cancelled)"
+          : meta?.backfill_status === "failed"
+            ? "Retry backfill"
+            : "Backfill history";
 
   const actionRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()

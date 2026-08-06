@@ -562,9 +562,11 @@ Ignore noisy channels/categories and inspect tracking status. See [User Activity
 /activityconfig ignore list
 /activityconfig status
 /activityconfig backfill all
+/activityconfig backfill all max_pages:100
+/activityconfig backfill cancel
 ```
 
-`backfill all` starts a long-running, rate-limited scan (one pass per channel, all human authors). Check progress with `status`.
+`backfill all` starts a long-running, rate-limited scan (one pass per channel, all human authors). Optional `max_pages` (1–500, default 50) caps history depth per channel (100 messages/page). Check progress with `status`. Use `backfill cancel` to stop a running job (or clear a stale `running` status after a restart).
 
 ### `/warn` - Formal Warnings
 

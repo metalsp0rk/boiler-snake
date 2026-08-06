@@ -83,16 +83,31 @@ Discord bots cannot “search the guild for one user’s messages.” History mu
 
 ```bash
 /activityconfig backfill all
+/activityconfig backfill all max_pages:100
 ```
 
 **Manage Server** only.
 
+| Option | Default | Range | Meaning |
+|--------|---------|-------|---------|
+| `max_pages` | **50** | 1–500 | Max history pages **per channel** (100 messages/page → default ≈ **5,000** msgs/channel; max ≈ **50,000**) |
+
 - Walks each eligible text/announcement channel **once**
 - Counts **all** non-bot messages older than the live watermark into daily counters
-- Same rate limits: ~1 page / 1.1s, max **50 × 100** messages per channel
+- Rate limit: ~1 page / 1.1s (independent of `max_pages`)
 - Progress: `/activityconfig status` (`guild_backfill_*` fields)
 - One backfill job per guild at a time (blocks concurrent per-user jobs)
-- Guild channel cursors: completed channels are skipped on re-run (and by per-user backfill)
+- Guild channel cursors: **complete** channels are skipped on re-run; **partial** channels resume from the cursor — raise `max_pages` and re-run to dig deeper
+
+### Cancel
+
+```bash
+/activityconfig backfill cancel
+```
+
+Stops the **in-process** guild-wide or per-user backfill for this server (cooperative: finishes the current page, usually within ~1–2s). Final status becomes **`cancelled`**. Cursors and counts already written are kept — re-run to continue.
+
+If the bot restarted while a job was marked `running`, cancel clears that **stale** status so a new backfill can start.
 
 ### Per-user: Activity button
 

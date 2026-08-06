@@ -13,6 +13,7 @@ const BACKFILL_STATUSES = Object.freeze([
   "done",
   "failed",
   "partial",
+  "cancelled",
 ]);
 
 /**

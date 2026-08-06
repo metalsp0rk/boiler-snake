@@ -23,7 +23,12 @@ const {
 const { requireAdmin } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordUserChannelMessage } = require("./service");
-const { startUserBackfill, startGuildBackfill } = require("./backfill");
+const {
+  startUserBackfill,
+  startGuildBackfill,
+  cancelBackfill,
+  getBackfillJobInfo,
+} = require("./backfill");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -93,6 +98,23 @@ const commands = [
             .setName("all")
             .setDescription(
               "Backfill all users (one history pass per channel). Rate-limited; long-running."
+            )
+            .addIntegerOption((opt) =>
+              opt
+                .setName("max_pages")
+                .setDescription(
+                  "Max history pages per channel (100 msgs/page; default 50 ≈ 5k msgs)"
+                )
+                .setRequired(false)
+                .setMinValue(1)
+                .setMaxValue(500)
+            )
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("cancel")
+            .setDescription(
+              "Stop the in-progress backfill for this server (guild or per-user)."
             )
         )
     ),
@@ -223,7 +245,30 @@ async function handleActivityConfig(interaction, ctx) {
         `• Honeypot channels: always skipped\n` +
         `${gLine}\n` +
         `• Per-user history: senior staff **Backfill** on \`/userinfo\` → Activity\n` +
-        `• All users (preferred): \`/activityconfig backfill all\``,
+        `• All users (preferred): \`/activityconfig backfill all\`\n` +
+        `• Cancel: \`/activityconfig backfill cancel\``,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (group === "backfill" && sub === "cancel") {
+    const result = cancelBackfill(guildId);
+    if (result.cancelled) {
+      await logConfigChange(client, guildId, {
+        title: "Activity backfill cancel",
+        command: "/activityconfig backfill cancel",
+        actor: interaction.user,
+        changes: [
+          result.kind ? `Kind: **${result.kind}**` : "Kind: unknown",
+          result.reason || "Cancelled",
+        ],
+      });
+    }
+    await interaction.reply({
+      content: result.cancelled
+        ? `**Backfill cancel**\n${result.reason || "Cancelled."}`
+        : result.reason || "No backfill running.",
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -238,8 +283,11 @@ async function handleActivityConfig(interaction, ctx) {
       return;
     }
 
+    const maxPagesOpt = interaction.options.getInteger("max_pages");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const result = await startGuildBackfill(interaction.guild);
+    const result = await startGuildBackfill(interaction.guild, {
+      maxPagesPerChannel: maxPagesOpt ?? undefined,
+    });
     if (!result.started) {
       await interaction.editReply({
         content: result.reason || "Could not start guild backfill.",
@@ -247,12 +295,15 @@ async function handleActivityConfig(interaction, ctx) {
       return;
     }
 
+    const pages = result.maxPagesPerChannel ?? 50;
+    const approxMsgs = pages * 100;
     await logConfigChange(client, guildId, {
       title: "Activity guild backfill started",
       command: "/activityconfig backfill all",
       actor: interaction.user,
       changes: [
         `Channels to scan: **${result.channels ?? "?"}**`,
+        `Max pages/channel: **${pages}** (≈${approxMsgs} messages)`,
         "Single pass per channel · all human authors · rate-limited (~1.1s/page)",
       ],
     });
@@ -261,8 +312,9 @@ async function handleActivityConfig(interaction, ctx) {
       content:
         `**Guild backfill started** for **${result.channels ?? "?"}** channels.\n` +
         `Each channel is scanned once; every human author's pre-tracking messages are counted.\n` +
-        `This can take a long time (≈1.1s per 100 messages, max 50 pages/channel).\n` +
-        `Check progress with \`/activityconfig status\`.`,
+        `Cap: **${pages}** pages/channel (≈**${approxMsgs}** messages) · ≈1.1s per page.\n` +
+        `Check progress with \`/activityconfig status\`.\n` +
+        `_If a run stops as **partial**, re-run with a higher \`max_pages\` to continue from cursors._`,
     });
     return;
   }
@@ -282,4 +334,6 @@ module.exports = {
   recordUserChannelMessage,
   startUserBackfill,
   startGuildBackfill,
+  cancelBackfill,
+  getBackfillJobInfo,
 };
