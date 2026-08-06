@@ -640,6 +640,115 @@ describe("integration: tickets", () => {
     );
   });
 
+  it("/ticket panel posts embed + Open ticket button (admin only)", async () => {
+    const denied = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "panel",
+      admin: false,
+      user: env.users.memberUser,
+      options: { channel: env.channels.general },
+    });
+    assertEphemeralReply(denied, /permission/i);
+
+    const beforeCount = env.channels.general.sent?.length || 0;
+    const panel = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "panel",
+      admin: true,
+      options: {
+        channel: env.channels.general,
+        title: "Need help?",
+        description: "Press the button to open a ticket.",
+      },
+    });
+    assertReplyContains(panel, /Posted ticket panel/i);
+
+    const afterCount = env.channels.general.sent?.length || 0;
+    assert.ok(afterCount > beforeCount, "expected panel message in channel");
+    const lastPayload = env.channels.general.sent[afterCount - 1];
+    assert.ok(lastPayload.embeds?.length >= 1);
+    assert.ok(lastPayload.components?.length >= 1);
+
+    const ticketsFeature = require("../../src/features/tickets");
+    const row = lastPayload.components[0];
+    const rowJson = typeof row.toJSON === "function" ? row.toJSON() : row;
+    const components = rowJson.components || row.components || [];
+    const btn = components[0];
+    const btnJson = typeof btn?.toJSON === "function" ? btn.toJSON() : btn;
+    assert.equal(
+      btnJson?.custom_id || btnJson?.customId || btn?.data?.custom_id,
+      ticketsFeature.BTN_OPEN
+    );
+  });
+
+  it("panel button shows modal; modal submit creates ticket", async () => {
+    env.db.updateGuildSettings(env.guild.id, {
+      ticket_rate_limit_minutes: 0,
+    });
+
+    const ticketsFeature = require("../../src/features/tickets");
+    const { createModalSubmitInteraction } = require("../helpers/discord");
+
+    const btn = await env.runButton({
+      customId: ticketsFeature.BTN_OPEN,
+      admin: false,
+      user: env.users.member2User,
+    });
+    assert.equal(btn.modals.length, 1);
+    const modal = btn.modals[0];
+    const modalJson =
+      typeof modal.toJSON === "function" ? modal.toJSON() : modal;
+    assert.equal(
+      modalJson.custom_id || modalJson.customId,
+      ticketsFeature.MODAL_CREATE
+    );
+
+    const reason = `panel-modal-${Date.now()}`;
+    const modalIx = createModalSubmitInteraction({
+      customId: ticketsFeature.MODAL_CREATE,
+      guild: env.guild,
+      user: env.users.member2User,
+      member: env.members.member2,
+      admin: false,
+      client: env.client,
+      fields: { reason },
+    });
+    await env.handleInteraction(modalIx, env.ctx);
+
+    const content = env.lastReplyContent(modalIx);
+    assert.match(content, /Ticket|opened/i);
+
+    const open = env.db.listOpenTickets(env.guild.id, {
+      userId: IDS.member2,
+      limit: 10,
+    });
+    const ticket = open.find((t) => t.reason === reason);
+    assert.ok(ticket, "expected ticket from panel modal");
+    assert.equal(ticket.opened_by_staff_id, null);
+  });
+
+  it("panel button respects self-create rate limit", async () => {
+    env.db.updateGuildSettings(env.guild.id, {
+      ticket_rate_limit_minutes: 60,
+    });
+    // Seed a recent self-create for memberUser
+    env.db.createTicket({
+      guildId: env.guild.id,
+      creatorUserId: IDS.member,
+      channelId: `ch-rl-panel-${Date.now()}`,
+      reason: "seed for rate limit",
+    });
+
+    const ticketsFeature = require("../../src/features/tickets");
+    const btn = await env.runButton({
+      customId: ticketsFeature.BTN_OPEN,
+      admin: false,
+      user: env.users.memberUser,
+    });
+    assert.equal(btn.modals.length, 0);
+    assertEphemeralReply(btn, /too quickly|rate limit/i);
+  });
+
   it("close without archive channel still soft-closes; archive still works", async () => {
     const ticket = await openViaStaff({
       reason: "no-archive-channel",

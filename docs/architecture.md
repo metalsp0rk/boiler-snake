@@ -50,7 +50,7 @@ src/
 │   ├── staffNotes/          # /note staff-only private notes
 │   ├── warnings/            # /warn + /setwarn formal disciplinary records
 │   ├── userinfo/            # /userinfo staff card + note/warn buttons
-│   └── tickets/             # /ticket support channels + archive HTTP
+│   └── tickets/             # /ticket support channels + panel button/modal + archive HTTP
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch
@@ -172,6 +172,7 @@ Used by message XP, reaction XP, and voice ticker:
 | **honeypot** | Channel posts / ban-roles; warning PNG; exempt roles |
 | **reactionRoles** | Bot panels, min level, removable options |
 | **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |
+| **tickets** | Support channels, sensitive mode, panel button→modal, HTML archive HTTP |
 
 ---
 
@@ -186,7 +187,7 @@ npm run register   # node src/commands/register.js
 - `DEV_GUILD_ID` set → that guild only (instant)
 - else → every guild the bot is in
 
-Router: `commands/router.js` → autocomplete / modal submit / chat input → channel restriction (chat) → handler.
+Router: `commands/router.js` → autocomplete / modal submit / button / chat input → channel restriction (chat) → handler.
 
 Public: `/xp`, `/leaderboard`, `/eventreminder` opt-out/status (and create for event creators). Admin/staff (ManageGuild today via `requireStaff` / `isAdminOrMod`): most config, including `/note`. `/setcommandchannel` always allowed for admins (lockout escape).
 

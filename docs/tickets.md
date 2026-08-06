@@ -6,9 +6,10 @@ Private per-server support tickets: members open a channel with staff, staff res
 
 ```
 Member /ticket create [reason]
+   or   panel button → modal (description)
         → rate limit (default 1 self-create / 60 min)
         → channel ticket-N under configured category
-        → overwrites: @everyone deny view; members + each staff role allow
+        → overwrites: @everyone deny view; members + each senior staff role allow
         → welcome embed
 
 Staff /ticket claim · adduser · sensitive · close · archive
@@ -43,7 +44,8 @@ Configure: `/staff role add role level`, `/staff role setlevel`, `/staff role li
 4. Optional category: `/ticket setcategory` (Manage Server). Ensure the bot is allowed to create channels under that category.
 5. Archive channel (staff-only in Discord perms): `/ticket setarchive`.
 6. Optional rate limit: `/ticket setratelimit` (default **60** minutes; `0` = off).
-7. Optional transcript HTTP (for clickable HTML links + staff index):
+7. Optional public entry panel: `/ticket panel` (Manage Server) — posts an embed with **Open a ticket** → modal for the description (same pipeline and rate limit as `/ticket create`).
+8. Optional transcript HTTP (for clickable HTML links + staff index):
 
 ```bash
 TICKET_HTTP_PORT=8080
@@ -68,7 +70,7 @@ ticket-transcripts/{guild_id}/{uuid}/assets/001_photo.png
 
 Reverse-proxy TLS in front of the bot process. The index is **not** Discord-login-gated (MVP) — keep the host private (VPN, basic auth, firewall). Sensitive tickets never appear on the index (no content archive). Still treat the Discord archive channel as staff-only.
 
-8. Optional AI summaries (non-sensitive closes only):
+9. Optional AI summaries (non-sensitive closes only):
 
 ```bash
 AI_API_KEY=...
@@ -82,9 +84,10 @@ Without an API key, archives use a stats + close-reason fallback summary.
 
 ### Everyone
 
-| Command | Description |
-|---------|-------------|
+| Command / UI | Description |
+|--------------|-------------|
 | `/ticket create [reason]` | Open a ticket for yourself (rate-limited) |
+| **Open a ticket** panel button | Opens a modal for the description, then creates a ticket (same rate limit) |
 | `/ticket settings` | Show category, archive channel, rate limit, staff roles |
 
 ### Staff (`requireStaff`)
@@ -112,6 +115,17 @@ Lifecycle commands work **inside the ticket channel** even if command-channel re
 | `/ticket setcategory` | Parent category for new tickets |
 | `/ticket setarchive` | Channel for close embeds + transcript links |
 | `/ticket setratelimit` | Minutes between self-creates (`0` = off) |
+| `/ticket panel [channel] [title] [description]` | Post a public **Open a ticket** panel (button → modal) |
+
+## Ticket panel (button → modal)
+
+1. Admin runs `/ticket panel` in (or targeting) a public channel.
+2. The bot posts an embed with a persistent **Open a ticket** button.
+3. Members click the button → Discord modal asks for a short description.
+4. On submit, the bot runs the same self-create pipeline as `/ticket create` (rate limit, channel, overwrites, welcome embed).
+5. The member gets an ephemeral link to the new ticket channel.
+
+Panels are plain bot messages (no DB row). Delete the Discord message to remove a panel, or post another with `/ticket panel`. Re-register slash commands after deploy if `/ticket panel` is missing.
 
 ## Sensitive tickets
 
@@ -158,10 +172,10 @@ Optional env for media mirroring:
 
 ## Not in MVP
 
-- Panel message + “Open ticket” button → modal
 - Discord OAuth gate on `/t/{uuid}`
 - Concurrent open-ticket caps
 - Re-download / re-mirror media for tickets archived before local assets existed
+- Stored panel registry (list/edit/delete via commands) — delete the Discord message or repost
 
 ## Related
 
