@@ -10,9 +10,9 @@ const {
   getXp,
   topUsers,
 } = require("../../db");
-const { levelFromXp, validateXpValue } = require("../../core/xpMath");
+const { levelFromXp, validateXpValue, MAX_XP_AWARD } = require("../../core/xpMath");
 const { key, isOnCooldown, sweepCooldownMap } = require("../../core/cooldowns");
-const { isStaff } = require("../../core/permissions");
+const { isStaff, requireAdmin } = require("../../core/permissions");
 const { awardXp } = require("../../services/awardXp");
 const { renderLeaderboardPng } = require("../../render/leaderboard");
 const { logConfigChange, diffConfigLines } = require("../logs/auditLog");
@@ -73,6 +73,29 @@ const commands = [
         .setName("reactioncooldown")
         .setDescription("Reaction XP cooldown seconds")
         .setMinValue(0)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("grantxp")
+    .setDescription("Grant XP to a user (admin only).")
+    .setDefaultMemberPermissions(adminPerms)
+    .addUserOption((opt) =>
+      opt.setName("user").setDescription("User to grant XP to").setRequired(true)
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName("amount")
+        .setDescription("XP to grant")
+        .setMinValue(1)
+        .setMaxValue(MAX_XP_AWARD)
+        .setRequired(true)
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName("reason")
+        .setDescription("Optional reason (shown in audit log)")
+        .setMaxLength(200)
         .setRequired(false)
     ),
 ];
@@ -195,6 +218,76 @@ async function handleSetXp(interaction, ctx) {
 }
 
 /**
+ * Admin-only: grant XP to a member. Runs the full award pipeline (roles + audit).
+ */
+async function handleGrantXp(interaction, ctx) {
+  const { client } = ctx;
+  if (!(await requireAdmin(interaction))) return;
+
+  const target = interaction.options.getUser("user", true);
+  const amount = interaction.options.getInteger("amount", true);
+  const reason = interaction.options.getString("reason");
+
+  if (target.bot) {
+    await interaction.reply({
+      content: "You can’t grant XP to bots.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const amountError = validateXpValue(amount, "Grant");
+  if (amountError) {
+    await interaction.reply({ content: amountError, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (amount < 1) {
+    await interaction.reply({
+      content: "Amount must be at least 1.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const guildId = interaction.guildId;
+  const settings = getGuildSettings(guildId);
+  const beforeXp = getXp(guildId, target.id);
+
+  const { newXp, level } = await awardXp(client, {
+    guild: interaction.guild,
+    userId: target.id,
+    delta: amount,
+    activityKind: "admin_grant",
+    levelXpFactor: settings.level_xp_factor,
+    source: "admin_grant",
+  });
+
+  const levelText = level != null ? String(level) : levelFromXp(newXp, settings.level_xp_factor);
+  const reasonText = reason?.trim() ? reason.trim() : null;
+
+  await logConfigChange(client, guildId, {
+    title: "XP granted",
+    command: "/grantxp",
+    actor: interaction.user,
+    changes: [
+      `Target: <@${target.id}> (\`${target.id}\`)`,
+      `Amount: **+${amount.toLocaleString()}** XP`,
+      `XP: **${beforeXp.toLocaleString()}** → **${newXp.toLocaleString()}**`,
+      `Level: **${levelText}**`,
+      reasonText ? `Reason: ${reasonText}` : null,
+    ].filter(Boolean),
+  }).catch(() => {});
+
+  await interaction.reply({
+    content:
+      `Granted **${amount.toLocaleString()}** XP to **${target.username}**.\n` +
+      `Now **${newXp.toLocaleString()} XP** (Level **${levelText}**)` +
+      (reasonText ? `\nReason: ${reasonText}` : ""),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
  * Award message XP. Returns true if this path consumed the event for XP purposes
  * (callers still run honeypot/cache before this).
  */
@@ -259,6 +352,7 @@ module.exports = {
     xp: handleXp,
     leaderboard: handleLeaderboard,
     setxp: handleSetXp,
+    grantxp: handleGrantXp,
   },
   registerEvents,
   start,

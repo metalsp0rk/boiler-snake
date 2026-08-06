@@ -100,16 +100,16 @@ npm run register
 - Only when a role actually changes (no log if the member already had the role)
 
 **Level role granted / removed**
-- After XP-driven `syncMemberRoles` (message, reaction, or voice XP) when roles change
+- After XP-driven `syncMemberRoles` (message, reaction, voice XP, or `/grantxp`) when roles change
 - After daily decay when level→role grace drops fire
 - After decay when reaction-claim roles are stripped for min level
 - Batched per user per sync (all granted/removed roles in one embed)
-- Source field: `XP / level sync`, `XP decay (level→role)`, or `XP decay (reaction role min level)`
+- Source field: `XP / level sync`, `XP decay (level→role)`, `XP decay (reaction role min level)`, or `Admin /grantxp`
 
 **Admin configuration changes** (purple embeds)
 - Who changed settings, which slash command, and a before→after (or action) summary
 - Covers successful mutations for:
-  - `/setlog`, `/setxp`, `/setdecay`
+  - `/setlog`, `/setxp`, `/setdecay`, `/grantxp`
   - `/leveltorole` set/remove
   - `/setcommandchannel` add/remove
   - `/youtube` add/remove, `/setyoutube` *
