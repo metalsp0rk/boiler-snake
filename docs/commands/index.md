@@ -563,7 +563,14 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 ```bash
 /setwarn dm enabled:false
 /setwarn dm enabled:true
+/setwarn log channel:#warn-log
+/setwarn log clear:true
 ```
+
+| Subcommand | Description |
+|------------|-------------|
+| `dm` | Toggle member DMs on issue/void |
+| `log` | Dedicated channel for warning issue/void embeds (falls back to `/setlog audit` when cleared) |
 
 **Permission**: Manage Server only.
 
@@ -619,6 +626,7 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 | `/warn count` | Staff gate | Yes |
 | `/warn settings` | Staff gate | Yes |
 | `/setwarn dm` | ManageGuild | Yes |
+| `/setwarn log` | ManageGuild | Yes |
 
 ---
 

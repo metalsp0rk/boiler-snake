@@ -1,7 +1,7 @@
 /**
  * Warning system — permanent formal disciplinary records.
  *
- * Slash: /warn add|list|info|void|count|mine|settings, /setwarn dm
+ * Slash: /warn add|list|info|void|count|mine|settings, /setwarn dm|log
  * Staff ops: requireStaff. /warn mine: any member (own history).
  * /setwarn: ManageGuild only.
  */
@@ -11,6 +11,7 @@ const {
   PermissionFlagsBits,
   MessageFlags,
   EmbedBuilder,
+  ChannelType,
 } = require("discord.js");
 const {
   createWarning,
@@ -25,7 +26,7 @@ const {
   MAX_WARN_REASON,
 } = require("../../db");
 const { requireStaff, requireAdmin } = require("../../core/permissions");
-const { logConfigChange } = require("../logs/auditLog");
+const { logConfigChange, logWarnEvent } = require("../logs/auditLog");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -174,7 +175,33 @@ const commands = [
             .setDescription("Send DMs when warnings are issued or voided")
             .setRequired(true)
         )
-    ),
+    )
+    .addSubcommand((sc) => {
+      const sub = sc
+        .setName("log")
+        .setDescription(
+          "Set a dedicated staff channel for warning issue/void logs."
+        );
+      sub.addChannelOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("Channel for warning issue/void embeds")
+          .setRequired(false)
+          .addChannelTypes(
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement
+          )
+      );
+      sub.addBooleanOption((opt) =>
+        opt
+          .setName("clear")
+          .setDescription(
+            "Clear dedicated warn log (fall back to audit log only)"
+          )
+          .setRequired(false)
+      );
+      return sub;
+    }),
 ];
 
 /**
@@ -292,6 +319,7 @@ async function handleSetwarn(interaction, ctx) {
 
   const sub = interaction.options.getSubcommand();
   if (sub === "dm") return handleSetDm(interaction, ctx);
+  if (sub === "log") return handleSetLog(interaction, ctx);
 
   await interaction.reply({
     content: `Unknown subcommand: \`${sub}\``,
@@ -358,7 +386,7 @@ async function handleAdd(interaction, ctx) {
   const activeCount = countActiveWarnings(interaction.guildId, target.id);
   const ref = formatWarnRef(warn.warning_number);
 
-  await logConfigChange(interaction.client, interaction.guildId, {
+  await logWarnEvent(interaction.client, interaction.guildId, {
     title: "Warning issued",
     command: "/warn add",
     actor: interaction.user,
@@ -574,7 +602,7 @@ async function handleVoid(interaction, ctx) {
   const activeCount = countActiveWarnings(interaction.guildId, warn.user_id);
   const ref = formatWarnRef(warn.warning_number);
 
-  await logConfigChange(interaction.client, interaction.guildId, {
+  await logWarnEvent(interaction.client, interaction.guildId, {
     title: "Warning voided",
     command: "/warn void",
     actor: interaction.user,
@@ -741,15 +769,29 @@ async function handleMine(interaction) {
 async function handleSettings(interaction) {
   const dmOn = warnDmEnabled(interaction.guildId);
   const settings = getGuildSettings(interaction.guildId);
+  const dedicated = settings.warn_log_channel_id
+    ? `<#${settings.warn_log_channel_id}>`
+    : null;
   const audit = settings.audit_log_channel_id
     ? `<#${settings.audit_log_channel_id}>`
-    : "_not set_ (`/setlog audit`)";
+    : null;
+
+  let logLine;
+  if (dedicated) {
+    logLine = `Warning log: ${dedicated} (dedicated; \`/setwarn log\`)`;
+  } else if (audit) {
+    logLine =
+      `Warning log: ${audit} (fallback to audit log; set dedicated with \`/setwarn log\`)`;
+  } else {
+    logLine =
+      "Warning log: _not set_ (`/setwarn log` or `/setlog audit`)";
+  }
 
   await interaction.reply({
     content:
       `**Warning system settings**\n` +
       `Member DMs on issue/void: **${dmOn ? "on" : "off"}** (toggle: \`/setwarn dm\`)\n` +
-      `Staff audit log: ${audit}\n` +
+      `${logLine}\n` +
       `Max reason length: **${MAX_WARN_REASON}** characters\n` +
       `\n**Access:** staff gate — Manage Server or any role in \`/staff role list\`.\n` +
       `**Members:** \`/warn mine\` to view their own warnings.\n` +
@@ -785,6 +827,72 @@ async function handleSetDm(interaction, ctx) {
       (enabled
         ? "Members will be DMed when a warning is issued or voided (unless `silent:true` on issue)."
         : "Members will not be DMed. Staff can still use `/warn list` / audit logs."),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
+ * Configure dedicated warning log channel.
+ * Issue/void embeds prefer this channel; fall back to audit log when unset.
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleSetLog(interaction, ctx) {
+  const clear = interaction.options.getBoolean("clear") === true;
+  const ch = interaction.options.getChannel("channel", false);
+  const settings = getGuildSettings(interaction.guildId);
+  const beforeId = settings.warn_log_channel_id;
+
+  if (clear) {
+    await logConfigChange(interaction.client, interaction.guildId, {
+      title: "Warning log channel cleared",
+      command: "/setwarn log",
+      actor: interaction.user,
+      changes: [
+        beforeId
+          ? `Warn log: <#${beforeId}> → *none* (fallback to audit log)`
+          : "Warn log: was already unset",
+      ],
+    }).catch(() => {});
+    updateGuildSettings(interaction.guildId, { warn_log_channel_id: null });
+    const auditFallback = settings.audit_log_channel_id
+      ? ` Issue/void will use audit log <#${settings.audit_log_channel_id}>.`
+      : " No audit log is set either — issue/void will not post channel embeds until one is configured.";
+    await interaction.reply({
+      content:
+        `Dedicated warning log channel cleared.${auditFallback}`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (!ch) {
+    await interaction.reply({
+      content:
+        "Provide a `channel` or set `clear:true`.\n" +
+        "Example: `/setwarn log channel:#warn-log`",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  updateGuildSettings(interaction.guildId, { warn_log_channel_id: ch.id });
+
+  await logConfigChange(interaction.client, interaction.guildId, {
+    title: "Warning log channel set",
+    command: "/setwarn log",
+    actor: interaction.user,
+    changes: [
+      beforeId
+        ? `Warn log: <#${beforeId}> → <#${ch.id}>`
+        : `Warn log: *none* → <#${ch.id}>`,
+    ],
+  }).catch(() => {});
+
+  await interaction.reply({
+    content:
+      `Warning issue/void embeds will post to ${ch}.\n` +
+      `General audit log (\`/setlog audit\`) is unchanged. Clear with \`/setwarn log clear:true\` to fall back to the audit channel.`,
     flags: MessageFlags.Ephemeral,
   });
 }

@@ -99,6 +99,8 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `youtube_polling_interval_minutes` | 5 | YouTube API check frequency |
 | `audit_log_channel_id` | *(none)* | Channel for bans, kicks, role-change embeds |
 | `message_log_channel_id` | *(none)* | Channel for deleted-message embeds |
+| `warn_log_channel_id` | *(none)* | Dedicated warning issue/void log; falls back to audit log |
+| `warn_dm_members` | `1` | DM members on warn issue/void (`0` = off) |
 | `ticket_category_id` | *(none)* | Parent category for open tickets |
 | `ticket_archive_channel_id` | *(none)* | Staff channel for close summaries / transcripts |
 | `ticket_rate_limit_minutes` | 60 | Minutes between member self-creates (`0` = off) |

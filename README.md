@@ -112,6 +112,7 @@ Admin/mod commands (requires **Manage Guild** by default):
 - `/note add|list|edit|delete|info|settings` — private staff notes about members
 - `/warn add|list|info|void|count|mine|settings` — formal permanent warnings
 - `/setwarn dm` — toggle member DMs on warn issue/void
+- `/setwarn log` — dedicated channel for warning issue/void embeds (falls back to audit log)
 - `/userinfo user:<member>` — staff card (XP + note/warning counts + drill-down buttons)
 
 ## Database Backup

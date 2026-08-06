@@ -166,6 +166,8 @@ CREATE TABLE guild_settings (
 
   audit_log_channel_id TEXT,                     -- NULL when not configured
   message_log_channel_id TEXT,                   -- NULL when not configured
+  warn_log_channel_id TEXT,                      -- NULL → warn issue/void fall back to audit log
+  warn_dm_members INTEGER NOT NULL DEFAULT 1,
   
   updated_at INTEGER NOT NULL
 );
@@ -182,6 +184,8 @@ CREATE TABLE guild_settings (
 | `decay_enabled` | 1 | Enable decay (boolean) |
 | `audit_log_channel_id` | NULL | Staff audit log channel |
 | `message_log_channel_id` | NULL | Deleted-message log channel |
+| `warn_log_channel_id` | NULL | Dedicated warning log (optional) |
+| `warn_dm_members` | 1 | DM members on warn issue/void |
 | `decay_window_days` | 7 | Time window for activity check |
 | `decay_min_messages` | 20 | Minimum messages to avoid decay |
 | `decay_percent` | 0.10 | XP reduction fraction (10%) |

@@ -207,6 +207,95 @@ describe("integration: warnings", () => {
     });
   });
 
+  it("/setwarn log sets dedicated channel and routes issue embeds", async () => {
+    const warnCh = env.channels.log;
+    const auditCh = env.channels.general;
+    warnCh.sent.length = 0;
+    auditCh.sent.length = 0;
+
+    // Prefer dedicated warn log over general audit
+    env.db.updateGuildSettings(env.guild.id, {
+      audit_log_channel_id: auditCh.id,
+      warn_log_channel_id: null,
+    });
+
+    const denied = await env.runCommand({
+      commandName: "setwarn",
+      subcommand: "log",
+      admin: false,
+      user: env.users.memberUser,
+      options: { channel: warnCh },
+    });
+    assertEphemeralReply(denied, /permission/i);
+
+    const set = await env.runCommand({
+      commandName: "setwarn",
+      subcommand: "log",
+      admin: true,
+      options: { channel: warnCh },
+    });
+    assertEphemeralReply(set);
+    assertReplyContains(set, /Warning issue|warn/i);
+    assert.equal(
+      env.db.getGuildSettings(env.guild.id).warn_log_channel_id,
+      warnCh.id
+    );
+
+    const beforeWarnSent = warnCh.sent.length;
+    const beforeAuditSent = auditCh.sent.length;
+
+    const add = await env.runCommand({
+      commandName: "warn",
+      subcommand: "add",
+      admin: true,
+      options: {
+        user: env.users.memberUser,
+        reason: "Routed to dedicated warn log",
+        silent: true,
+      },
+    });
+    assertEphemeralReply(add);
+
+    assert.ok(
+      warnCh.sent.length > beforeWarnSent,
+      "issue embed should post to dedicated warn log"
+    );
+    assert.equal(
+      auditCh.sent.length,
+      beforeAuditSent,
+      "issue embed should not also go to audit when warn log is set"
+    );
+
+    const clear = await env.runCommand({
+      commandName: "setwarn",
+      subcommand: "log",
+      admin: true,
+      options: { clear: true },
+    });
+    assertEphemeralReply(clear);
+    assert.equal(
+      env.db.getGuildSettings(env.guild.id).warn_log_channel_id,
+      null
+    );
+
+    // After clear, issue/void fall back to audit log
+    const afterClearAudit = auditCh.sent.length;
+    await env.runCommand({
+      commandName: "warn",
+      subcommand: "add",
+      admin: true,
+      options: {
+        user: env.users.member2User,
+        reason: "Fallback to audit after clear",
+        silent: true,
+      },
+    });
+    assert.ok(
+      auditCh.sent.length > afterClearAudit,
+      "issue embed should fall back to audit log"
+    );
+  });
+
   it("/warn settings shows access and dm flag", async () => {
     const interaction = await env.runCommand({
       commandName: "warn",
@@ -214,7 +303,7 @@ describe("integration: warnings", () => {
       admin: true,
     });
     assertEphemeralReply(interaction);
-    assertReplyContains(interaction, /Access|DM|staff/i);
+    assertReplyContains(interaction, /Access|DM|staff|log/i);
   });
 
   it("/warn add rejects bots", async () => {

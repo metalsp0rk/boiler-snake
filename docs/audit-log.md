@@ -4,12 +4,13 @@ Staff-facing Discord channel logs for moderation and role activity.
 
 ## Overview
 
-Boiler Snake can post rich embeds to **two independently configured channels**:
+Boiler Snake can post rich embeds to independently configured channels:
 
 | Stream | Setting | Events |
 |--------|---------|--------|
-| **Audit log** | `audit_log_channel_id` | Bans, kicks, reaction-role changes, level→role grants/drops (including after XP decay) |
+| **Audit log** | `audit_log_channel_id` | Bans, kicks, reaction-role changes, level→role grants/drops (including after XP decay), config changes |
 | **Message log** | `message_log_channel_id` | Single and bulk message deletes |
+| **Warning log** (optional) | `warn_log_channel_id` | Warning issue/void embeds; when unset, those events fall back to the **audit log** |
 
 Raw XP gain/decay amounts are **not** logged. Only **role changes** caused by XP/level systems appear in the audit log.
 
@@ -41,6 +42,13 @@ In each log channel, the bot needs:
 /setlog show
 ```
 
+Optional dedicated channel for formal warnings (see [Warning System](warnings.md)):
+
+```bash
+/setwarn log channel:#warn-log
+/setwarn log clear:true
+```
+
 Clear a stream (disable it):
 
 ```bash
@@ -48,7 +56,7 @@ Clear a stream (disable it):
 /setlog message clear:true
 ```
 
-Also shown under **Logs** in `/settings`.
+Also shown under **Logs** in `/settings`. Warning log target is listed in `/warn settings`.
 
 Re-register slash commands after updating the bot:
 

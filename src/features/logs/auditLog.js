@@ -117,10 +117,24 @@ function memberLabel(member) {
   return userLabel(u);
 }
 
+/**
+ * Resolve the Discord channel for a log stream.
+ * @param {import('discord.js').Client} client
+ * @param {string} guildId
+ * @param {"audit"|"message"|"warn"} kind
+ * @returns {Promise<object|null>}
+ */
 async function resolveLogChannel(client, guildId, kind) {
   const settings = getGuildSettings(guildId);
-  const channelId =
-    kind === "message" ? settings.message_log_channel_id : settings.audit_log_channel_id;
+  let channelId = null;
+  if (kind === "message") {
+    channelId = settings.message_log_channel_id;
+  } else if (kind === "warn") {
+    // Dedicated warn channel when set; otherwise fall back to general audit log.
+    channelId = settings.warn_log_channel_id || settings.audit_log_channel_id;
+  } else {
+    channelId = settings.audit_log_channel_id;
+  }
   if (!channelId) return null;
 
   try {
@@ -156,6 +170,10 @@ async function sendAuditLog(client, guildId, payload) {
 
 async function sendMessageLog(client, guildId, payload) {
   return sendToLogChannel(client, guildId, "message", payload);
+}
+
+async function sendWarnLog(client, guildId, payload) {
+  return sendToLogChannel(client, guildId, "warn", payload);
 }
 
 /**
@@ -831,12 +849,26 @@ async function logConfigChange(client, guildId, opts) {
   await sendAuditLog(client, guildId, { embeds: [embed] });
 }
 
+/**
+ * Post a warning issue/void staff embed.
+ * Prefers `warn_log_channel_id`; falls back to `audit_log_channel_id`.
+ * @param {import('discord.js').Client} client
+ * @param {string} guildId
+ * @param {object} opts Same as buildConfigChangeEmbed
+ */
+async function logWarnEvent(client, guildId, opts) {
+  if (!client || !guildId) return;
+  const embed = buildConfigChangeEmbed(opts);
+  await sendWarnLog(client, guildId, { embeds: [embed] });
+}
+
 module.exports = {
   cacheMessage,
   getCachedMessage,
   takeCachedMessage,
   sendAuditLog,
   sendMessageLog,
+  sendWarnLog,
   fetchRecentAuditEntry,
   buildMessageDeleteEmbed,
   buildMessageBulkDeleteEmbed,
@@ -856,6 +888,7 @@ module.exports = {
   logReactionRoleChange,
   logLevelRoleChanges,
   logConfigChange,
+  logWarnEvent,
   AuditLogEvent,
   BULK_SAMPLE_LIMIT,
 };

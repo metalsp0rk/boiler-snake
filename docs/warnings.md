@@ -63,6 +63,8 @@ All replies are **ephemeral**. Staff logs go to the configured audit channel whe
 | Command | Description |
 |---------|-------------|
 | `/setwarn dm enabled:<true\|false>` | Toggle member DMs on issue/void (default **true**) |
+| `/setwarn log channel:<#channel>` | Dedicated staff channel for issue/void embeds |
+| `/setwarn log clear:true` | Clear dedicated warn log (fall back to audit log) |
 
 ### Everyone
 
@@ -93,9 +95,20 @@ On void (if DMs on): short notice that `W-n` was voided, by whom, and void reaso
 
 **DM failure never rolls back** the warning. Staff still get the ephemeral confirm.
 
-## Audit log
+## Staff log (issue / void)
 
-When an audit log channel is configured (`/setlog audit`), issue and void post a config-style embed with warning ref, subject, active count, and a short reason snippet.
+Issue and void post a staff embed (warning ref, subject, active count, short reason snippet) to:
+
+1. **Dedicated warning log** when set via `/setwarn log channel:#…` (`guild_settings.warn_log_channel_id`)
+2. Otherwise the **general audit log** (`/setlog audit` → `audit_log_channel_id`)
+3. If neither is set, no channel embed is posted (commands still work)
+
+Config changes (`/setwarn dm`, `/setwarn log`) always use the general audit log stream when configured.
+
+```bash
+/setwarn log channel:#warn-log
+/setwarn log clear:true
+```
 
 ## Access
 
@@ -111,6 +124,7 @@ There is **no** warnings-specific role table. Access shares the guild [staff rol
 
 ```sql
 -- guild_settings.warn_dm_members INTEGER NOT NULL DEFAULT 1
+-- guild_settings.warn_log_channel_id TEXT  -- NULL → fall back to audit_log_channel_id
 
 CREATE TABLE warnings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
