@@ -20,6 +20,7 @@ docker compose run --rm bot node src/commands/register.js
 - **Never commit secrets**: Do not put real or realistic-looking API keys, tokens, passwords, or credentials in the repo — including docs, examples, tests, comments, or commit messages. Use clearly fake placeholders (e.g. `YOUR_YOUTUBE_API_KEY`, `YOUR_BOT_TOKEN`). Real secrets belong only in `.env` (gitignored) or a secret manager. Patterns like Google `AIza…` keys trigger GitHub secret scanning even in documentation.
 - **Discord Intents**: Enable "Message Content Intent" in Developer Portal for reliable message tracking.
 - **Releases**: Conventional Commits + release-please on `main` → GitHub Release + GHCR image (`ghcr.io/metalsp0rk/boiler-snake`).
+- **PR merges**: Use **rebase merge** only (`gh pr merge --rebase --delete-branch`). Do **not** use merge commits (`--merge`) or squash unless the user explicitly asks. Prefer linear history on `main`.
 
 ## Key Commands
 
