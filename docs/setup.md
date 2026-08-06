@@ -101,8 +101,9 @@ Use Discord's [OAuth2 URL Generator](https://discord.com/developers/applications
 - ✅ Ban Members *(required for [honeypot channels](honeypot.md))*
 
 **Ticket system notes:**
-- The bot role must sit **above** every role listed in `/staff role list` (otherwise Discord rejects private ticket overwrites with Missing Permissions).
+- The bot role must sit **above** every **senior** staff role (ticket overwrites). Otherwise Discord rejects private ticket overwrites with Missing Permissions.
 - Prefer a ticket category via `/ticket setcategory` and ensure the bot can create channels there.
+- Staff levels: `/staff role add … level:senior` for ticket visibility; `level:junior` for staff commands without auto-seeing every ticket.
 - ✅ Manage Messages *(recommended so honeypot messages can be deleted, and so [reaction-role](reaction-roles.md) panels can strip unconfigured reactions)*
 - ✅ View Audit Log *(recommended for [audit / message logs](audit-log.md) — attribute bans, kicks, and deletes)*
 

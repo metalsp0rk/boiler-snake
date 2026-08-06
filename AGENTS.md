@@ -54,7 +54,7 @@ See [docs/architecture.md](docs/architecture.md) for the full layout and boot se
 1. **Cooldowns**: message (default 20s), reaction (default 10s) — configurable per guild
 2. **Voice XP**: ignore AFK; ≥2 eligible humans; no XP if muted/deafened
 3. **Command channels**: empty allow-list → everywhere; `/setcommandchannel` always for admins
-4. **Admin gate**: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` public; staff/config commands use `requireStaff` (ManageGuild **or** `staff_roles`); `/setwarn`, ticket `set*`, and staff-role edits are ManageGuild-only
+4. **Admin gate**: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` public; staff/config commands use `requireStaff` (ManageGuild **or** any `staff_roles` level); `/setwarn`, ticket `set*`, and staff-role edits are ManageGuild-only. **Ticket channel overwrites** use **senior** staff roles only (junior = command gate without auto ticket view)
 5. **Bot role** must be above roles it manages
 6. **XP caps**: max award 1e9 per event; DB/JS-safe totals
 7. **Level→role drop**: grace days after falling below threshold

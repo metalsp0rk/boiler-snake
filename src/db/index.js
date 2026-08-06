@@ -76,11 +76,17 @@ module.exports = {
   cleanupOldNotifications: youtube.cleanupOldNotifications,
   cleanupMalformedYoutubeChannels: youtube.cleanupMalformedYoutubeChannels,
 
-  // staff roles (generalized from honeypot_exempt_roles)
+  // staff roles (generalized from honeypot_exempt_roles; junior | senior)
+  STAFF_LEVELS: staffRoles.STAFF_LEVELS,
+  normalizeStaffLevel: staffRoles.normalizeStaffLevel,
   addStaffRole: staffRoles.addStaffRole,
+  setStaffRoleLevel: staffRoles.setStaffRoleLevel,
   removeStaffRole: staffRoles.removeStaffRole,
   listStaffRoles: staffRoles.listStaffRoles,
+  listSeniorStaffRoles: staffRoles.listSeniorStaffRoles,
   memberHasStaffRole: staffRoles.memberHasStaffRole,
+  memberHasSeniorStaffRole: staffRoles.memberHasSeniorStaffRole,
+  getStaffRole: staffRoles.getStaffRole,
 
   // honeypot (exempt-role aliases → same table as staff_roles)
   addHoneypotChannel: honeypot.addHoneypotChannel,

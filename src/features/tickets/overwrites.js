@@ -6,7 +6,11 @@
  */
 
 const { PermissionFlagsBits } = require("discord.js");
-const { listStaffRoles, listTicketMembers, listTicketStaff } = require("../../db");
+const {
+  listSeniorStaffRoles,
+  listTicketMembers,
+  listTicketStaff,
+} = require("../../db");
 
 /** Member participants: chat only, no manage. */
 const MEMBER_ALLOW =
@@ -78,8 +82,12 @@ function botHighestRolePosition(botMember) {
  * @param {import("discord.js").GuildMember|null|undefined} botMember
  * @returns {{ roleIds: string[], skipped: { id: string, reason: string }[] }}
  */
+/**
+ * Senior staff roles only (ticket channel visibility).
+ * Junior staff pass requireStaff but do not get automatic ticket overwrites.
+ */
 function getManageableStaffRoleIds(guild, botMember) {
-  const rows = listStaffRoles(guild.id);
+  const rows = listSeniorStaffRoles(guild.id);
   const botPos = botHighestRolePosition(botMember);
   const roleIds = [];
   const skipped = [];
@@ -247,7 +255,8 @@ function buildTicketOverwrites(opts) {
       staffRoleIds = getManageableStaffRoleIds(opts.guild, opts.botMember)
         .roleIds;
     } else {
-      staffRoleIds = listStaffRoles(guildId).map((r) => r.role_id);
+      // Senior only — junior staff never get automatic ticket visibility
+      staffRoleIds = listSeniorStaffRoles(guildId).map((r) => r.role_id);
     }
   }
 

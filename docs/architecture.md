@@ -135,6 +135,7 @@ Migrations on load:
 | `008_staff_roles` | staff_roles table (generalized honeypot exempt) |
 | `009_warnings` | warnings + warn_dm_members |
 | `010_tickets` | tickets / members / staff / messages + ticket_* settings |
+| `011_staff_role_levels` | `staff_roles.level` junior \| senior (ticket visibility) |
 
 ### Core XP API
 

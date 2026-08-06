@@ -35,6 +35,8 @@ const {
   markTicketClosedByChannelDelete,
   updateGuildSettings,
   listStaffRoles,
+  listSeniorStaffRoles,
+  normalizeStaffLevel,
 } = require("../../db");
 const {
   requireStaff,
@@ -1231,10 +1233,17 @@ async function handleSettings(interaction) {
   // Anyone can view settings summary (helps members know rate limits)
   // Config changes still require admin via set* commands
   const s = getTicketSettings(interaction.guildId);
-  const staffRoles = listStaffRoles(interaction.guildId);
-  const roleList = staffRoles.length
-    ? staffRoles.map((r) => `<@&${r.role_id}>`).join(", ")
-    : "_none configured_ — run `/staff role add` so staff can see ticket channels";
+  const allStaff = listStaffRoles(interaction.guildId);
+  const senior = listSeniorStaffRoles(interaction.guildId);
+  const junior = allStaff.filter(
+    (r) => normalizeStaffLevel(r.level) === "junior"
+  );
+  const seniorList = senior.length
+    ? senior.map((r) => `<@&${r.role_id}>`).join(", ")
+    : "_none_ — `/staff role add` with **senior** for ticket visibility";
+  const juniorList = junior.length
+    ? junior.map((r) => `<@&${r.role_id}>`).join(", ")
+    : "_none_";
 
   await interaction.reply({
     content:
@@ -1242,7 +1251,8 @@ async function handleSettings(interaction) {
       `Category: ${s.ticket_category_id ? `<#${s.ticket_category_id}>` : "_not set_ (`/ticket setcategory`)"} \n` +
       `Archive channel: ${s.ticket_archive_channel_id ? `<#${s.ticket_archive_channel_id}>` : "_not set_ (`/ticket setarchive`)"} \n` +
       `Self-create rate limit: **${s.ticket_rate_limit_minutes === 0 ? "off" : `${s.ticket_rate_limit_minutes} min`}**\n` +
-      `Staff roles (overwrites + command gate): ${roleList}\n` +
+      `**Senior** staff (ticket channel overwrites): ${seniorList}\n` +
+      `**Junior** staff (commands only, no auto ticket view): ${juniorList}\n` +
       `\n**Members:** \`/ticket create [reason]\`\n` +
       `**Staff:** \`for\` · \`claim\` · \`close\` · \`archive\` · \`sensitive\` · \`list\` · …\n` +
       `**Admin:** \`setcategory\` · \`setarchive\` · \`setratelimit\`\n` +

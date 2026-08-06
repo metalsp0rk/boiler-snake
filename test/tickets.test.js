@@ -309,8 +309,9 @@ describe("tickets overwrites", () => {
       true
     );
 
-    db.addStaffRole("g-ow", "role-staff-a");
-    db.addStaffRole("g-ow", "role-staff-b");
+    db.addStaffRole("g-ow", "role-staff-a", "senior");
+    db.addStaffRole("g-ow", "role-staff-b", "senior");
+    db.addStaffRole("g-ow", "role-staff-junior", "junior");
 
     const ticket = db.createTicket({
       guildId: "g-ow",
@@ -337,6 +338,19 @@ describe("tickets overwrites", () => {
     assert.ok(byId("friend")?.allow);
     assert.ok(byId("role-staff-a")?.allow);
     assert.ok(byId("role-staff-b")?.allow);
+    // Junior staff roles must not get ticket overwrites when using DB defaults
+    const normalFromDb = buildTicketOverwrites({
+      guildId: "g-ow",
+      everyoneId: "g-ow",
+      botUserId: "bot-1",
+      ticket: db.getTicketById(ticket.id),
+      sensitive: false,
+    });
+    assert.ok(normalFromDb.find((o) => o.id === "role-staff-a")?.allow);
+    assert.equal(
+      normalFromDb.find((o) => o.id === "role-staff-junior"),
+      undefined
+    );
 
     // Soft-close overwrites deny members, keep staff
     const closedOw = buildTicketOverwrites({

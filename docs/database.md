@@ -596,6 +596,7 @@ Migrations run automatically when the db module loads (`src/db/migrate.js` via `
 | `006_event_reminders` | Event reminder tables + default channel column |
 | `007_staff_notes` | `staff_notes` table + indexes |
 | `008_staff_roles` | Rename/generalize honeypot exempt roles → `staff_roles` |
+| `011_staff_role_levels` | `staff_roles.level` (`junior` \| `senior`, default senior) |
 | `009_warnings` | `warnings` table + `warn_dm_members` column |
 
 Public API remains available via `require("./db")` (facade over repositories).

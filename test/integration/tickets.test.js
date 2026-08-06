@@ -22,7 +22,7 @@ describe("integration: tickets", () => {
   before(async () => {
     env = await createIntegrationEnv();
     process.env.DATA_DIR = env.tmpDir;
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt);
+    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
     env.db.updateGuildSettings(env.guild.id, {
       ticket_archive_channel_id: IDS.channelLog,
       ticket_rate_limit_minutes: 60,

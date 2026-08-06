@@ -17,9 +17,19 @@ Staff /ticket claim · adduser · sensitive · close · archive
                    sensitive → metadata stub only → delete channel (no content)
 ```
 
+### Staff role levels (ticket visibility)
+
+| Level | Staff commands (`requireStaff`) | Honeypot exempt | Ticket channel overwrites |
+|-------|----------------------------------|-----------------|---------------------------|
+| **senior** | Yes | Yes | Yes (open non-sensitive tickets) |
+| **junior** | Yes | Yes | **No** — use `/ticket addstaff` or claim/transfer for named access |
+| Manage Server only | Yes (commands) | No (honeypot) | No automatic overwrite |
+
+Configure: `/staff role add role level`, `/staff role setlevel`, `/staff role list`.
+
 | Rule | Detail |
 |------|--------|
-| Staff access | Guild [staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) + Manage Server (not a ticket-only role) |
+| Staff access | Guild [staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) + Manage Server. **Ticket channel visibility** is **senior** staff roles only; junior staff pass the command gate but do not get automatic channel overwrites. |
 | Rate limit | Self-create only; `/ticket for` is unlimited |
 | Concurrent opens | No cap per user |
 | Transcript URL | Staff archive channel only — never DMed to the requester |
@@ -29,7 +39,7 @@ Staff /ticket claim · adduser · sensitive · close · archive
 
 1. Give the bot **Manage Channels** (and keep **Manage Roles** if you use level/reaction roles). Without Manage Channels, Discord returns `50013 Missing Permissions` on create.
 2. Put the **bot role above** every staff role in Server Settings → Roles. Discord will not let the bot set overwrites for higher roles.
-3. Add staff roles: `/staff role add` (so mods see ticket channels and pass the command gate).
+3. Add staff roles: `/staff role add role:<role> level:senior` so mods see ticket channels (and pass the command gate). Use `level:junior` for helpers who can run staff commands but should **not** auto-see every ticket.
 4. Optional category: `/ticket setcategory` (Manage Server). Ensure the bot is allowed to create channels under that category.
 5. Archive channel (staff-only in Discord perms): `/ticket setarchive`.
 6. Optional rate limit: `/ticket setratelimit` (default **60** minutes; `0` = off).
