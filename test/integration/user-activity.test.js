@@ -291,6 +291,11 @@ describe("integration: user activity", () => {
       userId: IDS.member,
       win: "30",
     });
+    assert.deepEqual(parseButtonCustomId(`ui:aw:90:ch:${IDS.member}`), {
+      view: "a",
+      userId: IDS.member,
+      win: "90",
+    });
     assert.deepEqual(parseButtonCustomId(`ui:ap:ca:7:${IDS.member}`), {
       view: "c",
       userId: IDS.member,

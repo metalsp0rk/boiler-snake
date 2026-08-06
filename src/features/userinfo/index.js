@@ -5,7 +5,7 @@
  * Slash: /userinfo user:<member>
  * Buttons:
  *   ui:o|n|w:<userId>           overview | notes | warnings
- *   ui:a|c:<userId>:<win>       activity channels | categories (win = a|7|30)
+ *   ui:a|c:<userId>:<win>       activity channels | categories (win = a|7|30|90)
  *   ui:b:<userId>               start backfill
  * Access: requireStaff for command and o/n/w; requireSeniorStaff for a/c/b.
  */

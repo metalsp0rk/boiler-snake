@@ -19,7 +19,10 @@ const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 const TOP_CHANNELS = 15;
 const TOP_CATEGORIES = 15;
 
-/** @typedef {"a"|"7"|"30"} ActivityWindow */
+/** Fixed window lengths in days (token → days). All-time uses join age instead. */
+const WINDOW_DAYS = { "7": 7, "30": 30, "90": 90 };
+
+/** @typedef {"a"|"7"|"30"|"90"} ActivityWindow */
 /** @typedef {"channels"|"categories"} ActivityPage */
 
 /**
@@ -27,7 +30,7 @@ const TOP_CATEGORIES = 15;
  * @returns {ActivityWindow}
  */
 function normalizeWindow(win) {
-  if (win === "7" || win === "30") return win;
+  if (win === "7" || win === "30" || win === "90") return win;
   return "a";
 }
 
@@ -37,8 +40,7 @@ function normalizeWindow(win) {
  */
 function sinceDayForWindow(win) {
   const w = normalizeWindow(win);
-  if (w === "7") return utcDayKeyDaysAgo(7);
-  if (w === "30") return utcDayKeyDaysAgo(30);
+  if (w in WINDOW_DAYS) return utcDayKeyDaysAgo(WINDOW_DAYS[w]);
   return null;
 }
 
@@ -50,6 +52,7 @@ function windowLabel(win) {
   const w = normalizeWindow(win);
   if (w === "7") return "Last 7 days";
   if (w === "30") return "Last 30 days";
+  if (w === "90") return "Last 90 days";
   return "All time";
 }
 
@@ -63,6 +66,20 @@ function weeksSinceJoin(joinedMs, nowMs = Date.now()) {
   if (joinedMs == null || !Number.isFinite(Number(joinedMs))) return 1;
   const elapsed = Math.max(0, Number(nowMs) - Number(joinedMs));
   return Math.max(1, elapsed / MS_PER_WEEK);
+}
+
+/**
+ * Denominator for posts/week in the selected window.
+ * Fixed windows use window length in weeks; all-time uses weeks since join.
+ * @param {string|undefined|null} win
+ * @param {number|null|undefined} joinedMs
+ * @param {number} [nowMs]
+ * @returns {number}
+ */
+function weeksForWindow(win, joinedMs, nowMs = Date.now()) {
+  const w = normalizeWindow(win);
+  if (w in WINDOW_DAYS) return WINDOW_DAYS[w] / 7;
+  return weeksSinceJoin(joinedMs, nowMs);
 }
 
 /**
@@ -199,14 +216,15 @@ function filterCountedChannels(guildId, guild, rows) {
 
 /**
  * Build channel ranking for a window.
- * Lifetime weekly rates use all-time per-channel totals.
+ * Posts/week uses the selected window's counts and length (all-time: join age).
  * @param {object} opts
  * @returns {object}
  */
 function buildChannelRanking(opts) {
   const { guildId, userId, guild, window: win, joinedMs } = opts;
   const sinceDay = sinceDayForWindow(win);
-  const weeks = weeksSinceJoin(joinedMs);
+  const weeks = weeksForWindow(win, joinedMs);
+  const joinWeeks = weeksSinceJoin(joinedMs);
 
   const windowRows = filterCountedChannels(
     guildId,
@@ -217,9 +235,6 @@ function buildChannelRanking(opts) {
     guildId,
     guild,
     sumByChannel(guildId, userId, { sinceDay: null })
-  );
-  const allTimeByChannel = new Map(
-    allTimeRows.map((r) => [r.channel_id, r.count])
   );
 
   const windowTotal = windowRows.reduce((s, r) => s + r.count, 0);
@@ -232,13 +247,12 @@ function buildChannelRanking(opts) {
   };
 
   const ranked = windowRows.slice(0, TOP_CHANNELS).map((r) => {
-    const lifetime = allTimeByChannel.get(r.channel_id) || r.count;
     return {
       id: r.channel_id,
       label: labelFn(r.channel_id),
       count: r.count,
       pct: windowTotal > 0 ? (r.count / windowTotal) * 100 : 0,
-      weekly: weeklyRate(lifetime, weeks),
+      weekly: weeklyRate(r.count, weeks),
     };
   });
 
@@ -248,7 +262,10 @@ function buildChannelRanking(opts) {
     weeks,
     windowTotal,
     lifetimeTotal,
-    lifetimeWeekly: weeklyRate(lifetimeTotal, weeks),
+    /** Posts/week for the selected window (same as lifetime when win is all-time). */
+    windowWeekly: weeklyRate(windowTotal, weeks),
+    /** Lifetime posts ÷ weeks since join (always all-time). */
+    lifetimeWeekly: weeklyRate(lifetimeTotal, joinWeeks),
     ranked,
     trackingDay: earliestTrackedDay(guildId, userId),
     meta: getUserActivityMeta(guildId, userId),
@@ -263,7 +280,8 @@ function buildChannelRanking(opts) {
 function buildCategoryRanking(opts) {
   const { guildId, userId, guild, window: win, joinedMs } = opts;
   const sinceDay = sinceDayForWindow(win);
-  const weeks = weeksSinceJoin(joinedMs);
+  const weeks = weeksForWindow(win, joinedMs);
+  const joinWeeks = weeksSinceJoin(joinedMs);
 
   const windowRows = filterCountedChannels(
     guildId,
@@ -305,13 +323,12 @@ function buildCategoryRanking(opts) {
         const ch = guild?.channels?.cache?.get?.(r.id);
         label = ch?.name ? ch.name : `category:${r.id}`;
       }
-      const lifetime = lifeByCat.get(r.id) || r.count;
       return {
         id: r.id,
         label,
         count: r.count,
         pct: windowTotal > 0 ? (r.count / windowTotal) * 100 : 0,
-        weekly: weeklyRate(lifetime, weeks),
+        weekly: weeklyRate(r.count, weeks),
       };
     });
 
@@ -321,7 +338,8 @@ function buildCategoryRanking(opts) {
     weeks,
     windowTotal,
     lifetimeTotal,
-    lifetimeWeekly: weeklyRate(lifetimeTotal, weeks),
+    windowWeekly: weeklyRate(windowTotal, weeks),
+    lifetimeWeekly: weeklyRate(lifetimeTotal, joinWeeks),
     ranked,
     trackingDay: earliestTrackedDay(guildId, userId),
     meta: getUserActivityMeta(guildId, userId),
@@ -332,10 +350,12 @@ module.exports = {
   MS_PER_WEEK,
   TOP_CHANNELS,
   TOP_CATEGORIES,
+  WINDOW_DAYS,
   normalizeWindow,
   sinceDayForWindow,
   windowLabel,
   weeksSinceJoin,
+  weeksForWindow,
   weeklyRate,
   formatWeeklyRate,
   resolveChannelMeta,

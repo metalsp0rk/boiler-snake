@@ -1,6 +1,6 @@
 # User Activity Summary
 
-Staff tooling to see **where a member posts most**, by **channel** and **Discord category**, with absolute counts, share of total, and a simple **posts/week since join** rate.
+Staff tooling to see **where a member posts most**, by **channel** and **Discord category**, with absolute counts, share of total, and a **posts/week** rate for the selected time window.
 
 This is **independent of XP**. Cooldowns do not apply; every human guild message can be counted.
 
@@ -19,7 +19,7 @@ Junior staff see the Activity button but get a clear denial if they click it.
 1. Run `/userinfo user:@member`
 2. Click **Activity** (senior staff)
 3. Use controls:
-   - **All / 7d / 30d** — time window for the ranking list
+   - **All / 7d / 30d / 90d** — time window for ranking counts **and** posts/week
    - **Channels** — top **15** channels (default)
    - **Categories** — roll-up by current Discord category (secondary page)
    - **Backfill history** — optional best-effort history scan for that user
@@ -30,13 +30,17 @@ Each ranked line shows:
 #channel · count · % of window total · X.X/wk
 ```
 
-**`X.X/wk`** is the **lifetime** rate for that channel (or category):
+**`X.X/wk`** is the rate **for the selected window** for that channel (or category):
 
 ```
+# Fixed windows (7d / 30d / 90d):
+weekly_rate = window_posts / (window_days / 7)
+
+# All time:
 weekly_rate = lifetime_posts / max(1, weeks_since_guild_join)
 ```
 
-The selected window only filters **which posts appear in the ranking counts**; the weekly rate always uses lifetime totals ÷ weeks since join.
+The header **~X.X/wk** uses the same formula over the window (or lifetime) total.
 
 Channels with **zero** counted posts are omitted. Deleted channels show as `` #channel_id `` when the name is unknown.
 

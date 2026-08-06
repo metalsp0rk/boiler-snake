@@ -4,6 +4,7 @@ const { loadDb } = require("./helpers/env");
 
 describe("userActivity math & ids", () => {
   let weeksSinceJoin;
+  let weeksForWindow;
   let weeklyRate;
   let formatWeeklyRate;
   let normalizeWindow;
@@ -19,6 +20,7 @@ describe("userActivity math & ids", () => {
     loadDb();
     ({
       weeksSinceJoin,
+      weeksForWindow,
       weeklyRate,
       formatWeeklyRate,
       normalizeWindow,
@@ -43,6 +45,15 @@ describe("userActivity math & ids", () => {
     assert.ok(Math.abs(weeksSinceJoin(twoWeeksAgo, now) - 2) < 0.01);
   });
 
+  it("weeksForWindow uses fixed length for 7/30/90 and join age for all-time", () => {
+    const now = Date.UTC(2026, 0, 15);
+    const tenWeeksAgo = now - 10 * 7 * 86400000;
+    assert.equal(weeksForWindow("7", tenWeeksAgo, now), 1);
+    assert.ok(Math.abs(weeksForWindow("30", tenWeeksAgo, now) - 30 / 7) < 1e-9);
+    assert.ok(Math.abs(weeksForWindow("90", tenWeeksAgo, now) - 90 / 7) < 1e-9);
+    assert.ok(Math.abs(weeksForWindow("a", tenWeeksAgo, now) - 10) < 0.01);
+  });
+
   it("weeklyRate and format", () => {
     assert.equal(weeklyRate(14, 2), 7);
     assert.equal(formatWeeklyRate(7), "7.0/wk");
@@ -51,9 +62,11 @@ describe("userActivity math & ids", () => {
 
   it("normalizeWindow and sinceDay", () => {
     assert.equal(normalizeWindow("7"), "7");
+    assert.equal(normalizeWindow("90"), "90");
     assert.equal(normalizeWindow("nope"), "a");
     assert.equal(sinceDayForWindow("a"), null);
     assert.match(sinceDayForWindow("7"), /^\d{4}-\d{2}-\d{2}$/);
+    assert.match(sinceDayForWindow("90"), /^\d{4}-\d{2}-\d{2}$/);
   });
 
   it("parses activity button custom ids", () => {
@@ -70,6 +83,11 @@ describe("userActivity math & ids", () => {
       view: "a",
       userId: "99",
       win: "7",
+    });
+    assert.deepEqual(parseActivityButtonCustomId("ui:aw:90:ca:99"), {
+      view: "c",
+      userId: "99",
+      win: "90",
     });
     assert.deepEqual(parseActivityButtonCustomId("ui:ap:ca:30:99"), {
       view: "c",
@@ -91,6 +109,10 @@ describe("userActivity math & ids", () => {
     assert.equal(
       activityButtonCustomId("aw", "1", { win: "30", page: "ch" }),
       "ui:aw:30:ch:1"
+    );
+    assert.equal(
+      activityButtonCustomId("aw", "1", { win: "90", page: "ca" }),
+      "ui:aw:90:ca:1"
     );
   });
 
@@ -120,7 +142,7 @@ describe("userActivity math & ids", () => {
       warnsTotal: 0,
     };
     for (const page of ["a", "c"]) {
-      for (const win of ["a", "7", "30"]) {
+      for (const win of ["a", "7", "30", "90"]) {
         const rows = [
           buildPrimaryButtons(counts, page, "user-1", win),
           ...buildActivityControlRows("user-1", win, page, null),
@@ -131,6 +153,8 @@ describe("userActivity math & ids", () => {
           new Set(ids).size,
           `duplicate ids for page=${page} win=${win}: ${ids.join(", ")}`
         );
+        // 4 window buttons present
+        assert.ok(ids.some((id) => id.includes(":90:")), "90d control present");
       }
     }
   });
@@ -198,7 +222,7 @@ describe("userActivity db counters", () => {
     assert.equal(shouldSkipChannel(g, "ok", "other"), false);
   });
 
-  it("buildChannelRanking ranks and applies lifetime weekly rate", () => {
+  it("buildChannelRanking ranks and applies window-aware weekly rate", () => {
     const g = "g-rank";
     const u = "u-rank";
     db.ensureGuildActivitySettings(g);
@@ -217,6 +241,9 @@ describe("userActivity db counters", () => {
     assert.equal(ranking.windowTotal, 115);
     assert.equal(ranking.ranked[0].id, "alpha");
     assert.ok(ranking.ranked[0].weekly > ranking.ranked[1].weekly);
+    // All-time: 115 posts / 10 weeks
+    assert.ok(Math.abs(ranking.windowWeekly - 11.5) < 0.01);
+    assert.ok(Math.abs(ranking.ranked[0].weekly - 11) < 0.01); // 110/10
 
     const week = buildChannelRanking({
       guildId: g,
@@ -226,6 +253,23 @@ describe("userActivity db counters", () => {
       joinedMs,
     });
     assert.equal(week.windowTotal, 15);
+    // 7d: window posts / 1 week (not lifetime / join weeks)
+    assert.ok(Math.abs(week.windowWeekly - 15) < 0.01);
+    assert.ok(Math.abs(week.ranked.find((r) => r.id === "alpha").weekly - 10) < 0.01);
+    assert.ok(Math.abs(week.ranked.find((r) => r.id === "beta").weekly - 5) < 0.01);
+    // Lifetime rate still reflects all-time
+    assert.ok(Math.abs(week.lifetimeWeekly - 11.5) < 0.01);
+
+    const ninety = buildChannelRanking({
+      guildId: g,
+      userId: u,
+      guild: null,
+      window: "90",
+      joinedMs,
+    });
+    // Recent posts fall in 90d; historical 2020-01-01 does not
+    assert.equal(ninety.windowTotal, 15);
+    assert.ok(Math.abs(ninety.windowWeekly - 15 / (90 / 7)) < 0.01);
   });
 
   it("buildCategoryRanking rolls up uncategorized without guild cache", () => {

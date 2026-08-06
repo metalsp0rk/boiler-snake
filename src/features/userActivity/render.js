@@ -5,7 +5,7 @@
  * buttons). Roles:
  *   ui:o|n|w:<userId>              primary Overview / Notes / Warnings
  *   ui:a:<userId>                  primary Activity (open channels / all-time)
- *   ui:aw:<win>:<page>:<userId>    window toggle (a|7|30, page ch|ca)
+ *   ui:aw:<win>:<page>:<userId>    window toggle (a|7|30|90, page ch|ca)
  *   ui:ap:<page>:<win>:<userId>    page toggle (ch|ca)
  *   ui:b:<userId>                  backfill
  */
@@ -201,6 +201,8 @@ function buildPrimaryButtons(counts, activeView, userId, win = "a") {
 
 /**
  * Window + page toggles for activity.
+ * Windows and page toggles are on separate rows (Discord max 5 buttons/row;
+ * four windows + Channels/Categories would overflow a single row).
  * @param {string} userId
  * @param {string} win
  * @param {"a"|"c"} page a=channels c=categories
@@ -234,6 +236,16 @@ function buildActivityControlRows(userId, win, page, meta = null) {
       .setLabel("30d")
       .setStyle(w === "30" ? ButtonStyle.Primary : ButtonStyle.Secondary)
       .setDisabled(w === "30"),
+    new ButtonBuilder()
+      .setCustomId(
+        activityButtonCustomId("aw", userId, { win: "90", page: pageTok })
+      )
+      .setLabel("90d")
+      .setStyle(w === "90" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(w === "90")
+  );
+
+  const pageRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(
         activityButtonCustomId("ap", userId, { page: "ch", win: w })
@@ -270,7 +282,7 @@ function buildActivityControlRows(userId, win, page, meta = null) {
       .setDisabled(running)
   );
 
-  return [windowRow, actionRow];
+  return [windowRow, pageRow, actionRow];
 }
 
 /**
@@ -302,13 +314,19 @@ function formatRankLines(ranked) {
  */
 function buildActivityEmbed(user, ranking, page, joinedMs) {
   const pageTitle = page === "categories" ? "Categories" : "Channels";
+  const rate =
+    ranking.windowWeekly != null
+      ? ranking.windowWeekly
+      : ranking.lifetimeWeekly;
+  const rateSuffix =
+    ranking.window === "a" ? "since join" : "in window";
   const embed = new EmbedBuilder()
     .setColor(COLOR_ACTIVITY)
     .setTitle(`Activity · ${pageTitle} · ${ranking.windowLabel}`)
     .setDescription(
       `Subject: <@${user.id}> · \`${user.id}\`\n` +
         `**Window total:** ${ranking.windowTotal} · **Lifetime:** ${ranking.lifetimeTotal} · ` +
-        `**~${formatWeeklyRate(ranking.lifetimeWeekly)}** since join`
+        `**~${formatWeeklyRate(rate)}** ${rateSuffix}`
     );
 
   embed.addFields({
@@ -322,14 +340,18 @@ function buildActivityEmbed(user, ranking, page, joinedMs) {
   } else {
     footerParts.push("No counters yet · forward tracking + optional backfill");
   }
-  if (joinedMs == null) {
+  if (joinedMs == null && ranking.window === "a") {
     footerParts.push("join date unknown · rate uses min 1 week");
   }
   const st = ranking.meta?.backfill_status;
   if (st && st !== "none") {
     footerParts.push(`backfill: ${st}`);
   }
-  footerParts.push("Senior staff · posts/wk = lifetime ÷ weeks since join");
+  footerParts.push(
+    ranking.window === "a"
+      ? "Senior staff · posts/wk = lifetime ÷ weeks since join"
+      : "Senior staff · posts/wk = window posts ÷ weeks in window"
+  );
   embed.setFooter({ text: footerParts.join(" · ").slice(0, 2048) });
 
   return embed;
