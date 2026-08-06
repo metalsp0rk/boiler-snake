@@ -23,7 +23,7 @@ const {
 const { requireAdmin } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordUserChannelMessage } = require("./service");
-const { startUserBackfill } = require("./backfill");
+const { startUserBackfill, startGuildBackfill } = require("./backfill");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -83,6 +83,18 @@ const commands = [
       sc
         .setName("status")
         .setDescription("Show activity tracking status for this server.")
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName("backfill")
+        .setDescription("Scan channel history into activity counters.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("all")
+            .setDescription(
+              "Backfill all users (one history pass per channel). Rate-limited; long-running."
+            )
+        )
     ),
 ];
 
@@ -190,6 +202,17 @@ async function handleActivityConfig(interaction, ctx) {
     const collectFrom = settings?.collect_from_ms
       ? `<t:${Math.floor(settings.collect_from_ms / 1000)}:f>`
       : "—";
+    const gStatus = settings?.guild_backfill_status || "none";
+    const gDone = settings?.guild_backfill_channels_done ?? 0;
+    const gTotal = settings?.guild_backfill_channels_total ?? 0;
+    const gMsgs = settings?.guild_backfill_messages_counted ?? 0;
+    let gLine = `• Guild backfill: **${gStatus}**`;
+    if (gStatus !== "none") {
+      gLine += ` · channels ${gDone}/${gTotal} · msgs counted ${gMsgs}`;
+    }
+    if (settings?.guild_backfill_error) {
+      gLine += `\n• Last error: ${String(settings.guild_backfill_error).slice(0, 200)}`;
+    }
     await interaction.reply({
       content:
         `**Activity tracking status**\n` +
@@ -198,8 +221,48 @@ async function handleActivityConfig(interaction, ctx) {
         `• Messages counted (sum): **${stats.message_total}**\n` +
         `• Ignore entries: **${stats.ignore_count}**\n` +
         `• Honeypot channels: always skipped\n` +
-        `• History: senior staff can **Backfill** from \`/userinfo\` → Activity`,
+        `${gLine}\n` +
+        `• Per-user history: senior staff **Backfill** on \`/userinfo\` → Activity\n` +
+        `• All users (preferred): \`/activityconfig backfill all\``,
       flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (group === "backfill" && sub === "all") {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "This command only works in a server.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const result = await startGuildBackfill(interaction.guild);
+    if (!result.started) {
+      await interaction.editReply({
+        content: result.reason || "Could not start guild backfill.",
+      });
+      return;
+    }
+
+    await logConfigChange(client, guildId, {
+      title: "Activity guild backfill started",
+      command: "/activityconfig backfill all",
+      actor: interaction.user,
+      changes: [
+        `Channels to scan: **${result.channels ?? "?"}**`,
+        "Single pass per channel · all human authors · rate-limited (~1.1s/page)",
+      ],
+    });
+
+    await interaction.editReply({
+      content:
+        `**Guild backfill started** for **${result.channels ?? "?"}** channels.\n` +
+        `Each channel is scanned once; every human author's pre-tracking messages are counted.\n` +
+        `This can take a long time (≈1.1s per 100 messages, max 50 pages/channel).\n` +
+        `Check progress with \`/activityconfig status\`.`,
     });
     return;
   }
@@ -218,4 +281,5 @@ module.exports = {
   },
   recordUserChannelMessage,
   startUserBackfill,
+  startGuildBackfill,
 };

@@ -62,11 +62,7 @@ function normalizeIgnoreKind(kind) {
  * @returns {{ guild_id: string, collect_from_ms: number, created_at: number }}
  */
 function ensureGuildActivitySettings(guildId, opts = {}) {
-  const existing = db
-    .prepare(
-      `SELECT guild_id, collect_from_ms, created_at FROM guild_activity_settings WHERE guild_id=?`
-    )
-    .get(guildId);
+  const existing = getGuildActivitySettings(guildId);
   if (existing) return existing;
 
   const t =
@@ -82,26 +78,100 @@ function ensureGuildActivitySettings(guildId, opts = {}) {
   ).run(guildId, t, created);
 
   return (
-    db
-      .prepare(
-        `SELECT guild_id, collect_from_ms, created_at FROM guild_activity_settings WHERE guild_id=?`
-      )
-      .get(guildId) || { guild_id: guildId, collect_from_ms: t, created_at: created }
+    getGuildActivitySettings(guildId) || {
+      guild_id: guildId,
+      collect_from_ms: t,
+      created_at: created,
+    }
   );
 }
 
+const GUILD_SETTINGS_COLS = `
+  guild_id, collect_from_ms, created_at,
+  guild_backfill_status, guild_backfill_started_at, guild_backfill_finished_at,
+  guild_backfill_error, guild_backfill_channels_done, guild_backfill_channels_total,
+  guild_backfill_messages_counted
+`;
+
 /**
  * @param {string} guildId
- * @returns {{ guild_id: string, collect_from_ms: number, created_at: number }|null}
+ * @returns {object|null}
  */
 function getGuildActivitySettings(guildId) {
   return (
     db
       .prepare(
-        `SELECT guild_id, collect_from_ms, created_at FROM guild_activity_settings WHERE guild_id=?`
+        `SELECT ${GUILD_SETTINGS_COLS} FROM guild_activity_settings WHERE guild_id=?`
       )
       .get(guildId) || null
   );
+}
+
+/**
+ * Patch guild activity settings (backfill progress, etc.).
+ * @param {string} guildId
+ * @param {object} patch
+ * @returns {object|null}
+ */
+function patchGuildActivitySettings(guildId, patch = {}) {
+  ensureGuildActivitySettings(guildId);
+  const existing = getGuildActivitySettings(guildId);
+  if (!existing) return null;
+
+  const next = {
+    guild_backfill_status:
+      patch.guild_backfill_status !== undefined
+        ? patch.guild_backfill_status
+        : existing.guild_backfill_status ?? "none",
+    guild_backfill_started_at:
+      patch.guild_backfill_started_at !== undefined
+        ? patch.guild_backfill_started_at
+        : existing.guild_backfill_started_at,
+    guild_backfill_finished_at:
+      patch.guild_backfill_finished_at !== undefined
+        ? patch.guild_backfill_finished_at
+        : existing.guild_backfill_finished_at,
+    guild_backfill_error:
+      patch.guild_backfill_error !== undefined
+        ? patch.guild_backfill_error
+        : existing.guild_backfill_error,
+    guild_backfill_channels_done:
+      patch.guild_backfill_channels_done !== undefined
+        ? patch.guild_backfill_channels_done
+        : existing.guild_backfill_channels_done ?? 0,
+    guild_backfill_channels_total:
+      patch.guild_backfill_channels_total !== undefined
+        ? patch.guild_backfill_channels_total
+        : existing.guild_backfill_channels_total ?? 0,
+    guild_backfill_messages_counted:
+      patch.guild_backfill_messages_counted !== undefined
+        ? patch.guild_backfill_messages_counted
+        : existing.guild_backfill_messages_counted ?? 0,
+  };
+
+  db.prepare(
+    `
+  UPDATE guild_activity_settings SET
+    guild_backfill_status=?,
+    guild_backfill_started_at=?,
+    guild_backfill_finished_at=?,
+    guild_backfill_error=?,
+    guild_backfill_channels_done=?,
+    guild_backfill_channels_total=?,
+    guild_backfill_messages_counted=?
+  WHERE guild_id=?
+  `
+  ).run(
+    next.guild_backfill_status,
+    next.guild_backfill_started_at,
+    next.guild_backfill_finished_at,
+    next.guild_backfill_error,
+    next.guild_backfill_channels_done,
+    next.guild_backfill_channels_total,
+    next.guild_backfill_messages_counted,
+    guildId
+  );
+  return getGuildActivitySettings(guildId);
 }
 
 /**
@@ -478,11 +548,18 @@ function upsertBackfillCursor(guildId, userId, channelId, patch = {}) {
 }
 
 /**
- * True if any user in guild currently has backfill running/queued.
+ * True if any user or guild-wide backfill is running/queued.
  * @param {string} guildId
  * @returns {boolean}
  */
 function guildHasActiveBackfill(guildId) {
+  const settings = getGuildActivitySettings(guildId);
+  if (
+    settings?.guild_backfill_status === "running" ||
+    settings?.guild_backfill_status === "queued"
+  ) {
+    return true;
+  }
   const row = db
     .prepare(
       `
@@ -495,6 +572,75 @@ function guildHasActiveBackfill(guildId) {
   return !!row;
 }
 
+/**
+ * @param {string} guildId
+ * @param {string} channelId
+ * @returns {{ oldest_message_id: string|null, complete: number }|null}
+ */
+function getGuildChannelBackfillCursor(guildId, channelId) {
+  return (
+    db
+      .prepare(
+        `
+  SELECT oldest_message_id, complete
+  FROM guild_channel_backfill_cursor
+  WHERE guild_id=? AND channel_id=?
+  `
+      )
+      .get(guildId, channelId) || null
+  );
+}
+
+/**
+ * @param {string} guildId
+ * @param {string} channelId
+ * @param {{ oldest_message_id?: string|null, complete?: boolean }} patch
+ */
+function upsertGuildChannelBackfillCursor(guildId, channelId, patch = {}) {
+  const existing = getGuildChannelBackfillCursor(guildId, channelId);
+  const complete =
+    patch.complete === true
+      ? 1
+      : patch.complete === false
+        ? 0
+        : existing?.complete ?? 0;
+  const oldest =
+    patch.oldest_message_id !== undefined
+      ? patch.oldest_message_id
+      : existing?.oldest_message_id ?? null;
+
+  db.prepare(
+    `
+  INSERT INTO guild_channel_backfill_cursor
+    (guild_id, channel_id, oldest_message_id, complete)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(guild_id, channel_id)
+  DO UPDATE SET oldest_message_id=excluded.oldest_message_id, complete=excluded.complete
+  `
+  ).run(guildId, channelId, oldest, complete);
+}
+
+/**
+ * Count completed guild-level channel cursors.
+ * @param {string} guildId
+ * @returns {{ complete: number, total: number }}
+ */
+function guildChannelBackfillProgress(guildId) {
+  const total =
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM guild_channel_backfill_cursor WHERE guild_id=?`
+      )
+      .get(guildId)?.c ?? 0;
+  const complete =
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM guild_channel_backfill_cursor WHERE guild_id=? AND complete=1`
+      )
+      .get(guildId)?.c ?? 0;
+  return { complete: Number(complete) || 0, total: Number(total) || 0 };
+}
+
 module.exports = {
   IGNORE_KINDS,
   BACKFILL_STATUSES,
@@ -503,6 +649,7 @@ module.exports = {
   normalizeIgnoreKind,
   ensureGuildActivitySettings,
   getGuildActivitySettings,
+  patchGuildActivitySettings,
   incrementDaily,
   addActivityIgnore,
   removeActivityIgnore,
@@ -518,4 +665,7 @@ module.exports = {
   getBackfillCursor,
   upsertBackfillCursor,
   guildHasActiveBackfill,
+  getGuildChannelBackfillCursor,
+  upsertGuildChannelBackfillCursor,
+  guildChannelBackfillProgress,
 };

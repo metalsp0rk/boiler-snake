@@ -57,6 +57,7 @@ module.exports = {
   normalizeIgnoreKind: userChannelActivity.normalizeIgnoreKind,
   ensureGuildActivitySettings: userChannelActivity.ensureGuildActivitySettings,
   getGuildActivitySettings: userChannelActivity.getGuildActivitySettings,
+  patchGuildActivitySettings: userChannelActivity.patchGuildActivitySettings,
   incrementDaily: userChannelActivity.incrementDaily,
   addActivityIgnore: userChannelActivity.addActivityIgnore,
   removeActivityIgnore: userChannelActivity.removeActivityIgnore,
@@ -73,6 +74,10 @@ module.exports = {
   getBackfillCursor: userChannelActivity.getBackfillCursor,
   upsertBackfillCursor: userChannelActivity.upsertBackfillCursor,
   guildHasActiveBackfill: userChannelActivity.guildHasActiveBackfill,
+  getGuildChannelBackfillCursor: userChannelActivity.getGuildChannelBackfillCursor,
+  upsertGuildChannelBackfillCursor:
+    userChannelActivity.upsertGuildChannelBackfillCursor,
+  guildChannelBackfillProgress: userChannelActivity.guildChannelBackfillProgress,
 
   // voice sessions
   upsertVoiceSession: voiceSessions.upsertVoiceSession,

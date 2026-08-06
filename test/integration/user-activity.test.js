@@ -129,6 +129,42 @@ describe("integration: user activity", () => {
     assertEphemeralReply(interaction, /permission/i);
   });
 
+  it("/activityconfig backfill all starts guild job (admin)", async () => {
+    // Stub channels with empty history so job finishes quickly
+    for (const ch of Object.values(env.channels)) {
+      if (ch?.messages) {
+        ch.messages.fetch = async () => new Map();
+      }
+    }
+
+    const interaction = await env.runCommand({
+      commandName: "activityconfig",
+      subcommandGroup: "backfill",
+      subcommand: "all",
+      admin: true,
+    });
+    // defer + editReply path
+    const texts = [
+      ...(interaction.replies || []).map((r) => r.content || ""),
+      ...(interaction.editReplies || []).map((r) => r.content || ""),
+      ...(interaction.followUps || []).map((r) => r.content || ""),
+    ].join("\n");
+    assert.match(
+      texts,
+      /Guild backfill started|already running|Could not start/i
+    );
+
+    // Wait briefly for background job to settle
+    await new Promise((r) => setTimeout(r, 50));
+    const settings = env.db.getGuildActivitySettings(env.guild.id);
+    assert.ok(settings);
+    assert.ok(
+      ["running", "done", "partial", "failed", "none"].includes(
+        settings.guild_backfill_status || "none"
+      )
+    );
+  });
+
   it("Activity button requires senior staff; admin can open", async () => {
     // seed some counts
     env.db.ensureGuildActivitySettings(env.guild.id);

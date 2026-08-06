@@ -40,9 +40,10 @@ boiler-snake/
 | `tickets` | Support ticket lifecycle, sensitive flag, archive metadata |
 | `user_channel_message_daily` | Per-user per-channel daily message counts (staff activity) |
 | `activity_ignore` | Channels/categories excluded from activity stats |
-| `guild_activity_settings` | Live activity collect watermark per guild |
+| `guild_activity_settings` | Live watermark + guild-wide backfill progress |
 | `user_activity_meta` | Per-user backfill status for activity |
-| `user_channel_backfill_cursor` | Per-channel history scan progress |
+| `user_channel_backfill_cursor` | Per-user per-channel history scan progress |
+| `guild_channel_backfill_cursor` | Guild-wide per-channel history scan progress |
 | `ticket_members` | Extra member participants on a ticket |
 | `ticket_staff` | Named staff allow-list (sensitive / extras) |
 | `ticket_messages` | Archived messages for non-sensitive closed tickets |

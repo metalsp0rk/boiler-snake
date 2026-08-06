@@ -561,7 +561,10 @@ Ignore noisy channels/categories and inspect tracking status. See [User Activity
 /activityconfig ignore remove target:#spam
 /activityconfig ignore list
 /activityconfig status
+/activityconfig backfill all
 ```
+
+`backfill all` starts a long-running, rate-limited scan (one pass per channel, all human authors). Check progress with `status`.
 
 ### `/warn` - Formal Warnings
 
