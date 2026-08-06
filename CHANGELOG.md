@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.2.0...v1.3.0) (2026-08-06)
+
+
+### Features
+
+* **staffRoles:** junior and senior staff role levels ([fd92eaa](https://github.com/metalsp0rk/boiler-snake/commit/fd92eaaea9a2a0103b9ed70fad160c7fb2606c11))
+* **tickets:** panel button opens modal for ticket create ([5684e7f](https://github.com/metalsp0rk/boiler-snake/commit/5684e7fd39b4e490aaefa2b956e3a884022399f5))
+* **warnings:** dedicated warn log channel ([bb6b328](https://github.com/metalsp0rk/boiler-snake/commit/bb6b3280a4be3ba9fb0bd2014fd898d96e80f1e5))
+* **warnings:** dedicated warn_log_channel_id for issue/void logs ([a17dfc2](https://github.com/metalsp0rk/boiler-snake/commit/a17dfc27c9436364ab454e50468b086d7ff17844))
+
+
+### Bug Fixes
+
+* **tickets:** auto-claim staff who open tickets for members ([5b51b41](https://github.com/metalsp0rk/boiler-snake/commit/5b51b418e61a09393dcb8472123551b2524cd79a))
+
 ## [1.2.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.1.0...v1.2.0) (2026-08-06)
 
 
