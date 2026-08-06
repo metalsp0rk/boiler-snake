@@ -5,12 +5,14 @@
 const {
   PermissionFlagsBits,
   GuildScheduledEventStatus,
+  EmbedBuilder,
 } = require("discord.js");
 const {
   getConfigByScheduledEventId,
+  getConfigByShortname,
   clearEventReminderConfig,
   clearEventReminderConfigById,
-  isEventReminderOptedOut,
+  isUserBlockedFromEventReminders,
   listEventReminderConfigs,
   setOffsetFireTimes,
   getGuildSettings,
@@ -19,8 +21,13 @@ const {
 const MAX_OFFSETS = 8;
 const MAX_OFFSET_MINUTES = 30 * 24 * 60; // 30 days
 const ROLE_PREFIX = "event-";
+/** Used when a custom template is set (embed description body). */
 const DEFAULT_MESSAGE =
-  "Reminder: **{event}** starts {starts_in} ({starts_at}) in {location}. {role}";
+  "Starts {starts_in} ({starts_at}) in {location}.";
+/** Embed description when message_template is empty. */
+const DEFAULT_EMBED_DESCRIPTION = "Starts {starts_in}";
+const EMBED_COLOR = 0x5865f2;
+const DESCRIPTION_MAX = 300;
 
 /** Preset offset options for the create/edit modal (minutes → label). */
 const OFFSET_PRESETS = [
@@ -46,6 +53,25 @@ function slugifyShortname(title) {
     .replace(/^-|-$/g, "")
     .slice(0, 80);
   return raw || "event";
+}
+
+/**
+ * Prefill shortname from event title; append -2, -3, … if already taken.
+ * @param {string} guildId
+ * @param {string} eventName
+ * @returns {string}
+ */
+function suggestShortname(guildId, eventName) {
+  const base = slugifyShortname(eventName);
+  if (!getConfigByShortname(guildId, base)) return base;
+
+  for (let n = 2; n <= 99; n++) {
+    const suffix = `-${n}`;
+    const maxBase = Math.max(1, 80 - suffix.length);
+    const candidate = `${base.slice(0, maxBase)}${suffix}`;
+    if (!getConfigByShortname(guildId, candidate)) return candidate;
+  }
+  return base;
 }
 
 /**
@@ -188,18 +214,76 @@ function formatEventLocation(scheduledEvent) {
 }
 
 /**
- * @param {string|null|undefined} template
- * @param {{ eventName: string, startMs: number, roleId: string, location?: string }} ctx
+ * @param {string} guildId
+ * @param {string} eventId
+ * @returns {string}
  */
-function renderReminderMessage(template, ctx) {
+function eventUrl(guildId, eventId) {
+  if (!guildId || !eventId) return "";
+  return `https://discord.com/events/${guildId}/${eventId}`;
+}
+
+/**
+ * Truncate event description for embed/template use.
+ * @param {{ description?: string|null }|null} scheduledEvent
+ * @param {number} [maxLen]
+ * @returns {string}
+ */
+function formatEventDescription(scheduledEvent, maxLen = DESCRIPTION_MAX) {
+  const raw = scheduledEvent?.description;
+  if (!raw || !String(raw).trim()) return "";
+  const text = String(raw).trim().replace(/\s+/g, " ");
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 1))}…`;
+}
+
+/**
+ * Cover image URL if Discord provides one.
+ * @param {{ coverImageURL?: Function, image?: string|null }|null} scheduledEvent
+ * @returns {string|null}
+ */
+function eventCoverImageUrl(scheduledEvent) {
+  if (!scheduledEvent) return null;
+  try {
+    if (typeof scheduledEvent.coverImageURL === "function") {
+      const url = scheduledEvent.coverImageURL({ size: 1024 });
+      if (url) return url;
+    }
+  } catch {
+    // ignore
+  }
+  if (scheduledEvent.image && String(scheduledEvent.image).trim()) {
+    return String(scheduledEvent.image).trim();
+  }
+  return null;
+}
+
+/**
+ * @param {string|null|undefined} template
+ * @param {{
+ *   eventName: string,
+ *   startMs: number,
+ *   roleId: string,
+ *   location?: string,
+ *   url?: string,
+ *   description?: string,
+ *   offset?: string,
+ * }} ctx
+ * @param {{ defaultBody?: string }} [opts]
+ */
+function renderReminderMessage(template, ctx, opts = {}) {
   const startUnix = Math.floor(ctx.startMs / 1000);
-  const body = (template && String(template).trim()) || DEFAULT_MESSAGE;
+  const fallback = opts.defaultBody ?? DEFAULT_MESSAGE;
+  const body = (template && String(template).trim()) || fallback;
   let out = body
     .replaceAll("{event}", ctx.eventName || "Event")
     .replaceAll("{starts_in}", `<t:${startUnix}:R>`)
     .replaceAll("{starts_at}", `<t:${startUnix}:F>`)
-    .replaceAll("{role}", `<@&${ctx.roleId}>`)
-    .replaceAll("{location}", ctx.location ?? "");
+    .replaceAll("{role}", ctx.roleId ? `<@&${ctx.roleId}>` : "")
+    .replaceAll("{location}", ctx.location ?? "")
+    .replaceAll("{url}", ctx.url ?? "")
+    .replaceAll("{description}", ctx.description ?? "")
+    .replaceAll("{offset}", ctx.offset ?? "");
 
   // Drop awkward " in " when location is empty (default template and similar).
   out = out
@@ -208,6 +292,100 @@ function renderReminderMessage(template, ctx) {
     .replace(/[ \t]{2,}/g, " ")
     .trim();
   return out;
+}
+
+/**
+ * Build the always-on embed for a reminder delivery.
+ * Role ping must stay in message content (mentions in embeds do not notify).
+ *
+ * @param {object} opts
+ * @param {object|null} opts.scheduledEvent
+ * @param {string} opts.guildId
+ * @param {string} opts.roleId
+ * @param {number} opts.offsetMinutes
+ * @param {string|null|undefined} opts.template
+ * @param {number} opts.startMs
+ * @returns {import("discord.js").EmbedBuilder}
+ */
+function buildReminderEmbed(opts) {
+  const {
+    scheduledEvent,
+    guildId,
+    roleId,
+    offsetMinutes,
+    template,
+    startMs,
+  } = opts;
+
+  const eventName = scheduledEvent?.name || "Event";
+  const eventId = scheduledEvent?.id || null;
+  const location = formatEventLocation(scheduledEvent);
+  const url = eventUrl(guildId, eventId);
+  const descriptionText = formatEventDescription(scheduledEvent);
+  const offsetLabel = formatOffsetMinutes(offsetMinutes);
+  const startUnix = Math.floor(startMs / 1000);
+
+  const ctx = {
+    eventName,
+    startMs,
+    roleId,
+    location,
+    url,
+    description: descriptionText,
+    offset: offsetLabel,
+  };
+
+  const hasCustom = !!(template && String(template).trim());
+  const body = renderReminderMessage(
+    template,
+    ctx,
+    { defaultBody: hasCustom ? DEFAULT_MESSAGE : DEFAULT_EMBED_DESCRIPTION }
+  );
+
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLOR)
+    .setTitle(String(eventName).slice(0, 256))
+    .setFooter({ text: "Event reminder" });
+
+  if (url) embed.setURL(url);
+  if (body) embed.setDescription(body.slice(0, 4096));
+
+  const fields = [];
+  fields.push({
+    name: "Starts",
+    value: `<t:${startUnix}:R> · <t:${startUnix}:F>`,
+    inline: false,
+  });
+  if (location) {
+    fields.push({ name: "Location", value: location.slice(0, 1024), inline: true });
+  }
+  if (offsetLabel) {
+    fields.push({
+      name: "Reminder",
+      value: `${offsetLabel} before start`,
+      inline: true,
+    });
+  }
+  if (fields.length) embed.addFields(fields);
+
+  const cover = eventCoverImageUrl(scheduledEvent);
+  if (cover) embed.setImage(cover);
+
+  return embed;
+}
+
+/**
+ * Payload for channel.send — content pings the role; embed carries details.
+ * @param {object} opts
+ * @returns {{ content: string, embeds: import("discord.js").EmbedBuilder[], allowedMentions: object }}
+ */
+function buildReminderDelivery(opts) {
+  const embed = buildReminderEmbed(opts);
+  return {
+    content: `<@&${opts.roleId}>`,
+    embeds: [embed],
+    allowedMentions: { roles: [opts.roleId] },
+  };
 }
 
 /**
@@ -321,7 +499,7 @@ async function fetchInterestedUserIds(scheduledEvent) {
 }
 
 /**
- * Grant/remove role so members match interested ∩ ¬opted-out.
+ * Grant/remove role so members match interested ∩ ¬blocked (guild opt-out or mute).
  * @param {import("discord.js").Guild} guild
  * @param {import("discord.js").GuildScheduledEvent} scheduledEvent
  * @param {string} roleId
@@ -329,12 +507,14 @@ async function fetchInterestedUserIds(scheduledEvent) {
 async function syncEventReminderRole(guild, scheduledEvent, roleId) {
   if (!guild || !roleId) return { granted: 0, removed: 0 };
 
+  const eventId = scheduledEvent?.id;
+  if (!eventId) return { granted: 0, removed: 0 };
+
   const interested = new Set(await fetchInterestedUserIds(scheduledEvent));
   const shouldHave = new Set();
   for (const userId of interested) {
-    if (!isEventReminderOptedOut(guild.id, userId)) {
-      shouldHave.add(userId);
-    }
+    if (isUserBlockedFromEventReminders(guild.id, userId, eventId)) continue;
+    shouldHave.add(userId);
   }
 
   let granted = 0;
@@ -402,13 +582,19 @@ async function syncEventReminderRole(guild, scheduledEvent, roleId) {
 }
 
 /**
- * Grant role for a single user if eligible.
+ * Grant role for a single user if eligible (not guild-opted-out, not muted for event).
  * @param {import("discord.js").Guild} guild
  * @param {string} userId
  * @param {string} roleId
+ * @param {string} scheduledEventId
  */
-async function grantRoleIfEligible(guild, userId, roleId) {
-  if (isEventReminderOptedOut(guild.id, userId)) return false;
+async function grantRoleIfEligible(guild, userId, roleId, scheduledEventId) {
+  if (
+    scheduledEventId &&
+    isUserBlockedFromEventReminders(guild.id, userId, scheduledEventId)
+  ) {
+    return false;
+  }
   try {
     const member =
       guild.members.cache.get(userId) ||
@@ -526,16 +712,24 @@ module.exports = {
   MAX_OFFSET_MINUTES,
   ROLE_PREFIX,
   DEFAULT_MESSAGE,
+  DEFAULT_EMBED_DESCRIPTION,
+  EMBED_COLOR,
   OFFSET_PRESETS,
   DEFAULT_PRESET_MINUTES,
   slugifyShortname,
+  suggestShortname,
   normalizeShortname,
   parseCustomOffsets,
   resolveOffsetMinutes,
   buildOffsetRows,
   formatOffsetMinutes,
   formatEventLocation,
+  formatEventDescription,
+  eventUrl,
+  eventCoverImageUrl,
   renderReminderMessage,
+  buildReminderEmbed,
+  buildReminderDelivery,
   canConfigureEventReminder,
   resolveNotifyChannelId,
   createReminderRole,

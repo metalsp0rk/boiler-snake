@@ -22,6 +22,7 @@ const migrations = [
   require("./migrations/012_warn_log_channel"),
   require("./migrations/013_user_channel_activity"),
   require("./migrations/014_guild_activity_backfill"),
+  require("./migrations/015_event_reminder_event_optouts"),
 ];
 
 const helpers = {

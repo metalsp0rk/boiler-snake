@@ -84,18 +84,20 @@ Shows category, archive channel, rate limit, and staff roles used for ticket vis
 /ticket settings
 ```
 
-### `/eventreminder optout` / `optin` / `status` - Reminder preferences
+### `/eventreminder optout` / `optin` / `mute` / `unmute` / `status` - Reminder preferences
 
 Control your own event reminder pings. See [Scheduled Event Reminders](../event-reminders.md).
 
 **Usage**:
 ```bash
-/eventreminder optout    # Leave all event reminder roles; no future pings
-/eventreminder optin     # Re-enable; restore roles for events you are still Interested in
-/eventreminder status    # Opt-out state + event roles you currently hold
+/eventreminder optout              # Leave all event reminder roles; no future pings
+/eventreminder optin               # Re-enable; restore roles for Interested events (skips muted)
+/eventreminder mute event:<id>     # Mute one linked event
+/eventreminder unmute event:<id>   # Unmute one event; restore role if still Interested
+/eventreminder status              # Guild opt-out, muted events, roles you hold
 ```
 
-Other `/eventreminder` subcommands require **Manage Guild** or being the scheduled event’s **creator** (see below).
+Guild opt-out always wins over per-event unmute. Other `/eventreminder` subcommands require **Manage Guild** or being the scheduled event’s **creator** (see below).
 
 ---
 
@@ -492,7 +494,7 @@ Pre-event reminder pings for Discord **Guild Scheduled Events**. Members who mar
 - `create` / `edit` / `clear` / `sync` — **ManageGuild** **or** that scheduled event’s **creator**
 - `setchannel` — **ManageGuild** only
 - `list` — any member
-- `optout` / `optin` / `status` — any member (documented under [Public Commands](#public-commands))
+- `optout` / `optin` / `mute` / `unmute` / `status` — any member (documented under [Public Commands](#public-commands))
 
 Bot needs **Manage Roles** (role above `event-*`), send access in the notify channel, and the **Guild Scheduled Events** intent.
 
@@ -511,14 +513,14 @@ Bot needs **Manage Roles** (role above `event-*`), send access in the notify cha
 
 | Subcommand | Description |
 |------------|-------------|
-| `create` | Opens a modal to link reminders to a scheduled event (shortname, offsets, optional channel override + message) |
+| `create` | Opens a modal to link reminders to a scheduled event (shortname, offsets, optional channel override + embed description) |
 | `edit` | Re-open the configure modal for an existing config |
 | `list` | Active configs, offsets, next fire time, default channel |
 | `clear` | Stop reminders; delete the `event-<shortname>` role and DB rows |
 | `sync` | Re-fetch Interested users and reconcile role membership |
 | `setchannel` | Guild default notify channel (text/announcement); per-event modal can override |
 
-**Create/edit modal fields**: shortname → role `event-<shortname>`; offset multi-select (defaults 1d / 1h / 15m) + optional custom offsets (`2h, 10m`); optional channel override; optional message with placeholders `{event}`, `{location}`, `{starts_in}`, `{starts_at}`, `{role}`.
+**Create/edit modal fields**: shortname → role `event-<shortname>` (create prefills a slug of the event title, with `-2`/`-3` on collision); offset multi-select (defaults 1d / 1h / 15m) + optional custom offsets (`2h, 10m`); optional channel override; optional **embed description** with placeholders `{event}`, `{location}`, `{starts_in}`, `{starts_at}`, `{url}`, `{description}`, `{offset}`, `{role}`. Delivery is always an embed + role mention in message content.
 
 ### `/honeypot` - Honeypot Channel Management
 
@@ -811,6 +813,8 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 | `/ticket settings` | Public | Yes |
 | `/eventreminder optout` | Public | Yes |
 | `/eventreminder optin` | Public | Yes |
+| `/eventreminder mute` | Public | Yes |
+| `/eventreminder unmute` | Public | Yes |
 | `/eventreminder status` | Public | Yes |
 | `/eventreminder list` | Public | Yes |
 | `/note add\|list\|edit\|delete\|info\|settings` | Staff gate | Yes |
@@ -882,7 +886,7 @@ PUBLIC:
 /warn mine                         → Your own warnings
 /ticket create [reason]            → Open a support ticket
 /ticket settings                   → View ticket config
-/eventreminder optout|optin|status → Reminder ping preferences
+/eventreminder optout|optin|mute|unmute|status → Reminder ping preferences
 /eventreminder list                → List active event reminders
 
 STAFF GATE (Manage Server OR any staff role):

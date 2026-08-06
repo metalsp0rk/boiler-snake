@@ -31,6 +31,7 @@ describe("integration: event reminders", () => {
       .sort();
     assert.deepEqual(tables, [
       "event_reminder_configs",
+      "event_reminder_event_optouts",
       "event_reminder_offsets",
       "event_reminder_optouts",
     ]);
@@ -166,7 +167,7 @@ describe("integration: event reminders", () => {
     assert.ok(env.members.member.roles.cache.has(config.role_id));
   });
 
-  it("ticker delivers due offset message once", async () => {
+  it("ticker delivers due offset as embed once", async () => {
     const start = Date.now() + 60 * 60 * 1000; // 1h from now
     const event = createScheduledEvent({
       guild: env.guild,
@@ -190,7 +191,7 @@ describe("integration: event reminders", () => {
       shortname: "tick-test",
       roleId: role.id,
       channelId: null,
-      messageTemplate: "Ping {role} for {event}",
+      messageTemplate: "Custom body for {event}",
       offsets: [{ offsetMinutes: 60, fireAt }],
       createdBy: IDS.admin,
     });
@@ -203,8 +204,13 @@ describe("integration: event reminders", () => {
       "expected a reminder message"
     );
     const payload = env.channels.notify.sent[0];
-    const content = typeof payload === "string" ? payload : payload.content;
-    assert.match(content, /Ticker Event|Ping/);
+    assert.ok(payload && typeof payload === "object");
+    assert.match(payload.content || "", new RegExp(`<@&${role.id}>`));
+    assert.ok(Array.isArray(payload.embeds) && payload.embeds.length >= 1);
+    const embed = payload.embeds[0];
+    const embedData = typeof embed.toJSON === "function" ? embed.toJSON() : embed.data || embed;
+    assert.match(embedData.title || "", /Ticker Event/);
+    assert.match(embedData.description || "", /Custom body for Ticker Event/);
 
     // Second tick should not re-send
     const countAfterFirst = env.channels.notify.sent.length;
@@ -279,6 +285,170 @@ describe("integration: event reminders", () => {
     assert.equal(
       due2.find((d) => d.offset_id === mine.offset_id),
       undefined
+    );
+  });
+
+  it("suggestShortname appends suffix on collision", () => {
+    const {
+      suggestShortname,
+    } = require("../../src/features/eventReminders/service");
+    const roleId = "role-suggest-1";
+    env.db.createEventReminderConfig({
+      guildId: env.guild.id,
+      scheduledEventId: "evt-suggest-1",
+      shortname: "friday-raid",
+      roleId,
+      offsets: [
+        { offsetMinutes: 60, fireAt: Date.now() + 3_600_000 },
+      ],
+      createdBy: IDS.admin,
+    });
+    assert.equal(
+      suggestShortname(env.guild.id, "Friday Raid!!!"),
+      "friday-raid-2"
+    );
+    assert.equal(
+      suggestShortname(env.guild.id, "Unique Event Name"),
+      "unique-event-name"
+    );
+  });
+
+  it("mute strips role; unmute restores when Interested", async () => {
+    const start = Date.now() + 2 * 24 * 60 * 60 * 1000;
+    const event = createScheduledEvent({
+      guild: env.guild,
+      id: "evt-mute-1",
+      name: "Mute Me",
+      scheduledStartTimestamp: start,
+      creatorId: IDS.admin,
+      subscriberIds: [IDS.member],
+    });
+    env.guild.addScheduledEvent(event);
+
+    const role = await env.guild.roles.create({ name: "event-mute-me" });
+    env.db.createEventReminderConfig({
+      guildId: env.guild.id,
+      scheduledEventId: "evt-mute-1",
+      shortname: "mute-me",
+      roleId: role.id,
+      offsets: [
+        { offsetMinutes: 60, fireAt: Date.now() + 80_000_000 },
+      ],
+      createdBy: IDS.admin,
+    });
+    await env.members.member.roles.add(role.id);
+    assert.ok(env.members.member.roles.cache.has(role.id));
+
+    const muteIx = await env.runCommand({
+      commandName: "eventreminder",
+      subcommand: "mute",
+      admin: false,
+      user: env.users.memberUser,
+      options: { event: "evt-mute-1" },
+    });
+    assertEphemeralReply(muteIx);
+    assert.equal(
+      env.db.isEventReminderMuted(env.guild.id, IDS.member, "evt-mute-1"),
+      true
+    );
+    assert.equal(env.members.member.roles.cache.has(role.id), false);
+    assert.equal(
+      env.db.isUserBlockedFromEventReminders(
+        env.guild.id,
+        IDS.member,
+        "evt-mute-1"
+      ),
+      true
+    );
+
+    const status = await env.runCommand({
+      commandName: "eventreminder",
+      subcommand: "status",
+      admin: false,
+      user: env.users.memberUser,
+    });
+    assertReplyContains(status, /mute-me|muted events/i);
+
+    const unmuteIx = await env.runCommand({
+      commandName: "eventreminder",
+      subcommand: "unmute",
+      admin: false,
+      user: env.users.memberUser,
+      options: { event: "evt-mute-1" },
+    });
+    assert.equal(
+      env.db.isEventReminderMuted(env.guild.id, IDS.member, "evt-mute-1"),
+      false
+    );
+    assert.ok(env.members.member.roles.cache.has(role.id));
+    assertReplyContains(unmuteIx, /unmuted|restored/i);
+  });
+
+  it("guild opt-out blocks grants even after unmute", async () => {
+    const event = createScheduledEvent({
+      guild: env.guild,
+      id: "evt-mute-opt-1",
+      name: "Opt Mute",
+      scheduledStartTimestamp: Date.now() + 86_400_000,
+      creatorId: IDS.admin,
+      subscriberIds: [IDS.member2],
+    });
+    env.guild.addScheduledEvent(event);
+    const role = await env.guild.roles.create({ name: "event-opt-mute" });
+    env.db.createEventReminderConfig({
+      guildId: env.guild.id,
+      scheduledEventId: "evt-mute-opt-1",
+      shortname: "opt-mute",
+      roleId: role.id,
+      offsets: [
+        { offsetMinutes: 30, fireAt: Date.now() + 80_000_000 },
+      ],
+      createdBy: IDS.admin,
+    });
+
+    env.db.setEventReminderMute(env.guild.id, IDS.member2, "evt-mute-opt-1");
+    env.db.setEventReminderOptOut(env.guild.id, IDS.member2);
+
+    await env.runCommand({
+      commandName: "eventreminder",
+      subcommand: "unmute",
+      admin: false,
+      user: env.users.member2User,
+      options: { event: "evt-mute-opt-1" },
+    });
+
+    assert.equal(
+      env.db.isEventReminderMuted(env.guild.id, IDS.member2, "evt-mute-opt-1"),
+      false
+    );
+    assert.equal(
+      env.db.isEventReminderOptedOut(env.guild.id, IDS.member2),
+      true
+    );
+    assert.equal(env.members.member2.roles.cache.has(role.id), false);
+  });
+
+  it("clearing config drops mute rows for that event", () => {
+    const roleId = "role-mute-clear";
+    env.db.createEventReminderConfig({
+      guildId: env.guild.id,
+      scheduledEventId: "evt-mute-clear",
+      shortname: "mute-clear",
+      roleId,
+      offsets: [
+        { offsetMinutes: 15, fireAt: Date.now() + 60_000 },
+      ],
+      createdBy: IDS.admin,
+    });
+    env.db.setEventReminderMute(env.guild.id, IDS.member, "evt-mute-clear");
+    assert.equal(
+      env.db.isEventReminderMuted(env.guild.id, IDS.member, "evt-mute-clear"),
+      true
+    );
+    env.db.clearEventReminderConfig(env.guild.id, "evt-mute-clear");
+    assert.equal(
+      env.db.isEventReminderMuted(env.guild.id, IDS.member, "evt-mute-clear"),
+      false
     );
   });
 });

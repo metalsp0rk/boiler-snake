@@ -107,7 +107,7 @@ Admin/mod commands (requires **Manage Guild** by default):
 - `/setcommandchannel remove channel:<channel>`
 - `/setcommandchannel list`
 - `/settings` (shows current guild settings, role mappings, allowed channels)
-- `/eventreminder create|edit|list|clear|sync|setchannel|optout|optin|status` — scheduled event reminder pings
+- `/eventreminder create|edit|list|clear|sync|setchannel|optout|optin|mute|unmute|status` — scheduled event reminder pings
 - `/staff role add|remove|list` · `/staff settings` — guild staff roles (admin gate; also honeypot exemption)
 - `/note add|list|edit|delete|info|settings` — private staff notes about members
 - `/warn add|list|info|void|count|mine|settings` — formal permanent warnings

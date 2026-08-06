@@ -229,6 +229,7 @@ function clearEventReminderConfig(guildId, scheduledEventId) {
   // SQLite FK CASCADE may be off; delete children explicitly.
   db.prepare(`DELETE FROM event_reminder_offsets WHERE config_id=?`).run(row.id);
   db.prepare(`DELETE FROM event_reminder_configs WHERE id=?`).run(row.id);
+  clearEventReminderMutesForEvent(guildId, scheduledEventId);
   return {
     id: row.id,
     role_id: row.role_id,
@@ -250,6 +251,7 @@ function clearEventReminderConfigById(configId) {
   if (!row) return null;
   db.prepare(`DELETE FROM event_reminder_offsets WHERE config_id=?`).run(configId);
   db.prepare(`DELETE FROM event_reminder_configs WHERE id=?`).run(configId);
+  clearEventReminderMutesForEvent(row.guild_id, row.scheduled_event_id);
   return {
     id: row.id,
     role_id: row.role_id,
@@ -357,6 +359,91 @@ function clearEventReminderOptOut(guildId, userId) {
 }
 
 /**
+ * Per-event mute (independent of guild-wide opt-out).
+ * @param {string} guildId
+ * @param {string} userId
+ * @param {string} scheduledEventId
+ * @returns {boolean}
+ */
+function isEventReminderMuted(guildId, userId, scheduledEventId) {
+  const row = db
+    .prepare(
+      `SELECT 1 FROM event_reminder_event_optouts
+       WHERE guild_id=? AND user_id=? AND scheduled_event_id=?`
+    )
+    .get(guildId, userId, scheduledEventId);
+  return !!row;
+}
+
+/**
+ * @param {string} guildId
+ * @param {string} userId
+ * @param {string} scheduledEventId
+ */
+function setEventReminderMute(guildId, userId, scheduledEventId) {
+  db.prepare(
+    `INSERT INTO event_reminder_event_optouts
+       (guild_id, user_id, scheduled_event_id, muted_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(guild_id, user_id, scheduled_event_id)
+     DO UPDATE SET muted_at=excluded.muted_at`
+  ).run(guildId, userId, scheduledEventId, now());
+}
+
+/**
+ * @param {string} guildId
+ * @param {string} userId
+ * @param {string} scheduledEventId
+ */
+function clearEventReminderMute(guildId, userId, scheduledEventId) {
+  db.prepare(
+    `DELETE FROM event_reminder_event_optouts
+     WHERE guild_id=? AND user_id=? AND scheduled_event_id=?`
+  ).run(guildId, userId, scheduledEventId);
+}
+
+/**
+ * @param {string} guildId
+ * @param {string} userId
+ * @returns {{ scheduled_event_id: string, muted_at: number }[]}
+ */
+function listEventReminderMutes(guildId, userId) {
+  return db
+    .prepare(
+      `SELECT scheduled_event_id, muted_at FROM event_reminder_event_optouts
+       WHERE guild_id=? AND user_id=?
+       ORDER BY muted_at DESC`
+    )
+    .all(guildId, userId);
+}
+
+/**
+ * Drop all mutes for a scheduled event (config cleanup).
+ * @param {string} guildId
+ * @param {string} scheduledEventId
+ */
+function clearEventReminderMutesForEvent(guildId, scheduledEventId) {
+  db.prepare(
+    `DELETE FROM event_reminder_event_optouts
+     WHERE guild_id=? AND scheduled_event_id=?`
+  ).run(guildId, scheduledEventId);
+}
+
+/**
+ * Guild opt-out OR per-event mute blocks reminder roles for that event.
+ * @param {string} guildId
+ * @param {string} userId
+ * @param {string} scheduledEventId
+ * @returns {boolean}
+ */
+function isUserBlockedFromEventReminders(guildId, userId, scheduledEventId) {
+  return (
+    isEventReminderOptedOut(guildId, userId) ||
+    isEventReminderMuted(guildId, userId, scheduledEventId)
+  );
+}
+
+/**
  * @param {string} guildId
  * @returns {string[]} role ids for active configs
  */
@@ -399,5 +486,11 @@ module.exports = {
   isEventReminderOptedOut,
   setEventReminderOptOut,
   clearEventReminderOptOut,
+  isEventReminderMuted,
+  setEventReminderMute,
+  clearEventReminderMute,
+  listEventReminderMutes,
+  clearEventReminderMutesForEvent,
+  isUserBlockedFromEventReminders,
   listActiveEventReminderRoleIds,
 };

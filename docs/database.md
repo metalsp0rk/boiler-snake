@@ -35,6 +35,7 @@ boiler-snake/
 | `event_reminder_configs` | Scheduled event ↔ reminder role/channel config |
 | `event_reminder_offsets` | Per-offset fire times and sent state |
 | `event_reminder_optouts` | Per-guild user opt-out from event reminder pings |
+| `event_reminder_event_optouts` | Per-event mute (user + scheduled_event_id) |
 | `staff_notes` | Private staff notes about members (soft-delete) |
 | `warnings` | Formal permanent warnings (voidable; sequential W-n) |
 | `tickets` | Support ticket lifecycle, sensitive flag, archive metadata |
@@ -629,6 +630,24 @@ CREATE TABLE event_reminder_optouts (
 );
 ```
 
+#### `event_reminder_event_optouts`
+
+Per-event mute rows (independent of guild-wide opt-out). Created by migration `015_event_reminder_event_optouts`. Purged when the matching reminder config is cleared.
+
+```sql
+CREATE TABLE event_reminder_event_optouts (
+  guild_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  scheduled_event_id TEXT NOT NULL,
+  muted_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, user_id, scheduled_event_id)
+);
+CREATE INDEX idx_er_event_optouts_user
+  ON event_reminder_event_optouts(guild_id, user_id);
+CREATE INDEX idx_er_event_optouts_event
+  ON event_reminder_event_optouts(guild_id, scheduled_event_id);
+```
+
 See [Event Reminders](event-reminders.md).
 
 ---
@@ -940,6 +959,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `012_warn_log_channel` | `warn_log_channel_id` on `guild_settings` (fallback: audit log) |
 | `013_user_channel_activity` | Daily activity counters, ignore list, user meta/cursors, `guild_activity_settings` watermark |
 | `014_guild_activity_backfill` | Guild-wide backfill columns on `guild_activity_settings` + `guild_channel_backfill_cursor` |
+| `015_event_reminder_event_optouts` | Per-event mute table for scheduled event reminders |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

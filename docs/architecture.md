@@ -141,6 +141,7 @@ Migrations on load:
 | `012_warn_log_channel` | `guild_settings.warn_log_channel_id` (warn issue/void embeds) |
 | `013_user_channel_activity` | daily per-channel message counters, ignore list, user backfill meta |
 | `014_guild_activity_backfill` | guild-wide activity backfill status + channel cursors |
+| `015_event_reminder_event_optouts` | per-event mute table for event reminders |
 
 ### Core XP API
 

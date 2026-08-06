@@ -170,6 +170,12 @@ module.exports = {
   isEventReminderOptedOut: eventReminders.isEventReminderOptedOut,
   setEventReminderOptOut: eventReminders.setEventReminderOptOut,
   clearEventReminderOptOut: eventReminders.clearEventReminderOptOut,
+  isEventReminderMuted: eventReminders.isEventReminderMuted,
+  setEventReminderMute: eventReminders.setEventReminderMute,
+  clearEventReminderMute: eventReminders.clearEventReminderMute,
+  listEventReminderMutes: eventReminders.listEventReminderMutes,
+  clearEventReminderMutesForEvent: eventReminders.clearEventReminderMutesForEvent,
+  isUserBlockedFromEventReminders: eventReminders.isUserBlockedFromEventReminders,
   listActiveEventReminderRoleIds: eventReminders.listActiveEventReminderRoleIds,
 
   // staff notes

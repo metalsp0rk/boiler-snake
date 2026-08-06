@@ -9,7 +9,12 @@ const {
   formatOffsetMinutes,
   renderReminderMessage,
   formatEventLocation,
+  formatEventDescription,
+  eventUrl,
+  buildReminderEmbed,
+  buildReminderDelivery,
   canConfigureEventReminder,
+  DEFAULT_EMBED_DESCRIPTION,
 } = require("../src/features/eventReminders/service");
 const { PermissionFlagsBits } = require("discord.js");
 
@@ -67,38 +72,54 @@ describe("eventReminders service helpers", () => {
 
   it("renderReminderMessage substitutes placeholders", () => {
     const startMs = 1_700_000_000_000;
-    const msg = renderReminderMessage(null, {
-      eventName: "Raid",
-      startMs,
-      roleId: "99",
-      location: "<#42>",
-    });
+    const msg = renderReminderMessage(
+      "Meet in {location} for {event} · {offset} · {url}",
+      {
+        eventName: "Raid",
+        startMs,
+        roleId: "99",
+        location: "<#42>",
+        url: "https://discord.com/events/1/2",
+        description: "Bring snacks",
+        offset: "1 hour",
+      }
+    );
     assert.match(msg, /Raid/);
-    assert.match(msg, /<@&99>/);
-    assert.match(msg, /in <#42>/);
-    assert.match(msg, new RegExp(`<t:${Math.floor(startMs / 1000)}:R>`));
+    assert.match(msg, /<#42>/);
+    assert.match(msg, /1 hour/);
+    assert.match(msg, /discord\.com\/events\/1\/2/);
   });
 
   it("default template omits empty location clause", () => {
     const startMs = 1_700_000_000_000;
-    const msg = renderReminderMessage(null, {
-      eventName: "Raid",
-      startMs,
-      roleId: "99",
-      location: "",
-    });
+    const msg = renderReminderMessage(
+      "Starts {starts_in} ({starts_at}) in {location}.",
+      {
+        eventName: "Raid",
+        startMs,
+        roleId: "99",
+        location: "",
+      }
+    );
     assert.equal(
       msg,
-      `Reminder: **Raid** starts <t:${Math.floor(startMs / 1000)}:R> (<t:${Math.floor(startMs / 1000)}:F>). <@&99>`
+      `Starts <t:${Math.floor(startMs / 1000)}:R> (<t:${Math.floor(startMs / 1000)}:F>).`
     );
     assert.doesNotMatch(msg, /\bin\b/);
   });
 
+  it("renderReminderMessage substitutes {description} and {role}", () => {
+    const msg = renderReminderMessage("{description} {role}", {
+      eventName: "Raid",
+      startMs: Date.now(),
+      roleId: "1",
+      description: "Hello world",
+    });
+    assert.equal(msg, "Hello world <@&1>");
+  });
+
   it("formatEventLocation mentions channel-hosted events", () => {
-    assert.equal(
-      formatEventLocation({ channelId: "111" }),
-      "<#111>"
-    );
+    assert.equal(formatEventLocation({ channelId: "111" }), "<#111>");
     assert.equal(
       formatEventLocation({
         channelId: null,
@@ -109,14 +130,68 @@ describe("eventReminders service helpers", () => {
     assert.equal(formatEventLocation({}), "");
   });
 
-  it("renderReminderMessage substitutes {location}", () => {
-    const msg = renderReminderMessage("Meet in {location} for {event}", {
-      eventName: "Raid",
-      startMs: Date.now(),
-      roleId: "1",
-      location: "<#555>",
+  it("formatEventDescription truncates", () => {
+    assert.equal(formatEventDescription({ description: "  hi  " }), "hi");
+    const long = "x".repeat(400);
+    const out = formatEventDescription({ description: long }, 50);
+    assert.ok(out.length <= 50);
+    assert.ok(out.endsWith("…"));
+  });
+
+  it("eventUrl builds discord events link", () => {
+    assert.equal(
+      eventUrl("g1", "e1"),
+      "https://discord.com/events/g1/e1"
+    );
+    assert.equal(eventUrl("", "e1"), "");
+  });
+
+  it("buildReminderEmbed has title fields and uses default description", () => {
+    const startMs = Date.now() + 3_600_000;
+    const embed = buildReminderEmbed({
+      scheduledEvent: {
+        id: "e1",
+        name: "Boss Night",
+        channelId: "ch1",
+        description: "Bring pots",
+      },
+      guildId: "g1",
+      roleId: "r1",
+      offsetMinutes: 60,
+      template: null,
+      startMs,
     });
-    assert.equal(msg, "Meet in <#555> for Raid");
+    const data = typeof embed.toJSON === "function" ? embed.toJSON() : embed.data;
+    assert.equal(data.title, "Boss Night");
+    assert.equal(data.url, "https://discord.com/events/g1/e1");
+    assert.match(data.description || "", /Starts/);
+    assert.ok(Array.isArray(data.fields));
+    assert.ok(data.fields.some((f) => f.name === "Starts"));
+    assert.ok(data.fields.some((f) => f.name === "Location"));
+    assert.ok(data.fields.some((f) => /Reminder/i.test(f.name)));
+  });
+
+  it("buildReminderDelivery pings role in content with embed", () => {
+    const payload = buildReminderDelivery({
+      scheduledEvent: { id: "e1", name: "Raid" },
+      guildId: "g1",
+      roleId: "role99",
+      offsetMinutes: 15,
+      template: "Custom {event}",
+      startMs: Date.now() + 60_000,
+    });
+    assert.equal(payload.content, "<@&role99>");
+    assert.equal(payload.embeds.length, 1);
+    assert.deepEqual(payload.allowedMentions, { roles: ["role99"] });
+    const data =
+      typeof payload.embeds[0].toJSON === "function"
+        ? payload.embeds[0].toJSON()
+        : payload.embeds[0].data;
+    assert.match(data.description || "", /Custom Raid/);
+  });
+
+  it("DEFAULT_EMBED_DESCRIPTION is the empty-template body", () => {
+    assert.match(DEFAULT_EMBED_DESCRIPTION, /starts_in/);
   });
 
   it("canConfigureEventReminder allows ManageGuild or creator", () => {

@@ -1,14 +1,14 @@
 # Scheduled Event Reminders
 
-Pre-event reminder pings for Discord **Guild Scheduled Events**. Only members who marked **Interested** are notified (via a dedicated `event-<shortname>` role). Users can opt out of all reminder pings per guild.
+Pre-event reminder pings for Discord **Guild Scheduled Events**. Only members who marked **Interested** are notified (via a dedicated `event-<shortname>` role). Users can opt out of **all** reminder pings per guild, or **mute** a single linked event.
 
 ## How it works
 
 1. An authorized user runs `/eventreminder create` and picks a scheduled event.
-2. A modal configures shortname, reminder offsets, optional channel override, and message.
-3. The bot creates role `event-<shortname>`, grants it to currently Interested users (minus opt-outs), and keeps the role in sync as interest changes.
-4. At each offset before start, the bot posts **one message** mentioning that role in the notify channel.
-5. When the event completes/cancels (or on `/eventreminder clear`), the bot deletes the role and config so shortnames can be reused.
+2. A modal configures shortname (auto-suggested from the event title, with a `-2`/`-3` suffix if taken), reminder offsets, optional channel override, and embed description.
+3. The bot creates role `event-<shortname>`, grants it to currently Interested users (minus guild opt-outs and per-event mutes), and keeps the role in sync as interest changes.
+4. At each offset before start, the bot posts **one message**: role mention in content + an **embed** with event details in the notify channel.
+5. When the event completes/cancels (or on `/eventreminder clear`), the bot deletes the role and config (and any mute rows for that event) so shortnames can be reused.
 
 ## Role lifecycle (with the Discord event)
 
@@ -22,12 +22,12 @@ stateDiagram-v2
 
   [*] --> NoRole: Discord event created<br>(status: Scheduled)
 
-  NoRole --> RoleExists: /eventreminder create<br>create role event-shortname<br>grant Interested NE opt-out
+  NoRole --> RoleExists: /eventreminder create<br>create role event-shortname<br>grant Interested NE opt-out/mute
 
   state RoleExists {
     [*] --> Syncing
-    Syncing --> Syncing: Interest add → grant role<br>Interest remove → strip role<br>optout strips / optin re-grants<br>/eventreminder sync
-    Syncing --> Firing: cron every 60s<br>fire_at ≤ now → one message<br>mention @event-shortname
+    Syncing --> Syncing: Interest add → grant role<br>Interest remove → strip role<br>optout strips / mute strips<br>optin/unmute re-grants<br>/eventreminder sync
+    Syncing --> Firing: cron every 60s<br>fire_at ≤ now → role ping + embed
     Firing --> Syncing: more unsent offsets
     Firing --> WaitingEnd: all offsets sent<br>or past
     Syncing --> WaitingEnd: event start reached
@@ -57,7 +57,7 @@ sequenceDiagram
   Staff->>Bot: eventreminder create plus modal
   Bot->>Role: Create role
   Bot->>Discord: Fetch Interested users
-  Bot->>Role: Assign to Interested skip opt-outs
+  Bot->>Role: Assign to Interested skip opt-outs and mutes
   Note over Bot: Config and offsets saved in SQLite
 
   loop While event is Scheduled
@@ -66,8 +66,8 @@ sequenceDiagram
     Bot->>Role: Grant or remove membership
     Bot->>Bot: node-cron every 60s
     alt Offset fire_at is due and unsent
-      Bot->>Discord: Post reminder message
-      Note over Discord,Role: Message mentions the role
+      Bot->>Discord: Post reminder (role content + embed)
+      Note over Discord,Role: Content mentions the role
     else No offset due this minute
       Bot->>Bot: Idle until next cron tick
     end
@@ -156,8 +156,8 @@ sequenceDiagram
 | | One-time | Recurring (current MVP) |
 |--|----------|-------------------------|
 | Role created | On `/eventreminder create` for that event id | Same, **per occurrence you configure** |
-| Role while live | Synced to Interested ∩ ¬opt-out | Same |
-| Reminder messages | Offsets before that start | Offsets before **that** occurrence’s start |
+| Role while live | Synced to Interested ∩ ¬opt-out ∩ ¬mute | Same |
+| Reminder messages | Offsets before that start (embed + role ping) | Offsets before **that** occurrence’s start |
 | Role deleted | Complete / cancel / delete / clear / safety | Same when **that** occurrence is terminal |
 | Next occurrence | N/A | **No automatic re-link** — run create again |
 
@@ -167,7 +167,7 @@ sequenceDiagram
 |--------|-----|
 | Create / edit / clear / sync for an event | **Manage Guild** **or** that scheduled event’s **creator** |
 | Set default notify channel | **Manage Guild** only |
-| Opt out / opt in / status | Everyone |
+| Opt out / opt in / mute / unmute / status | Everyone |
 
 Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and ability to mention the role by ID) in the notify channel. Enable the **Guild Scheduled Events** intent in the Developer Portal.
 
@@ -182,30 +182,58 @@ Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and abili
 | `/eventreminder sync event:` | Re-fetch Interested users and reconcile roles |
 | `/eventreminder setchannel [channel]` | Guild default notify channel |
 | `/eventreminder optout` | Opt out of all reminder roles/pings in this guild |
-| `/eventreminder optin` | Re-enable; re-grant roles for events you are still Interested in |
-| `/eventreminder status` | Opt-out state and event roles you hold |
+| `/eventreminder optin` | Re-enable; re-grant roles for events you are still Interested in (skips muted) |
+| `/eventreminder mute event:` | Mute one linked event (strip that role; block future grants) |
+| `/eventreminder unmute event:` | Clear mute; re-grant if still Interested and not guild-opted-out |
+| `/eventreminder status` | Guild opt-out, muted events, and event roles you hold |
 
 ## Modal fields
 
 | Field | Purpose |
 |-------|---------|
-| Shortname | Role suffix → `event-<shortname>` (`[a-z0-9-]`) |
+| Shortname | Role suffix → `event-<shortname>` (`[a-z0-9-]`). **Create** prefills a slug of the event title; if taken, suggests `title-2`, `title-3`, … |
 | Offsets (multi-select) | Presets: 1 week, 1 day, 1 hour, 30 min, 15 min, 5 min (defaults: 1d, 1h, 15m) |
 | Extra custom offsets | Freeform `2h, 10m` (`(\d+)(m\|h\|d)`) |
 | Channel override | Optional; empty uses guild default |
-| Custom message | Placeholders: `{event}`, `{location}`, `{starts_in}`, `{starts_at}`, `{role}` |
+| Custom embed description | Optional body for the reminder **embed**. Leave empty for the default (`Starts {starts_in}`) |
 
-**`{location}`:** if the scheduled event is hosted in a voice/stage channel, expands to a channel mention (`<#id>`). For external events, expands to the external location text. Empty when unset.
+### Placeholders (embed description)
 
-**Default message:**  
-`Reminder: **{event}** starts {starts_in} ({starts_at}) in {location}. {role}`  
-When `{location}` is empty, the trailing ` in ` clause is dropped automatically.
+| Token | Meaning |
+|-------|---------|
+| `{event}` | Event name |
+| `{location}` | Voice/stage channel mention or external location text |
+| `{starts_in}` | Relative Discord timestamp (`<t:unix:R>`) |
+| `{starts_at}` | Full Discord timestamp (`<t:unix:F>`) |
+| `{url}` | `https://discord.com/events/{guildId}/{eventId}` |
+| `{description}` | Event description (trimmed, max ~300 chars) |
+| `{offset}` | Human offset for this fire (e.g. `1 hour`) |
+| `{role}` | Role mention text (does **not** ping inside the embed) |
+
+**`{location}`:** if the scheduled event is hosted in a voice/stage channel, expands to a channel mention (`<#id>`). For external events, expands to the external location text. Empty when unset. Trailing ` in ` clauses are dropped when location is empty.
+
+### Delivery shape
+
+Every due offset posts:
+
+1. **Content:** `<@&role>` (this is what notifies role holders)
+2. **Embed:** title = event name, optional event URL, description (custom or default), fields for Starts / Location / Reminder offset, cover image when available
+
+Role mentions inside embed bodies do **not** notify in Discord — the content line is required.
 
 Offsets already in the past relative to the event start are skipped. Max **8** offsets; max lookback **30 days**.
 
-## Opt-out
+## Opt-out and mute
 
-Guild-wide (MVP). Opt-out strips bot-managed event reminder roles and prevents future grants. Per-event opt-out is post-MVP.
+| Mode | Command | Scope |
+|------|---------|--------|
+| Guild opt-out | `/eventreminder optout` / `optin` | All events in this guild |
+| Per-event mute | `/eventreminder mute` / `unmute` | One linked config |
+
+- **Guild opt-out always wins:** muting/unmuting does not restore roles while guild-opted-out; use `optin` first.
+- Mute strips that event’s reminder role and blocks future grants for that `scheduled_event_id`.
+- Unmute re-grants only if you are still **Interested** and not guild-opted-out.
+- Mute rows are deleted when the event config is cleared (complete / cancel / delete / `/clear`).
 
 ## Delivery & cleanup
 
@@ -215,7 +243,7 @@ Guild-wide (MVP). Opt-out strips bot-managed event reminder roles and prevents f
 
 ## Database
 
-Tables: `event_reminder_configs`, `event_reminder_offsets`, `event_reminder_optouts`.  
+Tables: `event_reminder_configs`, `event_reminder_offsets`, `event_reminder_optouts`, `event_reminder_event_optouts` (per-event mutes).  
 Guild setting: `event_reminder_channel_id`.
 
 See [database.md](database.md) and [architecture.md](architecture.md).

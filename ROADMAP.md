@@ -386,11 +386,11 @@ Authorized user links reminders to a Discord scheduled event
 | Rule | Detail |
 |------|--------|
 | Audience | Only members who are **Interested** on that scheduled event |
-| Opt-out | **Guild-wide** per user (MVP); skips role grant and thus pings. Per-event opt-out = post-MVP |
+| Opt-out | **Guild-wide** per user (`/optout`) **or** per-event mute (`/mute`); both skip role grant and thus pings. Guild opt-out always wins |
 | Ping mechanism | Mention dedicated role `event-<shortname>` (not mass user mentions) |
 | Timing | Relative offsets before the event’s scheduled start (e.g. 1d, 1h, 15m) |
-| Delivery | **One Discord message per offset** (not a digest) |
-| Create UX | Slash picks the event → **modal** configures shortname, offsets, channel, message |
+| Delivery | **One Discord message per offset**: role ping in content + **embed** details (not a digest) |
+| Create UX | Slash picks the event → **modal** configures shortname (slug + collision suffix), offsets, channel, embed description |
 | Who may configure | **ManageGuild** **or** the Discord scheduled event’s **creator** |
 | Role lifecycle | Create on setup; **delete after event is done** (completed/canceled) or on `/clear` |
 
@@ -416,10 +416,12 @@ Authorized user links reminders to a Discord scheduled event
 | Command | Description |
 |---------|-------------|
 | `/eventreminder optout` | Opt out of **all** event reminder roles/pings in this guild |
-| `/eventreminder optin` | Re-enable reminders; re-sync roles for events you are still Interested in |
-| `/eventreminder status` | Show opt-out state; list event roles you currently hold (optional) |
+| `/eventreminder optin` | Re-enable reminders; re-sync roles for events you are still Interested in (skips muted) |
+| `/eventreminder mute` | Mute one linked event (strip that role; block future grants) |
+| `/eventreminder unmute` | Clear mute; re-grant if still Interested and not guild-opted-out |
+| `/eventreminder status` | Show guild opt-out, muted events, and event roles you currently hold |
 
-Ephemeral replies for opt-out/opt-in/status.
+Ephemeral replies for opt-out/opt-in/mute/unmute/status.
 
 ---
 
@@ -467,12 +469,14 @@ We do **not** need absolute date/time pickers for MVP: reminders are **offsets r
 
 ### 2.4 Who gets pinged
 
-1. User marks **Interested** → `GuildScheduledEventUserAdd` → if config active and not opted out → grant `event-*` role.
+1. User marks **Interested** → `GuildScheduledEventUserAdd` → if config active and not guild-opted-out and not muted for this event → grant `event-*` role.
 2. User removes interest → remove role.
 3. `/eventreminder optout` → guild opt-out flag; **strip all bot-managed event reminder roles** for that guild; future sync skips them.
-4. `/eventreminder optin` → clear flag; re-grant for events they are still Interested in.
+4. `/eventreminder optin` → clear flag; re-grant for events they are still Interested in (skips muted).
+5. `/eventreminder mute` → per-event mute row; strip that event’s role; future sync skips that event.
+6. `/eventreminder unmute` → clear mute; re-grant if still Interested and not guild-opted-out.
 
-Pings are `@event-<shortname>` in the notify channel. Only role holders are notified. Opt-out users never hold the role.
+Pings are `@event-<shortname>` in message **content** plus an embed in the notify channel. Only role holders are notified. Opted-out or muted users never hold the role.
 
 ---
 
@@ -579,7 +583,7 @@ Implementation module: `src/eventReminders.js` (ticker + role sync + delivery + 
 | `guildScheduledEventUpdate` | Start time change → recompute unsent `fire_at`; completed/canceled → **cleanup role + config** |
 | `guildScheduledEventDelete` | **Cleanup role + config** |
 | Interval ticker | Deliver due offsets (**one message each**); safety cleanup after event end |
-| `/eventreminder optout` / `optin` | Toggle DB + strip or re-sync roles |
+| `/eventreminder optout` / `optin` / `mute` / `unmute` | Toggle guild opt-out or per-event mute + strip or re-sync roles |
 
 ---
 
@@ -603,8 +607,10 @@ Implementation module: `src/eventReminders.js` (ticker + role sync + delivery + 
 | 2 | **One message per offset** (not a digest). |
 | 3 | **Permission:** `ManageGuild` **or** the scheduled event’s **creator**. Guild default channel: ManageGuild only. |
 | 4 | **Role cleanup after event completes/cancels** (and on clear) — primary defense against shortname/role collisions. |
-| 5 | **Opt-out:** guild-wide for MVP; per-event opt-out post-MVP. |
+| 5 | **Opt-out:** guild-wide `/optout` **and** per-event `/mute`; guild opt-out always wins for grants. |
 | 6 | **Default preset selection** in modal: `1 day`, `1 hour`, `15 min` (user can change). |
+| 7 | **Delivery:** always embed + role mention in message content (embed mentions do not notify). |
+| 8 | **Shortname suggest:** slug of event title; append `-2`…`-99` on collision among existing configs. |
 
 **Still minor (non-blocking):**
 
@@ -1387,6 +1393,7 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 | Table / change | Notes |
 |----------------|-------|
 | `event_reminder_configs` | Event ↔ role ↔ channel ↔ template (**shipped**, migration `006`) |
+| `event_reminder_event_optouts` | Per-event mute (**shipped**, migration `015`) |
 | `event_reminder_offsets` | Each “X before” fire + sent state (**shipped**) |
 | `event_reminder_optouts` | Per-guild user opt-out (**shipped**) |
 | `guild_settings.event_reminder_channel_id` | Default notify channel (**shipped**) |
@@ -1465,9 +1472,9 @@ Docs currently describe two incomplete slash surfaces honestly; this section is 
 
 ### Event reminders
 
-- [ ] Richer templates / embed reminders  
-- [ ] Per-event opt-out (MVP is guild-wide opt-out only)  
-- [ ] Auto-suggest shortname from event title in the modal  
+- [x] Richer templates / embed reminders (always embed + placeholders `{url}` `{description}` `{offset}`)  
+- [x] Per-event mute (`/mute` / `/unmute`; guild `/optout` still wins)  
+- [x] Auto-suggest shortname from event title (+ collision suffix `-2`…)  
 
 ### Twitch stream notifications
 

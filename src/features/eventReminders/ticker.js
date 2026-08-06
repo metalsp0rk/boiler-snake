@@ -10,8 +10,7 @@ const {
   listAllActiveEventReminderConfigs,
 } = require("../../db");
 const {
-  renderReminderMessage,
-  formatEventLocation,
+  buildReminderDelivery,
   resolveNotifyChannelId,
   cleanupEventReminderByConfigId,
   isEventTerminal,
@@ -89,19 +88,21 @@ async function deliverOne(client, row) {
     return;
   }
 
-  const startMs = eventStartMs(scheduledEvent) || row.fire_at + row.offset_minutes * 60_000;
-  const content = renderReminderMessage(row.message_template, {
-    eventName: scheduledEvent.name || "Event",
-    startMs,
+  const startMs =
+    eventStartMs(scheduledEvent) ||
+    row.fire_at + row.offset_minutes * 60_000;
+
+  // Role ping must be in content (embed mentions do not notify).
+  const payload = buildReminderDelivery({
+    scheduledEvent,
+    guildId: row.guild_id,
     roleId: row.role_id,
-    location: formatEventLocation(scheduledEvent),
+    offsetMinutes: row.offset_minutes,
+    template: row.message_template,
+    startMs,
   });
 
-  const msg = await channel.send({
-    content,
-    // Role pings must be allow-listed; channel mentions (location) do not need it.
-    allowedMentions: { roles: [row.role_id] },
-  });
+  const msg = await channel.send(payload);
 
   markReminderSent(row.offset_id, msg?.id || null);
 }
