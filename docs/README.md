@@ -34,6 +34,10 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Drop grace periods to prevent immediate loss
   - Best practices for thresholds
 
+- **[Reaction Roles](reaction-roles.md)**
+  - Self-serve emoji panels with min-level gates
+  - Removable options and panel deploy/sync
+
 - **[Daily XP Decay](decay.md)**
   - Configure inactivity penalties
   - Activity threshold logic
@@ -50,6 +54,34 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Decoy channels that ban anyone who posts
   - Exempt roles for staff
   - Setup order, permissions, and troubleshooting
+
+- **[Scheduled Event Reminders](event-reminders.md)**
+  - Pre-event pings for Interested members
+  - Dedicated event roles and opt-out
+
+- **[Staff Roles](staff-roles.md)**
+  - Junior/senior trusted roles
+  - Staff command gate and ticket visibility
+
+- **[Staff Notes](staff-notes.md)**
+  - Private staff-only notes about members
+  - Never shown to the subject
+
+- **[Warning System](warnings.md)**
+  - Formal permanent disciplinary records
+  - Voidable; member self-view via `/warn mine`
+
+- **[Help Tickets](tickets.md)**
+  - Private support channels, sensitive mode
+  - HTML transcripts and staff archives
+
+- **[User Activity Summary](user-activity.md)**
+  - Channel/category post rankings for senior staff
+  - Ignore lists and backfill
+
+- **[Audit Log & Message Log](audit-log.md)**
+  - Staff channels for moderation and role activity
+  - Deleted-message embeds
 
 - **[Leaderboard Rendering](leaderboard.md)**
   - PNG generation details
@@ -100,6 +132,9 @@ Welcome to the comprehensive documentation for Boiler Snake.
 **Need YouTube notifications working?**
 → Read [YouTube Notifications](youtube-notifications.md)
 
+**Setting up tickets or staff access?**
+→ [Help Tickets](tickets.md) and [Staff Roles](staff-roles.md)
+
 **Troubleshooting a problem?**
 → Check the [FAQ](FAQ.md) first
 
@@ -110,7 +145,7 @@ Welcome to the comprehensive documentation for Boiler Snake.
 
 ## 📦 Project Information
 
-- **Version**: 1.2.0
+- **Version**: 1.3.0
 - **License**: MIT
 - **Framework**: Discord.js v14
 - **Database**: SQLite with WAL mode
@@ -121,7 +156,6 @@ Welcome to the comprehensive documentation for Boiler Snake.
 ## 🔗 Additional Resources
 
 - [Project README](https://github.com/metalsp0rk/boiler-snake#readme) - Project overview and installation summary
-- [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; staff exempt roles
 - [GitHub Repository](https://github.com/metalsp0rk/boiler-snake)
 
 ---
@@ -133,6 +167,6 @@ Everything you need is in this documentation:
 1. **Install** the bot following [Setup Guide](setup.md)
 2. **Configure** settings per your server's needs ([Configuration Guide](configuration.md))
 3. **Test** XP and leveling features
-4. **Customize** roles, decay, YouTube alerts, honeypots as needed
+4. **Customize** roles, decay, tickets, staff tools, YouTube alerts, honeypots as needed
 
 Good luck, and enjoy gamifying your Discord community! 🚀

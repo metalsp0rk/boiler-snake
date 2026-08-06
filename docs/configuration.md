@@ -19,7 +19,7 @@ Configure Boiler Snake for your server's needs using environment variables and i
 Your Discord bot's token. Get this from [Discord Developer Portal](https://discord.com/developers/applications).
 
 ```env
-DISCORD_TOKEN=OTg3NjU0MzIx.example-token-here
+DISCORD_TOKEN=YOUR_BOT_TOKEN
 ```
 
 ⚠️ **Never commit this to version control!** The `.gitignore` file should already exclude it.
@@ -28,7 +28,7 @@ DISCORD_TOKEN=OTg3NjU0MzIx.example-token-here
 Your application's client ID. Also from Developer Portal → General Information.
 
 ```env
-CLIENT_ID=987654321098765432
+CLIENT_ID=YOUR_APP_CLIENT_ID
 ```
 
 ### Optional Variables
@@ -50,7 +50,7 @@ YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY
 Server ID for instant command registration during development.
 
 ```env
-DEV_GUILD_ID=123456789012345678
+DEV_GUILD_ID=YOUR_TEST_GUILD_ID
 ```
 
 Using this registers commands instantly to one guild instead of globally (which can take 1 hour).
@@ -95,7 +95,7 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `decay_window_days` | 7 | Time window for activity check |
 | `decay_min_messages` | 20 | Minimum messages to avoid decay |
 | `decay_percent` | 0.10 | XP reduction (10%) |
-| `level_xp_factor` | 100 | Level formula factor |
+| `level_xp_factor` | 100 | Level formula factor (see [Level Curve](#level-curve-configuration)) |
 | `youtube_polling_interval_minutes` | 5 | YouTube API check frequency |
 | `audit_log_channel_id` | *(none)* | Channel for bans, kicks, role-change embeds |
 | `message_log_channel_id` | *(none)* | Channel for deleted-message embeds |
@@ -138,11 +138,15 @@ See [Audit Log & Message Log](audit-log.md) for setup and event details.
 /setlog audit clear:true
 ```
 
+Full details: [Audit Log & Message Log](audit-log.md).
+
 ### Configure XP Awards
 
 ```bash
 /setxp message:<int> reaction:<int> voice:<int> msgcooldown:<int> reactioncooldown:<int>
 ```
+
+`/setxp` only accepts those five options. It does **not** set `level_xp_factor` (see [Level Curve Configuration](#level-curve-configuration)).
 
 #### Examples
 
@@ -283,6 +287,93 @@ Decoy channels that ban users who post (except exempt roles). Full guide: [Honey
 
 Requires bot **Ban Members** permission (and **Manage Messages** to delete honeypot posts).
 
+### Staff Roles
+
+Trusted roles for the staff command gate (and ticket visibility by level). Full guide: [Staff Roles](staff-roles.md).
+
+```bash
+# Trust a role as senior staff (staff gate + ticket channel view)
+/staff role add role:@Moderator level:senior
+
+# Junior: staff commands / notes / warns, but no automatic ticket overwrites
+/staff role add role:@Helper level:junior
+
+/staff role list
+/staff settings
+```
+
+- **Mutations** (`add` / `remove` / `setlevel`): **Manage Server** only
+- **List / settings**: staff gate (Manage Server **or** any trusted staff role)
+- **senior** → staff commands + automatic ticket channel overwrites
+- **junior** → staff commands only (tickets need claim / `/ticket addstaff`)
+
+### Audit & Message Logs
+
+```bash
+/setlog audit channel:#staff-audit
+/setlog message channel:#message-deletes
+/setlog show
+```
+
+See [Audit Log & Message Log](audit-log.md).
+
+### Reaction Roles (brief)
+
+Self-serve emoji panels with optional min-level gates. Full guide: [Reaction Roles](reaction-roles.md).
+
+```bash
+/reactionrole panel create channel:#roles title:Self Roles description:Pick a role
+# Then add options using the panel message ID from the create reply:
+/reactionrole option add message_id:… role:@Announcements level:0 removable:true
+```
+
+Requires **Manage Server**. Bot needs **Manage Roles** (and **Manage Messages** to strip unconfigured reactions).
+
+### Help Tickets (brief)
+
+Private support channels with panel, sensitive mode, and HTML archives. Full guide: [Help Tickets](tickets.md).
+
+```bash
+/staff role add role:@Moderator level:senior   # ticket visibility
+/ticket setcategory category:#Tickets
+/ticket setarchive channel:#ticket-archive
+/ticket panel channel:#support
+/ticket settings
+```
+
+Requires bot **Manage Channels**. Put the bot role **above** senior staff roles so ticket overwrites succeed.
+
+### Event Reminders
+
+Pre-event pings for members who marked **Interested** on a Discord scheduled event. Full guide: [Scheduled Event Reminders](event-reminders.md).
+
+```bash
+/eventreminder create event:…
+/eventreminder list
+/eventreminder setchannel channel:#event-alerts
+```
+
+### Staff Notes & Warnings
+
+| Feature | Entry commands | Docs |
+|---------|----------------|------|
+| **Staff notes** | `/note add`, `/note list`, … | [Staff Notes](staff-notes.md) |
+| **Warnings** | `/warn issue`, `/warn mine`, `/setwarn` | [Warning System](warnings.md) |
+
+Notes are private staff context; warnings are formal permanent records (voidable). Both use the staff gate (Manage Server or a trusted staff role). `/setwarn` is Manage Server–only.
+
+### User Activity Config
+
+Ignore channels/categories and backfill post rankings used by `/userinfo` **Activity** (senior staff). Full guide: [User Activity Summary](user-activity.md).
+
+```bash
+/activityconfig ignore add kind:channel target:#spam
+/activityconfig ignore list
+/activityconfig status
+```
+
+`/activityconfig` requires **Manage Server**.
+
 ---
 
 ## Level Curve Configuration
@@ -302,22 +393,34 @@ Level = floor(sqrt(XP / level_xp_factor))
 | 10    | ≥ 5,000  | ≥ 10,000  | ≥ 20,000  |
 | 20    | ≥ 20,000 | ≥ 40,000  | ≥ 80,000  |
 
-### Adjusting the Curve
+### Defaults and how to change the factor
 
-**Make it easier** (faster leveling):
-```bash
-/setxp level_xp_factor:50
+| Item | Value |
+|------|--------|
+| Default `level_xp_factor` | **100** (stored in `guild_settings`) |
+| Shown in | `/settings` → **Level curve factor** |
+| Slash command today | **`/setxp` does not accept `level_xp_factor`** |
+
+There is currently **no** slash option such as `/setxp level_xp_factor:N`. Award rates and cooldowns use `/setxp`; the curve factor is not among those options.
+
+To change the factor today you must update guild settings outside the slash surface, for example:
+
+- Programmatically via `updateGuildSettings(guildId, { level_xp_factor: N })` in bot code / a maintenance script, or
+- Directly in SQLite (advanced):
+
+```sql
+UPDATE guild_settings
+SET level_xp_factor = 100
+WHERE guild_id = 'YOUR_GUILD_ID';
 ```
 
-**Make it harder** (slower leveling):
-```bash
-/setxp level_xp_factor:200
-```
+Use a positive integer. Recommended ranges if you do change it:
 
-**Recommended values**:
-- **Fast-paced server**: 30-75
+- **Fast-paced server**: 30–75
 - **Standard server**: 100 (default)
-- **Long-term server**: 150-300
+- **Long-term server**: 150–300
+
+**Lower factor** → faster leveling (less XP per level). **Higher factor** → slower leveling.
 
 ---
 
@@ -367,7 +470,7 @@ Level = floor(sqrt(XP / level_xp_factor))
 /settings
 ```
 
-Verify XP rates and cooldowns match expectations.
+Verify XP rates, cooldowns, and the **Level curve factor** match expectations. Remember `/setxp` does not change the curve factor.
 
 **Test manually**:
 ```bash
@@ -410,11 +513,15 @@ Before going live:
 - [ ] Bot added to server (with correct permissions)
 - [ ] Commands registered (`npm run register`)
 - [ ] `DISCORD_TOKEN` and `CLIENT_ID` set in `.env`
-- [ ] Role position configured (bot above managed roles)
+- [ ] Role position configured (bot above managed / senior staff roles)
+- [ ] Staff roles configured (`/staff role add …`, `/staff role list`)
 - [ ] XP rates adjusted (`/setxp`)
 - [ ] Level→role mappings created (`/leveltorole`)
 - [ ] Command channels restricted if needed (`/setcommandchannel`)
-- [ ] YouTube notifications configured (optional)
+- [ ] Optional: audit/message logs (`/setlog`)
+- [ ] Optional: tickets (category, archive, panel) — see [tickets](tickets.md)
+- [ ] Optional: reaction-role panels — see [reaction roles](reaction-roles.md)
+- [ ] Optional: YouTube notifications
 - [ ] Database backups set up
 
 ---

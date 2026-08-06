@@ -1420,6 +1420,35 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 
 ## 8. Post-MVP TODOs
 
+### XP & leaderboard polish
+
+Docs currently describe two incomplete slash surfaces honestly; this section is the product follow-up.
+
+#### `/setxp` — expose `level_xp_factor`
+
+**Today:** `guild_settings.level_xp_factor` (default `100`) drives `levelFromXp` everywhere, and `/settings` shows it, but `/setxp` only accepts `message` / `reaction` / `voice` / `msgcooldown` / `reactioncooldown`. Operators must use SQL or `updateGuildSettings` to change the curve ([docs/configuration.md](docs/configuration.md#level-curve-configuration)).
+
+- [ ] Add optional integer option `level_xp_factor` (or short name `factor`) on `/setxp`, min **1**, sensible max (e.g. **10000**)
+- [ ] Persist via `updateGuildSettings`; include in `/setxp` audit `logConfigChange` payload
+- [ ] Reply should show before/after factor and a one-line reminder of the formula (`L² × factor` XP for level L)
+- [ ] Unit/integration: set factor → `/xp` level and leaderboard level labels match new curve
+- [ ] Update [docs/commands](docs/commands/index.md), [configuration](docs/configuration.md), [xp-and-leveling](docs/xp-and-leveling.md), FAQ once shipped
+
+**Out of scope:** per-user curve overrides; non-sqrt formulas.
+
+#### `/leaderboard` — honor `limit`
+
+**Today:** Slash defines optional `limit` (integer), but `handleLeaderboard` always calls `topUsers(guildId, 10)` and the PNG is fixed to 10 rows ([docs/leaderboard.md](docs/leaderboard.md)).
+
+- [ ] Read `interaction.options.getInteger("limit")` with clamp (e.g. default **10**, min **1**, max **20** or **25** — match Discord option constraints)
+- [ ] Pass clamped limit into `topUsers(guildId, n)`
+- [ ] Resize PNG layout (`render/leaderboard.js`) for `n` rows (height / row math), or keep PNG top-10 and only expand a text summary if full canvas resize is too large a change — **prefer full PNG for `n`**
+- [ ] Message content: `**Leaderboard (Top N)**` reflecting the applied limit
+- [ ] Integration test: seed >10 users; `limit:15` returns 15 ranks
+- [ ] Update [docs/commands](docs/commands/index.md) and [leaderboard](docs/leaderboard.md) (remove “limit unused” note)
+
+**Out of scope:** multi-page leaderboards; ephemeral vs public toggle.
+
 ### Guild staff roles
 
 - [ ] Optional capability flags per role (warn-only, config-only, …) — MVP is full admin-gate equivalence  

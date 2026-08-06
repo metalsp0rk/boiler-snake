@@ -29,7 +29,17 @@ When a non-exempt member **receives** a configured ban role, the bot:
 
 Members who **already** hold the role when you run `/honeypot banrole add` are **not** retroactively banned—only new grants (via `GuildMemberUpdate`) trigger the ban.
 
-Staff and other trusted roles can be marked **exempt** so they are not banned if they post in honeypot channels or receive a ban role while testing. Messages from exempt members in honeypot channels are still deleted.
+### Exempt roles = staff roles
+
+Honeypot **exemption uses the same list as guild staff roles** (`staff_roles` table / `/staff`). There is no separate honeypot-only exempt table.
+
+- `/honeypot exempt add` is the **same operation** as `/staff role add` (documented in code as such)
+- `/honeypot exempt del` removes the role from **staff roles** (and therefore from honeypot exemption)
+- `/honeypot exempt list` lists **staff roles** (with a note that they are also used for honeypot exemption)
+
+Staff and other trusted roles should be on this list so they are not banned if they post in honeypot channels or receive a ban role while testing. Messages from exempt members in honeypot channels are still deleted.
+
+See [Staff Roles](staff-roles.md) for junior vs senior levels and the broader admin gate.
 
 ## Bot Permissions
 
@@ -54,11 +64,14 @@ Also ensure:
 ### 1. Exempt staff first
 
 ```bash
+/staff role add role:@Moderator
+/staff role add role:@Admin
+# equivalent:
 /honeypot exempt add role:@Moderator
 /honeypot exempt add role:@Admin
 ```
 
-Always configure exempt roles **before** marking channels as honeypots. There is no automatic exemption for users with Manage Server—only listed roles (and bots, which are ignored).
+Always configure staff / exempt roles **before** marking channels as honeypots. There is no automatic exemption for users with Manage Server—only listed roles (and bots, which are ignored).
 
 ### 2. Create a decoy channel
 
@@ -89,7 +102,7 @@ Removing a honeypot with `/honeypot channel del` also deletes that warning messa
 /honeypot banrole add role:@Raid-Bait
 ```
 
-Anyone granted that role is banned (same exempt list as channels).
+Anyone granted that role is banned (same exempt list as channels — any `staff_roles` entry).
 
 ### 5. Verify
 
@@ -97,6 +110,8 @@ Anyone granted that role is banned (same exempt list as channels).
 /honeypot channel list
 /honeypot banrole list
 /honeypot exempt list
+# or:
+/staff role list
 ```
 
 ## Commands
@@ -131,7 +146,7 @@ Mark a channel as a honeypot.
 /honeypot channel add channel:#trap-channel
 ```
 
-**Effect**: Anyone without an exempt role who posts in that channel is banned.
+**Effect**: Anyone without a staff / exempt role who posts in that channel is banned.
 
 ### `/honeypot channel list`
 
@@ -151,17 +166,17 @@ Remove a channel from the honeypot list (does not delete the Discord channel).
 
 ### `/honeypot exempt add`
 
-Add a role that is exempt from honeypot bans.
+Add a role that is exempt from honeypot bans. **Same as** `/staff role add` — writes to `staff_roles`.
 
 ```bash
 /honeypot exempt add role:@Staff
 ```
 
-Members with **any** configured exempt role are safe.
+Members with **any** configured staff role (junior or senior) are safe from honeypot bans.
 
 ### `/honeypot exempt list`
 
-List roles exempt from honeypot bans.
+List staff roles (also used as the honeypot exempt list).
 
 ```bash
 /honeypot exempt list
@@ -169,19 +184,21 @@ List roles exempt from honeypot bans.
 
 ### `/honeypot exempt del`
 
-Remove a role from the exempt list.
+Remove a role from staff roles (and therefore from honeypot exemption).
 
 ```bash
 /honeypot exempt del role:@Staff
 ```
+
+Prefer `/staff role remove` when you only mean to change the admin gate, so the intent is clear—both paths update the same table.
 
 ## Enforcement Details
 
 | Case | Result |
 |------|--------|
 | Bot or webhook message | Ignored (no ban, no delete) |
-| Human with exempt role | Message deleted; no ban; no XP |
-| Human without exempt role | DM → delete message → ban; no XP |
+| Human with staff / exempt role | Message deleted; no ban; no XP |
+| Human without staff / exempt role | DM → delete message → ban; no XP |
 | DM closed / blocked | Ban still proceeds; failure logged |
 | Bot lacks Ban Members / role hierarchy | Ban fails; error logged; message may still be deleted |
 | Rapid multiple messages | In-flight de-dupe (~10s) avoids repeated ban attempts |
@@ -194,7 +211,7 @@ Users who can receive DMs get a message explaining they were banned for posting 
 
 ## Best Practices
 
-1. **Exempt before enable** — add staff roles first.
+1. **Exempt before enable** — add staff roles first (`/staff role add` or `/honeypot exempt add`).
 2. **Hide honeypots from real members** when possible (channel permissions), so only scrapers and raiders post.
 3. **Don’t put honeypots in command-allowed channels** if you use `/setcommandchannel`; staff may still need slash commands elsewhere.
 4. **Log review** — configure `/setlog audit` so honeypot bans post rich embeds (user, channel/role, DM status, success/failure). Also watch console for `[honeypot]` lines.
@@ -207,13 +224,13 @@ Users who can receive DMs get a message explaining they were banned for posting 
 - Bot missing **Ban Members**
 - Bot role is **below** the target member’s highest role
 - Channel is not listed: `/honeypot channel list`
-- User has an exempt role: `/honeypot exempt list`
+- User has a staff / exempt role: `/honeypot exempt list` or `/staff role list`
 - Bot process not restarted after deploy (handlers only load on start)
 
 ### Staff got banned
 
-- Their role was not exempt — add it with `/honeypot exempt add`, then unban them in Discord
-- Only roles are exempt, not “anyone with Manage Server”
+- Their role was not in `staff_roles` — add it with `/staff role add` or `/honeypot exempt add`, then unban them in Discord
+- Only roles on that list are exempt, not “anyone with Manage Server”
 
 ### Message not deleted
 
@@ -247,8 +264,9 @@ Config changes (`/honeypot channel|banrole|exempt add|del`) also appear as purpl
 
 ## Related
 
+- [Staff Roles](staff-roles.md) — shared `staff_roles` list, junior/senior, admin gate
 - [Commands Reference](commands/index.md) — full slash command docs
-- [Database Schema](database.md) — `honeypot_channels` and `honeypot_exempt_roles` tables
-- [Architecture Overview](architecture.md) — `MessageCreate` enforcement path
+- [Database Schema](database.md) — `honeypot_channels`, `honeypot_ban_roles`, and `staff_roles` (exempt)
+- [Architecture Overview](architecture.md) — `MessageCreate` / member-update enforcement path
 - [Audit Log](audit-log.md) — staff embeds for honeypot bans
 - [Setup](setup.md) — bot permissions

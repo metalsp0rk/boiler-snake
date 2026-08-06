@@ -28,7 +28,7 @@ Staff / member lists history
 | Scope | Per guild + user |
 | Active count | Non-voided rows for that guild/user |
 | Self-service | Members may view **their own** warnings (`/warn mine`) |
-| Staff access | [Staff gate](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) (`requireStaff`) |
+| Staff access | [Staff gate](staff-roles.md) (`requireStaff`) |
 | Escalation | Auto kick/ban thresholds = not in MVP |
 
 ## Notes vs warnings
@@ -115,10 +115,10 @@ Config changes (`/setwarn dm`, `/setwarn log`) always use the general audit log 
 | Who | Access |
 |-----|--------|
 | Manage Server | Full staff ops + `/setwarn` |
-| Guild staff roles (`/staff role list`) | Staff ops (`/warn add|list|…`) |
+| Guild [staff roles](staff-roles.md) (`/staff role list`) | Staff ops (`/warn add|list|…`) |
 | Any member | `/warn mine` only |
 
-There is **no** warnings-specific role table. Access shares the guild [staff role](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) list.
+There is **no** warnings-specific role table. Access shares the guild [staff role](staff-roles.md) list.
 
 ## Database
 
@@ -160,8 +160,8 @@ See [Database Schema](database.md) for indexes and migration id `009_warnings`.
 ## Related
 
 - [Staff Notes](staff-notes.md)
+- [Staff roles](staff-roles.md) — junior vs senior; who passes the staff gate
 - `/userinfo` — staff card with note/warning counts and drill-down buttons
 - [ROADMAP — Warning System](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#6-warning-system)
-- [ROADMAP — Guild staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate)
 - [Audit Log](audit-log.md)
 - [Commands reference](commands/index.md)

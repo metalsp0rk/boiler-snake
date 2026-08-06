@@ -72,10 +72,10 @@ Each guild has a sequential **note number** (human-friendly refs like **N-12**).
 | Who | Access |
 |-----|--------|
 | Manage Server | Full note CRUD |
-| Guild staff roles | Same gate via `/staff role list` |
+| Guild [staff roles](staff-roles.md) | Same gate via `/staff role list` |
 | Subject member | **None** — notes are never shown to them |
 
-There is **no** notes-specific role table. Access shares the guild staff-role list (`/staff role list`).
+There is **no** notes-specific role table. Access shares the guild [staff role](staff-roles.md) list (`/staff role list`).
 
 ## Audit log
 
@@ -116,8 +116,8 @@ See [Database Schema](database.md) for indexes and migration id `007_staff_notes
 ## Related
 
 - [Warning System](warnings.md)
+- [Staff roles](staff-roles.md) — junior vs senior; who passes the staff gate
 - `/userinfo` — staff card with note/warning counts and drill-down buttons
 - [ROADMAP — Staff Notes](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#5-staff-notes-system)
-- [ROADMAP — Guild staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate)
 - [Audit Log](audit-log.md)
 - [Commands reference](commands/index.md)

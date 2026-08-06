@@ -48,7 +48,7 @@ Where:
 
 ### Customizing the Level Curve
 
-調整XP curve by changing `level_xp_factor` in settings:
+The curve uses `guild_settings.level_xp_factor` (default **100**). **`/setxp` does not change this factor** (only message/reaction/voice XP and cooldowns). To change the factor, update the database or call `updateGuildSettings` programmatically — see [Configuration — Level curve](configuration.md#level-curve-configuration).
 
 - **Lower factor (e.g., 50)**: Easier leveling (less XP needed)
 - **Higher factor (e.g., 200)**: Harder leveling (more XP needed)

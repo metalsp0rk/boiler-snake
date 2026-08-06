@@ -14,6 +14,7 @@ Boiler Snake is a feature-rich Discord bot that helps you gamify your server wit
 - **YouTube notifications**: Get alerted when subscribed channels go live or upload videos
 - **Honeypot channels**: Auto-ban users who post in decoy channels (with staff role exemptions)
 - **Scheduled event reminders**: Pre-event pings for Interested members via dedicated roles
+- **Staff roles**: Junior/senior trusted roles for the staff command gate and ticket visibility
 - **Staff notes**: Private staff-only notes about members (never shown to the subject)
 - **Warnings**: Formal permanent disciplinary records (voidable; member self-view via `/warn mine`)
 - **Help tickets**: Private support channels with panel button→modal, sensitive mode, HTML transcripts, and staff archives
@@ -59,6 +60,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [YouTube Notifications](youtube-notifications.md) - Monitor channels for live streams and uploads
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
 - [Scheduled Event Reminders](event-reminders.md) - Pre-event pings for Interested members
+- [Staff Roles](staff-roles.md) - Junior/senior trusted roles for staff gate and tickets
 - [Staff Notes](staff-notes.md) - Private staff-only notes about members
 - [Warning System](warnings.md) - Formal permanent disciplinary records
 - [Help Tickets](tickets.md) - Private support channels, sensitive mode, HTML archives
@@ -74,7 +76,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 
 ## Requirements
 
-- Node.js 16+ (Discord.js v14 requirement)
+- Node.js 18+ (Discord.js v14 requirement; `engines.node` is `>=18`)
 - Discord Bot Token with proper permissions
 - SQLite database (auto-created on first run)
 
@@ -83,7 +85,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 | Feature | Description |
 |---------|-------------|
 | **Message XP** | Award XP per message with configurable cooldowns to prevent spam farming |
-| **Reaction XP** | Give points for reacting to messages (reactions, reactions, and more reactions!) |
+| **Reaction XP** | Give points for reacting to messages |
 | **Voice XP** | Earn XP while in voice channels (requires ≥2 eligible humans) |
 | **Level-Up Roles** | Automatically grant roles when users reach specific levels |
 | **Reaction Roles** | Self-serve panels: react for a role (optional min level / removable) |
@@ -92,6 +94,14 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 | **Command Channels** | Restrict where commands can be used per guild |
 | **YouTube Alerts** | Monitor subscribed channels for live streams and uploads |
 | **Honeypot Channels** | Ban users who post in configured decoy channels; exempt roles for staff |
+| **Staff Roles** | Junior/senior trusted roles for the staff gate and ticket visibility |
+| **Staff Notes** | Private staff-only notes about members (never shown to the subject) |
+| **Warnings** | Formal permanent disciplinary records (voidable; `/warn mine` for members) |
+| **Help Tickets** | Private support channels, sensitive mode, HTML transcripts, staff archive |
+| **Event Reminders** | Pre-event pings for Interested members on scheduled events |
+| **User Activity** | Channel/category post rankings for senior staff (`/userinfo` Activity) |
+| **Audit Logs** | Staff channels for bans, kicks, role changes, and deleted messages |
+| **Leaderboard** | Top-10 PNG leaderboard with ranks and levels |
 
 ## License
 

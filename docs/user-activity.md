@@ -8,8 +8,8 @@ This is **independent of XP**. Cooldowns do not apply; every human guild message
 
 | Surface | Who |
 |---------|-----|
-| `/userinfo` Overview / Notes / Warnings | Any **staff** (`Manage Server` or any `staff_roles` level) |
-| `/userinfo` → **Activity** tab | **Senior** staff only (`Manage Server` or a **senior** staff role) |
+| `/userinfo` Overview / Notes / Warnings | Any **[staff](staff-roles.md)** (`Manage Server` or any `staff_roles` level) |
+| `/userinfo` → **Activity** tab | **Senior** staff only (`Manage Server` or a **senior** staff role) — see [staff roles](staff-roles.md) |
 | `/activityconfig` | **Manage Server** only |
 
 Junior staff see the Activity button but get a clear denial if they click it.
@@ -137,5 +137,5 @@ See [Database Schema](database.md).
 ## Related
 
 - [Staff userinfo](staff-notes.md) (notes) and [Warnings](warnings.md)
-- [Staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) — junior vs senior
+- [Staff roles](staff-roles.md) — junior vs senior; Activity requires senior
 - [Honeypot](honeypot.md) — always excluded from activity

@@ -26,11 +26,11 @@ Staff /ticket claim · adduser · sensitive · close · archive
 | **junior** | Yes | Yes | **No** — use `/ticket addstaff` or claim/transfer for named access |
 | Manage Server only | Yes (commands) | No (honeypot) | No automatic overwrite |
 
-Configure: `/staff role add role level`, `/staff role setlevel`, `/staff role list`.
+Configure: `/staff role add role level`, `/staff role setlevel`, `/staff role list`. Full model: [Staff roles](staff-roles.md).
 
 | Rule | Detail |
 |------|--------|
-| Staff access | Guild [staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) + Manage Server. **Ticket channel visibility** is **senior** staff roles only; junior staff pass the command gate but do not get automatic channel overwrites. |
+| Staff access | Guild [staff roles](staff-roles.md) + Manage Server. **Ticket channel visibility** is **senior** staff roles only; junior staff pass the command gate but do not get automatic channel overwrites. |
 | Rate limit | Self-create only; `/ticket for` is unlimited |
 | Concurrent opens | No cap per user |
 | Transcript URL | Staff archive channel only — never DMed to the requester |
@@ -180,6 +180,7 @@ Optional env for media mirroring:
 
 ## Related
 
+- [Staff roles](staff-roles.md) — junior vs senior, staff gate, ticket overwrites
 - [Staff notes](staff-notes.md) — private staff memory
 - [Warnings](warnings.md) — formal disciplinary records
 - [Architecture](architecture.md) — feature module layout

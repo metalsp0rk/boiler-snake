@@ -58,18 +58,22 @@ nano .env  # or vim, code, etc.
 
 **Required Variables**:
 ```env
-DISCORD_TOKEN=your_bot_token_here
-CLIENT_ID=your_application_id_here
+DISCORD_TOKEN=YOUR_BOT_TOKEN
+CLIENT_ID=YOUR_APP_CLIENT_ID
 ```
 
 **Optional Variables**:
 ```env
-YOUTUBE_API_KEY=your_google_cloud_api_key
-DEV_GUILD_ID=server_id_for_fast_registration  # For development
+YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY
+DEV_GUILD_ID=YOUR_TEST_GUILD_ID  # For development
 
 # SQLite location (default: project root). Docker compose sets DATA_DIR=/data
 # DATA_DIR=/data
 # DB_PATH=/data/xpbot.sqlite
+
+# Ticket HTML transcripts (optional) — see tickets.md
+# TICKET_HTTP_PORT=8080
+# TICKET_PUBLIC_BASE_URL=https://tickets.example.com
 ```
 
 ### Get DEV_GUILD_ID
@@ -87,8 +91,8 @@ Add the bot to your server with required permissions.
 
 Use Discord's [OAuth2 URL Generator](https://discord.com/developers/applications/{{app_id}}/oauth2/url-generator):
 
-**Scopes**: `bot`
-**Bot Permissions**: 
+**Scopes**: `bot`  
+**Bot Permissions**:
 - ✅ Send Messages
 - ✅ Embed Links
 - ✅ Attach Files
@@ -99,13 +103,13 @@ Use Discord's [OAuth2 URL Generator](https://discord.com/developers/applications
 - ✅ Read Message History
 - ✅ Use External Emoji
 - ✅ Ban Members *(required for [honeypot channels](honeypot.md))*
+- ✅ Manage Messages *(recommended so honeypot messages can be deleted, and so [reaction-role](reaction-roles.md) panels can strip unconfigured reactions)*
+- ✅ View Audit Log *(recommended for [audit / message logs](audit-log.md) — attribute bans, kicks, and deletes)*
 
 **Ticket system notes:**
 - The bot role must sit **above** every **senior** staff role (ticket overwrites). Otherwise Discord rejects private ticket overwrites with Missing Permissions.
 - Prefer a ticket category via `/ticket setcategory` and ensure the bot can create channels there.
 - Staff levels: `/staff role add … level:senior` for ticket visibility; `level:junior` for staff commands without auto-seeing every ticket.
-- ✅ Manage Messages *(recommended so honeypot messages can be deleted, and so [reaction-role](reaction-roles.md) panels can strip unconfigured reactions)*
-- ✅ View Audit Log *(recommended for [audit / message logs](audit-log.md) — attribute bans, kicks, and deletes)*
 
 ### Add Bot to Server
 
@@ -144,7 +148,7 @@ SQLite is stored on the `bot-data` volume at `/data/xpbot.sqlite`. Published ima
 ### Steps:
 1. Server Settings → Roles
 2. Find your bot's role (named after bot)
-3. Drag it **ABOVE** the roles you want it to manage
+3. Drag it **ABOVE** the roles you want it to manage (including senior staff roles used for tickets)
 4. Ensure "Manage Roles" permission is enabled
 
 ## Step 7: Install Fonts (Ubuntu/Debian)
@@ -211,9 +215,52 @@ If you have `YOUTUBE_API_KEY` configured:
 /setyoutube interval 5
 ```
 
+### Configure Staff Roles
+Trust moderator roles so they can use staff commands without Manage Server. Full guide: [Staff Roles](staff-roles.md).
+
+```bash
+# Senior: staff gate + automatic ticket channel visibility
+/staff role add role:@Moderator level:senior
+
+# Junior: staff commands only (no auto ticket overwrites)
+/staff role add role:@Helper level:junior
+
+/staff role list
+```
+
+### Optional Audit / Message Log
+Staff channels for bans, kicks, role changes, and deleted messages. Full guide: [Audit Log & Message Log](audit-log.md).
+
+```bash
+/setlog audit channel:#staff-audit
+/setlog message channel:#message-deletes
+/setlog show
+```
+
+### Optional Help Tickets
+Private support channels with category, archive, and optional public panel. Full guide: [Help Tickets](tickets.md).
+
+```bash
+/ticket setcategory category:#Tickets
+/ticket setarchive channel:#ticket-archive
+/ticket panel channel:#support
+/ticket settings
+```
+
+Ensure senior staff roles are configured first and the bot role sits above them.
+
+### Optional Reaction Roles
+Self-serve emoji → role panels. Full guide: [Reaction Roles](reaction-roles.md).
+
+```bash
+/reactionrole panel create channel:#roles title:Self Roles description:Pick what fits you
+# Use the message ID from the reply to add options:
+/reactionrole option add message_id:… role:@Announcements
+```
+
 ## Database Backup Setup
 
-SQLite database (`xpbot.sqlite`) is created in the project root.
+SQLite database (`xpbot.sqlite`) is created in the project root (or under `DATA_DIR` / `DB_PATH`).
 
 ### Manual Backup
 ```bash
@@ -249,9 +296,9 @@ npm start
 
 ### Issue: "Permission denied on admin commands"
 
-Verify user or role has **Manage Guild** permission:
+Verify user or role has **Manage Guild** permission, **or** is on a trusted staff role (`/staff role list`):
 1. Right-click user/role → Edit
-2. Check "Administrator" or "Manage Server"
+2. Check "Administrator" or "Manage Server", or add the role via `/staff role add`
 3. Save changes
 
 ### Issue: "Leaderboard shows tofu blocks/boxes"
@@ -273,9 +320,11 @@ Test each feature:
 /xp                    # View your XP
 /leaderboard          # Show top 10
 
-# Admin commands (Manage Guild only)
-/settings            # View configuration
-/setxp message:5     # Update settings
+# Staff / admin
+/settings             # View configuration
+/setxp message:5      # Update XP rates
+/staff role list      # Trusted staff roles (empty until configured)
+/ticket settings      # Ticket category / archive / rate limit
 ```
 
 ### Expected Results
@@ -292,11 +341,12 @@ Test each feature:
 ## Next Steps
 
 After setup is complete:
-1. Configure XP rates to match your server's pace
-2. Set up role mappings for level-based access control
-3. Enable decay if you want to prevent XP hoarding
-4. Subscribe to YouTube channels if using that feature
-5. Use `/setcommandchannel` to organize command locations
+1. Configure staff roles (`/staff role add …`)
+2. Configure XP rates to match your server's pace
+3. Set up role mappings for level-based access control
+4. Enable decay if you want to prevent XP hoarding
+5. Optional: `/setlog`, tickets, reaction roles, YouTube, event reminders
+6. Use `/setcommandchannel` to organize command locations
 
 ## Support
 

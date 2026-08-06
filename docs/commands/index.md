@@ -4,8 +4,11 @@ Complete guide to all Boiler Snake slash commands, organized by permission level
 
 ## Table of Contents
 
-- [Public Commands](#public-commands) - Available to everyone
-- [Admin/Mod Commands](#adminmod-commands) - Require ManageGuild permission
+- [Public Commands](#public-commands) — Available to everyone
+- [Admin/Mod Commands](#adminmod-commands) — Staff gate, Manage Server, or event creator (varies by command)
+- [Permission Matrix](#permission-matrix)
+- [Error Handling](#error-handling)
+- [Quick Reference Card](#quick-reference-card)
 
 ---
 
@@ -37,14 +40,13 @@ Display the top 10 users by XP with a generated PNG leaderboard.
 
 **Usage**:
 ```bash
-/leaderboard                 # Top 10
-/leaderboard limit:20        # Show up to 20 users (still renders top 10)
+/leaderboard
 ```
 
 **Options**:
-- `limit`: Maximum number of users to query (max: 20)
+- `limit`: Present in the slash definition (integer) but **not applied** by the handler today — the bot always loads and renders the **top 10**.
 
-**Response**: PNG image attachment titled "boiler-snake-leaderboard.png"
+**Response**: Public message with content `**Leaderboard (Top 10)**` and PNG attachment `boiler-snake-leaderboard.png` (not ephemeral).
 
 ### `/warn mine` - View Your Warnings
 
@@ -78,17 +80,70 @@ Members can also use a public **Open a ticket** panel button (posted by admins w
 
 Shows category, archive channel, rate limit, and staff roles used for ticket visibility.
 
+```bash
+/ticket settings
+```
+
+### `/eventreminder optout` / `optin` / `status` - Reminder preferences
+
+Control your own event reminder pings. See [Scheduled Event Reminders](../event-reminders.md).
+
+**Usage**:
+```bash
+/eventreminder optout    # Leave all event reminder roles; no future pings
+/eventreminder optin     # Re-enable; restore roles for events you are still Interested in
+/eventreminder status    # Opt-out state + event roles you currently hold
+```
+
+Other `/eventreminder` subcommands require **Manage Guild** or being the scheduled event’s **creator** (see below).
+
 ---
 
 ## Admin/Mod Commands
 
 Require the **Manage Guild** permission, or a configured **staff role** for staff-gated commands (`/note`, `/warn` staff ops, `/ticket` staff ops, etc.). All responses are ephemeral unless noted.
 
+**Permission terms** (used below and in the [Permission Matrix](#permission-matrix)):
+
+| Term | Meaning |
+|------|---------|
+| **Public** | Any guild member |
+| **Staff gate** | Manage Server **or** any role from `/staff role list` (junior or senior) |
+| **Senior staff** | Manage Server **or** a **senior** staff role |
+| **ManageGuild** | Manage Server only |
+| **Event creator** | Manage Server **or** creator of that Discord scheduled event |
+
 ### `/ticket` - Support tickets (staff / admin)
 
-See [Help Tickets](../tickets.md) for the full list: `for`, `claim`, `transfer`, `adduser`, `removeuser`, `addstaff`, `removestaff`, `sensitive`, `unsensitive`, `close`, `archive`, `list`, `info`.
+See [Help Tickets](../tickets.md) for full behavior.
 
-**Admin (Manage Server):** `panel`, `setcategory`, `setarchive`, `setratelimit`.
+**Public:** `create`, `settings`  
+**Staff gate:** `for`, `claim`, `transfer`, `adduser`, `removeuser`, `addstaff`, `removestaff`, `sensitive`, `unsensitive`, `close`, `archive`, `list`, `info`  
+**ManageGuild:** `panel`, `setcategory`, `setarchive`, `setratelimit`
+
+#### Staff lifecycle (open ticket channel unless noted)
+
+```bash
+/ticket for user:@Member reason:Follow-up on ban appeal
+/ticket claim
+/ticket transfer staff:@OtherStaff
+/ticket adduser user:@Witness
+/ticket removeuser user:@Witness
+/ticket addstaff user:@JuniorMod
+/ticket removestaff user:@JuniorMod
+/ticket sensitive
+/ticket unsensitive
+/ticket close reason:Resolved staff_note:Followed up in DMs
+/ticket archive
+/ticket list
+/ticket list user:@Member
+/ticket info
+```
+
+- **`close`** — remove non-staff members; keep the channel for staff. Optional `reason` (shown to requester / archive) and `staff_note` (private note on the requester).  
+- **`archive`** — after close: save transcript (if not sensitive) and delete the channel.  
+- **`for`** — staff open a ticket on behalf of a member (no self-create rate limit).  
+- **Ticket channel overwrites** (automatic staff-role view) use **senior** staff roles only; junior staff need named access (`addstaff`) or Manage Server.
 
 #### `/ticket panel` - Public entry panel
 
@@ -99,10 +154,13 @@ See [Help Tickets](../tickets.md) for the full list: `for`, `claim`, `transfer`,
 
 Posts an embed with an **Open a ticket** button. Clicking the button opens a modal; submit creates a ticket (same rate limit as `/ticket create`).
 
-- **`close`** — remove non-staff members; keep the channel for staff  
-- **`archive`** — after close: save transcript (if not sensitive) and delete the channel  
+#### Admin config
 
-Admin-only config: `setcategory`, `setarchive`, `setratelimit`.
+```bash
+/ticket setcategory category:Tickets
+/ticket setarchive channel:#ticket-archives
+/ticket setratelimit minutes:60
+```
 
 ### `/settings` - Show Guild Configuration
 
@@ -270,6 +328,8 @@ Display all configured role mappings.
 
 Control which channels can use bot commands.
 
+**Permission**: **Staff gate** (handler). Discord may hide the command behind Manage Server. **Lockout escape:** members with **Manage Server** can run this command in any channel even when an allow-list is active.
+
 #### Subcommand: `add` - Allow Commands in Channel
 
 Add a channel to the allowed list.
@@ -344,7 +404,7 @@ Choose where live stream and video alerts appear.
 
 **Usage**:
 ```bash
-/setyoutube channel #stream-notifications
+/setyoutube channel channel:#stream-notifications
 ```
 
 #### Subcommand: `interval` - Configure Polling Frequency
@@ -353,16 +413,120 @@ Set how often the bot checks for updates (1-60 minutes).
 
 **Usage**:
 ```bash
-/setyoutube interval 5
+/setyoutube interval minutes:5
+```
+
+#### Subcommand: `uploadrole` - Mention Role for Uploads
+
+Set (or clear) a role mentioned when a subscribed channel posts a new video upload. Live notifications are unchanged.
+
+**Usage**:
+```bash
+/setyoutube uploadrole role:@Uploads
+/setyoutube uploadrole
+# omit role → disable upload mentions
 ```
 
 **Notes**:
 - Lower intervals = faster alerts but more API quota usage
 - Recommended: 5-30 minutes for most servers
 
+### `/testnotification` - Test YouTube Notification
+
+Send a one-off test notification using the latest feed item for a YouTube channel (admin only). Uses the configured upload mention role when the latest item is an upload.
+
+**Usage**:
+```bash
+/testnotification channel:https://www.youtube.com/@TechChannel
+/testnotification channel:UCxxxxx simple:true
+```
+
+**Options**:
+- `channel`: YouTube channel URL, `@username`, or channel ID (required)
+- `simple`: Use a simple text-based upload embed instead of the rich embed (optional)
+
+If the channel is not already subscribed, the bot adds it as a subscription so the feed can be fetched. Reply is **not** ephemeral (posted as a normal interaction reply with embed/content).
+
+### `/staff` - Staff Roles
+
+Configure trusted staff roles for the admin/staff gate, honeypot exemption, and ticket visibility. See [Staff Roles](../staff-roles.md).
+
+**Permission**:
+- `role add` / `remove` / `setlevel` — **ManageGuild** only
+- `role list` / `settings` — **Staff gate**
+
+**Levels**:
+- **junior** — passes staff gate + honeypot exempt; **no** automatic ticket channel view
+- **senior** — junior privileges **plus** ticket channel overwrites on open/claim/sensitive/close
+
+#### Subcommand group: `role`
+
+```bash
+/staff role add role:@Moderator level:senior
+/staff role add role:@Helper level:junior
+/staff role remove role:@Helper
+/staff role setlevel role:@Moderator level:junior
+/staff role list
+```
+
+| Subcommand | Options | Description |
+|------------|---------|-------------|
+| `add` | `role` (required), `level` (`junior` \| `senior`, required) | Trust a role as staff (updates level if already listed) |
+| `remove` | `role` (required) | Drop a role from the staff list |
+| `setlevel` | `role` (required), `level` (required) | Switch an existing staff role between junior and senior |
+| `list` | — | List senior and junior staff roles |
+
+#### Subcommand: `settings`
+
+```bash
+/staff settings
+```
+
+Shows counts, what each level controls, and that only Manage Server can mutate staff roles.
+
+### `/eventreminder` - Scheduled Event Reminders
+
+Pre-event reminder pings for Discord **Guild Scheduled Events**. Members who marked **Interested** get a bot-managed `event-<shortname>` role and are pinged at configured offsets. See [Scheduled Event Reminders](../event-reminders.md).
+
+**Permission**:
+- `create` / `edit` / `clear` / `sync` — **ManageGuild** **or** that scheduled event’s **creator**
+- `setchannel` — **ManageGuild** only
+- `list` — any member
+- `optout` / `optin` / `status` — any member (documented under [Public Commands](#public-commands))
+
+Bot needs **Manage Roles** (role above `event-*`), send access in the notify channel, and the **Guild Scheduled Events** intent.
+
+#### Subcommands
+
+```bash
+/eventreminder create event:<scheduled event>
+/eventreminder edit event:<linked event>
+/eventreminder list
+/eventreminder clear event:<linked event>
+/eventreminder sync event:<linked event>
+/eventreminder setchannel channel:#event-pings
+/eventreminder setchannel
+# omit channel → clear guild default
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `create` | Opens a modal to link reminders to a scheduled event (shortname, offsets, optional channel override + message) |
+| `edit` | Re-open the configure modal for an existing config |
+| `list` | Active configs, offsets, next fire time, default channel |
+| `clear` | Stop reminders; delete the `event-<shortname>` role and DB rows |
+| `sync` | Re-fetch Interested users and reconcile role membership |
+| `setchannel` | Guild default notify channel (text/announcement); per-event modal can override |
+
+**Create/edit modal fields**: shortname → role `event-<shortname>`; offset multi-select (defaults 1d / 1h / 15m) + optional custom offsets (`2h, 10m`); optional channel override; optional message with placeholders `{event}`, `{location}`, `{starts_in}`, `{starts_at}`, `{role}`.
+
 ### `/honeypot` - Honeypot Channel Management
 
-Configure decoy channels that ban users who post, and roles that are exempt from those bans. See [Honeypot Channels](../honeypot.md) for full setup guidance.
+Configure decoy channels that ban users who post, roles that ban on grant, and roles exempt from those bans. See [Honeypot Channels](../honeypot.md) for full setup guidance.
+
+**Permission**: **ManageGuild only** (`isAdminOrMod`). Staff roles do **not** grant honeypot config access. Replies are ephemeral.
+
+**Exempt list** = shared `staff_roles` table (same as `/staff`). `/honeypot exempt add` adds a staff role at default **senior** if new.
 
 #### Subcommand group: `channel` - Manage Honeypot Channels
 
@@ -390,7 +554,19 @@ Configure decoy channels that ban users who post, and roles that are exempt from
 
 Does not delete the Discord channel—only removes honeypot enforcement.
 
+#### Subcommand group: `banrole` - Roles that ban on grant
+
+```bash
+/honeypot banrole add role:@Raid-Bait
+/honeypot banrole list
+/honeypot banrole del role:@Raid-Bait
+```
+
+When a non-exempt member is **granted** a ban role, the bot bans them (not retroactive for existing holders). Same exempt list as channels.
+
 #### Subcommand group: `exempt` - Manage Exempt Roles
+
+Alias for staff-role membership used by honeypot enforcement. Prefer `/staff role add … level:` when junior vs senior matters.
 
 ##### `exempt add` - Exempt a Role
 
@@ -398,7 +574,7 @@ Does not delete the Discord channel—only removes honeypot enforcement.
 /honeypot exempt add role:@Moderator
 ```
 
-Members with this role will not be banned for posting in honeypot channels. Configure exempt roles **before** enabling honeypots.
+Adds the role to `staff_roles` (default **senior** if new). Members with **any** staff role will not be banned for posting in honeypot channels or receiving honeypot ban roles. Configure exempt / staff roles **before** enabling honeypots.
 
 ##### `exempt list` - List Exempt Roles
 
@@ -411,6 +587,8 @@ Members with this role will not be banned for posting in honeypot channels. Conf
 ```bash
 /honeypot exempt del role:@Moderator
 ```
+
+Removes the role from `staff_roles` entirely (also drops staff gate and ticket overwrites for that role).
 
 ### `/reactionrole` - Reaction Role Panels
 
@@ -619,61 +797,49 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 
 ## Permission Matrix
 
+**Staff gate** = Manage Server **or** any `staff_roles` role (junior or senior).  
+**Senior staff** = Manage Server **or** a **senior** `staff_roles` role.  
+**ManageGuild** = Manage Server only.  
+**Event creator** = Manage Server **or** creator of that Discord scheduled event.
+
 | Command | Permissions Required | Ephemeral Response |
 |---------|---------------------|-------------------|
-| `/xp` [user] | None (public) | Yes |
-| `/leaderboard` | None (public) | No (but uses attachments) |
-| `/warn mine` | None (public) | Yes |
-| `/userinfo` | Staff gate (Activity = senior) | Yes |
+| `/xp` [user] | Public | Yes |
+| `/leaderboard` | Public | No (attachment) |
+| `/warn mine` | Public | Yes |
+| `/ticket create` | Public | Yes |
+| `/ticket settings` | Public | Yes |
+| `/eventreminder optout` | Public | Yes |
+| `/eventreminder optin` | Public | Yes |
+| `/eventreminder status` | Public | Yes |
+| `/eventreminder list` | Public | Yes |
+| `/note add\|list\|edit\|delete\|info\|settings` | Staff gate | Yes |
+| `/warn add\|list\|info\|void\|count\|settings` | Staff gate | Yes |
+| `/userinfo` | Staff gate | Yes |
+| `/userinfo` **Activity** tab | Senior staff | Yes |
+| `/ticket for\|claim\|transfer\|adduser\|removeuser\|addstaff\|removestaff\|sensitive\|unsensitive\|close\|archive\|list\|info` | Staff gate | Yes |
+| `/staff role list` | Staff gate | Yes |
+| `/staff settings` | Staff gate | Yes |
+| `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
+| `/setwarn dm\|log` | ManageGuild | Yes |
 | `/activityconfig` | ManageGuild | Yes |
-| `/settings` | ManageGuild | Yes |
-| `/setxp` | ManageGuild | Yes |
-| `/setdecay` | ManageGuild | Yes |
-| `/leveltorole set` | ManageGuild | Yes |
-| `/leveltorole remove` | ManageGuild | Yes |
-| `/leveltorole list` | ManageGuild | Yes |
-| `/setcommandchannel add` | ManageGuild | Yes |
-| `/setcommandchannel remove` | ManageGuild | Yes |
-| `/setcommandchannel list` | ManageGuild | Yes |
-| `/youtube add` | ManageGuild | Yes |
-| `/youtube remove` | ManageGuild | Yes |
-| `/youtube list` | ManageGuild | Yes |
-| `/setyoutube channel` | ManageGuild | Yes |
-| `/setyoutube interval` | ManageGuild | Yes |
-| `/honeypot channel add` | ManageGuild | Yes |
-| `/honeypot channel list` | ManageGuild | Yes |
-| `/honeypot channel del` | ManageGuild | Yes |
-| `/honeypot exempt add` | ManageGuild | Yes |
-| `/honeypot exempt list` | ManageGuild | Yes |
-| `/honeypot exempt del` | ManageGuild | Yes |
-| `/reactionrole panel create` | ManageGuild | Yes |
-| `/reactionrole panel edit` | ManageGuild | Yes |
-| `/reactionrole panel deploy` | ManageGuild | Yes |
-| `/reactionrole panel delete` | ManageGuild | Yes |
-| `/reactionrole panel list` | ManageGuild | Yes |
-| `/reactionrole option add` | ManageGuild | Yes |
-| `/reactionrole option remove` | ManageGuild | Yes |
-| `/reactionrole option list` | ManageGuild | Yes |
-| `/reactionrole sync` | ManageGuild | Yes |
-| `/note add` | Staff gate | Yes |
-| `/note list` | Staff gate | Yes |
-| `/note edit` | Staff gate | Yes |
-| `/note delete` | Staff gate | Yes |
-| `/note info` | Staff gate | Yes |
-| `/note settings` | Staff gate | Yes |
-| `/warn add` | Staff gate | Yes |
-| `/warn list` | Staff gate | Yes |
-| `/warn info` | Staff gate | Yes |
-| `/warn void` | Staff gate | Yes |
-| `/warn count` | Staff gate | Yes |
-| `/warn settings` | Staff gate | Yes |
-| `/setwarn dm` | ManageGuild | Yes |
-| `/setwarn log` | ManageGuild | Yes |
-| `/ticket create` | None (public) | Yes |
-| `/ticket settings` | None (public) | Yes |
-| `/ticket panel` | ManageGuild | Yes |
-| `/ticket` staff lifecycle | Staff gate | Yes |
-| `/ticket setcategory|setarchive|setratelimit` | ManageGuild | Yes |
+| `/ticket panel\|setcategory\|setarchive\|setratelimit` | ManageGuild | Yes |
+| `/honeypot channel\|banrole\|exempt …` | ManageGuild | Yes |
+| `/eventreminder setchannel` | ManageGuild | Yes |
+| `/eventreminder create\|edit\|clear\|sync` | ManageGuild **or** event creator | Yes |
+| `/settings` | Staff gate¹ | Yes |
+| `/setxp` | Staff gate¹ | Yes |
+| `/setdecay` | Staff gate¹ | Yes |
+| `/setlog` | Staff gate¹ | Yes |
+| `/leveltorole set\|remove\|list` | Staff gate¹ | Yes |
+| `/setcommandchannel add\|remove\|list` | Staff gate¹ ² | Yes |
+| `/youtube add\|remove\|list` | Staff gate¹ | Yes |
+| `/setyoutube channel\|interval\|uploadrole` | Staff gate¹ | Yes |
+| `/testnotification` | Staff gate¹ | No |
+| `/reactionrole panel\|option\|sync` | Staff gate¹ | Yes |
+
+¹ Discord may hide the command behind **Manage Server** (`defaultMemberPermissions`); handlers accept the **staff gate** when invoked (except true ManageGuild-only rows above: honeypot, setwarn, activityconfig, ticket admin, staff mutations, eventreminder setchannel).  
+² `/setcommandchannel` channel-restriction **bypass** applies only to **Manage Server** holders (lockout prevention). Staff without Manage Server still need an allowed command channel when a list is configured.
 
 ---
 
@@ -681,9 +847,9 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 
 ### "You don't have permission to use this"
 
-User attempts admin command without `ManageGuild` permission.
+User attempts a gated command without Manage Server or a configured staff role (as required for that command).
 
-**Solution**: Grant the user or their role "Manage Server" permission in Discord.
+**Solution**: Grant **Manage Server**, or add their role via `/staff role add` (and use `setlevel` for senior features such as `/userinfo` Activity).
 
 ### "Commands aren't enabled in this channel"
 
@@ -711,18 +877,38 @@ UCxxxxxxxxxxx
 
 ```
 PUBLIC:
-/xp [user]              → View XP & level
-/leaderboard            → Top 10 PNG leaderboard
+/xp [user]                         → View XP & level
+/leaderboard                       → Top 10 PNG leaderboard
+/warn mine                         → Your own warnings
+/ticket create [reason]            → Open a support ticket
+/ticket settings                   → View ticket config
+/eventreminder optout|optin|status → Reminder ping preferences
+/eventreminder list                → List active event reminders
 
-ADMIN/MOD:
-/settings               → Show current config
-/setxp                  → Set XP rates & cooldowns
-/setdecay               → Configure decay system
-/leveltorole set/remove/list → Manage role mappings
-/setcommandchannel add/remove/list → Command restrictions
-/youtube add/remove/list        → YouTube subscriptions
-/setyoutube channel/interval    → YouTube settings
-/honeypot channel add/list/del  → Honeypot channels
-/honeypot exempt add/list/del   → Honeypot exempt roles
-/reactionrole panel|option|sync → Reaction-role panels
+STAFF GATE (Manage Server OR any staff role):
+/note add|list|edit|delete|info|settings
+/warn add|list|info|void|count|settings
+/userinfo [user]                   → Member card (Activity = senior)
+/ticket for|claim|transfer|list|info
+/ticket adduser|removeuser|addstaff|removestaff
+/ticket sensitive|unsensitive|close|archive
+/staff role list | /staff settings
+
+STAFF GATE¹ (config; Discord may still hide behind Manage Server):
+/settings | /setxp | /setdecay | /setlog
+/leveltorole set|remove|list
+/setcommandchannel add|remove|list
+/youtube add|remove|list
+/setyoutube channel|interval|uploadrole
+/testnotification
+/reactionrole panel|option|sync
+
+MANAGE SERVER ONLY (or event creator where noted):
+/staff role add|remove|setlevel    → Configure staff roles
+/setwarn dm|log                    → Warning DMs + log channel
+/activityconfig ignore|status|backfill
+/ticket panel|setcategory|setarchive|setratelimit
+/honeypot channel|banrole|exempt …
+/eventreminder create|edit|clear|sync  → creator OR Manage Server
+/eventreminder setchannel          → Manage Server only
 ```

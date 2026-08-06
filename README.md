@@ -108,12 +108,13 @@ Admin/mod commands (requires **Manage Guild** by default):
 - `/setcommandchannel list`
 - `/settings` (shows current guild settings, role mappings, allowed channels)
 - `/eventreminder create|edit|list|clear|sync|setchannel|optout|optin|status` — scheduled event reminder pings
-- `/staff role add|remove|list` · `/staff settings` — guild staff roles (admin gate)
+- `/staff role add|remove|list` · `/staff settings` — guild staff roles (admin gate; also honeypot exemption)
 - `/note add|list|edit|delete|info|settings` — private staff notes about members
 - `/warn add|list|info|void|count|mine|settings` — formal permanent warnings
 - `/setwarn dm` — toggle member DMs on warn issue/void
 - `/setwarn log` — dedicated channel for warning issue/void embeds (falls back to audit log)
-- `/userinfo user:<member>` — staff card (XP + note/warning counts + drill-down buttons)
+- `/userinfo user:<member>` — staff card (XP + note/warning counts + Activity + drill-down buttons)
+- `/activityconfig ignore|backfill|status` — user-activity ignore list and history backfill (Manage Server)
 - `/ticket create|for|close|archive|claim|…` — help tickets; `/ticket panel` posts Open-ticket button → modal
 
 ## Database Backup

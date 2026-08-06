@@ -14,6 +14,7 @@ Common questions and answers for Boiler Snake users and administrators.
 - Daily XP decay for inactive users
 - YouTube notifications for streams/uploads
 - Honeypot channels (auto-ban decoy-channel posters)
+- Help tickets, staff notes, warnings, user activity
 - Beautiful PNG leaderboards
 
 ---
@@ -53,15 +54,15 @@ Install once, add to multiple servers using the OAuth2 URL.
 
 ### Q: How do honeypot channels work?
 
-**A**: Mark a decoy channel with `/honeypot channel add`. Anyone who posts there is DM'd (if possible), the message is deleted, and they are banned—unless they have a role from `/honeypot exempt add`.
+**A**: Mark a decoy channel with `/honeypot channel add`. Anyone who posts there is DM'd (if possible), the message is deleted, and they are banned—unless they have a **staff role** (`staff_roles`).
 
 **Important**:
-- Exempt staff roles **before** enabling honeypots
+- Exempt staff **before** enabling honeypots (`/staff role add` or `/honeypot exempt add` — same list)
 - The bot needs **Ban Members** (and ideally **Manage Messages**)
 - The bot’s role must be **above** members it needs to ban
 - Bots are ignored; only human posters trigger bans
 
-Full guide: [Honeypot Channels](honeypot.md).
+Full guide: [Honeypot Channels](honeypot.md). See also [Staff Roles](staff-roles.md).
 
 ---
 
@@ -105,7 +106,7 @@ Where `level_xp_factor` defaults to 100.
 - Level 3: requires ≥ 900 XP
 - Level 10: requires ≥ 10,000 XP
 
-You can adjust the curve using `/setxp level_xp_factor:<value>`.
+The curve factor defaults to **100** and is stored in `guild_settings.level_xp_factor`. There is currently **no** `/setxp` option for it (award rates and cooldowns only). To change the factor, update the database / use `updateGuildSettings` programmatically. See [Configuration — Level curve](configuration.md#level-curve-configuration).
 
 ---
 
@@ -130,9 +131,9 @@ This sets message XP to 0 while keeping other sources active. Users will still e
 1. **Bot permissions**: Verify "Manage Roles" is enabled in Discord Developer Portal → Bot permissions
 
 2. **Role position**: In your server settings:
-   -go to Roles
-   -Find your bot's role
-   -Drag it ABOVE the roles you want it to manage
+   - Go to Roles
+   - Find your bot's role
+   - Drag it ABOVE the roles you want it to manage
    
 3. **Level thresholds**: Check if user has actually reached required level with `/xp [user]`
 
@@ -251,22 +252,92 @@ sudo apk add noto-fonts ttf-dejavu
 
 ### Q: Can I customize the leaderboard appearance?
 
-**A**: Yes, in `src/renderLeaderboard.js`:
+**A**: Yes — edit the canonical renderer **`src/render/leaderboard.js`**.  
+(`src/renderLeaderboard.js` is only a deprecated compat shim that re-exports that module.)
 
 ```javascript
-// Background colors (lines 79-80)
+// Background colors
 const bg0 = "#070A12";  // Change hex values
 const bg1 = "#0B1224";
 
-// Row dimensions (line 61)
+// Row dimensions
 const rowStep = 70;     // Increase for more spacing
 
-// Font stack (lines 9-25)
+// Font stack near the top of the file
 const FONT_STACK = [
   '"Noto Sans"',
   // Add custom fonts here
-];
+].join(", ");
 ```
+
+See [Leaderboard Rendering](leaderboard.md).
+
+---
+
+## Staff, Permissions & Deploy
+
+### Q: Staff commands say I don't have permission. Why?
+
+**A**: Most staff/config features use **`requireStaff`**: you need **Manage Server** **or** any role registered with `/staff role add` (junior or senior).
+
+- Manage Server–only examples: `/setwarn`, ticket `set*`, `/activityconfig`, staff-role edits
+- Public examples: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create`
+
+Configure roles: `/staff role add role:@Mod level:senior` (or `junior`).  
+Guide: [Staff Roles](staff-roles.md).
+
+---
+
+### Q: Junior staff can't see ticket channels
+
+**A**: Ticket **channel overwrites** are granted to **senior** staff roles only. Junior staff can still run many ticket **commands**, but they do not automatically get View Channel on every ticket.
+
+Fix: `/staff role setlevel role:@Helper level:senior`, or add the junior member with `/ticket addstaff` for that ticket.
+
+Guide: [Help Tickets](tickets.md).
+
+---
+
+### Q: Tickets fail with Missing Permissions (50013)
+
+**A**: Usually Discord hierarchy:
+
+1. Bot needs **Manage Channels**
+2. **Bot role must be above** every senior staff role it applies overwrites for
+3. Restart / re-check overwrites after role order changes
+
+Guide: [Help Tickets](tickets.md).
+
+---
+
+### Q: After deploy, slash commands are missing or outdated
+
+**A**: Registration is separate from starting the bot:
+
+```bash
+npm run register
+# Docker:
+docker compose run --rm bot node src/commands/register.js
+```
+
+- **Global** commands can take minutes to hours to appear
+- Set `DEV_GUILD_ID` for instant guild-scoped registration while developing
+- Then restart the bot process
+
+---
+
+### Q: Where are warnings, notes, events, and activity docs?
+
+**A**:
+
+| Feature | Doc |
+|---------|-----|
+| Staff roles | [staff-roles.md](staff-roles.md) |
+| Help tickets | [tickets.md](tickets.md) |
+| Warnings | [warnings.md](warnings.md) |
+| Staff notes | [staff-notes.md](staff-notes.md) |
+| Event reminders | [event-reminders.md](event-reminders.md) |
+| User activity | [user-activity.md](user-activity.md) |
 
 ---
 
@@ -384,12 +455,11 @@ With daily decay:
 **A**: Yes! See [`ROADMAP.md`](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md) in the project root:
 
 **Planned features** (see roadmap if present):
-- ~~Ticket system (support requests)~~ — shipped MVP; see [Help Tickets](tickets.md)
 - Twitch stream notifications (multi-channel go-live alerts + dedicated ping role)
 - Activity analytics dashboard
 - XP transfer between servers
 
-**Recently added**: [Warnings](warnings.md); [Staff notes](staff-notes.md); guild staff roles (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
+**Recently added**: [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
 
 ---
 

@@ -10,6 +10,7 @@ Boiler Snake is a [Discord.js](https://discord.js.org/) v14 bot with a SQLite ba
 
 - **Unit** (`npm run test:unit`): pure math, cooldowns, registry, DB smoke — `test/*.test.js`
 - **Integration** (`npm run test:integration`): full stack offline with temp SQLite and mocked Discord I/O — `test/integration/*.test.js`
+- **All** (`npm test`): unit + integration via `node --test`
 - Harness: `test/helpers/` (`createIntegrationEnv`). See `test/README.md`.
 - Pipeline handlers (`onMessageCreate`, etc.), `runVoiceTick`, and YouTube `processChannel`/`runYoutubeTick` are exported for direct invocation without gateway login.
 
@@ -28,13 +29,13 @@ src/
 │   ├── constants.js         # MAX_XP_AWARD, MAX_SAFE_XP
 │   ├── xpMath.js            # levelFromXp, clamps, validateXpValue
 │   ├── cooldowns.js
-│   ├── permissions.js
+│   ├── permissions.js       # isAdminOrMod / isStaff / isSeniorStaff + require*
 │   └── interaction.js
 ├── services/
 │   └── awardXp.js           # Unified XP → activity → roles → audit
 ├── features/
 │   ├── load.js              # applyFeaturesToRegistry / start / registerEvents
-│   ├── index.js             # Ordered feature list
+│   ├── index.js             # Ordered feature list (17 modules)
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
 │   ├── xp/                  # /xp /leaderboard /setxp + award helpers
@@ -46,10 +47,11 @@ src/
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
 │   ├── reactionRoles/       # /reactionrole + panel service
 │   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
-│   ├── staffRoles/          # /staff role gate (isStaff / requireStaff)
+│   ├── staffRoles/          # /staff role gate (isStaff / requireStaff; junior|senior)
 │   ├── staffNotes/          # /note staff-only private notes
 │   ├── warnings/            # /warn + /setwarn formal disciplinary records
-│   ├── userinfo/            # /userinfo staff card + note/warn buttons
+│   ├── userinfo/            # /userinfo staff card + note/warn/activity buttons
+│   ├── userActivity/        # /activityconfig + channel message counters + backfill
 │   └── tickets/             # /ticket support channels + panel button/modal + archive HTTP
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
@@ -106,7 +108,7 @@ module.exports = {
 
 | Event | Order |
 |-------|--------|
-| **MessageCreate** | cache → pending RR emoji → honeypot → message XP |
+| **MessageCreate** | cache → pending RR emoji → honeypot → user channel activity → message XP |
 | **MessageReactionAdd** | partials → honeypot warning strip → RR panels → reaction XP |
 | **MessageReactionRemove** | reaction-role remove |
 
@@ -118,7 +120,7 @@ Independent events (message delete, ban, kick, honeypot ban-role, tickers) regis
 
 - **connection.js** — SQLite open (`DB_PATH` / `DATA_DIR`), WAL
 - **migrate.js** + **migrations/** — idempotent ordered steps
-- **repositories/** — users, guildSettings, activity, youtube, honeypot, reactionRoles, …
+- **repositories/** — users, guildSettings, activity, youtube, honeypot, reactionRoles, staff notes/roles, warnings, tickets, user activity, …
 - **index.js** — public facade (same API as legacy single-file `db.js`)
 
 Migrations on load:
@@ -136,6 +138,9 @@ Migrations on load:
 | `009_warnings` | warnings + warn_dm_members |
 | `010_tickets` | tickets / members / staff / messages + ticket_* settings |
 | `011_staff_role_levels` | `staff_roles.level` junior \| senior (ticket visibility) |
+| `012_warn_log_channel` | `guild_settings.warn_log_channel_id` (warn issue/void embeds) |
+| `013_user_channel_activity` | daily per-channel message counters, ignore list, user backfill meta |
+| `014_guild_activity_backfill` | guild-wide activity backfill status + channel cursors |
 
 ### Core XP API
 
@@ -172,13 +177,18 @@ Used by message XP, reaction XP, and voice ticker:
 | **honeypot** | Channel posts / ban-roles; warning PNG; exempt roles |
 | **reactionRoles** | Bot panels, min level, removable options |
 | **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |
-| **tickets** | Support channels, sensitive mode, panel button→modal, HTML archive HTTP |
+| **staffRoles** | `/staff` role list; junior (command gate) vs senior (ticket channel overwrites); ManageGuild for mutations |
+| **staffNotes** | `/note` private staff notes (`requireStaff`) |
+| **warnings** | `/warn` issue/void/list; `/warn mine` public; `/setwarn` ManageGuild-only |
+| **userinfo** | Staff member card; note/warn buttons; Activity tab needs **senior** staff |
+| **userActivity** | Live per-channel counts; `/activityconfig` ignore/status/backfill (ManageGuild); feeds `/userinfo` Activity |
+| **tickets** | Support channels, sensitive mode, panel button→modal, HTML archive HTTP; senior roles get auto ticket view |
 
 ---
 
 ## Commands
 
-Slash builders and handlers are **co-located** on features. Registration:
+Slash builders and handlers are **co-located** on features. The registry exports **21** slash commands (unique names; see `test/registry.test.js`). Registration:
 
 ```bash
 npm run register   # node src/commands/register.js
@@ -189,7 +199,16 @@ npm run register   # node src/commands/register.js
 
 Router: `commands/router.js` → autocomplete / modal submit / button / chat input → channel restriction (chat) → handler.
 
-Public: `/xp`, `/leaderboard`, `/eventreminder` opt-out/status (and create for event creators). Admin/staff (ManageGuild today via `requireStaff` / `isAdminOrMod`): most config, including `/note`. `/setcommandchannel` always allowed for admins (lockout escape).
+### Access gates (`core/permissions.js`)
+
+| Gate | Meaning |
+|------|---------|
+| **Public** | No staff check: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` (and panel open). `/eventreminder` opt-out/status (and create for event creators). |
+| **Staff** (`requireStaff` / `isStaff`) | ManageGuild **or** any `staff_roles` role — notes, most staff ops, `/userinfo` (except Activity), ticket lifecycle, many config commands |
+| **Senior staff** (`requireSeniorStaff` / `isSeniorStaff`) | ManageGuild **or** a **senior** `staff_roles` role — `/userinfo` Activity; senior roles also receive automatic ticket channel overwrites (junior = command gate only, no auto ticket view) |
+| **ManageGuild-only** (`requireAdmin` / `isAdminOrMod`) | `/setwarn`, ticket `set*` / `panel`, `/activityconfig`, staff-role add/remove/setlevel, **`/honeypot`**, `/eventreminder setchannel` |
+
+`/setcommandchannel` is always allowed for ManageGuild admins (lockout escape). `/ticket` inside an open (or soft-closed, not archived) ticket channel bypasses the command-channel allow-list.
 
 ---
 
@@ -206,16 +225,19 @@ Public: `/xp`, `/leaderboard`, `/eventreminder` opt-out/status (and create for e
 ## Testing
 
 ```bash
-npm test   # node --test
+npm test                 # unit + integration (node --test)
+npm run test:unit        # test/*.test.js
+npm run test:integration # test/integration/*.test.js
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event reminder helpers, and command registry (14 commands, feature list).
+Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**21** commands, **17** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
 
 ---
 
 ## Operator notes
 
 - Env: `DISCORD_TOKEN`, `CLIENT_ID`; optional `DEV_GUILD_ID`, `DATA_DIR`, `DB_PATH`
+- Tickets (optional): `TICKET_HTTP_PORT`, `TICKET_PUBLIC_BASE_URL`, `TICKET_MAX_ASSET_BYTES`, `TICKET_MAX_ASSETS`; AI close summaries: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` — see [tickets.md](./tickets.md)
 - Docker: `DATA_DIR=/data` volume; persist WAL siblings
 - Fonts for PNG: Noto / DejaVu (image includes them)
 - Bot role must sit above managed roles

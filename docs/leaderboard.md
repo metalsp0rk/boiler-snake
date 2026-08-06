@@ -29,13 +29,9 @@ Shows top 10 users with:
 - Total XP
 - Current level
 
-### Custom Limit (Advanced)
+### Limit option (currently unused)
 
-```bash
-/leaderboard limit:20
-```
-
-Shows up to 20 users (default is always 10). Note: Rendered image still shows only top 10 visually.
+The slash command may show an optional `limit` integer, but **`handleLeaderboard` always queries and renders the top 10** (`topUsers(guildId, 10)`). Passing `limit` has no effect until the handler is updated.
 
 ## Image Specifications
 
@@ -104,6 +100,19 @@ if (rank === 3) { trophy = "🥉" }  // Bronze
 ```
 
 ## Code Implementation
+
+### Source of truth
+
+| Path | Role |
+|------|------|
+| **`src/render/leaderboard.js`** | Canonical PNG renderer (`renderLeaderboardPng`) |
+| `src/renderLeaderboard.js` | Thin **compat shim** only (`module.exports = require("./render/leaderboard")`) — do not edit this for theming |
+
+XP command code imports the canonical path:
+
+```javascript
+const { renderLeaderboardPng } = require("../../render/leaderboard");
+```
 
 ### Main Function Signature
 
@@ -203,24 +212,24 @@ Leaderboard shows:
 
 ## Customization Ideas
 
-Want to change the look?
+Want to change the look? Edit **`src/render/leaderboard.js`** (not the `src/renderLeaderboard.js` shim).
 
-### Modify Colors in `src/renderLeaderboard.js`
+### Modify Colors
 
 ```javascript
-// Background gradient stop 1
+// Background gradient stops
 const bg0 = "#070A12";
+const bg1 = "#0B1224";
 
-// XP bar color
-const barStart = "cyan";
+// XP bar / accent colors live further down in the same file
 ```
 
 ### Adjust Layout Dimensions
 
 ```javascript
-const ROW_COUNT = 15;     // Show more/less rows
-const width = 1200;       // Wider leaderboard
-const rowStep = 80;       // More vertical spacing
+const ROW_COUNT = 10;     // Always top 10 in the PNG
+const width = 900;        // Canvas width
+const rowStep = 70;       // Vertical spacing per row
 ```
 
 ### Add Custom Branding

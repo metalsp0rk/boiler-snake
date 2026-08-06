@@ -101,17 +101,58 @@ Configure how often the bot checks for updates (1-60 minutes):
 - **Lower interval** (1-2 min): Faster alerts, more API quota use
 - **Higher interval** (30-60 min): Fewer API calls, slightly delayed alerts
 
+### `/setyoutube uploadrole`
+
+Set (or clear) the role mentioned on **video upload** notifications:
+
+```bash
+/setyoutube uploadrole role:@VideoAlerts
+```
+
+Leave `role` empty to disable the mention:
+
+```bash
+/setyoutube uploadrole
+```
+
+**Notes**:
+- Applies to **uploads only** (not live stream alerts)
+- Live stream notifications use a fixed `@everyone` content line in the ticker
+- Role is stored as `youtube_upload_role_id` in guild settings
+
+### `/testnotification`
+
+Send a **one-off test** for a channel’s latest video or stream (staff / Manage Server). Does not wait for the poller.
+
+```bash
+/testnotification channel:https://www.youtube.com/@TechChannel
+/testnotification channel:https://www.youtube.com/@TechChannel simple:true
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `channel` | Yes | YouTube URL, `@username`, or channel ID (same formats as `/youtube add`) |
+| `simple` | No | If true, use the simple text-style upload body instead of the rich upload embed |
+
+**Behavior**:
+- If the channel is not already subscribed, the bot **subscribes it** first, then tests
+- Detects live vs upload from the latest feed entry and builds the matching embed
+- Upload tests include the configured upload-role mention (if set)
+- Replies in the **current** channel (not necessarily the YouTube notification channel)
+
 ## Notification Behavior
 
 ### Live Stream Alerts
 - **Trigger**: Channel starts streaming
 - **Color**: Red embed (`#FF0000`)
 - **Content**: Channel name + stream title + direct link
+- **Mention**: `@everyone` in the message content (ticker)
 
 ### Video Upload Alerts  
 - **Trigger**: New video published to uploads playlist
-- **Color**: Orange embed (`#FFA500`)
-- **Content**: Video title, duration, upload date, thumbnail
+- **Color**: Orange embed (`#FFA500`) for the rich embed path
+- **Content**: Video title, link, channel thumbnail; optional simple text form
+- **Mention**: Role from `/setyoutube uploadrole` when configured
 
 ## Examples
 
@@ -122,21 +163,31 @@ Configure how often the bot checks for updates (1-60 minutes):
    /setyoutube channel #stream-notifications
    ```
 
-2. **Subscribe multiple channels**:
+2. **(Optional) Upload ping role**:
+   ```bash
+   /setyoutube uploadrole role:@VideoAlerts
+   ```
+
+3. **Subscribe multiple channels**:
    ```bash
    /youtube add url:https://www.youtube.com/@TechChannel
    /youtube add url:@GamingChannel
    /youtube add url:UCxxxxxxxxxxxxx
    ```
 
-3. **Configure polling frequency** (check every 10 minutes):
+4. **Configure polling frequency** (check every 10 minutes):
    ```bash
    /setyoutube interval 10
    ```
 
-4. **Verify configuration**:
+5. **Verify configuration**:
    ```bash
    /youtube list
+   ```
+
+6. **(Optional) Dry-run a notification**:
+   ```bash
+   /testnotification channel:https://www.youtube.com/@TechChannel
    ```
 
 ### Example Notifications
