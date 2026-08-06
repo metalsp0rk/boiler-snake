@@ -77,13 +77,31 @@ Honeypot channels are always skipped even without an ignore entry.
 
 ## Backfill
 
-Senior staff can click **Backfill history** on the Activity view for **one user**.
+Discord bots cannot “search the guild for one user’s messages.” History must be read **per channel**. Prefer a **single pass that attributes every human author** over running one user at a time.
 
-- Scans text/announcement channels (skips ignored + honeypot)
-- Counts that user’s messages with timestamp **older than** the live watermark (no double-count with live ingest)
-- Rate-limited (~1 page / 1.1s), max **50 × 100** messages per channel
-- One backfill job per guild at a time
-- Status: `none` → `running` → `done` / `partial` / `failed`
+### Guild-wide (recommended): all users
+
+```bash
+/activityconfig backfill all
+```
+
+**Manage Server** only.
+
+- Walks each eligible text/announcement channel **once**
+- Counts **all** non-bot messages older than the live watermark into daily counters
+- Same rate limits: ~1 page / 1.1s, max **50 × 100** messages per channel
+- Progress: `/activityconfig status` (`guild_backfill_*` fields)
+- One backfill job per guild at a time (blocks concurrent per-user jobs)
+- Guild channel cursors: completed channels are skipped on re-run (and by per-user backfill)
+
+### Per-user: Activity button
+
+Senior staff can click **Backfill history** on `/userinfo` → Activity for **one user**.
+
+- Same channel list and rate limits
+- Only increments counters for that user
+- Skips channels already **guild-complete**
+- Prefer **backfill all** after deploy if you want full historical depth for everyone
 
 Discord history is incomplete for very old channels; treat backfill as **best-effort**.
 
