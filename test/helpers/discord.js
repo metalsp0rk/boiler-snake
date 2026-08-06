@@ -172,6 +172,8 @@ function createTextChannel(opts = {}) {
         content: typeof payload === "string" ? payload : payload?.content,
         embeds: typeof payload === "object" ? payload?.embeds : undefined,
         files: typeof payload === "object" ? payload?.files : undefined,
+        components:
+          typeof payload === "object" ? payload?.components : undefined,
         channel,
         guild,
         createdTimestamp: Date.now(),
@@ -185,6 +187,10 @@ function createTextChannel(opts = {}) {
       sent.push(payload);
       messages.set(msg.id, msg);
       return msg;
+    },
+    /** Payloads passed to send() (for assertions). */
+    get sent() {
+      return sent;
     },
     /** Seed a user message into the channel (tests / archive). */
     addMessage(msgOpts = {}) {
@@ -734,6 +740,7 @@ function createButtonInteraction(opts) {
   const member = opts.member;
   const replies = [];
   const updates = [];
+  const modals = [];
   let admin =
     opts.admin != null
       ? opts.admin
@@ -761,6 +768,7 @@ function createButtonInteraction(opts) {
     deferred: false,
     replies,
     updates,
+    modals,
     isChatInputCommand: () => false,
     isAutocomplete: () => false,
     isModalSubmit: () => false,
@@ -779,6 +787,11 @@ function createButtonInteraction(opts) {
     },
     deferUpdate: async () => {
       interaction.deferred = true;
+    },
+    showModal: async (modal) => {
+      modals.push(modal);
+      interaction.replied = true;
+      return modal;
     },
     followUp: async (payload) => {
       replies.push(payload);

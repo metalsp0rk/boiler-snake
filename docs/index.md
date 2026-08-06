@@ -16,7 +16,7 @@ Boiler Snake is a feature-rich Discord bot that helps you gamify your server wit
 - **Scheduled event reminders**: Pre-event pings for Interested members via dedicated roles
 - **Staff notes**: Private staff-only notes about members (never shown to the subject)
 - **Warnings**: Formal permanent disciplinary records (voidable; member self-view via `/warn mine`)
-- **Help tickets**: Private support channels with sensitive mode, HTML transcripts, and staff archives
+- **Help tickets**: Private support channels with panel button→modal, sensitive mode, HTML transcripts, and staff archives
 - **Staff userinfo**: Unified member card with note/warning counts and drill-down buttons
 - **Audit & message logs**: Staff channels for bans/kicks/role changes and deleted messages
 - **Leaderboard visualization**: Beautiful PNG leaderboards with gradients and rankings

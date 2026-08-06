@@ -16,7 +16,7 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 
 ### Status
 
-**Shipped (MVP)** — see [docs/tickets.md](docs/tickets.md). Design decisions locked in [1.10](#110-design-decisions-locked). Post-MVP: panel + modal, Discord OAuth on transcripts, attachment mirroring.
+**Shipped (MVP + panel)** — see [docs/tickets.md](docs/tickets.md). Design decisions locked in [1.10](#110-design-decisions-locked). Post-MVP remaining: Discord OAuth on transcripts; further attachment/panel polish.
 
 ---
 
@@ -39,7 +39,7 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 | `ticket_archive_channel_id` | Staff-visible channel for archive posts |
 | `ticket_rate_limit_minutes` | Cooldown for member self-create; default `60` |
 
-**Later (not MVP):** panel channel + persistent “Open ticket” button message ID (see [1.2](#12-ticket-creation)).
+**Panel:** `/ticket panel` posts a public embed + **Open a ticket** button (no DB row; delete the Discord message to remove).
 
 ---
 
@@ -50,9 +50,7 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 | `/ticket create [reason]` | Any member | Open a ticket for yourself (subject to rate limit) |
 | `/ticket for <user> [reason]` | Staff | Pull a member into a **new** ticket (staff-initiated; **not** rate-limited like self-create) |
 
-**MVP create UX:** slash commands only.
-
-**Later UX:** staff posts a panel (`/ticket panel` or similar) with an “Open ticket” button → Discord **modal** for initial description → creates ticket. Same pipeline as `/ticket create`.
+**Create UX:** slash `/ticket create` + staff `/ticket for`, plus admin `/ticket panel` → button → **modal** for description (same self-create pipeline and rate limit).
 
 **On create:**
 
@@ -324,7 +322,7 @@ CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_
 
 | Event | Purpose |
 |-------|---------|
-| Slash (+ later button/modal) | Create, for, close, sensitive, claim, adduser, addstaff |
+| Slash + panel button/modal | Create, for, close, sensitive, claim, adduser, addstaff; panel open → modal |
 | `ChannelDelete` | If ticket channel deleted outside `/ticket close`: mark `closed`, `archived=0`, no salvage for sensitive intent; non-sensitive best-effort only if we still have cache (usually not) |
 
 Channel create is **bot-driven**.
@@ -339,7 +337,7 @@ Channel create is **bot-driven**.
 4. **Close (sensitive branch)** — metadata + required archive-channel stub + delete channel  
 5. **Close (archive branch)** — fetch, HTML, UUID route HTTP server, archive embed (stats fallback)  
 6. **AI summary** — non-sensitive only; graceful fallback  
-7. **Post-MVP** — panel + modal; Discord OAuth on `/t/{uuid}`; **TODO: download/mirror attachments** into transcript assets  
+7. **Post-MVP** — Discord OAuth on `/t/{uuid}`; panel registry list/edit; further attachment polish (local mirror is already implemented)  
 
 ---
 
@@ -352,7 +350,7 @@ Channel create is **bot-driven**.
 | 3 | **Transcript URL is staff-only** — posted only to the ticket archive channel; never DMed to members/requesters |
 | 4 | **MVP URL security:** UUID path `/t/{uuid}`; **later:** Login with Discord for real access control |
 | 5 | **Attachments MVP:** hotlink Discord CDN URLs; **TODO:** download all thread assets at archive time and serve locally |
-| 6 | **Create UX:** slash `/ticket create` + staff `/ticket for @user` first; **later** panel button → modal for description |
+| 6 | **Create UX:** slash `/ticket create` + staff `/ticket for @user` + **panel button → modal** for description (same pipeline) |
 | 7 | **Rate limit:** configurable per guild; **default 60 minutes** (1 self-create per hour); staff `/ticket for` not subject to member cooldown |
 | 8 | **No concurrent open-ticket cap** per user — rate limit only throttles new self-creates |
 | 9 | **Sensitive close stub required** in the archive channel (metadata only; no transcript) |
@@ -1429,10 +1427,11 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 
 ### Tickets
 
-- [ ] Panel message + button → modal for ticket description  
+- [x] Panel message + button → modal for ticket description  
 - [ ] Login with Discord on transcript HTTP routes  
-- [ ] Download/mirror all attachments into transcript storage at archive time (replace hotlinks)  
+- [x] Download/mirror all attachments into transcript storage at archive time (replace hotlinks)  
 - [ ] Richer `/ticket list` filters  
+- [ ] Stored panel registry (list/edit/delete via commands)  
 
 ### Event reminders
 

@@ -74,6 +74,12 @@ describe("buildDefaultRegistry", () => {
     const registry = buildDefaultRegistry();
     assert.equal(typeof registry.getButtonHandler("ui:n:123"), "function");
   });
+
+  it("registers ticket panel button and modal handlers", () => {
+    const registry = buildDefaultRegistry();
+    assert.equal(typeof registry.getButtonHandler("tk:open"), "function");
+    assert.equal(typeof registry.getModalHandler("tk:create"), "function");
+  });
 });
 
 describe("createRegistry", () => {

@@ -3,7 +3,9 @@
  *
  * Slash: /ticket create|for|close|claim|transfer|adduser|removeuser|
  *        addstaff|removestaff|sensitive|unsensitive|list|info|
- *        setcategory|setarchive|setratelimit|settings
+ *        setcategory|setarchive|setratelimit|settings|panel
+ * Buttons: tk:open → modal for description → same pipeline as /ticket create
+ * Modals:  tk:create
  */
 
 const {
@@ -13,6 +15,12 @@ const {
   EmbedBuilder,
   ChannelType,
   Events,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require("discord.js");
 const {
   MAX_TICKET_REASON,
@@ -61,6 +69,18 @@ const { startTicketHttpServer } = require("./httpServer");
 const COLOR_OPEN = 0x57f287;
 const COLOR_INFO = 0x5865f2;
 const COLOR_SENSITIVE = 0xe74c3c;
+
+/** Button customId: open ticket from a panel */
+const BTN_OPEN = "tk:open";
+/** Modal customId: submit ticket description after panel button */
+const MODAL_CREATE = "tk:create";
+/** Text input customId inside the create modal */
+const MODAL_FIELD_REASON = "reason";
+
+const DEFAULT_PANEL_TITLE = "Support Tickets";
+const DEFAULT_PANEL_DESCRIPTION =
+  "Click **Open a ticket** below to start a private conversation with staff. " +
+  "You'll be asked to describe what you need help with.";
 
 const commands = [
   new SlashCommandBuilder()
@@ -252,6 +272,37 @@ const commands = [
     )
     .addSubcommand((sc) =>
       sc
+        .setName("panel")
+        .setDescription(
+          "Post an Open Ticket panel (button → modal) in a channel (admin)."
+        )
+        .addChannelOption((opt) =>
+          opt
+            .setName("channel")
+            .setDescription("Channel to post the panel in (default: here)")
+            .addChannelTypes(
+              ChannelType.GuildText,
+              ChannelType.GuildAnnouncement
+            )
+            .setRequired(false)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("title")
+            .setDescription("Panel embed title")
+            .setRequired(false)
+            .setMaxLength(256)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("description")
+            .setDescription("Panel embed description")
+            .setRequired(false)
+            .setMaxLength(2000)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
         .setName("settings")
         .setDescription("Show ticket configuration for this server.")
     ),
@@ -263,6 +314,70 @@ const commands = [
  */
 function formatTicketRef(n) {
   return `#${n}`;
+}
+
+/**
+ * Rate-limit message for self-create (slash or panel modal).
+ * @param {{ retryAfterMs: number, minutes: number }} check
+ * @returns {string}
+ */
+function formatRateLimitMessage(check) {
+  const mins = Math.ceil(check.retryAfterMs / 60000);
+  return (
+    `You're creating tickets too quickly. Try again in about **${mins}** minute(s) ` +
+    `(rate limit: ${check.minutes} min between self-creates).`
+  );
+}
+
+/**
+ * Build the persistent panel button row.
+ * @returns {ActionRowBuilder}
+ */
+function buildOpenTicketButtonRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(BTN_OPEN)
+      .setLabel("Open a ticket")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("🎫")
+  );
+}
+
+/**
+ * Build the create-ticket modal (reason / description).
+ * @returns {ModalBuilder}
+ */
+function buildCreateTicketModal() {
+  const reasonInput = new TextInputBuilder()
+    .setCustomId(MODAL_FIELD_REASON)
+    .setLabel("How can we help?")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setMaxLength(MAX_TICKET_REASON)
+    .setPlaceholder("Describe your issue (optional but recommended)");
+
+  return new ModalBuilder()
+    .setCustomId(MODAL_CREATE)
+    .setTitle("Open a support ticket")
+    .addComponents(
+      new ActionRowBuilder().addComponents(reasonInput)
+    );
+}
+
+/**
+ * Build panel embed for public ticket entry.
+ * @param {string} title
+ * @param {string} description
+ * @returns {EmbedBuilder}
+ */
+function buildPanelEmbed(title, description) {
+  return new EmbedBuilder()
+    .setColor(COLOR_INFO)
+    .setTitle(title)
+    .setDescription(description)
+    .setFooter({
+      text: "Same rate limit as /ticket create · Staff will join the private channel",
+    });
 }
 
 /**
@@ -427,6 +542,20 @@ async function openTicketChannel(opts) {
       deny: MEMBER_DENY,
     },
   ];
+  // Staff who open on behalf of a member get named (user) access immediately —
+  // required for junior staff / admins without a senior role overwrite.
+  if (openedByStaffId && openedByStaffId !== creatorUserId) {
+    baseOverwrites.push({
+      id: openedByStaffId,
+      allow: STAFF_ALLOW,
+    });
+  } else if (openedByStaffId && openedByStaffId === creatorUserId) {
+    // Staff opened for themselves: still grant staff-level access on their user overwrite
+    baseOverwrites[baseOverwrites.length - 1] = {
+      id: creatorUserId,
+      allow: STAFF_ALLOW,
+    };
+  }
   for (const roleId of staffRoleIds) {
     baseOverwrites.push({
       id: roleId,
@@ -545,11 +674,17 @@ async function handleTicket(interaction, ctx) {
   if (sub === "settings") return handleSettings(interaction);
 
   // Admin config
-  if (sub === "setcategory" || sub === "setarchive" || sub === "setratelimit") {
+  if (
+    sub === "setcategory" ||
+    sub === "setarchive" ||
+    sub === "setratelimit" ||
+    sub === "panel"
+  ) {
     if (!(await requireAdmin(interaction))) return;
     if (sub === "setcategory") return handleSetCategory(interaction, ctx);
     if (sub === "setarchive") return handleSetArchive(interaction, ctx);
     if (sub === "setratelimit") return handleSetRateLimit(interaction, ctx);
+    if (sub === "panel") return handlePanel(interaction, ctx);
   }
 
   // Staff
@@ -575,22 +710,14 @@ async function handleTicket(interaction, ctx) {
   });
 }
 
-async function handleCreate(interaction, ctx) {
-  const reason = interaction.options.getString("reason");
-  const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
-  if (!check.ok) {
-    const mins = Math.ceil(check.retryAfterMs / 60000);
-    await interaction.reply({
-      content:
-        `You're creating tickets too quickly. Try again in about **${mins}** minute(s) ` +
-        `(rate limit: ${check.minutes} min between self-creates).`,
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
+/**
+ * Shared self-create path for /ticket create and panel modal.
+ * Caller must already have deferred the interaction (ephemeral).
+ * @param {import("discord.js").Interaction} interaction
+ * @param {object} ctx
+ * @param {string|null} reason
+ */
+async function completeSelfCreate(interaction, ctx, reason) {
   try {
     const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
       guild: interaction.guild,
@@ -618,6 +745,179 @@ async function handleCreate(interaction, ctx) {
           : `Failed to open ticket: ${formatChannelCreateError(err)}`,
     });
   }
+}
+
+async function handleCreate(interaction, ctx) {
+  const reason = interaction.options.getString("reason");
+  const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
+  if (!check.ok) {
+    await interaction.reply({
+      content: formatRateLimitMessage(check),
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await completeSelfCreate(interaction, ctx, reason);
+}
+
+/**
+ * Admin: post a public panel with an Open ticket button.
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} ctx
+ */
+async function handlePanel(interaction, ctx) {
+  const targetChannel =
+    interaction.options.getChannel("channel") ||
+    (await resolveChannel(interaction, ctx));
+  const title =
+    interaction.options.getString("title")?.trim() || DEFAULT_PANEL_TITLE;
+  const description =
+    interaction.options.getString("description")?.trim() ||
+    DEFAULT_PANEL_DESCRIPTION;
+
+  if (!targetChannel || typeof targetChannel.send !== "function") {
+    await interaction.reply({
+      content:
+        "Could not resolve a text channel to post the panel. Pass `channel:` or run this in a text channel.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const type = targetChannel.type;
+  const okType =
+    type === ChannelType.GuildText ||
+    type === ChannelType.GuildAnnouncement ||
+    type == null; // mocks may omit type
+  if (!okType) {
+    await interaction.reply({
+      content: "Panel must be posted in a text or announcement channel.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const embed = buildPanelEmbed(title, description);
+    const message = await targetChannel.send({
+      embeds: [embed],
+      components: [buildOpenTicketButtonRow()],
+    });
+
+    await logConfigChange(
+      ctx?.client || interaction.client,
+      interaction.guildId,
+      {
+        title: "Ticket panel posted",
+        command: "/ticket panel",
+        actor: interaction.user,
+        changes: [
+          `Channel: <#${targetChannel.id}>`,
+          `Message: \`${message.id}\``,
+          `Title: ${title}`,
+        ],
+      }
+    ).catch(() => {});
+
+    const jump =
+      interaction.guildId && targetChannel.id && message.id
+        ? `https://discord.com/channels/${interaction.guildId}/${targetChannel.id}/${message.id}`
+        : null;
+
+    await interaction.editReply({
+      content:
+        `Posted ticket panel in <#${targetChannel.id}>.` +
+        (jump ? `\n[Jump to panel](${jump})` : ""),
+    });
+  } catch (err) {
+    console.error("[tickets] panel failed:", err);
+    await interaction.editReply({
+      content: `Failed to post panel: ${err?.message || "unknown error"}`,
+    });
+  }
+}
+
+/**
+ * Panel button → show description modal (public).
+ * @param {import("discord.js").ButtonInteraction} interaction
+ * @param {object} _ctx
+ */
+async function handleOpenTicketButton(interaction, _ctx) {
+  if (!interaction.guild) {
+    await interaction.reply({
+      content: "Tickets can only be opened in a server.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.user?.bot) {
+    await interaction.reply({
+      content: "Bots cannot open tickets.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // Early rate-limit feedback so users don't fill the modal for nothing.
+  // Re-checked on modal submit (state can change while modal is open).
+  const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
+  if (!check.ok) {
+    await interaction.reply({
+      content: formatRateLimitMessage(check),
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.showModal(buildCreateTicketModal());
+}
+
+/**
+ * Modal submit from panel button → create ticket (public, rate-limited).
+ * @param {import("discord.js").ModalSubmitInteraction} interaction
+ * @param {object} ctx
+ */
+async function handleCreateTicketModal(interaction, ctx) {
+  if (!interaction.guild) {
+    await interaction.reply({
+      content: "Tickets can only be opened in a server.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.user?.bot) {
+    await interaction.reply({
+      content: "Bots cannot open tickets.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  let reason = null;
+  try {
+    const raw = interaction.fields.getTextInputValue(MODAL_FIELD_REASON);
+    reason = raw != null && String(raw).trim() !== "" ? String(raw).trim() : null;
+  } catch {
+    reason = null;
+  }
+
+  const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
+  if (!check.ok) {
+    await interaction.reply({
+      content: formatRateLimitMessage(check),
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await completeSelfCreate(interaction, ctx, reason);
 }
 
 async function handleFor(interaction, ctx) {
@@ -1253,9 +1553,9 @@ async function handleSettings(interaction) {
       `Self-create rate limit: **${s.ticket_rate_limit_minutes === 0 ? "off" : `${s.ticket_rate_limit_minutes} min`}**\n` +
       `**Senior** staff (ticket channel overwrites): ${seniorList}\n` +
       `**Junior** staff (commands only, no auto ticket view): ${juniorList}\n` +
-      `\n**Members:** \`/ticket create [reason]\`\n` +
+      `\n**Members:** \`/ticket create [reason]\` or the **Open a ticket** panel button\n` +
       `**Staff:** \`for\` · \`claim\` · \`close\` · \`archive\` · \`sensitive\` · \`list\` · …\n` +
-      `**Admin:** \`setcategory\` · \`setarchive\` · \`setratelimit\`\n` +
+      `**Admin:** \`panel\` · \`setcategory\` · \`setarchive\` · \`setratelimit\`\n` +
       `\n**Close** removes non-staff from the channel; **archive** saves the transcript and deletes it.`,
     flags: MessageFlags.Ephemeral,
   });
@@ -1293,9 +1593,21 @@ module.exports = {
   handlers: {
     ticket: handleTicket,
   },
+  buttonHandlers: {
+    [BTN_OPEN]: handleOpenTicketButton,
+  },
+  modalHandlers: {
+    [MODAL_CREATE]: handleCreateTicketModal,
+  },
   registerEvents,
   start,
   formatTicketRef,
   openTicketChannel,
+  buildCreateTicketModal,
+  buildOpenTicketButtonRow,
+  buildPanelEmbed,
+  BTN_OPEN,
+  MODAL_CREATE,
+  MODAL_FIELD_REASON,
   MAX_TICKET_REASON,
 };

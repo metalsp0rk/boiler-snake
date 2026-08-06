@@ -115,7 +115,8 @@ function canUserCreateTicket(guildId, userId) {
  * @param {string} opts.creatorUserId
  * @param {string} opts.channelId
  * @param {string|null} [opts.reason]
- * @param {string|null} [opts.openedByStaffId]
+ * @param {string|null} [opts.openedByStaffId] staff who opened on behalf of creator;
+ *   when set, that user becomes staff owner + named staff (user overwrite access)
  * @returns {object}
  */
 function createTicket(opts) {
@@ -129,15 +130,22 @@ function createTicket(opts) {
   }
 
   const t = now();
+  const openedByStaffId = opts.openedByStaffId
+    ? String(opts.openedByStaffId)
+    : null;
   const insert = db.prepare(`
     INSERT INTO tickets (
       guild_id, ticket_number, channel_id, creator_user_id, status,
-      is_sensitive, reason, created_at, opened_by_staff_id, archived
-    ) VALUES (?, ?, ?, ?, 'open', 0, ?, ?, ?, 0)
+      is_sensitive, reason, created_at, opened_by_staff_id, staff_owner_id, archived
+    ) VALUES (?, ?, ?, ?, 'open', 0, ?, ?, ?, ?, 0)
   `);
   const insertMember = db.prepare(`
     INSERT OR IGNORE INTO ticket_members (ticket_id, user_id, added_at, added_by)
     VALUES (?, ?, ?, ?)
+  `);
+  const insertStaff = db.prepare(`
+    INSERT INTO ticket_staff (ticket_id, user_id, is_owner, added_at, added_by)
+    VALUES (?, ?, 1, ?, ?)
   `);
 
   const tx = db.transaction(() => {
@@ -149,15 +157,21 @@ function createTicket(opts) {
       opts.creatorUserId,
       reasonNorm.reason,
       t,
-      opts.openedByStaffId || null
+      openedByStaffId,
+      openedByStaffId // auto-claim opener as staff owner when staff-initiated
     );
     const id = Number(info.lastInsertRowid);
     insertMember.run(
       id,
       opts.creatorUserId,
       t,
-      opts.openedByStaffId || opts.creatorUserId
+      openedByStaffId || opts.creatorUserId
     );
+    // Staff-opened tickets: opener is named staff exclusively (user overwrite),
+    // so junior staff / ManageGuild-only openers can see the channel.
+    if (openedByStaffId) {
+      insertStaff.run(id, openedByStaffId, t, openedByStaffId);
+    }
     return id;
   });
 

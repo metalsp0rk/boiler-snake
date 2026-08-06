@@ -72,6 +72,8 @@ Open a private ticket channel with staff. See [Help Tickets](../tickets.md).
 
 **Response**: Ephemeral link to the new `ticket-N` channel. Subject to per-guild rate limit (default 60 minutes between self-creates).
 
+Members can also use a public **Open a ticket** panel button (posted by admins with `/ticket panel`) which opens a modal for the description, then uses the same create pipeline.
+
 ### `/ticket settings` - View Ticket Config
 
 Shows category, archive channel, rate limit, and staff roles used for ticket visibility.
@@ -82,9 +84,20 @@ Shows category, archive channel, rate limit, and staff roles used for ticket vis
 
 Require the **Manage Guild** permission, or a configured **staff role** for staff-gated commands (`/note`, `/warn` staff ops, `/ticket` staff ops, etc.). All responses are ephemeral unless noted.
 
-### `/ticket` - Support tickets (staff)
+### `/ticket` - Support tickets (staff / admin)
 
 See [Help Tickets](../tickets.md) for the full list: `for`, `claim`, `transfer`, `adduser`, `removeuser`, `addstaff`, `removestaff`, `sensitive`, `unsensitive`, `close`, `archive`, `list`, `info`.
+
+**Admin (Manage Server):** `panel`, `setcategory`, `setarchive`, `setratelimit`.
+
+#### `/ticket panel` - Public entry panel
+
+```bash
+/ticket panel
+/ticket panel channel:#support title:Need help? description:Staff will reply in a private channel.
+```
+
+Posts an embed with an **Open a ticket** button. Clicking the button opens a modal; submit creates a ticket (same rate limit as `/ticket create`).
 
 - **`close`** — remove non-staff members; keep the channel for staff  
 - **`archive`** — after close: save transcript (if not sensitive) and delete the channel  
@@ -627,6 +640,11 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 | `/warn settings` | Staff gate | Yes |
 | `/setwarn dm` | ManageGuild | Yes |
 | `/setwarn log` | ManageGuild | Yes |
+| `/ticket create` | None (public) | Yes |
+| `/ticket settings` | None (public) | Yes |
+| `/ticket panel` | ManageGuild | Yes |
+| `/ticket` staff lifecycle | Staff gate | Yes |
+| `/ticket setcategory|setarchive|setratelimit` | ManageGuild | Yes |
 
 ---
 

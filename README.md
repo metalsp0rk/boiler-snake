@@ -114,6 +114,7 @@ Admin/mod commands (requires **Manage Guild** by default):
 - `/setwarn dm` — toggle member DMs on warn issue/void
 - `/setwarn log` — dedicated channel for warning issue/void embeds (falls back to audit log)
 - `/userinfo user:<member>` — staff card (XP + note/warning counts + drill-down buttons)
+- `/ticket create|for|close|archive|claim|…` — help tickets; `/ticket panel` posts Open-ticket button → modal
 
 ## Database Backup
 
