@@ -101,7 +101,7 @@ Without an API key, archives use a stats + close-reason fallback summary.
 | `/ticket addstaff` / `removestaff` | Named staff allow-list (esp. when sensitive) |
 | `/ticket sensitive` | Lock-down; auto-claims if no owner |
 | `/ticket unsensitive` | Restore staff-role visibility |
-| `/ticket close [reason]` | Soft-close: remove non-staff; **keep** channel for staff |
+| `/ticket close [reason] [staff_note]` | Soft-close: remove non-staff; **keep** channel for staff. Optional private staff note on the requester; reply also has **Add staff note** → modal |
 | `/ticket archive` | After close: save transcript (if not sensitive), post summary, **delete** channel |
 | `/ticket list [user]` | Open tickets |
 | `/ticket info` | Detail for the current ticket channel (open or soft-closed) |
@@ -141,6 +141,7 @@ Panels are plain bot messages (no DB row). Delete the Discord message to remove 
 2. Rewrite overwrites: staff retain access; **non-staff members lose view**.
 3. Post an in-channel notice; optional DM to requester (reason only).
 4. Channel stays for staff review until archive.
+5. **Staff notes (optional):** pass `staff_note:` to create a private note on the requester immediately, and/or use the **Add staff note** button on the ephemeral reply (opens a modal). Note body includes ticket # and close reason; never shown to the member. See [Staff notes](staff-notes.md).
 
 ### `/ticket archive` (dispose)
 

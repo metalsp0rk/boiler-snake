@@ -1,6 +1,6 @@
 const { db, now } = require("../connection");
 
-/** Recommended max note body length (roadmap open item). */
+/** Max note body length (slash option + modal paragraph). */
 const MAX_NOTE_CONTENT = 2000;
 
 /**

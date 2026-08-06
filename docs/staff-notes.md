@@ -29,12 +29,34 @@ All subcommands require the **staff gate** (`Manage Server` or a role from `/sta
 
 | Command | Description |
 |---------|-------------|
-| `/note add user:<member> content:<text>` | Create a staff note (max 2000 characters) |
+| `/note add user:<member> [content:<text>]` | Create a staff note (max 2000 characters). **Omit `content`** to open a modal for longer text. |
 | `/note list [user] [page] [include_deleted]` | List notes for a member (newest first), or recent guild-wide notes if `user` is omitted |
-| `/note edit id:<note_number> content:<text>` | Replace note body; records `edited_at` / `edited_by` |
+| `/note edit id:<note_number> [content:<text>]` | Replace note body; records `edited_at` / `edited_by`. **Omit `content`** to open a prefilled modal. |
 | `/note delete id:<note_number>` | Soft-delete (`deleted_at`); row kept for audit |
 | `/note info id:<note_number>` | Full note detail (author, timestamps, body) |
 | `/note settings` | Counts + access info |
+
+### Content modal
+
+Discord slash string options are awkward for multi-paragraph notes. Prefer:
+
+```bash
+/note add user:@SomeUser
+# → modal: write the full body (up to 2000 chars)
+/note edit id:12
+# → modal prefilled with the current body
+```
+
+You can still pass `content:` inline for short notes.
+
+### From ticket close
+
+When staff runs `/ticket close`:
+
+- Optional `staff_note:` string creates a private note on the **ticket requester** immediately (includes ticket # and close reason).
+- The ephemeral close reply always includes an **Add staff note** button → modal for free-form context.
+
+Notes created this way are normal staff notes (`N-n`); they are never shown to the member.
 
 ### Note IDs
 
@@ -83,11 +105,13 @@ See [Database Schema](database.md) for indexes and migration id `007_staff_notes
 ## Design decisions
 
 1. **Staff-only** — notes never DMed or shown to the subject.
-2. **Soft-delete only** in MVP — no hard delete command.
+2. **Soft-delete only** — no hard delete command.
 3. **Editable** — working memory, not a legal-style record.
 4. **Separate from warnings** — no automatic promotion of notes into warnings.
 5. **Access via staff gate** — no `staff_note_access_roles` table.
 6. **Per-guild sequential `note_number`** for human-friendly refs.
+7. **Modal for long content** — omit slash `content` on add/edit.
+8. **Ticket close integration** — optional `staff_note` + **Add staff note** button.
 
 ## Related
 

@@ -5,7 +5,8 @@
  *        addstaff|removestaff|sensitive|unsensitive|list|info|
  *        setcategory|setarchive|setratelimit|settings|panel
  * Buttons: tk:open → modal for description → same pipeline as /ticket create
- * Modals:  tk:create
+ *          tk:sn:<ticketId> → modal to attach a staff note after close
+ * Modals:  tk:create · tk:snm:<ticketId>
  */
 
 const {
@@ -45,6 +46,8 @@ const {
   listStaffRoles,
   listSeniorStaffRoles,
   normalizeStaffLevel,
+  createStaffNote,
+  MAX_NOTE_CONTENT,
 } = require("../../db");
 const {
   requireStaff,
@@ -76,6 +79,13 @@ const BTN_OPEN = "tk:open";
 const MODAL_CREATE = "tk:create";
 /** Text input customId inside the create modal */
 const MODAL_FIELD_REASON = "reason";
+
+/** Button prefix: attach staff note after close — `tk:sn:<ticketId>` */
+const BTN_STAFF_NOTE_PREFIX = "tk:sn:";
+/** Modal prefix: staff note body after close — `tk:snm:<ticketId>` */
+const MODAL_STAFF_NOTE_PREFIX = "tk:snm:";
+/** Text input customId inside the post-close staff note modal */
+const MODAL_FIELD_STAFF_NOTE = "staff_note";
 
 const DEFAULT_PANEL_TITLE = "Support Tickets";
 const DEFAULT_PANEL_DESCRIPTION =
@@ -131,6 +141,15 @@ const commands = [
             .setDescription("Close reason (shown to requester + on archive)")
             .setRequired(false)
             .setMaxLength(MAX_TICKET_REASON)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("staff_note")
+            .setDescription(
+              "Optional private staff note on the requester (never shown to them)"
+            )
+            .setRequired(false)
+            .setMaxLength(MAX_NOTE_CONTENT)
         )
     )
     .addSubcommand((sc) =>
@@ -378,6 +397,109 @@ function buildPanelEmbed(title, description) {
     .setFooter({
       text: "Same rate limit as /ticket create · Staff will join the private channel",
     });
+}
+
+/**
+ * Compose staff-note body from a closed ticket + optional free text.
+ * @param {object} ticket
+ * @param {string|null|undefined} closeReason
+ * @param {string|null|undefined} body
+ * @returns {string}
+ */
+function buildTicketStaffNoteContent(ticket, closeReason, body) {
+  const parts = [
+    `Ticket ${formatTicketRef(ticket.ticket_number)} closed`,
+  ];
+  if (closeReason && String(closeReason).trim()) {
+    parts.push(`Close reason: ${String(closeReason).trim()}`);
+  }
+  if (Number(ticket.is_sensitive) === 1) {
+    parts.push("Sensitive ticket (no content archive).");
+  }
+  const free = body != null ? String(body).trim() : "";
+  if (free) {
+    parts.push("");
+    parts.push(free);
+  }
+  let text = parts.join("\n");
+  if (text.length > MAX_NOTE_CONTENT) {
+    text = text.slice(0, MAX_NOTE_CONTENT);
+  }
+  return text;
+}
+
+/**
+ * Create a staff note on the ticket requester (if human subject).
+ * @param {object} opts
+ * @returns {{ ok: true, note: object } | { ok: false, error: string }}
+ */
+function attachStaffNoteFromTicket(opts) {
+  const { ticket, authorId, closeReason, body } = opts;
+  if (!ticket?.creator_user_id) {
+    return { ok: false, error: "Ticket has no requester to note." };
+  }
+  const content = buildTicketStaffNoteContent(ticket, closeReason, body);
+  if (!content.trim()) {
+    return { ok: false, error: "Staff note content cannot be empty." };
+  }
+  try {
+    const note = createStaffNote({
+      guildId: ticket.guild_id,
+      userId: ticket.creator_user_id,
+      authorId,
+      content,
+    });
+    return { ok: true, note };
+  } catch (err) {
+    if (err?.code === "INVALID_CONTENT") {
+      return { ok: false, error: err.message };
+    }
+    console.error("[tickets] staff note from close failed:", err);
+    return { ok: false, error: "Failed to save staff note (database error)." };
+  }
+}
+
+/**
+ * Button on post-close ephemeral reply.
+ * @param {number|string} ticketId
+ * @returns {ActionRowBuilder}
+ */
+function buildAddStaffNoteButtonRow(ticketId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${BTN_STAFF_NOTE_PREFIX}${ticketId}`)
+      .setLabel("Add staff note")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("📝")
+  );
+}
+
+/**
+ * Modal for free-text staff note after close.
+ * @param {number|string} ticketId
+ * @param {number} [ticketNumber]
+ * @returns {ModalBuilder}
+ */
+function buildTicketStaffNoteModal(ticketId, ticketNumber) {
+  const input = new TextInputBuilder()
+    .setCustomId(MODAL_FIELD_STAFF_NOTE)
+    .setLabel("Private staff note")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(MAX_NOTE_CONTENT)
+    .setPlaceholder(
+      "Context for staff about this requester (never shown to them)"
+    );
+
+  const title =
+    ticketNumber != null
+      ? `Note · ticket #${ticketNumber}`.slice(0, 45)
+      : "Staff note from ticket";
+
+  return new ModalBuilder()
+    .setCustomId(`${MODAL_STAFF_NOTE_PREFIX}${ticketId}`)
+    .setTitle(title)
+    .addComponents(new ActionRowBuilder().addComponents(input));
 }
 
 /**
@@ -977,6 +1099,7 @@ async function handleClose(interaction, ctx) {
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
   const closeReason = interaction.options.getString("reason");
+  const staffNoteBody = interaction.options.getString("staff_note");
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -1006,13 +1129,153 @@ async function handleClose(interaction, ctx) {
     if (result.warnings?.length) {
       msg += `\n\n_Warnings:_\n- ${result.warnings.join("\n- ")}`;
     }
-    await interaction.editReply({ content: msg });
+
+    // Optional one-shot staff note via slash option
+    const closedTicket = result.ticket || ticket;
+    if (staffNoteBody != null && String(staffNoteBody).trim() !== "") {
+      const noteResult = attachStaffNoteFromTicket({
+        ticket: closedTicket,
+        authorId: interaction.user.id,
+        closeReason,
+        body: staffNoteBody,
+      });
+      if (noteResult.ok) {
+        msg +=
+          `\n\nStaff note **N-${noteResult.note.note_number}** saved on ` +
+          `<@${closedTicket.creator_user_id}> (private).`;
+        await logConfigChange(client, interaction.guildId, {
+          title: "Staff note created",
+          command: "/ticket close staff_note",
+          actor: interaction.user,
+          changes: [
+            `N-${noteResult.note.note_number} on <@${closedTicket.creator_user_id}>`,
+            `From ticket ${formatTicketRef(closedTicket.ticket_number)}`,
+          ],
+        }).catch(() => {});
+      } else {
+        msg += `\n\n_Could not save staff note: ${noteResult.error}_`;
+      }
+    } else {
+      msg +=
+        `\n\nOptional: click **Add staff note** to record private context on ` +
+        `<@${closedTicket.creator_user_id}>.`;
+    }
+
+    await interaction.editReply({
+      content: msg,
+      components: [buildAddStaffNoteButtonRow(closedTicket.id)],
+    });
   } catch (err) {
     console.error("[tickets] close failed:", err);
     await interaction.editReply({
       content: `Failed to close ticket: ${err?.message || "unknown error"}`,
     });
   }
+}
+
+/**
+ * Post-close button → modal for private staff note on the requester.
+ * @param {import("discord.js").ButtonInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleStaffNoteButton(interaction, ctx) {
+  if (!(await requireStaff(interaction))) return;
+
+  const customId = interaction.customId || "";
+  if (!customId.startsWith(BTN_STAFF_NOTE_PREFIX)) return;
+  const ticketId = Number(customId.slice(BTN_STAFF_NOTE_PREFIX.length));
+  if (!Number.isFinite(ticketId) || ticketId < 1) {
+    await interaction.reply({
+      content: "Invalid ticket reference on this button.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const ticket = getTicketById(ticketId);
+  if (!ticket || ticket.guild_id !== interaction.guildId) {
+    await interaction.reply({
+      content: "That ticket was not found in this server.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.showModal(
+    buildTicketStaffNoteModal(ticket.id, ticket.ticket_number)
+  );
+}
+
+/**
+ * Modal submit: save staff note linked to a closed (or open) ticket.
+ * @param {import("discord.js").ModalSubmitInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleStaffNoteModal(interaction, ctx) {
+  if (!(await requireStaff(interaction))) return;
+
+  const customId = interaction.customId || "";
+  if (!customId.startsWith(MODAL_STAFF_NOTE_PREFIX)) return;
+  const ticketId = Number(customId.slice(MODAL_STAFF_NOTE_PREFIX.length));
+  if (!Number.isFinite(ticketId) || ticketId < 1) {
+    await interaction.reply({
+      content: "Invalid modal state (missing ticket).",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const ticket = getTicketById(ticketId);
+  if (!ticket || ticket.guild_id !== interaction.guildId) {
+    await interaction.reply({
+      content: "That ticket was not found in this server.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  let body = "";
+  try {
+    body = interaction.fields.getTextInputValue(MODAL_FIELD_STAFF_NOTE);
+  } catch {
+    body = "";
+  }
+
+  const noteResult = attachStaffNoteFromTicket({
+    ticket,
+    authorId: interaction.user.id,
+    closeReason: ticket.close_reason,
+    body,
+  });
+  if (!noteResult.ok) {
+    await interaction.reply({
+      content: noteResult.error,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await logConfigChange(
+    ctx?.client || interaction.client,
+    interaction.guildId,
+    {
+      title: "Staff note created",
+      command: "/ticket close → Add staff note",
+      actor: interaction.user,
+      changes: [
+        `N-${noteResult.note.note_number} on <@${ticket.creator_user_id}>`,
+        `From ticket ${formatTicketRef(ticket.ticket_number)}`,
+      ],
+    }
+  ).catch(() => {});
+
+  await interaction.reply({
+    content:
+      `Staff note **N-${noteResult.note.note_number}** saved on ` +
+      `<@${ticket.creator_user_id}> (private; never shown to the member).\n` +
+      `View with \`/note info id:${noteResult.note.note_number}\`.`,
+    flags: MessageFlags.Ephemeral,
+  });
 }
 
 async function handleArchive(interaction, ctx) {
@@ -1595,9 +1858,11 @@ module.exports = {
   },
   buttonHandlers: {
     [BTN_OPEN]: handleOpenTicketButton,
+    [BTN_STAFF_NOTE_PREFIX]: handleStaffNoteButton,
   },
   modalHandlers: {
     [MODAL_CREATE]: handleCreateTicketModal,
+    [MODAL_STAFF_NOTE_PREFIX]: handleStaffNoteModal,
   },
   registerEvents,
   start,
@@ -1606,8 +1871,13 @@ module.exports = {
   buildCreateTicketModal,
   buildOpenTicketButtonRow,
   buildPanelEmbed,
+  buildTicketStaffNoteContent,
+  buildAddStaffNoteButtonRow,
   BTN_OPEN,
+  BTN_STAFF_NOTE_PREFIX,
   MODAL_CREATE,
+  MODAL_STAFF_NOTE_PREFIX,
   MODAL_FIELD_REASON,
+  MODAL_FIELD_STAFF_NOTE,
   MAX_TICKET_REASON,
 };

@@ -500,7 +500,11 @@ Private staff-only notes about members. Never shown to the subject. See [Staff N
 
 ```bash
 /note add user:@SomeUser content:Watch for repeated spam in #general
+/note add user:@SomeUser
+# omit content → Discord modal for longer text (max 2000)
 ```
+
+After `/ticket close`, staff can also attach a note via `staff_note:` or the **Add staff note** button.
 
 #### Subcommand: `list`
 
@@ -514,6 +518,7 @@ Private staff-only notes about members. Never shown to the subject. See [Staff N
 
 ```bash
 /note edit id:12 content:Updated context
+/note edit id:12                    # modal prefilled with current body
 /note delete id:12
 /note info id:12
 ```

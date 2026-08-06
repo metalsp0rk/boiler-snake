@@ -146,6 +146,68 @@ describe("integration: staff notes", () => {
     assertReplyContains(interaction, /No note|N-99999/i);
   });
 
+  it("/note add without content opens modal", async () => {
+    const interaction = await env.runCommand({
+      commandName: "note",
+      subcommand: "add",
+      admin: true,
+      options: { user: env.users.memberUser },
+    });
+    assert.equal(interaction.modals.length, 1);
+    const modal = interaction.modals[0];
+    const json = typeof modal.toJSON === "function" ? modal.toJSON() : modal;
+    const staffNotes = require("../../src/features/staffNotes");
+    assert.equal(
+      json.custom_id || json.customId,
+      `${staffNotes.MODAL_PREFIX_ADD}${IDS.member}`
+    );
+  });
+
+  it("note add modal creates staff note", async () => {
+    const staffNotes = require("../../src/features/staffNotes");
+    const { createModalSubmitInteraction } = require("../helpers/discord");
+    const content = `Modal note body ${Date.now()}`;
+    const modalIx = createModalSubmitInteraction({
+      customId: `${staffNotes.MODAL_PREFIX_ADD}${IDS.member2}`,
+      guild: env.guild,
+      user: env.users.adminUser,
+      member: env.members.adminMember,
+      admin: true,
+      client: env.client,
+      fields: { content },
+    });
+    await env.handleInteraction(modalIx, env.ctx);
+    assertReplyContains(modalIx, /created|N-/i);
+
+    const notes = env.db.listStaffNotes(env.guild.id, IDS.member2, {
+      limit: 5,
+    });
+    assert.ok(notes.some((n) => n.content === content));
+  });
+
+  it("/note edit without content opens prefilled modal", async () => {
+    const created = env.db.createStaffNote({
+      guildId: env.guild.id,
+      userId: IDS.member,
+      authorId: IDS.admin,
+      content: "Prefill me please",
+    });
+    const interaction = await env.runCommand({
+      commandName: "note",
+      subcommand: "edit",
+      admin: true,
+      options: { id: created.note_number },
+    });
+    assert.equal(interaction.modals.length, 1);
+    const staffNotes = require("../../src/features/staffNotes");
+    const modal = interaction.modals[0];
+    const json = typeof modal.toJSON === "function" ? modal.toJSON() : modal;
+    assert.equal(
+      json.custom_id || json.customId,
+      `${staffNotes.MODAL_PREFIX_EDIT}${created.note_number}`
+    );
+  });
+
   it("/note add rejects bots", async () => {
     const interaction = await env.runCommand({
       commandName: "note",
