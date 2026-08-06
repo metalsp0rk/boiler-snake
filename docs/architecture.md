@@ -49,7 +49,8 @@ src/
 │   ├── staffRoles/          # /staff role gate (isStaff / requireStaff)
 │   ├── staffNotes/          # /note staff-only private notes
 │   ├── warnings/            # /warn + /setwarn formal disciplinary records
-│   └── userinfo/            # /userinfo staff card + note/warn buttons
+│   ├── userinfo/            # /userinfo staff card + note/warn buttons
+│   └── tickets/             # /ticket support channels + archive HTTP
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch
@@ -131,6 +132,9 @@ Migrations on load:
 | `005_clamp_bad_xp` | sanitize bad XP rows |
 | `006_event_reminders` | event reminder tables + default channel column |
 | `007_staff_notes` | staff_notes table (soft-delete, per-guild note_number) |
+| `008_staff_roles` | staff_roles table (generalized honeypot exempt) |
+| `009_warnings` | warnings + warn_dm_members |
+| `010_tickets` | tickets / members / staff / messages + ticket_* settings |
 
 ### Core XP API
 

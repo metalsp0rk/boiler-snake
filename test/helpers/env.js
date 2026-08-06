@@ -31,6 +31,8 @@ function createTempDbPath() {
 function loadDb() {
   const { tmpDir, dbPath } = createTempDbPath();
   process.env.DB_PATH = dbPath;
+  // Tickets HTML transcripts resolve under DATA_DIR
+  process.env.DATA_DIR = tmpDir;
   resetSrcModules();
   const api = require("../../src/db");
   return { api, tmpDir, dbPath };

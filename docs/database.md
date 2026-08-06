@@ -37,6 +37,10 @@ boiler-snake/
 | `event_reminder_optouts` | Per-guild user opt-out from event reminder pings |
 | `staff_notes` | Private staff notes about members (soft-delete) |
 | `warnings` | Formal permanent warnings (voidable; sequential W-n) |
+| `tickets` | Support ticket lifecycle, sensitive flag, archive metadata |
+| `ticket_members` | Extra member participants on a ticket |
+| `ticket_staff` | Named staff allow-list (sensitive / extras) |
+| `ticket_messages` | Archived messages for non-sensitive closed tickets |
 
 ---
 

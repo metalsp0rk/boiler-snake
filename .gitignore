@@ -57,3 +57,8 @@ coverage/
 ###
 
 *.sqlite-*
+
+############################
+# Ticket transcripts (runtime)
+############################
+ticket-transcripts/

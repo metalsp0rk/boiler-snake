@@ -52,10 +52,42 @@ async function createIntegrationEnv(options = {}) {
   const adminMember = createMember({ guild, user: adminUser, admin: true });
   const member = createMember({ guild, user: memberUser, admin: false });
   const member2 = createMember({ guild, user: member2User, admin: false });
+  // Bot member needs Manage Channels for ticket channel creation preflight
+  const { PermissionFlagsBits } = require("discord.js");
+  const botMember = createMember({
+    guild,
+    user: botUser,
+    admin: false,
+    permissions:
+      PermissionFlagsBits.ManageChannels |
+      PermissionFlagsBits.ManageRoles |
+      PermissionFlagsBits.ViewChannel |
+      PermissionFlagsBits.SendMessages,
+  });
 
   guild.addMember(adminMember);
   guild.addMember(member);
   guild.addMember(member2);
+  guild.addMember(botMember);
+  // discord.js-style shortcut used by tickets openTicketChannel
+  guild.members.me = botMember;
+
+  // Common staff / exempt role used by honeypot + ticket tests
+  guild.roles.cache.set(IDS.roleExempt, {
+    id: IDS.roleExempt,
+    name: "Staff",
+    position: 1,
+    managed: false,
+  });
+  // Bot role above staff for overwrite hierarchy checks
+  guild.roles.cache.set("role-bot", {
+    id: "role-bot",
+    name: "Bot",
+    position: 5,
+    managed: false,
+  });
+  botMember.roles.cache.set("role-bot", { id: "role-bot", position: 5 });
+  botMember.roles.highest = { id: "role-bot", position: 5 };
 
   const channelGeneral = createTextChannel({
     id: IDS.channelGeneral,
@@ -129,6 +161,7 @@ async function createIntegrationEnv(options = {}) {
       user,
       member: mem,
       channelId: cmdOpts.channelId || IDS.channelGeneral,
+      client,
       admin: cmdOpts.admin !== false,
       options: cmdOpts.options || {},
       subcommand: cmdOpts.subcommand,

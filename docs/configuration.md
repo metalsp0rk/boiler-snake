@@ -55,6 +55,27 @@ DEV_GUILD_ID=123456789012345678
 
 Using this registers commands instantly to one guild instead of globally (which can take 1 hour).
 
+#### Ticket transcripts (optional)
+
+| Variable | Purpose |
+|----------|---------|
+| `TICKET_HTTP_PORT` | Serve HTML transcripts + media (`GET /t`, `/t/{uuid}`, `/t/{uuid}/assets/…`) |
+| `TICKET_PUBLIC_BASE_URL` | Public origin for archive embed links |
+| `TICKET_MAX_ASSET_BYTES` | Max size per mirrored file (default 50 MiB) |
+| `TICKET_MAX_ASSETS` | Max media files downloaded per ticket (default 100) |
+| `AI_API_KEY` | Optional OpenAI-compatible key for non-sensitive close summaries |
+| `AI_BASE_URL` | API base URL (default OpenAI) |
+| `AI_MODEL` | Model name |
+
+See [Help Tickets](tickets.md).
+
+#### Database location
+
+| Variable | Purpose |
+|----------|---------|
+| `DATA_DIR` | Directory for `xpbot.sqlite` and `ticket-transcripts/` |
+| `DB_PATH` | Full path to the SQLite file (overrides `DATA_DIR` for the DB file only) |
+
 ---
 
 ## Per-Guild Settings
@@ -78,6 +99,9 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `youtube_polling_interval_minutes` | 5 | YouTube API check frequency |
 | `audit_log_channel_id` | *(none)* | Channel for bans, kicks, role-change embeds |
 | `message_log_channel_id` | *(none)* | Channel for deleted-message embeds |
+| `ticket_category_id` | *(none)* | Parent category for open tickets |
+| `ticket_archive_channel_id` | *(none)* | Staff channel for close summaries / transcripts |
+| `ticket_rate_limit_minutes` | 60 | Minutes between member self-creates (`0` = off) |
 
 See [Audit Log & Message Log](audit-log.md) for setup and event details.
 

@@ -11,6 +11,9 @@
  *   DATA_DIR       — directory for xpbot.sqlite (default: project root)
  *   DB_PATH        — full path to sqlite file (wins over DATA_DIR)
  *   YOUTUBE_API_KEY — YouTube Data API (live detection / channel resolve)
+ *   TICKET_HTTP_PORT — serve HTML transcripts on this port (GET /t/{uuid})
+ *   TICKET_PUBLIC_BASE_URL — public origin for transcript links in archive embeds
+ *   AI_API_KEY / AI_BASE_URL / AI_MODEL — optional ticket archive summarization
  */
 
 function requireEnv(name) {

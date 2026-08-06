@@ -98,24 +98,75 @@ function createTextChannel(opts = {}) {
   const guild = opts.guild || null;
   const messages = new Map();
   const sent = [];
+  const overwrites = new Map();
+  let deleted = false;
+  let channelName = opts.name || `channel-${id}`;
 
   const channel = {
     id,
-    name: opts.name || `channel-${id}`,
+    get name() {
+      return channelName;
+    },
+    set name(v) {
+      channelName = v;
+    },
     guild,
     guildId: guild?.id,
-    type: 0,
+    type: opts.type != null ? opts.type : 0,
+    parentId: opts.parentId || null,
+    permissionOverwrites: {
+      cache: overwrites,
+      set: async (list) => {
+        overwrites.clear();
+        for (const ow of list || []) {
+          overwrites.set(ow.id, ow);
+        }
+        channel._overwrites = [...overwrites.values()];
+      },
+      edit: async (targetId, perms) => {
+        overwrites.set(targetId, { id: targetId, ...perms });
+        channel._overwrites = [...overwrites.values()];
+      },
+    },
+    _overwrites: [],
     messages: {
       cache: messages,
-      fetch: async (messageId) => {
-        if (messages.has(messageId)) return messages.get(messageId);
-        return null;
+      fetch: async (arg) => {
+        // fetch(messageId) single
+        if (typeof arg === "string") {
+          if (messages.has(arg)) return messages.get(arg);
+          return null;
+        }
+        // fetch({ limit, before }) collection-like
+        const limit = arg?.limit || 100;
+        let all = [...messages.values()].sort((a, b) =>
+          String(b.id).localeCompare(String(a.id))
+        );
+        if (arg?.before) {
+          all = all.filter((m) => String(m.id) < String(arg.before));
+        }
+        const slice = all.slice(0, limit);
+        return new Map(slice.map((m) => [m.id, m]));
       },
     },
     sent,
+    deleted: false,
     isTextBased: () => true,
+    setName: async (name) => {
+      channelName = name;
+      return channel;
+    },
+    delete: async () => {
+      deleted = true;
+      channel.deleted = true;
+      if (guild?.channels?.cache) {
+        guild.channels.cache.delete(id);
+      }
+      return channel;
+    },
+    _wasDeleted: () => deleted,
     send: async (payload) => {
-      const msgId = `msg-sent-${sent.length + 1}`;
+      const msgId = `msg-sent-${sent.length + 1}-${id}`;
       const msg = {
         id: msgId,
         content: typeof payload === "string" ? payload : payload?.content,
@@ -123,14 +174,36 @@ function createTextChannel(opts = {}) {
         files: typeof payload === "object" ? payload?.files : undefined,
         channel,
         guild,
+        createdTimestamp: Date.now(),
         url: `https://discord.com/channels/${guild?.id || "0"}/${id}/${msgId}`,
-        author: opts.clientUser || { id: "bot", bot: true },
+        author: opts.clientUser || { id: "bot", bot: true, username: "bot" },
+        attachments: new Map(),
         pin: async () => {},
         react: async () => {},
         reactions: { cache: new Map(), removeAll: async () => {} },
       };
       sent.push(payload);
       messages.set(msg.id, msg);
+      return msg;
+    },
+    /** Seed a user message into the channel (tests / archive). */
+    addMessage(msgOpts = {}) {
+      const msgId = msgOpts.id || `msg-seed-${messages.size + 1}-${id}`;
+      const msg = {
+        id: msgId,
+        content: msgOpts.content || "",
+        author: msgOpts.author || {
+          id: IDS.member,
+          username: "member",
+          tag: "member#0000",
+        },
+        embeds: msgOpts.embeds || [],
+        attachments: msgOpts.attachments || new Map(),
+        createdTimestamp: msgOpts.createdTimestamp || Date.now(),
+        channel,
+        guild,
+      };
+      messages.set(msgId, msg);
       return msg;
     },
   };
@@ -156,6 +229,7 @@ function createGuild(opts = {}) {
     afkChannelId: opts.afkChannelId || null,
     members: {
       cache: membersById,
+      me: null,
       fetch: async (arg) => {
         if (typeof arg === "string") {
           if (membersById.has(arg)) return membersById.get(arg);
@@ -181,6 +255,21 @@ function createGuild(opts = {}) {
         if (channelsById.has(channelId)) return channelsById.get(channelId);
         return null;
       },
+      create: async (data) => {
+        const chId = data.id || `channel-created-${channelsById.size + 1}`;
+        const ch = createTextChannel({
+          id: chId,
+          guild,
+          name: data.name || chId,
+          type: data.type != null ? data.type : 0,
+          parentId: data.parent || data.parentId || null,
+        });
+        if (data.permissionOverwrites) {
+          await ch.permissionOverwrites.set(data.permissionOverwrites);
+        }
+        channelsById.set(chId, ch);
+        return ch;
+      },
     },
     roles: {
       cache: rolesById,
@@ -191,6 +280,7 @@ function createGuild(opts = {}) {
           name: data.name || roleId,
           mentionable: !!data.mentionable,
           hoist: !!data.hoist,
+          position: data.position != null ? data.position : roleSeq,
           guild,
           members: new Map(),
           setName: async (name) => {
@@ -415,11 +505,18 @@ function createChatInputInteraction(opts) {
 
   const modals = [];
 
+  const channel =
+    opts.channel ||
+    guild?.channels?.cache?.get?.(channelId) ||
+    null;
+
   const interaction = {
     commandName: opts.commandName,
     guild,
     guildId: guild?.id ?? null,
     channelId,
+    channel,
+    client: opts.client || null,
     user,
     member: member || null,
     memberPermissions,

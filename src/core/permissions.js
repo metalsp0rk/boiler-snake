@@ -1,5 +1,9 @@
 const { PermissionFlagsBits, MessageFlags } = require("discord.js");
-const { listAllowedCommandChannels, memberHasStaffRole } = require("../db");
+const {
+  listAllowedCommandChannels,
+  memberHasStaffRole,
+  getTicketByChannel,
+} = require("../db");
 
 /**
  * Guild admin/mod gate used by most config commands (Manage Guild).
@@ -11,7 +15,7 @@ function isAdminOrMod(interaction) {
 }
 
 /**
- * Staff / admin gate for staff-facing features (notes, future warnings, …).
+ * Staff / admin gate for staff-facing features (notes, warnings, tickets, …).
  *
  * Manage Guild **or** any role in `staff_roles`.
  * New features should call {@link isStaff} / {@link requireStaff} so call sites
@@ -32,11 +36,19 @@ function isStaff(interaction) {
  * - If no allowed channels configured => allowed everywhere
  * - If configured => only allowed in those channels
  * - EXCEPTION: /setcommandchannel is allowed anywhere for admins to avoid lockout
+ * - EXCEPTION: /ticket inside an open ticket channel (lifecycle commands)
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  * @returns {boolean}
  */
 function commandsAllowed(interaction) {
   if (interaction.commandName === "setcommandchannel" && isAdminOrMod(interaction)) return true;
+  if (interaction.commandName === "ticket" && interaction.channelId) {
+    const ticket = getTicketByChannel(interaction.channelId);
+    // Open tickets, or soft-closed channels still awaiting /ticket archive
+    if (ticket && ticket.channel_id && Number(ticket.archived) !== 1) {
+      return true;
+    }
+  }
   const rows = listAllowedCommandChannels(interaction.guildId);
   if (!rows.length) return true;
   return rows.some((r) => r.channel_id === interaction.channelId);

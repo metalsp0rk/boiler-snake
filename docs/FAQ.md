@@ -384,7 +384,7 @@ With daily decay:
 **A**: Yes! See [`ROADMAP.md`](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md) in the project root:
 
 **Planned features** (see roadmap if present):
-- Ticket system (support requests)
+- ~~Ticket system (support requests)~~ — shipped MVP; see [Help Tickets](tickets.md)
 - Twitch stream notifications (multi-channel go-live alerts + dedicated ping role)
 - Activity analytics dashboard
 - XP transfer between servers

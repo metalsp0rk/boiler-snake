@@ -95,9 +95,14 @@ Use Discord's [OAuth2 URL Generator](https://discord.com/developers/applications
 - ✅ Add Reactions
 - ✅ Use Slash Commands
 - ✅ Manage Roles
+- ✅ **Manage Channels** *(required for [help tickets](tickets.md))*
 - ✅ Read Message History
 - ✅ Use External Emoji
 - ✅ Ban Members *(required for [honeypot channels](honeypot.md))*
+
+**Ticket system notes:**
+- The bot role must sit **above** every role listed in `/staff role list` (otherwise Discord rejects private ticket overwrites with Missing Permissions).
+- Prefer a ticket category via `/ticket setcategory` and ensure the bot can create channels there.
 - ✅ Manage Messages *(recommended so honeypot messages can be deleted, and so [reaction-role](reaction-roles.md) panels can strip unconfigured reactions)*
 - ✅ View Audit Log *(recommended for [audit / message logs](audit-log.md) — attribute bans, kicks, and deletes)*
 

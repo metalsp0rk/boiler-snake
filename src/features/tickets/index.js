@@ -1,0 +1,1291 @@
+/**
+ * Help ticket system — private support channels with sensitive mode and archives.
+ *
+ * Slash: /ticket create|for|close|claim|transfer|adduser|removeuser|
+ *        addstaff|removestaff|sensitive|unsensitive|list|info|
+ *        setcategory|setarchive|setratelimit|settings
+ */
+
+const {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  MessageFlags,
+  EmbedBuilder,
+  ChannelType,
+  Events,
+} = require("discord.js");
+const {
+  MAX_TICKET_REASON,
+  getTicketSettings,
+  canUserCreateTicket,
+  createTicket,
+  getTicketByChannel,
+  getTicketById,
+  claimTicket,
+  transferTicket,
+  addTicketStaff,
+  removeTicketStaff,
+  setTicketSensitive,
+  setTicketUnsensitive,
+  addTicketMember,
+  removeTicketMember,
+  listTicketMembers,
+  listTicketStaff,
+  listOpenTickets,
+  markTicketClosedByChannelDelete,
+  updateGuildSettings,
+  listStaffRoles,
+} = require("../../db");
+const {
+  requireStaff,
+  requireAdmin,
+  isStaff,
+  isAdminOrMod,
+} = require("../../core/permissions");
+const { logConfigChange } = require("../logs/auditLog");
+const {
+  applyTicketOverwrites,
+  getManageableStaffRoleIds,
+  assertBotCanCreateTickets,
+  formatChannelCreateError,
+  MEMBER_ALLOW,
+  MEMBER_DENY,
+  STAFF_ALLOW,
+  BOT_ALLOW,
+} = require("./overwrites");
+const { softCloseTicket, archiveTicketPipeline } = require("./close");
+const { startTicketHttpServer } = require("./httpServer");
+
+const COLOR_OPEN = 0x57f287;
+const COLOR_INFO = 0x5865f2;
+const COLOR_SENSITIVE = 0xe74c3c;
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName("ticket")
+    .setDescription(
+      "Open and manage support tickets; staff lifecycle and guild ticket config."
+    )
+    // create is public; other ops gated in handlers
+    .addSubcommand((sc) =>
+      sc
+        .setName("create")
+        .setDescription("Open a support ticket for yourself.")
+        .addStringOption((opt) =>
+          opt
+            .setName("reason")
+            .setDescription("What do you need help with?")
+            .setRequired(false)
+            .setMaxLength(MAX_TICKET_REASON)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("for")
+        .setDescription("Staff: open a ticket for a member.")
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Member to open a ticket for")
+            .setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("reason")
+            .setDescription("Why this ticket is being opened")
+            .setRequired(false)
+            .setMaxLength(MAX_TICKET_REASON)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("close")
+        .setDescription(
+          "Close this ticket: remove non-staff members; keep channel for staff."
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("reason")
+            .setDescription("Close reason (shown to requester + on archive)")
+            .setRequired(false)
+            .setMaxLength(MAX_TICKET_REASON)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("archive")
+        .setDescription(
+          "Archive a closed ticket: transcript (if not sensitive), then delete channel."
+        )
+    )
+    .addSubcommand((sc) =>
+      sc.setName("claim").setDescription("Claim this ticket as staff owner.")
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("transfer")
+        .setDescription("Transfer staff ownership of this ticket.")
+        .addUserOption((opt) =>
+          opt
+            .setName("staff")
+            .setDescription("New staff owner")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("adduser")
+        .setDescription("Add a member participant to this ticket.")
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Member to add")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("removeuser")
+        .setDescription("Remove a member participant from this ticket.")
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Member to remove")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("addstaff")
+        .setDescription("Allow-list a staff user on this ticket (named access).")
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Staff user to add")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("removestaff")
+        .setDescription("Remove a named staff allow-list entry.")
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Staff user to remove")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("sensitive")
+        .setDescription(
+          "Lock this ticket to owner + named staff + members only."
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("unsensitive")
+        .setDescription("Restore normal staff-role visibility on this ticket.")
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("list")
+        .setDescription("List open tickets (staff).")
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Filter by member")
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("info")
+        .setDescription("Show details for this ticket channel.")
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("setcategory")
+        .setDescription("Set the category for new ticket channels (admin).")
+        .addChannelOption((opt) =>
+          opt
+            .setName("category")
+            .setDescription("Category channel")
+            .addChannelTypes(ChannelType.GuildCategory)
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("setarchive")
+        .setDescription(
+          "Set the staff channel for close summaries / transcripts (admin)."
+        )
+        .addChannelOption((opt) =>
+          opt
+            .setName("channel")
+            .setDescription("Text channel for archive posts")
+            .addChannelTypes(
+              ChannelType.GuildText,
+              ChannelType.GuildAnnouncement
+            )
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("setratelimit")
+        .setDescription(
+          "Min minutes between member self-creates (0 = off; default 60)."
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("minutes")
+            .setDescription("Cooldown limit minutes (0 disables)")
+            .setRequired(true)
+            .setMinValue(0)
+            .setMaxValue(10080)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("settings")
+        .setDescription("Show ticket configuration for this server.")
+    ),
+];
+
+/**
+ * @param {number} n
+ * @returns {string}
+ */
+function formatTicketRef(n) {
+  return `#${n}`;
+}
+
+/**
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} ctx
+ * @returns {Promise<import("discord.js").GuildBasedChannel|null>}
+ */
+async function resolveChannel(interaction, ctx) {
+  if (interaction.channel) return interaction.channel;
+  const id = interaction.channelId;
+  const client = ctx?.client || interaction.client;
+  const fromGuild = interaction.guild?.channels?.cache?.get?.(id);
+  if (fromGuild) return fromGuild;
+  try {
+    return (await client?.channels?.fetch?.(id)) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} ctx
+ * @returns {Promise<{ ticket: object, channel: object }|null>}
+ */
+async function requireOpenTicketChannel(interaction, ctx) {
+  const channel = await resolveChannel(interaction, ctx);
+  const ticket = getTicketByChannel(interaction.channelId);
+  if (!ticket || ticket.status !== "open") {
+    await interaction.reply({
+      content:
+        "This command only works inside an **open ticket** channel.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return null;
+  }
+  return { ticket, channel };
+}
+
+/**
+ * Live ticket channel still present (open or soft-closed awaiting archive).
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} ctx
+ * @param {object} [opts]
+ * @param {"any"|"open"|"closed"} [opts.status="any"]
+ * @returns {Promise<{ ticket: object, channel: object }|null>}
+ */
+async function requireLiveTicketChannel(interaction, ctx, opts = {}) {
+  const statusWant = opts.status || "any";
+  const channel = await resolveChannel(interaction, ctx);
+  const ticket = getTicketByChannel(interaction.channelId);
+  if (!ticket || !ticket.channel_id) {
+    await interaction.reply({
+      content: "This command only works inside a **ticket** channel.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return null;
+  }
+  if (statusWant === "open" && ticket.status !== "open") {
+    await interaction.reply({
+      content: "This command only works inside an **open** ticket channel.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return null;
+  }
+  if (statusWant === "closed" && ticket.status !== "closed") {
+    await interaction.reply({
+      content:
+        "This ticket is still **open**. Run `/ticket close` first, then `/ticket archive`.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return null;
+  }
+  if (Number(ticket.archived) === 1) {
+    await interaction.reply({
+      content: "This ticket is already archived.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return null;
+  }
+  return { ticket, channel };
+}
+
+/**
+ * Resolve the bot's GuildMember (for permission / hierarchy checks).
+ * @param {import("discord.js").Guild} guild
+ * @param {import("discord.js").Client} client
+ * @returns {Promise<import("discord.js").GuildMember|null>}
+ */
+async function resolveBotMember(guild, client) {
+  const botId = client.user?.id;
+  if (!botId) return null;
+  try {
+    if (guild.members?.me) return guild.members.me;
+    const cached = guild.members?.cache?.get?.(botId);
+    if (cached) return cached;
+    return (await guild.members.fetch(botId)) || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Create Discord channel + DB row.
+ * @param {object} opts
+ */
+async function openTicketChannel(opts) {
+  const {
+    guild,
+    client,
+    creatorUserId,
+    reason,
+    openedByStaffId,
+  } = opts;
+
+  const settings = getTicketSettings(guild.id);
+  const botUserId = client.user?.id;
+  if (!botUserId) {
+    throw new Error("Bot user not ready");
+  }
+
+  const botMember = await resolveBotMember(guild, client);
+  const canCreate = assertBotCanCreateTickets(
+    guild,
+    botMember,
+    settings.ticket_category_id
+  );
+  if (!canCreate.ok) {
+    const err = new Error(canCreate.error);
+    err.code = "BOT_PERMISSIONS";
+    throw err;
+  }
+
+  const { roleIds: staffRoleIds, skipped } = getManageableStaffRoleIds(
+    guild,
+    botMember
+  );
+  if (skipped.length) {
+    console.warn(
+      `[tickets] Skipping ${skipped.length} staff role overwrite(s):`,
+      skipped.map((s) => `${s.id} (${s.reason})`).join("; ")
+    );
+  }
+
+  const { nextTicketNumber } = require("../../db/repositories/tickets");
+  const ticketNumber = nextTicketNumber(guild.id);
+  const channelName = `ticket-${ticketNumber}`.slice(0, 100);
+
+  // Minimal safe overwrites at create time (no ManageChannels on staff).
+  const baseOverwrites = [
+    {
+      id: guild.id,
+      deny: PermissionFlagsBits.ViewChannel,
+    },
+    {
+      id: botUserId,
+      allow: BOT_ALLOW,
+    },
+    {
+      id: creatorUserId,
+      allow: MEMBER_ALLOW,
+      deny: MEMBER_DENY,
+    },
+  ];
+  for (const roleId of staffRoleIds) {
+    baseOverwrites.push({
+      id: roleId,
+      allow: STAFF_ALLOW,
+    });
+  }
+
+  const createOpts = {
+    name: channelName,
+    type: ChannelType.GuildText,
+    reason: `Ticket ${ticketNumber} for ${creatorUserId}`,
+    permissionOverwrites: baseOverwrites,
+  };
+  if (settings.ticket_category_id) {
+    createOpts.parent = settings.ticket_category_id;
+  }
+
+  let channel;
+  try {
+    channel = await guild.channels.create(createOpts);
+  } catch (err) {
+    const wrapped = new Error(formatChannelCreateError(err));
+    wrapped.code = "CHANNEL_CREATE";
+    wrapped.cause = err;
+    throw wrapped;
+  }
+
+  let ticket;
+  try {
+    ticket = createTicket({
+      guildId: guild.id,
+      creatorUserId,
+      channelId: channel.id,
+      reason: reason || null,
+      openedByStaffId: openedByStaffId || null,
+    });
+  } catch (err) {
+    try {
+      await channel.delete("Ticket DB insert failed");
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
+
+  const expectedName = `ticket-${ticket.ticket_number}`.slice(0, 100);
+  if (channel.name !== expectedName && typeof channel.setName === "function") {
+    try {
+      await channel.setName(expectedName);
+    } catch {
+      // ignore rename failure
+    }
+  }
+
+  try {
+    await applyTicketOverwrites(channel, {
+      guildId: guild.id,
+      everyoneId: guild.id,
+      botUserId,
+      ticket,
+      sensitive: false,
+      guild,
+      botMember,
+      staffRoleIds,
+    });
+  } catch (err) {
+    console.warn("[tickets] re-apply overwrites failed:", err?.message || err);
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(COLOR_OPEN)
+    .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)}`)
+    .setDescription(
+      reason
+        ? String(reason).slice(0, 4000)
+        : "_No reason provided._"
+    )
+    .addFields(
+      { name: "Requester", value: `<@${creatorUserId}>`, inline: true },
+      {
+        name: "Opened by",
+        value: openedByStaffId
+          ? `<@${openedByStaffId}> (staff)`
+          : `<@${creatorUserId}>`,
+        inline: true,
+      },
+      {
+        name: "Created",
+        value: `<t:${Math.floor(ticket.created_at / 1000)}:F>`,
+        inline: true,
+      }
+    )
+    .setFooter({
+      text: "Staff: /ticket claim · close · sensitive · adduser",
+    });
+
+  await channel.send({
+    content: openedByStaffId
+      ? `Opened for <@${creatorUserId}> by <@${openedByStaffId}>.`
+      : `<@${creatorUserId}> — staff will be with you shortly.`,
+    embeds: [embed],
+  });
+
+  return { ticket, channel, skippedStaffRoles: skipped };
+}
+
+/**
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} ctx
+ */
+async function handleTicket(interaction, ctx) {
+  const sub = interaction.options.getSubcommand();
+
+  // Public
+  if (sub === "create") return handleCreate(interaction, ctx);
+  if (sub === "settings") return handleSettings(interaction);
+
+  // Admin config
+  if (sub === "setcategory" || sub === "setarchive" || sub === "setratelimit") {
+    if (!(await requireAdmin(interaction))) return;
+    if (sub === "setcategory") return handleSetCategory(interaction, ctx);
+    if (sub === "setarchive") return handleSetArchive(interaction, ctx);
+    if (sub === "setratelimit") return handleSetRateLimit(interaction, ctx);
+  }
+
+  // Staff
+  if (!(await requireStaff(interaction))) return;
+
+  if (sub === "for") return handleFor(interaction, ctx);
+  if (sub === "list") return handleList(interaction);
+  if (sub === "close") return handleClose(interaction, ctx);
+  if (sub === "archive") return handleArchive(interaction, ctx);
+  if (sub === "claim") return handleClaim(interaction, ctx);
+  if (sub === "transfer") return handleTransfer(interaction, ctx);
+  if (sub === "adduser") return handleAddUser(interaction, ctx);
+  if (sub === "removeuser") return handleRemoveUser(interaction, ctx);
+  if (sub === "addstaff") return handleAddStaff(interaction, ctx);
+  if (sub === "removestaff") return handleRemoveStaff(interaction, ctx);
+  if (sub === "sensitive") return handleSensitive(interaction, ctx);
+  if (sub === "unsensitive") return handleUnsensitive(interaction, ctx);
+  if (sub === "info") return handleInfo(interaction, ctx);
+
+  await interaction.reply({
+    content: `Unknown subcommand: \`${sub}\``,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleCreate(interaction, ctx) {
+  const reason = interaction.options.getString("reason");
+  const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
+  if (!check.ok) {
+    const mins = Math.ceil(check.retryAfterMs / 60000);
+    await interaction.reply({
+      content:
+        `You're creating tickets too quickly. Try again in about **${mins}** minute(s) ` +
+        `(rate limit: ${check.minutes} min between self-creates).`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
+      guild: interaction.guild,
+      client: ctx.client || interaction.client,
+      creatorUserId: interaction.user.id,
+      reason,
+      openedByStaffId: null,
+    });
+
+    let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened: ${channel}`;
+    if (skippedStaffRoles?.length) {
+      msg +=
+        `\n\n_Note: ${skippedStaffRoles.length} staff role(s) could not get channel access ` +
+        `(bot role must be higher than staff roles, and roles must still exist)._`;
+    }
+    await interaction.editReply({ content: msg });
+  } catch (err) {
+    console.error("[tickets] create failed:", err);
+    await interaction.editReply({
+      content:
+        err?.code === "INVALID_REASON" ||
+        err?.code === "BOT_PERMISSIONS" ||
+        err?.code === "CHANNEL_CREATE"
+          ? err.message
+          : `Failed to open ticket: ${formatChannelCreateError(err)}`,
+    });
+  }
+}
+
+async function handleFor(interaction, ctx) {
+  const target = interaction.options.getUser("user", true);
+  const reason = interaction.options.getString("reason");
+
+  if (target.bot) {
+    await interaction.reply({
+      content: "Cannot open a ticket for a bot.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
+      guild: interaction.guild,
+      client: ctx.client || interaction.client,
+      creatorUserId: target.id,
+      reason,
+      openedByStaffId: interaction.user.id,
+    });
+
+    // Best-effort DM
+    try {
+      await target.send({
+        content:
+          `A support ticket was opened for you in **${interaction.guild.name}**: ` +
+          `https://discord.com/channels/${interaction.guildId}/${channel.id}`,
+      });
+    } catch {
+      // DMs closed
+    }
+
+    let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened for <@${target.id}>: ${channel}`;
+    if (skippedStaffRoles?.length) {
+      msg +=
+        `\n\n_Note: ${skippedStaffRoles.length} staff role(s) could not get channel access ` +
+        `(bot role must be higher than staff roles, and roles must still exist)._`;
+    }
+    await interaction.editReply({ content: msg });
+  } catch (err) {
+    console.error("[tickets] for failed:", err);
+    await interaction.editReply({
+      content:
+        err?.code === "BOT_PERMISSIONS" || err?.code === "CHANNEL_CREATE"
+          ? err.message
+          : `Failed to open ticket: ${formatChannelCreateError(err)}`,
+    });
+  }
+}
+
+async function handleClose(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+  const closeReason = interaction.options.getString("reason");
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const client = ctx.client || interaction.client;
+    const botMember =
+      interaction.guild?.members?.me ||
+      (await resolveBotMember(interaction.guild, client));
+
+    const result = await softCloseTicket({
+      client,
+      channel,
+      ticket,
+      closedBy: interaction.user.id,
+      closeReason,
+      botMember,
+    });
+
+    let msg =
+      `Ticket **${formatTicketRef(ticket.ticket_number)}** closed.\n` +
+      `Non-staff members were removed; the channel remains for staff.\n` +
+      `Run **\`/ticket archive\`** to save the transcript` +
+      (Number(result.ticket.is_sensitive)
+        ? " (sensitive: metadata only, no message content)"
+        : "") +
+      ` and delete the channel.`;
+    if (result.warnings?.length) {
+      msg += `\n\n_Warnings:_\n- ${result.warnings.join("\n- ")}`;
+    }
+    await interaction.editReply({ content: msg });
+  } catch (err) {
+    console.error("[tickets] close failed:", err);
+    await interaction.editReply({
+      content: `Failed to close ticket: ${err?.message || "unknown error"}`,
+    });
+  }
+}
+
+async function handleArchive(interaction, ctx) {
+  const ctxTicket = await requireLiveTicketChannel(interaction, ctx, {
+    status: "closed",
+  });
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const result = await archiveTicketPipeline({
+      client: ctx.client || interaction.client,
+      channel,
+      ticket,
+      archivedBy: interaction.user.id,
+      guildName: interaction.guild?.name,
+    });
+
+    let msg =
+      `Ticket **${formatTicketRef(ticket.ticket_number)}** archived` +
+      (Number(ticket.is_sensitive)
+        ? " (sensitive — no content transcript)."
+        : " — transcript saved and channel deleted.");
+    if (result.warnings?.length) {
+      msg += `\n\n_Warnings:_\n- ${result.warnings.join("\n- ")}`;
+    }
+    await interaction.editReply({ content: msg });
+  } catch (err) {
+    console.error("[tickets] archive failed:", err);
+    await interaction.editReply({
+      content: `Failed to archive ticket: ${err?.message || "unknown error"}`,
+    });
+  }
+}
+
+async function handleClaim(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+
+  const updated = claimTicket(ticket.id, interaction.user.id);
+  try {
+    if (channel) {
+      await applyTicketOverwrites(channel, {
+        guildId: interaction.guildId,
+        everyoneId: interaction.guild.id,
+        botUserId: (ctx.client || interaction.client).user.id,
+        ticket: updated,
+      });
+    }
+  } catch (err) {
+    console.warn("[tickets] claim overwrites:", err?.message || err);
+  }
+
+  await interaction.reply({
+    content: `You claimed ticket **${formatTicketRef(ticket.ticket_number)}**.`,
+    flags: MessageFlags.Ephemeral,
+  });
+  try {
+    await channel?.send?.(
+      `<@${interaction.user.id}> claimed this ticket.`
+    );
+  } catch {
+    // ignore
+  }
+}
+
+async function handleTransfer(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+  const staff = interaction.options.getUser("staff", true);
+
+  if (staff.bot) {
+    await interaction.reply({
+      content: "Cannot transfer to a bot.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const updated = transferTicket(ticket.id, staff.id, interaction.user.id);
+  try {
+    if (channel) {
+      await applyTicketOverwrites(channel, {
+        guildId: interaction.guildId,
+        everyoneId: interaction.guild.id,
+        botUserId: (ctx.client || interaction.client).user.id,
+        ticket: updated,
+      });
+    }
+  } catch (err) {
+    console.warn("[tickets] transfer overwrites:", err?.message || err);
+  }
+
+  await interaction.reply({
+    content: `Transferred ticket **${formatTicketRef(ticket.ticket_number)}** to <@${staff.id}>.`,
+    flags: MessageFlags.Ephemeral,
+  });
+  try {
+    await channel?.send?.(
+      `Staff ownership transferred to <@${staff.id}> by <@${interaction.user.id}>.`
+    );
+  } catch {
+    // ignore
+  }
+}
+
+async function handleAddUser(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+  const user = interaction.options.getUser("user", true);
+
+  if (user.bot) {
+    await interaction.reply({
+      content: "Cannot add a bot as a ticket member.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const added = addTicketMember(ticket.id, user.id, interaction.user.id);
+  const updated = getTicketById(ticket.id);
+  try {
+    if (channel) {
+      await applyTicketOverwrites(channel, {
+        guildId: interaction.guildId,
+        everyoneId: interaction.guild.id,
+        botUserId: (ctx.client || interaction.client).user.id,
+        ticket: updated,
+      });
+    }
+  } catch (err) {
+    console.warn("[tickets] adduser overwrites:", err?.message || err);
+  }
+
+  await interaction.reply({
+    content: added
+      ? `Added <@${user.id}> to ticket **${formatTicketRef(ticket.ticket_number)}**.`
+      : `<@${user.id}> is already a member of this ticket.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleRemoveUser(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+  const user = interaction.options.getUser("user", true);
+
+  const result = removeTicketMember(ticket.id, user.id);
+  if (!result.ok) {
+    await interaction.reply({
+      content: result.error,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const updated = getTicketById(ticket.id);
+  try {
+    if (channel) {
+      await applyTicketOverwrites(channel, {
+        guildId: interaction.guildId,
+        everyoneId: interaction.guild.id,
+        botUserId: (ctx.client || interaction.client).user.id,
+        ticket: updated,
+      });
+    }
+  } catch (err) {
+    console.warn("[tickets] removeuser overwrites:", err?.message || err);
+  }
+
+  await interaction.reply({
+    content: `Removed <@${user.id}> from ticket **${formatTicketRef(ticket.ticket_number)}**.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleAddStaff(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+  const user = interaction.options.getUser("user", true);
+
+  if (user.bot) {
+    await interaction.reply({
+      content: "Cannot add a bot as ticket staff.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const added = addTicketStaff(ticket.id, user.id, interaction.user.id);
+  const updated = getTicketById(ticket.id);
+  try {
+    if (channel) {
+      await applyTicketOverwrites(channel, {
+        guildId: interaction.guildId,
+        everyoneId: interaction.guild.id,
+        botUserId: (ctx.client || interaction.client).user.id,
+        ticket: updated,
+      });
+    }
+  } catch (err) {
+    console.warn("[tickets] addstaff overwrites:", err?.message || err);
+  }
+
+  await interaction.reply({
+    content: added
+      ? `Added <@${user.id}> to the staff allow-list for **${formatTicketRef(ticket.ticket_number)}**.`
+      : `<@${user.id}> is already on the staff allow-list.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleRemoveStaff(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+  const user = interaction.options.getUser("user", true);
+
+  const result = removeTicketStaff(ticket.id, user.id);
+  if (!result.ok) {
+    await interaction.reply({
+      content: result.error,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const updated = getTicketById(ticket.id);
+  try {
+    if (channel) {
+      await applyTicketOverwrites(channel, {
+        guildId: interaction.guildId,
+        everyoneId: interaction.guild.id,
+        botUserId: (ctx.client || interaction.client).user.id,
+        ticket: updated,
+      });
+    }
+  } catch (err) {
+    console.warn("[tickets] removestaff overwrites:", err?.message || err);
+  }
+
+  await interaction.reply({
+    content: `Removed <@${user.id}> from the staff allow-list.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleSensitive(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+
+  // If owner exists and invoker is not owner, only ManageGuild may flip
+  if (
+    ticket.staff_owner_id &&
+    ticket.staff_owner_id !== interaction.user.id &&
+    !isAdminOrMod(interaction)
+  ) {
+    await interaction.reply({
+      content:
+        `Only the staff owner (<@${ticket.staff_owner_id}>) or a server admin can mark this ticket sensitive.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const ownerId =
+    ticket.staff_owner_id || interaction.user.id; // auto-claim
+  const updated = setTicketSensitive(ticket.id, ownerId);
+
+  try {
+    if (channel) {
+      await applyTicketOverwrites(channel, {
+        guildId: interaction.guildId,
+        everyoneId: interaction.guild.id,
+        botUserId: (ctx.client || interaction.client).user.id,
+        ticket: updated,
+        sensitive: true,
+      });
+    }
+  } catch (err) {
+    console.warn("[tickets] sensitive overwrites:", err?.message || err);
+  }
+
+  await interaction.reply({
+    content:
+      `Ticket **${formatTicketRef(ticket.ticket_number)}** is now **sensitive**. ` +
+      `Only the owner, named staff, and members can see it. Close will **not** archive content.`,
+    flags: MessageFlags.Ephemeral,
+  });
+  try {
+    await channel?.send?.({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(COLOR_SENSITIVE)
+          .setTitle("Ticket marked sensitive")
+          .setDescription(
+            `Visibility locked. Staff owner: <@${updated.staff_owner_id}>.`
+          ),
+      ],
+    });
+  } catch {
+    // ignore
+  }
+}
+
+async function handleUnsensitive(interaction, ctx) {
+  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+
+  // Staff owner OR staff gate (already required staff)
+  const isOwner = ticket.staff_owner_id === interaction.user.id;
+  if (!isOwner && !isStaff(interaction)) {
+    await interaction.reply({
+      content: "You don’t have permission to use this.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const updated = setTicketUnsensitive(ticket.id);
+  try {
+    if (channel) {
+      await applyTicketOverwrites(channel, {
+        guildId: interaction.guildId,
+        everyoneId: interaction.guild.id,
+        botUserId: (ctx.client || interaction.client).user.id,
+        ticket: updated,
+        sensitive: false,
+      });
+    }
+  } catch (err) {
+    console.warn("[tickets] unsensitive overwrites:", err?.message || err);
+  }
+
+  await interaction.reply({
+    content: `Ticket **${formatTicketRef(ticket.ticket_number)}** is no longer sensitive. Staff roles can see it again.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleList(interaction) {
+  const filterUser = interaction.options.getUser("user");
+  const rows = listOpenTickets(interaction.guildId, {
+    userId: filterUser?.id,
+    limit: 25,
+  });
+
+  if (!rows.length) {
+    await interaction.reply({
+      content: filterUser
+        ? `No open tickets for <@${filterUser.id}>.`
+        : "No open tickets.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const lines = rows.map((t) => {
+    const sens = Number(t.is_sensitive) ? " 🔒" : "";
+    const ch = t.channel_id ? `<#${t.channel_id}>` : "_no channel_";
+    const owner = t.staff_owner_id
+      ? `<@${t.staff_owner_id}>`
+      : "_unclaimed_";
+    return (
+      `**${formatTicketRef(t.ticket_number)}**${sens} · ${ch} · ` +
+      `requester <@${t.creator_user_id}> · owner ${owner}`
+    );
+  });
+
+  await interaction.reply({
+    content: `**Open tickets** (${rows.length})\n\n${lines.join("\n")}`.slice(
+      0,
+      1900
+    ),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleInfo(interaction, ctx) {
+  // Allow info on soft-closed channels still present
+  const ctxTicket = await requireLiveTicketChannel(interaction, ctx, {
+    status: "any",
+  });
+  if (!ctxTicket) return;
+  const { ticket } = ctxTicket;
+
+  const members = listTicketMembers(ticket.id);
+  const staff = listTicketStaff(ticket.id);
+
+  const embed = new EmbedBuilder()
+    .setColor(Number(ticket.is_sensitive) ? COLOR_SENSITIVE : COLOR_INFO)
+    .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)}`)
+    .setDescription((ticket.reason || "_No reason_").slice(0, 4000))
+    .addFields(
+      {
+        name: "Status",
+        value: ticket.status,
+        inline: true,
+      },
+      {
+        name: "Sensitive",
+        value: Number(ticket.is_sensitive) ? "yes" : "no",
+        inline: true,
+      },
+      {
+        name: "Requester",
+        value: `<@${ticket.creator_user_id}>`,
+        inline: true,
+      },
+      {
+        name: "Staff owner",
+        value: ticket.staff_owner_id
+          ? `<@${ticket.staff_owner_id}>`
+          : "_unclaimed_",
+        inline: true,
+      },
+      {
+        name: "Created",
+        value: `<t:${Math.floor(ticket.created_at / 1000)}:F>`,
+        inline: true,
+      },
+      {
+        name: "Members",
+        value:
+          members.map((m) => `<@${m.user_id}>`).join(", ") || "—",
+      },
+      {
+        name: "Named staff",
+        value:
+          staff
+            .map(
+              (s) =>
+                `<@${s.user_id}>${Number(s.is_owner) ? " (owner)" : ""}`
+            )
+            .join(", ") || "—",
+      }
+    );
+
+  await interaction.reply({
+    embeds: [embed],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleSetCategory(interaction, ctx) {
+  const category = interaction.options.getChannel("category", true);
+  updateGuildSettings(interaction.guildId, {
+    ticket_category_id: category.id,
+  });
+  await logConfigChange(ctx?.client || interaction.client, interaction.guildId, {
+    title: "Ticket category set",
+    command: "/ticket setcategory",
+    actor: interaction.user,
+    changes: [`Category: ${category.name || category.id} (${category.id})`],
+  }).catch(() => {});
+
+  await interaction.reply({
+    content: `New tickets will be created under **${category.name || category.id}**.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleSetArchive(interaction, ctx) {
+  const channel = interaction.options.getChannel("channel", true);
+  updateGuildSettings(interaction.guildId, {
+    ticket_archive_channel_id: channel.id,
+  });
+  await logConfigChange(ctx?.client || interaction.client, interaction.guildId, {
+    title: "Ticket archive channel set",
+    command: "/ticket setarchive",
+    actor: interaction.user,
+    changes: [`Channel: <#${channel.id}>`],
+  }).catch(() => {});
+
+  await interaction.reply({
+    content:
+      `Close summaries and transcript links will post to <#${channel.id}>. ` +
+      `Restrict that channel to staff in Discord permissions.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleSetRateLimit(interaction, ctx) {
+  const minutes = interaction.options.getInteger("minutes", true);
+  updateGuildSettings(interaction.guildId, {
+    ticket_rate_limit_minutes: minutes,
+  });
+  await logConfigChange(ctx?.client || interaction.client, interaction.guildId, {
+    title: "Ticket rate limit set",
+    command: "/ticket setratelimit",
+    actor: interaction.user,
+    changes: [
+      minutes === 0
+        ? "Rate limit: disabled"
+        : `Rate limit: ${minutes} minute(s) between self-creates`,
+    ],
+  }).catch(() => {});
+
+  await interaction.reply({
+    content:
+      minutes === 0
+        ? "Member self-create rate limit **disabled**."
+        : `Members can self-create at most one ticket every **${minutes}** minute(s). Staff \`/ticket for\` is not rate-limited.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleSettings(interaction) {
+  // Anyone can view settings summary (helps members know rate limits)
+  // Config changes still require admin via set* commands
+  const s = getTicketSettings(interaction.guildId);
+  const staffRoles = listStaffRoles(interaction.guildId);
+  const roleList = staffRoles.length
+    ? staffRoles.map((r) => `<@&${r.role_id}>`).join(", ")
+    : "_none configured_ — run `/staff role add` so staff can see ticket channels";
+
+  await interaction.reply({
+    content:
+      `**Ticket settings**\n` +
+      `Category: ${s.ticket_category_id ? `<#${s.ticket_category_id}>` : "_not set_ (`/ticket setcategory`)"} \n` +
+      `Archive channel: ${s.ticket_archive_channel_id ? `<#${s.ticket_archive_channel_id}>` : "_not set_ (`/ticket setarchive`)"} \n` +
+      `Self-create rate limit: **${s.ticket_rate_limit_minutes === 0 ? "off" : `${s.ticket_rate_limit_minutes} min`}**\n` +
+      `Staff roles (overwrites + command gate): ${roleList}\n` +
+      `\n**Members:** \`/ticket create [reason]\`\n` +
+      `**Staff:** \`for\` · \`claim\` · \`close\` · \`archive\` · \`sensitive\` · \`list\` · …\n` +
+      `**Admin:** \`setcategory\` · \`setarchive\` · \`setratelimit\`\n` +
+      `\n**Close** removes non-staff from the channel; **archive** saves the transcript and deletes it.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
+ * @param {import("discord.js").Client} client
+ */
+function registerEvents(client) {
+  client.on(Events.ChannelDelete, (channel) => {
+    try {
+      if (!channel?.id) return;
+      const closed = markTicketClosedByChannelDelete(channel.id);
+      if (closed) {
+        console.log(
+          `[tickets] Channel deleted externally; closed ticket #${closed.ticket_number} (no archive)`
+        );
+      }
+    } catch (err) {
+      console.error("[tickets] ChannelDelete handler:", err);
+    }
+  });
+}
+
+/**
+ * @param {import("discord.js").Client} client
+ */
+function start(client) {
+  startTicketHttpServer();
+}
+
+module.exports = {
+  name: "tickets",
+  commands,
+  handlers: {
+    ticket: handleTicket,
+  },
+  registerEvents,
+  start,
+  formatTicketRef,
+  openTicketChannel,
+  MAX_TICKET_REASON,
+};

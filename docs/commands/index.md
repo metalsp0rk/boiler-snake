@@ -60,11 +60,36 @@ View your own formal warnings in this server. See [Warning System](../warnings.m
 
 Other `/warn` subcommands require the staff gate (below).
 
+### `/ticket create` - Open a Support Ticket
+
+Open a private ticket channel with staff. See [Help Tickets](../tickets.md).
+
+**Usage**:
+```bash
+/ticket create
+/ticket create reason:Cannot join voice
+```
+
+**Response**: Ephemeral link to the new `ticket-N` channel. Subject to per-guild rate limit (default 60 minutes between self-creates).
+
+### `/ticket settings` - View Ticket Config
+
+Shows category, archive channel, rate limit, and staff roles used for ticket visibility.
+
 ---
 
 ## Admin/Mod Commands
 
-Require the **Manage Guild** permission, or a configured **staff role** for staff-gated commands (`/note`, `/warn` staff ops, etc.). All responses are ephemeral unless noted.
+Require the **Manage Guild** permission, or a configured **staff role** for staff-gated commands (`/note`, `/warn` staff ops, `/ticket` staff ops, etc.). All responses are ephemeral unless noted.
+
+### `/ticket` - Support tickets (staff)
+
+See [Help Tickets](../tickets.md) for the full list: `for`, `claim`, `transfer`, `adduser`, `removeuser`, `addstaff`, `removestaff`, `sensitive`, `unsensitive`, `close`, `archive`, `list`, `info`.
+
+- **`close`** — remove non-staff members; keep the channel for staff  
+- **`archive`** — after close: save transcript (if not sensitive) and delete the channel  
+
+Admin-only config: `setcategory`, `setarchive`, `setratelimit`.
 
 ### `/settings` - Show Guild Configuration
 

@@ -5,8 +5,12 @@ services:
     env_file: .env
     environment:
       DATA_DIR: /data
+      # Optional: expose ticket transcripts (set TICKET_HTTP_PORT + TICKET_PUBLIC_BASE_URL in .env)
+      # TICKET_HTTP_PORT: "8080"
     volumes:
       - bot-data:/data
+    # ports:
+    #   - "8080:8080"  # ticket HTML transcripts when TICKET_HTTP_PORT is set
     restart: unless-stopped
 
 volumes:

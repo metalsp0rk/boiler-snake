@@ -38,6 +38,9 @@ function getGuildSettings(guildId) {
       message_log_channel_id: null,
       event_reminder_channel_id: null,
       warn_dm_members: 1,
+      ticket_category_id: null,
+      ticket_archive_channel_id: null,
+      ticket_rate_limit_minutes: 60,
       updated_at: now(),
     };
   }
@@ -65,6 +68,9 @@ function updateGuildSettings(guildId, patch) {
     "message_log_channel_id",
     "event_reminder_channel_id",
     "warn_dm_members",
+    "ticket_category_id",
+    "ticket_archive_channel_id",
+    "ticket_rate_limit_minutes",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));

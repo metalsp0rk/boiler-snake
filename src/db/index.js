@@ -25,6 +25,7 @@ const eventReminders = require("./repositories/eventReminders");
 const staffRoles = require("./repositories/staffRoles");
 const staffNotes = require("./repositories/staffNotes");
 const warnings = require("./repositories/warnings");
+const tickets = require("./repositories/tickets");
 
 module.exports = {
   db,
@@ -156,4 +157,36 @@ module.exports = {
   countWarnings: warnings.countWarnings,
   countActiveWarnings: warnings.countActiveWarnings,
   voidWarning: warnings.voidWarning,
+
+  // tickets
+  MAX_TICKET_REASON: tickets.MAX_TICKET_REASON,
+  normalizeTicketReason: tickets.normalizeTicketReason,
+  getTicketSettings: tickets.getTicketSettings,
+  canUserCreateTicket: tickets.canUserCreateTicket,
+  createTicket: tickets.createTicket,
+  getTicketById: tickets.getTicketById,
+  getTicketByChannel: tickets.getTicketByChannel,
+  getTicketByNumber: tickets.getTicketByNumber,
+  getTicketByTranscriptToken: tickets.getTicketByTranscriptToken,
+  claimTicket: tickets.claimTicket,
+  transferTicket: tickets.transferTicket,
+  addTicketStaff: tickets.addTicketStaff,
+  removeTicketStaff: tickets.removeTicketStaff,
+  setTicketSensitive: tickets.setTicketSensitive,
+  setTicketUnsensitive: tickets.setTicketUnsensitive,
+  addTicketMember: tickets.addTicketMember,
+  removeTicketMember: tickets.removeTicketMember,
+  listTicketMembers: tickets.listTicketMembers,
+  listTicketStaff: tickets.listTicketStaff,
+  listOpenTickets: tickets.listOpenTickets,
+  listArchivedTickets: tickets.listArchivedTickets,
+  countArchivedTickets: tickets.countArchivedTickets,
+  markTicketClosed: tickets.markTicketClosed,
+  closeTicketSensitive: tickets.closeTicketSensitive,
+  closeTicketArchived: tickets.closeTicketArchived,
+  markTicketClosedByChannelDelete: tickets.markTicketClosedByChannelDelete,
+  saveTicketMessages: tickets.saveTicketMessages,
+  listTicketMessages: tickets.listTicketMessages,
+  generateTranscriptToken: tickets.generateTranscriptToken,
+  setTicketArchiveMessageId: tickets.setTicketArchiveMessageId,
 };
