@@ -92,6 +92,7 @@ See [Database Schema](database.md) for indexes and migration id `007_staff_notes
 ## Related
 
 - [Warning System](warnings.md)
+- `/userinfo` — staff card with note/warning counts and drill-down buttons
 - [ROADMAP — Staff Notes](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#5-staff-notes-system)
 - [ROADMAP — Guild staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate)
 - [Audit Log](audit-log.md)

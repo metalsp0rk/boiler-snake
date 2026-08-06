@@ -9,13 +9,16 @@
  * @property {Map<string, Function>} handlers
  * @property {Map<string, Function>} autocomplete
  * @property {Map<string, Function>} modalHandlers customId prefix → handler
+ * @property {Map<string, Function>} buttonHandlers customId prefix → handler
  * @property {(builder: object) => void} addCommand
  * @property {(name: string, fn: Function) => void} registerHandler
  * @property {(name: string, fn: Function) => void} registerAutocomplete
  * @property {(prefix: string, fn: Function) => void} registerModalHandler
+ * @property {(prefix: string, fn: Function) => void} registerButtonHandler
  * @property {(name: string) => Function|undefined} getHandler
  * @property {(name: string) => Function|undefined} getAutocomplete
  * @property {(customId: string) => Function|undefined} getModalHandler
+ * @property {(customId: string) => Function|undefined} getButtonHandler
  */
 
 /**
@@ -32,6 +35,8 @@ function createRegistry() {
   const autocomplete = new Map();
   /** @type {Map<string, Function>} customId prefix → handler */
   const modalHandlers = new Map();
+  /** @type {Map<string, Function>} customId prefix → handler */
+  const buttonHandlers = new Map();
   /** @type {Set<string>} */
   const commandNames = new Set();
 
@@ -51,6 +56,7 @@ function createRegistry() {
     handlers,
     autocomplete,
     modalHandlers,
+    buttonHandlers,
 
     addCommand(builder) {
       if (!builder) throw new Error("addCommand: builder required");
@@ -99,6 +105,18 @@ function createRegistry() {
       modalHandlers.set(prefix, fn);
     },
 
+    registerButtonHandler(prefix, fn) {
+      if (typeof prefix !== "string" || !prefix) {
+        throw new Error("registerButtonHandler: prefix required");
+      }
+      if (typeof fn !== "function") {
+        throw new Error(
+          `registerButtonHandler(${prefix}): fn must be a function`
+        );
+      }
+      buttonHandlers.set(prefix, fn);
+    },
+
     getHandler(name) {
       return handlers.get(name);
     },
@@ -108,19 +126,32 @@ function createRegistry() {
     },
 
     getModalHandler(customId) {
-      if (!customId) return undefined;
-      // Prefer longest matching prefix
-      let best;
-      let bestLen = -1;
-      for (const [prefix, fn] of modalHandlers) {
-        if (customId.startsWith(prefix) && prefix.length > bestLen) {
-          best = fn;
-          bestLen = prefix.length;
-        }
-      }
-      return best;
+      return matchPrefixHandler(modalHandlers, customId);
+    },
+
+    getButtonHandler(customId) {
+      return matchPrefixHandler(buttonHandlers, customId);
     },
   };
+}
+
+/**
+ * Prefer longest matching customId prefix.
+ * @param {Map<string, Function>} map
+ * @param {string} customId
+ * @returns {Function|undefined}
+ */
+function matchPrefixHandler(map, customId) {
+  if (!customId) return undefined;
+  let best;
+  let bestLen = -1;
+  for (const [prefix, fn] of map) {
+    if (customId.startsWith(prefix) && prefix.length > bestLen) {
+      best = fn;
+      bestLen = prefix.length;
+    }
+  }
+  return best;
 }
 
 /**

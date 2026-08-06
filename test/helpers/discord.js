@@ -432,6 +432,7 @@ function createChatInputInteraction(opts) {
     isChatInputCommand: () => !isAutocomplete,
     isAutocomplete: () => isAutocomplete,
     isModalSubmit: () => false,
+    isButton: () => false,
     options: {
       getSubcommand: (required = true) => {
         if (subcommand == null && required) throw new Error("No subcommand");
@@ -445,6 +446,13 @@ function createChatInputInteraction(opts) {
         const v = optionsMap[name];
         if (v === undefined) return null;
         return v;
+      },
+      getMember: (name) => {
+        const v = optionsMap[name];
+        if (v == null) return null;
+        // Option may be a User; resolve guild member when possible
+        const id = v.id || v;
+        return guild?.members?.cache?.get?.(id) || null;
       },
       getInteger: (name) => {
         const v = optionsMap[name];
@@ -592,6 +600,7 @@ function createModalSubmitInteraction(opts) {
     isChatInputCommand: () => false,
     isAutocomplete: () => false,
     isModalSubmit: () => true,
+    isButton: () => false,
     reply: async (payload) => {
       interaction.replied = true;
       replies.push(payload);
@@ -612,9 +621,79 @@ function createModalSubmitInteraction(opts) {
 }
 
 /**
- * @param {object} interaction
- * @returns {string}
+ * Build a ButtonInteraction-like object.
+ *
+ * @param {object} opts
+ * @param {string} opts.customId
+ * @param {object} opts.guild
+ * @param {object} opts.user
+ * @param {object} [opts.member]
+ * @param {object} [opts.client]
+ * @param {boolean} [opts.admin]
  */
+function createButtonInteraction(opts) {
+  const guild = opts.guild ?? null;
+  const user = opts.user;
+  const member = opts.member;
+  const replies = [];
+  const updates = [];
+  let admin =
+    opts.admin != null
+      ? opts.admin
+      : member
+        ? member.permissions.has(PermissionFlagsBits.ManageGuild)
+        : false;
+
+  const memberPermissions = {
+    has: (flag) => {
+      if (admin && flag === PermissionFlagsBits.ManageGuild) return true;
+      if (member?.permissions) return member.permissions.has(flag);
+      return false;
+    },
+  };
+
+  const interaction = {
+    customId: opts.customId,
+    guild,
+    guildId: guild?.id ?? null,
+    user,
+    member: member || null,
+    memberPermissions,
+    client: opts.client || null,
+    replied: false,
+    deferred: false,
+    replies,
+    updates,
+    isChatInputCommand: () => false,
+    isAutocomplete: () => false,
+    isModalSubmit: () => false,
+    isButton: () => true,
+    reply: async (payload) => {
+      interaction.replied = true;
+      replies.push(payload);
+      return payload;
+    },
+    update: async (payload) => {
+      interaction.replied = true;
+      updates.push(payload);
+      // Also mirror into replies so assert helpers can see embeds
+      replies.push({ ...payload, _updated: true });
+      return payload;
+    },
+    deferUpdate: async () => {
+      interaction.deferred = true;
+    },
+    followUp: async (payload) => {
+      replies.push(payload);
+      return payload;
+    },
+    setAdmin(isAdmin) {
+      admin = isAdmin;
+    },
+  };
+  return interaction;
+}
+
 /**
  * Flatten embed JSON (plain object or EmbedBuilder-like) into searchable text.
  * @param {object} embed
@@ -674,6 +753,7 @@ module.exports = {
   createReaction,
   createChatInputInteraction,
   createModalSubmitInteraction,
+  createButtonInteraction,
   lastReplyContent,
   lastReplyEphemeral,
   MessageFlags,

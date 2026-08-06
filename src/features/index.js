@@ -16,4 +16,5 @@ module.exports = [
   require("./staffRoles"),
   require("./staffNotes"),
   require("./warnings"),
+  require("./userinfo"),
 ];

@@ -48,7 +48,8 @@ src/
 │   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
 │   ├── staffRoles/          # /staff role gate (isStaff / requireStaff)
 │   ├── staffNotes/          # /note staff-only private notes
-│   └── warnings/            # /warn + /setwarn formal disciplinary records
+│   ├── warnings/            # /warn + /setwarn formal disciplinary records
+│   └── userinfo/            # /userinfo staff card + note/warn buttons
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch

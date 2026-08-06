@@ -146,6 +146,7 @@ See [Database Schema](database.md) for indexes and migration id `009_warnings`.
 ## Related
 
 - [Staff Notes](staff-notes.md)
+- `/userinfo` — staff card with note/warning counts and drill-down buttons
 - [ROADMAP — Warning System](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#6-warning-system)
 - [ROADMAP — Guild staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate)
 - [Audit Log](audit-log.md)

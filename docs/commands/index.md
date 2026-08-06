@@ -490,6 +490,18 @@ Private staff-only notes about members. Never shown to the subject. See [Staff N
 
 Shows active/soft-deleted counts and access info.
 
+### `/userinfo` - Staff Member Card
+
+Unified staff view of a member: XP/level, staff-note counts, warning counts, with buttons to open recent notes or warnings.
+
+**Permission**: Staff gate — Manage Server or a role from `/staff role list`.
+
+```bash
+/userinfo user:@SomeUser
+```
+
+**Buttons** (on the ephemeral reply): **Overview** · **Notes (n)** · **Warnings (n active)**
+
 ### `/warn` - Formal Warnings
 
 Permanent disciplinary records. See [Warning System](../warnings.md).
@@ -539,6 +551,7 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 | `/xp` [user] | None (public) | Yes |
 | `/leaderboard` | None (public) | No (but uses attachments) |
 | `/warn mine` | None (public) | Yes |
+| `/userinfo` | Staff gate | Yes |
 | `/settings` | ManageGuild | Yes |
 | `/setxp` | ManageGuild | Yes |
 | `/setdecay` | ManageGuild | Yes |

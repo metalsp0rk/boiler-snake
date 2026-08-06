@@ -46,6 +46,19 @@ async function handleInteraction(interaction, ctx) {
     return;
   }
 
+  if (interaction.isButton()) {
+    if (!interaction.guild) return;
+    try {
+      const fn = registry.getButtonHandler(interaction.customId);
+      if (!fn) return;
+      await fn(interaction, ctx);
+    } catch (err) {
+      console.error("Button handler error:", err);
+      await safeErrorReply(interaction);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.guild) return;
 

@@ -7,6 +7,7 @@
  *   handlers: { [commandName]: async (interaction, ctx) => void }
  *   autocomplete: { [commandName]: async (interaction, ctx) => void }
  *   modalHandlers: { [customIdPrefix]: async (interaction, ctx) => void }
+ *   buttonHandlers: { [customIdPrefix]: async (interaction, ctx) => void }
  *   registerEvents(client, ctx): void
  *   start(client, ctx): void   // ClientReady tickers/schedulers
  */
@@ -35,6 +36,10 @@ function applyFeaturesToRegistry(features, registry) {
 
     for (const [prefix, fn] of Object.entries(feature.modalHandlers || {})) {
       registry.registerModalHandler(prefix, fn);
+    }
+
+    for (const [prefix, fn] of Object.entries(feature.buttonHandlers || {})) {
+      registry.registerButtonHandler(prefix, fn);
     }
   }
 }

@@ -6,6 +6,7 @@ const {
   createMember,
   createTextChannel,
   createChatInputInteraction,
+  createButtonInteraction,
   createMessage,
   createReaction,
   lastReplyContent,
@@ -143,6 +144,46 @@ async function createIntegrationEnv(options = {}) {
     return interaction;
   }
 
+  /**
+   * Run a button interaction through the real router.
+   * @param {object} btnOpts
+   * @param {string} btnOpts.customId
+   * @param {boolean} [btnOpts.admin]
+   * @param {object} [btnOpts.user]
+   * @param {object} [btnOpts.member]
+   */
+  async function runButton(btnOpts) {
+    const user =
+      btnOpts.user ||
+      (btnOpts.admin === false ? memberUser : adminUser);
+
+    let mem = btnOpts.member;
+    if (!mem) {
+      if (user.id === adminUser.id) mem = adminMember;
+      else if (user.id === memberUser.id) mem = member;
+      else if (user.id === member2User.id) mem = member2;
+      else mem = createMember({ guild, user, admin: btnOpts.admin !== false });
+    }
+
+    if (btnOpts.admin === true) mem.setAdmin?.(true);
+    if (btnOpts.admin === false) mem.setAdmin?.(false);
+
+    const interaction = createButtonInteraction({
+      customId: btnOpts.customId,
+      guild,
+      user,
+      member: mem,
+      client,
+      admin: btnOpts.admin !== false,
+    });
+
+    if (btnOpts.admin === false) interaction.setAdmin(false);
+    if (btnOpts.admin === true) interaction.setAdmin(true);
+
+    await handleInteraction(interaction, ctx);
+    return interaction;
+  }
+
   function makeMessage(overrides = {}) {
     const author = overrides.author || memberUser;
     let mem = overrides.member;
@@ -199,6 +240,7 @@ async function createIntegrationEnv(options = {}) {
       notify: channelNotify,
     },
     runCommand,
+    runButton,
     makeMessage,
     emitMessage,
     emitReactionAdd,
