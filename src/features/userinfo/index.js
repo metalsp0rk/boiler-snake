@@ -1,9 +1,13 @@
 /**
- * Staff user card — XP snapshot + note/warning counts with drill-down buttons.
+ * Staff user card — XP snapshot + note/warning counts with drill-down buttons,
+ * plus senior-only Activity (channel/category message rankings).
  *
  * Slash: /userinfo user:<member>
- * Buttons: ui:o|n|w:<userId>  (overview | notes | warnings)
- * Access: requireStaff for command and every button click.
+ * Buttons:
+ *   ui:o|n|w:<userId>           overview | notes | warnings
+ *   ui:a|c:<userId>:<win>       activity channels | categories (win = a|7|30)
+ *   ui:b:<userId>               start backfill
+ * Access: requireStaff for command and o/n/w; requireSeniorStaff for a/c/b.
  */
 
 const {
@@ -11,9 +15,6 @@ const {
   PermissionFlagsBits,
   MessageFlags,
   EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
 } = require("discord.js");
 const {
   getXp,
@@ -25,7 +26,23 @@ const {
   listWarnings,
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
-const { requireStaff } = require("../../core/permissions");
+const {
+  requireStaff,
+  requireSeniorStaff,
+} = require("../../core/permissions");
+const {
+  buildChannelRanking,
+  buildCategoryRanking,
+  normalizeWindow,
+} = require("../userActivity/service");
+const {
+  parseActivityButtonCustomId,
+  buildPrimaryButtons,
+  buildActivityControlRows,
+  buildActivityEmbed,
+  activityButtonCustomId,
+} = require("../userActivity/render");
+const { startUserBackfill } = require("../userActivity/backfill");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -43,7 +60,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("userinfo")
     .setDescription(
-      "Staff card for a member: XP, staff notes, and warning counts."
+      "Staff card for a member: XP, notes, warnings, and activity."
     )
     .setDefaultMemberPermissions(adminPerms)
     .addUserOption((opt) =>
@@ -60,22 +77,15 @@ const commands = [
  * @returns {string}
  */
 function buttonCustomId(view, userId) {
-  return `${BTN_PREFIX}${view}:${userId}`;
+  return activityButtonCustomId(view, userId);
 }
 
 /**
  * @param {string} customId
- * @returns {{ view: "o"|"n"|"w", userId: string }|null}
+ * @returns {{ view: string, userId: string, win?: string }|null}
  */
 function parseButtonCustomId(customId) {
-  if (!customId || !customId.startsWith(BTN_PREFIX)) return null;
-  const rest = customId.slice(BTN_PREFIX.length);
-  const colon = rest.indexOf(":");
-  if (colon < 1) return null;
-  const view = rest.slice(0, colon);
-  const userId = rest.slice(colon + 1);
-  if (!userId || (view !== "o" && view !== "n" && view !== "w")) return null;
-  return { view, userId };
+  return parseActivityButtonCustomId(customId);
 }
 
 /**
@@ -117,56 +127,13 @@ function loadCounts(guildId, userId) {
 }
 
 /**
- * @param {object} counts
- * @param {"o"|"n"|"w"} activeView
- * @param {string} userId
- * @returns {ActionRowBuilder}
- */
-function buildButtons(counts, activeView, userId) {
-  const notesLabel =
-    counts.notesActive === counts.notesTotal
-      ? `Notes (${counts.notesActive})`
-      : `Notes (${counts.notesActive}/${counts.notesTotal})`;
-  const warnsLabel =
-    counts.warnsActive === counts.warnsTotal
-      ? `Warnings (${counts.warnsActive})`
-      : `Warnings (${counts.warnsActive} active)`;
-
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(buttonCustomId("o", userId))
-      .setLabel("Overview")
-      .setStyle(
-        activeView === "o" ? ButtonStyle.Primary : ButtonStyle.Secondary
-      )
-      .setDisabled(activeView === "o"),
-    new ButtonBuilder()
-      .setCustomId(buttonCustomId("n", userId))
-      .setLabel(notesLabel.slice(0, 80))
-      .setStyle(
-        activeView === "n" ? ButtonStyle.Primary : ButtonStyle.Secondary
-      )
-      .setDisabled(activeView === "n"),
-    new ButtonBuilder()
-      .setCustomId(buttonCustomId("w", userId))
-      .setLabel(warnsLabel.slice(0, 80))
-      .setStyle(
-        activeView === "w" ? ButtonStyle.Primary : ButtonStyle.Secondary
-      )
-      .setDisabled(activeView === "w")
-  );
-}
-
-/**
  * Resolve a displayable user-ish object for embeds.
  * @param {import("discord.js").Interaction} interaction
  * @param {string} userId
- * @returns {Promise<{ id: string, username: string, bot: boolean, tag?: string, displayAvatarURL?: Function }>}
  */
 async function resolveUser(interaction, userId) {
   if (interaction.user?.id === userId) return interaction.user;
 
-  // Prefer guild member user
   try {
     const member = await interaction.guild?.members
       ?.fetch?.(userId)
@@ -231,7 +198,7 @@ function buildOverviewEmbed(interaction, user, member) {
       }
     )
     .setFooter({
-      text: "Staff only · use buttons to open notes or warnings",
+      text: "Staff only · Activity tab requires senior staff",
     });
 
   if (typeof user.displayAvatarURL === "function") {
@@ -375,10 +342,38 @@ function buildWarningsEmbed(guildId, user) {
  * @param {import("discord.js").Interaction} interaction
  * @param {object} user
  * @param {object|null} member
- * @param {"o"|"n"|"w"} view
+ * @param {string} view o|n|w|a|c
+ * @param {string} [win]
  */
-function buildViewPayload(interaction, user, member, view) {
+function buildViewPayload(interaction, user, member, view, win = "a") {
   const counts = loadCounts(interaction.guildId, user.id);
+  const w = normalizeWindow(win);
+  const joinedMs = member?.joinedTimestamp ?? null;
+
+  if (view === "a" || view === "c") {
+    const page = view === "c" ? "categories" : "channels";
+    const rankingOpts = {
+      guildId: interaction.guildId,
+      userId: user.id,
+      guild: interaction.guild,
+      window: w,
+      joinedMs,
+    };
+    const ranking =
+      page === "categories"
+        ? buildCategoryRanking(rankingOpts)
+        : buildChannelRanking(rankingOpts);
+    const embed = buildActivityEmbed(user, ranking, page, joinedMs);
+    return {
+      embeds: [embed],
+      components: [
+        buildPrimaryButtons(counts, view, user.id, w),
+        ...buildActivityControlRows(user.id, w, view, ranking.meta),
+      ],
+      flags: MessageFlags.Ephemeral,
+    };
+  }
+
   let embed;
   if (view === "n") {
     embed = buildNotesEmbed(interaction.guildId, user);
@@ -390,7 +385,7 @@ function buildViewPayload(interaction, user, member, view) {
 
   return {
     embeds: [embed],
-    components: [buildButtons(counts, view, user.id)],
+    components: [buildPrimaryButtons(counts, view === "n" || view === "w" ? view : "o", user.id, w)],
     flags: MessageFlags.Ephemeral,
   };
 }
@@ -421,15 +416,21 @@ async function handleUserinfo(interaction, ctx) {
  * @param {object} [ctx]
  */
 async function handleUserinfoButton(interaction, ctx) {
-  if (!(await requireStaff(interaction))) return;
-
   const parsed = parseButtonCustomId(interaction.customId);
   if (!parsed) {
+    if (!(await requireStaff(interaction))) return;
     await interaction.reply({
       content: "Unknown userinfo control.",
       flags: MessageFlags.Ephemeral,
     });
     return;
+  }
+
+  const activityViews = parsed.view === "a" || parsed.view === "c" || parsed.view === "b";
+  if (activityViews) {
+    if (!(await requireSeniorStaff(interaction))) return;
+  } else {
+    if (!(await requireStaff(interaction))) return;
   }
 
   const user = await resolveUser(interaction, parsed.userId);
@@ -442,8 +443,51 @@ async function handleUserinfoButton(interaction, ctx) {
     member = null;
   }
 
-  const payload = buildViewPayload(interaction, user, member, parsed.view);
-  // Drop flags on update — message is already ephemeral
+  if (parsed.view === "b") {
+    const result = await startUserBackfill(interaction.guild, parsed.userId);
+    // Refresh activity view after queueing
+    const payload = buildViewPayload(
+      interaction,
+      user,
+      member,
+      "a",
+      "a"
+    );
+    const { flags: _flags, ...updatePayload } = payload;
+
+    if (typeof interaction.update === "function") {
+      await interaction.update(updatePayload);
+      if (!result.started) {
+        await interaction.followUp({
+          content: result.reason || "Could not start backfill.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } else {
+        await interaction.followUp({
+          content:
+            "Backfill started. History older than live tracking is scanned rate-limited; re-open Activity later for progress.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+    } else {
+      await interaction.reply({
+        ...payload,
+        content: result.started
+          ? "Backfill started."
+          : result.reason || "Could not start backfill.",
+      });
+    }
+    return;
+  }
+
+  const win = parsed.win || "a";
+  const payload = buildViewPayload(
+    interaction,
+    user,
+    member,
+    parsed.view,
+    win
+  );
   const { flags: _flags, ...updatePayload } = payload;
 
   if (typeof interaction.update === "function") {

@@ -4,9 +4,9 @@ const { buildDefaultRegistry, createRegistry } = require("../src/commands/regist
 const features = require("../src/features");
 
 describe("command definitions via registry", () => {
-  it("exports 20 slash commands with unique names", () => {
+  it("exports 21 slash commands with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 20);
+    assert.equal(commands.length, 21);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -15,6 +15,7 @@ describe("command definitions via registry", () => {
     assert.ok(names.includes("warn"));
     assert.ok(names.includes("setwarn"));
     assert.ok(names.includes("userinfo"));
+    assert.ok(names.includes("activityconfig"));
     assert.ok(names.includes("ticket"));
   });
 });
@@ -63,11 +64,12 @@ describe("buildDefaultRegistry", () => {
       "staffNotes",
       "warnings",
       "userinfo",
+      "userActivity",
       "tickets",
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 16);
+    assert.equal(features.length, 17);
   });
 
   it("registers userinfo button handler", () => {

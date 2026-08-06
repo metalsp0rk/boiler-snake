@@ -18,6 +18,7 @@ Boiler Snake is a feature-rich Discord bot that helps you gamify your server wit
 - **Warnings**: Formal permanent disciplinary records (voidable; member self-view via `/warn mine`)
 - **Help tickets**: Private support channels with panel button→modal, sensitive mode, HTML transcripts, and staff archives
 - **Staff userinfo**: Unified member card with note/warning counts and drill-down buttons
+- **User activity summary**: Senior-staff channel/category post rankings on `/userinfo` Activity
 - **Audit & message logs**: Staff channels for bans/kicks/role changes and deleted messages
 - **Leaderboard visualization**: Beautiful PNG leaderboards with gradients and rankings
 
@@ -61,6 +62,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [Staff Notes](staff-notes.md) - Private staff-only notes about members
 - [Warning System](warnings.md) - Formal permanent disciplinary records
 - [Help Tickets](tickets.md) - Private support channels, sensitive mode, HTML archives
+- [User Activity Summary](user-activity.md) - Channel/category post rankings for senior staff
 - [Audit Log & Message Log](audit-log.md) - Staff channels for moderation and role activity
 - [Leaderboard Rendering](leaderboard.md) - Beautiful PNG leaderboards with gradients
 - [Command Restrictions](command-restrictions.md) - Control where commands can be used
