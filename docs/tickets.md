@@ -19,7 +19,7 @@ Staff /ticket claim · adduser · sensitive · close · archive
 
 | Rule | Detail |
 |------|--------|
-| Staff access | Guild [staff roles](../ROADMAP.md#4-guild-staff-roles-admin-gate) + Manage Server (not a ticket-only role) |
+| Staff access | Guild [staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) + Manage Server (not a ticket-only role) |
 | Rate limit | Self-create only; `/ticket for` is unlimited |
 | Concurrent opens | No cap per user |
 | Transcript URL | Staff archive channel only — never DMed to the requester |

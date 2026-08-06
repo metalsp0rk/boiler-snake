@@ -67,3 +67,14 @@ See [docs/architecture.md](docs/architecture.md) for the full layout and boot se
 - Migrations under `src/db/migrations/` run automatically on db load
 - Docker: persist the whole data dir (WAL files beside the DB)
 - Use Conventional Commit prefixes (`feat:`, `fix:`, …) for release-please
+
+## Documentation (VitePress)
+
+Docs site builds from **`docs/` only** (`npm run docs:build` → GitHub Pages).
+
+- **Never link from `docs/**/*.md` to repo paths outside `docs/`** with relative links (e.g. `../ROADMAP.md`, `../../package.json`). VitePress treats those as dead links and **fails the build**.
+- For root files such as `ROADMAP.md` or `LICENSE`, use absolute GitHub URLs, e.g.  
+  `https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#section`  
+  (same pattern as `docs/staff-notes.md` / `docs/warnings.md`).
+- Prefer links to other pages under `docs/` (`tickets.md`, `architecture.md`, …).
+- After adding or changing docs links, run **`npm run docs:build`** and fix any “Found dead link” errors before merge.
