@@ -19,6 +19,7 @@ const migrations = [
   require("./migrations/009_warnings"),
   require("./migrations/010_tickets"),
   require("./migrations/011_staff_role_levels"),
+  require("./migrations/012_warn_log_channel"),
 ];
 
 const helpers = {

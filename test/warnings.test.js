@@ -187,6 +187,18 @@ describe("warnings repository", () => {
     assert.equal(Number(api.getGuildSettings(g).warn_dm_members), 1);
   });
 
+  it("supports warn_log_channel_id set and clear", () => {
+    const g = "g-warn-log";
+    const s = api.getGuildSettings(g);
+    assert.equal(s.warn_log_channel_id ?? null, null);
+
+    api.updateGuildSettings(g, { warn_log_channel_id: "chan-warn-1" });
+    assert.equal(api.getGuildSettings(g).warn_log_channel_id, "chan-warn-1");
+
+    api.updateGuildSettings(g, { warn_log_channel_id: null });
+    assert.equal(api.getGuildSettings(g).warn_log_channel_id, null);
+  });
+
   it("void of missing warning returns null", () => {
     assert.equal(
       api.voidWarning("g-missing", 99999, {

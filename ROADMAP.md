@@ -1236,14 +1236,14 @@ Guild setting `warn_dm_members` (default **1**). Per-issue `silent:true` overrid
 
 #### Staff / audit channel
 
-When `audit_log_channel_id` is set (reuse existing audit stream) **or** optional dedicated `warn_log_channel_id`:
+When dedicated `warn_log_channel_id` is set **or** `audit_log_channel_id` is set (fallback):
 
 | Event | Embed |
 |-------|--------|
 | Warning issued | Target, issuer, `W-n`, reason, new active count |
 | Warning voided | Target, voider, `W-n`, void reason, remaining active count |
 
-**MVP preference:** post to existing **audit log** channel when set; dedicated warn channel = post-MVP.
+**Shipped:** prefer `warn_log_channel_id` (`/setwarn log`); fall back to **audit log** when dedicated channel is unset.
 
 ---
 
@@ -1254,14 +1254,16 @@ When `audit_log_channel_id` is set (reuse existing audit stream) **or** optional
 | Guild staff roles | Access control via [§4](#4-guild-staff-roles-admin-gate) (`/staff role *`) |
 | `/warn settings` | DM flag, log target |
 | `/setwarn dm <true\|false>` | Toggle member DMs (ManageGuild) |
+| `/setwarn log channel\|clear` | Dedicated warn log channel (ManageGuild); falls back to audit |
 
 **Stored in `guild_settings`:**
 
 | Column | Purpose |
 |--------|---------|
 | `warn_dm_members` | `1` (default) / `0` — DM subject on issue/void |
+| `warn_log_channel_id` | Optional dedicated issue/void log channel (**shipped**) |
 
-**Later (not MVP):** `warn_log_channel_id`, auto-mod thresholds, warn-expiry timers.
+**Later:** auto-mod thresholds, warn-expiry timers.
 
 ---
 
@@ -1409,6 +1411,7 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 |----------------|-------|
 | `warnings` | Permanent rows; void metadata; optional `related_note_id` → `staff_notes` (**shipped**, migration `009`) |
 | `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void (**shipped**) |
+| `guild_settings.warn_log_channel_id` | Dedicated warn issue/void log; audit fallback (**shipped**) |
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
@@ -1455,7 +1458,7 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 
 - [x] MVP: issue / list / info / void / count / mine + `/setwarn dm` + audit + optional note link  
 - [ ] Auto-mod thresholds (e.g. 3 active → timeout / kick / ban with configurable actions)  
-- [ ] Dedicated `warn_log_channel_id` separate from general audit log  
+- [x] Dedicated `warn_log_channel_id` separate from general audit log (`/setwarn log`; falls back to audit)  
 - [ ] Warning expiry / auto-void after N days (opt-in; default still permanent)  
 - [ ] Export user record (notes + warnings) for staff handoff  
 - [ ] Un-void / re-activate (only if product needs it; prefer re-issue)  
