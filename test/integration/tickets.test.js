@@ -640,6 +640,79 @@ describe("integration: tickets", () => {
     );
   });
 
+  it("/ticket close staff_note creates private note on requester", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.memberUser,
+      reason: "note-from-close",
+    });
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: ticket.channel_id,
+      options: {
+        reason: "Resolved in channel",
+        staff_note: "Member had VPN issues; watch for repeat.",
+      },
+    });
+    assertReplyContains(close, /closed/i);
+    assertReplyContains(close, /Staff note|N-/i);
+
+    // Button should still be present for additional notes
+    const reply = close.replies.find((r) => r.components?.length) || close.replies[0];
+    assert.ok(reply?.components?.length >= 1, "expected Add staff note button");
+
+    const notes = env.db.listStaffNotes(env.guild.id, IDS.member, { limit: 20 });
+    const match = notes.find(
+      (n) =>
+        n.content.includes("Member had VPN issues") &&
+        n.content.includes(`#${ticket.ticket_number}`)
+    );
+    assert.ok(match, "expected staff note with ticket ref and body");
+  });
+
+  it("post-close Add staff note button → modal creates note", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.member2User,
+      reason: "button-note-path",
+    });
+    await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: ticket.channel_id,
+      options: { reason: "Done" },
+    });
+    const closed = env.db.getTicketById(ticket.id);
+
+    const ticketsFeature = require("../../src/features/tickets");
+    const { createModalSubmitInteraction } = require("../helpers/discord");
+
+    const btn = await env.runButton({
+      customId: `${ticketsFeature.BTN_STAFF_NOTE_PREFIX}${closed.id}`,
+      admin: true,
+    });
+    assert.equal(btn.modals.length, 1);
+
+    const body = `Button modal note ${Date.now()}`;
+    const modalIx = createModalSubmitInteraction({
+      customId: `${ticketsFeature.MODAL_STAFF_NOTE_PREFIX}${closed.id}`,
+      guild: env.guild,
+      user: env.users.adminUser,
+      member: env.members.adminMember,
+      admin: true,
+      client: env.client,
+      fields: { staff_note: body },
+    });
+    await env.handleInteraction(modalIx, env.ctx);
+    assertReplyContains(modalIx, /Staff note|N-/i);
+
+    const notes = env.db.listStaffNotes(env.guild.id, IDS.member2, {
+      limit: 20,
+    });
+    assert.ok(notes.some((n) => n.content.includes(body)));
+  });
+
   it("/ticket panel posts embed + Open ticket button (admin only)", async () => {
     const denied = await env.runCommand({
       commandName: "ticket",

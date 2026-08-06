@@ -79,6 +79,17 @@ describe("buildDefaultRegistry", () => {
     const registry = buildDefaultRegistry();
     assert.equal(typeof registry.getButtonHandler("tk:open"), "function");
     assert.equal(typeof registry.getModalHandler("tk:create"), "function");
+    assert.equal(typeof registry.getButtonHandler("tk:sn:42"), "function");
+    assert.equal(typeof registry.getModalHandler("tk:snm:42"), "function");
+  });
+
+  it("registers staff note modal handlers", () => {
+    const registry = buildDefaultRegistry();
+    assert.equal(
+      typeof registry.getModalHandler("note:add:1234567890"),
+      "function"
+    );
+    assert.equal(typeof registry.getModalHandler("note:edit:12"), "function");
   });
 });
 

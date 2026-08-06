@@ -1005,7 +1005,7 @@ Paired with the [Warning System](#6-warning-system): notes hold soft context; wa
 
 ### Status
 
-**Shipped (MVP)** — `/note` commands, soft-delete, sequential `note_number`, audit embeds. Access uses `requireStaff` (ManageGuild only until [§4 staff roles](#4-guild-staff-roles-admin-gate) land). Design decisions in [5.6](#56-design-decisions-locked).
+**Shipped** — `/note` commands, soft-delete, sequential `note_number`, audit embeds, content modals, ticket-close attach. Access uses `requireStaff` ([§4 staff roles](#4-guild-staff-roles-admin-gate)). Design decisions in [5.6](#56-design-decisions-locked).
 
 ---
 
@@ -1034,7 +1034,7 @@ Staff adds a note on a user
 
 | Command | Description |
 |---------|-------------|
-| `/note add user:<member> content:<text>` | Create a staff note (text option or modal if long) |
+| `/note add user:<member> [content:<text>]` | Create a staff note (omit content → modal for long text) |
 | `/note list user:<member>` | List notes for a member (newest first; paginate if many) |
 | `/note edit id:<note_id> content:<text>` | Replace note body; record `edited_at` / `edited_by` |
 | `/note delete id:<note_id>` | Soft-delete (`deleted_at`); keep row for audit |
@@ -1044,9 +1044,10 @@ Staff adds a note on a user
 **Permission:** `requireStaff` for all note commands (no separate `/note role *`).
 
 **UX notes:**
-- Prefer a **modal** for long `content`.
+- Prefer a **modal** for long `content` (omit slash `content` on add/edit).
 - Ephemeral replies for all note commands.
 - List embeds: note id, snippet, author, relative time; deleted notes only if “include deleted” (default: active only).
+- **Ticket close:** `/ticket close staff_note:…` and/or **Add staff note** button → modal.
 
 ---
 
@@ -1450,8 +1451,8 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 ### Staff notes
 
 - [x] Guild-wide recent notes feed without targeting a user (`/note list` without `user`)  
-- [ ] Attach note from ticket close flow  
-- [ ] Content modal for long notes (MVP uses slash string option, max 2000)  
+- [x] Attach note from ticket close flow (`staff_note` option + **Add staff note** button → modal)  
+- [x] Content modal for long notes (omit slash `content` on add/edit; max 2000)  
 - [x] Wire access to full staff roles once §4 ships (`isStaff` already the call site)  
 
 ### Warnings

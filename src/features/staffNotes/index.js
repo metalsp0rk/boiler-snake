@@ -2,7 +2,8 @@
  * Staff notes — private institutional memory about guild members.
  *
  * Slash: /note add|list|edit|delete|info|settings
- * Access: requireStaff (ManageGuild today; staff roles when §4 ships).
+ * Modals: note:add:<userId> · note:edit:<noteNumber>
+ * Access: requireStaff (ManageGuild or staff role).
  * Never shown to the subject member.
  */
 
@@ -11,6 +12,10 @@ const {
   PermissionFlagsBits,
   MessageFlags,
   EmbedBuilder,
+  ActionRowBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require("discord.js");
 const {
   createStaffNote,
@@ -34,6 +39,12 @@ const RECENT_GUILD_LIMIT = 15;
 /** Snippet length in list embeds */
 const SNIPPET_LEN = 80;
 
+/** Modal customId prefixes (registry matches longest prefix) */
+const MODAL_PREFIX_ADD = "note:add:";
+const MODAL_PREFIX_EDIT = "note:edit:";
+/** Text input customId inside note modals */
+const MODAL_FIELD_CONTENT = "content";
+
 const commands = [
   new SlashCommandBuilder()
     .setName("note")
@@ -52,8 +63,10 @@ const commands = [
         .addStringOption((opt) =>
           opt
             .setName("content")
-            .setDescription("Note body (staff only; never shown to the member)")
-            .setRequired(true)
+            .setDescription(
+              "Note body (omit to open a modal for longer text)"
+            )
+            .setRequired(false)
             .setMaxLength(MAX_NOTE_CONTENT)
         )
     )
@@ -95,8 +108,10 @@ const commands = [
         .addStringOption((opt) =>
           opt
             .setName("content")
-            .setDescription("New note body")
-            .setRequired(true)
+            .setDescription(
+              "New note body (omit to open a modal with the current text)"
+            )
+            .setRequired(false)
             .setMaxLength(MAX_NOTE_CONTENT)
         )
     )
@@ -191,6 +206,110 @@ function formatListLine(note, opts = {}) {
 }
 
 /**
+ * Modal to write a new note body for a subject user.
+ * @param {string} userId
+ * @returns {ModalBuilder}
+ */
+function buildAddNoteModal(userId) {
+  const input = new TextInputBuilder()
+    .setCustomId(MODAL_FIELD_CONTENT)
+    .setLabel("Note body (staff only)")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(MAX_NOTE_CONTENT)
+    .setPlaceholder("Context for staff — never shown to the member");
+
+  return new ModalBuilder()
+    .setCustomId(`${MODAL_PREFIX_ADD}${userId}`)
+    .setTitle("Add staff note")
+    .addComponents(new ActionRowBuilder().addComponents(input));
+}
+
+/**
+ * Modal to replace an existing note body (prefilled).
+ * @param {number} noteNumber
+ * @param {string} [existingContent]
+ * @returns {ModalBuilder}
+ */
+function buildEditNoteModal(noteNumber, existingContent) {
+  const input = new TextInputBuilder()
+    .setCustomId(MODAL_FIELD_CONTENT)
+    .setLabel("Note body (staff only)")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(MAX_NOTE_CONTENT);
+  if (existingContent) {
+    input.setValue(String(existingContent).slice(0, MAX_NOTE_CONTENT));
+  }
+
+  const title = `Edit ${formatNoteRef(noteNumber)}`.slice(0, 45);
+  return new ModalBuilder()
+    .setCustomId(`${MODAL_PREFIX_EDIT}${noteNumber}`)
+    .setTitle(title)
+    .addComponents(new ActionRowBuilder().addComponents(input));
+}
+
+/**
+ * Build success embed for a created note.
+ * @param {object} note
+ * @param {string} subjectUserId
+ * @returns {EmbedBuilder}
+ */
+function buildCreatedEmbed(note, subjectUserId) {
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`Note ${formatNoteRef(note.note_number)} created`)
+    .setDescription(note.content.slice(0, 4000))
+    .addFields(
+      { name: "Subject", value: `<@${subjectUserId}>`, inline: true },
+      { name: "Author", value: `<@${note.author_id}>`, inline: true },
+      { name: "Created", value: fullTs(note.created_at), inline: true }
+    )
+    .setFooter({ text: "Staff only — never shown to the member" });
+}
+
+/**
+ * Build success embed for an updated note.
+ * @param {object} note
+ * @returns {EmbedBuilder}
+ */
+function buildUpdatedEmbed(note) {
+  return new EmbedBuilder()
+    .setColor(0xfaa61a)
+    .setTitle(`Note ${formatNoteRef(note.note_number)} updated`)
+    .setDescription(note.content.slice(0, 4000))
+    .addFields(
+      { name: "Subject", value: `<@${note.user_id}>`, inline: true },
+      { name: "Edited by", value: `<@${note.edited_by}>`, inline: true },
+      { name: "Edited", value: fullTs(note.edited_at), inline: true }
+    )
+    .setFooter({ text: "Staff only — never shown to the member" });
+}
+
+/**
+ * Persist a new note and log audit (shared by slash + modal).
+ * @param {object} opts
+ * @returns {{ ok: true, note: object } | { ok: false, error: string }}
+ */
+function persistNewNote(opts) {
+  try {
+    const note = createStaffNote({
+      guildId: opts.guildId,
+      userId: opts.userId,
+      authorId: opts.authorId,
+      content: opts.content,
+    });
+    return { ok: true, note };
+  } catch (err) {
+    if (err?.code === "INVALID_CONTENT") {
+      return { ok: false, error: err.message };
+    }
+    console.error("[staffNotes] create failed:", err);
+    return { ok: false, error: "Failed to save the note (database error)." };
+  }
+}
+
+/**
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  * @param {object} [ctx]
  */
@@ -217,7 +336,7 @@ async function handleNote(interaction, ctx) {
  */
 async function handleAdd(interaction, ctx) {
   const target = interaction.options.getUser("user", true);
-  const content = interaction.options.getString("content", true);
+  const content = interaction.options.getString("content");
 
   if (target.bot) {
     await interaction.reply({
@@ -227,30 +346,27 @@ async function handleAdd(interaction, ctx) {
     return;
   }
 
-  let note;
-  try {
-    note = createStaffNote({
-      guildId: interaction.guildId,
-      userId: target.id,
-      authorId: interaction.user.id,
-      content,
-    });
-  } catch (err) {
-    if (err?.code === "INVALID_CONTENT") {
-      await interaction.reply({
-        content: err.message,
-        flags: MessageFlags.Ephemeral,
-      });
-      return;
-    }
-    console.error("[staffNotes] create failed:", err);
+  // Omit content → modal for longer text (Discord slash strings are awkward for multi-paragraph).
+  if (content == null) {
+    await interaction.showModal(buildAddNoteModal(target.id));
+    return;
+  }
+
+  const result = persistNewNote({
+    guildId: interaction.guildId,
+    userId: target.id,
+    authorId: interaction.user.id,
+    content,
+  });
+  if (!result.ok) {
     await interaction.reply({
-      content: "Failed to save the note (database error).",
+      content: result.error,
       flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
+  const note = result.note;
   await logConfigChange(interaction.client, interaction.guildId, {
     title: "Staff note created",
     command: "/note add",
@@ -261,19 +377,69 @@ async function handleAdd(interaction, ctx) {
     ],
   }).catch(() => {});
 
-  const embed = new EmbedBuilder()
-    .setColor(0x5865f2)
-    .setTitle(`Note ${formatNoteRef(note.note_number)} created`)
-    .setDescription(note.content.slice(0, 4000))
-    .addFields(
-      { name: "Subject", value: `<@${target.id}>`, inline: true },
-      { name: "Author", value: `<@${note.author_id}>`, inline: true },
-      { name: "Created", value: fullTs(note.created_at), inline: true }
-    )
-    .setFooter({ text: "Staff only — never shown to the member" });
+  await interaction.reply({
+    embeds: [buildCreatedEmbed(note, target.id)],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
+ * Modal submit: create note for userId in customId.
+ * @param {import("discord.js").ModalSubmitInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleAddNoteModal(interaction, ctx) {
+  if (!(await requireStaff(interaction))) return;
+
+  const customId = interaction.customId || "";
+  if (!customId.startsWith(MODAL_PREFIX_ADD)) return;
+  const userId = customId.slice(MODAL_PREFIX_ADD.length);
+  if (!userId) {
+    await interaction.reply({
+      content: "Invalid modal state (missing user).",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  let content = "";
+  try {
+    content = interaction.fields.getTextInputValue(MODAL_FIELD_CONTENT);
+  } catch {
+    content = "";
+  }
+
+  const result = persistNewNote({
+    guildId: interaction.guildId,
+    userId,
+    authorId: interaction.user.id,
+    content,
+  });
+  if (!result.ok) {
+    await interaction.reply({
+      content: result.error,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const note = result.note;
+  await logConfigChange(
+    ctx?.client || interaction.client,
+    interaction.guildId,
+    {
+      title: "Staff note created",
+      command: "/note add (modal)",
+      actor: interaction.user,
+      changes: [
+        `${formatNoteRef(note.note_number)} on <@${userId}>`,
+        snippet(note.content, 120),
+      ],
+    }
+  ).catch(() => {});
 
   await interaction.reply({
-    embeds: [embed],
+    embeds: [buildCreatedEmbed(note, userId)],
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -334,7 +500,7 @@ async function handleList(interaction) {
   if (!notes.length) {
     await interaction.reply({
       content:
-        "No staff notes in this server yet. Use `/note add user:… content:…`.",
+        "No staff notes in this server yet. Use `/note add user:…` (optionally open the content modal).",
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -358,8 +524,79 @@ async function handleList(interaction) {
  */
 async function handleEdit(interaction, ctx) {
   const noteNumber = interaction.options.getInteger("id", true);
-  const content = interaction.options.getString("content", true);
+  const content = interaction.options.getString("content");
 
+  const existing = getStaffNote(interaction.guildId, noteNumber);
+  if (!existing) {
+    await interaction.reply({
+      content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (existing.deleted_at != null) {
+    await interaction.reply({
+      content: `Note **${formatNoteRef(noteNumber)}** is soft-deleted and cannot be edited. Add a new note instead.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // Omit content → modal prefilled with current body
+  if (content == null) {
+    await interaction.showModal(
+      buildEditNoteModal(noteNumber, existing.content)
+    );
+    return;
+  }
+
+  await applyNoteEdit(interaction, ctx, noteNumber, content, "/note edit");
+}
+
+/**
+ * Modal submit: edit note by note_number in customId.
+ * @param {import("discord.js").ModalSubmitInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleEditNoteModal(interaction, ctx) {
+  if (!(await requireStaff(interaction))) return;
+
+  const customId = interaction.customId || "";
+  if (!customId.startsWith(MODAL_PREFIX_EDIT)) return;
+  const noteNumber = Number(customId.slice(MODAL_PREFIX_EDIT.length));
+  if (!Number.isFinite(noteNumber) || noteNumber < 1) {
+    await interaction.reply({
+      content: "Invalid modal state (missing note id).",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  let content = "";
+  try {
+    content = interaction.fields.getTextInputValue(MODAL_FIELD_CONTENT);
+  } catch {
+    content = "";
+  }
+
+  await applyNoteEdit(
+    interaction,
+    ctx,
+    noteNumber,
+    content,
+    "/note edit (modal)"
+  );
+}
+
+/**
+ * Shared edit path for slash + modal.
+ * @param {import("discord.js").Interaction} interaction
+ * @param {object} [ctx]
+ * @param {number} noteNumber
+ * @param {string} content
+ * @param {string} auditCommand
+ */
+async function applyNoteEdit(interaction, ctx, noteNumber, content, auditCommand) {
   let note;
   try {
     note = updateStaffNote(interaction.guildId, noteNumber, {
@@ -398,9 +635,9 @@ async function handleEdit(interaction, ctx) {
     return;
   }
 
-  await logConfigChange(interaction.client, interaction.guildId, {
+  await logConfigChange(ctx?.client || interaction.client, interaction.guildId, {
     title: "Staff note edited",
-    command: "/note edit",
+    command: auditCommand,
     actor: interaction.user,
     changes: [
       `${formatNoteRef(note.note_number)} on <@${note.user_id}>`,
@@ -408,19 +645,8 @@ async function handleEdit(interaction, ctx) {
     ],
   }).catch(() => {});
 
-  const embed = new EmbedBuilder()
-    .setColor(0xfaa61a)
-    .setTitle(`Note ${formatNoteRef(note.note_number)} updated`)
-    .setDescription(note.content.slice(0, 4000))
-    .addFields(
-      { name: "Subject", value: `<@${note.user_id}>`, inline: true },
-      { name: "Edited by", value: `<@${note.edited_by}>`, inline: true },
-      { name: "Edited", value: fullTs(note.edited_at), inline: true }
-    )
-    .setFooter({ text: "Staff only — never shown to the member" });
-
   await interaction.reply({
-    embeds: [embed],
+    embeds: [buildUpdatedEmbed(note)],
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -547,9 +773,26 @@ async function handleSettings(interaction) {
       `\nMax content length: **${MAX_NOTE_CONTENT}** characters\n` +
       `\n**Access:** staff gate — Manage Server or any role in \`/staff role list\`.\n` +
       `\n**Commands:** \`/note add\` · \`list\` · \`edit\` · \`delete\` · \`info\`\n` +
+      `Omit \`content\` on add/edit to open a **modal** for longer text.\n` +
+      `After \`/ticket close\`, use **Add staff note** or the \`staff_note\` option.\n` +
       `Notes are **never** DMed or shown to the subject member. Soft-delete only; no hard delete.`,
     flags: MessageFlags.Ephemeral,
   });
+}
+
+/**
+ * Route modal submits for add + edit prefixes.
+ * @param {import("discord.js").ModalSubmitInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleNoteModal(interaction, ctx) {
+  const id = interaction.customId || "";
+  if (id.startsWith(MODAL_PREFIX_ADD)) {
+    return handleAddNoteModal(interaction, ctx);
+  }
+  if (id.startsWith(MODAL_PREFIX_EDIT)) {
+    return handleEditNoteModal(interaction, ctx);
+  }
 }
 
 module.exports = {
@@ -558,9 +801,20 @@ module.exports = {
   handlers: {
     note: handleNote,
   },
+  modalHandlers: {
+    // Longest-prefix match; both prefixes start with "note:" so register both.
+    [MODAL_PREFIX_ADD]: handleAddNoteModal,
+    [MODAL_PREFIX_EDIT]: handleEditNoteModal,
+  },
   // Exported for unit/integration tests
   formatNoteRef,
   snippet,
+  buildAddNoteModal,
+  buildEditNoteModal,
+  MODAL_PREFIX_ADD,
+  MODAL_PREFIX_EDIT,
+  MODAL_FIELD_CONTENT,
   LIST_PAGE_SIZE,
   RECENT_GUILD_LIMIT,
+  handleNoteModal,
 };
