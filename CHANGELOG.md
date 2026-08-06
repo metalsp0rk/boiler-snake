@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.1.0...v1.2.0) (2026-08-06)
+
+
+### Features
+
+* **tickets:** add help ticket system MVP ([74ad5d3](https://github.com/metalsp0rk/boiler-snake/commit/74ad5d3234c1b716101a8d9e031a14f2f98d11ac))
+* **userinfo:** staff card with note and warning drill-down ([c97de28](https://github.com/metalsp0rk/boiler-snake/commit/c97de2869301f65b18a117b102ab89bdd37681c7))
+* **warnings:** add permanent formal warning system ([0981b71](https://github.com/metalsp0rk/boiler-snake/commit/0981b71383f0209ac7e13b73157c8d1ff382ce0c))
+
+
+### Bug Fixes
+
+* **docs:** use GitHub URL for ROADMAP link in tickets.md ([667cf0a](https://github.com/metalsp0rk/boiler-snake/commit/667cf0aeef35fb398c9ff5f76839ef67a8411dcc))
+
 ## [1.1.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.0.0...v1.1.0) (2026-08-05)
 
 
