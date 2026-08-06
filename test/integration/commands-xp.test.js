@@ -176,6 +176,42 @@ describe("integration: xp commands", () => {
     assertEphemeralReply(interaction, /No XP settings/);
   });
 
+  it("/grantxp denies non-admin", async () => {
+    const interaction = await env.runCommand({
+      commandName: "grantxp",
+      admin: false,
+      user: env.users.memberUser,
+      options: { user: env.users.member2User, amount: 50 },
+    });
+    assertEphemeralReply(interaction, /permission/i);
+  });
+
+  it("/grantxp grants XP for admin", async () => {
+    env.db.setXp(env.guild.id, IDS.member2, 100);
+    const interaction = await env.runCommand({
+      commandName: "grantxp",
+      admin: true,
+      options: {
+        user: env.users.member2User,
+        amount: 50,
+        reason: "Contest winner",
+      },
+    });
+    assertReplyContains(interaction, "Granted");
+    assertReplyContains(interaction, "50");
+    assertReplyContains(interaction, "Contest winner");
+    assertXp(env.db, env.guild.id, IDS.member2, 150);
+  });
+
+  it("/grantxp rejects bots", async () => {
+    const interaction = await env.runCommand({
+      commandName: "grantxp",
+      admin: true,
+      options: { user: env.users.botUser, amount: 10 },
+    });
+    assertEphemeralReply(interaction, /bots/i);
+  });
+
   it("/settings shows admin summary", async () => {
     const interaction = await env.runCommand({
       commandName: "settings",

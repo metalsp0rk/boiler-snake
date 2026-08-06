@@ -38,7 +38,7 @@ src/
 │   ├── index.js             # Ordered feature list (17 modules)
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
-│   ├── xp/                  # /xp /leaderboard /setxp + award helpers
+│   ├── xp/                  # /xp /leaderboard /setxp /grantxp + award helpers
 │   ├── decay/               # /setdecay + daily cron
 │   ├── voice/               # Voice XP ticker
 │   ├── levelRoles/          # /leveltorole + syncMemberRoles
@@ -156,7 +156,7 @@ Migrations on load:
 
 ## Shared XP award (`services/awardXp.js`)
 
-Used by message XP, reaction XP, and voice ticker:
+Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 
 1. `addXp` (atomic)
 2. `logActivity`
@@ -189,7 +189,7 @@ Used by message XP, reaction XP, and voice ticker:
 
 ## Commands
 
-Slash builders and handlers are **co-located** on features. The registry exports **21** slash commands (unique names; see `test/registry.test.js`). Registration:
+Slash builders and handlers are **co-located** on features. The registry exports **22** slash commands (unique names; see `test/registry.test.js`). Registration:
 
 ```bash
 npm run register   # node src/commands/register.js
@@ -207,7 +207,7 @@ Router: `commands/router.js` → autocomplete / modal submit / button / chat inp
 | **Public** | No staff check: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` (and panel open). `/eventreminder` opt-out/status (and create for event creators). |
 | **Staff** (`requireStaff` / `isStaff`) | ManageGuild **or** any `staff_roles` role — notes, warnings, tickets (incl. panel/set*), activity config, honeypot channel/banrole, XP/YouTube/decay/logs/reaction-roles, `/userinfo` (except Activity), most config |
 | **Senior staff** (`requireSeniorStaff` / `isSeniorStaff`) | ManageGuild **or** a **senior** `staff_roles` role — `/userinfo` Activity; senior roles also receive automatic ticket channel overwrites (junior = command gate only, no auto ticket view) |
-| **ManageGuild-only** (`requireAdmin` / `isAdminOrMod`) | staff-role add/remove/setlevel; **`/staff syncpermissions`**; **`/setcommandchannel`**; **`/honeypot exempt`** (staff-role alias) |
+| **ManageGuild-only** (`requireAdmin` / `isAdminOrMod`) | **`/grantxp`**; staff-role add/remove/setlevel; **`/staff syncpermissions`**; **`/setcommandchannel`**; **`/honeypot exempt`** (staff-role alias) |
 
 `/setcommandchannel` is ManageGuild-only and always allowed for admins even when command channels are restricted (lockout escape). `/ticket` inside an open (or soft-closed, not archived) ticket channel bypasses the command-channel allow-list.
 
@@ -233,7 +233,7 @@ npm run test:unit        # test/*.test.js
 npm run test:integration # test/integration/*.test.js
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**21** commands, **17** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
+Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**22** commands, **17** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
 
 ---
 

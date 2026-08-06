@@ -114,6 +114,7 @@ Three gates appear across the bot:
 | Honeypot exempt (`/honeypot exempt …`) | Manage Server only (mutates `staff_roles`) |
 | XP/config (`/settings`, `/setxp`, `/setdecay`, `/setlog`, `/leveltorole`, YouTube, reaction roles) | Staff |
 | `/setcommandchannel` | Manage Server only |
+| Manual XP grant (`/grantxp`) | Manage Server only |
 | Public `/xp`, `/leaderboard`, `/ticket create` | Everyone (subject to command-channel rules) |
 
 There are **no** per-feature staff tables (no `warn_access_roles`, no notes-only roles). Everything shares `staff_roles`.

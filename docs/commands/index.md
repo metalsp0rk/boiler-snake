@@ -247,6 +247,30 @@ Easier leveling (lower factor):
 /setxp factor:50
 ```
 
+### `/grantxp` - Grant XP to a User
+
+Manually grant XP to a member (Manage Server only). Runs the full award pipeline (level roles + audit).
+
+**Permission**: **ManageGuild** only. Staff roles do **not** grant access.
+
+**Usage**:
+```bash
+/grantxp user:@SomeUser amount:500
+/grantxp user:@SomeUser amount:100 reason:Contest winner
+```
+
+**Options**:
+- `user`: Member to grant XP to (required)
+- `amount`: XP to add, 1–1,000,000,000 (required)
+- `reason`: Optional note for the audit log (max 200 characters)
+
+**Notes**:
+- Bots cannot receive XP
+- Ephemeral reply shows new total XP and level
+- Posts an audit-log embed when `/setlog audit` is configured
+- Does **not** count toward decay message activity
+
+
 ### `/setdecay` - Configure XP Decay
 
 Set up daily XP reduction for inactive users.
@@ -847,6 +871,7 @@ Optional: `silent`, `note` (N-n), `message` (Discord jump link), `evidence` (sta
 | `/staff settings` | Staff gate | Yes |
 | `/setwarn dm\|log\|expiry` | Staff gate | Yes |
 | `/activityconfig` | Staff gate | Yes |
+| `/grantxp` | ManageGuild | Yes |
 | `/ticket panel\|setcategory\|setarchive\|setratelimit` | Staff gate | Yes |
 | `/honeypot channel\|banrole` | Staff gate | Yes |
 | `/honeypot exempt …` | ManageGuild | Yes |
@@ -933,6 +958,7 @@ STAFF GATE (Manage Server OR any staff role):
 /eventreminder create|edit|clear|sync  → creator OR Manage Server
 
 MANAGE SERVER ONLY:
+/grantxp user amount [reason]      → Manually grant XP
 /staff role add|remove|setlevel    → Configure staff roles
 /staff syncpermissions             → OAuth sync slash visibility for staff roles
 /setcommandchannel add|remove|list → Command channel allow-list

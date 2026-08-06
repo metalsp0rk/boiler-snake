@@ -31,6 +31,7 @@ const COMMAND_VISIBILITY = Object.freeze({
   eventreminder: TIERS.public,
 
   // Manage Server only (picker + handler)
+  grantxp: TIERS.admin,
   staff: TIERS.admin,
   setcommandchannel: TIERS.admin,
 

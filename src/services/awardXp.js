@@ -16,7 +16,7 @@ const { logLevelRoleChanges } = require("../features/logs/auditLog");
  * @param {import("discord.js").Guild} opts.guild
  * @param {string} opts.userId
  * @param {number} opts.delta XP to add (already validated/gated by caller)
- * @param {string} opts.activityKind activity_log kind (message|reaction|voice_minute)
+ * @param {string} opts.activityKind activity_log kind (message|reaction|voice_minute|admin_grant)
  * @param {import("discord.js").GuildMember|null} [opts.member] if already fetched
  * @param {number} [opts.levelXpFactor] guild setting; fetched if omitted
  * @param {string} [opts.source] audit source label (default xp_sync)

@@ -96,6 +96,7 @@ User commands:
 
 Admin/mod commands (requires **Manage Guild** by default):
 - `/setxp message:<int> reaction:<int> voice:<int> msgcooldown:<int> reactioncooldown:<int>`
+- `/grantxp user:<user> amount:<int> [reason:<string>]` — manually grant XP (Manage Server only)
 - `/setdecay enabled:<bool> messages:<int> days:<int> percent:<0-95>`
 - `/leveltorole set role:<role> level:<int> dropdays:<int>`
 - `/leveltorole remove role:<role>`

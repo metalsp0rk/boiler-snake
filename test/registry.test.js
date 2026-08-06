@@ -4,9 +4,9 @@ const { buildDefaultRegistry, createRegistry } = require("../src/commands/regist
 const features = require("../src/features");
 
 describe("command definitions via registry", () => {
-  it("exports 21 slash commands with unique names", () => {
+  it("exports 22 slash commands with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 21);
+    assert.equal(commands.length, 22);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -17,6 +17,7 @@ describe("command definitions via registry", () => {
     assert.ok(names.includes("userinfo"));
     assert.ok(names.includes("activityconfig"));
     assert.ok(names.includes("ticket"));
+    assert.ok(names.includes("grantxp"));
   });
 });
 

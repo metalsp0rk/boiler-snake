@@ -562,6 +562,7 @@ const SOURCE_LABELS = {
   xp_sync: "XP / level sync",
   decay: "XP decay (level→role)",
   decay_reaction_role: "XP decay (reaction role min level)",
+  admin_grant: "Admin /grantxp",
 };
 
 function buildLevelRoleChangeEmbed({
