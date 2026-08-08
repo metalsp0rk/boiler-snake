@@ -764,9 +764,12 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 ```bash
 /warn add user:@SomeUser reason:Repeated spam in #general
 /warn add user:@SomeUser reason:Escalation silent:true note:12
+/warn add user:@SomeUser reason:Harassment message:https://discord.com/channels/…/…/… evidence:Second report expires_days:30
 ```
 
-#### Subcommand: `list` / `count` / `info` / `void`
+Optional: `silent`, `note` (N-n), `message` (Discord jump link), `evidence` (staff-only notes), `expires_days` (`0` = never; omit = guild default).
+
+#### Subcommand: `list` / `count` / `info` / `void` / `export`
 
 ```bash
 /warn list user:@SomeUser
@@ -774,9 +777,11 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 /warn count user:@SomeUser
 /warn info id:12
 /warn void id:12 reason:Appeal accepted
+/warn export user:@SomeUser
 ```
 
-`id` is the per-guild warning number (**W-12**), not an internal database id.
+`id` is the per-guild warning number (**W-12**), not an internal database id.  
+`export` attaches an ephemeral markdown file (notes + warnings) for staff handoff.
 
 #### Subcommand: `settings`
 
@@ -791,12 +796,15 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 /setwarn dm enabled:true
 /setwarn log channel:#warn-log
 /setwarn log clear:true
+/setwarn expiry days:30
+/setwarn expiry days:0
 ```
 
 | Subcommand | Description |
 |------------|-------------|
 | `dm` | Toggle member DMs on issue/void |
 | `log` | Dedicated channel for warning issue/void embeds (falls back to `/setlog audit` when cleared) |
+| `expiry` | Default auto-void after N days for **new** warnings (`0` = never) |
 
 **Permission**: Staff gate.
 
@@ -823,13 +831,13 @@ Permanent disciplinary records. See [Warning System](../warnings.md).
 | `/eventreminder status` | Public | Yes |
 | `/eventreminder list` | Public | Yes |
 | `/note add\|list\|edit\|delete\|info\|settings` | Staff gate | Yes |
-| `/warn add\|list\|info\|void\|count\|settings` | Staff gate | Yes |
+| `/warn add\|list\|info\|void\|count\|export\|settings` | Staff gate | Yes |
 | `/userinfo` | Staff gate | Yes |
 | `/userinfo` **Activity** tab | Senior staff | Yes |
 | `/ticket for\|claim\|transfer\|adduser\|removeuser\|addstaff\|removestaff\|sensitive\|unsensitive\|close\|archive\|list\|info` | Staff gate | Yes |
 | `/staff role list` | Staff gate | Yes |
 | `/staff settings` | Staff gate | Yes |
-| `/setwarn dm\|log` | Staff gate | Yes |
+| `/setwarn dm\|log\|expiry` | Staff gate | Yes |
 | `/activityconfig` | Staff gate | Yes |
 | `/ticket panel\|setcategory\|setarchive\|setratelimit` | Staff gate | Yes |
 | `/honeypot channel\|banrole` | Staff gate | Yes |
@@ -897,8 +905,8 @@ PUBLIC:
 
 STAFF GATE (Manage Server OR any staff role):
 /note add|list|edit|delete|info|settings
-/warn add|list|info|void|count|settings
-/setwarn dm|log
+/warn add|list|info|void|count|export|settings
+/setwarn dm|log|expiry
 /userinfo [user]                   → Member card (Activity = senior)
 /activityconfig ignore|status|backfill
 /ticket for|claim|transfer|list|info

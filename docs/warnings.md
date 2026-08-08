@@ -17,8 +17,14 @@ Staff voids /warn void id reason
         → set voided_at / voided_by / void_reason
         → row remains queryable forever as voided
 
+Optional expiry (opt-in)
+        → guild default via /setwarn expiry, or per-issue expires_days
+        → ticker auto-voids when expires_at is reached (paper trail kept)
+
 Staff / member lists history
         → active by default; full history includes voided
+Staff export
+        → /warn export → ephemeral markdown of notes + warnings
 ```
 
 | Rule | Detail |
@@ -29,7 +35,9 @@ Staff / member lists history
 | Active count | Non-voided rows for that guild/user |
 | Self-service | Members may view **their own** warnings (`/warn mine`) |
 | Staff access | [Staff gate](staff-roles.md) (`requireStaff`) |
-| Escalation | Auto kick/ban thresholds = not in MVP |
+| Expiry | Opt-in; default is **never**. Auto-void keeps the row as voided |
+| Evidence | Optional message link + freeform notes — **staff-only** (not in member DMs / `/warn mine`) |
+| Escalation | Auto kick/ban thresholds = not shipped |
 
 ## Notes vs warnings
 
@@ -51,12 +59,13 @@ All replies are **ephemeral**. Staff logs go to the configured audit channel whe
 
 | Command | Description |
 |---------|-------------|
-| `/warn add user:<member> reason:<text> [silent] [note]` | Issue a warning. `silent` skips member DM for this issue only. `note` links a staff note number (N-n). |
+| `/warn add user:<member> reason:<text> [silent] [note] [message] [evidence] [expires_days]` | Issue a warning. `silent` skips member DM. `note` links N-n. `message` = Discord jump link. `evidence` = staff-only notes. `expires_days` overrides guild default (`0` = never). |
 | `/warn list user:<member> [page] [include_voided]` | History for a member (default active only) |
-| `/warn info id:<warning_number>` | Full detail: reason, issuer, timestamps, void metadata |
+| `/warn info id:<warning_number>` | Full detail: reason, issuer, expiry, evidence, void metadata |
 | `/warn void id:<…> reason:<text>` | Void a warning (permanent row; marks inactive) |
 | `/warn count user:<member>` | Active warning count (+ recent snippet) |
-| `/warn settings` | DM flag, log target, access info |
+| `/warn export user:<member> [include_voided] [include_deleted_notes]` | Ephemeral **markdown file** of notes + warnings for staff handoff |
+| `/warn settings` | DM flag, log target, default expiry, access info |
 
 ### Config (staff gate)
 
@@ -65,6 +74,7 @@ All replies are **ephemeral**. Staff logs go to the configured audit channel whe
 | `/setwarn dm enabled:<true\|false>` | Toggle member DMs on issue/void (default **true**) |
 | `/setwarn log channel:<#channel>` | Dedicated staff channel for issue/void embeds |
 | `/setwarn log clear:true` | Clear dedicated warn log (fall back to audit log) |
+| `/setwarn expiry days:<n>` | Default auto-void after **n** days for **new** warnings (`0` = never, default) |
 
 ### Everyone
 
@@ -120,11 +130,45 @@ Config changes (`/setwarn dm`, `/setwarn log`) always use the general audit log 
 
 There is **no** warnings-specific role table. Access shares the guild [staff role](staff-roles.md) list.
 
+## Expiry (opt-in)
+
+By default warnings **never** expire. Admins can:
+
+| Control | Effect |
+|---------|--------|
+| `/setwarn expiry days:30` | New warnings get `expires_at = created + 30d` unless overridden |
+| `/setwarn expiry days:0` | New warnings never expire (default) |
+| `/warn add … expires_days:7` | This warning only: expire in 7 days |
+| `/warn add … expires_days:0` | This warning only: never, even if guild default is set |
+
+When `expires_at` is reached, a **minute ticker** voids the row with reason `Auto-voided: expiry date reached` (bot as voider). The row stays in history as voided; staff log + optional member DM follow the same rules as manual void.
+
+Existing warnings are **not** rewritten when you change the guild default.
+
+## Evidence (staff-only)
+
+On `/warn add`:
+
+| Option | Storage | Visibility |
+|--------|---------|------------|
+| `message` | Validated Discord jump URL for **this** server | Staff: info / export / issue confirm. **Not** in member DMs or `/warn mine` |
+| `evidence` | Freeform notes (max 500 chars) | Same as above |
+
+## Export
+
+```bash
+/warn export user:@SomeUser
+/warn export user:@SomeUser include_voided:false include_deleted_notes:false
+```
+
+Ephemeral reply with a `.md` attachment (`staff-record-{userId}-{date}.md`) containing summary counts, full warning history (incl. evidence), and staff notes. Defaults include voided warnings and soft-deleted notes. **Staff handoff only** — do not share with the subject.
+
 ## Database
 
 ```sql
 -- guild_settings.warn_dm_members INTEGER NOT NULL DEFAULT 1
 -- guild_settings.warn_log_channel_id TEXT  -- NULL → fall back to audit_log_channel_id
+-- guild_settings.warn_expiry_days INTEGER NOT NULL DEFAULT 0  -- 0 = never
 
 CREATE TABLE warnings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,11 +182,14 @@ CREATE TABLE warnings (
   voided_by TEXT,
   void_reason TEXT,
   related_note_id INTEGER REFERENCES staff_notes(id) ON DELETE SET NULL,
+  expires_at INTEGER,              -- NULL = never; auto-void when reached
+  evidence_message_url TEXT,       -- Discord jump link (staff-only)
+  evidence_text TEXT,              -- freeform evidence (staff-only)
   UNIQUE (guild_id, warning_number)
 );
 ```
 
-See [Database Schema](database.md) for indexes and migration id `009_warnings`.
+See [Database Schema](database.md) for indexes and migrations `009_warnings`, `012_warn_log_channel`, `017_warn_post_mvp`.
 
 ## Design decisions
 
@@ -154,8 +201,11 @@ See [Database Schema](database.md) for indexes and migration id `009_warnings`.
 6. **Access via guild staff roles** — no `warn_access_roles` table.
 7. **`/setwarn dm`:** staff gate (same as other warn config).
 8. **Human ids** sequential per guild (`W-n`); stable forever including after void.
-9. **No auto-mod escalation** in MVP.
-10. **Audit stream:** reuse `audit_log_channel_id` when set.
+9. **No auto-mod escalation** (timeout/kick/ban thresholds not shipped).
+10. **Audit stream:** prefer dedicated warn log; fall back to `audit_log_channel_id`.
+11. **Expiry is opt-in** — default never; auto-void preserves the permanent row.
+12. **Evidence is staff-only** — not shown to the subject via DM or `/warn mine`.
+13. **No un-void** — prefer re-issue if a void was a mistake.
 
 ## Related
 

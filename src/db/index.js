@@ -205,13 +205,21 @@ module.exports = {
 
   // warnings
   MAX_WARN_REASON: warnings.MAX_WARN_REASON,
+  MAX_EVIDENCE_TEXT: warnings.MAX_EVIDENCE_TEXT,
+  MAX_EXPIRY_DAYS: warnings.MAX_EXPIRY_DAYS,
   normalizeWarnReason: warnings.normalizeWarnReason,
+  normalizeEvidenceText: warnings.normalizeEvidenceText,
+  normalizeEvidenceMessageUrl: warnings.normalizeEvidenceMessageUrl,
+  normalizeExpiryDays: warnings.normalizeExpiryDays,
+  expiresAtFromDays: warnings.expiresAtFromDays,
+  resolveExpiryDays: warnings.resolveExpiryDays,
   createWarning: warnings.createWarning,
   getWarningById: warnings.getWarningById,
   getWarning: warnings.getWarning,
   listWarnings: warnings.listWarnings,
   countWarnings: warnings.countWarnings,
   countActiveWarnings: warnings.countActiveWarnings,
+  listExpiredActiveWarnings: warnings.listExpiredActiveWarnings,
   voidWarning: warnings.voidWarning,
 
   // tickets

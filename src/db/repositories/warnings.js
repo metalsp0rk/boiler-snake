@@ -3,6 +3,19 @@ const { db, now } = require("../connection");
 /** Max reason / void_reason length (roadmap §6.3). */
 const MAX_WARN_REASON = 1000;
 
+/** Max freeform evidence text length. */
+const MAX_EVIDENCE_TEXT = 500;
+
+/** Max days for guild default or per-warning expiry override (≈10 years). */
+const MAX_EXPIRY_DAYS = 3650;
+
+/**
+ * Discord message jump-link patterns.
+ * Production uses snowflake segments; path shape is guild/channel/message.
+ */
+const DISCORD_MESSAGE_URL_RE =
+  /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/channels\/([^/?#\s]+)\/([^/?#\s]+)\/([^/?#\s]+)\/?$/i;
+
 /**
  * Normalize and validate warning reason text.
  * @param {string} reason
@@ -21,6 +34,116 @@ function normalizeWarnReason(reason, label = "Reason") {
     };
   }
   return { ok: true, reason: text };
+}
+
+/**
+ * Normalize optional freeform evidence text (null/empty → null).
+ * @param {string|null|undefined} text
+ * @returns {{ ok: true, text: string|null } | { ok: false, error: string }}
+ */
+function normalizeEvidenceText(text) {
+  if (text == null) return { ok: true, text: null };
+  const s = String(text).trim();
+  if (!s) return { ok: true, text: null };
+  if (s.length > MAX_EVIDENCE_TEXT) {
+    return {
+      ok: false,
+      error: `Evidence text is too long (max ${MAX_EVIDENCE_TEXT} characters).`,
+    };
+  }
+  return { ok: true, text: s };
+}
+
+/**
+ * Validate and normalize a Discord message jump URL.
+ * @param {string|null|undefined} url
+ * @param {string} [expectedGuildId] when set, path guild must match
+ * @returns {{ ok: true, url: string|null } | { ok: false, error: string }}
+ */
+function normalizeEvidenceMessageUrl(url, expectedGuildId) {
+  if (url == null) return { ok: true, url: null };
+  const s = String(url).trim();
+  if (!s) return { ok: true, url: null };
+
+  const m = s.match(DISCORD_MESSAGE_URL_RE);
+  if (!m) {
+    return {
+      ok: false,
+      error:
+        "Evidence message must be a Discord message link " +
+        "(https://discord.com/channels/…/…/…).",
+    };
+  }
+
+  const guildId = m[1];
+  if (expectedGuildId && guildId !== String(expectedGuildId)) {
+    return {
+      ok: false,
+      error: "Evidence message link must be from this server.",
+    };
+  }
+
+  // Canonical form (no trailing slash, discord.com host)
+  const canonical = `https://discord.com/channels/${m[1]}/${m[2]}/${m[3]}`;
+  return { ok: true, url: canonical };
+}
+
+/**
+ * Clamp expiry day counts (0 = never).
+ * @param {unknown} days
+ * @returns {{ ok: true, days: number } | { ok: false, error: string }}
+ */
+function normalizeExpiryDays(days) {
+  if (days == null || days === "") {
+    return { ok: false, error: "Expiry days is required." };
+  }
+  const n = Number(days);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    return {
+      ok: false,
+      error: "Expiry days must be an integer ≥ 0 (0 = never expire).",
+    };
+  }
+  if (n > MAX_EXPIRY_DAYS) {
+    return {
+      ok: false,
+      error: `Expiry days cannot exceed ${MAX_EXPIRY_DAYS}.`,
+    };
+  }
+  return { ok: true, days: n };
+}
+
+/**
+ * Resolve absolute expires_at from create time + day count.
+ * @param {number} createdAtMs
+ * @param {number} days 0 or negative → null (never)
+ * @returns {number|null}
+ */
+function expiresAtFromDays(createdAtMs, days) {
+  const d = Number(days);
+  if (!Number.isFinite(d) || d <= 0) return null;
+  const base = Number(createdAtMs);
+  if (!Number.isFinite(base)) return null;
+  return base + Math.floor(d) * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Effective expiry days for a new warning.
+ * Per-warning override wins when provided; else guild default.
+ * @param {object} opts
+ * @param {number|null|undefined} opts.expiresDays override (0 = never)
+ * @param {number|null|undefined} opts.guildDefaultDays
+ * @returns {number} days (0 = never)
+ */
+function resolveExpiryDays(opts = {}) {
+  if (opts.expiresDays != null) {
+    const n = Number(opts.expiresDays);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.min(Math.floor(n), MAX_EXPIRY_DAYS);
+  }
+  const g = Number(opts.guildDefaultDays ?? 0);
+  if (!Number.isFinite(g) || g <= 0) return 0;
+  return Math.min(Math.floor(g), MAX_EXPIRY_DAYS);
 }
 
 /**
@@ -44,6 +167,11 @@ function nextWarningNumber(guildId) {
  * @param {string} opts.issuerId
  * @param {string} opts.reason
  * @param {number|null} [opts.relatedNoteId]
+ * @param {number|null} [opts.expiresAt] absolute ms; preferred when set
+ * @param {number|null} [opts.expiresDays] relative days from create (if expiresAt omitted)
+ * @param {number|null} [opts.guildDefaultDays] used when expiresDays omitted
+ * @param {string|null} [opts.evidenceMessageUrl]
+ * @param {string|null} [opts.evidenceText]
  * @returns {object} created warning row
  */
 function createWarning(opts) {
@@ -51,6 +179,23 @@ function createWarning(opts) {
   if (!normalized.ok) {
     const err = new Error(normalized.error);
     err.code = "INVALID_REASON";
+    throw err;
+  }
+
+  const evidenceUrl = normalizeEvidenceMessageUrl(
+    opts.evidenceMessageUrl,
+    opts.guildId
+  );
+  if (!evidenceUrl.ok) {
+    const err = new Error(evidenceUrl.error);
+    err.code = "INVALID_EVIDENCE_URL";
+    throw err;
+  }
+
+  const evidenceText = normalizeEvidenceText(opts.evidenceText);
+  if (!evidenceText.ok) {
+    const err = new Error(evidenceText.error);
+    err.code = "INVALID_EVIDENCE_TEXT";
     throw err;
   }
 
@@ -66,10 +211,28 @@ function createWarning(opts) {
   }
 
   const t = now();
+  let expiresAt = null;
+  if (opts.expiresAt != null) {
+    const e = Number(opts.expiresAt);
+    if (!Number.isFinite(e) || e <= 0) {
+      const err = new Error("expires_at must be a positive timestamp.");
+      err.code = "INVALID_EXPIRY";
+      throw err;
+    }
+    expiresAt = Math.floor(e);
+  } else {
+    const days = resolveExpiryDays({
+      expiresDays: opts.expiresDays,
+      guildDefaultDays: opts.guildDefaultDays,
+    });
+    expiresAt = expiresAtFromDays(t, days);
+  }
+
   const insert = db.prepare(`
     INSERT INTO warnings (
-      guild_id, warning_number, user_id, issuer_id, reason, created_at, related_note_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      guild_id, warning_number, user_id, issuer_id, reason, created_at,
+      related_note_id, expires_at, evidence_message_url, evidence_text
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const tx = db.transaction(() => {
@@ -81,7 +244,10 @@ function createWarning(opts) {
       opts.issuerId,
       normalized.reason,
       t,
-      relatedNoteId
+      relatedNoteId,
+      expiresAt,
+      evidenceUrl.url,
+      evidenceText.text
     );
     return Number(info.lastInsertRowid);
   });
@@ -130,7 +296,8 @@ function getWarning(guildId, warningNumber) {
  */
 function listWarnings(guildId, userId, opts = {}) {
   const includeVoided = !!opts.includeVoided;
-  const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), 100);
+  const maxLimit = opts.export ? 5000 : 100;
+  const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), maxLimit);
   const offset = Math.max(Number(opts.offset) || 0, 0);
 
   if (includeVoided) {
@@ -196,6 +363,28 @@ function countActiveWarnings(guildId, userId) {
 }
 
 /**
+ * Active warnings past their expires_at (for auto-void ticker).
+ * @param {number} [nowMs]
+ * @param {number} [limit=50]
+ * @returns {object[]}
+ */
+function listExpiredActiveWarnings(nowMs = now(), limit = 50) {
+  const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  return db
+    .prepare(
+      `
+    SELECT * FROM warnings
+    WHERE voided_at IS NULL
+      AND expires_at IS NOT NULL
+      AND expires_at <= ?
+    ORDER BY expires_at ASC
+    LIMIT ?
+  `
+    )
+    .all(Number(nowMs), lim);
+}
+
+/**
  * Void a warning (permanent row; marks inactive). Cannot un-void.
  * @param {string} guildId
  * @param {number} warningNumber
@@ -244,12 +433,21 @@ function voidWarning(guildId, warningNumber, opts) {
 
 module.exports = {
   MAX_WARN_REASON,
+  MAX_EVIDENCE_TEXT,
+  MAX_EXPIRY_DAYS,
+  DISCORD_MESSAGE_URL_RE,
   normalizeWarnReason,
+  normalizeEvidenceText,
+  normalizeEvidenceMessageUrl,
+  normalizeExpiryDays,
+  expiresAtFromDays,
+  resolveExpiryDays,
   createWarning,
   getWarningById,
   getWarning,
   listWarnings,
   countWarnings,
   countActiveWarnings,
+  listExpiredActiveWarnings,
   voidWarning,
 };

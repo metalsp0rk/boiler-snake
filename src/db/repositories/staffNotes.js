@@ -116,7 +116,8 @@ function getStaffNote(guildId, noteNumber) {
  */
 function listStaffNotes(guildId, userId, opts = {}) {
   const includeDeleted = !!opts.includeDeleted;
-  const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), 100);
+  const maxLimit = opts.export ? 5000 : 100;
+  const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), maxLimit);
   const offset = Math.max(Number(opts.offset) || 0, 0);
 
   if (includeDeleted) {

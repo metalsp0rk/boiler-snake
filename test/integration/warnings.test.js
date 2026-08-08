@@ -374,4 +374,152 @@ describe("integration: warnings", () => {
     assert.ok(linked);
     assert.equal(linked.related_note_id, note.id);
   });
+
+  it("/warn add stores evidence and expires_days override", async () => {
+    const msgUrl = `https://discord.com/channels/${env.guild.id}/chan1/msg1`;
+    const add = await env.runCommand({
+      commandName: "warn",
+      subcommand: "add",
+      admin: true,
+      options: {
+        user: env.users.memberUser,
+        reason: "Evidence-backed warning",
+        silent: true,
+        message: msgUrl,
+        evidence: "Second report from #mod-queue",
+        expires_days: 2,
+      },
+    });
+    assertEphemeralReply(add);
+    assertReplyContains(add, /Evidence|Expires|W-/i);
+
+    const list = env.db.listWarnings(env.guild.id, IDS.member, {
+      includeVoided: true,
+      limit: 20,
+    });
+    const row = list.find((w) => w.reason === "Evidence-backed warning");
+    assert.ok(row);
+    assert.equal(
+      row.evidence_message_url,
+      `https://discord.com/channels/${env.guild.id}/chan1/msg1`
+    );
+    assert.equal(row.evidence_text, "Second report from #mod-queue");
+    assert.ok(row.expires_at != null);
+    assert.equal(
+      row.expires_at,
+      row.created_at + 2 * 24 * 60 * 60 * 1000
+    );
+
+    const info = await env.runCommand({
+      commandName: "warn",
+      subcommand: "info",
+      admin: true,
+      options: { id: row.warning_number },
+    });
+    assertEphemeralReply(info);
+    assertReplyContains(info, /Evidence|discord\.com\/channels/i);
+  });
+
+  it("/setwarn expiry sets guild default for new warnings", async () => {
+    const set = await env.runCommand({
+      commandName: "setwarn",
+      subcommand: "expiry",
+      admin: true,
+      options: { days: 14 },
+    });
+    assertEphemeralReply(set);
+    assert.equal(
+      Number(env.db.getGuildSettings(env.guild.id).warn_expiry_days),
+      14
+    );
+
+    const add = await env.runCommand({
+      commandName: "warn",
+      subcommand: "add",
+      admin: true,
+      options: {
+        user: env.users.member2User,
+        reason: "Uses guild default expiry",
+        silent: true,
+      },
+    });
+    assertEphemeralReply(add);
+
+    const list = env.db.listWarnings(env.guild.id, IDS.member2, {
+      includeVoided: true,
+      limit: 20,
+    });
+    const row = list.find((w) => w.reason === "Uses guild default expiry");
+    assert.ok(row);
+    assert.equal(
+      row.expires_at,
+      row.created_at + 14 * 24 * 60 * 60 * 1000
+    );
+
+    await env.runCommand({
+      commandName: "setwarn",
+      subcommand: "expiry",
+      admin: true,
+      options: { days: 0 },
+    });
+  });
+
+  it("/warn export attaches staff handoff markdown", async () => {
+    env.db.createStaffNote({
+      guildId: env.guild.id,
+      userId: IDS.member,
+      authorId: IDS.admin,
+      content: "Export note body",
+    });
+    env.db.createWarning({
+      guildId: env.guild.id,
+      userId: IDS.member,
+      issuerId: IDS.admin,
+      reason: "Export warning body",
+      evidenceText: "staff only",
+    });
+
+    const denied = await env.runCommand({
+      commandName: "warn",
+      subcommand: "export",
+      admin: false,
+      user: env.users.memberUser,
+      options: { user: env.users.memberUser },
+    });
+    assertEphemeralReply(denied, /permission/i);
+
+    const exp = await env.runCommand({
+      commandName: "warn",
+      subcommand: "export",
+      admin: true,
+      options: { user: env.users.memberUser },
+    });
+    assertEphemeralReply(exp);
+    assertReplyContains(exp, /Staff record|warning/i);
+    const last = exp.replies[exp.replies.length - 1];
+    assert.ok(Array.isArray(last.files) && last.files.length >= 1);
+    const file = last.files[0];
+    const name = file.name || file.attachment?.name || "";
+    assert.match(String(name), /staff-record-.*\.md/);
+  });
+
+  it("expiry ticker auto-voids past-due warnings", async () => {
+    const past = Date.now() - 5_000;
+    const warn = env.db.createWarning({
+      guildId: env.guild.id,
+      userId: IDS.member,
+      issuerId: IDS.admin,
+      reason: "Will expire via ticker",
+      expiresAt: past,
+    });
+    assert.equal(warn.voided_at, null);
+
+    const { runWarnExpiryTick } = require("../../src/features/warnings/ticker");
+    const result = await runWarnExpiryTick(env.client, { now: Date.now() });
+    assert.ok(result.voided >= 1);
+
+    const after = env.db.getWarning(env.guild.id, warn.warning_number);
+    assert.ok(after.voided_at != null);
+    assert.match(after.void_reason, /expiry|Auto-voided/i);
+  });
 });
