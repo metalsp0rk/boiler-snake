@@ -51,7 +51,6 @@ const {
 } = require("../../db");
 const {
   requireStaff,
-  requireAdmin,
   isStaff,
   isAdminOrMod,
 } = require("../../core/permissions");
@@ -795,14 +794,14 @@ async function handleTicket(interaction, ctx) {
   if (sub === "create") return handleCreate(interaction, ctx);
   if (sub === "settings") return handleSettings(interaction);
 
-  // Admin config
+  // Staff config + lifecycle (handlers enforce requireStaff below)
   if (
     sub === "setcategory" ||
     sub === "setarchive" ||
     sub === "setratelimit" ||
     sub === "panel"
   ) {
-    if (!(await requireAdmin(interaction))) return;
+    if (!(await requireStaff(interaction))) return;
     if (sub === "setcategory") return handleSetCategory(interaction, ctx);
     if (sub === "setarchive") return handleSetArchive(interaction, ctx);
     if (sub === "setratelimit") return handleSetRateLimit(interaction, ctx);

@@ -6,13 +6,13 @@ const {
 } = require("../../db");
 const { isStaff } = require("../../core/permissions");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const commands = [
   new SlashCommandBuilder()
     .setName("settings")
     .setDescription("Show current guild settings.")
-    .setDefaultMemberPermissions(adminPerms),
+    .setDefaultMemberPermissions(staffPerms),
 ];
 
 async function handleSettings(interaction) {

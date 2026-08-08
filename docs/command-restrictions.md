@@ -4,7 +4,7 @@ Control where slash commands can be used within your Discord guild.
 
 ## Overview
 
-By default, all Boiler Snake commands are accessible anywhere in the server. You can restrict this to specific channels using `/setcommandchannel`.
+By default, all Boiler Snake commands are accessible anywhere in the server. You can restrict this to specific channels using `/setcommandchannel` (**Manage Server** only).
 
 ### Why Use Command Restrictions?
 
@@ -20,7 +20,7 @@ By default, all Boiler Snake commands are accessible anywhere in the server. You
 
 ### Exception: Self-Lockout Prevention
 
-`/setcommandchannel` is always accessible to users with `ManageGuild` permission, even if they're not in an allowed channel. This prevents administrators from accidentally locking themselves out.
+`/setcommandchannel` requires **Manage Server** and is always accessible to those users even if they're not in an allowed channel. This prevents administrators from accidentally locking themselves out.
 
 ## Commands
 

@@ -17,7 +17,7 @@ const { awardXp } = require("../../services/awardXp");
 const { renderLeaderboardPng } = require("../../render/leaderboard");
 const { logConfigChange, diffConfigLines } = require("../logs/auditLog");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const msgCooldown = new Map();
 const reactionCooldown = new Map();
@@ -43,7 +43,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("setxp")
     .setDescription("Set XP values and cooldowns for this guild.")
-    .setDefaultMemberPermissions(adminPerms)
+    .setDefaultMemberPermissions(staffPerms)
     .addIntegerOption((opt) =>
       opt.setName("message").setDescription("XP per message").setMinValue(0).setRequired(false)
     )

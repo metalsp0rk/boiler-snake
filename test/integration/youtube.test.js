@@ -179,7 +179,7 @@ describe("integration: youtube", () => {
     }
   });
 
-  it("denies non-admin /youtube", async () => {
+  it("denies non-staff /youtube", async () => {
     const interaction = await env.runCommand({
       commandName: "youtube",
       subcommand: "list",

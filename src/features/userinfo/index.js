@@ -44,7 +44,7 @@ const {
 } = require("../userActivity/render");
 const { startUserBackfill } = require("../userActivity/backfill");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 /** customId prefix for button routing */
 const BTN_PREFIX = "ui:";
@@ -62,7 +62,7 @@ const commands = [
     .setDescription(
       "Staff card for a member: XP, notes, warnings, and activity."
     )
-    .setDefaultMemberPermissions(adminPerms)
+    .setDefaultMemberPermissions(staffPerms)
     .addUserOption((opt) =>
       opt
         .setName("user")

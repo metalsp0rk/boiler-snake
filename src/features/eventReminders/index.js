@@ -36,7 +36,7 @@ const {
   listEventReminderMutes,
   listActiveEventReminderRoleIds,
 } = require("../../db");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isStaff } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const {
   OFFSET_PRESETS,
@@ -333,9 +333,9 @@ async function handleEventReminder(interaction, ctx) {
 }
 
 async function handleSetChannel(interaction) {
-  if (!isAdminOrMod(interaction)) {
+  if (!isStaff(interaction)) {
     await interaction.reply({
-      content: "You need **Manage Guild** to set the default reminder channel.",
+      content: "You don’t have permission to use this.",
       flags: MessageFlags.Ephemeral,
     });
     return;

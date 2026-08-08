@@ -11,8 +11,10 @@
  *   DATA_DIR       — directory for xpbot.sqlite (default: project root)
  *   DB_PATH        — full path to sqlite file (wins over DATA_DIR)
  *   YOUTUBE_API_KEY — YouTube Data API (live detection / channel resolve)
- *   TICKET_HTTP_PORT — serve HTML transcripts on this port (GET /t/{uuid})
- *   TICKET_PUBLIC_BASE_URL — public origin for transcript links in archive embeds
+ *   CLIENT_SECRET — Discord app secret (OAuth for /staff syncpermissions)
+ *   PUBLIC_HTTP_PORT / TICKET_HTTP_PORT — public HTTP (transcripts + OAuth callback)
+ *   PUBLIC_BASE_URL / TICKET_PUBLIC_BASE_URL — public origin for links / OAuth redirect
+ *   OAUTH_REDIRECT_URI — override default {PUBLIC_BASE_URL}/oauth/command-permissions/callback
  *   AI_API_KEY / AI_BASE_URL / AI_MODEL — optional ticket archive summarization
  */
 

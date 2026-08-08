@@ -42,7 +42,7 @@ describe("integration: honeypot", () => {
     assertReplyContains(list, IDS.channelHoneypot);
   });
 
-  it("/honeypot denies non-admin", async () => {
+  it("/honeypot channel denies non-staff", async () => {
     const interaction = await env.runCommand({
       commandName: "honeypot",
       subcommandGroup: "channel",
@@ -51,6 +51,27 @@ describe("integration: honeypot", () => {
       user: env.users.memberUser,
     });
     assertEphemeralReply(interaction, /permission/i);
+  });
+
+  it("/honeypot exempt denies staff without ManageGuild", async () => {
+    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
+    const staffMember = env.createMember({
+      guild: env.guild,
+      user: env.users.memberUser,
+      admin: false,
+      roleIds: [IDS.roleExempt],
+    });
+    env.guild.addMember(staffMember);
+
+    const interaction = await env.runCommand({
+      commandName: "honeypot",
+      subcommandGroup: "exempt",
+      subcommand: "list",
+      admin: false,
+      user: env.users.memberUser,
+      member: staffMember,
+    });
+    assertEphemeralReply(interaction, /administrators|permission/i);
   });
 
   it("ban-role grant triggers ban", async () => {

@@ -27,6 +27,7 @@ const staffNotes = require("./repositories/staffNotes");
 const warnings = require("./repositories/warnings");
 const tickets = require("./repositories/tickets");
 const userChannelActivity = require("./repositories/userChannelActivity");
+const commandPermissionOauth = require("./repositories/commandPermissionOauth");
 
 module.exports = {
   db,
@@ -118,6 +119,18 @@ module.exports = {
   memberHasStaffRole: staffRoles.memberHasStaffRole,
   memberHasSeniorStaffRole: staffRoles.memberHasSeniorStaffRole,
   getStaffRole: staffRoles.getStaffRole,
+
+  // command permission OAuth (slash visibility sync)
+  getCommandPermissionOauth: commandPermissionOauth.getCommandPermissionOauth,
+  upsertCommandPermissionOauth:
+    commandPermissionOauth.upsertCommandPermissionOauth,
+  updateCommandPermissionAccessToken:
+    commandPermissionOauth.updateCommandPermissionAccessToken,
+  setCommandPermissionSyncResult:
+    commandPermissionOauth.setCommandPermissionSyncResult,
+  deleteCommandPermissionOauth:
+    commandPermissionOauth.deleteCommandPermissionOauth,
+  hasCommandPermissionOauth: commandPermissionOauth.hasCommandPermissionOauth,
 
   // honeypot (exempt-role aliases → same table as staff_roles)
   addHoneypotChannel: honeypot.addHoneypotChannel,

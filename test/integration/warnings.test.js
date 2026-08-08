@@ -179,7 +179,7 @@ describe("integration: warnings", () => {
     assertReplyContains(mine, /Mine-visible|active/i);
   });
 
-  it("/setwarn dm requires ManageGuild", async () => {
+  it("/setwarn dm requires staff gate", async () => {
     const denied = await env.runCommand({
       commandName: "setwarn",
       subcommand: "dm",
@@ -189,14 +189,26 @@ describe("integration: warnings", () => {
     });
     assertEphemeralReply(denied, /permission/i);
 
-    const ok = await env.runCommand({
+    // Staff role (no ManageGuild) can configure
+    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "junior");
+    const staffMember = env.createMember({
+      guild: env.guild,
+      user: env.users.memberUser,
+      admin: false,
+      roleIds: [IDS.roleExempt],
+    });
+    env.guild.addMember(staffMember);
+
+    const okStaff = await env.runCommand({
       commandName: "setwarn",
       subcommand: "dm",
-      admin: true,
+      admin: false,
+      user: env.users.memberUser,
+      member: staffMember,
       options: { enabled: false },
     });
-    assertEphemeralReply(ok);
-    assertReplyContains(ok, /disabled|off/i);
+    assertEphemeralReply(okStaff);
+    assertReplyContains(okStaff, /disabled|off/i);
     assert.equal(Number(env.db.getGuildSettings(env.guild.id).warn_dm_members), 0);
 
     await env.runCommand({

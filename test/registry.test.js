@@ -61,6 +61,7 @@ describe("buildDefaultRegistry", () => {
       "reactionRoles",
       "eventReminders",
       "staffRoles",
+      "commandPermissions",
       "staffNotes",
       "warnings",
       "userinfo",
@@ -69,7 +70,7 @@ describe("buildDefaultRegistry", () => {
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 17);
+    assert.equal(features.length, 18);
   });
 
   it("registers userinfo button handler", () => {

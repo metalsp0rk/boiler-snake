@@ -13,14 +13,14 @@ const { syncMemberRoles } = require("../levelRoles/sync");
 const { syncMemberReactionRoles } = require("../reactionRoles/service");
 const { logLevelRoleChanges, logConfigChange, diffConfigLines } = require("../logs/auditLog");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 const DECAY_CRON = "0 4 * * *";
 
 const commands = [
   new SlashCommandBuilder()
     .setName("setdecay")
     .setDescription("Configure decay for this guild.")
-    .setDefaultMemberPermissions(adminPerms)
+    .setDefaultMemberPermissions(staffPerms)
     .addBooleanOption((opt) =>
       opt.setName("enabled").setDescription("Enable/disable decay").setRequired(false)
     )

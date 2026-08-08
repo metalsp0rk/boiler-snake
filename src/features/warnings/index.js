@@ -3,7 +3,7 @@
  *
  * Slash: /warn add|list|info|void|count|mine|settings, /setwarn dm|log
  * Staff ops: requireStaff. /warn mine: any member (own history).
- * /setwarn: ManageGuild only.
+ * /setwarn: staff gate (requireStaff).
  */
 
 const {
@@ -25,10 +25,10 @@ const {
   updateGuildSettings,
   MAX_WARN_REASON,
 } = require("../../db");
-const { requireStaff, requireAdmin } = require("../../core/permissions");
+const { requireStaff } = require("../../core/permissions");
 const { logConfigChange, logWarnEvent } = require("../logs/auditLog");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 /** Default page size for /warn list */
 const LIST_PAGE_SIZE = 10;
@@ -164,7 +164,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("setwarn")
     .setDescription("Configure warning system guild settings.")
-    .setDefaultMemberPermissions(adminPerms)
+    .setDefaultMemberPermissions(staffPerms)
     .addSubcommand((sc) =>
       sc
         .setName("dm")
@@ -315,7 +315,7 @@ async function handleWarn(interaction, ctx) {
  * @param {object} [ctx]
  */
 async function handleSetwarn(interaction, ctx) {
-  if (!(await requireAdmin(interaction))) return;
+  if (!(await requireStaff(interaction))) return;
 
   const sub = interaction.options.getSubcommand();
   if (sub === "dm") return handleSetDm(interaction, ctx);

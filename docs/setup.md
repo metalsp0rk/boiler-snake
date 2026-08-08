@@ -71,9 +71,15 @@ DEV_GUILD_ID=YOUR_TEST_GUILD_ID  # For development
 # DATA_DIR=/data
 # DB_PATH=/data/xpbot.sqlite
 
-# Ticket HTML transcripts (optional) — see tickets.md
+# Public HTTP: ticket transcripts + command-visibility OAuth callback
+# CLIENT_SECRET=YOUR_DISCORD_CLIENT_SECRET
+# PUBLIC_HTTP_PORT=8080
+# PUBLIC_BASE_URL=https://bot.example.com
 # TICKET_HTTP_PORT=8080
-# TICKET_PUBLIC_BASE_URL=https://tickets.example.com
+# TICKET_PUBLIC_BASE_URL=https://bot.example.com
+# Developer Portal OAuth2 redirect:
+#   https://bot.example.com/oauth/command-permissions/callback
+# Then: /staff syncpermissions (see staff-roles.md)
 ```
 
 ### Get DEV_GUILD_ID

@@ -41,10 +41,10 @@ Configure: `/staff role add role level`, `/staff role setlevel`, `/staff role li
 1. Give the bot **Manage Channels** (and keep **Manage Roles** if you use level/reaction roles). Without Manage Channels, Discord returns `50013 Missing Permissions` on create.
 2. Put the **bot role above** every staff role in Server Settings → Roles. Discord will not let the bot set overwrites for higher roles.
 3. Add staff roles: `/staff role add role:<role> level:senior` so mods see ticket channels (and pass the command gate). Use `level:junior` for helpers who can run staff commands but should **not** auto-see every ticket.
-4. Optional category: `/ticket setcategory` (Manage Server). Ensure the bot is allowed to create channels under that category.
+4. Optional category: `/ticket setcategory` (staff). Ensure the bot is allowed to create channels under that category.
 5. Archive channel (staff-only in Discord perms): `/ticket setarchive`.
 6. Optional rate limit: `/ticket setratelimit` (default **60** minutes; `0` = off).
-7. Optional public entry panel: `/ticket panel` (Manage Server) — posts an embed with **Open a ticket** → modal for the description (same pipeline and rate limit as `/ticket create`).
+7. Optional public entry panel: `/ticket panel` (staff) — posts an embed with **Open a ticket** → modal for the description (same pipeline and rate limit as `/ticket create`).
 8. Optional transcript HTTP (for clickable HTML links + staff index):
 
 ```bash
@@ -108,7 +108,7 @@ Without an API key, archives use a stats + close-reason fallback summary.
 
 Lifecycle commands work **inside the ticket channel** even if command-channel restrictions are set.
 
-### Admin (Manage Server)
+### Config (staff gate)
 
 | Command | Description |
 |---------|-------------|
@@ -119,7 +119,7 @@ Lifecycle commands work **inside the ticket channel** even if command-channel re
 
 ## Ticket panel (button → modal)
 
-1. Admin runs `/ticket panel` in (or targeting) a public channel.
+1. Staff runs `/ticket panel` in (or targeting) a public channel.
 2. The bot posts an embed with a persistent **Open a ticket** button.
 3. Members click the button → Discord modal asks for a short description.
 4. On submit, the bot runs the same self-create pipeline as `/ticket create` (rate limit, channel, overwrites, welcome embed).

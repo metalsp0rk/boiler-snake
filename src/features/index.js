@@ -14,6 +14,7 @@ module.exports = [
   require("./reactionRoles"),
   require("./eventReminders"),
   require("./staffRoles"),
+  require("./commandPermissions"),
   require("./staffNotes"),
   require("./warnings"),
   require("./userinfo"),

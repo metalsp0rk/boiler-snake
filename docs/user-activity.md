@@ -10,7 +10,7 @@ This is **independent of XP**. Cooldowns do not apply; every human guild message
 |---------|-----|
 | `/userinfo` Overview / Notes / Warnings | Any **[staff](staff-roles.md)** (`Manage Server` or any `staff_roles` level) |
 | `/userinfo` → **Activity** tab | **Senior** staff only (`Manage Server` or a **senior** staff role) — see [staff roles](staff-roles.md) |
-| `/activityconfig` | **Manage Server** only |
+| `/activityconfig` | **Staff gate** (Manage Server or any staff role) |
 
 Junior staff see the Activity button but get a clear denial if they click it.
 
@@ -90,7 +90,7 @@ Discord bots cannot “search the guild for one user’s messages.” History mu
 /activityconfig backfill all max_pages:100
 ```
 
-**Manage Server** only.
+**Staff gate** (Manage Server or any staff role).
 
 | Option | Default | Range | Meaning |
 |--------|---------|-------|---------|

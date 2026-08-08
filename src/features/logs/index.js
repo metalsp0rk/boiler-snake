@@ -13,13 +13,13 @@ const {
   diffConfigLines,
 } = require("./auditLog");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const commands = [
   new SlashCommandBuilder()
       .setName("setlog")
-      .setDescription("Configure audit log and message log channels (admin only).")
-      .setDefaultMemberPermissions(adminPerms)
+      .setDescription("Configure audit log and message log channels (staff).")
+      .setDefaultMemberPermissions(staffPerms)
       .addSubcommand((sc) => {
         const sub = sc
           .setName("audit")

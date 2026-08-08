@@ -29,7 +29,7 @@ DMs use the **role name** (not a `<@&role>` mention), because Discord does not r
 
 ## Commands
 
-All subcommands require **Manage Server** (`ManageGuild`).
+All subcommands require the **staff gate** (Manage Server **or** a configured staff role).
 
 ### Panels
 

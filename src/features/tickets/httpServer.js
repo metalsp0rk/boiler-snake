@@ -1,7 +1,8 @@
 /**
- * Minimal HTTP server for staff ticket transcripts:
+ * Minimal HTTP server for:
  *   GET /t          — index of archived tickets
  *   GET /t/{uuid}   — single HTML transcript
+ *   GET /oauth/command-permissions/callback — slash visibility OAuth
  */
 
 const http = require("http");
@@ -20,6 +21,12 @@ const {
   resolveAssetAbsolutePath,
   contentTypeForFilename,
 } = require("./assets");
+const {
+  getPublicHttpConfig,
+} = require("../commandPermissions/config");
+const {
+  handleCommandPermissionOAuthCallback,
+} = require("../commandPermissions/httpCallback");
 
 /** @type {import("http").Server|null} */
 let server = null;
@@ -30,18 +37,7 @@ const PAGE_SIZE = 50;
  * @returns {{ port: number|null, publicBaseUrl: string|null }}
  */
 function getHttpConfig() {
-  const portRaw = process.env.TICKET_HTTP_PORT;
-  const port =
-    portRaw != null && String(portRaw).trim() !== ""
-      ? Number(portRaw)
-      : null;
-  const publicBaseUrl = process.env.TICKET_PUBLIC_BASE_URL
-    ? String(process.env.TICKET_PUBLIC_BASE_URL).replace(/\/$/, "")
-    : null;
-  return {
-    port: Number.isFinite(port) && port > 0 ? port : null,
-    publicBaseUrl,
-  };
+  return getPublicHttpConfig();
 }
 
 /**
@@ -66,29 +62,31 @@ function startTicketHttpServer() {
   const { port } = getHttpConfig();
   if (!port) {
     console.log(
-      "[tickets] Transcript HTTP server disabled (set TICKET_HTTP_PORT to enable)."
+      "[http] Public HTTP server disabled (set PUBLIC_HTTP_PORT or TICKET_HTTP_PORT to enable transcripts + OAuth)."
     );
     return null;
   }
   if (server) return server;
 
   server = http.createServer((req, res) => {
-    try {
-      handleRequest(req, res);
-    } catch (err) {
-      console.error("[tickets] HTTP handler error:", err);
-      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Internal error");
-    }
+    Promise.resolve()
+      .then(() => handleRequest(req, res))
+      .catch((err) => {
+        console.error("[http] handler error:", err);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Internal error");
+        }
+      });
   });
 
   server.on("error", (err) => {
-    console.error("[tickets] HTTP server error:", err?.message || err);
+    console.error("[http] server error:", err?.message || err);
   });
 
   server.listen(port, () => {
     console.log(
-      `[tickets] Transcript HTTP listening on port ${port} (index: /t)`
+      `[http] Listening on port ${port} (transcripts: /t · OAuth: /oauth/command-permissions/callback)`
     );
   });
 
@@ -237,7 +235,7 @@ function renderArchiveIndexHtml(opts) {
  * @param {import("http").IncomingMessage} req
  * @param {import("http").ServerResponse} res
  */
-function handleRequest(req, res) {
+async function handleRequest(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Method not allowed");
@@ -249,6 +247,15 @@ function handleRequest(req, res) {
   if (url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
     res.end(req.method === "HEAD" ? undefined : "ok");
+    return;
+  }
+
+  // OAuth callback for slash command visibility sync
+  if (
+    url.pathname === "/oauth/command-permissions/callback" ||
+    url.pathname === "/oauth/command-permissions/callback/"
+  ) {
+    await handleCommandPermissionOAuthCallback(req, res, url);
     return;
   }
 

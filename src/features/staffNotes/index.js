@@ -30,7 +30,7 @@ const {
 const { requireStaff } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 /** Default page size for /note list */
 const LIST_PAGE_SIZE = 10;
@@ -49,7 +49,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("note")
     .setDescription("Private staff notes about members (staff only).")
-    .setDefaultMemberPermissions(adminPerms)
+    .setDefaultMemberPermissions(staffPerms)
     .addSubcommand((sc) =>
       sc
         .setName("add")

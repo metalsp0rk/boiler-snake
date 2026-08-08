@@ -280,11 +280,15 @@ See [Leaderboard Rendering](leaderboard.md).
 
 **A**: Most staff/config features use **`requireStaff`**: you need **Manage Server** **or** any role registered with `/staff role add` (junior or senior).
 
-- Manage Server–only examples: `/setwarn`, ticket `set*`, `/activityconfig`, staff-role edits
+- Manage Server–only examples: staff-role edits (`/staff role add|remove|setlevel`), `/staff syncpermissions`, `/setcommandchannel`, `/honeypot exempt`
 - Public examples: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create`
 
 Configure roles: `/staff role add role:@Mod level:senior` (or `junior`).  
 Guide: [Staff Roles](staff-roles.md).
+
+### Q: Staff have the role but can't see slash commands in `/`
+
+**A**: Discord’s command picker is separate from bot handler checks. Staff-tier commands default to **Manage Server** visibility. An admin should run **`/staff syncpermissions`** (OAuth once per guild) so each `staff_roles` role is allowed in Discord. Operators need `CLIENT_SECRET` + a public HTTP URL (same host as ticket transcripts is fine). Details: [Command visibility sync](staff-roles.md#command-visibility-sync-optional).
 
 ---
 

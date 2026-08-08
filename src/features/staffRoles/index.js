@@ -21,9 +21,18 @@ const {
   listStaffRoles,
   getStaffRole,
   normalizeStaffLevel,
+  hasCommandPermissionOauth,
+  getCommandPermissionOauth,
 } = require("../../db");
 const { isAdminOrMod, isStaff } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
+const {
+  getCommandPermissionOAuthConfig,
+  createOAuthState,
+  buildAuthorizeUrl,
+  applyGuildCommandPermissions,
+  maybeAutoSyncCommandPermissions,
+} = require("../commandPermissions");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -93,6 +102,19 @@ const commands = [
       sc
         .setName("settings")
         .setDescription("Show staff role configuration and what it controls.")
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("syncpermissions")
+        .setDescription(
+          "Sync slash-command visibility so staff roles see staff tools (OAuth)."
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("force_reauth")
+            .setDescription("Always open a new authorize link")
+            .setRequired(false)
+        )
     ),
 ];
 
@@ -112,6 +134,7 @@ async function handleStaff(interaction, ctx) {
   }
 
   if (sub === "settings") return handleSettings(interaction);
+  if (sub === "syncpermissions") return handleSyncPermissions(interaction);
 
   await interaction.reply({
     content: `Unknown subcommand: \`/staff ${subGroup || ""} ${sub || ""}\``,
@@ -178,9 +201,14 @@ async function handleRoleAdd(interaction, ctx) {
       (existing
         ? `Updated ${role} to **${level}** staff.`
         : `Added ${role} as **${level}** staff.`) +
-      `\nMembers with this role pass the staff gate and are honeypot-exempt.\n${ticketNote}`,
+      `\nMembers with this role pass the staff gate and are honeypot-exempt.\n${ticketNote}` +
+      (hasCommandPermissionOauth(interaction.guildId)
+        ? "\n_Refreshing slash-command visibility…_"
+        : "\n_Tip: run `/staff syncpermissions` so this role can **see** staff slash commands._"),
     flags: MessageFlags.Ephemeral,
   });
+
+  void maybeAutoSyncCommandPermissions(interaction.guildId);
 }
 
 /**
@@ -214,6 +242,8 @@ async function handleRoleRemove(interaction, ctx) {
       : `${role} is not a configured staff role.`,
     flags: MessageFlags.Ephemeral,
   });
+
+  if (removed) void maybeAutoSyncCommandPermissions(interaction.guildId);
 }
 
 /**
@@ -271,6 +301,10 @@ async function handleRoleSetLevel(interaction, ctx) {
         : "They no longer get automatic ticket visibility. Existing open tickets still need an overwrite refresh (e.g. claim/sensitive/close) to drop the old role allow."),
     flags: MessageFlags.Ephemeral,
   });
+
+  // Levels don't change Discord command overwrites (all staff roles get allows),
+  // but keep auto-sync for consistency if operators expect it.
+  void maybeAutoSyncCommandPermissions(interaction.guildId);
 }
 
 /**
@@ -317,6 +351,129 @@ async function handleRoleList(interaction) {
 /**
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  */
+async function handleSyncPermissions(interaction) {
+  if (!isAdminOrMod(interaction)) {
+    await interaction.reply({
+      content:
+        "Only server administrators (Manage Server) can sync command visibility.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const cfg = getCommandPermissionOAuthConfig();
+  if (!cfg.ready) {
+    await interaction.reply({
+      content:
+        "**Command visibility sync is not configured on this bot.**\n\n" +
+        "Operators need:\n" +
+        cfg.missing.map((m) => `• \`${m}\``).join("\n") +
+        "\n\nAlso add the OAuth2 redirect URI in the Discord Developer Portal:\n" +
+        `\`${cfg.redirectUri || "https://your-public-host/oauth/command-permissions/callback"}\`\n\n` +
+        "Handlers still enforce staff permissions even without sync.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const forceReauth = !!interaction.options.getBoolean("force_reauth");
+  const guildId = interaction.guildId;
+  const hasToken = hasCommandPermissionOauth(guildId);
+
+  if (!hasToken || forceReauth) {
+    let url;
+    try {
+      const state = createOAuthState({
+        guildId,
+        userId: interaction.user.id,
+      });
+      url = buildAuthorizeUrl(state);
+    } catch (err) {
+      await interaction.reply({
+        content: `Could not build authorize URL: ${err?.message || err}`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    await interaction.reply({
+      content:
+        "**Authorize command visibility sync**\n\n" +
+        "1. Click the link below (you need **Manage Server** + **Manage Roles**).\n" +
+        "2. Approve the app permission to update command permissions.\n" +
+        "3. The bot will allow each configured staff role to see staff slash commands.\n\n" +
+        `[Authorize Boiler Snake](${url})\n\n` +
+        `_Redirect: \`${cfg.redirectUri}\`_\n` +
+        "After authorizing, staff without Manage Server should see tools like `/note` and `/setxp` in the `/` menu.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const result = await applyGuildCommandPermissions(guildId);
+    const oauth = getCommandPermissionOauth(guildId);
+    const parts = [
+      `**Synced slash-command visibility** for this server.`,
+      `Staff roles applied: **${result.roleCount}**`,
+      `Commands updated: **${result.updated.length}**` +
+        (result.updated.length
+          ? ` (\`${result.updated.slice(0, 8).join("`, `")}\`${
+              result.updated.length > 8 ? "…" : ""
+            })`
+          : ""),
+    ];
+    if (result.missingCommands.length) {
+      parts.push(
+        `Not registered yet: \`${result.missingCommands.join("`, `")}\` — run \`npm run register\`.`
+      );
+    }
+    if (result.failed.length) {
+      parts.push(
+        `**Failed:** ${result.failed
+          .map((f) => `\`${f.name}\` (${f.error})`)
+          .join("; ")
+          .slice(0, 800)}`
+      );
+      parts.push("Try `/staff syncpermissions force_reauth:true` if auth expired.");
+    }
+    if (oauth?.last_sync_at) {
+      parts.push(`Last sync: <t:${Math.floor(oauth.last_sync_at / 1000)}:R>`);
+    }
+    await interaction.editReply({ content: parts.join("\n") });
+  } catch (err) {
+    const code = err?.code;
+    if (code === "reauth_required" || code === "not_authorized") {
+      let url = null;
+      try {
+        const state = createOAuthState({
+          guildId,
+          userId: interaction.user.id,
+        });
+        url = buildAuthorizeUrl(state);
+      } catch {
+        /* ignore */
+      }
+      await interaction.editReply({
+        content:
+          "Authorization missing or expired. " +
+          (url
+            ? `Re-authorize here: [Authorize Boiler Snake](${url})`
+            : "Run `/staff syncpermissions force_reauth:true`."),
+      });
+      return;
+    }
+    await interaction.editReply({
+      content: `Sync failed: ${err?.message || err}`,
+    });
+  }
+}
+
+/**
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ */
 async function handleSettings(interaction) {
   if (!isStaff(interaction)) {
     await interaction.reply({
@@ -329,6 +486,14 @@ async function handleSettings(interaction) {
   const rows = listStaffRoles(interaction.guildId);
   const seniors = rows.filter((r) => normalizeStaffLevel(r.level) === "senior");
   const juniors = rows.filter((r) => normalizeStaffLevel(r.level) === "junior");
+  const oauth = getCommandPermissionOauth(interaction.guildId);
+  const syncLine = oauth
+    ? `Command visibility sync: **authorized**` +
+      (oauth.last_sync_at
+        ? ` · last sync <t:${Math.floor(oauth.last_sync_at / 1000)}:R>`
+        : "") +
+      (oauth.last_sync_error ? ` · ⚠ last error recorded` : "")
+    : `Command visibility sync: **not authorized** — admin: \`/staff syncpermissions\``;
 
   await interaction.reply({
     content:
@@ -337,9 +502,10 @@ async function handleSettings(interaction) {
       `Admin gate: Manage Server **or** any staff role (junior or senior)\n` +
       `Honeypot exemption: any staff role (not bare Manage Server)\n` +
       `Ticket channel visibility: **senior** roles only (+ named staff on a ticket)\n` +
+      `${syncLine}\n` +
       `Only Manage Server can add/remove/setlevel staff roles.\n` +
       `\n**Used by:** admin gate, honeypot exemption, tickets (senior overwrites), notes, warnings\n` +
-      `\n**Commands:** \`/staff role add\` · \`setlevel\` · \`remove\` · \`list\``,
+      `\n**Commands:** \`/staff role add\` · \`setlevel\` · \`remove\` · \`list\` · \`syncpermissions\``,
     flags: MessageFlags.Ephemeral,
   });
 }

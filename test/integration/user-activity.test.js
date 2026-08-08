@@ -119,7 +119,7 @@ describe("integration: user activity", () => {
     assertEphemeralReply(status, /Activity tracking|Live collect/i);
   });
 
-  it("/activityconfig denies non-admin", async () => {
+  it("/activityconfig denies non-staff", async () => {
     const interaction = await env.runCommand({
       commandName: "activityconfig",
       subcommand: "status",

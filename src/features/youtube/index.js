@@ -22,13 +22,13 @@ const {
   fetchYouTubeFeed,
 } = require("./ticker");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const commands = [
   new SlashCommandBuilder()
       .setName("youtube")
-      .setDescription("Manage YouTube channel subscriptions (admin only).")
-      .setDefaultMemberPermissions(adminPerms)
+      .setDescription("Manage YouTube channel subscriptions (staff).")
+      .setDefaultMemberPermissions(staffPerms)
       .addSubcommand((sc) =>
         sc
           .setName("add")
@@ -57,8 +57,8 @@ const commands = [
 
   new SlashCommandBuilder()
       .setName("setyoutube")
-      .setDescription("Configure YouTube notification settings (admin only).")
-      .setDefaultMemberPermissions(adminPerms)
+      .setDescription("Configure YouTube notification settings (staff).")
+      .setDefaultMemberPermissions(staffPerms)
       .addSubcommand((sc) => {
         const sub = sc.setName("channel").setDescription("Set channel for YouTube notifications.");
         sub.addChannelOption((opt) =>
@@ -94,8 +94,8 @@ const commands = [
 
   new SlashCommandBuilder()
       .setName("testnotification")
-      .setDescription("Send a test notification for a YouTube channel (admin only).")
-      .setDefaultMemberPermissions(adminPerms)
+      .setDescription("Send a test notification for a YouTube channel (staff).")
+      .setDefaultMemberPermissions(staffPerms)
       .addStringOption((opt) =>
         opt
           .setName("channel")

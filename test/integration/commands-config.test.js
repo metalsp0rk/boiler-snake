@@ -125,7 +125,7 @@ describe("integration: config commands", () => {
     assertReplyContains(interaction, IDS.channelLog);
   });
 
-  it("config commands deny non-admin", async () => {
+  it("config commands deny non-staff", async () => {
     for (const commandName of [
       "setcommandchannel",
       "setdecay",
@@ -139,7 +139,37 @@ describe("integration: config commands", () => {
         user: env.users.memberUser,
         options: commandName === "setdecay" ? { enabled: true } : {},
       });
-      assertEphemeralReply(interaction, /permission/i);
+      assertEphemeralReply(interaction, /permission|administrators/i);
     }
+  });
+
+  it("staff can use setdecay but not setcommandchannel", async () => {
+    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "junior");
+    const staffMember = env.createMember({
+      guild: env.guild,
+      user: env.users.memberUser,
+      admin: false,
+      roleIds: [IDS.roleExempt],
+    });
+    env.guild.addMember(staffMember);
+
+    const decay = await env.runCommand({
+      commandName: "setdecay",
+      admin: false,
+      user: env.users.memberUser,
+      member: staffMember,
+      options: { enabled: true },
+    });
+    assertEphemeralReply(decay);
+    assertReplyContains(decay, /Decay|enabled|updated/i);
+
+    const setcmd = await env.runCommand({
+      commandName: "setcommandchannel",
+      subcommand: "list",
+      admin: false,
+      user: env.users.memberUser,
+      member: staffMember,
+    });
+    assertEphemeralReply(setcmd, /administrators|permission/i);
   });
 });

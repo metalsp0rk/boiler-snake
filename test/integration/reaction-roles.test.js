@@ -32,7 +32,7 @@ describe("integration: reaction roles", () => {
     assert.ok(interaction.replies.length >= 1);
   });
 
-  it("/reactionrole denies non-admin", async () => {
+  it("/reactionrole denies non-staff", async () => {
     const interaction = await env.runCommand({
       commandName: "reactionrole",
       subcommandGroup: "panel",

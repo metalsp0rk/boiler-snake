@@ -8,13 +8,13 @@ const { isStaff } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { syncMemberRoles } = require("./sync");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const commands = [
   new SlashCommandBuilder()
     .setName("leveltorole")
     .setDescription("Map a role to a level requirement (and drop grace days).")
-    .setDefaultMemberPermissions(adminPerms)
+    .setDefaultMemberPermissions(staffPerms)
     .addSubcommand((sc) =>
       sc
         .setName("set")

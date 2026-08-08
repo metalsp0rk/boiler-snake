@@ -52,12 +52,14 @@ Changing a role between junior and senior does **not** instantly rewrite every o
 | `/staff role add role:<role> level:<junior\|senior>` | Trust a role as staff. If the role is already listed, updates its level. |
 | `/staff role remove role:<role>` | Remove a role from the staff list (drops gate, honeypot exempt, and future ticket overwrites). |
 | `/staff role setlevel role:<role> level:<junior\|senior>` | Change junior ↔ senior for an existing staff role. |
+| `/staff syncpermissions` | OAuth + sync Discord slash-command **visibility** for staff roles (see below). |
 
 ```bash
 /staff role add role:@Moderator level:senior
 /staff role add role:@Trial-Mod level:junior
 /staff role setlevel role:@Trial-Mod level:senior
 /staff role remove role:@Old-Staff
+/staff syncpermissions
 ```
 
 ### Read-only (staff gate)
@@ -65,9 +67,23 @@ Changing a role between junior and senior does **not** instantly rewrite every o
 | Command | Description |
 |---------|-------------|
 | `/staff role list` | List trusted staff roles grouped by senior / junior |
-| `/staff settings` | Counts + what staff roles control |
+| `/staff settings` | Counts + what staff roles control (includes sync status) |
 
 Replies are **ephemeral**.
+
+## Command visibility sync (optional)
+
+Handlers always enforce the staff gate. Discord’s `/` picker is separate: staff-tier commands default to **Manage Server** visibility. To also show them to configured staff roles **without** Manage Server, run a one-time OAuth sync per guild.
+
+1. Operator sets `CLIENT_SECRET`, public HTTP (`PUBLIC_HTTP_PORT` / `PUBLIC_BASE_URL` or ticket aliases), and registers the OAuth2 redirect  
+   `https://your-host/oauth/command-permissions/callback` in the Discord Developer Portal.
+2. Admin runs `/staff syncpermissions` and opens the **Authorize** link (needs Manage Server + Manage Roles).
+3. The bot stores a refresh token and sets per-command role **allow** overwrites for every role in `staff_roles`.
+4. Later `/staff role add|remove` re-syncs automatically when a token is stored. Use `force_reauth:true` if auth expired.
+
+**Not synced (by design):** public commands (`/xp`, `/warn`, `/ticket`, …) and Manage Server–only commands (`/staff`, `/setcommandchannel`). Mixed commands stay fully visible; staff subcommands are still gated in code.
+
+Guild admins can still override visibility under **Server Settings → Integrations**.
 
 ## Permission gates (feature map)
 
@@ -75,9 +91,9 @@ Three gates appear across the bot:
 
 | Gate | Who passes | Typical use |
 |------|------------|-------------|
-| **Staff** (`requireStaff` / `isStaff`) | Manage Server **or** any `staff_roles` level | Notes, warning ops, ticket staff ops, `/userinfo` Overview/Notes/Warnings, `/staff role list` / `settings` |
+| **Staff** (`requireStaff` / `isStaff`) | Manage Server **or** any `staff_roles` level | Notes, warnings (incl. `/setwarn`), ticket ops (incl. panel/set*), `/activityconfig`, honeypot channel/banrole, XP/YouTube/decay/logs/reaction-roles, `/userinfo` Overview/Notes/Warnings, `/staff role list` / `settings` |
 | **Senior** (`requireSeniorStaff` / `isSeniorStaff`) | Manage Server **or** a **senior** staff role | `/userinfo` → **Activity** tab (and related activity controls) |
-| **Manage Server** (`requireAdmin` / `isAdminOrMod`) | Manage Server only | Staff role add/remove/setlevel; `/setwarn`; ticket `set*` / panel; `/activityconfig`; **honeypot config**; `/eventreminder setchannel`. *(Most XP/YouTube/decay/log/reaction-role config uses the **staff** gate, not this one.)* |
+| **Manage Server** (`requireAdmin` / `isAdminOrMod`) | Manage Server only | Staff role add/remove/setlevel; **`/staff syncpermissions`**; **`/setcommandchannel`**; **`/honeypot exempt`** (alias for staff-role mutations) |
 
 ### Feature summary
 
@@ -86,16 +102,18 @@ Three gates appear across the bot:
 | [Staff notes](staff-notes.md) (`/note *`) | Staff |
 | [Warnings](warnings.md) staff ops (`/warn add\|list\|…`) | Staff |
 | `/warn mine` | Any member (own history) |
-| `/setwarn *` | Manage Server |
+| `/setwarn *` | Staff |
 | [Tickets](tickets.md) staff ops (`claim`, `close`, `for`, …) | Staff |
 | Ticket channel **view** overwrites | **Senior** staff roles (+ named staff / members on that ticket) |
-| Ticket `setcategory` / `setarchive` / `setratelimit` / `panel` | Manage Server |
+| Ticket `setcategory` / `setarchive` / `setratelimit` / `panel` | Staff |
 | `/userinfo` Overview / Notes / Warnings | Staff |
 | [User activity](user-activity.md) (`/userinfo` Activity) | **Senior** |
-| `/activityconfig` | Manage Server |
+| `/activityconfig` | Staff |
 | [Honeypot](honeypot.md) exemption | Any staff role (not bare Manage Server) |
-| Honeypot config (`/honeypot channel\|banrole\|exempt …`) | Manage Server only (not staff gate) |
-| XP/config (`/settings`, `/setxp`, `/setdecay`, `/setlog`, `/leveltorole`, YouTube, reaction roles, `/setcommandchannel`) | Staff gate (handlers); Discord may hide behind Manage Server |
+| Honeypot config (`/honeypot channel\|banrole`) | Staff |
+| Honeypot exempt (`/honeypot exempt …`) | Manage Server only (mutates `staff_roles`) |
+| XP/config (`/settings`, `/setxp`, `/setdecay`, `/setlog`, `/leveltorole`, YouTube, reaction roles) | Staff |
+| `/setcommandchannel` | Manage Server only |
 | Public `/xp`, `/leaderboard`, `/ticket create` | Everyone (subject to command-channel rules) |
 
 There are **no** per-feature staff tables (no `warn_access_roles`, no notes-only roles). Everything shares `staff_roles`.

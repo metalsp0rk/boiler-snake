@@ -166,7 +166,7 @@ sequenceDiagram
 | Action | Who |
 |--------|-----|
 | Create / edit / clear / sync for an event | **Manage Guild** **or** that scheduled event’s **creator** |
-| Set default notify channel | **Manage Guild** only |
+| Set default notify channel | **Staff gate** (Manage Server or any staff role) |
 | Opt out / opt in / mute / unmute / status | Everyone |
 
 Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and ability to mention the role by ID) in the notify channel. Enable the **Guild Scheduled Events** intent in the Developer Portal.

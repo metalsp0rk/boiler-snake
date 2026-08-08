@@ -502,7 +502,7 @@ describe("integration: tickets", () => {
     assertReplyContains(addBot, /bot/i);
   });
 
-  it("/ticket setcategory / setarchive / setratelimit require admin", async () => {
+  it("/ticket setcategory / setarchive / setratelimit require staff", async () => {
     const denied = await env.runCommand({
       commandName: "ticket",
       subcommand: "setratelimit",
@@ -511,6 +511,30 @@ describe("integration: tickets", () => {
       options: { minutes: 30 },
     });
     assertEphemeralReply(denied, /permission/i);
+
+    // Staff role (no ManageGuild) can configure
+    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "junior");
+    const staffMember = env.createMember({
+      guild: env.guild,
+      user: env.users.memberUser,
+      admin: false,
+      roleIds: [IDS.roleExempt],
+    });
+    env.guild.addMember(staffMember);
+
+    const okStaff = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "setratelimit",
+      admin: false,
+      user: env.users.memberUser,
+      member: staffMember,
+      options: { minutes: 45 },
+    });
+    assertEphemeralReply(okStaff);
+    assert.equal(
+      env.db.getTicketSettings(env.guild.id).ticket_rate_limit_minutes,
+      45
+    );
 
     const ok = await env.runCommand({
       commandName: "ticket",
@@ -713,7 +737,7 @@ describe("integration: tickets", () => {
     assert.ok(notes.some((n) => n.content.includes(body)));
   });
 
-  it("/ticket panel posts embed + Open ticket button (admin only)", async () => {
+  it("/ticket panel posts embed + Open ticket button (staff)", async () => {
     const denied = await env.runCommand({
       commandName: "ticket",
       subcommand: "panel",

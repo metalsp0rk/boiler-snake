@@ -327,7 +327,7 @@ Self-serve emoji panels with optional min-level gates. Full guide: [Reaction Rol
 /reactionrole option add message_id:… role:@Announcements level:0 removable:true
 ```
 
-Requires **Manage Server**. Bot needs **Manage Roles** (and **Manage Messages** to strip unconfigured reactions).
+Requires the **staff gate** (Manage Server or a trusted staff role). Bot needs **Manage Roles** (and **Manage Messages** to strip unconfigured reactions).
 
 ### Help Tickets (brief)
 
@@ -360,7 +360,7 @@ Pre-event pings for members who marked **Interested** on a Discord scheduled eve
 | **Staff notes** | `/note add`, `/note list`, … | [Staff Notes](staff-notes.md) |
 | **Warnings** | `/warn issue`, `/warn mine`, `/setwarn` | [Warning System](warnings.md) |
 
-Notes are private staff context; warnings are formal permanent records (voidable). Both use the staff gate (Manage Server or a trusted staff role). `/setwarn` is Manage Server–only.
+Notes are private staff context; warnings are formal permanent records (voidable). Both use the staff gate (Manage Server or a trusted staff role), including `/setwarn`.
 
 ### User Activity Config
 
@@ -372,7 +372,7 @@ Ignore channels/categories and backfill post rankings used by `/userinfo` **Acti
 /activityconfig status
 ```
 
-`/activityconfig` requires **Manage Server**.
+`/activityconfig` requires the **staff gate** (Manage Server or a trusted staff role).
 
 ---
 

@@ -72,7 +72,7 @@ describe("integration: xp commands", () => {
     assert.ok(files && files.length >= 1, "expected leaderboard image file");
   });
 
-  it("/setxp denies non-admin", async () => {
+  it("/setxp denies non-staff", async () => {
     const interaction = await env.runCommand({
       commandName: "setxp",
       admin: false,
@@ -121,7 +121,7 @@ describe("integration: xp commands", () => {
     assertReplyContains(interaction, "msg=");
   });
 
-  it("/settings denies non-admin", async () => {
+  it("/settings denies non-staff", async () => {
     const interaction = await env.runCommand({
       commandName: "settings",
       admin: false,

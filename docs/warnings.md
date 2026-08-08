@@ -58,7 +58,7 @@ All replies are **ephemeral**. Staff logs go to the configured audit channel whe
 | `/warn count user:<member>` | Active warning count (+ recent snippet) |
 | `/warn settings` | DM flag, log target, access info |
 
-### Config (Manage Server only)
+### Config (staff gate)
 
 | Command | Description |
 |---------|-------------|
@@ -114,7 +114,7 @@ Config changes (`/setwarn dm`, `/setwarn log`) always use the general audit log 
 
 | Who | Access |
 |-----|--------|
-| Manage Server | Full staff ops + `/setwarn` |
+| Manage Server or staff role | Full staff ops + `/setwarn` |
 | Guild [staff roles](staff-roles.md) (`/staff role list`) | Staff ops (`/warn add|list|…`) |
 | Any member | `/warn mine` only |
 
@@ -152,7 +152,7 @@ See [Database Schema](database.md) for indexes and migration id `009_warnings`.
 4. **DM members by default**; guild toggle + per-issue `silent`.
 5. **Member self-view** via `/warn mine` (no staff role required).
 6. **Access via guild staff roles** — no `warn_access_roles` table.
-7. **`/setwarn dm`:** Manage Server only (meta config).
+7. **`/setwarn dm`:** staff gate (same as other warn config).
 8. **Human ids** sequential per guild (`W-n`); stable forever including after void.
 9. **No auto-mod escalation** in MVP.
 10. **Audit stream:** reuse `audit_log_channel_id` when set.

@@ -27,13 +27,13 @@ const {
   syncMemberReactionRoles,
 } = require("./service");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const commands = [
   new SlashCommandBuilder()
       .setName("reactionrole")
-      .setDescription("Manage reaction-role panels (admin only).")
-      .setDefaultMemberPermissions(adminPerms)
+      .setDescription("Manage reaction-role panels (staff).")
+      .setDefaultMemberPermissions(staffPerms)
       .addSubcommandGroup((group) =>
         group
           .setName("panel")

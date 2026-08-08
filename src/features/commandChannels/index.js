@@ -4,7 +4,7 @@ const {
   removeAllowedCommandChannel,
   listAllowedCommandChannels,
 } = require("../../db");
-const { isStaff } = require("../../core/permissions");
+const { isAdminOrMod } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
@@ -38,9 +38,10 @@ const commands = [
 async function handleSetCommandChannel(interaction, ctx) {
   const { client } = ctx;
 
-  if (!isStaff(interaction)) {
+  // ManageGuild only — prevents staff from locking out admins / each other.
+  if (!isAdminOrMod(interaction)) {
     await interaction.reply({
-      content: "You don’t have permission to use this.",
+      content: "Only server administrators can configure command channels.",
       flags: MessageFlags.Ephemeral,
     });
     return;

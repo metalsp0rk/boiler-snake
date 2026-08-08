@@ -1,7 +1,7 @@
 /**
  * User channel activity feature:
  * - Live message counting (recordUserChannelMessage)
- * - /activityconfig ignore + status (ManageGuild)
+ * - /activityconfig ignore + status (staff gate)
  * - Ranking helpers used by /userinfo Activity tab
  */
 
@@ -20,7 +20,7 @@ const {
   guildActivityStats,
   normalizeIgnoreKind,
 } = require("../../db");
-const { requireAdmin } = require("../../core/permissions");
+const { requireStaff } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordUserChannelMessage } = require("./service");
 const {
@@ -30,13 +30,13 @@ const {
   getBackfillJobInfo,
 } = require("./backfill");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const commands = [
   new SlashCommandBuilder()
     .setName("activityconfig")
     .setDescription("Configure user activity tracking (ignore list, status).")
-    .setDefaultMemberPermissions(adminPerms)
+    .setDefaultMemberPermissions(staffPerms)
     .addSubcommandGroup((group) =>
       group
         .setName("ignore")
@@ -125,7 +125,7 @@ const commands = [
  * @param {object} [ctx]
  */
 async function handleActivityConfig(interaction, ctx) {
-  if (!(await requireAdmin(interaction))) return;
+  if (!(await requireStaff(interaction))) return;
 
   const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand(true);

@@ -26,11 +26,11 @@ const {
   isHoneypotBanRole,
 } = require("../../db");
 const { key } = require("../../core/cooldowns");
-const { isAdminOrMod } = require("../../core/permissions");
+const { isAdminOrMod, isStaff } = require("../../core/permissions");
 const { logConfigChange, logHoneypotTrigger } = require("../logs/auditLog");
 const { renderHoneypotWarningPng } = require("./renderWarning");
 
-const adminPerms = PermissionFlagsBits.ManageGuild;
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 // In-flight honeypot bans to avoid double-processing rapid messages
 const honeypotBanning = new Set(); // key: guildId:userId
@@ -38,8 +38,8 @@ const honeypotBanning = new Set(); // key: guildId:userId
 const commands = [
   new SlashCommandBuilder()
       .setName("honeypot")
-      .setDescription("Configure honeypot channels and ban roles (admin only).")
-      .setDefaultMemberPermissions(adminPerms)
+      .setDescription("Configure honeypot channels and ban roles (staff).")
+      .setDefaultMemberPermissions(staffPerms)
       .addSubcommandGroup((group) =>
         group
           .setName("channel")
@@ -486,18 +486,26 @@ async function handleHoneypot(interaction, ctx) {
   const { client, ensureHoneypotWarning } = ctx;
   const guildId = interaction.guildId;
   const settings = getGuildSettings(guildId);
-  const admin = isAdminOrMod(interaction);
 
-  if (!admin) {
+  const group = interaction.options.getSubcommandGroup(false);
+  const sub = interaction.options.getSubcommand();
+
+  // exempt mutates staff_roles — ManageGuild only (same as /staff role)
+  if (group === "exempt") {
+    if (!isAdminOrMod(interaction)) {
+      await interaction.reply({
+        content: "Only server administrators can manage honeypot exempt roles.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+  } else if (!isStaff(interaction)) {
     await interaction.reply({
       content: "You don't have permission to use this.",
       flags: MessageFlags.Ephemeral,
     });
     return;
   }
-
-  const group = interaction.options.getSubcommandGroup(false);
-  const sub = interaction.options.getSubcommand();
 
   // /honeypot channel [add|list|del]
   if (group === "channel") {

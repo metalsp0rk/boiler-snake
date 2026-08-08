@@ -180,9 +180,9 @@ Used by message XP, reaction XP, and voice ticker:
 | **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |
 | **staffRoles** | `/staff` role list; junior (command gate) vs senior (ticket channel overwrites); ManageGuild for mutations |
 | **staffNotes** | `/note` private staff notes (`requireStaff`) |
-| **warnings** | `/warn` issue/void/list; `/warn mine` public; `/setwarn` ManageGuild-only |
+| **warnings** | `/warn` issue/void/list; `/warn mine` public; `/setwarn` staff gate |
 | **userinfo** | Staff member card; note/warn buttons; Activity tab needs **senior** staff |
-| **userActivity** | Live per-channel counts; `/activityconfig` ignore/status/backfill (ManageGuild); feeds `/userinfo` Activity |
+| **userActivity** | Live per-channel counts; `/activityconfig` ignore/status/backfill (staff); feeds `/userinfo` Activity |
 | **tickets** | Support channels, sensitive mode, panel button→modal, HTML archive HTTP; senior roles get auto ticket view |
 
 ---
@@ -205,11 +205,13 @@ Router: `commands/router.js` → autocomplete / modal submit / button / chat inp
 | Gate | Meaning |
 |------|---------|
 | **Public** | No staff check: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` (and panel open). `/eventreminder` opt-out/status (and create for event creators). |
-| **Staff** (`requireStaff` / `isStaff`) | ManageGuild **or** any `staff_roles` role — notes, most staff ops, `/userinfo` (except Activity), ticket lifecycle, many config commands |
+| **Staff** (`requireStaff` / `isStaff`) | ManageGuild **or** any `staff_roles` role — notes, warnings, tickets (incl. panel/set*), activity config, honeypot channel/banrole, XP/YouTube/decay/logs/reaction-roles, `/userinfo` (except Activity), most config |
 | **Senior staff** (`requireSeniorStaff` / `isSeniorStaff`) | ManageGuild **or** a **senior** `staff_roles` role — `/userinfo` Activity; senior roles also receive automatic ticket channel overwrites (junior = command gate only, no auto ticket view) |
-| **ManageGuild-only** (`requireAdmin` / `isAdminOrMod`) | `/setwarn`, ticket `set*` / `panel`, `/activityconfig`, staff-role add/remove/setlevel, **`/honeypot`**, `/eventreminder setchannel` |
+| **ManageGuild-only** (`requireAdmin` / `isAdminOrMod`) | staff-role add/remove/setlevel; **`/staff syncpermissions`**; **`/setcommandchannel`**; **`/honeypot exempt`** (staff-role alias) |
 
-`/setcommandchannel` is always allowed for ManageGuild admins (lockout escape). `/ticket` inside an open (or soft-closed, not archived) ticket channel bypasses the command-channel allow-list.
+`/setcommandchannel` is ManageGuild-only and always allowed for admins even when command channels are restricted (lockout escape). `/ticket` inside an open (or soft-closed, not archived) ticket channel bypasses the command-channel allow-list.
+
+**Slash picker visibility** (`src/core/commandVisibility.js` + `src/features/commandPermissions/`): staff-tier commands register with ManageGuild `defaultMemberPermissions`. Optional OAuth (`/staff syncpermissions`, scope `applications.commands.permissions.update`) writes Discord role allow overwrites for `staff_roles` so staff without Manage Server see those commands. Public and admin-tier commands are not overwritten. Handlers remain authoritative.
 
 ---
 
