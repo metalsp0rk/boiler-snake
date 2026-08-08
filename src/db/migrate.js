@@ -24,6 +24,7 @@ const migrations = [
   require("./migrations/014_guild_activity_backfill"),
   require("./migrations/015_event_reminder_event_optouts"),
   require("./migrations/016_command_permission_oauth"),
+  require("./migrations/017_warn_post_mvp"),
 ];
 
 const helpers = {

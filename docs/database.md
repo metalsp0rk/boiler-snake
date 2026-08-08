@@ -179,6 +179,7 @@ CREATE TABLE guild_settings (
   event_reminder_channel_id TEXT,                -- default channel for event reminders
   warn_log_channel_id TEXT,                      -- NULL → warn issue/void fall back to audit log
   warn_dm_members INTEGER NOT NULL DEFAULT 1,
+  warn_expiry_days INTEGER NOT NULL DEFAULT 0,   -- 0 = new warnings never expire by default
 
   ticket_category_id TEXT,                       -- parent category for open tickets
   ticket_archive_channel_id TEXT,                -- staff channel for close summaries
@@ -208,6 +209,7 @@ CREATE TABLE guild_settings (
 | `event_reminder_channel_id` | NULL | Default event-reminder notify channel |
 | `warn_log_channel_id` | NULL | Dedicated warning log (optional) |
 | `warn_dm_members` | 1 | DM members on warn issue/void |
+| `warn_expiry_days` | 0 | Default days until new warnings auto-void (`0` = never) |
 | `ticket_category_id` | NULL | Parent category for open tickets |
 | `ticket_archive_channel_id` | NULL | Staff channel for transcripts / stubs |
 | `ticket_rate_limit_minutes` | 60 | Minutes between member self-creates (`0` = off) |
@@ -708,12 +710,17 @@ CREATE TABLE warnings (
   voided_by TEXT,
   void_reason TEXT,
   related_note_id INTEGER REFERENCES staff_notes(id) ON DELETE SET NULL,
+  expires_at INTEGER,
+  evidence_message_url TEXT,
+  evidence_text TEXT,
   UNIQUE (guild_id, warning_number)
 );
 CREATE INDEX idx_warnings_user
   ON warnings(guild_id, user_id, created_at DESC);
 CREATE INDEX idx_warnings_active
   ON warnings(guild_id, user_id) WHERE voided_at IS NULL;
+CREATE INDEX idx_warnings_expires
+  ON warnings(expires_at) WHERE voided_at IS NULL AND expires_at IS NOT NULL;
 ```
 
 | Column | Description |
@@ -724,8 +731,11 @@ CREATE INDEX idx_warnings_active
 | `reason` | Immutable after issue (max 1000 chars in app) |
 | `voided_at` | Void timestamp; `NULL` = active |
 | `related_note_id` | Optional FK to `staff_notes.id` |
+| `expires_at` | Optional auto-void deadline (ms); `NULL` = never |
+| `evidence_message_url` | Optional Discord jump link (staff-only) |
+| `evidence_text` | Optional freeform evidence notes (staff-only, max 500) |
 
-Guild settings: `warn_dm_members` (`1` default / `0`) — DM subject on issue/void; `warn_log_channel_id` — dedicated log channel (falls back to audit log when unset).
+Guild settings: `warn_dm_members` (`1` default / `0`) — DM subject on issue/void; `warn_log_channel_id` — dedicated log channel (falls back to audit log when unset); `warn_expiry_days` (`0` default) — default days until **new** warnings expire.
 
 See [Warning System](warnings.md).
 
@@ -960,6 +970,8 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `013_user_channel_activity` | Daily activity counters, ignore list, user meta/cursors, `guild_activity_settings` watermark |
 | `014_guild_activity_backfill` | Guild-wide backfill columns on `guild_activity_settings` + `guild_channel_backfill_cursor` |
 | `015_event_reminder_event_optouts` | Per-event mute table for scheduled event reminders |
+| `016_command_permission_oauth` | OAuth token storage for slash command permission sync |
+| `017_warn_post_mvp` | `warn_expiry_days`; `warnings.expires_at` / evidence columns + expiry index |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
