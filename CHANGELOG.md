@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.4.0...v1.5.0) (2026-08-08)
+
+
+### Features
+
+* **eventReminders:** mute, always-embed delivery, shortname suggest ([344977d](https://github.com/metalsp0rk/boiler-snake/commit/344977d6dcfda1aaec12043eebd95e4185c56ad7))
+* **permissions:** staff-gate tools and OAuth slash visibility sync ([6d9939b](https://github.com/metalsp0rk/boiler-snake/commit/6d9939b730acf9043e01efbbe75629cc7d133c14))
+
+
+### Bug Fixes
+
+* **userActivity:** window-aware posts/week and 90d option ([cbff383](https://github.com/metalsp0rk/boiler-snake/commit/cbff383d6916d4a73208ffb556d2c79c76936bf3))
+
 ## [1.4.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.3.0...v1.4.0) (2026-08-06)
 
 
