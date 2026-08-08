@@ -1144,7 +1144,7 @@ Formal, **permanent** disciplinary record for guild members. Complements [staff 
 
 ### Status
 
-**Shipped (MVP)** — `/warn` + `/setwarn`, permanent rows, void with reason, member `/warn mine`, optional note link, DMs + audit embeds. Design decisions in [6.9](#69-design-decisions-locked).
+**Shipped (MVP + post-MVP polish)** — `/warn` + `/setwarn`, permanent rows, void with reason, member `/warn mine`, optional note link, DMs + audit embeds, opt-in expiry, staff export, evidence fields. Design decisions in [6.9](#69-design-decisions-locked). Auto-mod thresholds remain post-MVP.
 
 ---
 
@@ -1418,8 +1418,10 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 | Table / change | Notes |
 |----------------|-------|
 | `warnings` | Permanent rows; void metadata; optional `related_note_id` → `staff_notes` (**shipped**, migration `009`) |
+| `warnings.expires_at` / evidence columns | Opt-in expiry + staff evidence (**shipped**, migration `017`) |
 | `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void (**shipped**) |
 | `guild_settings.warn_log_channel_id` | Dedicated warn issue/void log; audit fallback (**shipped**) |
+| `guild_settings.warn_expiry_days` | Default `0` (never); guild default for new warnings (**shipped**, migration `017`) |
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
@@ -1496,9 +1498,9 @@ Docs currently describe two incomplete slash surfaces honestly; this section is 
 - [x] MVP: issue / list / info / void / count / mine + `/setwarn dm` + audit + optional note link  
 - [ ] Auto-mod thresholds (e.g. 3 active → timeout / kick / ban with configurable actions)  
 - [x] Dedicated `warn_log_channel_id` separate from general audit log (`/setwarn log`; falls back to audit)  
-- [ ] Warning expiry / auto-void after N days (opt-in; default still permanent)  
-- [ ] Export user record (notes + warnings) for staff handoff  
-- [ ] Un-void / re-activate (only if product needs it; prefer re-issue)  
-- [ ] Evidence attachments or message-link field on issue  
+- [x] Warning expiry / auto-void after N days (opt-in; default still permanent) — guild `/setwarn expiry` + per-warn `expires_days`  
+- [x] Export user record (notes + warnings) for staff handoff — `/warn export` ephemeral `.md`  
+- [x] ~~Un-void / re-activate~~ — **skipped**; prefer re-issue (no un-void command)  
+- [x] Evidence: message jump link + freeform staff-only notes on `/warn add` (not in member DM / `/warn mine`)  
 
 ---

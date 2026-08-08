@@ -1,7 +1,7 @@
 /**
  * Warning system — permanent formal disciplinary records.
  *
- * Slash: /warn add|list|info|void|count|mine|settings, /setwarn dm|log
+ * Slash: /warn add|list|info|void|count|mine|export|settings, /setwarn dm|log|expiry
  * Staff ops: requireStaff. /warn mine: any member (own history).
  * /setwarn: staff gate (requireStaff).
  */
@@ -12,6 +12,7 @@ const {
   MessageFlags,
   EmbedBuilder,
   ChannelType,
+  AttachmentBuilder,
 } = require("discord.js");
 const {
   createWarning,
@@ -21,12 +22,23 @@ const {
   getWarning,
   voidWarning,
   getStaffNote,
+  getStaffNoteById,
+  listStaffNotes,
+  countStaffNotes,
   getGuildSettings,
   updateGuildSettings,
   MAX_WARN_REASON,
+  MAX_EVIDENCE_TEXT,
+  MAX_EXPIRY_DAYS,
+  normalizeEvidenceMessageUrl,
+  normalizeEvidenceText,
+  normalizeExpiryDays,
+  resolveExpiryDays,
 } = require("../../db");
 const { requireStaff } = require("../../core/permissions");
 const { logConfigChange, logWarnEvent } = require("../logs/auditLog");
+const { buildStaffRecordMarkdown, exportFilename } = require("./exportRecord");
+const { startWarnExpiryTicker } = require("./ticker");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -76,6 +88,29 @@ const commands = [
             .setDescription("Optional staff note number to link (e.g. 12 from N-12)")
             .setRequired(false)
             .setMinValue(1)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("message")
+            .setDescription("Optional Discord message link as evidence")
+            .setRequired(false)
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("evidence")
+            .setDescription("Optional staff-only evidence notes")
+            .setRequired(false)
+            .setMaxLength(MAX_EVIDENCE_TEXT)
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("expires_days")
+            .setDescription(
+              "Days until auto-void (0=never). Omit to use guild default."
+            )
+            .setRequired(false)
+            .setMinValue(0)
+            .setMaxValue(MAX_EXPIRY_DAYS)
         )
     )
     .addSubcommand((sc) =>
@@ -157,6 +192,31 @@ const commands = [
     )
     .addSubcommand((sc) =>
       sc
+        .setName("export")
+        .setDescription(
+          "Export notes + warnings for a member as a staff handoff file."
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Member to export")
+            .setRequired(true)
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("include_voided")
+            .setDescription("Include voided warnings (default true)")
+            .setRequired(false)
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("include_deleted_notes")
+            .setDescription("Include soft-deleted staff notes (default true)")
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((sc) =>
+      sc
         .setName("settings")
         .setDescription("Show warning system settings and access info.")
     ),
@@ -201,7 +261,22 @@ const commands = [
           .setRequired(false)
       );
       return sub;
-    }),
+    })
+    .addSubcommand((sc) =>
+      sc
+        .setName("expiry")
+        .setDescription(
+          "Default auto-void after N days for new warnings (0 = never)."
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("days")
+            .setDescription("Days until new warnings expire (0 = never)")
+            .setRequired(true)
+            .setMinValue(0)
+            .setMaxValue(MAX_EXPIRY_DAYS)
+        )
+    ),
 ];
 
 /**
@@ -252,8 +327,12 @@ function fullTs(ms) {
 function formatListLine(warn) {
   const ref = formatWarnRef(warn.warning_number);
   const voided = warn.voided_at != null ? " · ~~voided~~" : "";
+  const exp =
+    warn.voided_at == null && warn.expires_at != null
+      ? ` · expires ${relativeTs(warn.expires_at)}`
+      : "";
   return (
-    `**${ref}** · by <@${warn.issuer_id}> · ${relativeTs(warn.created_at)}${voided}\n` +
+    `**${ref}** · by <@${warn.issuer_id}> · ${relativeTs(warn.created_at)}${voided}${exp}\n` +
     `> ${snippet(warn.reason)}`
   );
 }
@@ -266,6 +345,17 @@ function formatListLine(warn) {
 function warnDmEnabled(guildId) {
   const s = getGuildSettings(guildId);
   return Number(s.warn_dm_members ?? 1) !== 0;
+}
+
+/**
+ * @param {string} guildId
+ * @returns {number}
+ */
+function guildWarnExpiryDays(guildId) {
+  const s = getGuildSettings(guildId);
+  const n = Number(s.warn_expiry_days ?? 0);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(Math.floor(n), MAX_EXPIRY_DAYS);
 }
 
 /**
@@ -302,6 +392,7 @@ async function handleWarn(interaction, ctx) {
   if (sub === "info") return handleInfo(interaction);
   if (sub === "void") return handleVoid(interaction, ctx);
   if (sub === "count") return handleCount(interaction);
+  if (sub === "export") return handleExport(interaction);
   if (sub === "settings") return handleSettings(interaction);
 
   await interaction.reply({
@@ -320,6 +411,7 @@ async function handleSetwarn(interaction, ctx) {
   const sub = interaction.options.getSubcommand();
   if (sub === "dm") return handleSetDm(interaction, ctx);
   if (sub === "log") return handleSetLog(interaction, ctx);
+  if (sub === "expiry") return handleSetExpiry(interaction, ctx);
 
   await interaction.reply({
     content: `Unknown subcommand: \`${sub}\``,
@@ -336,10 +428,34 @@ async function handleAdd(interaction, ctx) {
   const reason = interaction.options.getString("reason", true);
   const silent = !!interaction.options.getBoolean("silent");
   const noteNumber = interaction.options.getInteger("note");
+  const messageOpt = interaction.options.getString("message");
+  const evidenceOpt = interaction.options.getString("evidence");
+  const expiresDaysOpt = interaction.options.getInteger("expires_days");
 
   if (target.bot) {
     await interaction.reply({
       content: "Warnings are for human members, not bots.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const urlCheck = normalizeEvidenceMessageUrl(
+    messageOpt,
+    interaction.guildId
+  );
+  if (!urlCheck.ok) {
+    await interaction.reply({
+      content: urlCheck.error,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const evidenceCheck = normalizeEvidenceText(evidenceOpt);
+  if (!evidenceCheck.ok) {
+    await interaction.reply({
+      content: evidenceCheck.error,
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -358,6 +474,12 @@ async function handleAdd(interaction, ctx) {
     relatedNoteId = note.id;
   }
 
+  const guildDefaultDays = guildWarnExpiryDays(interaction.guildId);
+  const effectiveDays = resolveExpiryDays({
+    expiresDays: expiresDaysOpt,
+    guildDefaultDays,
+  });
+
   let warn;
   try {
     warn = createWarning({
@@ -366,9 +488,19 @@ async function handleAdd(interaction, ctx) {
       issuerId: interaction.user.id,
       reason,
       relatedNoteId,
+      expiresDays: expiresDaysOpt,
+      guildDefaultDays,
+      evidenceMessageUrl: urlCheck.url,
+      evidenceText: evidenceCheck.text,
     });
   } catch (err) {
-    if (err?.code === "INVALID_REASON" || err?.code === "INVALID_NOTE") {
+    if (
+      err?.code === "INVALID_REASON" ||
+      err?.code === "INVALID_NOTE" ||
+      err?.code === "INVALID_EVIDENCE_URL" ||
+      err?.code === "INVALID_EVIDENCE_TEXT" ||
+      err?.code === "INVALID_EXPIRY"
+    ) {
       await interaction.reply({
         content: err.message,
         flags: MessageFlags.Ephemeral,
@@ -394,26 +526,39 @@ async function handleAdd(interaction, ctx) {
       `${ref} on <@${target.id}>`,
       `Active count: **${activeCount}**`,
       snippet(warn.reason, 120),
+      warn.expires_at != null
+        ? `Expires: ${fullTs(warn.expires_at)}`
+        : "Expires: never",
     ],
   }).catch(() => {});
 
   let dmNote = "DM skipped (silent).";
   if (!silent && warnDmEnabled(interaction.guildId)) {
     const guildName = interaction.guild?.name || "this server";
+    const dmFields = [
+      { name: "Warning", value: ref, inline: true },
+      {
+        name: "Issued by",
+        value: interaction.user.username || interaction.user.tag || "staff",
+        inline: true,
+      },
+      { name: "Active warnings", value: String(activeCount), inline: true },
+      { name: "Reason", value: warn.reason.slice(0, 1024) },
+      { name: "When", value: fullTs(warn.created_at), inline: true },
+    ];
+    if (warn.expires_at != null) {
+      dmFields.push({
+        name: "Expires",
+        value: fullTs(warn.expires_at),
+        inline: true,
+      });
+    }
+    // Evidence stays staff-only — not included in member DM.
+
     const dmEmbed = new EmbedBuilder()
       .setColor(COLOR_ISSUE)
       .setTitle(`Warning issued in ${guildName}`)
-      .addFields(
-        { name: "Warning", value: ref, inline: true },
-        {
-          name: "Issued by",
-          value: interaction.user.username || interaction.user.tag || "staff",
-          inline: true,
-        },
-        { name: "Active warnings", value: String(activeCount), inline: true },
-        { name: "Reason", value: warn.reason.slice(0, 1024) },
-        { name: "When", value: fullTs(warn.created_at), inline: true }
-      )
+      .addFields(dmFields)
       .setFooter({ text: "View your history anytime with /warn mine" });
 
     const sent = await tryDmUser(target, { embeds: [dmEmbed] });
@@ -430,7 +575,15 @@ async function handleAdd(interaction, ctx) {
       { name: "Subject", value: `<@${target.id}>`, inline: true },
       { name: "Issuer", value: `<@${warn.issuer_id}>`, inline: true },
       { name: "Active count", value: String(activeCount), inline: true },
-      { name: "Created", value: fullTs(warn.created_at), inline: true }
+      { name: "Created", value: fullTs(warn.created_at), inline: true },
+      {
+        name: "Expires",
+        value:
+          warn.expires_at != null
+            ? `${fullTs(warn.expires_at)} (${effectiveDays}d)`
+            : "Never",
+        inline: true,
+      }
     )
     .setFooter({ text: dmNote });
 
@@ -439,6 +592,20 @@ async function handleAdd(interaction, ctx) {
       name: "Linked note",
       value: noteNumber != null ? `N-${noteNumber}` : `id ${warn.related_note_id}`,
       inline: true,
+    });
+  }
+  if (warn.evidence_message_url) {
+    embed.addFields({
+      name: "Evidence message",
+      value: warn.evidence_message_url,
+      inline: false,
+    });
+  }
+  if (warn.evidence_text) {
+    embed.addFields({
+      name: "Evidence notes",
+      value: warn.evidence_text.slice(0, 1024),
+      inline: false,
     });
   }
 
@@ -519,6 +686,14 @@ async function handleInfo(interaction) {
       { name: "Status", value: warn.voided_at != null ? "Voided" : "Active", inline: true },
       { name: "Created", value: fullTs(warn.created_at), inline: true },
       {
+        name: "Expires",
+        value:
+          warn.expires_at != null
+            ? fullTs(warn.expires_at)
+            : "Never",
+        inline: true,
+      },
+      {
         name: "Subject active count",
         value: String(active),
         inline: true,
@@ -526,10 +701,28 @@ async function handleInfo(interaction) {
     );
 
   if (warn.related_note_id != null) {
+    const linked = getStaffNoteById(warn.related_note_id);
     embed.addFields({
-      name: "Linked note id",
-      value: String(warn.related_note_id),
+      name: "Linked note",
+      value: linked
+        ? `N-${linked.note_number}`
+        : `id ${warn.related_note_id}`,
       inline: true,
+    });
+  }
+
+  if (warn.evidence_message_url) {
+    embed.addFields({
+      name: "Evidence message",
+      value: warn.evidence_message_url,
+      inline: false,
+    });
+  }
+  if (warn.evidence_text) {
+    embed.addFields({
+      name: "Evidence notes",
+      value: String(warn.evidence_text).slice(0, 1024),
+      inline: false,
     });
   }
 
@@ -624,7 +817,6 @@ async function handleVoid(interaction, ctx) {
     } catch {
       targetUser = null;
     }
-    // Fallback: options user not available; try guild member cache via interaction
     if (!targetUser && interaction.guild?.members) {
       try {
         const mem = await interaction.guild.members
@@ -717,7 +909,86 @@ async function handleCount(interaction) {
 }
 
 /**
+ * Staff handoff export: notes + warnings as an ephemeral markdown attachment.
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ */
+async function handleExport(interaction) {
+  const target = interaction.options.getUser("user", true);
+  const includeVoided =
+    interaction.options.getBoolean("include_voided") !== false;
+  const includeDeletedNotes =
+    interaction.options.getBoolean("include_deleted_notes") !== false;
+
+  const warnings = listWarnings(interaction.guildId, target.id, {
+    includeVoided,
+    limit: 5000,
+    export: true,
+  });
+  const notes = listStaffNotes(interaction.guildId, target.id, {
+    includeDeleted: includeDeletedNotes,
+    limit: 5000,
+    export: true,
+  });
+
+  const activeWarnings = countActiveWarnings(interaction.guildId, target.id);
+  const totalWarnings = countWarnings(interaction.guildId, target.id, {
+    includeVoided: true,
+  });
+  const activeNotes = countStaffNotes(interaction.guildId, target.id, {
+    includeDeleted: false,
+  });
+  const totalNotes = countStaffNotes(interaction.guildId, target.id, {
+    includeDeleted: true,
+  });
+
+  const notesById = new Map();
+  for (const n of notes) {
+    notesById.set(Number(n.id), n);
+  }
+  // Also resolve linked notes not in the notes list (e.g. deleted excluded)
+  for (const w of warnings) {
+    if (w.related_note_id != null && !notesById.has(Number(w.related_note_id))) {
+      const linked = getStaffNoteById(w.related_note_id);
+      if (linked) notesById.set(Number(linked.id), linked);
+    }
+  }
+
+  const exportedAt = Date.now();
+  const body = buildStaffRecordMarkdown({
+    guildId: interaction.guildId,
+    guildName: interaction.guild?.name,
+    userId: target.id,
+    userTag: target.tag || target.username,
+    exportedById: interaction.user.id,
+    exportedByTag: interaction.user.tag || interaction.user.username,
+    warnings,
+    notes,
+    activeWarnings,
+    totalWarnings,
+    activeNotes,
+    totalNotes,
+    notesById,
+    exportedAt,
+  });
+
+  const filename = exportFilename(target.id, exportedAt);
+  const file = new AttachmentBuilder(Buffer.from(body, "utf8"), {
+    name: filename,
+  });
+
+  await interaction.reply({
+    content:
+      `Staff record for <@${target.id}>: **${warnings.length}** warning(s), ` +
+      `**${notes.length}** note(s) in file.\n` +
+      `_Ephemeral — staff handoff only; do not share with the subject._`,
+    files: [file],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
  * Member self-service: own warnings only.
+ * Evidence is staff-only and is not shown here.
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  */
 async function handleMine(interaction) {
@@ -744,8 +1015,12 @@ async function handleMine(interaction) {
   const lines = warnings.map((w) => {
     const ref = formatWarnRef(w.warning_number);
     const voided = w.voided_at != null ? " · ~~voided~~" : "";
+    const exp =
+      w.voided_at == null && w.expires_at != null
+        ? ` · expires ${relativeTs(w.expires_at)}`
+        : "";
     return (
-      `**${ref}** · ${relativeTs(w.created_at)}${voided}\n` +
+      `**${ref}** · ${relativeTs(w.created_at)}${voided}${exp}\n` +
       `> ${snippet(w.reason)}`
     );
   });
@@ -769,6 +1044,7 @@ async function handleMine(interaction) {
 async function handleSettings(interaction) {
   const dmOn = warnDmEnabled(interaction.guildId);
   const settings = getGuildSettings(interaction.guildId);
+  const expiryDays = guildWarnExpiryDays(interaction.guildId);
   const dedicated = settings.warn_log_channel_id
     ? `<#${settings.warn_log_channel_id}>`
     : null;
@@ -787,15 +1063,21 @@ async function handleSettings(interaction) {
       "Warning log: _not set_ (`/setwarn log` or `/setlog audit`)";
   }
 
+  const expiryLine =
+    expiryDays > 0
+      ? `Default expiry: **${expiryDays}** day(s) for new warnings (\`/setwarn expiry\`; per-warn override: \`expires_days\` on \`/warn add\`)`
+      : "Default expiry: **never** (`/setwarn expiry days:N` to opt in; per-warn `expires_days` still works)";
+
   await interaction.reply({
     content:
       `**Warning system settings**\n` +
       `Member DMs on issue/void: **${dmOn ? "on" : "off"}** (toggle: \`/setwarn dm\`)\n` +
       `${logLine}\n` +
+      `${expiryLine}\n` +
       `Max reason length: **${MAX_WARN_REASON}** characters\n` +
       `\n**Access:** staff gate — Manage Server or any role in \`/staff role list\`.\n` +
       `**Members:** \`/warn mine\` to view their own warnings.\n` +
-      `\n**Commands:** \`/warn add\` · \`list\` · \`info\` · \`void\` · \`count\` · \`mine\` · \`settings\`\n` +
+      `\n**Commands:** \`/warn add\` · \`list\` · \`info\` · \`void\` · \`count\` · \`export\` · \`mine\` · \`settings\`\n` +
       `Warnings are **permanent** — void only (never hard-deleted). Pair with \`/note\` for informal context.`,
     flags: MessageFlags.Ephemeral,
   });
@@ -897,6 +1179,54 @@ async function handleSetLog(interaction, ctx) {
   });
 }
 
+/**
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleSetExpiry(interaction, ctx) {
+  const daysRaw = interaction.options.getInteger("days", true);
+  const parsed = normalizeExpiryDays(daysRaw);
+  if (!parsed.ok) {
+    await interaction.reply({
+      content: parsed.error,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const before = guildWarnExpiryDays(interaction.guildId);
+  updateGuildSettings(interaction.guildId, {
+    warn_expiry_days: parsed.days,
+  });
+
+  await logConfigChange(interaction.client, interaction.guildId, {
+    title: "Warning default expiry changed",
+    command: "/setwarn expiry",
+    actor: interaction.user,
+    changes: [
+      `Default expiry days: **${before}** → **${parsed.days}**` +
+        (parsed.days === 0 ? " (never)" : ""),
+    ],
+  }).catch(() => {});
+
+  await interaction.reply({
+    content:
+      parsed.days === 0
+        ? "New warnings will **not** expire by default. Staff can still set `expires_days` on `/warn add`."
+        : `New warnings will auto-void after **${parsed.days}** day(s) by default.\n` +
+          `Override per issue with \`/warn add … expires_days:N\` (use \`0\` for never on that warning only).\n` +
+          `Existing warnings are unchanged.`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
+ * @param {import("discord.js").Client} client
+ */
+function start(client) {
+  startWarnExpiryTicker(client);
+}
+
 module.exports = {
   name: "warnings",
   commands,
@@ -904,9 +1234,12 @@ module.exports = {
     warn: handleWarn,
     setwarn: handleSetwarn,
   },
+  start,
   // Exported for unit/integration tests
   formatWarnRef,
   snippet,
   LIST_PAGE_SIZE,
   MAX_WARN_REASON,
+  MAX_EVIDENCE_TEXT,
+  MAX_EXPIRY_DAYS,
 };
