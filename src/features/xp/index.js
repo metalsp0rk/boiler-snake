@@ -74,8 +74,16 @@ const commands = [
         .setDescription("Reaction XP cooldown seconds")
         .setMinValue(0)
         .setRequired(false)
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName("factor")
+        .setDescription("Level curve factor (XP for level L = L² × factor)")
+        .setMinValue(1)
+        .setMaxValue(10000)
+        .setRequired(false)
     ),
-];
+  ];
 
 async function handleXp(interaction) {
   const guildId = interaction.guildId;
@@ -143,6 +151,7 @@ async function handleSetXp(interaction, ctx) {
   const voice = interaction.options.getInteger("voice");
   const msgcooldown = interaction.options.getInteger("msgcooldown");
   const reactioncooldown = interaction.options.getInteger("reactioncooldown");
+  const factor = interaction.options.getInteger("factor");
 
   const errors = [
     validateXpValue(msg, "Message"),
@@ -161,6 +170,7 @@ async function handleSetXp(interaction, ctx) {
   if (voice !== null) patch.voice_xp_per_min = voice;
   if (msgcooldown !== null) patch.msg_cooldown_sec = msgcooldown;
   if (reactioncooldown !== null) patch.reaction_cooldown_sec = reactioncooldown;
+  if (factor !== null) patch.level_xp_factor = factor;
 
   if (!Object.keys(patch).length) {
     await interaction.reply({
@@ -182,14 +192,23 @@ async function handleSetXp(interaction, ctx) {
     }).catch(() => {});
   }
 
+  const factorChanged = factor !== null;
+  let replyContent =
+    `Updated XP settings:\n` +
+    `- msg_xp: **${updated.msg_xp}**\n` +
+    `- reaction_xp: **${updated.reaction_xp}**\n` +
+    `- voice_xp_per_min: **${updated.voice_xp_per_min}**\n` +
+    `- msg_cooldown_sec: **${updated.msg_cooldown_sec}**\n` +
+    `- reaction_cooldown_sec: **${updated.reaction_cooldown_sec}**`;
+
+  if (factorChanged) {
+    const oldFactor = settings.level_xp_factor;
+    const newFactor = updated.level_xp_factor;
+    replyContent += `\n- level_xp_factor: **${oldFactor}** → **${newFactor}** (Level L starts at L² × factor)`;
+  }
+
   await interaction.reply({
-    content:
-      `Updated XP settings:\n` +
-      `- msg_xp: **${updated.msg_xp}**\n` +
-      `- reaction_xp: **${updated.reaction_xp}**\n` +
-      `- voice_xp_per_min: **${updated.voice_xp_per_min}**\n` +
-      `- msg_cooldown_sec: **${updated.msg_cooldown_sec}**\n` +
-      `- reaction_cooldown_sec: **${updated.reaction_cooldown_sec}**`,
+    content: replyContent,
     flags: MessageFlags.Ephemeral,
   });
 }

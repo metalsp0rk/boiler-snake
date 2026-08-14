@@ -106,7 +106,7 @@ Where `level_xp_factor` defaults to 100.
 - Level 3: requires ≥ 900 XP
 - Level 10: requires ≥ 10,000 XP
 
-The curve factor defaults to **100** and is stored in `guild_settings.level_xp_factor`. There is currently **no** `/setxp` option for it (award rates and cooldowns only). To change the factor, update the database / use `updateGuildSettings` programmatically. See [Configuration — Level curve](configuration.md#level-curve-configuration).
+The curve factor defaults to **100** and is stored in `guild_settings.level_xp_factor`. Change it with `/setxp factor:<int>` (range 1–10,000). See [Configuration — Level curve](configuration.md#level-curve-configuration).
 
 ---
 

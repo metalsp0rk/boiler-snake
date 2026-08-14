@@ -143,10 +143,10 @@ Full details: [Audit Log & Message Log](audit-log.md).
 ### Configure XP Awards
 
 ```bash
-/setxp message:<int> reaction:<int> voice:<int> msgcooldown:<int> reactioncooldown:<int>
+/setxp message:<int> reaction:<int> voice:<int> msgcooldown:<int> reactioncooldown:<int> factor:<int>
 ```
 
-`/setxp` only accepts those five options. It does **not** set `level_xp_factor` (see [Level Curve Configuration](#level-curve-configuration)).
+`/setxp` accepts all six options above, including `factor` to change the [level curve](#level-curve-configuration) (1–10,000, default 100).
 
 #### Examples
 
@@ -399,19 +399,19 @@ Level = floor(sqrt(XP / level_xp_factor))
 |------|--------|
 | Default `level_xp_factor` | **100** (stored in `guild_settings`) |
 | Shown in | `/settings` → **Level curve factor** |
-| Slash command today | **`/setxp` does not accept `level_xp_factor`** |
+| Slash command | `/setxp factor:<int>` (range 1–10,000) |
 
-There is currently **no** slash option such as `/setxp level_xp_factor:N`. Award rates and cooldowns use `/setxp`; the curve factor is not among those options.
+Change the level curve via slash command:
 
-To change the factor today you must update guild settings outside the slash surface, for example:
+```bash
+/setxp factor:150    # Slower leveling (more XP per level)
+/setxp factor:50     # Faster leveling (less XP per level)
+```
 
-- Programmatically via `updateGuildSettings(guildId, { level_xp_factor: N })` in bot code / a maintenance script, or
-- Directly in SQLite (advanced):
+The reply shows before/after values and a reminder of the formula (`L² × factor`). You can also adjust rates and the factor in one command:
 
-```sql
-UPDATE guild_settings
-SET level_xp_factor = 100
-WHERE guild_id = 'YOUR_GUILD_ID';
+```bash
+/setxp message:3 factor:200
 ```
 
 Use a positive integer. Recommended ranges if you do change it:
@@ -470,7 +470,7 @@ Use a positive integer. Recommended ranges if you do change it:
 /settings
 ```
 
-Verify XP rates, cooldowns, and the **Level curve factor** match expectations. Remember `/setxp` does not change the curve factor.
+Verify XP rates, cooldowns, and the **Level curve factor** match expectations. Use `/setxp factor:<int>` to adjust the curve directly.
 
 **Test manually**:
 ```bash

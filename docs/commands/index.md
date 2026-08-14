@@ -208,11 +208,12 @@ Set separate channels for staff audit embeds and deleted-message embeds. See [Au
 
 ### `/setxp` - Configure XP Settings
 
-Adjust XP rewards and cooldowns for messages, reactions, and voice activity.
+Adjust XP rewards, cooldowns, and the level curve factor for messages, reactions, and voice activity.
 
 **Usage**:
 ```bash
 /setxp message:10 reaction:5 voice:2 msgcooldown:30 reactioncooldown:15
+/setxp factor:100
 ```
 
 **Options** (all optional):
@@ -221,11 +222,13 @@ Adjust XP rewards and cooldowns for messages, reactions, and voice activity.
 - `voice`: XP per minute in voice (default: 1)
 - `msgcooldown`: Message cooldown seconds (default: 20)
 - `reactioncooldown`: Reaction cooldown seconds (default: 10)
+- `factor`: Level curve factor (1–10000, default: 100). Level L requires ≥ L² × factor XP.
 
 **Limits**:
 - Maximum per-event XP: 1,000,000,000 (1 billion)
 - All values must be ≥ 0
 - Cooldowns can be set to 0 for no delay
+- Factor range: 1–10,000
 
 **Example Configurations**:
 
@@ -237,6 +240,11 @@ Aggressive XP gain:
 Conservative (low inflation):
 ```bash
 /setxp message:3 reaction:1 voice:1 msgcooldown:60 reactioncooldown:30
+```
+
+Easier leveling (lower factor):
+```bash
+/setxp factor:50
 ```
 
 ### `/setdecay` - Configure XP Decay

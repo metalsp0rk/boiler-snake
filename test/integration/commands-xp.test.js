@@ -112,6 +112,70 @@ describe("integration: xp commands", () => {
     assertEphemeralReply(interaction, /No XP settings/);
   });
 
+  it("/setxp updates level_xp_factor", async () => {
+    const interaction = await env.runCommand({
+      commandName: "setxp",
+      admin: true,
+      options: { factor: 400 },
+    });
+    assertReplyContains(interaction, "Updated XP settings");
+    assertReplyContains(interaction, "level_xp_factor");
+    const s = env.db.getGuildSettings(env.guild.id);
+    assert.equal(s.level_xp_factor, 400);
+  });
+
+  it("/xp reflects new factor (floor(sqrt(xp/factor)))", async () => {
+    // Ensure factor is 400 from previous test.
+    // xp=1600, factor=400 → floor(sqrt(1600/400)) = floor(sqrt(4)) = 2
+    env.db.setXp(env.guild.id, IDS.member, 1600);
+    const interaction = await env.runCommand({
+      commandName: "xp",
+      admin: false,
+      user: env.users.memberUser,
+    });
+    assertReplyContains(interaction, "1600 XP");
+    assertReplyContains(interaction, "Level **2**");
+  });
+
+  it("/xp level changes when factor changes", async () => {
+    // With factor=400, xp=400 → floor(sqrt(400/400)) = 1
+    env.db.setXp(env.guild.id, IDS.member2, 400);
+    let interaction = await env.runCommand({
+      commandName: "xp",
+      admin: false,
+      user: env.users.memberUser,
+      options: { user: env.users.member2User },
+    });
+    assertReplyContains(interaction, "400 XP");
+    assertReplyContains(interaction, "Level **1**");
+
+    // Change factor to 100 → floor(sqrt(400/100)) = floor(sqrt(4)) = 2
+    await env.runCommand({
+      commandName: "setxp",
+      admin: true,
+      options: { factor: 100 },
+    });
+
+    interaction = await env.runCommand({
+      commandName: "xp",
+      admin: false,
+      user: env.users.memberUser,
+      options: { user: env.users.member2User },
+    });
+    assertReplyContains(interaction, "400 XP");
+    assertReplyContains(interaction, "Level **2**");
+  });
+
+  it("/setxp factor-only no-op still shows no settings message", async () => {
+    // Calling /setxp with no options (including no factor) should be no-op
+    const interaction = await env.runCommand({
+      commandName: "setxp",
+      admin: true,
+      options: {},
+    });
+    assertEphemeralReply(interaction, /No XP settings/);
+  });
+
   it("/settings shows admin summary", async () => {
     const interaction = await env.runCommand({
       commandName: "settings",

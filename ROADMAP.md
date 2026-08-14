@@ -1435,13 +1435,13 @@ Docs currently describe two incomplete slash surfaces honestly; this section is 
 
 #### `/setxp` — expose `level_xp_factor`
 
-**Today:** `guild_settings.level_xp_factor` (default `100`) drives `levelFromXp` everywhere, and `/settings` shows it, but `/setxp` only accepts `message` / `reaction` / `voice` / `msgcooldown` / `reactioncooldown`. Operators must use SQL or `updateGuildSettings` to change the curve ([docs/configuration.md](docs/configuration.md#level-curve-configuration)).
+**Shipped.** `guild_settings.level_xp_factor` (default `100`) is now exposed as the `factor` option on `/setxp`.
 
-- [ ] Add optional integer option `level_xp_factor` (or short name `factor`) on `/setxp`, min **1**, sensible max (e.g. **10000**)
-- [ ] Persist via `updateGuildSettings`; include in `/setxp` audit `logConfigChange` payload
-- [ ] Reply should show before/after factor and a one-line reminder of the formula (`L² × factor` XP for level L)
-- [ ] Unit/integration: set factor → `/xp` level and leaderboard level labels match new curve
-- [ ] Update [docs/commands](docs/commands/index.md), [configuration](docs/configuration.md), [xp-and-leveling](docs/xp-and-leveling.md), FAQ once shipped
+- [x] Add optional integer option `factor` on `/setxp`, min **1**, max **10000**
+- [x] Persist via `updateGuildSettings`; included in `/setxp` audit `logConfigChange` payload
+- [x] Reply shows before/after factor and a one-line reminder of the formula (`L² × factor` XP for level L)
+- [x] Unit/integration: set factor → `/xp` level and leaderboard level labels match new curve
+- [x] Update [docs/commands](docs/commands/index.md), [configuration](docs/configuration.md), [xp-and-leveling](docs/xp-and-leveling.md), FAQ
 
 **Out of scope:** per-user curve overrides; non-sqrt formulas.
 
