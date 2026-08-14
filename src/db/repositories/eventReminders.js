@@ -19,22 +19,23 @@ function getEventReminderSettings(guildId) {
  * @param {string} opts.shortname
  * @param {string} opts.roleId
  * @param {string|null} [opts.channelId]
- * @param {string|null} [opts.messageTemplate]
- * @param {{ offsetMinutes: number, fireAt: number }[]} opts.offsets
- * @param {string} opts.createdBy
- * @returns {object} config row with offsets
- */
+  * @param {string|null} [opts.messageTemplate]
+  * @param {boolean} [opts.persistent]
+  * @param {{ offsetMinutes: number, fireAt: number }[]} opts.offsets
+  * @param {string} opts.createdBy
+  * @returns {object} config row with offsets
+  */
 function createEventReminderConfig(opts) {
   const t = now();
   const insertConfig = db.prepare(`
-    INSERT INTO event_reminder_configs (
-      guild_id, scheduled_event_id, shortname, role_id, channel_id,
-      message_template, active, created_at, created_by
-    ) VALUES (
-      @guild_id, @scheduled_event_id, @shortname, @role_id, @channel_id,
-      @message_template, 1, @created_at, @created_by
-    )
-  `);
+     INSERT INTO event_reminder_configs (
+       guild_id, scheduled_event_id, shortname, role_id, channel_id,
+       message_template, persistent, active, created_at, created_by
+     ) VALUES (
+       @guild_id, @scheduled_event_id, @shortname, @role_id, @channel_id,
+       @message_template, @persistent, 1, @created_at, @created_by
+     )
+   `);
   const insertOffset = db.prepare(`
     INSERT INTO event_reminder_offsets (config_id, offset_minutes, fire_at, sent_at, message_id)
     VALUES (?, ?, ?, NULL, NULL)
@@ -48,6 +49,7 @@ function createEventReminderConfig(opts) {
       role_id: opts.roleId,
       channel_id: opts.channelId ?? null,
       message_template: opts.messageTemplate ?? null,
+      persistent: opts.persistent ? 1 : 0,
       created_at: t,
       created_by: opts.createdBy,
     });
@@ -160,6 +162,7 @@ function listAllActiveEventReminderConfigs() {
  * @param {string} [patch.roleId]
  * @param {string|null} [patch.channelId]
  * @param {string|null} [patch.messageTemplate]
+ * @param {boolean} [patch.persistent]
  * @param {{ offsetMinutes: number, fireAt: number }[]} [patch.offsets] if set, replaces unsent offsets
  */
 function updateEventReminderConfig(configId, patch) {
@@ -185,6 +188,10 @@ function updateEventReminderConfig(configId, patch) {
     if (patch.messageTemplate !== undefined) {
       fields.push("message_template=@message_template");
       params.message_template = patch.messageTemplate;
+    }
+    if (patch.persistent !== undefined) {
+      fields.push("persistent=@persistent");
+      params.persistent = patch.persistent ? 1 : 0;
     }
 
     if (fields.length) {
@@ -284,30 +291,31 @@ function setOffsetFireTimes(configId, eventStartMs) {
  */
 function claimDueReminders(nowMs, limit = 50) {
   const cap = Math.max(1, Math.min(Number(limit) || 50, 200));
-  return db
-    .prepare(
-      `SELECT
-         o.id AS offset_id,
-         o.config_id,
-         o.offset_minutes,
-         o.fire_at,
-         o.sent_at,
-         o.message_id,
-         c.guild_id,
-         c.scheduled_event_id,
-         c.shortname,
-         c.role_id,
-         c.channel_id,
-         c.message_template
-       FROM event_reminder_offsets o
-       INNER JOIN event_reminder_configs c ON c.id = o.config_id
-       WHERE o.sent_at IS NULL
-         AND o.fire_at <= ?
-         AND c.active = 1
-       ORDER BY o.fire_at ASC
-       LIMIT ?`
-    )
-    .all(nowMs, cap);
+    return db
+      .prepare(
+        `SELECT
+          o.id AS offset_id,
+          o.config_id,
+          o.offset_minutes,
+          o.fire_at,
+          o.sent_at,
+          o.message_id,
+          c.guild_id,
+          c.scheduled_event_id,
+          c.shortname,
+          c.role_id,
+          c.channel_id,
+          c.message_template,
+          c.persistent
+        FROM event_reminder_offsets o
+        INNER JOIN event_reminder_configs c ON c.id = o.config_id
+        WHERE o.sent_at IS NULL
+          AND o.fire_at <= ?
+          AND c.active = 1
+        ORDER BY o.fire_at ASC
+        LIMIT ?`
+      )
+      .all(nowMs, cap);
 }
 
 /**

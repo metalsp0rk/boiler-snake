@@ -25,6 +25,7 @@ const migrations = [
   require("./migrations/015_event_reminder_event_optouts"),
   require("./migrations/016_command_permission_oauth"),
   require("./migrations/017_warn_post_mvp"),
+  require("./migrations/018_event_reminder_persistent"),
 ];
 
 const helpers = {

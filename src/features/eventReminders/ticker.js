@@ -67,6 +67,7 @@ async function deliverOne(client, row) {
 
   if (!scheduledEvent || isEventTerminal(scheduledEvent)) {
     await cleanupEventReminderByConfigId(guild, row.config_id);
+    markReminderSent(row.offset_id, null);
     return;
   }
 
