@@ -9,6 +9,7 @@ const {
 } = require("discord.js");
 const {
   getConfigByScheduledEventId,
+  getEventReminderConfigById,
   getConfigByShortname,
   clearEventReminderConfig,
   clearEventReminderConfigById,
@@ -651,9 +652,12 @@ async function stripAllEventReminderRoles(guild, userId) {
  * Full cleanup: delete Discord role + DB config.
  * @param {import("discord.js").Guild} guild
  * @param {string} scheduledEventId
+ * @param {{ force?: boolean }} [opts] if persistent and not forced, skips cleanup
  */
-async function cleanupEventReminder(guild, scheduledEventId) {
+async function cleanupEventReminder(guild, scheduledEventId, opts = {}) {
   if (!guild || !scheduledEventId) return null;
+  const config = getConfigByScheduledEventId(guild.id, scheduledEventId);
+  if (config?.persistent && !opts.force) return null;
   const cleared = clearEventReminderConfig(guild.id, scheduledEventId);
   if (!cleared) return null;
   await deleteReminderRole(guild, cleared.role_id);
@@ -663,8 +667,11 @@ async function cleanupEventReminder(guild, scheduledEventId) {
 /**
  * @param {import("discord.js").Guild} guild
  * @param {number} configId
+ * @param {{ force?: boolean }} [opts] if persistent and not forced, skips cleanup
  */
-async function cleanupEventReminderByConfigId(guild, configId) {
+async function cleanupEventReminderByConfigId(guild, configId, opts = {}) {
+  const config = getEventReminderConfigById(configId);
+  if (config?.persistent && !opts.force) return null;
   const cleared = clearEventReminderConfigById(configId);
   if (!cleared) return null;
   if (guild) await deleteReminderRole(guild, cleared.role_id);

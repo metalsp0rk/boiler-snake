@@ -265,6 +265,27 @@ function buildReminderModal(opts) {
     .setMaxValues(1)
     .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement);
 
+  const isPersistent = !!opts.persistent;
+  const persistentSelect = new StringSelectMenuBuilder()
+    .setCustomId("persistent")
+    .setPlaceholder("Notify on all occurrences?")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions([
+      {
+        label: "Yes",
+        description: "Keep role alive across recurring event occurrences (cleanup only on manual clear)",
+        value: "1",
+        default: isPersistent,
+      },
+      {
+        label: "No",
+        description: "Clean up after this single occurrence ends",
+        value: "0",
+        default: !isPersistent,
+      },
+    ]);
+
   const messageInput = new TextInputBuilder()
     .setCustomId("message")
     .setStyle(TextInputStyle.Paragraph)
@@ -299,7 +320,11 @@ function buildReminderModal(opts) {
         .setDescription(
           "{event} {location} {starts_in} {starts_at} {url} {description} {offset} {role}"
         )
-        .setTextInputComponent(messageInput)
+        .setTextInputComponent(messageInput),
+      new LabelBuilder()
+        .setLabel("Notify on all occurrences")
+        .setDescription("Keep role + config across recurring event occurrences; only clean on manual clear.")
+        .setStringSelectMenuComponent(persistentSelect)
     );
 }
 
@@ -402,7 +427,9 @@ async function handleList(interaction) {
       .join(" ");
     return (
       `• **${ROLE_PREFIX}${c.shortname}** (\`${c.scheduled_event_id}\`)\n` +
-      `  Role: <@&${c.role_id}> · Channel: ${ch}\n` +
+      `  Role: <@&${c.role_id}> · Channel: ${ch}` +
+      (c.persistent ? " · ♾️ persistent" : "") +
+      `\n` +
       `  Offsets: ${offs || "—"}\n` +
       `  Next: ${nextText}`
     );
@@ -501,6 +528,7 @@ async function handleEdit(interaction) {
     shortname: config.shortname,
     selectedMinutes,
     message: config.message_template || "",
+    persistent: !!config.persistent,
   });
   await interaction.showModal(modal);
 }
@@ -526,7 +554,7 @@ async function handleClear(interaction) {
     return;
   }
 
-  const cleared = await cleanupEventReminder(interaction.guild, eventId);
+  const cleared = await cleanupEventReminder(interaction.guild, eventId, { force: true });
   await logConfigChange(interaction.client, interaction.guildId, {
     title: "Event reminder cleared",
     command: "/eventreminder clear",
@@ -848,6 +876,14 @@ async function handleEventReminderModal(interaction, ctx) {
     channelId = null;
   }
 
+  let persistent = false;
+  try {
+    const pvals = interaction.fields.getStringSelectValues("persistent");
+    persistent = pvals?.[0] === "1";
+  } catch {
+    persistent = false;
+  }
+
   const nameResult = normalizeShortname(shortnameRaw);
   if (!nameResult.ok) {
     await interaction.reply({
@@ -933,6 +969,7 @@ async function handleEventReminderModal(interaction, ctx) {
         roleId: role.id,
         channelId,
         messageTemplate: template,
+        persistent,
         offsets,
         createdBy: interaction.user.id,
       });
@@ -1041,8 +1078,9 @@ async function handleEventReminderModal(interaction, ctx) {
   updateEventReminderConfig(existing.id, {
     shortname,
     roleId,
-    channelId: channelId, // may be null → means use default; empty select clears override
+    channelId: channelId,
     messageTemplate: template,
+    persistent,
     offsets,
   });
 
