@@ -754,6 +754,109 @@ function setTicketArchiveMessageId(ticketId, messageId) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Ticket panel registry — stored panels for list / edit / delete
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a posted panel message.
+ * @param {string} guildId
+ * @param {string} channelId
+ * @param {string} messageId
+ * @param {string} [title]
+ * @param {string} [description]
+ */
+function createTicketPanel(guildId, channelId, messageId, title, description) {
+  const t = now();
+  db.prepare(`
+    INSERT INTO ticket_panels (guild_id, channel_id, message_id, title, description, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    guildId,
+    channelId,
+    messageId,
+    title || "Support Tickets",
+    description || "Click **Open a ticket** below to start a private conversation with staff. You'll be asked to describe what you need help with.",
+    t,
+    t,
+  );
+}
+
+/**
+ * @param {string} guildId
+ * @param {string} messageId
+ * @returns {object|null}
+ */
+function getTicketPanel(guildId, messageId) {
+  return (
+    db.prepare(`
+      SELECT guild_id, channel_id, message_id, title, description, created_at, updated_at
+      FROM ticket_panels
+      WHERE guild_id=? AND message_id=?
+    `).get(guildId, messageId) || null
+  );
+}
+
+/**
+ * @param {string} guildId
+ * @returns {object[]}
+ */
+function listTicketPanels(guildId) {
+  return db.prepare(`
+    SELECT guild_id, channel_id, message_id, title, description, created_at, updated_at
+    FROM ticket_panels
+    WHERE guild_id=?
+    ORDER BY created_at ASC
+  `).all(guildId);
+}
+
+/**
+ * Update a panel's title and/or description.
+ * @param {string} guildId
+ * @param {string} messageId
+ * @param {string|null} [title]
+ * @param {string|null} [description]
+ * @returns {boolean} true if panel existed and was updated
+ */
+function updateTicketPanelText(guildId, messageId, title, description) {
+  const existing = getTicketPanel(guildId, messageId);
+  if (!existing) return false;
+  const t = now();
+  db.prepare(`
+    UPDATE ticket_panels
+    SET title=?, description=?, updated_at=?
+    WHERE guild_id=? AND message_id=?
+  `).run(
+    title != null ? title : existing.title,
+    description != null ? description : existing.description,
+    t,
+    guildId,
+    messageId,
+  );
+  return true;
+}
+
+/**
+ * Remove a panel from the registry.
+ * @param {string} guildId
+ * @param {string} messageId
+ * @returns {{ removed: boolean, channel_id: string|null }}
+ */
+function deleteTicketPanel(guildId, messageId) {
+  const existing = getTicketPanel(guildId, messageId);
+  if (!existing) {
+    return { removed: false, channel_id: null };
+  }
+  const result = db.prepare(`
+    DELETE FROM ticket_panels
+    WHERE guild_id=? AND message_id=?
+  `).run(guildId, messageId);
+  return {
+    removed: result.changes > 0,
+    channel_id: existing.channel_id,
+  };
+}
+
 module.exports = {
   MAX_TICKET_REASON,
   normalizeTicketReason,
@@ -787,4 +890,11 @@ module.exports = {
   listTicketMessages,
   generateTranscriptToken,
   setTicketArchiveMessageId,
+
+  // panel registry
+  createTicketPanel,
+  getTicketPanel,
+  listTicketPanels,
+  updateTicketPanelText,
+  deleteTicketPanel,
 };

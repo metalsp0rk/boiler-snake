@@ -3,7 +3,8 @@
  *
  * Slash: /ticket create|for|close|claim|transfer|adduser|removeuser|
  *        addstaff|removestaff|sensitive|unsensitive|list|info|
- *        setcategory|setarchive|setratelimit|settings|panel
+ *        setcategory|setarchive|setratelimit|settings
+ *        panel create|list|edit|delete  (stored panel registry)
  * Buttons: tk:open → modal for description → same pipeline as /ticket create
  *          tk:sn:<ticketId> → modal to attach a staff note after close
  * Modals:  tk:create · tk:snm:<ticketId>
@@ -48,6 +49,12 @@ const {
   normalizeStaffLevel,
   createStaffNote,
   MAX_NOTE_CONTENT,
+  // panel registry
+  createTicketPanel,
+  getTicketPanel,
+  listTicketPanels,
+  updateTicketPanelText,
+  deleteTicketPanel,
 } = require("../../db");
 const {
   requireStaff,
@@ -289,36 +296,86 @@ const commands = [
             .setMaxValue(10080),
         ),
     )
-    .addSubcommand((sc) =>
-      sc
+    .addSubcommandGroup((group) =>
+      group
         .setName("panel")
-        .setDescription(
-          "Post an Open Ticket panel (button → modal) in a channel (admin).",
-        )
-        .addChannelOption((opt) =>
-          opt
-            .setName("channel")
-            .setDescription("Channel to post the panel in (default: here)")
-            .addChannelTypes(
-              ChannelType.GuildText,
-              ChannelType.GuildAnnouncement,
+        .setDescription("Create, list, edit, or delete ticket panels (staff).")
+        // panel create — post a new panel
+        .addSubcommand((sc) =>
+          sc
+            .setName("create")
+            .setDescription(
+              "Post an Open Ticket panel (button → modal) in a channel."
             )
-            .setRequired(false),
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Channel to post the panel in (default: here)")
+                .addChannelTypes(
+                  ChannelType.GuildText,
+                  ChannelType.GuildAnnouncement
+                )
+                .setRequired(false)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("title")
+                .setDescription("Panel embed title")
+                .setRequired(false)
+                .setMaxLength(256)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("description")
+                .setDescription("Panel embed description")
+                .setRequired(false)
+                .setMaxLength(2000)
+            )
         )
-        .addStringOption((opt) =>
-          opt
-            .setName("title")
-            .setDescription("Panel embed title")
-            .setRequired(false)
-            .setMaxLength(256),
+        // panel list — show registered panels
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List all ticket panels in this server.")
         )
-        .addStringOption((opt) =>
-          opt
-            .setName("description")
-            .setDescription("Panel embed description")
-            .setRequired(false)
-            .setMaxLength(2000),
-        ),
+        // panel edit — update title/description of a registered panel
+        .addSubcommand((sc) =>
+          sc
+            .setName("edit")
+            .setDescription("Update a panel's title and/or description.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("title")
+                .setDescription("New embed title")
+                .setRequired(false)
+                .setMaxLength(256)
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("description")
+                .setDescription("New embed description")
+                .setRequired(false)
+                .setMaxLength(2000)
+            )
+        )
+        // panel delete — remove a registered panel
+        .addSubcommand((sc) =>
+          sc
+            .setName("delete")
+            .setDescription("Remove a ticket panel and its Discord message.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel to remove")
+                .setRequired(true)
+            )
+        )
     )
     .addSubcommand((sc) =>
       sc
@@ -767,24 +824,32 @@ async function openTicketChannel(opts) {
  * @param {object} ctx
  */
 async function handleTicket(interaction, ctx) {
+  const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand();
+
+  // Panel subcommand group: /ticket panel [create|list|edit|delete]
+  if (group === "panel") {
+    if (!(await requireStaff(interaction))) return;
+    if (sub === "create") return handlePanelCreate(interaction, ctx);
+    if (sub === "list") return handlePanelList(interaction);
+    if (sub === "edit") return handlePanelEdit(interaction, ctx);
+    if (sub === "delete") return handlePanelDelete(interaction, ctx);
+  }
 
   // Public
   if (sub === "create") return handleCreate(interaction, ctx);
   if (sub === "settings") return handleSettings(interaction);
 
-  // Staff config + lifecycle (handlers enforce requireStaff below)
+  // Staff config (no subcommand group)
   if (
     sub === "setcategory" ||
     sub === "setarchive" ||
-    sub === "setratelimit" ||
-    sub === "panel"
+    sub === "setratelimit"
   ) {
     if (!(await requireStaff(interaction))) return;
     if (sub === "setcategory") return handleSetCategory(interaction, ctx);
     if (sub === "setarchive") return handleSetArchive(interaction, ctx);
     if (sub === "setratelimit") return handleSetRateLimit(interaction, ctx);
-    if (sub === "panel") return handlePanel(interaction, ctx);
   }
 
   // Staff
@@ -861,11 +926,11 @@ async function handleCreate(interaction, ctx) {
 }
 
 /**
- * Admin: post a public panel with an Open ticket button.
+ * Staff: post a public panel with an Open ticket button (stored in DB).
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  * @param {object} ctx
  */
-async function handlePanel(interaction, ctx) {
+async function handlePanelCreate(interaction, ctx) {
   const targetChannel =
     interaction.options.getChannel("channel") ||
     (await resolveChannel(interaction, ctx));
@@ -904,12 +969,21 @@ async function handlePanel(interaction, ctx) {
       components: [buildOpenTicketButtonRow()],
     });
 
+    // Store panel in registry
+    createTicketPanel(
+      interaction.guildId,
+      targetChannel.id,
+      message.id,
+      title,
+      description,
+    );
+
     await logConfigChange(
       ctx?.client || interaction.client,
       interaction.guildId,
       {
-        title: "Ticket panel posted",
-        command: "/ticket panel",
+        title: "Ticket panel created",
+        command: "/ticket panel create",
         actor: interaction.user,
         changes: [
           `Channel: <#${targetChannel.id}>`,
@@ -926,15 +1000,172 @@ async function handlePanel(interaction, ctx) {
 
     await interaction.editReply({
       content:
-        `Posted ticket panel in <#${targetChannel.id}>.` +
-        (jump ? `\n[Jump to panel](${jump})` : ""),
+        `Created ticket panel in <#${targetChannel.id}>.\n` +
+        `Message ID: \`${message.id}\`\n` +
+        (jump ? `[Jump to panel](${jump})` : "") +
+        "\n\nList panels with `/ticket panel list`.",
     });
   } catch (err) {
-    console.error("[tickets] panel failed:", err);
+    console.error("[tickets] panel create failed:", err);
     await interaction.editReply({
       content: `Failed to post panel: ${err?.message || "unknown error"}`,
     });
   }
+}
+
+/**
+ * Staff: list all registered ticket panels.
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ */
+async function handlePanelList(interaction) {
+  const panels = listTicketPanels(interaction.guildId);
+  if (!panels.length) {
+    await interaction.reply({
+      content: "No ticket panels configured. Use `/ticket panel create` to post one.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const lines = panels.map((p) => {
+    const jump = `https://discord.com/channels/${interaction.guildId}/${p.channel_id}/${p.message_id}`;
+    return `- **${p.title || DEFAULT_PANEL_TITLE}** in <#${p.channel_id}> — \`${p.message_id}\` — [jump](${jump})`;
+  });
+
+  await interaction.reply({
+    content: `**Ticket panels:**\n${lines.join("\n")}`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
+ * Staff: edit a registered panel's title and/or description.
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} ctx
+ */
+async function handlePanelEdit(interaction, ctx) {
+  const messageId = interaction.options.getString("message_id", true).trim();
+  const title = interaction.options.getString("title");
+  const description = interaction.options.getString("description");
+
+  if (title == null && description == null) {
+    await interaction.reply({
+      content: "Provide at least one of `title` or `description` to update.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const updated = updateTicketPanelText(
+    interaction.guildId,
+    messageId,
+    title != null ? title.trim() : null,
+    description != null ? description.trim() : null,
+  );
+
+  if (!updated) {
+    await interaction.reply({
+      content: `No ticket panel with message ID \`${messageId}\`.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const panel = getTicketPanel(interaction.guildId, messageId);
+  const finalTitle = (title != null ? title.trim() : panel?.title) || DEFAULT_PANEL_TITLE;
+  const finalDesc = (description != null ? description.trim() : panel?.description) || DEFAULT_PANEL_DESCRIPTION;
+
+  // Try to update the live Discord message embed
+  let note = "";
+  if (panel?.channel_id) {
+    try {
+      const channel = await interaction.guild.channels.fetch(panel.channel_id).catch(() => null);
+      if (channel?.messages) {
+        const msg = await channel.messages.fetch(messageId).catch(() => null);
+        if (msg) {
+          const embed = buildPanelEmbed(finalTitle, finalDesc);
+          await msg.edit({ embeds: [embed], components: [buildOpenTicketButtonRow()] });
+          note = " Discord message updated.";
+        } else {
+          note = " (Message was already gone.)";
+        }
+      }
+    } catch {
+      note = " (Could not update Discord message — it may have been deleted.)";
+    }
+  }
+
+  await logConfigChange(
+    ctx?.client || interaction.client,
+    interaction.guildId,
+    {
+      title: "Ticket panel edited",
+      command: "/ticket panel edit",
+      actor: interaction.user,
+      changes: [
+        `Message ID: \`${messageId}\``,
+        panel ? `Channel: <#${panel.channel_id}>` : null,
+        title != null ? `New title: ${finalTitle}` : null,
+        description != null ? "Description updated" : null,
+      ].filter(Boolean),
+    }
+  ).catch(() => {});
+
+  await interaction.reply({
+    content: `Updated ticket panel \`${messageId}\`.${note}`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/**
+ * Staff: delete a registered panel and its Discord message.
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {object} ctx
+ */
+async function handlePanelDelete(interaction, ctx) {
+  const messageId = interaction.options.getString("message_id", true).trim();
+  const { removed, channel_id } = deleteTicketPanel(interaction.guildId, messageId);
+
+  let note = "";
+  if (removed && channel_id) {
+    try {
+      const channel = await interaction.guild.channels.fetch(channel_id).catch(() => null);
+      if (channel?.messages) {
+        const msg = await channel.messages.fetch(messageId).catch(() => null);
+        if (msg) {
+          await msg.delete().catch(() => null);
+          note = " Discord message deleted.";
+        } else {
+          note = " (Message was already gone.)";
+        }
+      }
+    } catch {
+      note = " (Could not delete Discord message — remove it manually if needed.)";
+    }
+  }
+
+  if (removed) {
+    await logConfigChange(
+      ctx?.client || interaction.client,
+      interaction.guildId,
+      {
+        title: "Ticket panel deleted",
+        command: "/ticket panel delete",
+        actor: interaction.user,
+        changes: [
+          `Message ID: \`${messageId}\``,
+          channel_id ? `Channel: <#${channel_id}>` : null,
+        ].filter(Boolean),
+      }
+    ).catch(() => {});
+  }
+
+  await interaction.reply({
+    content: removed
+      ? `Deleted ticket panel \`${messageId}\`.${note}`
+      : `No ticket panel with message ID \`${messageId}\`.`,
+    flags: MessageFlags.Ephemeral,
+  });
 }
 
 /**

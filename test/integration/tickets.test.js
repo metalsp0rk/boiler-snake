@@ -737,10 +737,11 @@ describe("integration: tickets", () => {
     assert.ok(notes.some((n) => n.content.includes(body)));
   });
 
-  it("/ticket panel posts embed + Open ticket button (staff)", async () => {
+  it("/ticket panel create posts embed + Open ticket button (staff)", async () => {
     const denied = await env.runCommand({
       commandName: "ticket",
-      subcommand: "panel",
+      subcommandGroup: "panel",
+      subcommand: "create",
       admin: false,
       user: env.users.memberUser,
       options: { channel: env.channels.general },
@@ -750,7 +751,8 @@ describe("integration: tickets", () => {
     const beforeCount = env.channels.general.sent?.length || 0;
     const panel = await env.runCommand({
       commandName: "ticket",
-      subcommand: "panel",
+      subcommandGroup: "panel",
+      subcommand: "create",
       admin: true,
       options: {
         channel: env.channels.general,
@@ -758,7 +760,7 @@ describe("integration: tickets", () => {
         description: "Press the button to open a ticket.",
       },
     });
-    assertReplyContains(panel, /Posted ticket panel/i);
+    assertReplyContains(panel, /Created ticket panel/i);
 
     const afterCount = env.channels.general.sent?.length || 0;
     assert.ok(afterCount > beforeCount, "expected panel message in channel");
@@ -900,5 +902,201 @@ describe("integration: tickets", () => {
     assertEphemeralReply(archive);
     assertReplyContains(archive, /close/i);
     assert.equal(env.db.getTicketById(ticket.id).status, "open");
+  });
+
+  it("/ticket panel list shows registered panels after create", async () => {
+    // Count existing panels first (prior tests may have left state)
+    let panels = env.db.listTicketPanels(env.guild.id);
+    const beforeCount = panels.length;
+
+    // Create a panel
+    const create = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "create",
+      admin: true,
+      options: {
+        channel: env.channels.general,
+        title: "Test Panel List",
+        description: "Panel for list test",
+      },
+    });
+    assertReplyContains(create, /Created ticket panel/i);
+
+    // List should show the new panel
+    const list = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "list",
+      admin: true,
+    });
+    assertEphemeralReply(list);
+    assertReplyContains(list, /Test Panel List/i);
+
+    // Verify DB count increased
+    panels = env.db.listTicketPanels(env.guild.id);
+    assert.equal(panels.length, beforeCount + 1);
+  });
+
+  it("/ticket panel edit updates title/description and live message", async () => {
+    // Get existing panels to find one with known state
+    let panels = env.db.listTicketPanels(env.guild.id);
+    // Filter for our test panels (created during this suite)
+    const editablePanel = panels.find((p) => p.title === "Test Panel List");
+
+    if (!editablePanel) {
+      // Create one if not found (isolated run)
+      const create = await env.runCommand({
+        commandName: "ticket",
+        subcommandGroup: "panel",
+        subcommand: "create",
+        admin: true,
+        options: {
+          channel: env.channels.general,
+          title: "Panel To Edit",
+          description: "Original desc",
+        },
+      });
+      assertReplyContains(create, /Created ticket panel/i);
+      panels = env.db.listTicketPanels(env.guild.id);
+      const newPanels = panels.filter((p) => p.title === "Panel To Edit");
+      assert.ok(newPanels.length > 0, "expected created panel in DB");
+      editablePanel._panel = newPanels[0];
+    }
+
+    const panel = editablePanel._panel || editablePanel;
+    const messageId = panel.message_id;
+
+    // Edit the panel
+    const edit = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "edit",
+      admin: true,
+      options: {
+        message_id: messageId,
+        title: "Updated Title",
+      },
+    });
+    assertReplyContains(edit, /Updated ticket panel/i);
+
+    // Verify DB was updated
+    const updatedPanel = env.db.getTicketPanel(env.guild.id, messageId);
+    assert.equal(updatedPanel.title, "Updated Title");
+
+    // Edit with missing message_id fails
+    const editMissing = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "edit",
+      admin: true,
+      options: {
+        message_id: "nonexistent-msg-id",
+        title: "Won't happen",
+      },
+    });
+    assertReplyContains(editMissing, /No ticket panel/i);
+  });
+
+  it("/ticket panel delete removes registration and Discord message", async () => {
+    // Create a panel specifically for deletion
+    const create = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "create",
+      admin: true,
+      options: {
+        channel: env.channels.general,
+        title: "Panel To Delete",
+        description: "Will be removed",
+      },
+    });
+    assertReplyContains(create, /Created ticket panel/i);
+
+    // Find in DB by title (more reliable than parsing reply)
+    let panels = env.db.listTicketPanels(env.guild.id);
+    const toDelete = panels.find((p) => p.title === "Panel To Delete");
+    assert.ok(toDelete, "expected panel in DB");
+    const messageId = toDelete.message_id;
+
+    // Verify count before delete
+    const beforeCount = panels.length;
+
+    // Delete the panel
+    const delete_ = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "delete",
+      admin: true,
+      options: {
+        message_id: messageId,
+      },
+    });
+    assertReplyContains(delete_, /Deleted ticket panel/i);
+
+    // Verify it's gone from DB
+    panels = env.db.listTicketPanels(env.guild.id);
+    assert.equal(panels.length, beforeCount - 1);
+
+    // Delete nonexistent fails gracefully
+    const deleteMissing = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "delete",
+      admin: true,
+      options: {
+        message_id: "nonexistent-panel-id",
+      },
+    });
+    assertReplyContains(deleteMissing, /No ticket panel/i);
+  });
+
+  it("/ticket panel requires staff gate for all operations", async () => {
+    // panel create
+    const createDeny = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "create",
+      admin: false,
+      user: env.users.memberUser,
+      options: { channel: env.channels.general },
+    });
+    assertEphemeralReply(createDeny);
+    assertReplyContains(createDeny, /permission/i);
+
+    // panel list (non-staff gets denied)
+    const list = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "list",
+      admin: false,
+      user: env.users.memberUser,
+    });
+    assertEphemeralReply(list);
+    assertReplyContains(list, /permission/i);
+
+    // panel edit (non-staff gets denied)
+    const editDeny = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "edit",
+      admin: false,
+      user: env.users.memberUser,
+      options: { message_id: "x", title: "hack" },
+    });
+    assertEphemeralReply(editDeny);
+    assertReplyContains(editDeny, /permission/i);
+
+    // panel delete (non-staff gets denied)
+    const delDeny = await env.runCommand({
+      commandName: "ticket",
+      subcommandGroup: "panel",
+      subcommand: "delete",
+      admin: false,
+      user: env.users.memberUser,
+      options: { message_id: "x" },
+    });
+    assertEphemeralReply(delDeny);
+    assertReplyContains(delDeny, /permission/i);
   });
 });

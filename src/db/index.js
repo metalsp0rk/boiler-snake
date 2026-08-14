@@ -253,4 +253,11 @@ module.exports = {
   listTicketMessages: tickets.listTicketMessages,
   generateTranscriptToken: tickets.generateTranscriptToken,
   setTicketArchiveMessageId: tickets.setTicketArchiveMessageId,
+
+  // ticket panels (stored registry)
+  createTicketPanel: tickets.createTicketPanel,
+  getTicketPanel: tickets.getTicketPanel,
+  listTicketPanels: tickets.listTicketPanels,
+  updateTicketPanelText: tickets.updateTicketPanelText,
+  deleteTicketPanel: tickets.deleteTicketPanel,
 };
