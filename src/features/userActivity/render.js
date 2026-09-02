@@ -16,13 +16,10 @@ const {
   ButtonBuilder,
   ButtonStyle,
 } = require("discord.js");
-const {
-  formatWeeklyRate,
-  normalizeWindow,
-  windowLabel,
-} = require("./service");
+const { Color } = require("../../core/theme");
+const { formatWeeklyRate, normalizeWindow, windowLabel } = require("./service");
 
-const COLOR_ACTIVITY = 0x1abc9c;
+const COLOR_ACTIVITY = Color.accent;
 const BTN_PREFIX = "ui:";
 
 /**
@@ -62,14 +59,12 @@ function activityButtonCustomId(kind, userId, extra = {}) {
   }
   if (kind === "aw") {
     const win = normalizeWindow(extra.win);
-    const page =
-      extra.page === "ca" || extra.page === "c" ? "ca" : "ch";
+    const page = extra.page === "ca" || extra.page === "c" ? "ca" : "ch";
     return `${BTN_PREFIX}aw:${win}:${page}:${userId}`;
   }
   if (kind === "ap") {
     const win = normalizeWindow(extra.win);
-    const page =
-      extra.page === "ca" || extra.page === "c" ? "ca" : "ch";
+    const page = extra.page === "ca" || extra.page === "c" ? "ca" : "ch";
     return `${BTN_PREFIX}ap:${page}:${win}:${userId}`;
   }
   return `${BTN_PREFIX}${kind}:${userId}`;
@@ -171,21 +166,21 @@ function buildPrimaryButtons(counts, activeView, userId, win = "a") {
       .setCustomId(activityButtonCustomId("o", userId))
       .setLabel("Overview")
       .setStyle(
-        activeView === "o" ? ButtonStyle.Primary : ButtonStyle.Secondary
+        activeView === "o" ? ButtonStyle.Primary : ButtonStyle.Secondary,
       )
       .setDisabled(activeView === "o"),
     new ButtonBuilder()
       .setCustomId(activityButtonCustomId("n", userId))
       .setLabel(notesLabel.slice(0, 80))
       .setStyle(
-        activeView === "n" ? ButtonStyle.Primary : ButtonStyle.Secondary
+        activeView === "n" ? ButtonStyle.Primary : ButtonStyle.Secondary,
       )
       .setDisabled(activeView === "n"),
     new ButtonBuilder()
       .setCustomId(activityButtonCustomId("w", userId))
       .setLabel(warnsLabel.slice(0, 80))
       .setStyle(
-        activeView === "w" ? ButtonStyle.Primary : ButtonStyle.Secondary
+        activeView === "w" ? ButtonStyle.Primary : ButtonStyle.Secondary,
       )
       .setDisabled(activeView === "w"),
     new ButtonBuilder()
@@ -195,7 +190,7 @@ function buildPrimaryButtons(counts, activeView, userId, win = "a") {
       // Keep enabled on categories so staff can jump back to channels/all;
       // only disable when already on default channels view is awkward — disable
       // whenever any activity page is open so primary never duplicates control row.
-      .setDisabled(isActivity)
+      .setDisabled(isActivity),
   );
 }
 
@@ -217,49 +212,45 @@ function buildActivityControlRows(userId, win, page, meta = null) {
   const windowRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(
-        activityButtonCustomId("aw", userId, { win: "a", page: pageTok })
+        activityButtonCustomId("aw", userId, { win: "a", page: pageTok }),
       )
       .setLabel("All")
       .setStyle(w === "a" ? ButtonStyle.Primary : ButtonStyle.Secondary)
       .setDisabled(w === "a"),
     new ButtonBuilder()
       .setCustomId(
-        activityButtonCustomId("aw", userId, { win: "7", page: pageTok })
+        activityButtonCustomId("aw", userId, { win: "7", page: pageTok }),
       )
       .setLabel("7d")
       .setStyle(w === "7" ? ButtonStyle.Primary : ButtonStyle.Secondary)
       .setDisabled(w === "7"),
     new ButtonBuilder()
       .setCustomId(
-        activityButtonCustomId("aw", userId, { win: "30", page: pageTok })
+        activityButtonCustomId("aw", userId, { win: "30", page: pageTok }),
       )
       .setLabel("30d")
       .setStyle(w === "30" ? ButtonStyle.Primary : ButtonStyle.Secondary)
       .setDisabled(w === "30"),
     new ButtonBuilder()
       .setCustomId(
-        activityButtonCustomId("aw", userId, { win: "90", page: pageTok })
+        activityButtonCustomId("aw", userId, { win: "90", page: pageTok }),
       )
       .setLabel("90d")
       .setStyle(w === "90" ? ButtonStyle.Primary : ButtonStyle.Secondary)
-      .setDisabled(w === "90")
+      .setDisabled(w === "90"),
   );
 
   const pageRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(
-        activityButtonCustomId("ap", userId, { page: "ch", win: w })
-      )
+      .setCustomId(activityButtonCustomId("ap", userId, { page: "ch", win: w }))
       .setLabel("Channels")
       .setStyle(page === "a" ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setDisabled(page === "a"),
     new ButtonBuilder()
-      .setCustomId(
-        activityButtonCustomId("ap", userId, { page: "ca", win: w })
-      )
+      .setCustomId(activityButtonCustomId("ap", userId, { page: "ca", win: w }))
       .setLabel("Categories")
       .setStyle(page === "c" ? ButtonStyle.Success : ButtonStyle.Secondary)
-      .setDisabled(page === "c")
+      .setDisabled(page === "c"),
   );
 
   const backfillLabel = running
@@ -279,7 +270,7 @@ function buildActivityControlRows(userId, win, page, meta = null) {
       .setCustomId(activityButtonCustomId("b", userId))
       .setLabel(backfillLabel.slice(0, 80))
       .setStyle(ButtonStyle.Danger)
-      .setDisabled(running)
+      .setDisabled(running),
   );
 
   return [windowRow, pageRow, actionRow];
@@ -297,8 +288,7 @@ function formatRankLines(ranked) {
     .map((r, i) => {
       const pct = r.pct.toFixed(1);
       const rate = formatWeeklyRate(r.weekly);
-      const label =
-        r.label.length > 28 ? `${r.label.slice(0, 27)}…` : r.label;
+      const label = r.label.length > 28 ? `${r.label.slice(0, 27)}…` : r.label;
       return `**${i + 1}.** ${label} · **${r.count}** · ${pct}% · ${rate}`;
     })
     .join("\n")
@@ -318,15 +308,14 @@ function buildActivityEmbed(user, ranking, page, joinedMs) {
     ranking.windowWeekly != null
       ? ranking.windowWeekly
       : ranking.lifetimeWeekly;
-  const rateSuffix =
-    ranking.window === "a" ? "since join" : "in window";
+  const rateSuffix = ranking.window === "a" ? "since join" : "in window";
   const embed = new EmbedBuilder()
     .setColor(COLOR_ACTIVITY)
     .setTitle(`Activity · ${pageTitle} · ${ranking.windowLabel}`)
     .setDescription(
       `Subject: <@${user.id}> · \`${user.id}\`\n` +
         `**Window total:** ${ranking.windowTotal} · **Lifetime:** ${ranking.lifetimeTotal} · ` +
-        `**~${formatWeeklyRate(rate)}** ${rateSuffix}`
+        `**~${formatWeeklyRate(rate)}** ${rateSuffix}`,
     );
 
   embed.addFields({
@@ -350,7 +339,7 @@ function buildActivityEmbed(user, ranking, page, joinedMs) {
   footerParts.push(
     ranking.window === "a"
       ? "Senior staff · posts/wk = lifetime ÷ weeks since join"
-      : "Senior staff · posts/wk = window posts ÷ weeks in window"
+      : "Senior staff · posts/wk = window posts ÷ weeks in window",
   );
   embed.setFooter({ text: footerParts.join(" · ").slice(0, 2048) });
 

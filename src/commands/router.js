@@ -1,6 +1,6 @@
 const { MessageFlags } = require("discord.js");
 const { commandsAllowed } = require("../core/permissions");
-const { safeErrorReply } = require("../core/interaction");
+const { safeErrorReply, replyEphemeral } = require("../core/interaction");
 
 /**
  * Dispatch a Discord interaction through the command registry.
@@ -64,19 +64,19 @@ async function handleInteraction(interaction, ctx) {
 
   try {
     if (!commandsAllowed(interaction)) {
-      await interaction.reply({
-        content: "Commands aren't enabled in this channel.",
-        flags: MessageFlags.Ephemeral,
-      });
+      await replyEphemeral(
+        interaction,
+        "Commands aren't enabled in this channel.",
+      );
       return;
     }
 
     const handler = registry.getHandler(interaction.commandName);
     if (!handler) {
-      await interaction.reply({
-        content: `Unhandled command: \`/${interaction.commandName}\` (handler missing).`,
-        flags: MessageFlags.Ephemeral,
-      });
+      await replyEphemeral(
+        interaction,
+        `Unhandled command: \`/${interaction.commandName}\` (handler missing).`,
+      );
       return;
     }
 

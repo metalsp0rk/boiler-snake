@@ -54,6 +54,7 @@ const {
   isStaff,
   isAdminOrMod,
 } = require("../../core/permissions");
+const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const {
   applyTicketOverwrites,
@@ -67,10 +68,11 @@ const {
 } = require("./overwrites");
 const { softCloseTicket, archiveTicketPipeline } = require("./close");
 const { startTicketHttpServer } = require("./httpServer");
+const { Color, formatTicketRef, tsFull } = require("../../core/theme");
 
-const COLOR_OPEN = 0x57f287;
-const COLOR_INFO = 0x5865f2;
-const COLOR_SENSITIVE = 0xe74c3c;
+const COLOR_OPEN = Color.success;
+const COLOR_INFO = Color.brand;
+const COLOR_SENSITIVE = Color.danger;
 
 /** Button customId: open ticket from a panel */
 const BTN_OPEN = "tk:open";
@@ -95,7 +97,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("ticket")
     .setDescription(
-      "Open and manage support tickets; staff lifecycle and guild ticket config."
+      "Open and manage support tickets; staff lifecycle and guild ticket config.",
     )
     // create is public; other ops gated in handlers
     .addSubcommand((sc) =>
@@ -107,8 +109,8 @@ const commands = [
             .setName("reason")
             .setDescription("What do you need help with?")
             .setRequired(false)
-            .setMaxLength(MAX_TICKET_REASON)
-        )
+            .setMaxLength(MAX_TICKET_REASON),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -118,48 +120,48 @@ const commands = [
           opt
             .setName("user")
             .setDescription("Member to open a ticket for")
-            .setRequired(true)
+            .setRequired(true),
         )
         .addStringOption((opt) =>
           opt
             .setName("reason")
             .setDescription("Why this ticket is being opened")
             .setRequired(false)
-            .setMaxLength(MAX_TICKET_REASON)
-        )
+            .setMaxLength(MAX_TICKET_REASON),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("close")
         .setDescription(
-          "Close this ticket: remove non-staff members; keep channel for staff."
+          "Close this ticket: remove non-staff members; keep channel for staff.",
         )
         .addStringOption((opt) =>
           opt
             .setName("reason")
             .setDescription("Close reason (shown to requester + on archive)")
             .setRequired(false)
-            .setMaxLength(MAX_TICKET_REASON)
+            .setMaxLength(MAX_TICKET_REASON),
         )
         .addStringOption((opt) =>
           opt
             .setName("staff_note")
             .setDescription(
-              "Optional private staff note on the requester (never shown to them)"
+              "Optional private staff note on the requester (never shown to them)",
             )
             .setRequired(false)
-            .setMaxLength(MAX_NOTE_CONTENT)
-        )
+            .setMaxLength(MAX_NOTE_CONTENT),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("archive")
         .setDescription(
-          "Archive a closed ticket: transcript (if not sensitive), then delete channel."
-        )
+          "Archive a closed ticket: transcript (if not sensitive), then delete channel.",
+        ),
     )
     .addSubcommand((sc) =>
-      sc.setName("claim").setDescription("Claim this ticket as staff owner.")
+      sc.setName("claim").setDescription("Claim this ticket as staff owner."),
     )
     .addSubcommand((sc) =>
       sc
@@ -169,19 +171,16 @@ const commands = [
           opt
             .setName("staff")
             .setDescription("New staff owner")
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("adduser")
         .setDescription("Add a member participant to this ticket.")
         .addUserOption((opt) =>
-          opt
-            .setName("user")
-            .setDescription("Member to add")
-            .setRequired(true)
-        )
+          opt.setName("user").setDescription("Member to add").setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -191,19 +190,21 @@ const commands = [
           opt
             .setName("user")
             .setDescription("Member to remove")
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("addstaff")
-        .setDescription("Allow-list a staff user on this ticket (named access).")
+        .setDescription(
+          "Allow-list a staff user on this ticket (named access).",
+        )
         .addUserOption((opt) =>
           opt
             .setName("user")
             .setDescription("Staff user to add")
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -213,20 +214,20 @@ const commands = [
           opt
             .setName("user")
             .setDescription("Staff user to remove")
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("sensitive")
         .setDescription(
-          "Lock this ticket to owner + named staff + members only."
-        )
+          "Lock this ticket to owner + named staff + members only.",
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("unsensitive")
-        .setDescription("Restore normal staff-role visibility on this ticket.")
+        .setDescription("Restore normal staff-role visibility on this ticket."),
     )
     .addSubcommand((sc) =>
       sc
@@ -236,13 +237,13 @@ const commands = [
           opt
             .setName("user")
             .setDescription("Filter by member")
-            .setRequired(false)
-        )
+            .setRequired(false),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("info")
-        .setDescription("Show details for this ticket channel.")
+        .setDescription("Show details for this ticket channel."),
     )
     .addSubcommand((sc) =>
       sc
@@ -253,14 +254,14 @@ const commands = [
             .setName("category")
             .setDescription("Category channel")
             .addChannelTypes(ChannelType.GuildCategory)
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("setarchive")
         .setDescription(
-          "Set the staff channel for close summaries / transcripts (admin)."
+          "Set the staff channel for close summaries / transcripts (admin).",
         )
         .addChannelOption((opt) =>
           opt
@@ -268,16 +269,16 @@ const commands = [
             .setDescription("Text channel for archive posts")
             .addChannelTypes(
               ChannelType.GuildText,
-              ChannelType.GuildAnnouncement
+              ChannelType.GuildAnnouncement,
             )
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("setratelimit")
         .setDescription(
-          "Min minutes between member self-creates (0 = off; default 60)."
+          "Min minutes between member self-creates (0 = off; default 60).",
         )
         .addIntegerOption((opt) =>
           opt
@@ -285,14 +286,14 @@ const commands = [
             .setDescription("Cooldown limit minutes (0 disables)")
             .setRequired(true)
             .setMinValue(0)
-            .setMaxValue(10080)
-        )
+            .setMaxValue(10080),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("panel")
         .setDescription(
-          "Post an Open Ticket panel (button → modal) in a channel (admin)."
+          "Post an Open Ticket panel (button → modal) in a channel (admin).",
         )
         .addChannelOption((opt) =>
           opt
@@ -300,29 +301,29 @@ const commands = [
             .setDescription("Channel to post the panel in (default: here)")
             .addChannelTypes(
               ChannelType.GuildText,
-              ChannelType.GuildAnnouncement
+              ChannelType.GuildAnnouncement,
             )
-            .setRequired(false)
+            .setRequired(false),
         )
         .addStringOption((opt) =>
           opt
             .setName("title")
             .setDescription("Panel embed title")
             .setRequired(false)
-            .setMaxLength(256)
+            .setMaxLength(256),
         )
         .addStringOption((opt) =>
           opt
             .setName("description")
             .setDescription("Panel embed description")
             .setRequired(false)
-            .setMaxLength(2000)
-        )
+            .setMaxLength(2000),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("settings")
-        .setDescription("Show ticket configuration for this server.")
+        .setDescription("Show ticket configuration for this server."),
     ),
 ];
 
@@ -330,10 +331,6 @@ const commands = [
  * @param {number} n
  * @returns {string}
  */
-function formatTicketRef(n) {
-  return `#${n}`;
-}
-
 /**
  * Rate-limit message for self-create (slash or panel modal).
  * @param {{ retryAfterMs: number, minutes: number }} check
@@ -357,7 +354,7 @@ function buildOpenTicketButtonRow() {
       .setCustomId(BTN_OPEN)
       .setLabel("Open a ticket")
       .setStyle(ButtonStyle.Primary)
-      .setEmoji("🎫")
+      .setEmoji("🎫"),
   );
 }
 
@@ -377,9 +374,7 @@ function buildCreateTicketModal() {
   return new ModalBuilder()
     .setCustomId(MODAL_CREATE)
     .setTitle("Open a support ticket")
-    .addComponents(
-      new ActionRowBuilder().addComponents(reasonInput)
-    );
+    .addComponents(new ActionRowBuilder().addComponents(reasonInput));
 }
 
 /**
@@ -406,9 +401,7 @@ function buildPanelEmbed(title, description) {
  * @returns {string}
  */
 function buildTicketStaffNoteContent(ticket, closeReason, body) {
-  const parts = [
-    `Ticket ${formatTicketRef(ticket.ticket_number)} closed`,
-  ];
+  const parts = [`Ticket ${formatTicketRef(ticket.ticket_number)} closed`];
   if (closeReason && String(closeReason).trim()) {
     parts.push(`Close reason: ${String(closeReason).trim()}`);
   }
@@ -469,7 +462,7 @@ function buildAddStaffNoteButtonRow(ticketId) {
       .setCustomId(`${BTN_STAFF_NOTE_PREFIX}${ticketId}`)
       .setLabel("Add staff note")
       .setStyle(ButtonStyle.Secondary)
-      .setEmoji("📝")
+      .setEmoji("📝"),
   );
 }
 
@@ -487,7 +480,7 @@ function buildTicketStaffNoteModal(ticketId, ticketNumber) {
     .setRequired(true)
     .setMaxLength(MAX_NOTE_CONTENT)
     .setPlaceholder(
-      "Context for staff about this requester (never shown to them)"
+      "Context for staff about this requester (never shown to them)",
     );
 
   const title =
@@ -528,10 +521,8 @@ async function requireOpenTicketChannel(interaction, ctx) {
   const channel = await resolveChannel(interaction, ctx);
   const ticket = getTicketByChannel(interaction.channelId);
   if (!ticket || ticket.status !== "open") {
-    await interaction.reply({
-      content:
-        "This command only works inside an **open ticket** channel.",
-      flags: MessageFlags.Ephemeral,
+    await replyEphemeral(interaction, {
+      content: "This command only works inside an **open ticket** channel.",
     });
     return null;
   }
@@ -551,31 +542,27 @@ async function requireLiveTicketChannel(interaction, ctx, opts = {}) {
   const channel = await resolveChannel(interaction, ctx);
   const ticket = getTicketByChannel(interaction.channelId);
   if (!ticket || !ticket.channel_id) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "This command only works inside a **ticket** channel.",
-      flags: MessageFlags.Ephemeral,
     });
     return null;
   }
   if (statusWant === "open" && ticket.status !== "open") {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "This command only works inside an **open** ticket channel.",
-      flags: MessageFlags.Ephemeral,
     });
     return null;
   }
   if (statusWant === "closed" && ticket.status !== "closed") {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "This ticket is still **open**. Run `/ticket close` first, then `/ticket archive`.",
-      flags: MessageFlags.Ephemeral,
     });
     return null;
   }
   if (Number(ticket.archived) === 1) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "This ticket is already archived.",
-      flags: MessageFlags.Ephemeral,
     });
     return null;
   }
@@ -606,13 +593,7 @@ async function resolveBotMember(guild, client) {
  * @param {object} opts
  */
 async function openTicketChannel(opts) {
-  const {
-    guild,
-    client,
-    creatorUserId,
-    reason,
-    openedByStaffId,
-  } = opts;
+  const { guild, client, creatorUserId, reason, openedByStaffId } = opts;
 
   const settings = getTicketSettings(guild.id);
   const botUserId = client.user?.id;
@@ -624,7 +605,7 @@ async function openTicketChannel(opts) {
   const canCreate = assertBotCanCreateTickets(
     guild,
     botMember,
-    settings.ticket_category_id
+    settings.ticket_category_id,
   );
   if (!canCreate.ok) {
     const err = new Error(canCreate.error);
@@ -634,12 +615,12 @@ async function openTicketChannel(opts) {
 
   const { roleIds: staffRoleIds, skipped } = getManageableStaffRoleIds(
     guild,
-    botMember
+    botMember,
   );
   if (skipped.length) {
     console.warn(
       `[tickets] Skipping ${skipped.length} staff role overwrite(s):`,
-      skipped.map((s) => `${s.id} (${s.reason})`).join("; ")
+      skipped.map((s) => `${s.id} (${s.reason})`).join("; "),
     );
   }
 
@@ -750,9 +731,7 @@ async function openTicketChannel(opts) {
     .setColor(COLOR_OPEN)
     .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)}`)
     .setDescription(
-      reason
-        ? String(reason).slice(0, 4000)
-        : "_No reason provided._"
+      reason ? String(reason).slice(0, 4000) : "_No reason provided._",
     )
     .addFields(
       { name: "Requester", value: `<@${creatorUserId}>`, inline: true },
@@ -765,9 +744,9 @@ async function openTicketChannel(opts) {
       },
       {
         name: "Created",
-        value: `<t:${Math.floor(ticket.created_at / 1000)}:F>`,
+        value: tsFull(ticket.created_at),
         inline: true,
-      }
+      },
     )
     .setFooter({
       text: "Staff: /ticket claim · close · sensitive · adduser",
@@ -825,9 +804,8 @@ async function handleTicket(interaction, ctx) {
   if (sub === "unsensitive") return handleUnsensitive(interaction, ctx);
   if (sub === "info") return handleInfo(interaction, ctx);
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Unknown subcommand: \`${sub}\``,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -872,9 +850,8 @@ async function handleCreate(interaction, ctx) {
   const reason = interaction.options.getString("reason");
   const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
   if (!check.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: formatRateLimitMessage(check),
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -899,10 +876,9 @@ async function handlePanel(interaction, ctx) {
     DEFAULT_PANEL_DESCRIPTION;
 
   if (!targetChannel || typeof targetChannel.send !== "function") {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "Could not resolve a text channel to post the panel. Pass `channel:` or run this in a text channel.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -913,9 +889,8 @@ async function handlePanel(interaction, ctx) {
     type === ChannelType.GuildAnnouncement ||
     type == null; // mocks may omit type
   if (!okType) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Panel must be posted in a text or announcement channel.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -941,7 +916,7 @@ async function handlePanel(interaction, ctx) {
           `Message: \`${message.id}\``,
           `Title: ${title}`,
         ],
-      }
+      },
     ).catch(() => {});
 
     const jump =
@@ -969,17 +944,15 @@ async function handlePanel(interaction, ctx) {
  */
 async function handleOpenTicketButton(interaction, _ctx) {
   if (!interaction.guild) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Tickets can only be opened in a server.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (interaction.user?.bot) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Bots cannot open tickets.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -988,9 +961,8 @@ async function handleOpenTicketButton(interaction, _ctx) {
   // Re-checked on modal submit (state can change while modal is open).
   const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
   if (!check.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: formatRateLimitMessage(check),
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1005,17 +977,15 @@ async function handleOpenTicketButton(interaction, _ctx) {
  */
 async function handleCreateTicketModal(interaction, ctx) {
   if (!interaction.guild) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Tickets can only be opened in a server.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (interaction.user?.bot) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Bots cannot open tickets.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1023,16 +993,16 @@ async function handleCreateTicketModal(interaction, ctx) {
   let reason = null;
   try {
     const raw = interaction.fields.getTextInputValue(MODAL_FIELD_REASON);
-    reason = raw != null && String(raw).trim() !== "" ? String(raw).trim() : null;
+    reason =
+      raw != null && String(raw).trim() !== "" ? String(raw).trim() : null;
   } catch {
     reason = null;
   }
 
   const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
   if (!check.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: formatRateLimitMessage(check),
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1046,9 +1016,8 @@ async function handleFor(interaction, ctx) {
   const reason = interaction.options.getString("reason");
 
   if (target.bot) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Cannot open a ticket for a bot.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1184,24 +1153,22 @@ async function handleStaffNoteButton(interaction, ctx) {
   if (!customId.startsWith(BTN_STAFF_NOTE_PREFIX)) return;
   const ticketId = Number(customId.slice(BTN_STAFF_NOTE_PREFIX.length));
   if (!Number.isFinite(ticketId) || ticketId < 1) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Invalid ticket reference on this button.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const ticket = getTicketById(ticketId);
   if (!ticket || ticket.guild_id !== interaction.guildId) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "That ticket was not found in this server.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   await interaction.showModal(
-    buildTicketStaffNoteModal(ticket.id, ticket.ticket_number)
+    buildTicketStaffNoteModal(ticket.id, ticket.ticket_number),
   );
 }
 
@@ -1217,18 +1184,16 @@ async function handleStaffNoteModal(interaction, ctx) {
   if (!customId.startsWith(MODAL_STAFF_NOTE_PREFIX)) return;
   const ticketId = Number(customId.slice(MODAL_STAFF_NOTE_PREFIX.length));
   if (!Number.isFinite(ticketId) || ticketId < 1) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Invalid modal state (missing ticket).",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const ticket = getTicketById(ticketId);
   if (!ticket || ticket.guild_id !== interaction.guildId) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "That ticket was not found in this server.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1247,9 +1212,8 @@ async function handleStaffNoteModal(interaction, ctx) {
     body,
   });
   if (!noteResult.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: noteResult.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1265,15 +1229,14 @@ async function handleStaffNoteModal(interaction, ctx) {
         `N-${noteResult.note.note_number} on <@${ticket.creator_user_id}>`,
         `From ticket ${formatTicketRef(ticket.ticket_number)}`,
       ],
-    }
+    },
   ).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Staff note **N-${noteResult.note.note_number}** saved on ` +
       `<@${ticket.creator_user_id}> (private; never shown to the member).\n` +
       `View with \`/note info id:${noteResult.note.note_number}\`.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1331,14 +1294,11 @@ async function handleClaim(interaction, ctx) {
     console.warn("[tickets] claim overwrites:", err?.message || err);
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `You claimed ticket **${formatTicketRef(ticket.ticket_number)}**.`,
-    flags: MessageFlags.Ephemeral,
   });
   try {
-    await channel?.send?.(
-      `<@${interaction.user.id}> claimed this ticket.`
-    );
+    await channel?.send?.(`<@${interaction.user.id}> claimed this ticket.`);
   } catch {
     // ignore
   }
@@ -1351,9 +1311,8 @@ async function handleTransfer(interaction, ctx) {
   const staff = interaction.options.getUser("staff", true);
 
   if (staff.bot) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Cannot transfer to a bot.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1372,13 +1331,12 @@ async function handleTransfer(interaction, ctx) {
     console.warn("[tickets] transfer overwrites:", err?.message || err);
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Transferred ticket **${formatTicketRef(ticket.ticket_number)}** to <@${staff.id}>.`,
-    flags: MessageFlags.Ephemeral,
   });
   try {
     await channel?.send?.(
-      `Staff ownership transferred to <@${staff.id}> by <@${interaction.user.id}>.`
+      `Staff ownership transferred to <@${staff.id}> by <@${interaction.user.id}>.`,
     );
   } catch {
     // ignore
@@ -1392,9 +1350,8 @@ async function handleAddUser(interaction, ctx) {
   const user = interaction.options.getUser("user", true);
 
   if (user.bot) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Cannot add a bot as a ticket member.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1414,11 +1371,10 @@ async function handleAddUser(interaction, ctx) {
     console.warn("[tickets] adduser overwrites:", err?.message || err);
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: added
       ? `Added <@${user.id}> to ticket **${formatTicketRef(ticket.ticket_number)}**.`
       : `<@${user.id}> is already a member of this ticket.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1430,9 +1386,8 @@ async function handleRemoveUser(interaction, ctx) {
 
   const result = removeTicketMember(ticket.id, user.id);
   if (!result.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: result.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1451,9 +1406,8 @@ async function handleRemoveUser(interaction, ctx) {
     console.warn("[tickets] removeuser overwrites:", err?.message || err);
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Removed <@${user.id}> from ticket **${formatTicketRef(ticket.ticket_number)}**.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1464,9 +1418,8 @@ async function handleAddStaff(interaction, ctx) {
   const user = interaction.options.getUser("user", true);
 
   if (user.bot) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Cannot add a bot as ticket staff.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1486,11 +1439,10 @@ async function handleAddStaff(interaction, ctx) {
     console.warn("[tickets] addstaff overwrites:", err?.message || err);
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: added
       ? `Added <@${user.id}> to the staff allow-list for **${formatTicketRef(ticket.ticket_number)}**.`
       : `<@${user.id}> is already on the staff allow-list.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1502,9 +1454,8 @@ async function handleRemoveStaff(interaction, ctx) {
 
   const result = removeTicketStaff(ticket.id, user.id);
   if (!result.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: result.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1523,9 +1474,8 @@ async function handleRemoveStaff(interaction, ctx) {
     console.warn("[tickets] removestaff overwrites:", err?.message || err);
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Removed <@${user.id}> from the staff allow-list.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1540,16 +1490,13 @@ async function handleSensitive(interaction, ctx) {
     ticket.staff_owner_id !== interaction.user.id &&
     !isAdminOrMod(interaction)
   ) {
-    await interaction.reply({
-      content:
-        `Only the staff owner (<@${ticket.staff_owner_id}>) or a server admin can mark this ticket sensitive.`,
-      flags: MessageFlags.Ephemeral,
+    await replyEphemeral(interaction, {
+      content: `Only the staff owner (<@${ticket.staff_owner_id}>) or a server admin can mark this ticket sensitive.`,
     });
     return;
   }
 
-  const ownerId =
-    ticket.staff_owner_id || interaction.user.id; // auto-claim
+  const ownerId = ticket.staff_owner_id || interaction.user.id; // auto-claim
   const updated = setTicketSensitive(ticket.id, ownerId);
 
   try {
@@ -1566,11 +1513,10 @@ async function handleSensitive(interaction, ctx) {
     console.warn("[tickets] sensitive overwrites:", err?.message || err);
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Ticket **${formatTicketRef(ticket.ticket_number)}** is now **sensitive**. ` +
       `Only the owner, named staff, and members can see it. Close will **not** archive content.`,
-    flags: MessageFlags.Ephemeral,
   });
   try {
     await channel?.send?.({
@@ -1579,7 +1525,7 @@ async function handleSensitive(interaction, ctx) {
           .setColor(COLOR_SENSITIVE)
           .setTitle("Ticket marked sensitive")
           .setDescription(
-            `Visibility locked. Staff owner: <@${updated.staff_owner_id}>.`
+            `Visibility locked. Staff owner: <@${updated.staff_owner_id}>.`,
           ),
       ],
     });
@@ -1596,10 +1542,7 @@ async function handleUnsensitive(interaction, ctx) {
   // Staff owner OR staff gate (already required staff)
   const isOwner = ticket.staff_owner_id === interaction.user.id;
   if (!isOwner && !isStaff(interaction)) {
-    await interaction.reply({
-      content: "You don’t have permission to use this.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyDenied(interaction);
     return;
   }
 
@@ -1618,9 +1561,8 @@ async function handleUnsensitive(interaction, ctx) {
     console.warn("[tickets] unsensitive overwrites:", err?.message || err);
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Ticket **${formatTicketRef(ticket.ticket_number)}** is no longer sensitive. Staff roles can see it again.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1632,11 +1574,10 @@ async function handleList(interaction) {
   });
 
   if (!rows.length) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: filterUser
         ? `No open tickets for <@${filterUser.id}>.`
         : "No open tickets.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1644,21 +1585,18 @@ async function handleList(interaction) {
   const lines = rows.map((t) => {
     const sens = Number(t.is_sensitive) ? " 🔒" : "";
     const ch = t.channel_id ? `<#${t.channel_id}>` : "_no channel_";
-    const owner = t.staff_owner_id
-      ? `<@${t.staff_owner_id}>`
-      : "_unclaimed_";
+    const owner = t.staff_owner_id ? `<@${t.staff_owner_id}>` : "_unclaimed_";
     return (
       `**${formatTicketRef(t.ticket_number)}**${sens} · ${ch} · ` +
       `requester <@${t.creator_user_id}> · owner ${owner}`
     );
   });
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `**Open tickets** (${rows.length})\n\n${lines.join("\n")}`.slice(
       0,
-      1900
+      1900,
     ),
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1702,29 +1640,26 @@ async function handleInfo(interaction, ctx) {
       },
       {
         name: "Created",
-        value: `<t:${Math.floor(ticket.created_at / 1000)}:F>`,
+        value: tsFull(ticket.created_at),
         inline: true,
       },
       {
         name: "Members",
-        value:
-          members.map((m) => `<@${m.user_id}>`).join(", ") || "—",
+        value: members.map((m) => `<@${m.user_id}>`).join(", ") || "—",
       },
       {
         name: "Named staff",
         value:
           staff
             .map(
-              (s) =>
-                `<@${s.user_id}>${Number(s.is_owner) ? " (owner)" : ""}`
+              (s) => `<@${s.user_id}>${Number(s.is_owner) ? " (owner)" : ""}`,
             )
             .join(", ") || "—",
-      }
+      },
     );
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     embeds: [embed],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1733,16 +1668,19 @@ async function handleSetCategory(interaction, ctx) {
   updateGuildSettings(interaction.guildId, {
     ticket_category_id: category.id,
   });
-  await logConfigChange(ctx?.client || interaction.client, interaction.guildId, {
-    title: "Ticket category set",
-    command: "/ticket setcategory",
-    actor: interaction.user,
-    changes: [`Category: ${category.name || category.id} (${category.id})`],
-  }).catch(() => {});
+  await logConfigChange(
+    ctx?.client || interaction.client,
+    interaction.guildId,
+    {
+      title: "Ticket category set",
+      command: "/ticket setcategory",
+      actor: interaction.user,
+      changes: [`Category: ${category.name || category.id} (${category.id})`],
+    },
+  ).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `New tickets will be created under **${category.name || category.id}**.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1751,18 +1689,21 @@ async function handleSetArchive(interaction, ctx) {
   updateGuildSettings(interaction.guildId, {
     ticket_archive_channel_id: channel.id,
   });
-  await logConfigChange(ctx?.client || interaction.client, interaction.guildId, {
-    title: "Ticket archive channel set",
-    command: "/ticket setarchive",
-    actor: interaction.user,
-    changes: [`Channel: <#${channel.id}>`],
-  }).catch(() => {});
+  await logConfigChange(
+    ctx?.client || interaction.client,
+    interaction.guildId,
+    {
+      title: "Ticket archive channel set",
+      command: "/ticket setarchive",
+      actor: interaction.user,
+      changes: [`Channel: <#${channel.id}>`],
+    },
+  ).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Close summaries and transcript links will post to <#${channel.id}>. ` +
       `Restrict that channel to staff in Discord permissions.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1771,23 +1712,26 @@ async function handleSetRateLimit(interaction, ctx) {
   updateGuildSettings(interaction.guildId, {
     ticket_rate_limit_minutes: minutes,
   });
-  await logConfigChange(ctx?.client || interaction.client, interaction.guildId, {
-    title: "Ticket rate limit set",
-    command: "/ticket setratelimit",
-    actor: interaction.user,
-    changes: [
-      minutes === 0
-        ? "Rate limit: disabled"
-        : `Rate limit: ${minutes} minute(s) between self-creates`,
-    ],
-  }).catch(() => {});
+  await logConfigChange(
+    ctx?.client || interaction.client,
+    interaction.guildId,
+    {
+      title: "Ticket rate limit set",
+      command: "/ticket setratelimit",
+      actor: interaction.user,
+      changes: [
+        minutes === 0
+          ? "Rate limit: disabled"
+          : `Rate limit: ${minutes} minute(s) between self-creates`,
+      ],
+    },
+  ).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       minutes === 0
         ? "Member self-create rate limit **disabled**."
         : `Members can self-create at most one ticket every **${minutes}** minute(s). Staff \`/ticket for\` is not rate-limited.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1798,7 +1742,7 @@ async function handleSettings(interaction) {
   const allStaff = listStaffRoles(interaction.guildId);
   const senior = listSeniorStaffRoles(interaction.guildId);
   const junior = allStaff.filter(
-    (r) => normalizeStaffLevel(r.level) === "junior"
+    (r) => normalizeStaffLevel(r.level) === "junior",
   );
   const seniorList = senior.length
     ? senior.map((r) => `<@&${r.role_id}>`).join(", ")
@@ -1807,7 +1751,7 @@ async function handleSettings(interaction) {
     ? junior.map((r) => `<@&${r.role_id}>`).join(", ")
     : "_none_";
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `**Ticket settings**\n` +
       `Category: ${s.ticket_category_id ? `<#${s.ticket_category_id}>` : "_not set_ (`/ticket setcategory`)"} \n` +
@@ -1819,7 +1763,6 @@ async function handleSettings(interaction) {
       `**Staff:** \`for\` · \`claim\` · \`close\` · \`archive\` · \`sensitive\` · \`list\` · …\n` +
       `**Admin:** \`panel\` · \`setcategory\` · \`setarchive\` · \`setratelimit\`\n` +
       `\n**Close** removes non-staff from the channel; **archive** saves the transcript and deletes it.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1833,7 +1776,7 @@ function registerEvents(client) {
       const closed = markTicketClosedByChannelDelete(channel.id);
       if (closed) {
         console.log(
-          `[tickets] Channel deleted externally; closed ticket #${closed.ticket_number} (no archive)`
+          `[tickets] Channel deleted externally; closed ticket #${closed.ticket_number} (no archive)`,
         );
       }
     } catch (err) {

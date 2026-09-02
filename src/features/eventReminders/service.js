@@ -7,6 +7,7 @@ const {
   GuildScheduledEventStatus,
   EmbedBuilder,
 } = require("discord.js");
+const { Color, tsRelativeFull } = require("../../core/theme");
 const {
   getConfigByScheduledEventId,
   getEventReminderConfigById,
@@ -23,11 +24,10 @@ const MAX_OFFSETS = 8;
 const MAX_OFFSET_MINUTES = 30 * 24 * 60; // 30 days
 const ROLE_PREFIX = "event-";
 /** Used when a custom template is set (embed description body). */
-const DEFAULT_MESSAGE =
-  "Starts {starts_in} ({starts_at}) in {location}.";
+const DEFAULT_MESSAGE = "Starts {starts_in} ({starts_at}) in {location}.";
 /** Embed description when message_template is empty. */
 const DEFAULT_EMBED_DESCRIPTION = "Starts {starts_in}";
-const EMBED_COLOR = 0x5865f2;
+const EMBED_COLOR = Color.brand;
 const DESCRIPTION_MAX = 300;
 
 /** Preset offset options for the create/edit modal (minutes → label). */
@@ -137,7 +137,10 @@ function resolveOffsetMinutes(presetMinutes, customText) {
 
   const minutes = [...set].sort((a, b) => b - a);
   if (!minutes.length) {
-    return { ok: false, error: "Select or enter at least one reminder offset." };
+    return {
+      ok: false,
+      error: "Select or enter at least one reminder offset.",
+    };
   }
   if (minutes.length > MAX_OFFSETS) {
     return {
@@ -204,7 +207,8 @@ function formatOffsetMinutes(minutes) {
  */
 function formatEventLocation(scheduledEvent) {
   if (!scheduledEvent) return "";
-  const channelId = scheduledEvent.channelId ?? scheduledEvent.channel_id ?? null;
+  const channelId =
+    scheduledEvent.channelId ?? scheduledEvent.channel_id ?? null;
   if (channelId) return `<#${channelId}>`;
   const external =
     scheduledEvent.entityMetadata?.location ??
@@ -309,14 +313,8 @@ function renderReminderMessage(template, ctx, opts = {}) {
  * @returns {import("discord.js").EmbedBuilder}
  */
 function buildReminderEmbed(opts) {
-  const {
-    scheduledEvent,
-    guildId,
-    roleId,
-    offsetMinutes,
-    template,
-    startMs,
-  } = opts;
+  const { scheduledEvent, guildId, roleId, offsetMinutes, template, startMs } =
+    opts;
 
   const eventName = scheduledEvent?.name || "Event";
   const eventId = scheduledEvent?.id || null;
@@ -337,11 +335,9 @@ function buildReminderEmbed(opts) {
   };
 
   const hasCustom = !!(template && String(template).trim());
-  const body = renderReminderMessage(
-    template,
-    ctx,
-    { defaultBody: hasCustom ? DEFAULT_MESSAGE : DEFAULT_EMBED_DESCRIPTION }
-  );
+  const body = renderReminderMessage(template, ctx, {
+    defaultBody: hasCustom ? DEFAULT_MESSAGE : DEFAULT_EMBED_DESCRIPTION,
+  });
 
   const embed = new EmbedBuilder()
     .setColor(EMBED_COLOR)
@@ -354,11 +350,15 @@ function buildReminderEmbed(opts) {
   const fields = [];
   fields.push({
     name: "Starts",
-    value: `<t:${startUnix}:R> · <t:${startUnix}:F>`,
+    value: tsRelativeFull(startMs),
     inline: false,
   });
   if (location) {
-    fields.push({ name: "Location", value: location.slice(0, 1024), inline: true });
+    fields.push({
+      name: "Location",
+      value: location.slice(0, 1024),
+      inline: true,
+    });
   }
   if (offsetLabel) {
     fields.push({
@@ -469,7 +469,7 @@ async function deleteReminderRole(guild, roleId) {
   } catch (err) {
     console.error(
       `[eventReminders] Failed deleting role ${roleId} in guild ${guild.id}:`,
-      err?.message || err
+      err?.message || err,
     );
   }
 }
@@ -535,7 +535,7 @@ async function syncEventReminderRole(guild, scheduledEvent, roleId) {
     } catch (err) {
       console.error(
         `[eventReminders] grant role failed guild=${guild.id} user=${userId}:`,
-        err?.message || err
+        err?.message || err,
       );
     }
   }
@@ -555,7 +555,7 @@ async function syncEventReminderRole(guild, scheduledEvent, roleId) {
         } catch (err) {
           console.error(
             `[eventReminders] remove role failed guild=${guild.id} user=${userId}:`,
-            err?.message || err
+            err?.message || err,
           );
         }
       }
@@ -575,7 +575,7 @@ async function syncEventReminderRole(guild, scheduledEvent, roleId) {
   } catch (err) {
     console.error(
       `[eventReminders] role holder scan failed guild=${guild.id}:`,
-      err?.message || err
+      err?.message || err,
     );
   }
 
@@ -607,7 +607,7 @@ async function grantRoleIfEligible(guild, userId, roleId, scheduledEventId) {
   } catch (err) {
     console.error(
       `[eventReminders] grant failed guild=${guild.id} user=${userId}:`,
-      err?.message || err
+      err?.message || err,
     );
     return false;
   }
@@ -629,7 +629,7 @@ async function removeRoleSafe(guild, userId, roleId) {
   } catch (err) {
     console.error(
       `[eventReminders] remove failed guild=${guild.id} user=${userId}:`,
-      err?.message || err
+      err?.message || err,
     );
   }
 }
@@ -641,7 +641,7 @@ async function removeRoleSafe(guild, userId, roleId) {
  */
 async function stripAllEventReminderRoles(guild, userId) {
   const roleIds = listEventReminderConfigs(guild.id, { activeOnly: true }).map(
-    (c) => c.role_id
+    (c) => c.role_id,
   );
   for (const roleId of roleIds) {
     await removeRoleSafe(guild, userId, roleId);

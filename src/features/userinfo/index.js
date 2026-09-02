@@ -26,10 +26,7 @@ const {
   listWarnings,
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
-const {
-  requireStaff,
-  requireSeniorStaff,
-} = require("../../core/permissions");
+const { requireStaff, requireSeniorStaff } = require("../../core/permissions");
 const {
   buildChannelRanking,
   buildCategoryRanking,
@@ -43,6 +40,12 @@ const {
   activityButtonCustomId,
 } = require("../userActivity/render");
 const { startUserBackfill } = require("../userActivity/backfill");
+const {
+  Color,
+  tsRelative,
+  formatNoteRef,
+  formatWarnRef,
+} = require("../../core/theme");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -52,22 +55,19 @@ const BTN_PREFIX = "ui:";
 const LIST_LIMIT = 10;
 const SNIPPET_LEN = 80;
 
-const COLOR_CARD = 0x5865f2;
-const COLOR_NOTES = 0x9b59b6;
-const COLOR_WARNS = 0xe74c3c;
+const COLOR_CARD = Color.brand;
+const COLOR_NOTES = Color.config;
+const COLOR_WARNS = Color.danger;
 
 const commands = [
   new SlashCommandBuilder()
     .setName("userinfo")
     .setDescription(
-      "Staff card for a member: XP, notes, warnings, and activity."
+      "Staff card for a member: XP, notes, warnings, and activity.",
     )
     .setDefaultMemberPermissions(staffPerms)
     .addUserOption((opt) =>
-      opt
-        .setName("user")
-        .setDescription("Member to inspect")
-        .setRequired(true)
+      opt.setName("user").setDescription("Member to inspect").setRequired(true),
     ),
 ];
 
@@ -94,7 +94,9 @@ function parseButtonCustomId(customId) {
  * @returns {string}
  */
 function snippet(content, max = SNIPPET_LEN) {
-  const s = String(content || "").replace(/\s+/g, " ").trim();
+  const s = String(content || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (s.length <= max) return s;
   return `${s.slice(0, Math.max(0, max - 1))}…`;
 }
@@ -103,13 +105,6 @@ function snippet(content, max = SNIPPET_LEN) {
  * @param {number|null|undefined} ms
  * @returns {string}
  */
-function relativeTs(ms) {
-  if (ms == null) return "—";
-  const sec = Math.floor(Number(ms) / 1000);
-  if (!Number.isFinite(sec)) return "—";
-  return `<t:${sec}:R>`;
-}
-
 /**
  * @param {string} guildId
  * @param {string} userId
@@ -144,7 +139,9 @@ async function resolveUser(interaction, userId) {
   }
 
   try {
-    const u = await interaction.client?.users?.fetch?.(userId).catch(() => null);
+    const u = await interaction.client?.users
+      ?.fetch?.(userId)
+      .catch(() => null);
     if (u) return u;
   } catch {
     // ignore
@@ -195,7 +192,7 @@ function buildOverviewEmbed(interaction, user, member) {
             ? `**${counts.warnsActive}** active`
             : `**${counts.warnsActive}** active · **${counts.warnsTotal - counts.warnsActive}** voided`,
         inline: true,
-      }
+      },
     )
     .setFooter({
       text: "Staff only · Activity tab requires senior staff",
@@ -223,7 +220,7 @@ function buildOverviewEmbed(interaction, user, member) {
   if (member?.joinedTimestamp) {
     embed.addFields({
       name: "Joined server",
-      value: relativeTs(member.joinedTimestamp),
+      value: tsRelative(member.joinedTimestamp),
       inline: true,
     });
   }
@@ -231,7 +228,7 @@ function buildOverviewEmbed(interaction, user, member) {
   if (user.createdTimestamp) {
     embed.addFields({
       name: "Account created",
-      value: relativeTs(user.createdTimestamp),
+      value: tsRelative(user.createdTimestamp),
       inline: true,
     });
   }
@@ -265,7 +262,7 @@ function buildNotesEmbed(guildId, user) {
   } else {
     const lines = notes.map((n) => {
       return (
-        `**N-${n.note_number}** · by <@${n.author_id}> · ${relativeTs(n.created_at)}\n` +
+        `**${formatNoteRef(n.note_number)}** · by <@${n.author_id}> · ${tsRelative(n.created_at)}\n` +
         `> ${snippet(n.content)}`
       );
     });
@@ -307,7 +304,7 @@ function buildWarningsEmbed(guildId, user) {
       `Subject: <@${user.id}> · **${counts.warnsActive}** active` +
         (counts.warnsTotal > counts.warnsActive
           ? ` · **${counts.warnsTotal - counts.warnsActive}** voided`
-          : "")
+          : ""),
     );
 
   if (!warnings.length) {
@@ -319,7 +316,7 @@ function buildWarningsEmbed(guildId, user) {
     const lines = warnings.map((w) => {
       const voided = w.voided_at != null ? " · ~~voided~~" : "";
       return (
-        `**W-${w.warning_number}** · by <@${w.issuer_id}> · ${relativeTs(w.created_at)}${voided}\n` +
+        `**${formatWarnRef(w.warning_number)}** · by <@${w.issuer_id}> · ${tsRelative(w.created_at)}${voided}\n` +
         `> ${snippet(w.reason)}`
       );
     });
@@ -385,7 +382,14 @@ function buildViewPayload(interaction, user, member, view, win = "a") {
 
   return {
     embeds: [embed],
-    components: [buildPrimaryButtons(counts, view === "n" || view === "w" ? view : "o", user.id, w)],
+    components: [
+      buildPrimaryButtons(
+        counts,
+        view === "n" || view === "w" ? view : "o",
+        user.id,
+        w,
+      ),
+    ],
     flags: MessageFlags.Ephemeral,
   };
 }
@@ -419,14 +423,14 @@ async function handleUserinfoButton(interaction, ctx) {
   const parsed = parseButtonCustomId(interaction.customId);
   if (!parsed) {
     if (!(await requireStaff(interaction))) return;
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Unknown userinfo control.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
-  const activityViews = parsed.view === "a" || parsed.view === "c" || parsed.view === "b";
+  const activityViews =
+    parsed.view === "a" || parsed.view === "c" || parsed.view === "b";
   if (activityViews) {
     if (!(await requireSeniorStaff(interaction))) return;
   } else {
@@ -446,27 +450,19 @@ async function handleUserinfoButton(interaction, ctx) {
   if (parsed.view === "b") {
     const result = await startUserBackfill(interaction.guild, parsed.userId);
     // Refresh activity view after queueing
-    const payload = buildViewPayload(
-      interaction,
-      user,
-      member,
-      "a",
-      "a"
-    );
+    const payload = buildViewPayload(interaction, user, member, "a", "a");
     const { flags: _flags, ...updatePayload } = payload;
 
     if (typeof interaction.update === "function") {
       await interaction.update(updatePayload);
       if (!result.started) {
-        await interaction.followUp({
+        await replyEphemeral(interaction, {
           content: result.reason || "Could not start backfill.",
-          flags: MessageFlags.Ephemeral,
         });
       } else {
-        await interaction.followUp({
+        await replyEphemeral(interaction, {
           content:
             "Backfill started. History older than live tracking is scanned rate-limited; re-open Activity later for progress.",
-          flags: MessageFlags.Ephemeral,
         });
       }
     } else {
@@ -481,13 +477,7 @@ async function handleUserinfoButton(interaction, ctx) {
   }
 
   const win = parsed.win || "a";
-  const payload = buildViewPayload(
-    interaction,
-    user,
-    member,
-    parsed.view,
-    win
-  );
+  const payload = buildViewPayload(interaction, user, member, parsed.view, win);
   const { flags: _flags, ...updatePayload } = payload;
 
   if (typeof interaction.update === "function") {

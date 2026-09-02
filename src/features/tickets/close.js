@@ -3,6 +3,7 @@
  */
 
 const { EmbedBuilder } = require("discord.js");
+const { Color, formatTicketRef, tsFull } = require("../../core/theme");
 const {
   markTicketClosed,
   closeTicketSensitive,
@@ -29,9 +30,9 @@ const {
 } = require("./users");
 const { mirrorTicketAssets } = require("./assets");
 
-const COLOR_ARCHIVE = 0x5865f2;
-const COLOR_SENSITIVE = 0xe74c3c;
-const COLOR_CLOSED = 0x95a5a6;
+const COLOR_ARCHIVE = Color.brand;
+const COLOR_SENSITIVE = Color.danger;
+const COLOR_CLOSED = Color.muted;
 
 /**
  * Fetch all messages from a channel (oldest → newest).
@@ -122,8 +123,8 @@ function normalizeDiscordMessage(msg) {
     try {
       embedsJson = JSON.stringify(
         msg.embeds.map((e) =>
-          typeof e.toJSON === "function" ? e.toJSON() : e
-        )
+          typeof e.toJSON === "function" ? e.toJSON() : e,
+        ),
       );
     } catch {
       embedsJson = null;
@@ -175,11 +176,11 @@ async function notifyRequesterClosed(client, ticket, closeReason) {
     if (!user?.send) return;
     const embed = new EmbedBuilder()
       .setColor(COLOR_CLOSED)
-      .setTitle(`Ticket #${ticket.ticket_number} closed`)
+      .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)} closed`)
       .setDescription(
         closeReason
           ? `Your support ticket was closed.\n\n**Reason:** ${String(closeReason).slice(0, 900)}`
-          : "Your support ticket was closed."
+          : "Your support ticket was closed.",
       );
     await user.send({ embeds: [embed] });
   } catch {
@@ -206,7 +207,9 @@ async function postSensitiveStub(client, ticket, opts) {
 
   const embed = new EmbedBuilder()
     .setColor(COLOR_SENSITIVE)
-    .setTitle(`Ticket #${ticket.ticket_number} archived (sensitive — not content-archived)`)
+    .setTitle(
+      `Ticket ${formatTicketRef(ticket.ticket_number)} archived (sensitive — not content-archived)`,
+    )
     .addFields(
       {
         name: "Requester",
@@ -220,25 +223,23 @@ async function postSensitiveStub(client, ticket, opts) {
       },
       {
         name: "Staff owner",
-        value: ticket.staff_owner_id
-          ? `<@${ticket.staff_owner_id}>`
-          : "—",
+        value: ticket.staff_owner_id ? `<@${ticket.staff_owner_id}>` : "—",
         inline: true,
       },
       {
         name: "Opened",
-        value: `<t:${Math.floor(ticket.created_at / 1000)}:F>`,
+        value: tsFull(ticket.created_at),
         inline: true,
       },
       {
         name: "Closed",
-        value: `<t:${Math.floor((ticket.closed_at || Date.now()) / 1000)}:F>`,
+        value: tsFull(ticket.closed_at || Date.now()),
         inline: true,
       },
       {
         name: "Close reason",
         value: (opts.closeReason || ticket.close_reason || "—").slice(0, 1024),
-      }
+      },
     )
     .setFooter({ text: "No transcript · content disposed with channel" });
 
@@ -268,7 +269,11 @@ async function postArchiveEmbed(client, ticket, summary, transcriptUrl, opts) {
   const closeReason = opts.closeReason || ticket.close_reason || null;
 
   const fields = [
-    { name: "Ticket #", value: `#${ticket.ticket_number}`, inline: true },
+    {
+      name: "Ticket",
+      value: formatTicketRef(ticket.ticket_number),
+      inline: true,
+    },
     {
       name: "Requester",
       value: `<@${ticket.creator_user_id}>`,
@@ -276,9 +281,7 @@ async function postArchiveEmbed(client, ticket, summary, transcriptUrl, opts) {
     },
     {
       name: "Staff owner",
-      value: ticket.staff_owner_id
-        ? `<@${ticket.staff_owner_id}>`
-        : "—",
+      value: ticket.staff_owner_id ? `<@${ticket.staff_owner_id}>` : "—",
       inline: true,
     },
     {
@@ -287,12 +290,12 @@ async function postArchiveEmbed(client, ticket, summary, transcriptUrl, opts) {
     },
     {
       name: "Opened",
-      value: `<t:${Math.floor(ticket.created_at / 1000)}:F>`,
+      value: tsFull(ticket.created_at),
       inline: true,
     },
     {
       name: "Closed",
-      value: `<t:${Math.floor((ticket.closed_at || Date.now()) / 1000)}:F>`,
+      value: tsFull(ticket.closed_at || Date.now()),
       inline: true,
     },
     {
@@ -328,7 +331,7 @@ async function postArchiveEmbed(client, ticket, summary, transcriptUrl, opts) {
 
   const embed = new EmbedBuilder()
     .setColor(COLOR_ARCHIVE)
-    .setTitle(`Ticket #${ticket.ticket_number} archived`)
+    .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)} archived`)
     .addFields(fields)
     .setFooter({
       text:
@@ -365,10 +368,7 @@ async function softCloseTicket(opts) {
 
   try {
     const guild = channel.guild;
-    const botMember =
-      opts.botMember ||
-      guild?.members?.me ||
-      null;
+    const botMember = opts.botMember || guild?.members?.me || null;
     const botUserId = client.user?.id;
     const { roleIds } = getManageableStaffRoleIds(guild, botMember);
 
@@ -383,9 +383,12 @@ async function softCloseTicket(opts) {
       excludeMembers: true,
     });
   } catch (err) {
-    console.warn("[tickets] soft-close overwrites failed:", err?.message || err);
+    console.warn(
+      "[tickets] soft-close overwrites failed:",
+      err?.message || err,
+    );
     warnings.push(
-      "Could not fully update channel permissions (members may still see the channel)."
+      "Could not fully update channel permissions (members may still see the channel).",
     );
   }
 
@@ -394,7 +397,7 @@ async function softCloseTicket(opts) {
       embeds: [
         new EmbedBuilder()
           .setColor(COLOR_CLOSED)
-          .setTitle(`Ticket #${ticket.ticket_number} closed`)
+          .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)} closed`)
           .setDescription(
             (closeReason
               ? `**Reason:** ${String(closeReason).slice(0, 1500)}\n\n`
@@ -403,7 +406,7 @@ async function softCloseTicket(opts) {
               "Staff: run **`/ticket archive`** when ready to save the transcript and delete the channel." +
               (Number(ticket.is_sensitive)
                 ? "\n\n_Sensitive ticket — archive will **not** save message content._"
-                : "")
+                : ""),
           ),
       ],
     });
@@ -446,20 +449,16 @@ async function archiveTicketPipeline(opts) {
       closedBy: archivedBy,
       closeReason,
     });
-    const archiveMsgId = await postSensitiveStub(
-      client,
-      closed || ticket,
-      {
-        closedBy: closed?.closed_by_user_id || archivedBy,
-        closeReason,
-      }
-    ).catch((err) => {
+    const archiveMsgId = await postSensitiveStub(client, closed || ticket, {
+      closedBy: closed?.closed_by_user_id || archivedBy,
+      closeReason,
+    }).catch((err) => {
       console.error("[tickets] sensitive stub post failed:", err);
       return null;
     });
     if (!archiveMsgId) {
       warnings.push(
-        "Archive channel missing or unwritable — sensitive stub not posted."
+        "Archive channel missing or unwritable — sensitive stub not posted.",
       );
     } else if (closed) {
       setTicketArchiveMessageId(closed.id, archiveMsgId);
@@ -517,12 +516,12 @@ async function archiveTicketPipeline(opts) {
     messages = mirrored.messages;
     if (mirrored.downloaded) {
       console.log(
-        `[tickets] Archived ${mirrored.downloaded} media file(s) for ticket #${ticket.ticket_number}`
+        `[tickets] Archived ${mirrored.downloaded} media file(s) for ticket #${ticket.ticket_number}`,
       );
     }
     if (mirrored.failed) {
       warnings.push(
-        `${mirrored.failed} media file(s) could not be downloaded (CDN links may remain).`
+        `${mirrored.failed} media file(s) could not be downloaded (CDN links may remain).`,
       );
     }
     if (mirrored.warnings?.length) {
@@ -561,7 +560,7 @@ async function archiveTicketPipeline(opts) {
         closedByLabel:
           labels.closedByLabel !== "—" ? labels.closedByLabel : null,
         token,
-      }
+      },
     );
     relativePath = written.relativePath;
   } catch (err) {
@@ -572,7 +571,7 @@ async function archiveTicketPipeline(opts) {
   const summary = await summarizeTicket(
     { ...ticket, close_reason: closeReason },
     messages,
-    { closeReason }
+    { closeReason },
   );
 
   const publicUrl = relativePath ? transcriptPublicUrl(token) : null;
@@ -591,7 +590,7 @@ async function archiveTicketPipeline(opts) {
     archived || ticket,
     summary,
     publicUrl,
-    { closeReason, transcriptToken: token }
+    { closeReason, transcriptToken: token },
   ).catch((err) => {
     console.error("[tickets] archive embed failed:", err);
     return null;
@@ -599,7 +598,7 @@ async function archiveTicketPipeline(opts) {
 
   if (!archiveMsgId) {
     warnings.push(
-      "Archive channel missing or unwritable — summary embed not posted."
+      "Archive channel missing or unwritable — summary embed not posted.",
     );
   } else if (archived) {
     setTicketArchiveMessageId(archived.id, archiveMsgId);

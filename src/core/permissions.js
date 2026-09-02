@@ -1,10 +1,11 @@
-const { PermissionFlagsBits, MessageFlags } = require("discord.js");
+const { PermissionFlagsBits } = require("discord.js");
 const {
   listAllowedCommandChannels,
   memberHasStaffRole,
   memberHasSeniorStaffRole,
   getTicketByChannel,
 } = require("../db");
+const { replyDenied, replyOrFollowUpEphemeral } = require("./interaction");
 
 /**
  * Guild admin/mod gate used by most config commands (Manage Guild).
@@ -56,7 +57,11 @@ function isSeniorStaff(interaction) {
  * @returns {boolean}
  */
 function commandsAllowed(interaction) {
-  if (interaction.commandName === "setcommandchannel" && isAdminOrMod(interaction)) return true;
+  if (
+    interaction.commandName === "setcommandchannel" &&
+    isAdminOrMod(interaction)
+  )
+    return true;
   if (interaction.commandName === "ticket" && interaction.channelId) {
     const ticket = getTicketByChannel(interaction.channelId);
     // Open tickets, or soft-closed channels still awaiting /ticket archive
@@ -76,10 +81,7 @@ function commandsAllowed(interaction) {
  */
 async function requireAdmin(interaction) {
   if (isAdminOrMod(interaction)) return true;
-  await interaction.reply({
-    content: "You don’t have permission to use this.",
-    flags: MessageFlags.Ephemeral,
-  });
+  await replyDenied(interaction);
   return false;
 }
 
@@ -91,10 +93,7 @@ async function requireAdmin(interaction) {
  */
 async function requireStaff(interaction) {
   if (isStaff(interaction)) return true;
-  await interaction.reply({
-    content: "You don’t have permission to use this.",
-    flags: MessageFlags.Ephemeral,
-  });
+  await replyDenied(interaction);
   return false;
 }
 
@@ -105,16 +104,10 @@ async function requireStaff(interaction) {
  */
 async function requireSeniorStaff(interaction) {
   if (isSeniorStaff(interaction)) return true;
-  const payload = {
-    content:
-      "Activity requires **senior** staff (or Manage Server). Ask an admin to set your role with `/staff role setlevel`.",
-    flags: MessageFlags.Ephemeral,
-  };
-  if (interaction.replied || interaction.deferred) {
-    await interaction.followUp(payload);
-  } else if (typeof interaction.reply === "function") {
-    await interaction.reply(payload);
-  }
+  await replyOrFollowUpEphemeral(
+    interaction,
+    "Activity requires **senior** staff (or Manage Server). Ask an admin to set your role with `/staff role setlevel`.",
+  );
   return false;
 }
 

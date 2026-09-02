@@ -55,7 +55,7 @@ describe("integration: config commands", () => {
         percent: 10,
       },
     });
-    assertReplyContains(interaction, "Updated decay");
+    assertReplyContains(interaction, /Updated decay|decay settings/i);
     const s = env.db.getGuildSettings(env.guild.id);
     assert.equal(s.decay_enabled, 1);
     assert.equal(s.decay_min_messages, 5);

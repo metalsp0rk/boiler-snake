@@ -182,7 +182,7 @@ describe("integration: xp commands", () => {
       admin: true,
     });
     assertReplyContains(interaction, "Boiler Snake Settings");
-    assertReplyContains(interaction, "msg=");
+    assertReplyContains(interaction, /Message|XP awards|msg/i);
   });
 
   it("/settings denies non-staff", async () => {

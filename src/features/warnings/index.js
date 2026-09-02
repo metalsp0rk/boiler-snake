@@ -9,7 +9,6 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  MessageFlags,
   EmbedBuilder,
   ChannelType,
   AttachmentBuilder,
@@ -36,9 +35,17 @@ const {
   resolveExpiryDays,
 } = require("../../db");
 const { requireStaff } = require("../../core/permissions");
+const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logWarnEvent } = require("../logs/auditLog");
 const { buildStaffRecordMarkdown, exportFilename } = require("./exportRecord");
 const { startWarnExpiryTicker } = require("./ticker");
+const {
+  Color,
+  formatWarnRef,
+  formatNoteRef,
+  tsRelative,
+  tsFull: fullTs,
+} = require("../../core/theme");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -47,15 +54,15 @@ const LIST_PAGE_SIZE = 10;
 /** Snippet length in list embeds */
 const SNIPPET_LEN = 80;
 
-const COLOR_ISSUE = 0xe74c3c;
-const COLOR_VOID = 0x95a5a6;
-const COLOR_INFO = 0xfaa61a;
+const COLOR_ISSUE = Color.danger;
+const COLOR_VOID = Color.muted;
+const COLOR_INFO = Color.caution;
 
 const commands = [
   new SlashCommandBuilder()
     .setName("warn")
     .setDescription(
-      "Issue and manage formal member warnings (staff); view your own with mine."
+      "Issue and manage formal member warnings (staff); view your own with mine.",
     )
     // No defaultMemberPermissions — /warn mine must be visible to all members.
     // Staff subcommands are gated in the handler via requireStaff.
@@ -67,51 +74,53 @@ const commands = [
           opt
             .setName("user")
             .setDescription("Member to warn")
-            .setRequired(true)
+            .setRequired(true),
         )
         .addStringOption((opt) =>
           opt
             .setName("reason")
             .setDescription("Why this warning is being issued")
             .setRequired(true)
-            .setMaxLength(MAX_WARN_REASON)
+            .setMaxLength(MAX_WARN_REASON),
         )
         .addBooleanOption((opt) =>
           opt
             .setName("silent")
             .setDescription("Skip DM to the member for this warning only")
-            .setRequired(false)
+            .setRequired(false),
         )
         .addIntegerOption((opt) =>
           opt
             .setName("note")
-            .setDescription("Optional staff note number to link (e.g. 12 from N-12)")
+            .setDescription(
+              "Optional staff note number to link (e.g. 12 from N-12)",
+            )
             .setRequired(false)
-            .setMinValue(1)
+            .setMinValue(1),
         )
         .addStringOption((opt) =>
           opt
             .setName("message")
             .setDescription("Optional Discord message link as evidence")
-            .setRequired(false)
+            .setRequired(false),
         )
         .addStringOption((opt) =>
           opt
             .setName("evidence")
             .setDescription("Optional staff-only evidence notes")
             .setRequired(false)
-            .setMaxLength(MAX_EVIDENCE_TEXT)
+            .setMaxLength(MAX_EVIDENCE_TEXT),
         )
         .addIntegerOption((opt) =>
           opt
             .setName("expires_days")
             .setDescription(
-              "Days until auto-void (0=never). Omit to use guild default."
+              "Days until auto-void (0=never). Omit to use guild default.",
             )
             .setRequired(false)
             .setMinValue(0)
-            .setMaxValue(MAX_EXPIRY_DAYS)
-        )
+            .setMaxValue(MAX_EXPIRY_DAYS),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -121,21 +130,21 @@ const commands = [
           opt
             .setName("user")
             .setDescription("Member to list warnings for")
-            .setRequired(true)
+            .setRequired(true),
         )
         .addIntegerOption((opt) =>
           opt
             .setName("page")
             .setDescription("Page number (default 1)")
             .setRequired(false)
-            .setMinValue(1)
+            .setMinValue(1),
         )
         .addBooleanOption((opt) =>
           opt
             .setName("include_voided")
             .setDescription("Include voided warnings (default false)")
-            .setRequired(false)
-        )
+            .setRequired(false),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -146,8 +155,8 @@ const commands = [
             .setName("id")
             .setDescription("Warning number (e.g. 12 from W-12)")
             .setRequired(true)
-            .setMinValue(1)
-        )
+            .setMinValue(1),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -158,15 +167,15 @@ const commands = [
             .setName("id")
             .setDescription("Warning number (e.g. 12 from W-12)")
             .setRequired(true)
-            .setMinValue(1)
+            .setMinValue(1),
         )
         .addStringOption((opt) =>
           opt
             .setName("reason")
             .setDescription("Why this warning is being voided")
             .setRequired(true)
-            .setMaxLength(MAX_WARN_REASON)
-        )
+            .setMaxLength(MAX_WARN_REASON),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -176,8 +185,8 @@ const commands = [
           opt
             .setName("user")
             .setDescription("Member to count")
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -187,38 +196,38 @@ const commands = [
           opt
             .setName("include_voided")
             .setDescription("Include voided warnings (default false)")
-            .setRequired(false)
-        )
+            .setRequired(false),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("export")
         .setDescription(
-          "Export notes + warnings for a member as a staff handoff file."
+          "Export notes + warnings for a member as a staff handoff file.",
         )
         .addUserOption((opt) =>
           opt
             .setName("user")
             .setDescription("Member to export")
-            .setRequired(true)
+            .setRequired(true),
         )
         .addBooleanOption((opt) =>
           opt
             .setName("include_voided")
             .setDescription("Include voided warnings (default true)")
-            .setRequired(false)
+            .setRequired(false),
         )
         .addBooleanOption((opt) =>
           opt
             .setName("include_deleted_notes")
             .setDescription("Include soft-deleted staff notes (default true)")
-            .setRequired(false)
-        )
+            .setRequired(false),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("settings")
-        .setDescription("Show warning system settings and access info.")
+        .setDescription("Show warning system settings and access info."),
     ),
 
   new SlashCommandBuilder()
@@ -233,14 +242,14 @@ const commands = [
           opt
             .setName("enabled")
             .setDescription("Send DMs when warnings are issued or voided")
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) => {
       const sub = sc
         .setName("log")
         .setDescription(
-          "Set a dedicated staff channel for warning issue/void logs."
+          "Set a dedicated staff channel for warning issue/void logs.",
         );
       sub.addChannelOption((opt) =>
         opt
@@ -249,16 +258,16 @@ const commands = [
           .setRequired(false)
           .addChannelTypes(
             ChannelType.GuildText,
-            ChannelType.GuildAnnouncement
-          )
+            ChannelType.GuildAnnouncement,
+          ),
       );
       sub.addBooleanOption((opt) =>
         opt
           .setName("clear")
           .setDescription(
-            "Clear dedicated warn log (fall back to audit log only)"
+            "Clear dedicated warn log (fall back to audit log only)",
           )
-          .setRequired(false)
+          .setRequired(false),
       );
       return sub;
     })
@@ -266,7 +275,7 @@ const commands = [
       sc
         .setName("expiry")
         .setDescription(
-          "Default auto-void after N days for new warnings (0 = never)."
+          "Default auto-void after N days for new warnings (0 = never).",
         )
         .addIntegerOption((opt) =>
           opt
@@ -274,18 +283,10 @@ const commands = [
             .setDescription("Days until new warnings expire (0 = never)")
             .setRequired(true)
             .setMinValue(0)
-            .setMaxValue(MAX_EXPIRY_DAYS)
-        )
+            .setMaxValue(MAX_EXPIRY_DAYS),
+        ),
     ),
 ];
-
-/**
- * @param {number} warningNumber
- * @returns {string}
- */
-function formatWarnRef(warningNumber) {
-  return `W-${warningNumber}`;
-}
 
 /**
  * @param {string} content
@@ -293,31 +294,11 @@ function formatWarnRef(warningNumber) {
  * @returns {string}
  */
 function snippet(content, max = SNIPPET_LEN) {
-  const s = String(content || "").replace(/\s+/g, " ").trim();
+  const s = String(content || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (s.length <= max) return s;
   return `${s.slice(0, Math.max(0, max - 1))}…`;
-}
-
-/**
- * @param {number|null|undefined} ms
- * @returns {string}
- */
-function relativeTs(ms) {
-  if (ms == null) return "—";
-  const sec = Math.floor(Number(ms) / 1000);
-  if (!Number.isFinite(sec)) return "—";
-  return `<t:${sec}:R>`;
-}
-
-/**
- * @param {number|null|undefined} ms
- * @returns {string}
- */
-function fullTs(ms) {
-  if (ms == null) return "—";
-  const sec = Math.floor(Number(ms) / 1000);
-  if (!Number.isFinite(sec)) return "—";
-  return `<t:${sec}:F>`;
 }
 
 /**
@@ -329,10 +310,10 @@ function formatListLine(warn) {
   const voided = warn.voided_at != null ? " · ~~voided~~" : "";
   const exp =
     warn.voided_at == null && warn.expires_at != null
-      ? ` · expires ${relativeTs(warn.expires_at)}`
+      ? ` · expires ${tsRelative(warn.expires_at)}`
       : "";
   return (
-    `**${ref}** · by <@${warn.issuer_id}> · ${relativeTs(warn.created_at)}${voided}${exp}\n` +
+    `**${ref}** · by <@${warn.issuer_id}> · ${tsRelative(warn.created_at)}${voided}${exp}\n` +
     `> ${snippet(warn.reason)}`
   );
 }
@@ -395,9 +376,8 @@ async function handleWarn(interaction, ctx) {
   if (sub === "export") return handleExport(interaction);
   if (sub === "settings") return handleSettings(interaction);
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Unknown subcommand: \`${sub}\``,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -413,9 +393,8 @@ async function handleSetwarn(interaction, ctx) {
   if (sub === "log") return handleSetLog(interaction, ctx);
   if (sub === "expiry") return handleSetExpiry(interaction, ctx);
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Unknown subcommand: \`${sub}\``,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -433,30 +412,24 @@ async function handleAdd(interaction, ctx) {
   const expiresDaysOpt = interaction.options.getInteger("expires_days");
 
   if (target.bot) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Warnings are for human members, not bots.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
-  const urlCheck = normalizeEvidenceMessageUrl(
-    messageOpt,
-    interaction.guildId
-  );
+  const urlCheck = normalizeEvidenceMessageUrl(messageOpt, interaction.guildId);
   if (!urlCheck.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: urlCheck.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const evidenceCheck = normalizeEvidenceText(evidenceOpt);
   if (!evidenceCheck.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: evidenceCheck.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -465,9 +438,8 @@ async function handleAdd(interaction, ctx) {
   if (noteNumber != null) {
     const note = getStaffNote(interaction.guildId, noteNumber);
     if (!note) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: `No staff note **N-${noteNumber}** in this server. Omit \`note\` or use a valid note number.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -501,16 +473,14 @@ async function handleAdd(interaction, ctx) {
       err?.code === "INVALID_EVIDENCE_TEXT" ||
       err?.code === "INVALID_EXPIRY"
     ) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: err.message,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
     console.error("[warnings] create failed:", err);
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Failed to save the warning (database error).",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -562,7 +532,9 @@ async function handleAdd(interaction, ctx) {
       .setFooter({ text: "View your history anytime with /warn mine" });
 
     const sent = await tryDmUser(target, { embeds: [dmEmbed] });
-    dmNote = sent ? "Member notified by DM." : "Could not DM the member (DMs closed or blocked).";
+    dmNote = sent
+      ? "Member notified by DM."
+      : "Could not DM the member (DMs closed or blocked).";
   } else if (!silent) {
     dmNote = "Member DMs are disabled for this server (`/setwarn dm`).";
   }
@@ -583,14 +555,18 @@ async function handleAdd(interaction, ctx) {
             ? `${fullTs(warn.expires_at)} (${effectiveDays}d)`
             : "Never",
         inline: true,
-      }
+      },
+      { name: "Notification", value: dmNote, inline: false },
     )
-    .setFooter({ text: dmNote });
+    .setFooter({ text: "Staff only" });
 
   if (warn.related_note_id != null) {
     embed.addFields({
       name: "Linked note",
-      value: noteNumber != null ? `N-${noteNumber}` : `id ${warn.related_note_id}`,
+      value:
+        noteNumber != null
+          ? formatNoteRef(noteNumber)
+          : `id ${warn.related_note_id}`,
       inline: true,
     });
   }
@@ -609,9 +585,8 @@ async function handleAdd(interaction, ctx) {
     });
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     embeds: [embed],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -636,12 +611,11 @@ async function handleList(interaction) {
   const active = countActiveWarnings(interaction.guildId, target.id);
 
   if (!warnings.length) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         total === 0
           ? `No${includeVoided ? "" : " active"} warnings for <@${target.id}>.`
           : `No warnings on page **${page}** for <@${target.id}> (pages 1–${totalPages}).`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -651,12 +625,13 @@ async function handleList(interaction) {
     `**Warnings for <@${target.id}>**` +
     ` · page ${page}/${totalPages}` +
     ` · **${active}** active` +
-    (includeVoided ? ` · ${total} total (incl. voided)` : ` · ${total} listed`) +
+    (includeVoided
+      ? ` · ${total} total (incl. voided)`
+      : ` · ${total} listed`) +
     (includeVoided ? " · including voided" : "");
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `${header}\n\n${lines.join("\n\n")}`.slice(0, 1900),
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -668,9 +643,8 @@ async function handleInfo(interaction) {
   const warn = getWarning(interaction.guildId, warningNumber);
 
   if (!warn) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: `No warning **${formatWarnRef(warningNumber)}** in this server.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -683,30 +657,29 @@ async function handleInfo(interaction) {
     .addFields(
       { name: "Subject", value: `<@${warn.user_id}>`, inline: true },
       { name: "Issuer", value: `<@${warn.issuer_id}>`, inline: true },
-      { name: "Status", value: warn.voided_at != null ? "Voided" : "Active", inline: true },
+      {
+        name: "Status",
+        value: warn.voided_at != null ? "Voided" : "Active",
+        inline: true,
+      },
       { name: "Created", value: fullTs(warn.created_at), inline: true },
       {
         name: "Expires",
-        value:
-          warn.expires_at != null
-            ? fullTs(warn.expires_at)
-            : "Never",
+        value: warn.expires_at != null ? fullTs(warn.expires_at) : "Never",
         inline: true,
       },
       {
         name: "Subject active count",
         value: String(active),
         inline: true,
-      }
+      },
     );
 
   if (warn.related_note_id != null) {
     const linked = getStaffNoteById(warn.related_note_id);
     embed.addFields({
       name: "Linked note",
-      value: linked
-        ? `N-${linked.note_number}`
-        : `id ${warn.related_note_id}`,
+      value: linked ? `N-${linked.note_number}` : `id ${warn.related_note_id}`,
       inline: true,
     });
   }
@@ -737,13 +710,12 @@ async function handleInfo(interaction) {
         name: "Void reason",
         value: (warn.void_reason || "—").slice(0, 1024),
         inline: false,
-      }
+      },
     );
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     embeds: [embed],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -763,31 +735,27 @@ async function handleVoid(interaction, ctx) {
     });
   } catch (err) {
     if (err?.code === "INVALID_REASON") {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: err.message,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
     if (err?.code === "ALREADY_VOIDED") {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: err.message,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
     console.error("[warnings] void failed:", err);
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Failed to void the warning (database error).",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (!warn) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: `No warning **${formatWarnRef(warningNumber)}** in this server.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -813,7 +781,9 @@ async function handleVoid(interaction, ctx) {
     try {
       targetUser =
         interaction.client?.users?.cache?.get?.(warn.user_id) ||
-        (await interaction.client?.users?.fetch?.(warn.user_id).catch(() => null));
+        (await interaction.client?.users
+          ?.fetch?.(warn.user_id)
+          .catch(() => null));
     } catch {
       targetUser = null;
     }
@@ -847,7 +817,7 @@ async function handleVoid(interaction, ctx) {
           {
             name: "Void reason",
             value: (warn.void_reason || "—").slice(0, 1024),
-          }
+          },
         )
         .setFooter({ text: "View your history anytime with /warn mine" });
 
@@ -867,13 +837,13 @@ async function handleVoid(interaction, ctx) {
       { name: "Subject", value: `<@${warn.user_id}>`, inline: true },
       { name: "Voided by", value: `<@${warn.voided_by}>`, inline: true },
       { name: "Active remaining", value: String(activeCount), inline: true },
-      { name: "Void reason", value: (warn.void_reason || "—").slice(0, 1024) }
+      { name: "Void reason", value: (warn.void_reason || "—").slice(0, 1024) },
+      { name: "Notification", value: dmNote, inline: false },
     )
-    .setFooter({ text: dmNote });
+    .setFooter({ text: "Staff only" });
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     embeds: [embed],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -902,9 +872,8 @@ async function handleCount(interaction) {
       recent.map((w) => formatListLine(w)).join("\n\n");
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: body.slice(0, 1900),
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -947,7 +916,10 @@ async function handleExport(interaction) {
   }
   // Also resolve linked notes not in the notes list (e.g. deleted excluded)
   for (const w of warnings) {
-    if (w.related_note_id != null && !notesById.has(Number(w.related_note_id))) {
+    if (
+      w.related_note_id != null &&
+      !notesById.has(Number(w.related_note_id))
+    ) {
       const linked = getStaffNoteById(w.related_note_id);
       if (linked) notesById.set(Number(linked.id), linked);
     }
@@ -976,13 +948,12 @@ async function handleExport(interaction) {
     name: filename,
   });
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Staff record for <@${target.id}>: **${warnings.length}** warning(s), ` +
       `**${notes.length}** note(s) in file.\n` +
       `_Ephemeral — staff handoff only; do not share with the subject._`,
     files: [file],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1003,11 +974,10 @@ async function handleMine(interaction) {
   });
 
   if (!warnings.length) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: includeVoided
         ? "You have no warnings on record in this server."
         : "You have no **active** warnings in this server. Use `include_voided:true` to see full history.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1017,24 +987,25 @@ async function handleMine(interaction) {
     const voided = w.voided_at != null ? " · ~~voided~~" : "";
     const exp =
       w.voided_at == null && w.expires_at != null
-        ? ` · expires ${relativeTs(w.expires_at)}`
+        ? ` · expires ${tsRelative(w.expires_at)}`
         : "";
     return (
-      `**${ref}** · ${relativeTs(w.created_at)}${voided}${exp}\n` +
+      `**${ref}** · ${tsRelative(w.created_at)}${voided}${exp}\n` +
       `> ${snippet(w.reason)}`
     );
   });
 
   const header =
     `**Your warnings** · **${active}** active` +
-    (includeVoided ? ` · showing ${warnings.length} of ${total} (incl. voided)` : "") +
+    (includeVoided
+      ? ` · showing ${warnings.length} of ${total} (incl. voided)`
+      : "") +
     (warnings.length >= LIST_PAGE_SIZE
       ? `\n_Showing latest ${LIST_PAGE_SIZE}. Ask staff for full history if needed._`
       : "");
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `${header}\n\n${lines.join("\n\n")}`.slice(0, 1900),
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1056,11 +1027,9 @@ async function handleSettings(interaction) {
   if (dedicated) {
     logLine = `Warning log: ${dedicated} (dedicated; \`/setwarn log\`)`;
   } else if (audit) {
-    logLine =
-      `Warning log: ${audit} (fallback to audit log; set dedicated with \`/setwarn log\`)`;
+    logLine = `Warning log: ${audit} (fallback to audit log; set dedicated with \`/setwarn log\`)`;
   } else {
-    logLine =
-      "Warning log: _not set_ (`/setwarn log` or `/setlog audit`)";
+    logLine = "Warning log: _not set_ (`/setwarn log` or `/setlog audit`)";
   }
 
   const expiryLine =
@@ -1068,7 +1037,7 @@ async function handleSettings(interaction) {
       ? `Default expiry: **${expiryDays}** day(s) for new warnings (\`/setwarn expiry\`; per-warn override: \`expires_days\` on \`/warn add\`)`
       : "Default expiry: **never** (`/setwarn expiry days:N` to opt in; per-warn `expires_days` still works)";
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `**Warning system settings**\n` +
       `Member DMs on issue/void: **${dmOn ? "on" : "off"}** (toggle: \`/setwarn dm\`)\n` +
@@ -1079,7 +1048,6 @@ async function handleSettings(interaction) {
       `**Members:** \`/warn mine\` to view their own warnings.\n` +
       `\n**Commands:** \`/warn add\` · \`list\` · \`info\` · \`void\` · \`count\` · \`export\` · \`mine\` · \`settings\`\n` +
       `Warnings are **permanent** — void only (never hard-deleted). Pair with \`/note\` for informal context.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1103,13 +1071,12 @@ async function handleSetDm(interaction, ctx) {
     ],
   }).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Warning member DMs are now **${enabled ? "enabled" : "disabled"}**.\n` +
       (enabled
         ? "Members will be DMed when a warning is issued or voided (unless `silent:true` on issue)."
         : "Members will not be DMed. Staff can still use `/warn list` / audit logs."),
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1140,20 +1107,17 @@ async function handleSetLog(interaction, ctx) {
     const auditFallback = settings.audit_log_channel_id
       ? ` Issue/void will use audit log <#${settings.audit_log_channel_id}>.`
       : " No audit log is set either — issue/void will not post channel embeds until one is configured.";
-    await interaction.reply({
-      content:
-        `Dedicated warning log channel cleared.${auditFallback}`,
-      flags: MessageFlags.Ephemeral,
+    await replyEphemeral(interaction, {
+      content: `Dedicated warning log channel cleared.${auditFallback}`,
     });
     return;
   }
 
   if (!ch) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "Provide a `channel` or set `clear:true`.\n" +
         "Example: `/setwarn log channel:#warn-log`",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1171,11 +1135,10 @@ async function handleSetLog(interaction, ctx) {
     ],
   }).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Warning issue/void embeds will post to ${ch}.\n` +
       `General audit log (\`/setlog audit\`) is unchanged. Clear with \`/setwarn log clear:true\` to fall back to the audit channel.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -1187,9 +1150,8 @@ async function handleSetExpiry(interaction, ctx) {
   const daysRaw = interaction.options.getInteger("days", true);
   const parsed = normalizeExpiryDays(daysRaw);
   if (!parsed.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: parsed.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -1209,14 +1171,13 @@ async function handleSetExpiry(interaction, ctx) {
     ],
   }).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       parsed.days === 0
         ? "New warnings will **not** expire by default. Staff can still set `expires_days` on `/warn add`."
         : `New warnings will auto-void after **${parsed.days}** day(s) by default.\n` +
           `Override per issue with \`/warn add … expires_days:N\` (use \`0\` for never on that warning only).\n` +
           `Existing warnings are unchanged.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 

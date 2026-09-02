@@ -1,5 +1,14 @@
 const https = require("https");
-const { normalizeYoutubeName, getAllYoutubeChannels, getGuildSettings, getYoutubeChannelById, addYoutubeChannel, updateYoutubeChannelLastChecked, updateGuildSettings } = require("../../db");
+const { Color } = require("../../core/theme");
+const {
+  normalizeYoutubeName,
+  getAllYoutubeChannels,
+  getGuildSettings,
+  getYoutubeChannelById,
+  addYoutubeChannel,
+  updateYoutubeChannelLastChecked,
+  updateGuildSettings,
+} = require("../../db");
 
 async function lookupChannelByName(username) {
   if (!process.env.YOUTUBE_API_KEY) {
@@ -13,12 +22,14 @@ async function lookupChannelByName(username) {
         hostname: "www.googleapis.com",
         port: 443,
         path: `/youtube/v3/search?part=snippet&type=channel&q=${encodeURIComponent(username)}&maxResults=5&key=${process.env.YOUTUBE_API_KEY}`,
-        method: "GET"
+        method: "GET",
       };
 
       const req = https.request(options, (res) => {
         let data = "";
-        res.on("data", (chunk) => { data += chunk; });
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
         res.on("end", () => {
           try {
             resolve(JSON.parse(data));
@@ -38,7 +49,9 @@ async function lookupChannelByName(username) {
         const channelTitle = item.snippet.channelTitle || "";
         // Exact match or name contains username (case insensitive)
         if (channelTitle.toLowerCase() === username.toLowerCase()) {
-          console.log(`[youtube] Resolved @${username} to ${item.snippet.channelId}`);
+          console.log(
+            `[youtube] Resolved @${username} to ${item.snippet.channelId}`,
+          );
 
           return {
             id: item.snippet.channelId,
@@ -50,7 +63,9 @@ async function lookupChannelByName(username) {
 
       // Return first match if no exact match
       const item = response.items[0];
-      console.log(`[youtube] Used approximate match for @${username}: ${item.snippet.channelTitle}`);
+      console.log(
+        `[youtube] Used approximate match for @${username}: ${item.snippet.channelTitle}`,
+      );
 
       return {
         id: item.snippet.channelId,
@@ -61,7 +76,10 @@ async function lookupChannelByName(username) {
 
     console.log(`[youtube] No channel found for @${username}`);
   } catch (err) {
-    console.log(`[youtube] Could not fetch channel info for @${username}:`, err?.message || err);
+    console.log(
+      `[youtube] Could not fetch channel info for @${username}:`,
+      err?.message || err,
+    );
   }
 
   return null;
@@ -71,7 +89,9 @@ async function lookupChannelByName(username) {
 
 async function fetchYouTubeFeed(channelId) {
   if (!process.env.YOUTUBE_API_KEY) {
-    console.warn("[youtube] YOUTUBE_API_KEY not set in environment - YouTube notifications disabled");
+    console.warn(
+      "[youtube] YOUTUBE_API_KEY not set in environment - YouTube notifications disabled",
+    );
     return null;
   }
 
@@ -84,12 +104,14 @@ async function fetchYouTubeFeed(channelId) {
         hostname: "www.googleapis.com",
         port: 443,
         path: `/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${process.env.YOUTUBE_API_KEY}`,
-        method: "GET"
+        method: "GET",
       };
 
       const req = https.request(options, (res) => {
         let data = "";
-        res.on("data", (chunk) => { data += chunk; });
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
         res.on("end", () => {
           try {
             resolve(JSON.parse(data));
@@ -108,7 +130,8 @@ async function fetchYouTubeFeed(channelId) {
       return null;
     }
 
-    const uploadsPlaylistId = channelResponse.items[0].contentDetails?.relatedPlaylists?.uploads;
+    const uploadsPlaylistId =
+      channelResponse.items[0].contentDetails?.relatedPlaylists?.uploads;
     if (!uploadsPlaylistId) {
       console.log(`[youtube] Channel ${channelId} has no uploads playlist`);
       return null;
@@ -120,12 +143,14 @@ async function fetchYouTubeFeed(channelId) {
         hostname: "www.googleapis.com",
         port: 443,
         path: `/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${uploadsPlaylistId}&key=${process.env.YOUTUBE_API_KEY}`,
-        method: "GET"
+        method: "GET",
       };
 
       const req = https.request(options, (res) => {
         let data = "";
-        res.on("data", (chunk) => { data += chunk; });
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
         res.on("end", () => {
           try {
             resolve(JSON.parse(data));
@@ -143,19 +168,22 @@ async function fetchYouTubeFeed(channelId) {
     // Include liveBroadcastContent if available for accurate live detection
     return {
       title: `YouTube channel ${channelId}`,
-      items: (videoResponse.items || []).map(item => ({
+      items: (videoResponse.items || []).map((item) => ({
         id: item.snippet.resourceId?.videoId,
         title: item.snippet.title,
         pubDate: item.snippet.publishedAt,
         description: item.snippet.description,
         liveBroadcastContent: item.snippet.liveBroadcastContent, // "none", "live", "upcoming"
         "media:thumbnail": {
-          url: item.snippet.thumbnails?.default?.url
-        }
-      }))
+          url: item.snippet.thumbnails?.default?.url,
+        },
+      })),
     };
   } catch (err) {
-    console.error(`[youtube] Failed to fetch feed for channel ${channelId}:`, err?.message || err);
+    console.error(
+      `[youtube] Failed to fetch feed for channel ${channelId}:`,
+      err?.message || err,
+    );
     return null;
   }
 }
@@ -164,7 +192,8 @@ function isLiveVideo(entry) {
   if (!entry) return false;
 
   // YouTube Data API v3 gives us broadcast content type
-  const broadcastContent = entry.liveBroadcastContent || entry.snippet?.liveBroadcastContent || "";
+  const broadcastContent =
+    entry.liveBroadcastContent || entry.snippet?.liveBroadcastContent || "";
 
   if (broadcastContent === "live" || broadcastContent === "upcoming") {
     return true;
@@ -176,7 +205,8 @@ function isLiveVideo(entry) {
 function isVideoUpload(entry) {
   if (!entry) return false;
 
-  const broadcastContent = entry.liveBroadcastContent || entry.snippet?.liveBroadcastContent || "";
+  const broadcastContent =
+    entry.liveBroadcastContent || entry.snippet?.liveBroadcastContent || "";
 
   return broadcastContent === "none" || !broadcastContent;
 }
@@ -184,11 +214,16 @@ function isVideoUpload(entry) {
 function extractVideoInfo(entry) {
   if (!entry) return null;
 
-  const videoId = entry["yt:videoId"] || entry.id?.split(":").pop() || entry.snippet?.resourceId?.videoId;
+  const videoId =
+    entry["yt:videoId"] ||
+    entry.id?.split(":").pop() ||
+    entry.snippet?.resourceId?.videoId;
   const title = entry.title || "Untitled Video";
-  const published = entry.pubDate ? new Date(entry.pubDate).getTime() :
-    entry.snippet?.publishedAt ? new Date(entry.snippet.publishedAt).getTime() :
-      Date.now();
+  const published = entry.pubDate
+    ? new Date(entry.pubDate).getTime()
+    : entry.snippet?.publishedAt
+      ? new Date(entry.snippet.publishedAt).getTime()
+      : Date.now();
 
   let thumbnail = "";
   if (entry["media:thumbnail"]) {
@@ -223,14 +258,21 @@ const defaultDeps = {
  * @param {object} channelData
  * @param {YoutubeTickerDeps} [deps]
  */
-async function processChannel(client, guildId, channelData, deps = defaultDeps) {
+async function processChannel(
+  client,
+  guildId,
+  channelData,
+  deps = defaultDeps,
+) {
   const fetchFeed = deps.fetchYouTubeFeed || fetchYouTubeFeed;
   const resolveName = deps.lookupChannelByName || lookupChannelByName;
 
   const settings = getGuildSettings(guildId);
 
   if (!settings.youtube_notification_channel_id) {
-    console.log(`[youtube] No notification channel configured for guild ${guildId}`);
+    console.log(
+      `[youtube] No notification channel configured for guild ${guildId}`,
+    );
     return;
   }
 
@@ -239,7 +281,10 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
 
   // Check if we need to resolve @username
   const hasUnresolvedName = channelName.startsWith("@");
-  const needsResolution = hasUnresolvedName && !channelId.startsWith("UC") && !channelId.startsWith("HC");
+  const needsResolution =
+    hasUnresolvedName &&
+    !channelId.startsWith("UC") &&
+    !channelId.startsWith("HC");
 
   if (needsResolution) {
     const username = normalizeYoutubeName(channelName);
@@ -250,14 +295,18 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
       channelId = resolved.id;
       addYoutubeChannel(guildId, channelId, resolved.name, resolved.url, "");
 
-      console.log(`[youtube] Resolved @${username} to ${channelId} (${resolved.name})`);
+      console.log(
+        `[youtube] Resolved @${username} to ${channelId} (${resolved.name})`,
+      );
     } else {
       console.log(`[youtube] Could not resolve @${username}, skipping`);
       return;
     }
   }
 
-  const displayName = hasUnresolvedName ? "@" + normalizeYoutubeName(channelName) : channelName;
+  const displayName = hasUnresolvedName
+    ? "@" + normalizeYoutubeName(channelName)
+    : channelName;
 
   // Get channel URL
   let channelUrl = channelData.channel_url;
@@ -267,9 +316,13 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
 
   // Get last-checked time
   const channelWithLastChecked = getYoutubeChannelById(guildId, channelId);
-  const lastChecked = channelData.last_checked || (channelWithLastChecked ? channelWithLastChecked.last_checked : null);
+  const lastChecked =
+    channelData.last_checked ||
+    (channelWithLastChecked ? channelWithLastChecked.last_checked : null);
 
-  console.log(`[youtube] Checking ${displayName} (${channelId}) - last checked: ${lastChecked ? new Date(lastChecked).toISOString() : 'never'}`);
+  console.log(
+    `[youtube] Checking ${displayName} (${channelId}) - last checked: ${lastChecked ? new Date(lastChecked).toISOString() : "never"}`,
+  );
 
   const feed = await fetchFeed(channelId);
   if (!feed) return;
@@ -287,7 +340,9 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
     return bDate - aDate;
   });
 
-  const lastVideoId = channelData.last_video_id || (channelWithLastChecked ? channelWithLastChecked.last_video_id : null);
+  const lastVideoId =
+    channelData.last_video_id ||
+    (channelWithLastChecked ? channelWithLastChecked.last_video_id : null);
 
   // Track if we found any uploads in the time window
   let foundUploadInWindow = false;
@@ -311,7 +366,9 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
 
     // Skip if we've already notified about this video (using last_video_id as snapshot)
     if (lastVideoId && info.videoId === lastVideoId) {
-      console.log(`[youtube] Skipping ${info.title} - already notified (matches last_video_id: ${lastVideoId})`);
+      console.log(
+        `[youtube] Skipping ${info.title} - already notified (matches last_video_id: ${lastVideoId})`,
+      );
       continue;
     }
 
@@ -319,7 +376,9 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
     if (notificationType === "upload") {
       if (lastChecked) {
         if (info.published <= lastChecked) {
-          console.log(`[youtube] Skipping ${info.title} - already checked (published: ${new Date(info.published).toISOString()}, last checked: ${new Date(lastChecked).toISOString()})`);
+          console.log(
+            `[youtube] Skipping ${info.title} - already checked (published: ${new Date(info.published).toISOString()}, last checked: ${new Date(lastChecked).toISOString()})`,
+          );
           // Stop processing older videos
           break;
         }
@@ -327,7 +386,9 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
         // Never checked before: only notify on videos from the last hour
         const oneHourAgo = Date.now() - 60 * 60 * 1000;
         if (info.published <= oneHourAgo) {
-          console.log(`[youtube] Skipping ${info.title} - published too old (published: ${new Date(info.published).toISOString()}, cutoff: ${new Date(oneHourAgo).toISOString()})`);
+          console.log(
+            `[youtube] Skipping ${info.title} - published too old (published: ${new Date(info.published).toISOString()}, cutoff: ${new Date(oneHourAgo).toISOString()})`,
+          );
           continue;
         }
       }
@@ -337,7 +398,9 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
     const alreadyNotified = channelData.last_video_id === info.videoId;
 
     if (alreadyNotified) {
-      console.log(`[youtube] Already notified about ${info.title} (${notificationType}) for ${channelName}`);
+      console.log(
+        `[youtube] Already notified about ${info.title} (${notificationType}) for ${channelName}`,
+      );
       // For uploads that were previously notified but are newer than lastChecked, continue
       if (notificationType === "upload") {
         continue;
@@ -349,7 +412,16 @@ async function processChannel(client, guildId, channelData, deps = defaultDeps) 
     foundUploadInWindow = true;
 
     const useSimpleEmbed = notificationType === "upload";
-    await sendNotification(client, guildId, settings.youtube_notification_channel_id, channelData, info, channelUrl, notificationType, useSimpleEmbed);
+    await sendNotification(
+      client,
+      guildId,
+      settings.youtube_notification_channel_id,
+      channelData,
+      info,
+      channelUrl,
+      notificationType,
+      useSimpleEmbed,
+    );
   }
 
   // Update last-checked time and store the most recent video ID
@@ -361,26 +433,37 @@ function createLiveEmbed(channelData, videoInfo, channelUrl) {
   const discord = require("discord.js");
 
   const embed = new discord.EmbedBuilder()
-    .setColor("#FF0000")
+    .setColor(Color.youtubeLive)
     .setAuthor({
       name: `${channelData.channel_name} just went live!`,
       url: channelUrl,
-      iconURL: channelData.thumbnail_url || undefined
+      iconURL: channelData.thumbnail_url || undefined,
     })
     .setTitle(videoInfo.title)
     .setDescription(`[Watch Live](https://youtu.be/${videoInfo.videoId})`)
     .setThumbnail(channelData.thumbnail_url || undefined)
-    .setImage(videoInfo.thumbnail ? videoInfo.thumbnail.replace(/=s\d+/, "=s1280") : undefined)
+    .setImage(
+      videoInfo.thumbnail
+        ? videoInfo.thumbnail.replace(/=s\d+/, "=s1280")
+        : undefined,
+    )
     .addFields([
-      { name: "Channel", value: `[${channelData.channel_name}](${channelUrl})`, inline: true },
-      { name: "Video ID", value: videoInfo.videoId, inline: true }
+      {
+        name: "Channel",
+        value: `[${channelData.channel_name}](${channelUrl})`,
+        inline: true,
+      },
+      { name: "Video ID", value: videoInfo.videoId, inline: true },
     ])
     .setTimestamp(new Date(videoInfo.published))
     .setFooter({
-      text: "YouTube Notification",
-      iconURL: "https://www.youtube.com/img/desktop/yt_120x64.png"
+      text: "YouTube",
+      iconURL: "https://www.youtube.com/img/desktop/yt_120x64.png",
     });
-  console.log(`[createLiveEmbed] Channel thumbnail URL:`, channelData.thumbnail_url);
+  console.log(
+    `[createLiveEmbed] Channel thumbnail URL:`,
+    channelData.thumbnail_url,
+  );
 
   return embed;
 }
@@ -400,31 +483,49 @@ function createUploadEmbed(channelData, videoInfo, channelUrl) {
   const discord = require("discord.js");
 
   const embed = new discord.EmbedBuilder()
-    .setColor("#FFA500")
+    .setColor(Color.youtubeUpload)
     .setAuthor({
       name: `${channelData.channel_name}`,
       url: channelUrl,
-      iconURL: channelData.thumbnail_url || undefined
+      iconURL: channelData.thumbnail_url || undefined,
     })
     .setTitle(videoInfo.title)
     .setDescription(`[Watch Video](https://youtu.be/${videoInfo.videoId})`)
     .setThumbnail(channelData.thumbnail_url || undefined)
-    .setImage(videoInfo.thumbnail ? videoInfo.thumbnail.replace(/=s\d+/, "=s1280") : undefined)
+    .setImage(
+      videoInfo.thumbnail
+        ? videoInfo.thumbnail.replace(/=s\d+/, "=s1280")
+        : undefined,
+    )
     .setTimestamp(new Date(videoInfo.published))
     .setFooter({
       text: "YouTube",
-      iconURL: "https://www.youtube.com/img/desktop/yt_120x64.png"
+      iconURL: "https://www.youtube.com/img/desktop/yt_120x64.png",
     });
-  console.log(`[createUploadEmbed] Channel thumbnail URL:`, channelData.thumbnail_url);
+  console.log(
+    `[createUploadEmbed] Channel thumbnail URL:`,
+    channelData.thumbnail_url,
+  );
 
   return embed;
 }
 
-async function sendNotification(client, guildId, channelId, channelData, videoInfo, channelUrl, notificationType, useSimpleEmbed = true) {
+async function sendNotification(
+  client,
+  guildId,
+  channelId,
+  channelData,
+  videoInfo,
+  channelUrl,
+  notificationType,
+  useSimpleEmbed = true,
+) {
   try {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) {
-      console.error(`[youtube] Could not find notification channel ${channelId}`);
+      console.error(
+        `[youtube] Could not find notification channel ${channelId}`,
+      );
       return;
     }
 
@@ -444,7 +545,11 @@ async function sendNotification(client, guildId, channelId, channelData, videoIn
       }
 
       if (useSimpleEmbed) {
-        const simpleResult = createSimpleUploadEmbed(channelData, videoInfo, channelUrl);
+        const simpleResult = createSimpleUploadEmbed(
+          channelData,
+          videoInfo,
+          channelUrl,
+        );
         content = `${roleMention}${simpleResult.content}`;
         embeds = [];
       } else {
@@ -456,12 +561,17 @@ async function sendNotification(client, guildId, channelId, channelData, videoIn
     const message = await channel.send({
       content: content,
       allowedMentions: { parse: [] },
-      embeds: embeds
+      embeds: embeds,
     });
 
-    console.log(`[youtube] Sent notification for ${videoInfo.title} in guild ${guildId}`);
+    console.log(
+      `[youtube] Sent notification for ${videoInfo.title} in guild ${guildId}`,
+    );
   } catch (err) {
-    console.error(`[youtube] Failed to send notification for ${videoInfo?.title}:`, err?.message || err);
+    console.error(
+      `[youtube] Failed to send notification for ${videoInfo?.title}:`,
+      err?.message || err,
+    );
   }
 }
 
@@ -473,12 +583,14 @@ async function runYoutubeTick(client, deps = defaultDeps) {
   console.log(`[youtube] Running tick`);
   // Check for API key before doing any work (tests may pass skipApiKeyCheck + stubs)
   if (!deps.skipApiKeyCheck && !process.env.YOUTUBE_API_KEY) {
-    console.log(`[youtube] YouTube Data API v3: YOUTUBE_API_KEY not configured - live notifications disabled`);
+    console.log(
+      `[youtube] YouTube Data API v3: YOUTUBE_API_KEY not configured - live notifications disabled`,
+    );
     return;
   }
 
   const channels = getAllYoutubeChannels();
-  console.log(channels)
+  console.log(channels);
 
   if (!channels.length) {
     console.log(`[youtube] No channels to monitor`);
@@ -495,32 +607,39 @@ async function runYoutubeTick(client, deps = defaultDeps) {
   //   return true;
   // });
 
-  console.log(`[youtube] Checking ${channels.length} subscribed channels (after deduplication)`);
+  console.log(
+    `[youtube] Checking ${channels.length} subscribed channels (after deduplication)`,
+  );
 
   for (const channel of channels) {
     try {
       await processChannel(client, channel.guild_id, channel, deps);
     } catch (err) {
-      console.error(`[youtube] Error processing channel ${channel.channel_name}:`, err?.message || err);
+      console.error(
+        `[youtube] Error processing channel ${channel.channel_name}:`,
+        err?.message || err,
+      );
     }
   }
 }
 
 function startYoutubeTicker(client) {
   if (!process.env.YOUTUBE_API_KEY) {
-    console.log("[youtube] Skipping ticker startup - YOUTUBE_API_KEY not configured");
+    console.log(
+      "[youtube] Skipping ticker startup - YOUTUBE_API_KEY not configured",
+    );
     return;
   }
 
   const msToNext5Minutes = 5 * 60000 - (Date.now() % (5 * 60000));
 
-  runYoutubeTick(client).catch(() => { });
+  runYoutubeTick(client).catch(() => {});
 
   setTimeout(() => {
-    runYoutubeTick(client).catch(() => { });
+    runYoutubeTick(client).catch(() => {});
 
     setInterval(() => {
-      runYoutubeTick(client).catch(() => { });
+      runYoutubeTick(client).catch(() => {});
     }, 5 * 60000);
   }, msToNext5Minutes);
 }
@@ -534,12 +653,14 @@ async function fetchChannelInfo(channelId) {
         hostname: "www.googleapis.com",
         port: 443,
         path: `/youtube/v3/channels?part=snippet&id=${channelId}&key=${process.env.YOUTUBE_API_KEY}`,
-        method: "GET"
+        method: "GET",
       };
 
       const req = https.request(options, (res) => {
         let data = "";
-        res.on("data", (chunk) => { data += chunk; });
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
         res.on("end", () => {
           try {
             resolve(JSON.parse(data));
@@ -556,16 +677,26 @@ async function fetchChannelInfo(channelId) {
     if (response.items && response.items.length > 0) {
       const snippet = response.items[0].snippet;
       const thumbnails = snippet.thumbnails || {};
-      console.log(`[youtube] fetchChannelInfo raw thumbnails:`, JSON.stringify(thumbnails, null, 2));
+      console.log(
+        `[youtube] fetchChannelInfo raw thumbnails:`,
+        JSON.stringify(thumbnails, null, 2),
+      );
       return {
         id: channelId,
         name: snippet.title,
         url: `https://www.youtube.com/channel/${channelId}`,
-        thumbnail_url: thumbnails.default?.url || thumbnails.medium?.url || thumbnails.high?.url || "",
+        thumbnail_url:
+          thumbnails.default?.url ||
+          thumbnails.medium?.url ||
+          thumbnails.high?.url ||
+          "",
       };
     }
   } catch (err) {
-    console.log(`[youtube] Could not fetch channel info for ${channelId}:`, err?.message || err);
+    console.log(
+      `[youtube] Could not fetch channel info for ${channelId}:`,
+      err?.message || err,
+    );
   }
 
   return null;

@@ -37,6 +37,7 @@ const {
   listActiveEventReminderRoleIds,
 } = require("../../db");
 const { isStaff } = require("../../core/permissions");
+const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const {
   OFFSET_PRESETS,
@@ -79,8 +80,8 @@ const commands = [
             .setName("event")
             .setDescription("Scheduled event")
             .setRequired(true)
-            .setAutocomplete(true)
-        )
+            .setAutocomplete(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -91,11 +92,11 @@ const commands = [
             .setName("event")
             .setDescription("Linked scheduled event")
             .setRequired(true)
-            .setAutocomplete(true)
-        )
+            .setAutocomplete(true),
+        ),
     )
     .addSubcommand((sc) =>
-      sc.setName("list").setDescription("List active event reminder configs.")
+      sc.setName("list").setDescription("List active event reminder configs."),
     )
     .addSubcommand((sc) =>
       sc
@@ -106,8 +107,8 @@ const commands = [
             .setName("event")
             .setDescription("Linked scheduled event")
             .setRequired(true)
-            .setAutocomplete(true)
-        )
+            .setAutocomplete(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -118,30 +119,35 @@ const commands = [
             .setName("event")
             .setDescription("Linked scheduled event")
             .setRequired(true)
-            .setAutocomplete(true)
-        )
+            .setAutocomplete(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("setchannel")
-        .setDescription("Set the default channel for reminder posts (Manage Guild).")
+        .setDescription(
+          "Set the default channel for reminder posts (Manage Guild).",
+        )
         .addChannelOption((opt) =>
           opt
             .setName("channel")
             .setDescription("Default notify channel (omit to clear)")
             .setRequired(false)
-            .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
-        )
+            .addChannelTypes(
+              ChannelType.GuildText,
+              ChannelType.GuildAnnouncement,
+            ),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("optout")
-        .setDescription("Opt out of all event reminder pings in this server.")
+        .setDescription("Opt out of all event reminder pings in this server."),
     )
     .addSubcommand((sc) =>
       sc
         .setName("optin")
-        .setDescription("Re-enable event reminder pings in this server.")
+        .setDescription("Re-enable event reminder pings in this server."),
     )
     .addSubcommand((sc) =>
       sc
@@ -152,8 +158,8 @@ const commands = [
             .setName("event")
             .setDescription("Linked scheduled event to mute")
             .setRequired(true)
-            .setAutocomplete(true)
-        )
+            .setAutocomplete(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -164,13 +170,13 @@ const commands = [
             .setName("event")
             .setDescription("Linked scheduled event to unmute")
             .setRequired(true)
-            .setAutocomplete(true)
-        )
+            .setAutocomplete(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("status")
-        .setDescription("Show your event reminder opt-out, mutes, and roles.")
+        .setDescription("Show your event reminder opt-out, mutes, and roles."),
     ),
 ];
 
@@ -227,7 +233,7 @@ function buildReminderModal(opts) {
   const selected = new Set(
     opts.selectedMinutes?.length
       ? opts.selectedMinutes
-      : [...DEFAULT_PRESET_MINUTES]
+      : [...DEFAULT_PRESET_MINUTES],
   );
 
   const shortnameInput = new TextInputBuilder()
@@ -247,7 +253,7 @@ function buildReminderModal(opts) {
         label: p.label,
         value: String(p.minutes),
         default: selected.has(p.minutes),
-      }))
+      })),
     );
 
   const customOffsets = new TextInputBuilder()
@@ -274,7 +280,8 @@ function buildReminderModal(opts) {
     .addOptions([
       {
         label: "Yes",
-        description: "Keep role alive across recurring event occurrences (cleanup only on manual clear)",
+        description:
+          "Keep role alive across recurring event occurrences (cleanup only on manual clear)",
         value: "1",
         default: isPersistent,
       },
@@ -318,13 +325,15 @@ function buildReminderModal(opts) {
       new LabelBuilder()
         .setLabel("Custom embed description (optional)")
         .setDescription(
-          "{event} {location} {starts_in} {starts_at} {url} {description} {offset} {role}"
+          "{event} {location} {starts_in} {starts_at} {url} {description} {offset} {role}",
         )
         .setTextInputComponent(messageInput),
       new LabelBuilder()
         .setLabel("Notify on all occurrences")
-        .setDescription("Keep role + config across recurring event occurrences; only clean on manual clear.")
-        .setStringSelectMenuComponent(persistentSelect)
+        .setDescription(
+          "Keep role + config across recurring event occurrences; only clean on manual clear.",
+        )
+        .setStringSelectMenuComponent(persistentSelect),
     );
 }
 
@@ -332,9 +341,8 @@ async function handleEventReminder(interaction, ctx) {
   const sub = interaction.options.getSubcommand();
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "This command only works in a server.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -351,18 +359,14 @@ async function handleEventReminder(interaction, ctx) {
   if (sub === "clear") return handleClear(interaction);
   if (sub === "sync") return handleSync(interaction);
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Unknown subcommand: \`${sub}\``,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
 async function handleSetChannel(interaction) {
   if (!isStaff(interaction)) {
-    await interaction.reply({
-      content: "You don’t have permission to use this.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyDenied(interaction);
     return;
   }
 
@@ -383,11 +387,10 @@ async function handleSetChannel(interaction) {
     ],
   }).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: channelId
       ? `Event reminders will post to <#${channelId}> by default (unless overridden per event).`
       : "Default event reminder channel cleared. Each config must set a channel override, or reminders will be skipped.",
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -401,18 +404,14 @@ async function handleList(interaction) {
     : "_not set_";
 
   if (!configs.length) {
-    await interaction.reply({
-      content:
-        `**Event reminders**\nDefault channel: ${defaultCh}\n\nNo active configs. Use \`/eventreminder create\`.`,
-      flags: MessageFlags.Ephemeral,
+    await replyEphemeral(interaction, {
+      content: `**Event reminders**\nDefault channel: ${defaultCh}\n\nNo active configs. Use \`/eventreminder create\`.`,
     });
     return;
   }
 
   const lines = configs.map((c) => {
-    const ch = c.channel_id
-      ? `<#${c.channel_id}>`
-      : `default (${defaultCh})`;
+    const ch = c.channel_id ? `<#${c.channel_id}>` : `default (${defaultCh})`;
     const next = (c.offsets || [])
       .filter((o) => o.sent_at == null)
       .sort((a, b) => a.fire_at - b.fire_at)[0];
@@ -435,12 +434,12 @@ async function handleList(interaction) {
     );
   });
 
-  await interaction.reply({
-    content: `**Event reminders**\nDefault channel: ${defaultCh}\n\n${lines.join("\n\n")}`.slice(
-      0,
-      1900
-    ),
-    flags: MessageFlags.Ephemeral,
+  await replyEphemeral(interaction, {
+    content:
+      `**Event reminders**\nDefault channel: ${defaultCh}\n\n${lines.join("\n\n")}`.slice(
+        0,
+        1900,
+      ),
   });
 }
 
@@ -448,44 +447,39 @@ async function handleCreate(interaction) {
   const eventId = interaction.options.getString("event", true);
   const scheduledEvent = await fetchScheduledEvent(interaction.guild, eventId);
   if (!scheduledEvent) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Could not find that scheduled event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "You need **Manage Guild** or be the **creator** of this scheduled event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (isEventTerminal(scheduledEvent)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "That event is completed or canceled — cannot attach reminders.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (getAnyConfigByScheduledEventId(interaction.guildId, eventId)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "Reminders already exist for this event. Use `/eventreminder edit` or `/eventreminder clear`.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const start = eventStartMs(scheduledEvent);
   if (start == null) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "That event has no start time.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -503,19 +497,18 @@ async function handleEdit(interaction) {
   const eventId = interaction.options.getString("event", true);
   const config = getConfigByScheduledEventId(interaction.guildId, eventId);
   if (!config) {
-    await interaction.reply({
-      content: "No active reminder config for that event. Use `/eventreminder create`.",
-      flags: MessageFlags.Ephemeral,
+    await replyEphemeral(interaction, {
+      content:
+        "No active reminder config for that event. Use `/eventreminder create`.",
     });
     return;
   }
 
   const scheduledEvent = await fetchScheduledEvent(interaction.guild, eventId);
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "You need **Manage Guild** or be the **creator** of this scheduled event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -537,24 +530,24 @@ async function handleClear(interaction) {
   const eventId = interaction.options.getString("event", true);
   const config = getAnyConfigByScheduledEventId(interaction.guildId, eventId);
   if (!config) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "No reminder config found for that event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const scheduledEvent = await fetchScheduledEvent(interaction.guild, eventId);
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "You need **Manage Guild** or be the **creator** of this scheduled event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
-  const cleared = await cleanupEventReminder(interaction.guild, eventId, { force: true });
+  const cleared = await cleanupEventReminder(interaction.guild, eventId, {
+    force: true,
+  });
   await logConfigChange(interaction.client, interaction.guildId, {
     title: "Event reminder cleared",
     command: "/eventreminder clear",
@@ -565,9 +558,8 @@ async function handleClear(interaction) {
     ],
   }).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Cleared event reminders and deleted role **${ROLE_PREFIX}${cleared?.shortname || config.shortname}**.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -575,27 +567,24 @@ async function handleSync(interaction) {
   const eventId = interaction.options.getString("event", true);
   const config = getConfigByScheduledEventId(interaction.guildId, eventId);
   if (!config) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "No active reminder config for that event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const scheduledEvent = await fetchScheduledEvent(interaction.guild, eventId);
   if (!scheduledEvent) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Could not fetch the scheduled event from Discord.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "You need **Manage Guild** or be the **creator** of this scheduled event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -604,7 +593,7 @@ async function handleSync(interaction) {
   const result = await syncEventReminderRole(
     interaction.guild,
     scheduledEvent,
-    config.role_id
+    config.role_id,
   );
   await interaction.editReply({
     content: `Synced **${ROLE_PREFIX}${config.shortname}**: +${result.granted} / −${result.removed} members.`,
@@ -614,10 +603,9 @@ async function handleSync(interaction) {
 async function handleOptOut(interaction) {
   setEventReminderOptOut(interaction.guildId, interaction.user.id);
   await stripAllEventReminderRoles(interaction.guild, interaction.user.id);
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       "You have opted out of **all** event reminder pings in this server. Use `/eventreminder optin` to re-enable. Per-event mutes (`/eventreminder mute`) still apply after you opt back in.",
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -633,7 +621,7 @@ async function handleOptIn(interaction) {
   for (const config of configs) {
     const scheduledEvent = await fetchScheduledEvent(
       interaction.guild,
-      config.scheduled_event_id
+      config.scheduled_event_id,
     );
     if (!scheduledEvent || isEventTerminal(scheduledEvent)) continue;
     try {
@@ -643,7 +631,7 @@ async function handleOptIn(interaction) {
           interaction.guild,
           interaction.user.id,
           config.role_id,
-          config.scheduled_event_id
+          config.scheduled_event_id,
         );
         if (ok) granted += 1;
       }
@@ -664,10 +652,9 @@ async function handleMute(interaction) {
   const eventId = interaction.options.getString("event", true);
   const config = getConfigByScheduledEventId(interaction.guildId, eventId);
   if (!config) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "No active reminder config for that event. You can only mute linked events (`/eventreminder list`).",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -675,11 +662,10 @@ async function handleMute(interaction) {
   setEventReminderMute(interaction.guildId, interaction.user.id, eventId);
   await removeRoleSafe(interaction.guild, interaction.user.id, config.role_id);
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Muted reminders for **${ROLE_PREFIX}${config.shortname}**. ` +
       `You will not receive pings for this event. Use \`/eventreminder unmute\` to restore.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -689,10 +675,9 @@ async function handleUnmute(interaction) {
   if (!config) {
     // Still clear mute row if leftover after clear
     clearEventReminderMute(interaction.guildId, interaction.user.id, eventId);
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "No active reminder config for that event. Any mute record was cleared.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -700,11 +685,10 @@ async function handleUnmute(interaction) {
   clearEventReminderMute(interaction.guildId, interaction.user.id, eventId);
 
   if (isEventReminderOptedOut(interaction.guildId, interaction.user.id)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         `Unmuted **${ROLE_PREFIX}${config.shortname}**, but you are still **guild-opted-out**. ` +
         `Use \`/eventreminder optin\` to receive any reminder pings.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -721,7 +705,7 @@ async function handleUnmute(interaction) {
           interaction.guild,
           interaction.user.id,
           config.role_id,
-          eventId
+          eventId,
         );
       }
     } catch {
@@ -739,11 +723,11 @@ async function handleUnmute(interaction) {
 async function handleStatus(interaction) {
   const optedOut = isEventReminderOptedOut(
     interaction.guildId,
-    interaction.user.id
+    interaction.user.id,
   );
   const mutes = listEventReminderMutes(
     interaction.guildId,
-    interaction.user.id
+    interaction.user.id,
   );
   const roleIds = listActiveEventReminderRoleIds(interaction.guildId);
   const member = interaction.member;
@@ -758,7 +742,7 @@ async function handleStatus(interaction) {
     for (const m of mutes.slice(0, 15)) {
       const config = getConfigByScheduledEventId(
         interaction.guildId,
-        m.scheduled_event_id
+        m.scheduled_event_id,
       );
       if (config) {
         labels.push(`\`${ROLE_PREFIX}${config.shortname}\``);
@@ -770,13 +754,12 @@ async function handleStatus(interaction) {
     if (mutes.length > 15) mutedText += ` _(+${mutes.length - 15} more)_`;
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `**Event reminder status**\n` +
       `Guild opted out: **${optedOut ? "yes" : "no"}**\n` +
       `Muted events: ${mutedText}\n` +
       `Event roles you hold: ${heldText}`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -792,48 +775,43 @@ async function handleEventReminderModal(interaction, ctx) {
   if (!isCreate && !isEdit) return;
 
   const eventId = customId.slice(
-    isCreate ? MODAL_PREFIX_CREATE.length : MODAL_PREFIX_EDIT.length
+    isCreate ? MODAL_PREFIX_CREATE.length : MODAL_PREFIX_EDIT.length,
   );
   const guild = interaction.guild;
   if (!guild || !eventId) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Invalid modal state.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const scheduledEvent = await fetchScheduledEvent(guild, eventId);
   if (!scheduledEvent) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Scheduled event no longer exists.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "You need **Manage Guild** or be the **creator** of this scheduled event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (isEventTerminal(scheduledEvent)) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "That event is completed or canceled.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const start = eventStartMs(scheduledEvent);
   if (start == null) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Event has no start time.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -886,9 +864,8 @@ async function handleEventReminderModal(interaction, ctx) {
 
   const nameResult = normalizeShortname(shortnameRaw);
   if (!nameResult.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: nameResult.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -896,22 +873,17 @@ async function handleEventReminderModal(interaction, ctx) {
 
   const offsetResult = resolveOffsetMinutes(presetMinutes, customText);
   if (!offsetResult.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: offsetResult.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
-  const { offsets, skippedPast } = buildOffsetRows(
-    offsetResult.minutes,
-    start
-  );
+  const { offsets, skippedPast } = buildOffsetRows(offsetResult.minutes, start);
   if (!offsets.length) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "All selected offsets are already in the past relative to the event start. Pick closer times or a later event.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -943,7 +915,7 @@ async function handleEventReminderModal(interaction, ctx) {
       role = await createReminderRole(
         guild,
         shortname,
-        `Event reminder for ${scheduledEvent.name}`
+        `Event reminder for ${scheduledEvent.name}`,
       );
     } catch (err) {
       if (err?.code === "ROLE_NAME_IN_USE") {
@@ -1005,7 +977,7 @@ async function handleEventReminderModal(interaction, ctx) {
     const fireLines = offsets
       .map(
         (o) =>
-          `• ${formatOffsetMinutes(o.offsetMinutes)} → <t:${Math.floor(o.fireAt / 1000)}:F>`
+          `• ${formatOffsetMinutes(o.offsetMinutes)} → <t:${Math.floor(o.fireAt / 1000)}:F>`,
       )
       .join("\n");
 
@@ -1049,13 +1021,13 @@ async function handleEventReminderModal(interaction, ctx) {
       if (role) {
         await role.setName(
           `${ROLE_PREFIX}${shortname}`,
-          "Event reminder shortname edit"
+          "Event reminder shortname edit",
         );
       } else {
         const newRole = await createReminderRole(
           guild,
           shortname,
-          "Event reminder role recreate on edit"
+          "Event reminder role recreate on edit",
         );
         roleId = newRole.id;
         await syncEventReminderRole(guild, scheduledEvent, roleId);
@@ -1097,7 +1069,7 @@ async function handleEventReminderModal(interaction, ctx) {
   const fireLines = offsets
     .map(
       (o) =>
-        `• ${formatOffsetMinutes(o.offsetMinutes)} → <t:${Math.floor(o.fireAt / 1000)}:F>`
+        `• ${formatOffsetMinutes(o.offsetMinutes)} → <t:${Math.floor(o.fireAt / 1000)}:F>`,
     )
     .join("\n");
 
@@ -1131,7 +1103,11 @@ async function autocompleteEventReminder(interaction) {
       if (isEventTerminal(ev)) continue;
       const name = ev.name || "Event";
       const label = name.slice(0, 100);
-      if (query && !label.toLowerCase().includes(query) && !ev.id.includes(query)) {
+      if (
+        query &&
+        !label.toLowerCase().includes(query) &&
+        !ev.id.includes(query)
+      ) {
         continue;
       }
       choices.push({ name: label, value: ev.id });
@@ -1153,12 +1129,12 @@ async function autocompleteEventReminder(interaction) {
   if (sub === "unmute") {
     const mutedIds = new Set(
       listEventReminderMutes(guild.id, interaction.user.id).map(
-        (m) => m.scheduled_event_id
-      )
+        (m) => m.scheduled_event_id,
+      ),
     );
     if (mutedIds.size) {
       const mutedConfigs = allConfigs.filter((c) =>
-        mutedIds.has(c.scheduled_event_id)
+        mutedIds.has(c.scheduled_event_id),
       );
       if (mutedConfigs.length) allConfigs = mutedConfigs;
     }
@@ -1173,7 +1149,10 @@ async function autocompleteEventReminder(interaction) {
     } catch {
       // keep shortname label
     }
-    if (sub === "mute" && isEventReminderMuted(guild.id, interaction.user.id, c.scheduled_event_id)) {
+    if (
+      sub === "mute" &&
+      isEventReminderMuted(guild.id, interaction.user.id, c.scheduled_event_id)
+    ) {
       label = `🔇 ${label}`;
     }
     label = label.slice(0, 100);
@@ -1194,23 +1173,21 @@ async function autocompleteEventReminder(interaction) {
 function registerEvents(client) {
   client.on(Events.GuildScheduledEventUserAdd, async (scheduledEvent, user) => {
     try {
-      const guild = scheduledEvent.guild || client.guilds.cache.get(scheduledEvent.guildId);
+      const guild =
+        scheduledEvent.guild || client.guilds.cache.get(scheduledEvent.guildId);
       if (!guild || !user?.id) return;
-      const config = getConfigByScheduledEventId(
-        guild.id,
-        scheduledEvent.id
-      );
+      const config = getConfigByScheduledEventId(guild.id, scheduledEvent.id);
       if (!config) return;
       await grantRoleIfEligible(
         guild,
         user.id,
         config.role_id,
-        scheduledEvent.id
+        scheduledEvent.id,
       );
     } catch (err) {
       console.error(
         "[eventReminders] GuildScheduledEventUserAdd:",
-        err?.message || err
+        err?.message || err,
       );
     }
   });
@@ -1223,19 +1200,16 @@ function registerEvents(client) {
           scheduledEvent.guild ||
           client.guilds.cache.get(scheduledEvent.guildId);
         if (!guild || !user?.id) return;
-        const config = getConfigByScheduledEventId(
-          guild.id,
-          scheduledEvent.id
-        );
+        const config = getConfigByScheduledEventId(guild.id, scheduledEvent.id);
         if (!config) return;
         await removeRoleSafe(guild, user.id, config.role_id);
       } catch (err) {
         console.error(
           "[eventReminders] GuildScheduledEventUserRemove:",
-          err?.message || err
+          err?.message || err,
         );
       }
-    }
+    },
   );
 
   client.on(Events.GuildScheduledEventUpdate, async (oldEvent, newEvent) => {
@@ -1257,7 +1231,7 @@ function registerEvents(client) {
     } catch (err) {
       console.error(
         "[eventReminders] GuildScheduledEventUpdate:",
-        err?.message || err
+        err?.message || err,
       );
     }
   });
@@ -1272,7 +1246,7 @@ function registerEvents(client) {
     } catch (err) {
       console.error(
         "[eventReminders] GuildScheduledEventDelete:",
-        err?.message || err
+        err?.message || err,
       );
     }
   });

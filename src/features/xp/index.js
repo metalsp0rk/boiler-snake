@@ -1,7 +1,6 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  MessageFlags,
   AttachmentBuilder,
 } = require("discord.js");
 const {
@@ -13,6 +12,8 @@ const {
 const { levelFromXp, validateXpValue } = require("../../core/xpMath");
 const { key, isOnCooldown, sweepCooldownMap } = require("../../core/cooldowns");
 const { isStaff } = require("../../core/permissions");
+const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const { Color, baseEmbed } = require("../../core/theme");
 const { awardXp } = require("../../services/awardXp");
 const { renderLeaderboardPng } = require("../../render/leaderboard");
 const { logConfigChange, diffConfigLines } = require("../logs/auditLog");
@@ -27,7 +28,7 @@ const commands = [
     .setName("xp")
     .setDescription("Show your XP and level (or another user's).")
     .addUserOption((opt) =>
-      opt.setName("user").setDescription("User to check").setRequired(false)
+      opt.setName("user").setDescription("User to check").setRequired(false),
     ),
 
   new SlashCommandBuilder()
@@ -37,7 +38,7 @@ const commands = [
       opt
         .setName("limit")
         .setDescription("How many to show (max 20)")
-        .setRequired(false)
+        .setRequired(false),
     ),
 
   new SlashCommandBuilder()
@@ -45,35 +46,39 @@ const commands = [
     .setDescription("Set XP values and cooldowns for this guild.")
     .setDefaultMemberPermissions(staffPerms)
     .addIntegerOption((opt) =>
-      opt.setName("message").setDescription("XP per message").setMinValue(0).setRequired(false)
+      opt
+        .setName("message")
+        .setDescription("XP per message")
+        .setMinValue(0)
+        .setRequired(false),
     )
     .addIntegerOption((opt) =>
       opt
         .setName("reaction")
         .setDescription("Reaction XP per message")
         .setMinValue(0)
-        .setRequired(false)
+        .setRequired(false),
     )
     .addIntegerOption((opt) =>
       opt
         .setName("voice")
         .setDescription("XP per voice minute")
         .setMinValue(0)
-        .setRequired(false)
+        .setRequired(false),
     )
     .addIntegerOption((opt) =>
       opt
         .setName("msgcooldown")
         .setDescription("Message XP cooldown seconds")
         .setMinValue(0)
-        .setRequired(false)
+        .setRequired(false),
     )
     .addIntegerOption((opt) =>
       opt
         .setName("reactioncooldown")
         .setDescription("Reaction XP cooldown seconds")
         .setMinValue(0)
-        .setRequired(false)
+        .setRequired(false),
     )
     .addIntegerOption((opt) =>
       opt
@@ -81,9 +86,9 @@ const commands = [
         .setDescription("Level curve factor (XP for level L = L² × factor)")
         .setMinValue(1)
         .setMaxValue(10000)
-        .setRequired(false)
+        .setRequired(false),
     ),
-  ];
+];
 
 async function handleXp(interaction) {
   const guildId = interaction.guildId;
@@ -92,10 +97,10 @@ async function handleXp(interaction) {
   const xp = getXp(guildId, target.id);
   const level = levelFromXp(xp, settings.level_xp_factor);
 
-  await interaction.reply({
-    content: `${target.username}: **${xp} XP** (Level **${level}**)`,
-    flags: MessageFlags.Ephemeral,
-  });
+  await replyEphemeral(
+    interaction,
+    `**${target.username}**: **${xp} XP** · Level **${level}**`,
+  );
 }
 
 async function handleLeaderboard(interaction) {
@@ -103,16 +108,17 @@ async function handleLeaderboard(interaction) {
   const settings = getGuildSettings(guildId);
   const rows = topUsers(guildId, 10);
   if (!rows.length) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "No leaderboard data yet.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   let members = null;
   try {
-    members = await interaction.guild.members.fetch({ user: rows.map((r) => r.user_id) });
+    members = await interaction.guild.members.fetch({
+      user: rows.map((r) => r.user_id),
+    });
   } catch {
     members = null;
   }
@@ -126,7 +132,9 @@ async function handleLeaderboard(interaction) {
   });
 
   const png = renderLeaderboardPng(entries, factor);
-  const file = new AttachmentBuilder(png, { name: "boiler-snake-leaderboard.png" });
+  const file = new AttachmentBuilder(png, {
+    name: "boiler-snake-leaderboard.png",
+  });
 
   await interaction.reply({
     content: "**Leaderboard (Top 10)**",
@@ -137,10 +145,7 @@ async function handleLeaderboard(interaction) {
 async function handleSetXp(interaction, ctx) {
   const { client } = ctx;
   if (!isStaff(interaction)) {
-    await interaction.reply({
-      content: "You don’t have permission to use this.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyDenied(interaction);
     return;
   }
 
@@ -160,7 +165,7 @@ async function handleSetXp(interaction, ctx) {
   ].filter(Boolean);
 
   if (errors.length) {
-    await interaction.reply({ content: errors.join("\n"), flags: MessageFlags.Ephemeral });
+    await replyEphemeral(interaction, errors.join("\n"));
     return;
   }
 
@@ -173,10 +178,7 @@ async function handleSetXp(interaction, ctx) {
   if (factor !== null) patch.level_xp_factor = factor;
 
   if (!Object.keys(patch).length) {
-    await interaction.reply({
-      content: "No XP settings provided to update.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyEphemeral(interaction, "No XP settings provided to update.");
     return;
   }
 
@@ -192,25 +194,39 @@ async function handleSetXp(interaction, ctx) {
     }).catch(() => {});
   }
 
-  const factorChanged = factor !== null;
-  let replyContent =
-    `Updated XP settings:\n` +
-    `- msg_xp: **${updated.msg_xp}**\n` +
-    `- reaction_xp: **${updated.reaction_xp}**\n` +
-    `- voice_xp_per_min: **${updated.voice_xp_per_min}**\n` +
-    `- msg_cooldown_sec: **${updated.msg_cooldown_sec}**\n` +
-    `- reaction_cooldown_sec: **${updated.reaction_cooldown_sec}**`;
+  const embed = baseEmbed({
+    color: Color.config,
+    title: "Updated XP settings",
+    footer: "Staff only",
+  }).addFields(
+    { name: "Message XP", value: `**${updated.msg_xp}**`, inline: true },
+    { name: "Reaction XP", value: `**${updated.reaction_xp}**`, inline: true },
+    {
+      name: "Voice XP / min",
+      value: `**${updated.voice_xp_per_min}**`,
+      inline: true,
+    },
+    {
+      name: "Message cooldown",
+      value: `**${updated.msg_cooldown_sec}s**`,
+      inline: true,
+    },
+    {
+      name: "Reaction cooldown",
+      value: `**${updated.reaction_cooldown_sec}s**`,
+      inline: true,
+    },
+  );
 
-  if (factorChanged) {
-    const oldFactor = settings.level_xp_factor;
-    const newFactor = updated.level_xp_factor;
-    replyContent += `\n- level_xp_factor: **${oldFactor}** → **${newFactor}** (Level L starts at L² × factor)`;
+  if (factor !== null) {
+    embed.addFields({
+      name: "level_xp_factor",
+      value: `**${settings.level_xp_factor}** → **${updated.level_xp_factor}** (Level L starts at L² × factor)`,
+      inline: false,
+    });
   }
 
-  await interaction.reply({
-    content: replyContent,
-    flags: MessageFlags.Ephemeral,
-  });
+  await replyEphemeral(interaction, { embeds: [embed] });
 }
 
 /**
@@ -265,10 +281,13 @@ function registerEvents(client, ctx) {
 }
 
 function start(_client) {
-  setInterval(() => {
-    sweepCooldownMap(msgCooldown, 6 * 60 * 60 * 1000);
-    sweepCooldownMap(reactionCooldown, 6 * 60 * 60 * 1000);
-  }, 10 * 60 * 1000);
+  setInterval(
+    () => {
+      sweepCooldownMap(msgCooldown, 6 * 60 * 60 * 1000);
+      sweepCooldownMap(reactionCooldown, 6 * 60 * 60 * 1000);
+    },
+    10 * 60 * 1000,
+  );
 }
 
 module.exports = {

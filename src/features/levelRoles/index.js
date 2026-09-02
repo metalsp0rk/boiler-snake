@@ -1,10 +1,11 @@
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const {
   upsertLevelRole,
   deleteLevelRole,
   listLevelRoles,
 } = require("../../db");
 const { isStaff } = require("../../core/permissions");
+const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { syncMemberRoles } = require("./sync");
 
@@ -20,38 +21,47 @@ const commands = [
         .setName("set")
         .setDescription("Set/update a level->role mapping.")
         .addRoleOption((opt) =>
-          opt.setName("role").setDescription("Role to manage").setRequired(true)
+          opt
+            .setName("role")
+            .setDescription("Role to manage")
+            .setRequired(true),
         )
         .addIntegerOption((opt) =>
-          opt.setName("level").setDescription("Level required").setMinValue(0).setRequired(true)
+          opt
+            .setName("level")
+            .setDescription("Level required")
+            .setMinValue(0)
+            .setRequired(true),
         )
         .addIntegerOption((opt) =>
           opt
             .setName("dropdays")
             .setDescription("Days below level before removing")
             .setMinValue(0)
-            .setRequired(true)
-        )
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) => {
-      const sub = sc.setName("remove").setDescription("Remove a mapping for a role.");
+      const sub = sc
+        .setName("remove")
+        .setDescription("Remove a mapping for a role.");
       sub.addRoleOption((opt) =>
-        opt.setName("role").setDescription("Role to unmanage").setRequired(true)
+        opt
+          .setName("role")
+          .setDescription("Role to unmanage")
+          .setRequired(true),
       );
       return sub;
     })
     .addSubcommand((sc) =>
-      sc.setName("list").setDescription("List current level->role mappings.")
+      sc.setName("list").setDescription("List current level->role mappings."),
     ),
 ];
 
 async function handleLevelToRole(interaction, ctx) {
   const { client } = ctx;
   if (!isStaff(interaction)) {
-    await interaction.reply({
-      content: "You don’t have permission to use this.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyDenied(interaction);
     return;
   }
 
@@ -63,7 +73,12 @@ async function handleLevelToRole(interaction, ctx) {
     const level = interaction.options.getInteger("level", true);
     const dropdays = interaction.options.getInteger("dropdays", true);
 
-    upsertLevelRole(guildId, role.id, Math.max(0, level), Math.max(0, dropdays));
+    upsertLevelRole(
+      guildId,
+      role.id,
+      Math.max(0, level),
+      Math.max(0, dropdays),
+    );
     await logConfigChange(client, guildId, {
       title: "Level→role mapping set",
       command: "/leveltorole set",
@@ -75,10 +90,10 @@ async function handleLevelToRole(interaction, ctx) {
       ],
     }).catch(() => {});
 
-    await interaction.reply({
-      content: `Mapped ${role} to **Lvl ${level}** (remove after **${dropdays}** day(s) below).`,
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyEphemeral(
+      interaction,
+      `Mapped ${role} to **Lvl ${level}** (remove after **${dropdays}** day(s) below).`,
+    );
     return;
   }
 
@@ -92,31 +107,25 @@ async function handleLevelToRole(interaction, ctx) {
       changes: [`Role: ${role} (\`${role.id}\`)`],
     }).catch(() => {});
 
-    await interaction.reply({
-      content: `Removed mapping for ${role}.`,
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyEphemeral(interaction, `Removed mapping for ${role}.`);
     return;
   }
 
   if (sub === "list") {
     const rows = listLevelRoles(guildId);
     if (!rows.length) {
-      await interaction.reply({
-        content: "No level→role mappings configured.",
-        flags: MessageFlags.Ephemeral,
-      });
+      await replyEphemeral(interaction, "No level→role mappings configured.");
       return;
     }
 
     const lines = rows.map(
       (r) =>
-        `- <@&${r.role_id}> @ **Lvl ${r.level_required}** (drop after **${r.drop_grace_days}d**)`
+        `• <@&${r.role_id}> @ **Lvl ${r.level_required}** (drop after **${r.drop_grace_days}d**)`,
     );
-    await interaction.reply({
-      content: `**Level→Role mappings:**\n${lines.join("\n")}`,
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyEphemeral(
+      interaction,
+      `**Level→Role mappings**\n${lines.join("\n")}`,
+    );
   }
 }
 

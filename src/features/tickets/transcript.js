@@ -10,6 +10,7 @@
  */
 
 const fs = require("fs");
+const { formatTicketRef } = require("../../core/theme");
 const path = require("path");
 const { dataDir } = require("../../db/connection");
 const { parseAttachmentList, mediaKind } = require("./assets");
@@ -54,7 +55,7 @@ function relativeTranscriptPath(guildId, token) {
     "ticket-transcripts",
     String(guildId),
     String(token),
-    "index.html"
+    "index.html",
   );
 }
 
@@ -147,10 +148,9 @@ function renderAttachmentsHtml(attachments) {
  * @returns {string} HTML document
  */
 function renderTranscriptHtml(ticket, messages, meta = {}) {
-  const title = `Ticket #${ticket.ticket_number}`;
+  const title = `Ticket ${formatTicketRef(ticket.ticket_number)}`;
   const guildName = meta.guildName || ticket.guild_id;
-  const requesterLabel =
-    meta.requesterLabel || ticket.creator_user_id || "—";
+  const requesterLabel = meta.requesterLabel || ticket.creator_user_id || "—";
   const staffOwnerLabel =
     meta.staffOwnerLabel ||
     (ticket.staff_owner_id ? String(ticket.staff_owner_id) : "—");
@@ -257,14 +257,14 @@ function resolveTranscriptAbsolutePath(ticket) {
   if (ticket.transcript_token) {
     const nested = absoluteTranscriptPath(
       ticket.guild_id,
-      ticket.transcript_token
+      ticket.transcript_token,
     );
     if (fs.existsSync(nested)) return nested;
 
     // Legacy flat file
     const flat = path.join(
       transcriptDir(ticket.guild_id),
-      `${ticket.transcript_token}.html`
+      `${ticket.transcript_token}.html`,
     );
     if (fs.existsSync(flat)) return flat;
   }

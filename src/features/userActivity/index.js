@@ -11,6 +11,7 @@ const {
   ChannelType,
   MessageFlags,
 } = require("discord.js");
+const { tsShort } = require("../../core/theme");
 const {
   addActivityIgnore,
   removeActivityIgnore,
@@ -21,6 +22,7 @@ const {
   normalizeIgnoreKind,
 } = require("../../db");
 const { requireStaff } = require("../../core/permissions");
+const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordUserChannelMessage } = require("./service");
 const {
@@ -40,7 +42,9 @@ const commands = [
     .addSubcommandGroup((group) =>
       group
         .setName("ignore")
-        .setDescription("Channels and categories excluded from activity counts.")
+        .setDescription(
+          "Channels and categories excluded from activity counts.",
+        )
         .addSubcommand((sc) =>
           sc
             .setName("add")
@@ -52,8 +56,8 @@ const commands = [
                 .setRequired(true)
                 .addChoices(
                   { name: "channel", value: "channel" },
-                  { name: "category", value: "category" }
-                )
+                  { name: "category", value: "category" },
+                ),
             )
             .addChannelOption((opt) =>
               opt
@@ -65,9 +69,9 @@ const commands = [
                   ChannelType.GuildAnnouncement,
                   ChannelType.GuildCategory,
                   ChannelType.GuildForum,
-                  ChannelType.GuildVoice
-                )
-            )
+                  ChannelType.GuildVoice,
+                ),
+            ),
         )
         .addSubcommand((sc) =>
           sc
@@ -76,18 +80,22 @@ const commands = [
             .addChannelOption((opt) =>
               opt
                 .setName("target")
-                .setDescription("Channel or category to remove from ignore list")
-                .setRequired(true)
-            )
+                .setDescription(
+                  "Channel or category to remove from ignore list",
+                )
+                .setRequired(true),
+            ),
         )
         .addSubcommand((sc) =>
-          sc.setName("list").setDescription("List ignored channels and categories.")
-        )
+          sc
+            .setName("list")
+            .setDescription("List ignored channels and categories."),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("status")
-        .setDescription("Show activity tracking status for this server.")
+        .setDescription("Show activity tracking status for this server."),
     )
     .addSubcommandGroup((group) =>
       group
@@ -97,26 +105,26 @@ const commands = [
           sc
             .setName("all")
             .setDescription(
-              "Backfill all users (one history pass per channel). Rate-limited; long-running."
+              "Backfill all users (one history pass per channel). Rate-limited; long-running.",
             )
             .addIntegerOption((opt) =>
               opt
                 .setName("max_pages")
                 .setDescription(
-                  "Max history pages per channel (100 msgs/page; default 50 ≈ 5k msgs)"
+                  "Max history pages per channel (100 msgs/page; default 50 ≈ 5k msgs)",
                 )
                 .setRequired(false)
                 .setMinValue(1)
-                .setMaxValue(500)
-            )
+                .setMaxValue(500),
+            ),
         )
         .addSubcommand((sc) =>
           sc
             .setName("cancel")
             .setDescription(
-              "Stop the in-progress backfill for this server (guild or per-user)."
-            )
-        )
+              "Stop the in-progress backfill for this server (guild or per-user).",
+            ),
+        ),
     ),
 ];
 
@@ -134,22 +142,20 @@ async function handleActivityConfig(interaction, ctx) {
 
   if (group === "ignore" && sub === "add") {
     const kind = normalizeIgnoreKind(
-      interaction.options.getString("kind", true)
+      interaction.options.getString("kind", true),
     );
     const target = interaction.options.getChannel("target", true);
 
     if (kind === "category" && target.type !== ChannelType.GuildCategory) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: "Pick a **category** channel when kind is `category`.",
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
     if (kind === "channel" && target.type === ChannelType.GuildCategory) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           "That target is a category. Use kind `category`, or pick a text channel.",
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -163,11 +169,10 @@ async function handleActivityConfig(interaction, ctx) {
         changes: [`**${kind}:** <#${target.id}> (\`${target.id}\`)`],
       });
     }
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: inserted
         ? `Now ignoring **${kind}** <#${target.id}> in activity stats.`
         : `Already ignoring <#${target.id}>.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -183,11 +188,10 @@ async function handleActivityConfig(interaction, ctx) {
         changes: [`**target:** <#${target.id}> (\`${target.id}\`)`],
       });
     }
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: removed
         ? `Removed <#${target.id}> from the activity ignore list.`
         : `<#${target.id}> was not on the ignore list.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -195,24 +199,25 @@ async function handleActivityConfig(interaction, ctx) {
   if (group === "ignore" && sub === "list") {
     const rows = listActivityIgnore(guildId);
     if (!rows.length) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           "No ignored channels or categories. Honeypot channels are always skipped.",
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
     const lines = rows.map((r) => {
       const mention =
-        r.kind === "category" ? `\`${r.target_id}\` (category)` : `<#${r.target_id}>`;
+        r.kind === "category"
+          ? `\`${r.target_id}\` (category)`
+          : `<#${r.target_id}>`;
       return `• **${r.kind}** ${mention}`;
     });
-    await interaction.reply({
-      content: `**Activity ignore list** (${rows.length})\n${lines.join("\n")}`.slice(
-        0,
-        2000
-      ),
-      flags: MessageFlags.Ephemeral,
+    await replyEphemeral(interaction, {
+      content:
+        `**Activity ignore list** (${rows.length})\n${lines.join("\n")}`.slice(
+          0,
+          2000,
+        ),
     });
     return;
   }
@@ -222,7 +227,7 @@ async function handleActivityConfig(interaction, ctx) {
     const settings = getGuildActivitySettings(guildId);
     const stats = guildActivityStats(guildId);
     const collectFrom = settings?.collect_from_ms
-      ? `<t:${Math.floor(settings.collect_from_ms / 1000)}:f>`
+      ? tsShort(settings.collect_from_ms)
       : "—";
     const gStatus = settings?.guild_backfill_status || "none";
     const gDone = settings?.guild_backfill_channels_done ?? 0;
@@ -235,7 +240,7 @@ async function handleActivityConfig(interaction, ctx) {
     if (settings?.guild_backfill_error) {
       gLine += `\n• Last error: ${String(settings.guild_backfill_error).slice(0, 200)}`;
     }
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         `**Activity tracking status**\n` +
         `• Live collect from: ${collectFrom}\n` +
@@ -247,7 +252,6 @@ async function handleActivityConfig(interaction, ctx) {
         `• Per-user history: senior staff **Backfill** on \`/userinfo\` → Activity\n` +
         `• All users (preferred): \`/activityconfig backfill all\`\n` +
         `• Cancel: \`/activityconfig backfill cancel\``,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -265,20 +269,18 @@ async function handleActivityConfig(interaction, ctx) {
         ],
       });
     }
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: result.cancelled
         ? `**Backfill cancel**\n${result.reason || "Cancelled."}`
         : result.reason || "No backfill running.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (group === "backfill" && sub === "all") {
     if (!interaction.guild) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: "This command only works in a server.",
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -319,9 +321,8 @@ async function handleActivityConfig(interaction, ctx) {
     return;
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: "Unknown subcommand.",
-    flags: MessageFlags.Ephemeral,
   });
 }
 

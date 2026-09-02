@@ -1,10 +1,11 @@
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const {
   addAllowedCommandChannel,
   removeAllowedCommandChannel,
   listAllowedCommandChannels,
 } = require("../../db");
 const { isAdminOrMod } = require("../../core/permissions");
+const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
@@ -12,26 +13,34 @@ const adminPerms = PermissionFlagsBits.ManageGuild;
 const commands = [
   new SlashCommandBuilder()
     .setName("setcommandchannel")
-    .setDescription("Restrict bot commands to specific channels for this guild.")
+    .setDescription(
+      "Restrict bot commands to specific channels for this guild.",
+    )
     .setDefaultMemberPermissions(adminPerms)
     .addSubcommand((sc) =>
       sc
         .setName("add")
         .setDescription("Allow commands in a channel.")
         .addChannelOption((opt) =>
-          opt.setName("channel").setDescription("Channel to allow").setRequired(true)
-        )
+          opt
+            .setName("channel")
+            .setDescription("Channel to allow")
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("remove")
         .setDescription("Remove a channel from allowed list.")
         .addChannelOption((opt) =>
-          opt.setName("channel").setDescription("Channel to remove").setRequired(true)
-        )
+          opt
+            .setName("channel")
+            .setDescription("Channel to remove")
+            .setRequired(true),
+        ),
     )
     .addSubcommand((sc) =>
-      sc.setName("list").setDescription("List allowed command channels.")
+      sc.setName("list").setDescription("List allowed command channels."),
     ),
 ];
 
@@ -40,10 +49,10 @@ async function handleSetCommandChannel(interaction, ctx) {
 
   // ManageGuild only — prevents staff from locking out admins / each other.
   if (!isAdminOrMod(interaction)) {
-    await interaction.reply({
-      content: "Only server administrators can configure command channels.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyEphemeral(
+      interaction,
+      "Only server administrators can configure command channels.",
+    );
     return;
   }
 
@@ -59,10 +68,10 @@ async function handleSetCommandChannel(interaction, ctx) {
       actor: interaction.user,
       changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
     }).catch(() => {});
-    await interaction.reply({
-      content: `Commands are now allowed in <#${ch.id}>.`,
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyEphemeral(
+      interaction,
+      `Commands are now allowed in <#${ch.id}>.`,
+    );
     return;
   }
 
@@ -75,27 +84,27 @@ async function handleSetCommandChannel(interaction, ctx) {
       actor: interaction.user,
       changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
     }).catch(() => {});
-    await interaction.reply({
-      content: `Removed <#${ch.id}> from allowed command channels.`,
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyEphemeral(
+      interaction,
+      `Removed <#${ch.id}> from allowed command channels.`,
+    );
     return;
   }
 
   if (sub === "list") {
     const rows = listAllowedCommandChannels(guildId);
     if (!rows.length) {
-      await interaction.reply({
-        content: "No allowed channels configured — commands are allowed in all channels.",
-        flags: MessageFlags.Ephemeral,
-      });
+      await replyEphemeral(
+        interaction,
+        "No allowed channels configured — commands are allowed in all channels.",
+      );
       return;
     }
-    const lines = rows.map((r) => `- <#${r.channel_id}>`);
-    await interaction.reply({
-      content: `**Allowed command channels:**\n${lines.join("\n")}`,
-      flags: MessageFlags.Ephemeral,
-    });
+    const lines = rows.map((r) => `• <#${r.channel_id}>`);
+    await replyEphemeral(
+      interaction,
+      `**Allowed command channels**\n${lines.join("\n")}`,
+    );
   }
 }
 

@@ -1,7 +1,6 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  MessageFlags,
   AttachmentBuilder,
   Events,
 } = require("discord.js");
@@ -27,6 +26,7 @@ const {
 } = require("../../db");
 const { key } = require("../../core/cooldowns");
 const { isAdminOrMod, isStaff } = require("../../core/permissions");
+const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logHoneypotTrigger } = require("../logs/auditLog");
 const { renderHoneypotWarningPng } = require("./renderWarning");
 
@@ -37,105 +37,111 @@ const honeypotBanning = new Set(); // key: guildId:userId
 
 const commands = [
   new SlashCommandBuilder()
-      .setName("honeypot")
-      .setDescription("Configure honeypot channels and ban roles (staff).")
-      .setDefaultMemberPermissions(staffPerms)
-      .addSubcommandGroup((group) =>
-        group
-          .setName("channel")
-          .setDescription("Manage honeypot channels.")
-          .addSubcommand((sc) =>
-            sc
-              .setName("add")
-              .setDescription("Mark a channel as a honeypot (anyone who posts is banned).")
-              .addChannelOption((opt) =>
-                opt
-                  .setName("channel")
-                  .setDescription("Channel to mark as a honeypot")
-                  .setRequired(true)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("list")
-              .setDescription("List configured honeypot channels.")
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("del")
-              .setDescription("Remove a channel from the honeypot list.")
-              .addChannelOption((opt) =>
-                opt
-                  .setName("channel")
-                  .setDescription("Channel to remove from honeypot list")
-                  .setRequired(true)
-              )
-          )
-      )
-      .addSubcommandGroup((group) =>
-        group
-          .setName("banrole")
-          .setDescription("Manage roles that ban a user when assigned.")
-          .addSubcommand((sc) =>
-            sc
-              .setName("add")
-              .setDescription("Mark a role as a honeypot ban role (assigning it bans the member).")
-              .addRoleOption((opt) =>
-                opt
-                  .setName("role")
-                  .setDescription("Role that triggers an automatic ban when granted")
-                  .setRequired(true)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("list")
-              .setDescription("List honeypot ban roles.")
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("del")
-              .setDescription("Remove a role from the honeypot ban-role list.")
-              .addRoleOption((opt) =>
-                opt
-                  .setName("role")
-                  .setDescription("Role to remove from the ban-role list")
-                  .setRequired(true)
-              )
-          )
-      )
-      .addSubcommandGroup((group) =>
-        group
-          .setName("exempt")
-          .setDescription("Manage roles exempt from honeypot bans.")
-          .addSubcommand((sc) =>
-            sc
-              .setName("add")
-              .setDescription("Add a role that is exempt from honeypot bans (same as /staff role add).")
-              .addRoleOption((opt) =>
-                opt
-                  .setName("role")
-                  .setDescription("Role to exempt (e.g. staff)")
-                  .setRequired(true)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("list")
-              .setDescription("List roles exempt from honeypot bans.")
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("del")
-              .setDescription("Remove a role from the honeypot exempt list.")
-              .addRoleOption((opt) =>
-                opt
-                  .setName("role")
-                  .setDescription("Role to remove from exempt list")
-                  .setRequired(true)
-              )
-          )
-      ),
+    .setName("honeypot")
+    .setDescription("Configure honeypot channels and ban roles (staff).")
+    .setDefaultMemberPermissions(staffPerms)
+    .addSubcommandGroup((group) =>
+      group
+        .setName("channel")
+        .setDescription("Manage honeypot channels.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("add")
+            .setDescription(
+              "Mark a channel as a honeypot (anyone who posts is banned).",
+            )
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Channel to mark as a honeypot")
+                .setRequired(true),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List configured honeypot channels."),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("del")
+            .setDescription("Remove a channel from the honeypot list.")
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Channel to remove from honeypot list")
+                .setRequired(true),
+            ),
+        ),
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName("banrole")
+        .setDescription("Manage roles that ban a user when assigned.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("add")
+            .setDescription(
+              "Mark a role as a honeypot ban role (assigning it bans the member).",
+            )
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription(
+                  "Role that triggers an automatic ban when granted",
+                )
+                .setRequired(true),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc.setName("list").setDescription("List honeypot ban roles."),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("del")
+            .setDescription("Remove a role from the honeypot ban-role list.")
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role to remove from the ban-role list")
+                .setRequired(true),
+            ),
+        ),
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName("exempt")
+        .setDescription("Manage roles exempt from honeypot bans.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("add")
+            .setDescription(
+              "Add a role that is exempt from honeypot bans (same as /staff role add).",
+            )
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role to exempt (e.g. staff)")
+                .setRequired(true),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List roles exempt from honeypot bans."),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("del")
+            .setDescription("Remove a role from the honeypot exempt list.")
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role to remove from exempt list")
+                .setRequired(true),
+            ),
+        ),
+    ),
 ];
 
 /**
@@ -168,7 +174,11 @@ async function postHoneypotWarning(channel) {
  */
 async function ensureHoneypotWarning(guild, channelId) {
   const channel = await guild.channels.fetch(channelId).catch(() => null);
-  if (!channel || typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
+  if (
+    !channel ||
+    typeof channel.isTextBased !== "function" ||
+    !channel.isTextBased()
+  ) {
     return "Channel cannot receive messages — warning not posted.";
   }
   if (typeof channel.send !== "function") {
@@ -177,7 +187,9 @@ async function ensureHoneypotWarning(guild, channelId) {
 
   const existing = getHoneypotChannel(guild.id, channelId);
   if (existing?.warning_message_id) {
-    const old = await channel.messages.fetch(existing.warning_message_id).catch(() => null);
+    const old = await channel.messages
+      .fetch(existing.warning_message_id)
+      .catch(() => null);
     if (old) {
       return "Warning notice already present (left in place).";
     }
@@ -188,7 +200,10 @@ async function ensureHoneypotWarning(guild, channelId) {
     setHoneypotWarningMessage(guild.id, channelId, msg.id);
     return "Warning notice posted and pinned (image only — no plain text).";
   } catch (e) {
-    console.error(`[honeypot] Failed to post warning in ${guild.id}/${channelId}:`, e?.message || e);
+    console.error(
+      `[honeypot] Failed to post warning in ${guild.id}/${channelId}:`,
+      e?.message || e,
+    );
     return `Could not post warning notice: ${e?.message || e}`;
   }
 }
@@ -199,14 +214,18 @@ async function ensureHoneypotWarning(guild, channelId) {
  * Posts a staff audit-log embed via logHoneypotTrigger (richer than the generic ban log).
  * @returns {Promise<boolean>} true if a ban was attempted (or already in flight)
  */
-async function executeHoneypotBan(guild, user, {
-  reason,
-  dmText,
-  deleteMessage = null,
-  trigger = "channel",
-  channelId = null,
-  roleIds = null,
-} = {}) {
+async function executeHoneypotBan(
+  guild,
+  user,
+  {
+    reason,
+    dmText,
+    deleteMessage = null,
+    trigger = "channel",
+    channelId = null,
+    roleIds = null,
+  } = {},
+) {
   if (!guild || !user?.id) return false;
   if (user.bot) return false;
 
@@ -228,14 +247,14 @@ async function executeHoneypotBan(guild, user, {
         dmText ||
           `You have been **banned** from **${guildName}**.\n\n` +
             `**Reason:** ${shortReason}. ` +
-            `If you believe this was a mistake, contact the server staff through another channel.`
+            `If you believe this was a mistake, contact the server staff through another channel.`,
       );
       dmSent = true;
     } catch (e) {
       dmSent = false;
       console.warn(
         `[honeypot] Could not DM ${user.id} in ${guild.id}:`,
-        e?.message || e
+        e?.message || e,
       );
     }
 
@@ -245,7 +264,7 @@ async function executeHoneypotBan(guild, user, {
       } catch (e) {
         console.warn(
           `[honeypot] Could not delete message in ${guild.id}:`,
-          e?.message || e
+          e?.message || e,
         );
       }
     }
@@ -257,13 +276,13 @@ async function executeHoneypotBan(guild, user, {
       });
       banned = true;
       console.log(
-        `[honeypot] Banned ${user.tag || user.username} (${user.id}) in ${guildName} (${guild.id}): ${shortReason}`
+        `[honeypot] Banned ${user.tag || user.username} (${user.id}) in ${guildName} (${guild.id}): ${shortReason}`,
       );
     } catch (e) {
       banError = e?.message || String(e);
       console.error(
         `[honeypot] Failed to ban ${user.id} in ${guild.id}:`,
-        banError
+        banError,
       );
     }
 
@@ -289,7 +308,7 @@ async function executeHoneypotBan(guild, user, {
     } catch (e) {
       console.warn(
         `[honeypot] Audit log failed for ${user.id} in ${guild.id}:`,
-        e?.message || e
+        e?.message || e,
       );
     }
   } finally {
@@ -328,7 +347,7 @@ async function stripHoneypotWarningReaction(reaction) {
     }
     console.warn(
       `[honeypot] Could not strip reaction on warning notice:`,
-      err?.message || err
+      err?.message || err,
     );
     return false;
   }
@@ -365,12 +384,20 @@ async function sweepHoneypotWarningReactions(client) {
         (await client.guilds.fetch(row.guild_id).catch(() => null));
       if (!guild) continue;
 
-      const channel = await guild.channels.fetch(row.channel_id).catch(() => null);
-      if (!channel || typeof channel.isTextBased !== "function" || !channel.isTextBased()) {
+      const channel = await guild.channels
+        .fetch(row.channel_id)
+        .catch(() => null);
+      if (
+        !channel ||
+        typeof channel.isTextBased !== "function" ||
+        !channel.isTextBased()
+      ) {
         continue;
       }
 
-      const msg = await channel.messages.fetch(row.warning_message_id).catch(() => null);
+      const msg = await channel.messages
+        .fetch(row.warning_message_id)
+        .catch(() => null);
       if (!msg) continue;
 
       const count = msg.reactions?.cache?.size || 0;
@@ -386,7 +413,7 @@ async function sweepHoneypotWarningReactions(client) {
     } catch (e) {
       console.warn(
         `[honeypot] Warning reaction sweep failed for ${row.guild_id}/${row.channel_id}:`,
-        e?.message || e
+        e?.message || e,
       );
     }
   }
@@ -402,7 +429,9 @@ async function handleHoneypotMessage(message) {
 
   let member = message.member;
   if (!member) {
-    member = await message.guild.members.fetch(message.author.id).catch(() => null);
+    member = await message.guild.members
+      .fetch(message.author.id)
+      .catch(() => null);
   }
 
   // Exempt roles (staff, etc.) — no ban, but still delete the message so the channel stays empty
@@ -414,7 +443,7 @@ async function handleHoneypotMessage(message) {
       } catch (e) {
         console.warn(
           `[honeypot] Could not delete exempt message in ${message.guild.id}:`,
-          e?.message || e
+          e?.message || e,
         );
       }
       return true;
@@ -460,7 +489,7 @@ async function handleHoneypotBanRole(oldMember, newMember) {
   if (memberHasStaffRole(guildId, allRoleIds)) {
     console.log(
       `[honeypot] Skip ban-role for exempt member ${newMember.id} in ${guildId} ` +
-        `(roles: ${matched.join(", ")})`
+        `(roles: ${matched.join(", ")})`,
     );
     return;
   }
@@ -477,10 +506,9 @@ async function handleHoneypotBanRole(oldMember, newMember) {
   });
 
   console.log(
-    `[honeypot] Ban-role trigger for ${newMember.id} in ${guildId}: ${roleMentions}`
+    `[honeypot] Ban-role trigger for ${newMember.id} in ${guildId}: ${roleMentions}`,
   );
 }
-
 
 async function handleHoneypot(interaction, ctx) {
   const { client, ensureHoneypotWarning } = ctx;
@@ -493,17 +521,13 @@ async function handleHoneypot(interaction, ctx) {
   // exempt mutates staff_roles — ManageGuild only (same as /staff role)
   if (group === "exempt") {
     if (!isAdminOrMod(interaction)) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: "Only server administrators can manage honeypot exempt roles.",
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
   } else if (!isStaff(interaction)) {
-    await interaction.reply({
-      content: "You don't have permission to use this.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyDenied(interaction);
     return;
   }
 
@@ -513,15 +537,17 @@ async function handleHoneypot(interaction, ctx) {
       const ch = interaction.options.getChannel("channel", true);
 
       if (isHoneypotChannel(guildId, ch.id)) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `<#${ch.id}> is already set up as a honeypot channel.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
 
       addHoneypotChannel(guildId, ch.id);
-      const warningStatus = await ensureHoneypotWarning(interaction.guild, ch.id);
+      const warningStatus = await ensureHoneypotWarning(
+        interaction.guild,
+        ch.id,
+      );
       await logConfigChange(client, guildId, {
         title: "Honeypot channel added",
         command: "/honeypot channel add",
@@ -529,34 +555,41 @@ async function handleHoneypot(interaction, ctx) {
         changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
         details: warningStatus,
       }).catch(() => {});
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           `Marked <#${ch.id}> as a **honeypot** channel.\n` +
           `Anyone who posts there will be banned immediately (except members with exempt roles).\n` +
           `${warningStatus}\n` +
           `Tip: use \`/staff role add\` (or \`/honeypot exempt add\`) to configure staff roles so they are not banned by mistake.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (sub === "del") {
       const ch = interaction.options.getChannel("channel", true);
-      const { removed, warning_message_id } = removeHoneypotChannel(guildId, ch.id);
+      const { removed, warning_message_id } = removeHoneypotChannel(
+        guildId,
+        ch.id,
+      );
 
       let warningNote = "";
       if (removed && warning_message_id) {
         try {
-          const channel = await interaction.guild.channels.fetch(ch.id).catch(() => null);
+          const channel = await interaction.guild.channels
+            .fetch(ch.id)
+            .catch(() => null);
           if (channel?.messages) {
-            const msg = await channel.messages.fetch(warning_message_id).catch(() => null);
+            const msg = await channel.messages
+              .fetch(warning_message_id)
+              .catch(() => null);
             if (msg) {
               await msg.delete().catch(() => null);
               warningNote = " Warning notice removed.";
             }
           }
         } catch {
-          warningNote = " (Could not delete warning notice — remove it manually if needed.)";
+          warningNote =
+            " (Could not delete warning notice — remove it manually if needed.)";
         }
       }
 
@@ -570,11 +603,10 @@ async function handleHoneypot(interaction, ctx) {
         }).catch(() => {});
       }
 
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: removed
           ? `Removed <#${ch.id}> from the honeypot list.${warningNote}`
           : `<#${ch.id}> was not a honeypot channel.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -582,16 +614,14 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "list") {
       const rows = listHoneypotChannels(guildId);
       if (!rows.length) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: "No honeypot channels configured.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
       const lines = rows.map((r) => `- <#${r.channel_id}>`);
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: `**Honeypot channels:**\n${lines.join("\n")}`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -603,24 +633,21 @@ async function handleHoneypot(interaction, ctx) {
       const role = interaction.options.getRole("role", true);
 
       if (role.id === guildId) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: "You cannot use @everyone as a honeypot ban role.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
       if (role.managed) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content:
             "That role is managed by an integration. Prefer a normal server role for ban-role honeypots.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
       if (isHoneypotBanRole(guildId, role.id)) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `${role} is already a honeypot ban role.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -632,14 +659,13 @@ async function handleHoneypot(interaction, ctx) {
         actor: interaction.user,
         changes: [`Role: ${role} (\`${role.id}\`)`],
       }).catch(() => {});
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           `Marked ${role} as a **honeypot ban role**.\n` +
           `Anyone who is **granted** this role will be banned immediately ` +
           `(except members with honeypot exempt roles).\n` +
           `Tip: configure \`/staff role add\` (or \`/honeypot exempt add\`) for staff first. ` +
           `Members who already have the role are not retroactively banned.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -655,11 +681,10 @@ async function handleHoneypot(interaction, ctx) {
           changes: [`Role: ${role} (\`${role.id}\`)`],
         }).catch(() => {});
       }
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: removed
           ? `Removed ${role} from the honeypot ban-role list.`
           : `${role} was not a honeypot ban role.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -667,17 +692,14 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "list") {
       const rows = listHoneypotBanRoles(guildId);
       if (!rows.length) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: "No honeypot ban roles configured.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
       const lines = rows.map((r) => `- <@&${r.role_id}>`);
-      await interaction.reply({
-        content:
-          `**Honeypot ban roles** (granting these bans the member):\n${lines.join("\n")}`,
-        flags: MessageFlags.Ephemeral,
+      await replyEphemeral(interaction, {
+        content: `**Honeypot ban roles** (granting these bans the member):\n${lines.join("\n")}`,
       });
       return;
     }
@@ -694,11 +716,10 @@ async function handleHoneypot(interaction, ctx) {
         actor: interaction.user,
         changes: [`Role: ${role} (\`${role.id}\`)`],
       }).catch(() => {});
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           `Added ${role} as a staff role (also used for honeypot exemption). ` +
           `Members with this role will not be banned for posting in honeypot channels or receiving honeypot ban roles.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -714,11 +735,10 @@ async function handleHoneypot(interaction, ctx) {
           changes: [`Role: ${role} (\`${role.id}\`)`],
         }).catch(() => {});
       }
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: removed
           ? `Removed ${role} from staff roles (also removes honeypot exemption).`
           : `${role} is not a configured staff role.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -726,29 +746,26 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "list") {
       const rows = listStaffRoles(guildId);
       if (!rows.length) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content:
             "No staff roles configured. Staff who hit honeypots will be banned.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
       const lines = rows.map((r) => `- <@&${r.role_id}>`);
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: `**Staff roles (also used for honeypot exemption):**\n${lines.join("\n")}`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
   }
 
   // Always answer /honeypot so we never fall through as "handler missing"
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Unknown honeypot subcommand: \`/${interaction.commandName}` +
       `${group ? ` ${group}` : ""} ${sub || ""}\`.\n` +
       `Use \`/honeypot channel add|list|del\`, \`/honeypot banrole add|list|del\`, or \`/honeypot exempt add|list|del\`.`,
-    flags: MessageFlags.Ephemeral,
   });
   return;
 }
@@ -758,20 +775,32 @@ function registerEvents(client) {
     try {
       await handleHoneypotBanRole(oldMember, newMember);
     } catch (e) {
-      console.error("[GuildMemberUpdate] honeypot banrole error:", e?.message || e);
+      console.error(
+        "[GuildMemberUpdate] honeypot banrole error:",
+        e?.message || e,
+      );
     }
   });
 }
 
 function start(client) {
   sweepHoneypotWarningReactions(client).catch((e) =>
-    console.warn("[honeypot] Initial warning reaction sweep failed:", e?.message || e)
+    console.warn(
+      "[honeypot] Initial warning reaction sweep failed:",
+      e?.message || e,
+    ),
   );
-  setInterval(() => {
-    sweepHoneypotWarningReactions(client).catch((e) =>
-      console.warn("[honeypot] Warning reaction sweep failed:", e?.message || e)
-    );
-  }, 10 * 60 * 1000);
+  setInterval(
+    () => {
+      sweepHoneypotWarningReactions(client).catch((e) =>
+        console.warn(
+          "[honeypot] Warning reaction sweep failed:",
+          e?.message || e,
+        ),
+      );
+    },
+    10 * 60 * 1000,
+  );
 }
 
 module.exports = {

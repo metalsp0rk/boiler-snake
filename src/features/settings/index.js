@@ -1,10 +1,12 @@
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const {
   getGuildSettings,
   listAllowedCommandChannels,
   listLevelRoles,
 } = require("../../db");
 const { isStaff } = require("../../core/permissions");
+const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const { Color, baseEmbed } = require("../../core/theme");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -17,10 +19,7 @@ const commands = [
 
 async function handleSettings(interaction) {
   if (!isStaff(interaction)) {
-    await interaction.reply({
-      content: "You don’t have permission to use this.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyDenied(interaction);
     return;
   }
 
@@ -37,30 +36,63 @@ async function handleSettings(interaction) {
     ? roles
         .map(
           (r) =>
-            `<@&${r.role_id}> @ Lvl ${r.level_required} (drop after ${r.drop_grace_days}d)`
+            `<@&${r.role_id}> @ Lvl ${r.level_required} (drop after ${r.drop_grace_days}d)`,
         )
         .join("\n")
-    : "(none configured)";
+    : "_None configured_";
 
   const auditLogCh = settings.audit_log_channel_id
     ? `<#${settings.audit_log_channel_id}>`
-    : "Not configured";
+    : "_Not configured_";
   const messageLogCh = settings.message_log_channel_id
     ? `<#${settings.message_log_channel_id}>`
-    : "Not configured";
+    : "_Not configured_";
 
-  await interaction.reply({
-    content:
-      `**Boiler Snake Settings**\n` +
-      `**XP:** msg=${settings.msg_xp}, reaction=${settings.reaction_xp}, voice/min=${settings.voice_xp_per_min}\n` +
-      `**Cooldowns:** msg=${settings.msg_cooldown_sec}s, reaction=${settings.reaction_cooldown_sec}s\n` +
-      `**Decay:** enabled=${!!settings.decay_enabled}, threshold=${settings.decay_min_messages} msgs / ${settings.decay_window_days} days, percent=${Math.round((Number(settings.decay_percent) || 0) * 100)}%\n` +
-      `**Level curve factor:** ${settings.level_xp_factor} (Level L starts at L²×factor)\n` +
-      `**Logs:** audit=${auditLogCh}, message=${messageLogCh}\n` +
-      `**Commands allowed in:** ${chanText}\n` +
-      `**Level→Role mappings:**\n${roleText}`,
-    flags: MessageFlags.Ephemeral,
-  });
+  const decayPct = Math.round((Number(settings.decay_percent) || 0) * 100);
+
+  const embed = baseEmbed({
+    color: Color.brand,
+    title: "Boiler Snake Settings",
+    footer: "Staff only",
+  }).addFields(
+    {
+      name: "XP awards",
+      value: `Message **${settings.msg_xp}** · Reaction **${settings.reaction_xp}** · Voice/min **${settings.voice_xp_per_min}**`,
+      inline: false,
+    },
+    {
+      name: "Cooldowns",
+      value: `Message **${settings.msg_cooldown_sec}s** · Reaction **${settings.reaction_cooldown_sec}s**`,
+      inline: false,
+    },
+    {
+      name: "Decay",
+      value: `Enabled **${!!settings.decay_enabled}** · threshold **${settings.decay_min_messages}** msgs / **${settings.decay_window_days}** days · **${decayPct}%**`,
+      inline: false,
+    },
+    {
+      name: "Level curve",
+      value: `Factor **${settings.level_xp_factor}** (level L starts at L²×factor)`,
+      inline: false,
+    },
+    {
+      name: "Logs",
+      value: `Audit ${auditLogCh} · Message ${messageLogCh}`,
+      inline: false,
+    },
+    {
+      name: "Commands allowed in",
+      value: chanText,
+      inline: false,
+    },
+    {
+      name: "Level→Role mappings",
+      value: roleText.slice(0, 1024),
+      inline: false,
+    },
+  );
+
+  await replyEphemeral(interaction, { embeds: [embed] });
 }
 
 module.exports = {

@@ -3,17 +3,18 @@
 
 const { EmbedBuilder, AuditLogEvent } = require("discord.js");
 const { getGuildSettings } = require("../../db");
+const { Color } = require("../../core/theme");
 
-// Embed colors
-const COLOR_DELETE = 0xe74c3c; // red
-const COLOR_BULK_DELETE = 0xc0392b; // darker red
-const COLOR_BAN = 0x8b0000; // dark red
-const COLOR_HONEYPOT = 0x922b21; // deep red — honeypot-specific bans
-const COLOR_KICK = 0xe67e22; // orange
-const COLOR_ROLE_ADD = 0x2ecc71; // green
-const COLOR_ROLE_REMOVE = 0x95a5a6; // grey
-const COLOR_ROLE_MIXED = 0x3498db; // blue
-const COLOR_CONFIG = 0x9b59b6; // purple — admin reconfiguration
+// Embed colors (theme tokens)
+const COLOR_DELETE = Color.danger;
+const COLOR_BULK_DELETE = Color.bulkDelete;
+const COLOR_BAN = Color.ban;
+const COLOR_HONEYPOT = Color.honeypot;
+const COLOR_KICK = Color.kick;
+const COLOR_ROLE_ADD = Color.success;
+const COLOR_ROLE_REMOVE = Color.muted;
+const COLOR_ROLE_MIXED = Color.mixed;
+const COLOR_CONFIG = Color.config;
 
 const CONTENT_TRUNCATE = 1500;
 const FIELD_TRUNCATE = 1024;
@@ -33,7 +34,10 @@ function cacheMessage(message) {
   const attachments = [];
   if (message.attachments?.size) {
     for (const att of message.attachments.values()) {
-      attachments.push({ name: att.name || "file", url: att.url || att.proxyURL || "" });
+      attachments.push({
+        name: att.name || "file",
+        url: att.url || att.proxyURL || "",
+      });
     }
   }
 
@@ -89,12 +93,15 @@ function takeCachedMessage(messageId) {
 }
 
 // Periodic sweep so TTL is enforced without waiting for get
-setInterval(() => {
-  const cutoff = Date.now() - MESSAGE_CACHE_TTL_MS;
-  for (const [id, entry] of messageCache.entries()) {
-    if (entry.cachedAt < cutoff) messageCache.delete(id);
-  }
-}, 10 * 60 * 1000).unref?.();
+setInterval(
+  () => {
+    const cutoff = Date.now() - MESSAGE_CACHE_TTL_MS;
+    for (const [id, entry] of messageCache.entries()) {
+      if (entry.cachedAt < cutoff) messageCache.delete(id);
+    }
+  },
+  10 * 60 * 1000,
+).unref?.();
 
 // ---------- Helpers ----------
 
@@ -140,7 +147,8 @@ async function resolveLogChannel(client, guildId, kind) {
   try {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) return null;
-    if (typeof channel.isTextBased === "function" && !channel.isTextBased()) return null;
+    if (typeof channel.isTextBased === "function" && !channel.isTextBased())
+      return null;
     if (typeof channel.send !== "function") return null;
     return channel;
   } catch {
@@ -158,7 +166,7 @@ async function sendToLogChannel(client, guildId, kind, payload) {
   } catch (err) {
     console.warn(
       `[auditLog] Failed to send ${kind} log in guild ${guildId}:`,
-      err?.message || err
+      err?.message || err,
     );
     return false;
   }
@@ -180,7 +188,12 @@ async function sendWarnLog(client, guildId, payload) {
  * Wait briefly then fetch a recent audit log entry matching target user + action.
  * @returns {Promise<import('discord.js').GuildAuditLogsEntry|null>}
  */
-async function fetchRecentAuditEntry(guild, action, targetId, { maxAgeMs = 5000, delayMs = 400 } = {}) {
+async function fetchRecentAuditEntry(
+  guild,
+  action,
+  targetId,
+  { maxAgeMs = 5000, delayMs = 400 } = {},
+) {
   if (!guild || !targetId) return null;
 
   const tryFetch = async () => {
@@ -188,7 +201,8 @@ async function fetchRecentAuditEntry(guild, action, targetId, { maxAgeMs = 5000,
       const logs = await guild.fetchAuditLogs({ type: action, limit: 6 });
       const now = Date.now();
       for (const entry of logs.entries.values()) {
-        if (entry.target?.id !== targetId && entry.targetId !== targetId) continue;
+        if (entry.target?.id !== targetId && entry.targetId !== targetId)
+          continue;
         const created = entry.createdTimestamp || 0;
         if (maxAgeMs > 0 && now - created > maxAgeMs) continue;
         return entry;
@@ -237,14 +251,25 @@ function buildMessageDeleteEmbed({
     { name: "Author", value: authorText, inline: true },
     {
       name: "Channel",
-      value: channelId && channelId !== "unknown" ? `<#${channelId}> (\`${channelId}\`)` : "Unknown",
+      value:
+        channelId && channelId !== "unknown"
+          ? `<#${channelId}> (\`${channelId}\`)`
+          : "Unknown",
       inline: true,
     },
-    { name: "Message ID", value: `\`${messageId || "unknown"}\``, inline: true }
+    {
+      name: "Message ID",
+      value: `\`${messageId || "unknown"}\``,
+      inline: true,
+    },
   );
 
   if (executor) {
-    embed.addFields({ name: "Deleted by", value: userLabel(executor), inline: true });
+    embed.addFields({
+      name: "Deleted by",
+      value: userLabel(executor),
+      inline: true,
+    });
   }
 
   if (createdTimestamp) {
@@ -255,18 +280,26 @@ function buildMessageDeleteEmbed({
     });
   }
 
-  const body = content?.trim() ? truncate(content, CONTENT_TRUNCATE) : "*No text content*";
+  const body = content?.trim()
+    ? truncate(content, CONTENT_TRUNCATE)
+    : "*No text content*";
   embed.addFields({ name: "Content", value: body.slice(0, FIELD_TRUNCATE) });
 
   if (attachments?.length) {
     const attText = attachments
       .map((a) => (a.url ? `[${a.name}](${a.url})` : a.name))
       .join("\n");
-    embed.addFields({ name: "Attachments", value: truncate(attText, FIELD_TRUNCATE) });
+    embed.addFields({
+      name: "Attachments",
+      value: truncate(attText, FIELD_TRUNCATE),
+    });
   }
 
   if (embedsSummary) {
-    embed.addFields({ name: "Embeds", value: truncate(embedsSummary, FIELD_TRUNCATE) });
+    embed.addFields({
+      name: "Embeds",
+      value: truncate(embedsSummary, FIELD_TRUNCATE),
+    });
   }
 
   return embed;
@@ -283,7 +316,7 @@ function buildMessageBulkDeleteEmbed(channel, samples, count) {
         value: channel?.id ? `<#${channel.id}> (\`${channel.id}\`)` : "Unknown",
         inline: true,
       },
-      { name: "Count", value: String(count), inline: true }
+      { name: "Count", value: String(count), inline: true },
     );
 
   if (samples?.length) {
@@ -319,11 +352,15 @@ function buildBanEmbed({ user, executor, reason, viaBot }) {
         name: "Banned by",
         value: executor ? userLabel(executor) : "Unknown",
         inline: true,
-      }
+      },
     );
 
   if (viaBot) {
-    embed.addFields({ name: "Source", value: "Bot (this application)", inline: true });
+    embed.addFields({
+      name: "Source",
+      value: "Bot (this application)",
+      inline: true,
+    });
   }
 
   embed.addFields({
@@ -384,7 +421,7 @@ function buildHoneypotEmbed({
         name: "Ban",
         value: banned ? "Succeeded" : "Failed",
         inline: true,
-      }
+      },
     );
 
   if (trigger === "channel" || channelId) {
@@ -396,10 +433,9 @@ function buildHoneypotEmbed({
   }
 
   if (trigger === "ban_role" || (roleIds && roleIds.length)) {
-    const roles =
-      roleIds?.length
-        ? roleIds.map((id) => `<@&${id}> (\`${id}\`)`).join("\n")
-        : "Unknown";
+    const roles = roleIds?.length
+      ? roleIds.map((id) => `<@&${id}> (\`${id}\`)`).join("\n")
+      : "Unknown";
     embed.addFields({
       name: "Ban role(s)",
       value: truncate(roles, FIELD_TRUNCATE),
@@ -453,7 +489,7 @@ function buildKickEmbed({ user, executor, reason }) {
       {
         name: "Reason",
         value: truncate(reason || "*No reason provided*", FIELD_TRUNCATE),
-      }
+      },
     );
 
   if (user?.displayAvatarURL) {
@@ -487,8 +523,12 @@ function buildReactionRoleEmbed({
   const who = member ? memberLabel(member) : userLabel(user);
   embed.addFields(
     { name: "Member", value: who, inline: true },
-    { name: "Role", value: roleId ? `<@&${roleId}> (\`${roleId}\`)` : "Unknown", inline: true },
-    { name: "Emoji", value: emoji ? String(emoji) : "—", inline: true }
+    {
+      name: "Role",
+      value: roleId ? `<@&${roleId}> (\`${roleId}\`)` : "Unknown",
+      inline: true,
+    },
+    { name: "Emoji", value: emoji ? String(emoji) : "—", inline: true },
   );
 
   if (panelMessageId) {
@@ -501,7 +541,11 @@ function buildReactionRoleEmbed({
   }
 
   if (minLevel != null) {
-    embed.addFields({ name: "Min level", value: String(minLevel), inline: true });
+    embed.addFields({
+      name: "Min level",
+      value: String(minLevel),
+      inline: true,
+    });
   }
   if (removable != null) {
     embed.addFields({
@@ -520,7 +564,13 @@ const SOURCE_LABELS = {
   decay_reaction_role: "XP decay (reaction role min level)",
 };
 
-function buildLevelRoleChangeEmbed({ member, granted = [], removed = [], level, source }) {
+function buildLevelRoleChangeEmbed({
+  member,
+  granted = [],
+  removed = [],
+  level,
+  source,
+}) {
   const hasGrant = granted.length > 0;
   const hasRemove = removed.length > 0;
   let color = COLOR_ROLE_MIXED;
@@ -544,19 +594,25 @@ function buildLevelRoleChangeEmbed({ member, granted = [], removed = [], level, 
         name: "Source",
         value: SOURCE_LABELS[source] || source || "unknown",
         inline: true,
-      }
+      },
     );
 
   if (hasGrant) {
     embed.addFields({
       name: "Granted",
-      value: truncate(granted.map((id) => `<@&${id}> (\`${id}\`)`).join("\n"), FIELD_TRUNCATE),
+      value: truncate(
+        granted.map((id) => `<@&${id}> (\`${id}\`)`).join("\n"),
+        FIELD_TRUNCATE,
+      ),
     });
   }
   if (hasRemove) {
     embed.addFields({
       name: "Removed",
-      value: truncate(removed.map((id) => `<@&${id}> (\`${id}\`)`).join("\n"), FIELD_TRUNCATE),
+      value: truncate(
+        removed.map((id) => `<@&${id}> (\`${id}\`)`).join("\n"),
+        FIELD_TRUNCATE,
+      ),
     });
   }
 
@@ -576,14 +632,19 @@ async function logMessageDelete(client, message) {
     message.author?.username ||
     cached?.authorTag ||
     "unknown";
-  const channelId = message.channel?.id || message.channelId || cached?.channelId || "unknown";
+  const channelId =
+    message.channel?.id || message.channelId || cached?.channelId || "unknown";
   const content = message.content || cached?.content || "";
-  const createdTimestamp = message.createdTimestamp || cached?.createdTimestamp || null;
+  const createdTimestamp =
+    message.createdTimestamp || cached?.createdTimestamp || null;
 
   let attachments = [];
   if (message.attachments?.size) {
     for (const att of message.attachments.values()) {
-      attachments.push({ name: att.name || "file", url: att.url || att.proxyURL || "" });
+      attachments.push({
+        name: att.name || "file",
+        url: att.url || att.proxyURL || "",
+      });
     }
   } else if (cached?.attachments?.length) {
     attachments = cached.attachments;
@@ -610,7 +671,7 @@ async function logMessageDelete(client, message) {
       message.guild,
       AuditLogEvent.MessageDelete,
       authorId,
-      { maxAgeMs: 8000, delayMs: 350 }
+      { maxAgeMs: 8000, delayMs: 350 },
     );
     // MessageDelete audit target is the author; extra.channel may match
     if (entry) {
@@ -640,7 +701,8 @@ async function logMessageDelete(client, message) {
 }
 
 async function logMessageBulkDelete(client, messages, channel) {
-  const guild = channel?.guild || messages?.first?.()?.guild || messages?.at?.(0)?.guild;
+  const guild =
+    channel?.guild || messages?.first?.()?.guild || messages?.at?.(0)?.guild;
   if (!guild) return;
 
   const count = messages?.size ?? messages?.length ?? 0;
@@ -680,10 +742,15 @@ async function logBan(client, ban) {
   let reason = ban.reason || null;
   let viaBot = false;
 
-  const entry = await fetchRecentAuditEntry(guild, AuditLogEvent.MemberBanAdd, user.id, {
-    maxAgeMs: 10000,
-    delayMs: 400,
-  });
+  const entry = await fetchRecentAuditEntry(
+    guild,
+    AuditLogEvent.MemberBanAdd,
+    user.id,
+    {
+      maxAgeMs: 10000,
+      delayMs: 400,
+    },
+  );
   if (entry) {
     executor = entry.executor || null;
     if (entry.reason) reason = entry.reason;
@@ -727,10 +794,15 @@ async function logKickIfApplicable(client, member) {
   const guild = member?.guild;
   if (!guild) return;
 
-  const entry = await fetchRecentAuditEntry(guild, AuditLogEvent.MemberKick, member.id, {
-    maxAgeMs: 5000,
-    delayMs: 400,
-  });
+  const entry = await fetchRecentAuditEntry(
+    guild,
+    AuditLogEvent.MemberKick,
+    member.id,
+    {
+      maxAgeMs: 5000,
+      delayMs: 400,
+    },
+  );
   if (!entry) return; // voluntary leave or unknown
 
   const embed = buildKickEmbed({
@@ -749,7 +821,13 @@ async function logReactionRoleChange(client, opts) {
   await sendAuditLog(client, guildId, { embeds: [embed] });
 }
 
-async function logLevelRoleChanges(client, member, { granted = [], removed = [] }, level, source) {
+async function logLevelRoleChanges(
+  client,
+  member,
+  { granted = [], removed = [] },
+  level,
+  source,
+) {
   if (!member?.guild || !client) return;
   if (!granted.length && !removed.length) return;
 
@@ -787,7 +865,9 @@ function diffConfigLines(before, after, keys, formatKey) {
     const to = after?.[k];
     if (from === to) continue;
     const label = formatKey ? formatKey(k, to) : `\`${k}\``;
-    lines.push(`${label}: ${formatConfigValue(from)} → **${formatConfigValue(to)}**`);
+    lines.push(
+      `${label}: ${formatConfigValue(from)} → **${formatConfigValue(to)}**`,
+    );
   }
   return lines;
 }
@@ -808,7 +888,11 @@ function buildConfigChangeEmbed({ title, command, actor, changes, details }) {
     .setTimestamp(new Date());
 
   if (actor) {
-    embed.addFields({ name: "Changed by", value: userLabel(actor), inline: true });
+    embed.addFields({
+      name: "Changed by",
+      value: userLabel(actor),
+      inline: true,
+    });
   }
   if (command) {
     embed.addFields({ name: "Command", value: `\`${command}\``, inline: true });
@@ -816,7 +900,10 @@ function buildConfigChangeEmbed({ title, command, actor, changes, details }) {
 
   let changeText = "";
   if (Array.isArray(changes)) {
-    changeText = changes.filter(Boolean).map((l) => (l.startsWith("•") || l.startsWith("-") ? l : `• ${l}`)).join("\n");
+    changeText = changes
+      .filter(Boolean)
+      .map((l) => (l.startsWith("•") || l.startsWith("-") ? l : `• ${l}`))
+      .join("\n");
   } else if (changes) {
     changeText = String(changes);
   }

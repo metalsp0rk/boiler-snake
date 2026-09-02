@@ -3,6 +3,8 @@
  * Falls back to stats + close reason when AI is unavailable.
  */
 
+const { formatTicketRef } = require("../../core/theme");
+
 /**
  * @returns {{ apiKey: string|null, baseUrl: string, model: string }}
  */
@@ -34,7 +36,10 @@ function buildFallbackSummary(ticket, messages, opts = {}) {
     const sample = messages
       .filter((m) => m.content && String(m.content).trim())
       .slice(0, 3)
-      .map((m) => `${m.author_tag || m.author_id}: ${String(m.content).slice(0, 120)}`);
+      .map(
+        (m) =>
+          `${m.author_tag || m.author_id}: ${String(m.content).slice(0, 120)}`,
+      );
     excerpt = sample.join(" | ");
   }
 
@@ -51,7 +56,7 @@ function buildFallbackSummary(ticket, messages, opts = {}) {
       closeReason ||
       (excerpt
         ? `Ticket closed with ${count} message(s). Excerpt: ${excerpt.slice(0, 400)}`
-        : `Ticket #${ticket.ticket_number} closed with ${count} message(s).`),
+        : `Ticket ${formatTicketRef(ticket.ticket_number)} closed with ${count} message(s).`),
   };
 }
 
@@ -78,11 +83,11 @@ async function summarizeTicket(ticket, messages, opts = {}) {
 
   const system =
     "You summarize Discord support tickets for staff archives. " +
-    "Respond with JSON only: {\"resolution\": string one-liner, \"summary\": string 2-4 sentences}. " +
+    'Respond with JSON only: {"resolution": string one-liner, "summary": string 2-4 sentences}. ' +
     "Do not invent facts. Be neutral and concise.";
 
   const user = [
-    `Ticket #${ticket.ticket_number}`,
+    `Ticket ${formatTicketRef(ticket.ticket_number)}`,
     `Open reason: ${ticket.reason || "(none)"}`,
     `Close reason: ${ticket.close_reason || opts.closeReason || "(none)"}`,
     `Messages (${messages?.length ?? 0}):`,
@@ -108,9 +113,7 @@ async function summarizeTicket(ticket, messages, opts = {}) {
     });
 
     if (!res.ok) {
-      console.warn(
-        `[tickets] AI summary HTTP ${res.status}; using fallback`
-      );
+      console.warn(`[tickets] AI summary HTTP ${res.status}; using fallback`);
       return fallback;
     }
 
@@ -129,7 +132,10 @@ async function summarizeTicket(ticket, messages, opts = {}) {
       ...fallback,
       source: "ai",
       model: cfg.model,
-      resolution: String(parsed.resolution || fallback.resolution).slice(0, 500),
+      resolution: String(parsed.resolution || fallback.resolution).slice(
+        0,
+        500,
+      ),
       summary: String(parsed.summary || fallback.summary).slice(0, 2000),
     };
   } catch (err) {

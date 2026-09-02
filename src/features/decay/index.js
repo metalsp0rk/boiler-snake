@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const cron = require("node-cron");
 const {
   allUsersInGuild,
@@ -9,9 +9,15 @@ const {
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
 const { isStaff } = require("../../core/permissions");
+const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const { Color, baseEmbed } = require("../../core/theme");
 const { syncMemberRoles } = require("../levelRoles/sync");
 const { syncMemberReactionRoles } = require("../reactionRoles/service");
-const { logLevelRoleChanges, logConfigChange, diffConfigLines } = require("../logs/auditLog");
+const {
+  logLevelRoleChanges,
+  logConfigChange,
+  diffConfigLines,
+} = require("../logs/auditLog");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 const DECAY_CRON = "0 4 * * *";
@@ -22,13 +28,24 @@ const commands = [
     .setDescription("Configure decay for this guild.")
     .setDefaultMemberPermissions(staffPerms)
     .addBooleanOption((opt) =>
-      opt.setName("enabled").setDescription("Enable/disable decay").setRequired(false)
+      opt
+        .setName("enabled")
+        .setDescription("Enable/disable decay")
+        .setRequired(false),
     )
     .addIntegerOption((opt) =>
-      opt.setName("messages").setDescription("Min messages required").setMinValue(0).setRequired(false)
+      opt
+        .setName("messages")
+        .setDescription("Min messages required")
+        .setMinValue(0)
+        .setRequired(false),
     )
     .addIntegerOption((opt) =>
-      opt.setName("days").setDescription("Window in days").setMinValue(1).setRequired(false)
+      opt
+        .setName("days")
+        .setDescription("Window in days")
+        .setMinValue(1)
+        .setRequired(false),
     )
     .addNumberOption((opt) =>
       opt
@@ -36,17 +53,14 @@ const commands = [
         .setDescription("Decay percent (e.g. 10 = 10%)")
         .setMinValue(0)
         .setMaxValue(95)
-        .setRequired(false)
+        .setRequired(false),
     ),
 ];
 
 async function handleSetDecay(interaction, ctx) {
   const { client } = ctx;
   if (!isStaff(interaction)) {
-    await interaction.reply({
-      content: "You don’t have permission to use this.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyDenied(interaction);
     return;
   }
 
@@ -61,13 +75,11 @@ async function handleSetDecay(interaction, ctx) {
   if (enabled !== null) patch.decay_enabled = enabled ? 1 : 0;
   if (messages !== null) patch.decay_min_messages = Math.max(0, messages);
   if (days !== null) patch.decay_window_days = Math.max(1, days);
-  if (percent !== null) patch.decay_percent = Math.max(0, Math.min(0.95, percent / 100));
+  if (percent !== null)
+    patch.decay_percent = Math.max(0, Math.min(0.95, percent / 100));
 
   if (!Object.keys(patch).length) {
-    await interaction.reply({
-      content: "No decay settings provided to update.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyEphemeral(interaction, "No decay settings provided to update.");
     return;
   }
 
@@ -98,14 +110,30 @@ async function handleSetDecay(interaction, ctx) {
     }).catch(() => {});
   }
 
-  await interaction.reply({
-    content:
-      `Updated decay settings:\n` +
-      `- enabled: **${!!updated.decay_enabled}**\n` +
-      `- threshold: **${updated.decay_min_messages} messages** in **${updated.decay_window_days} days**\n` +
-      `- percent: **${Math.round((Number(updated.decay_percent) || 0) * 100)}%**`,
-    flags: MessageFlags.Ephemeral,
-  });
+  const decayPct = Math.round((Number(updated.decay_percent) || 0) * 100);
+  const embed = baseEmbed({
+    color: Color.config,
+    title: "Updated decay settings",
+    footer: "Staff only",
+  }).addFields(
+    {
+      name: "Enabled",
+      value: `**${!!updated.decay_enabled}**`,
+      inline: true,
+    },
+    {
+      name: "Threshold",
+      value: `**${updated.decay_min_messages}** messages / **${updated.decay_window_days}** days`,
+      inline: true,
+    },
+    {
+      name: "Percent",
+      value: `**${decayPct}%**`,
+      inline: true,
+    },
+  );
+
+  await replyEphemeral(interaction, { embeds: [embed] });
 }
 
 async function runDecayForGuild(client, guildId) {
@@ -120,12 +148,15 @@ async function runDecayForGuild(client, guildId) {
     const msgCount = countMessagesInWindow(
       guildId,
       u.user_id,
-      settings.decay_window_days
+      settings.decay_window_days,
     );
 
     if (msgCount >= settings.decay_min_messages) continue;
 
-    const pct = Math.min(0.95, Math.max(0, Number(settings.decay_percent) || 0));
+    const pct = Math.min(
+      0.95,
+      Math.max(0, Number(settings.decay_percent) || 0),
+    );
     const newXp = Math.floor(u.xp * (1 - pct));
     if (newXp === u.xp) continue;
 
@@ -136,7 +167,13 @@ async function runDecayForGuild(client, guildId) {
     if (member) {
       const lvl = levelFromXp(newXp, settings.level_xp_factor);
       const levelChanges = await syncMemberRoles(member, lvl);
-      await logLevelRoleChanges(client, member, levelChanges, lvl, "decay").catch(() => {});
+      await logLevelRoleChanges(
+        client,
+        member,
+        levelChanges,
+        lvl,
+        "decay",
+      ).catch(() => {});
 
       await syncMemberReactionRoles(member, lvl, {
         client,
@@ -145,7 +182,7 @@ async function runDecayForGuild(client, guildId) {
 
       if (lvl < oldLvl) {
         console.log(
-          `[decay] ${guildId}/${u.user_id}: XP ${u.xp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`
+          `[decay] ${guildId}/${u.user_id}: XP ${u.xp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`,
         );
       }
     }

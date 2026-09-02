@@ -16,6 +16,7 @@ const {
   getGuildSettings,
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
+const { Color } = require("../../core/theme");
 const {
   logReactionRoleChange,
   logLevelRoleChanges,
@@ -158,10 +159,10 @@ const EMOJI_INPUT_HELP =
 
 function logRoleError(action, err, { guildId, userId, roleId }) {
   console.error(
-    `[reactionRoles] Failed to ${action} role ${roleId} for user ${userId} in guild ${guildId}: ${err?.message || err}`
+    `[reactionRoles] Failed to ${action} role ${roleId} for user ${userId} in guild ${guildId}: ${err?.message || err}`,
   );
   console.error(
-    "[reactionRoles] Common cause: the bot's highest role is below the role it is trying to manage, or it lacks Manage Roles permission."
+    "[reactionRoles] Common cause: the bot's highest role is below the role it is trying to manage, or it lacks Manage Roles permission.",
   );
 }
 
@@ -221,11 +222,25 @@ function parseEmojiInput(raw) {
     const name = bare[1];
     const id = bare[2];
     const display = `<:${name}:${id}>`;
-    return { key: id, display, reactIdent: id, isCustom: true, name, animated: false };
+    return {
+      key: id,
+      display,
+      reactIdent: id,
+      isCustom: true,
+      name,
+      animated: false,
+    };
   }
 
   if (SNOWFLAKE_RE.test(s)) {
-    return { key: s, display: s, reactIdent: s, isCustom: true, name: null, animated: false };
+    return {
+      key: s,
+      display: s,
+      reactIdent: s,
+      isCustom: true,
+      name: null,
+      animated: false,
+    };
   }
 
   // Reject half-parsed markdown
@@ -250,7 +265,14 @@ function parseEmojiInput(raw) {
   }
 
   // Unicode / default emoji (may be multi-codepoint, e.g. ❤️ or 🏴󠁧󠁢󠁥󠁮󠁧󠁿)
-  return { key: s, display: s, reactIdent: s, isCustom: false, name: null, animated: false };
+  return {
+    key: s,
+    display: s,
+    reactIdent: s,
+    isCustom: false,
+    name: null,
+    animated: false,
+  };
 }
 
 /**
@@ -294,7 +316,8 @@ function resolveReactionRoleOption(guildId, messageId, emojiKey) {
   const options = listReactionRoleOptions(guildId, messageId);
   for (const opt of options) {
     if (normalizeEmojiKey(opt.emoji_key) === norm) return opt;
-    if (opt.emoji_display && normalizeEmojiKey(opt.emoji_display) === norm) return opt;
+    if (opt.emoji_display && normalizeEmojiKey(opt.emoji_display) === norm)
+      return opt;
   }
   return null;
 }
@@ -308,12 +331,16 @@ function buildPanelEmbed(panel, options) {
     for (const opt of options) {
       const lvl = Number(opt.min_level) || 0;
       const removable = Number(opt.removable) !== 0;
-      const bits = [`${opt.emoji_display} → <@&${opt.role_id}> — Level ${lvl}+`];
+      const bits = [
+        `${opt.emoji_display} → <@&${opt.role_id}> — Level ${lvl}+`,
+      ];
       if (!removable) bits.push("· permanent");
       lines.push(bits.join(" "));
     }
   } else {
-    lines.push("_No roles configured yet. An admin can add options with `/reactionrole option add`._");
+    lines.push(
+      "_No roles configured yet. An admin can add options with `/reactionrole option add`._",
+    );
   }
 
   const descParts = [];
@@ -327,7 +354,7 @@ function buildPanelEmbed(panel, options) {
     .setFooter({
       text: "React to claim · remove reaction to drop (where allowed)",
     })
-    .setColor(0x5865f2);
+    .setColor(Color.brand);
 
   return embed;
 }
@@ -337,7 +364,9 @@ function buildPanelEmbed(panel, options) {
  */
 async function fetchPanelMessage(guild, panel) {
   if (!guild || !panel) return null;
-  const channel = await guild.channels.fetch(panel.channel_id).catch(() => null);
+  const channel = await guild.channels
+    .fetch(panel.channel_id)
+    .catch(() => null);
   if (!channel || typeof channel.messages?.fetch !== "function") return null;
   return channel.messages.fetch(panel.message_id).catch(() => null);
 }
@@ -353,16 +382,25 @@ async function fetchPanelMessage(guild, panel) {
  */
 async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
   if (!guild || !sourceMessageId || !destChannel) {
-    return { ok: false, error: "Missing guild, source message ID, or destination channel." };
+    return {
+      ok: false,
+      error: "Missing guild, source message ID, or destination channel.",
+    };
   }
 
   const guildId = guild.id;
   const source = getReactionRolePanel(guildId, sourceMessageId);
   if (!source) {
-    return { ok: false, error: `No reaction-role panel with message ID \`${sourceMessageId}\`.` };
+    return {
+      ok: false,
+      error: `No reaction-role panel with message ID \`${sourceMessageId}\`.`,
+    };
   }
 
-  if (typeof destChannel.isTextBased === "function" && !destChannel.isTextBased()) {
+  if (
+    typeof destChannel.isTextBased === "function" &&
+    !destChannel.isTextBased()
+  ) {
     return { ok: false, error: "That channel cannot receive messages." };
   }
   if (typeof destChannel.send !== "function") {
@@ -388,7 +426,7 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
       destChannel.id,
       msg.id,
       source.title,
-      source.description
+      source.description,
     );
 
     for (const opt of options) {
@@ -399,7 +437,7 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
         opt.emoji_display,
         opt.role_id,
         opt.min_level,
-        Number(opt.removable) !== 0
+        Number(opt.removable) !== 0,
       );
     }
   } catch (err) {
@@ -409,7 +447,10 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
     } catch {
       // ignore
     }
-    return { ok: false, error: `Posted message but failed to save config: ${err?.message || err}` };
+    return {
+      ok: false,
+      error: `Posted message but failed to save config: ${err?.message || err}`,
+    };
   }
 
   const newPanel = getReactionRolePanel(guildId, msg.id);
@@ -442,7 +483,11 @@ async function refreshPanelMessage(guild, panel) {
   const options = listReactionRoleOptions(panel.guild_id, panel.message_id);
   const message = await fetchPanelMessage(guild, panel);
   if (!message) {
-    return { ok: false, error: "Panel message is missing (deleted?). Remove the panel with `/reactionrole panel delete` or re-create it." };
+    return {
+      ok: false,
+      error:
+        "Panel message is missing (deleted?). Remove the panel with `/reactionrole panel delete` or re-create it.",
+    };
   }
 
   const embed = buildPanelEmbed(panel, options);
@@ -454,13 +499,17 @@ async function refreshPanelMessage(guild, panel) {
       allowedMentions: NO_PING_MENTIONS,
     });
   } catch (err) {
-    return { ok: false, error: `Could not edit panel message: ${err?.message || err}` };
+    return {
+      ok: false,
+      error: `Could not edit panel message: ${err?.message || err}`,
+    };
   }
 
   // Ensure configured reactions are present
   const wantedKeys = new Set(options.map((o) => o.emoji_key));
   for (const opt of options) {
-    const parsed = parseEmojiInput(opt.emoji_display) || parseEmojiInput(opt.emoji_key);
+    const parsed =
+      parseEmojiInput(opt.emoji_display) || parseEmojiInput(opt.emoji_key);
     const reactIdent = parsed?.reactIdent || opt.emoji_key;
     try {
       const existing = message.reactions.cache.find((r) => {
@@ -473,7 +522,7 @@ async function refreshPanelMessage(guild, panel) {
     } catch (err) {
       console.error(
         `[reactionRoles] Failed to react with ${opt.emoji_display} on ${panel.message_id}:`,
-        err?.message || err
+        err?.message || err,
       );
     }
   }
@@ -494,7 +543,8 @@ async function refreshPanelMessage(guild, panel) {
     for (const reaction of message.reactions.cache.values()) {
       const key = emojiKeyFromReaction(reaction);
       if (!key) continue;
-      if (wantedKeys.has(key) || wantedNorm.has(normalizeEmojiKey(key))) continue;
+      if (wantedKeys.has(key) || wantedNorm.has(normalizeEmojiKey(key)))
+        continue;
 
       try {
         // Wipe this emoji from the message entirely
@@ -506,12 +556,15 @@ async function refreshPanelMessage(guild, panel) {
         }
         console.warn(
           `[reactionRoles] Could not remove unconfigured reaction ${key} on ${panel.message_id}:`,
-          err?.message || err
+          err?.message || err,
         );
       }
     }
   } catch (err) {
-    console.warn(`[reactionRoles] Cleanup of stale reactions failed:`, err?.message || err);
+    console.warn(
+      `[reactionRoles] Cleanup of stale reactions failed:`,
+      err?.message || err,
+    );
   }
 
   return { ok: true };
@@ -536,7 +589,7 @@ async function removeUserReaction(reaction, userId) {
     console.warn(
       `[reactionRoles] Could not remove reaction for ${userId}:`,
       err?.message || err,
-      "(bot needs Manage Messages on the panel channel)"
+      "(bot needs Manage Messages on the panel channel)",
     );
     return false;
   }
@@ -563,7 +616,7 @@ async function stripExtraneousReaction(reaction, userId) {
   } catch (err) {
     console.warn(
       `[reactionRoles] reaction.remove() failed (need Manage Messages?):`,
-      err?.message || err
+      err?.message || err,
     );
   }
 
@@ -603,7 +656,11 @@ async function roleNameForDm(guild, roleId) {
  * @param {number} level current level after XP change
  * @returns {Promise<{ removed: string[] }>} role IDs removed
  */
-async function syncMemberReactionRoles(member, level, { client = null, logSource = null } = {}) {
+async function syncMemberReactionRoles(
+  member,
+  level,
+  { client = null, logSource = null } = {},
+) {
   const guildId = member.guild.id;
   const requirements = listReactionRoleLevelRequirements(guildId);
   if (!requirements.length) return { removed: [] };
@@ -622,7 +679,7 @@ async function syncMemberReactionRoles(member, level, { client = null, logSource
       removed.push(roleId);
       console.log(
         `[reactionRoles] Removed role ${roleId} from ${member.id} in ${guildId} ` +
-          `(level ${lvl} < min ${minLevel} after XP change)`
+          `(level ${lvl} < min ${minLevel} after XP change)`,
       );
     } catch (err) {
       logRoleError("remove", err, { guildId, userId: member.id, roleId });
@@ -633,7 +690,13 @@ async function syncMemberReactionRoles(member, level, { client = null, logSource
   if (removed.length && logSource) {
     const c = client || member.client;
     if (c) {
-      await logLevelRoleChanges(c, member, { granted: [], removed }, lvl, logSource).catch(() => {});
+      await logLevelRoleChanges(
+        c,
+        member,
+        { granted: [], removed },
+        lvl,
+        logSource,
+      ).catch(() => {});
     }
   }
 
@@ -708,7 +771,7 @@ async function handleReactionRoleAdd(reaction, user) {
     await tryDmUser(
       user,
       `You need **Level ${minLevel}** to claim ${roleLabel} in **${guild.name}**. ` +
-        `(You are currently Level ${level}.)`
+        `(You are currently Level ${level}.)`,
     );
     return { handled: true };
   }
@@ -729,11 +792,15 @@ async function handleReactionRoleAdd(reaction, user) {
         removable: option.removable,
       }).catch(() => {});
     } catch (err) {
-      logRoleError("add", err, { guildId, userId: user.id, roleId: option.role_id });
+      logRoleError("add", err, {
+        guildId,
+        userId: user.id,
+        roleId: option.role_id,
+      });
       await removeUserReaction(reaction, user.id);
       await tryDmUser(
         user,
-        `I couldn't assign that role in **${guild.name}**. Staff may need to fix the bot's role permissions.`
+        `I couldn't assign that role in **${guild.name}**. Staff may need to fix the bot's role permissions.`,
       );
     }
   }
@@ -796,7 +863,11 @@ async function handleReactionRoleRemove(reaction, user) {
         removable: option.removable,
       }).catch(() => {});
     } catch (err) {
-      logRoleError("remove", err, { guildId, userId: user.id, roleId: option.role_id });
+      logRoleError("remove", err, {
+        guildId,
+        userId: user.id,
+        roleId: option.role_id,
+      });
     }
   }
 
@@ -843,11 +914,17 @@ function enrichParsedEmojiDisplay(guild, parsed) {
  * Persist an option and refresh the panel embed + bot reactions.
  * @returns {Promise<{ ok: boolean, error?: string, display?: string }>}
  */
-async function applyReactionRoleOption(guild, { messageId, parsed, roleId, level, removable }) {
+async function applyReactionRoleOption(
+  guild,
+  { messageId, parsed, roleId, level, removable },
+) {
   const guildId = guild.id;
   const panel = getReactionRolePanel(guildId, messageId);
   if (!panel) {
-    return { ok: false, error: `No reaction-role panel with message ID \`${messageId}\`.` };
+    return {
+      ok: false,
+      error: `No reaction-role panel with message ID \`${messageId}\`.`,
+    };
   }
 
   enrichParsedEmojiDisplay(guild, parsed);
@@ -868,7 +945,7 @@ async function applyReactionRoleOption(guild, { messageId, parsed, roleId, level
     parsed.display,
     roleId,
     level,
-    removable
+    removable,
   );
 
   const updated = getReactionRolePanel(guildId, messageId);
@@ -929,7 +1006,7 @@ async function deleteAdminEmojiMessage(message) {
   } catch (err) {
     console.warn(
       `[reactionRoles] Could not delete emoji config message:`,
-      err?.message || err
+      err?.message || err,
     );
   }
 }
@@ -1029,16 +1106,13 @@ async function handlePendingOptionEmojiMessage(message) {
     await deleteAdminEmojiMessage(message);
     await sendChannelConfirm(
       channel,
-      `Removed ${removed.display} from panel \`${session.messageId}\`.`
+      `Removed ${removed.display} from panel \`${session.messageId}\`.`,
     );
     await logConfigChange(message.client, guildId, {
       title: "Reaction-role option removed",
       command: "/reactionrole option remove",
       actor: message.author,
-      changes: [
-        `Panel: \`${session.messageId}\``,
-        `Emoji: ${removed.display}`,
-      ],
+      changes: [`Panel: \`${session.messageId}\``, `Emoji: ${removed.display}`],
     }).catch(() => {});
     return { handled: true };
   }
@@ -1082,7 +1156,7 @@ async function handlePendingOptionEmojiMessage(message) {
   await sendChannelConfirm(
     channel,
     `Configured ${applied.display} → <@&${session.roleId}> ` +
-      `(Level ${session.level}+, ${remText}) on panel \`${session.messageId}\`.`
+      `(Level ${session.level}+, ${remText}) on panel \`${session.messageId}\`.`,
   );
   await logConfigChange(message.client, guildId, {
     title: "Reaction-role option added",

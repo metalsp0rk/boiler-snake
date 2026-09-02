@@ -10,7 +10,6 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  MessageFlags,
   EmbedBuilder,
   ActionRowBuilder,
   ModalBuilder,
@@ -28,7 +27,14 @@ const {
   MAX_NOTE_CONTENT,
 } = require("../../db");
 const { requireStaff } = require("../../core/permissions");
+const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const {
+  Color,
+  formatNoteRef,
+  tsRelative,
+  tsFull: fullTs,
+} = require("../../core/theme");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -58,41 +64,43 @@ const commands = [
           opt
             .setName("user")
             .setDescription("Member the note is about")
-            .setRequired(true)
+            .setRequired(true),
         )
         .addStringOption((opt) =>
           opt
             .setName("content")
-            .setDescription(
-              "Note body (omit to open a modal for longer text)"
-            )
+            .setDescription("Note body (omit to open a modal for longer text)")
             .setRequired(false)
-            .setMaxLength(MAX_NOTE_CONTENT)
-        )
+            .setMaxLength(MAX_NOTE_CONTENT),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("list")
-        .setDescription("List staff notes for a member (or recent guild notes).")
+        .setDescription(
+          "List staff notes for a member (or recent guild notes).",
+        )
         .addUserOption((opt) =>
           opt
             .setName("user")
-            .setDescription("Member to list notes for (omit for recent guild-wide)")
-            .setRequired(false)
+            .setDescription(
+              "Member to list notes for (omit for recent guild-wide)",
+            )
+            .setRequired(false),
         )
         .addIntegerOption((opt) =>
           opt
             .setName("page")
             .setDescription("Page number (default 1)")
             .setRequired(false)
-            .setMinValue(1)
+            .setMinValue(1),
         )
         .addBooleanOption((opt) =>
           opt
             .setName("include_deleted")
             .setDescription("Include soft-deleted notes (default false)")
-            .setRequired(false)
-        )
+            .setRequired(false),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -103,17 +111,17 @@ const commands = [
             .setName("id")
             .setDescription("Note number (e.g. 12 from N-12)")
             .setRequired(true)
-            .setMinValue(1)
+            .setMinValue(1),
         )
         .addStringOption((opt) =>
           opt
             .setName("content")
             .setDescription(
-              "New note body (omit to open a modal with the current text)"
+              "New note body (omit to open a modal with the current text)",
             )
             .setRequired(false)
-            .setMaxLength(MAX_NOTE_CONTENT)
-        )
+            .setMaxLength(MAX_NOTE_CONTENT),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -124,8 +132,8 @@ const commands = [
             .setName("id")
             .setDescription("Note number (e.g. 12 from N-12)")
             .setRequired(true)
-            .setMinValue(1)
-        )
+            .setMinValue(1),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -136,23 +144,15 @@ const commands = [
             .setName("id")
             .setDescription("Note number (e.g. 12 from N-12)")
             .setRequired(true)
-            .setMinValue(1)
-        )
+            .setMinValue(1),
+        ),
     )
     .addSubcommand((sc) =>
       sc
         .setName("settings")
-        .setDescription("Show staff notes status and access info.")
+        .setDescription("Show staff notes status and access info."),
     ),
 ];
-
-/**
- * @param {number} noteNumber
- * @returns {string}
- */
-function formatNoteRef(noteNumber) {
-  return `N-${noteNumber}`;
-}
 
 /**
  * @param {string} content
@@ -160,31 +160,11 @@ function formatNoteRef(noteNumber) {
  * @returns {string}
  */
 function snippet(content, max = SNIPPET_LEN) {
-  const s = String(content || "").replace(/\s+/g, " ").trim();
+  const s = String(content || "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (s.length <= max) return s;
   return `${s.slice(0, Math.max(0, max - 1))}…`;
-}
-
-/**
- * @param {number|null|undefined} ms
- * @returns {string}
- */
-function relativeTs(ms) {
-  if (ms == null) return "—";
-  const sec = Math.floor(Number(ms) / 1000);
-  if (!Number.isFinite(sec)) return "—";
-  return `<t:${sec}:R>`;
-}
-
-/**
- * @param {number|null|undefined} ms
- * @returns {string}
- */
-function fullTs(ms) {
-  if (ms == null) return "—";
-  const sec = Math.floor(Number(ms) / 1000);
-  if (!Number.isFinite(sec)) return "—";
-  return `<t:${sec}:F>`;
 }
 
 /**
@@ -200,7 +180,7 @@ function formatListLine(note, opts = {}) {
   const userPart = opts.showUser ? ` · subject <@${note.user_id}>` : "";
   const body = snippet(note.content);
   return (
-    `**${ref}** · by <@${note.author_id}> · ${relativeTs(note.created_at)}${userPart}${deleted}\n` +
+    `**${ref}** · by <@${note.author_id}> · ${tsRelative(note.created_at)}${userPart}${deleted}\n` +
     `> ${body}`
   );
 }
@@ -257,13 +237,13 @@ function buildEditNoteModal(noteNumber, existingContent) {
  */
 function buildCreatedEmbed(note, subjectUserId) {
   return new EmbedBuilder()
-    .setColor(0x5865f2)
+    .setColor(Color.brand)
     .setTitle(`Note ${formatNoteRef(note.note_number)} created`)
     .setDescription(note.content.slice(0, 4000))
     .addFields(
       { name: "Subject", value: `<@${subjectUserId}>`, inline: true },
       { name: "Author", value: `<@${note.author_id}>`, inline: true },
-      { name: "Created", value: fullTs(note.created_at), inline: true }
+      { name: "Created", value: fullTs(note.created_at), inline: true },
     )
     .setFooter({ text: "Staff only — never shown to the member" });
 }
@@ -275,13 +255,13 @@ function buildCreatedEmbed(note, subjectUserId) {
  */
 function buildUpdatedEmbed(note) {
   return new EmbedBuilder()
-    .setColor(0xfaa61a)
+    .setColor(Color.brand)
     .setTitle(`Note ${formatNoteRef(note.note_number)} updated`)
     .setDescription(note.content.slice(0, 4000))
     .addFields(
       { name: "Subject", value: `<@${note.user_id}>`, inline: true },
       { name: "Edited by", value: `<@${note.edited_by}>`, inline: true },
-      { name: "Edited", value: fullTs(note.edited_at), inline: true }
+      { name: "Edited", value: fullTs(note.edited_at), inline: true },
     )
     .setFooter({ text: "Staff only — never shown to the member" });
 }
@@ -324,9 +304,8 @@ async function handleNote(interaction, ctx) {
   if (sub === "info") return handleInfo(interaction);
   if (sub === "settings") return handleSettings(interaction);
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `Unknown subcommand: \`${sub}\``,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -339,9 +318,8 @@ async function handleAdd(interaction, ctx) {
   const content = interaction.options.getString("content");
 
   if (target.bot) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Staff notes are for human members, not bots.",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -359,9 +337,8 @@ async function handleAdd(interaction, ctx) {
     content,
   });
   if (!result.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: result.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -377,9 +354,8 @@ async function handleAdd(interaction, ctx) {
     ],
   }).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     embeds: [buildCreatedEmbed(note, target.id)],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -395,9 +371,8 @@ async function handleAddNoteModal(interaction, ctx) {
   if (!customId.startsWith(MODAL_PREFIX_ADD)) return;
   const userId = customId.slice(MODAL_PREFIX_ADD.length);
   if (!userId) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Invalid modal state (missing user).",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -416,9 +391,8 @@ async function handleAddNoteModal(interaction, ctx) {
     content,
   });
   if (!result.ok) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: result.error,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -435,12 +409,11 @@ async function handleAddNoteModal(interaction, ctx) {
         `${formatNoteRef(note.note_number)} on <@${userId}>`,
         snippet(note.content, 120),
       ],
-    }
+    },
   ).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     embeds: [buildCreatedEmbed(note, userId)],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -465,12 +438,11 @@ async function handleList(interaction) {
     const totalPages = Math.max(1, Math.ceil(total / LIST_PAGE_SIZE));
 
     if (!notes.length) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           total === 0
             ? `No${includeDeleted ? "" : " active"} staff notes for <@${target.id}>.`
             : `No notes on page **${page}** for <@${target.id}> (pages 1–${totalPages}).`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -482,9 +454,8 @@ async function handleList(interaction) {
       ` · ${total} total` +
       (includeDeleted ? " · including deleted" : "");
 
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: `${header}\n\n${lines.join("\n\n")}`.slice(0, 1900),
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -498,10 +469,9 @@ async function handleList(interaction) {
   });
 
   if (!notes.length) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         "No staff notes in this server yet. Use `/note add user:…` (optionally open the content modal).",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -512,9 +482,8 @@ async function handleList(interaction) {
     (includeDeleted ? " · including deleted" : "") +
     `\n_Pass \`user:\` to list notes for one member (paginated)._`;
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content: `${header}\n\n${lines.join("\n\n")}`.slice(0, 1900),
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -528,16 +497,14 @@ async function handleEdit(interaction, ctx) {
 
   const existing = getStaffNote(interaction.guildId, noteNumber);
   if (!existing) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
   if (existing.deleted_at != null) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: `Note **${formatNoteRef(noteNumber)}** is soft-deleted and cannot be edited. Add a new note instead.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -545,7 +512,7 @@ async function handleEdit(interaction, ctx) {
   // Omit content → modal prefilled with current body
   if (content == null) {
     await interaction.showModal(
-      buildEditNoteModal(noteNumber, existing.content)
+      buildEditNoteModal(noteNumber, existing.content),
     );
     return;
   }
@@ -565,9 +532,8 @@ async function handleEditNoteModal(interaction, ctx) {
   if (!customId.startsWith(MODAL_PREFIX_EDIT)) return;
   const noteNumber = Number(customId.slice(MODAL_PREFIX_EDIT.length));
   if (!Number.isFinite(noteNumber) || noteNumber < 1) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Invalid modal state (missing note id).",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -584,7 +550,7 @@ async function handleEditNoteModal(interaction, ctx) {
     ctx,
     noteNumber,
     content,
-    "/note edit (modal)"
+    "/note edit (modal)",
   );
 }
 
@@ -596,7 +562,13 @@ async function handleEditNoteModal(interaction, ctx) {
  * @param {string} content
  * @param {string} auditCommand
  */
-async function applyNoteEdit(interaction, ctx, noteNumber, content, auditCommand) {
+async function applyNoteEdit(
+  interaction,
+  ctx,
+  noteNumber,
+  content,
+  auditCommand,
+) {
   let note;
   try {
     note = updateStaffNote(interaction.guildId, noteNumber, {
@@ -605,16 +577,14 @@ async function applyNoteEdit(interaction, ctx, noteNumber, content, auditCommand
     });
   } catch (err) {
     if (err?.code === "INVALID_CONTENT") {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: err.message,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
     console.error("[staffNotes] edit failed:", err);
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: "Failed to update the note (database error).",
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -622,32 +592,33 @@ async function applyNoteEdit(interaction, ctx, noteNumber, content, auditCommand
   if (!note) {
     const existing = getStaffNote(interaction.guildId, noteNumber);
     if (existing?.deleted_at != null) {
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: `Note **${formatNoteRef(noteNumber)}** is soft-deleted and cannot be edited. Add a new note instead.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
-  await logConfigChange(ctx?.client || interaction.client, interaction.guildId, {
-    title: "Staff note edited",
-    command: auditCommand,
-    actor: interaction.user,
-    changes: [
-      `${formatNoteRef(note.note_number)} on <@${note.user_id}>`,
-      snippet(note.content, 120),
-    ],
-  }).catch(() => {});
+  await logConfigChange(
+    ctx?.client || interaction.client,
+    interaction.guildId,
+    {
+      title: "Staff note edited",
+      command: auditCommand,
+      actor: interaction.user,
+      changes: [
+        `${formatNoteRef(note.note_number)} on <@${note.user_id}>`,
+        snippet(note.content, 120),
+      ],
+    },
+  ).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     embeds: [buildUpdatedEmbed(note)],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -660,20 +631,18 @@ async function handleDelete(interaction, ctx) {
   const existing = getStaffNote(interaction.guildId, noteNumber);
 
   if (!existing) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   if (existing.deleted_at != null) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content:
         `Note **${formatNoteRef(noteNumber)}** is already soft-deleted` +
         (existing.deleted_by ? ` (by <@${existing.deleted_by}>)` : "") +
         `.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -681,7 +650,7 @@ async function handleDelete(interaction, ctx) {
   const note = softDeleteStaffNote(
     interaction.guildId,
     noteNumber,
-    interaction.user.id
+    interaction.user.id,
   );
 
   await logConfigChange(interaction.client, interaction.guildId, {
@@ -694,11 +663,10 @@ async function handleDelete(interaction, ctx) {
     ],
   }).catch(() => {});
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Soft-deleted **${formatNoteRef(note.note_number)}** about <@${note.user_id}>.` +
       ` The row is kept for audit; use \`/note list include_deleted:true\` to see it.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -710,46 +678,40 @@ async function handleInfo(interaction) {
   const note = getStaffNote(interaction.guildId, noteNumber);
 
   if (!note) {
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   const embed = new EmbedBuilder()
-    .setColor(note.deleted_at != null ? 0x95a5a6 : 0x5865f2)
+    .setColor(note.deleted_at != null ? Color.muted : Color.brand)
     .setTitle(`Note ${formatNoteRef(note.note_number)}`)
     .setDescription(note.content.slice(0, 4000))
     .addFields(
       { name: "Subject", value: `<@${note.user_id}>`, inline: true },
       { name: "Author", value: `<@${note.author_id}>`, inline: true },
-      { name: "Created", value: fullTs(note.created_at), inline: true }
+      { name: "Created", value: fullTs(note.created_at), inline: true },
     )
     .setFooter({ text: "Staff only — never shown to the member" });
 
   if (note.edited_at != null) {
-    embed.addFields(
-      {
-        name: "Last edited",
-        value: `${fullTs(note.edited_at)} by <@${note.edited_by}>`,
-        inline: false,
-      }
-    );
+    embed.addFields({
+      name: "Last edited",
+      value: `${fullTs(note.edited_at)} by <@${note.edited_by}>`,
+      inline: false,
+    });
   }
   if (note.deleted_at != null) {
-    embed.addFields(
-      {
-        name: "Soft-deleted",
-        value: `${fullTs(note.deleted_at)} by <@${note.deleted_by}>`,
-        inline: false,
-      }
-    );
+    embed.addFields({
+      name: "Soft-deleted",
+      value: `${fullTs(note.deleted_at)} by <@${note.deleted_by}>`,
+      inline: false,
+    });
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     embeds: [embed],
-    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -765,7 +727,7 @@ async function handleSettings(interaction) {
   });
   const deleted = all - active;
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `**Staff notes settings**\n` +
       `Active notes: **${active}**` +
@@ -776,7 +738,6 @@ async function handleSettings(interaction) {
       `Omit \`content\` on add/edit to open a **modal** for longer text.\n` +
       `After \`/ticket close\`, use **Add staff note** or the \`staff_note\` option.\n` +
       `Notes are **never** DMed or shown to the subject member. Soft-delete only; no hard delete.`,
-    flags: MessageFlags.Ephemeral,
   });
 }
 

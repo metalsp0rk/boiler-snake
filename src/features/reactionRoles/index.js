@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const {
   getGuildSettings,
   createReactionRolePanel,
@@ -10,6 +10,7 @@ const {
   countReactionRoleOptions,
 } = require("../../db");
 const { isStaff } = require("../../core/permissions");
+const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const {
   MAX_OPTIONS_PER_PANEL,
@@ -31,163 +32,177 @@ const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const commands = [
   new SlashCommandBuilder()
-      .setName("reactionrole")
-      .setDescription("Manage reaction-role panels (staff).")
-      .setDefaultMemberPermissions(staffPerms)
-      .addSubcommandGroup((group) =>
-        group
-          .setName("panel")
-          .setDescription("Create, edit, list, deploy, or delete reaction-role panels.")
-          .addSubcommand((sc) =>
-            sc
-              .setName("create")
-              .setDescription("Post a new reaction-role panel in a channel.")
-              .addChannelOption((opt) =>
-                opt
-                  .setName("channel")
-                  .setDescription("Channel to post the panel in")
-                  .setRequired(true)
-              )
-              .addStringOption((opt) =>
-                opt
-                  .setName("title")
-                  .setDescription("Embed title")
-                  .setRequired(false)
-                  .setMaxLength(256)
-              )
-              .addStringOption((opt) =>
-                opt
-                  .setName("description")
-                  .setDescription("Embed description (intro text above the role list)")
-                  .setRequired(false)
-                  .setMaxLength(1000)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("edit")
-              .setDescription("Update a panel's title and/or description.")
-              .addStringOption((opt) =>
-                opt
-                  .setName("message_id")
-                  .setDescription("Message ID of the panel")
-                  .setRequired(true)
-              )
-              .addStringOption((opt) =>
-                opt
-                  .setName("title")
-                  .setDescription("New embed title")
-                  .setRequired(false)
-                  .setMaxLength(256)
-              )
-              .addStringOption((opt) =>
-                opt
-                  .setName("description")
-                  .setDescription("New embed description")
-                  .setRequired(false)
-                  .setMaxLength(1000)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("deploy")
-              .setDescription("Copy a panel (config + options) into another channel.")
-              .addStringOption((opt) =>
-                opt
-                  .setName("message_id")
-                  .setDescription("Message ID of the source panel to copy")
-                  .setRequired(true)
-              )
-              .addChannelOption((opt) =>
-                opt
-                  .setName("channel")
-                  .setDescription("Destination channel for the new panel")
-                  .setRequired(true)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("delete")
-              .setDescription("Delete a panel (DB + Discord message).")
-              .addStringOption((opt) =>
-                opt
-                  .setName("message_id")
-                  .setDescription("Message ID of the panel")
-                  .setRequired(true)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc.setName("list").setDescription("List reaction-role panels in this server.")
-          )
-      )
-      .addSubcommandGroup((group) =>
-        group
-          .setName("option")
-          .setDescription("Map emojis to roles on a panel.")
-          .addSubcommand((sc) =>
-            sc
-              .setName("add")
-              .setDescription("Start adding an option; then send the emoji as your next message.")
-              .addStringOption((opt) =>
-                opt
-                  .setName("message_id")
-                  .setDescription("Message ID of the panel")
-                  .setRequired(true)
-              )
-              .addRoleOption((opt) =>
-                opt
-                  .setName("role")
-                  .setDescription("Role to grant")
-                  .setRequired(true)
-              )
-              .addIntegerOption((opt) =>
-                opt
-                  .setName("level")
-                  .setDescription("Minimum level required (default 0)")
-                  .setMinValue(0)
-                  .setRequired(false)
-              )
-              .addBooleanOption((opt) =>
-                opt
-                  .setName("removable")
-                  .setDescription("Remove role when reaction is removed (default true)")
-                  .setRequired(false)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("remove")
-              .setDescription("Start removing an option; then send the emoji as your next message.")
-              .addStringOption((opt) =>
-                opt
-                  .setName("message_id")
-                  .setDescription("Message ID of the panel")
-                  .setRequired(true)
-              )
-          )
-          .addSubcommand((sc) =>
-            sc
-              .setName("list")
-              .setDescription("List emoji→role options on a panel.")
-              .addStringOption((opt) =>
-                opt
-                  .setName("message_id")
-                  .setDescription("Message ID of the panel")
-                  .setRequired(true)
-              )
-          )
-      )
-      .addSubcommand((sc) =>
-        sc
-          .setName("sync")
-          .setDescription("Re-apply embed text and bot reactions for a panel.")
-          .addStringOption((opt) =>
-            opt
-              .setName("message_id")
-              .setDescription("Message ID of the panel")
-              .setRequired(true)
-          )
-      ),
+    .setName("reactionrole")
+    .setDescription("Manage reaction-role panels (staff).")
+    .setDefaultMemberPermissions(staffPerms)
+    .addSubcommandGroup((group) =>
+      group
+        .setName("panel")
+        .setDescription(
+          "Create, edit, list, deploy, or delete reaction-role panels.",
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("create")
+            .setDescription("Post a new reaction-role panel in a channel.")
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Channel to post the panel in")
+                .setRequired(true),
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("title")
+                .setDescription("Embed title")
+                .setRequired(false)
+                .setMaxLength(256),
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("description")
+                .setDescription(
+                  "Embed description (intro text above the role list)",
+                )
+                .setRequired(false)
+                .setMaxLength(1000),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("edit")
+            .setDescription("Update a panel's title and/or description.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true),
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("title")
+                .setDescription("New embed title")
+                .setRequired(false)
+                .setMaxLength(256),
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("description")
+                .setDescription("New embed description")
+                .setRequired(false)
+                .setMaxLength(1000),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("deploy")
+            .setDescription(
+              "Copy a panel (config + options) into another channel.",
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the source panel to copy")
+                .setRequired(true),
+            )
+            .addChannelOption((opt) =>
+              opt
+                .setName("channel")
+                .setDescription("Destination channel for the new panel")
+                .setRequired(true),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("delete")
+            .setDescription("Delete a panel (DB + Discord message).")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List reaction-role panels in this server."),
+        ),
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName("option")
+        .setDescription("Map emojis to roles on a panel.")
+        .addSubcommand((sc) =>
+          sc
+            .setName("add")
+            .setDescription(
+              "Start adding an option; then send the emoji as your next message.",
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true),
+            )
+            .addRoleOption((opt) =>
+              opt
+                .setName("role")
+                .setDescription("Role to grant")
+                .setRequired(true),
+            )
+            .addIntegerOption((opt) =>
+              opt
+                .setName("level")
+                .setDescription("Minimum level required (default 0)")
+                .setMinValue(0)
+                .setRequired(false),
+            )
+            .addBooleanOption((opt) =>
+              opt
+                .setName("removable")
+                .setDescription(
+                  "Remove role when reaction is removed (default true)",
+                )
+                .setRequired(false),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("remove")
+            .setDescription(
+              "Start removing an option; then send the emoji as your next message.",
+            )
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("list")
+            .setDescription("List emoji→role options on a panel.")
+            .addStringOption((opt) =>
+              opt
+                .setName("message_id")
+                .setDescription("Message ID of the panel")
+                .setRequired(true),
+            ),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("sync")
+        .setDescription("Re-apply embed text and bot reactions for a panel.")
+        .addStringOption((opt) =>
+          opt
+            .setName("message_id")
+            .setDescription("Message ID of the panel")
+            .setRequired(true),
+        ),
+    ),
 ];
 
 async function handleReactionrole(interaction, ctx) {
@@ -197,10 +212,7 @@ async function handleReactionrole(interaction, ctx) {
   const admin = isStaff(interaction);
 
   if (!admin) {
-    await interaction.reply({
-      content: "You don't have permission to use this.",
-      flags: MessageFlags.Ephemeral,
-    });
+    await replyDenied(interaction);
     return;
   }
 
@@ -217,16 +229,14 @@ async function handleReactionrole(interaction, ctx) {
         "React to get a role. Remove your reaction to drop it (if allowed).";
 
       if (typeof ch.isTextBased !== "function" || !ch.isTextBased()) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: "That channel cannot receive messages.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
       if (typeof ch.send !== "function") {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: "That channel cannot receive messages.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -243,11 +253,13 @@ async function handleReactionrole(interaction, ctx) {
       let msg;
       try {
         // Role names may appear later in the embed as mentions — never ping
-        msg = await ch.send({ embeds: [embed], allowedMentions: NO_PING_MENTIONS });
+        msg = await ch.send({
+          embeds: [embed],
+          allowedMentions: NO_PING_MENTIONS,
+        });
       } catch (e) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `Could not post panel: ${e?.message || e}`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -264,35 +276,35 @@ async function handleReactionrole(interaction, ctx) {
         ],
         details: msg.url,
       }).catch(() => {});
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           `Created reaction-role panel in <#${ch.id}>.\n` +
           `Message ID: \`${msg.id}\`\n` +
           `Jump: ${msg.url}\n` +
           `Add options with \`/reactionrole option add message_id:${msg.id}\`.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (sub === "edit") {
-      const messageId = interaction.options.getString("message_id", true).trim();
+      const messageId = interaction.options
+        .getString("message_id", true)
+        .trim();
       const title = interaction.options.getString("title");
       const description = interaction.options.getString("description");
 
       if (title == null && description == null) {
-        await interaction.reply({
-          content: "Provide at least one of `title` or `description` to update.",
-          flags: MessageFlags.Ephemeral,
+        await replyEphemeral(interaction, {
+          content:
+            "Provide at least one of `title` or `description` to update.",
         });
         return;
       }
 
       const panel = getReactionRolePanel(guildId, messageId);
       if (!panel) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -301,10 +313,11 @@ async function handleReactionrole(interaction, ctx) {
       const updated = getReactionRolePanel(guildId, messageId);
       const result = await refreshPanelMessage(interaction.guild, updated);
       const changeLines = [];
-      if (title != null) changeLines.push(`Title: ${panel.title} → **${updated.title}**`);
+      if (title != null)
+        changeLines.push(`Title: ${panel.title} → **${updated.title}**`);
       if (description != null) {
         changeLines.push(
-          `Description updated (${String(panel.description || "").length} → ${String(updated.description || "").length} chars)`
+          `Description updated (${String(panel.description || "").length} → ${String(updated.description || "").length} chars)`,
         );
       }
       await logConfigChange(client, guildId, {
@@ -313,30 +326,29 @@ async function handleReactionrole(interaction, ctx) {
         actor: interaction.user,
         changes: [`Panel: \`${messageId}\``, ...changeLines],
       }).catch(() => {});
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: result.ok
           ? `Updated panel \`${messageId}\`.`
           : `Saved text, but refresh failed: ${result.error}`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (sub === "deploy") {
-      const messageId = interaction.options.getString("message_id", true).trim();
+      const messageId = interaction.options
+        .getString("message_id", true)
+        .trim();
       const ch = interaction.options.getChannel("channel", true);
 
       if (typeof ch.isTextBased === "function" && !ch.isTextBased()) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: "That channel cannot receive messages.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
       if (typeof ch.send !== "function") {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: "That channel cannot receive messages.",
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -344,7 +356,11 @@ async function handleReactionrole(interaction, ctx) {
       // May post + react several times
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      const result = await deployPanelToChannel(interaction.guild, messageId, ch);
+      const result = await deployPanelToChannel(
+        interaction.guild,
+        messageId,
+        ch,
+      );
       if (!result.ok) {
         await interaction.editReply({ content: result.error });
         return;
@@ -376,15 +392,24 @@ async function handleReactionrole(interaction, ctx) {
     }
 
     if (sub === "delete") {
-      const messageId = interaction.options.getString("message_id", true).trim();
-      const { removed, channel_id } = deleteReactionRolePanel(guildId, messageId);
+      const messageId = interaction.options
+        .getString("message_id", true)
+        .trim();
+      const { removed, channel_id } = deleteReactionRolePanel(
+        guildId,
+        messageId,
+      );
 
       let note = "";
       if (removed && channel_id) {
         try {
-          const channel = await interaction.guild.channels.fetch(channel_id).catch(() => null);
+          const channel = await interaction.guild.channels
+            .fetch(channel_id)
+            .catch(() => null);
           if (channel?.messages) {
-            const msg = await channel.messages.fetch(messageId).catch(() => null);
+            const msg = await channel.messages
+              .fetch(messageId)
+              .catch(() => null);
             if (msg) {
               await msg.delete().catch(() => null);
               note = " Discord message deleted.";
@@ -393,7 +418,8 @@ async function handleReactionrole(interaction, ctx) {
             }
           }
         } catch {
-          note = " (Could not delete Discord message — remove it manually if needed.)";
+          note =
+            " (Could not delete Discord message — remove it manually if needed.)";
         }
       }
 
@@ -410,11 +436,10 @@ async function handleReactionrole(interaction, ctx) {
         }).catch(() => {});
       }
 
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: removed
           ? `Deleted reaction-role panel \`${messageId}\`.${note}`
           : `No reaction-role panel with message ID \`${messageId}\`.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -422,9 +447,9 @@ async function handleReactionrole(interaction, ctx) {
     if (sub === "list") {
       const panels = listReactionRolePanels(guildId);
       if (!panels.length) {
-        await interaction.reply({
-          content: "No reaction-role panels configured. Use `/reactionrole panel create`.",
-          flags: MessageFlags.Ephemeral,
+        await replyEphemeral(interaction, {
+          content:
+            "No reaction-role panels configured. Use `/reactionrole panel create`.",
         });
         return;
       }
@@ -433,9 +458,8 @@ async function handleReactionrole(interaction, ctx) {
         const n = countReactionRoleOptions(guildId, p.message_id);
         return `- **${p.title}** in <#${p.channel_id}> — \`${p.message_id}\` (${n} option${n === 1 ? "" : "s"}) — [jump](${jump})`;
       });
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: `**Reaction-role panels:**\n${lines.join("\n")}`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -444,7 +468,9 @@ async function handleReactionrole(interaction, ctx) {
   // /reactionrole option [add|remove|list]
   if (group === "option") {
     if (sub === "add") {
-      const messageId = interaction.options.getString("message_id", true).trim();
+      const messageId = interaction.options
+        .getString("message_id", true)
+        .trim();
       const role = interaction.options.getRole("role", true);
       const level = interaction.options.getInteger("level") ?? 0;
       const removable = interaction.options.getBoolean("removable");
@@ -452,26 +478,24 @@ async function handleReactionrole(interaction, ctx) {
 
       const panel = getReactionRolePanel(guildId, messageId);
       if (!panel) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
 
       if (role.managed) {
-        await interaction.reply({
-          content: "That role is managed by an integration and cannot be assigned by the bot.",
-          flags: MessageFlags.Ephemeral,
+        await replyEphemeral(interaction, {
+          content:
+            "That role is managed by an integration and cannot be assigned by the bot.",
         });
         return;
       }
 
       const optCount = countReactionRoleOptions(guildId, messageId);
       if (optCount >= MAX_OPTIONS_PER_PANEL) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `This panel already has ${MAX_OPTIONS_PER_PANEL} options (Discord reaction limit). Remove one first.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -487,36 +511,36 @@ async function handleReactionrole(interaction, ctx) {
       });
 
       const mins = Math.round(PENDING_EMOJI_TTL_MS / 60000);
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           `**Send the emoji** as your next message in this server (message should be only the emoji).\n` +
           `I'll map it to ${role} on panel \`${messageId}\` (Level ${level}+, ${
             removableFlag ? "removable" : "permanent"
           }).\n` +
           `Type **\`stop\`** to cancel. Expires in ${mins} minutes.`,
-        flags: MessageFlags.Ephemeral,
         allowedMentions: NO_PING_MENTIONS,
       });
       return;
     }
 
     if (sub === "remove") {
-      const messageId = interaction.options.getString("message_id", true).trim();
+      const messageId = interaction.options
+        .getString("message_id", true)
+        .trim();
 
       const panel = getReactionRolePanel(guildId, messageId);
       if (!panel) {
-        await interaction.reply({
-          content: `No reaction-role panel with message ID \`${messageId}\`.`,
-          flags: MessageFlags.Ephemeral,
-        });
+        await replyEphemeral(
+          interaction,
+          `No reaction-role panel with message ID \`${messageId}\`.`,
+        );
         return;
       }
 
       const optCount = countReactionRoleOptions(guildId, messageId);
       if (optCount === 0) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `Panel \`${messageId}\` has no options to remove.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -528,32 +552,31 @@ async function handleReactionrole(interaction, ctx) {
       });
 
       const mins = Math.round(PENDING_EMOJI_TTL_MS / 60000);
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content:
           `**Send the emoji** to remove as your next message (message should be only the emoji).\n` +
           `I'll remove that option from panel \`${messageId}\`.\n` +
           `Type **\`stop\`** to cancel. Expires in ${mins} minutes.`,
-        flags: MessageFlags.Ephemeral,
       });
       return;
     }
 
     if (sub === "list") {
-      const messageId = interaction.options.getString("message_id", true).trim();
+      const messageId = interaction.options
+        .getString("message_id", true)
+        .trim();
       const panel = getReactionRolePanel(guildId, messageId);
       if (!panel) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
 
       const opts = listReactionRoleOptions(guildId, messageId);
       if (!opts.length) {
-        await interaction.reply({
+        await replyEphemeral(interaction, {
           content: `Panel \`${messageId}\` has no options yet.`,
-          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -562,9 +585,8 @@ async function handleReactionrole(interaction, ctx) {
         const rem = Number(o.removable) !== 0 ? "removable" : "permanent";
         return `- ${o.emoji_display} → <@&${o.role_id}> — Level ${o.min_level}+ · ${rem}`;
       });
-      await interaction.reply({
+      await replyEphemeral(interaction, {
         content: `**Options for panel \`${messageId}\`:**\n${lines.join("\n")}`,
-        flags: MessageFlags.Ephemeral,
         allowedMentions: NO_PING_MENTIONS,
       });
       return;
@@ -576,10 +598,10 @@ async function handleReactionrole(interaction, ctx) {
     const messageId = interaction.options.getString("message_id", true).trim();
     const panel = getReactionRolePanel(guildId, messageId);
     if (!panel) {
-      await interaction.reply({
-        content: `No reaction-role panel with message ID \`${messageId}\`.`,
-        flags: MessageFlags.Ephemeral,
-      });
+      await replyEphemeral(
+        interaction,
+        `No reaction-role panel with message ID \`${messageId}\`.`,
+      );
       return;
     }
 
@@ -592,21 +614,19 @@ async function handleReactionrole(interaction, ctx) {
         changes: [`Panel: \`${messageId}\``],
       }).catch(() => {});
     }
-    await interaction.reply({
+    await replyEphemeral(interaction, {
       content: result.ok
         ? `Synced panel \`${messageId}\` (embed + bot reactions).`
         : `Sync failed: ${result.error}`,
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
-  await interaction.reply({
+  await replyEphemeral(interaction, {
     content:
       `Unknown reactionrole subcommand: \`/${interaction.commandName}` +
       `${group ? ` ${group}` : ""} ${sub || ""}\`.\n` +
       `Use \`/reactionrole panel create|edit|deploy|delete|list\`, \`/reactionrole option add|remove|list\`, or \`/reactionrole sync\`.`,
-    flags: MessageFlags.Ephemeral,
   });
   return;
 }

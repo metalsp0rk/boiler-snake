@@ -11,11 +11,12 @@ const {
   getGuildSettings,
 } = require("../../db");
 const { logWarnEvent } = require("../logs/auditLog");
+const { Color } = require("../../core/theme");
 
 /** Every minute. */
 const EXPIRY_CRON = "* * * * *";
 
-const COLOR_VOID = 0x95a5a6;
+const COLOR_VOID = Color.muted;
 
 /**
  * Process due expirations.
