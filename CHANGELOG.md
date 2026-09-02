@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.5.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.4.0...v1.5.0) (2026-09-02)
+
+
+### Features
+
+* **eventReminders:** mute, always-embed delivery, shortname suggest ([344977d](https://github.com/metalsp0rk/boiler-snake/commit/344977d6dcfda1aaec12043eebd95e4185c56ad7))
+* **expose level_xp_factor on /setxp:** add `factor` option ([37c4115](https://github.com/metalsp0rk/boiler-snake/commit/37c41159a32b42b1866e3c5d7a364fbca20ff1db))
+* **permissions:** staff-gate tools and OAuth slash visibility sync ([6d9939b](https://github.com/metalsp0rk/boiler-snake/commit/6d9939b730acf9043e01efbbe75629cc7d133c14))
+* stored ticket panel registry with list/edit/delete ([1493a55](https://github.com/metalsp0rk/boiler-snake/commit/1493a5552da52bd86441f222f3f5eb9eaa76d346))
+* **warnings:** expiry, staff export, and evidence fields ([15dba90](https://github.com/metalsp0rk/boiler-snake/commit/15dba906d13b9ed938dbb14c216e46b980f43372))
+* **xp:** add admin-only /grantxp command ([4cb888a](https://github.com/metalsp0rk/boiler-snake/commit/4cb888a479817f41bef28d7d0b83904b33237e5d))
+
+
+### Bug Fixes
+
+* persistent flag for event reminders to skip auto-cleanup ([52ca907](https://github.com/metalsp0rk/boiler-snake/commit/52ca907b331aaaf6e2332230dcbeea292eda64de))
+* **userActivity:** window-aware posts/week and 90d option ([cbff383](https://github.com/metalsp0rk/boiler-snake/commit/cbff383d6916d4a73208ffb556d2c79c76936bf3))
+
 ## [1.4.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.3.0...v1.4.0) (2026-08-06)
 
 
