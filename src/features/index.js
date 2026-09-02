@@ -11,6 +11,7 @@ module.exports = [
   require("./levelRoles"),
   require("./logs"),
   require("./youtube"),
+  require("./twitch"),
   require("./honeypot"),
   require("./reactionRoles"),
   require("./eventReminders"),

@@ -513,6 +513,82 @@ Send a one-off test notification using the latest feed item for a YouTube channe
 
 If the channel is not already subscribed, the bot adds it as a subscription so the feed can be fetched. Reply is **not** ephemeral (posted as a normal interaction reply with embed/content).
 
+### `/twitch` - Twitch Channel Management
+
+Manage subscriptions to Twitch channels for **go-live** notifications. Requires `TWITCH_CLIENT_ID` + `TWITCH_CLIENT_SECRET` in the environment. See [Twitch Stream Notifications](../twitch-notifications.md).
+
+#### Subcommand: `add` - Subscribe to Channel
+
+Add a Twitch channel for go-live notifications.
+
+**Usage**:
+```bash
+/twitch add login:SomeStreamer
+/twitch add login:https://twitch.tv/SomeStreamer
+/twitch add login:12345678
+```
+
+**Supported formats**: login, `twitch.tv/…` URL, `@login`, or numeric user id.
+
+#### Subcommand: `remove` - Unsubscribe
+
+Remove a Twitch channel subscription (autocomplete over subscriptions).
+
+**Usage**:
+```bash
+/twitch remove channel:SomeStreamer
+```
+
+#### Subcommand: `list` - View Subscriptions
+
+Display all subscribed channels (with live status), the notification channel, and ping role.
+
+**Usage**:
+```bash
+/twitch list
+```
+
+### `/settwitch` - Twitch Configuration
+
+Configure Twitch notification settings.
+
+#### Subcommand: `channel` - Set Notification Location
+
+Choose where go-live alerts appear.
+
+**Usage**:
+```bash
+/settwitch channel channel:#stream-notifications
+```
+
+#### Subcommand: `role` - Mention Role on Go-Live
+
+Set (or clear) a role mentioned when a subscribed streamer goes live. Independent of the YouTube roles; no `@everyone` fallback.
+
+**Usage**:
+```bash
+/settwitch role role:@StreamAlerts
+/settwitch role
+# omit role → disable mentions
+```
+
+#### Subcommand: `interval` - Configure Polling Frequency
+
+Set how often the bot checks Twitch (1–60 minutes, default 2).
+
+**Usage**:
+```bash
+/settwitch interval minutes:2
+```
+
+#### Subcommand: `settings` - Show Current Configuration
+
+```bash
+/settwitch settings
+```
+
+Shows credentials status, notification channel, ping role, interval, and subscription count.
+
 ### `/staff` - Staff Roles
 
 Configure trusted staff roles for the admin/staff gate, honeypot exemption, and ticket visibility. See [Staff Roles](../staff-roles.md).
@@ -922,6 +998,8 @@ Optional: `silent`, `note` (N-n), `message` (Discord jump link), `evidence` (sta
 | `/youtube add\|remove\|list` | Staff gate | Yes |
 | `/setyoutube channel\|interval\|uploadrole` | Staff gate | Yes |
 | `/testnotification` | Staff gate | No |
+| `/twitch add\|remove\|list` | Staff gate | Yes |
+| `/settwitch channel\|role\|interval\|settings` | Staff gate | Yes |
 | `/reactionrole panel\|option\|sync` | Staff gate | Yes |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
@@ -991,6 +1069,8 @@ STAFF GATE (Manage Server OR any staff role):
 /youtube add|remove|list
 /setyoutube channel|interval|uploadrole
 /testnotification
+/twitch add|remove|list
+/settwitch channel|role|interval|settings
 /reactionrole panel|option|sync
 /honeypot channel|banrole
 /eventreminder setchannel

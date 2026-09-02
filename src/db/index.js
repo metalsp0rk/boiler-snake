@@ -28,6 +28,7 @@ const warnings = require("./repositories/warnings");
 const tickets = require("./repositories/tickets");
 const userChannelActivity = require("./repositories/userChannelActivity");
 const commandPermissionOauth = require("./repositories/commandPermissionOauth");
+const twitch = require("./repositories/twitch");
 
 module.exports = {
   db,
@@ -107,6 +108,15 @@ module.exports = {
   updateYoutubeChannelLastChecked: youtube.updateYoutubeChannelLastChecked,
   cleanupOldNotifications: youtube.cleanupOldNotifications,
   cleanupMalformedYoutubeChannels: youtube.cleanupMalformedYoutubeChannels,
+
+  // Twitch
+  normalizeTwitchLogin: twitch.normalizeTwitchLogin,
+  getTwitchChannels: twitch.getTwitchChannels,
+  getAllTwitchChannels: twitch.getAllTwitchChannels,
+  getTwitchChannel: twitch.getTwitchChannel,
+  addTwitchChannel: twitch.addTwitchChannel,
+  removeTwitchChannel: twitch.removeTwitchChannel,
+  updateTwitchChannelLiveState: twitch.updateTwitchChannelLiveState,
 
   // staff roles (generalized from honeypot_exempt_roles; junior | senior)
   STAFF_LEVELS: staffRoles.STAFF_LEVELS,

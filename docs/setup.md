@@ -226,6 +226,15 @@ If you have `YOUTUBE_API_KEY` configured:
 /setyoutube interval 5
 ```
 
+### Subscribe to Twitch (Optional)
+If you have `TWITCH_CLIENT_ID` + `TWITCH_CLIENT_SECRET` configured (see [Twitch Stream Notifications](twitch-notifications.md)):
+
+```bash
+/settwitch channel #stream-alerts
+/twitch add login:SomeStreamer
+/settwitch interval 2
+```
+
 ### Configure Staff Roles
 Trust moderator roles so they can use staff commands without Manage Server. Full guide: [Staff Roles](staff-roles.md).
 

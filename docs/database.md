@@ -27,6 +27,7 @@ boiler-snake/
 | `role_drop_state` | Track when users dropped below role thresholds |
 | `allowed_command_channels` | Command channel restrictions per guild |
 | `youtube_channels` | YouTube subscriptions and metadata |
+| `twitch_channels` | Twitch broadcaster subscriptions + live/stream dedup state |
 | `honeypot_channels` | Channels that ban non-exempt users who post |
 | `staff_roles` | Guild staff roles (admin gate + honeypot exemption); `level` junior\|senior |
 | `honeypot_ban_roles` | Roles that ban a member when granted |
@@ -174,6 +175,10 @@ CREATE TABLE guild_settings (
   youtube_polling_interval_minutes INTEGER NOT NULL DEFAULT 5,
   youtube_upload_role_id TEXT,                   -- optional role pinged on new uploads
 
+  twitch_notification_channel_id TEXT,           -- NULL when not configured
+  twitch_notify_role_id TEXT,                    -- optional role pinged on go-live
+  twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2,
+
   audit_log_channel_id TEXT,                     -- NULL when not configured
   message_log_channel_id TEXT,                   -- NULL when not configured
   event_reminder_channel_id TEXT,                -- default channel for event reminders
@@ -204,6 +209,9 @@ CREATE TABLE guild_settings (
 | `level_xp_factor` | 100 | Level formula factor |
 | `youtube_polling_interval_minutes` | 5 | API check frequency |
 | `youtube_upload_role_id` | NULL | Role mentioned on new uploads |
+| `twitch_notification_channel_id` | NULL | Channel for go-live alerts |
+| `twitch_notify_role_id` | NULL | Role mentioned on go-live (independent of YouTube) |
+| `twitch_polling_interval_minutes` | 2 | Helix check frequency |
 | `audit_log_channel_id` | NULL | Staff audit log channel |
 | `message_log_channel_id` | NULL | Deleted-message log channel |
 | `event_reminder_channel_id` | NULL | Default event-reminder notify channel |
@@ -387,6 +395,44 @@ WHERE id=?
 ```
 
 See [YouTube Notifications](youtube-notifications.md).
+
+---
+
+### 8b. `twitch_channels`
+
+Twitch broadcaster subscriptions and live-state dedup.
+
+```sql
+CREATE TABLE twitch_channels (
+  guild_id          TEXT NOT NULL,
+  broadcaster_id    TEXT NOT NULL,     -- Twitch user id (stable)
+  login             TEXT NOT NULL,     -- lowercase login
+  display_name      TEXT NOT NULL,
+  profile_image_url TEXT,
+  is_live           INTEGER NOT NULL DEFAULT 0,
+  last_stream_id    TEXT,              -- Helix stream id; dedup go-live
+  last_checked      INTEGER,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, broadcaster_id),
+  UNIQUE (guild_id, login)
+);
+```
+
+**Query patterns**:
+```javascript
+// All subscriptions for the poller
+SELECT guild_id, broadcaster_id, login, display_name, profile_image_url,
+       is_live, last_stream_id, last_checked
+FROM twitch_channels ORDER BY created_at ASC
+
+// Update live state after a poll
+UPDATE twitch_channels
+SET is_live=?, last_stream_id=?, last_checked=?, updated_at=?
+WHERE guild_id=? AND broadcaster_id=?
+```
+
+See [Twitch Stream Notifications](twitch-notifications.md).
 
 ---
 
@@ -972,6 +1018,9 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `015_event_reminder_event_optouts` | Per-event mute table for scheduled event reminders |
 | `016_command_permission_oauth` | OAuth token storage for slash command permission sync |
 | `017_warn_post_mvp` | `warn_expiry_days`; `warnings.expires_at` / evidence columns + expiry index |
+| `018_warn_post_mvp` | `warnings.expires_at` / evidence columns (post-MVP warning fields) |
+| `019_ticket_panels` | `ticket_panels` registry (posted panel messages for list/edit/delete) |
+| `020_twitch` | `twitch_channels` table + `twitch_*` columns on `guild_settings` |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

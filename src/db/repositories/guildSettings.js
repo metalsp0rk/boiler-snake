@@ -43,6 +43,9 @@ function getGuildSettings(guildId) {
       ticket_category_id: null,
       ticket_archive_channel_id: null,
       ticket_rate_limit_minutes: 60,
+      twitch_notification_channel_id: null,
+      twitch_notify_role_id: null,
+      twitch_polling_interval_minutes: 2,
       updated_at: now(),
     };
   }
@@ -75,6 +78,9 @@ function updateGuildSettings(guildId, patch) {
     "ticket_category_id",
     "ticket_archive_channel_id",
     "ticket_rate_limit_minutes",
+    "twitch_notification_channel_id",
+    "twitch_notify_role_id",
+    "twitch_polling_interval_minutes",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));

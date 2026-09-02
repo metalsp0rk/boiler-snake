@@ -54,6 +54,12 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - `/play` in voice via Lavalink
   - Spotify catalog (not Spotify audio streams)
 
+- **[Twitch Stream Notifications](twitch-notifications.md)**
+  - Go-live alerts for any number of subscribed streamers
+  - Client credentials setup
+  - Subscribing to channels
+  - Configuration commands
+
 - **[Honeypot Channels](honeypot.md)**
   - Decoy channels that ban anyone who posts
   - Exempt roles for staff

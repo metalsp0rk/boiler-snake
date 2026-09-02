@@ -63,6 +63,21 @@ Google Cloud API key for YouTube notifications. Required only if using `/youtube
 YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY
 ```
 
+#### `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` (Optional)
+Twitch app credentials (Client Credentials) for go-live notifications. Required only if using `/twitch` features.
+
+**Setup**:
+1. Go to the [Twitch Developer Console](https://dev.twitch.tv/console)
+2. Create an application (no user OAuth needed)
+3. Copy the Client ID and Client Secret to `.env`
+
+```env
+TWITCH_CLIENT_ID=YOUR_TWITCH_CLIENT_ID
+TWITCH_CLIENT_SECRET=YOUR_TWITCH_CLIENT_SECRET
+```
+
+See [Twitch Stream Notifications](twitch-notifications.md).
+
 #### `DEV_GUILD_ID` (Optional)
 Server ID for instant command registration during development.
 
@@ -114,6 +129,9 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `decay_percent` | 0.10 | XP reduction (10%) |
 | `level_xp_factor` | 100 | Level formula factor (see [Level Curve](#level-curve-configuration)) |
 | `youtube_polling_interval_minutes` | 5 | YouTube API check frequency |
+| `twitch_notification_channel_id` | *(none)* | Channel for Twitch go-live alerts |
+| `twitch_notify_role_id` | *(none)* | Role mentioned on Twitch go-live (independent of YouTube roles) |
+| `twitch_polling_interval_minutes` | 2 | Twitch Helix check frequency |
 | `audit_log_channel_id` | *(none)* | Channel for bans, kicks, role-change embeds |
 | `message_log_channel_id` | *(none)* | Channel for deleted-message embeds |
 | `warn_log_channel_id` | *(none)* | Dedicated warning issue/void log; falls back to audit log |
@@ -281,6 +299,18 @@ Range: 1-60 minutes. Lower = faster alerts but more API quota usage.
 #### Unsubscribe
 ```bash
 /youtube remove channel:UCxxxxxxxxxxx
+```
+
+### Twitch Configuration (Requires Client Credentials)
+
+Full guide: [Twitch Stream Notifications](twitch-notifications.md).
+
+```bash
+/settwitch channel #stream-alerts
+/settwitch role role:@StreamAlerts   # omit role to disable
+/settwitch interval 2                # 1-60 minutes
+/twitch add login:SomeStreamer
+/twitch list
 ```
 
 ### Honeypot Channels

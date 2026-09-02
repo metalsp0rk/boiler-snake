@@ -113,6 +113,7 @@ npm run register
   - `/leveltorole` set/remove
   - `/setcommandchannel` add/remove
   - `/youtube` add/remove, `/setyoutube` *
+  - `/twitch` add/remove, `/settwitch` *
   - `/honeypot` channel/banrole/exempt add/del
   - `/reactionrole` panel create/edit/deploy/delete, option add/remove (when emoji is applied), sync
 - **Not** logged: read-only commands (`/settings`, `list`/`show` subcommands, `/testnotification`, `/xp`, `/leaderboard`)

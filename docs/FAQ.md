@@ -468,11 +468,10 @@ With daily decay:
 **A**: Yes! See [`ROADMAP.md`](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md) in the project root:
 
 **Planned features** (see roadmap if present):
-- Twitch stream notifications (multi-channel go-live alerts + dedicated ping role)
 - Activity analytics dashboard
 - XP transfer between servers
 
-**Recently added**: [Music player](music.md); [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
+**Recently added**: [Music player](music.md); [Twitch stream notifications](twitch-notifications.md) (multi-channel go-live alerts + dedicated ping role); [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
 
 ---
 

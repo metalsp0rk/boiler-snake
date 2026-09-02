@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, music playback, and (planned) Twitch stream notifications. This roadmap documents **planned** features and their implementation stages.
+Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, Twitch stream notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, and music playback. This roadmap documents **planned** features and their implementation stages.
 
-**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
+**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
 
 ---
 
@@ -627,7 +627,7 @@ Notify a guild when any subscribed Twitch channel goes live. Supports **any numb
 
 ### Status
 
-**Planned** — design decisions locked (see [3.8](#38-design-decisions-locked)); ready to implement once scheduled. Patterned after the shipped YouTube feature (`src/features/youtube/`).
+**Shipped (MVP)** — implemented in `src/features/twitch/` with migration `020_twitch`. Go-live notifications via Helix polling, multi-channel per guild, separate notify channel + ping role. See [docs/twitch-notifications.md](docs/twitch-notifications.md). Design decisions in [3.8](#38-design-decisions-locked) remain the product contract. Post-MVP: EventSub, per-channel overrides, templates, go-offline, clips/VODs.
 
 ---
 
@@ -1402,10 +1402,10 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 
 | Table / change | Notes |
 |----------------|-------|
-| `twitch_channels` | Per-guild broadcaster subscriptions + live/stream dedup state |
-| `guild_settings.twitch_notification_channel_id` | Go-live Discord channel |
-| `guild_settings.twitch_notify_role_id` | Optional ping role (≠ YouTube roles) |
-| `guild_settings.twitch_polling_interval_minutes` | Poll interval (default 2) |
+| `twitch_channels` | Per-guild broadcaster subscriptions + live/stream dedup state (**shipped**, migration `020`) |
+| `guild_settings.twitch_notification_channel_id` | Go-live Discord channel (**shipped**) |
+| `guild_settings.twitch_notify_role_id` | Optional ping role (≠ YouTube roles) (**shipped**) |
+| `guild_settings.twitch_polling_interval_minutes` | Poll interval (default 2) (**shipped**) |
 
 ### Staff notes
 
@@ -1480,6 +1480,7 @@ Docs currently describe two incomplete slash surfaces honestly; this section is 
 
 ### Twitch stream notifications
 
+- [x] MVP: multi-channel go-live alerts via Helix polling; `/twitch add|remove|list`; `/settwitch channel|role|interval|settings`; stream-id dedup  
 - [ ] Twitch EventSub (webhook or conduit) instead of / in addition to polling  
 - [ ] Per-channel Discord channel or role overrides  
 - [ ] Custom go-live message templates  

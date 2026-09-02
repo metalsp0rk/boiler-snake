@@ -73,6 +73,7 @@ export default defineConfig({
         items: [
           { text: 'YouTube', link: '/youtube-notifications' },
           { text: 'Music', link: '/music' },
+          { text: 'Twitch', link: '/twitch-notifications' },
           { text: 'Event reminders', link: '/event-reminders' },
           { text: 'Command restrictions', link: '/command-restrictions' },
         ],

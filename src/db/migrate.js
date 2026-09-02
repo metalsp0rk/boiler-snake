@@ -27,6 +27,7 @@ const migrations = [
   require("./migrations/017_event_reminder_persistent"),
   require("./migrations/018_warn_post_mvp"),
   require("./migrations/019_ticket_panels"),
+  require("./migrations/020_twitch"),
 ];
 
 const helpers = {

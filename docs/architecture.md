@@ -35,7 +35,7 @@ src/
 │   └── awardXp.js           # Unified XP → activity → roles → audit
 ├── features/
 │   ├── load.js              # applyFeaturesToRegistry / start / registerEvents
-│   ├── index.js             # Ordered feature list
+│   ├── index.js             # Ordered feature list (20 modules)
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
 │   ├── xp/                  # /xp /leaderboard /setxp /grantxp + award helpers
@@ -45,6 +45,7 @@ src/
 │   ├── levelRoles/          # /leveltorole + syncMemberRoles
 │   ├── logs/                # /setlog + auditLog + delete/ban/kick
 │   ├── youtube/             # YouTube commands + RSS/API ticker
+│   ├── twitch/              # /twitch /settwitch + Helix go-live ticker
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
 │   ├── reactionRoles/       # /reactionrole + panel service
 │   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
@@ -121,7 +122,7 @@ Independent events (message delete, ban, kick, honeypot ban-role, tickers) regis
 
 - **connection.js** — SQLite open (`DB_PATH` / `DATA_DIR`), WAL
 - **migrate.js** + **migrations/** — idempotent ordered steps
-- **repositories/** — users, guildSettings, activity, youtube, honeypot, reactionRoles, staff notes/roles, warnings, tickets, user activity, …
+- **repositories/** — users, guildSettings, activity, youtube, twitch, honeypot, reactionRoles, staff notes/roles, warnings, tickets, user activity, …
 - **index.js** — public facade (same API as legacy single-file `db.js`)
 
 Migrations on load:
@@ -143,6 +144,7 @@ Migrations on load:
 | `013_user_channel_activity` | daily per-channel message counters, ignore list, user backfill meta |
 | `014_guild_activity_backfill` | guild-wide activity backfill status + channel cursors |
 | `015_event_reminder_event_optouts` | per-event mute table for event reminders |
+| `020_twitch` | twitch_channels table + twitch_* guild_settings columns |
 
 ### Core XP API
 
@@ -176,6 +178,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **levelRoles** | Grace-period drop via `levelRoles/sync.js` |
 | **logs** | Audit + message log channels; in-memory delete cache |
 | **youtube** | RSS + optional Data API; guild notification channel |
+| **twitch** | Helix poll (≤100 ids/req); go-live dedup by stream id; separate channel + role from YouTube |
 | **honeypot** | Channel posts / ban-roles; warning PNG; exempt roles |
 | **reactionRoles** | Bot panels, min level, removable options |
 | **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |
@@ -190,7 +193,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 
 ## Commands
 
-Slash builders and handlers are **co-located** on features. The registry exports **22** slash commands (unique names; see `test/registry.test.js`). Registration:
+Slash builders and handlers are **co-located** on features. The registry exports **26** slash commands (unique names; see `test/registry.test.js`). Registration:
 
 ```bash
 npm run register   # node src/commands/register.js
@@ -206,7 +209,7 @@ Router: `commands/router.js` → autocomplete / modal submit / button / chat inp
 | Gate | Meaning |
 |------|---------|
 | **Public** | No staff check: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` (and panel open), `/play`, `/music`. `/eventreminder` opt-out/status (and create for event creators). |
-| **Staff** (`requireStaff` / `isStaff`) | ManageGuild **or** any `staff_roles` role — notes, warnings, tickets (incl. panel/set*), activity config, honeypot channel/banrole, XP/YouTube/decay/logs/reaction-roles, `/userinfo` (except Activity), most config |
+| **Staff** (`requireStaff` / `isStaff`) | ManageGuild **or** any `staff_roles` role — notes, warnings, tickets (incl. panel/set*), activity config, honeypot channel/banrole, XP/YouTube/Twitch/decay/logs/reaction-roles, `/userinfo` (except Activity), most config |
 | **Senior staff** (`requireSeniorStaff` / `isSeniorStaff`) | ManageGuild **or** a **senior** `staff_roles` role — `/userinfo` Activity; senior roles also receive automatic ticket channel overwrites (junior = command gate only, no auto ticket view) |
 | **ManageGuild-only** (`requireAdmin` / `isAdminOrMod`) | **`/grantxp`**; staff-role add/remove/setlevel; **`/staff syncpermissions`**; **`/setcommandchannel`**; **`/honeypot exempt`** (staff-role alias) |
 
@@ -241,6 +244,8 @@ Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event remin
 ## Operator notes
 
 - Env: `DISCORD_TOKEN`, `CLIENT_ID`; optional `DEV_GUILD_ID`, `DATA_DIR`, `DB_PATH`
+- YouTube (optional): `YOUTUBE_API_KEY` — see [youtube-notifications.md](./youtube-notifications.md)
+- Twitch (optional): `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` — see [twitch-notifications.md](./twitch-notifications.md)
 - Tickets (optional): `TICKET_HTTP_PORT`, `TICKET_PUBLIC_BASE_URL`, `TICKET_MAX_ASSET_BYTES`, `TICKET_MAX_ASSETS`; AI close summaries: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` — see [tickets.md](./tickets.md)
 - Docker: `DATA_DIR=/data` volume; persist WAL siblings
 - Fonts for PNG: Noto / DejaVu (image includes them)
