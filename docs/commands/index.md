@@ -99,6 +99,39 @@ Control your own event reminder pings. See [Scheduled Event Reminders](../event-
 
 Guild opt-out always wins over per-event unmute. Other `/eventreminder` subcommands require **Manage Guild** or being the scheduled event’s **creator** (see below).
 
+### `/play` - Play a track
+
+Join your voice channel (if needed) and play a song. See [Music player](../music.md).
+
+```bash
+/play query:never gonna give you up
+/play query:https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT
+```
+
+**Who**: Any member in a non-AFK voice channel. If the bot is already playing, you must be in **that** channel.
+
+**Notes**:
+- Spotify links need `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET`. Audio is resolved from YouTube Music / YouTube / SoundCloud, not streamed from Spotify.
+- Playlists/albums enqueue up to 100 tracks.
+- Respects `/setcommandchannel` (being in voice is not enough if commands are restricted).
+
+### `/music` - Playback controls
+
+| Subcommand | Effect |
+|------------|--------|
+| `skip` | Skip current track |
+| `pause` / `resume` | Pause / resume |
+| `stop` | Clear queue and leave |
+| `leave` | Leave voice |
+| `queue` | Show upcoming tracks (ephemeral) |
+| `nowplaying` | Current track + Pause/Skip/Stop buttons |
+| `volume level:` | 0–100 |
+| `shuffle` | Shuffle remaining queue |
+| `remove position:` | Remove one queued item (1-based) |
+| `seek timestamp:` | `1:23` or seconds (`90`) |
+
+Same voice-channel rule as `/play`.
+
 ---
 
 ## Admin/Mod Commands
@@ -862,6 +895,10 @@ Optional: `silent`, `note` (N-n), `message` (Discord jump link), `evidence` (sta
 | `/eventreminder unmute` | Public | Yes |
 | `/eventreminder status` | Public | Yes |
 | `/eventreminder list` | Public | Yes |
+| `/play` | Public (same VC) | No (now-playing) |
+| `/music skip\|pause\|resume\|stop\|leave\|volume\|shuffle\|remove\|seek` | Public (same VC) | Yes |
+| `/music queue` | Public (same VC) | Yes |
+| `/music nowplaying` | Public (same VC) | No |
 | `/note add\|list\|edit\|delete\|info\|settings` | Staff gate | Yes |
 | `/warn add\|list\|info\|void\|count\|export\|settings` | Staff gate | Yes |
 | `/userinfo` | Staff gate | Yes |
@@ -935,6 +972,8 @@ PUBLIC:
 /ticket settings                   → View ticket config
 /eventreminder optout|optin|mute|unmute|status → Reminder ping preferences
 /eventreminder list                → List active event reminders
+/play query:                       → Play in your voice channel
+/music skip|pause|resume|stop|leave|queue|nowplaying|volume|shuffle|remove|seek
 
 STAFF GATE (Manage Server OR any staff role):
 /note add|list|edit|delete|info|settings

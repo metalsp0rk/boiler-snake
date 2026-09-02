@@ -38,6 +38,8 @@ describe("commandVisibility", () => {
     assert.equal(visibilityTier("warn"), TIERS.public);
     assert.equal(visibilityTier("ticket"), TIERS.public);
     assert.equal(visibilityTier("eventreminder"), TIERS.public);
+    assert.equal(visibilityTier("play"), TIERS.public);
+    assert.equal(visibilityTier("music"), TIERS.public);
     assert.equal(visibilityTier("note"), TIERS.staff);
     assert.equal(visibilityTier("setxp"), TIERS.staff);
     assert.equal(visibilityTier("honeypot"), TIERS.staff);

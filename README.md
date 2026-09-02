@@ -12,6 +12,7 @@ Includes:
 - **Level → Role** automation with **drop-below grace days**
 - **Command restriction** to allowed channels per guild
 - Admin/mod commands for configuration
+- **Music player** (`/play` in voice via Lavalink; Spotify is catalog-only)
 
 ## Architecture
 

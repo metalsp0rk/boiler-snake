@@ -7,6 +7,7 @@ module.exports = [
   require("./xp"),
   require("./decay"),
   require("./voice"),
+  require("./music"),
   require("./levelRoles"),
   require("./logs"),
   require("./youtube"),

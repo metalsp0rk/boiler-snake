@@ -44,3 +44,4 @@ npm test
 - `src/bot/pipelines.js` — `onMessageCreate`, `onMessageReactionAdd`, `onMessageReactionRemove`
 - `src/features/voice` — `runVoiceTick`
 - `src/features/youtube/ticker.js` — `processChannel` / `runYoutubeTick` accept optional network deps
+- `src/features/music` — `setManagerForTests` injects an in-memory Lavalink fake (`helpers/lavalink.js`); do not run a real node in CI

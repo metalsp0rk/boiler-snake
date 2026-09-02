@@ -1,10 +1,30 @@
 services:
+  lavalink:
+    # Lavalink 4.2+ required for Discord DAVE (E2EE voice). Do not pin below 4.2.2.
+    image: ghcr.io/lavalink-devs/lavalink:4
+    restart: unless-stopped
+    environment:
+      _JAVA_OPTIONS: -Xmx512M
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+    volumes:
+      - ./deploy/lavalink/application.yml:/opt/Lavalink/application.yml:ro
+      - lavalink-plugins:/opt/Lavalink/plugins
+    expose:
+      - "2333"
+
   bot:
     image: ghcr.io/metalsp0rk/boiler-snake:latest
     build: .
     env_file: .env
+    depends_on:
+      - lavalink
     environment:
       DATA_DIR: /data
+      LAVALINK_HOST: lavalink
+      LAVALINK_PORT: "2333"
+      LAVALINK_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
       # Optional: expose ticket transcripts (set TICKET_HTTP_PORT + TICKET_PUBLIC_BASE_URL in .env)
       # TICKET_HTTP_PORT: "8080"
     volumes:
@@ -15,3 +35,4 @@ services:
 
 volumes:
   bot-data:
+  lavalink-plugins:

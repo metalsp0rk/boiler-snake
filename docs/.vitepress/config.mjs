@@ -72,6 +72,7 @@ export default defineConfig({
         text: 'Integrations & controls',
         items: [
           { text: 'YouTube', link: '/youtube-notifications' },
+          { text: 'Music', link: '/music' },
           { text: 'Event reminders', link: '/event-reminders' },
           { text: 'Command restrictions', link: '/command-restrictions' },
         ],

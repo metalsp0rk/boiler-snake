@@ -12,6 +12,7 @@ Boiler Snake is a feature-rich Discord bot that helps you gamify your server wit
 - **Reaction roles**: Self-serve emoji panels with min-level gates and optional removable roles
 - **Daily XP decay**: Incentivize active participation
 - **YouTube notifications**: Get alerted when subscribed channels go live or upload videos
+- **Music player**: `/play` in voice (Spotify catalog via Lavalink; YouTube/SoundCloud streams)
 - **Honeypot channels**: Auto-ban users who post in decoy channels (with staff role exemptions)
 - **Scheduled event reminders**: Pre-event pings for Interested members via dedicated roles
 - **Staff roles**: Junior/senior trusted roles for the staff command gate and ticket visibility
@@ -58,6 +59,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 
 ### Advanced Features
 - [YouTube Notifications](youtube-notifications.md) - Monitor channels for live streams and uploads
+- [Music Player](music.md) - Voice playback with Spotify catalog + Lavalink
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
 - [Scheduled Event Reminders](event-reminders.md) - Pre-event pings for Interested members
 - [Staff Roles](staff-roles.md) - Junior/senior trusted roles for staff gate and tickets

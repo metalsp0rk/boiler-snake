@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, and (planned) Twitch stream notifications. This roadmap documents **planned** features and their implementation stages.
+Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, music playback, and (planned) Twitch stream notifications. This roadmap documents **planned** features and their implementation stages.
 
-**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, help tickets (MVP).
+**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
 
 ---
 

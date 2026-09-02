@@ -13,6 +13,7 @@ Common questions and answers for Boiler Snake users and administrators.
 - Level-based role granting
 - Daily XP decay for inactive users
 - YouTube notifications for streams/uploads
+- Music player (`/play` in voice via Lavalink)
 - Honeypot channels (auto-ban decoy-channel posters)
 - Help tickets, staff notes, warnings, user activity
 - Beautiful PNG leaderboards
@@ -422,6 +423,14 @@ crontab -e
 
 ---
 
+### Q: The music bot joins voice but I hear nothing.
+
+**A**: Discord requires DAVE (E2EE voice). Lavalink **4.2.2+** is required. Recreate the sidecar (`docker compose up -d --force-recreate lavalink`), confirm the bot has **Speak**, and check logs for `[music] Lavalink node connected`. See [Music player](music.md#joined-but-no-audio).
+
+Spotify cannot stream full tracks; links resolve via YouTube Music. Wrong matches and YouTube 403s are Lavalink plugin issues — bump the YouTube plugin in `application.yml`.
+
+---
+
 ### Q: How much memory does the bot use?
 
 **Approximate baseline** (no decay):
@@ -463,7 +472,7 @@ With daily decay:
 - Activity analytics dashboard
 - XP transfer between servers
 
-**Recently added**: [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
+**Recently added**: [Music player](music.md); [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
 
 ---
 

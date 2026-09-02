@@ -50,6 +50,10 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Subscribing to channels
   - Configuration commands
 
+- **[Music Player](music.md)**
+  - `/play` in voice via Lavalink
+  - Spotify catalog (not Spotify audio streams)
+
 - **[Honeypot Channels](honeypot.md)**
   - Decoy channels that ban anyone who posts
   - Exempt roles for staff

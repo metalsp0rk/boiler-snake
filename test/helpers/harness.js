@@ -114,6 +114,12 @@ async function createIntegrationEnv(options = {}) {
     guild,
     name: "yt-notify",
   });
+  const channelVoice = createTextChannel({
+    id: IDS.channelVoice,
+    guild,
+    name: "General",
+    type: 2,
+  });
 
   for (const ch of [
     channelGeneral,
@@ -121,6 +127,7 @@ async function createIntegrationEnv(options = {}) {
     channelHoneypot,
     channelLog,
     channelNotify,
+    channelVoice,
   ]) {
     guild.addChannel(ch);
   }
@@ -271,6 +278,7 @@ async function createIntegrationEnv(options = {}) {
       honeypot: channelHoneypot,
       log: channelLog,
       notify: channelNotify,
+      voice: channelVoice,
     },
     runCommand,
     runButton,

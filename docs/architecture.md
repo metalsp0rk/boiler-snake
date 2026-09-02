@@ -35,12 +35,13 @@ src/
 │   └── awardXp.js           # Unified XP → activity → roles → audit
 ├── features/
 │   ├── load.js              # applyFeaturesToRegistry / start / registerEvents
-│   ├── index.js             # Ordered feature list (17 modules)
+│   ├── index.js             # Ordered feature list
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
 │   ├── xp/                  # /xp /leaderboard /setxp /grantxp + award helpers
 │   ├── decay/               # /setdecay + daily cron
 │   ├── voice/               # Voice XP ticker
+│   ├── music/               # /play /music + Lavalink voice streaming
 │   ├── levelRoles/          # /leveltorole + syncMemberRoles
 │   ├── logs/                # /setlog + auditLog + delete/ban/kick
 │   ├── youtube/             # YouTube commands + RSS/API ticker
@@ -204,7 +205,7 @@ Router: `commands/router.js` → autocomplete / modal submit / button / chat inp
 
 | Gate | Meaning |
 |------|---------|
-| **Public** | No staff check: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` (and panel open). `/eventreminder` opt-out/status (and create for event creators). |
+| **Public** | No staff check: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` (and panel open), `/play`, `/music`. `/eventreminder` opt-out/status (and create for event creators). |
 | **Staff** (`requireStaff` / `isStaff`) | ManageGuild **or** any `staff_roles` role — notes, warnings, tickets (incl. panel/set*), activity config, honeypot channel/banrole, XP/YouTube/decay/logs/reaction-roles, `/userinfo` (except Activity), most config |
 | **Senior staff** (`requireSeniorStaff` / `isSeniorStaff`) | ManageGuild **or** a **senior** `staff_roles` role — `/userinfo` Activity; senior roles also receive automatic ticket channel overwrites (junior = command gate only, no auto ticket view) |
 | **ManageGuild-only** (`requireAdmin` / `isAdminOrMod`) | **`/grantxp`**; staff-role add/remove/setlevel; **`/staff syncpermissions`**; **`/setcommandchannel`**; **`/honeypot exempt`** (staff-role alias) |

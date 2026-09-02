@@ -152,6 +152,9 @@ function createTextChannel(opts = {}) {
     sent,
     deleted: false,
     isTextBased: () => true,
+    permissionsFor: () => ({
+      has: () => true,
+    }),
     setName: async (name) => {
       channelName = name;
       return channel;

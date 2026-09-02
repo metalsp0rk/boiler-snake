@@ -4,9 +4,9 @@ const { buildDefaultRegistry, createRegistry } = require("../src/commands/regist
 const features = require("../src/features");
 
 describe("command definitions via registry", () => {
-  it("exports 22 slash commands with unique names", () => {
+  it("exports 24 slash commands with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 22);
+    assert.equal(commands.length, 24);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -18,6 +18,8 @@ describe("command definitions via registry", () => {
     assert.ok(names.includes("activityconfig"));
     assert.ok(names.includes("ticket"));
     assert.ok(names.includes("grantxp"));
+    assert.ok(names.includes("play"));
+    assert.ok(names.includes("music"));
   });
 });
 
@@ -68,15 +70,22 @@ describe("buildDefaultRegistry", () => {
       "userinfo",
       "userActivity",
       "tickets",
+      "music",
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 18);
+    assert.equal(features.length, 19);
   });
 
   it("registers userinfo button handler", () => {
     const registry = buildDefaultRegistry();
     assert.equal(typeof registry.getButtonHandler("ui:n:123"), "function");
+  });
+
+  it("registers music button handler", () => {
+    const registry = buildDefaultRegistry();
+    assert.equal(typeof registry.getButtonHandler("music:skip"), "function");
+    assert.equal(typeof registry.getButtonHandler("music:pause"), "function");
   });
 
   it("registers ticket panel button and modal handlers", () => {

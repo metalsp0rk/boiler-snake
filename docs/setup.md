@@ -111,6 +111,7 @@ Use Discord's [OAuth2 URL Generator](https://discord.com/developers/applications
 - ✅ Ban Members *(required for [honeypot channels](honeypot.md))*
 - ✅ Manage Messages *(recommended so honeypot messages can be deleted, and so [reaction-role](reaction-roles.md) panels can strip unconfigured reactions)*
 - ✅ View Audit Log *(recommended for [audit / message logs](audit-log.md) — attribute bans, kicks, and deletes)*
+- ✅ **Connect** and **Speak** *(required for the [music player](music.md))*
 
 **Ticket system notes:**
 - The bot role must sit **above** every **senior** staff role (ticket overwrites). Otherwise Discord rejects private ticket overwrites with Missing Permissions.
@@ -187,6 +188,10 @@ You should see:
 ```
 Boiler Snake logged in as YourBot#1234
 ```
+
+Compose also starts a **Lavalink** sidecar for [music](music.md). Set `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` in `.env` if you want Spotify links and search. Without `LAVALINK_HOST` (bare `npm start` and no local node), `/play` replies that music is not configured.
+
+For a local Lavalink process instead of Compose, see [Music player](music.md#2-lavalink-node-required).
 
 ## First-Time Setup Wizard
 

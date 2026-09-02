@@ -62,3 +62,8 @@ coverage/
 # Ticket transcripts (runtime)
 ############################
 ticket-transcripts/
+
+############################
+# Lavalink plugin JARs
+############################
+deploy/lavalink/plugins/*.jar

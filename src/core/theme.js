@@ -37,6 +37,8 @@ const Color = {
   youtubeLive: 0xff0000,
   /** YouTube upload */
   youtubeUpload: 0xffa500,
+  /** Music player now-playing / queue (Spotify catalog branding) */
+  music: 0x1db954,
 };
 
 /** Standard permission denial (straight apostrophe). */

@@ -33,6 +33,23 @@ CLIENT_ID=YOUR_APP_CLIENT_ID
 
 ### Optional Variables
 
+#### `LAVALINK_HOST` (Optional — required for music)
+Hostname of a Lavalink **4.2+** node. Compose sets `lavalink`. Local: `127.0.0.1`. See [Music player](music.md).
+
+```env
+LAVALINK_HOST=127.0.0.1
+LAVALINK_PORT=2333
+LAVALINK_PASSWORD=YOUR_LAVALINK_PASSWORD
+```
+
+#### `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` (Optional)
+Spotify Web API **client credentials** for catalog search and playlist resolve. They do **not** stream Spotify audio. Required for Spotify URLs; YouTube/SoundCloud still work without them.
+
+```env
+SPOTIFY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID
+SPOTIFY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET
+```
+
 #### `YOUTUBE_API_KEY` (Optional)
 Google Cloud API key for YouTube notifications. Required only if using `/youtube` features.
 

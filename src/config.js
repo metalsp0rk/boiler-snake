@@ -11,6 +11,8 @@
  *   DATA_DIR       — directory for xpbot.sqlite (default: project root)
  *   DB_PATH        — full path to sqlite file (wins over DATA_DIR)
  *   YOUTUBE_API_KEY — YouTube Data API (live detection / channel resolve)
+ *   LAVALINK_HOST / LAVALINK_PORT / LAVALINK_PASSWORD — music player node
+ *   SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET — Spotify catalog (LavaSrc)
  *   CLIENT_SECRET — Discord app secret (OAuth for /staff syncpermissions)
  *   PUBLIC_HTTP_PORT / TICKET_HTTP_PORT — public HTTP (transcripts + OAuth callback)
  *   PUBLIC_BASE_URL / TICKET_PUBLIC_BASE_URL — public origin for links / OAuth redirect
