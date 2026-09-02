@@ -78,7 +78,7 @@ AI_BASE_URL=https://api.openai.com/v1   # OpenAI-compatible
 AI_MODEL=gpt-4o-mini
 ```
 
-Without an API key, archives use a stats + close-reason fallback summary.
+Without an API key, archives use a stats + close-reason fallback summary. The same AI (or fallback) powers the on-demand `/ticket summarize` command.
 
 ## Commands
 
@@ -105,6 +105,7 @@ Without an API key, archives use a stats + close-reason fallback summary.
 | `/ticket archive` | After close: save transcript (if not sensitive), post summary, **delete** channel |
 | `/ticket list [user]` | Open tickets |
 | `/ticket info` | Detail for the current ticket channel (open or soft-closed) |
+| `/ticket summarize` | On-demand AI summary of the current ticket conversation (open or soft-closed, pre-archive). Without `AI_API_KEY` (or if the API is unreachable) it replies with a stats-only fallback and says so |
 
 Lifecycle commands work **inside the ticket channel** even if command-channel restrictions are set.
 

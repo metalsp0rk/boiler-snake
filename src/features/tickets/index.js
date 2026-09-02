@@ -41,6 +41,7 @@ const {
   removeTicketMember,
   listTicketMembers,
   listTicketStaff,
+  listTicketMessages,
   listOpenTickets,
   markTicketClosedByChannelDelete,
   updateGuildSettings,
@@ -61,7 +62,11 @@ const {
   isStaff,
   isAdminOrMod,
 } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const {
+  replyDenied,
+  replyEphemeral,
+  editEphemeral,
+} = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const {
   applyTicketOverwrites,
@@ -73,9 +78,24 @@ const {
   STAFF_ALLOW,
   BOT_ALLOW,
 } = require("./overwrites");
-const { softCloseTicket, archiveTicketPipeline } = require("./close");
+const {
+  softCloseTicket,
+  archiveTicketPipeline,
+  fetchAllMessages,
+} = require("./close");
+const {
+  collectTicketUserIds,
+  resolveUsers,
+  enrichMessagesForArchive,
+} = require("./users");
+const { summarizeTicket } = require("./summary");
 const { startTicketHttpServer } = require("./httpServer");
-const { Color, formatTicketRef, tsFull } = require("../../core/theme");
+const {
+  Color,
+  formatTicketRef,
+  tsFull,
+  baseEmbed,
+} = require("../../core/theme");
 
 const COLOR_OPEN = Color.success;
 const COLOR_INFO = Color.brand;
@@ -254,6 +274,13 @@ const commands = [
     )
     .addSubcommand((sc) =>
       sc
+        .setName("summarize")
+        .setDescription(
+          "Generate an AI summary of this ticket's conversation (staff).",
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
         .setName("setcategory")
         .setDescription("Set the category for new ticket channels (admin).")
         .addChannelOption((opt) =>
@@ -305,7 +332,7 @@ const commands = [
           sc
             .setName("create")
             .setDescription(
-              "Post an Open Ticket panel (button → modal) in a channel."
+              "Post an Open Ticket panel (button → modal) in a channel.",
             )
             .addChannelOption((opt) =>
               opt
@@ -313,30 +340,30 @@ const commands = [
                 .setDescription("Channel to post the panel in (default: here)")
                 .addChannelTypes(
                   ChannelType.GuildText,
-                  ChannelType.GuildAnnouncement
+                  ChannelType.GuildAnnouncement,
                 )
-                .setRequired(false)
+                .setRequired(false),
             )
             .addStringOption((opt) =>
               opt
                 .setName("title")
                 .setDescription("Panel embed title")
                 .setRequired(false)
-                .setMaxLength(256)
+                .setMaxLength(256),
             )
             .addStringOption((opt) =>
               opt
                 .setName("description")
                 .setDescription("Panel embed description")
                 .setRequired(false)
-                .setMaxLength(2000)
-            )
+                .setMaxLength(2000),
+            ),
         )
         // panel list — show registered panels
         .addSubcommand((sc) =>
           sc
             .setName("list")
-            .setDescription("List all ticket panels in this server.")
+            .setDescription("List all ticket panels in this server."),
         )
         // panel edit — update title/description of a registered panel
         .addSubcommand((sc) =>
@@ -347,22 +374,22 @@ const commands = [
               opt
                 .setName("message_id")
                 .setDescription("Message ID of the panel")
-                .setRequired(true)
+                .setRequired(true),
             )
             .addStringOption((opt) =>
               opt
                 .setName("title")
                 .setDescription("New embed title")
                 .setRequired(false)
-                .setMaxLength(256)
+                .setMaxLength(256),
             )
             .addStringOption((opt) =>
               opt
                 .setName("description")
                 .setDescription("New embed description")
                 .setRequired(false)
-                .setMaxLength(2000)
-            )
+                .setMaxLength(2000),
+            ),
         )
         // panel delete — remove a registered panel
         .addSubcommand((sc) =>
@@ -373,9 +400,9 @@ const commands = [
               opt
                 .setName("message_id")
                 .setDescription("Message ID of the panel to remove")
-                .setRequired(true)
-            )
-        )
+                .setRequired(true),
+            ),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -841,11 +868,7 @@ async function handleTicket(interaction, ctx) {
   if (sub === "settings") return handleSettings(interaction);
 
   // Staff config (no subcommand group)
-  if (
-    sub === "setcategory" ||
-    sub === "setarchive" ||
-    sub === "setratelimit"
-  ) {
+  if (sub === "setcategory" || sub === "setarchive" || sub === "setratelimit") {
     if (!(await requireStaff(interaction))) return;
     if (sub === "setcategory") return handleSetCategory(interaction, ctx);
     if (sub === "setarchive") return handleSetArchive(interaction, ctx);
@@ -868,6 +891,7 @@ async function handleTicket(interaction, ctx) {
   if (sub === "sensitive") return handleSensitive(interaction, ctx);
   if (sub === "unsensitive") return handleUnsensitive(interaction, ctx);
   if (sub === "info") return handleInfo(interaction, ctx);
+  if (sub === "summarize") return handleSummarize(interaction, ctx);
 
   await replyEphemeral(interaction, {
     content: `Unknown subcommand: \`${sub}\``,
@@ -1021,7 +1045,8 @@ async function handlePanelList(interaction) {
   const panels = listTicketPanels(interaction.guildId);
   if (!panels.length) {
     await interaction.reply({
-      content: "No ticket panels configured. Use `/ticket panel create` to post one.",
+      content:
+        "No ticket panels configured. Use `/ticket panel create` to post one.",
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -1072,19 +1097,27 @@ async function handlePanelEdit(interaction, ctx) {
   }
 
   const panel = getTicketPanel(interaction.guildId, messageId);
-  const finalTitle = (title != null ? title.trim() : panel?.title) || DEFAULT_PANEL_TITLE;
-  const finalDesc = (description != null ? description.trim() : panel?.description) || DEFAULT_PANEL_DESCRIPTION;
+  const finalTitle =
+    (title != null ? title.trim() : panel?.title) || DEFAULT_PANEL_TITLE;
+  const finalDesc =
+    (description != null ? description.trim() : panel?.description) ||
+    DEFAULT_PANEL_DESCRIPTION;
 
   // Try to update the live Discord message embed
   let note = "";
   if (panel?.channel_id) {
     try {
-      const channel = await interaction.guild.channels.fetch(panel.channel_id).catch(() => null);
+      const channel = await interaction.guild.channels
+        .fetch(panel.channel_id)
+        .catch(() => null);
       if (channel?.messages) {
         const msg = await channel.messages.fetch(messageId).catch(() => null);
         if (msg) {
           const embed = buildPanelEmbed(finalTitle, finalDesc);
-          await msg.edit({ embeds: [embed], components: [buildOpenTicketButtonRow()] });
+          await msg.edit({
+            embeds: [embed],
+            components: [buildOpenTicketButtonRow()],
+          });
           note = " Discord message updated.";
         } else {
           note = " (Message was already gone.)";
@@ -1108,7 +1141,7 @@ async function handlePanelEdit(interaction, ctx) {
         title != null ? `New title: ${finalTitle}` : null,
         description != null ? "Description updated" : null,
       ].filter(Boolean),
-    }
+    },
   ).catch(() => {});
 
   await interaction.reply({
@@ -1124,12 +1157,17 @@ async function handlePanelEdit(interaction, ctx) {
  */
 async function handlePanelDelete(interaction, ctx) {
   const messageId = interaction.options.getString("message_id", true).trim();
-  const { removed, channel_id } = deleteTicketPanel(interaction.guildId, messageId);
+  const { removed, channel_id } = deleteTicketPanel(
+    interaction.guildId,
+    messageId,
+  );
 
   let note = "";
   if (removed && channel_id) {
     try {
-      const channel = await interaction.guild.channels.fetch(channel_id).catch(() => null);
+      const channel = await interaction.guild.channels
+        .fetch(channel_id)
+        .catch(() => null);
       if (channel?.messages) {
         const msg = await channel.messages.fetch(messageId).catch(() => null);
         if (msg) {
@@ -1140,7 +1178,8 @@ async function handlePanelDelete(interaction, ctx) {
         }
       }
     } catch {
-      note = " (Could not delete Discord message — remove it manually if needed.)";
+      note =
+        " (Could not delete Discord message — remove it manually if needed.)";
     }
   }
 
@@ -1156,7 +1195,7 @@ async function handlePanelDelete(interaction, ctx) {
           `Message ID: \`${messageId}\``,
           channel_id ? `Channel: <#${channel_id}>` : null,
         ].filter(Boolean),
-      }
+      },
     ).catch(() => {});
   }
 
@@ -1892,6 +1931,70 @@ async function handleInfo(interaction, ctx) {
   await replyEphemeral(interaction, {
     embeds: [embed],
   });
+}
+
+/**
+ * On-demand AI summary of the current ticket conversation.
+ * Works while the ticket is open (or soft-closed, pre-archive).
+ */
+async function handleSummarize(interaction, ctx) {
+  const ctxTicket = await requireLiveTicketChannel(interaction, ctx, {
+    status: "any",
+  });
+  if (!ctxTicket) return;
+  const { ticket, channel } = ctxTicket;
+
+  const client = ctx?.client || interaction.client;
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  let messages = listTicketMessages(ticket.id);
+  if (!messages.length) {
+    try {
+      messages = await fetchAllMessages(channel);
+      const ids = collectTicketUserIds(ticket, messages);
+      const userMap = await resolveUsers(client, channel.guild, ids);
+      messages = enrichMessagesForArchive(messages, userMap);
+    } catch (err) {
+      console.error("[tickets] summarize fetch failed:", err);
+      await editEphemeral(
+        interaction,
+        "Could not read the ticket conversation to summarize it.",
+      );
+      return;
+    }
+  }
+
+  const summary = await summarizeTicket(ticket, messages, {});
+  const sourceNote =
+    summary.source === "ai"
+      ? `AI summary (model: ${summary.model})`
+      : "Stats-only summary (AI not configured or unavailable)";
+
+  const embed = baseEmbed({
+    color: Number(ticket.is_sensitive) ? Color.danger : Color.brand,
+    title: `Ticket ${formatTicketRef(ticket.ticket_number)} — ${ticket.status}`,
+    footer: "Staff only",
+  })
+    .setDescription((summary.summary || "").slice(0, 4000) || "—")
+    .addFields(
+      {
+        name: "Resolution",
+        value: (summary.resolution || "—").slice(0, 500),
+        inline: false,
+      },
+      {
+        name: "Messages",
+        value: String(summary.message_count ?? messages.length),
+        inline: true,
+      },
+      {
+        name: "Source",
+        value: sourceNote,
+        inline: true,
+      },
+    );
+
+  await editEphemeral(interaction, { embeds: [embed] });
 }
 
 async function handleSetCategory(interaction, ctx) {

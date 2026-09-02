@@ -848,6 +848,47 @@ describe("integration: tickets", () => {
     assertEphemeralReply(btn, /too quickly|rate limit/i);
   });
 
+  it("/ticket summarize on open ticket (fallback without AI key)", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.memberUser,
+      reason: "summarize-test",
+    });
+    const channel = env.guild.channels.cache.get(ticket.channel_id);
+    assert.ok(channel, "expected ticket channel");
+    channel.addMessage({
+      id: "sum-1",
+      content: "My microphone is not working at all",
+      author: { id: IDS.member, username: "member", tag: "member#0000" },
+    });
+
+    const res = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "summarize",
+      admin: true,
+      channelId: ticket.channel_id,
+    });
+    const text = env.lastReplyContent(res);
+    assert.match(text, /summarize|resolution|summary/i);
+    // No AI key in test env → stats-only fallback
+    assert.match(text, /stats-only/i);
+    assert.match(text, /microphone/i);
+  });
+
+  it("/ticket summarize denies non-staff", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.member2User,
+      reason: "summarize-deny",
+    });
+    const res = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "summarize",
+      admin: false,
+      user: env.users.memberUser,
+      channelId: ticket.channel_id,
+    });
+    assertEphemeralReply(res, /permission|staff|denied/i);
+  });
+
   it("close without archive channel still soft-closes; archive still works", async () => {
     const ticket = await openViaStaff({
       reason: "no-archive-channel",
