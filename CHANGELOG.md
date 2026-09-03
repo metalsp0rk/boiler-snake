@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.6.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.5.0...v1.6.0) (2026-09-03)
+
+
+### Features
+
+* **music:** add Lavalink player with Spotify catalog ([9e90d0f](https://github.com/metalsp0rk/boiler-snake/commit/9e90d0f8aac51cf68b9d0b98359ae27d7cef73b2))
+* **tickets:** add /ticket summarize for on-demand AI summaries ([1b38786](https://github.com/metalsp0rk/boiler-snake/commit/1b38786a4fece9087f339cee8ea58f4b3e0ed642))
+* **twitch:** multi-channel go-live notifications via Helix polling ([7c5d7d0](https://github.com/metalsp0rk/boiler-snake/commit/7c5d7d03986ebfc8ad643c95b77729f8a7eca6aa))
+* **xp:** paginate /leaderboard with limit and prev/next buttons ([2110fd1](https://github.com/metalsp0rk/boiler-snake/commit/2110fd1d8186ea1643cbd5d2d00c493a66a51300))
+
 ## [1.5.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.4.0...v1.5.0) (2026-09-02)
 
 
