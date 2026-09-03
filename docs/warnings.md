@@ -212,6 +212,6 @@ See [Database Schema](database.md) for indexes and migrations `009_warnings`, `0
 - [Staff Notes](staff-notes.md)
 - [Staff roles](staff-roles.md) — junior vs senior; who passes the staff gate
 - `/userinfo` — staff card with note/warning counts and drill-down buttons
-- [ROADMAP — Warning System](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#6-warning-system)
+- [ROADMAP — Warning System](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/warnings.md#6-warning-system)
 - [Audit Log](audit-log.md)
 - [Commands reference](commands/index.md)

@@ -118,6 +118,6 @@ See [Database Schema](database.md) for indexes and migration id `007_staff_notes
 - [Warning System](warnings.md)
 - [Staff roles](staff-roles.md) — junior vs senior; who passes the staff gate
 - `/userinfo` — staff card with note/warning counts and drill-down buttons
-- [ROADMAP — Staff Notes](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#5-staff-notes-system)
+- [ROADMAP — Staff Notes](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/staff-notes.md#5-staff-notes-system)
 - [Audit Log](audit-log.md)
 - [Commands reference](commands/index.md)

@@ -15,7 +15,7 @@ npm-debug.log*
 logs
 *.log
 docs
-ROADMAP.md
+roadmap
 DOCS_SUMMARY.txt
 bot_settings.png
 logo.png

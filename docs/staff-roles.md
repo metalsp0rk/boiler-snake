@@ -187,4 +187,4 @@ See [Database Schema](database.md) for the full schema.
 - [Honeypot Channels](honeypot.md) — exempt list = staff roles
 - [Commands reference](commands/index.md)
 - [Setup](setup.md) — bot permissions and ticket notes
-- [ROADMAP — Guild staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md#4-guild-staff-roles-admin-gate) — design history
+- [ROADMAP — Guild staff roles](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/staff-roles.md#4-guild-staff-roles-admin-gate) — design history

@@ -465,7 +465,7 @@ With daily decay:
 
 ### Q: Is there a roadmap for future features?
 
-**A**: Yes! See [`ROADMAP.md`](https://github.com/metalsp0rk/boiler-snake/blob/main/ROADMAP.md) in the project root:
+**A**: Yes! See the [`roadmap/` folder](https://github.com/metalsp0rk/boiler-snake/tree/main/roadmap) in the project root (one file per feature, tracked in the [index](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/index.md)):
 
 **Planned features** (see roadmap if present):
 - Activity analytics dashboard
