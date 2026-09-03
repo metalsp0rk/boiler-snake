@@ -36,17 +36,18 @@ Show your own or another user's current XP and level.
 
 ### `/leaderboard` - View Top Users
 
-Display the top 10 users by XP with a generated PNG leaderboard.
+Display top users by XP with a generated PNG leaderboard.
 
 **Usage**:
 ```bash
 /leaderboard
+/leaderboard limit:20
 ```
 
 **Options**:
-- `limit`: Present in the slash definition (integer) but **not applied** by the handler today — the bot always loads and renders the **top 10**.
+- `limit`: Users per page (integer 1–20, default **10**).
 
-**Response**: Public message with content `**Leaderboard (Top 10)**` and PNG attachment `boiler-snake-leaderboard.png` (not ephemeral).
+**Response**: Public message with content like `**Leaderboard — ranks 1–10**` and PNG attachment `boiler-snake-leaderboard.png` (not ephemeral), plus a **◀ Prev / Next ▶** button row. Only the user who ran the command can page; each click re-queries current XP. Prev is disabled on page 1 and Next on the last page.
 
 ### `/warn mine` - View Your Warnings
 
@@ -1044,7 +1045,7 @@ UCxxxxxxxxxxx
 ```
 PUBLIC:
 /xp [user]                         → View XP & level
-/leaderboard                       → Top 10 PNG leaderboard
+/leaderboard [limit]               → Paginated PNG leaderboard (1-20/page)
 /warn mine                         → Your own warnings
 /ticket create [reason]            → Open a support ticket
 /ticket settings                   → View ticket config

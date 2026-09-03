@@ -106,7 +106,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 | **Event Reminders** | Pre-event pings for Interested members on scheduled events |
 | **User Activity** | Channel/category post rankings for senior staff (`/userinfo` Activity) |
 | **Audit Logs** | Staff channels for bans, kicks, role changes, and deleted messages |
-| **Leaderboard** | Top-10 PNG leaderboard with ranks and levels |
+| **Leaderboard** | Paginated PNG leaderboard (1–20 per page) with ranks and levels |
 
 ## License
 

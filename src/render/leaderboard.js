@@ -43,13 +43,16 @@ function sanitizeDisplayName(name) {
  *
  * entries: Array<{ rank: number, name: string, xp: number, level: number }>
  * factor: number (XP curve factor, default 100). XP needed for level L is L^2 * factor.
+ * subtitle: optional header subtitle (default: "Top {rows} by XP • Quantum-approved").
+ *
+ * Renders as many rows as provided (capped at 20) so pages can have varying sizes.
  *
  * Returns: Buffer (PNG)
  */
-function renderLeaderboardPng(entries, factor = 100) {
-    // Always Top 10, always render 10 rows to guarantee consistent height
-    const ROW_COUNT = 10;
-    const top = entries.slice(0, ROW_COUNT);
+function renderLeaderboardPng(entries, factor = 100, subtitle = null) {
+    const MAX_ROWS = 20;
+    const top = entries.slice(0, MAX_ROWS);
+    const ROW_COUNT = top.length;
 
     // Layout
     const width = 900;
@@ -277,9 +280,11 @@ function renderLeaderboardPng(entries, factor = 100) {
     ctx.fillText("Boiler Snake Leaderboard", headerX + 28, headerY + 22);
 
     // Subtitle
+    const subtitleText =
+      subtitle ?? `Top ${ROW_COUNT} by XP • Quantum-approved`;
     ctx.fillStyle = subtext;
     ctx.font = `500 16px ${FONT_STACK}`;
-    ctx.fillText("Top 10 by XP • Quantum-approved", headerX + 30, headerY + 62);
+    ctx.fillText(subtitleText, headerX + 30, headerY + 62);
     ctx.restore();
 
     // Rows

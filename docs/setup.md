@@ -338,7 +338,7 @@ Test each feature:
 ```bash
 # Public commands (anyone)
 /xp                    # View your XP
-/leaderboard          # Show top 10
+/leaderboard          # Show top users (paginated PNG)
 
 # Staff / admin
 /settings             # View configuration

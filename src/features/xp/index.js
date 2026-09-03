@@ -2,6 +2,9 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   AttachmentBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require("discord.js");
 const {
   getGuildSettings,
@@ -38,7 +41,9 @@ const commands = [
     .addIntegerOption((opt) =>
       opt
         .setName("limit")
-        .setDescription("How many to show (max 20)")
+        .setDescription("Users per page (default 10, max 20)")
+        .setMinValue(1)
+        .setMaxValue(20)
         .setRequired(false),
     ),
 
@@ -127,43 +132,192 @@ async function handleXp(interaction) {
   );
 }
 
-async function handleLeaderboard(interaction) {
-  const guildId = interaction.guildId;
+/** customId prefix for leaderboard pagination buttons (lb:<userId>:<limit>:<page>) */
+const LB_BTN_PREFIX = "lb:";
+const LB_PAGE_MIN = 1;
+const LB_PAGE_MAX = 20;
+const LB_PAGE_DEFAULT = 10;
+
+function clampLeaderboardLimit(value) {
+  if (value === null || value === undefined) return LB_PAGE_DEFAULT;
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return LB_PAGE_DEFAULT;
+  return Math.min(LB_PAGE_MAX, Math.max(LB_PAGE_MIN, n));
+}
+
+/**
+ * @param {string} requesterId
+ * @param {number} limit
+ * @param {number} page 1-based
+ */
+function leaderboardButtonCustomId(requesterId, limit, page) {
+  return `${LB_BTN_PREFIX}${requesterId}:${limit}:${page}`;
+}
+
+/**
+ * @param {string} customId
+ * @returns {{ requesterId: string, limit: number, page: number } | null}
+ */
+function parseLeaderboardButtonCustomId(customId) {
+  if (!customId || !customId.startsWith(LB_BTN_PREFIX)) return null;
+  const parts = customId.slice(LB_BTN_PREFIX.length).split(":");
+  if (parts.length !== 3) return null;
+  const [requesterId, limitRaw, pageRaw] = parts;
+  const limit = Number(limitRaw);
+  const page = Number(pageRaw);
+  if (!requesterId) return null;
+  if (!Number.isInteger(limit) || limit < LB_PAGE_MIN || limit > LB_PAGE_MAX) {
+    return null;
+  }
+  if (!Number.isInteger(page) || page < 1) return null;
+  return { requesterId, limit, page };
+}
+
+/**
+ * Prev/Next control row for a leaderboard page.
+ * @param {string} requesterId
+ * @param {number} limit
+ * @param {number} page 1-based
+ * @param {{ hasPrev: boolean, hasMore: boolean }} flags
+ */
+function buildLeaderboardControls(requesterId, limit, page, { hasPrev, hasMore }) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(leaderboardButtonCustomId(requesterId, limit, page - 1))
+      .setLabel("◀ Prev")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!hasPrev),
+    new ButtonBuilder()
+      .setCustomId(leaderboardButtonCustomId(requesterId, limit, page + 1))
+      .setLabel("Next ▶")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!hasMore),
+  );
+}
+
+/**
+ * Build the reply/update payload for one leaderboard page.
+ * Fetches `limit * page + 1` rows so "has more" is known without a count query.
+ * @param {object} interaction
+ * @param {string} guildId
+ * @param {string} requesterId
+ * @param {number} limit
+ * @param {number} page 1-based
+ */
+async function buildLeaderboardPagePayload(interaction, guildId, requesterId, limit, page) {
   const settings = getGuildSettings(guildId);
-  const rows = topUsers(guildId, 10);
-  if (!rows.length) {
-    await replyEphemeral(interaction, {
+  const factor = Math.max(1, Number(settings.level_xp_factor) || 100);
+
+  const fetchCount = limit * page + 1;
+  const rows = topUsers(guildId, fetchCount);
+  const hasMore = rows.length === fetchCount;
+  const pageRows = rows.slice((page - 1) * limit, page * limit);
+
+  if (!pageRows.length) {
+    return {
+      empty: true,
       content: "No leaderboard data yet.",
-    });
-    return;
+      components: [
+        buildLeaderboardControls(requesterId, limit, page, {
+          hasPrev: page > 1,
+          hasMore: false,
+        }),
+      ],
+    };
   }
 
   let members = null;
   try {
     members = await interaction.guild.members.fetch({
-      user: rows.map((r) => r.user_id),
+      user: pageRows.map((r) => r.user_id),
     });
   } catch {
     members = null;
   }
 
-  const factor = Math.max(1, Number(settings.level_xp_factor) || 100);
-  const entries = rows.map((r, idx) => {
+  const entries = pageRows.map((r, idx) => {
     const m = members?.get?.(r.user_id);
     const name = m?.displayName || m?.user?.username || `User ${r.user_id}`;
     const level = levelFromXp(r.xp, factor);
-    return { rank: idx + 1, name, xp: r.xp, level };
+    return { rank: (page - 1) * limit + idx + 1, name, xp: r.xp, level };
   });
 
-  const png = renderLeaderboardPng(entries, factor);
+  const first = (page - 1) * limit + 1;
+  const last = first + pageRows.length - 1;
+  const subtitle =
+    page === 1
+      ? `Top ${pageRows.length} by XP • Quantum-approved`
+      : `Ranks ${first}–${last} • Quantum-approved`;
+
+  const png = renderLeaderboardPng(entries, factor, subtitle);
   const file = new AttachmentBuilder(png, {
     name: "boiler-snake-leaderboard.png",
   });
 
-  await interaction.reply({
-    content: "**Leaderboard (Top 10)**",
+  return {
+    content: `**Leaderboard — ranks ${first}–${last}**`,
     files: [file],
-  });
+    components: [
+      buildLeaderboardControls(requesterId, limit, page, {
+        hasPrev: page > 1,
+        hasMore,
+      }),
+    ],
+  };
+}
+
+async function handleLeaderboard(interaction) {
+  const guildId = interaction.guildId;
+  const limit = clampLeaderboardLimit(interaction.options.getInteger("limit"));
+  const payload = await buildLeaderboardPagePayload(
+    interaction,
+    guildId,
+    interaction.user.id,
+    limit,
+    1,
+  );
+  if (payload.empty) {
+    await replyEphemeral(interaction, { content: payload.content });
+    return;
+  }
+  await interaction.reply(payload);
+}
+
+/**
+ * Prev/Next pagination. Only the user who ran /leaderboard may page.
+ * @param {import("discord.js").ButtonInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleLeaderboardButton(interaction, ctx) {
+  void ctx;
+  const parsed = parseLeaderboardButtonCustomId(interaction.customId);
+  if (!parsed) return;
+
+  if (parsed.requesterId !== interaction.user.id) {
+    await replyEphemeral(interaction, {
+      content: "Only the person who ran /leaderboard can page it.",
+    });
+    return;
+  }
+
+  if (typeof interaction.deferUpdate === "function") {
+    await interaction.deferUpdate();
+  }
+
+  const payload = await buildLeaderboardPagePayload(
+    interaction,
+    interaction.guildId,
+    parsed.requesterId,
+    parsed.limit,
+    parsed.page,
+  );
+  if (payload.empty) {
+    const { empty, ...rest } = payload;
+    void empty;
+    await interaction.update(rest);
+    return;
+  }
+  await interaction.update(payload);
 }
 
 async function handleSetXp(interaction, ctx) {
@@ -386,9 +540,18 @@ module.exports = {
     setxp: handleSetXp,
     grantxp: handleGrantXp,
   },
+  buttonHandlers: {
+    [LB_BTN_PREFIX]: handleLeaderboardButton,
+  },
   registerEvents,
   start,
   // used by index event composition until full event ownership moves here
   tryAwardMessageXp,
   tryAwardReactionXp,
+  // tests
+  LB_BTN_PREFIX,
+  clampLeaderboardLimit,
+  leaderboardButtonCustomId,
+  parseLeaderboardButtonCustomId,
+  buildLeaderboardControls,
 };

@@ -230,3 +230,133 @@ describe("integration: xp commands", () => {
     assertEphemeralReply(interaction, /permission/i);
   });
 });
+
+describe("integration: leaderboard pagination", () => {
+  const GUILD_ID = "guild-lb-pagination";
+
+  /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
+  let env;
+  /** @type {ReturnType<import("node:module").Module["require"]>} */
+  let xpFeature;
+
+  before(async () => {
+    env = await createIntegrationEnv({ guildId: GUILD_ID });
+    xpFeature = require("../../src/features/xp");
+
+    // 12 users → 2 pages at default limit 10
+    for (let i = 1; i <= 12; i++) {
+      env.db.setXp(GUILD_ID, `lb-user-${i}`, 120 - i);
+    }
+  });
+
+  /** @param {object} payload
+   * @returns {Array<{ customId: string, label: string, disabled: boolean }>} */
+  function buttonsOf(payload) {
+    const out = [];
+    for (const row of payload.components || []) {
+      const rowJson = typeof row?.toJSON === "function" ? row.toJSON() : row;
+      const components = rowJson?.components || row?.components || [];
+      for (const btn of components) {
+        const btnJson = typeof btn?.toJSON === "function" ? btn.toJSON() : btn;
+        out.push({
+          customId: btnJson?.custom_id || btn?.data?.custom_id,
+          label: btnJson?.label || btn?.data?.label,
+          disabled: btnJson?.disabled ?? btn?.data?.disabled ?? false,
+        });
+      }
+    }
+    return out;
+  }
+
+  it("default /leaderboard shows ranks 1-10 with Prev disabled, Next enabled", async () => {
+    const interaction = await env.runCommand({
+      commandName: "leaderboard",
+      admin: false,
+      user: env.users.memberUser,
+    });
+    assertReplyContains(interaction, "Leaderboard");
+    assertReplyContains(interaction, "ranks 1–10");
+    const reply = interaction.replies[0];
+    assert.equal(reply.files?.length, 1);
+    const btns = buttonsOf(reply);
+    assert.equal(btns.length, 2);
+    assert.equal(btns[0].label, "◀ Prev");
+    assert.equal(btns[0].disabled, true);
+    assert.equal(btns[1].label, "Next ▶");
+    assert.equal(btns[1].disabled, false);
+    assert.equal(btns[1].customId, `lb:${env.users.memberUser.id}:10:2`);
+  });
+
+  it("limit option controls page size", async () => {
+    const interaction = await env.runCommand({
+      commandName: "leaderboard",
+      admin: false,
+      user: env.users.memberUser,
+      options: { limit: 5 },
+    });
+    assertReplyContains(interaction, "ranks 1–5");
+    const btns = buttonsOf(interaction.replies[0]);
+    assert.equal(btns[1].customId, `lb:${env.users.memberUser.id}:5:2`);
+  });
+
+  it("Next button shows the next page ranks and disables itself on last page", async () => {
+    const interaction = await env.runButton({
+      customId: `lb:${env.users.memberUser.id}:10:2`,
+      admin: false,
+      user: env.users.memberUser,
+    });
+    assert.equal(interaction.updates.length, 1);
+    const update = interaction.updates[0];
+    assert.match(update.content, /ranks 11–12/);
+    assert.equal(update.files?.length, 1);
+    const btns = buttonsOf(update);
+    assert.equal(btns[0].disabled, false);
+    assert.equal(btns[0].customId, `lb:${env.users.memberUser.id}:10:1`);
+    assert.equal(btns[1].disabled, true);
+  });
+
+  it("Prev button returns to page 1 and disables itself", async () => {
+    const interaction = await env.runButton({
+      customId: `lb:${env.users.memberUser.id}:10:1`,
+      admin: false,
+      user: env.users.memberUser,
+    });
+    assert.equal(interaction.updates.length, 1);
+    assert.match(interaction.updates[0].content, /ranks 1–10/);
+    const btns = buttonsOf(interaction.updates[0]);
+    assert.equal(btns[0].disabled, true);
+    assert.equal(btns[1].disabled, false);
+  });
+
+  it("non-caller cannot page someone else's leaderboard", async () => {
+    const interaction = await env.runButton({
+      customId: `lb:${env.users.memberUser.id}:10:2`,
+      admin: true,
+      user: env.users.adminUser,
+    });
+    assertEphemeralReply(interaction, /Only the person/i);
+    assert.equal(interaction.updates.length, 0);
+  });
+
+  it("parseLeaderboardButtonCustomId round-trips and rejects malformed ids", () => {
+    const {
+      parseLeaderboardButtonCustomId,
+      leaderboardButtonCustomId,
+      clampLeaderboardLimit,
+    } = xpFeature;
+    assert.deepEqual(
+      parseLeaderboardButtonCustomId(leaderboardButtonCustomId("u1", 10, 2)),
+      { requesterId: "u1", limit: 10, page: 2 },
+    );
+    assert.equal(parseLeaderboardButtonCustomId("lb:u1:10"), null);
+    assert.equal(parseLeaderboardButtonCustomId("lb:u1:0:1"), null);
+    assert.equal(parseLeaderboardButtonCustomId("lb:u1:21:1"), null);
+    assert.equal(parseLeaderboardButtonCustomId("lb:u1:10:0"), null);
+    assert.equal(parseLeaderboardButtonCustomId("lb::10:1"), null);
+    assert.equal(parseLeaderboardButtonCustomId("ui:u1:10:1"), null);
+    assert.equal(clampLeaderboardLimit(null), 10);
+    assert.equal(clampLeaderboardLimit(0), 1);
+    assert.equal(clampLeaderboardLimit(999), 20);
+    assert.equal(clampLeaderboardLimit(7), 7);
+  });
+});

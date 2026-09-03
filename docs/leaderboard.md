@@ -8,7 +8,7 @@ The leaderboard system generates professional-grade images using the `@napi-rs/c
 
 ## Features
 
-- **Top 10 display**: Shows best performers in a guild
+- **Paginated display**: 1–20 users per page with Prev/Next buttons (default page size 10)
 - **Dark theme**: Modern blue gradient background matching Boiler Snake branding
 - **Gradient bars**: Visual XP progression with cyan/green colors
 - **Trophy icons**: Gold/silver/bronze for top 3
@@ -23,22 +23,36 @@ The leaderboard system generates professional-grade images using the `@napi-rs/c
 /leaderboard
 ```
 
-Shows top 10 users with:
-- Rank position (1-10)
+Shows the first 10 users (ranks 1–10) with:
+- Rank position
 - Username or display name
 - Total XP
 - Current level
 
-### Limit option (currently unused)
+### Limit option
 
-The slash command may show an optional `limit` integer, but **`handleLeaderboard` always queries and renders the top 10** (`topUsers(guildId, 10)`). Passing `limit` has no effect until the handler is updated.
+```bash
+/leaderboard limit:20
+```
+
+`limit` is the **page size**: integer 1–20, default **10**. The handler queries and renders that many rows per page.
+
+### Pagination
+
+Every leaderboard message (except the empty-guild notice) has a **◀ Prev** / **Next ▶** button row:
+
+- **Prev** is disabled on page 1; **Next** is disabled on the last page.
+- Only the user who ran `/leaderboard` can press the buttons (others get an ephemeral notice).
+- Each click re-queries the leaderboard, so ranks/XP reflect current data.
+- Message content shows the applied range, e.g. `**Leaderboard — ranks 11–20**`.
 
 ## Image Specifications
 
 ### Dimensions
 - **Width**: 900 pixels
-- **Height**: Variable (base + rows)
+- **Height**: Variable (base + rows × row step)
 - **Total height for 10 users**: ~856 pixels
+- **Total height for 20 users**: ~1556 pixels
 
 ### Color Scheme
 
@@ -76,7 +90,7 @@ sudo apk add noto-fonts ttf-dejavu ttf-nerd-fonts
 Total Height = padding(28)
              + header_height(110)
              + gap_after_header(22)  
-             + rows × row_step(70)   [for 10 users]
+             + rows × row_step(70)   [rows = page size, 1-20]
              + bottom_padding(56)
 ```
 
@@ -117,22 +131,23 @@ const { renderLeaderboardPng } = require("../../render/leaderboard");
 ### Main Function Signature
 
 ```javascript
-function renderLeaderboardPng(entries, factor = 100)
+function renderLeaderboardPng(entries, factor = 100, subtitle = null)
 ```
 
 **Parameters**:
-- `entries`: Array of `{ rank, name, xp, level }` objects
+- `entries`: Array of `{ rank, name, xp, level }` objects (1–20 rows; capped at 20)
 - `factor`: Level curve factor (default: 100)
+- `subtitle`: Optional header subtitle (default: `Top {rows} by XP • Quantum-approved`)
 
 **Returns**: PNG buffer ready for Discord attachment
 
 ### Entry Processing
 
 ```javascript
-const top10 = entries.slice(0, 10);
-// For each entry:
+const top = entries.slice(0, 20);
+// For each entry on the page:
 { rank, name, xp, level } = {
-  rank: idx + 1,
+  rank: global rank (page offset + idx + 1),
   name: member?.displayName || username || "Unknown",
   xp: XP total (raw number),
   level: Math.floor(Math.sqrt(xp / factor))
@@ -227,7 +242,7 @@ const bg1 = "#0B1224";
 ### Adjust Layout Dimensions
 
 ```javascript
-const ROW_COUNT = 10;     // Always top 10 in the PNG
+const MAX_ROWS = 20;      // Cap rows in the PNG (page size)
 const width = 900;        // Canvas width
 const rowStep = 70;       // Vertical spacing per row
 ```

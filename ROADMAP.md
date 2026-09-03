@@ -1431,7 +1431,7 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 
 ### XP & leaderboard polish
 
-Docs currently describe two incomplete slash surfaces honestly; this section is the product follow-up.
+Both slash surfaces below are now shipped; the checkboxes document the work that landed.
 
 #### `/setxp` — expose `level_xp_factor`
 
@@ -1445,18 +1445,18 @@ Docs currently describe two incomplete slash surfaces honestly; this section is 
 
 **Out of scope:** per-user curve overrides; non-sqrt formulas.
 
-#### `/leaderboard` — honor `limit`
+#### `/leaderboard` — honor `limit` + pagination
 
-**Today:** Slash defines optional `limit` (integer), but `handleLeaderboard` always calls `topUsers(guildId, 10)` and the PNG is fixed to 10 rows ([docs/leaderboard.md](docs/leaderboard.md)).
+**Shipped.** `limit` is the page size (default **10**, min **1**, max **20**). `renderLeaderboardPng` renders a dynamic row count (1–20), and each message gets **◀ Prev / Next ▶** buttons so the caller can page through the whole list. Paging is caller-only, re-queries current XP on every click, and re-fetches `limit × page + 1` rows to detect the last page (no count query). See [docs/leaderboard.md](docs/leaderboard.md).
 
-- [ ] Read `interaction.options.getInteger("limit")` with clamp (e.g. default **10**, min **1**, max **20** or **25** — match Discord option constraints)
-- [ ] Pass clamped limit into `topUsers(guildId, n)`
-- [ ] Resize PNG layout (`render/leaderboard.js`) for `n` rows (height / row math), or keep PNG top-10 and only expand a text summary if full canvas resize is too large a change — **prefer full PNG for `n`**
-- [ ] Message content: `**Leaderboard (Top N)**` reflecting the applied limit
-- [ ] Integration test: seed >10 users; `limit:15` returns 15 ranks
-- [ ] Update [docs/commands](docs/commands/index.md) and [leaderboard](docs/leaderboard.md) (remove “limit unused” note)
+- [x] Read `interaction.options.getInteger("limit")` with clamp (default **10**, min **1**, max **20**)
+- [x] Pass clamped limit into `topUsers(guildId, n)` (per page: `limit × page + 1`)
+- [x] Resize PNG layout (`render/leaderboard.js`) for `n` rows (dynamic height, 1–20 rows)
+- [x] Message content: `**Leaderboard — ranks first–last**` reflecting the applied page
+- [x] Integration tests: 12 seeded users; page 2 shows ranks 11–12; prev/next button states; caller-only; customId parse/clamp unit cases
+- [x] Update [docs/commands](docs/commands/index.md) and [leaderboard](docs/leaderboard.md) (removed “limit unused” note)
 
-**Out of scope:** multi-page leaderboards; ephemeral vs public toggle.
+**Out of scope:** jump-to-page input; ephemeral vs public toggle.
 
 ### Guild staff roles
 
@@ -1470,7 +1470,7 @@ Docs currently describe two incomplete slash surfaces honestly; this section is 
 - [ ] Login with Discord on transcript HTTP routes  
 - [x] Download/mirror all attachments into transcript storage at archive time (replace hotlinks)  
 - [ ] Richer `/ticket list` filters  
-- [ ] Stored panel registry (list/edit/delete via commands)  
+- [x] Stored panel registry (list/edit/delete via commands)  
 
 ### Event reminders
 
