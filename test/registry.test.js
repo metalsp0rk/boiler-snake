@@ -1,5 +1,15 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+
+// Loading the registry pulls in every feature module, which opens SQLite at
+// require time (db facade side effect). Point this process at a private temp
+// DB BEFORE any src/db require: the project-root default (xpbot.sqlite) is
+// racy when node --test runs files in parallel (SQLITE_ERROR flakes).
+process.env.DB_PATH = require("path").join(
+  require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "boiler-snake-registry-")),
+  "test.sqlite"
+);
+
 const { buildDefaultRegistry, createRegistry } = require("../src/commands/registry");
 const features = require("../src/features");
 
