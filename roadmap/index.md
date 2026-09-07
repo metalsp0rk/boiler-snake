@@ -140,6 +140,7 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 - [x] Richer templates / embed reminders (always embed + placeholders `{url}` `{description}` `{offset}`)  
 - [x] Per-event mute (`/mute` / `/unmute`; guild `/optout` still wins)  
 - [x] Auto-suggest shortname from event title (+ collision suffix `-2`…)  
+- [x] **Fix:** `/eventreminder create`/`edit` modal exceeded Discord's 5-component limit — dropped the `persistent` select from the modal (back to 5); create now takes an optional `persistent` boolean (encoded in the modal customId `:p1`) and a **♾️ Recurring: on/off** button on the create/edit confirmation toggles it for either flow (see [event-reminders.md §2.12](event-reminders.md))  
 
 ### Twitch stream notifications
 

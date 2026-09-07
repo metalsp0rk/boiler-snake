@@ -2,7 +2,8 @@
  * Scheduled event reminders feature.
  *
  * Slash: /eventreminder …
- * Modal custom ids: er:create:<eventId> | er:edit:<eventId>
+ * Modal custom ids: er:create:<eventId>[:p1] | er:edit:<eventId>
+ * Button custom ids: er-recur:<eventId> (recurring toggle on confirmations)
  */
 
 const {
@@ -16,6 +17,9 @@ const {
   ChannelSelectMenuBuilder,
   ChannelType,
   GuildScheduledEventStatus,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Events,
 } = require("discord.js");
 const {
@@ -66,6 +70,57 @@ const { startEventReminderTicker } = require("./ticker");
 
 const MODAL_PREFIX_CREATE = "er:create:";
 const MODAL_PREFIX_EDIT = "er:edit:";
+/** Toggle button on create/edit confirmations: er-recur:<eventId> */
+const RECUR_BTN_PREFIX = "er-recur:";
+const PERSISTENT_SUFFIX = ":p1";
+
+/**
+ * Create-modal customId. `persistent` (from the slash option) is encoded in
+ * the id because the modal itself is capped at 5 components.
+ * @param {string} eventId
+ * @param {boolean} [persistent]
+ */
+function createModalCustomId(eventId, persistent) {
+  return `${MODAL_PREFIX_CREATE}${eventId}${persistent ? PERSISTENT_SUFFIX : ""}`;
+}
+
+/**
+ * @param {string} customId
+ * @returns {{ mode: "create"|"edit", eventId: string, persistent: boolean }|null}
+ */
+function parseModalCustomId(customId) {
+  if (typeof customId !== "string") return null;
+  if (customId.startsWith(MODAL_PREFIX_EDIT)) {
+    return {
+      mode: "edit",
+      eventId: customId.slice(MODAL_PREFIX_EDIT.length),
+      persistent: false,
+    };
+  }
+  if (customId.startsWith(MODAL_PREFIX_CREATE)) {
+    let rest = customId.slice(MODAL_PREFIX_CREATE.length);
+    let persistent = false;
+    if (rest.endsWith(PERSISTENT_SUFFIX)) {
+      persistent = true;
+      rest = rest.slice(0, -PERSISTENT_SUFFIX.length);
+    }
+    return { mode: "create", eventId: rest, persistent };
+  }
+  return null;
+}
+
+/**
+ * @param {string} eventId
+ * @param {boolean} persistent
+ */
+function buildRecurringButtonRow(eventId, persistent) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${RECUR_BTN_PREFIX}${eventId}`)
+      .setLabel(persistent ? "♾️ Recurring: on" : "♾️ Recurring: off")
+      .setStyle(persistent ? ButtonStyle.Success : ButtonStyle.Secondary),
+  );
+}
 
 const commands = [
   new SlashCommandBuilder()
@@ -81,6 +136,14 @@ const commands = [
             .setDescription("Scheduled event")
             .setRequired(true)
             .setAutocomplete(true),
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("persistent")
+            .setDescription(
+              "Keep role alive across recurring occurrences (default: no)",
+            )
+            .setRequired(false),
         ),
     )
     .addSubcommand((sc) =>
@@ -222,12 +285,14 @@ function modalTitle(name) {
  * @param {string} [opts.shortname]
  * @param {number[]} [opts.selectedMinutes]
  * @param {string} [opts.message]
+ * @param {boolean} [opts.persistent] create-mode only; encoded in the modal
+ *   customId (Discord caps modals at 5 label components — no modal field).
  */
 function buildReminderModal(opts) {
   const customId =
     opts.mode === "edit"
       ? `${MODAL_PREFIX_EDIT}${opts.eventId}`
-      : `${MODAL_PREFIX_CREATE}${opts.eventId}`;
+      : createModalCustomId(opts.eventId, opts.persistent);
 
   const shortnameDefault = (opts.shortname || "event").slice(0, 80);
   const selected = new Set(
@@ -271,28 +336,6 @@ function buildReminderModal(opts) {
     .setMaxValues(1)
     .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement);
 
-  const isPersistent = !!opts.persistent;
-  const persistentSelect = new StringSelectMenuBuilder()
-    .setCustomId("persistent")
-    .setPlaceholder("Notify on all occurrences?")
-    .setMinValues(1)
-    .setMaxValues(1)
-    .addOptions([
-      {
-        label: "Yes",
-        description:
-          "Keep role alive across recurring event occurrences (cleanup only on manual clear)",
-        value: "1",
-        default: isPersistent,
-      },
-      {
-        label: "No",
-        description: "Clean up after this single occurrence ends",
-        value: "0",
-        default: !isPersistent,
-      },
-    ]);
-
   const messageInput = new TextInputBuilder()
     .setCustomId("message")
     .setStyle(TextInputStyle.Paragraph)
@@ -328,12 +371,6 @@ function buildReminderModal(opts) {
           "{event} {location} {starts_in} {starts_at} {url} {description} {offset} {role}",
         )
         .setTextInputComponent(messageInput),
-      new LabelBuilder()
-        .setLabel("Notify on all occurrences")
-        .setDescription(
-          "Keep role + config across recurring event occurrences; only clean on manual clear.",
-        )
-        .setStringSelectMenuComponent(persistentSelect),
     );
 }
 
@@ -489,6 +526,7 @@ async function handleCreate(interaction) {
     eventId,
     eventName: scheduledEvent.name,
     shortname: suggestShortname(interaction.guildId, scheduledEvent.name),
+    persistent: interaction.options.getBoolean("persistent") === true,
   });
   await interaction.showModal(modal);
 }
@@ -521,7 +559,6 @@ async function handleEdit(interaction) {
     shortname: config.shortname,
     selectedMinutes,
     message: config.message_template || "",
-    persistent: !!config.persistent,
   });
   await interaction.showModal(modal);
 }
@@ -769,14 +806,10 @@ async function handleStatus(interaction) {
  * @param {object} ctx
  */
 async function handleEventReminderModal(interaction, ctx) {
-  const customId = interaction.customId || "";
-  const isCreate = customId.startsWith(MODAL_PREFIX_CREATE);
-  const isEdit = customId.startsWith(MODAL_PREFIX_EDIT);
-  if (!isCreate && !isEdit) return;
-
-  const eventId = customId.slice(
-    isCreate ? MODAL_PREFIX_CREATE.length : MODAL_PREFIX_EDIT.length,
-  );
+  const parsed = parseModalCustomId(interaction.customId);
+  if (!parsed) return;
+  const { mode, eventId } = parsed;
+  const isCreate = mode === "create";
   const guild = interaction.guild;
   if (!guild || !eventId) {
     await replyEphemeral(interaction, {
@@ -854,13 +887,7 @@ async function handleEventReminderModal(interaction, ctx) {
     channelId = null;
   }
 
-  let persistent = false;
-  try {
-    const pvals = interaction.fields.getStringSelectValues("persistent");
-    persistent = pvals?.[0] === "1";
-  } catch {
-    persistent = false;
-  }
+  const persistent = isCreate && parsed.persistent;
 
   const nameResult = normalizeShortname(shortnameRaw);
   if (!nameResult.ok) {
@@ -990,6 +1017,7 @@ async function handleEventReminderModal(interaction, ctx) {
           ? `_Skipped ${skippedPast} offset(s) already in the past._\n`
           : "") +
         `**Fires:**\n${fireLines}`,
+      components: [buildRecurringButtonRow(eventId, persistent)],
     });
     return;
   }
@@ -1052,7 +1080,6 @@ async function handleEventReminderModal(interaction, ctx) {
     roleId,
     channelId: channelId,
     messageTemplate: template,
-    persistent,
     offsets,
   });
 
@@ -1080,6 +1107,63 @@ async function handleEventReminderModal(interaction, ctx) {
         ? `_Skipped ${skippedPast} offset(s) already in the past._\n`
         : "") +
       `**Pending fires:**\n${fireLines}`,
+    components: [buildRecurringButtonRow(eventId, !!existing.persistent)],
+  });
+}
+
+async function handleRecurringButton(interaction) {
+  const eventId = (interaction.customId || "").slice(RECUR_BTN_PREFIX.length);
+  if (!eventId || !interaction.guild) return;
+
+  const config = getAnyConfigByScheduledEventId(interaction.guildId, eventId);
+  if (!config) {
+    await replyEphemeral(interaction, {
+      content: "That reminder config no longer exists.",
+    });
+    return;
+  }
+
+  const scheduledEvent = await fetchScheduledEvent(interaction.guild, eventId);
+  if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
+    await replyEphemeral(interaction, {
+      content:
+        "You need **Manage Guild** or be the **creator** of this scheduled event.",
+    });
+    return;
+  }
+
+  const next = !config.persistent;
+  updateEventReminderConfig(config.id, { persistent: next });
+
+  await logConfigChange(interaction.client, interaction.guildId, {
+    title: "Event reminder recurring",
+    command: "/eventreminder (recurring toggle)",
+    actor: interaction.user,
+    changes: [
+      `Recurring for \`${ROLE_PREFIX}${config.shortname}\` → ${next ? "on" : "off"}`,
+    ],
+  }).catch(() => {});
+
+  const pending = (config.offsets || []).filter((o) => o.sent_at == null);
+  const fireLines =
+    pending
+      .map(
+        (o) =>
+          `• ${formatOffsetMinutes(o.offset_minutes)} → <t:${Math.floor(o.fire_at / 1000)}:F>`,
+      )
+      .join("\n") || "—";
+  const chId = resolveNotifyChannelId(interaction.guildId, config.channel_id);
+
+  await interaction.update({
+    content:
+      `♾️ **Recurring: ${next ? "on" : "off"}** — reminders for ` +
+      `**${scheduledEvent?.name || config.shortname}**.\n` +
+      (next
+        ? "_Role + config stay alive across every occurrence; cleared only with /eventreminder clear._\n"
+        : "_Cleanup runs after this occurrence ends._\n") +
+      (chId ? `Channel: <#${chId}>\n` : "") +
+      `**Pending fires:**\n${fireLines}`,
+    components: [buildRecurringButtonRow(eventId, next)],
   });
 }
 
@@ -1268,11 +1352,19 @@ module.exports = {
   modalHandlers: {
     "er:": handleEventReminderModal,
   },
+  buttonHandlers: {
+    [RECUR_BTN_PREFIX]: handleRecurringButton,
+  },
   registerEvents,
   start,
   // exported for tests
   handleEventReminderModal,
   buildReminderModal,
+  handleRecurringButton,
+  createModalCustomId,
+  parseModalCustomId,
+  buildRecurringButtonRow,
   MODAL_PREFIX_CREATE,
   MODAL_PREFIX_EDIT,
+  RECUR_BTN_PREFIX,
 };
