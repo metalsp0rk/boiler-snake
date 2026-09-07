@@ -8,14 +8,34 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  packages: write
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release-please.outputs.release_created }}
+      tag_name: ${{ steps.release-please.outputs.tag_name }}
     steps:
       - name: Release Please
+        id: release-please
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # GitHub suppresses the downstream `on: release` trigger when the release
+  # was created by the default GITHUB_TOKEN inside a workflow (which is
+  # exactly what release-please does), so Docker Publish never fired for
+  # any past release. Publish the GHCR image directly from here instead;
+  # docker-publish.yml keeps its manual dispatch for backfills/rebuilds.
+  publish-image:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
+    permissions:
+      contents: read
+      packages: write
