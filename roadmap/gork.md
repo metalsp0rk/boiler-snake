@@ -17,7 +17,7 @@ engineering beyond documentation.
 
 ### Status
 
-**Planned** — design locked in [7.14](#714-design-decisions-locked). Not yet implemented.
+**Shipped** — design locked in [7.14](#714-design-decisions-locked).
 
 ---
 

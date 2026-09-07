@@ -5,6 +5,7 @@ const {
   handleHoneypotMessage,
   handleHoneypotWarningReaction,
 } = require("../features/honeypot");
+const { handleGorkMessage } = require("../features/gork");
 const {
   handleReactionRoleAdd,
   handleReactionRoleRemove,
@@ -17,8 +18,9 @@ const { recordUserChannelMessage } = require("../features/userActivity");
  * 1. message cache (logs)
  * 2. reaction-role pending emoji capture
  * 3. honeypot channel enforcement
- * 4. user channel activity counters (all human messages)
- * 5. message XP
+ * 4. gork AI keyword Q&A (detached; never blocks, never early-returns)
+ * 5. user channel activity counters (all human messages)
+ * 6. message XP
  *
  * @param {import("discord.js").Client} client
  * @param {import("discord.js").Message} message
@@ -34,6 +36,12 @@ async function onMessageCreate(client, message) {
     if (pendingRr.handled) return;
 
     if (await handleHoneypotMessage(message)) return;
+
+    // Gork AI keyword Q&A — never blocks the pipeline (detached job inside);
+    // a triggering message still earns XP below.
+    handleGorkMessage(client, message).catch((e) =>
+      console.error("[MessageCreate] gork error:", e?.message || e)
+    );
 
     // Count real message volume by channel (not XP-cooldown gated)
     recordUserChannelMessage(message);
