@@ -22,4 +22,5 @@ module.exports = [
   require("./userinfo"),
   require("./userActivity"),
   require("./tickets"),
+  require("./gork"),
 ];

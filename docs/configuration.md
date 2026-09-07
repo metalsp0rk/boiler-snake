@@ -95,11 +95,12 @@ Using this registers commands instantly to one guild instead of globally (which 
 | `TICKET_PUBLIC_BASE_URL` | Public origin for archive embed links |
 | `TICKET_MAX_ASSET_BYTES` | Max size per mirrored file (default 50 MiB) |
 | `TICKET_MAX_ASSETS` | Max media files downloaded per ticket (default 100) |
-| `AI_API_KEY` | Optional OpenAI-compatible key for non-sensitive close summaries |
+| `AI_API_KEY` | Optional OpenAI-compatible key for non-sensitive close summaries (and [Gork](gork.md) — live whenever set) |
 | `AI_BASE_URL` | API base URL (default OpenAI) |
 | `AI_MODEL` | Model name |
+| `SEARXNG_URL` | Optional base URL of a SearXNG instance with JSON format enabled — enables [Gork](gork.md) web search |
 
-See [Help Tickets](tickets.md).
+See [Help Tickets](tickets.md) and [Gork](gork.md).
 
 #### Database location
 

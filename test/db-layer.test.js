@@ -63,4 +63,139 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     assert.doesNotThrow(() => runMigrations());
   });
+
+  describe("gork settings (migration 021 + clamps)", () => {
+    before(() => {
+      // 021 is not yet in the migrate.js registry; apply it directly so the
+      // gork columns exist for this suite. addColumnIfMissing is idempotent,
+      // so this stays a no-op once 021 is registered.
+      const { addColumnIfMissing } = require("../src/db/connection");
+      require("../src/db/migrations/021_gork").up(api.db, { addColumnIfMissing });
+    });
+
+    it("migration 021 adds the 5 gork columns to guild_settings", () => {
+      const cols = new Set(
+        api.db.prepare(`PRAGMA table_info(guild_settings)`).all().map((c) => c.name)
+      );
+      for (const name of [
+        "gork_keyword",
+        "gork_context_window",
+        "gork_extra_rules",
+        "gork_search_enabled",
+        "gork_cooldown_sec",
+      ]) {
+        assert.ok(cols.has(name), `missing column: ${name}`);
+      }
+    });
+
+    it("fresh guild row gets the gork column defaults", () => {
+      const s = api.getGuildSettings("g-gork-fresh");
+      assert.equal(s.gork_keyword, "@gork");
+      assert.equal(s.gork_context_window, 10);
+      assert.equal(s.gork_extra_rules, "");
+      assert.equal(s.gork_search_enabled, 1);
+      assert.equal(s.gork_cooldown_sec, 180);
+    });
+
+    it("gork_context_window clamps to 1-50 (invalid -> 10)", () => {
+      const g = "g-gork-window";
+      const expectWindow = (value, expected) => {
+        const s = api.updateGuildSettings(g, { gork_context_window: value });
+        assert.equal(s.gork_context_window, expected, `window ${value} -> ${expected}`);
+      };
+      expectWindow(0, 1);
+      expectWindow(1, 1);
+      expectWindow(25, 25);
+      expectWindow(50, 50);
+      expectWindow(51, 50);
+      expectWindow(2.9, 2);
+      expectWindow("abc", 10);
+      expectWindow(null, 10);
+    });
+
+    it("gork_cooldown_sec clamps to 0-3600 (invalid -> 180)", () => {
+      const g = "g-gork-cooldown";
+      const expectCooldown = (value, expected) => {
+        const s = api.updateGuildSettings(g, { gork_cooldown_sec: value });
+        assert.equal(s.gork_cooldown_sec, expected, `cooldown ${value} -> ${expected}`);
+      };
+      expectCooldown(-5, 0);
+      expectCooldown(0, 0);
+      expectCooldown(180, 180);
+      expectCooldown(3600, 3600);
+      expectCooldown(3601, 3600);
+      expectCooldown(90.5, 90);
+      expectCooldown("soon", 180);
+      expectCooldown(null, 180);
+    });
+
+    it("gork_extra_rules is truncated at 500 chars", () => {
+      const g = "g-gork-rules";
+      const exact = api.updateGuildSettings(g, { gork_extra_rules: "r".repeat(500) });
+      assert.equal(exact.gork_extra_rules, "r".repeat(500));
+      const long = api.updateGuildSettings(g, {
+        gork_extra_rules: "a".repeat(300) + "b".repeat(300),
+      });
+      assert.equal(long.gork_extra_rules, "a".repeat(300) + "b".repeat(200));
+      const short = api.updateGuildSettings(g, { gork_extra_rules: "be nice" });
+      assert.equal(short.gork_extra_rules, "be nice");
+    });
+
+    it("gork_keyword: empty/whitespace clears to NULL (disabled)", () => {
+      const g = "g-gork-keyword-clear";
+      const set = api.updateGuildSettings(g, { gork_keyword: "@gork" });
+      assert.equal(set.gork_keyword, "@gork");
+      const emptied = api.updateGuildSettings(g, { gork_keyword: "" });
+      assert.equal(emptied.gork_keyword, null);
+      const blanked = api.updateGuildSettings(g, { gork_keyword: "   " });
+      assert.equal(blanked.gork_keyword, null);
+      const nulled = api.updateGuildSettings(g, { gork_keyword: null });
+      assert.equal(nulled.gork_keyword, null);
+    });
+
+    it("gork_keyword stores trimmed 1-50 char keywords; over-length keeps prior value", () => {
+      const g = "g-gork-keyword";
+      const kw50 = "k".repeat(50);
+      const s50 = api.updateGuildSettings(g, { gork_keyword: kw50 });
+      assert.equal(s50.gork_keyword, kw50);
+      const trimmed = api.updateGuildSettings(g, { gork_keyword: " @gork2 " });
+      assert.equal(trimmed.gork_keyword, "@gork2");
+      const rejected = api.updateGuildSettings(g, { gork_keyword: "k".repeat(51) });
+      assert.equal(rejected.gork_keyword, "@gork2");
+      const single = api.updateGuildSettings(g, { gork_keyword: "?" });
+      assert.equal(single.gork_keyword, "?");
+    });
+
+    it("gork_search_enabled coerces to 0/1", () => {
+      const g = "g-gork-search";
+      const expectSearch = (value, expected) => {
+        const s = api.updateGuildSettings(g, { gork_search_enabled: value });
+        assert.equal(s.gork_search_enabled, expected, `search ${value} -> ${expected}`);
+      };
+      expectSearch(1, 1);
+      expectSearch(0, 0);
+      expectSearch("on", 1);
+      expectSearch("off", 0);
+      expectSearch("1", 1);
+      expectSearch("0", 0);
+      expectSearch(true, 1);
+      expectSearch(false, 0);
+    });
+
+    it("all five gork keys round-trip in one patch", () => {
+      const g = "g-gork-roundtrip";
+      const s = api.updateGuildSettings(g, {
+        gork_keyword: "@gork",
+        gork_context_window: 20,
+        gork_extra_rules: "keep it short",
+        gork_search_enabled: 0,
+        gork_cooldown_sec: 60,
+      });
+      assert.equal(s.gork_keyword, "@gork");
+      assert.equal(s.gork_context_window, 20);
+      assert.equal(s.gork_extra_rules, "keep it short");
+      assert.equal(s.gork_search_enabled, 0);
+      assert.equal(s.gork_cooldown_sec, 60);
+    });
+  });
 });

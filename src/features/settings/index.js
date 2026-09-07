@@ -81,6 +81,11 @@ async function handleSettings(interaction) {
       inline: false,
     },
     {
+      name: "Gork",
+      value: `Keyword **${settings.gork_keyword || "disabled"}** · Window **${settings.gork_context_window}** · Search **${settings.gork_search_enabled ? "on" : "off"}**`,
+      inline: false,
+    },
+    {
       name: "Commands allowed in",
       value: chanText,
       inline: false,
