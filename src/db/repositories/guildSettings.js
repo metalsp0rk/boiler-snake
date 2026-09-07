@@ -34,8 +34,8 @@ function normalizeGorkKeyword(value) {
   return keyword;
 }
 
-/** Coerce the SearXNG tool toggle to a 0/1 integer. */
-function normalizeGorkSearchEnabled(value) {
+/** Coerce a gork boolean toggle (search / guild enable switch) to a 0/1 integer. */
+function normalizeGorkFlag(value) {
   if (value === false || value === 0 || value === "0" || value === "off") return 0;
   return 1;
 }
@@ -90,6 +90,7 @@ function getGuildSettings(guildId) {
       gork_extra_rules: "",
       gork_search_enabled: 1,
       gork_cooldown_sec: 180,
+      gork_enabled: 1,
       updated_at: now(),
     };
   }
@@ -130,6 +131,7 @@ function updateGuildSettings(guildId, patch) {
     "gork_extra_rules",
     "gork_search_enabled",
     "gork_cooldown_sec",
+    "gork_enabled",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
@@ -172,7 +174,10 @@ function updateGuildSettings(guildId, patch) {
     safePatch.gork_keyword = normalizeGorkKeyword(safePatch.gork_keyword);
   }
   if (safePatch.gork_search_enabled !== undefined) {
-    safePatch.gork_search_enabled = normalizeGorkSearchEnabled(safePatch.gork_search_enabled);
+    safePatch.gork_search_enabled = normalizeGorkFlag(safePatch.gork_search_enabled);
+  }
+  if (safePatch.gork_enabled !== undefined) {
+    safePatch.gork_enabled = normalizeGorkFlag(safePatch.gork_enabled);
   }
 
   // A sanitized value of undefined means "rejected" (over-length keyword) —

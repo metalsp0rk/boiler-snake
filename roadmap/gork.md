@@ -83,7 +83,7 @@ is extracted to **`src/core/ai.js`** and used by both features.
 - **Env (unchanged, already documented):** `AI_API_KEY`, `AI_BASE_URL`
   (default `https://api.openai.com/v1`), `AI_MODEL` (default `gpt-4o-mini`).
 - **Gork is live whenever `AI_API_KEY` is set.** No key → triggers are silently
-  ignored (no reply); `/setgork status` reports "AI provider not configured".
+  ignored (no reply); `/gork status` reports "AI provider not configured".
 - **Gork parameters:** temperature **0.8** (sarcasm), `max_tokens` ~600, total
   timeout **60s** including the tool loop.
 - **Long answers:** if the final text exceeds 2,000 chars it is split into
@@ -116,7 +116,7 @@ is extracted to **`src/core/ai.js`** and used by both features.
   mention source facts or a URL inline when it improves the answer.
 - If context is insufficient, say so (sarcastically) rather than inventing facts.
 
-**Staff additions:** `gork_extra_rules` (≤500 chars, set via `/setgork rules`) is
+**Staff additions:** `gork_extra_rules` (≤500 chars, set via `/gork rules`) is
 appended as "Additional guild rules:". Staff rules may shape tone or subject
 preference but **cannot** override the SFW / questions-only constraints. These are
 model-level guardrails — best effort, not a hard guarantee (documented as such).
@@ -171,7 +171,7 @@ extracted page content feeds the same tool loop.
 | Pipeline hook | New step in `onMessageCreate` after honeypot. Fast checks (settings, match, ticket-channel skip, cooldown, queue admission) run inline; the slow LLM job is fired as a detached promise (caught + logged) so the pipeline never stalls. |
 | Typing | `channel.sendTyping()` immediately on trigger — **including for queued requests while they wait** — refreshed every **8s** until the reply is sent |
 | Reply | Plain text via `message.reply(...)` — replies **to** the keyword message. No embed, no source list (model may inline URLs). |
-| Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/setgork cooldown` (`gork_cooldown_sec`, 0–3600, **0 = disabled**). **Staff** (ManageGuild or any `staff_roles` role) **bypass** the cooldown entirely. Hit → **silent ignore** |
+| Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (`gork_cooldown_sec`, 0–3600, **0 = disabled**). **Staff** (ManageGuild or any `staff_roles` role) **bypass** the cooldown entirely. Hit → **silent ignore** |
 | Concurrency / queue | **1 in-flight** gork request per guild; further triggers are **queued FIFO**, up to **5 waiting** (in-memory). When the queue is full, new triggers are **dropped** with the queue-full reply (locked wording in [7.14](#714-design-decisions-locked), decision 20) |
 
 ---
@@ -199,28 +199,35 @@ Every completed Q&A posts an embed to the guild's audit channel
 
 ### 7.8 Commands & Settings
 
-**`/setgork`** — all subcommands `requireStaff` (ManageGuild or any `staff_roles` role):
+**`/gork`** — all subcommands `requireStaff` (ManageGuild or any `staff_roles` role):
 
 | Command | Description |
 |---------|-------------|
-| `/setgork keyword <text>` | Set the trigger keyword (1–50 chars). `/setgork keyword clear` disables gork for the guild |
-| `/setgork context <1-50>` | Context window size (default 10) |
-| `/setgork cooldown <seconds>` | Per-user cooldown in seconds (0–3600; default **180**, 0 = disabled). Staff always bypass |
-| `/setgork rules <text>` | Set additional staff prompt rules (≤500 chars). `/setgork rules clear` removes them |
-| `/setgork search <on\|off>` | Toggle the SearXNG `web_search` tool for this guild |
-| `/setgork status` | Ephemeral embed: keyword, window, rules, search state, AI provider configured?, `SEARXNG_URL` set? |
+| `/gork keyword <text>` | Set the trigger keyword (1–50 chars). `/gork keyword clear` disables gork for the guild |
+| `/gork context <1-50>` | Context window size (default 10) |
+| `/gork cooldown <seconds>` | Per-user cooldown in seconds (0–3600; default **180**, 0 = disabled). Staff always bypass |
+| `/gork rules <text>` | Set additional staff prompt rules (≤500 chars). `/gork rules clear` removes them |
+| `/gork search <on\|off>` | Toggle the SearXNG `web_search` tool for this guild |
+| `/gork enable <on\|off>` | Master server switch (decision 23): off = every trigger silent; all other settings kept |
+| `/gork ban <user>` | Ban a user from gork for this guild (decision 22) — generic failure reply, never revealed |
+| `/gork unban <user>` | Lift the ban |
+| `/gork bans` | List banned users |
+| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, AI provider configured?, `SEARXNG_URL` set?, banned count |
 
-`/settings` gains a **Gork** field (keyword + window + search state).
+`/settings` gains a **Gork** field (enabled + keyword + window + search state).
 
 **Stored in `guild_settings`:**
 
 | Column | Purpose | Default |
 |--------|---------|---------|
+| `gork_enabled` | Master server switch (migration 022); `0` = silent | `1` |
 | `gork_keyword` | Trigger keyword; `NULL` = disabled | `@gork` |
 | `gork_context_window` | Prior-message context size | `10` |
 | `gork_extra_rules` | Staff prompt additions (≤500 chars) | `` (empty) |
 | `gork_search_enabled` | SearXNG tool toggle | `1` |
 | `gork_cooldown_sec` | Per-user cooldown in seconds; staff bypass | `180` |
+
+**Stored in `gork_user_blocks` (migration 022):** `guild_id`, `user_id` (composite PK), `created_by`, `created_at`.
 
 ---
 
@@ -308,7 +315,7 @@ repo convention):
 2. Migration `021` + `guildSettings` allow-list/defaults
 3. Context builder + unit tests
 4. Trigger matcher + pipeline hook + typing + reply
-5. System prompt + staff rules + `/setgork` commands (+ `/settings` field)
+5. System prompt + staff rules + `/gork` commands (+ `/settings` field)
 6. `web_search` tool + loop + `SEARXNG_URL`
 7. Audit logging embeds
 8. Rate limiting (cooldown + staff bypass + FIFO queue)
@@ -332,12 +339,14 @@ repo convention):
 | 10 | `web_search` is a plain OpenAI-compatible **function tool** executed by the bot against the SearXNG JSON API (architecture A). Max 3 searches/question, top-5 results, per-guild toggle, `SEARXNG_URL` env-only hosting. |
 | 11 | Reply is **plain text** to the keyword message; no embed, no source list — model may inline source facts/URLs when useful or asked. |
 | 12 | Typing indicator on trigger, refreshed every 8s. |
-| 13 | Per-user cooldown **180s** default (silent on hit), **staff bypass** (ManageGuild or `staff_roles`), guild-overridable 0–3600 via `/setgork cooldown` (0 = disabled). Concurrency: **1 in-flight + FIFO queue of up to 5 waiting** per guild; queue full → request **dropped** with the queue-full reply. |
+| 13 | Per-user cooldown **180s** default (silent on hit), **staff bypass** (ManageGuild or `staff_roles`), guild-overridable 0–3600 via `/gork cooldown` (0 = disabled). Concurrency: **1 in-flight + FIFO queue of up to 5 waiting** per guild; queue full → request **dropped** with the queue-full reply. |
 | 14 | **Every Q&A logged to the audit channel** (embed with question, context mode, search count, model, duration, truncated answer, jump links); failures as a compact one-liner; console fallback. |
-| 15 | `/setgork` config is **staff-gated** (`requireStaff`). |
+| 15 | `/gork` config is **staff-gated** (`requireStaff`). |
 | 16 | Naming: **gork** everywhere — feature dir, command, `gork_*` settings columns, roadmap/docs files. Misspelling of "grok" is intentional. |
 | 17 | Works in threads; no DMs; bot/webhook messages skipped. XP awards unchanged. |
 | 18 | No privacy guardrail engineering beyond documentation (single-server personal project; messages sent to the configured LLM provider). |
 | 19 | Gork is **disabled in open ticket channels** (channel has a `tickets` row that is not yet archived) — triggers silently ignored. |
 | 20 | **Canned replies (locked):** queue full → "My one (1) brain is already busy, and the queue is full. Your question has been dropped — no hard feelings." · LLM failure/timeout → "*gork's brain went to lunch* — try again in a bit." · Keyword alone with no question and no reply reference → no reply at all. |
 | 21 | **Page reading (2026-09):** `read_page(urls: 1–3)` — main-content extraction (`@mozilla/readability` + `jsdom`) → Markdown (`turndown`); shared 3-round tool budget and shared enablement with `web_search`; strict SSRF wall (public web only); base prompt byte-locked and unchanged. See [7.5.1](#751-page-reading-tool-read_page--2026-09-extension-decision-21). |
+| 22 | **Command rename + user bans (2026-09):** `/setgork` → **`/gork`** (all subcommands move under it). `/gork ban|unban|bans` maintain a per-guild ban list (`gork_user_blocks`, migration 022). A banned trigger is answered with the locked **LLM-failure canned reply** (decision 20 text) so the ban is indistinguishable from a normal failure — no LLM call, no QA audit entry, and **no staff bypass** (unlike the cooldown). Check sits after the per-user cooldown so the reply is paced like any admitted trigger. Ban/unban actions are config-change audited. |
+| 23 | **Guild master switch (2026-09):** `guild_settings.gork_enabled` (migration 022, default on) via `/gork enable on|off`. Off = every trigger **fully silent** (like a null keyword / missing AI key — disabled states never reply); keyword and all other settings preserved for re-enable. Reflected in `/gork status` and the `/settings` Gork field. |

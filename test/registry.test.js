@@ -22,7 +22,7 @@ describe("command definitions via registry", () => {
     assert.ok(names.includes("music"));
     assert.ok(names.includes("twitch"));
     assert.ok(names.includes("settwitch"));
-    assert.ok(names.includes("setgork"));
+    assert.ok(names.includes("gork"));
   });
 });
 

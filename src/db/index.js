@@ -29,6 +29,7 @@ const tickets = require("./repositories/tickets");
 const userChannelActivity = require("./repositories/userChannelActivity");
 const commandPermissionOauth = require("./repositories/commandPermissionOauth");
 const twitch = require("./repositories/twitch");
+const gorkAccess = require("./repositories/gorkAccess");
 
 module.exports = {
   db,
@@ -263,6 +264,12 @@ module.exports = {
   listTicketMessages: tickets.listTicketMessages,
   generateTranscriptToken: tickets.generateTranscriptToken,
   setTicketArchiveMessageId: tickets.setTicketArchiveMessageId,
+
+  // gork access control (per-guild user blocks)
+  addGorkBlock: gorkAccess.addGorkBlock,
+  removeGorkBlock: gorkAccess.removeGorkBlock,
+  isGorkBlocked: gorkAccess.isGorkBlocked,
+  listGorkBlocks: gorkAccess.listGorkBlocks,
 
   // ticket panels (stored registry)
   createTicketPanel: tickets.createTicketPanel,

@@ -29,6 +29,7 @@ const migrations = [
   require("./migrations/019_ticket_panels"),
   require("./migrations/020_twitch"),
   require("./migrations/021_gork"),
+  require("./migrations/022_gork_access"),
 ];
 
 const helpers = {
