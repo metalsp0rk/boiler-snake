@@ -856,6 +856,123 @@ describe("integration: gork (AI keyword Q&A)", () => {
     }
   });
 
+  it("read_page tool: model browses pages, answer is grounded in page content", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    // Public IPv4 literal: the SSRF guard validates it without DNS, so the
+    // test is deterministic and never resolves real hostnames.
+    const PAGE_URL = "http://93.184.216.34/center-div";
+    const PAGE_HTML = [
+      "<!DOCTYPE html><html><head><title>Centering a div</title>",
+      '<script>var evil="SCRIPT-SHOULD-VANISH";</script></head>',
+      "<body><nav>NAV-SHOULD-VANISH</nav>",
+      "<article><h1>Centering a div</h1>",
+      `<p>${"Use flexbox on the container. ".repeat(30)}</p>`,
+      `<p>${"Set display flex and justify-content center. ".repeat(10)}</p>`,
+      "</article></body></html>",
+    ].join("\n");
+    const fetchMock = mockFetch([
+      // 1) model calls read_page with the page URL
+      chatCompletionResponse(null, {
+        tool_calls: [
+          {
+            id: "call_read",
+            type: "function",
+            function: {
+              name: "read_page",
+              arguments: JSON.stringify({ urls: [PAGE_URL] }),
+            },
+          },
+        ],
+      }),
+      // 2) the page itself
+      async () => ({
+        ok: true,
+        status: 200,
+        headers: {
+          get: (name) =>
+            String(name).toLowerCase() === "content-type"
+              ? "text/html; charset=utf-8"
+              : null,
+        },
+        text: async () => PAGE_HTML,
+      }),
+      // 3) grounded final answer
+      chatCompletionResponse(
+        "Flex container with justify-content center — per the docs page."
+      ),
+    ]);
+    try {
+      enableAiKey();
+      process.env.SEARXNG_URL = "https://searxng.test";
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-readpage-1",
+        content: "gork: how do I center a div?",
+      });
+      await env.onMessageCreate(message);
+
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 5000),
+        "expected the read-page grounded answer"
+      );
+      assert.match(replies[0].content, /flex container/i);
+
+      // Two chat calls + exactly one page fetch of the resolved URL.
+      const chat = fetchMock.calls.filter((c) =>
+        c.url.includes("/chat/completions")
+      );
+      const page = fetchMock.calls.filter((c) => c.url === PAGE_URL);
+      assert.equal(chat.length, 2, "two chat round trips");
+      assert.equal(page.length, 1, "the tool fetched the page once");
+
+      // Both tools offered to the model when search is enabled.
+      const firstBody = JSON.parse(chat[0].init.body);
+      const toolNames = (firstBody.tools || [])
+        .map((t) => t.function.name)
+        .sort();
+      assert.deepEqual(toolNames, ["read_page", "web_search"]);
+
+      // Extracted page content entered the conversation as a tool result;
+      // scripts/nav stripped by extraction.
+      const secondBody = JSON.parse(chat[1].init.body);
+      const toolMsg = secondBody.messages.find((m) => m.role === "tool");
+      assert.ok(toolMsg, "tool result must feed the second chat call");
+      assert.ok(
+        toolMsg.content.includes("Centering a div"),
+        `tool block carries title: ${toolMsg.content.slice(0, 120)}`
+      );
+      assert.ok(toolMsg.content.includes("Use flexbox on the container."));
+      assert.ok(
+        !toolMsg.content.includes("SCRIPT-SHOULD-VANISH"),
+        "script content must be stripped"
+      );
+      assert.ok(
+        !toolMsg.content.includes("NAV-SHOULD-VANISH"),
+        "nav must be stripped"
+      );
+
+      // Audit records page reads separately from searches.
+      assert.ok(
+        await waitFor(() => env.channels.log.sent.length >= 1),
+        "expected the Q&A audit embed"
+      );
+      const auditText = embedText(env.channels.log.sent[0].embeds[0]);
+      assert.ok(
+        auditText.includes("yes — 1 page read"),
+        `audit tools field must count the page read only: ${auditText}`
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
   it("/setgork keyword + search update settings; /settings reflects them", async () => {
     const env = await createIntegrationEnv();
     const saved = saveEnv();

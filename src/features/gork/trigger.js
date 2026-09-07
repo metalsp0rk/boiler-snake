@@ -30,6 +30,7 @@ const {
   isWebSearchEnabled,
   executeWebSearch,
 } = require("./tools/webSearch");
+const { READ_PAGE_TOOL, executeReadPage } = require("./tools/readPage");
 const { logGorkQa, logGorkFailure, describeContext } = require("./audit");
 
 /** One gork queue per process (in-memory cooldowns + per-guild FIFO). */
@@ -244,6 +245,10 @@ async function handleGorkMessage(client, message) {
           extraRules: settings.gork_extra_rules,
         });
         const searchOn = isWebSearchEnabled(settings);
+        // Per-job tool counters for the audit embed (locked spec:
+        // separate search / page-read tallies, not the combined total).
+        let searches = 0;
+        let reads = 0;
         const res = await chatWithTools(cfg, {
           messages: [
             { role: "system", content: system },
@@ -253,11 +258,22 @@ async function handleGorkMessage(client, message) {
           maxTokens: LLM_MAX_TOKENS,
           timeoutMs: LLM_TIMEOUT_MS,
           maxToolRounds: LLM_MAX_TOOL_ROUNDS,
-          tools: searchOn ? [WEB_SEARCH_TOOL] : undefined,
-          executeTool: (name, args) =>
-            name === "web_search"
-              ? executeWebSearch(args?.query)
-              : `unknown tool: ${name}`,
+          tools: searchOn
+            ? [WEB_SEARCH_TOOL, READ_PAGE_TOOL]
+            : undefined,
+          executeTool: (name, args) => {
+            if (name === "web_search") {
+              searches += 1;
+              return executeWebSearch(args?.query);
+            }
+            if (name === "read_page") {
+              reads += 1;
+              // The tool module coerces/dedupes/caps urls itself; pass
+              // the raw args through (never throws).
+              return executeReadPage(args);
+            }
+            return `unknown tool: ${name}`;
+          },
         });
 
         if (res.ok && (res.content || "").trim()) {
@@ -273,7 +289,8 @@ async function handleGorkMessage(client, message) {
             user: message.author,
             question,
             contextLabel: describeContext(ctx),
-            searchQueries: res.toolCalls,
+            searchQueries: searches,
+            pageReads: reads,
             model: cfg.model,
             durationMs: res.durationMs,
             answer: res.content,
