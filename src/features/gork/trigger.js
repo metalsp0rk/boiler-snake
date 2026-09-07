@@ -3,15 +3,19 @@
  * (roadmap/gork.md §7.1, §7.6; design decisions 2, 3, 11–13, 20).
  *
  * The pipeline hook runs only fast checks inline, in order:
- * guild + author + non-bot, text-based channel, guild keyword enabled,
- * open-ticket channel skip, AI key present, keyword match, keyword-alone
- * rule, per-user cooldown (staff bypass), queue admission. The slow LLM
- * job is then fired as a detached promise (caught + logged) so the
- * onMessageCreate pipeline never stalls — XP awards keep flowing.
+ * guild + author + non-bot, text-based channel, guild enable switch +
+ * keyword enabled, open-ticket channel skip, AI key present, keyword
+ * match, keyword-alone rule, per-user cooldown (staff bypass), guild ban
+ * list (banned users get the LLM-failure reply, no staff bypass), queue
+ * admission. The slow LLM job is then fired as a detached promise (caught
+ * + logged) so the onMessageCreate pipeline never stalls — XP awards keep
+ * flowing.
  *
  * Canned replies (LOCKED — roadmap/gork.md decision 20, verbatim):
  * - queue full:  "My one (1) brain is already busy, and the queue is full. Your question has been dropped — no hard feelings."
  * - LLM failure: "*gork's brain went to lunch* — try again in a bit."
+ *   (guild-banned users get this same text so a ban is indistinguishable
+ *   from a normal failure)
  * - keyword alone with no reply reference: no reply at all (no LLM call).
  */
 
@@ -19,6 +23,7 @@ const { PermissionFlagsBits } = require("discord.js");
 const {
   getGuildSettings,
   getTicketByChannel,
+  isGorkBlocked,
   memberHasStaffRole,
 } = require("../../db");
 const { getAiConfig, chatWithTools } = require("../../core/ai");
@@ -179,8 +184,11 @@ async function handleGorkMessage(client, message) {
       return;
     }
 
-    // 3. Guild must have a non-blank keyword (null/blank = gork disabled).
+    // 3. Guild must have gork enabled: the `/gork enable` master switch
+    //    (off = fully silent; keyword + all other settings are preserved)
+    //    and a non-blank keyword (null/blank = gork disabled).
     const settings = getGuildSettings(guildId);
+    if (Number(settings?.gork_enabled ?? 1) !== 1) return;
     const keyword = settings?.gork_keyword;
     if (typeof keyword !== "string" || !keyword.trim()) return;
 
@@ -219,7 +227,17 @@ async function handleGorkMessage(client, message) {
     });
     if (!cd.allowed) return;
 
-    // 10. Concurrency: 1 in-flight per guild, FIFO up to 5 waiting; a
+    // 10. Guild ban list (`/gork ban`): banned users — staff included, no
+    //     bypass — get the locked LLM-failure canned reply so the ban is
+    //     indistinguishable from a normal failure. Checked after the
+    //     cooldown so a banned trigger stays silent during the cooldown
+    //     window (rate-limits the reply); no LLM call, no QA audit.
+    if (isGorkBlocked(guildId, message.author.id)) {
+      await message.reply(LLM_FAILURE_REPLY).catch(() => {});
+      return;
+    }
+
+    // 11. Concurrency: 1 in-flight per guild, FIFO up to 5 waiting; a
     //     full queue drops the trigger with the locked canned reply.
     const slot = gorkQueue.admit({ guildId });
     if (slot.dropped) {
@@ -227,14 +245,14 @@ async function handleGorkMessage(client, message) {
       return;
     }
 
-    // 11. Typing immediately (also while queued) and every 8s.
+    // 12. Typing immediately (also while queued) and every 8s.
     await channel.sendTyping().catch(() => {});
     const typingInterval = setInterval(
       () => channel.sendTyping().catch(() => {}),
       TYPING_REFRESH_MS,
     );
 
-    // 12. Detached LLM job: fire-and-forget so the pipeline never awaits.
+    // 13. Detached LLM job: fire-and-forget so the pipeline never awaits.
     const auditClient = client || message.guild.client || null;
     void (async () => {
       let replied = false;
@@ -321,7 +339,7 @@ async function handleGorkMessage(client, message) {
       }
     })().catch(() => {});
   } catch (err) {
-    // 13. The pipeline must never see a rejection.
+    // 14. The pipeline must never see a rejection.
     console.error("[gork] pipeline hook error:", err?.message || err);
   }
 }

@@ -198,4 +198,89 @@ describe("db layer", () => {
       assert.equal(s.gork_cooldown_sec, 60);
     });
   });
+
+  describe("gork access control (migration 022 + blocks repo)", () => {
+    it("migration 022 is registered and adds gork_enabled + gork_user_blocks", () => {
+      const { migrations } = require("../src/db/migrate");
+      assert.ok(
+        migrations.some((m) => m.id === "022_gork_access"),
+        "022_gork_access must be registered in migrate.js"
+      );
+      const cols = api.db
+        .prepare(`PRAGMA table_info(guild_settings)`)
+        .all()
+        .map((c) => c.name);
+      assert.ok(cols.includes("gork_enabled"));
+      const table = api.db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name='gork_user_blocks'`
+        )
+        .get();
+      assert.ok(table, "gork_user_blocks table must exist");
+    });
+
+    it("re-running all migrations (incl. 022) stays safe", () => {
+      const { runMigrations } = require("../src/db/migrate");
+      assert.doesNotThrow(() => runMigrations());
+    });
+
+    it("fresh guild row defaults gork_enabled to 1", () => {
+      const s = api.getGuildSettings("g-gork-enabled-fresh");
+      assert.equal(s.gork_enabled, 1);
+    });
+
+    it("gork_enabled coerces to 0/1 and round-trips", () => {
+      const g = "g-gork-enabled";
+      const expectEnabled = (value, expected) => {
+        const s = api.updateGuildSettings(g, { gork_enabled: value });
+        assert.equal(s.gork_enabled, expected, `gork_enabled ${value} -> ${expected}`);
+      };
+      expectEnabled(1, 1);
+      expectEnabled(0, 0);
+      expectEnabled("on", 1);
+      expectEnabled("off", 0);
+      expectEnabled(true, 1);
+      expectEnabled(false, 0);
+      const s = api.getGuildSettings(g);
+      assert.equal(s.gork_enabled, 0, "value must persist across reads");
+    });
+
+    it("adding a block preserves keyword and other settings", () => {
+      const g = "g-gork-enable-preserves";
+      api.updateGuildSettings(g, { gork_keyword: "@ask", gork_cooldown_sec: 45 });
+      api.updateGuildSettings(g, { gork_enabled: 0 });
+      const s = api.getGuildSettings(g);
+      assert.equal(s.gork_enabled, 0);
+      assert.equal(s.gork_keyword, "@ask", "disable must preserve the keyword");
+      assert.equal(s.gork_cooldown_sec, 45, "disable must preserve the cooldown");
+    });
+
+    it("addGorkBlock / isGorkBlocked / listGorkBlocks / removeGorkBlock round-trip", () => {
+      const g = "g-gork-blocks";
+      const other = "g-gork-blocks-other";
+      assert.equal(api.isGorkBlocked(g, "u1"), false);
+
+      api.addGorkBlock(g, "u1", "staff-1");
+      api.addGorkBlock(g, "u2", null);
+      assert.equal(api.isGorkBlocked(g, "u1"), true);
+      assert.equal(api.isGorkBlocked(other, "u1"), false, "blocks are per-guild");
+
+      api.addGorkBlock(g, "u1", "staff-X"); // idempotent re-add keeps first row
+      const rows = api.listGorkBlocks(g);
+      assert.equal(rows.length, 2);
+      const u1 = rows.find((r) => r.user_id === "u1");
+      assert.equal(u1.created_by, "staff-1", "re-add must not clobber the audit fields");
+      assert.ok(Number.isInteger(u1.created_at));
+
+      assert.equal(api.removeGorkBlock(g, "u1"), true);
+      assert.equal(api.removeGorkBlock(g, "u1"), false, "second remove is a no-op");
+      assert.equal(api.isGorkBlocked(g, "u1"), false);
+      assert.equal(api.listGorkBlocks(other).length, 0);
+    });
+
+    it("isGorkBlocked degrades to false for missing identity", () => {
+      assert.equal(api.isGorkBlocked(null, "u1"), false);
+      assert.equal(api.isGorkBlocked("g-gork-blocks", ""), false);
+    });
+  });
 });
