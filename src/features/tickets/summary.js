@@ -1,24 +1,13 @@
 /**
  * AI structured summary for non-sensitive ticket archives.
  * Falls back to stats + close reason when AI is unavailable.
+ *
+ * The OpenAI-compatible HTTP call lives in src/core/ai.js (shared with
+ * gork); this module keeps the prompt, fallbacks, and feature warnings.
  */
 
 const { formatTicketRef } = require("../../core/theme");
-
-/**
- * @returns {{ apiKey: string|null, baseUrl: string, model: string }}
- */
-function getAiConfig() {
-  return {
-    apiKey: process.env.AI_API_KEY || process.env.OPENAI_API_KEY || null,
-    baseUrl: (
-      process.env.AI_BASE_URL ||
-      process.env.OPENAI_BASE_URL ||
-      "https://api.openai.com/v1"
-    ).replace(/\/$/, ""),
-    model: process.env.AI_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini",
-  };
-}
+const { getAiConfig, chatCompletion } = require("../../core/ai");
 
 /**
  * Stats-only fallback summary (no external call).
@@ -94,54 +83,44 @@ async function summarizeTicket(ticket, messages, opts = {}) {
     transcriptText || "(no text)",
   ].join("\n");
 
-  try {
-    const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: cfg.model,
-        temperature: 0.2,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
-    });
+  const result = await chatCompletion(cfg, {
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    temperature: 0.2,
+    responseFormat: { type: "json_object" },
+  });
 
-    if (!res.ok) {
-      console.warn(`[tickets] AI summary HTTP ${res.status}; using fallback`);
-      return fallback;
+  if (!result.ok) {
+    if (result.status) {
+      console.warn(`[tickets] AI summary HTTP ${result.status}; using fallback`);
+    } else {
+      console.warn("[tickets] AI summary failed:", result.error);
     }
-
-    const data = await res.json();
-    const raw = data?.choices?.[0]?.message?.content;
-    if (!raw) return fallback;
-
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return fallback;
-    }
-
-    return {
-      ...fallback,
-      source: "ai",
-      model: cfg.model,
-      resolution: String(parsed.resolution || fallback.resolution).slice(
-        0,
-        500,
-      ),
-      summary: String(parsed.summary || fallback.summary).slice(0, 2000),
-    };
-  } catch (err) {
-    console.warn("[tickets] AI summary failed:", err?.message || err);
     return fallback;
   }
+
+  const raw = result.content;
+  if (!raw) return fallback;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+
+  return {
+    ...fallback,
+    source: "ai",
+    model: cfg.model,
+    resolution: String(parsed.resolution || fallback.resolution).slice(
+      0,
+      500,
+    ),
+    summary: String(parsed.summary || fallback.summary).slice(0, 2000),
+  };
 }
 
 module.exports = {

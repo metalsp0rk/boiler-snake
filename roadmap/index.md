@@ -18,7 +18,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags; `added_by`; audit embeds |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + polish) | Auto-mod thresholds |
-| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Planned | — |
+| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | — |
 
 ---
 
@@ -80,11 +80,11 @@ Each feature has its own file with the full design, status, and locked decisions
 
 | Table / change | Notes |
 |----------------|-------|
-| `guild_settings.gork_keyword` | Trigger keyword (default `@gork`; `NULL` = disabled) (**planned**, migration `021`) |
-| `guild_settings.gork_context_window` | Prior-message context size; default `10` (**planned**) |
-| `guild_settings.gork_extra_rules` | Staff prompt additions, ≤500 chars (**planned**) |
-| `guild_settings.gork_search_enabled` | SearXNG `web_search` tool toggle; default `1` (**planned**) |
-| `guild_settings.gork_cooldown_sec` | Per-user cooldown seconds; default `180`, staff bypass (**planned**) |
+| `guild_settings.gork_keyword` | Trigger keyword (default `@gork`; `NULL` = disabled) (**shipped**, migration `021`) |
+| `guild_settings.gork_context_window` | Prior-message context size; default `10` (**shipped**) |
+| `guild_settings.gork_extra_rules` | Staff prompt additions, ≤500 chars (**shipped**) |
+| `guild_settings.gork_search_enabled` | SearXNG `web_search` tool toggle; default `1` (**shipped**) |
+| `guild_settings.gork_cooldown_sec` | Per-user cooldown seconds; default `180`, staff bypass (**shipped**) |
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
