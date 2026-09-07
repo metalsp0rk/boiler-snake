@@ -175,7 +175,7 @@ Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and abili
 
 | Command | Description |
 |---------|-------------|
-| `/eventreminder create event:` | Open configure modal for a scheduled event |
+| `/eventreminder create event: [persistent]` | Open configure modal for a scheduled event. `persistent` (default no) keeps the role + config alive across recurring occurrences |
 | `/eventreminder edit event:` | Re-open modal for an existing config |
 | `/eventreminder list` | Active configs, offsets, next fire |
 | `/eventreminder clear event:` | Stop reminders, delete role + DB rows |
@@ -196,6 +196,8 @@ Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and abili
 | Extra custom offsets | Freeform `2h, 10m` (`(\d+)(m\|h\|d)`) |
 | Channel override | Optional; empty uses guild default |
 | Custom embed description | Optional body for the reminder **embed**. Leave empty for the default (`Starts {starts_in}`) |
+
+**Recurring ("persistent")** is **not** a modal field (Discord caps modals at 5 fields). Set it with the `persistent` option on `/eventreminder create`, or toggle it anytime with the **♾️ Recurring: on/off** button on the create/edit confirmation. When **on**, the `event-*` role and config survive an occurrence completing and are only removed by `/eventreminder clear`. Edit submissions leave the current recurring state untouched.
 
 ### Placeholders (embed description)
 
