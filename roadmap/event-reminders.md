@@ -255,3 +255,20 @@ Implementation module: `src/eventReminders.js` (ticker + role sync + delivery + 
 
 - Role `mentionable: false` vs true (recommend **false**; bot mentions by snowflake).
 - Exact preset list beyond the defaults above.
+
+---
+
+### 2.12 Fix — create/edit modal exceeds Discord's 5-component limit
+
+**Symptom:** `/eventreminder create` (and `edit`) fail at `showModal` with `Invalid Form Body — data.components[BASE_TYPE_MAX_LENGTH]: Must be 5 or fewer in length.` Creating event reminders is currently broken.
+
+**Root cause:** `buildReminderModal()` in `src/features/eventReminders/index.js` adds **6** label components — `shortname`, `offsets`, `offsets_custom`, `channel`, `message`, plus the later-added **persistent** (“Notify on all occurrences”) string select. The modal layout in [2.3](#23-create-flow-modal--discord-ui-limits) was specced at exactly 5 components; the persistent select pushed it over Discord's hard modal limit.
+
+**Fix (shipped):**
+
+- [x] Removed the `persistent` string select from the modal → back to 5 components (`shortname`, `offsets`, `offsets_custom`, `channel`, `message`) for **both** create and edit.
+- [x] Persistent choice moved to an **optional `persistent` boolean option** on `/eventreminder create` (default **No**); encoded in the create modal customId (`er:create:<eventId>:p1`) so it reaches the submit handler without a modal field. A **♾️ Recurring: on/off button** on the ephemeral create/edit confirmation toggles `persistent` for either flow (button customId `er-recur:<eventId>`).
+- [x] Modal submit handler: reads the same 5 component ids; create sources `persistent` from the create option, edit preserves the stored config value (omitted from the patch).
+- [x] Regression test: `buildReminderModal()` produces exactly 5 components (both modes); plus integration coverage of the `:p1` encode/persist and the toggle button.
+- [x] Updated [docs/event-reminders.md](../docs/event-reminders.md) create/edit flow.
+
