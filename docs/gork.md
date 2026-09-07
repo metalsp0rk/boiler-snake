@@ -7,6 +7,7 @@ A goofy AI question-answering bot. When someone types the trigger keyword — a 
 - **Literal keyword trigger**: message content (trimmed) starts with the guild's keyword (default `@gork`), compared case-insensitively
 - **Context-aware**: answers from the reply chain when the keyword message replies to something, otherwise from the N most recent messages (default 10, max 50)
 - **Optional web search**: the model can call a `web_search` tool the bot executes against a SearXNG instance's JSON API (up to 3 searches per question)
+- **Page reading**: the model can also open pages with `read_page` (1–3 URLs per call) — gork fetches them, extracts the main content to clean Markdown, and feeds it back into the same tool loop; **public web only** (internal/private addresses are refused by an SSRF guard)
 - **Voice**: sarcastic, always safe for work; the base prompt is immutable and staff rules cannot override the SFW / questions-only constraints (best effort)
 - **Gating**: gork is live whenever `AI_API_KEY` is set; all `/setgork` configuration is staff-only
 
@@ -20,7 +21,7 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
    → queue? (1 in-flight + 5 waiting; full → canned drop reply)
    → typing indicator (refreshed every 8s until the reply lands)
    → context window: reply chain (with backfill) or N prior messages
-   → LLM (temperature 0.8, 60s total timeout; web_search tool if enabled)
+   → LLM (temperature 0.8, 60s total timeout; web_search + read_page tools if enabled)
    → plain-text reply to the keyword message (>2,000 chars → split)
    → audit embed to the audit channel
 ```
@@ -83,9 +84,23 @@ SEARXNG_URL=https://searxng.example.com
 
 `SEARXNG_URL` is the base URL of any SearXNG instance (self-hosted or public) with **JSON format enabled** (`formats: [json]` in the SearXNG settings). **No compose service is added** — the bot simply calls the instance's JSON API.
 
-How it works: gork exposes a plain OpenAI-compatible function tool `web_search(query)`. When the model calls it, the bot runs `GET {SEARXNG_URL}/search?q=<query>&format=json` (~10s timeout) and feeds the top 5 results (title, URL, snippet trimmed to ~300 chars) back into the conversation. The budget is **3 searches per question**. If a search fails, the model is told "search unavailable" and answers from context alone.
+How it works: gork exposes a plain OpenAI-compatible function tool `web_search(query)`. When the model calls it, the bot runs `GET {SEARXNG_URL}/search?q=<query>&format=json` (~10s timeout) and feeds the top 5 results (title, URL, snippet trimmed to ~300 chars) back into the conversation. The budget is **3 tool rounds per question**, shared with `read_page`. If a search fails, the model is told "search unavailable" and answers from context alone.
 
 The tool is a per-guild setting (default on) and only runs when `SEARXNG_URL` is set: `/setgork search on|off`.
+
+### Page reading (`read_page`)
+
+When a search snippet (or the conversation itself) points at a page that likely has the answer, the model can call `read_page` with **1–3 URLs** — gork fetches them concurrently, extracts the **main content** (Mozilla Readability via jsdom, body fallback for non-article pages), converts it to clean **Markdown** (turndown), and feeds it back into the same conversation. Pages arrive as `### <title> / Source: <url> / <markdown>` blocks, capped at ~4,000 chars per page and ~10,000 combined.
+
+| Aspect | Detail |
+|--------|--------|
+| Enabled when | Same lever as search (`SEARXNG_URL` set + `/setgork search on`) — no separate toggle |
+| Tool budget | The model gets up to **3 tool rounds** per question total (searches + reads combined); parallel calls in one round cost one round |
+| Fetch guards | 10s per page, ≤1 MB, `text/html`/`text/plain` only, ≤2 redirects (every hop re-validated) |
+| **SSRF guard** | Refuses **private / internal URLs by design**: loopback, RFC1918, CGNAT, link-local & cloud-metadata (`169.254.169.254`), multicast/reserved, IPv6 ULA/link-local, `localhost`/`.local`/`.internal` — checked at the hostname **and** on resolved IPs |
+| Failure mode | Per-page: `"Could not read: <reason>"` inline — one dead page never kills the answer |
+
+Reading is grounded strictly in the fetched content — extraction strips scripts, nav, and chrome, so the model sees article text, not page furniture.
 
 ## Commands
 
@@ -168,11 +183,12 @@ Staff can append up to 500 chars of rules via `/setgork rules` (added as "Additi
 3. Is the message from a **bot or webhook**, in a **DM**, or in an **open ticket channel**? All are skipped silently
 4. Is the asker still within the per-user cooldown? Cooldown hits are silent (staff bypass)
 
-### Web search not happening
+### Web search / page reading not happening
 
 - `SEARXNG_URL` must be set **and** the instance must have JSON format enabled (`formats: [json]` in SearXNG settings); otherwise the model is told search is unavailable and answers from context alone
-- `/setgork search off` disables the tool for the guild
-- `/setgork status` shows whether `SEARXNG_URL` is set; the budget is max **3** searches per question
+- `/setgork search off` disables **both** tools for the guild (search and page reading share the lever)
+- `/setgork status` shows whether `SEARXNG_URL` is set; the budget is max **3 tool rounds** per question (searches + page reads combined)
+- `read_page` **cannot open internal URLs** (LAN hosts, `localhost`, cloud metadata) — the SSRF guard refuses them by design; only public web pages are readable
 
 ### Gork feels slow or drops questions
 
