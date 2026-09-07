@@ -973,14 +973,14 @@ describe("integration: gork (AI keyword Q&A)", () => {
     }
   });
 
-  it("/setgork keyword + search update settings; /settings reflects them", async () => {
+  it("/gork keyword + search update settings; /settings reflects them", async () => {
     const env = await createIntegrationEnv();
     const saved = saveEnv();
     clearAiKey(); // config commands do not need the AI key
     try {
       // keyword: set
       let ixn = await env.runCommand({
-        commandName: "setgork",
+        commandName: "gork",
         subcommand: "keyword",
         admin: true,
         options: { keyword: "ask" },
@@ -1003,7 +1003,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
 
       // search: off
       ixn = await env.runCommand({
-        commandName: "setgork",
+        commandName: "gork",
         subcommand: "search",
         admin: true,
         options: { search: "off" },
@@ -1016,7 +1016,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
 
       // keyword: clear (disable)
       ixn = await env.runCommand({
-        commandName: "setgork",
+        commandName: "gork",
         subcommand: "keyword",
         admin: true,
         options: { keyword: "clear" },
@@ -1030,7 +1030,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
 
       // Non-staff is denied and the stored settings stay unchanged.
       const denied = await env.runCommand({
-        commandName: "setgork",
+        commandName: "gork",
         subcommand: "keyword",
         admin: false,
         user: env.users.memberUser,
@@ -1087,6 +1087,258 @@ describe("integration: gork (AI keyword Q&A)", () => {
         "no LLM call in an open ticket channel"
       );
       assert.equal(typing.calls, 0, "no typing indicator in an open ticket channel");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("/gork ban/unban/bans: staff-gated command flow with db state + audit", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    clearAiKey(); // config commands do not need the AI key
+    try {
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+
+      // ban: stores a per-guild block, replies ephemerally
+      let ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "ban",
+        admin: true,
+        options: { user: env.users.memberUser },
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, /banned from gork/i);
+      assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.member), true);
+
+      // bans: lists the blocked user
+      ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "bans",
+        admin: true,
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, `<@${IDS.member}>`);
+      assertReplyContains(ixn, /1\)/);
+
+      // unban: removes the block
+      ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "unban",
+        admin: true,
+        options: { user: env.users.memberUser },
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, /can use gork again/i);
+      assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.member), false);
+
+      // unban again: reports "not banned" (idempotent UX)
+      ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "unban",
+        admin: true,
+        options: { user: env.users.memberUser },
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, /not banned/i);
+
+      // bans when empty: friendly empty state
+      ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "bans",
+        admin: true,
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, /no users are banned/i);
+
+      // bots are rejected (they never trigger gork anyway)
+      ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "ban",
+        admin: true,
+        options: { user: env.users.botUser },
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, /bots can't be banned/i);
+      assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.bot), false);
+
+      // Non-staff is denied and stores nothing.
+      const denied = await env.runCommand({
+        commandName: "gork",
+        subcommand: "ban",
+        admin: false,
+        user: env.users.memberUser,
+        options: { user: env.users.member2User },
+      });
+      assertEphemeralReply(denied, /permission/i);
+      assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.member2), false);
+
+      // Audit trail recorded the ban + unban (not the failed attempts).
+      assert.ok(
+        await waitFor(() => env.channels.log.sent.length >= 2),
+        "expected ban + unban audit embeds"
+      );
+      const auditAll = env.channels.log.sent
+        .map((p) => embedText(p.embeds?.[0]))
+        .join("\n");
+      assert.ok(auditAll.includes("Gork user banned"), auditAll);
+      assert.ok(auditAll.includes("Gork user unbanned"), auditAll);
+      assert.ok(auditAll.includes(`/gork ban`), auditAll);
+    } finally {
+      restoreEnv(saved);
+    }
+  });
+
+  it("/gork enable off silences triggers (settings preserved); on restores; /settings reflects it", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const script = [];
+    const fetchMock = mockFetch(script);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 45,
+      });
+      attachTyping(env.channels.general);
+
+      // Command: disable the whole feature for the guild.
+      const off = await env.runCommand({
+        commandName: "gork",
+        subcommand: "enable",
+        admin: true,
+        options: { enable: "off" },
+      });
+      assertEphemeralReply(off);
+      assertReplyContains(off, /disabled/i);
+      const disabled = env.db.getGuildSettings(env.guild.id);
+      assert.equal(disabled.gork_enabled, 0);
+      assert.equal(disabled.gork_keyword, "gork", "disable preserves the keyword");
+      assert.equal(
+        disabled.gork_cooldown_sec,
+        45,
+        "disable preserves unrelated settings"
+      );
+
+      // /settings shows the disabled state.
+      const settings = await env.runCommand({
+        commandName: "settings",
+        admin: true,
+      });
+      const settingsText = embedText(
+        settings.replies[settings.replies.length - 1].embeds[0]
+      );
+      assert.match(settingsText, /Gork[\s\S]*disabled/i);
+
+      // Trigger while disabled: fully silent (no reply, no fetch, no typing).
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-off-1",
+        content: "gork: why is the sky blue?",
+      });
+      await env.onMessageCreate(message);
+      await sleep(500);
+      assert.equal(replies.length, 0, "disabled gork must not reply");
+      assert.equal(fetchMock.calls.length, 0, "disabled gork must not call the LLM");
+
+      // Command: re-enable, and triggers answer again (keyword survived).
+      const on = await env.runCommand({
+        commandName: "gork",
+        subcommand: "enable",
+        admin: true,
+        options: { enable: "on" },
+      });
+      assertEphemeralReply(on);
+      assertReplyContains(on, /enabled/i);
+      assert.equal(env.db.getGuildSettings(env.guild.id).gork_enabled, 1);
+
+      script.push(chatCompletionResponse("Rayleigh scattering, member."));
+      const { message: m2, replies: r2 } = makeGorkMessage(env, {
+        id: "t-off-2",
+        content: "gork: why is the sky blue?",
+      });
+      await env.onMessageCreate(m2);
+      assert.ok(
+        await waitFor(() => r2.length >= 1),
+        "re-enabled gork must answer again"
+      );
+      assert.equal(r2[0].content, "Rayleigh scattering, member.");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("banned user trigger: generic lunch reply, no LLM call; staff binds too; unban restores", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const script = [];
+    const fetchMock = mockFetch(script);
+    try {
+      enableAiKey();
+      // Cooldown 0 so repeated triggers from the same user are not masked.
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 0,
+      });
+      const typing = attachTyping(env.channels.general);
+
+      const LUNCH = "*gork's brain went to lunch* — try again in a bit.";
+
+      // Regular banned user: exactly the vague failure reply, no LLM call.
+      env.db.addGorkBlock(env.guild.id, IDS.member, IDS.admin);
+      const { message: m1, replies: r1 } = makeGorkMessage(env, {
+        id: "t-ban-1",
+        content: "gork: why is the sky blue?",
+      });
+      await env.onMessageCreate(m1);
+      assert.ok(
+        await waitFor(() => r1.length >= 1),
+        "banned trigger must get the canned reply"
+      );
+      assert.equal(r1[0].content, LUNCH, "ban must be disguised as a failure");
+      assert.equal(fetchMock.calls.length, 0, "banned trigger must skip the LLM");
+      assert.equal(typing.calls, 0, "banned trigger must not type");
+
+      // Banned staff member: staff status does NOT bypass the ban.
+      env.db.addGorkBlock(env.guild.id, IDS.admin, IDS.admin);
+      const { message: m2, replies: r2 } = makeGorkMessage(env, {
+        id: "t-ban-2",
+        content: "gork: admin question",
+        author: env.users.adminUser,
+        member: env.members.adminMember,
+      });
+      await env.onMessageCreate(m2);
+      assert.ok(
+        await waitFor(() => r2.length >= 1),
+        "banned staff trigger must get the canned reply"
+      );
+      assert.equal(r2[0].content, LUNCH);
+      assert.equal(fetchMock.calls.length, 0, "banned staff must skip the LLM too");
+
+      // Nothing QA-audited for banned triggers (they never reach the LLM).
+      assert.equal(
+        env.channels.log.sent.length,
+        0,
+        "banned triggers must not appear in the audit channel"
+      );
+
+      // Unban restores normal answering.
+      env.db.removeGorkBlock(env.guild.id, IDS.member);
+      script.push(chatCompletionResponse("Rayleigh scattering strikes again."));
+      const { message: m3, replies: r3 } = makeGorkMessage(env, {
+        id: "t-ban-3",
+        content: "gork: why is the sky blue?",
+      });
+      await env.onMessageCreate(m3);
+      assert.ok(
+        await waitFor(() => r3.length >= 1),
+        "unbanned trigger must be answered again"
+      );
+      assert.equal(r3[0].content, "Rayleigh scattering strikes again.");
+      assert.equal(fetchMock.calls.length, 1, "exactly the unbanned trigger hit the LLM");
     } finally {
       restoreEnv(saved);
       fetchMock.restore();

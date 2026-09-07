@@ -1,18 +1,30 @@
 /**
  * Gork feature module (roadmap/gork.md): a goofy AI keyword Q&A bot.
  *
- * - `/setgork` (staff): configure the trigger keyword, context window,
- *   per-user cooldown, staff prompt rules, and the SearXNG web_search
- *   toggle for the guild.
+ * - `/gork` (staff): configure the trigger keyword, context window,
+ *   per-user cooldown, staff prompt rules, the SearXNG web_search toggle,
+ *   and the guild master enable switch; ban/unban/list users blocked from
+ *   using gork in this guild.
  * - `handleGorkMessage`: the onMessageCreate pipeline hook — answers
  *   keyword triggers using conversation context and optional web search.
  *
- * Gork is live whenever `AI_API_KEY` is set; triggers in open ticket
- * channels are ignored (roadmap/gork.md §7.1, decisions 7, 19).
+ * Gork is live whenever `AI_API_KEY` is set and the guild's `gork_enabled`
+ * switch is on; triggers in open ticket channels are ignored
+ * (roadmap/gork.md §7.1, decisions 7, 19).
+ *
+ * Banned users (guild `gork_user_blocks`) still see the locked
+ * LLM-failure canned reply, so a ban is indistinguishable from a normal
+ * failure; unlike the cooldown, staff status does NOT bypass a ban.
  */
 
 const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
-const { getGuildSettings, updateGuildSettings } = require("../../db");
+const {
+  getGuildSettings,
+  updateGuildSettings,
+  addGorkBlock,
+  removeGorkBlock,
+  listGorkBlocks,
+} = require("../../db");
 const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { Color, baseEmbed } = require("../../core/theme");
@@ -28,11 +40,13 @@ const CONTEXT_MAX = 50;
 const COOLDOWN_MIN = 0;
 const COOLDOWN_MAX = 3600;
 const RULES_MAX = 500;
+/** Max banned users listed by `/gork bans` (rest summarized). */
+const BANS_LIST_MAX = 25;
 
 const commands = [
   new SlashCommandBuilder()
-    .setName("setgork")
-    .setDescription("Configure Gork, the AI keyword Q&A (staff).")
+    .setName("gork")
+    .setDescription("Configure and moderate Gork, the AI keyword Q&A (staff).")
     .setDefaultMemberPermissions(staffPerms)
     .addSubcommand((sc) =>
       sc
@@ -114,13 +128,59 @@ const commands = [
     )
     .addSubcommand((sc) =>
       sc
+        .setName("enable")
+        .setDescription(
+          "Enable or disable gork entirely for this server (settings are kept).",
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("enable")
+            .setDescription("Turn gork on or off for this server")
+            .setRequired(true)
+            .addChoices(
+              { name: "on", value: "on" },
+              { name: "off", value: "off" },
+            ),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("ban")
+        .setDescription(
+          "Ban a user from using gork in this server (they get the generic failure reply).",
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("User to ban from gork")
+            .setRequired(true),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("unban")
+        .setDescription("Lift a user's gork ban in this server.")
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("User to unban from gork")
+            .setRequired(true),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("bans")
+        .setDescription("List the users banned from gork in this server."),
+    )
+    .addSubcommand((sc) =>
+      sc
         .setName("status")
         .setDescription("Show the current gork configuration for this guild."),
     ),
 ];
 
 /**
- * /setgork keyword: set the trigger keyword, or `clear` to disable gork.
+ * /gork keyword: set the trigger keyword, or `clear` to disable gork.
  */
 async function setKeyword(client, interaction, guildId) {
   const raw = (interaction.options.getString("keyword") || "").trim();
@@ -136,7 +196,7 @@ async function setKeyword(client, interaction, guildId) {
   });
   await logConfigChange(client, guildId, {
     title: clearing ? "Gork disabled" : "Gork keyword updated",
-    command: "/setgork keyword",
+    command: "/gork keyword",
     actor: interaction.user,
     changes: [
       clearing
@@ -153,7 +213,7 @@ async function setKeyword(client, interaction, guildId) {
 }
 
 /**
- * /setgork context: set the context window size (1-50).
+ * /gork context: set the context window size (1-50).
  */
 async function setContext(client, interaction, guildId) {
   const raw = interaction.options.getInteger("context");
@@ -168,7 +228,7 @@ async function setContext(client, interaction, guildId) {
   });
   await logConfigChange(client, guildId, {
     title: "Gork context window updated",
-    command: "/setgork context",
+    command: "/gork context",
     actor: interaction.user,
     changes: [`Context window: ${settings.gork_context_window} messages`],
   }).catch(() => {});
@@ -179,7 +239,7 @@ async function setContext(client, interaction, guildId) {
 }
 
 /**
- * /setgork cooldown: set the per-user cooldown in seconds (0-3600).
+ * /gork cooldown: set the per-user cooldown in seconds (0-3600).
  */
 async function setCooldown(client, interaction, guildId) {
   const raw = interaction.options.getInteger("cooldown");
@@ -195,7 +255,7 @@ async function setCooldown(client, interaction, guildId) {
   const stored = settings.gork_cooldown_sec;
   await logConfigChange(client, guildId, {
     title: "Gork cooldown updated",
-    command: "/setgork cooldown",
+    command: "/gork cooldown",
     actor: interaction.user,
     changes: [`Cooldown: ${stored}s (staff always bypass)`],
   }).catch(() => {});
@@ -208,7 +268,7 @@ async function setCooldown(client, interaction, guildId) {
 }
 
 /**
- * /setgork rules: set the staff prompt rules, or `clear` to remove them.
+ * /gork rules: set the staff prompt rules, or `clear` to remove them.
  */
 async function setRules(client, interaction, guildId) {
   const raw = (interaction.options.getString("rules") || "").trim();
@@ -231,7 +291,7 @@ async function setRules(client, interaction, guildId) {
   const stored = (settings.gork_extra_rules || "").trim();
   await logConfigChange(client, guildId, {
     title: stored ? "Gork staff rules updated" : "Gork staff rules removed",
-    command: "/setgork rules",
+    command: "/gork rules",
     actor: interaction.user,
     changes: [stored ? `Rules: \`${stored}\`` : "Rules: removed"],
   }).catch(() => {});
@@ -244,7 +304,7 @@ async function setRules(client, interaction, guildId) {
 }
 
 /**
- * /setgork search: toggle the SearXNG web_search tool for the guild.
+ * /gork search: toggle the SearXNG web_search tool for the guild.
  */
 async function setSearch(client, interaction, guildId) {
   const raw = (interaction.options.getString("search") || "").toLowerCase();
@@ -257,27 +317,134 @@ async function setSearch(client, interaction, guildId) {
   const on = Number(settings.gork_search_enabled) === 1;
   await logConfigChange(client, guildId, {
     title: `Gork web search ${on ? "enabled" : "disabled"}`,
-    command: "/setgork search",
+    command: "/gork search",
     actor: interaction.user,
     changes: [`Web search: ${on ? "on" : "off"}`],
   }).catch(() => {});
   await replyEphemeral(
     interaction,
     on
-      ? "Gork web search is now **on** (runs against the bot's SearXNG instance — see `/setgork status` for the URL state)."
+      ? "Gork web search is now **on** (runs against the bot's SearXNG instance — see `/gork status` for the URL state)."
       : "Gork web search is now **off** — answers come from conversation context only.",
   );
 }
 
 /**
- * /setgork status: ephemeral embed of the current configuration.
+ * /gork enable: master on/off switch for the whole gork feature in this
+ * guild. Off makes triggers fully silent; every other gork setting
+ * (keyword, rules, cooldown, bans, ...) is preserved for re-enable.
+ */
+async function setEnable(client, interaction, guildId) {
+  const raw = (interaction.options.getString("enable") || "").toLowerCase();
+  if (raw !== "on" && raw !== "off") {
+    return replyEphemeral(interaction, "Enable must be `on` or `off`.");
+  }
+  const settings = updateGuildSettings(guildId, {
+    gork_enabled: raw === "on" ? 1 : 0,
+  });
+  const on = Number(settings.gork_enabled ?? 1) === 1;
+  await logConfigChange(client, guildId, {
+    title: `Gork ${on ? "enabled" : "disabled"} for the server`,
+    command: "/gork enable",
+    actor: interaction.user,
+    changes: [`Gork: ${on ? "enabled" : "disabled"}`],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    on
+      ? "Gork is now **enabled** for this server — keyword triggers are active again."
+      : "Gork is now **disabled** for this server — all triggers are ignored. Every other gork setting is kept; re-enable with `/gork enable on`.",
+  );
+}
+
+/**
+ * /gork ban: block a user from gork in this guild. The banned user keeps
+ * getting the locked generic replies (never told about the ban), and
+ * staff roles do NOT bypass the ban.
+ */
+async function banUser(client, interaction, guildId) {
+  const user = interaction.options.getUser("user");
+  if (!user) {
+    return replyEphemeral(interaction, "Pick a user to ban from gork.");
+  }
+  if (user.bot) {
+    return replyEphemeral(
+      interaction,
+      "Bots can't be banned from gork (they never trigger it anyway).",
+    );
+  }
+  addGorkBlock(guildId, user.id, interaction.user.id);
+  await logConfigChange(client, guildId, {
+    title: "Gork user banned",
+    command: "/gork ban",
+    actor: interaction.user,
+    changes: [`Banned from gork: <@${user.id}> (\`${user.id}\`)`],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    `<@${user.id}> is now **banned from gork** in this server — triggers get the generic "brain went to lunch" reply (they are not told it's a ban). Lift it with \`/gork unban\`.`,
+  );
+}
+
+/**
+ * /gork unban: lift a user's gork ban in this guild.
+ */
+async function unbanUser(client, interaction, guildId) {
+  const user = interaction.options.getUser("user");
+  if (!user) {
+    return replyEphemeral(interaction, "Pick a user to unban from gork.");
+  }
+  const removed = removeGorkBlock(guildId, user.id);
+  if (!removed) {
+    return replyEphemeral(
+      interaction,
+      `<@${user.id}> is not banned from gork in this server.`,
+    );
+  }
+  await logConfigChange(client, guildId, {
+    title: "Gork user unbanned",
+    command: "/gork unban",
+    actor: interaction.user,
+    changes: [`Unbanned from gork: <@${user.id}> (\`${user.id}\`)`],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    `<@${user.id}> can use gork again in this server.`,
+  );
+}
+
+/**
+ * /gork bans: ephemeral list of users banned from gork in this guild.
+ */
+async function showBans(interaction, guildId) {
+  const blocks = listGorkBlocks(guildId);
+  if (!blocks.length) {
+    return replyEphemeral(
+      interaction,
+      "No users are banned from gork in this server.",
+    );
+  }
+  const shown = blocks.slice(0, BANS_LIST_MAX).map((b) => `- <@${b.user_id}>`);
+  if (blocks.length > BANS_LIST_MAX) {
+    shown.push(`…and ${blocks.length - BANS_LIST_MAX} more`);
+  }
+  await replyEphemeral(
+    interaction,
+    `**Gork bans (${blocks.length}):**\n${shown.join("\n")}`,
+  );
+}
+
+/**
+ * /gork status: ephemeral embed of the current configuration.
  */
 async function showStatus(interaction, guildId) {
   const settings = getGuildSettings(guildId);
+  const enabled = Number(settings.gork_enabled ?? 1) === 1;
   const keyword = (settings.gork_keyword || "").trim();
   const rules = (settings.gork_extra_rules || "").trim();
   const searchOn = Number(settings.gork_search_enabled) === 1;
   const cooldownSec = settings.gork_cooldown_sec;
+  const banCount = listGorkBlocks(guildId).length;
   const ai = getAiConfig();
   const searxngSet = Boolean(
     typeof process.env.SEARXNG_URL === "string" && process.env.SEARXNG_URL.trim(),
@@ -285,6 +452,7 @@ async function showStatus(interaction, guildId) {
 
   const embed = baseEmbed({ color: Color.brand, title: "Gork status", timestamp: true });
   embed.addFields(
+    { name: "Enabled", value: enabled ? "on" : "**off** (server disabled)", inline: true },
     { name: "Keyword", value: keyword ? `\`${keyword}\`` : "disabled", inline: true },
     { name: "Context window", value: `${settings.gork_context_window} messages`, inline: true },
     {
@@ -300,18 +468,19 @@ async function showStatus(interaction, guildId) {
       inline: true,
     },
     { name: "SearXNG URL", value: searxngSet ? "set" : "not set", inline: true },
+    { name: "Banned users", value: String(banCount), inline: true },
   );
   await replyEphemeral(interaction, { embeds: [embed] });
 }
 
 /**
- * /setgork handler (staff-gated via requireStaff).
+ * /gork handler (staff-gated via requireStaff).
  *
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  * @param {object} ctx
  * @param {import("discord.js").Client} ctx.client
  */
-async function handleSetGork(interaction, ctx) {
+async function handleGork(interaction, ctx) {
   if (!(await requireStaff(interaction))) return;
   const { client } = ctx || {};
   const guildId = interaction.guildId;
@@ -328,6 +497,14 @@ async function handleSetGork(interaction, ctx) {
       return setRules(client, interaction, guildId);
     case "search":
       return setSearch(client, interaction, guildId);
+    case "enable":
+      return setEnable(client, interaction, guildId);
+    case "ban":
+      return banUser(client, interaction, guildId);
+    case "unban":
+      return unbanUser(client, interaction, guildId);
+    case "bans":
+      return showBans(interaction, guildId);
     case "status":
       return showStatus(interaction, guildId);
     default:
@@ -339,7 +516,7 @@ module.exports = {
   name: "gork",
   commands,
   handlers: {
-    setgork: handleSetGork,
+    gork: handleGork,
   },
   handleGorkMessage,
   gorkQueue,
