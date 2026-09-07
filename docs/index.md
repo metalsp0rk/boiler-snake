@@ -80,7 +80,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 
 ## Requirements
 
-- Node.js 18+ (Discord.js v14 requirement; `engines.node` is `>=18`)
+- Node.js 22.22.2+ (`engines.node` is `>=22.22.2` — jsdom 30, used by gork `read_page`, requires it)
 - Discord Bot Token with proper permissions
 - SQLite database (auto-created on first run)
 
