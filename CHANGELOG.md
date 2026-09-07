@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.7.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.6.0...v1.7.0) (2026-09-07)
+
+
+### Features
+
+* **gork:** AI keyword Q&A with context, web search, and per-guild queue ([1c4e4d9](https://github.com/metalsp0rk/boiler-snake/commit/1c4e4d9b70dd8c217bfa5a17b6d2af7f6384bb68))
+* **gork:** read_page tool — browse search results with clean LLM-ready extraction ([57ab6c9](https://github.com/metalsp0rk/boiler-snake/commit/57ab6c9142d1297d47dc53e7769eec900b10adfc))
+* **gork:** rename /setgork to /gork, add user bans and guild enable switch ([e007458](https://github.com/metalsp0rk/boiler-snake/commit/e00745880147fe22e0ffdaa38effa332e76a7416))
+
+
+### Bug Fixes
+
+* **ci:** raise Node floor to 22.22.2+ (jsdom 30 requirement) ([884e97c](https://github.com/metalsp0rk/boiler-snake/commit/884e97c568ed689cdce7a397f062321dbe40d805))
+
 ## [1.6.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.5.0...v1.6.0) (2026-09-03)
 
 
