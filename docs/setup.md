@@ -4,7 +4,7 @@ Step-by-step guide to get Boiler Snake running on your server.
 
 ## Prerequisites
 
-- Node.js 18+ (Discord.js v14 requirement), **or** Docker / Docker Compose
+- Node.js 22.22.2+ (jsdom 30 / gork `read_page` requirement), **or** Docker / Docker Compose (image ships Node 22)
 - npm or yarn package manager (if not using Docker)
 - Discord Bot Token
 - Google Cloud Project (optional, for YouTube notifications)
