@@ -167,6 +167,169 @@ describe("integration: event reminders", () => {
     assert.ok(env.members.member.roles.cache.has(config.role_id));
   });
 
+  it("modal keeps exactly 5 label components (Discord modal cap)", () => {
+    const feature = require("../../src/features/eventReminders/index.js");
+    for (const mode of ["create", "edit"]) {
+      const json = feature
+        .buildReminderModal({
+          mode,
+          eventId: "evt-cap-1",
+          eventName: "Cap Test",
+        })
+        .toJSON();
+      assert.ok(
+        json.components.length <= 5,
+        `${mode} modal has ${json.components.length} components (max 5)`,
+      );
+      assert.equal(json.components.length, 5);
+    }
+  });
+
+  it("create persistent option encodes modal customId and persists", async () => {
+    const start = Date.now() + 4 * 24 * 60 * 60 * 1000;
+    const event = createScheduledEvent({
+      guild: env.guild,
+      id: "evt-persist-1",
+      name: "Weekly Raid",
+      scheduledStartTimestamp: start,
+      creatorId: IDS.admin,
+      subscriberIds: [],
+    });
+    env.guild.addScheduledEvent(event);
+    env.db.updateGuildSettings(env.guild.id, {
+      event_reminder_channel_id: IDS.channelNotify,
+    });
+
+    const ix = await env.runCommand({
+      commandName: "eventreminder",
+      subcommand: "create",
+      admin: true,
+      options: { event: "evt-persist-1", persistent: true },
+    });
+    assert.equal(ix.modals.length, 1);
+    const json = ix.modals[0].toJSON();
+    assert.match(
+      json.custom_id || json.customId,
+      /^er:create:evt-persist-1:p1$/,
+    );
+
+    const modalIx = createModalSubmitInteraction({
+      customId: "er:create:evt-persist-1:p1",
+      guild: env.guild,
+      user: env.users.adminUser,
+      member: env.members.adminMember,
+      admin: true,
+      client: env.client,
+      fields: {
+        shortname: "weekly-raid",
+        offsets: ["1440", "60"],
+        offsets_custom: "",
+        message: "",
+        channel: null,
+      },
+    });
+    await env.handleInteraction(modalIx, env.ctx);
+
+    const config = env.db.getConfigByScheduledEventId(
+      env.guild.id,
+      "evt-persist-1",
+    );
+    assert.ok(config);
+    assert.equal(config.persistent, 1);
+
+    const confirm = modalIx.replies[modalIx.replies.length - 1];
+    const compJson = JSON.stringify(
+      (confirm.components || []).map((r) =>
+        typeof r.toJSON === "function" ? r.toJSON() : r,
+      ),
+    );
+    assert.match(compJson, /er-recur:evt-persist-1/);
+  });
+
+  it("recurring toggle button flips persistent both ways", async () => {
+    const event = createScheduledEvent({
+      guild: env.guild,
+      id: "evt-recur-1",
+      name: "Recur Toggle",
+      scheduledStartTimestamp: Date.now() + 86_400_000,
+      creatorId: IDS.admin,
+    });
+    env.guild.addScheduledEvent(event);
+    const role = await env.guild.roles.create({ name: "event-recur-toggle" });
+    env.db.createEventReminderConfig({
+      guildId: env.guild.id,
+      scheduledEventId: "evt-recur-1",
+      shortname: "recur-toggle",
+      roleId: role.id,
+      persistent: false,
+      offsets: [{ offsetMinutes: 60, fireAt: Date.now() + 80_000_000 }],
+      createdBy: IDS.admin,
+    });
+
+    const btn = await env.runButton({
+      customId: "er-recur:evt-recur-1",
+      admin: true,
+    });
+    assert.equal(
+      env.db.getConfigByScheduledEventId(env.guild.id, "evt-recur-1")
+        .persistent,
+      1,
+    );
+    assert.equal(btn.updates.length, 1);
+    assert.match(btn.updates[0].content, /\*\*Recurring: on\*\*/);
+
+    await env.runButton({ customId: "er-recur:evt-recur-1", admin: true });
+    assert.equal(
+      env.db.getConfigByScheduledEventId(env.guild.id, "evt-recur-1")
+        .persistent,
+      0,
+    );
+  });
+
+  it("edit modal submit preserves existing persistent", async () => {
+    const event = createScheduledEvent({
+      guild: env.guild,
+      id: "evt-edit-persist",
+      name: "Edit Persist",
+      scheduledStartTimestamp: Date.now() + 3 * 86_400_000,
+      creatorId: IDS.admin,
+    });
+    env.guild.addScheduledEvent(event);
+    const role = await env.guild.roles.create({ name: "event-edit-persist" });
+    env.db.createEventReminderConfig({
+      guildId: env.guild.id,
+      scheduledEventId: "evt-edit-persist",
+      shortname: "edit-persist",
+      roleId: role.id,
+      persistent: true,
+      offsets: [{ offsetMinutes: 60, fireAt: Date.now() + 80_000_000 }],
+      createdBy: IDS.admin,
+    });
+
+    const modalIx = createModalSubmitInteraction({
+      customId: "er:edit:evt-edit-persist",
+      guild: env.guild,
+      user: env.users.adminUser,
+      member: env.members.adminMember,
+      admin: true,
+      client: env.client,
+      fields: {
+        shortname: "edit-persist",
+        offsets: ["60"],
+        offsets_custom: "",
+        message: "",
+        channel: null,
+      },
+    });
+    await env.handleInteraction(modalIx, env.ctx);
+
+    assert.equal(
+      env.db.getConfigByScheduledEventId(env.guild.id, "evt-edit-persist")
+        .persistent,
+      1,
+    );
+  });
+
   it("ticker delivers due offset as embed once", async () => {
     const start = Date.now() + 60 * 60 * 1000; // 1h from now
     const event = createScheduledEvent({
