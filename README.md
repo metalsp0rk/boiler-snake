@@ -23,7 +23,7 @@ See [docs/architecture.md](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
 ## Setup
 
-Requirements: **Node.js 18+** (Discord.js 14; Node 13.x will not work)
+Requirements: **Node.js 22.22.2+** (Discord.js 14; gork `read_page` uses jsdom 30 which needs ≥22.22.2)
 
 ### Option A: Node (local)
 
