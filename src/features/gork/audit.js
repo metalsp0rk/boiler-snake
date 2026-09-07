@@ -5,7 +5,7 @@
  * channel (via logs/auditLog `sendAuditLog`): asker mention, question
  * (≤300 chars; "(keyword only)" when the trigger was just the keyword),
  * context mode (e.g. "reply chain (4 msgs)" / "10 prior messages"),
- * search usage ("yes — 2 queries" / "no"), model + duration, the answer
+ * search usage ("yes — 2 searches · 1 page read" / "no"), model + duration, the answer
  * (≤1000 chars), and jump links to the question and the gork reply.
  *
  * Failed / timed-out exchanges log a compact one-liner (asker + error
@@ -39,6 +39,28 @@ function describeContext(ctx = {}) {
   const count = Math.max(0, Math.floor(Number(ctx.collected) || 0));
   if (ctx.mode === "reply-chain") return `reply chain (${count} msgs)`;
   return `${count} prior messages`;
+}
+
+/**
+ * Render the audit "Search" field from the two per-job tool counters.
+ * Searches and page reads are counted separately (locked wording):
+ * "yes — 2 searches · 1 page read"; "no" when neither tool ran.
+ *
+ * @param {unknown} searchQueries web_search tool executions
+ * @param {unknown} pageReads read_page tool executions
+ * @returns {string}
+ */
+function formatToolUsage(searchQueries, pageReads) {
+  const queries = Math.max(0, Math.floor(Number(searchQueries) || 0));
+  const pages = Math.max(0, Math.floor(Number(pageReads) || 0));
+  const parts = [];
+  if (queries > 0) {
+    parts.push(queries === 1 ? "1 search" : `${queries} searches`);
+  }
+  if (pages > 0) {
+    parts.push(pages === 1 ? "1 page read" : `${pages} page reads`);
+  }
+  return parts.length ? `yes — ${parts.join(" · ")}` : "no";
 }
 
 /**
@@ -82,6 +104,7 @@ function jumpLink(label, guildId, message) {
  * @param {string} [opts.question] trigger question ("" = keyword alone)
  * @param {string} [opts.contextLabel] describeContext() output
  * @param {number} [opts.searchQueries] web_search tool executions (0 = none)
+ * @param {number} [opts.pageReads] read_page tool executions (0 = none)
  * @param {string} [opts.model] AI model used
  * @param {number} [opts.durationMs] wall-clock ms of the LLM call
  * @param {string} [opts.answer] final answer text
@@ -95,6 +118,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     question,
     contextLabel,
     searchQueries,
+    pageReads,
     model,
     durationMs,
     answer,
@@ -108,8 +132,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     const questionValue = question?.trim()
       ? truncateField(question, QUESTION_MAX_CHARS)
       : "(keyword only)";
-    const queries = Math.max(0, Math.floor(Number(searchQueries) || 0));
-    const searchValue = queries > 0 ? `yes — ${queries} queries` : "no";
+    const searchValue = formatToolUsage(searchQueries, pageReads);
     const durationSuffix =
       typeof durationMs === "number" && Number.isFinite(durationMs)
         ? ` / ${(durationMs / 1000).toFixed(1)}s`
@@ -187,6 +210,7 @@ async function logGorkFailure(client, guildId, opts = {}) {
 
 module.exports = {
   describeContext,
+  formatToolUsage,
   logGorkQa,
   logGorkFailure,
 };

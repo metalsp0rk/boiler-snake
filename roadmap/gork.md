@@ -145,6 +145,25 @@ for a real MCP client later without touching the rest of the feature.
 
 ---
 
+### 7.5.1 Page Reading Tool (`read_page`) — 2026-09 extension (decision 21)
+
+Post-spec extension: alongside `web_search`, gork exposes `read_page(urls)`.
+The model opens promising result pages itself when snippets lack the answer;
+extracted page content feeds the same tool loop.
+
+| Aspect | Detail |
+|--------|--------|
+| Tool schema | `read_page(urls: string[])` — 1–3 URLs per call (deduped; overflow reported inline) |
+| Extraction | `jsdom` → `@mozilla/readability` main-content (body-fallback when <200 chars extracted) → `turndown` Markdown |
+| Budget | **3 tool rounds shared** across `web_search` + `read_page` (parallel calls in one round cost one round); ≤4,000 chars per page, ≤10,000 combined |
+| Fetch guards | http/https only; 10s per page (concurrent); ≤1 MB; content-type `text/html`/`text/plain`; manual redirects (≤2), every hop re-validated |
+| SSRF wall | Hostname + resolved IPs checked against private/loopback/link-local/CGNAT/metadata/multicast/reserved ranges (IPv4 + IPv6, incl. IPv4-mapped); `localhost`/`.local`/`.internal` blocked pre-DNS. Internal URLs are refused **by design** |
+| Enabled when | Same lever as web search: `SEARXNG_URL` set **and** `gork_search_enabled` on (no separate toggle) |
+| Audit | Q&A embed counts searches and page reads separately |
+| Prompt | Base prompt unchanged (locked §7.4); usage guidance lives in the tool description |
+
+---
+
 ### 7.6 Runtime Behavior
 
 | Aspect | Detail |
@@ -321,3 +340,4 @@ repo convention):
 | 18 | No privacy guardrail engineering beyond documentation (single-server personal project; messages sent to the configured LLM provider). |
 | 19 | Gork is **disabled in open ticket channels** (channel has a `tickets` row that is not yet archived) — triggers silently ignored. |
 | 20 | **Canned replies (locked):** queue full → "My one (1) brain is already busy, and the queue is full. Your question has been dropped — no hard feelings." · LLM failure/timeout → "*gork's brain went to lunch* — try again in a bit." · Keyword alone with no question and no reply reference → no reply at all. |
+| 21 | **Page reading (2026-09):** `read_page(urls: 1–3)` — main-content extraction (`@mozilla/readability` + `jsdom`) → Markdown (`turndown`); shared 3-round tool budget and shared enablement with `web_search`; strict SSRF wall (public web only); base prompt byte-locked and unchanged. See [7.5.1](#751-page-reading-tool-read_page--2026-09-extension-decision-21). |
