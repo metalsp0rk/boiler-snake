@@ -18,6 +18,7 @@ const http = require("http");
 const { createWebApp } = require("./app");
 const {
   getHttpConfig,
+  getSessionSecret,
   warnIfInsecurePublicBaseUrl,
 } = require("./config");
 const {
@@ -44,8 +45,16 @@ function startWebServer() {
   if (server) return server;
 
   // Boot checks (roadmap/web-admin.md §8.7, §8.3): loud warning on plain-HTTP
-  // public URLs; session prune sweep now + unref'd periodic sweep.
+  // public URLs; loud warning when NO session signing secret is configured at
+  // all (SESSION_SECRET with CLIENT_SECRET fallback — getSessionSecret() also
+  // emits its own once-per-boot fallback warning); session prune sweep now +
+  // unref'd periodic sweep.
   warnIfInsecurePublicBaseUrl();
+  if (!getSessionSecret()) {
+    console.warn(
+      "[web] SESSION_SECRET is not set (and no CLIENT_SECRET fallback): web login and CSRF checks will fail closed. Set SESSION_SECRET (e.g. `openssl rand -hex 32`) — roadmap/web-admin.md §8.10."
+    );
+  }
   startSessionPruneJob();
 
   server = http.createServer(createWebApp());

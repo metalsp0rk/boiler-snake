@@ -279,6 +279,8 @@ module.exports = {
   touchWebSession: webSessions.touchWebSession,
   destroyWebSession: webSessions.destroyWebSession,
   pruneWebSessions: webSessions.pruneWebSessions,
+  setWebSessionAuth: webSessions.setWebSessionAuth,
+  getWebSessionAuth: webSessions.getWebSessionAuth,
 
   // admin audit trail (roadmap/web-admin.md §8.5; consumed by phases 0b–3)
   AUDIT_ORIGINS: adminAudit.AUDIT_ORIGINS,

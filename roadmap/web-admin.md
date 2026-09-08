@@ -71,9 +71,10 @@ src/web/
 
 | Input | Source | Cache |
 |-------|--------|-------|
-| Guilds the user is in | OAuth `guilds` (+ bot-membership filter: guild must **also have the bot**) | session, re-checked at TTL |
-| User's role ids in guild | OAuth `guilds.members.read` — **role ids only** | 60 s (`WEB_TIER_CACHE_TTL_MS`) |
-| Which roles carry ManageGuild | Bot REST `GET /guilds/:id/roles` (`permissions` bitmask) | 5 min + invalidated on role events |
+| Guilds the user is in | OAuth `guilds` — returns **all** user guilds; must be intersected with the bot's guilds (`client.guilds` cache) | session row `guild_snapshot` (025), re-checked at TTL |
+| Admin tier fast path | `guild_snapshot[].permissions` decimal bitset (`MANAGE_GUILD`/`ADMINISTRATOR`, BigInt) + `owner` flag — no per-guild fetch needed | as above |
+| User's role ids in guild | OAuth `guilds.members.read` — **role ids only** (no computed permissions) | 60 s (`WEB_TIER_CACHE_TTL_MS`) |
+| Which roles carry ManageGuild (attribution only) | Bot REST `GET /guilds/:id/roles` (`permissions` bitmask) — needed only to show *which* role grants it | 5 min + invalidated on role events |
 | Staff / senior membership | `staff_roles` table (SQLite) | none (cheap) |
 
 Tier = `admin` if any role has ManageGuild → else `senior`/`staff` via `staff_roles.level` → else no access. Decision inputs are `(roleIds, manageGuildBit, staffRoleIds)` so the slash-command gates and web middleware stay provably equivalent.
@@ -83,7 +84,8 @@ Tier = `admin` if any role has ManageGuild → else `senior`/`staff` via `staff_
 | Failure | Behavior |
 |---------|----------|
 | Bot not in guild | Guild hidden from switcher; routes 404 |
-| Roles fetch unavailable (rate-limited / scope missing) | ManageGuild tier unresolvable → staff/senior still work via `staff_roles`; admin-only pages blocked; operator banner + log. Escape: add the admin's role to `staff_roles` |
+| `guilds.members.read` member fetch unavailable | Admin tier still resolves via `guild_snapshot.permissions`; **staff/senior unresolvable** (need role ids) → those users see admin-tier-allowed content only via snapshot, nothing staff-scoped; operator banner + log. Escape: none needed for admins; retry on TTL |
+| Snapshot stale after role/permission change | Bounded by `WEB_TIER_CACHE_TTL_MS` (§8.1-8) |
 | Member left guild | Deny + session's guild list refreshed |
 
 **Sessions** (`web_sessions`): opaque 32-byte id (cookie, `httpOnly`, `SameSite=Lax`, `Secure` when https), sliding 12 h (`WEB_SESSION_TTL_HOURS`), absolute 7 d cap, destroy on logout, prune job on boot. Cookie signing via **`SESSION_SECRET`** (dedicated; falls back to `CLIENT_SECRET` with boot warning — mirrors the `OAUTH_STATE_SECRET` precedent). Revocation latency ≤ tier-cache TTL (default 60 s).
@@ -116,6 +118,7 @@ Rules:
 |-----------|--------|
 | `023_web_sessions` | `web_sessions (id TEXT PK, user_id TEXT, discord_tag TEXT, created_at, last_seen_at, expires_at)` + `idx(user_id)`; prune index on `expires_at` |
 | `024_admin_audit` | `admin_audit (id, guild_id, actor_user_id, origin 'web'\|'slash'\|'system', action, target_type, target_id, details_json, created_at)` + `idx(guild_id, created_at)` |
+| `025_web_session_tokens` | Adds NULLable `access_token_enc` (AES-256-GCM envelope, HKDF key from `SESSION_SECRET`), `token_expires_at`, `scopes`, `guild_snapshot` (bot∩user guild list w/ per-guild `permissions` bitset + `owner`) to `web_sessions`. AT lifetime ≈ session cap ⇒ no refresh flow in v1; secret rotation ⇒ decrypt fails ⇒ re-auth. Login tokens still never leave the DB (§8.1-9) |
 
 No new tables for participants (existing ticket schema covers §8.4). Slash handlers gain a thin `admin_audit` write alongside their existing channel embeds so origin is consistent across transports.
 

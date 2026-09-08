@@ -38,11 +38,32 @@ describe("web sessions (migration 023 + repo helpers)", () => {
       );
     });
 
-    it("creates web_sessions with the exact §8.5 column list", () => {
+    it("025_web_session_tokens is registered AFTER 023 in migrate.js", () => {
+      const { migrations } = require("../src/db/migrate");
+      const i023 = migrations.findIndex((m) => m.id === "023_web_sessions");
+      const i025 = migrations.findIndex((m) => m.id === "025_web_session_tokens");
+      assert.ok(i025 !== -1, "025_web_session_tokens must be registered");
+      assert.ok(i025 > i023, "025 extends the table 023 creates");
+    });
+
+    it("creates web_sessions with the §8.5 columns + the 025 token extension", () => {
       const cols = api.db.prepare(`PRAGMA table_info(web_sessions)`).all();
+      // 023 base (roadmap §8.5) + 025_web_session_tokens (Phase 0b: the
+      // encrypted user AT + metadata the login callback attaches).
       assert.deepEqual(
         cols.map((c) => c.name),
-        ["id", "user_id", "discord_tag", "created_at", "last_seen_at", "expires_at"]
+        [
+          "id",
+          "user_id",
+          "discord_tag",
+          "created_at",
+          "last_seen_at",
+          "expires_at",
+          "access_token_enc",
+          "token_expires_at",
+          "scopes",
+          "guild_snapshot",
+        ]
       );
       const byName = Object.fromEntries(cols.map((c) => [c.name, c]));
       assert.equal(byName.id.pk, 1, "id is the primary key");
@@ -51,6 +72,10 @@ describe("web sessions (migration 023 + repo helpers)", () => {
       assert.equal(byName.last_seen_at.notnull, 1);
       assert.equal(byName.expires_at.notnull, 1);
       assert.equal(byName.discord_tag.notnull, 0, "discord_tag is nullable display data");
+      // 025 columns are NULLable — pre-login / pre-upgrade rows stay valid.
+      for (const col of ["access_token_enc", "token_expires_at", "scopes", "guild_snapshot"]) {
+        assert.equal(byName[col].notnull, 0, `${col} is nullable`);
+      }
     });
 
     it("creates both indexes: user lookup + prune on expires_at", () => {
