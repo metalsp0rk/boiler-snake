@@ -498,7 +498,10 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
     assert.equal(health.body, "ok", "legacy body untouched");
     assert.match(health.csp, /frame-ancestors 'none'/);
 
-    const index = await get("/t");
+    // §8.4 (subtask 12): the ticket surface is login-mandatory now — only
+    // the REQUEST POSTURE moved (staff session instead of anonymous); the
+    // byte/header assertions below are exactly the pre-auth ones.
+    const index = await get("/t", { cookie: cookieOf.admin });
     assert.equal(index.res.status, 200);
     assert.ok(index.body.includes("Archived tickets"), "/t bytes untouched");
     assert.match(index.csp, /default-src 'self'/);
