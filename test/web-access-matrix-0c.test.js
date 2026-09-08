@@ -535,10 +535,24 @@ describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () =
     assert.ok(idx.body.includes("Guild filter"), "honored param activates the filter");
     assert.ok(!idx.body.includes(T.normalA.token), "guild A rows never leak into B view");
 
+    // §8.6 "System: health, tickers, OAuth state, audit viewer" is the ONE
+    // Admin-tier row among the mounted Phase 1 views (subtask 22) — guild-B
+    // staff must TIER-DENY (403) there, never resolve. A 403 (not the
+    // cross-guild 404) still proves the route is alive in guild B, so the
+    // "gate ≠ dead data" control holds for the admin surfaces too.
+    const ADMIN_TIER_VIEWS = new Set(["/g/:guildId/system", "/g/:guildId/audit"]);
     for (const route of harness.listGetRoutesUnder(app, "/g/")) {
       if (route.params.length !== 1 || route.params[0] !== "guildId") continue;
       const url = harness.buildConcretePath(route.path, { guildId: GUILD_B });
       const r = await harness.request(base, url, { cookieId: cookies.staffB });
+      if (ADMIN_TIER_VIEWS.has(route.path)) {
+        assert.equal(
+          r.status,
+          403,
+          `admin-tier view ${route.path} must tier-deny guild-B staff with 403 (right guild, wrong tier) — never the cross-guild 404`
+        );
+        continue;
+      }
       assert.equal(
         r.status,
         200,
