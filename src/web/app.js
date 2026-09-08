@@ -26,6 +26,8 @@ const { registerTranscriptRoutes } = require("./routes/transcripts");
 const { registerOauthRoutes } = require("./routes/oauth");
 const { registerAuthRoutes } = require("./routes/auth");
 const { registerGuildShellRoutes } = require("./routes/guildShell");
+const { registerUsersRoutes } = require("./routes/users");
+const { registerDashboardRoutes } = require("./routes/dashboard");
 const { createSessionMiddleware } = require("./middleware/session");
 const {
   createAuthRateLimit,
@@ -109,14 +111,16 @@ function handleAppError(err, req, res, next) {
  * @param {object} [options]
  * @param {string} [options.apiBase] Discord API base for the auth AND guild
  *   access routes (tests point this at a local fake; production unset → real
- *   Discord). Ticket/OAuth/session surfaces are unaffected, so the Phase 0a
- *   byte-parity contract still holds.
+ *   Discord). OAuth/session surfaces are unaffected; the ticket surface
+ *   gates on login + guildAccess (§8.4) but its authenticated responses keep
+ *   the Phase 0a byte-parity contract.
  * @param {string} [options.oauthBase]
  * @param {() => string[]|Set<string>} [options.botGuilds] bot-guild provider
  *   override (tests); production wiring lives in features/web boot.
  * @param {{resolve: Function, listGuilds: Function}} [options.guildAccess]
- *   pre-built createGuildAccessResolver() instance for the /g shell (tests
- *   inject fakes; default builds one from apiBase/fetchImpl/botGuilds).
+ *   pre-built createGuildAccessResolver() instance for the /g shell AND the
+ *   §8.4 ticket gate (tests inject fakes; default builds one from
+ *   apiBase/fetchImpl/botGuilds).
  * @returns {import("express").Express}
  */
 function createWebApp(options = {}) {
@@ -178,13 +182,27 @@ function createWebApp(options = {}) {
   // anonymous /g/*. The injectable seams keep it offline-testable against
   // the same fake Discord the login routes use (guildScope needs
   // getUserGuilds + getUserGuildMember, bot∩user intersection).
+  registerDashboardRoutes(app, options);
   registerGuildShellRoutes(app, {
     guildAccess: options.guildAccess,
     apiBase: options.apiBase,
     fetchImpl: options.fetchImpl,
     botGuilds: options.botGuilds,
   });
-  registerTranscriptRoutes(app);
+  // Ticket surface (Phase 0c, subtask 12): login-mandatory + staff-or-
+  // participant gate (§8.4). Gets the SAME resolver seams as the /g shell —
+  // an injected guildAccess covers both surfaces, so tests and future
+  // wiring never diverge on tier math.
+  registerTranscriptRoutes(app, {
+    guildAccess: options.guildAccess,
+    apiBase: options.apiBase,
+    fetchImpl: options.fetchImpl,
+    botGuilds: options.botGuilds,
+  });
+  // Users surface (Phase 1, subtask 15): unified profile + senior Activity tab
+  // (§8.6). Registered AFTER the guild shell so /g/:guildId guildScope runs
+  // first; same resolver seams as the shell keep tier math undivided.
+  registerUsersRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
 
   app.use(handleNotFound);
   app.use(handleAppError);

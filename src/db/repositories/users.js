@@ -121,6 +121,71 @@ function topUsers(guildId, limit = 10) {
   return out;
 }
 
+/**
+ * Point-read one user's row (web profile existence check). No row ⇒ the bot
+ * has never tracked XP for this member in this guild. Read-only (unlike
+ * getXp, never seeds or clamps-writes).
+ * @param {string} guildId
+ * @param {string} userId
+ * @returns {{ user_id: string, xp: number }|null}
+ */
+function getUser(guildId, userId) {
+  const row = db
+    .prepare(`SELECT user_id, xp FROM users WHERE guild_id=? AND user_id=?`)
+    .get(guildId, userId);
+  if (!row) return null;
+  return { user_id: row.user_id, xp: clampXpTotal(row.xp) };
+}
+
+/** Web user search never returns more than this many rows (§8.6 budget). */
+const SEARCH_LIMIT = 50;
+
+/**
+ * Search tracked users of ONE guild by snowflake text (web users index).
+ *
+ * Boundedness (§8.6): the users table stores NO display names, so name/LIKE
+ * search is impossible without a per-request Discord fan-out; this helper
+ * therefore answers EXACT and PREFIX id matches only — both served by the
+ * (guild_id, user_id) PK index, no scans. Non-digit queries can never match
+ * a numeric id and short-circuit to [] WITHOUT touching the DB.
+ * LIKE metacharacters are escaped with ESCAPE '\' so junk input cannot
+ * widen the pattern (defense in depth — the digit guard already blocks %).
+ *
+ * @param {string} guildId
+ * @param {string} query raw search text (trimmed by the caller)
+ * @param {{ limit?: number }} [opts]
+ * @returns {{ user_id: string, xp: number }[]}
+ */
+function searchUsers(guildId, query, opts = {}) {
+  const q = String(query ?? "").trim();
+  // Snowflake-ish guard: digits only, 1..20 chars. Anything else matches no
+  // id, and we refuse to run a scan-shaped query for it.
+  if (!/^[0-9]{1,20}$/.test(q)) return [];
+
+  const limit = Math.min(Math.max(Number(opts.limit) || SEARCH_LIMIT, 1), SEARCH_LIMIT);
+
+  // Two index-friendly point/prefix reads, merged exact-first (§ PK use).
+  const exact = db
+    .prepare(`SELECT user_id, xp FROM users WHERE guild_id=? AND user_id=?`)
+    .all(guildId, q);
+  if (exact.length >= limit) {
+    return exact.slice(0, limit).map((r) => ({ user_id: r.user_id, xp: clampXpTotal(r.xp) }));
+  }
+  const like = q.replace(/[\\%_]/g, (c) => `\\${c}`);
+  const prefix = db
+    .prepare(
+      `SELECT user_id, xp FROM users
+       WHERE guild_id=? AND user_id LIKE ? ESCAPE '\\'
+       ORDER BY user_id ASC
+       LIMIT ?`
+    )
+    .all(guildId, `${like}%`, limit);
+
+  const seen = new Set(exact.map((r) => r.user_id));
+  const out = [...exact, ...prefix.filter((r) => !seen.has(r.user_id))].slice(0, limit);
+  return out.map((r) => ({ user_id: r.user_id, xp: clampXpTotal(r.xp) }));
+}
+
 function allUsersInGuild(guildId) {
   const rows = db.prepare(`
   SELECT user_id, xp
@@ -136,6 +201,9 @@ module.exports = {
   addXp,
   setXp,
   getXp,
+  getUser,
+  searchUsers,
+  SEARCH_LIMIT,
   topUsers,
   allUsersInGuild,
 };
