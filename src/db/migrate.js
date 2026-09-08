@@ -37,6 +37,7 @@ const migrations = [
   require("./migrations/027_gork_interaction_log"),
   require("./migrations/028_web_sessions"),
   require("./migrations/029_admin_audit"),
+  require("./migrations/030_web_session_tokens"),
 ];
 
 const helpers = {
