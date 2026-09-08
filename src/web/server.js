@@ -31,10 +31,12 @@ let server = null;
 
 /**
  * Start listening if PUBLIC_HTTP_PORT / TICKET_HTTP_PORT is set.
- * Idempotent.
+ * Idempotent. `options` is threaded into createWebApp (offline test seams
+ * AND the production getClient() — features/web binds the live client).
+ * @param {object} [options]
  * @returns {import("http").Server|null}
  */
-function startWebServer() {
+function startWebServer(options = {}) {
   const { port } = getHttpConfig();
   if (!port) {
     console.log(
@@ -57,7 +59,7 @@ function startWebServer() {
   }
   startSessionPruneJob();
 
-  server = http.createServer(createWebApp());
+  server = http.createServer(createWebApp(options));
 
   server.on("error", (err) => {
     console.error("[http] server error:", err?.message || err);
