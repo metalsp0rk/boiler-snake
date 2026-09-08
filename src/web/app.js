@@ -27,6 +27,9 @@ const { registerOauthRoutes } = require("./routes/oauth");
 const { registerAuthRoutes } = require("./routes/auth");
 const { registerGuildShellRoutes } = require("./routes/guildShell");
 const { registerUsersRoutes } = require("./routes/users");
+const { registerModerationRoutes } = require("./routes/moderation");
+const { registerSettingsRoutes } = require("./routes/settings");
+const { registerLeaderboardRoutes } = require("./routes/leaderboard");
 const { registerDashboardRoutes } = require("./routes/dashboard");
 const { createSessionMiddleware } = require("./middleware/session");
 const {
@@ -203,6 +206,20 @@ function createWebApp(options = {}) {
   // (§8.6). Registered AFTER the guild shell so /g/:guildId guildScope runs
   // first; same resolver seams as the shell keep tier math undivided.
   registerUsersRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
+  // Moderation lists (Phase 1, subtask 17): guild-wide warnings + staff notes
+  // (§8.6 Staff row, read-only). Registered after the shell like the other
+  // Phase 1 surfaces so /g/:guildId guildScope gates first; same resolver
+  // seams keep tier math undivided. Warn/issue/void writes land in Phase 3.
+  registerModerationRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds });
+  // Settings surface (Phase 1, subtask 18): read-only guild settings view
+  // (§8.6 Staff row). Also AFTER the guild shell so /g/:guildId guildScope
+  // gates it; same shared resolver instance keeps tier math undivided.
+  registerSettingsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, settingsData: options.settingsData });
+  // Leaderboard surface (Phase 1, subtask 16): paginated top-XP board +
+  // per-user rank/level page (§8.6 XP row, staff tier). AFTER the guild
+  // shell so /g/:guildId guildScope gates first; same shared resolver
+  // instance keeps tier math undivided. Grant-xp stays Phase 3 / slash.
+  registerLeaderboardRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
 
   app.use(handleNotFound);
   app.use(handleAppError);
