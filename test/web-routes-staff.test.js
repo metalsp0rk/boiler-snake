@@ -21,11 +21,15 @@
  *    authorized-by id), stored last_sync_error XSS probe;
  *  - secrets (§8.1-9/§8.7): the stored fake refresh/access tokens NEVER
  *    appear in any body; projection field list is token-shaped-name-free.
- *  - query budget (§8.6): exactly TWO bounded facade reads on /staff
- *    (listStaffRoles + getCommandPermissionOauth), ONE on /commands,
- *    every read guild-scoped to the viewed guild;
- *  - read-only Phase 1 (§8.8): every non-GET on both paths is the
- *    app-wide 405 (role writes = subtask 25, sync trigger = subtask 31).
+ *  - query budget (§8.6): exactly THREE bounded facade reads on /staff
+ *    (listStaffRoles + listLevelRoles + getCommandPermissionOauth), ONE
+ *    on /commands, every read guild-scoped to the viewed guild;
+ *  - read-only exact paths: POST/PUT/PATCH/DELETE on the EXACT page paths
+ *    (/staff, /commands) and every unregistered /g/ subpath stay the
+ *    byte-exact app-wide 405 — Phase 2 registered only the five mutation
+ *    TEMPLATES (pinned here; behavior in test/web-staff-roles-writes.test.js);
+ *  - Phase 2 form rendering: staff-role forms ADMIN-tier viewers only, the
+ *    level-role forms for every viewer, all with the hidden _csrf.
  */
 
 const { describe, it, before, after } = require("node:test");
@@ -75,8 +79,15 @@ const ENV_KEYS = [
 ];
 const BOT_GUILDS = [GUILD_A, GUILD_CROSS];
 
-/** Exactly what ONE /staff page build may read (query budget). */
-const STAFF_PAGE_READS = ["listStaffRoles", "getCommandPermissionOauth"];
+/** Exactly what ONE /staff page build may read (query budget). Phase 2
+ * (subtask 25) added the bounded per-guild listLevelRoles read — the
+ * level→role config the staff page now lists and the /staff/levelrole/*
+ * forms mutate. /commands still reads NOTHING it does not show. */
+const STAFF_PAGE_READS = [
+  "listStaffRoles",
+  "listLevelRoles",
+  "getCommandPermissionOauth",
+];
 
 describe("web staff page + command-visibility panel (GET-only, staff tier)", () => {
   /** @type {ReturnType<typeof loadDb>["api"]} */
@@ -87,6 +98,8 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
   /** @type {import("http").Server} */
   let server;
   let base;
+  /** Last app built by mountApp (methodGate registry inspection). */
+  let appRef;
 
   const cookieOf = {};
 
@@ -165,6 +178,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       botGuilds: async () => BOT_GUILDS,
       ...extraOptions,
     });
+    appRef = app; // registry inspection (webMutations lockstep assertions)
     server = http.createServer(app);
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -415,7 +429,10 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       assert.ok(body.includes("PUBLIC_BASE_URL"), "PUBLIC_BASE_URL named");
       // Never a value anywhere: no secrets, no tokens, no sync affordances.
       assert.ok(!body.includes(FAKE_REFRESH) && !body.includes(FAKE_ACCESS));
-      assert.ok(body.includes("never performs OAuth"), "no sync/OAuth action from a view (§8.8)");
+      // View defers the sync ACTION to Phase 3 — the honest rendered claim
+      // (the "no OAuth performed by a GET" guarantee is the no-forms
+      // assertion below: a view with no POST affordance cannot trigger).
+      assert.ok(body.includes("trigger arrives in Phase 3"), "sync action deferred to Phase 3 (§8.8)");
       // No mutation form on the PAGE itself (the shell's logout form is the
       // only POST affordance in the document — slice to <main> to assert it).
       const main = body.slice(body.indexOf("<main"), body.indexOf("</main>"));
@@ -550,7 +567,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
   // -------------------------------------------------------------------------
 
   describe("query budget", () => {
-    it("/staff = exactly TWO bounded facade reads; /commands = ONE; all guild-scoped", async () => {
+    it("/staff = exactly THREE bounded facade reads; /commands = ONE; all guild-scoped", async () => {
       const { calls, proxy } = startReadCounter();
       await mountApp({
         staffData: staffDataMod.createStaffData({ db: proxy }),
@@ -561,11 +578,11 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       assert.deepEqual(
         calls.map((c) => c.name).sort(),
         [...STAFF_PAGE_READS].sort(),
-        "exactly one listStaffRoles + one getCommandPermissionOauth"
+        "exactly one listStaffRoles + one listLevelRoles + one getCommandPermissionOauth"
       );
       assert.deepEqual(
         calls.map((c) => c.args[0]),
-        [GUILD_A, GUILD_A],
+        [GUILD_A, GUILD_A, GUILD_A],
         "every read is guild-scoped to the viewed guild"
       );
 
@@ -581,10 +598,73 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
   });
 
   // -------------------------------------------------------------------------
-  // Read-only Phase 1 (§8.8): no mutation routes on either path
+  // Phase 2 mutation forms (subtask 25) — RENDERING policy only; the tier
+  // gate lives on the POST routes (behavior in web-staff-roles-writes.test.js)
   // -------------------------------------------------------------------------
 
-  it("no POST/PUT/PATCH/DELETE routes — app-wide 405 on staff + commands", async () => {
+  describe("Phase 2 mutation forms", () => {
+    it("admin viewer: staff-role + level-role forms with hidden _csrf", async () => {
+      await mountApp();
+      const { res, body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+      assert.equal(res.status, 200);
+      for (const action of [
+        `/g/${GUILD_A}/staff/role/add`,
+        `/g/${GUILD_A}/staff/role/setlevel`,
+        `/g/${GUILD_A}/staff/role/remove`,
+        `/g/${GUILD_A}/staff/levelrole/set`,
+        `/g/${GUILD_A}/staff/levelrole/remove`,
+      ]) {
+        assert.ok(body.includes(`action="${action}"`), `form posts to ${action}`);
+      }
+      assert.ok(body.includes('name="_csrf"'), "every page carries the CSRF input");
+      assert.ok(body.includes('name="drop_days"'), "level-role set fields present");
+      assert.equal(body.match(/\son[a-z]+\s*=\s*["']/i), null, "no inline handlers");
+    });
+
+    it("staff/senior viewers: NO admin-tier role forms; level-role forms DO render", async () => {
+      await mountApp();
+      for (const cookie of [cookieOf.staff, cookieOf.senior]) {
+        const { res, body } = await req(`/g/${GUILD_A}/staff`, { cookie });
+        assert.equal(res.status, 200);
+        for (const action of ["add", "setlevel", "remove"]) {
+          assert.ok(
+            !body.includes(`/staff/role/${action}"`),
+            `role-${action} form is admin-only (§8.6)`
+          );
+        }
+        // /leveltorole gates on isStaff ⇒ every viewer of this page mutates
+        // level-roles at the SAME tier the slash handler enforces.
+        assert.ok(
+          body.includes(`/staff/levelrole/set"`),
+          "level-role set form renders for staff tier (slash parity)"
+        );
+      }
+    });
+
+    it("level→role mappings render from the SAME level_roles table slash lists", async () => {
+      await mountApp();
+      api.upsertLevelRole(GUILD_A, "500000000000000007", 7, 3);
+      try {
+        const { body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+        assert.ok(
+          body.includes(`<code class="role-id">500000000000000007</code>`),
+          "mapped role id rendered"
+        );
+        assert.ok(body.includes("Level required"), "mapping table header");
+      } finally {
+        api.deleteLevelRole(GUILD_A, "500000000000000007");
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Exact-path 405 pins (§8.8/§8.6): Phase 2 registered ONLY the five
+  // mutation templates. The page paths themselves, other verbs on the
+  // registered subpaths, and junk under /staff stay byte-exact 405s.
+  // -------------------------------------------------------------------------
+
+  it("405 byte-parity: page paths, non-POST verbs, junk subpaths, sync paths", async () => {
+    // (a) The two PAGE paths take no direct POST/PUT/PATCH/DELETE at all.
     for (const path of PATHS) {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
         const res = await fetch(`${base}/g/${GUILD_A}${path}`, {
@@ -595,5 +675,62 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
         assert.equal(await res.text(), "Method not allowed");
       }
     }
+    // (b) Registered mutation templates answer POST ONLY (methodGate is
+    //     method-exact): other verbs 405 byte-identically.
+    for (const sub of [
+      "/staff/role/add",
+      "/staff/role/remove",
+      "/staff/role/setlevel",
+      "/staff/levelrole/set",
+      "/staff/levelrole/remove",
+    ]) {
+      for (const method of ["PUT", "PATCH", "DELETE"]) {
+        const res = await fetch(`${base}/g/${GUILD_A}${sub}`, {
+          method,
+          headers: { cookie: cookieOf.admin },
+        });
+        assert.equal(res.status, 405, `${method} ${sub} is not a registered mutation`);
+        assert.equal(await res.text(), "Method not allowed");
+      }
+    }
+    // (c) Unregistered /g/ subpaths never reach CSRF/router — plain 405.
+    for (const path of [
+      "/staff/role",
+      "/staff/role/unknown",
+      "/staff/role/add/extra",
+      "/staff/levelrole/unknown",
+      "/staff/unknown",
+      // Sync trigger = Phase 3 (subtask 31): NO sync/sync-permissions route
+      // is registered by Phase 2 (this suite owns that pin).
+      "/staff/sync-permissions",
+      "/commands/sync",
+    ]) {
+      const res = await fetch(`${base}/g/${GUILD_A}${path}`, {
+        method: "POST",
+        headers: { cookie: cookieOf.admin },
+      });
+      assert.equal(res.status, 405, `POST ${path} stays unregistered (Phase 3 / junk)`);
+      assert.equal(await res.text(), "Method not allowed");
+    }
+  });
+
+  it("methodGate registry contains EXACTLY the five staff mutation templates", () => {
+    const registered = appRef.locals.webMutations
+      .filter((m) => m.path.startsWith("/g/:guildId/staff/"))
+      .map((m) => `${m.method} ${m.path}`)
+      .sort();
+    assert.deepEqual(registered, [
+      "POST /g/:guildId/staff/levelrole/remove",
+      "POST /g/:guildId/staff/levelrole/set",
+      "POST /g/:guildId/staff/role/add",
+      "POST /g/:guildId/staff/role/remove",
+      "POST /g/:guildId/staff/role/setlevel",
+    ]);
+    // NO sync/sync-permissions mutation (command visibility = Phase 3):
+    assert.equal(
+      appRef.locals.webMutations.some((m) => /sync/i.test(m.path)),
+      false,
+      "subtask 25 registers ZERO sync mutations (Phase 3 owns the trigger)"
+    );
   });
 });

@@ -297,12 +297,14 @@ function createWebApp(options = {}) {
   // shell so /g/:guildId guildScope gates first; same shared resolver
   // instance keeps tier math undivided. Grant-xp stays Phase 3 / slash.
   registerLeaderboardRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
-  // Integrations surface (Phase 1, subtask 20): read-only YouTube/Twitch/
-  // reaction-roles/event-reminders/honeypot view (§8.6 Integrations row,
-  // staff tier). AFTER the guild shell so /g/:guildId guildScope gates
-  // first; same shared resolver instance keeps tier math undivided.
-  // Per-command writes (incl. /honeypot exempt = admin) land in Phase 2.
-  registerIntegrationsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, integrationsData: options.integrationsData });
+  // Integrations surface (Phase 1 read view subtask 20; Phase 2 writes
+  // subtask 26): YouTube/Twitch/reaction-roles/event-reminders/honeypot
+  // (§8.6 Integrations row, staff tier; /honeypot exempt = admin). AFTER the
+  // guild shell so /g/:guildId guildScope gates first; same shared resolver
+  // instance keeps tier math undivided. The *_seam options mirror the
+  // settingsData pass-through (tests inject offline fakes; production omits
+  // them and the routes use the real service resolvers).
+  registerIntegrationsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, integrationsData: options.integrationsData, resolveTwitchUser: options.resolveTwitchUser, lookupYoutubeChannel: options.lookupYoutubeChannel, fetchYoutubeChannelInfo: options.fetchYoutubeChannelInfo, ensureHoneypotWarning: options.ensureHoneypotWarning });
   registerStaffRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, staffData: options.staffData, oauthConfig: options.oauthConfig });
   // Voice & music surface (Phase 1, subtask 21): read-only now-playing/queue
   // + live-voice snapshot (§8.6 Voice & Music row, staff tier; queue CONTROL

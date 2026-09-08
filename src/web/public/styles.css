@@ -619,3 +619,162 @@ th {
   .system-kv { grid-template-columns: 1fr; gap: 0.1rem; }
   .system-kv dd { margin-bottom: 0.5rem; }
 }
+
+/* settings writes (Phase 2, subtask 24) */
+/* Plain PRG forms under .settings-* only — rides the existing shell tokens
+   and .btn/.banner classes; nothing here restyles sibling pages. */
+.settings-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+  margin: 0.6rem 0 0;
+  padding: 0.6rem 0 0;
+  border-top: 1px dashed var(--line);
+}
+.settings-form-inline {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+  gap: 0.35rem;
+  align-items: center;
+}
+.setting-field { display: grid; gap: 0.2rem; font-size: 0.8rem; }
+.setting-field-label { color: var(--fg-muted); }
+.setting-field-wide .setting-input-channel { min-width: 13rem; }
+.setting-input {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.setting-input-number { width: 8.5rem; }
+.btn-small { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+.settings-submit-clear { color: var(--banner-error-fg); border-color: var(--banner-error-fg); }
+.settings-log-forms {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0.6rem 0 0;
+  border-top: 1px dashed var(--line);
+}
+.settings-log-forms .settings-form-inline { border-top: 0; }
+.settings-list-item { display: flex; align-items: center; gap: 0.6rem; margin: 0.25rem 0; }
+
+@media (max-width: 640px) {
+  .setting-input-number { width: 6.5rem; }
+}
+
+/* staff */
+/* Phase 2 mutation forms on GET /g/:guildId/staff (subtask 25). Plain PRG
+   forms scoped under .staff-mutate-* / .level-role-panel / .level-roles-
+   table only — rides the existing shell tokens and .btn/.badge classes;
+   nothing here restyles sibling pages. */
+.staff-mutate-panel { display: grid; gap: 0.5rem; }
+.staff-mutate-panel .subheading { margin: 0; font-size: 0.85rem; }
+
+.staff-mutate-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+  padding: 0.6rem 0 0;
+  border-top: 1px dashed var(--line);
+}
+.staff-mutate-form label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+.staff-mutate-form input,
+.staff-mutate-form select {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.staff-mutate-form input[name="role_id"] { min-width: 13rem; }
+.staff-mutate-form input[type="number"] { width: 7.5rem; }
+.btn-danger { color: var(--banner-error-fg); border-color: var(--banner-error-fg); }
+
+.level-roles-config-panel .level-roles-table { margin-top: 0.4rem; }
+
+@media (max-width: 640px) {
+  .staff-mutate-form { font-size: 0.8rem; }
+  .staff-mutate-form input[name="role_id"] { min-width: 9rem; }
+}
+
+/* integrations writes (Phase 2, subtask 26) */
+/* Collapsible PRG write forms on GET /g/:guildId/integrations. Scoped under
+   .integ-write* only — rides the existing shell tokens and .btn/.banner
+   classes; nothing here restyles sibling pages. */
+.integrations-panel .integ-write {
+  margin: 0.7rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px dashed var(--line);
+  border-radius: 0.5rem;
+}
+.integrations-panel .integ-write > summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+.integrations-panel .integ-write[open] > summary { margin-bottom: 0.4rem; }
+
+.integ-write-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+  padding: 0.5rem 0 0;
+}
+.integ-write-form + .integ-write-form {
+  margin-top: 0.35rem;
+  border-top: 1px dotted var(--line);
+}
+.integ-write-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.55rem;
+}
+.integ-write-form label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+.integ-write-form label:has(input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.integ-write-form input:not([type="hidden"]),
+.integ-write-form select {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.integ-write-form input[name$="role_id"],
+.integ-write-form input[name="channel_id"],
+.integ-write-form input[name="message_id"] { min-width: 13rem; }
+.integ-write-form input[type="number"] { width: 7.5rem; }
+
+@media (max-width: 640px) {
+  .integ-write-form { font-size: 0.8rem; }
+  .integ-write-form input[name$="role_id"],
+  .integ-write-form input[name="channel_id"],
+  .integ-write-form input[name="message_id"] { min-width: 9rem; }
+}
