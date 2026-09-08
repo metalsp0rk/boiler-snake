@@ -152,6 +152,169 @@ function warnIfInsecurePublicBaseUrl() {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Web login (Discord OAuth2) knobs (roadmap/web-admin.md §8.3, §8.10)
+// ---------------------------------------------------------------------------
+
+/** §8.3 login scopes: profile + the user's guild list + member reads (07). */
+const LOGIN_SCOPES = Object.freeze(["identify", "guilds", "guilds.members.read"]);
+const DEFAULT_LOGIN_PROMPT = "consent";
+const LOGIN_PROMPTS = Object.freeze(["consent", "none"]);
+
+/**
+ * Redirect URI for the web login flow.
+ *
+ * OPERATOR NOTE: this exact string must be registered in the Discord
+ * Developer Portal (OAuth2 → Redirects). Discord matches redirect URIs
+ * byte-exactly (scheme, host, port, path, trailing slashes); the token
+ * exchange must resend the identical string, which is why both the
+ * authorize URL and the callback exchange resolve it HERE, live, from the
+ * same base URL (getOAuthRedirectUri precedent in commandPermissions).
+ *
+ * @returns {string|null} null when PUBLIC_BASE_URL (or the explicit
+ *   WEB_LOGIN_REDIRECT_URI override) is unset
+ */
+function getLoginRedirectUri() {
+  const explicit = process.env.WEB_LOGIN_REDIRECT_URI
+    ? String(process.env.WEB_LOGIN_REDIRECT_URI).trim().replace(/\/$/, "")
+    : "";
+  if (explicit) return explicit;
+  const { publicBaseUrl } = getHttpConfig();
+  if (!publicBaseUrl) return null;
+  return `${publicBaseUrl}/auth/login/callback`;
+}
+
+/**
+ * Everything the login routes need, resolved live from env (tests flip
+ * values without re-requiring). Never log or echo secret VALUES — `missing`
+ * lists var NAMES only.
+ * @returns {{
+ *   ready: boolean,
+ *   clientId: string|null,
+ *   clientSecret: string|null,
+ *   redirectUri: string|null,
+ *   prompt: string,
+ *   scopes: string[],
+ *   missing: string[],
+ * }}
+ */
+function getWebLoginConfig() {
+  const clientId = process.env.CLIENT_ID
+    ? String(process.env.CLIENT_ID).trim()
+    : null;
+  const clientSecret = process.env.CLIENT_SECRET
+    ? String(process.env.CLIENT_SECRET).trim()
+    : null;
+  const redirectUri = getLoginRedirectUri();
+
+  const promptRaw = process.env.WEB_LOGIN_PROMPT
+    ? String(process.env.WEB_LOGIN_PROMPT).trim().toLowerCase()
+    : "";
+  // prompt=consent by default (fresh consent screen per login); operators
+  // may pick "none" for silent re-auth. Anything else falls back to default.
+  const prompt = LOGIN_PROMPTS.includes(promptRaw)
+    ? promptRaw
+    : DEFAULT_LOGIN_PROMPT;
+
+  const missing = [];
+  if (!clientId) missing.push("CLIENT_ID");
+  if (!clientSecret) missing.push("CLIENT_SECRET");
+  if (!redirectUri) missing.push("PUBLIC_BASE_URL (or WEB_LOGIN_REDIRECT_URI)");
+
+  return {
+    ready: missing.length === 0,
+    clientId,
+    clientSecret,
+    redirectUri,
+    prompt,
+    scopes: [...LOGIN_SCOPES],
+    missing,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Rate limiting / body cap / reverse-proxy trust (roadmap/web-admin.md §8.7,
+// §8.10 — subtask 08). Resolved live from env like the session knobs above;
+// the middleware factories snapshot the values at creation (boot) time, so
+// changing these vars takes an app restart — matching the bot's lifecycle.
+// ---------------------------------------------------------------------------
+
+/** Fixed window length for every web rate bucket. */
+const DEFAULT_RATE_WINDOW_MS = 60_000;
+/** Login + OAuth callback requests per client IP per window. */
+const DEFAULT_AUTH_RATE_MAX = 30;
+/** Login + OAuth callback requests per resolved user per window. */
+const DEFAULT_AUTH_USER_RATE_MAX = 10;
+/** Non-GET (mutation) requests per user per window. */
+const DEFAULT_MUTATION_RATE_MAX = 120;
+/** Max accepted request body size in bytes (generic 413 beyond it). */
+const DEFAULT_MAX_BODY_BYTES = 65_536;
+
+/**
+ * Parse a positive integer env value; invalid (NaN, ≤0, empty) → fallback.
+ * @param {string|undefined} raw
+ * @param {number} fallback
+ * @returns {number}
+ */
+function readPositiveIntEnv(raw, fallback) {
+  if (raw == null || String(raw).trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
+}
+
+/**
+ * Fixed-window rate-limit budget + body cap (§8.7). Defaults are sized for a
+ * human admin (120 mutations/min, 30 auth hits/min per IP) while still
+ * capping scripted abuse.
+ * @returns {{
+ *   windowMs: number,
+ *   authMax: number,
+ *   authUserMax: number,
+ *   mutationMax: number,
+ *   maxBodyBytes: number,
+ * }}
+ */
+function getRateLimitConfig() {
+  return {
+    windowMs: readPositiveIntEnv(
+      process.env.WEB_RATE_LIMIT_WINDOW_MS,
+      DEFAULT_RATE_WINDOW_MS
+    ),
+    authMax: readPositiveIntEnv(
+      process.env.WEB_RATE_LIMIT_AUTH_MAX,
+      DEFAULT_AUTH_RATE_MAX
+    ),
+    authUserMax: readPositiveIntEnv(
+      process.env.WEB_RATE_LIMIT_AUTH_USER_MAX,
+      DEFAULT_AUTH_USER_RATE_MAX
+    ),
+    mutationMax: readPositiveIntEnv(
+      process.env.WEB_RATE_LIMIT_MUTATION_MAX,
+      DEFAULT_MUTATION_RATE_MAX
+    ),
+    maxBodyBytes: readPositiveIntEnv(
+      process.env.WEB_MAX_BODY_BYTES,
+      DEFAULT_MAX_BODY_BYTES
+    ),
+  };
+}
+
+/**
+ * Reverse-proxy trust (§8.7): X-Forwarded-For is honored ONLY when
+ * WEB_TRUST_PROXY is truthy. Default OFF → the socket address is the client
+ * identity, which is correct for a directly exposed bot and fails safe
+ * behind an unconfigured proxy (visitors share one bucket instead of forged
+ * headers winning). Operators running behind nginx/traefik/etc. MUST set
+ * WEB_TRUST_PROXY=1 (documented in .env.example).
+ * @returns {boolean}
+ */
+function isTrustProxyEnabled() {
+  const raw = String(process.env.WEB_TRUST_PROXY || "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 /** @private test helper (mirrors oauthState._resetNoncesForTests) */
 function _resetConfigWarningsForTests() {
   warnedSecretFallback = false;
@@ -165,7 +328,19 @@ module.exports = {
   getTierCacheTtlMs,
   isSecureBaseUrl,
   warnIfInsecurePublicBaseUrl,
+  getRateLimitConfig,
+  isTrustProxyEnabled,
+  getLoginRedirectUri,
+  getWebLoginConfig,
+  LOGIN_SCOPES,
+  DEFAULT_LOGIN_PROMPT,
+  LOGIN_PROMPTS,
   DEFAULT_SESSION_TTL_HOURS,
   DEFAULT_TIER_CACHE_TTL_MS,
+  DEFAULT_RATE_WINDOW_MS,
+  DEFAULT_AUTH_RATE_MAX,
+  DEFAULT_AUTH_USER_RATE_MAX,
+  DEFAULT_MUTATION_RATE_MAX,
+  DEFAULT_MAX_BODY_BYTES,
   _resetConfigWarningsForTests,
 };

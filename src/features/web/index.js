@@ -11,13 +11,20 @@
  */
 
 const { startWebServer } = require("../../web/server");
+const { setBotGuildsProvider } = require("../../web/auth/botGuilds");
 
 module.exports = {
   name: "web",
   /**
-   * @param {import("discord.js").Client} _client
+   * @param {import("discord.js").Client} client
    */
-  start(_client) {
+  start(client) {
+    // Production bot-guild provider (login guild intersection, §8.3): the
+    // discord.js v14 guild cache, READ LIVE at every login. It is only
+    // complete after READY — a login racing cold boot may briefly see a
+    // partial list; the snapshot refreshes on the next login (07 re-checks
+    // per TTL). Guarded so tests/harnesses without a client never throw.
+    setBotGuildsProvider(() => client?.guilds?.cache?.keyArray?.() ?? []);
     startWebServer();
   },
 };
