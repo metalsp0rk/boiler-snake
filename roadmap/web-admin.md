@@ -156,6 +156,13 @@ No new tables for participants (existing ticket schema covers §8.4). Slash hand
 - HTTPS validation at boot: non-localhost `http://` `PUBLIC_BASE_URL` → loud warning + `Secure` cookie caveat in docs.
 - Secrets: `SESSION_SECRET` placeholder in `.env.example` only; never logged (tags/tokens redacted in logs).
 - Vendored htmx pinned with version header comment + upgrade note in this file.
+  **Pinned (Phase 0c):** `htmx.org@2.0.10` → `src/web/public/vendor/htmx.2.0.10.min.js`
+  (MIT; npm-registry tarball sha512-verified at vendor time; `/*! htmx.org v2.0.10 … */`
+  banner is the first bytes; no CDN, no build step). **Upgrade procedure:** bump the
+  pinned version, re-vendor from the registry tarball, drop the old file, and bump
+  `HTMX_SRC` in `src/web/views/layout.js` — the filename is the cache-buster
+  (`/static/*` is served `immutable`), and `test/web-views-layout.test.js` pins both
+  the banner and the layout reference.
 
 ---
 

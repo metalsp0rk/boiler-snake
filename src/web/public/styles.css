@@ -1,0 +1,238 @@
+/*
+ * Web admin console shell styles (roadmap/web-admin.md §8.2 public/).
+ * No build step, no framework (§8.1-2): plain CSS, system-ui, served from
+ * /static/styles.css. Visual language follows the ticket transcripts
+ * (src/features/tickets/transcript.js + views/archiveIndex.js): same
+ * system-ui stack, same link blue, same quiet uppercase table headers —
+ * the console and the transcripts are one product.
+ *
+ * Dark is the DEFAULT palette (the console is a dark tool; §8.2 acceptance
+ * "dark-by-default"); a light palette is provided via prefers-color-scheme
+ * so the shell follows the OS when the user asks for light. All colors ride
+ * the custom properties below — components never hardcode a color.
+ */
+
+:root {
+  color-scheme: dark light;
+
+  --bg: #191b1f;
+  --bg-raised: #212429;
+  --fg: #e7e9ee;
+  --fg-muted: #a3a9b5;
+  --line: #3a3e46;
+  --link: #5b9dff;
+  --banner-warn-bg: #3a2f14;
+  --banner-warn-fg: #f0c96c;
+  --banner-info-bg: #16283c;
+  --banner-info-fg: #9cc6ff;
+  --banner-error-bg: #3c1a1a;
+  --banner-error-fg: #f2a0a0;
+  --btn-bg: #2c313a;
+  --btn-fg: var(--fg);
+  --tier-staff: #7fb069;
+  --tier-senior: #d8b54c;
+  --tier-admin: #e07b6b;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f5f7;
+    --bg-raised: #ffffff;
+    --fg: #1f2329;
+    --fg-muted: #5b6270;
+    --line: #d4d8de;
+    --link: #1f5cc4;
+    --banner-warn-bg: #fdf3d7;
+    --banner-warn-fg: #7a5b0d;
+    --banner-info-bg: #deebfb;
+    --banner-info-fg: #1f4e8a;
+    --banner-error-bg: #fbe3e3;
+    --banner-error-fg: #8a2626;
+    --btn-bg: #e6e9ee;
+    --btn-fg: #1f2329;
+    --tier-staff: #3d6f2e;
+    --tier-senior: #8a6d10;
+    --tier-admin: #a03a28;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  line-height: 1.5;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+a { color: var(--link); }
+
+:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+/* ---- shell bar (header) ---------------------------------------------- */
+
+.shell-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;                 /* mobile: stack, desktop: single row */
+  padding: 0.6rem 1rem;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--fg);
+  margin-right: auto;
+}
+
+.guild-switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.guild-switcher label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted);
+}
+
+.guild-switcher select {
+  max-width: 40vw;                 /* long guild names never break the bar */
+  min-height: 44px;                /* touch target (ui standards §testing) */
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+.badge-tier-staff { color: var(--tier-staff); }
+.badge-tier-senior { color: var(--tier-senior); }
+.badge-tier-admin { color: var(--tier-admin); }
+
+.user-box {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.user-tag {
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.logout-form { margin: 0; }
+
+.btn {
+  min-height: 44px;
+  padding: 0.35rem 0.9rem;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn:hover { border-color: var(--link); }
+
+/* ---- banners (degraded resolver, notices) ---------------------------- */
+
+.banner {
+  margin: 0.9rem auto 0;
+  max-width: 1100px;
+  padding: 0.65rem 0.85rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+
+.banner-degraded, .banner-warn { background: var(--banner-warn-bg); color: var(--banner-warn-fg); }
+.banner-info { background: var(--banner-info-bg); color: var(--banner-info-fg); }
+.banner-error { background: var(--banner-error-bg); color: var(--banner-error-fg); }
+
+.noscript-hint {
+  max-width: 1100px;
+  margin: 0.75rem auto 0;
+  padding: 0 1rem;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+}
+
+/* ---- main + footer ----------------------------------------------------- */
+
+.shell-main {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 2.5rem;
+}
+
+.shell-main h1 { font-size: 1.4rem; margin: 0.25rem 0; }
+
+.subheading { opacity: 0.75; font-size: 0.9rem; margin: 0 0 1rem; }
+
+.error-body {
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  border-radius: 6px;
+  padding: 1rem 1.15rem;
+}
+
+.empty-state { text-align: center; opacity: 0.7; padding: 2rem 0; }
+
+/* Transcripts' table language, shared for Phase 1 lists. */
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td {
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+th {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.8;
+}
+
+.shell-footer {
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 0.75rem;
+  opacity: 0.6;
+  padding: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+/* Narrow phones: the bar wraps to rows; nothing overflows at 375px. */
+@media (max-width: 480px) {
+  .shell-bar { padding: 0.5rem 0.6rem; }
+  .guild-switcher select { max-width: 60vw; }
+}
