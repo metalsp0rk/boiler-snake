@@ -17,6 +17,7 @@ const {
   logLevelRoleChanges,
   diffConfigLines,
 } = require("./auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -120,6 +121,13 @@ async function handleSetlog(interaction, ctx) {
         ],
       }).catch(() => {});
       updateGuildSettings(guildId, { [field]: null });
+      recordSlashAudit({
+        interaction,
+        action: "logs.channel_clear",
+        targetType: "guild",
+        targetId: guildId,
+        details: { stream: sub, previous_channel_id: beforeId ?? null },
+      });
       await replyEphemeral(
         interaction,
         `${label} channel cleared. That log stream is disabled until set again.`,
@@ -136,6 +144,13 @@ async function handleSetlog(interaction, ctx) {
     }
 
     updateGuildSettings(guildId, { [field]: ch.id });
+    recordSlashAudit({
+      interaction,
+      action: "logs.channel_set",
+      targetType: "channel",
+      targetId: ch.id,
+      details: { stream: sub, previous_channel_id: beforeId ?? null },
+    });
     await logConfigChange(client, guildId, {
       title: `${label} channel set`,
       command: `/setlog ${sub}`,

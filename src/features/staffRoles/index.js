@@ -27,6 +27,7 @@ const {
 const { isAdminOrMod, isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   getCommandPermissionOAuthConfig,
   createOAuthState,
@@ -182,6 +183,13 @@ async function handleRoleAdd(interaction, ctx) {
 
   const existing = getStaffRole(interaction.guildId, role.id);
   addStaffRole(interaction.guildId, role.id, level);
+  recordSlashAudit({
+    interaction,
+    action: "staff.role_add",
+    targetType: "role",
+    targetId: role.id,
+    details: { level, previous_level: existing ? existing.level : null },
+  });
 
   await logConfigChange(
     ctx?.client || interaction.client,
@@ -231,9 +239,17 @@ async function handleRoleRemove(interaction, ctx) {
   }
 
   const role = interaction.options.getRole("role", true);
+  const existing = getStaffRole(interaction.guildId, role.id);
   const removed = removeStaffRole(interaction.guildId, role.id);
 
   if (removed) {
+    recordSlashAudit({
+      interaction,
+      action: "staff.role_remove",
+      targetType: "role",
+      targetId: role.id,
+      details: { previous_level: existing ? existing.level : null },
+    });
     await logConfigChange(
       ctx?.client || interaction.client,
       interaction.guildId,
@@ -288,6 +304,13 @@ async function handleRoleSetLevel(interaction, ctx) {
   }
 
   setStaffRoleLevel(interaction.guildId, role.id, level);
+  recordSlashAudit({
+    interaction,
+    action: "staff.role_setlevel",
+    targetType: "role",
+    targetId: role.id,
+    details: { previous_level: existing.level, level },
+  });
 
   await logConfigChange(
     ctx?.client || interaction.client,
@@ -413,6 +436,16 @@ async function handleSyncPermissions(interaction) {
   try {
     const result = await applyGuildCommandPermissions(guildId);
     const oauth = getCommandPermissionOauth(guildId);
+    recordSlashAudit({
+      interaction,
+      action: "staff.sync_permissions",
+      targetType: "guild",
+      targetId: guildId,
+      details: {
+        role_count: result.roleCount,
+        commands_updated: result.updated.length,
+      },
+    });
     const parts = [
       `**Synced slash-command visibility** for this server.`,
       `Staff roles applied: **${result.roleCount}**`,

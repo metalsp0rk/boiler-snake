@@ -7,6 +7,7 @@ const {
 const { isAdminOrMod } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -62,6 +63,12 @@ async function handleSetCommandChannel(interaction, ctx) {
   if (sub === "add") {
     const ch = interaction.options.getChannel("channel", true);
     addAllowedCommandChannel(guildId, ch.id);
+    recordSlashAudit({
+      interaction,
+      action: "command_channels.add",
+      targetType: "channel",
+      targetId: ch.id,
+    });
     await logConfigChange(client, guildId, {
       title: "Command channel allowed",
       command: "/setcommandchannel add",
@@ -78,6 +85,12 @@ async function handleSetCommandChannel(interaction, ctx) {
   if (sub === "remove") {
     const ch = interaction.options.getChannel("channel", true);
     removeAllowedCommandChannel(guildId, ch.id);
+    recordSlashAudit({
+      interaction,
+      action: "command_channels.remove",
+      targetType: "channel",
+      targetId: ch.id,
+    });
     await logConfigChange(client, guildId, {
       title: "Command channel restriction removed",
       command: "/setcommandchannel remove",

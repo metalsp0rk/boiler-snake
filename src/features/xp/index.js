@@ -20,6 +20,7 @@ const { Color, baseEmbed } = require("../../core/theme");
 const { awardXp } = require("../../services/awardXp");
 const { renderLeaderboardPng } = require("../../render/leaderboard");
 const { logConfigChange, diffConfigLines } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 const adminPerms = PermissionFlagsBits.ManageGuild;
@@ -362,6 +363,13 @@ async function handleSetXp(interaction, ctx) {
 
   const before = settings;
   const updated = updateGuildSettings(guildId, patch);
+  recordSlashAudit({
+    interaction,
+    action: "xp.settings_update",
+    targetType: "guild",
+    targetId: guildId,
+    details: { patch },
+  });
   const lines = diffConfigLines(before, updated, Object.keys(patch));
   if (lines.length) {
     await logConfigChange(client, guildId, {
@@ -448,6 +456,19 @@ async function handleGrantXp(interaction, ctx) {
 
   const levelText = level != null ? String(level) : levelFromXp(newXp, settings.level_xp_factor);
   const reasonText = reason?.trim() ? reason.trim() : null;
+
+  recordSlashAudit({
+    interaction,
+    action: "xp.grant",
+    targetType: "user",
+    targetId: target.id,
+    details: {
+      amount,
+      before_xp: beforeXp,
+      after_xp: newXp,
+      reason: reasonText,
+    },
+  });
 
   await logConfigChange(client, guildId, {
     title: "XP granted",
