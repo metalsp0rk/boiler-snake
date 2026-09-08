@@ -9,12 +9,13 @@
  *  - responses go through raw `res.writeHead()/res.end()` only — never
  *    res.send()/res.json() — so Express adds no ETag, charset, or extra
  *    framing versus the legacy node:http handler;
- *  - a GET/HEAD method gate runs BEFORE the router: the Express 5 router
- *    would answer method mismatches with its own 405 + Allow header, but
- *    the legacy server answered every non-GET/HEAD with
+ *  - the method gate runs BEFORE the router: the Express 5 router would
+ *    answer method mismatches with its own 405 + Allow header, but the
+ *    legacy server answered every non-GET/HEAD with
  *    `405 "Method not allowed"` (plain text) on every path, known or not;
- *    the single Phase 0b exception is POST on the exact path /auth/logout
- *    (see methodGate) — everything else still 405s byte-identically;
+ *    exceptions are POST on the exact path /auth/logout and boot-registered
+ *    /g/ mutation routes (registerWebMutation — see makeMethodGate);
+ *    everything else still 405s byte-identically;
  *  - handlers parse the RAW req.url (never req.query) so the Express 5
  *    "simple" query-parser default and path-to-regexp decoding cannot
  *    change behavior;
@@ -44,35 +45,98 @@ const {
 const { createCsrfMiddleware } = require("./middleware/csrf");
 const { createCspMiddleware } = require("./middleware/csp");
 const { createStaticMiddleware } = require("./middleware/static");
+const { createAuditMiddleware } = require("./middleware/audit");
 
 /**
- * The ONE POST path the legacy method gate makes an exception for (§8.3
- * logout is a POST). Exact-path match on the RAW url (query stripped, no
- * decoding — same parsing rule as everything else here): /auth/logout/
- * (trailing slash), /auth/login, tickets, and the OAuth callback keep
- * answering 405 exactly as the Phase 0a oracle asserts.
+ * The ONE POST path the method gate makes an exception for without a
+ * registry entry (§8.3 logout is a POST). Exact-path match on the RAW url
+ * (query stripped, no decoding — same parsing rule as everything else
+ * here): /auth/logout/ (trailing slash), /auth/login, tickets, /static,
+ * and the OAuth callback keep answering 405 exactly as the Phase 0a
+ * oracle asserts.
  */
 const LOGOUT_POST_PATH = "/auth/logout";
 
 /**
- * Legacy dispatch gate: anything but GET/HEAD is rejected before routing
- * (POST /auth/logout is the single audited exception).
- * @param {import("http").IncomingMessage} req
- * @param {import("http").ServerResponse} res
- * @param {() => void} next
+ * Segment-wise match of a raw path against a mounted mutation template
+ * (templates are the literal Express mount paths, e.g.
+ * "/g/:guildId/settings/decay"). ":guildId" matches exactly one non-empty
+ * segment; every other segment is a byte-exact literal. No decoding, no
+ * trailing-slash leniency — same strict parsing doctrine as the rest of
+ * app.js, so unregistered junk under /g/ keeps failing to the 405.
+ * @param {string} rawPath
+ * @param {string} template
+ * @returns {boolean}
  */
-function methodGate(req, res, next) {
-  if (req.method === "GET" || req.method === "HEAD") {
-    next();
-    return;
+function matchesMutationPath(rawPath, template) {
+  const raw = rawPath.split("/");
+  const tpl = template.split("/");
+  if (raw.length !== tpl.length) return false;
+  for (let i = 0; i < tpl.length; i++) {
+    if (tpl[i] === ":guildId") {
+      if (raw[i] === "") return false;
+      continue;
+    }
+    if (raw[i] !== tpl[i]) return false;
   }
-  const path = String(req.url || "/").split("?")[0];
-  if (req.method === "POST" && path === LOGOUT_POST_PATH) {
-    next();
-    return;
+  return true;
+}
+
+/**
+ * Method policy — one source of truth, 405-before-everything doctrine
+ * preserved from Phase 0a:
+ *  - GET/HEAD: always proceed (unchanged).
+ *  - POST /auth/logout: proceeds (unchanged 0b exception).
+ *  - ANY other non-GET/HEAD: proceeds ONLY if the raw path matches a
+ *    mutation route registered via registerWebMutation() at boot (exact
+ *    template match). Everything else gets the legacy byte-identical
+ *    405 "Method not allowed" BEFORE rate limiters, CSRF, auth, or the
+ *    router — unregistered junk never reaches CSRF (which would 403),
+ *    and the Phase-1 read-page suites' 405 pins stay byte-exact.
+ * @param {Array<{method: string, path: string}>} mutations
+ */
+function makeMethodGate(mutations) {
+  return function methodGate(req, res, next) {
+    if (req.method === "GET" || req.method === "HEAD") {
+      next();
+      return;
+    }
+    const path = String(req.url || "/").split("?")[0];
+    if (req.method === "POST" && path === LOGOUT_POST_PATH) {
+      next();
+      return;
+    }
+    for (const m of mutations) {
+      if (m.method === req.method && matchesMutationPath(path, m.path)) {
+        next();
+        return;
+      }
+    }
+    res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Method not allowed");
+  };
+}
+
+/**
+ * Boot-time registration of a web mutation route (Phase 2/3 contract):
+ * route modules MUST call this with the EXACT template they mount
+ * (e.g. "POST", "/g/:guildId/settings/decay") so the method gate lets it
+ * through — the gate runs before CSRF/rate-limit/router by design and
+ * byte-405s anything unregistered. Keep the register call and the
+ * app.post(...) path in lockstep (subtask suites pin both).
+ * @param {{ locals: { webMutations: Array<{method: string, path: string}> } }} app
+ * @param {string} method HTTP verb, upper-case
+ * @param {string} path Express mount template
+ */
+function registerWebMutation(app, method, path) {
+  const m = { method: String(method).toUpperCase(), path };
+  if (!m.path.startsWith("/g/") || !m.path.includes(":guildId")) {
+    throw new Error(`mutation mount must be /g/:guildId-scoped: ${m.path}`);
   }
-  res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end("Method not allowed");
+  if (m.method === "GET" || m.method === "HEAD") {
+    throw new Error(`mutations must not use ${m.method}: ${m.path}`);
+  }
+  app.locals.webMutations.push(m);
 }
 
 /**
@@ -134,6 +198,10 @@ function createWebApp(options = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.set("etag", false);
+  // Mutation registry (Phase 2/3): route modules add entries via
+  // registerWebMutation(app, ...) at mount time; makeMethodGate reads the
+  // SAME array reference on every request.
+  app.locals.webMutations = [];
 
   // Phase 0c (subtask 11, §8.7): CSP + per-response script nonce BEFORE any
   // responder, so even the methodGate's 405 and the catch-all 404 carry the
@@ -143,12 +211,17 @@ function createWebApp(options = {}) {
   // headers, so the byte-parity contract survives; verified green).
   app.use(createCspMiddleware());
 
-  app.use(methodGate);
+  app.use(makeMethodGate(app.locals.webMutations));
   // Phase 0b: resolve the session cookie for downstream auth (req.webSession
   // / req.user). Read-only middleware — it never writes the response, so the
   // byte-parity contract above is unaffected. Mounted after methodGate so
   // 405 rejections skip DB work entirely.
   app.use(createSessionMiddleware());
+  // Phase 0b audit trail (subtask 09): attaches req.audit — DB-first
+  // admin_audit writer with best-effort channel-embed mirror; zero I/O at
+  // mount, never writes the response itself (handlers call it post-mutation
+  // and a failed insert 500s the request — §8.1-7 fail-closed).
+  app.use(createAuditMiddleware());
   // Phase 0b security middlewares (subtask 08, roadmap §8.7). GET/HEAD pay
   // at most an HMAC here, so the Phase 0a byte-parity contract is untouched;
   // everything below activates the moment a request survives methodGate —
@@ -252,4 +325,6 @@ function createWebApp(options = {}) {
 
 module.exports = {
   createWebApp,
+  registerWebMutation,
+  matchesMutationPath,
 };
