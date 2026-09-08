@@ -142,7 +142,9 @@ Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `us
 |--------|--------|
 | Typing | Typing indicator immediately on trigger — **including for queued requests while they wait** — refreshed every **8s** until the reply is sent |
 | Reply | **Plain text**, a reply **to** the keyword message. No embed, no trailing source list (the model may mention source facts or a URL inline) |
-| Long answers | Final text over 2,000 chars is split into consecutive messages (~1,900-char chunks, prefer line boundaries) |
+| Mentions & pings | Mention markup echoed in an answer (`<@id>`, `<@&role>`, `<#channel>`) is rewritten to a readable `@name` / `#channel`, and gork replies **never ping anyone** (mention parsing is disabled on every send) |
+| User roster | Each question includes a compact roster (id → handle → display name) of the people involved in the conversation, so gork can map names to people ("what did @alice say?") |
+| Long answers | Final text over 2,000 chars is split into consecutive messages (~1,900-char chunks, prefer line boundaries; emoji and Discord tokens are never cut mid-character) |
 | Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (0–3600, **0 = disabled**). **Staff** (Manage Server or any `staff_roles` role) **bypass** the cooldown entirely. Cooldown hit → **silent ignore** |
 | Gork bans | `/gork ban` blocks a user per-guild. A banned trigger gets the LLM-failure canned reply, so the ban is **indistinguishable from a normal failure** — no LLM call, no audit Q&A entry. Unlike the cooldown, staff roles do **not** bypass a ban. The reply is paced by the normal per-user cooldown |
 | Concurrency / queue | **1 in-flight** gork request per guild; further triggers are **queued FIFO**, up to **5 waiting** (in-memory). When the queue is full, new triggers are **dropped** with the queue-full reply |

@@ -774,3 +774,233 @@ describe("buildUserContent + locked canned replies (trigger)", () => {
     assert.equal(LLM_FAILURE_REPLY, "*gork's brain went to lunch* — try again in a bit.");
   });
 });
+
+// ---------- user roster (Fix 2) ----------
+
+describe("user roster (roster)", () => {
+  const {
+    collectParticipantIds,
+    buildRoster,
+    formatRosterBlock,
+    MAX_ROSTER_USERS,
+  } = require("../src/features/gork/roster");
+
+  function fakeMember(id, username, { displayName, nickname } = {}) {
+    return {
+      user: { id, username, tag: `${username}#0000` },
+      displayName: displayName || nickname || username,
+      nickname: nickname || null,
+    };
+  }
+
+  function fakeGuild(members) {
+    const cache = new Map(members.map((m) => [m.user.id, m]));
+    return {
+      id: "guild-1",
+      members: {
+        cache,
+        fetch: async (id) => {
+          if (cache.has(id)) return cache.get(id);
+          throw new Error(`member ${id} not found`);
+        },
+      },
+      roles: { cache: new Map([["r1", { id: "r1", name: "Staff" }]]) },
+      channels: { cache: new Map([["c9", { id: "c9", name: "general" }]]) },
+    };
+  }
+
+  it("collectParticipantIds: asker first, then authors, then mentions (deduped)", () => {
+    const trigger = { author: { id: "1" } };
+    const messages = [
+      { author: { id: "2" }, content: "hi <@3>" },
+      { author: { id: "1" }, content: "yo <@!3>" },
+    ];
+    assert.deepEqual(
+      collectParticipantIds(trigger, messages, "what did <@2> say?"),
+      ["1", "2", "3"],
+    );
+  });
+
+  it("buildRoster resolves cache/fetch members and degrades to id-only lines", async () => {
+    const guild = fakeGuild([
+      fakeMember("1", "alice", { displayName: "Alice T", nickname: "Ali" }),
+      fakeMember("2", "bob"),
+    ]);
+    const roster = await buildRoster(null, guild, { author: { id: "1" } }, [
+      { author: { id: "2" }, content: "hello <@404>" },
+    ]);
+    const lines = roster.lines;
+    assert.ok(lines[0].startsWith("1 | @alice | "), lines[0]);
+    assert.ok(lines[0].includes("(Ali)"), "nickname shown");
+    assert.ok(lines[1].startsWith("2 | @bob | bob"), lines[1]);
+    assert.equal(lines[2], "404 | (unresolved)", "member-fetch miss → id-only");
+    assert.equal(roster.entries.size, 3, "all participants resolved (or degraded)");
+  });
+
+  it("buildRoster caps listed users and reports the truncation count", async () => {
+    const many = [];
+    for (let i = 0; i < MAX_ROSTER_USERS + 3; i += 1) {
+      many.push(fakeMember(`${1000 + i}`, `user${i}`));
+    }
+    const guild = fakeGuild(many);
+    const messages = many.map((m) => ({
+      author: { id: m.user.id },
+      content: "hi",
+    }));
+    const roster = await buildRoster(null, guild, { author: { id: "1000" } }, messages);
+    assert.equal(roster.lines.length, MAX_ROSTER_USERS);
+    assert.equal(roster.truncated, 3);
+    assert.equal(roster.entries.size, MAX_ROSTER_USERS + 3, "cap only trims the listing");
+  });
+
+  it("formatRosterBlock: empty roster -> no block; block carries guidance", async () => {
+    assert.equal(formatRosterBlock({ lines: [] }), "");
+    const block = formatRosterBlock({
+      lines: ["u1 | @alice | Alice"],
+      truncated: 2,
+    });
+    assert.ok(block.includes("never write raw <@id>"), "usage guidance present");
+    assert.ok(block.includes("u1 | @alice | Alice"));
+    assert.ok(block.includes("2 more participants not listed"));
+  });
+
+  it("buildUserContent appends the roster block only when provided", () => {
+    const ctx = { text: "[alice] hello" };
+    assert.ok(!buildUserContent("q", ctx).includes("People roster:"));
+    const withRoster = buildUserContent("q", ctx, "u1 | @alice | Alice");
+    assert.ok(withRoster.includes("People roster:\nu1 | @alice | Alice"));
+  });
+});
+
+// ---------- answer sanitizer (Fix 1) ----------
+
+describe("sanitizeAnswer (sanitize)", () => {
+  const { sanitizeAnswer } = require("../src/features/gork/sanitize");
+
+  const roster = {
+    entries: new Map([
+      ["42", { id: "42", handle: "alice", display: "Alice" }],
+      ["43", { id: "43", handle: "bob", display: null }],
+    ]),
+  };
+  const guild = {
+    roles: { cache: new Map([["r1", { name: "Staff" }]]) },
+    channels: { cache: new Map([["c1", { name: "general" }]]) },
+  };
+
+  it("replaces user mentions with rendered handles (incl. <@!id>)", () => {
+    const out = sanitizeAnswer("ask <@42> or <@!42> please", { roster, guild });
+    assert.equal(out, "ask @Alice or @Alice please");
+  });
+
+  it("falls back to handle, then @someone for unknown ids", () => {
+    assert.equal(sanitizeAnswer("<@43>", { roster, guild }), "@bob");
+    assert.equal(sanitizeAnswer("<@999>", { roster, guild }), "@someone");
+  });
+
+  it("renders role and channel mentions from guild caches", () => {
+    assert.equal(sanitizeAnswer("<@&5> in <#6>", { roster, guild }), "@some-role in #some-channel");
+    const known = {
+      roles: { cache: new Map([["5", { name: "Staff" }]]) },
+      channels: { cache: new Map([["6", { name: "general" }]]) },
+    };
+    assert.equal(sanitizeAnswer("<@&5> in <#6>", { roster, guild: known }), "@Staff in #general");
+  });
+
+  it("leaves custom emoji and timestamps untouched", () => {
+    const src = "nice <:kekw:123456789012345678> <t:1700000000:R>";
+    assert.equal(sanitizeAnswer(src, { roster, guild }), src);
+  });
+
+  it("keeps markup inside code spans and fences verbatim", () => {
+    const out = sanitizeAnswer("`<@42>` and\n```\n<@999> <@&r1>\n```", { roster, guild });
+    assert.ok(out.includes("`<@42>`"), "inline code untouched");
+    assert.ok(out.includes("```\n<@999> <@&r1>\n```"), "fence untouched");
+  });
+
+  it("handles null/empty input", () => {
+    assert.equal(sanitizeAnswer(null), "");
+    assert.equal(sanitizeAnswer(""), "");
+  });
+});
+
+// ---------- code-point / token-safe chunking (Fix 4) ----------
+
+describe("code-point & token-safe chunking (Fix 4)", () => {
+  const { safeCutIndex, sliceSafe } = require("../src/core/text");
+  const { truncateField } = require("../src/core/theme");
+
+  function hasLoneSurrogate(s) {
+    for (let i = 0; i < s.length; i += 1) {
+      const code = s.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdfff) {
+        const isHigh = code <= 0xdbff;
+        const partner = i + (isHigh ? 1 : -1);
+        const p = s.charCodeAt(partner);
+        if (!(isHigh ? p >= 0xdc00 && p <= 0xdfff : p >= 0xd800 && p <= 0xdbff)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  it("safeCutIndex / sliceSafe never split a surrogate pair", () => {
+    const s = "a😀b";
+    assert.equal(safeCutIndex(s, 2), 1, "cut between halves backs off");
+    assert.equal(safeCutIndex(s, 1), 1, "before the pair is fine");
+    assert.equal(safeCutIndex(s, 0), 0);
+    assert.equal(s.slice(0, safeCutIndex(s, 4)), s, "end clamps to length");
+    assert.equal(sliceSafe(s, 2), "a");
+  });
+
+  it("truncateField is code-point safe", () => {
+    const s = "x".repeat(10) + "😀";
+    const out = truncateField(s, 11);
+    assert.ok(!hasLoneSurrogate(out), "no lone surrogate in truncated field");
+    assert.ok(out.endsWith("…"));
+    assert.ok(s.startsWith(out.slice(0, -1)));
+  });
+
+  it("splitLongAnswer chunks never split emoji (valid UTF-16, join round-trips)", () => {
+    const text = "a" + "😀".repeat(1500); // odd alignment forces a pair at index 1900
+    const chunks = splitLongAnswer(text);
+    assert.ok(chunks.length >= 2);
+    for (const c of chunks) assert.ok(!hasLoneSurrogate(c), "chunk is valid UTF-16");
+    assert.equal(chunks.join(""), text, "join reproduces input");
+  });
+
+  it("splitLongAnswer never cuts inside a <…> mention token", () => {
+    const text = "x".repeat(1895) + "<@123456789012345678>" + "y".repeat(100);
+    const chunks = splitLongAnswer(text);
+    assert.equal(chunks[0], "x".repeat(1895), "cut pulled before the token");
+    assert.ok(chunks[1].startsWith("<@123456789012345678>"));
+    assert.equal(chunks.join(""), text);
+  });
+
+  it("splitLongAnswer never cuts inside ||spoilers|| or ```fences```", () => {
+    const spoiler = "a".repeat(1895) + "||secret||" + "b".repeat(600);
+    const sChunks = splitLongAnswer(spoiler);
+    assert.ok(!sChunks[0].includes("||"), "first chunk has no spoiler marker");
+    assert.equal(sChunks.join(""), spoiler);
+
+    const fenced = "a".repeat(100) + "```\n" + "b".repeat(1900) + "\n```" + "c".repeat(300);
+    const fChunks = splitLongAnswer(fenced);
+    assert.ok(!fChunks[0].includes("```"), "first chunk ends before the fence");
+    assert.equal(fChunks.join(""), fenced);
+  });
+
+  it("emoji-heavy long answers survive every chunk boundary", () => {
+    const text = Array.from(
+      { length: 40 },
+      (_, i) => `line ${i} 😀🎉 ${"z".repeat(60)}`,
+    ).join("\n");
+    const chunks = splitLongAnswer(text);
+    assert.ok(chunks.length >= 2);
+    for (const c of chunks) {
+      assert.ok(!hasLoneSurrogate(c));
+      assert.ok(!/<[^<>]*$/.test(c), "no token left open at a chunk end");
+    }
+    assert.equal(chunks.join(""), text);
+  });
+});
