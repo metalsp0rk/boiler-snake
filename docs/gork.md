@@ -18,7 +18,7 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
    → guild enable switch + keyword set? (either off → silent)
    → keyword match (trimmed, case-insensitive prefix)
    → skipped silently: bot/webhook messages, DMs, open ticket channels
-   → per-user cooldown? (default 180s; staff bypass; hit → silent)
+   → per-user cooldown? (default 180s; staff bypass; hit → 🕐 reaction, no reply)
    → gork ban? (per-guild ban list → canned failure reply; staff included)
    → queue? (1 in-flight + 5 waiting; full → canned drop reply)
    → typing indicator (refreshed every 8s until the reply lands)
@@ -145,7 +145,7 @@ Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `us
 | Mentions & pings | Mention markup echoed in an answer (`<@id>`, `<@&role>`, `<#channel>`) is rewritten to a readable `@name` / `#channel`, and gork replies **never ping anyone** (mention parsing is disabled on every send) |
 | User roster | Each question includes a compact roster (id → handle → display name) of the people involved in the conversation, so gork can map names to people ("what did @alice say?") |
 | Long answers | Final text over 2,000 chars is split into consecutive messages (~1,900-char chunks, prefer line boundaries; emoji and Discord tokens are never cut mid-character) |
-| Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (0–3600, **0 = disabled**). **Staff** (Manage Server or any `staff_roles` role) **bypass** the cooldown entirely. Cooldown hit → **silent ignore** |
+| Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (0–3600, **0 = disabled**). **Staff** (Manage Server or any `staff_roles` role) **bypass** the cooldown entirely. Cooldown hit → the bot **reacts 🕐** on the trigger message (visible rate-limit signal; still no reply, no LLM call) |
 | Gork bans | `/gork ban` blocks a user per-guild. A banned trigger gets the LLM-failure canned reply, so the ban is **indistinguishable from a normal failure** — no LLM call, no audit Q&A entry. Unlike the cooldown, staff roles do **not** bypass a ban. The reply is paced by the normal per-user cooldown |
 | Concurrency / queue | **1 in-flight** gork request per guild; further triggers are **queued FIFO**, up to **5 waiting** (in-memory). When the queue is full, new triggers are **dropped** with the queue-full reply |
 | LLM parameters | Temperature **0.8** (sarcasm), `max_tokens` ~600, total timeout **60s** including the tool loop |
@@ -198,7 +198,7 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 1. Is `AI_API_KEY` set (and the bot restarted since)? Without a key, triggers are silently ignored — `/gork status` says "AI provider not configured"
 2. `/gork status` — is **Enabled** on? `/gork enable off` disables the whole feature for the server. Is the keyword set? `/gork keyword clear` also disables gork for the guild
 3. Is the message from a **bot or webhook**, in a **DM**, or in an **open ticket channel**? All are skipped silently
-4. Is the asker still within the per-user cooldown? Cooldown hits are silent (staff bypass)
+4. Is the asker still within the per-user cooldown? A cooldown hit gets a **🕐 reaction** on the message and no reply (staff bypass; a 🕐 with no reply means "ask again in a bit")
 5. If **one specific user** always gets the "*brain went to lunch*" reply while others work — check `/gork bans`; banned users are answered with that exact text (no LLM call)
 
 ### Web search / page reading not happening

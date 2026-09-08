@@ -5,11 +5,11 @@
  * The pipeline hook runs only fast checks inline, in order:
  * guild + author + non-bot, text-based channel, guild enable switch +
  * keyword enabled, open-ticket channel skip, AI key present, keyword
- * match, keyword-alone rule, per-user cooldown (staff bypass), guild ban
- * list (banned users get the LLM-failure reply, no staff bypass), queue
- * admission. The slow LLM job is then fired as a detached promise (caught
- * + logged) so the onMessageCreate pipeline never stalls — XP awards keep
- * flowing.
+ * match, keyword-alone rule, per-user cooldown (staff bypass; a hit reacts
+ * to the trigger with a clock emoji), guild ban list (banned users get the
+ * LLM-failure reply, no staff bypass), queue admission. The slow LLM job
+ * is then fired as a detached promise (caught + logged) so the
+ * onMessageCreate pipeline never stalls — XP awards keep flowing.
  *
  * Canned replies (LOCKED — roadmap/gork.md decision 20, verbatim):
  * - queue full:  "My one (1) brain is already busy, and the queue is full. Your question has been dropped — no hard feelings."
@@ -47,11 +47,66 @@ const gorkQueue = createGorkQueue();
 /** Refresh the typing indicator on this cadence (spec: every 8s). */
 const TYPING_REFRESH_MS = 8000;
 
-/** LLM budget (roadmap/gork.md §7.3). */
+/** LLM budget defaults (roadmap/gork.md §7.3), env-overridable below. */
 const LLM_TEMPERATURE = 0.8;
-const LLM_MAX_TOKENS = 600;
-const LLM_TIMEOUT_MS = 60_000;
-const LLM_MAX_TOOL_ROUNDS = 3;
+/**
+ * Default completion budget. Spec §7.3 says "~600" for the ANSWER, but
+ * reasoning/thinking providers (Qwen3-style, DeepSeek-R1, o-series) spend
+ * max_tokens on hidden reasoning FIRST — a 600 budget came back
+ * content:null (finish_reason "length") on a local thinking model
+ * (roadmap/gork.md §7.15, follow-up incident). 2,000 covers reasoning
+ * plus a ~150-word answer; override with GORK_LLM_MAX_TOKENS.
+ */
+const DEFAULT_LLM_MAX_TOKENS = 2000;
+const DEFAULT_LLM_TIMEOUT_MS = 60_000;
+const DEFAULT_LLM_MAX_TOOL_ROUNDS = 3;
+
+/**
+ * Positive-integer env knob with a fallback (unset/invalid → default).
+ *
+ * @param {string} name env var name
+ * @param {number} fallback default value
+ * @returns {number}
+ */
+function envPositiveInt(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/**
+ * Per-call LLM parameters, re-read every job so env overrides apply to
+ * queued requests without a restart.
+ *
+ * @returns {{ temperature: number, maxTokens: number, timeoutMs: number, maxToolRounds: number }}
+ */
+function llmParams() {
+  return {
+    temperature: LLM_TEMPERATURE,
+    maxTokens: envPositiveInt("GORK_LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS),
+    timeoutMs: envPositiveInt("GORK_LLM_TIMEOUT_MS", DEFAULT_LLM_TIMEOUT_MS),
+    maxToolRounds: envPositiveInt(
+      "GORK_LLM_MAX_TOOL_ROUNDS",
+      DEFAULT_LLM_MAX_TOOL_ROUNDS,
+    ),
+  };
+}
+
+/**
+ * Human-readable failure description for logs + audit (Fix: the old
+ * `reason || error || "unknown"` collapsed successful-but-empty answers
+ * into a useless "unknown").
+ *
+ * @param {object} res chatWithTools result
+ * @returns {string}
+ */
+function describeLlmFailure(res) {
+  if (res?.ok) return "provider returned an empty answer";
+  const bits = [];
+  if (res?.reason) bits.push(res.reason);
+  if (res?.status) bits.push(`HTTP ${res.status}`);
+  if (res?.error) bits.push(String(res.error).slice(0, 160));
+  return bits.length ? bits.join(": ") : "unknown error";
+}
 
 /** Max wait for the channel-history fetch phase (§7.15 Fix 3 hardening). */
 const CONTEXT_DEADLINE_MS = 20_000;
@@ -62,6 +117,13 @@ const QUEUE_FULL_REPLY =
 
 /** LOCKED canned reply: the LLM job failed or timed out (decision 20, verbatim). */
 const LLM_FAILURE_REPLY = "*gork's brain went to lunch* — try again in a bit.";
+
+/**
+ * Reaction added to a trigger that hits the per-user cooldown: a visible
+ * "rate-limited" signal replacing the old silent drop (still no reply and
+ * no LLM call on a hit).
+ */
+const COOLDOWN_REACTION = "🕐";
 
 /** One optional leading separator stripped from the question (spec §7.1). */
 const SEPARATORS = new Set([":", "-", "?", "!"]);
@@ -316,20 +378,28 @@ async function handleGorkMessage(client, message) {
         ...(message.member?.roles?.cache?.keys() ?? []),
       ]);
 
-    // 9. Per-user cooldown (guild-overridable; 0 = disabled) — silent hit.
+    // 9. Per-user cooldown (guild-overridable; 0 = disabled). A hit reacts
+    //    to the trigger with a clock emoji (visible rate-limit signal; staff
+    //    never see it) — no reply, no LLM call, and hits do not extend the
+    //    window. The react is best-effort: a missing permission or a deleted
+    //    message must never break the handler.
     const cd = gorkQueue.checkCooldown({
       guildId,
       userId: message.author.id,
       cooldownSec: settings.gork_cooldown_sec ?? DEFAULT_COOLDOWN_SEC,
       staff,
     });
-    if (!cd.allowed) return;
+    if (!cd.allowed) {
+      await message.react(COOLDOWN_REACTION).catch(() => {});
+      return;
+    }
 
     // 10. Guild ban list (`/gork ban`): banned users — staff included, no
     //     bypass — get the locked LLM-failure canned reply so the ban is
     //     indistinguishable from a normal failure. Checked after the
-    //     cooldown so a banned trigger stays silent during the cooldown
-    //     window (rate-limits the reply); no LLM call, no QA audit.
+    //     cooldown so a banned trigger only gets the clock reaction during
+    //     the cooldown window (rate-limits the reply); no LLM call, no QA
+    //     audit.
     if (isGorkBlocked(guildId, message.author.id)) {
       await message.reply(LLM_FAILURE_REPLY).catch(() => {});
       return;
@@ -386,7 +456,7 @@ async function handleGorkMessage(client, message) {
         // separate search / page-read tallies, not the combined total).
         let searches = 0;
         let reads = 0;
-        const res = await chatWithTools(cfg, {
+        const llmOpts = {
           messages: [
             { role: "system", content: system },
             {
@@ -398,10 +468,7 @@ async function handleGorkMessage(client, message) {
               ),
             },
           ],
-          temperature: LLM_TEMPERATURE,
-          maxTokens: LLM_MAX_TOKENS,
-          timeoutMs: LLM_TIMEOUT_MS,
-          maxToolRounds: LLM_MAX_TOOL_ROUNDS,
+          ...llmParams(),
           tools: searchOn
             ? [WEB_SEARCH_TOOL, READ_PAGE_TOOL]
             : undefined,
@@ -418,12 +485,31 @@ async function handleGorkMessage(client, message) {
             }
             return `unknown tool: ${name}`;
           },
-        });
+        };
+        let res = await chatWithTools(cfg, llmOpts);
 
-        if (res.ok && (res.content || "").trim()) {
+        // Providers occasionally answer OK-with-empty-text (thinking-model
+        // budget hiccups, transient upstream quirks). One retry beats the
+        // canned failure reply.
+        if (res.ok && !(res.content || "").trim()) {
+          console.log(
+            `[gork] empty answer from ${cfg.model} in ${guildId} (${res.durationMs ?? 0}ms); retrying once`,
+          );
+          res = await chatWithTools(cfg, llmOpts);
+        }
+
+        const answerText = (res.content || "").trim();
+        if (answerText) {
+          if (!res.ok) {
+            // Tool-round cap with real content: deliver the partial answer
+            // (better UX than the canned reply) but keep the breadcrumb.
+            console.log(
+              `[gork] delivering partial answer in ${guildId} (${res.reason}); tool budget exhausted`,
+            );
+          }
           // Fix 1: rewrite echoed mention markup to readable names, and
           // send with pings disabled so nothing notifies unintentionally.
-          const answer = sanitizeAnswer(res.content, {
+          const answer = sanitizeAnswer(answerText, {
             roster,
             guild: message.guild,
           });
@@ -454,16 +540,23 @@ async function handleGorkMessage(client, message) {
             replyMessage,
           }).catch(() => {});
         } else {
-          // Failure / timeout: locked canned reply, never a silent hang.
-          await message.reply(LLM_FAILURE_REPLY).catch(() => {});
+          // Failure / timeout / persistent empty answer: locked canned
+          // reply, never a silent hang.
+          await message
+            .reply({
+              content: LLM_FAILURE_REPLY,
+              allowedMentions: NO_PING_MENTIONS,
+            })
+            .catch(() => {});
           replied = true;
+          const why = describeLlmFailure(res);
           console.warn(
-            `[gork] LLM failure in ${guildId}: ${res.reason || res.error || "unknown"}`,
+            `[gork] LLM failure in ${guildId}: ${why} (model=${cfg.model}, toolCalls=${res.toolCalls ?? 0}, ${res.durationMs ?? 0}ms)`,
           );
           logGorkFailure(auditClient, guildId, {
             user: message.author,
             question,
-            reason: res.error || res.reason || "unknown error",
+            reason: why,
           }).catch(() => {});
         }
       } catch (err) {
@@ -492,7 +585,9 @@ module.exports = {
   LLM_FAILURE_REPLY,
   TYPING_REFRESH_MS,
   LLM_TEMPERATURE,
-  LLM_MAX_TOKENS,
-  LLM_TIMEOUT_MS,
-  LLM_MAX_TOOL_ROUNDS,
+  DEFAULT_LLM_MAX_TOKENS,
+  DEFAULT_LLM_TIMEOUT_MS,
+  DEFAULT_LLM_MAX_TOOL_ROUNDS,
+  llmParams,
+  describeLlmFailure,
 };

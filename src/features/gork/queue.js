@@ -7,7 +7,8 @@
  * - Per-user cooldown: 180s per user per guild by default, guild-overridable
  *   via `gork_cooldown_sec` (0-3600; 0 = disabled). Staff (caller passes
  *   `staff: true`) bypass the cooldown entirely. A cooldown hit is reported
- *   to the caller, which silently ignores the trigger (no reply, no LLM call).
+ *   to the caller, which reacts to the trigger with a clock emoji (no reply,
+ *   no LLM call).
  * - Per-guild concurrency: exactly 1 in-flight gork request per guild;
  *   further triggers are queued FIFO (up to 5 waiting); when the queue is
  *   full, new triggers are dropped with a distinct signal the trigger layer
@@ -30,7 +31,11 @@
  *   cooldownSec: settings.gork_cooldown_sec,
  *   staff: isStaff,
  * });
- * if (!cd.allowed) return; // cooldown hit -> silent ignore (no reply)
+ * if (!cd.allowed) {
+ *   // cooldown hit -> react with a clock emoji on the trigger, no reply
+ *   await message.react("🕐").catch(() => {});
+ *   return;
+ * }
  *
  * const slot = gorkQueue.admit({ guildId });
  * if (slot.dropped) {
