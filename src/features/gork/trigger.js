@@ -27,7 +27,10 @@ const {
   memberHasStaffRole,
 } = require("../../db");
 const { getAiConfig, chatWithTools } = require("../../core/ai");
+const { safeCutIndex } = require("../../core/text");
 const { buildContext, hasReference } = require("./context");
+const { buildRoster, formatRosterBlock } = require("./roster");
+const { NO_PING_MENTIONS, sanitizeAnswer } = require("./sanitize");
 const { buildSystemPrompt } = require("./prompt");
 const { createGorkQueue, DEFAULT_COOLDOWN_SEC } = require("./queue");
 const {
@@ -49,6 +52,9 @@ const LLM_TEMPERATURE = 0.8;
 const LLM_MAX_TOKENS = 600;
 const LLM_TIMEOUT_MS = 60_000;
 const LLM_MAX_TOOL_ROUNDS = 3;
+
+/** Max wait for the channel-history fetch phase (§7.15 Fix 3 hardening). */
+const CONTEXT_DEADLINE_MS = 20_000;
 
 /** LOCKED canned reply: the guild queue is full (decision 20, verbatim). */
 const QUEUE_FULL_REPLY =
@@ -87,21 +93,82 @@ function matchKeyword(content, keyword) {
 }
 
 /**
+ * Pull a candidate cut index back so it never splits a surrogate pair, a
+ * `<…>` Discord token (mention/custom-emoji/timestamp), a `||` spoiler
+ * span, or a ``` fenced code block (§7.15 Fix 4). Cutting earlier than
+ * `limit` is always allowed (chunks may be shorter); the cut stays ≥ 1.
+ *
+ * @param {string} text remaining text
+ * @param {number} cut candidate cut index (1..text.length)
+ * @returns {number} adjusted cut index (≥ 1, ≤ cut)
+ */
+function pullBeforeTokens(text, cut) {
+  for (let guard = 0; guard < 16 && cut > 1; guard += 1) {
+    const cpSafe = safeCutIndex(text, cut);
+    if (cpSafe >= 1 && cpSafe < cut) {
+      cut = cpSafe;
+      continue;
+    }
+    const lt = text.lastIndexOf("<", cut - 1);
+    if (lt >= 1) {
+      const gt = text.indexOf(">", lt);
+      if (gt === -1 || gt >= cut) {
+        cut = lt;
+        continue;
+      }
+    }
+    if (
+      (text.slice(0, cut).match(/\|\|/g) || []).length % 2 === 1 &&
+      text.lastIndexOf("||", cut - 1) >= 1
+    ) {
+      cut = text.lastIndexOf("||", cut - 1);
+      continue;
+    }
+    if (
+      (text.slice(0, cut).match(/```/g) || []).length % 2 === 1 &&
+      text.lastIndexOf("```", cut - 1) >= 1
+    ) {
+      cut = text.lastIndexOf("```", cut - 1);
+      continue;
+    }
+    return cut;
+  }
+  return Math.max(1, cpSafeIfPossible(text, cut));
+}
+
+/**
+ * Best-effort final code-point clamp (cut 1 edge cases).
+ *
+ * @param {string} text
+ * @param {number} cut
+ * @returns {number}
+ */
+function cpSafeIfPossible(text, cut) {
+  const safe = safeCutIndex(text, Math.max(1, cut));
+  return safe >= 1 ? safe : Math.max(1, cut);
+}
+
+/**
  * Find where to cut a chunk of at most `limit` chars: the chunk ends with
  * the last newline inside the first `limit` chars (so all characters are
  * preserved across chunks); a hard cut at `limit` when no newline exists.
  * A newline at index 0 alone is not accepted (avoids degenerate 1-char
- * chunks when the text starts with a newline).
+ * chunks when the text starts with a newline). The cut is then pulled
+ * back off surrogate pairs and Discord tokens (§7.15 Fix 4).
  *
  * @param {string} text remaining text
  * @param {number} limit max chunk size
  * @returns {number} cut index (1..limit)
  */
 function findBreakAt(text, limit) {
+  let cut = limit;
   for (let i = limit - 1; i >= 1; i -= 1) {
-    if (text[i] === "\n") return i + 1;
+    if (text[i] === "\n") {
+      cut = i + 1;
+      break;
+    }
   }
-  return limit;
+  return pullBeforeTokens(text, cut);
 }
 
 /**
@@ -140,20 +207,51 @@ function splitLongAnswer(text, { max = 2000, chunk = 1900 } = {}) {
  * With a question: the question followed by the conversation context
  * block. Without (keyword alone, replying to a message): a fixed
  * instruction to answer from the conversation context (decision 3).
+ * When a roster block is provided (Fix 2), it is appended as a
+ * "People roster" data block — the byte-locked base prompt stays
+ * untouched (decision-21 guidance pattern).
  *
  * @param {string} question trimmed question text ("" = keyword alone)
  * @param {{ text?: string }} ctx buildContext() result
+ * @param {string} [rosterBlock] formatRosterBlock() result ("" = none)
  * @returns {string}
  */
-function buildUserContent(question, ctx) {
+function buildUserContent(question, ctx, rosterBlock = "") {
   const context = (ctx?.text || "").trim() || "(none)";
+  const roster = (rosterBlock || "").trim();
+  const rosterSection = roster ? `\n\nPeople roster:\n${roster}` : "";
   if (question) {
-    return `${question}\n\nConversation context:\n${context}`;
+    return `${question}\n\nConversation context:\n${context}${rosterSection}`;
   }
   return (
     "The user sent only the keyword, replying to the message below. Answer from the conversation context.\n\n" +
-    context
+    context +
+    rosterSection
   );
+}
+
+/**
+ * Race a promise against a deadline, resolving to `fallback` on timeout
+ * (Fix 3: a hung channel fetch must never hold the guild queue slot
+ * open). The raced promise is already "never rejects" by contract; an
+ * added catch keeps the race free of unhandled rejections.
+ *
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {number} ms deadline
+ * @param {T} fallback
+ * @returns {Promise<T>}
+ */
+function withDeadline(promise, ms, fallback) {
+  const guarded = Promise.resolve(promise).catch(() => fallback);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    if (typeof timer.unref === "function") timer.unref();
+    guarded.then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    });
+  });
 }
 
 /**
@@ -258,7 +356,28 @@ async function handleGorkMessage(client, message) {
       let replied = false;
       try {
         if (slot.queued) await slot.turn; // wait for our FIFO slot
-        const ctx = await buildContext(message, settings.gork_context_window);
+        // Fix 3 hardening: buildContext is never-rejects by contract, but
+        // a hung channel fetch would hold the guild slot forever (the
+        // guild then looks "crashed"). Deadline it; degrade to no context.
+        const ctx = await withDeadline(
+          buildContext(message, settings.gork_context_window),
+          CONTEXT_DEADLINE_MS,
+          { text: "", mode: "prior", collected: 0, messages: [] },
+        );
+        // Fix 2: compact roster of the people involved (asker, context
+        // authors, mentioned users) so the model can map names ↔ ids.
+        let roster = { entries: new Map(), lines: [], truncated: 0 };
+        try {
+          roster = await buildRoster(
+            auditClient,
+            message.guild,
+            message,
+            ctx.messages || [],
+            question,
+          );
+        } catch {
+          // Roster is best-effort: answering must not depend on it.
+        }
         const system = buildSystemPrompt({
           extraRules: settings.gork_extra_rules,
         });
@@ -270,7 +389,14 @@ async function handleGorkMessage(client, message) {
         const res = await chatWithTools(cfg, {
           messages: [
             { role: "system", content: system },
-            { role: "user", content: buildUserContent(question, ctx) },
+            {
+              role: "user",
+              content: buildUserContent(
+                question,
+                ctx,
+                formatRosterBlock(roster),
+              ),
+            },
           ],
           temperature: LLM_TEMPERATURE,
           maxTokens: LLM_MAX_TOKENS,
@@ -295,13 +421,25 @@ async function handleGorkMessage(client, message) {
         });
 
         if (res.ok && (res.content || "").trim()) {
+          // Fix 1: rewrite echoed mention markup to readable names, and
+          // send with pings disabled so nothing notifies unintentionally.
+          const answer = sanitizeAnswer(res.content, {
+            roster,
+            guild: message.guild,
+          });
           // Plain text reply TO the keyword message (decision 11); long
           // answers continue as consecutive channel messages.
-          const chunks = splitLongAnswer(res.content);
-          const replyMessage = await message.reply(chunks[0]);
+          const chunks = splitLongAnswer(answer);
+          const replyMessage = await message.reply({
+            content: chunks[0],
+            allowedMentions: NO_PING_MENTIONS,
+          });
           replied = true;
           for (let i = 1; i < chunks.length; i += 1) {
-            await channel.send(chunks[i]);
+            await channel.send({
+              content: chunks[i],
+              allowedMentions: NO_PING_MENTIONS,
+            });
           }
           logGorkQa(auditClient, guildId, {
             user: message.author,
@@ -311,7 +449,7 @@ async function handleGorkMessage(client, message) {
             pageReads: reads,
             model: cfg.model,
             durationMs: res.durationMs,
-            answer: res.content,
+            answer,
             questionMessage: message,
             replyMessage,
           }).catch(() => {});
