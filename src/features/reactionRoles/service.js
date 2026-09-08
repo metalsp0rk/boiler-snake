@@ -22,6 +22,7 @@ const {
   logLevelRoleChanges,
   logConfigChange,
 } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 
 const MAX_OPTIONS_PER_PANEL = 20;
 /** How long admins have to send an emoji after option add/remove. */
@@ -1108,6 +1109,15 @@ async function handlePendingOptionEmojiMessage(message) {
       channel,
       `Removed ${removed.display} from panel \`${session.messageId}\`.`,
     );
+    // Emoji-confirmation flow: human actor, bot transport → origin 'slash'.
+    recordSlashAudit({
+      guildId,
+      actorUserId: userId,
+      action: "reaction_roles.option_remove",
+      targetType: "reaction_role_panel",
+      targetId: session.messageId,
+      details: { emoji: removed.display },
+    });
     await logConfigChange(message.client, guildId, {
       title: "Reaction-role option removed",
       command: "/reactionrole option remove",
@@ -1158,6 +1168,19 @@ async function handlePendingOptionEmojiMessage(message) {
     `Configured ${applied.display} → <@&${session.roleId}> ` +
       `(Level ${session.level}+, ${remText}) on panel \`${session.messageId}\`.`,
   );
+  recordSlashAudit({
+    guildId,
+    actorUserId: userId,
+    action: "reaction_roles.option_add",
+    targetType: "reaction_role_panel",
+    targetId: session.messageId,
+    details: {
+      role_id: session.roleId,
+      emoji: applied.display,
+      min_level: session.level,
+      removable: session.removable ? 1 : 0,
+    },
+  });
   await logConfigChange(message.client, guildId, {
     title: "Reaction-role option added",
     command: "/reactionrole option add",

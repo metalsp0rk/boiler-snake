@@ -11,6 +11,7 @@ const {
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const { resolveTwitchUser } = require("./helix");
 const { startTwitchTicker } = require("./ticker");
 
@@ -146,6 +147,14 @@ async function handleTwitch(interaction, ctx) {
       user.profile_image_url,
     );
 
+    recordSlashAudit({
+      interaction,
+      action: "twitch.channel_add",
+      targetType: "twitch_channel",
+      targetId: user.id,
+      details: { login: user.login, display_name: user.display_name },
+    });
+
     await logConfigChange(client, guildId, {
       title: "Twitch subscription added",
       command: "/twitch add",
@@ -178,6 +187,13 @@ async function handleTwitch(interaction, ctx) {
     }
 
     removeTwitchChannel(guildId, found.login);
+    recordSlashAudit({
+      interaction,
+      action: "twitch.channel_remove",
+      targetType: "twitch_channel",
+      targetId: found.broadcaster_id,
+      details: { login: found.login, display_name: found.display_name },
+    });
     await logConfigChange(client, guildId, {
       title: "Twitch subscription removed",
       command: "/twitch remove",
@@ -243,6 +259,13 @@ async function handleSetTwitch(interaction, ctx) {
     const ch = interaction.options.getChannel("channel", true);
     const before = settings.twitch_notification_channel_id;
     updateGuildSettings(guildId, { twitch_notification_channel_id: ch.id });
+    recordSlashAudit({
+      interaction,
+      action: "twitch.notify_channel_set",
+      targetType: "channel",
+      targetId: ch.id,
+      details: { previous_channel_id: before ?? null },
+    });
     await logConfigChange(client, guildId, {
       title: "Twitch notification channel set",
       command: "/settwitch channel",
@@ -266,6 +289,13 @@ async function handleSetTwitch(interaction, ctx) {
     updateGuildSettings(guildId, {
       twitch_notify_role_id: role ? role.id : null,
     });
+    recordSlashAudit({
+      interaction,
+      action: "twitch.notify_role_set",
+      targetType: "role",
+      targetId: role ? role.id : guildId,
+      details: { role_id: role ? role.id : null, previous_role_id: before ?? null },
+    });
     const beforeLabel = before ? `<@&${before}>` : "*none*";
     const afterLabel = role ? `<@&${role.id}>` : "*none*";
     await logConfigChange(client, guildId, {
@@ -287,6 +317,13 @@ async function handleSetTwitch(interaction, ctx) {
     const minutes = interaction.options.getInteger("minutes", true);
     const before = settings.twitch_polling_interval_minutes;
     updateGuildSettings(guildId, { twitch_polling_interval_minutes: minutes });
+    recordSlashAudit({
+      interaction,
+      action: "twitch.polling_interval_set",
+      targetType: "guild",
+      targetId: guildId,
+      details: { previous_minutes: before ?? null, minutes },
+    });
     await logConfigChange(client, guildId, {
       title: "Twitch polling interval set",
       command: "/settwitch interval",

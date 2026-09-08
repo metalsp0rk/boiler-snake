@@ -7,6 +7,7 @@ const {
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const { syncMemberRoles } = require("./sync");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -79,6 +80,16 @@ async function handleLevelToRole(interaction, ctx) {
       Math.max(0, level),
       Math.max(0, dropdays),
     );
+    recordSlashAudit({
+      interaction,
+      action: "level_roles.set",
+      targetType: "role",
+      targetId: role.id,
+      details: {
+        level_required: Math.max(0, level),
+        drop_grace_days: Math.max(0, dropdays),
+      },
+    });
     await logConfigChange(client, guildId, {
       title: "Level→role mapping set",
       command: "/leveltorole set",
@@ -100,6 +111,12 @@ async function handleLevelToRole(interaction, ctx) {
   if (sub === "remove") {
     const role = interaction.options.getRole("role", true);
     deleteLevelRole(guildId, role.id);
+    recordSlashAudit({
+      interaction,
+      action: "level_roles.remove",
+      targetType: "role",
+      targetId: role.id,
+    });
     await logConfigChange(client, guildId, {
       title: "Level→role mapping removed",
       command: "/leveltorole remove",

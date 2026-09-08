@@ -29,6 +29,10 @@ const { isAdminOrMod, isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logHoneypotTrigger } = require("../logs/auditLog");
 const { registerJob } = require("../../core/scheduler");
+const {
+  recordSlashAudit,
+  recordSystemAudit,
+} = require("../../core/auditTrail");
 const { renderHoneypotWarningPng } = require("./renderWarning");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -286,6 +290,24 @@ async function executeHoneypotBan(
         banError,
       );
     }
+
+    recordSystemAudit({
+      guildId: guild.id,
+      action: "honeypot.enforce",
+      targetType: "user",
+      targetId: user.id,
+      details: {
+        trigger,
+        channel_id:
+          channelId ||
+          deleteMessage?.channel?.id ||
+          deleteMessage?.channelId ||
+          null,
+        role_ids: roleIds || null,
+        banned: banned ? 1 : 0,
+        error: banError,
+      },
+    });
 
     // Staff audit channel (if configured) — dedicated honeypot embed
     try {
@@ -545,6 +567,12 @@ async function handleHoneypot(interaction, ctx) {
       }
 
       addHoneypotChannel(guildId, ch.id);
+      recordSlashAudit({
+        interaction,
+        action: "honeypot.channel_add",
+        targetType: "channel",
+        targetId: ch.id,
+      });
       const warningStatus = await ensureHoneypotWarning(
         interaction.guild,
         ch.id,
@@ -595,6 +623,12 @@ async function handleHoneypot(interaction, ctx) {
       }
 
       if (removed) {
+        recordSlashAudit({
+          interaction,
+          action: "honeypot.channel_del",
+          targetType: "channel",
+          targetId: ch.id,
+        });
         await logConfigChange(client, guildId, {
           title: "Honeypot channel removed",
           command: "/honeypot channel del",
@@ -654,6 +688,12 @@ async function handleHoneypot(interaction, ctx) {
       }
 
       addHoneypotBanRole(guildId, role.id);
+      recordSlashAudit({
+        interaction,
+        action: "honeypot.ban_role_add",
+        targetType: "role",
+        targetId: role.id,
+      });
       await logConfigChange(client, guildId, {
         title: "Honeypot ban role added",
         command: "/honeypot banrole add",
@@ -675,6 +715,12 @@ async function handleHoneypot(interaction, ctx) {
       const role = interaction.options.getRole("role", true);
       const removed = removeHoneypotBanRole(guildId, role.id);
       if (removed) {
+        recordSlashAudit({
+          interaction,
+          action: "honeypot.ban_role_del",
+          targetType: "role",
+          targetId: role.id,
+        });
         await logConfigChange(client, guildId, {
           title: "Honeypot ban role removed",
           command: "/honeypot banrole del",
@@ -711,6 +757,14 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "add") {
       const role = interaction.options.getRole("role", true);
       addStaffRole(guildId, role.id);
+      // Same underlying table as /staff role add — keep the action vocabulary.
+      recordSlashAudit({
+        interaction,
+        action: "staff.role_add",
+        targetType: "role",
+        targetId: role.id,
+        details: { via: "honeypot.exempt" },
+      });
       await logConfigChange(client, guildId, {
         title: "Honeypot exempt role added",
         command: "/honeypot exempt add",
@@ -729,6 +783,13 @@ async function handleHoneypot(interaction, ctx) {
       const role = interaction.options.getRole("role", true);
       const removed = removeStaffRole(guildId, role.id);
       if (removed) {
+        recordSlashAudit({
+          interaction,
+          action: "staff.role_remove",
+          targetType: "role",
+          targetId: role.id,
+          details: { via: "honeypot.exempt" },
+        });
         await logConfigChange(client, guildId, {
           title: "Honeypot exempt role removed",
           command: "/honeypot exempt del",
