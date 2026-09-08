@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.8.0...v1.9.0) (2026-09-08)
+
+
+### Features
+
+* **gork:** thinking-token budget cap, visible-answer cap, provider diagnostics ([aa79898](https://github.com/metalsp0rk/boiler-snake/commit/aa79898a5d8614d3dc935f609ec387f90eeef0bd))
+
 ## [1.8.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.7.2...v1.8.0) (2026-09-08)
 
 
