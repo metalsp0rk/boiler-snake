@@ -229,6 +229,8 @@ function parseStoredSnapshot(authRow) {
  *   resolve: (session: {id: string, userId: string}|null, guildId: string)
  *     => Promise<{status: "ok"|"deny"|"reauth"|"anon", tier?: string, reason?: string,
  *                 retry?: boolean, degraded?: boolean, guildId?: string}>,
+ *   listGuilds: (session: {id: string, userId: string}|null)
+ *     => Promise<{guilds: Array<{id: string, name: string}>, degraded: boolean, reauth?: boolean}>,
  *   invalidateSession: (sessionId: string) => void,
  *   invalidateUserGuild: (userId: string, guildId?: string) => void,
  *   _clearCachesForTests: () => void,
@@ -294,9 +296,17 @@ function createGuildAccessResolver(options = {}) {
       console.warn(
         "[web] guildAccess: guild-list refresh failed; using stored snapshot ∩ bot list until next TTL"
       );
+      // name/icon are kept for the shell's guild switcher (subtask 11); the
+      // tier math ignores them.
       const stored = parseStoredSnapshot(store.getWebSessionAuth(session.id))
         .filter((g) => g && typeof g.id === "string" && botIds.has(g.id))
-        .map((g) => ({ id: g.id, owner: g.owner === true, permissions: g.permissions }));
+        .map((g) => ({
+          id: g.id,
+          name: typeof g.name === "string" ? g.name : null,
+          icon: typeof g.icon === "string" ? g.icon : null,
+          owner: g.owner === true,
+          permissions: g.permissions,
+        }));
       const list = new Map(stored.map((g) => [g.id, g]));
       cacheSet(accessLists, session.id, { guilds: list, at }); // retry bounded by TTL
       return { list, degraded: true };
@@ -405,6 +415,48 @@ function createGuildAccessResolver(options = {}) {
     return { status: "ok", tier, guildId, degraded };
   }
 
+  /**
+   * Display list for the shell's guild switcher (subtask 11, §8.3): the
+   * SAME cached bot∩user access list `resolve` gates against — the switcher
+   * can never show a guild the router would 404. Names come from the fresh
+   * guilds payload or the stored snapshot (fallback path keeps name/icon,
+   * see getAccessGuilds). NEVER throws: on any failure the switcher just
+   * renders with fewer/no guilds; the per-request gate (`resolve`) stays
+   * the security boundary.
+   * @param {{id: string, userId: string}|null} session
+   * @returns {Promise<{guilds: Array<{id: string, name: string}>, degraded: boolean, reauth?: boolean}>}
+   */
+  async function listGuilds(session) {
+    if (!session || !session.id || !session.userId) {
+      return { guilds: [], degraded: false, reauth: true };
+    }
+    try {
+      const at = now();
+      const authRow = store.getWebSessionAuth(session.id);
+      const tok = readAccessToken(tokenApi, authRow, at);
+      if (!tok.ok) return { guilds: [], degraded: false, reauth: true };
+      const lists = await getAccessGuilds(session, tok.token, at);
+      if (lists.reauth) return { guilds: [], degraded: false, reauth: true };
+      const guilds = [...lists.list.values()]
+        .map((g) => ({
+          id: g.id,
+          // Never an empty <option>: ids are the stable fallback label.
+          name: typeof g.name === "string" && g.name.trim() ? g.name : g.id,
+        }))
+        .sort((a, b) =>
+          a.name.localeCompare(b.name, "en", { sensitivity: "base" }) ||
+          a.id.localeCompare(b.id)
+        );
+      return { guilds, degraded: !!lists.degraded };
+    } catch (err) {
+      console.warn(
+        "[web] guildAccess.listGuilds failed closed:",
+        err?.code || err?.message || err
+      );
+      return { guilds: [], degraded: true };
+    }
+  }
+
   /** Drop a session's cached guild list (logout / member-left events). */
   function invalidateSession(sessionId) {
     if (sessionId) accessLists.delete(sessionId);
@@ -427,7 +479,7 @@ function createGuildAccessResolver(options = {}) {
     memberRoles.clear();
   }
 
-  return { resolve, invalidateSession, invalidateUserGuild, _clearCachesForTests };
+  return { resolve, listGuilds, invalidateSession, invalidateUserGuild, _clearCachesForTests };
 }
 
 module.exports = {
