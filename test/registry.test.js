@@ -86,10 +86,11 @@ describe("buildDefaultRegistry", () => {
       "tickets",
       "music",
       "gork",
+      "web",
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 21);
+    assert.equal(features.length, 22);
   });
 
   it("registers userinfo button handler", () => {

@@ -89,7 +89,6 @@ const {
   enrichMessagesForArchive,
 } = require("./users");
 const { summarizeTicket } = require("./summary");
-const { startTicketHttpServer } = require("./httpServer");
 const {
   Color,
   formatTicketRef,
@@ -2120,11 +2119,10 @@ function registerEvents(client) {
 }
 
 /**
- * @param {import("discord.js").Client} client
+ * NOTE: The public HTTP server used to be started here. It now belongs to
+ * the `web` boot feature (src/features/web) per roadmap/web-admin.md §8.2;
+ * tickets only contributes route behavior via src/web/routes/transcripts.js.
  */
-function start(client) {
-  startTicketHttpServer();
-}
 
 module.exports = {
   name: "tickets",
@@ -2141,7 +2139,6 @@ module.exports = {
     [MODAL_STAFF_NOTE_PREFIX]: handleStaffNoteModal,
   },
   registerEvents,
-  start,
   formatTicketRef,
   openTicketChannel,
   buildCreateTicketModal,
