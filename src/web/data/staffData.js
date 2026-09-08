@@ -5,16 +5,21 @@
  * view" — subtask 19, Phase 1 READ-ONLY).
  *
  * Query-budget contract (§8.6, review-blocking):
- *  - ONE /staff page build = EXACTLY TWO bounded facade reads; the
+ *  - ONE /staff page build = EXACTLY THREE bounded facade reads; the
  *    /commands page build = exactly ONE (roles are not shown there):
  *      staff_roles rows        → listStaffRoles(guildId)          (guild-scoped, indexed)
+ *      level_roles rows        → listLevelRoles(guildId)          (guild-scoped, indexed —
+ *                                Phase 2 staff page: the level→role config the
+ *                                subtask-25 forms act on)
  *      command-perm OAuth row  → getCommandPermissionOauth(guildId) (PK row)
  *    No N+1, no full scans, no raw SQL here — existing src/db facade
  *    helpers ONLY (repositories stay untouched/read-only for this task).
- *    Both helpers are config-table reads (a handful of rows per guild);
+ *    All three are config-table reads (a handful of rows per guild);
  *    the staff page needs the FULL staff_roles list (slash `/staff role
  *    list` parity — that list is the whole table for one guild), so no
  *    LIMIT is invented beyond what the existing helper already bounds.
+ *    The read pin lives in test/web-routes-staff.test.js (3 reads) and the
+ *    statement-count ratchet in test/web-phase1-gate.test.js (/staff 7).
  *  - no caching layer: every read is a single indexed per-guild lookup
  *    (same discipline as data/moderation.js), and sync status changes
  *    outside this process (slash sync), so a stale cached panel would be
@@ -129,8 +134,9 @@ function createStaffData(options = {}) {
   }
 
   /**
-   * One /staff page build: staff_roles rows + command-permission OAuth
-   * status. Levels are mirrored through the FACADE's normalizeStaffLevel
+   * One /staff page build: staff_roles rows + level→role mappings (Phase 2,
+   * subtask 25 — the config the level-role forms act on) + command-permission
+   * OAuth status. Levels are mirrored through the FACADE's normalizeStaffLevel
    * (the exact function the slash /staff pages use) so the web list can
    * never diverge from slash level semantics (junior | senior, default
    * senior).
@@ -140,6 +146,10 @@ function createStaffData(options = {}) {
     const rolesRes = guardRead(
       () => facade.listStaffRoles(guildId),
       "staff roles"
+    );
+    const levelRolesRes = guardRead(
+      () => facade.listLevelRoles(guildId),
+      "level roles"
     );
     const { oauth } = getOauthStatus(guildId);
 
@@ -152,6 +162,14 @@ function createStaffData(options = {}) {
         }))
       : [];
 
+    const levelRoles = Array.isArray(levelRolesRes.value)
+      ? levelRolesRes.value.map((r) => ({
+          roleId: textOrNull(r?.role_id, 64),
+          levelRequired: numOrNull(r?.level_required),
+          dropGraceDays: numOrNull(r?.drop_grace_days),
+        }))
+      : [];
+
     return {
       guildId,
       roles: {
@@ -159,6 +177,10 @@ function createStaffData(options = {}) {
         rows: roles,
         seniors: roles.filter((r) => r.level === "senior").length,
         juniors: roles.filter((r) => r.level === "junior").length,
+      },
+      levelRoles: {
+        available: levelRolesRes.available,
+        rows: levelRoles,
       },
       oauth,
     };

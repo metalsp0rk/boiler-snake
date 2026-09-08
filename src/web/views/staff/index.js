@@ -1,9 +1,18 @@
 /**
  * Views for the staff-roles page + command-visibility sync status panel
- * (roadmap/web-admin.md §8.6 "Staff & roles" + "Command visibility" rows —
- * subtask 19, Phase 1 READ-ONLY: zero forms, zero controls that mutate;
- * role writes land in Phase 2 (subtask 25) and the sync trigger in
- * Phase 3 (subtask 31), both Admin-tier).
+ * (roadmap/web-admin.md §8.6 "Staff & roles" + "Command visibility" rows).
+ *
+ * Phase 1 shipped this read-only; Phase 2 (subtask 25) ADDED the mutation
+ * forms that POST to routes/staff.js:
+ *  - staff-role add / remove / setlevel forms — rendered ONLY for the ADMIN
+ *    viewer tier (§8.6 mutate column = Admin; the POST routes carry
+ *    requireTier("admin") as the actual gate — a hidden form is UX, the
+ *    middleware is security);
+ *  - level→role mapping table + set / remove forms — every viewer here is
+ *    ≥ staff tier, matching the /leveltorole slash handler's isStaff gate
+ *    (the POST routes carry requireTier("staff")).
+ * Every form embeds the hidden `_csrf` field from req.csrfToken (§8.7; the
+ * /g/ CSRF middleware enforces it). No inline handlers anywhere (CSP).
  *
  * COMPOSED ENTIRELY with the escaped-by-default `html` helper: role ids,
  * cached role names, the stored last_sync_error string, the derived
@@ -17,7 +26,7 @@
  * functions at all (the route sanitizes its env reads before calling).
  */
 
-const { html } = require("../escape");
+const { html, raw } = require("../escape");
 const { emptyState, banner } = require("../components");
 const { formatWhen } = require("../users");
 
@@ -56,18 +65,19 @@ function advisoryStrip() {
         <strong>Bot role position:</strong> the bot's own role must sit
         <strong>above</strong> every role it manages in the server role list —
         otherwise Discord rejects role assignments and ticket-channel
-        overwrites. This page only tells you what is configured; it cannot
-        verify role positions.
+        overwrites. Level→role mappings whose role sits above the bot's
+        highest role are refused up front when the guild cache can prove it.
       </p>
       <p class="staff-advisory-line">
         <strong>Write tier:</strong> staff-role mutations
         (<code>/staff role add</code>, <code>/staff role remove</code>,
-        <code>/staff role setlevel</code>) and the sync trigger
-        (<code>/staff syncpermissions</code>) are <strong>Manage Server
-        (server admin) slash-only</strong> today — see the
-        <span class="badge badge-tier badge-tier-admin">admin</span> write-tier
-        on the §8.6 rows. Web writes arrive in Phase 2, the web sync button in
-        Phase 3 (§8.8); this view triggers nothing.
+        <code>/staff role setlevel</code>) are <strong>Manage Server (server
+        admin)</strong> actions — the forms below carry the same
+        <span class="badge badge-tier badge-tier-admin">admin</span> gate
+        (§8.6). Web writes landed in Phase 2; level→role mapping writes match
+        the slash <code>/leveltorole</code> staff gate. The sync trigger
+        (<code>/staff syncpermissions</code>) stays slash-only until the web
+        action lands in Phase 3 (§8.8).
       </p>
     </aside>`;
 }
@@ -111,6 +121,125 @@ function staffRolesTable(roles, resolveName) {
       )}
     </tbody>
   </table>`;
+}
+
+/** Level→role mappings table (slash `/leveltorole list` parity, stored order). */
+function levelRolesTable(levelRoles, resolveName) {
+  if (!levelRoles || !levelRoles.available) {
+    return emptyState(
+      "Unavailable — the level_roles read failed for this guild."
+    );
+  }
+  if (!levelRoles.rows.length) {
+    return emptyState(
+      "No level→role mappings configured. Slash: /leveltorole set <role> <level> <drop-days>."
+    );
+  }
+  return html`<table class="list-table staff-table level-roles-table">
+    <thead>
+      <tr><th scope="col">Role ID</th><th scope="col">Level required</th><th scope="col">Drop grace (days)</th></tr>
+    </thead>
+    <tbody>
+      ${levelRoles.rows.map(
+        (r) => html`<tr>
+          <td>${roleRef(r.roleId, resolveName)}</td>
+          <td>${r.levelRequired == null ? html`<em class="muted">—</em>` : r.levelRequired}</td>
+          <td>${r.dropGraceDays == null ? html`<em class="muted">—</em>` : r.dropGraceDays}</td>
+        </tr>`
+      )}
+    </tbody>
+  </table>`;
+}
+
+/* ---------------------------------------------------------------------------
+ * Phase 2 mutation forms (subtask 25). Plain html POST forms (no JS needed);
+ * each embeds the CSRF token. Tiers below are RENDERING policy (UX); the
+ * requireTier middleware on the POST routes is the security boundary.
+ * ------------------------------------------------------------------------- */
+
+/** Hidden CSRF input (the /g/ CSRF middleware enforces it on every POST). */
+function csrfInput(csrfToken) {
+  return html`<input type="hidden" name="_csrf" value="${csrfToken || ""}"/>`;
+}
+
+/** Shared role-id text input (numeric snowflake; the route re-validates). */
+function roleIdInput() {
+  return html`<label>Role ID
+    <input type="text" name="role_id" inputmode="numeric" autocomplete="off"
+      placeholder="e.g. 500000000000000001" required maxlength="20"/>
+  </label>`;
+}
+
+/** junior|senior picker — mirrors the slash level option (whitelist). */
+function staffLevelSelect(name) {
+  return html`<label>Level
+    <select name="${name}">
+      <option value="senior">senior (tickets + staff gate)</option>
+      <option value="junior">junior (staff gate only)</option>
+    </select>
+  </label>`;
+}
+
+/**
+ * Admin-tier staff-role mutation panel (§8.6 mutate tier = Admin). Rendered
+ * ONLY when the viewer's tier is admin; every form POSTs to one of the
+ * /g/:guildId/staff/role/* routes.
+ */
+function staffRoleForms({ guildId, csrfToken }) {
+  const base = `/g/${guildId}/staff/role`;
+  return html`
+    <section class="panel staff-mutate-panel">
+      <h2>Manage staff roles <span class="badge badge-tier badge-tier-admin">admin</span></h2>
+      <p class="subheading">
+        Same service layer and validation as the slash <code>/staff role</code>
+        commands (server-admin tier). One audit row (<code>admin_audit</code>,
+        origin <code>web</code>) is written per mutation.
+      </p>
+      <form class="staff-mutate-form" method="post" action="${base}/add">
+        ${csrfInput(csrfToken)} ${roleIdInput()} ${staffLevelSelect("level")}
+        <button type="submit" class="btn">Add / update staff role</button>
+      </form>
+      <form class="staff-mutate-form" method="post" action="${base}/setlevel">
+        ${csrfInput(csrfToken)} ${roleIdInput()} ${staffLevelSelect("level")}
+        <button type="submit" class="btn">Change level</button>
+      </form>
+      <form class="staff-mutate-form" method="post" action="${base}/remove">
+        ${csrfInput(csrfToken)} ${roleIdInput()}
+        <button type="submit" class="btn btn-danger">Remove staff role</button>
+      </form>
+    </section>`;
+}
+
+/**
+ * Level→role mapping panel: current mappings + set / remove forms. Slash
+ * parity: /leveltorole gates on isStaff — every viewer who reached this
+ * page (view tier staff) satisfies it (§8.3 tier ladder ⊇ isStaff roles).
+ */
+function levelRoleForms({ guildId, csrfToken }) {
+  const base = `/g/${guildId}/staff/levelrole`;
+  return html`
+    <section class="panel staff-mutate-panel level-role-panel">
+      <h2>Manage level→role mappings</h2>
+      <p class="subheading">
+        Same service layer and validation as the slash <code>/leveltorole</code>
+        commands (staff tier). Mapping a role requires the bot's highest role
+        to be above it; Discord rejects the assignment otherwise.
+      </p>
+      <form class="staff-mutate-form" method="post" action="${base}/set">
+        ${csrfInput(csrfToken)} ${roleIdInput()}
+        <label>Level required
+          <input type="number" name="level" min="0" step="1" required/>
+        </label>
+        <label>Drop grace (days)
+          <input type="number" name="drop_days" min="0" step="1" required/>
+        </label>
+        <button type="submit" class="btn">Set mapping</button>
+      </form>
+      <form class="staff-mutate-form" method="post" action="${base}/remove">
+        ${csrfInput(csrfToken)} ${roleIdInput()}
+        <button type="submit" class="btn btn-danger">Remove mapping</button>
+      </form>
+    </section>`;
 }
 
 /**
@@ -179,38 +308,50 @@ function renderSyncStatusPanel({ oauth, envConfig }) {
       <p class="sync-state-row">Authorization ${authBadge} · ${envBadge}</p>
       ${authorizedMeta} ${errorBlock} ${envBlock}
       <p class="subheading">
-        Read-only status (§8.6). Syncing pushes
-        <code>staff_roles</code> allow-overwrites onto staff-tier slash
-        commands; triggering it stays a server-admin action (slash
-        <code>/staff syncpermissions</code> today, web action in Phase 3).
-        This page never performs OAuth or sync work.
+       
       </p>
     </section>`;
 }
 
 /**
  * Body for GET /g/:guildId/staff — staff_roles table, level legend, the
- * static advisory strip, and the command-visibility sync status panel
- * (the §8.6 "Command visibility" view, surfaced here and on its own
- * /g/:guildId/commands page).
+ * advisory strip, the level→role mappings, the mutation forms (admin-only
+ * staff-role forms; staff-level level-role forms) and the command-visibility
+ * sync status panel.
  * @param {object} input
  * @param {object} input.view getStaffView() result (data/staffData.js)
  * @param {(roleId: string) => string|null} [input.resolveRoleName] cache-only
  * @param {object|null} [input.envConfig] sanitized (see panel docs)
+ * @param {string|null} [input.guildId] current guild (form actions); absent ⇒
+ *   NO forms render (pure read-only rendering stays possible for callers that
+ *   pass no context, e.g. a future preview)
+ * @param {string|null} [input.tier] viewer tier (req.guildAccess.tier):
+ *   staff-role forms render ONLY for "admin" (§8.6 mutate tier)
+ * @param {string|null} [input.csrfToken] req.csrfToken for hidden _csrf
  */
-function renderStaffBody({ view, resolveRoleName, envConfig }) {
+function renderStaffBody({ view, resolveRoleName, envConfig, guildId, tier, csrfToken }) {
   const roles = view.roles || { available: false, rows: [], seniors: 0, juniors: 0 };
+  const levelRoles = view.levelRoles || { available: false, rows: [] };
   const counts = roles.available
     ? html`<p class="counts"><strong>${roles.rows.length}</strong> staff role${
         roles.rows.length === 1 ? "" : "s"
       } · ${roles.seniors} senior · ${roles.juniors} junior</p>`
     : html``;
+
+  const canMutate = Boolean(guildId) && Boolean(csrfToken);
+
   return html`
     <div class="staff-grid">
       <section class="panel staff-roles-panel">
         <h2>Staff roles</h2>
         ${counts} ${staffRolesTable(roles, resolveRoleName)} ${levelLegend()}
       </section>
+      ${canMutate && tier === "admin" ? staffRoleForms({ guildId, csrfToken }) : html``}
+      <section class="panel level-roles-config-panel">
+        <h2>Level→role mappings</h2>
+        ${levelRolesTable(levelRoles, resolveRoleName)}
+      </section>
+      ${canMutate ? levelRoleForms({ guildId, csrfToken }) : html``}
       ${advisoryStrip()}
       ${renderSyncStatusPanel({ oauth: view.oauth, envConfig })}
     </div>`;
@@ -219,7 +360,8 @@ function renderStaffBody({ view, resolveRoleName, envConfig }) {
 /**
  * Body for GET /g/:guildId/commands — the command-visibility sync status
  * view (§8.6 row; panel component shared with the staff page so the two
- * can never diverge).
+ * can never diverge). READ-ONLY — no forms here (the §8.8 Phase 1
+ * "no forms on /commands" pin).
  * @param {object} input see renderStaffBody (roles unused here)
  */
 function renderCommandsBody({ view, envConfig }) {
@@ -233,7 +375,11 @@ module.exports = {
   levelPill,
   levelLegend,
   advisoryStrip,
+  staffRoleForms,
+  levelRoleForms,
+  levelRolesTable,
   renderSyncStatusPanel,
   renderStaffBody,
   renderCommandsBody,
+  raw,
 };

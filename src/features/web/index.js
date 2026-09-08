@@ -30,6 +30,10 @@ module.exports = {
     // mirror (§8.1-7): the admin_audit DB row is authoritative; the embed is
     // fire-and-forget and no-ops cleanly when the client is absent.
     bindAuditClient(client);
-    startWebServer();
+    // Cache-only Discord seam (§8.6): routes resolve channel/role names +
+    // do cache-only staff preflights through getClient(). In production
+    // this is the live client cache; tests inject a fake via createWebApp.
+    // Absent/degraded ⇒ graceful id-only fallback (never throws/fetches).
+    startWebServer({ getClient: () => client });
   },
 };
