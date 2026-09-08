@@ -40,7 +40,7 @@ describe("web sessions (migration 023 + repo helpers)", () => {
 
     it("030_web_session_tokens is registered AFTER 023 in migrate.js", () => {
       const { migrations } = require("../src/db/migrate");
-      const i023 = migrations.findIndex((m) => m.id === "023_web_sessions");
+      const i023 = migrations.findIndex((m) => m.id === "028_web_sessions");
       const i025 = migrations.findIndex((m) => m.id === "030_web_session_tokens");
       assert.ok(i025 !== -1, "030_web_session_tokens must be registered");
       assert.ok(i025 > i023, "025 extends the table 023 creates");

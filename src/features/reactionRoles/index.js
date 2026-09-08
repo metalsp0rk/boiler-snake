@@ -12,6 +12,7 @@ const {
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   MAX_OPTIONS_PER_PANEL,
   PENDING_EMOJI_TTL_MS,
@@ -265,6 +266,13 @@ async function handleReactionrole(interaction, ctx) {
       }
 
       createReactionRolePanel(guildId, ch.id, msg.id, title, description);
+      recordSlashAudit({
+        interaction,
+        action: "reaction_roles.panel_create",
+        targetType: "reaction_role_panel",
+        targetId: msg.id,
+        details: { channel_id: ch.id, title },
+      });
       await logConfigChange(client, guildId, {
         title: "Reaction-role panel created",
         command: "/reactionrole panel create",
@@ -310,6 +318,16 @@ async function handleReactionrole(interaction, ctx) {
       }
 
       updateReactionRolePanelText(guildId, messageId, title, description);
+      recordSlashAudit({
+        interaction,
+        action: "reaction_roles.panel_update",
+        targetType: "reaction_role_panel",
+        targetId: messageId,
+        details: {
+          title_updated: title != null,
+          description_updated: description != null,
+        },
+      });
       const updated = getReactionRolePanel(guildId, messageId);
       const result = await refreshPanelMessage(interaction.guild, updated);
       const changeLines = [];
@@ -367,6 +385,17 @@ async function handleReactionrole(interaction, ctx) {
       }
 
       const n = result.optionCount ?? 0;
+      recordSlashAudit({
+        interaction,
+        action: "reaction_roles.panel_deploy",
+        targetType: "reaction_role_panel",
+        targetId: result.message.id,
+        details: {
+          source_message_id: messageId,
+          channel_id: ch.id,
+          option_count: n,
+        },
+      });
       let content =
         `Deployed panel from \`${messageId}\` → <#${ch.id}>.\n` +
         `New message ID: \`${result.message.id}\`\n` +
@@ -424,6 +453,13 @@ async function handleReactionrole(interaction, ctx) {
       }
 
       if (removed) {
+        recordSlashAudit({
+          interaction,
+          action: "reaction_roles.panel_delete",
+          targetType: "reaction_role_panel",
+          targetId: messageId,
+          details: { channel_id: channel_id ?? null },
+        });
         await logConfigChange(client, guildId, {
           title: "Reaction-role panel deleted",
           command: "/reactionrole panel delete",
