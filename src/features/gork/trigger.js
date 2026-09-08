@@ -27,7 +27,7 @@ const {
   memberHasStaffRole,
 } = require("../../db");
 const { getAiConfig, chatWithTools } = require("../../core/ai");
-const { safeCutIndex } = require("../../core/text");
+const { safeCutIndex, sliceSafe } = require("../../core/text");
 const { buildContext, hasReference } = require("./context");
 const { buildRoster, formatRosterBlock } = require("./roster");
 const { NO_PING_MENTIONS, sanitizeAnswer } = require("./sanitize");
@@ -54,12 +54,29 @@ const LLM_TEMPERATURE = 0.8;
  * reasoning/thinking providers (Qwen3-style, DeepSeek-R1, o-series) spend
  * max_tokens on hidden reasoning FIRST — a 600 budget came back
  * content:null (finish_reason "length") on a local thinking model
- * (roadmap/gork.md §7.15, follow-up incident). 2,000 covers reasoning
- * plus a ~150-word answer; override with GORK_LLM_MAX_TOKENS.
+ * (roadmap/gork.md §7.15, Fix 5/Fix 6 incidents). 6,000 = a 4,000-token
+ * thinking cap (pair with GORK_LLM_THINKING_TOKEN_BUDGET, enforced
+ * server-side on e.g. vLLM --reasoning-parser) plus ~2,000 tokens of
+ * visible-answer headroom; override with GORK_LLM_MAX_TOKENS.
  */
-const DEFAULT_LLM_MAX_TOKENS = 2000;
-const DEFAULT_LLM_TIMEOUT_MS = 60_000;
+const DEFAULT_LLM_MAX_TOKENS = 6000;
+/**
+ * Total LLM deadline. 4,000 reasoning tokens on local models routinely
+ * exceed 60s, so the whole loop gets 90s by default; override with
+ * GORK_LLM_TIMEOUT_MS.
+ */
+const DEFAULT_LLM_TIMEOUT_MS = 90_000;
 const DEFAULT_LLM_MAX_TOOL_ROUNDS = 3;
+
+/**
+ * Visible-answer char cap default. 0 = off, which keeps the LOCKED
+ * multi-message long-answer spec (splitLongAnswer continuations) intact —
+ * set GORK_MAX_ANSWER_CHARS to hard-cap answers to one message instead.
+ */
+const DEFAULT_MAX_ANSWER_CHARS = 0;
+
+/** Marker appended by capAnswerChars when a visible answer gets truncated. */
+const ANSWER_TRUNCATE_MARKER = "…[truncated]";
 
 /**
  * Positive-integer env knob with a fallback (unset/invalid → default).
@@ -77,7 +94,13 @@ function envPositiveInt(name, fallback) {
  * Per-call LLM parameters, re-read every job so env overrides apply to
  * queued requests without a restart.
  *
- * @returns {{ temperature: number, maxTokens: number, timeoutMs: number, maxToolRounds: number }}
+ * `thinkingTokenBudget` (GORK_LLM_THINKING_TOKEN_BUDGET) is the hidden
+ * reasoning cap passed through to the provider as thinking_token_budget.
+ * 0 = "do not send" (strict-provider safety: unknown params are rejected
+ * by e.g. api.openai.com; the cap only does anything on servers that
+ * enforce it, e.g. vLLM with --reasoning-parser).
+ *
+ * @returns {{ temperature: number, maxTokens: number, timeoutMs: number, maxToolRounds: number, thinkingTokenBudget: number }}
  */
 function llmParams() {
   return {
@@ -88,6 +111,7 @@ function llmParams() {
       "GORK_LLM_MAX_TOOL_ROUNDS",
       DEFAULT_LLM_MAX_TOOL_ROUNDS,
     ),
+    thinkingTokenBudget: envPositiveInt("GORK_LLM_THINKING_TOKEN_BUDGET", 0),
   };
 }
 
@@ -96,11 +120,23 @@ function llmParams() {
  * `reason || error || "unknown"` collapsed successful-but-empty answers
  * into a useless "unknown").
  *
+ * For ok-but-empty answers the base string stays exact; provider
+ * diagnostics (finish_reason / completion_tokens) are appended when the
+ * result carries them — they tell an empty-on-length from a real blank.
+ *
  * @param {object} res chatWithTools result
  * @returns {string}
  */
 function describeLlmFailure(res) {
-  if (res?.ok) return "provider returned an empty answer";
+  if (res?.ok) {
+    const base = "provider returned an empty answer";
+    const details = [];
+    if (res.finishReason) details.push(`finish_reason=${res.finishReason}`);
+    if (typeof res.usage?.completion_tokens === "number") {
+      details.push(`completion_tokens=${res.usage.completion_tokens}`);
+    }
+    return details.length ? `${base} (${details.join(", ")})` : base;
+  }
   const bits = [];
   if (res?.reason) bits.push(res.reason);
   if (res?.status) bits.push(`HTTP ${res.status}`);
@@ -261,6 +297,42 @@ function splitLongAnswer(text, { max = 2000, chunk = 1900 } = {}) {
   }
   chunks.push(rest);
   return chunks;
+}
+
+/**
+ * Hard-cap a visible answer at `limit` chars (pure; Fix 6).
+ *
+ * `limit` <= 0 (or garbage) disables the cap — the locked multi-message
+ * splitLongAnswer spec stays in charge. Over-limit text is cut at the last
+ * word boundary (space/newline/tab) that leaves room for the marker, then
+ * gets `ANSWER_TRUNCATE_MARKER` appended; the cut is code-point-safe
+ * (Fix 4 helpers), so emoji never split. When the limit is too small to
+ * hold the marker plus a usable prefix, a hard code-point-safe slice is
+ * returned instead. Invariant: whenever `limit` > 0 the result is at most
+ * `limit` chars.
+ *
+ * @param {unknown} text the answer text
+ * @param {unknown} limit max chars (0/negative/garbage = off)
+ * @returns {string}
+ */
+function capAnswerChars(text, limit) {
+  const source = text == null ? "" : String(text);
+  const lim = Math.floor(Number(limit));
+  if (!(lim > 0)) return source;
+  if (source.length <= lim) return source;
+  if (lim < ANSWER_TRUNCATE_MARKER.length + 10) {
+    // No room for a meaningful prefix + marker: hard code-point-safe cut.
+    return sliceSafe(source, lim);
+  }
+  const window = lim - ANSWER_TRUNCATE_MARKER.length;
+  let cut = 0;
+  for (const ch of [" ", "\n", "\t"]) {
+    const idx = source.lastIndexOf(ch, window - 1);
+    if (idx > cut) cut = idx;
+  }
+  if (!(cut > 0)) cut = window; // no whitespace in window: hard cut at window
+  cut = safeCutIndex(source, cut);
+  return source.slice(0, cut).trimEnd() + ANSWER_TRUNCATE_MARKER;
 }
 
 /**
@@ -452,6 +524,12 @@ async function handleGorkMessage(client, message) {
           extraRules: settings.gork_extra_rules,
         });
         const searchOn = isWebSearchEnabled(settings);
+        // Fix 6: visible-answer hard cap, re-read per job like the other
+        // knobs (0 = off; splitLongAnswer then keeps long answers whole).
+        const maxAnswerChars = envPositiveInt(
+          "GORK_MAX_ANSWER_CHARS",
+          DEFAULT_MAX_ANSWER_CHARS,
+        );
         // Per-job tool counters for the audit embed (locked spec:
         // separate search / page-read tallies, not the combined total).
         let searches = 0;
@@ -493,7 +571,7 @@ async function handleGorkMessage(client, message) {
         // canned failure reply.
         if (res.ok && !(res.content || "").trim()) {
           console.log(
-            `[gork] empty answer from ${cfg.model} in ${guildId} (${res.durationMs ?? 0}ms); retrying once`,
+            `[gork] ${describeLlmFailure(res)} from ${cfg.model} in ${guildId} (${res.durationMs ?? 0}ms); retrying once`,
           );
           res = await chatWithTools(cfg, llmOpts);
         }
@@ -513,9 +591,16 @@ async function handleGorkMessage(client, message) {
             roster,
             guild: message.guild,
           });
+          // Fix 6: optional hard cap on the visible answer (0 = off).
+          const capped = capAnswerChars(answer, maxAnswerChars);
+          if (capped !== answer) {
+            console.log(
+              `[gork] answer capped to ${capped.length} chars in ${guildId}`,
+            );
+          }
           // Plain text reply TO the keyword message (decision 11); long
           // answers continue as consecutive channel messages.
-          const chunks = splitLongAnswer(answer);
+          const chunks = splitLongAnswer(capped);
           const replyMessage = await message.reply({
             content: chunks[0],
             allowedMentions: NO_PING_MENTIONS,
@@ -535,7 +620,7 @@ async function handleGorkMessage(client, message) {
             pageReads: reads,
             model: cfg.model,
             durationMs: res.durationMs,
-            answer,
+            answer: capped,
             questionMessage: message,
             replyMessage,
           }).catch(() => {});
@@ -578,6 +663,7 @@ async function handleGorkMessage(client, message) {
 module.exports = {
   matchKeyword,
   splitLongAnswer,
+  capAnswerChars,
   buildUserContent,
   handleGorkMessage,
   gorkQueue,
@@ -588,6 +674,9 @@ module.exports = {
   DEFAULT_LLM_MAX_TOKENS,
   DEFAULT_LLM_TIMEOUT_MS,
   DEFAULT_LLM_MAX_TOOL_ROUNDS,
+  /** 0 = off by default: keeps the locked multi-message long-answer spec intact. */
+  DEFAULT_MAX_ANSWER_CHARS,
+  ANSWER_TRUNCATE_MARKER,
   llmParams,
   describeLlmFailure,
 };

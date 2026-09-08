@@ -36,6 +36,11 @@ const AI_ENV_KEYS = [
   "OPENAI_BASE_URL",
   "OPENAI_MODEL",
   "SEARXNG_URL",
+  "GORK_LLM_MAX_TOKENS",
+  "GORK_LLM_TIMEOUT_MS",
+  "GORK_LLM_MAX_TOOL_ROUNDS",
+  "GORK_LLM_THINKING_TOKEN_BUDGET",
+  "GORK_MAX_ANSWER_CHARS",
 ];
 
 const TEST_AI_KEY = "test-key";
@@ -94,6 +99,9 @@ function jsonResponse(body, status = 200) {
  * assistant message carries tool_calls instead.
  */
 function chatCompletionResponse(content, messageExtra = {}) {
+  // Explicit finish_reason override (Fix 6: e.g. "length" for a
+  // reasoning-truncated blank answer); existing callers unchanged.
+  const { finish_reason: fr, ...msgExtra } = messageExtra;
   return jsonResponse({
     id: "chatcmpl-test-1",
     object: "chat.completion",
@@ -102,8 +110,8 @@ function chatCompletionResponse(content, messageExtra = {}) {
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content, ...messageExtra },
-        finish_reason: messageExtra.tool_calls ? "tool_calls" : "stop",
+        message: { role: "assistant", content, ...msgExtra },
+        finish_reason: fr ?? (msgExtra.tool_calls ? "tool_calls" : "stop"),
       },
     ],
     usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
@@ -1720,6 +1728,178 @@ describe("integration: gork (AI keyword Q&A)", () => {
       );
       assert.notEqual(replies[0].content, LLM_FAILURE_REPLY);
       assert.match(replies[0].content, /NetBSD runs on anything/);
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 6: thinking budget opt-in lands in the payload (+ max_tokens default 6000)", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Poem: ones are better off in Plan 9."),
+    ]);
+    try {
+      enableAiKey();
+      // Deterministic knobs: defaults everywhere, budget explicitly set.
+      delete process.env.GORK_LLM_MAX_TOKENS;
+      delete process.env.GORK_LLM_TIMEOUT_MS;
+      delete process.env.GORK_LLM_MAX_TOOL_ROUNDS;
+      delete process.env.GORK_MAX_ANSWER_CHARS;
+      process.env.GORK_LLM_THINKING_TOKEN_BUDGET = "4000";
+      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-budget-1",
+        content: "gork: write me a poem about 386s",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 4000),
+        "expected the answer to reach the channel"
+      );
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      assert.equal(
+        body.thinking_token_budget,
+        4000,
+        "opt-in thinking cap must reach the provider"
+      );
+      assert.equal(body.max_tokens, 6000, "Fix 6 default completion budget");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 6: budget unset -> thinking_token_budget never appears in the payload", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Strict providers stay happy."),
+    ]);
+    try {
+      enableAiKey();
+      delete process.env.GORK_LLM_MAX_TOKENS;
+      delete process.env.GORK_LLM_TIMEOUT_MS;
+      delete process.env.GORK_LLM_MAX_TOOL_ROUNDS;
+      delete process.env.GORK_LLM_THINKING_TOKEN_BUDGET;
+      delete process.env.GORK_MAX_ANSWER_CHARS;
+      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-budget-2",
+        content: "gork: best unix for a 386?",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 4000),
+        "expected the answer to reach the channel"
+      );
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      assert.ok(
+        !("thinking_token_budget" in body),
+        "0/unset budget = the param must NOT be sent (strict-provider safety)"
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 6: empty twice with finish_reason=length -> canned reply + diagnostics in audit", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse(null, { finish_reason: "length" }),
+      chatCompletionResponse(null, { finish_reason: "length" }),
+    ]);
+    try {
+      enableAiKey();
+      delete process.env.GORK_LLM_MAX_TOKENS;
+      delete process.env.GORK_LLM_TIMEOUT_MS;
+      delete process.env.GORK_LLM_MAX_TOOL_ROUNDS;
+      delete process.env.GORK_LLM_THINKING_TOKEN_BUDGET;
+      delete process.env.GORK_MAX_ANSWER_CHARS;
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-empty-3",
+        content: "gork: write me a poem about 386s",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 4000),
+        "a canned reply must still be sent"
+      );
+      assert.equal(replies[0].content, LLM_FAILURE_REPLY);
+      assert.equal(fetchMock.calls.length, 2, "one retry attempted");
+
+      assert.ok(
+        await waitFor(() => env.channels.log.sent.length >= 1),
+        "expected the failure audit one-liner"
+      );
+      const auditText = embedText(env.channels.log.sent[0].embeds[0]);
+      assert.ok(
+        auditText.includes("empty answer"),
+        `audit must name the empty answer: ${auditText}`
+      );
+      assert.ok(
+        auditText.includes("finish_reason=length"),
+        `audit must surface the provider finish reason: ${auditText}`
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 6: GORK_MAX_ANSWER_CHARS caps the visible answer to one capped message", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const long = "word ".repeat(200).trim(); // ~1000 chars, no line breaks
+    const fetchMock = mockFetch([chatCompletionResponse(long)]);
+    try {
+      enableAiKey();
+      delete process.env.GORK_LLM_MAX_TOKENS;
+      delete process.env.GORK_LLM_TIMEOUT_MS;
+      delete process.env.GORK_LLM_MAX_TOOL_ROUNDS;
+      delete process.env.GORK_LLM_THINKING_TOKEN_BUDGET;
+      process.env.GORK_MAX_ANSWER_CHARS = "300";
+      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-capped-1",
+        content: "gork: list every word you know",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 4000),
+        "expected the capped answer to reach the channel"
+      );
+      const sentPayloads = ch_all_sent(env);
+      assert.equal(
+        sentPayloads.length,
+        1,
+        "a capped answer must be exactly one message (no continuations)"
+      );
+      const content = sentPayloads[0].content;
+      assert.ok(content.length <= 300, `content within cap: ${content.length}`);
+      assert.ok(
+        long.startsWith(content.slice(0, 100)),
+        "capped answer keeps the original prefix",
+      );
+      assert.ok(
+        content.endsWith("[truncated]"),
+        `capped answer carries the marker: ${content.slice(-40)}`
+      );
     } finally {
       restoreEnv(saved);
       fetchMock.restore();

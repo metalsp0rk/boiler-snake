@@ -532,6 +532,39 @@ budget/observability failure.
 **Open:** question-side input policy (Fix 4) unchanged; live repro matrix for Fix 3
 still open (this incident explains the reported "error" for the 386 question).
 
+#### Fix 6 — thinking budget + answer cap (2026-09)
+
+**Why (poem-prompt incident):** with the Fix 5 defaults, "write me a poem"-style prompts
+reproduced the empty-answer failure reliably — **reasoning burn is prompt-deterministic**:
+some prompts send a local thinking model on thousands of hidden tokens every single try,
+so a bigger static budget only postpones the wall. Both visible attempts were
+**200 OK with blank content** (`finish_reason: "length"`): the Fix 5 retry fired and
+starved on the same prompt.
+
+**Shipped:**
+
+- [x] Opt-in thinking cap: `GORK_LLM_THINKING_TOKEN_BUDGET` is forwarded to the provider as
+      `thinking_token_budget` **only when set to a positive number** — 0/unset never puts the
+      param in the payload (strict providers like api.openai.com reject unknown params).
+- [x] Defaults raised: completion budget **2,000 → 6,000** tokens (4,000 thinking cap +
+      ~2,000 visible headroom), total timeout **60,000 → 90,000** ms (4k reasoning tokens
+      on local models routinely exceed 60s).
+- [x] Hard visible-answer cap: `GORK_MAX_ANSWER_CHARS` (0 = off) → `capAnswerChars()` cuts at
+      a code-point-safe word boundary and appends "…[truncated]"; off keeps the locked
+      multi-message continuation spec (decision 8/20) intact.
+- [x] Observability: `finish_reason` + `usage` now flow through `AiResult` and are appended
+      to the empty-answer diagnostics (retry log, failure warn line, audit one-liner).
+
+**Serving-side dependency:** the thinking cap means something only when the server enforces
+it (vLLM must be started with `--reasoning-parser`; otherwise the param is ignored or
+rejected) — hence opt-in with "not sent" as the default.
+
+**Tests:** unit — env-knob parsing (incl. the budget), diagnostics appended to the exact
+"empty answer" base string, `capAnswerChars` invariants (≤ limit always, word-boundary cut,
+tiny-limit hard slice without marker, no split emoji); integration — payload carries
+`thinking_token_budget` + `max_tokens` 6000 when set / omits it when unset,
+empty-twice surfaces `finish_reason=length` in the audit, capped answer ships as one message.
+
 ---
 
 ### 7.16 Community Memory — 2026-09 design draft (proposed decisions 25–28; nothing locked yet)

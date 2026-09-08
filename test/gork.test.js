@@ -1016,7 +1016,12 @@ describe("llmParams + describeLlmFailure (trigger, Fix 5)", () => {
     DEFAULT_LLM_MAX_TOOL_ROUNDS,
   } = require("../src/features/gork/trigger");
 
-  const KEYS = ["GORK_LLM_MAX_TOKENS", "GORK_LLM_TIMEOUT_MS", "GORK_LLM_MAX_TOOL_ROUNDS"];
+  const KEYS = [
+    "GORK_LLM_MAX_TOKENS",
+    "GORK_LLM_TIMEOUT_MS",
+    "GORK_LLM_MAX_TOOL_ROUNDS",
+    "GORK_LLM_THINKING_TOKEN_BUDGET",
+  ];
 
   function withEnv(overrides, fn) {
     const saved = KEYS.map((k) => [k, Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined]);
@@ -1038,8 +1043,19 @@ describe("llmParams + describeLlmFailure (trigger, Fix 5)", () => {
         DEFAULT_LLM_MAX_TOKENS > 600,
         "thinking models burn the budget on reasoning first — 600 caused empty answers",
       );
+      assert.equal(
+        DEFAULT_LLM_MAX_TOKENS,
+        6000,
+        "4000 thinking cap + ~2000 visible headroom (Fix 6)",
+      );
       assert.equal(p.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
+      assert.equal(DEFAULT_LLM_TIMEOUT_MS, 90000, "Fix 6 timeout default");
       assert.equal(p.maxToolRounds, DEFAULT_LLM_MAX_TOOL_ROUNDS);
+      assert.equal(
+        p.thinkingTokenBudget,
+        0,
+        "unset thinking budget = do not send",
+      );
     });
   });
 
@@ -1056,6 +1072,15 @@ describe("llmParams + describeLlmFailure (trigger, Fix 5)", () => {
     withEnv({ GORK_LLM_TIMEOUT_MS: "180000" }, () => {
       assert.equal(llmParams().timeoutMs, 180000);
     });
+    withEnv({ GORK_LLM_THINKING_TOKEN_BUDGET: "4000" }, () => {
+      assert.equal(llmParams().thinkingTokenBudget, 4000);
+    });
+    withEnv({ GORK_LLM_THINKING_TOKEN_BUDGET: "bogus" }, () => {
+      assert.equal(llmParams().thinkingTokenBudget, 0, "garbage = do not send");
+    });
+    withEnv({ GORK_LLM_THINKING_TOKEN_BUDGET: "-1" }, () => {
+      assert.equal(llmParams().thinkingTokenBudget, 0, "negative = do not send");
+    });
   });
 
   it("describeLlmFailure classifies every result shape (no bare 'unknown')", () => {
@@ -1063,10 +1088,105 @@ describe("llmParams + describeLlmFailure (trigger, Fix 5)", () => {
       describeLlmFailure({ ok: true, content: "   " }),
       "provider returned an empty answer",
     );
+    // Fix 6: provider diagnostics append; the exact base above (no
+    // finishReason/usage) must keep passing unchanged.
+    const diag = describeLlmFailure({
+      ok: true,
+      content: "",
+      finishReason: "length",
+      usage: { completion_tokens: 6000 },
+    });
+    assert.ok(diag.includes("empty answer"), diag);
+    assert.ok(diag.includes("finish_reason=length"), diag);
+    assert.ok(diag.includes("completion_tokens=6000"), diag);
+    const noUsage = describeLlmFailure({ ok: true, content: "", finishReason: "length" });
+    assert.ok(noUsage.includes("finish_reason=length"), noUsage);
+    assert.ok(!noUsage.includes("completion_tokens"), noUsage);
     assert.equal(describeLlmFailure({ ok: false, reason: "timeout" }), "timeout");
     const http = describeLlmFailure({ ok: false, reason: "http", status: 403, error: "HTTP 403" });
     assert.ok(http.startsWith("http:"), http);
     assert.ok(http.includes("403"), http);
     assert.equal(describeLlmFailure({}), "unknown error");
+  });
+});
+
+// ---------- visible-answer char cap (Fix 6) ----------
+
+describe("capAnswerChars (Fix 6)", () => {
+  const {
+    capAnswerChars,
+    ANSWER_TRUNCATE_MARKER,
+    DEFAULT_MAX_ANSWER_CHARS,
+  } = require("../src/features/gork/trigger");
+
+  function hasLoneSurrogate(s) {
+    for (let i = 0; i < s.length; i += 1) {
+      const code = s.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdfff) {
+        const isHigh = code <= 0xdbff;
+        const partner = i + (isHigh ? 1 : -1);
+        const p = s.charCodeAt(partner);
+        if (!(isHigh ? p >= 0xdc00 && p <= 0xdfff : p >= 0xd800 && p <= 0xdbff)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  it("cap is off for limit 0/garbage; default is off", () => {
+    assert.equal(
+      DEFAULT_MAX_ANSWER_CHARS,
+      0,
+      "off by default keeps the multi-message long-answer spec intact",
+    );
+    const text = "Some answer that is comfortably longer than ten chars.";
+    assert.equal(capAnswerChars(text, 0), text);
+    assert.equal(capAnswerChars(text, "bogus"), text);
+    assert.equal(capAnswerChars(text, -5), text);
+    assert.equal(capAnswerChars(null, 10), "", "null text normalizes to ''");
+  });
+
+  it("text at or under the limit passes through (incl. length === limit)", () => {
+    assert.equal(capAnswerChars("short", 10), "short");
+    assert.equal(capAnswerChars("exactly9", 8), "exactly9");
+    assert.equal(capAnswerChars("ten chars!", 10), "ten chars!");
+  });
+
+  it("over-limit prose cuts at the last word boundary and gets the marker", () => {
+    const text = "alpha beta gamma delta echo foxtrot golf hotel";
+    const out = capAnswerChars(text, 30);
+    assert.ok(out.endsWith(ANSWER_TRUNCATE_MARKER), out);
+    assert.ok(out.length <= 30, `length <= limit: ${out.length}`);
+    assert.ok(
+      out.startsWith("alpha beta gamma…"),
+      `cut at the last whole word inside the window: ${out}`,
+    );
+    assert.ok(!out.includes("delta"), "content after the boundary is dropped");
+  });
+
+  it("whitespace-free emoji text uses a code-point-safe cut", () => {
+    const text = "x\u{1F600}".repeat(30); // 90 code units, zero whitespace
+    const out = capAnswerChars(text, 26);
+    assert.ok(out.endsWith(ANSWER_TRUNCATE_MARKER), out);
+    assert.ok(out.length <= 26, `length <= limit: ${out.length}`);
+    assert.ok(!hasLoneSurrogate(out), "emoji never split");
+  });
+
+  it("tiny limits (no room for the marker) get a hard sliceSafe cut", () => {
+    const text = "x\u{1F600}".repeat(10);
+    const out = capAnswerChars(text, 5);
+    assert.ok(out.length <= 5, `length <= limit: ${out.length}`);
+    assert.ok(!hasLoneSurrogate(out), "no lone surrogates in the hard cut");
+    assert.ok(!out.includes("[truncated]"), "no marker without room");
+  });
+
+  it("invariant: a positive limit always bounds the result length", () => {
+    const text = "prose ".repeat(100) + "\u{1F600} tail";
+    for (const lim of [1, 7, 15, 22, 23, 50, 111]) {
+      const out = capAnswerChars(text, lim);
+      assert.ok(out.length <= lim, `limit ${lim}: got ${out.length}`);
+      assert.ok(!hasLoneSurrogate(out), `limit ${lim} stays valid UTF-16`);
+    }
   });
 });
