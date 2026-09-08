@@ -347,6 +347,91 @@ function countWarnings(guildId, userId, opts = {}) {
 }
 
 /**
+ * Normalize the guild-wide list state filter (web console moderation
+ * lists, roadmap/web-admin.md §8.6 — subtask 17). Whitelist-only:
+ * "voided" → only voided rows, "all" → no void predicate, anything else
+ * → "active" (the slash `/warn list` default of hiding voided).
+ * @param {unknown} state
+ * @returns {"active"|"voided"|"all"}
+ */
+function normalizeWarnState(state) {
+  const s = String(state ?? "active").trim().toLowerCase();
+  if (s === "voided" || s === "all") return s;
+  return "active";
+}
+
+/**
+ * Shared WHERE builder for the guild-wide list/count pair. Declarative
+ * from whitelisted inputs only (state via normalizeWarnState, userId as
+ * a bound parameter) — no SQL ever built from raw strings.
+ * @param {string} guildId
+ * @param {{ userId?: string|null, state?: unknown }} opts
+ * @returns {{ where: string, params: (string)[] }}
+ */
+function guildWarnWhere(guildId, opts = {}) {
+  const state = normalizeWarnState(opts.state);
+  const clauses = ["guild_id=?"];
+  const params = [guildId];
+  if (opts.userId) {
+    clauses.push("user_id=?");
+    params.push(String(opts.userId));
+  }
+  if (state === "active") clauses.push("voided_at IS NULL");
+  else if (state === "voided") clauses.push("voided_at IS NOT NULL");
+  return { where: clauses.join(" AND "), params };
+}
+
+/**
+ * Guild-wide warnings list for the web moderation console — newest first
+ * by warning_number DESC (per-guild sequential ⇒ creation order; served
+ * by the UNIQUE(guild_id, warning_number) index with no sort step, unlike
+ * created_at which has no guild-wide index — see migration 009). The
+ * per-user list keeps listWarnings(); this is its guild-scoped sibling.
+ *
+ * Phase 2/3 reuse: web warn/void actions re-read the list page through
+ * this exact helper (same filters, same bounds).
+ *
+ * @param {string} guildId
+ * @param {object} [opts]
+ * @param {string|null} [opts.userId=null] exact subject filter (snowflake)
+ * @param {"active"|"voided"|"all"} [opts.state="active"] void-state filter
+ * @param {number} [opts.limit=25] hard-capped at 100 (§8.6 query budget)
+ * @param {number} [opts.offset=0]
+ * @returns {object[]}
+ */
+function listGuildWarnings(guildId, opts = {}) {
+  const { where, params } = guildWarnWhere(guildId, opts);
+  const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), 100);
+  const offset = Math.max(Number(opts.offset) || 0, 0);
+  return db
+    .prepare(
+      `
+    SELECT * FROM warnings
+    WHERE ${where}
+    ORDER BY warning_number DESC
+    LIMIT ? OFFSET ?
+  `
+    )
+    .all(...params, limit, offset);
+}
+
+/**
+ * Count behind listGuildWarnings — SAME filter semantics so pagers are
+ * honest (state default "active", exact userId filter).
+ * @param {string} guildId
+ * @param {object} [opts]
+ * @param {string|null} [opts.userId=null]
+ * @param {"active"|"voided"|"all"} [opts.state="active"]
+ * @returns {number}
+ */
+function countGuildWarnings(guildId, opts = {}) {
+  const { where, params } = guildWarnWhere(guildId, opts);
+  return (
+    db.prepare(`SELECT COUNT(*) AS c FROM warnings WHERE ${where}`).get(...params)?.c || 0
+  );
+}
+
+/**
  * Active (non-voided) warning count for a user in a guild.
  * @param {string} guildId
  * @param {string} userId
@@ -447,6 +532,9 @@ module.exports = {
   getWarning,
   listWarnings,
   countWarnings,
+  listGuildWarnings,
+  countGuildWarnings,
+  normalizeWarnState,
   countActiveWarnings,
   listExpiredActiveWarnings,
   voidWarning,
