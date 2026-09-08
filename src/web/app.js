@@ -29,6 +29,8 @@ const { registerGuildShellRoutes } = require("./routes/guildShell");
 const { registerUsersRoutes } = require("./routes/users");
 const { registerModerationRoutes } = require("./routes/moderation");
 const { registerSettingsRoutes } = require("./routes/settings");
+const { registerStaffRoutes } = require("./routes/staff");
+const { registerIntegrationsRoutes } = require("./routes/integrations");
 const { registerLeaderboardRoutes } = require("./routes/leaderboard");
 const { registerDashboardRoutes } = require("./routes/dashboard");
 const { createSessionMiddleware } = require("./middleware/session");
@@ -220,6 +222,13 @@ function createWebApp(options = {}) {
   // shell so /g/:guildId guildScope gates first; same shared resolver
   // instance keeps tier math undivided. Grant-xp stays Phase 3 / slash.
   registerLeaderboardRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
+  // Integrations surface (Phase 1, subtask 20): read-only YouTube/Twitch/
+  // reaction-roles/event-reminders/honeypot view (§8.6 Integrations row,
+  // staff tier). AFTER the guild shell so /g/:guildId guildScope gates
+  // first; same shared resolver instance keeps tier math undivided.
+  // Per-command writes (incl. /honeypot exempt = admin) land in Phase 2.
+  registerIntegrationsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, integrationsData: options.integrationsData });
+  registerStaffRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, staffData: options.staffData, oauthConfig: options.oauthConfig });
 
   app.use(handleNotFound);
   app.use(handleAppError);
