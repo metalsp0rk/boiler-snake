@@ -22,6 +22,7 @@
 const express = require("express");
 const { registerTranscriptRoutes } = require("./routes/transcripts");
 const { registerOauthRoutes } = require("./routes/oauth");
+const { createSessionMiddleware } = require("./middleware/session");
 
 /**
  * Legacy dispatch gate: anything but GET/HEAD is rejected before routing.
@@ -86,6 +87,11 @@ function createWebApp() {
   app.set("etag", false);
 
   app.use(methodGate);
+  // Phase 0b: resolve the session cookie for downstream auth (req.webSession
+  // / req.user). Read-only middleware — it never writes the response, so the
+  // byte-parity contract above is unaffected. Mounted after methodGate so
+  // 405 rejections skip DB work entirely.
+  app.use(createSessionMiddleware());
   app.get("/health", handleHealth);
   registerOauthRoutes(app);
   registerTranscriptRoutes(app);
