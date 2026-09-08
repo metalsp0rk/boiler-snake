@@ -33,6 +33,8 @@ const { registerStaffRoutes } = require("./routes/staff");
 const { registerIntegrationsRoutes } = require("./routes/integrations");
 const { registerLeaderboardRoutes } = require("./routes/leaderboard");
 const { registerDashboardRoutes } = require("./routes/dashboard");
+const { registerVoiceRoutes } = require("./routes/voice");
+const { registerSystemRoutes } = require("./routes/system");
 const { createSessionMiddleware } = require("./middleware/session");
 const {
   createAuthRateLimit,
@@ -229,6 +231,19 @@ function createWebApp(options = {}) {
   // Per-command writes (incl. /honeypot exempt = admin) land in Phase 2.
   registerIntegrationsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, integrationsData: options.integrationsData });
   registerStaffRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, staffData: options.staffData, oauthConfig: options.oauthConfig });
+  // Voice & music surface (Phase 1, subtask 21): read-only now-playing/queue
+  // + live-voice snapshot (§8.6 Voice & Music row, staff tier; queue CONTROL
+  // out of scope §8.9 — GET-only module, zero control routes). AFTER the
+  // guild shell so /g/:guildId guildScope gates first; same shared resolver
+  // instance keeps tier math undivided.
+  registerVoiceRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, getPlayerState: options.getPlayerState, getLiveVoice: options.getLiveVoice, voiceData: options.voiceData });
+  // System page + admin_audit viewer (Phase 1, subtask 22): process health,
+  // ticker registry, web-surface state, command-permission OAuth summary +
+  // the read-only admin_audit trail (§8.6 System row = ADMIN tier; cross-
+  // guild ⇒ 404, same-guild staff/senior ⇒ 403). AFTER the guild shell so
+  // /g/:guildId guildScope gates first; same shared resolver instance keeps
+  // tier math undivided. GET-only — the methodGate 405s every verb else.
+  registerSystemRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getTickerHealth: options.getTickerHealth, staffData: options.staffData, oauthConfig: options.oauthConfig });
 
   app.use(handleNotFound);
   app.use(handleAppError);
