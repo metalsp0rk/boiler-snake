@@ -15,7 +15,6 @@ const { markTicketClosedByChannelDelete } = require("../../db");
 const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { formatTicketRef } = require("../../core/theme");
-const { startTicketHttpServer } = require("./httpServer");
 const { commands } = require("./commands");
 const {
   BTN_OPEN,
@@ -141,13 +140,6 @@ function registerEvents(client) {
   });
 }
 
-/**
- * @param {import("discord.js").Client} client
- */
-function start(client) {
-  startTicketHttpServer();
-}
-
 module.exports = {
   name: "tickets",
   commands,
@@ -163,7 +155,6 @@ module.exports = {
     [MODAL_STAFF_NOTE_PREFIX]: handleStaffNoteModal,
   },
   registerEvents,
-  start,
   formatTicketRef,
   openTicketChannel,
   buildCreateTicketModal,

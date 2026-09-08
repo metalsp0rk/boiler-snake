@@ -93,6 +93,7 @@ describe("buildDefaultRegistry", () => {
       "music",
       "gork",
       "githubReleases",
+      "web",
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
