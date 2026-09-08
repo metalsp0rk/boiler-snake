@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.7.0...v1.7.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **ci:** publish GHCR image from release workflow; isolate visibility tests' DB ([e5ffdbb](https://github.com/metalsp0rk/boiler-snake/commit/e5ffdbbd8298da46a31c751cb8849045e5c7fca8))
+* **event-reminders:** keep create/edit modal within Discord's 5-component limit ([12a0d10](https://github.com/metalsp0rk/boiler-snake/commit/12a0d10e0586f131a5e089507764ed2f4f12d434))
+
 ## [1.7.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.6.0...v1.7.0) (2026-09-07)
 
 
