@@ -34,6 +34,8 @@ const gorkAccess = require("./repositories/gorkAccess");
 const gorkMemory = require("./repositories/gorkMemory");
 const gorkBudget = require("./repositories/gorkBudget");
 const gorkInteractions = require("./repositories/gorkInteractions");
+const webSessions = require("./repositories/webSessions");
+const adminAudit = require("./repositories/adminAudit");
 
 module.exports = {
   db,
@@ -313,6 +315,24 @@ module.exports = {
   countGorkInteractions: gorkInteractions.countGorkInteractions,
   pruneGorkInteractions: gorkInteractions.pruneGorkInteractions,
   deleteGorkInteractionsForGuild: gorkInteractions.deleteGorkInteractionsForGuild,
+
+  // web admin sessions (roadmap/web-admin.md §8.3/§8.5)
+  createWebSession: webSessions.createWebSession,
+  getWebSession: webSessions.getWebSession,
+  touchWebSession: webSessions.touchWebSession,
+  destroyWebSession: webSessions.destroyWebSession,
+  pruneWebSessions: webSessions.pruneWebSessions,
+
+  // admin audit trail (roadmap/web-admin.md §8.5; consumed by phases 0b–3)
+  AUDIT_ORIGINS: adminAudit.AUDIT_ORIGINS,
+  MAX_AUDIT_LIST_LIMIT: adminAudit.MAX_AUDIT_LIST_LIMIT,
+  MAX_AUDIT_DETAILS_JSON: adminAudit.MAX_AUDIT_DETAILS_JSON,
+  normalizeAuditOrigin: adminAudit.normalizeAuditOrigin,
+  serializeAuditDetails: adminAudit.serializeAuditDetails,
+  insertAdminAudit: adminAudit.insertAdminAudit,
+  getAdminAuditById: adminAudit.getAdminAuditById,
+  listAdminAudit: adminAudit.listAdminAudit,
+  countAdminAudit: adminAudit.countAdminAudit,
 
   // ticket panels (stored registry)
   createTicketPanel: tickets.createTicketPanel,
