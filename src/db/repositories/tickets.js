@@ -735,6 +735,125 @@ function countArchivedTickets(opts = {}) {
   return Number(row?.n || 0);
 }
 
+// ---------------------------------------------------------------------------
+// §8.4 ticket-participant lookups (web transcript gate) — one indexed EXISTS
+// per participant table. ticket_members/ticket_staff are (ticket_id, user_id)
+// PRIMARY KEYs; ticket_messages has idx_ticket_messages_ticket, so every
+// check is an index probe on the ticket, never a scan (§8.6 query budget).
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {number} ticketId
+ * @param {string} userId
+ * @returns {boolean} true when the user was added via /ticket adduser
+ */
+function hasTicketMember(ticketId, userId) {
+  if (ticketId == null || !userId) return false;
+  return !!db
+    .prepare(
+      `SELECT 1 FROM ticket_members WHERE ticket_id=? AND user_id=? LIMIT 1`
+    )
+    .get(Number(ticketId), String(userId));
+}
+
+/**
+ * @param {number} ticketId
+ * @param {string} userId
+ * @returns {boolean} true when the user is named staff on the ticket
+ */
+function hasTicketStaff(ticketId, userId) {
+  if (ticketId == null || !userId) return false;
+  return !!db
+    .prepare(
+      `SELECT 1 FROM ticket_staff WHERE ticket_id=? AND user_id=? LIMIT 1`
+    )
+    .get(Number(ticketId), String(userId));
+}
+
+/**
+ * @param {number} ticketId
+ * @param {string} userId
+ * @returns {boolean} true when the user authored an archived message
+ */
+function hasTicketMessageAuthor(ticketId, userId) {
+  if (ticketId == null || !userId) return false;
+  return !!db
+    .prepare(
+      `SELECT 1 FROM ticket_messages WHERE ticket_id=? AND author_id=? LIMIT 1`
+    )
+    .get(Number(ticketId), String(userId));
+}
+
+// ---------------------------------------------------------------------------
+// Guild-allow-list archive reads (web /t index guild scoping, §8.4). The
+// caller (route layer) supplies guilds the viewer is ALREADY proven staff+
+// for — these queries never decide access, they only filter within a
+// pre-vetted allow-list.
+// ---------------------------------------------------------------------------
+
+/** SQLite host-parameter guard for the IN (...) allow-lists. */
+const MAX_GUILD_IDS_PER_QUERY = 500;
+
+/**
+ * Normalize a guild-id allow-list: strings only, de-duplicated, capped.
+ * @param {string[]|null|undefined} guildIds
+ * @returns {string[]}
+ */
+function normalizeGuildIdList(guildIds) {
+  if (!Array.isArray(guildIds)) return [];
+  return [...new Set(guildIds.filter((g) => typeof g === "string" && g))].slice(
+    0,
+    MAX_GUILD_IDS_PER_QUERY
+  );
+}
+
+/**
+ * Content-archived tickets restricted to a guild allow-list.
+ * @param {object} opts
+ * @param {string[]} opts.guildIds pre-vetted guild allow-list
+ * @param {number} [opts.limit=50]
+ * @param {number} [opts.offset=0]
+ * @returns {object[]}
+ */
+function listArchivedTicketsForGuilds(opts = {}) {
+  const ids = normalizeGuildIdList(opts.guildIds);
+  if (ids.length === 0) return [];
+  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
+  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const placeholders = ids.map(() => "?").join(",");
+  return db
+    .prepare(
+      `
+    SELECT * FROM tickets
+    WHERE archived=1 AND transcript_token IS NOT NULL
+      AND guild_id IN (${placeholders})
+    ORDER BY closed_at DESC, guild_id ASC, ticket_number DESC
+    LIMIT ? OFFSET ?
+  `
+    )
+    .all(...ids, limit, offset);
+}
+
+/**
+ * @param {string[]} guildIds pre-vetted guild allow-list
+ * @returns {number}
+ */
+function countArchivedTicketsForGuilds(guildIds) {
+  const ids = normalizeGuildIdList(guildIds);
+  if (ids.length === 0) return 0;
+  const placeholders = ids.map(() => "?").join(",");
+  const row = db
+    .prepare(
+      `
+    SELECT COUNT(*) AS n FROM tickets
+    WHERE archived=1 AND transcript_token IS NOT NULL
+      AND guild_id IN (${placeholders})
+  `
+    )
+    .get(...ids);
+  return Number(row?.n || 0);
+}
+
 /**
  * @returns {string} UUID v4
  */
@@ -882,6 +1001,11 @@ module.exports = {
   listOpenTickets,
   listArchivedTickets,
   countArchivedTickets,
+  listArchivedTicketsForGuilds,
+  countArchivedTicketsForGuilds,
+  hasTicketMember,
+  hasTicketStaff,
+  hasTicketMessageAuthor,
   markTicketClosed,
   closeTicketSensitive,
   closeTicketArchived,
