@@ -213,14 +213,15 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 
 - Only **one** request is handled at a time per guild; further questions wait in the queue (up to **5**) — the typing indicator keeps refreshing while they wait
 - When the queue is full, the question is dropped with the canned "one (1) brain" reply
-- The total LLM timeout defaults to **60s** (`GORK_LLM_TIMEOUT_MS`); slower local models regularly need more
+- The total LLM timeout defaults to **90s** (`GORK_LLM_TIMEOUT_MS`); slower local models regularly need more
 
 ### Everyone gets "brain went to lunch" (the provider works elsewhere)
 
 Check the bot log: gork logs the exact failure reason (`reason`, HTTP status, model, tool calls, duration). Two common causes with self-hosted providers:
 
-- **Thinking/reasoning models** (Qwen3-style, DeepSeek-R1, o-series) burn the whole `max_tokens` budget on hidden reasoning and return `content: null` — the log says `empty answer ... retrying once` then `provider returned an empty answer`. Raise `GORK_LLM_MAX_TOKENS` (default 2,000) until answers come through
-- **Slow model + long context** trips the 60s timeout — raise `GORK_LLM_TIMEOUT_MS`
+- **Thinking/reasoning models** (Qwen3-style, DeepSeek-R1, o-series) burn the whole `max_tokens` budget on hidden reasoning and return `content: null` — the log says `provider returned an empty answer ... retrying once` then the same with `(finish_reason=...)`. Cap the thinking: `GORK_LLM_THINKING_TOKEN_BUDGET=4000` forwards a reasoning budget to the server — **the serving side must enforce it** (e.g. vLLM started with `--reasoning-parser`); leave it off for strict providers like api.openai.com, which reject the param. Keep `GORK_LLM_MAX_TOKENS` (default 6,000) above the thinking budget + answer headroom, or raise it until answers come through
+- **Slow model + long context** trips the 90s timeout (`GORK_LLM_TIMEOUT_MS`) — raise it
+- **Runaway visible answers** (the model rambles past a few paragraphs) — `GORK_MAX_ANSWER_CHARS` hard-caps the visible answer with a word-boundary cut + "[truncated]" marker (0 = off; 2000 keeps every answer to one message)
 
 ## Related
 

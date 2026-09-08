@@ -102,12 +102,17 @@ async function requestCompletion(cfg, payload, opts = {}) {
  * @param {object[]} [opts.tools] OpenAI tool definitions.
  * @param {number} [opts.temperature]
  * @param {number} [opts.maxTokens] Sent as max_tokens when set.
+ * @param {number} [opts.thinkingTokenBudget] Sent as
+ *   thinking_token_budget ONLY when a positive finite number (reasoning
+ *   cap passthrough for servers that enforce it, e.g. vLLM with
+ *   --reasoning-parser).
  * @param {object} [opts.responseFormat] e.g. { type: "json_object" }.
  * @param {number} [opts.timeoutMs]
  * @param {AbortSignal} [opts.signal]
  * @param {Function} [opts.fetchImpl]
  * @returns {Promise<object>}
- *   ok:true → message (raw assistant message, may include tool_calls).
+ *   ok:true → message (raw assistant message, may include tool_calls)
+ *   plus finishReason/usage from the provider response.
  *   ok:false → status/error/reason as in requestCompletion, or
  *   reason "empty" when the response carries no assistant message.
  */
@@ -117,6 +122,15 @@ async function completeOnce(cfg, opts) {
     payload.temperature = opts.temperature;
   }
   if (typeof opts.maxTokens === "number") payload.max_tokens = opts.maxTokens;
+  // Strict-provider safety: OpenAI-compatible frontends reject unknown
+  // params, so thinking_token_budget is sent ONLY on an explicit positive
+  // opt-in — never by default.
+  if (
+    Number.isFinite(opts.thinkingTokenBudget) &&
+    opts.thinkingTokenBudget > 0
+  ) {
+    payload.thinking_token_budget = Math.trunc(opts.thinkingTokenBudget);
+  }
   if (opts.responseFormat) payload.response_format = opts.responseFormat;
   if (opts.tools?.length) payload.tools = opts.tools;
 
@@ -130,7 +144,12 @@ async function completeOnce(cfg, opts) {
       error: "no assistant message in response",
     };
   }
-  return { ok: true, message };
+  return {
+    ok: true,
+    message,
+    finishReason: res.data?.choices?.[0]?.finish_reason ?? null,
+    usage: res.data?.usage ?? null,
+  };
 }
 
 /**
@@ -149,6 +168,8 @@ function failure(result, startedAt, toolCalls) {
     reason: result.reason || "network",
     durationMs: Date.now() - startedAt,
     toolCalls,
+    finishReason: null,
+    usage: null,
   };
 }
 
@@ -157,9 +178,11 @@ function failure(result, startedAt, toolCalls) {
  * @param {string|null} content
  * @param {number} startedAt
  * @param {number} toolCalls
+ * @param {{ finishReason?: string|null, usage?: object|null }} [meta]
+ *   Provider diagnostics from the final round.
  * @returns {object} AiResult
  */
-function success(content, startedAt, toolCalls) {
+function success(content, startedAt, toolCalls, meta = {}) {
   return {
     ok: true,
     content,
@@ -168,6 +191,8 @@ function success(content, startedAt, toolCalls) {
     reason: null,
     durationMs: Date.now() - startedAt,
     toolCalls,
+    finishReason: meta.finishReason ?? null,
+    usage: meta.usage ?? null,
   };
 }
 
@@ -180,6 +205,10 @@ function success(content, startedAt, toolCalls) {
  * @property {string|null} reason "http" | "network" | "timeout" | "empty" | "cap" | null
  * @property {number} durationMs Wall-clock ms for the whole call
  * @property {number} toolCalls Tool executions (tool loop only)
+ * @property {string|null} finishReason Provider finish_reason of the final
+ *   round (null when absent)
+ * @property {object|null} usage Final round's provider usage object
+ *   (null when absent)
  */
 
 /**
@@ -191,6 +220,8 @@ function success(content, startedAt, toolCalls) {
  * @param {object[]} opts.messages Chat messages (system/user/...).
  * @param {number} [opts.temperature]
  * @param {number} [opts.maxTokens]
+ * @param {number} [opts.thinkingTokenBudget] Reasoning cap passthrough
+ *   (sent only when a positive finite number).
  * @param {object} [opts.responseFormat] e.g. { type: "json_object" }.
  * @param {number} [opts.timeoutMs] Overall timeout for this request (ms).
  * @param {Function} [opts.fetchImpl] Injectable fetch (tests).
@@ -207,6 +238,7 @@ async function chatCompletion(cfg, opts = {}) {
     res.message?.content == null ? null : String(res.message.content),
     startedAt,
     0,
+    { finishReason: res.finishReason, usage: res.usage },
   );
 }
 
@@ -268,6 +300,8 @@ async function applyToolCalls(conversation, calls, executeTool) {
  *   may call tools.
  * @param {number} [opts.temperature]
  * @param {number} [opts.maxTokens]
+ * @param {number} [opts.thinkingTokenBudget] Reasoning cap passthrough
+ *   forwarded to every round (sent only when a positive finite number).
  * @param {number} [opts.timeoutMs] Overall timeout for the whole loop (ms).
  * @param {Function} [opts.fetchImpl] Injectable fetch (tests).
  * @returns {Promise<AiResult>}
@@ -309,6 +343,7 @@ async function chatWithTools(cfg, opts) {
         tools: opts.tools,
         temperature: opts.temperature,
         maxTokens: opts.maxTokens,
+        thinkingTokenBudget: opts.thinkingTokenBudget,
         signal: controller.signal,
         fetchImpl: opts.fetchImpl,
       });
@@ -323,6 +358,7 @@ async function chatWithTools(cfg, opts) {
           message.content == null ? null : String(message.content),
           startedAt,
           toolCalls,
+          { finishReason: res.finishReason, usage: res.usage },
         );
       }
       if (round >= maxRounds) {
@@ -334,6 +370,8 @@ async function chatWithTools(cfg, opts) {
           reason: "cap",
           durationMs: Date.now() - startedAt,
           toolCalls,
+          finishReason: res.finishReason ?? null,
+          usage: res.usage ?? null,
         };
       }
       const applied = await applyToolCalls(conversation, calls, opts.executeTool);

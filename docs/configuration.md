@@ -99,9 +99,11 @@ Using this registers commands instantly to one guild instead of globally (which 
 | `AI_BASE_URL` | API base URL (default OpenAI) |
 | `AI_MODEL` | Model name |
 | `SEARXNG_URL` | Optional base URL of a SearXNG instance with JSON format enabled — enables [Gork](gork.md) web search |
-| `GORK_LLM_MAX_TOKENS` | Gork completion budget (default **2000**). Thinking/reasoning models spend this budget on hidden reasoning **before** the visible answer — raise it if gork logs empty answers |
-| `GORK_LLM_TIMEOUT_MS` | Gork total LLM timeout in ms (default **60000**). Raise for slow local models |
+| `GORK_LLM_MAX_TOKENS` | Gork completion budget (default **6000** = thinking cap + visible-answer headroom). Thinking/reasoning models spend this budget on hidden reasoning **before** the visible answer — raise it if gork logs empty answers |
+| `GORK_LLM_TIMEOUT_MS` | Gork total LLM timeout in ms (default **90000**). Raise for slow local models |
 | `GORK_LLM_MAX_TOOL_ROUNDS` | Gork tool rounds per question (default **3**, shared by `web_search` + `read_page`) |
+| `GORK_LLM_THINKING_TOKEN_BUDGET` | Cap Gork's hidden reasoning tokens — forwarded to the provider as `thinking_token_budget` (default **0 = never sent**, required for strict providers like api.openai.com). Set on thinking-model servers that enforce it (e.g. vLLM with `--reasoning-parser`); keep `GORK_LLM_MAX_TOKENS` above the cap + answer headroom |
+| `GORK_MAX_ANSWER_CHARS` | Hard cap for Gork's visible answer in chars (default **0 = off**). Word-boundary truncate + "[truncated]" marker; **2000** keeps any answer to one message |
 
 See [Help Tickets](tickets.md) and [Gork](gork.md).
 
