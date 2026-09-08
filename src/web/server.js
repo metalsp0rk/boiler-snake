@@ -16,7 +16,14 @@
 
 const http = require("http");
 const { createWebApp } = require("./app");
-const { getHttpConfig } = require("./config");
+const {
+  getHttpConfig,
+  warnIfInsecurePublicBaseUrl,
+} = require("./config");
+const {
+  startSessionPruneJob,
+  stopSessionPruneJob,
+} = require("./auth/sessions");
 
 /** @type {import("http").Server|null} */
 let server = null;
@@ -35,6 +42,11 @@ function startWebServer() {
     return null;
   }
   if (server) return server;
+
+  // Boot checks (roadmap/web-admin.md §8.7, §8.3): loud warning on plain-HTTP
+  // public URLs; session prune sweep now + unref'd periodic sweep.
+  warnIfInsecurePublicBaseUrl();
+  startSessionPruneJob();
 
   server = http.createServer(createWebApp());
 
@@ -57,6 +69,7 @@ function startWebServer() {
  */
 function stopWebServer() {
   return new Promise((resolve) => {
+    stopSessionPruneJob();
     if (!server) {
       resolve();
       return;
