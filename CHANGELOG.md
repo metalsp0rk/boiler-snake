@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.2](https://github.com/metalsp0rk/boiler-snake/compare/v1.7.1...v1.7.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **gork:** §7.15 reported-issue fixes ([8d863f6](https://github.com/metalsp0rk/boiler-snake/commit/8d863f6e22c47dd0169a60de0b29e8db498a19e5))
+
 ## [1.7.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.7.0...v1.7.1) (2026-09-08)
 
 
