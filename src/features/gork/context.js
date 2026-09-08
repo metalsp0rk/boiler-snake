@@ -64,6 +64,8 @@
   *   order): messages strictly before `before`.
  */
 
+const { sliceSafe } = require("../../core/text");
+
 const MIN_WINDOW = 1;
 const MAX_WINDOW = 50;
 const DEFAULT_WINDOW = 10;
@@ -130,7 +132,7 @@ function hasContent(message) {
  */
 function formatMessageLine(message) {
   const username = (message && message.author && message.author.username) || "unknown";
-  const body = String((message && message.content) || "").slice(0, MESSAGE_CHAR_CAP);
+  const body = sliceSafe(String((message && message.content) || ""), MESSAGE_CHAR_CAP);
   return `[${username}] ${body}`;
 }
 
@@ -143,10 +145,8 @@ function formatMessageLine(message) {
  * @returns {string}
  */
 function formatContext(messages) {
-  return (messages || [])
-    .map(formatMessageLine)
-    .join("\n")
-    .slice(0, TOTAL_CHAR_CAP);
+  const joined = (messages || []).map(formatMessageLine).join("\n");
+  return sliceSafe(joined, TOTAL_CHAR_CAP);
 }
 
 /**
@@ -258,13 +258,14 @@ function backfillBeforeId(chainOldestFirst, triggerMessage) {
  *
  * @param {GorkMessage[]} messages oldest → newest
  * @param {"reply-chain"|"prior"} mode which collection path was used
- * @returns {{ text: string, mode: "reply-chain"|"prior", collected: number }}
+ * @returns {{ text: string, mode: "reply-chain"|"prior", collected: number, messages: GorkMessage[] }}
  */
 function toContextResult(messages, mode) {
   return {
     text: formatContext(messages),
     mode,
     collected: messages.length,
+    messages,
   };
 }
 
@@ -288,11 +289,13 @@ function toContextResult(messages, mode) {
  * @param {object} [opts]
  * @param {(channel: GorkChannel, opts: { limit: number, before?: string }) => Promise<object>} [opts.fetcher]
  *   message fetch seam (defaults to `channel.messages.fetch`)
- * @returns {Promise<{ text: string, mode: "reply-chain"|"prior", collected: number }>}
+ * @returns {Promise<{ text: string, mode: "reply-chain"|"prior", collected: number, messages: GorkMessage[] }>}
  *   - `text`: `[username] content` lines, oldest → newest, newlines-joined
  *     (may be "" when nothing was collected); ≤12,000 chars
  *   - `mode`: `"reply-chain"` (trigger had a reference) or `"prior"`
  *   - `collected`: number of non-empty messages in `text`
+ *   - `messages`: the collected message objects (oldest → newest), used
+ *     by the caller to build the user roster (§7.15 Fix 2)
  */
 async function buildContext(triggerMessage, windowSize, opts = {}) {
   const target = clampWindowSize(windowSize);

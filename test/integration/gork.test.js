@@ -558,16 +558,9 @@ describe("integration: gork (AI keyword Q&A)", () => {
         `expected backfill + chain lines in the context, got: ${userMsg.content}`
       );
       // Spec order is oldest -> newest (roadmap/gork.md §7.2 decision 5).
-      // KNOWN SRC BUG (reported, not fixed here): Discord's
-      // GET /channels/{id}/messages returns messages newest -> oldest
-      // (documented), but collectMessages() in src/features/gork/context.js
-      // assumes the opposite — line 226 slices the OLDEST end of each page
-      // (`fresh.slice(fresh.length - take)` takes the farthest-from-cursor
-      // messages instead of the newest) and line 230 advances the cursor to
-      // the NEWEST id (`values[0]`), so multi-page backfills re-read
-      // overlapping pages (duplicate lines) and the final context comes out
-      // newest -> oldest. This assertion fails until collectMessages is
-      // fixed (take `fresh.slice(0, take)`; cursor = `values[values.length - 1].id`).
+      // Regression guard: Discord returns pages newest -> oldest;
+      // collectMessages() must take the newest end of each page and walk
+      // the cursor backwards, or this order flips / duplicates appear.
       assert.ok(
         iA1 < iA2 && iA2 < iCA && iCA < iCB,
         "context must be ordered oldest -> newest"
@@ -1413,4 +1406,192 @@ describe("integration: gork (AI keyword Q&A)", () => {
       fetchMock.restore();
     }
   });
+
+  // ---------- roadmap/gork.md §7.15 regression fixtures (Fixes 1–4) ----------
+
+  it("Fix 1+2: echoed <@id> markup is sanitized, never pings, and the roster reaches the prompt", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse(
+        `Ask <@${IDS.member2}> — <@${IDS.member2}> broke it.`
+      ),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      const ch = env.channels.general;
+      ch.addMessage({
+        id: "a1",
+        content: "I totally broke the build",
+        author: { id: IDS.member2, username: "member2", tag: "member2#0000" },
+        createdTimestamp: Date.now() - 5000,
+      });
+      attachTyping(ch);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-sanitize-1",
+        content: `gork: who broke it? <@${IDS.member2}>`,
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1),
+        "expected the sanitized answer"
+      );
+
+      // Raw markup gone; resolved handle rendered instead.
+      assert.ok(
+        !replies[0].content.includes("<@"),
+        `reply must not carry raw mention tokens: ${replies[0].content}`
+      );
+      assert.ok(replies[0].content.includes("@member2"), replies[0].content);
+
+      // Ping control on the actual send payload.
+      const sentPayload = ch.sent.find((p) => typeof p === "object" && p);
+      assert.ok(sentPayload, "reply must be sent as a payload object");
+      assert.deepEqual(sentPayload.allowedMentions, { parse: [] });
+
+      // Fix 2: the prompt carried a roster naming the involved users.
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(userMsg.content.includes("People roster:"), userMsg.content);
+      assert.ok(
+        userMsg.content.includes(`${IDS.member2} | @member2 |`),
+        "roster must list the mentioned/authoring user",
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 3: trigger replying to a deleted message answers via backfill (no crash, slot released)", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Nothing survives deletion, member."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 0,
+      });
+      const ch = env.channels.general;
+      ch.addMessage({
+        id: "a1",
+        content: "Ancient context before the deletion",
+        author: { id: IDS.member2, username: "member2", tag: "member2#0000" },
+        createdTimestamp: Date.now() - 5000,
+      });
+      attachTyping(ch);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-deleted-1",
+        content: "gork: what was said here?",
+        reference: { messageId: "deleted-ref" },
+        fetchReference: async () => {
+          throw new Error("404 Unknown Message");
+        },
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1),
+        "deleted reference must degrade to backfill context, not crash"
+      );
+      assert.equal(replies[0].content, "Nothing survives deletion, member.");
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.includes("[member2] Ancient context before the deletion"),
+        "backfill context must still feed the prompt",
+      );
+
+      // The guild slot was released: the degraded job must not leak it.
+      const { gorkQueue } = require("../../src/features/gork/trigger");
+      assert.equal(
+        gorkQueue.admit({ guildId: env.guild.id }).queued,
+        false,
+        "the guild slot must be free after the degraded job",
+      );
+      gorkQueue.release({ guildId: env.guild.id });
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 4: emoji-heavy >2000-char answer splits safely (valid text, whole tokens, continuations sent)", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const heavy =
+      "Long one: " +
+      "\u{1F600}".repeat(1000) +
+      " ||secret|| " +
+      "```\nconst x = '<@123456789012345678> '\n```".repeat(3) +
+      " done \u{1F389}".repeat(50);
+    const fetchMock = mockFetch([chatCompletionResponse(heavy)]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-emoji-1",
+        content: "gork: say something long and colorful",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1),
+        "expected the first chunk"
+      );
+
+      const sentPayloads = ch_all_sent(env);
+      assert.ok(
+        sentPayloads.length >= 2,
+        "long answer must continue as consecutive messages"
+      );
+
+      const contents = sentPayloads.map((p) => p.content);
+      let joined = "";
+      for (const c of contents) {
+        assert.ok(c.length <= 2000, `chunk within Discord's limit: ${c.length}`);
+        assert.ok(
+          !hasLoneSurrogate(c),
+          "chunk must be valid UTF-16 (no split emoji)"
+        );
+        joined += c;
+      }
+      assert.ok(joined.includes("\u{1F600}"), "emoji survived");
+      assert.ok(joined.includes("done \u{1F389}"), "tail survived");
+      assert.ok(
+        !/(^|[^`<])\|\|(?!.*\|\|)/s.test(contents[0]) ||
+          (contents[0].match(/\|\|/g) || []).length % 2 === 0,
+        "no dangling spoiler marker at a chunk boundary"
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
 });
+
+/** All payload objects sent to the general channel this run. */
+function ch_all_sent(env) {
+  return env.channels.general.sent.filter((p) => typeof p === "object" && p?.content);
+}
+
+/** True when `s` contains a lone (unpaired) UTF-16 surrogate. */
+function hasLoneSurrogate(s) {
+  for (let i = 0; i < s.length; i += 1) {
+    const code = s.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdfff) {
+      const isHigh = code <= 0xdbff;
+      const partner = s.charCodeAt(i + (isHigh ? 1 : -1));
+      if (!(isHigh ? partner >= 0xdc00 && partner <= 0xdfff : partner >= 0xd800 && partner <= 0xdbff)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}

@@ -6,6 +6,7 @@
  */
 
 const { EmbedBuilder } = require("discord.js");
+const { sliceSafe } = require("./text");
 
 /** Semantic embed colors */
 const Color = {
@@ -187,7 +188,7 @@ function truncateField(s, max = 1024) {
   const str = String(s ?? "");
   if (str.length <= max) return str;
   if (max <= 1) return "…";
-  return `${str.slice(0, max - 1)}…`;
+  return `${sliceSafe(str, max - 1)}…`;
 }
 
 /**
@@ -200,7 +201,7 @@ function truncateDescription(s, max = 4096) {
   const str = String(s ?? "");
   if (str.length <= max) return str;
   if (max <= 1) return "…";
-  return `${str.slice(0, max - 1)}…`;
+  return `${sliceSafe(str, max - 1)}…`;
 }
 
 module.exports = {
