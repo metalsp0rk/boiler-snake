@@ -148,7 +148,8 @@ Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `us
 | Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (0–3600, **0 = disabled**). **Staff** (Manage Server or any `staff_roles` role) **bypass** the cooldown entirely. Cooldown hit → the bot **reacts 🕐** on the trigger message (visible rate-limit signal; still no reply, no LLM call) |
 | Gork bans | `/gork ban` blocks a user per-guild. A banned trigger gets the LLM-failure canned reply, so the ban is **indistinguishable from a normal failure** — no LLM call, no audit Q&A entry. Unlike the cooldown, staff roles do **not** bypass a ban. The reply is paced by the normal per-user cooldown |
 | Concurrency / queue | **1 in-flight** gork request per guild; further triggers are **queued FIFO**, up to **5 waiting** (in-memory). When the queue is full, new triggers are **dropped** with the queue-full reply |
-| LLM parameters | Temperature **0.8** (sarcasm), `max_tokens` ~600, total timeout **60s** including the tool loop |
+| LLM parameters | Temperature **0.8** (sarcasm), completion budget **2,000** tokens, total timeout **60s** including the tool loop — each overridable via `GORK_LLM_MAX_TOKENS` / `GORK_LLM_TIMEOUT_MS` / `GORK_LLM_MAX_TOOL_ROUNDS`. Budget matters for **thinking models**: they spend it on hidden reasoning first, so the default leaves room for both |
+| Empty answers | A provider response with no visible text is retried **once** automatically; only a second failure gets the canned reply. Tool-cap rounds that still carry a real (partial) answer are delivered instead of discarded |
 
 The fast checks (settings, match, skips, cooldown, queue admission) run inline in the message pipeline; the slow LLM job is fired as a detached promise so the pipeline never stalls.
 
@@ -212,7 +213,14 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 
 - Only **one** request is handled at a time per guild; further questions wait in the queue (up to **5**) — the typing indicator keeps refreshing while they wait
 - When the queue is full, the question is dropped with the canned "one (1) brain" reply
-- The total LLM timeout is **60s**; longer gets the "brain went to lunch" reply
+- The total LLM timeout defaults to **60s** (`GORK_LLM_TIMEOUT_MS`); slower local models regularly need more
+
+### Everyone gets "brain went to lunch" (the provider works elsewhere)
+
+Check the bot log: gork logs the exact failure reason (`reason`, HTTP status, model, tool calls, duration). Two common causes with self-hosted providers:
+
+- **Thinking/reasoning models** (Qwen3-style, DeepSeek-R1, o-series) burn the whole `max_tokens` budget on hidden reasoning and return `content: null` — the log says `empty answer ... retrying once` then `provider returned an empty answer`. Raise `GORK_LLM_MAX_TOKENS` (default 2,000) until answers come through
+- **Slow model + long context** trips the 60s timeout — raise `GORK_LLM_TIMEOUT_MS`
 
 ## Related
 
