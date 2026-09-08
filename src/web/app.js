@@ -33,6 +33,8 @@ const {
   createBodyCapMiddleware,
 } = require("./middleware/rateLimit");
 const { createCsrfMiddleware } = require("./middleware/csrf");
+const { createCspMiddleware } = require("./middleware/csp");
+const { createStaticMiddleware } = require("./middleware/static");
 
 /**
  * The ONE POST path the legacy method gate makes an exception for (§8.3
@@ -105,19 +107,30 @@ function handleAppError(err, req, res, next) {
 /**
  * Build the web admin / transcript app (no I/O, no listener).
  * @param {object} [options]
- * @param {string} [options.apiBase] Discord API base for the auth routes
- *   (tests point this at a local fake; production unset → real Discord).
- *   Only the login routes consume this — ticket/OAuth/session surfaces are
- *   unaffected, so the Phase 0a byte-parity contract still holds.
+ * @param {string} [options.apiBase] Discord API base for the auth AND guild
+ *   access routes (tests point this at a local fake; production unset → real
+ *   Discord). Ticket/OAuth/session surfaces are unaffected, so the Phase 0a
+ *   byte-parity contract still holds.
  * @param {string} [options.oauthBase]
  * @param {() => string[]|Set<string>} [options.botGuilds] bot-guild provider
  *   override (tests); production wiring lives in features/web boot.
+ * @param {{resolve: Function, listGuilds: Function}} [options.guildAccess]
+ *   pre-built createGuildAccessResolver() instance for the /g shell (tests
+ *   inject fakes; default builds one from apiBase/fetchImpl/botGuilds).
  * @returns {import("express").Express}
  */
 function createWebApp(options = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.set("etag", false);
+
+  // Phase 0c (subtask 11, §8.7): CSP + per-response script nonce BEFORE any
+  // responder, so even the methodGate's 405 and the catch-all 404 carry the
+  // policy and nosniff. Headers are set via res.setHeader() — the routes'
+  // raw writeHead() framing MERGES them in, which adds headers but never
+  // changes a body byte (the Phase 0a oracle only pins bodies + its own
+  // headers, so the byte-parity contract survives; verified green).
+  app.use(createCspMiddleware());
 
   app.use(methodGate);
   // Phase 0b: resolve the session cookie for downstream auth (req.webSession
@@ -146,6 +159,11 @@ function createWebApp(options = {}) {
   app.use(createBodyCapMiddleware());
   app.use(createMutationRateLimit());
   app.use(createCsrfMiddleware());
+  // Shell assets (vendored htmx, styles.css, app.js) — public, immutable-
+  // cached, dotfiles ignored, traversal-gated (src/web/middleware/static.js).
+  // Mounted after the method gate so POST /static/* still 405s like the rest
+  // of the surface; nothing here carries user data, so login-free is safe.
+  app.use("/static", createStaticMiddleware());
   app.get("/health", handleHealth);
   // Login/logout first: they must resolve without (and while rotating) any
   // session, and they are the only writers of the session cookie.
@@ -156,7 +174,16 @@ function createWebApp(options = {}) {
     botGuilds: options.botGuilds,
   });
   registerOauthRoutes(app);
-  registerGuildShellRoutes(app);
+  // Guild shell (Phase 0c): scoped pages, guild switcher, login redirect for
+  // anonymous /g/*. The injectable seams keep it offline-testable against
+  // the same fake Discord the login routes use (guildScope needs
+  // getUserGuilds + getUserGuildMember, bot∩user intersection).
+  registerGuildShellRoutes(app, {
+    guildAccess: options.guildAccess,
+    apiBase: options.apiBase,
+    fetchImpl: options.fetchImpl,
+    botGuilds: options.botGuilds,
+  });
   registerTranscriptRoutes(app);
 
   app.use(handleNotFound);
