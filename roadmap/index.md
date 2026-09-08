@@ -12,13 +12,14 @@ Each feature has its own file with the full design, status, and locked decisions
 
 | # | Feature | File | Status | Open items |
 |---|---------|------|--------|------------|
-| 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Discord OAuth on transcripts; richer `/ticket list` filters |
+| 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Discord OAuth on transcripts (→ covered by [web-admin.md](web-admin.md) §8.4); richer `/ticket list` filters |
 | 2 | Scheduled Event Reminders | [event-reminders.md](event-reminders.md) | Shipped | — |
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP) | EventSub; per-channel overrides; templates; go-offline; clips/VODs |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags; `added_by`; audit embeds |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + polish) | Auto-mod thresholds |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | — |
+| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
 
 ---
 
@@ -85,6 +86,14 @@ Each feature has its own file with the full design, status, and locked decisions
 | `guild_settings.gork_extra_rules` | Staff prompt additions, ≤500 chars (**shipped**) |
 | `guild_settings.gork_search_enabled` | SearXNG `web_search` tool toggle; default `1` (**shipped**) |
 | `guild_settings.gork_cooldown_sec` | Per-user cooldown seconds; default `180`, staff bypass (**shipped**) |
+
+### Web admin console (planned)
+
+| Table / change | Notes |
+|----------------|-------|
+| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**planned**, migration `023`) |
+| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**planned**, migration `024`) |
+| `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**planned**) |
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
