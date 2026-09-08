@@ -12,6 +12,7 @@
 
 const { startWebServer } = require("../../web/server");
 const { setBotGuildsProvider } = require("../../web/auth/botGuilds");
+const { bindAuditClient } = require("../../web/middleware/audit");
 
 module.exports = {
   name: "web",
@@ -25,6 +26,10 @@ module.exports = {
     // partial list; the snapshot refreshes on the next login (07 re-checks
     // per TTL). Guarded so tests/harnesses without a client never throw.
     setBotGuildsProvider(() => client?.guilds?.cache?.keyArray?.() ?? []);
+    // Bind the client for the audit middleware's best-effort channel-embed
+    // mirror (§8.1-7): the admin_audit DB row is authoritative; the embed is
+    // fire-and-forget and no-ops cleanly when the client is absent.
+    bindAuditClient(client);
     startWebServer();
   },
 };
