@@ -452,3 +452,92 @@ th {
   .lb-user-xp .kv { grid-template-columns: 1fr; gap: 0.1rem; }
   .lb-user-xp .kv dd { margin-bottom: 0.5rem; }
 }
+
+/* integrations */
+/* GET /g/:guildId/integrations (Phase 1 read-only, subtask 20). Panels reuse
+   the settings-page grid/rows classes; everything new is scoped under
+   .integrations-* / .integ-* so this section can never restyle sibling
+   pages; rides the existing shell tokens (no new custom props). */
+.integrations-panel .integ-sub { margin: 0.9rem 0 0.4rem; font-size: 0.95rem; }
+
+/* Env-gate / credential-state lines (names of missing vars only, §8.7). */
+.integrations-panel .integ-cred { margin: 0 0 0.6rem; font-size: 0.9rem; }
+
+/* Whitelisted state pills (views/integrations pill kinds: live | off). */
+.integ-pill {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.integ-pill-live { color: var(--tier-staff); }
+.integ-pill-off { color: var(--fg-muted); }
+
+/* Secondary metadata under table cells (panel descriptions, flags). */
+.integ-desc { font-size: 0.78rem; color: var(--fg-muted); }
+
+/* URL cells stay escapable text (never <a href>) but must not blow layout. */
+.integ-url { word-break: break-all; font-size: 0.85rem; }
+
+@media (max-width: 640px) {
+  .integrations-panel .settings-table { font-size: 0.8rem; }
+}
+
+/* staff — GET /g/:guildId/staff + /commands (subtask 19, Phase 1 read-only) */
+.staff-grid { display: grid; gap: 1.25rem; }
+
+.staff-roles-panel .counts { margin: 0 0 0.6rem; }
+
+.staff-table .role-id { word-break: break-all; }
+.staff-table .role-name { color: var(--fg-muted); font-size: 0.85rem; }
+
+/* Level pills mirror the state-pill idiom; classes come from a whitelist. */
+.staff-level {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.staff-level-senior { color: var(--tier-senior, var(--tier-staff)); font-weight: 600; }
+.staff-level-junior { color: var(--fg-muted); }
+
+/* What each level confers (AGENTS.md §4 mirror). */
+.staff-legend { margin: 0.8rem 0 0; padding-left: 1.1rem; font-size: 0.85rem; color: var(--fg-muted); }
+.staff-legend li { margin-bottom: 0.3rem; }
+
+/* Static advisory note strip (bot-above-roles + write-tier, §8.6/§8.8). */
+.staff-advisory {
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.7rem 0.9rem;
+  background: var(--bg);
+}
+.staff-advisory-line { margin: 0 0 0.4rem; font-size: 0.85rem; }
+.staff-advisory-line:last-child { margin-bottom: 0; }
+
+/* Command-visibility sync status panel (no controls — view only). */
+.staff-sync-panel .sync-state-row { margin: 0 0 0.5rem; }
+.staff-sync-panel .sync-meta,
+.staff-sync-panel .sync-env { margin: 0 0 0.5rem; font-size: 0.88rem; }
+.sync-redirect { word-break: break-all; }
+.sync-env-missing { margin-right: 0.25rem; white-space: nowrap; }
+
+.badge-state {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.badge-state-ok { color: var(--tier-staff); }
+.badge-state-none { color: var(--fg-muted); }
+.badge-state-unknown { color: var(--tier-senior); }
+
+@media (max-width: 640px) {
+  .staff-table { font-size: 0.8rem; }
+}
