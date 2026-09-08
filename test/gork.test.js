@@ -1004,3 +1004,69 @@ describe("code-point & token-safe chunking (Fix 4)", () => {
     assert.equal(chunks.join(""), text);
   });
 });
+
+// ---------- LLM budget knobs + failure classification (Fix 5) ----------
+
+describe("llmParams + describeLlmFailure (trigger, Fix 5)", () => {
+  const {
+    llmParams,
+    describeLlmFailure,
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_TIMEOUT_MS,
+    DEFAULT_LLM_MAX_TOOL_ROUNDS,
+  } = require("../src/features/gork/trigger");
+
+  const KEYS = ["GORK_LLM_MAX_TOKENS", "GORK_LLM_TIMEOUT_MS", "GORK_LLM_MAX_TOOL_ROUNDS"];
+
+  function withEnv(overrides, fn) {
+    const saved = KEYS.map((k) => [k, Object.prototype.hasOwnProperty.call(process.env, k) ? process.env[k] : undefined]);
+    KEYS.forEach((k) => delete process.env[k]);
+    Object.assign(process.env, overrides || {});
+    try {
+      return fn();
+    } finally {
+      KEYS.forEach((k) => delete process.env[k]);
+      for (const [k, v] of saved) if (v !== undefined) process.env[k] = v;
+    }
+  }
+
+  it("uses the defaults when env is unset (budget leaves reasoning headroom)", () => {
+    withEnv({}, () => {
+      const p = llmParams();
+      assert.equal(p.maxTokens, DEFAULT_LLM_MAX_TOKENS);
+      assert.ok(
+        DEFAULT_LLM_MAX_TOKENS > 600,
+        "thinking models burn the budget on reasoning first — 600 caused empty answers",
+      );
+      assert.equal(p.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
+      assert.equal(p.maxToolRounds, DEFAULT_LLM_MAX_TOOL_ROUNDS);
+    });
+  });
+
+  it("env overrides apply per call; invalid values fall back", () => {
+    withEnv({ GORK_LLM_MAX_TOKENS: "500" }, () => {
+      assert.equal(llmParams().maxTokens, 500);
+    });
+    withEnv({ GORK_LLM_MAX_TOKENS: "bogus" }, () => {
+      assert.equal(llmParams().maxTokens, DEFAULT_LLM_MAX_TOKENS);
+    });
+    withEnv({ GORK_LLM_MAX_TOKENS: "-5" }, () => {
+      assert.equal(llmParams().maxTokens, DEFAULT_LLM_MAX_TOKENS);
+    });
+    withEnv({ GORK_LLM_TIMEOUT_MS: "180000" }, () => {
+      assert.equal(llmParams().timeoutMs, 180000);
+    });
+  });
+
+  it("describeLlmFailure classifies every result shape (no bare 'unknown')", () => {
+    assert.equal(
+      describeLlmFailure({ ok: true, content: "   " }),
+      "provider returned an empty answer",
+    );
+    assert.equal(describeLlmFailure({ ok: false, reason: "timeout" }), "timeout");
+    const http = describeLlmFailure({ ok: false, reason: "http", status: 403, error: "HTTP 403" });
+    assert.ok(http.startsWith("http:"), http);
+    assert.ok(http.includes("403"), http);
+    assert.equal(describeLlmFailure({}), "unknown error");
+  });
+});

@@ -21,6 +21,9 @@ const {
 } = require("../helpers/assert");
 const { IDS } = require("../helpers/fixtures");
 
+/** Locked canned failure reply (from the trigger module). */
+const { LLM_FAILURE_REPLY } = require("../../src/features/gork/trigger");
+
 // ---------- env hygiene ----------
 // (test/helpers/env.js has no save/restore helpers, so keep a local pair;
 // loadDb() in the harness still owns DB_PATH / DATA_DIR.)
@@ -1591,6 +1594,132 @@ describe("integration: gork (AI keyword Q&A)", () => {
           (contents[0].match(/\|\|/g) || []).length % 2 === 0,
         "no dangling spoiler marker at a chunk boundary"
       );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 5: ok-with-empty-text is retried once; the retry's answer is delivered", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse(null), // thinking-model blank response
+      chatCompletionResponse("NetBSD 1.3, obviously, member."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-empty-1",
+        content: "gork: best unix for a 386?",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 4000),
+        "the retry answer must reach the channel"
+      );
+      assert.equal(replies[0].content, "NetBSD 1.3, obviously, member.");
+      assert.equal(fetchMock.calls.length, 2, "exactly one retry, no more");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 5: empty twice -> canned reply + audit says 'empty answer' (not 'unknown')", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse(null),
+      chatCompletionResponse(null),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-empty-2",
+        content: "gork: best unix for a 386?",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 4000),
+        "a canned reply must still be sent"
+      );
+      assert.equal(replies[0].content, LLM_FAILURE_REPLY);
+      assert.equal(fetchMock.calls.length, 2, "one retry attempted");
+
+      assert.ok(
+        await waitFor(() => env.channels.log.sent.length >= 1),
+        "expected the failure audit one-liner"
+      );
+      const auditText = embedText(env.channels.log.sent[0].embeds[0]);
+      assert.ok(
+        auditText.includes("empty answer"),
+        `audit must name the real cause: ${auditText}`,
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("Fix 5: tool-round cap with real content delivers the partial answer (not the canned reply)", async () => {
+    const env = await createIntegrationEnv();
+    const saved = saveEnv();
+    const toolCall = (id) =>
+      chatCompletionResponse(null, {
+        tool_calls: [
+          {
+            id,
+            type: "function",
+            function: { name: "web_search", arguments: '{"query":"unix 386"}' },
+          },
+        ],
+      });
+    const emptyResults = jsonResponse({ query: "unix 386", results: [] });
+    const fetchMock = mockFetch([
+      toolCall("c1"), emptyResults,
+      toolCall("c2"), emptyResults,
+      toolCall("c3"), emptyResults,
+      // 4th round still wants a tool -> budget cap; content is the partial answer.
+      chatCompletionResponse("Half an answer: NetBSD runs on anything.", {
+        tool_calls: [
+          {
+            id: "c4",
+            type: "function",
+            function: { name: "web_search", arguments: '{"query":"unix 386 again"}' },
+          },
+        ],
+      }),
+    ]);
+    try {
+      enableAiKey();
+      process.env.SEARXNG_URL = "https://searxng.test";
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_search_enabled: 1,
+      });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-cap-1",
+        content: "gork: best unix for a 386?",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 5000),
+        "the capped partial answer must be delivered"
+      );
+      assert.notEqual(replies[0].content, LLM_FAILURE_REPLY);
+      assert.match(replies[0].content, /NetBSD runs on anything/);
     } finally {
       restoreEnv(saved);
       fetchMock.restore();

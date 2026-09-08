@@ -356,7 +356,9 @@ repo convention):
 ### 7.15 Planned fixes
 
 Four reported issues; centered on `src/features/gork/` (context builder + reply path) —
-Fix 4 also implicates `src/core/theme.js`.
+Fix 4 also implicates `src/core/theme.js`. Plus **Fix 5** (follow-up incident:
+thinking-model empty answers / timeouts → budget defaults, env knobs, retry, and real
+failure diagnostics).
 
 #### Fix 1 — replies that mention someone render raw `<@id>` markup instead of a proper mention
 
@@ -497,6 +499,38 @@ by **JS code-unit index**, which cuts multi-byte characters and Discord tokens a
 - [x] Tests: unit/property tests — every `splitLongAnswer` chunk is valid UTF-16 (no
       lone surrogates), tokens never split, `join` round-trips; `truncateField`
       code-point safety; integration test with an emoji-heavy mocked answer.
+
+#### Fix 5 — follow-up incident (2026-09): empty answers + timeouts on a thinking-model provider
+
+**Symptom:** "brain went to lunch" on a perfectly good question ("best Unix for a
+386…"); the log showed a long run of `[gork] LLM failure in <guild>: unknown` plus a
+few `timeout`.
+
+**Root cause (confirmed by probing the operator's LiteLLM proxy):** `AI_MODEL` was a
+local **Qwen thinking model**; gork's 600-token budget was consumed entirely by
+`reasoning_content` (`finish_reason: "length"`, `content: null`) — chatWithTools
+returned **ok:true with empty text**, which the old trigger collapsed into the
+canned failure reply and an `unknown` log line. The `timeout`s were the same slow
+local model hitting the 60s cap. Static pipeline: no crash, no code path bug —
+budget/observability failure.
+
+**Fixes shipped (1.7.3):**
+
+- [x] Budget default raised 600 → **2,000** tokens (spec §7.3 "~600" always meant the
+      *answer*; reasoning-first providers bill hidden reasoning inside `max_tokens`).
+- [x] Operator knobs: `GORK_LLM_MAX_TOKENS`, `GORK_LLM_TIMEOUT_MS`,
+      `GORK_LLM_MAX_TOOL_ROUNDS` (re-read per job; `.env.example` + configuration docs).
+- [x] ok:true-with-empty-text retried **once** before the canned reply.
+- [x] Tool-round **cap with real content** delivers the partial answer instead of
+      discarding it (canned replies stay reserved for failure/timeout per decision 20).
+- [x] Failure diagnostics: `describeLlmFailure()` → `reason: HTTP <status>: <error>` /
+      "provider returned an empty answer" in the warn line (+ model, toolCalls, duration)
+      and in the audit one-liner — no more bare `unknown`.
+- [x] Tests: failure-classification + env-knob units; integration fixtures for the
+      empty-then-retry path and cap-with-content delivery.
+
+**Open:** question-side input policy (Fix 4) unchanged; live repro matrix for Fix 3
+still open (this incident explains the reported "error" for the 386 question).
 
 ---
 
