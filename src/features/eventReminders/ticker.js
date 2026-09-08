@@ -16,9 +16,27 @@ const {
   isEventTerminal,
   eventStartMs,
 } = require("./service");
+const { recordSystemAudit } = require("../../core/auditTrail");
 
 /** Every minute, wall clock (local timezone of the process). */
 const REMINDER_CRON = "* * * * *";
+
+/**
+ * Ticker-side cleanup is an automated state mutation (config + role removal)
+ * → one origin-'system' trail row. Slash-origin clears audit themselves.
+ * @param {string} guildId
+ * @param {number|string} configId
+ * @param {string|null} [scheduledEventId]
+ */
+function noteCleanup(guildId, configId, scheduledEventId = null) {
+  recordSystemAudit({
+    guildId,
+    action: "event_reminders.cleanup",
+    targetType: "event_reminder",
+    targetId: String(configId),
+    details: { scheduled_event_id: scheduledEventId },
+  });
+}
 
 /**
  * Deliver due offsets (one message per offset).
@@ -67,6 +85,7 @@ async function deliverOne(client, row) {
 
   if (!scheduledEvent || isEventTerminal(scheduledEvent)) {
     await cleanupEventReminderByConfigId(guild, row.config_id);
+    noteCleanup(row.guild_id, row.config_id, row.scheduled_event_id || null);
     markReminderSent(row.offset_id, null);
     return;
   }
@@ -135,6 +154,7 @@ async function safetyCleanup(client, nowMs) {
 
       if (!scheduledEvent || isEventTerminal(scheduledEvent)) {
         await cleanupEventReminderByConfigId(guild, config.id);
+        noteCleanup(config.guild_id, config.id, config.scheduled_event_id);
         continue;
       }
 
@@ -146,6 +166,7 @@ async function safetyCleanup(client, nowMs) {
         );
         if (allDone) {
           await cleanupEventReminderByConfigId(guild, config.id);
+          noteCleanup(config.guild_id, config.id, config.scheduled_event_id);
         }
       }
     } catch (err) {

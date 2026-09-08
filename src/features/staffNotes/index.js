@@ -29,6 +29,7 @@ const {
 const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   Color,
   formatNoteRef,
@@ -347,6 +348,17 @@ async function handleAdd(interaction, ctx) {
   }
 
   const note = result.note;
+  recordSlashAudit({
+    interaction,
+    action: "notes.add",
+    targetType: "note",
+    targetId: String(note.id),
+    details: {
+      note_number: note.note_number,
+      subject_user_id: target.id,
+      content: snippet(note.content, 500),
+    },
+  });
   await logConfigChange(interaction.client, interaction.guildId, {
     title: "Staff note created",
     command: "/note add",
@@ -401,6 +413,17 @@ async function handleAddNoteModal(interaction, ctx) {
   }
 
   const note = result.note;
+  recordSlashAudit({
+    interaction,
+    action: "notes.add",
+    targetType: "note",
+    targetId: String(note.id),
+    details: {
+      note_number: note.note_number,
+      subject_user_id: userId,
+      content: snippet(note.content, 500),
+    },
+  });
   await logConfigChange(
     ctx?.client || interaction.client,
     interaction.guildId,
@@ -606,6 +629,17 @@ async function applyNoteEdit(
     return;
   }
 
+  recordSlashAudit({
+    interaction,
+    action: "notes.update",
+    targetType: "note",
+    targetId: String(note.id),
+    details: {
+      note_number: note.note_number,
+      subject_user_id: note.user_id,
+      content: snippet(note.content, 500),
+    },
+  });
   await logConfigChange(
     ctx?.client || interaction.client,
     interaction.guildId,
@@ -656,6 +690,16 @@ async function handleDelete(interaction, ctx) {
     interaction.user.id,
   );
 
+  recordSlashAudit({
+    interaction,
+    action: "notes.delete",
+    targetType: "note",
+    targetId: String(note.id),
+    details: {
+      note_number: note.note_number,
+      subject_user_id: note.user_id,
+    },
+  });
   await logConfigChange(interaction.client, interaction.guildId, {
     title: "Staff note soft-deleted",
     command: "/note delete",

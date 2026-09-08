@@ -24,6 +24,7 @@ const {
 const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const { recordUserChannelMessage } = require("./service");
 const {
   startUserBackfill,
@@ -162,6 +163,13 @@ async function handleActivityConfig(interaction, ctx) {
 
     const inserted = addActivityIgnore(guildId, target.id, kind);
     if (inserted) {
+      recordSlashAudit({
+        interaction,
+        action: "activity.ignore_add",
+        targetType: "channel",
+        targetId: target.id,
+        details: { kind },
+      });
       await logConfigChange(client, guildId, {
         title: "Activity ignore added",
         command: "/activityconfig ignore add",
@@ -181,6 +189,12 @@ async function handleActivityConfig(interaction, ctx) {
     const target = interaction.options.getChannel("target", true);
     const removed = removeActivityIgnore(guildId, target.id);
     if (removed) {
+      recordSlashAudit({
+        interaction,
+        action: "activity.ignore_remove",
+        targetType: "channel",
+        targetId: target.id,
+      });
       await logConfigChange(client, guildId, {
         title: "Activity ignore removed",
         command: "/activityconfig ignore remove",
@@ -259,6 +273,13 @@ async function handleActivityConfig(interaction, ctx) {
   if (group === "backfill" && sub === "cancel") {
     const result = cancelBackfill(guildId);
     if (result.cancelled) {
+      recordSlashAudit({
+        interaction,
+        action: "activity.backfill_cancel",
+        targetType: "guild",
+        targetId: guildId,
+        details: { kind: result.kind ?? null },
+      });
       await logConfigChange(client, guildId, {
         title: "Activity backfill cancel",
         command: "/activityconfig backfill cancel",
@@ -299,6 +320,16 @@ async function handleActivityConfig(interaction, ctx) {
 
     const pages = result.maxPagesPerChannel ?? 50;
     const approxMsgs = pages * 100;
+    recordSlashAudit({
+      interaction,
+      action: "activity.backfill_start",
+      targetType: "guild",
+      targetId: guildId,
+      details: {
+        channels: result.channels ?? null,
+        max_pages: pages,
+      },
+    });
     await logConfigChange(client, guildId, {
       title: "Activity guild backfill started",
       command: "/activityconfig backfill all",

@@ -11,6 +11,7 @@ const {
   getGuildSettings,
 } = require("../../db");
 const { logWarnEvent } = require("../logs/auditLog");
+const { recordSystemAudit } = require("../../core/auditTrail");
 const { Color } = require("../../core/theme");
 
 /** Every minute. */
@@ -40,6 +41,17 @@ async function runWarnExpiryTick(client, opts = {}) {
       });
       if (!updated) continue;
       voided += 1;
+
+      recordSystemAudit({
+        guildId: row.guild_id,
+        action: "warnings.expire",
+        targetType: "warning",
+        targetId: String(updated.id),
+        details: {
+          warning_number: updated.warning_number,
+          subject_user_id: row.user_id,
+        },
+      });
 
       const activeCount = countActiveWarnings(row.guild_id, row.user_id);
       const ref = `W-${updated.warning_number}`;

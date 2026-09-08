@@ -1,5 +1,5 @@
 /**
- * Web admin console session store (migration 023_web_sessions).
+ * Web admin console session store (migration 028_web_sessions).
  *
  * The web auth layer owns session-id generation (opaque 32-byte random),
  * sliding/absolute expiry policy, and cookie handling; this repository is
