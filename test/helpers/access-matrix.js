@@ -25,6 +25,13 @@
 
 const assert = require("node:assert/strict");
 
+/**
+ * Stable structural marker of the authenticated guild shell (src/web/views/
+ * layout.js `<header class="shell-bar">`). Used by the shellOk outcome —
+ * a denied/plain page can never contain it.
+ */
+const SHELL_MARKER = "shell-bar";
+
 // ---------------------------------------------------------------------------
 // Live-app route enumeration (Express 5: `app.router` lazy getter → Router
 // instance with `.stack`; route layers carry `route.path` + `route.methods`).
@@ -157,6 +164,24 @@ function expectAssetOk(bytes) {
 function expectMethodNotAllowed() {
   return { kind: "methodNotAllowed" };
 }
+/**
+ * Allowed page INSIDE the guild shell: 200 HTML, contains the shell markers
+ * AND the page-specific heading marker (unique per page), Cache-Control
+ * no-store (console pages are session-scoped — §8.7). Phase 1+ gate suites
+ * (subtask 23) use this for the tier-permitted cells.
+ * @param {string} marker unique heading string rendered by the page
+ */
+function expectShellOk(marker) {
+  return { kind: "shellOk", marker };
+}
+/**
+ * Right-guild, wrong-tier denial: the FIXED generic 403 (body exactly
+ * "Forbidden") from src/web/middleware/requireTier.js — generic 404 would be
+ * wrong here (viewer IS in the guild) and anything richer would leak.
+ */
+function expectForbidden() {
+  return { kind: "forbidden" };
+}
 
 /**
  * Run ONE matrix cell: fetch (base+url as viewer cookieId) and assert the
@@ -215,6 +240,31 @@ async function runOutcome(cell) {
       "private, max-age=86400",
       `${label}${cell.url}: asset cache framing`
     );
+  } else if (e.kind === "shellOk") {
+    assert.equal(res.status, 200, `${label}${cell.url}: status`);
+    assert.match(res.headers.get("content-type") || "", /^text\/html/, `${label}${cell.url}: content-type`);
+    assert.ok(
+      res.body.includes(SHELL_MARKER),
+      `${label}${cell.url}: page must render inside the guild shell`
+    );
+    assert.ok(
+      res.body.includes(e.marker),
+      `${label}${cell.url}: page body must contain its heading marker`
+    );
+    assert.equal(
+      res.headers.get("cache-control"),
+      "no-store",
+      `${label}${cell.url}: console pages must be no-store`
+    );
+  } else if (e.kind === "forbidden") {
+    assert.equal(res.status, 403, `${label}${cell.url}: in-guild wrong-tier must be 403 (§8.6 tier table)`);
+    assert.equal(res.body, "Forbidden", `${label}${cell.url}: body must be the fixed generic 403`);
+    assert.equal(
+      res.headers.get("content-type"),
+      "text/plain; charset=utf-8",
+      `${label}${cell.url}: content-type`
+    );
+    assert.equal(res.headers.get("cache-control"), "no-store", `${label}${cell.url}: no-store`);
   } else if (e.kind === "methodNotAllowed") {
     assert.equal(res.status, 405, `${label}${cell.url}: status must be the legacy 405 (§8.8 0a parity)`);
     assert.equal(res.body, "Method not allowed", `${label}${cell.url}: body`);
@@ -354,6 +404,9 @@ module.exports = {
   expectTranscriptOk,
   expectAssetOk,
   expectMethodNotAllowed,
+  expectShellOk,
+  expectForbidden,
+  SHELL_MARKER,
   createLoginSession,
   seedArchivedTicket,
   PNG,
