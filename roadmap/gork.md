@@ -171,7 +171,7 @@ extracted page content feeds the same tool loop.
 | Pipeline hook | New step in `onMessageCreate` after honeypot. Fast checks (settings, match, ticket-channel skip, cooldown, queue admission) run inline; the slow LLM job is fired as a detached promise (caught + logged) so the pipeline never stalls. |
 | Typing | `channel.sendTyping()` immediately on trigger — **including for queued requests while they wait** — refreshed every **8s** until the reply is sent |
 | Reply | Plain text via `message.reply(...)` — replies **to** the keyword message. No embed, no source list (model may inline URLs). |
-| Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (`gork_cooldown_sec`, 0–3600, **0 = disabled**). **Staff** (ManageGuild or any `staff_roles` role) **bypass** the cooldown entirely. Hit → **silent ignore** |
+| Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (`gork_cooldown_sec`, 0–3600, **0 = disabled**). **Staff** (ManageGuild or any `staff_roles` role) **bypass** the cooldown entirely. Hit → **clock reaction** (🕐 on the trigger message, best-effort; still no reply, no LLM call) |
 | Concurrency / queue | **1 in-flight** gork request per guild; further triggers are **queued FIFO**, up to **5 waiting** (in-memory). When the queue is full, new triggers are **dropped** with the queue-full reply (locked wording in [7.14](#714-design-decisions-locked), decision 20) |
 
 ---
@@ -304,7 +304,7 @@ repo convention):
 - No `AI_API_KEY` → no reply at all
 - Reply-chain context + backfill end to end
 - Busy guild → queued request answered in FIFO order; queue full → drop reply;
-  per-user cooldown → silent; staff user bypasses cooldown
+  per-user cooldown → clock reaction (🕐, no reply); staff user bypasses cooldown
 - Tickets AI regression: summary still works through the extracted core
 
 ---
@@ -339,7 +339,7 @@ repo convention):
 | 10 | `web_search` is a plain OpenAI-compatible **function tool** executed by the bot against the SearXNG JSON API (architecture A). Max 3 searches/question, top-5 results, per-guild toggle, `SEARXNG_URL` env-only hosting. |
 | 11 | Reply is **plain text** to the keyword message; no embed, no source list — model may inline source facts/URLs when useful or asked. |
 | 12 | Typing indicator on trigger, refreshed every 8s. |
-| 13 | Per-user cooldown **180s** default (silent on hit), **staff bypass** (ManageGuild or `staff_roles`), guild-overridable 0–3600 via `/gork cooldown` (0 = disabled). Concurrency: **1 in-flight + FIFO queue of up to 5 waiting** per guild; queue full → request **dropped** with the queue-full reply. |
+| 13 | Per-user cooldown **180s** default (hit → **clock reaction** 🕐 on the trigger, no reply — updated 2026-09; was silent), **staff bypass** (ManageGuild or `staff_roles`), guild-overridable 0–3600 via `/gork cooldown` (0 = disabled). Concurrency: **1 in-flight + FIFO queue of up to 5 waiting** per guild; queue full → request **dropped** with the queue-full reply. |
 | 14 | **Every Q&A logged to the audit channel** (embed with question, context mode, search count, model, duration, truncated answer, jump links); failures as a compact one-liner; console fallback. |
 | 15 | `/gork` config is **staff-gated** (`requireStaff`). |
 | 16 | Naming: **gork** everywhere — feature dir, command, `gork_*` settings columns, roadmap/docs files. Misspelling of "grok" is intentional. |

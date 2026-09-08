@@ -153,10 +153,11 @@ function attachTyping(channel) {
 /**
  * Build a fake Message with the full surface the pipeline + gork trigger
  * read: a superset of the harness `createMessage` fields plus `reply` (the
- * trigger replies TO the keyword message), `memberPermissions`, and an
- * optional reply `reference` / `fetchReference` for the chain-walk path.
+ * trigger replies TO the keyword message), `react` (clock reaction on a
+ * cooldown hit), `memberPermissions`, and an optional reply `reference` /
+ * `fetchReference` for the chain-walk path.
  *
- * @returns {{ message: object, replies: object[] }}
+ * @returns {{ message: object, replies: object[], reacts: string[] }}
  */
 function makeGorkMessage(env, opts = {}) {
   const channel = opts.channel || env.channels.general;
@@ -169,6 +170,7 @@ function makeGorkMessage(env, opts = {}) {
   const id = opts.id || `gork-msg-${Math.random().toString(36).slice(2)}`;
 
   const replies = [];
+  const reacts = [];
   const message = {
     id,
     content: opts.content || "",
@@ -199,12 +201,16 @@ function makeGorkMessage(env, opts = {}) {
       replies.push(sent);
       return sent;
     },
+    react: async (emoji) => {
+      reacts.push(emoji);
+      return { emoji };
+    },
     delete: async () => {
       message.deleted = true;
     },
     _wasDeleted: () => message.deleted,
   };
-  return { message, replies };
+  return { message, replies, reacts };
 }
 
 /** Flatten an EmbedBuilder (or plain object) into searchable text. */
@@ -347,7 +353,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     }
   });
 
-  it("per-user cooldown: second trigger inside the window is silent (no reply, no fetch)", async () => {
+  it("per-user cooldown: second trigger inside the window gets the clock reaction (no reply, no fetch)", async () => {
     const env = await createIntegrationEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
@@ -361,7 +367,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       attachTyping(env.channels.general);
 
-      const { message: m1, replies: r1 } = makeGorkMessage(env, {
+      const { message: m1, replies: r1, reacts: c1 } = makeGorkMessage(env, {
         id: "t-cd-1",
         content: "gork: first question",
       });
@@ -370,18 +376,29 @@ describe("integration: gork (AI keyword Q&A)", () => {
         await waitFor(() => r1.length >= 1),
         "first trigger must be answered"
       );
+      assert.deepEqual(
+        c1,
+        [],
+        "an allowed trigger must not get the cooldown reaction"
+      );
 
-      const { message: m2, replies: r2 } = makeGorkMessage(env, {
+      const { message: m2, replies: r2, reacts: c2 } = makeGorkMessage(env, {
         id: "t-cd-2",
         content: "gork: second question",
       });
       await env.onMessageCreate(m2);
-      await sleep(500); // a cooldown hit must stay silent; give it room
+      assert.ok(
+        await waitFor(() => c2.length >= 1),
+        "cooldown hit must react with the clock emoji"
+      );
+      assert.deepEqual(c2, ["🕐"], "exactly one clock reaction on a hit");
+      await sleep(250); // give any erroneous reply/second react room to land
       assert.equal(
         r2.length,
         0,
-        "second trigger inside the cooldown must stay silent"
+        "second trigger inside the cooldown must not reply"
       );
+      assert.equal(c2.length, 1, "exactly one reaction on a cooldown hit");
       assert.equal(
         fetchMock.calls.length,
         1,
@@ -408,7 +425,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       attachTyping(env.channels.general);
 
-      const { message: m1, replies: r1 } = makeGorkMessage(env, {
+      const { message: m1, replies: r1, reacts: c1 } = makeGorkMessage(env, {
         id: "t-staff-1",
         content: "gork: admin question one",
         author: env.users.adminUser,
@@ -420,7 +437,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
         "staff first trigger must be answered"
       );
 
-      const { message: m2, replies: r2 } = makeGorkMessage(env, {
+      const { message: m2, replies: r2, reacts: c2 } = makeGorkMessage(env, {
         id: "t-staff-2",
         content: "gork: admin question two",
         author: env.users.adminUser,
@@ -433,6 +450,11 @@ describe("integration: gork (AI keyword Q&A)", () => {
       );
       assert.equal(r2[0].content, "Second admin answer (staff bypass).");
       assert.equal(fetchMock.calls.length, 2, "both staff triggers run the LLM");
+      assert.deepEqual(
+        [...c1, ...c2],
+        [],
+        "staff bypass means the clock reaction never fires"
+      );
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
