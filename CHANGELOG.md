@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.8.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.7.2...v1.8.0) (2026-09-08)
+
+
+### Features
+
+* **gork:** react with clock emoji on per-user cooldown hit ([3316031](https://github.com/metalsp0rk/boiler-snake/commit/33160313247a402923bcc4eb4323a226548cb7fc))
+
+
+### Bug Fixes
+
+* **gork:** LLM error handling — thinking-model empty answers, timeouts, opaque failures ([0d79be6](https://github.com/metalsp0rk/boiler-snake/commit/0d79be6e35ab4c8a716e03248f07f24f81e1d0bb))
+
 ## [1.7.2](https://github.com/metalsp0rk/boiler-snake/compare/v1.7.1...v1.7.2) (2026-09-08)
 
 
