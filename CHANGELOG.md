@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.11.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.10.0...v1.11.0) (2026-09-09)
+
+
+### Features
+
+* **staff-roles:** track added_by and test role-change audit embeds ([74684b2](https://github.com/metalsp0rk/boiler-snake/commit/74684b2695ab5cb450592dd8ce76e7d97f3142b2))
+* **tickets:** DM requester the transcript link on archive (non-sensitive, best-effort) ([35901c2](https://github.com/metalsp0rk/boiler-snake/commit/35901c21d2eff9dedd5df2f66a386229ebeb7d3c))
+
+
+### Bug Fixes
+
+* surface specific error causes and isolate feature boot hooks ([dec6375](https://github.com/metalsp0rk/boiler-snake/commit/dec6375bb45984ff5cb09405d50183e7b2ee977d))
+* **tickets:** only report staff roles actually denied channel access, with per-role reasons ([019f777](https://github.com/metalsp0rk/boiler-snake/commit/019f7779b2de74caf0b2dbac31042a5829814574))
+* **twitch:** surface fetch error causes in Helix request logs ([e50b4dc](https://github.com/metalsp0rk/boiler-snake/commit/e50b4dc6ac3983dd929caa9eff0465cc1ef70a28))
+
 ## [1.10.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.9.0...v1.10.0) (2026-09-09)
 
 
