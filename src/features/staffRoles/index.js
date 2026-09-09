@@ -32,8 +32,10 @@ const {
   getCommandPermissionOAuthConfig,
   createOAuthState,
   buildAuthorizeUrl,
-  applyGuildCommandPermissions,
   maybeAutoSyncCommandPermissions,
+  runCommandVisibilitySync,
+  SYNC_AUDIT_ACTION,
+  buildSyncAuditDetails,
 } = require("../commandPermissions");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
@@ -374,6 +376,56 @@ async function handleRoleList(interaction) {
 }
 
 /**
+ * Env-not-configured reply body (shared between the leading precondition
+ * check and the core's env_not_configured outcome — ONE template, byte-
+ * identical replies whatever branch produced it).
+ * @param {{ missing: string[], redirectUri: string|null }} cfg
+ */
+function envNotConfiguredContent(cfg) {
+  return (
+    "**Command visibility sync is not configured on this bot.**\n\n" +
+    "Operators need:\n" +
+    cfg.missing.map((m) => `• \`${m}\``).join("\n") +
+    "\n\nAlso add the OAuth2 redirect URI in the Discord Developer Portal:\n" +
+    `\`${cfg.redirectUri || "https://your-public-host/oauth/command-permissions/callback"}\`\n\n` +
+    "Handlers still enforce staff permissions even without sync."
+  );
+}
+
+/**
+ * Authorize-link reply body (no-token / force_reauth / reauth branches).
+ * @param {string} url
+ * @param {string|null} redirectUri
+ */
+function authorizeLinkContent(url, redirectUri) {
+  return (
+    "**Authorize command visibility sync**\n\n" +
+    "1. Click the link below (you need **Manage Server** + **Manage Roles**).\n" +
+    "2. Approve the app permission to update command permissions.\n" +
+    "3. The bot will allow each configured staff role to see staff slash commands.\n\n" +
+    `[Authorize Boiler Snake](${url})\n\n` +
+    `_Redirect: \`${redirectUri}\`_\n` +
+    "After authorizing, staff without Manage Server should see tools like `/note` and `/setxp` in the `/` menu."
+  );
+}
+
+/**
+ * Mint a purpose-tagged (cmd_perms) authorize URL for THIS user+guild.
+ * Throws when OAuth state cannot be signed — callers keep their own error
+ * reply semantics (visible message vs. silent reauth-link fallback).
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {string} guildId
+ * @returns {string}
+ */
+function buildAuthorizeLink(interaction, guildId) {
+  const state = createOAuthState({
+    guildId,
+    userId: interaction.user.id,
+  });
+  return buildAuthorizeUrl(state);
+}
+
+/**
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  */
 async function handleSyncPermissions(interaction) {
@@ -385,32 +437,30 @@ async function handleSyncPermissions(interaction) {
     return;
   }
 
+  // Subtask 31 PARITY REFACTOR: the trigger flow (env preconditions →
+  // stored-authorization check → sync → audit-details) moved VERBATIM into
+  // the shared core src/features/commandPermissions/syncTrigger.js, which
+  // the web admin trigger (src/web/routes/syncAction.js) calls too. This
+  // handler keeps its Discord-transport UX (reply choreography, the
+  // authorize-link flow, force_reauth) around the shared call. Replies are
+  // byte-identical to the pre-refactor flow.
   const cfg = getCommandPermissionOAuthConfig();
   if (!cfg.ready) {
     await replyEphemeral(interaction, {
-      content:
-        "**Command visibility sync is not configured on this bot.**\n\n" +
-        "Operators need:\n" +
-        cfg.missing.map((m) => `• \`${m}\``).join("\n") +
-        "\n\nAlso add the OAuth2 redirect URI in the Discord Developer Portal:\n" +
-        `\`${cfg.redirectUri || "https://your-public-host/oauth/command-permissions/callback"}\`\n\n` +
-        "Handlers still enforce staff permissions even without sync.",
+      content: envNotConfiguredContent(cfg),
     });
     return;
   }
 
   const forceReauth = !!interaction.options.getBoolean("force_reauth");
   const guildId = interaction.guildId;
-  const hasToken = hasCommandPermissionOauth(guildId);
 
-  if (!hasToken || forceReauth) {
+  if (forceReauth && hasCommandPermissionOauth(guildId)) {
+    // Operator wants a FRESH consent round even though a token is stored —
+    // link reply, no sync (identical to the not-authorized branch below).
     let url;
     try {
-      const state = createOAuthState({
-        guildId,
-        userId: interaction.user.id,
-      });
-      url = buildAuthorizeUrl(state);
+      url = buildAuthorizeLink(interaction, guildId);
     } catch (err) {
       await replyEphemeral(interaction, {
         content: `Could not build authorize URL: ${err?.message || err}`,
@@ -419,32 +469,68 @@ async function handleSyncPermissions(interaction) {
     }
 
     await replyEphemeral(interaction, {
-      content:
-        "**Authorize command visibility sync**\n\n" +
-        "1. Click the link below (you need **Manage Server** + **Manage Roles**).\n" +
-        "2. Approve the app permission to update command permissions.\n" +
-        "3. The bot will allow each configured staff role to see staff slash commands.\n\n" +
-        `[Authorize Boiler Snake](${url})\n\n` +
-        `_Redirect: \`${cfg.redirectUri}\`_\n` +
-        "After authorizing, staff without Manage Server should see tools like `/note` and `/setxp` in the `/` menu.",
+      content: authorizeLinkContent(url, cfg.redirectUri),
     });
     return;
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await runSyncPermissionsViaCore(interaction, guildId, cfg);
+}
 
+/**
+ * Deferred sync branch: shared core does the work, this handler owns the
+ * reply + the fail-safe slash audit (recordSlashAudit NEVER throws — the
+ * web twin writes FAIL-CLOSED via req.audit; see core header).
+ * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {string} guildId
+ * @param {{ redirectUri: string|null }} cfg
+ */
+async function runSyncPermissionsViaCore(interaction, guildId, cfg) {
   try {
-    const result = await applyGuildCommandPermissions(guildId);
+    const out = await runCommandVisibilitySync(guildId, {
+      // defer exactly when the sync is about to run (post-preconditions,
+      // pre-Discord-call) — the pre-refactor choreography.
+      onBeforeSync: () =>
+        interaction.deferReply({ flags: MessageFlags.Ephemeral }),
+    });
+
+    if (out.status === "env_not_configured") {
+      // Only reachable when env changed between the leading check and the
+      // core read — same reply as the leading branch (one template).
+      await replyEphemeral(interaction, {
+        content: envNotConfiguredContent({
+          missing: out.missing,
+          redirectUri: out.redirectUri,
+        }),
+      });
+      return;
+    }
+
+    if (out.status === "not_authorized") {
+      let url;
+      try {
+        url = buildAuthorizeLink(interaction, guildId);
+      } catch (err) {
+        await replyEphemeral(interaction, {
+          content: `Could not build authorize URL: ${err?.message || err}`,
+        });
+        return;
+      }
+
+      await replyEphemeral(interaction, {
+        content: authorizeLinkContent(url, cfg.redirectUri),
+      });
+      return;
+    }
+
+    const result = out.result;
     const oauth = getCommandPermissionOauth(guildId);
     recordSlashAudit({
       interaction,
-      action: "staff.sync_permissions",
+      action: SYNC_AUDIT_ACTION,
       targetType: "guild",
       targetId: guildId,
-      details: {
-        role_count: result.roleCount,
-        commands_updated: result.updated.length,
-      },
+      details: buildSyncAuditDetails(result),
     });
     const parts = [
       `**Synced slash-command visibility** for this server.`,
