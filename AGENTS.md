@@ -50,6 +50,17 @@ docker compose run --rm bot node src/commands/register.js
 
 See [docs/architecture.md](docs/architecture.md) for the full layout and boot sequence.
 
+## Error Handling
+
+Every unit of functionality must be wrapped so a failure produces a **logged, specific error** — never a silent drop and never a dead-end "something failed".
+
+1. **Wrap all entry points**: command/autocomplete/modal/button handlers, pipeline steps, tickers, and boot hooks. The router (`src/commands/router.js`) and pipelines (`src/bot/pipelines.js`) wrap at their boundaries; any *detached* async work (fire-and-forget promises, `setInterval` callbacks) must attach its own `.catch()` / try/catch so one failure can't kill the loop or login.
+2. **Log with context**: `console.error("[feature] what failed:", err?.message || err)` plus identifying ids (guild, user, command, customId) — enough to reproduce from logs alone.
+3. **User-facing replies carry the cause**: embed the specific error (`` `Could not post panel: ${err?.message || err}` ``) or translate it (see `formatChannelCreateError` in `src/features/tickets/overwrites.js`). Never reply "check logs", `"unknown error"`, or bare `"(database error)"` — if the user can't act on it, it's not an error message.
+4. **Sanctioned generics are the exception, not the tool**: `MSG_GENERIC_ERROR` via `safeErrorReply` is the router's last-resort fallback only (handler threw before being specific), and the public HTTP server's generic 500 `Internal error` (`src/features/tickets/httpServer.js`) intentionally never leaks internals to unauthenticated callers. Features must not invent their own generic replies.
+5. **Partial failures report partial results**: multi-step operations (bulk role sync, ticket close, batch deletes) accumulate per-item failures and surface them (see the "warnings" pattern in `src/features/tickets/close.js`) instead of aborting silently or claiming total success.
+6. **Return `{ ok:false, error }` from services** — services never reply to Discord themselves and never throw uncaught; handlers decide how to surface the error.
+
 ## Intentions & Constraints
 
 1. **Cooldowns**: message (default 20s), reaction (default 10s) — configurable per guild
@@ -67,6 +78,7 @@ See [docs/architecture.md](docs/architecture.md) for the full layout and boot se
 - Voice ticker aligns to minute boundaries
 - Migrations under `src/db/migrations/` run automatically on db load
 - Docker: persist the whole data dir (WAL files beside the DB)
+- Feature boot hooks in `src/features/load.js` wrap each `registerEvents`/`start` call per feature and log `[feature] <name>.<hook> failed` — a broken feature degrades instead of killing login; keep hooks idempotent and don't remove the guards
 - Use Conventional Commit prefixes (`feat:`, `fix:`, …) for release-please
 
 ## Documentation (VitePress)
