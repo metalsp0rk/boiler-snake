@@ -297,7 +297,7 @@ describe("tickets overwrites", () => {
     process.env.DATA_DIR = loaded.tmpDir;
   });
 
-  it("normal ticket allows staff roles; sensitive denies them", () => {
+  it("normal ticket allows staff roles; sensitive denies them", async () => {
     const {
       buildTicketOverwrites,
       STAFF_ALLOW,
@@ -328,7 +328,7 @@ describe("tickets overwrites", () => {
       channelId: "ch-ow-staff-for",
       openedByStaffId: "junior-opener",
     });
-    const forOw = buildTicketOverwrites({
+    const forOw = await buildTicketOverwrites({
       guildId: "g-ow",
       everyoneId: "g-ow",
       botUserId: "bot-1",
@@ -344,7 +344,7 @@ describe("tickets overwrites", () => {
     );
     assert.ok(forById("role-staff-a")?.allow, "senior staff roles still apply");
     // legacy row: opened_by_staff_id without ticket_staff / staff_owner still grants access
-    const legacyOw = buildTicketOverwrites({
+    const legacyOw = await buildTicketOverwrites({
       guildId: "g-ow",
       everyoneId: "g-ow",
       botUserId: "bot-1",
@@ -372,7 +372,7 @@ describe("tickets overwrites", () => {
     db.addTicketStaff(ticket.id, "extra-mod", "owner-mod");
     db.addTicketMember(ticket.id, "friend", "owner-mod");
 
-    const normal = buildTicketOverwrites({
+    const normal = await buildTicketOverwrites({
       guildId: "g-ow",
       everyoneId: "g-ow",
       botUserId: "bot-1",
@@ -389,7 +389,7 @@ describe("tickets overwrites", () => {
     assert.ok(byId("role-staff-a")?.allow);
     assert.ok(byId("role-staff-b")?.allow);
     // Junior staff roles must not get ticket overwrites when using DB defaults
-    const normalFromDb = buildTicketOverwrites({
+    const normalFromDb = await buildTicketOverwrites({
       guildId: "g-ow",
       everyoneId: "g-ow",
       botUserId: "bot-1",
@@ -403,7 +403,7 @@ describe("tickets overwrites", () => {
     );
 
     // Soft-close overwrites deny members, keep staff
-    const closedOw = buildTicketOverwrites({
+    const closedOw = await buildTicketOverwrites({
       guildId: "g-ow",
       everyoneId: "g-ow",
       botUserId: "bot-1",
@@ -420,7 +420,7 @@ describe("tickets overwrites", () => {
 
     db.setTicketSensitive(ticket.id);
     const sensTicket = db.getTicketById(ticket.id);
-    const sensitive = buildTicketOverwrites({
+    const sensitive = await buildTicketOverwrites({
       guildId: "g-ow",
       everyoneId: "g-ow",
       botUserId: "bot-1",
@@ -437,7 +437,7 @@ describe("tickets overwrites", () => {
     assert.ok(sById("creator")?.allow);
   });
 
-  it("getManageableStaffRoleIds skips missing and higher roles", () => {
+  it("getManageableStaffRoleIds skips missing and higher roles", async () => {
     const {
       getManageableStaffRoleIds,
     } = require("../src/features/tickets/overwrites");
@@ -447,24 +447,239 @@ describe("tickets overwrites", () => {
     db.addStaffRole("g-hier", "role-missing");
 
     const rolesCache = new Map([
-      ["role-low", { id: "role-low", position: 1, managed: false }],
-      ["role-high", { id: "role-high", position: 10, managed: false }],
+      ["role-low", { id: "role-low", name: "Low", position: 1, managed: false }],
+      ["role-high", { id: "role-high", name: "High", position: 10, managed: false }],
     ]);
     const guild = {
       id: "g-hier",
-      roles: { cache: rolesCache },
+      roles: {
+        cache: rolesCache,
+        // v14 semantics: deleted role fetches resolve null
+        fetch: async () => null,
+      },
     };
     const botMember = {
       roles: {
-        highest: { position: 5 },
-        cache: new Map([["bot-role", { position: 5 }]]),
+        highest: { id: "bot-role", position: 5 },
+        cache: new Map([["bot-role", { id: "bot-role", position: 5 }]]),
       },
     };
 
-    const { roleIds, skipped } = getManageableStaffRoleIds(guild, botMember);
+    const { roleIds, skipped } = await getManageableStaffRoleIds(
+      guild,
+      botMember,
+    );
     assert.deepEqual(roleIds, ["role-low"]);
-    assert.ok(skipped.some((s) => s.id === "role-high"));
-    assert.ok(skipped.some((s) => s.id === "role-missing"));
+    const high = skipped.find((s) => s.id === "role-high");
+    assert.ok(high, "role-high must be skipped");
+    assert.match(high.reason, /above bot role in hierarchy/);
+    assert.equal(high.name, "High");
+    const missing = skipped.find((s) => s.id === "role-missing");
+    assert.ok(missing, "role-missing must be skipped");
+    assert.equal(missing.reason, "role not found in guild");
+  });
+
+  it("getManageableStaffRoleIds falls back to guild.roles.fetch on cache miss", async () => {
+    const {
+      getManageableStaffRoleIds,
+    } = require("../src/features/tickets/overwrites");
+
+    db.addStaffRole("g-fetch", "role-uncached", "senior");
+
+    const fetchCalls = [];
+    const guild = {
+      id: "g-fetch",
+      roles: {
+        cache: new Map(), // cache miss (newly created role / guild fetched without roles)
+        fetch: async (roleId) => {
+          fetchCalls.push(roleId);
+          return { id: roleId, name: "Uncached Staff", position: 2, managed: false };
+        },
+      },
+    };
+    const botMember = {
+      roles: {
+        highest: { id: "bot-role", position: 5 },
+        cache: new Map([["bot-role", { id: "bot-role", position: 5 }]]),
+      },
+    };
+
+    const { roleIds, skipped } = await getManageableStaffRoleIds(
+      guild,
+      botMember,
+    );
+    assert.deepEqual(fetchCalls, ["role-uncached"], "must attempt fetch on cache miss");
+    assert.deepEqual(roleIds, ["role-uncached"], "fetched role must not be skipped");
+    assert.deepEqual(skipped, [], "cache miss alone is not a skip");
+  });
+
+  it("getManageableStaffRoleIds does not count bot-held staff role as skipped", async () => {
+    const {
+      getManageableStaffRoleIds,
+    } = require("../src/features/tickets/overwrites");
+
+    db.addStaffRole("g-held", "role-staff-held", "senior");
+
+    // Bot's highest role IS the staff role it also holds → overwrite for the
+    // bot itself is unnecessary → must NOT be reported as a failure.
+    const staffRole = { id: "role-staff-held", name: "Staff", position: 5, managed: false };
+    const guild = {
+      id: "g-held",
+      roles: {
+        cache: new Map([["role-staff-held", staffRole]]),
+        fetch: async () => staffRole,
+      },
+    };
+    const botMember = {
+      roles: {
+        highest: staffRole,
+        cache: new Map([
+          ["role-staff-held", staffRole],
+        ]),
+      },
+    };
+
+    const { roleIds, skipped } = await getManageableStaffRoleIds(
+      guild,
+      botMember,
+    );
+    assert.deepEqual(skipped, [], "bot-held staff role must not raise the note");
+    assert.deepEqual(roleIds, [], "unequal-position overwrite still unsafe → not granted");
+  });
+
+  it("getManageableStaffRoleIds still grants overwrite for bot-held role when bot has a higher role", async () => {
+    const {
+      getManageableStaffRoleIds,
+    } = require("../src/features/tickets/overwrites");
+
+    db.addStaffRole("g-held2", "role-staff-both", "senior");
+
+    const staffRole = { id: "role-staff-both", name: "Staff", position: 3, managed: false };
+    const guild = {
+      id: "g-held2",
+      roles: {
+        cache: new Map([["role-staff-both", staffRole]]),
+        fetch: async () => staffRole,
+      },
+    };
+    // Bot holds the staff role but ALSO a higher admin role → can and should
+    // still set the overwrite so human members of the staff role see tickets.
+    const botMember = {
+      roles: {
+        highest: { id: "role-admin", position: 9 },
+        cache: new Map([
+          ["role-staff-both", staffRole],
+          ["role-admin", { id: "role-admin", position: 9 }],
+        ]),
+      },
+    };
+
+    const { roleIds, skipped } = await getManageableStaffRoleIds(
+      guild,
+      botMember,
+    );
+    assert.deepEqual(roleIds, ["role-staff-both"]);
+    assert.deepEqual(skipped, []);
+  });
+
+  it("getManageableStaffRoleIds skips managed roles with a specific reason", async () => {
+    const {
+      getManageableStaffRoleIds,
+    } = require("../src/features/tickets/overwrites");
+
+    db.addStaffRole("g-mgmt", "role-bot-only", "senior");
+
+    const guild = {
+      id: "g-mgmt",
+      roles: {
+        cache: new Map([
+          ["role-bot-only", { id: "role-bot-only", name: "Integrations", position: 2, managed: true }],
+        ]),
+        fetch: async () => null,
+      },
+    };
+    const botMember = {
+      roles: {
+        highest: { id: "bot-role", position: 5 },
+        cache: new Map([["bot-role", { id: "bot-role", position: 5 }]]),
+      },
+    };
+
+    const { roleIds, skipped } = await getManageableStaffRoleIds(
+      guild,
+      botMember,
+    );
+    assert.deepEqual(roleIds, []);
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].id, "role-bot-only");
+    assert.equal(skipped[0].name, "Integrations");
+    assert.match(skipped[0].reason, /managed\/bots-only role/);
+  });
+
+  it("getManageableStaffRoleIds distinguishes fetch failure from deleted role", async () => {
+    const {
+      getManageableStaffRoleIds,
+    } = require("../src/features/tickets/overwrites");
+
+    db.addStaffRole("g-err", "role-api-err", "senior");
+
+    const guild = {
+      id: "g-err",
+      roles: {
+        cache: new Map(),
+        fetch: async () => {
+          const err = new Error("Missing Access");
+          err.code = 50001;
+          throw err;
+        },
+      },
+    };
+    const botMember = {
+      roles: {
+        highest: { id: "bot-role", position: 5 },
+        cache: new Map([["bot-role", { id: "bot-role", position: 5 }]]),
+      },
+    };
+
+    const { roleIds, skipped } = await getManageableStaffRoleIds(
+      guild,
+      botMember,
+    );
+    assert.deepEqual(roleIds, []);
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].id, "role-api-err");
+    // Must NOT claim "not found" when the lookup itself failed
+    assert.doesNotMatch(skipped[0].reason, /not found/);
+    assert.match(skipped[0].reason, /role lookup failed \(Missing Access\)/);
+  });
+
+  it("formatStaffRoleAccessNote lists each role name + reason; empty list → ''", async () => {
+    const {
+      formatStaffRoleAccessNote,
+      describeSkippedStaffRoles,
+    } = require("../src/features/tickets/overwrites");
+
+    assert.equal(formatStaffRoleAccessNote([]), "");
+    assert.equal(formatStaffRoleAccessNote(null), "");
+    assert.equal(formatStaffRoleAccessNote(undefined), "");
+
+    const note = formatStaffRoleAccessNote([
+      { id: "r1", name: "Mod", reason: "above bot role in hierarchy" },
+      { id: "deleted-role-id", name: null, reason: "role not found in guild" },
+    ]);
+    assert.match(note, /2 staff role\(s\) could not get channel access/);
+    assert.match(note, /\*\*Mod\*\* — above bot role in hierarchy/);
+    assert.match(note, /`deleted-role-id` — role not found in guild/);
+    // No role pings
+    assert.doesNotMatch(note, /<@&/);
+
+    assert.equal(
+      describeSkippedStaffRoles([
+        { id: "r1", name: "Mod", reason: "above bot role in hierarchy" },
+        { id: "r2", name: null, reason: "managed/bots-only role" },
+      ]),
+      "Mod (r1): above bot role in hierarchy; r2: managed/bots-only role"
+    );
   });
 
   it("assertBotCanCreateTickets requires Manage Channels", () => {
