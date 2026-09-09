@@ -65,9 +65,48 @@ function sliceSafe(s, end) {
   return str.slice(0, safeCutIndex(str, end));
 }
 
+/**
+ * Max code-unit length of a normalized title / title key (roadmap §7.16.1).
+ */
+const TITLE_KEY_MAX_LEN = 80;
+
+/**
+ * Wrapping punctuation strips for the title key. "Punctuation" here means
+ * anything that is NOT a Unicode letter or number (\p{L}/\p{N}) — so ASCII
+ * symbols, quotes, emoji, and full-width forms all count, and the strip is
+ * only ever applied at the two ends (internal punctuation is kept).
+ */
+const LEADING_NON_LEADERS = /^[^\p{L}\p{N}]+/u;
+const TRAILING_NON_LEADERS = /[^\p{L}\p{N}]+$/u;
+
+/**
+ * Canonicalize a model-written title into the collision key half of a
+ * gork memory (roadmap §7.16.1): SQLite's BINARY collation is case- and
+ * byte-sensitive, so "Loves Rust" and "loves rust  " must collapse into one
+ * same-day upsert via this shared normalization.
+ *
+ * Pure: String(raw ?? "") → trim → collapse internal whitespace runs →
+ * toLowerCase → strip wrapping punctuation from both ends → sliceSafe 80.
+ * Returns "" when nothing survives.
+ *
+ * @param {unknown} raw
+ * @returns {string}
+ */
+function normalizeTitle(raw) {
+  const collapsed = String(raw ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  const stripped = collapsed
+    .replace(LEADING_NON_LEADERS, "")
+    .replace(TRAILING_NON_LEADERS, "");
+  return sliceSafe(stripped, TITLE_KEY_MAX_LEN);
+}
+
 module.exports = {
   isHighSurrogateAt,
   isLowSurrogateAt,
   safeCutIndex,
   sliceSafe,
+  normalizeTitle,
 };

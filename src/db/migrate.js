@@ -30,6 +30,7 @@ const migrations = [
   require("./migrations/020_twitch"),
   require("./migrations/021_gork"),
   require("./migrations/022_gork_access"),
+  require("./migrations/023_gork_memory"),
 ];
 
 const helpers = {

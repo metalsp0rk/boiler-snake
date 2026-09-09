@@ -30,6 +30,7 @@ const userChannelActivity = require("./repositories/userChannelActivity");
 const commandPermissionOauth = require("./repositories/commandPermissionOauth");
 const twitch = require("./repositories/twitch");
 const gorkAccess = require("./repositories/gorkAccess");
+const gorkMemory = require("./repositories/gorkMemory");
 
 module.exports = {
   db,
@@ -270,6 +271,18 @@ module.exports = {
   removeGorkBlock: gorkAccess.removeGorkBlock,
   isGorkBlocked: gorkAccess.isGorkBlocked,
   listGorkBlocks: gorkAccess.listGorkBlocks,
+
+  // gork community memory (per-person memory rows, roadmap §7.16)
+  gorkMemoryUpsert: gorkMemory.upsertMemory,
+  gorkMemoryListForSubjects: gorkMemory.listForSubjects,
+  gorkMemoryListForSubject: gorkMemory.listForSubject,
+  gorkMemoryListForGuild: gorkMemory.listForGuild,
+  gorkMemoryGetById: gorkMemory.getById,
+  gorkMemoryDeleteById: gorkMemory.deleteById,
+  gorkMemoryDeleteForSubject: gorkMemory.deleteForSubject,
+  gorkMemoryDeleteForGuild: gorkMemory.deleteForGuild,
+  gorkMemoryCountForGuild: gorkMemory.countForGuild,
+  gorkMemoryTouch: gorkMemory.touchMemories,
 
   // ticket panels (stored registry)
   createTicketPanel: tickets.createTicketPanel,

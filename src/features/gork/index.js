@@ -4,7 +4,8 @@
  * - `/gork` (staff): configure the trigger keyword, context window,
  *   per-user cooldown, staff prompt rules, the SearXNG web_search toggle,
  *   and the guild master enable switch; ban/unban/list users blocked from
- *   using gork in this guild.
+ *   using gork in this guild; curate the per-person community memory
+ *   (roadmap/gork.md §7.16) with `/gork memory` (off by default).
  * - `handleGorkMessage`: the onMessageCreate pipeline hook — answers
  *   keyword triggers using conversation context and optional web search.
  *
@@ -24,10 +25,18 @@ const {
   addGorkBlock,
   removeGorkBlock,
   listGorkBlocks,
+  gorkMemoryListForSubject,
+  gorkMemoryListForGuild,
+  gorkMemoryGetById,
+  gorkMemoryDeleteById,
+  gorkMemoryDeleteForSubject,
+  gorkMemoryDeleteForGuild,
+  gorkMemoryCountForGuild,
 } = require("../../db");
 const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { Color, baseEmbed } = require("../../core/theme");
+const { sliceSafe } = require("../../core/text");
 const { getAiConfig } = require("../../core/ai");
 const { logConfigChange } = require("../logs/auditLog");
 const { handleGorkMessage, gorkQueue } = require("./trigger");
@@ -42,6 +51,12 @@ const COOLDOWN_MAX = 3600;
 const RULES_MAX = 500;
 /** Max banned users listed by `/gork bans` (rest summarized). */
 const BANS_LIST_MAX = 25;
+/** Max memory rows listed by `/gork memory show` (guild view). */
+const MEMORIES_LIST_MAX = 25;
+/** Body preview length in a `/gork memory show` line (rest becomes `…`). */
+const MEMORY_BODY_MAX = 120;
+/** Char budget for the whole `/gork memory show` listing (then "…and N more"). */
+const MEMORY_LIST_TOTAL_MAX = 3800;
 
 const commands = [
   new SlashCommandBuilder()
@@ -171,6 +186,48 @@ const commands = [
       sc
         .setName("bans")
         .setDescription("List the users banned from gork in this server."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("memory")
+        .setDescription(
+          "Curate gork's per-person community memory (roadmap §7.16).",
+        )
+        // Discord caps option depth at 2 → action choices carry the verbs.
+        .addStringOption((opt) =>
+          opt
+            .setName("action")
+            .setDescription("Which memory action to run")
+            .setRequired(true)
+            .addChoices(
+              { name: "show", value: "show" },
+              { name: "forget", value: "forget" },
+              { name: "clear", value: "clear" },
+              { name: "on", value: "on" },
+              { name: "off", value: "off" },
+              { name: "budget", value: "budget" },
+            ),
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Target user for show/clear (omit = whole guild)"),
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("id")
+            .setDescription("Memory #id handle to forget (from show)"),
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("chars")
+            .setDescription("Memory-block budget in chars (0–64000; 0 = unlimited)"),
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("confirm")
+            .setDescription("Set true to actually erase (clear)"),
+        ),
     )
     .addSubcommand((sc) =>
       sc
@@ -435,6 +492,233 @@ async function showBans(interaction, guildId) {
 }
 
 /**
+ * One `/gork memory show` line:
+ * `#id — <@userid> — YYYY-MM-DD · title: body(≤120 chars…)`.
+ */
+function formatMemoryShowLine(row) {
+  const body = String(row.body || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const shown =
+    body.length > MEMORY_BODY_MAX
+      ? `${sliceSafe(body, MEMORY_BODY_MAX)}…`
+      : body;
+  return `#${row.id} — <@${row.subject_user_id}> — ${row.mem_date} · ${row.title}: ${shown}`;
+}
+
+/**
+ * Pure total-budget cut: keep whole lines while the joined listing stays
+ * within `totalMax`; everything past the cut is reported as hidden.
+ */
+function capMemoryLines(lines, totalMax) {
+  let total = 0;
+  const shown = [];
+  for (const line of lines) {
+    const cost = shown.length ? line.length + 1 : line.length;
+    if (total + cost > totalMax) break;
+    shown.push(line);
+    total += cost;
+  }
+  return { shown, hidden: lines.length - shown.length };
+}
+
+/**
+ * /gork memory show [user]: ephemeral listing with `#id` handles — one
+ * person's memories when `user` is given, otherwise the newest guild rows.
+ */
+async function showMemory(interaction, guildId) {
+  const target = interaction.options.getUser("user");
+  const rows = target
+    ? gorkMemoryListForSubject(guildId, target.id)
+    : gorkMemoryListForGuild(guildId, MEMORIES_LIST_MAX);
+  if (!rows.length) {
+    return replyEphemeral(
+      interaction,
+      target
+        ? `No memories stored for <@${target.id}> in this server.`
+        : "No memories stored in this server yet.",
+    );
+  }
+  const heading = target
+    ? `**Gork memories for <@${target.id}> (${rows.length}):**`
+    : `**Gork memories (newest ${rows.length}):**`;
+  const { shown, hidden } = capMemoryLines(
+    rows.map(formatMemoryShowLine),
+    MEMORY_LIST_TOTAL_MAX,
+  );
+  const lines = [...shown];
+  if (hidden > 0) lines.push(`…and ${hidden} more`);
+  await replyEphemeral(interaction, `${heading}\n${lines.join("\n")}`);
+}
+
+/**
+ * /gork memory forget <id>: delete one memory by its `#id` handle.
+ * Guild-scoped — a miss never hints whether the id exists elsewhere.
+ */
+async function forgetMemory(client, interaction, guildId) {
+  const rawId = interaction.options.getInteger("id");
+  if (!Number.isInteger(rawId) || rawId <= 0) {
+    return replyEphemeral(
+      interaction,
+      "`id` must be a positive whole number — the `#id` handle from `/gork memory show`.",
+    );
+  }
+  const row = gorkMemoryGetById(guildId, rawId);
+  if (!row) {
+    return replyEphemeral(interaction, `No memory #${rawId} in this guild.`);
+  }
+  gorkMemoryDeleteById(guildId, rawId);
+  await logConfigChange(client, guildId, {
+    title: "Gork memory forgotten",
+    command: "/gork memory",
+    actor: interaction.user,
+    changes: [
+      `Forgot memory #${row.id}: \`${row.title}\` (about <@${row.subject_user_id}>)`,
+    ],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    `Forgot memory **#${row.id}** — \`${row.title}\` (about <@${row.subject_user_id}>).`,
+  );
+}
+
+/**
+ * /gork memory clear [user]: wipe one person's (with `user`) or the whole
+ * guild's memories. Confirm-once: without `confirm: true` this only shows
+ * the damage preview.
+ */
+async function clearMemory(client, interaction, guildId) {
+  const target = interaction.options.getUser("user");
+  const confirmed = interaction.options.getBoolean("confirm") === true;
+  const scope = target
+    ? {
+        count: gorkMemoryListForSubject(guildId, target.id).length,
+        subject: target,
+        noun: `memories for <@${target.id}>`,
+        run: () => gorkMemoryDeleteForSubject(guildId, target.id),
+      }
+    : {
+        count: gorkMemoryCountForGuild(guildId),
+        subject: null,
+        noun: "memories across this server",
+        run: () => gorkMemoryDeleteForGuild(guildId),
+      };
+
+  if (scope.count === 0) {
+    return replyEphemeral(
+      interaction,
+      target
+        ? `No memories stored for <@${target.id}> — nothing to erase.`
+        : "No memories stored in this server — nothing to erase.",
+    );
+  }
+  if (!confirmed) {
+    return replyEphemeral(
+      interaction,
+      `This will erase **${scope.count}** ${scope.noun}. Re-run with \`confirm: true\` to actually erase.`,
+    );
+  }
+
+  const deleted = scope.run();
+  await logConfigChange(client, guildId, {
+    title: "Gork memory cleared",
+    command: "/gork memory",
+    actor: interaction.user,
+    changes: [
+      target
+        ? `Erased ${deleted} memories for <@${target.id}> (\`${target.id}\`)`
+        : `Erased ${deleted} memories (whole guild)`,
+    ],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    `Erased **${deleted}** ${scope.noun}.`,
+  );
+}
+
+/**
+ * /gork memory on|off: master switch for community memory (default off —
+ * every answered question costs an extra extraction LLM call).
+ */
+async function setMemoryEnabled(client, interaction, guildId, action) {
+  const settings = updateGuildSettings(guildId, {
+    gork_memory_enabled: action === "on" ? 1 : 0,
+  });
+  const on = Number(settings.gork_memory_enabled) === 1;
+  await logConfigChange(client, guildId, {
+    title: `Gork memory ${on ? "enabled" : "disabled"}`,
+    command: "/gork memory",
+    actor: interaction.user,
+    changes: [`Memory: ${on ? "on" : "off"}`],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    on
+      ? "Gork memory is now **on** — gork extracts durable facts about people after each answer and remembers them. Turn it off again with `/gork memory off`."
+      : "Gork memory is now **off** — nothing new is stored and no memory block is injected. Stored memories stay until staff erase them (`/gork memory show` / `forget` / `clear`).",
+  );
+}
+
+/**
+ * /gork memory budget <chars>: cap for the injected memory block
+ * (0–64,000; 0 = unlimited; garbage → default 12,000).
+ */
+async function setMemoryBudget(client, interaction, guildId) {
+  const raw = interaction.options.getInteger("chars");
+  if (raw === null) {
+    return replyEphemeral(
+      interaction,
+      "Provide `chars` — the memory-block budget in characters (0–64000; 0 = unlimited).",
+    );
+  }
+  // Lazy require: the memory module owns the clamp, and the command surface
+  // must load fine without it (same pattern as the trigger's memory hooks).
+  const { clampMemoryChars } = require("./memory");
+  const value = clampMemoryChars(raw);
+  const settings = updateGuildSettings(guildId, {
+    gork_memory_chars: value,
+  });
+  const stored = Number(settings.gork_memory_chars);
+  await logConfigChange(client, guildId, {
+    title: "Gork memory budget updated",
+    command: "/gork memory",
+    actor: interaction.user,
+    changes: [`Memory budget: ${stored} chars${stored === 0 ? " (unlimited)" : ""}`],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    stored === 0
+      ? "Gork memory budget set to **0** — the memory block is **unlimited** (0 = unlimited)."
+      : `Gork memory budget set to **${stored}** chars. \`0\` = unlimited.`,
+  );
+}
+
+/**
+ * /gork memory dispatcher (action option → verb).
+ */
+async function handleMemory(client, interaction, guildId) {
+  const action = (interaction.options.getString("action") || "").toLowerCase();
+  switch (action) {
+    case "show":
+      return showMemory(interaction, guildId);
+    case "forget":
+      return forgetMemory(client, interaction, guildId);
+    case "clear":
+      return clearMemory(client, interaction, guildId);
+    case "on":
+    case "off":
+      return setMemoryEnabled(client, interaction, guildId, action);
+    case "budget":
+      return setMemoryBudget(client, interaction, guildId);
+    default:
+      return replyEphemeral(
+        interaction,
+        `Unknown memory action: \`${action}\`.`,
+      );
+  }
+}
+
+/**
  * /gork status: ephemeral embed of the current configuration.
  */
 async function showStatus(interaction, guildId) {
@@ -445,6 +729,8 @@ async function showStatus(interaction, guildId) {
   const searchOn = Number(settings.gork_search_enabled) === 1;
   const cooldownSec = settings.gork_cooldown_sec;
   const banCount = listGorkBlocks(guildId).length;
+  const memoryOn = Number(settings.gork_memory_enabled ?? 0) === 1;
+  const memoryCount = gorkMemoryCountForGuild(guildId);
   const ai = getAiConfig();
   const searxngSet = Boolean(
     typeof process.env.SEARXNG_URL === "string" && process.env.SEARXNG_URL.trim(),
@@ -469,6 +755,13 @@ async function showStatus(interaction, guildId) {
     },
     { name: "SearXNG URL", value: searxngSet ? "set" : "not set", inline: true },
     { name: "Banned users", value: String(banCount), inline: true },
+    {
+      name: "Memory",
+      value: memoryOn
+        ? `on · ${Number(settings.gork_memory_chars ?? 12000)} chars · ${memoryCount} stored`
+        : "off",
+      inline: true,
+    },
   );
   await replyEphemeral(interaction, { embeds: [embed] });
 }
@@ -505,6 +798,8 @@ async function handleGork(interaction, ctx) {
       return unbanUser(client, interaction, guildId);
     case "bans":
       return showBans(interaction, guildId);
+    case "memory":
+      return handleMemory(client, interaction, guildId);
     case "status":
       return showStatus(interaction, guildId);
     default:
