@@ -362,6 +362,12 @@ const PAGES = [
   // staff READ surface; the GRANT action is the ADMIN mutate — /grantxp twin,
   // AGENTS.md §4 ManageGuild-only). Live router enumeration must see it.
   { path: "/g/:guildId/xp/grant", tier: "admin", marker: "<h1>Grant XP" },
+  // Phase 3 (subtask 30): senior-only ticket ACTIONS page (§8.6 Tickets row
+  // "Senior: claim/close/summary regen"). Hosts the three POST forms; the
+  // one data read is the bounded listOpenTickets (LIMIT ≤50). Junior keeps
+  // the untouched Phase-0c READ surfaces; this page is the documented §8.6
+  // senior tighten (requireTier("senior") — outcomeFor's ladder proves it).
+  { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
 ];
 
 /** Pages whose data module caches per guild (§8.6 floor 30 s) — on these,
@@ -418,6 +424,12 @@ const STATEMENT_PINS = {
   // awardXp service and are pinned by test/web-xp-grant.test.js, not the
   // budget sweep). Measured via GATE_MEASURE=1 on this fixture.
   "/g/:guildId/xp/grant": { req1: 4, req2: 4 },
+  // Phase 3 (subtask 30): the ticket ACTIONS page adds EXACTLY ONE bounded
+  // read on top of the session/tier plumbing — listOpenTickets(guildId,
+  // {limit:50}), a guild_id+status indexed range read with a hard LIMIT
+  // (the repo clamps ≤50). The three POST mutations run the pinned ticket
+  // helpers, not budget-swept reads. Measured via GATE_MEASURE=1.
+  "/g/:guildId/tickets": { req1: 5, req2: 5 },
   "/t": { req1: 5, req2: 5 },
 };
 
@@ -768,16 +780,21 @@ describe("E. cross-guild probes at scale", () => {
     assert.equal(control.status, 200, "session control: /g/A renders for admin");
   });
 
-  it("positive control: guild-B staff resolves 200 on B and 403 on B-admin pages", async () => {
+  it("positive control: guild-B staff resolves 200 on B and 403 on B-admin/SENIOR pages", async () => {
     // :userId pages are skipped here — guild B has no seeded profile rows
     // (a profile 404 on B would prove nothing); guild A's map coverage is
     // the matrix's job (suite D).
+    // staffB holds a JUNIOR staff_roles row ⇒ tier staff: every ABOVE-staff
+    // page (admin AND the Phase-3 senior ticket-actions page) must 403.
     for (const page of PAGES.filter((p) => !p.path.includes(":userId"))) {
       await harness.runOutcome({
         base,
         url: concrete(page.path, GUILD_B),
         cookieId: cookies.staffB,
-        expect: page.tier === "admin" ? harness.expectForbidden() : harness.expectShellOk(page.marker),
+        expect:
+          page.tier !== "staff"
+            ? harness.expectForbidden()
+            : harness.expectShellOk(page.marker),
         label: "[staffB]",
       });
     }

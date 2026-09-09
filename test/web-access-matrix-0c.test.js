@@ -548,15 +548,20 @@ describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () =
       "/g/:guildId/audit",
       "/g/:guildId/xp/grant",
     ]);
+    // Phase 3 (subtask 30): the ticket ACTIONS page is SENIOR-only (§8.6
+    // "Tickets | Senior: claim/close/summary regen"). guild-B staff holds a
+    // JUNIOR row ⇒ tier staff ⇒ the same generic 403 as the admin set —
+    // never a resolve, never the cross-guild 404 (route alive, tier wrong).
+    const SENIOR_TIER_VIEWS = new Set(["/g/:guildId/tickets"]);
     for (const route of harness.listGetRoutesUnder(app, "/g/")) {
       if (route.params.length !== 1 || route.params[0] !== "guildId") continue;
       const url = harness.buildConcretePath(route.path, { guildId: GUILD_B });
       const r = await harness.request(base, url, { cookieId: cookies.staffB });
-      if (ADMIN_TIER_VIEWS.has(route.path)) {
+      if (ADMIN_TIER_VIEWS.has(route.path) || SENIOR_TIER_VIEWS.has(route.path)) {
         assert.equal(
           r.status,
           403,
-          `admin-tier view ${route.path} must tier-deny guild-B staff with 403 (right guild, wrong tier) — never the cross-guild 404`
+          `above-staff-tier view ${route.path} must tier-deny guild-B staff with 403 (right guild, wrong tier) — never the cross-guild 404`
         );
         continue;
       }

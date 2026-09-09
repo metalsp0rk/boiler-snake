@@ -303,6 +303,14 @@ const FACADE_METHODS = [
   "voidWarning",
   "createStaffNote",
   "getStaffNote",
+  // Phase 3 (subtask 30) ticket surface: claimTicket is the slash's OWN
+  // write (features/tickets/index.js:1650); markTicketClosed runs INSIDE
+  // the slash's OWN softCloseTicket (features/tickets/close.js) — the
+  // gate lazy-loads close.js on the first web close (route seam), AFTER
+  // this install, so the feature's load-time destructure binds THE
+  // WRAPPER (recorded from inside = deep service-layer proof §8.6).
+  "claimTicket",
+  "markTicketClosed",
 ];
 
 /** DB-mutating facade helpers — validation rejections must call ZERO of these. */
@@ -332,6 +340,8 @@ const WRITE_HELPERS = new Set([
   "createWarning",
   "voidWarning",
   "createStaffNote",
+  "claimTicket",
+  "markTicketClosed",
 ]);
 
 const recorder = {
@@ -1288,6 +1298,125 @@ const PARITY = [
       fields: { user_id: USER_WARN_SUBJECT, content: "x".repeat(2001) },
     },
   },
+  // ---- Tickets (subtask 30, Phase 3) — §8.6 "Tickets" row, SENIOR only -----
+  // Documented TIER delta (routes/ticketActions.js header delta (1)): the
+  // slash gates claim/close/summarize behind requireStaff (staff suffices);
+  // §8.6 assigns the WEB surface "Senior: claim/close/summary regen" — the
+  // rows below carry tier "senior" and the senior wrong-tier branch proves
+  // junior is 403'd (STRICTENING only; junior read/transcript access is
+  // untouched — Phase 0c surfaces are unmutated by this module).
+  // Ticket identity is the DB row id on the BODY (channel-less seed rows:
+  // slash resolves tickets by CHANNEL, the web id rides the form — the
+  // audit targetId is String(ticket.id) on BOTH transports).
+  {
+    no: "T1",
+    area: "tickets (claim — Phase 3 action)",
+    template: "/g/:guildId/tickets/claim",
+    method: "POST",
+    tier: "senior",
+    slash: "/ticket claim → claimTicket (src/features/tickets/index.js:1650, audit :1651)",
+    helpers: ["claimTicket"],
+    action: "tickets.claim",
+    targetType: "ticket",
+    targetId: "1", // re-seeded ticket id 1 via purgeAutoincrement
+    mirror: false, // the slash claim handler posts NO channel embed
+    fields: { ticket_id: "1" },
+    prepare: () => {
+      purgeAutoincrement("tickets");
+      api.createTicket({
+        guildId: GUILD_A,
+        creatorUserId: "560000000000000301", // cache-absent requester (fake)
+        channelId: null,
+        reason: "gate claim seed",
+      });
+    },
+    details: D({ ticket_number: 1, previous_owner: null, staff_owner_id: USER_SENIOR }),
+    okLocation: `/g/${GUILD_A}/tickets?done=ticket_claimed`,
+    reject: {
+      // ticket_id field shape — refused BEFORE any facade call
+      status: 302,
+      location: `/g/${GUILD_A}/tickets?error=invalid_ticket_id`,
+      fields: { ticket_id: "x" },
+    },
+  },
+  {
+    no: "T2",
+    area: "tickets (close — Phase 3 action)",
+    template: "/g/:guildId/tickets/close",
+    method: "POST",
+    tier: "senior",
+    slash: "/ticket close → softCloseTicket → markTicketClosed (src/features/tickets/index.js:1401, features/tickets/close.js, audit :1410)",
+    // markTicketClosed is recorded from INSIDE the slash's OWN close helper
+    // — the deep-parity evidence. The seed row has NO channel: the cache-only
+    // seam hands the helper a null channel = the slash service's OWN
+    // degraded path (DB transition first, permission/notice skipped as
+    // warnings) — the flash claims only the transition, which truly ran.
+    helpers: ["markTicketClosed"],
+    action: "tickets.close",
+    targetType: "ticket",
+    targetId: "1",
+    mirror: false, // the slash close posts NO logConfigChange (its staff-note
+    // add-on is NOT part of the web surface — documented delta (4))
+    fields: { ticket_id: "1", reason: "gate close reason" },
+    prepare: () => {
+      purgeAutoincrement("tickets");
+      api.createTicket({
+        guildId: GUILD_A,
+        creatorUserId: "560000000000000301",
+        channelId: null,
+        reason: "gate close seed",
+      });
+    },
+    details: D({ ticket_number: 1, close_reason: "gate close reason", status: "closed" }),
+    okLocation: `/g/${GUILD_A}/tickets?done=ticket_closed`,
+    reject: {
+      // close-reason bound (MAX_TICKET_REASON = 1000) pre-validated — the
+      // helper is NEVER invoked
+      status: 302,
+      location: `/g/${GUILD_A}/tickets?error=close_reason_too_long`,
+      fields: { ticket_id: "1", reason: "x".repeat(1001) },
+    },
+  },
+  {
+    no: "T3",
+    area: "tickets (summary regen — Phase 3 action)",
+    template: "/g/:guildId/tickets/summarize",
+    method: "POST",
+    tier: "senior",
+    slash: "/ticket summarize → summarizeTicket (src/features/tickets/index.js:2143, audit :2145)",
+    // summarizeTicket sits ABOVE the facade (service seam, like awardXp /
+    // softCloseTicket) — the gate mounts a deterministic offline fake via
+    // createWebApp's ticketActions option below; on-demand regen persists
+    // NOTHING on either transport, so the only recorded write is the audit.
+    helpers: [],
+    action: "tickets.summarize",
+    targetType: "ticket",
+    targetId: "1",
+    mirror: false, // the slash summarize posts NO channel embed
+    fields: { ticket_id: "1" },
+    prepare: () => {
+      purgeAutoincrement("tickets");
+      rawDb.prepare("DELETE FROM ticket_messages").run(); // id 1 re-usable
+      api.createTicket({
+        guildId: GUILD_A,
+        creatorUserId: "560000000000000301",
+        channelId: null,
+        reason: "gate regen seed",
+      });
+      api.saveTicketMessages(1, [
+        { message_id: "9001", author_id: "560000000000000301", content: "one", sent_at: 1 },
+        { message_id: "9002", author_id: USER_SENIOR, content: "two", sent_at: 2 },
+      ]);
+    },
+    details: D({ ticket_number: 1, source: "fallback", message_count: 2 }),
+    okLocation: `/g/${GUILD_A}/tickets?done=summary_fallback`,
+    reject: {
+      // leading-zero id shape — parse-level refusal, zero facade calls
+      status: 302,
+      location: `/g/${GUILD_A}/tickets?error=invalid_ticket_id`,
+      fields: { ticket_id: "01" },
+    },
+  },
 ];
 
 // Rows flip to "PASS" only when the positive-path test completed (the full
@@ -1309,6 +1438,12 @@ function expectedTierFor(template) {
     template.startsWith("/g/:guildId/xp/grant")
   ) {
     return "admin";
+  }
+  // §8.6 "Tickets | Senior: claim/close/summary regen" (subtask 30) — the
+  // web ticket mutations are SENIOR (a documented tightening vs the slash's
+  // requireStaff gate; see routes/ticketActions.js header delta (1)).
+  if (template.startsWith("/g/:guildId/tickets/")) {
+    return "senior";
   }
   return "staff";
 }
@@ -1383,6 +1518,22 @@ const app = createWebApp({
   lookupYoutubeChannel: async () => null,
   fetchYoutubeChannelInfo: async () => null,
   ensureHoneypotWarning: async () => "sent",
+  // Ticket summary seam (T3): deterministic offline fake for the slash's
+  // OWN summarizeTicket service — no env AI key, no network. The route
+  // STILL exercises every guard (parse → guild-scope → sensitive 404 →
+  // archived → AI-configured → stored-messages) around the injected call;
+  // only the AI/stats body itself is stubbed, exactly like the twitch/yt
+  // seams stub ONLY the outbound HTTP.
+  ticketActions: {
+    isAiConfigured: () => true,
+    summarizeTicket: async (ticket, messages) => ({
+      source: "fallback",
+      model: null,
+      resolution: `gate summary for ${ticket.ticket_number}`,
+      summary: `gate summary (${(messages || []).length} messages)`,
+      message_count: (messages || []).length,
+    }),
+  },
 });
 
 /** @type {http.Server} */
@@ -1567,8 +1718,16 @@ describe("B. per-mutation acceptance gate — ladder + service + audit + fail-cl
 
       const path = concretePath(row.template, GUILD_A);
       const crossPath = concretePath(row.template, GUILD_CROSS);
-      const viewer = row.tier === "admin" ? "admin" : "staff";
-      const viewerUser = row.tier === "admin" ? USER_ADMIN : USER_STAFF;
+      // Senior-tier rows (ticket actions, subtask 30) run the positive path
+      // AS the senior user; below-staff tiers keep the junior viewer.
+      const viewer =
+        row.tier === "admin" ? "admin" : row.tier === "senior" ? "senior" : "staff";
+      const viewerUser =
+        row.tier === "admin"
+          ? USER_ADMIN
+          : row.tier === "senior"
+            ? USER_SENIOR
+            : USER_STAFF;
 
       it("anon POST ⇒ 302 /auth/login?guild=<id> (guildScope answers before anything mutates)", async () => {
         await harness.runOutcome({
@@ -1629,6 +1788,34 @@ describe("B. per-mutation acceptance gate — ladder + service + audit + fail-cl
             evidence(row.template)[key === "staff" ? "junior" : "senior"] = 403;
           }
           assert.equal(webAuditCount(), before, "tier denial audited nothing");
+        });
+      } else if (row.tier === "senior") {
+        it("wrong-tier (senior surface): junior gets the FIXED 403 with ZERO writes/audits; admin is NOT tier-denied (§8.6 Tickets row)", async () => {
+          // The documented tightening vs slash requireStaff: the WEB ticket
+          // mutations are senior-only; junior keeps the read surfaces and
+          // loses these writes (asserted HERE, per mutation).
+          const before = webAuditCount();
+          startWindow();
+          const { res, body } = await post(path, {
+            cookie: cookieOf.staff,
+            fields: { ...row.fields, _csrf: csrfOf.staff },
+          });
+          const calls = stopWindow();
+          assert.equal(res.status, 403, `junior on senior-tier ${row.template}`);
+          assert.equal(body, "Forbidden");
+          assert.equal(res.headers.get("cache-control"), "no-store");
+          assert.deepEqual(writeCalls(calls), [], "junior denial wrote nothing");
+          assert.equal(webAuditCount(), before, "junior denial audited nothing");
+          evidence(row.template).junior = 403;
+          const admin = await post(path, {
+            cookie: cookieOf.admin,
+            fields: { ...row.fields, _csrf: csrfOf.admin },
+          });
+          assert.notEqual(
+            admin.res.status,
+            403,
+            `admin must not be tier-denied on senior-tier ${row.template}`
+          );
         });
       } else {
         it("staff tier: senior is NOT tier-denied (403 ladder is vacuous below staff; §8.6)", async () => {
@@ -1730,6 +1917,7 @@ describe("B. per-mutation acceptance gate — ladder + service + audit + fail-cl
         );
 
         if (row.tier === "staff") evidence(row.template).junior = res.status;
+        if (row.tier === "senior") evidence(row.template).senior = res.status;
         row.status = "PASS";
       });
 
@@ -1833,6 +2021,27 @@ describe("C. tier correctness from runtime ladder evidence (AGENTS.md §4)", () 
     }
   });
 
+  it("senior-tier surfaces (ticket actions, subtask 30): junior 403'd on EVERY one while the senior viewer passed — the documented §8.6 tightening vs slash requireStaff", () => {
+    const seniorRows = PARITY.filter((r) => r.tier === "senior");
+    assert.equal(
+      seniorRows.length,
+      3,
+      "the senior set is EXACTLY claim + close + summarize (§8.6 Tickets row)"
+    );
+    assert.deepEqual(
+      seniorRows.map((r) => r.template).sort(),
+      PARITY.filter((r) => expectedTierFor(r.template) === "senior")
+        .map((r) => r.template)
+        .sort(),
+      "runtime-senior set equals the derived classification"
+    );
+    for (const row of seniorRows) {
+      const ev = evidence(row.template);
+      assert.equal(ev.junior, 403, `${row.template}: junior must have been 403 (senior tier)`);
+      assert.equal(ev.senior, 302, `${row.template}: senior must have PASSED via the positive path`);
+    }
+  });
+
   it("cross-cutting ladder is uniform: anon 302 · stranger 404 · plain 404 · cross 404 on ALL rows", () => {
     for (const row of PARITY) {
       const ev = evidence(row.template);
@@ -1923,6 +2132,34 @@ describe("D. KNOWN INTENTIONAL DELTAS vs slash (documented rows)", () => {
       assert.equal(evidence(t).junior, 403, `${t}: junior 403`);
       assert.equal(evidence(t).senior, 403, `${t}: senior 403`);
     }
+  });
+
+  it("DELTA-D: ticket summarize web-hardens a SENSITIVE ticket to the generic 404 (slash summarizes it in-channel ephemeral); zero writes, zero audits (§8.4)", async () => {
+    // The ONE web ticket refusal with no slash twin: sensitive content never
+    // reaches the web transport (routes/ticketActions.js header delta (2)).
+    purgeAutoincrement("tickets");
+    rawDb.prepare("DELETE FROM ticket_messages").run();
+    const t = api.createTicket({
+      guildId: GUILD_A,
+      creatorUserId: "560000000000000301",
+      channelId: null,
+      reason: "sensitive gate probe",
+    });
+    api.setTicketSensitive(t.id, USER_SENIOR);
+    api.saveTicketMessages(t.id, [
+      { message_id: "9101", author_id: "560000000000000301", content: "private content", sent_at: 1 },
+    ]);
+    const before = webAuditCount();
+    startWindow();
+    const { res, body } = await post(`/g/${GUILD_A}/tickets/summarize`, {
+      cookie: cookieOf.senior,
+      fields: { ticket_id: String(t.id), _csrf: csrfOf.senior },
+    });
+    const calls = stopWindow();
+    assert.equal(res.status, 404, "sensitive ⇒ indistinguishable from unknown");
+    assert.equal(body, "Not found");
+    assert.deepEqual(writeCalls(calls), [], "the refusal wrote NOTHING");
+    assert.equal(webAuditCount(), before, "the refusal audited NOTHING (no enumeration signal)");
   });
 });
 
@@ -2089,6 +2326,8 @@ describe("G. gate report — slash parity checklist (§8.8 artifact)", () => {
       // Phase 3 (subtask 29): the moderation surface is checklist-mandatory.
       "warnings",
       "staff notes",
+      // Phase 3 (subtask 30): the ticket ACTIONS surface is mandatory too.
+      "tickets",
     ];
     const passed = PARITY.filter((r) => r.status === "PASS");
     assert.equal(passed.length, PARITY.length, "every mutation row must have PASSed (a ladder failed earlier)");
@@ -2108,7 +2347,7 @@ describe("G. gate report — slash parity checklist (§8.8 artifact)", () => {
       );
     }
     lines.push(
-      "DELTAS: (a) event-reminder create/edit slash-only · (b) youtube/add env-refusal hardening · (c) honeypot exempt → staff.role_add/remove via='honeypot.exempt'",
+      "DELTAS: (a) event-reminder create/edit slash-only · (b) youtube/add env-refusal hardening · (c) honeypot exempt → staff.role_add/remove via='honeypot.exempt' · (d) ticket actions SENIOR-only (slash requireStaff) + sensitive summarize ⇒ generic 404 + no-AI regen refused up front + staff_note add-on slash-only",
       `rows=${PARITY.length} passed=${passed.length}`,
       ""
     );
