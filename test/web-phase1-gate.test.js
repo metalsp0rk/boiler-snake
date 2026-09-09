@@ -396,7 +396,13 @@ const STATEMENT_PINS = {
   "/g/:guildId/settings": { req1: 8, req2: 4 },
   "/g/:guildId/leaderboard": { req1: 8, req2: 8 },
   "/g/:guildId/leaderboard/user/:userId": { req1: 9, req2: 9 },
-  "/g/:guildId/staff": { req1: 6, req2: 6 },
+  // 6 → 7 (Phase 2, subtask 25): /staff gained EXACTLY ONE bounded per-guild
+  // config read — listLevelRoles(guildId), the level→role mapping table the
+  // staff page now lists and the /staff/levelrole/* forms mutate. Indexed
+  // guild_id point-range read (same shape as the existing listStaffRoles),
+  // no cache added (config must never render stale). Deliberate ratchet
+  // update per the GATE_MEASURE regeneration procedure above.
+  "/g/:guildId/staff": { req1: 7, req2: 7 },
   "/g/:guildId/commands": { req1: 5, req2: 5 },
   "/g/:guildId/integrations": { req1: 17, req2: 4 },
   "/g/:guildId/voice": { req1: 7, req2: 4 },
