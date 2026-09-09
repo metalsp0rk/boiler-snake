@@ -1364,4 +1364,132 @@ describe("tickets close helpers", () => {
     assert.equal(row.attachment_urls[0].name, "file.png");
     assert.ok(row.embeds_json);
   });
+
+  // --- Fix 2 (spec §1.11): archive DM to requester ---
+
+  it("buildArchiveDmEmbed includes ref, reason, and transcript link when URL set", () => {
+    const { buildArchiveDmEmbed } = require("../src/features/tickets/close");
+    const data = buildArchiveDmEmbed(
+      { ticket_number: 42, creator_user_id: "u1" },
+      "Restarted client",
+      "https://tickets.example.com/t/abc-123"
+    ).toJSON();
+    const text = JSON.stringify(data);
+    assert.match(text, /Ticket #42 archived/);
+    assert.match(text, /Restarted client/);
+    assert.ok(
+      text.includes("[View transcript](https://tickets.example.com/t/abc-123)")
+    );
+  });
+
+  it("buildArchiveDmEmbed omits the link entirely when no transcript URL", () => {
+    const { buildArchiveDmEmbed } = require("../src/features/tickets/close");
+    const data = buildArchiveDmEmbed(
+      { ticket_number: 7, creator_user_id: "u1" },
+      "handled privately",
+      null
+    ).toJSON();
+    const text = JSON.stringify(data);
+    assert.match(text, /Ticket #7 archived/);
+    assert.match(text, /handled privately/);
+    assert.doesNotMatch(text, /View transcript/i);
+    assert.doesNotMatch(text, /https?:\/\//i);
+  });
+
+  it("notifyRequesterArchived DMs the creator via users cache", async () => {
+    const { notifyRequesterArchived } = require("../src/features/tickets/close");
+    const sent = [];
+    const creator = {
+      id: "creator-1",
+      send: async (payload) => {
+        sent.push(payload);
+      },
+    };
+    const client = {
+      users: {
+        cache: new Map([["creator-1", creator]]),
+        fetch: async () => null,
+      },
+    };
+    const res = await notifyRequesterArchived(
+      client,
+      { ticket_number: 3, creator_user_id: "creator-1" },
+      "done",
+      "https://tickets.example.com/t/x"
+    );
+    assert.equal(res.ok, true);
+    assert.equal(sent.length, 1);
+    assert.ok(
+      JSON.stringify(sent[0]).includes(
+        "[View transcript](https://tickets.example.com/t/x)"
+      )
+    );
+  });
+
+  it("notifyRequesterArchived falls back to users.fetch on cache miss", async () => {
+    const { notifyRequesterArchived } = require("../src/features/tickets/close");
+    const sent = [];
+    const creator = {
+      id: "creator-2",
+      send: async (payload) => {
+        sent.push(payload);
+      },
+    };
+    const client = {
+      users: {
+        cache: new Map(),
+        fetch: async (id) => (id === "creator-2" ? creator : null),
+      },
+    };
+    const res = await notifyRequesterArchived(
+      client,
+      { ticket_number: 9, creator_user_id: "creator-2" },
+      null,
+      null
+    );
+    assert.equal(res.ok, true);
+    assert.equal(sent.length, 1);
+    assert.doesNotMatch(JSON.stringify(sent[0]), /https?:\/\//i);
+  });
+
+  it("notifyRequesterArchived returns ok:false when send rejects (DMs closed)", async () => {
+    const { notifyRequesterArchived } = require("../src/features/tickets/close");
+    const client = {
+      users: {
+        cache: new Map([
+          [
+            "creator-3",
+            {
+              id: "creator-3",
+              send: async () => {
+                throw new Error("Cannot send messages to this user");
+              },
+            },
+          ],
+        ]),
+        fetch: async () => null,
+      },
+    };
+    const res = await notifyRequesterArchived(
+      client,
+      { ticket_number: 1, creator_user_id: "creator-3" },
+      "done",
+      "https://tickets.example.com/t/y"
+    );
+    assert.equal(res.ok, false);
+    assert.match(res.error, /Cannot send messages to this user/);
+  });
+
+  it("notifyRequesterArchived returns ok:false when requester is unreachable", async () => {
+    const { notifyRequesterArchived } = require("../src/features/tickets/close");
+    const client = { users: { cache: new Map(), fetch: async () => null } };
+    const res = await notifyRequesterArchived(
+      client,
+      { ticket_number: 2, creator_user_id: "ghost" },
+      "done",
+      "https://tickets.example.com/t/z"
+    );
+    assert.equal(res.ok, false);
+    assert.match(res.error, /not reachable/i);
+  });
 });
