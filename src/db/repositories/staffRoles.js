@@ -5,6 +5,8 @@
  * Level (migration 011):
  *   - junior: isStaff / honeypot exempt only
  *   - senior: junior + ticket channel visibility overwrites
+ * added_by (migration 024): actor user id recorded when the role is added;
+ * NULL on rows created before the column existed.
  */
 
 const { db, now } = require("../connection");
@@ -25,17 +27,30 @@ function normalizeStaffLevel(level) {
 }
 
 /**
+ * Add (or re-add) a staff role.
+ *
+ * Upsert keeps `added_by` provenance sane:
+ * - fresh insert → added_by = actor (or NULL when the caller has none,
+ *   e.g. the `/honeypot exempt` wrapper),
+ * - re-add with an actor → provenance refreshes to the acting admin,
+ * - re-add without an actor → COALESCE preserves existing provenance
+ *   instead of clobbering it with NULL.
+ *
  * @param {string} guildId
  * @param {string} roleId
  * @param {string} [level="senior"]
+ * @param {string|null} [addedBy=null] actor user id who added the role
  */
-function addStaffRole(guildId, roleId, level = "senior") {
+function addStaffRole(guildId, roleId, level = "senior", addedBy = null) {
   const lvl = normalizeStaffLevel(level);
+  const actor = addedBy == null ? null : String(addedBy);
   db.prepare(`
-  INSERT INTO staff_roles (guild_id, role_id, level, created_at)
-  VALUES (?, ?, ?, ?)
-  ON CONFLICT(guild_id, role_id) DO UPDATE SET level=excluded.level
-  `).run(guildId, roleId, lvl, now());
+  INSERT INTO staff_roles (guild_id, role_id, level, created_at, added_by)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(guild_id, role_id) DO UPDATE SET
+    level=excluded.level,
+    added_by=COALESCE(excluded.added_by, added_by)
+  `).run(guildId, roleId, lvl, now(), actor);
 }
 
 /**
@@ -72,7 +87,7 @@ function removeStaffRole(guildId, roleId) {
  * @param {string} guildId
  * @param {object} [opts]
  * @param {"junior"|"senior"} [opts.level] filter to one level
- * @returns {{ role_id: string, level: string, created_at: number }[]}
+ * @returns {{ role_id: string, level: string, created_at: number, added_by: string|null }[]}
  */
 function listStaffRoles(guildId, opts = {}) {
   if (opts.level) {
@@ -80,7 +95,7 @@ function listStaffRoles(guildId, opts = {}) {
     return db
       .prepare(
         `
-      SELECT role_id, level, created_at
+      SELECT role_id, level, created_at, added_by
       FROM staff_roles
       WHERE guild_id=? AND level=?
       ORDER BY level DESC, created_at ASC
@@ -91,7 +106,7 @@ function listStaffRoles(guildId, opts = {}) {
   return db
     .prepare(
       `
-    SELECT role_id, level, created_at
+    SELECT role_id, level, created_at, added_by
     FROM staff_roles
     WHERE guild_id=?
     ORDER BY CASE level WHEN 'senior' THEN 0 ELSE 1 END, created_at ASC
@@ -140,14 +155,14 @@ function memberHasSeniorStaffRole(guildId, memberRoleIds) {
 /**
  * @param {string} guildId
  * @param {string} roleId
- * @returns {{ role_id: string, level: string, created_at: number }|null}
+ * @returns {{ role_id: string, level: string, created_at: number, added_by: string|null }|null}
  */
 function getStaffRole(guildId, roleId) {
   return (
     db
       .prepare(
         `
-      SELECT role_id, level, created_at
+      SELECT role_id, level, created_at, added_by
       FROM staff_roles
       WHERE guild_id=? AND role_id=?
     `
