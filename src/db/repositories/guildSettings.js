@@ -5,6 +5,8 @@ const GORK_DEFAULT_CONTEXT_WINDOW = 10;
 const GORK_DEFAULT_COOLDOWN_SEC = 180;
 const GORK_RULES_MAX_LEN = 500;
 const GORK_KEYWORD_MAX_LEN = 50;
+const GORK_DEFAULT_MEMORY_CHARS = 12000;
+const GORK_MEMORY_CHARS_MAX = 64000;
 
 /** Clamp to an integer range; null/non-finite input falls back to the default. */
 function clampInt(value, min, max, fallback) {
@@ -38,6 +40,21 @@ function normalizeGorkKeyword(value) {
 function normalizeGorkFlag(value) {
   if (value === false || value === 0 || value === "0" || value === "off") return 0;
   return 1;
+}
+
+/**
+ * Normalize the gork memory-block char budget (roadmap §7.16.2): integer in
+ * 0–64,000. 0 is a VALID value (= unlimited), so this must NOT collapse 0 to
+ * the default; over-range clamps down to 64,000, while negatives and any
+ * non-numeric input fall back to the default (never clamped up to 0).
+ */
+function clampGorkMemoryChars(value) {
+  if (value === null || value === undefined) return GORK_DEFAULT_MEMORY_CHARS;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return GORK_DEFAULT_MEMORY_CHARS;
+  const int = Math.floor(n);
+  if (int < 0) return GORK_DEFAULT_MEMORY_CHARS;
+  return Math.min(int, GORK_MEMORY_CHARS_MAX);
 }
 
 /**
@@ -91,6 +108,8 @@ function getGuildSettings(guildId) {
       gork_search_enabled: 1,
       gork_cooldown_sec: 180,
       gork_enabled: 1,
+      gork_memory_enabled: 0,
+      gork_memory_chars: 12000,
       updated_at: now(),
     };
   }
@@ -132,6 +151,8 @@ function updateGuildSettings(guildId, patch) {
     "gork_search_enabled",
     "gork_cooldown_sec",
     "gork_enabled",
+    "gork_memory_enabled",
+    "gork_memory_chars",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
@@ -178,6 +199,12 @@ function updateGuildSettings(guildId, patch) {
   }
   if (safePatch.gork_enabled !== undefined) {
     safePatch.gork_enabled = normalizeGorkFlag(safePatch.gork_enabled);
+  }
+  if (safePatch.gork_memory_enabled !== undefined) {
+    safePatch.gork_memory_enabled = normalizeGorkFlag(safePatch.gork_memory_enabled);
+  }
+  if (safePatch.gork_memory_chars !== undefined) {
+    safePatch.gork_memory_chars = clampGorkMemoryChars(safePatch.gork_memory_chars);
   }
 
   // A sanitized value of undefined means "rejected" (over-length keyword) —

@@ -119,9 +119,10 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork ban <user>` | Ban a user from gork in this server (they keep getting the generic reply — never told it's a ban) |
 | `/gork unban <user>` | Lift a user's gork ban |
 | `/gork bans` | List the users banned from gork in this server |
-| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
+| `/gork memory <action>` | Curate the community memory — see [Memory](#memory) |
+| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, memory state, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
-`/settings` also shows a **Gork** field (enabled + keyword + window + search state).
+`/settings` also shows a **Gork** field (enabled + keyword + window + search + memory state).
 
 All values are stored per-guild in `guild_settings`:
 
@@ -133,8 +134,42 @@ All values are stored per-guild in `guild_settings`:
 | `gork_extra_rules` | Staff prompt additions (≤500 chars) | *(empty)* |
 | `gork_search_enabled` | SearXNG `web_search` tool toggle | `1` (on) |
 | `gork_cooldown_sec` | Per-user cooldown in seconds; staff bypass | `180` |
+| `gork_memory_enabled` | Community-memory master switch (see [Memory](#memory)) | `0` (off) |
+| `gork_memory_chars` | Memory-block char budget; `0` = unlimited | `12000` |
 
 Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `user_id`, who banned them, when).
+
+## Memory
+
+Gork can **remember durable facts about people** — preferences, ongoing projects, roles, recurring topics, relationships, notable events — and weave them into later answers. Memories are per-guild, **per-person**, staff-curated, and the whole feature is **off by default**: every answered question costs one extra (invisible) extraction LLM call, so guilds opt in with `/gork memory on`.
+
+### How it works
+
+| Stage | Detail |
+|-------|--------|
+| **Inject (read)** | On each trigger gork looks up the memories of the people involved in the conversation (asker, participants, people mentioned — resolved through the roster) and appends a **memory block** to the prompt. Nobody involved has memories → nothing is injected |
+| **Bodies or index** | If everything fits under the `gork_memory_chars` budget the full bodies go in; on overflow the block degrades to a cheap titles-only **index** and the model pulls bodies on demand with the `recall_memories` tool (shares the 3-round tool budget with search/page reading) |
+| **Extract (write)** | **After** the answer is sent, audited, and the guild slot is released, a detached LLM turn extracts what is worth remembering as strict JSON. It never adds user-visible latency; invalid entries (unknown subjects, empty titles) are dropped, failures are silent (console line only) |
+| **Keying & bounds** | One entry per (person, UTC day, normalized title) — same-day re-extraction updates in place, a later day adds history. **≤25 entries per person**, lowest-importance/least-recently-used evicted first. `#<id>` handles are stable within the listing they came from |
+| **Model** | The extraction turn uses `AI_SMALL_MODEL` when set, otherwise `AI_MODEL` (extraction is a strict-JSON chore — a smaller model is usually enough) |
+
+### Commands (`/gork memory <action>`, staff-only)
+
+| Command | Detail |
+|---------|--------|
+| `show [user]` | Ephemeral listing with `#id` handles + body previews. With `user`: that person's entries; without: the newest 25 in the guild (long listings are cut with "…and N more") |
+| `forget <id>` | Delete one memory by its `#id` handle (guild-scoped — ids never cross guilds) |
+| `clear [user]` | Wipe one person's — or the whole guild's — memories. **Confirm-once:** without `confirm: true` it only previews the count |
+| `on` / `off` | Master switch (`gork_memory_enabled`, default **off**) |
+| `budget <chars>` | Memory-block cap (`gork_memory_chars`): default **12,000**, range 0–64,000, **0 = unlimited**; anything out of range is clamped (garbage → default) |
+
+`/gork status` shows the memory state, budget, and stored-entry count; `/settings` shows memory on/off. Every on/off/budget change, forget, and clear posts a config-change embed to the [audit log](audit-log.md).
+
+### Limitations
+
+- **Erasure is staff-only:** members cannot delete memories about themselves — staff `forget`/`clear`, the per-person cap, and eviction are the affordances (single-server posture).
+- **Memories are untrusted quoted text:** stored bodies are injected as *quoted background, never instructions* — prompt-injection through stored text is a **documented limitation**, the same posture as conversation context and search results. The extraction prompt forbids secrets and third-party personal info in bodies, and staff can `forget` anything at any time.
+- Extraction is a model turn: it can miss facts or store noise — `show` + `forget` are the curation loop. There is no TTL/decay in v1; the store stays bounded by the per-person cap.
 
 ## Runtime Behavior
 

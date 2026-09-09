@@ -567,7 +567,7 @@ empty-twice surfaces `finish_reason=length` in the audit, capped answer ships as
 
 ---
 
-### 7.16 Community Memory — 2026-09 design draft (proposed decisions 25–28; nothing locked yet)
+### 7.16 Community Memory — 2026-09 design (LOCKED 2026-09-09 — decisions 25–29; the pre-lock draft's 2,000-char index budget and model-emitted dates are superseded)
 
 **Goal:** gork behaves like a real long-term community member — it knows who the people
 are, remembers durable facts about them, and uses that in later answers. Everything else
@@ -576,70 +576,97 @@ about gork (trigger, canned replies, guardrails, persona) is unchanged.
 **Flow (one Q&A = two turns; the second happens *after* sending):**
 
 ```
-trigger → context build (conversation window + MEMORY INDEX per involved person
-                         + user roster, 7.15 Fix 2)
+trigger → context build (conversation window + MEMORY BLOCK per involved
+                         person (bodies-or-index, 7.16.2) + user roster, 7.15 Fix 2)
         → LLM answer (web_search / read_page / recall_memories)
         → reply → audit → release guild slot
         → [detached, after release] memory turn: extract what is worth
-          remembering → upsert keyed (person, date, title) → audit
+          remembering → validate → upsert keyed (person, date, title_key) → audit
 ```
 
-#### 7.16.1 Keying — person · date · title (proposed decision 26)
+#### 7.16.1 Keying — person · date · title_key (decision 26)
 
 | Field | Detail |
 |-------|--------|
-| **Person** | `subject_user_id` (Discord id — survives name changes; identity resolved via the Fix 2 roster) |
-| **Date** | `mem_date` (`YYYY-MM-DD`); same person+title re-extracted the same day overwrites (update in place); a later date = new entry (history preserved) |
-| **Title** | short stable slug, ≤80 chars — the human-readable half of the key and the unit of the injected index |
+| **Person** | `subject_user_id` (Discord id — survives name changes; identity resolved via the Fix 2 roster). Write-path validation: must be in the trigger's roster ∪ asker, **minus the bot's own id** — gork's answers live in the context window, so gork can be in its own roster; it never gets memories about itself |
+| **Date** | `mem_date` (`YYYY-MM-DD`, **UTC day of the trigger message**, stamped server-side from `message.createdAt` — the extractor model never emits dates). Same person+title re-extracted the same UTC day overwrites (update in place); a later date = new entry (history preserved) |
+| **Title** | display `title` (what the model wrote, ≤80 chars) + key half `title_key`: `normalizeTitle()` = trim → collapse internal whitespace → lowercase → strip wrapping punctuation → `sliceSafe(…, 80)`. "Loves Rust" and "loves rust  " collide into one same-day upsert (SQLite's BINARY collation is case-sensitive, so the key needs its own column) |
 
-`gork_memories` (migration 023): `guild_id, subject_user_id, mem_date, title, body,
-kind (profile|preference|project|relationship|event), importance (1–5),
-source_message_ids (JSON), created_at, updated_at, last_used_at`;
-PK `(guild_id, subject_user_id, mem_date, title)`. Bounded: per-person cap (default
-**25**, evict lowest `importance` then oldest `last_used_at`/date).
+`gork_memories` (migration 023): `id INTEGER PRIMARY KEY` (rowid alias — the
+`forget <id>` handle, 7.16.4), `guild_id, subject_user_id, mem_date, title,
+title_key, body, kind (profile|preference|project|relationship|event),
+importance (1–5), source_message_ids (JSON, server-stamped), created_at,
+updated_at, last_used_at`; PK `(guild_id, subject_user_id, mem_date, title_key)`.
+Bounded: per-person cap (default **25**, evict lowest `importance` then oldest
+`last_used_at`/date).
 
-#### 7.16.2 Read path — load memories about people *as we interact with them*
+#### 7.16.2 Read path — bodies-or-index under one budget (supersedes the draft's index-only design)
 
-- **MEMORY INDEX injection:** every trigger resolves the people involved — asker,
-  mentioned users, and people **talked about** (name→id via the Fix 2 roster) — and
-  injects a compact index into the context: one line per memory,
-  `person — mem_date · "title" (id)`. Bodies stay out. Own budget (default **2,000
-  chars**) inside the decision-5 12k cap; audit embed shows the injected count.
-- **`recall_memories` tool:** OpenAI-compatible function tool (decision-10/21 pattern) —
-  the model pulls bodies by key (`person`, `date`, `title`) or lists one person's
-  entries. Shares the 3-round tool budget with `web_search`/`read_page`.
+- Every trigger resolves the people involved — asker, mentioned users, and people
+  **talked about** (name→id via the Fix 2 roster) — and builds a **MEMORY BLOCK** for
+  them under one setting, `guild_settings.gork_memory_chars`:
+  - **default 12,000 chars, range 0–64,000, 0 = unlimited**; a *standalone* budget —
+    decision 5's 12k cap keeps covering the conversation window only.
+  - **Bodies mode (fits):** `person — mem_date · "title" (#id) · body` lines; when the
+    block fits the budget the bodies go in. The model needs no tool call for what's
+    already in front of it.
+  - **Index mode (overflow):** over budget → titles-only lines
+    `person — mem_date · "title" (#id)`; bodies come on demand via `recall_memories`.
+    The pathological full load (12 involved × 25 entries × bodies) auto-falls back to
+    cheap-tokens mode instead of blowing up prefill.
+  - Nobody involved has memories → **inject nothing** (no "recent events" fallback).
+- **Selection order** (when the budget bites): round-robin across involved people;
+  within one person `importance` desc, then `mem_date` desc. Breadth beats depth —
+  everyone involved gets seen before any whale floods the block.
+- **Latency rationale** (1,500 TPS prefill, ~30 s user baseline): 12k chars ≈ 3–4k
+  tokens ≈ 2–3 s worst-case added prefill, typically ≈ +1 s — and bodies mode usually
+  *saves* a whole `recall_memories` round (a full extra LLM round), so the common case
+  gets better recall **and** lower end-to-end latency.
+- **`recall_memories` tool:** OpenAI-compatible function tool (decision-10/21
+  pattern), always registered — pulls bodies by key or lists one person's entries
+  (also covers index-mode overflow). Shares the 3-round tool budget with
+  `web_search`/`read_page` (accepted for v1: a search-heavy answer can starve recall;
+  the injected titles keep the model honest about what exists).
 - **Instruction to load memories** (per the base-prompt byte-lock, decision 9 → the
   decision-21 pattern): usage guidance lives in the **tool schema description** and the
-  injected index header data block ("you remember these things about these people —
-  call `recall_memories` when relevant"), not the locked base prompt text.
-- Fallback: nobody involved has memories → optionally inject the N most recent
-  `kind=event|profile` entries, or nothing at all.
+  injected memory-block header data block ("you remember these things about these
+  people"), not the locked base prompt text.
 
-#### 7.16.3 Write path — the turn after sending (proposed decisions 25, 27)
+#### 7.16.3 Write path — the turn after sending (decisions 25, 27)
 
 - Runs **after** reply + audit + `gorkQueue.release`: never adds user-visible latency,
   never holds the guild slot.
-- Inputs: question, answer, the same context block, the roster, and the *bodies* of the
-  involved people's existing memories (so the extractor can update vs. add).
-- Output: strict JSON — 0..N `{subject_user_id, mem_date, title, body, kind,
-  importance}` or `NONE`. The model decides what is durable (preferences, ongoing
-  projects, roles, recurring topics, relationships, events); chit-chat stores nothing
-  (the "if needed" gate).
-- Invalid JSON / timeout (~20s) → dropped silently (console line only). Memory writes
-  get their own compact audit entry; the Q&A audit embed gains
-  `Memory: 6 indexed · +2 stored · 1 recalled`.
+- Inputs: question, answer, the same context block, the roster, the subject allow-list,
+  the server-stamped `mem_date`, and the *bodies* of the involved people's existing
+  memories (so the extractor can update vs. add).
+- Output: strict JSON — 0..N `{subject_user_id, title, body, kind, importance}` or
+  `NONE`. **Key fields are server-stamped, never model-emitted:** `guild_id`,
+  `mem_date`, `source_message_ids`, `title_key`. The model decides what is durable
+  (preferences, ongoing projects, roles, recurring topics, relationships, events);
+  chit-chat stores nothing (the "if needed" gate).
+- **Validation pass** (one pure function, `sanitize.js` style) before upsert: subject
+  not in roster ∪ asker minus bot id → **drop the entry** (console line + audit
+  counter `skipped_invalid`; unknown ids are never resolved against Discord); invalid
+  `kind` → coerce to `profile`; `importance` → clamp 1–5 (default 3); `body` → cap 400
+  chars; title → `normalizeTitle()`, empty after normalizing → drop.
+- Invalid JSON / timeout (~20s) → dropped silently (console line only). Because the
+  memory turn runs **after** the Q&A audit (decision-25 ordering), the Q&A embed's
+  `Memory:` field is **read-side only** — `Memory: bodies ×9 · 1 recalled` (or
+  `Memory: index ×14 · …` in index mode). Write-side counters land in the separate
+  compact "Gork memory" audit entry: `Stored: +2 · skipped_invalid: 1 · indexed: 6`.
 
 #### 7.16.4 Commands & settings (staff-gated, `requireStaff`, decision 15)
 
 | Control | Detail |
 |---------|--------|
-| `/gork memory show [user]` | ephemeral listing of keys + bodies (default: guild index) |
-| `/gork memory forget <id>` | delete one entry (config-change audited) |
+| `/gork memory show [user]` | ephemeral listing of entries with `#<id>` handles + bodies (default: guild index); truncated/paginated to Discord message limits |
+| `/gork memory forget <id>` | delete one entry by its `#<id>` handle (rowid alias, guild-scoped); `<id>` must be a positive integer; miss → ephemeral "no memory #N in this guild" (no cross-guild leak); success echoes the title; config-change audited |
 | `/gork memory clear [user]` | wipe one person's or the guild's memory; confirm-once |
-| `/gork memory on\|off` | master switch (`guild_settings.gork_memory_enabled`) |
-| `/gork memory budget <chars>` | index-injection cap (`gork_memory_chars`, default 2000) |
+| `/gork memory on\|off` | master switch (`guild_settings.gork_memory_enabled`, **default off**) |
+| `/gork memory budget <chars>` | memory-block cap (`gork_memory_chars`, default **12,000**, range 0–64,000, **0 = unlimited**) |
 
-Both columns in migration 023.
+Both settings columns in migration 023. Rowid reuse after eviction is acceptable —
+the `#id` handle only needs to be valid within the listing it came from.
 
 #### 7.16.5 Guardrails & risks
 
@@ -647,31 +674,38 @@ Both columns in migration 023.
   never instructions; prompt-injection-through-stored-text is a documented limitation
   (decision-18 single-server posture).
 - SFW/questions-only + persona guardrails unchanged; the memory turn reuses
-  `src/core/ai.js` (optional cheaper model — open question).
+  `src/core/ai.js` with `AI_SMALL_MODEL` → `AI_MODEL` fallback (decision 29).
 - Bodies must not carry secrets or third-party personal info — extraction prompt says
   so; staff can `forget` anything.
+- **Cost/latency envelope:** memory reads are DB-only (no LLM wait on the answer path
+  beyond the injected block — see the 7.16.2 budget math); the extraction turn is
+  detached and bounded (~20s timeout, silent drop).
+- **Erasure is staff-only (documented limitation):** members cannot delete memories
+  about themselves; staff `forget`/`clear`, the per-person cap, and eviction are the
+  affordances. Single-server posture per decision 18.
 - Depends on [7.15](#715-planned-fixes) Fix 2 (roster = identity plumbing for both
-  index injection and extraction).
+  memory-block injection and extraction).
 
-#### 7.16.6 Proposed decisions (24 is reserved by 7.15 Fix 1)
+#### 7.16.6 Locked decisions (2026-09-09; 24 is reserved by 7.15 Fix 1)
 
-| # | Proposal |
+| # | Decision |
 |---|----------|
-| 25 | **Post-send memory turn:** detached job after reply+audit+slot-release; strict-JSON extraction of durable per-person facts or `NONE`; failure = silent drop, never user-visible. |
-| 26 | **Key = (person, date, title).** Per-trigger MEMORY INDEX (titles only) auto-injected for involved people; bodies on demand via `recall_memories` sharing the 3-round tool budget; base prompt byte-lock preserved (decision-21 guidance pattern). |
-| 27 | **Zero added user-visible latency:** the answer path never waits on memory extraction; reads are index-only until the model calls the tool. |
-| 28 | **Staff-only visibility & erasure** (`/gork memory …`); every write/forget audited; per-person cap + eviction keeps the store bounded. |
-
-**Open questions:** ship default on or off; dedicated cheaper model for the memory turn
-(e.g. `AI_SMALL_MODEL`); allow guild-level `kind=event` memories with a sentinel
-`subject_user_id`, or keep v1 strictly per-person.
+| 25 | **Post-send memory turn:** detached job after reply+audit+slot-release; strict-JSON extraction of durable per-person facts or `NONE`; failure = silent drop, never user-visible. **Server-side validation pass:** subject ∈ roster ∪ asker minus bot id (invalid → drop + `skipped_invalid` audit counter); `kind` coerced; `importance` clamped 1–5; body ≤400 chars. |
+| 26 | **Key = (person, date, title_key).** `normalizeTitle()` (trim/collapse/casefold/80-cap) in an explicit `title_key` column; display `title` kept separate. `guild_id`, `mem_date` (trigger message's UTC date), `source_message_ids` are **server-stamped — the model never emits them**. `id` rowid alias is the `forget` handle. |
+| 27 | **Zero added user-visible extraction latency;** read path = **bodies-or-index auto-mode** under one standalone `gork_memory_chars` budget (default 12,000; 0–64,000; 0 = unlimited), round-robin overflow order; `recall_memories` always registered, shares the 3-round tool budget; base prompt byte-lock preserved (decision-21 guidance pattern). |
+| 28 | **Staff-only visibility & erasure** (`/gork memory …`); every write/forget audited; per-person cap + eviction keeps the store bounded; staff-only erasure documented as a limitation. |
+| 29 | **Defaults:** feature **off** (`gork_memory_enabled` = 0 — every Q&A costs a second LLM call; guilds opt in); memory turn uses **`AI_SMALL_MODEL`** falling back to `AI_MODEL` (matches the existing env-fallback idiom; extraction is a strict-JSON chore); v1 strictly per-person (no guild-scope sentinel subject); **no fallback injection** when nobody involved has memories. |
 
 **Out of scope:** embeddings/vector recall (id-match + titles suffice at single-server
 scale); proactive posting (keyword trigger unchanged); cross-guild memory; persona
 rework; TTL decay (staff `forget` + eviction cover v1).
 
-**Implementation sketch:** migration 023 + `guildSettings` keys → memory repository +
-index builder (budget-capped) → `recall_memories` tool + schema-description guidance →
-post-send extraction turn + keyed upsert/eviction → `/gork memory` commands + settings +
-audit fields → docs + `.env.example` + unit/integration fixtures (extraction JSON edges,
-index budget clamp, keyed upsert overwrite, eviction order).
+**Implementation sketch:** migration 023 (`id` rowid alias, `title_key`, both settings
+columns) + `guildSettings` keys → memory repository + pure `normalizeTitle()` /
+`validateExtraction()` (`sanitize.js` style) + memory-block builder (bodies-or-index
+auto-mode, round-robin budget cut) → `recall_memories` tool + schema-description
+guidance → post-send extraction turn (`AI_SMALL_MODEL` → `AI_MODEL` fallback) + keyed
+upsert/eviction → `/gork memory` commands + settings + audit fields → docs +
+`.env.example` + unit/integration fixtures (extraction JSON edges, validation drops,
+`normalizeTitle` collisions, mode-switch threshold + budget clamp, round-robin overflow
+order, keyed upsert overwrite, eviction order).

@@ -283,4 +283,93 @@ describe("db layer", () => {
       assert.equal(api.isGorkBlocked("g-gork-blocks", ""), false);
     });
   });
+
+  describe("gork memory settings (migration 023 + clamps)", () => {
+    before(() => {
+      // Mirror the 021 pattern above: apply 023.up directly so the memory
+      // columns exist for this suite. 023 is registered in migrate.js too,
+      // and every statement is idempotent, so this is a no-op there.
+      const { addColumnIfMissing } = require("../src/db/connection");
+      require("../src/db/migrations/023_gork_memory").up(api.db, { addColumnIfMissing });
+    });
+
+    it("023_gork_memory is registered and adds the table, index and columns", () => {
+      const { migrations } = require("../src/db/migrate");
+      assert.ok(
+        migrations.some((m) => m.id === "023_gork_memory"),
+        "023_gork_memory must be registered in migrate.js"
+      );
+      const cols = new Set(
+        api.db.prepare(`PRAGMA table_info(guild_settings)`).all().map((c) => c.name)
+      );
+      assert.ok(cols.has("gork_memory_enabled"), "missing column: gork_memory_enabled");
+      assert.ok(cols.has("gork_memory_chars"), "missing column: gork_memory_chars");
+      const table = api.db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name='gork_memories'`
+        )
+        .get();
+      assert.ok(table, "gork_memories table must exist");
+      const index = api.db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='index' AND name='idx_gork_memories_subject'`
+        )
+        .get();
+      assert.ok(index, "idx_gork_memories_subject must exist");
+    });
+
+    it("fresh guild row defaults the memory keys to 0 / 12000", () => {
+      const s = api.getGuildSettings("g-gork-mem-fresh");
+      assert.equal(s.gork_memory_enabled, 0, "memory is default-OFF");
+      assert.equal(s.gork_memory_chars, 12000);
+    });
+
+    it("gork_memory_enabled coerces to 0/1 and persists", () => {
+      const g = "g-gork-mem-enabled";
+      const expectEnabled = (value, expected) => {
+        const s = api.updateGuildSettings(g, { gork_memory_enabled: value });
+        assert.equal(
+          s.gork_memory_enabled,
+          expected,
+          `gork_memory_enabled ${value} -> ${expected}`
+        );
+      };
+      expectEnabled(1, 1);
+      expectEnabled(0, 0);
+      expectEnabled("on", 1);
+      expectEnabled("off", 0);
+      expectEnabled(true, 1);
+      expectEnabled(false, 0);
+      const s = api.getGuildSettings(g);
+      assert.equal(s.gork_memory_enabled, 0, "value must persist across reads");
+    });
+
+    it("gork_memory_chars clamps 0-64000 with 0 VALID (garbage -> 12000)", () => {
+      const g = "g-gork-mem-chars";
+      const expectChars = (value, expected) => {
+        const s = api.updateGuildSettings(g, { gork_memory_chars: value });
+        assert.equal(s.gork_memory_chars, expected, `gork_memory_chars ${value} -> ${expected}`);
+      };
+      expectChars(5000, 5000);
+      expectChars(0, 0); // 0 is VALID here: unlimited budget — never default-ify it
+      expectChars(100000, 64000);
+      expectChars(-5, 12000);
+      expectChars("abc", 12000);
+      expectChars(null, 12000);
+    });
+
+    it("memory keys round-trip alongside the other gork settings", () => {
+      const g = "g-gork-mem-roundtrip";
+      const s = api.updateGuildSettings(g, {
+        gork_memory_enabled: 1,
+        gork_memory_chars: 4000,
+        gork_enabled: 1,
+        gork_keyword: "@gork",
+      });
+      assert.equal(s.gork_memory_enabled, 1);
+      assert.equal(s.gork_memory_chars, 4000);
+      assert.equal(s.gork_enabled, 1);
+      assert.equal(s.gork_keyword, "@gork");
+    });
+  });
 });
