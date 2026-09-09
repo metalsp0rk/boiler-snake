@@ -238,7 +238,7 @@ async function handleYoutube(interaction, ctx) {
     } catch (err) {
       console.error("[youtube] Add error:", err);
       await replyEphemeral(interaction, {
-        content: "Failed to add subscription. Check logs.",
+        content: `Failed to add subscription: ${err?.message || err}`,
       });
     }
     return;
@@ -270,6 +270,7 @@ async function handleYoutube(interaction, ctx) {
     const channelsBefore = getYoutubeChannels(guildId).length;
 
     let removed = false;
+    let removeErr = null;
     try {
       removed = removeYoutubeChannel(guildId, channelId);
       console.log(`[youtube] Remove debug:`, {
@@ -281,6 +282,7 @@ async function handleYoutube(interaction, ctx) {
         error: null,
       });
     } catch (err) {
+      removeErr = err;
       console.error("[youtube] Remove error:", err);
     }
 
@@ -305,7 +307,10 @@ async function handleYoutube(interaction, ctx) {
       });
     } else {
       await replyEphemeral(interaction, {
-        content: "Failed to unsubscribe.",
+        content:
+          `Failed to unsubscribe${
+            removeErr ? `: ${removeErr?.message || removeErr}` : ""
+          } (subscription still present).`,
       });
     }
     return;

@@ -480,7 +480,7 @@ async function handleAdd(interaction, ctx) {
     }
     console.error("[warnings] create failed:", err);
     await replyEphemeral(interaction, {
-      content: "Failed to save the warning (database error).",
+      content: `Failed to save the warning: ${err?.message || "database error"}`,
     });
     return;
   }
@@ -748,7 +748,7 @@ async function handleVoid(interaction, ctx) {
     }
     console.error("[warnings] void failed:", err);
     await replyEphemeral(interaction, {
-      content: "Failed to void the warning (database error).",
+      content: `Failed to void the warning: ${err?.message || "database error"}`,
     });
     return;
   }

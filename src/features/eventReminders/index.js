@@ -980,7 +980,9 @@ async function handleEventReminderModal(interaction, ctx) {
         // ignore
       }
       await interaction.editReply({
-        content: "Failed to save reminder config (database error).",
+        content: `Failed to save reminder config: ${
+          err?.message || "database error"
+        }`,
       });
       return;
     }

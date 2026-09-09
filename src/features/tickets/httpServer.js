@@ -74,6 +74,8 @@ function startTicketHttpServer() {
       .catch((err) => {
         console.error("[http] handler error:", err);
         if (!res.headersSent) {
+          // Generic on purpose: this endpoint is public/unauthenticated, so
+          // never leak error internals over HTTP — full cause is logged above.
           res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Internal error");
         }

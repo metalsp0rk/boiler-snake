@@ -45,29 +45,51 @@ function applyFeaturesToRegistry(features, registry) {
 }
 
 /**
- * @param {import("discord.js").Client} client
- * @param {object[]} features
- * @param {object} ctx
+ * Run one lifecycle hook across all features, isolating failures: a throwing
+ * feature is logged (with feature + hook context) and skipped instead of
+ * killing the boot loop / login. See AGENTS.md → Error Handling.
+ * @returns {string[]} descriptors of failed hooks (empty on success)
  */
-function registerAllFeatureEvents(client, features, ctx) {
+function runFeatureHook(client, features, ctx, hookName) {
+  const failed = [];
   for (const feature of features) {
-    if (typeof feature.registerEvents === "function") {
-      feature.registerEvents(client, ctx);
+    if (typeof feature?.[hookName] !== "function") continue;
+    try {
+      feature[hookName](client, ctx);
+    } catch (err) {
+      console.error(
+        `[features] ${feature.name || "unknown"}.${hookName} failed:`,
+        err?.message || err
+      );
+      failed.push(`${feature.name || "unknown"}.${hookName}`);
     }
   }
+  if (failed.length) {
+    console.error(
+      `[features] boot continuing with degraded features: ${failed.join(", ")}`
+    );
+  }
+  return failed;
 }
 
 /**
  * @param {import("discord.js").Client} client
  * @param {object[]} features
  * @param {object} ctx
+ * @returns {string[]} failed hook descriptors
+ */
+function registerAllFeatureEvents(client, features, ctx) {
+  return runFeatureHook(client, features, ctx, "registerEvents");
+}
+
+/**
+ * @param {import("discord.js").Client} client
+ * @param {object[]} features
+ * @param {object} ctx
+ * @returns {string[]} failed hook descriptors
  */
 function startAllFeatures(client, features, ctx) {
-  for (const feature of features) {
-    if (typeof feature.start === "function") {
-      feature.start(client, ctx);
-    }
-  }
+  return runFeatureHook(client, features, ctx, "start");
 }
 
 module.exports = {
