@@ -372,4 +372,89 @@ describe("db layer", () => {
       assert.equal(s.gork_keyword, "@gork");
     });
   });
+
+  describe("staff_roles added_by (migration 024)", () => {
+    it("024_staff_roles_added_by is registered and adds the nullable column", () => {
+      const { migrations } = require("../src/db/migrate");
+      assert.ok(
+        migrations.some((m) => m.id === "024_staff_roles_added_by"),
+        "024_staff_roles_added_by must be registered in migrate.js"
+      );
+      const col = api.db
+        .prepare(`PRAGMA table_info(staff_roles)`)
+        .all()
+        .find((c) => c.name === "added_by");
+      assert.ok(col, "added_by column must exist");
+      assert.equal(col.type, "TEXT");
+      assert.equal(col.notnull, 0, "added_by is nullable");
+      assert.equal(col.dflt_value, null, "no default — old rows stay NULL");
+    });
+
+    it("re-running all migrations (incl. 024) stays safe", () => {
+      const { runMigrations } = require("../src/db/migrate");
+      assert.doesNotThrow(() => runMigrations());
+    });
+
+    it("rows written before the column existed read back as NULL", () => {
+      // Simulate a legacy row: raw insert that predates added_by entirely.
+      api.db
+        .prepare(
+          `INSERT INTO staff_roles (guild_id, role_id, created_at) VALUES (?, ?, ?)`
+        )
+        .run("g-addedby-legacy", "role-legacy", Date.now());
+      const row = api.db
+        .prepare(
+          `SELECT added_by FROM staff_roles WHERE guild_id=? AND role_id=?`
+        )
+        .get("g-addedby-legacy", "role-legacy");
+      assert.equal(row.added_by, null);
+    });
+
+    it("repo round-trip: add stores added_by; reads expose it; NULL stays NULL", () => {
+      const g = "g-addedby-repo";
+      api.addStaffRole(g, "role-1", "senior", "admin-1");
+      assert.equal(api.getStaffRole(g, "role-1").added_by, "admin-1");
+      assert.equal(
+        api
+          .listStaffRoles(g)
+          .find((r) => r.role_id === "role-1").added_by,
+        "admin-1"
+      );
+      assert.equal(
+        api
+          .listSeniorStaffRoles(g)
+          .find((r) => r.role_id === "role-1").added_by,
+        "admin-1"
+      );
+
+      // Caller without an actor (e.g. the honeypot exempt wrapper) → NULL.
+      api.addStaffRole(g, "role-2", "junior");
+      assert.equal(api.getStaffRole(g, "role-2").added_by, null);
+    });
+
+    it("re-add refreshes provenance with the actor; actorless re-add preserves it", () => {
+      const g = "g-addedby-upsert";
+      api.addStaffRole(g, "role-1", "senior", "admin-1");
+
+      api.addStaffRole(g, "role-1", "junior", "admin-2"); // re-add with actor
+      const updated = api.getStaffRole(g, "role-1");
+      assert.equal(updated.level, "junior", "level still upserts");
+      assert.equal(updated.added_by, "admin-2", "re-add records the acting admin");
+
+      api.addStaffRole(g, "role-1", "senior"); // actorless re-add
+      assert.equal(
+        api.getStaffRole(g, "role-1").added_by,
+        "admin-2",
+        "actorless re-add must not clobber provenance"
+      );
+
+      api.addStaffRole(g, "role-legacy", "senior");
+      api.addStaffRole(g, "role-legacy", "senior", "admin-3");
+      assert.equal(
+        api.getStaffRole(g, "role-legacy").added_by,
+        "admin-3",
+        "a known actor back-fills a legacy NULL row"
+      );
+    });
+  });
 });
