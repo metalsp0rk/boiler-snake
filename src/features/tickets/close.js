@@ -189,6 +189,70 @@ async function notifyRequesterClosed(client, ticket, closeReason) {
 }
 
 /**
+ * Embed for the requester archive DM: ticket ref + close reason, plus a
+ * transcript link ONLY when a public URL was provided (spec §1.11 Fix 2 —
+ * the URL is null unless TICKET_PUBLIC_BASE_URL is configured, and sensitive
+ * archives never pass one, so no link can leak).
+ * @param {object} ticket
+ * @param {string|null} closeReason
+ * @param {string|null} transcriptUrl
+ * @returns {EmbedBuilder}
+ */
+function buildArchiveDmEmbed(ticket, closeReason, transcriptUrl) {
+  const embed = new EmbedBuilder()
+    .setColor(COLOR_ARCHIVE)
+    .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)} archived`)
+    .setDescription(
+      closeReason
+        ? `Your support ticket was closed and archived.\n\n**Reason:** ${String(closeReason).slice(0, 900)}`
+        : "Your support ticket was closed and archived.",
+    );
+  if (transcriptUrl) {
+    embed.addFields({
+      name: "Transcript",
+      value: `[View transcript](${transcriptUrl})`,
+    });
+  }
+  return embed;
+}
+
+/**
+ * Best-effort archive DM to the requester (creator_user_id only — never other
+ * ticket members). Returns `{ ok, error }` instead of replying or throwing:
+ * the archive pipeline surfaces failures as warning lines and never aborts
+ * the archive because of a closed/blocked DM channel.
+ * @param {import("discord.js").Client} client
+ * @param {object} ticket
+ * @param {string|null} closeReason
+ * @param {string|null} transcriptUrl
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+async function notifyRequesterArchived(
+  client,
+  ticket,
+  closeReason,
+  transcriptUrl,
+) {
+  try {
+    const user =
+      client?.users?.cache?.get?.(ticket.creator_user_id) ||
+      (await client?.users?.fetch?.(ticket.creator_user_id).catch(() => null));
+    if (!user?.send) {
+      return {
+        ok: false,
+        error: "requester not reachable (DMs closed or user unavailable)",
+      };
+    }
+    await user.send({
+      embeds: [buildArchiveDmEmbed(ticket, closeReason, transcriptUrl)],
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+/**
  * Post metadata-only stub for sensitive archive.
  * @param {import("discord.js").Client} client
  * @param {object} ticket
@@ -445,6 +509,8 @@ async function archiveTicketPipeline(opts) {
   }
 
   if (sensitive) {
+    // Spec §1.11: sensitive branch unchanged — the requester's only DM is the
+    // close-time notice ("closed + reason", never a URL; no transcript exists).
     const closed = closeTicketSensitive(ticket.id, {
       closedBy: archivedBy,
       closeReason,
@@ -604,6 +670,28 @@ async function archiveTicketPipeline(opts) {
     setTicketArchiveMessageId(archived.id, archiveMsgId);
   }
 
+  // Spec §1.11 Fix 2: once the archive embed posted, best-effort DM the
+  // requester (creator only) with the ref, close reason, and transcript link.
+  // publicUrl is null unless TICKET_PUBLIC_BASE_URL is configured, so the
+  // link only appears when it is. A failed DM adds a warning line for the
+  // archiver (handleArchive surfaces `warnings`) but never fails the archive.
+  if (archiveMsgId) {
+    const dm = await notifyRequesterArchived(
+      client,
+      archived || ticket,
+      closeReason,
+      publicUrl,
+    );
+    if (!dm.ok) {
+      console.warn(
+        `[tickets] archive DM to requester ${ticket.creator_user_id} for ticket ${formatTicketRef(ticket.ticket_number)} failed: ${dm.error}`,
+      );
+      warnings.push(
+        `Could not DM the requester the transcript link: ${dm.error}`,
+      );
+    }
+  }
+
   try {
     if (channel?.delete) await channel.delete("Ticket archived");
   } catch (err) {
@@ -623,6 +711,8 @@ module.exports = {
   archiveTicketPipeline,
   postSensitiveStub,
   postArchiveEmbed,
+  notifyRequesterArchived,
+  buildArchiveDmEmbed,
   /** @deprecated use softCloseTicket + archiveTicketPipeline */
   closeTicketPipeline: async (opts) => {
     // Backward-compatible: soft-close only (no destroy)

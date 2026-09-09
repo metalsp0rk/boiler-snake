@@ -32,6 +32,23 @@ describe("integration: tickets", () => {
     const ticketsFeature = require("../../src/features/tickets");
     ticketsFeature.registerEvents(env.client, env.ctx);
     clientWithEvents = env.client;
+
+    // Requester DMs (close + archive transcript link) resolve users through
+    // client.users — give this env a mock collection so user.send is exercised.
+    if (!env.client.users) {
+      const userCache = new Map(
+        [
+          env.users.adminUser,
+          env.users.memberUser,
+          env.users.member2User,
+          env.users.botUser,
+        ].map((u) => [u.id, u])
+      );
+      env.client.users = {
+        cache: userCache,
+        fetch: async (id) => userCache.get(id) || null,
+      };
+    }
   });
 
   after(() => {
@@ -289,6 +306,230 @@ describe("integration: tickets", () => {
     assert.equal(after.channel_id, null);
     assert.equal(env.db.listTicketMessages(ticket.id).length, 0);
     assert.ok(env.channels.log.sent.length > logBefore); // stub post
+  });
+
+  // --- Fix 2 (spec §1.11): DM the requester the transcript link on archive ---
+
+  /**
+   * Run `fn` with TICKET_PUBLIC_BASE_URL temporarily set (env save/restore).
+   * @param {string|null} base
+   * @param {() => Promise<object>} fn
+   */
+  async function withBaseUrl(base, fn) {
+    const prev = process.env.TICKET_PUBLIC_BASE_URL;
+    if (base == null) delete process.env.TICKET_PUBLIC_BASE_URL;
+    else process.env.TICKET_PUBLIC_BASE_URL = base;
+    try {
+      return await fn();
+    } finally {
+      if (prev === undefined) delete process.env.TICKET_PUBLIC_BASE_URL;
+      else process.env.TICKET_PUBLIC_BASE_URL = prev;
+    }
+  }
+
+  /**
+   * Flatten captured DM payloads to searchable text.
+   * @param {object[]} sends
+   */
+  function dmText(sends) {
+    return sends.map((s) => JSON.stringify(s)).join("\n");
+  }
+
+  it("archive DMs the requester the transcript link (non-sensitive, base URL set)", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.memberUser,
+      reason: "dm transcript link",
+    });
+    const chId = ticket.channel_id;
+    const ticketChannel = env.guild.channels.cache.get(chId);
+    ticketChannel.addMessage({ id: "dm-msg-1", content: "help please" });
+
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: chId,
+      options: { reason: "All set" },
+    });
+    assert.match(env.lastReplyContent(close), /closed/i);
+
+    // Only look at DMs raised by this flow from here on
+    env.users.memberUser.sends.length = 0;
+    env.users.adminUser.sends.length = 0;
+    env.users.member2User.sends.length = 0;
+
+    const archive = await withBaseUrl(
+      "https://transcripts.example.test",
+      () =>
+        env.runCommand({
+          commandName: "ticket",
+          subcommand: "archive",
+          admin: true,
+          channelId: chId,
+        })
+    );
+
+    const after = env.db.getTicketById(ticket.id);
+    assert.equal(after.archived, 1);
+    assert.ok(after.transcript_token, "expected transcript token");
+
+    const archiveText = env.lastReplyContent(archive);
+    assert.match(archiveText, /archived/i);
+    assert.doesNotMatch(archiveText, /Warnings/i); // DM succeeded → no warning
+
+    const text = dmText(env.users.memberUser.sends);
+    assert.match(text, new RegExp(`Ticket #${after.ticket_number} archived`));
+    assert.match(text, /All set/); // close reason
+    assert.ok(
+      text.includes(
+        `[View transcript](https://transcripts.example.test/t/${after.transcript_token})`
+      ),
+      `expected transcript link in requester DM, got: ${text}`
+    );
+
+    // Requester only — the link is never DM'd to non-creators
+    for (const other of [env.users.adminUser, env.users.member2User]) {
+      assert.doesNotMatch(dmText(other.sends), /View transcript/i);
+    }
+  });
+
+  it("archive without public base URL DMs requester ref+reason but no URL", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.memberUser,
+      reason: "dm no base url",
+    });
+    const chId = ticket.channel_id;
+
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: chId,
+      options: { reason: "wrapped up" },
+    });
+    assert.match(env.lastReplyContent(close), /closed/i);
+
+    env.users.memberUser.sends.length = 0;
+
+    const archive = await withBaseUrl(null, () =>
+      env.runCommand({
+        commandName: "ticket",
+        subcommand: "archive",
+        admin: true,
+        channelId: chId,
+      })
+    );
+
+    const after = env.db.getTicketById(ticket.id);
+    assert.equal(after.archived, 1); // transcript still saved
+    assert.doesNotMatch(env.lastReplyContent(archive), /Warnings/i);
+
+    const text = dmText(env.users.memberUser.sends);
+    assert.equal(env.users.memberUser.sends.length, 1); // one archive DM
+    assert.match(text, new RegExp(`Ticket #${after.ticket_number} archived`));
+    assert.match(text, /wrapped up/);
+    assert.doesNotMatch(text, /View transcript/i);
+    assert.doesNotMatch(text, /https?:\/\//i);
+  });
+
+  it("sensitive archive never DMs a transcript URL to the requester", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.memberUser,
+      reason: "sensitive dm no url",
+    });
+    const chId = ticket.channel_id;
+
+    const sens = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "sensitive",
+      admin: true,
+      channelId: chId,
+    });
+    assertEphemeralReply(sens);
+    assert.equal(env.db.getTicketById(ticket.id).is_sensitive, 1);
+
+    env.users.memberUser.sends.length = 0;
+
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: chId,
+      options: { reason: "handled privately" },
+    });
+    assert.match(env.lastReplyContent(close), /closed/i);
+
+    const archive = await withBaseUrl(
+      "https://transcripts.example.test",
+      () =>
+        env.runCommand({
+          commandName: "ticket",
+          subcommand: "archive",
+          admin: true,
+          channelId: chId,
+        })
+    );
+    assert.match(env.lastReplyContent(archive), /archived|sensitive/i);
+
+    const text = dmText(env.users.memberUser.sends);
+    // Exactly one DM (the close notice); archive adds none; never a URL.
+    assert.equal(env.users.memberUser.sends.length, 1);
+    assert.match(text, /closed/i);
+    assert.match(text, /handled privately/);
+    assert.doesNotMatch(text, /View transcript/i);
+    assert.doesNotMatch(text, /https?:\/\//i);
+    assert.equal(env.db.getTicketById(ticket.id).transcript_token, null);
+  });
+
+  it("requester DM failure surfaces a warning and never fails the archive", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.memberUser,
+      reason: "dm rejected",
+    });
+    const chId = ticket.channel_id;
+
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: chId,
+      options: { reason: "done" },
+    });
+    assert.match(env.lastReplyContent(close), /closed/i);
+
+    // Simulate closed DMs / blocked bot
+    const origSend = env.users.memberUser.send;
+    env.users.memberUser.send = async () => {
+      throw new Error("Cannot send messages to this user");
+    };
+
+    let archive;
+    try {
+      archive = await withBaseUrl(
+        "https://transcripts.example.test",
+        () =>
+          env.runCommand({
+            commandName: "ticket",
+            subcommand: "archive",
+            admin: true,
+            channelId: chId,
+          })
+      );
+    } finally {
+      env.users.memberUser.send = origSend;
+    }
+
+    const archiveText = env.lastReplyContent(archive);
+    assert.match(archiveText, /archived/i);
+    assert.match(archiveText, /Warnings/i);
+    assert.match(archiveText, /Could not DM the requester the transcript link/);
+    assert.match(archiveText, /Cannot send messages to this user/);
+
+    // Archive itself succeeded despite the DM failure
+    const after = env.db.getTicketById(ticket.id);
+    assert.equal(after.archived, 1);
+    assert.equal(after.channel_id, null);
+    assert.ok(after.transcript_token);
   });
 
   it("/ticket adduser + removeuser + addstaff + removestaff + transfer", async () => {

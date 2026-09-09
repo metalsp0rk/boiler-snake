@@ -13,9 +13,9 @@ Member /ticket create [reason]
         → welcome embed
 
 Staff /ticket claim · adduser · sensitive · close · archive
-        → close: remove non-staff members; keep channel for staff
-        → archive: non-sensitive → fetch → HTML transcript → archive embed → delete channel
-                   sensitive → metadata stub only → delete channel (no content)
+        → close: remove non-staff members; keep channel for staff (DM requester: reason only)
+        → archive: non-sensitive → fetch → HTML transcript → archive embed → DM requester transcript link → delete channel
+                   sensitive → metadata stub only → delete channel (no content, no URL DM)
 ```
 
 ### Staff role levels (ticket visibility)
@@ -33,7 +33,7 @@ Configure: `/staff role add role level`, `/staff role setlevel`, `/staff role li
 | Staff access | Guild [staff roles](staff-roles.md) + Manage Server. **Ticket channel visibility** is **senior** staff roles only; junior staff pass the command gate but do not get automatic channel overwrites. |
 | Rate limit | Self-create only; `/ticket for` is unlimited |
 | Concurrent opens | No cap per user |
-| Transcript URL | Staff archive channel only — never DMed to the requester |
+| Transcript URL | Staff archive embed **plus** a best-effort DM to the **requester** (ticket ref + close reason + `[View transcript]` link when `TICKET_PUBLIC_BASE_URL` is set) on archive. Non-sensitive only — **sensitive tickets never receive any URL**, and no one but the requester is DMed |
 | Sensitive | No message fetch, no HTML, no AI; channel delete is disposal |
 
 ## Setup
@@ -102,7 +102,7 @@ Without an API key, archives use a stats + close-reason fallback summary. The sa
 | `/ticket sensitive` | Lock-down; auto-claims if no owner |
 | `/ticket unsensitive` | Restore staff-role visibility |
 | `/ticket close [reason] [staff_note]` | Soft-close: remove non-staff; **keep** channel for staff. Optional private staff note on the requester; reply also has **Add staff note** → modal |
-| `/ticket archive` | After close: save transcript (if not sensitive), post summary, **delete** channel |
+| `/ticket archive` | After close: save transcript (if not sensitive), post summary, DM the requester the transcript link (non-sensitive), **delete** channel |
 | `/ticket list [user]` | Open tickets |
 | `/ticket info` | Detail for the current ticket channel (open or soft-closed) |
 | `/ticket summarize` | On-demand AI summary of the current ticket conversation (open or soft-closed, pre-archive). Without `AI_API_KEY` (or if the API is unreachable) it replies with a stats-only fallback and says so |
@@ -132,7 +132,7 @@ Panels are plain bot messages (no DB row). Delete the Discord message to remove 
 
 1. Prefer `/ticket claim`, then `/ticket sensitive` (auto-claims if needed).
 2. Overwrites remove staff **roles** and allow only owner + `/ticket addstaff` users + members + bot.
-3. On **archive**: metadata stub in the archive channel only; **no** transcript URL or message storage.
+3. On **archive**: metadata stub in the archive channel only; **no** transcript URL or message storage — and no transcript link is ever DMed (the requester's close DM is reason-only).
 
 ## Close vs archive
 
@@ -159,11 +159,12 @@ Requires a **closed** ticket channel.
 5. Write HTML under `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/index.html`.
 6. Summarize (AI or fallback).
 7. Post embed to the archive channel (summary + link if `TICKET_PUBLIC_BASE_URL` set).
-8. Delete the live ticket channel.
+8. **DM the requester** (creator only): ticket ref, close reason, and a **View transcript** link when `TICKET_PUBLIC_BASE_URL` is configured (ref + reason only otherwise). Best-effort: if the DM fails (closed DMs, blocked bot), the archive reply notes a warning — the archive itself never fails because of it.
+9. Delete the live ticket channel.
 
 Transcript people lines look like `Cool Nick (@username) · 1234567890`. Mentions in message text become `@Cool Nick` (id kept in the author meta line). Images/videos/audio render inline in the HTML when mirrored.
 
-**Sensitive:** metadata stub only → delete channel (no fetch/HTML/AI/URL/media).
+**Sensitive:** metadata stub only → delete channel (no fetch/HTML/AI/URL/media). The requester is **not** DMed on archive — their only notice is the close DM ("closed + reason"), which never contains a URL.
 
 Optional env for media mirroring:
 
