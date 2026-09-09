@@ -429,10 +429,16 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       assert.ok(body.includes("PUBLIC_BASE_URL"), "PUBLIC_BASE_URL named");
       // Never a value anywhere: no secrets, no tokens, no sync affordances.
       assert.ok(!body.includes(FAKE_REFRESH) && !body.includes(FAKE_ACCESS));
-      // View defers the sync ACTION to Phase 3 — the honest rendered claim
-      // (the "no OAuth performed by a GET" guarantee is the no-forms
-      // assertion below: a view with no POST affordance cannot trigger).
-      assert.ok(body.includes("trigger arrives in Phase 3"), "sync action deferred to Phase 3 (§8.8)");
+      // Phase 3 (subtask 31) landed: the web CAN trigger a sync — but ONLY
+      // with a stored slash authorization (which this guild lacks), and the
+      // trigger never runs OAuth itself. The honest rendered claim replaces
+      // the old "arrives in Phase 3" deferral (the "no OAuth performed by a
+      // GET" guarantee is the no-forms assertion below: a view with no POST
+      // affordance cannot trigger).
+      assert.ok(
+        body.includes("never runs OAuth itself"),
+        "sync trigger honest: authorization stays the slash's consent"
+      );
       // No mutation form on the PAGE itself (the shell's logout form is the
       // only POST affordance in the document — slice to <main> to assert it).
       const main = body.slice(body.indexOf("<main"), body.indexOf("</main>"));
@@ -683,6 +689,9 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       "/staff/role/setlevel",
       "/staff/levelrole/set",
       "/staff/levelrole/remove",
+      // Phase 3 (subtask 31): the sync TRIGGER is registered now — POST
+      // only; every other verb still hits the app-wide 405 gate.
+      "/commands/sync",
     ]) {
       for (const method of ["PUT", "PATCH", "DELETE"]) {
         const res = await fetch(`${base}/g/${GUILD_A}${sub}`, {
@@ -700,10 +709,11 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       "/staff/role/add/extra",
       "/staff/levelrole/unknown",
       "/staff/unknown",
-      // Sync trigger = Phase 3 (subtask 31): NO sync/sync-permissions route
-      // is registered by Phase 2 (this suite owns that pin).
+      // "/staff/sync-permissions" stays UNREGISTERED (the Phase-3 trigger
+      // path is /commands/sync — routes/syncAction.js SYNC_PATH; this
+      // pinned non-path guards against a second sync endpoint creeping
+      // in under the slash-command-shaped name).
       "/staff/sync-permissions",
-      "/commands/sync",
     ]) {
       const res = await fetch(`${base}/g/${GUILD_A}${path}`, {
         method: "POST",
@@ -726,11 +736,17 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       "POST /g/:guildId/staff/role/remove",
       "POST /g/:guildId/staff/role/setlevel",
     ]);
-    // NO sync/sync-permissions mutation (command visibility = Phase 3):
-    assert.equal(
-      appRef.locals.webMutations.some((m) => /sync/i.test(m.path)),
-      false,
-      "subtask 25 registers ZERO sync mutations (Phase 3 owns the trigger)"
+    // Sync mutations (subtask 31): EXACTLY ONE, on the /commands/sync path —
+    // never anything under /staff/ (webMutations is written ONLY by
+    // registerWebMutation, so this mirrors the methodGate truth).
+    const syncMutations = appRef.locals.webMutations
+      .filter((m) => /sync/i.test(m.path))
+      .map((m) => `${m.method} ${m.path}`)
+      .sort();
+    assert.deepEqual(
+      syncMutations,
+      ["POST /g/:guildId/commands/sync"],
+      "subtask 31 registers EXACTLY ONE sync mutation (routes/syncAction.js)"
     );
   });
 });

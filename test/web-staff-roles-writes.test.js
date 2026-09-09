@@ -277,12 +277,15 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
       ]);
       // Scoped to /staff/ on purpose: sibling modules (settings,
       // integrations) own their own registry entries; this pin guards ONLY
-      // this module's surface. When subtask 31 lands
-      // POST /g/:guildId/staff/sync-permissions it MUST re-pin this list
-      // (deliberate tripwire — sync triggering is Phase 3's decision).
+      // this module's surface. Subtask 31 DID land — but on a different
+      // module/path (POST /g/:guildId/commands/sync, routes/syncAction.js),
+      // so this /staff/-scoped pin stays TRUE by design; the sync registry
+      // surface itself is pinned in test/web-routes-staff.test.js and
+      // test/web-visibility-sync.test.js. A sync mutation appearing under
+      // /staff/ again would be a second endpoint — this tripwire catches it.
       assert.ok(
         !staffRegs.some((entry) => /sync/i.test(entry)),
-        "command-visibility sync stays Phase 3 — no sync mutation registered"
+        "no sync mutation lives under /staff/ (the trigger lives in syncAction.js)"
       );
     });
 
@@ -309,8 +312,10 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         "/staff/role/unknown",
         "/staff/role/add/extra",
         "/staff/levelrole/unknown",
-        "/staff/sync-permissions", // Phase 3 — must NOT be registered
-        "/commands/sync",
+        // Still NOT registered — the Phase-3 trigger lives at
+        // /commands/sync (routes/syncAction.js), NOT at any slash-shaped
+        // /staff/ path.
+        "/staff/sync-permissions",
       ]) {
         const res = await fetch(`${base}/g/${GUILD_A}${path}`, {
           method: "POST",

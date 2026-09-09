@@ -1417,6 +1417,40 @@ const PARITY = [
       fields: { ticket_id: "01" },
     },
   },
+  // ---- Command visibility (subtask 31, Phase 3) — §8.6 "Command visibility:
+  // sync status + trigger" row; the TRIGGER is ADMIN (slash /staff
+  // syncpermissions is ManageGuild-ONLY per AGENTS.md §4 — no delta). The
+  // sync itself runs behind the syncActions seam (the T3 doctrine): the gate
+  // fakes ONLY the outbound Discord leg of the SHARED core
+  // (runCommandVisibilitySync); every guard around it (tier ladder, CSRF,
+  // return-target whitelist, fail-closed audit, PRG slugs) is REAL here. The
+  // real core — real token store, real REST sequence, audit parity vs slash —
+  // is pinned end-to-end in test/web-visibility-sync.test.js (patched
+  // global.fetch, zero network).
+  {
+    no: "C1",
+    area: "command visibility (sync trigger — Phase 3 action)",
+    template: "/g/:guildId/commands/sync",
+    method: "POST",
+    tier: "admin",
+    slash: "/staff syncpermissions → handleSyncPermissions → runCommandVisibilitySync → applyGuildCommandPermissions (src/features/staffRoles/index.js + features/commandPermissions/syncTrigger.js, audit via recordSlashAudit)",
+    helpers: [], // the web twin touches NO facade helper besides the audit (seam replaces the Discord leg only; even the real core would list none)
+    action: "staff.sync_permissions",
+    targetType: "guild",
+    targetId: GUILD_A,
+    mirror: false, // the slash syncpermissions posts NO logConfigChange embed — parity = mirror nothing
+    fields: { return: "staff" },
+    prepare: () => {},
+    details: D({ role_count: 2, commands_updated: 3 }),
+    okLocation: `/g/${GUILD_A}/staff?done=sync_completed`,
+    reject: {
+      // `return` field whitelist — refused BEFORE the service runs, and the
+      // redirect falls back to the DEFAULT surface (never the submitted value).
+      status: 302,
+      location: `/g/${GUILD_A}/commands?error=invalid_return`,
+      fields: { return: "<bogus>" },
+    },
+  },
 ];
 
 // Rows flip to "PASS" only when the positive-path test completed (the full
@@ -1435,7 +1469,10 @@ function expectedTierFor(template) {
     template.startsWith("/g/:guildId/staff/role/") ||
     template.startsWith("/g/:guildId/settings/command-channels/") ||
     template.startsWith("/g/:guildId/integrations/honeypot/exempt/") ||
-    template.startsWith("/g/:guildId/xp/grant")
+    template.startsWith("/g/:guildId/xp/grant") ||
+    // /staff syncpermissions is ManageGuild-ONLY (AGENTS.md §4) — the web
+    // twin (subtask 31) inherits ADMIN with zero delta.
+    template.startsWith("/g/:guildId/commands/sync")
   ) {
     return "admin";
   }
@@ -1532,6 +1569,22 @@ const app = createWebApp({
       resolution: `gate summary for ${ticket.ticket_number}`,
       summary: `gate summary (${(messages || []).length} messages)`,
       message_count: (messages || []).length,
+    }),
+  },
+  // Sync trigger seam (C1): offline fake for the SHARED sync core — ONLY the
+  // outbound Discord leg is faked (exactly the twitch/yt seam doctrine).
+  // The result shape mirrors applyGuildCommandPermissions' contract; the
+  // REAL core's REST sequence + audit parity is proven offline in
+  // test/web-visibility-sync.test.js.
+  syncActions: {
+    runCommandVisibilitySync: async () => ({
+      status: "synced",
+      result: {
+        updated: ["cmd-1", "cmd-2", "cmd-3"],
+        failed: [],
+        missingCommands: [],
+        roleCount: 2,
+      },
     }),
   },
 });
@@ -2007,7 +2060,7 @@ describe("C. tier correctness from runtime ladder evidence (AGENTS.md §4)", () 
     assert.deepEqual(
       adminRows.map((r) => r.template).sort(),
       derivedAdmin,
-      "the admin-tier set equals {staff/role/*, command-channels/*, honeypot/exempt/*, xp/grant} — §4 (grantxp is ManageGuild-only)"
+      "the admin-tier set equals {staff/role/*, command-channels/*, honeypot/exempt/*, xp/grant, commands/sync} — §4 (grantxp + syncpermissions are ManageGuild-only)"
     );
   });
 
