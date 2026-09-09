@@ -67,8 +67,11 @@
  * cross-guild/stranger ⇒ generic 404 — §8.6 never-403 rule); requireTier
  * inside each route denies the wrong tier with the fixed generic 403. CSRF
  * is auto-enforced on every /g/ POST (middleware/csrf.js); views embed the
- * hidden _csrf from req.csrfToken. NO route here triggers OAuth or the
- * permission sync (Phase 3, subtask 31).
+ * hidden _csrf from req.csrfToken. NO route HERE triggers OAuth or the
+ * permission sync — the Phase-3 sync TRIGGER is its own module
+ * (routes/syncAction.js, POST /g/:guildId/commands/sync, ADMIN); this file
+ * renders the panel it lives in (staff page only — the /commands GET stays
+ * forms-free, Phase-1 pin) and reads its whitelisted PRG flash back.
  *
  * Data: exclusively src/web/data/staffData.js (facade-only reads; the
  * command-permission OAuth row is whitelist-projected onto status fields so
@@ -91,6 +94,7 @@ const {
   renderStaffBody,
   renderCommandsBody,
 } = require("../views/staff");
+const { flashFromQuery } = require("../views/syncAction");
 const { createStaffData } = require("../data/staffData");
 
 /** Mutation mount templates (methodGate registry + app.post read these SAME
@@ -307,6 +311,19 @@ async function shellGuilds(resolver, req) {
 }
 
 /**
+ * Raw-url flash read (app doctrine: never req.query — the Express 5 "simple"
+ * parser and path-to-regexp decoding must not decide behavior here). The
+ * returned pair is WHITELIST-FILTERED by views/syncAction flashFromQuery:
+ * unknown/hostile slugs render no banner (§8.7).
+ * @param {string} rawUrl
+ */
+function rawFlashQuery(rawUrl) {
+  const idx = String(rawUrl || "").indexOf("?");
+  const params = new URLSearchParams(idx === -1 ? "" : String(rawUrl).slice(idx + 1));
+  return { done: params.get("done"), error: params.get("error") };
+}
+
+/**
  * @param {import("express").Express} app
  * @param {object} [options]
  * @param {{resolve: Function, listGuilds: Function}} [options.guildAccess]
@@ -413,6 +430,11 @@ function registerStaffRoutes(app, options = {}) {
           guildId,
           tier: req.guildAccess.tier,
           csrfToken: req.csrfToken || null,
+          // Phase-3: the panel derives the ADMIN trigger form from this
+          // same render context (guildId + tier + csrf are already bound
+          // for the Phase-2 forms) + reads the whitelisted PRG flash — a
+          // hostile query renders nothing (§8.7).
+          flash: flashFromQuery(rawFlashQuery(req.url)),
         }),
         guilds: await shellGuilds(resolver, req),
       });
@@ -432,10 +454,13 @@ function registerStaffRoutes(app, options = {}) {
         title: "Command visibility",
         heading: "Command visibility",
         subheading:
-          "OAuth authorization + last permission-sync state for the staff-tier slash commands — read-only; triggering stays Admin (Phase 3).",
+          "OAuth authorization + last permission-sync state for the staff-tier slash commands — read-only; the Admin trigger lives on the staff page (Phase 3).",
         content: renderCommandsBody({
           view,
           envConfig: readEnvConfig(oauthConfigFn),
+          // Same whitelisted flash vocabulary as the staff page — the PRG
+          // may target either surface; NO form renders here (Phase-1 pin).
+          flash: flashFromQuery(rawFlashQuery(req.url)),
         }),
         guilds: await shellGuilds(resolver, req),
       });

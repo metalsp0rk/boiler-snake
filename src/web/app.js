@@ -38,6 +38,7 @@ const { registerVoiceRoutes } = require("./routes/voice");
 const { registerSystemRoutes } = require("./routes/system");
 const { registerXpActionsRoutes } = require("./routes/xpActions");
 const { registerTicketActionsRoutes } = require("./routes/ticketActions");
+const { registerSyncActionRoutes } = require("./routes/syncAction");
 const { createSessionMiddleware } = require("./middleware/session");
 const {
   createAuthRateLimit,
@@ -337,6 +338,17 @@ function createWebApp(options = {}) {
   // first; same shared resolver instance keeps tier math undivided;
   // getClient stays the cache-only seam (never a fetch on a request path).
   registerTicketActionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, services: options.services, ticketActions: options.ticketActions });
+  // Command-visibility sync trigger (Phase 3, subtask 31): admin-only
+  // POST /g/:guildId/commands/sync — the web twin of slash
+  // /staff syncpermissions (§8.6 "Command visibility" row = Admin trigger;
+  // §8.8 Phase 3). Flows EXCLUSIVELY through the shared feature core
+  // (features/commandPermissions syncTrigger → sync.js) against the SAME
+  // stored guild_command_permission_oauth authorization the slash uses —
+  // web login tokens are NEVER sent to Discord (decision 9). The panel
+  // form itself renders on the staff page (views/staff), not here. AFTER
+  // the guild shell so /g/:guildId guildScope gates first; same shared
+  // resolver instance keeps tier math undivided.
+  registerSyncActionRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, syncActions: options.syncActions });
 
   app.use(handleNotFound);
   app.use(handleAppError);
