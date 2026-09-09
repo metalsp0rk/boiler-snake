@@ -6,7 +6,17 @@ Replace the minimal, mostly-unauthenticated HTTP surface (`src/features/tickets/
 
 ### Status
 
-**Planned** — design v2 (post critical review). No code yet. Program runs Phases 0a → 3, polish in Phase 4.
+**Phases 0a → 3 complete** (subtasks 01–32). Program exit net:
+`test/web-phase3-gate.test.js` — registry↔matrix integrity (all 40 mounted
+mutations), the 40-row acceptance ladder, audit-origin verification
+(forgery-immune `web`/`slash`/`system` labels + ledger invariant proving
+every `admin_audit` row is booked at its source), the full tier
+conformance sweep, boot wiring, and slash↔web two-transport equivalence
+for grant-XP, warn/void, notes, ticket claim/close/summarize and
+visibility sync (documented deltas D1–D5). Shared fixtures/ladder live in
+`test/helpers/mutation-ladder.js`; the historical per-phase gates
+(`web-phase1-gate`, `web-phase2-gate`) remain green. Phase 4 (polish) is
+separate and out of scope for this breakdown.
 
 ---
 
