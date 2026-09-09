@@ -157,6 +157,18 @@ function bindAuditClient(client) {
 }
 
 /**
+ * Read the boot-bound mirror client (ADDITIONAL read accessor for Phase-3
+ * cache-only seams, subtask 29): route modules that were mounted without
+ * their own options.getClient (app.js moderation mount predates the seam)
+ * fall back to this SAME boot-bound client for cache-only member/user
+ * lookups. Never fetches, never throws; null before bind / on dark boot.
+ * @returns {import("discord.js").Client|null}
+ */
+function getBoundAuditClient() {
+  return boundAuditClient;
+}
+
+/**
  * Build + post the mirror embed. Throws flow to scheduleMirror's .catch.
  * @param {object} mirror descriptor (see header)
  * @param {{ guildId: string, actor: object|null }} ctx
@@ -318,6 +330,7 @@ module.exports = {
   DEFAULT_AUDIT_ORIGIN,
   REDACT_KEY_PATTERN,
   bindAuditClient,
+  getBoundAuditClient,
   createAuditMiddleware,
   attachAudit,
   listAudit,
