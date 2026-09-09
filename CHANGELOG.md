@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.9.0...v1.10.0) (2026-09-09)
+
+
+### Features
+
+* **gork:** community memory — per-person memories with post-send extraction (§7.16) ([e8f2e1c](https://github.com/metalsp0rk/boiler-snake/commit/e8f2e1cb271ee30bf24af87563f98c9ecfe7a73b))
+
 ## [1.9.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.8.0...v1.9.0) (2026-09-08)
 
 
