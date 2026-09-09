@@ -1140,4 +1140,120 @@ describe("integration: tickets", () => {
     assertEphemeralReply(delDeny);
     assertReplyContains(delDeny, /permission/i);
   });
+
+  // ── help-tickets §1.11 Fix 1 — bogus "staff role(s) could not get channel
+  // access" note on ticket create ────────────────────────────────────────────
+
+  /**
+   * Open a ticket via staff /for and return the reply text + ticket row so
+   * note-assembly behavior can be asserted directly.
+   */
+  async function openForCaptureText(reason) {
+    const interaction = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "for",
+      admin: true,
+      options: { user: env.users.memberUser, reason },
+    });
+    const text = env.lastReplyContent(interaction);
+    assert.match(text, /opened/i, `expected opened reply, got: ${text}`);
+    const open = env.db.listOpenTickets(env.guild.id, {
+      userId: IDS.member,
+      limit: 20,
+    });
+    const ticket = open.find((t) => t.reason === reason);
+    assert.ok(ticket, `expected open ticket for reason=${reason}`);
+    return { interaction, text, ticket };
+  }
+
+  it("no staff-role access note when the bot role is above staff roles", async () => {
+    // Prior tests may have flipped this role to junior — force senior.
+    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
+    const staffRole = env.guild.roles.cache.get(IDS.roleExempt);
+    assert.ok(staffRole, "staff role present in role cache");
+    // Harness state: staff role position 1 < bot highest position 5.
+    assert.ok(staffRole.position < 5);
+
+    const { text, ticket } = await openForCaptureText(
+      `note-above-bot-${Date.now()}`,
+    );
+
+    // The false-positive this guards against: count-only note despite the bot
+    // being able to set the overwrite fine.
+    assert.doesNotMatch(text, /could not get channel access/i);
+    assert.doesNotMatch(text, /staff role/i);
+
+    const channel = env.guild.channels.cache.get(ticket.channel_id);
+    assert.ok(channel, "ticket channel exists");
+    const roleOw = channel._overwrites.find((o) => o.id === IDS.roleExempt);
+    assert.ok(roleOw?.allow, "senior staff role must get allow overwrite");
+  });
+
+  it("staff role missing from cache resolves via roles.fetch with no note", async () => {
+    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
+    const staffRole = env.guild.roles.cache.get(IDS.roleExempt);
+    assert.ok(staffRole);
+
+    // Simulate a cache miss (newly created role / guild fetched without roles):
+    // gone from cache but still resolvable via REST.
+    env.guild.roles.cache.delete(IDS.roleExempt);
+    const realFetch = env.guild.roles.fetch;
+    const fetchCalls = [];
+    env.guild.roles.fetch = async (roleId) => {
+      fetchCalls.push(roleId);
+      return roleId === IDS.roleExempt ? staffRole : null;
+    };
+
+    try {
+      const { text, ticket } = await openForCaptureText(
+        `note-cache-miss-${Date.now()}`,
+      );
+      assert.ok(
+        fetchCalls.includes(IDS.roleExempt),
+        "cache miss must trigger guild.roles.fetch",
+      );
+      assert.doesNotMatch(text, /could not get channel access/i);
+      assert.doesNotMatch(text, /staff role/i);
+
+      const channel = env.guild.channels.cache.get(ticket.channel_id);
+      const roleOw = channel._overwrites.find((o) => o.id === IDS.roleExempt);
+      assert.ok(roleOw?.allow, "fetched staff role must still get overwrite");
+    } finally {
+      env.guild.roles.fetch = realFetch;
+      env.guild.roles.cache.set(IDS.roleExempt, staffRole);
+    }
+  });
+
+  it("bot holding the staff role itself produces no access note", async () => {
+    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
+    const staffRole = env.guild.roles.cache.get(IDS.roleExempt);
+    assert.ok(staffRole);
+    const botMember = env.guild.members.me;
+
+    // Bot's ONLY top role is the staff role itself (same position as highest):
+    // the overwrite would grant nothing the bot does not already have — it must
+    // not be reported as "could not get channel access".
+    const origPos = staffRole.position;
+    staffRole.position = 5;
+    botMember.roles.cache.set(IDS.roleExempt, { id: IDS.roleExempt, position: 5 });
+
+    try {
+      const { text, ticket } = await openForCaptureText(
+        `note-bot-held-${Date.now()}`,
+      );
+      assert.doesNotMatch(text, /could not get channel access/i);
+      assert.doesNotMatch(text, /staff role/i);
+
+      // Equal-position overwrite is unsafe for Discord → omitted, ticket still opens.
+      const channel = env.guild.channels.cache.get(ticket.channel_id);
+      assert.ok(channel, "ticket still created");
+      assert.ok(
+        !channel._overwrites.some((o) => o.id === IDS.roleExempt),
+        "bot-held equal-position role must not get a channel overwrite",
+      );
+    } finally {
+      staffRole.position = origPos;
+      botMember.roles.cache.delete(IDS.roleExempt);
+    }
+  });
 });
