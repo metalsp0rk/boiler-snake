@@ -97,6 +97,11 @@ const { createSettingsData } = require("../src/web/data/settingsData");
 const { bindAuditClient } = require("../src/web/middleware/audit");
 const auditLogMod = require("../src/features/logs/auditLog");
 const dbFacade = require("../src/db");
+// Raw connection handle for the Phase-3 AUTOINCREMENT purges: warnings.id and
+// staff_notes.id are `INTEGER PRIMARY KEY AUTOINCREMENT` (migrations 009/007),
+// so deterministic audit target ids need the sqlite_sequence row reset too,
+// not just DELETE. Same connection instance loadDb() bound to the temp DB.
+const { db: rawDb } = require("../src/db/connection");
 
 // Clearly-fake sentinels / placeholders ONLY (AGENTS.md: never realistic).
 const SESSION_SECRET = "test-gate2-sentinel-session-secret-NOT-REAL-027";
@@ -133,6 +138,9 @@ const USER_GRANT = "448190112345678906"; // xp.grant subject (subtask 28) —
 // DELIBERATELY absent from the fake client cache: the grant exercises the
 // slash's member-miss path (awardXp resolves no member → role sync skipped),
 // exactly like a slash whose members.fetch fails (src/services/awardXp.js:46).
+const USER_WARN_SUBJECT = "448190112345678907"; // warn issue/void + note
+// subject (subtask 29) — likewise cache-absent: the mutations exercise the
+// cache-only DM seam's graceful-skip path (never a fetch on a request path).
 const YT_ID = "UC0123456789012345678901"; // /channel/ URL form parses this
 const YT_URL = `https://www.youtube.com/channel/${YT_ID}`;
 const TW_ID = "420000001";
@@ -288,6 +296,13 @@ const FACADE_METHODS = [
   "addXp",
   "logActivity",
   "getXp",
+  // Phase 3 (subtask 29) moderation surface: the slash's OWN write helpers
+  // (warnings/index.js:458|747, staffNotes/index.js:277); getStaffNote is the
+  // issue-form note-link READ (routes/moderation.js parseWarnIssueInput).
+  "createWarning",
+  "voidWarning",
+  "createStaffNote",
+  "getStaffNote",
 ];
 
 /** DB-mutating facade helpers — validation rejections must call ZERO of these. */
@@ -314,6 +329,9 @@ const WRITE_HELPERS = new Set([
   "removeHoneypotBanRole",
   "addXp",
   "logActivity",
+  "createWarning",
+  "voidWarning",
+  "createStaffNote",
 ]);
 
 const recorder = {
@@ -1165,6 +1183,111 @@ const PARITY = [
       fields: { user_id: USER_GRANT, amount: "0" },
     },
   },
+  // ---- Moderation (subtask 29, Phase 3) — §8.6 "Moderation" rows, STAFF ----
+  // Routing DELTA (documented in routes/moderation.js): the void mutation
+  // carries the warning number on the BODY (`warning_number`), not a `:id`
+  // path segment — the methodGate matches mutation templates with :guildId
+  // as the ONLY param (app.js matchesMutationPath). Same contract.
+  {
+    no: "W1",
+    area: "warnings (issue — Phase 3 action)",
+    template: "/g/:guildId/moderation/warnings/issue",
+    method: "POST",
+    tier: "staff",
+    slash: "/warn add → createWarning (src/features/warnings/index.js:458, audit :492)",
+    helpers: ["createWarning"],
+    action: "warnings.add",
+    targetType: "user",
+    targetId: USER_WARN_SUBJECT,
+    mirror: true, // kind "warn" — the slash's logWarnEvent (warn-log channel)
+    fields: { user_id: USER_WARN_SUBJECT, reason: "gate warn reason" },
+    // Deterministic details: AUTOINCREMENT reset ⇒ id/number 1; guild default
+    // expiry 0 ⇒ expires_at NULL (the omitted-expires_days ≡ slash path).
+    prepare: () => {
+      purgeAutoincrement("warnings");
+      api.updateGuildSettings(GUILD_A, { warn_expiry_days: 0 });
+    },
+    details: D({
+      warning_id: 1,
+      warning_number: 1,
+      reason: "gate warn reason",
+      expires_at: null,
+      silent: false,
+    }),
+    okLocation: `/g/${GUILD_A}/warnings?done=warn_issued`,
+    reject: {
+      // malformed subject id — the route pre-validates, zero facade writes
+      status: 302,
+      location: `/g/${GUILD_A}/warnings?error=invalid_user`,
+      fields: { user_id: "x", reason: "gate warn reason" },
+    },
+  },
+  {
+    no: "W2",
+    area: "warnings (void — Phase 3 action)",
+    template: "/g/:guildId/moderation/warnings/void",
+    method: "POST",
+    tier: "staff",
+    slash: "/warn void → voidWarning (src/features/warnings/index.js:747, audit :781)",
+    helpers: ["voidWarning"],
+    action: "warnings.void",
+    targetType: "warning",
+    targetId: "1", // seeded W-1 rowid — static via purgeAutoincrement reset
+    mirror: true, // kind "warn" — the slash's logWarnEvent again
+    fields: { warning_number: "1", reason: "gate void reason" },
+    // Re-seed EXACTLY one active warning (number 1, id 1) under the subject.
+    prepare: () => {
+      purgeAutoincrement("warnings");
+      api.createWarning({
+        guildId: GUILD_A,
+        userId: USER_WARN_SUBJECT,
+        issuerId: USER_ADMIN,
+        reason: "seeded warning to void",
+        expiresDays: 0,
+      });
+    },
+    details: D({
+      warning_number: 1,
+      subject_user_id: USER_WARN_SUBJECT,
+      void_reason: "gate void reason",
+    }),
+    okLocation: `/g/${GUILD_A}/warnings?done=warn_voided`,
+    reject: {
+      // warning_number must be a positive integer — pre-validated refusal
+      status: 302,
+      location: `/g/${GUILD_A}/warnings?error=invalid_warning_number`,
+      fields: { warning_number: "x", reason: "gate void reason" },
+    },
+  },
+  {
+    no: "W3",
+    area: "staff notes (add — Phase 3 action)",
+    template: "/g/:guildId/moderation/notes",
+    method: "POST",
+    tier: "staff",
+    slash: "/note add → createStaffNote (src/features/staffNotes/index.js:277, audit :348)",
+    helpers: ["createStaffNote"],
+    action: "notes.add",
+    targetType: "note",
+    targetId: "1", // seeded note_number/id 1 via purgeAutoincrement reset
+    mirror: true, // default kind — the slash's logConfigChange audit channel
+    fields: { user_id: USER_WARN_SUBJECT, content: "gate note text" },
+    prepare: () => purgeAutoincrement("staff_notes"),
+    // snippetNote(shortText, 500) is the identity here — slash detail shape
+    // verbatim (features/staffNotes/index.js:348).
+    details: D({
+      note_number: 1,
+      subject_user_id: USER_WARN_SUBJECT,
+      content: "gate note text",
+    }),
+    okLocation: `/g/${GUILD_A}/notes?done=note_added`,
+    reject: {
+      // content > MAX_NOTE_CONTENT (2000) — the slash's maxLength option twin
+      status: 302,
+      location: `/g/${GUILD_A}/notes?error=content_too_long`,
+      fields: { user_id: USER_WARN_SUBJECT, content: "x".repeat(2001) },
+    },
+  },
 ];
 
 // Rows flip to "PASS" only when the positive-path test completed (the full
@@ -1290,6 +1413,24 @@ function webAuditRows() {
   }));
 }
 const webAuditCount = () => api.countAdminAudit(GUILD_A, { origin: "web" });
+
+/**
+ * Deterministic purge for the AUTOINCREMENT moderation tables (Phase-3 rows).
+ * DELETE alone cannot restore rowids (warnings.id / staff_notes.id are
+ * `INTEGER PRIMARY KEY AUTOINCREMENT`), so the sqlite_sequence row is reset
+ * too — this keeps W1's warning id/number, W2's void target id and W3's note
+ * id/number STATIC (1). Identifiers are this file's own frozen literals; the
+ * table name is bound as a parameter to the sequence delete.
+ */
+function purgeAutoincrement(table) {
+  rawDb.prepare(`DELETE FROM ${table}`).run();
+  try {
+    // sqlite_sequence only exists after the FIRST autoincrement insert.
+    rawDb.prepare(`DELETE FROM sqlite_sequence WHERE name = ?`).run(table);
+  } catch {
+    /* not created yet — nothing to reset */
+  }
+}
 
 function writeCalls(log) {
   return log.filter((c) => WRITE_HELPERS.has(c.name));
@@ -1933,7 +2074,7 @@ describe("F. getClient boot wiring (features/web start → startWebServer({getCl
 // ---------------------------------------------------------------------------
 
 describe("G. gate report — slash parity checklist (§8.8 artifact)", () => {
-  it("every Phase-2 checklist area is covered by a PASSed row (settings, channels, logs, cooldowns, decay, staff+levels, level roles, integrations, exempt)", () => {
+  it("every checklist area is covered by a PASSed row (settings, channels, logs, cooldowns, decay, staff+levels, level roles, integrations, exempt, moderation)", () => {
     const REQUIRED_AREAS = [
       "settings",
       "command channels",
@@ -1945,6 +2086,9 @@ describe("G. gate report — slash parity checklist (§8.8 artifact)", () => {
       "event reminders",
       "honeypot",
       "honeypot exempt",
+      // Phase 3 (subtask 29): the moderation surface is checklist-mandatory.
+      "warnings",
+      "staff notes",
     ];
     const passed = PARITY.filter((r) => r.status === "PASS");
     assert.equal(passed.length, PARITY.length, "every mutation row must have PASSed (a ladder failed earlier)");
