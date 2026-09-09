@@ -43,6 +43,7 @@ const {
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   OFFSET_PRESETS,
   DEFAULT_PRESET_MINUTES,
@@ -412,6 +413,13 @@ async function handleSetChannel(interaction) {
   updateGuildSettings(interaction.guildId, {
     event_reminder_channel_id: channelId,
   });
+  recordSlashAudit({
+    interaction,
+    action: "event_reminders.channel_set",
+    targetType: "guild",
+    targetId: interaction.guildId,
+    details: { channel_id: channelId },
+  });
 
   await logConfigChange(interaction.client, interaction.guildId, {
     title: "Event reminder default channel",
@@ -585,6 +593,16 @@ async function handleClear(interaction) {
   const cleared = await cleanupEventReminder(interaction.guild, eventId, {
     force: true,
   });
+  recordSlashAudit({
+    interaction,
+    action: "event_reminders.delete",
+    targetType: "event_reminder",
+    targetId: String(config.id),
+    details: {
+      scheduled_event_id: eventId,
+      shortname: cleared?.shortname || config.shortname,
+    },
+  });
   await logConfigChange(interaction.client, interaction.guildId, {
     title: "Event reminder cleared",
     command: "/eventreminder clear",
@@ -632,6 +650,17 @@ async function handleSync(interaction) {
     scheduledEvent,
     config.role_id,
   );
+  recordSlashAudit({
+    interaction,
+    action: "event_reminders.sync",
+    targetType: "event_reminder",
+    targetId: String(config.id),
+    details: {
+      scheduled_event_id: eventId,
+      granted: result.granted,
+      removed: result.removed,
+    },
+  });
   await interaction.editReply({
     content: `Synced **${ROLE_PREFIX}${config.shortname}**: +${result.granted} / −${result.removed} members.`,
   });
@@ -987,6 +1016,21 @@ async function handleEventReminderModal(interaction, ctx) {
 
     const sync = await syncEventReminderRole(guild, scheduledEvent, role.id);
 
+    recordSlashAudit({
+      interaction,
+      action: "event_reminders.create",
+      targetType: "event_reminder",
+      targetId: String(config.id),
+      details: {
+        scheduled_event_id: eventId,
+        shortname,
+        role_id: role.id,
+        channel_id: channelId,
+        persistent: persistent ? 1 : 0,
+        offset_count: offsets.length,
+      },
+    });
+
     await logConfigChange(interaction.client, guild.id, {
       title: "Event reminder created",
       command: "/eventreminder create",
@@ -1081,6 +1125,19 @@ async function handleEventReminderModal(interaction, ctx) {
     channelId: channelId,
     messageTemplate: template,
     offsets,
+  });
+  recordSlashAudit({
+    interaction,
+    action: "event_reminders.update",
+    targetType: "event_reminder",
+    targetId: String(existing.id),
+    details: {
+      scheduled_event_id: eventId,
+      shortname,
+      channel_id: channelId,
+      persistent: persistent ? 1 : 0,
+      offset_count: offsets.length,
+    },
   });
 
   await logConfigChange(interaction.client, guild.id, {

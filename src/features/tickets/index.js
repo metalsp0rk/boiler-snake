@@ -68,6 +68,7 @@ const {
   editEphemeral,
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -89,7 +90,6 @@ const {
   enrichMessagesForArchive,
 } = require("./users");
 const { summarizeTicket } = require("./summary");
-const { startTicketHttpServer } = require("./httpServer");
 const {
   Color,
   formatTicketRef,
@@ -915,6 +915,18 @@ async function completeSelfCreate(interaction, ctx, reason) {
       openedByStaffId: null,
     });
 
+    recordSlashAudit({
+      interaction,
+      action: "tickets.create",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        channel_id: channel?.id ?? null,
+        reason: reason ?? null,
+      },
+    });
+
     let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened: ${channel}`;
     if (skippedStaffRoles?.length) {
       msg +=
@@ -1001,6 +1013,14 @@ async function handlePanelCreate(interaction, ctx) {
       title,
       description,
     );
+
+    recordSlashAudit({
+      interaction,
+      action: "tickets.panel_create",
+      targetType: "ticket_panel",
+      targetId: message.id,
+      details: { channel_id: targetChannel.id, title },
+    });
 
     await logConfigChange(
       ctx?.client || interaction.client,
@@ -1096,6 +1116,17 @@ async function handlePanelEdit(interaction, ctx) {
     return;
   }
 
+  recordSlashAudit({
+    interaction,
+    action: "tickets.panel_update",
+    targetType: "ticket_panel",
+    targetId: messageId,
+    details: {
+      title_updated: title != null,
+      description_updated: description != null,
+    },
+  });
+
   const panel = getTicketPanel(interaction.guildId, messageId);
   const finalTitle =
     (title != null ? title.trim() : panel?.title) || DEFAULT_PANEL_TITLE;
@@ -1184,6 +1215,13 @@ async function handlePanelDelete(interaction, ctx) {
   }
 
   if (removed) {
+    recordSlashAudit({
+      interaction,
+      action: "tickets.panel_delete",
+      targetType: "ticket_panel",
+      targetId: messageId,
+      details: { channel_id: channel_id ?? null },
+    });
     await logConfigChange(
       ctx?.client || interaction.client,
       interaction.guildId,
@@ -1303,6 +1341,19 @@ async function handleFor(interaction, ctx) {
       openedByStaffId: interaction.user.id,
     });
 
+    recordSlashAudit({
+      interaction,
+      action: "tickets.create",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        channel_id: channel?.id ?? null,
+        subject_user_id: target.id,
+        reason: reason ?? null,
+      },
+    });
+
     // Best-effort DM
     try {
       await target.send({
@@ -1356,6 +1407,18 @@ async function handleClose(interaction, ctx) {
       botMember,
     });
 
+    recordSlashAudit({
+      interaction,
+      action: "tickets.close",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        close_reason: closeReason ?? null,
+        status: result.ticket?.status ?? ticket.status,
+      },
+    });
+
     let msg =
       `Ticket **${formatTicketRef(ticket.ticket_number)}** closed.\n` +
       `Non-staff members were removed; the channel remains for staff.\n` +
@@ -1381,6 +1444,17 @@ async function handleClose(interaction, ctx) {
         msg +=
           `\n\nStaff note **N-${noteResult.note.note_number}** saved on ` +
           `<@${closedTicket.creator_user_id}> (private).`;
+        recordSlashAudit({
+          interaction,
+          action: "notes.add",
+          targetType: "note",
+          targetId: String(noteResult.note.id),
+          details: {
+            note_number: noteResult.note.note_number,
+            subject_user_id: closedTicket.creator_user_id,
+            from_ticket: closedTicket.ticket_number,
+          },
+        });
         await logConfigChange(client, interaction.guildId, {
           title: "Staff note created",
           command: "/ticket close staff_note",
@@ -1488,6 +1562,17 @@ async function handleStaffNoteModal(interaction, ctx) {
     return;
   }
 
+  recordSlashAudit({
+    interaction,
+    action: "notes.add",
+    targetType: "note",
+    targetId: String(noteResult.note.id),
+    details: {
+      note_number: noteResult.note.note_number,
+      subject_user_id: ticket.creator_user_id,
+      from_ticket: ticket.ticket_number,
+    },
+  });
   await logConfigChange(
     ctx?.client || interaction.client,
     interaction.guildId,
@@ -1528,6 +1613,18 @@ async function handleArchive(interaction, ctx) {
       guildName: interaction.guild?.name,
     });
 
+    recordSlashAudit({
+      interaction,
+      action: "tickets.archive",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        status: result.ticket?.status ?? ticket.status,
+        sensitive: Number(ticket.is_sensitive) ? 1 : 0,
+      },
+    });
+
     let msg =
       `Ticket **${formatTicketRef(ticket.ticket_number)}** archived` +
       (Number(ticket.is_sensitive)
@@ -1551,6 +1648,17 @@ async function handleClaim(interaction, ctx) {
   const { ticket, channel } = ctxTicket;
 
   const updated = claimTicket(ticket.id, interaction.user.id);
+  recordSlashAudit({
+    interaction,
+    action: "tickets.claim",
+    targetType: "ticket",
+    targetId: String(ticket.id),
+    details: {
+      ticket_number: ticket.ticket_number,
+      previous_owner: ticket.staff_owner_id ?? null,
+      staff_owner_id: updated?.staff_owner_id ?? interaction.user.id,
+    },
+  });
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
@@ -1588,6 +1696,17 @@ async function handleTransfer(interaction, ctx) {
   }
 
   const updated = transferTicket(ticket.id, staff.id, interaction.user.id);
+  recordSlashAudit({
+    interaction,
+    action: "tickets.transfer",
+    targetType: "ticket",
+    targetId: String(ticket.id),
+    details: {
+      ticket_number: ticket.ticket_number,
+      previous_owner: ticket.staff_owner_id ?? null,
+      staff_owner_id: updated?.staff_owner_id ?? staff.id,
+    },
+  });
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
@@ -1627,6 +1746,15 @@ async function handleAddUser(interaction, ctx) {
   }
 
   const added = addTicketMember(ticket.id, user.id, interaction.user.id);
+  if (added) {
+    recordSlashAudit({
+      interaction,
+      action: "tickets.member_add",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: { ticket_number: ticket.ticket_number, user_id: user.id },
+    });
+  }
   const updated = getTicketById(ticket.id);
   try {
     if (channel) {
@@ -1655,6 +1783,15 @@ async function handleRemoveUser(interaction, ctx) {
   const user = interaction.options.getUser("user", true);
 
   const result = removeTicketMember(ticket.id, user.id);
+  if (result.ok) {
+    recordSlashAudit({
+      interaction,
+      action: "tickets.member_remove",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: { ticket_number: ticket.ticket_number, user_id: user.id },
+    });
+  }
   if (!result.ok) {
     await replyEphemeral(interaction, {
       content: result.error,
@@ -1695,6 +1832,15 @@ async function handleAddStaff(interaction, ctx) {
   }
 
   const added = addTicketStaff(ticket.id, user.id, interaction.user.id);
+  if (added) {
+    recordSlashAudit({
+      interaction,
+      action: "tickets.staff_add",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: { ticket_number: ticket.ticket_number, user_id: user.id },
+    });
+  }
   const updated = getTicketById(ticket.id);
   try {
     if (channel) {
@@ -1723,6 +1869,15 @@ async function handleRemoveStaff(interaction, ctx) {
   const user = interaction.options.getUser("user", true);
 
   const result = removeTicketStaff(ticket.id, user.id);
+  if (result.ok) {
+    recordSlashAudit({
+      interaction,
+      action: "tickets.staff_remove",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: { ticket_number: ticket.ticket_number, user_id: user.id },
+    });
+  }
   if (!result.ok) {
     await replyEphemeral(interaction, {
       content: result.error,
@@ -1768,6 +1923,17 @@ async function handleSensitive(interaction, ctx) {
 
   const ownerId = ticket.staff_owner_id || interaction.user.id; // auto-claim
   const updated = setTicketSensitive(ticket.id, ownerId);
+  recordSlashAudit({
+    interaction,
+    action: "tickets.sensitive_set",
+    targetType: "ticket",
+    targetId: String(ticket.id),
+    details: {
+      ticket_number: ticket.ticket_number,
+      was_sensitive: Number(ticket.is_sensitive) ? 1 : 0,
+      staff_owner_id: ownerId,
+    },
+  });
 
   try {
     if (channel) {
@@ -1817,6 +1983,16 @@ async function handleUnsensitive(interaction, ctx) {
   }
 
   const updated = setTicketUnsensitive(ticket.id);
+  recordSlashAudit({
+    interaction,
+    action: "tickets.sensitive_clear",
+    targetType: "ticket",
+    targetId: String(ticket.id),
+    details: {
+      ticket_number: ticket.ticket_number,
+      was_sensitive: Number(ticket.is_sensitive) ? 1 : 0,
+    },
+  });
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
@@ -1965,6 +2141,19 @@ async function handleSummarize(interaction, ctx) {
   }
 
   const summary = await summarizeTicket(ticket, messages, {});
+
+  recordSlashAudit({
+    interaction,
+    action: "tickets.summarize",
+    targetType: "ticket",
+    targetId: String(ticket.id),
+    details: {
+      ticket_number: ticket.ticket_number,
+      source: summary.source ?? null,
+      message_count: summary.message_count ?? messages.length,
+    },
+  });
+
   const sourceNote =
     summary.source === "ai"
       ? `AI summary (model: ${summary.model})`
@@ -2002,6 +2191,12 @@ async function handleSetCategory(interaction, ctx) {
   updateGuildSettings(interaction.guildId, {
     ticket_category_id: category.id,
   });
+  recordSlashAudit({
+    interaction,
+    action: "tickets.category_set",
+    targetType: "channel",
+    targetId: category.id,
+  });
   await logConfigChange(
     ctx?.client || interaction.client,
     interaction.guildId,
@@ -2022,6 +2217,12 @@ async function handleSetArchive(interaction, ctx) {
   const channel = interaction.options.getChannel("channel", true);
   updateGuildSettings(interaction.guildId, {
     ticket_archive_channel_id: channel.id,
+  });
+  recordSlashAudit({
+    interaction,
+    action: "tickets.archive_channel_set",
+    targetType: "channel",
+    targetId: channel.id,
   });
   await logConfigChange(
     ctx?.client || interaction.client,
@@ -2045,6 +2246,13 @@ async function handleSetRateLimit(interaction, ctx) {
   const minutes = interaction.options.getInteger("minutes", true);
   updateGuildSettings(interaction.guildId, {
     ticket_rate_limit_minutes: minutes,
+  });
+  recordSlashAudit({
+    interaction,
+    action: "tickets.rate_limit_set",
+    targetType: "guild",
+    targetId: interaction.guildId,
+    details: { minutes },
   });
   await logConfigChange(
     ctx?.client || interaction.client,
@@ -2120,11 +2328,10 @@ function registerEvents(client) {
 }
 
 /**
- * @param {import("discord.js").Client} client
+ * NOTE: The public HTTP server used to be started here. It now belongs to
+ * the `web` boot feature (src/features/web) per roadmap/web-admin.md §8.2;
+ * tickets only contributes route behavior via src/web/routes/transcripts.js.
  */
-function start(client) {
-  startTicketHttpServer();
-}
 
 module.exports = {
   name: "tickets",
@@ -2141,7 +2348,6 @@ module.exports = {
     [MODAL_STAFF_NOTE_PREFIX]: handleStaffNoteModal,
   },
   registerEvents,
-  start,
   formatTicketRef,
   openTicketChannel,
   buildCreateTicketModal,

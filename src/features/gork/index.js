@@ -30,6 +30,7 @@ const { replyEphemeral } = require("../../core/interaction");
 const { Color, baseEmbed } = require("../../core/theme");
 const { getAiConfig } = require("../../core/ai");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const { handleGorkMessage, gorkQueue } = require("./trigger");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -194,6 +195,13 @@ async function setKeyword(client, interaction, guildId) {
   const settings = updateGuildSettings(guildId, {
     gork_keyword: clearing ? null : raw,
   });
+  recordSlashAudit({
+    interaction,
+    action: "gork.keyword_set",
+    targetType: "guild",
+    targetId: guildId,
+    details: { keyword: settings.gork_keyword ?? null, cleared: clearing },
+  });
   await logConfigChange(client, guildId, {
     title: clearing ? "Gork disabled" : "Gork keyword updated",
     command: "/gork keyword",
@@ -226,6 +234,13 @@ async function setContext(client, interaction, guildId) {
   const settings = updateGuildSettings(guildId, {
     gork_context_window: raw,
   });
+  recordSlashAudit({
+    interaction,
+    action: "gork.context_set",
+    targetType: "guild",
+    targetId: guildId,
+    details: { context_window: settings.gork_context_window },
+  });
   await logConfigChange(client, guildId, {
     title: "Gork context window updated",
     command: "/gork context",
@@ -253,6 +268,13 @@ async function setCooldown(client, interaction, guildId) {
     gork_cooldown_sec: raw,
   });
   const stored = settings.gork_cooldown_sec;
+  recordSlashAudit({
+    interaction,
+    action: "gork.cooldown_set",
+    targetType: "guild",
+    targetId: guildId,
+    details: { cooldown_sec: stored },
+  });
   await logConfigChange(client, guildId, {
     title: "Gork cooldown updated",
     command: "/gork cooldown",
@@ -289,6 +311,13 @@ async function setRules(client, interaction, guildId) {
     gork_extra_rules: clearing ? "" : raw,
   });
   const stored = (settings.gork_extra_rules || "").trim();
+  recordSlashAudit({
+    interaction,
+    action: "gork.rules_set",
+    targetType: "guild",
+    targetId: guildId,
+    details: { rules: stored, cleared: clearing },
+  });
   await logConfigChange(client, guildId, {
     title: stored ? "Gork staff rules updated" : "Gork staff rules removed",
     command: "/gork rules",
@@ -315,6 +344,13 @@ async function setSearch(client, interaction, guildId) {
     gork_search_enabled: raw === "on" ? 1 : 0,
   });
   const on = Number(settings.gork_search_enabled) === 1;
+  recordSlashAudit({
+    interaction,
+    action: "gork.search_set",
+    targetType: "guild",
+    targetId: guildId,
+    details: { enabled: on ? 1 : 0 },
+  });
   await logConfigChange(client, guildId, {
     title: `Gork web search ${on ? "enabled" : "disabled"}`,
     command: "/gork search",
@@ -343,6 +379,13 @@ async function setEnable(client, interaction, guildId) {
     gork_enabled: raw === "on" ? 1 : 0,
   });
   const on = Number(settings.gork_enabled ?? 1) === 1;
+  recordSlashAudit({
+    interaction,
+    action: "gork.enabled_set",
+    targetType: "guild",
+    targetId: guildId,
+    details: { enabled: on ? 1 : 0 },
+  });
   await logConfigChange(client, guildId, {
     title: `Gork ${on ? "enabled" : "disabled"} for the server`,
     command: "/gork enable",
@@ -374,6 +417,12 @@ async function banUser(client, interaction, guildId) {
     );
   }
   addGorkBlock(guildId, user.id, interaction.user.id);
+  recordSlashAudit({
+    interaction,
+    action: "gork.ban",
+    targetType: "user",
+    targetId: user.id,
+  });
   await logConfigChange(client, guildId, {
     title: "Gork user banned",
     command: "/gork ban",
@@ -401,6 +450,12 @@ async function unbanUser(client, interaction, guildId) {
       `<@${user.id}> is not banned from gork in this server.`,
     );
   }
+  recordSlashAudit({
+    interaction,
+    action: "gork.unban",
+    targetType: "user",
+    targetId: user.id,
+  });
   await logConfigChange(client, guildId, {
     title: "Gork user unbanned",
     command: "/gork unban",

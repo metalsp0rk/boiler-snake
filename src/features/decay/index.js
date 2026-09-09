@@ -18,6 +18,10 @@ const {
   logConfigChange,
   diffConfigLines,
 } = require("../logs/auditLog");
+const {
+  recordSlashAudit,
+  recordSystemAudit,
+} = require("../../core/auditTrail");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 const DECAY_CRON = "0 4 * * *";
@@ -85,6 +89,13 @@ async function handleSetDecay(interaction, ctx) {
 
   const before = settings;
   const updated = updateGuildSettings(guildId, patch);
+  recordSlashAudit({
+    interaction,
+    action: "decay.settings_update",
+    targetType: "guild",
+    targetId: guildId,
+    details: { patch },
+  });
   const lines = diffConfigLines(before, updated, Object.keys(patch), (k) => {
     if (k === "decay_enabled") return "`decay_enabled`";
     if (k === "decay_percent") return "`decay_percent`";
@@ -162,6 +173,18 @@ async function runDecayForGuild(client, guildId) {
 
     const oldLvl = levelFromXp(u.xp, settings.level_xp_factor);
     setXp(guildId, u.user_id, newXp);
+    recordSystemAudit({
+      guildId,
+      action: "decay.xp_decay",
+      targetType: "user",
+      targetId: u.user_id,
+      details: {
+        before_xp: u.xp,
+        after_xp: newXp,
+        percent: pct,
+        old_level: oldLvl,
+      },
+    });
 
     const member = await guild.members.fetch(u.user_id).catch(() => null);
     if (member) {

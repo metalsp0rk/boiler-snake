@@ -30,6 +30,9 @@ const migrations = [
   require("./migrations/020_twitch"),
   require("./migrations/021_gork"),
   require("./migrations/022_gork_access"),
+  require("./migrations/023_web_sessions"),
+  require("./migrations/024_admin_audit"),
+  require("./migrations/025_web_session_tokens"),
 ];
 
 const helpers = {

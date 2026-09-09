@@ -10,6 +10,7 @@ const {
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   startYoutubeTicker,
   createSimpleUploadEmbed,
@@ -215,6 +216,14 @@ async function handleYoutube(interaction, ctx) {
         thumbnail,
       );
 
+      recordSlashAudit({
+        interaction,
+        action: "youtube.channel_add",
+        targetType: "youtube_channel",
+        targetId: channelId,
+        details: { channel_name: normalizedChannelName, url },
+      });
+
       let replyMsg = `Subscribed to **@${normalizedChannelName}**. I'll notify when they go live.`;
       if (channelId.startsWith("@")) {
         replyMsg +=
@@ -291,6 +300,13 @@ async function handleYoutube(interaction, ctx) {
     }
 
     if (removed) {
+      recordSlashAudit({
+        interaction,
+        action: "youtube.channel_remove",
+        targetType: "youtube_channel",
+        targetId: foundChannel.id || channelId,
+        details: { channel_name: foundChannel.channel_name },
+      });
       await logConfigChange(client, guildId, {
         title: "YouTube subscription removed",
         command: "/youtube remove",
@@ -366,6 +382,13 @@ async function handleSetYoutube(interaction, ctx) {
     const ch = interaction.options.getChannel("channel", true);
     const before = settings.youtube_notification_channel_id;
     updateGuildSettings(guildId, { youtube_notification_channel_id: ch.id });
+    recordSlashAudit({
+      interaction,
+      action: "youtube.notify_channel_set",
+      targetType: "channel",
+      targetId: ch.id,
+      details: { previous_channel_id: before ?? null },
+    });
     await logConfigChange(client, guildId, {
       title: "YouTube notification channel set",
       command: "/setyoutube channel",
@@ -393,6 +416,13 @@ async function handleSetYoutube(interaction, ctx) {
     }
     const before = settings.youtube_polling_interval_minutes;
     updateGuildSettings(guildId, { youtube_polling_interval_minutes: minutes });
+    recordSlashAudit({
+      interaction,
+      action: "youtube.polling_interval_set",
+      targetType: "guild",
+      targetId: guildId,
+      details: { previous_minutes: before ?? null, minutes },
+    });
     await logConfigChange(client, guildId, {
       title: "YouTube polling interval set",
       command: "/setyoutube interval",
@@ -411,6 +441,13 @@ async function handleSetYoutube(interaction, ctx) {
     const before = settings.youtube_upload_role_id;
     updateGuildSettings(guildId, {
       youtube_upload_role_id: role ? role.id : null,
+    });
+    recordSlashAudit({
+      interaction,
+      action: "youtube.upload_role_set",
+      targetType: "role",
+      targetId: role ? role.id : guildId,
+      details: { role_id: role ? role.id : null, previous_role_id: before ?? null },
     });
     const afterLabel = role ? `<@&${role.id}>` : "*none*";
     const beforeLabel = before ? `<@&${before}>` : "*none*";
