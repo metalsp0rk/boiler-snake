@@ -153,9 +153,9 @@ Rationale: privacy. Channel deletion is the disposal mechanism; DB + archive stu
 4. Render   — generate HTML transcript on disk
 5. Summarize— AI structured summary (or stats fallback if no AI key)
 6. Publish  — post embed to ticket_archive_channel with summary + transcript URL
-              (staff channel only; never DM transcript URL to members)
 7. Delete   — delete the live Discord channel
-8. Notify   — optional DM to requester: closed + reason only, **no** transcript URL
+8. Notify   — DM the requester: closed + reason + **transcript URL** (see §1.11 fix;
+              sensitive branch still never sends a URL)
 ```
 
 #### HTML transcript (bot-served)
@@ -167,9 +167,9 @@ Rationale: privacy. Channel deletion is the disposal mechanism; DB + archive stu
   - Config: `TICKET_HTTP_PORT`, `TICKET_PUBLIC_BASE_URL` (public origin for embeds; reverse-proxy TLS documented for operators)
 - **Access control (MVP):**
   - UUID in the path (unguessable).
-  - Link posted **only** in the configured **staff** archive channel.
-  - Members / requesters **never** receive the transcript URL.
-  - **Later:** “Login with Discord” gate so only staff can load `/t/{uuid}` even with the link.
+  - Link posted in the configured **staff** archive channel, and **DM’d to the ticket requester** at archive time for **non-sensitive** tickets (see §1.11; supersedes the original staff-only rule).
+  - Other members / other staff never receive the transcript URL. Sensitive tickets never generate or send one.
+  - **Later:** “Login with Discord” gate on `/t/{uuid}`.
 - **Attachments (MVP):** hotlink Discord CDN URLs in the HTML.  
   **TODO (post-MVP):** at close time, download all thread assets into  
   `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/assets/` and rewrite HTML to local paths (CDN links expire).
@@ -337,7 +337,7 @@ Channel create is **bot-driven**.
 |---|----------|
 | 1 | **Ownership:** claim / auto-claim on sensitive; `/ticket transfer`; `/ticket addstaff` for extra named staff without restoring staff role |
 | 2 | **Sensitive tickets are never content-archived** — no message fetch, no HTML, no AI, no transcript URL; channel delete is disposal; **required** metadata-only archive stub |
-| 3 | **Transcript URL is staff-only** — posted only to the ticket archive channel; never DMed to members/requesters |
+| 3 | ~~Transcript URL is staff-only~~ **Revised (see §1.11):** archive-channel embed **plus** DM of the transcript link to the **requester** for non-sensitive tickets; sensitive tickets never get any URL |
 | 4 | **MVP URL security:** UUID path `/t/{uuid}`; **later:** Login with Discord for real access control |
 | 5 | **Attachments MVP:** hotlink Discord CDN URLs; **TODO:** download all thread assets at archive time and serve locally |
 | 6 | **Create UX:** slash `/ticket create` + staff `/ticket for @user` + **panel button → modal** for description (same pipeline) |
@@ -346,3 +346,32 @@ Channel create is **bot-driven**.
 | 9 | **Sensitive close stub required** in the archive channel (metadata only; no transcript) |
 | 10 | **`/ticket unsensitive`:** staff **owner** or anyone passing the [staff/admin gate](staff-roles.md#4-guild-staff-roles-admin-gate) |
 | 11 | **No ticket-only staff role** — use guild `staff_roles` (generalized `honeypot_exempt_roles`) for commands + channel overwrites |
+
+---
+
+### 1.11 Planned fixes
+
+Two reported issues to fix next; both touch `src/features/tickets/`.
+
+#### Fix 1 — bogus “staff role(s) could not get channel access” note on ticket create
+
+**Symptom:** `/ticket create` (and the panel / `/ticket for` paths) replies with “_Note: 1 staff role(s) could not get channel access (bot role must be higher than staff roles, and roles must still exist)._” even when the bot's role **is** above the configured staff roles.
+
+**Where:** `getManageableStaffRoleIds()` in `src/features/tickets/overwrites.js`; the note is assembled in `src/features/tickets/index.js` (`completeSelfCreate` / `handleFor`).
+
+**Root causes to address:**
+
+- [ ] **Cache-miss false positive:** role lookup is `guild.roles.cache.get()` only. A staff role missing from the role cache (newly created, guild fetched without roles, cache race) is reported “role not found in guild”. Add a `guild.roles.fetch(roleId)` fallback before skipping.
+- [ ] **Bot holds the staff role itself:** the `rolePos >= botPos` check counts a staff role the bot also holds as “above/equal the bot” and skips it. When the bot holds the role, an overwrite is unnecessary for the bot — distinguish this case (and if any staff members hold it, recommend/rely on a distinct higher bot admin role instead of a misleading note).
+- [ ] **Undiagnosable note:** the note shows only a count. Include each skipped role's **mention/name + specific reason** (not found / managed role / hierarchy) so admins know what to fix; log the same detail.
+- [ ] Tests: unit cases for cache-miss fallback, bot-held staff role, managed role, true hierarchy skip; integration test that create succeeds with no note when the bot role is above staff roles.
+
+#### Fix 2 — DM the transcript link to the requester on archive
+
+**Requested change:** when a ticket is archived, the requester should receive the transcript link too — not only the staff archive channel. **Revises locked decision 3** (staff-only URL) for **non-sensitive** tickets only; the sensitive branch is unchanged (no transcript exists to send).
+
+- [ ] After the archive embed posts successfully (and before/after channel delete), DM `creator_user_id`: ticket ref, close reason, and `[View transcript](url)` when `TICKET_PUBLIC_BASE_URL` is configured.
+- [ ] Best-effort: closed DMs / blocked bot → ignore silently (optionally note in the closer's ephemeral reply as a warning). Never fail the archive because the DM failed.
+- [ ] Requester only — do not DM other ticket members.
+- [ ] Sensitive tickets: DM stays “closed + reason only”, never a URL (already the contract).
+- [ ] Update [docs/tickets.md](../docs/tickets.md) transcript access-control wording when shipped.

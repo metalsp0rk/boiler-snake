@@ -12,13 +12,14 @@ Each feature has its own file with the full design, status, and locked decisions
 
 | # | Feature | File | Status | Open items |
 |---|---------|------|--------|------------|
-| 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Discord OAuth on transcripts; richer `/ticket list` filters |
+| 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Fix staff-role skip note on create; DM transcript link to requester on archive; Discord OAuth on transcripts (→ covered by [web-admin.md](web-admin.md) §8.4); richer `/ticket list` filters |
 | 2 | Scheduled Event Reminders | [event-reminders.md](event-reminders.md) | Shipped | — |
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP) | EventSub; per-channel overrides; templates; go-offline; clips/VODs |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags; `added_by`; audit embeds |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
-| 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + polish) | Auto-mod thresholds |
-| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | — |
+| 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + polish) | — |
+| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Embed-based mention rendering (deferred — §7.15 Fix 1, would revise decision 11); live repro for the reply / `@user`-message crash triage (§7.15 Fix 3); markdown hygiene + zero-width/bidi input policy (§7.15 Fix 4) |
+| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
 
 ---
 
@@ -85,6 +86,17 @@ Each feature has its own file with the full design, status, and locked decisions
 | `guild_settings.gork_extra_rules` | Staff prompt additions, ≤500 chars (**shipped**) |
 | `guild_settings.gork_search_enabled` | SearXNG `web_search` tool toggle; default `1` (**shipped**) |
 | `guild_settings.gork_cooldown_sec` | Per-user cooldown seconds; default `180`, staff bypass (**shipped**) |
+| `gork_user_blocks` | Per-guild gork ban list — `guild_id`+`user_id` PK, `created_by`, `created_at` (**shipped**, migration `022`) |
+| `guild_settings.gork_enabled` | Master server switch; `0` = fully silent (**shipped**, migration `022`) |
+| `gork_memories` + `guild_settings.gork_memory_enabled` / `gork_memory_chars` | Community memory (**shipped**, migration `023`) — memories keyed `(guild, person, date, title_key)` (key fields server-stamped); per-person cap + eviction; **off** by default; bodies-or-index block budget default 12,000 ([gork.md §7.16](gork.md)) |
+
+### Web admin console (planned)
+
+| Table / change | Notes |
+|----------------|-------|
+| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**planned**, migration `024` — `023` shipped as `gork_memory`) |
+| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**planned**, migration `025`) |
+| `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**planned**) |
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
@@ -130,6 +142,8 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 ### Tickets
 
 - [x] Panel message + button → modal for ticket description  
+- [ ] **Fix:** ticket create warns “`N` staff role(s) could not get channel access” even when the bot role is above staff roles — make `getManageableStaffRoleIds` resilient (fetch role on cache miss, don't count roles the bot itself holds as skipped) and show per-role name + reason in the note (see [help-tickets.md §1.11](help-tickets.md))  
+- [ ] **Fix:** on archive, DM the requester the transcript link (non-sensitive tickets only) in addition to posting the archive-channel embed — revises locked decision 3 (see [help-tickets.md §1.11](help-tickets.md))  
 - [ ] Login with Discord on transcript HTTP routes  
 - [x] Download/mirror all attachments into transcript storage at archive time (replace hotlinks)  
 - [ ] Richer `/ticket list` filters  
@@ -161,10 +175,19 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 ### Warnings
 
 - [x] MVP: issue / list / info / void / count / mine + `/setwarn dm` + audit + optional note link  
-- [ ] Auto-mod thresholds (e.g. 3 active → timeout / kick / ban with configurable actions)  
+
 - [x] Dedicated `warn_log_channel_id` separate from general audit log (`/setwarn log`; falls back to audit)  
 - [x] Warning expiry / auto-void after N days (opt-in; default still permanent) — guild `/setwarn expiry` + per-warn `expires_days`  
 - [x] Export user record (notes + warnings) for staff handoff — `/warn export` ephemeral `.md`  
 - [x] ~~Un-void / re-activate~~ — **skipped**; prefer re-issue (no un-void command)  
 - [x] Evidence: message jump link + freeform staff-only notes on `/warn add` (not in member DM / `/warn mine`)
+
+### Gork
+
+- [x] **Fix (shipped):** raw `<@id>` markup in gork replies — `sanitizeAnswer()` rewrites mention tokens to display names and replies send `allowedMentions: { parse: [] }` (no unintended pings); **embed-based** "chip" rendering stays **deferred** (would revise locked decision 11 → needs decision 24; see [gork.md §7.15](gork.md))  
+- [x] **Fix (shipped):** user roster in the generation context — `src/features/gork/roster.js` (`id | @handle | display name (nickname)`; asker + authors + mentions) (see [gork.md §7.15](gork.md))  
+- [ ] **Fix (triage, open):** reported crash on reply / `@user`-mention messages — hang-read-as-crash fixed (20s context deadline, deleted/forwarded-reference fixtures), but **no live crash evidence captured yet**; keep collecting the real stack + payload (see [gork.md §7.15](gork.md))  
+- [x] **Fix (shipped):** special-character safety in chunking/truncation — `safeCutIndex`/`sliceSafe` code-point cuts + `pullBeforeTokens` token-aware chunks + capped context slices (see [gork.md §7.15](gork.md))  
+- [ ] **Fix (open):** markdown hygiene (balance/escape fences, spoilers, emphasis) + zero-width / bidi / homoglyph input policy (see [gork.md §7.15](gork.md))  
+- [x] **Feature (shipped):** gork community memory — per-person durable facts keyed **(person, date, title_key)** with server-stamped key fields; bodies-or-index MEMORY BLOCK per trigger (asker + mentioned + talked-about via the Fix 2 roster) under `gork_memory_chars`, `recall_memories` tool on overflow, post-send extraction turn after reply+audit+slot-release, staff-only `/gork memory show|forget|clear|on|off|budget` (locked decisions 25–29, migration `023`, default **off**; see [gork.md §7.16](gork.md))
 

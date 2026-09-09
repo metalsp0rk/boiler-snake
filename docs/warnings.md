@@ -46,7 +46,7 @@ Staff export
 | Intent | Informal context | Formal disciplinary action |
 | Member visibility | Never | Active list via `/warn mine`; optional DM on issue |
 | Mutability | Edit + soft-delete | No edit of reason; **void** only |
-| Counting | Not counted | Active count for history / future auto-mod |
+| Counting | Not counted | Active count for history |
 | Human id | `N-{n}` | `W-{n}` |
 
 Use **notes** for soft context and **warnings** when the action is on the record.
