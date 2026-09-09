@@ -8,7 +8,7 @@ Formal, **permanent** disciplinary record for guild members. Complements [staff 
 
 ### Status
 
-**Shipped (MVP + post-MVP polish)** — `/warn` + `/setwarn`, permanent rows, void with reason, member `/warn mine`, optional note link, DMs + audit embeds, opt-in expiry, staff export, evidence fields. Design decisions in [6.9](#69-design-decisions-locked). Auto-mod thresholds remain post-MVP.
+**Shipped (MVP + post-MVP polish)** — `/warn` + `/setwarn`, permanent rows, void with reason, member `/warn mine`, optional note link, DMs + audit embeds, opt-in expiry, staff export, evidence fields. Design decisions in [6.9](#69-design-decisions-locked).
 
 ---
 
@@ -19,7 +19,7 @@ Formal, **permanent** disciplinary record for guild members. Complements [staff 
 | Intent | Informal context | Formal disciplinary action |
 | Member visibility | Never | Active warnings listable by subject; optional DM on issue |
 | Mutability | Edit + soft-delete | **No edit of reason** after issue; **void** only (keeps row) |
-| Counting | Not counted | Active count drives history / future auto-mod |
+| Counting | Not counted | Active count drives history |
 | Permanence | Soft-deleted notes hidden by default | **Permanent record** — voided still appears in full history |
 | Human id | `N-{n}` | `W-{n}` |
 | Staff access | Guild staff roles (§4) | Guild staff roles (§4) |
@@ -56,7 +56,6 @@ Staff / member lists history
 | Active count | `COUNT(*) WHERE voided_at IS NULL` for that guild/user |
 | Self-service | Members may view **their own** warnings (`/warn mine`) without staff role |
 | Staff access | `requireStaff` ([§4](staff-roles.md#4-guild-staff-roles-admin-gate)) |
-| Escalation | Threshold auto-kick/ban = **post-MVP** |
 
 ---
 
@@ -133,8 +132,6 @@ When dedicated `warn_log_channel_id` is set **or** `audit_log_channel_id` is set
 |--------|---------|
 | `warn_dm_members` | `1` (default) / `0` — DM subject on issue/void |
 | `warn_log_channel_id` | Optional dedicated issue/void log channel (**shipped**) |
-
-**Later:** auto-mod thresholds, warn-expiry timers.
 
 ---
 
