@@ -84,7 +84,7 @@ async function handleSettings(interaction) {
       name: "Gork",
       value:
         Number(settings.gork_enabled ?? 1) === 1
-          ? `Keyword **${settings.gork_keyword || "disabled"}** · Window **${settings.gork_context_window}** · Search **${settings.gork_search_enabled ? "on" : "off"}**`
+          ? `Keyword **${settings.gork_keyword || "disabled"}** · Window **${settings.gork_context_window}** · Search **${settings.gork_search_enabled ? "on" : "off"}** · Memory **${Number(settings.gork_memory_enabled ?? 0) === 1 ? "on" : "off"}**`
           : "**disabled** for this server (`/gork enable on` to re-enable)",
       inline: false,
     },

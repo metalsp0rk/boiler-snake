@@ -12,6 +12,11 @@
  * reason). When no audit channel is configured (or the send fails), a
  * one-line console log is the fallback.
  *
+ * Community memory (§7.16.3, decision 25): the Q&A embed gains a
+ * read-side-only "Memory" label (e.g. "bodies ×9 · 1 recalled") — the
+ * write side (extraction) posts its own compact "Gork memory" entry
+ * AFTER the Q&A embed, so the two audits mirror the two turns.
+ *
  * Nothing in this module throws: audit failures must never break the
  * gork reply path.
  */
@@ -64,6 +69,25 @@ function formatToolUsage(searchQueries, pageReads) {
 }
 
 /**
+ * Compact read-side memory label for the Q&A audit "Memory" field
+ * (roadmap §7.16.3): `${mode} ×${indexed}` — the block mode plus how
+ * many memories were indexed into the prompt — with a recall tally
+ * appended ONLY when the model actually fetched bodies via
+ * recall_memories. The trigger omits the field entirely when memory is
+ * OFF, so nothing here ever renders for the default config.
+ *
+ * @param {{ mode?: string, indexed?: number }|null|undefined} selection loadMemoryContext-shaped subset
+ * @param {number} [recalled] memories fetched through recall_memories this job
+ * @returns {string} e.g. "bodies ×9 · 1 recalled", "index ×14", "none ×0"
+ */
+function formatMemoryLabel(selection, recalled = 0) {
+  const mode = String(selection?.mode || "none");
+  const indexed = Math.max(0, Math.floor(Number(selection?.indexed) || 0));
+  const fetched = Math.max(0, Math.floor(Number(recalled) || 0));
+  return `${mode} ×${indexed}${fetched > 0 ? ` · ${fetched} recalled` : ""}`;
+}
+
+/**
  * Build a Discord "jump to message" URL, or null when the message does
  * not carry enough ids to construct one.
  *
@@ -110,6 +134,9 @@ function jumpLink(label, guildId, message) {
  * @param {string} [opts.answer] final answer text
  * @param {object} [opts.questionMessage] the keyword message (jump link)
  * @param {object} [opts.replyMessage] gork's reply message (jump link)
+ * @param {string} [opts.memoryLabel] formatMemoryLabel() output; the
+ *   inline "Memory" field is added only when this is a non-empty string
+ *   (READ-SIDE only — extraction ran after this embed, §7.16.3)
  * @returns {Promise<void>}
  */
 async function logGorkQa(client, guildId, opts = {}) {
@@ -124,6 +151,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     answer,
     questionMessage,
     replyMessage,
+    memoryLabel,
   } = opts;
   try {
     const embed = baseEmbed({ color: Color.brand, title: "Gork Q&A", timestamp: true });
@@ -149,6 +177,16 @@ async function logGorkQa(client, guildId, opts = {}) {
       { name: "Model / duration", value: `${model || "unknown"}${durationSuffix}`, inline: true },
       { name: "Answer", value: answerValue, inline: false },
     );
+
+    // §7.16.3: inline Memory field, only when the trigger supplied a
+    // non-empty label (memory OFF → undefined → field absent entirely).
+    if (typeof memoryLabel === "string" && memoryLabel.trim()) {
+      embed.addFields({
+        name: "Memory",
+        value: truncateField(memoryLabel.trim(), 1024),
+        inline: true,
+      });
+    }
 
     const links = [
       questionMessage ? jumpLink("Question", guildId, questionMessage) : null,
@@ -208,9 +246,48 @@ async function logGorkFailure(client, guildId, opts = {}) {
   }
 }
 
+/**
+ * Post the compact "Gork memory" audit entry for the post-send
+ * extraction turn (roadmap §7.16.3: memory writes get their own audit
+ * entry — the Q&A embed above only carries the read-side label).
+ *
+ * Never throws; a missing audit channel (or a failed send) degrades to
+ * a one-line console log, mirroring logGorkQa.
+ *
+ * @param {import("discord.js").Client} client
+ * @param {string} guildId
+ * @param {object} stats
+ * @param {number} [stats.indexed] memories indexed into the prompt
+ * @param {number} [stats.stored] memories upserted by this turn
+ * @param {number} [stats.skippedInvalid] extraction candidates dropped
+ *   by the write-path validation (decision 25 counter)
+ * @returns {Promise<void>}
+ */
+async function logGorkMemory(client, guildId, { indexed, stored, skippedInvalid } = {}) {
+  try {
+    const count = (v) => Math.max(0, Math.floor(Number(v) || 0));
+    const body = `Stored: +${count(stored)} · skipped_invalid: ${count(skippedInvalid)} · indexed: ${count(indexed)}`;
+    const embed = baseEmbed({
+      color: Color.brand,
+      title: "Gork memory",
+      description: body,
+      timestamp: true,
+    });
+
+    const sent = await sendAuditLog(client, guildId, { embeds: [embed] });
+    if (!sent) {
+      console.log(`[gork] memory (no audit channel): ${body}`);
+    }
+  } catch (err) {
+    console.warn("[gork] memory audit log failed:", err?.message || err);
+  }
+}
+
 module.exports = {
   describeContext,
   formatToolUsage,
+  formatMemoryLabel,
   logGorkQa,
   logGorkFailure,
+  logGorkMemory,
 };

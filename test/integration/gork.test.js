@@ -19,7 +19,7 @@ const {
   assertEphemeralReply,
   assertReplyContains,
 } = require("../helpers/assert");
-const { IDS } = require("../helpers/fixtures");
+const { IDS, uniqueId } = require("../helpers/fixtures");
 
 /** Locked canned failure reply (from the trigger module). */
 const { LLM_FAILURE_REPLY } = require("../../src/features/gork/trigger");
@@ -1903,6 +1903,554 @@ describe("integration: gork (AI keyword Q&A)", () => {
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
+    }
+  });
+});
+
+// ---------- roadmap/gork.md §7.16 community memory (§7.16 scenarios) ----------
+
+/**
+ * Fixed UTC afternoon (2026-09-09 12:00Z) for the §7.16 extraction trigger
+ * message: mem_date is stamped server-side from the trigger message, so a
+ * fixed createdTimestamp keeps the expected date deterministic no matter
+ * when the suite runs.
+ */
+const MEM_TRIGGER_TS = Date.UTC(2026, 8, 9, 12, 0, 0);
+const MEM_TRIGGER_DATE = "2026-09-09";
+
+/**
+ * Seed one gork memory row through the REAL db facade (real SQLite, the
+ * same instance the trigger reads), returning {id} for assertions.
+ */
+function seedMemory(env, opts) {
+  const title = opts.title;
+  return env.db.gorkMemoryUpsert({
+    guildId: env.guild.id,
+    subjectUserId: opts.subjectUserId,
+    memDate: opts.memDate || "2026-09-01",
+    title,
+    titleKey: opts.titleKey || title.toLowerCase().replace(/\s+/g, " ").trim(),
+    body: opts.body,
+    kind: opts.kind || "profile",
+    importance: opts.importance ?? 3,
+    sourceMessageIds: ["seed-msg-1"],
+  });
+}
+
+/** Parsed payload when the recorded fetch is a gork-persona (answer-path) call. */
+function qaBodyOf(call) {
+  try {
+    const body = JSON.parse(call.init.body);
+    const sys = (body.messages || []).find((m) => m.role === "system");
+    return sys && String(sys.content).includes("You are **Gork**") ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parsed payload when the recorded fetch is the §7.16.3 extraction turn. */
+function extractionBodyOf(call) {
+  try {
+    const body = JSON.parse(call.init.body);
+    const sys = (body.messages || []).find((m) => m.role === "system");
+    return sys && /extract durable memories/i.test(String(sys.content))
+      ? body
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+describe("integration: gork community memory (§7.16)", () => {
+  it("memory off (default): seeded rows stay fully inert — no block, no recall tool, no extraction turn", async () => {
+    // Objective (decision 29): gork_memory_enabled defaults to 0 and the
+    // feature must be byte-inert when off — even with rows seeded for the
+    // asker, the prompt, the payload, the audit and the fetch count all
+    // stay exactly what the memory-less path produces.
+    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memoff") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("No memories required, member."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 0,
+        audit_log_channel_id: IDS.channelLog,
+        // gork_memory_enabled deliberately UNSET (column default = 0).
+      });
+      assert.equal(
+        env.db.getGuildSettings(env.guild.id).gork_memory_enabled,
+        0,
+        "memory defaults to OFF"
+      );
+
+      // Inertness must come from the switch, not from an empty table.
+      seedMemory(env, {
+        subjectUserId: IDS.member,
+        title: "Loves Rust",
+        body: "Prefers Rust for CLI tools.",
+        kind: "preference",
+      });
+      seedMemory(env, {
+        subjectUserId: IDS.member,
+        title: "Runs a bakery",
+        body: "Opens the bakery at 5am.",
+      });
+
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-memoff-1",
+        content: "gork: what do you know about me?",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1),
+        "memory-off trigger must still be answered normally"
+      );
+
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        !userMsg.content.includes("What you remember"),
+        `prompt must carry NO memory block: ${userMsg.content}`
+      );
+      assert.ok(
+        !("tools" in body),
+        "payload must carry NO tools array (recall_memories absent) when memory is off"
+      );
+
+      assert.ok(
+        await waitFor(() => env.channels.log.sent.length >= 1),
+        "expected the Q&A audit embed"
+      );
+      const auditText = embedText(env.channels.log.sent[0].embeds[0]);
+      assert.ok(
+        !auditText.includes("Memory"),
+        `Q&A audit must have NO Memory field when off: ${auditText}`
+      );
+
+      // No extraction turn either: the fetch count never grows past the
+      // single Q&A call the memory-off expectations already assert.
+      await sleep(300);
+      assert.equal(
+        fetchMock.calls.length,
+        1,
+        "memory OFF ships no extraction request (Q&A call count unchanged)"
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("memory on: seeded rows inject '#id' lines, recall_memories rides the payload, Q&A audit gains a Memory label", async () => {
+    // Objective (§7.16.2 read path): with memory ON and rows stored for
+    // the asker, the user prompt carries the decision-21 header plus the
+    // seeded `(#id)` lines (bodies mode fits the default 12k budget), the
+    // request carries the recall tool, and the Q&A audit embed records the
+    // read-side Memory label.
+    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memon") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("I remember, member."),
+      // Extraction turn (fires after the answer ships): nothing durable.
+      chatCompletionResponse(JSON.stringify({ memories: [] })),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 0,
+        gork_memory_enabled: 1, // budget stays at the default 12000
+        audit_log_channel_id: IDS.channelLog,
+      });
+      const rowA = seedMemory(env, {
+        subjectUserId: IDS.member,
+        title: "Loves Rust",
+        body: "Prefers Rust for CLI tools.",
+        kind: "preference",
+        importance: 5,
+      });
+      const rowB = seedMemory(env, {
+        subjectUserId: IDS.member,
+        title: "Runs a bakery",
+        body: "Opens the bakery at 5am.",
+        importance: 4,
+      });
+      const rowC = seedMemory(env, {
+        subjectUserId: IDS.member,
+        memDate: "2026-08-15",
+        title: "Shipped a bot",
+        body: "Built the guild ticket bot.",
+        kind: "event",
+      });
+
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-memread-1",
+        content: "gork: what do you know about me?",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1),
+        "memory-on trigger must be answered"
+      );
+
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.includes("What you remember about these people"),
+        `prompt must carry the decision-21 memory header: ${userMsg.content}`
+      );
+      for (const row of [rowA, rowB, rowC]) {
+        assert.ok(
+          userMsg.content.includes(`(#${row.id})`),
+          `memory #${row.id} line must be injected: ${userMsg.content}`
+        );
+      }
+      assert.ok(
+        userMsg.content.includes('"Loves Rust"'),
+        "titles render quoted in the block"
+      );
+      assert.ok(
+        userMsg.content.includes("Prefers Rust for CLI tools."),
+        "bodies mode (everything fits the default budget): body goes inline"
+      );
+
+      const toolNames = (body.tools || []).map((t) => t.function.name);
+      assert.deepEqual(
+        toolNames,
+        ["recall_memories"],
+        "recall_memories ships alongside (and only without) the disabled search tools"
+      );
+
+      assert.ok(
+        await waitFor(() => env.channels.log.sent.length >= 1),
+        "expected the Q&A audit embed"
+      );
+      const auditText = embedText(env.channels.log.sent[0].embeds[0]);
+      assert.ok(auditText.includes("Memory"), `Memory field must be present: ${auditText}`);
+      assert.ok(
+        auditText.includes("bodies ×3"),
+        `read-side label must count the injected bodies: ${auditText}`
+      );
+
+      // Drain the detached extraction request before the mock is restored
+      // (the write path always fires after a real shipped answer).
+      assert.ok(
+        await waitFor(() => fetchMock.calls.length >= 2, 5000),
+        "extraction turn must arrive after the answer"
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("recall_memories round-trip: tool result carries the body, last_used_at is touched, exactly two answer-path AI calls", async () => {
+    // Objective (§7.16.2 + contract G/F): the model may recall a stored
+    // memory by #id mid-conversation; the tool result fed back to it
+    // carries the full stored body, the recall stamps last_used_at
+    // (gorkMemoryTouch side effect via the facade), and the answer path
+    // costs exactly two chat completions (the recall adds one round).
+    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memrecall") });
+    const seeded = seedMemory(env, {
+      subjectUserId: IDS.member,
+      title: "Owns a kayak",
+      body: "Owns a bright red kayak named CSS.",
+      kind: "project",
+      importance: 4,
+    });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      // 1) Model recalls the seeded memory by #id.
+      chatCompletionResponse(null, {
+        tool_calls: [
+          {
+            id: "call_mem1",
+            type: "function",
+            function: {
+              name: "recall_memories",
+              arguments: JSON.stringify({ ids: [seeded.id] }),
+            },
+          },
+        ],
+      }),
+      // 2) Final answer informed by the recall.
+      chatCompletionResponse("Right, the red kayak named CSS."),
+      // 3) Extraction turn (drained; nothing durable).
+      chatCompletionResponse(JSON.stringify({ memories: [] })),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 0,
+        gork_memory_enabled: 1,
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+      assert.equal(
+        env.db.gorkMemoryGetById(env.guild.id, seeded.id).last_used_at,
+        null,
+        "seeded row starts untouched"
+      );
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-memrecall-1",
+        content: "gork: what do I own?",
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1, 5000),
+        "the recall round must still end in an answer"
+      );
+      assert.equal(replies[0].content, "Right, the red kayak named CSS.");
+      assert.ok(
+        await waitFor(() => fetchMock.calls.length >= 3, 5000),
+        "extraction turn must arrive (drains before restore)"
+      );
+
+      // The tool result message fed back carries the seeded body.
+      const secondBody = JSON.parse(fetchMock.calls[1].init.body);
+      const toolMsg = secondBody.messages.find((m) => m.role === "tool");
+      assert.ok(toolMsg, "recall result must feed the second chat call");
+      assert.ok(
+        toolMsg.content.includes(`#${seeded.id}`),
+        `recall result carries the #id handle: ${toolMsg.content}`
+      );
+      assert.ok(
+        toolMsg.content.includes("Owns a bright red kayak named CSS."),
+        `recall result carries the FULL stored body: ${toolMsg.content}`
+      );
+
+      // Answer path = exactly the two gork-persona calls; the third fetch
+      // is the (separate) extraction turn, not an answer-path round.
+      const qaCalls = fetchMock.calls.filter((c) => qaBodyOf(c));
+      const extractionCalls = fetchMock.calls.filter((c) => extractionBodyOf(c));
+      assert.equal(qaCalls.length, 2, "exactly two AI calls on the answer path");
+      assert.equal(extractionCalls.length, 1, "exactly one extraction turn");
+
+      // gorkMemoryTouch side effect via the facade (decision: recalled rows
+      // win the eviction recency tie-break).
+      const row = env.db.gorkMemoryGetById(env.guild.id, seeded.id);
+      assert.ok(
+        row.last_used_at != null,
+        "recall must stamp last_used_at via gorkMemoryTouch"
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("extraction turn after slot release: valid entry stored server-stamped, bogus subject skipped, small model used", async () => {
+    // Objective (§7.16.3, decisions 25/26/29): after the answer ships and
+    // the guild slot is RELEASED, a detached extraction turn runs on
+    // AI_SMALL_MODEL with strict JSON. A valid entry lands with the
+    // SERVER-STAMPED trigger-message UTC date and the normalized title_key
+    // ("  Loves  Rust! " → "loves rust"); a subject outside the roster is
+    // dropped (skipped_invalid) and never stored.
+    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memextract") });
+    const saved = saveEnv([...AI_ENV_KEYS, "AI_SMALL_MODEL"]);
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Noted, member."),
+      // Extraction payload: one valid entry (asker) + one bogus subject.
+      chatCompletionResponse(
+        JSON.stringify({
+          memories: [
+            {
+              subject_user_id: IDS.member,
+              title: "  Loves  Rust! ",
+              body: "Prefers Rust for CLI tooling.",
+              kind: "preference",
+              importance: 5,
+            },
+            {
+              subject_user_id: "999999999999999999", // not in the roster
+              title: "Imaginary crewmate",
+              body: "Not in the roster at all.",
+              kind: "profile",
+              importance: 5,
+            },
+          ],
+        })
+      ),
+    ]);
+    try {
+      enableAiKey();
+      process.env.AI_SMALL_MODEL = "small-mem-model";
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 0,
+        gork_memory_enabled: 1,
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-memx-1",
+        content: "gork: I really love rust these days",
+        createdTimestamp: MEM_TRIGGER_TS, // server-stamped mem_date source
+      });
+      await env.onMessageCreate(message);
+      assert.ok(
+        await waitFor(() => replies.length >= 1),
+        "the answer must ship before any write-path work"
+      );
+      assert.ok(
+        await waitFor(() => fetchMock.calls.length >= 2, 5000),
+        "extraction request must arrive after the answer"
+      );
+
+      // The extraction turn fires only AFTER the finally-block slot
+      // release — so once the request is in, the guild slot is observably
+      // free (same admit-probe the §7.15 Fix 3 test uses).
+      const { gorkQueue } = require("../../src/features/gork/trigger");
+      assert.equal(
+        gorkQueue.admit({ guildId: env.guild.id }).queued,
+        false,
+        "the guild slot was already released when the extraction turn fired"
+      );
+      gorkQueue.release({ guildId: env.guild.id });
+
+      // The write-path request itself: small model + strict JSON + allow-list.
+      const xBody = extractionBodyOf(fetchMock.calls[1]);
+      assert.ok(xBody, "the second fetch must be the extraction turn");
+      assert.equal(
+        xBody.model,
+        "small-mem-model",
+        "AI_SMALL_MODEL overrides the extraction model (decision 29)"
+      );
+      assert.equal(
+        qaBodyOf(fetchMock.calls[0])?.model,
+        "gpt-4o-mini",
+        "the answer path keeps the main model"
+      );
+      assert.deepEqual(
+        xBody.response_format,
+        { type: "json_object" },
+        "extraction must request strict JSON"
+      );
+      const xUser = xBody.messages.find((m) => m.role === "user");
+      assert.ok(
+        xUser.content.includes(IDS.member),
+        "allow-list must carry the asker id"
+      );
+      assert.ok(
+        xUser.content.includes(MEM_TRIGGER_DATE),
+        "server-stamped mem_date must be shown to the extractor"
+      );
+
+      // Valid entry: stored with server-stamped UTC date + normalized key.
+      const rows = env.db.gorkMemoryListForSubject(env.guild.id, IDS.member);
+      assert.equal(rows.length, 1, "exactly the valid entry stored");
+      const row = rows[0];
+      assert.equal(
+        row.title_key,
+        "loves rust",
+        '"  Loves  Rust! " must normalizeTitle into the key half (decision 26)'
+      );
+      assert.equal(
+        row.mem_date,
+        MEM_TRIGGER_DATE,
+        "mem_date = trigger message UTC day, stamped server-side"
+      );
+      assert.equal(row.kind, "preference");
+      assert.equal(row.importance, 5);
+
+      // Bogus subject: never stored (skipped_invalid path), never resolved.
+      assert.equal(
+        env.db.gorkMemoryCountForGuild(env.guild.id),
+        1,
+        "the out-of-roster entry must NOT be stored"
+      );
+
+      // Write-side audit gets its own compact "Gork memory" entry.
+      assert.ok(
+        await waitFor(
+          () =>
+            env.channels.log.sent.some((p) =>
+              embedText(p.embeds?.[0]).includes("Gork memory")
+            ),
+          5000
+        ),
+        "expected the 'Gork memory' audit embed"
+      );
+      const memAudit = env.channels.log.sent
+        .map((p) => embedText(p.embeds?.[0]))
+        .find((t) => t.includes("Gork memory"));
+      assert.ok(memAudit.includes("Stored: +1"), `stored counter: ${memAudit}`);
+      assert.ok(
+        memAudit.includes("skipped_invalid: 1"),
+        `skipped_invalid counter: ${memAudit}`
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("/gork memory on + budget 8000: settings persisted + config-change audit embeds; non-staff denied", async () => {
+    // Objective (§7.16.4, decision 28): the staff command surface persists
+    // gork_memory_enabled / gork_memory_chars through the real router and
+    // audits every change; non-staff cannot touch it.
+    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memcmd") });
+    const saved = saveEnv();
+    clearAiKey(); // config commands do not need the AI key
+    try {
+      env.db.updateGuildSettings(env.guild.id, {
+        audit_log_channel_id: IDS.channelLog,
+      });
+
+      // on: master switch persisted.
+      let ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "memory",
+        admin: true,
+        options: { action: "on" },
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, /memory is now \*\*on\*\*/i);
+      assert.equal(env.db.getGuildSettings(env.guild.id).gork_memory_enabled, 1);
+
+      // budget 8000: the standalone block budget persists.
+      ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "memory",
+        admin: true,
+        options: { action: "budget", chars: 8000 },
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, "8000");
+      assert.equal(env.db.getGuildSettings(env.guild.id).gork_memory_chars, 8000);
+
+      // Non-staff is denied and the stored settings stay unchanged.
+      const denied = await env.runCommand({
+        commandName: "gork",
+        subcommand: "memory",
+        admin: false,
+        user: env.users.memberUser,
+        options: { action: "off" },
+      });
+      assertEphemeralReply(denied, /permission/i);
+      assert.equal(env.db.getGuildSettings(env.guild.id).gork_memory_enabled, 1);
+
+      // Audit trail: both config changes recorded (not the denial).
+      assert.ok(
+        await waitFor(() => env.channels.log.sent.length >= 2),
+        "expected the two config-change audit embeds"
+      );
+      const auditAll = env.channels.log.sent
+        .map((p) => embedText(p.embeds?.[0]))
+        .join("\n");
+      assert.ok(auditAll.includes("Gork memory enabled"), auditAll);
+      assert.ok(auditAll.includes("Gork memory budget updated"), auditAll);
+      assert.ok(auditAll.includes("/gork memory"), auditAll);
+    } finally {
+      restoreEnv(saved);
     }
   });
 });

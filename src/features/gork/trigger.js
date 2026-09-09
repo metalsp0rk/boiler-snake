@@ -23,6 +23,7 @@ const { PermissionFlagsBits } = require("discord.js");
 const {
   getGuildSettings,
   getTicketByChannel,
+  gorkMemoryTouch,
   isGorkBlocked,
   memberHasStaffRole,
 } = require("../../db");
@@ -39,7 +40,22 @@ const {
   executeWebSearch,
 } = require("./tools/webSearch");
 const { READ_PAGE_TOOL, executeReadPage } = require("./tools/readPage");
-const { logGorkQa, logGorkFailure, describeContext } = require("./audit");
+const {
+  RECALL_MEMORIES_TOOL,
+  executeRecallMemory,
+} = require("./tools/recallMemories");
+const {
+  clampMemoryChars,
+  loadMemoryContext,
+  runMemoryTurn,
+  formatExistingMemoriesBlock,
+} = require("./memory");
+const {
+  logGorkQa,
+  logGorkFailure,
+  describeContext,
+  formatMemoryLabel,
+} = require("./audit");
 
 /** One gork queue per process (in-memory cooldowns + per-guild FIFO). */
 const gorkQueue = createGorkQueue();
@@ -343,25 +359,57 @@ function capAnswerChars(text, limit) {
  * instruction to answer from the conversation context (decision 3).
  * When a roster block is provided (Fix 2), it is appended as a
  * "People roster" data block — the byte-locked base prompt stays
- * untouched (decision-21 guidance pattern).
+ * untouched (decision-21 guidance pattern). The optional 4th argument
+ * appends the MEMORY BLOCK after the roster section (§7.16.2); 3-arg
+ * callers are unaffected (empty/whitespace block changes nothing).
  *
  * @param {string} question trimmed question text ("" = keyword alone)
  * @param {{ text?: string }} ctx buildContext() result
  * @param {string} [rosterBlock] formatRosterBlock() result ("" = none)
+ * @param {string} [memoryBlock] loadMemoryContext().block ("" = none)
  * @returns {string}
  */
-function buildUserContent(question, ctx, rosterBlock = "") {
+function buildUserContent(question, ctx, rosterBlock = "", memoryBlock = "") {
   const context = (ctx?.text || "").trim() || "(none)";
   const roster = (rosterBlock || "").trim();
   const rosterSection = roster ? `\n\nPeople roster:\n${roster}` : "";
+  const memorySection = (memoryBlock || "").trim() ? `\n\n${memoryBlock}` : "";
   if (question) {
-    return `${question}\n\nConversation context:\n${context}${rosterSection}`;
+    return `${question}\n\nConversation context:\n${context}${rosterSection}${memorySection}`;
   }
   return (
     "The user sent only the keyword, replying to the message below. Answer from the conversation context.\n\n" +
     context +
-    rosterSection
+    rosterSection +
+    memorySection
   );
+}
+
+/**
+ * Server-stamped memory date for the extraction turn (§7.16.1, decision
+ * 26): the UTC calendar day (YYYY-MM-DD) of the trigger message. The
+ * extractor model never emits dates. Primary source is `createdAt`;
+ * discord.js always has it on real messages, so the snowflake-id decode
+ * is the documented fallback (guarded so a non-numeric id can never
+ * throw out of BigInt).
+ *
+ * @param {object} message discord.js Message (or subset)
+ * @returns {string} YYYY-MM-DD (UTC)
+ */
+function memDateFromMessage(message) {
+  const created = message?.createdAt;
+  let ms =
+    created instanceof Date && Number.isFinite(created.getTime())
+      ? created.getTime()
+      : null;
+  if (ms === null && /^\d{15,20}$/.test(String(message?.id ?? ""))) {
+    ms = Number((BigInt(message.id) >> 22n) + 1420070400000n);
+  }
+  if (ms === null && Number.isFinite(message?.createdTimestamp)) {
+    ms = message.createdTimestamp;
+  }
+  if (ms === null || !Number.isFinite(ms)) ms = Date.now();
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 /**
@@ -496,6 +544,17 @@ async function handleGorkMessage(client, message) {
     const auditClient = client || message.guild.client || null;
     void (async () => {
       let replied = false;
+      // §7.16 write-path state: the shipped sanitized answer (null = no
+      // real answer went out → never extract from a canned reply) plus a
+      // reference to the read-path data (roster/ctx captured in the try).
+      let shippedAnswer = null;
+      let memJob = null;
+      // §7.16 (decision 29): per-guild memory master switch, default OFF
+      // — when OFF the prompt, tool payload, and audit stay byte-identical.
+      const memoryOn = Number(settings.gork_memory_enabled ?? 0) === 1;
+      // §7.16.2 read-path result (decision 27) — declared here (not in the
+      // try) so the post-send write turn after the finally can reuse it.
+      let mem = { block: "", mode: "none", indexed: 0, selectedIds: [], rows: [], allRows: [] };
       try {
         if (slot.queued) await slot.turn; // wait for our FIFO slot
         // Fix 3 hardening: buildContext is never-rejects by contract, but
@@ -520,6 +579,25 @@ async function handleGorkMessage(client, message) {
         } catch {
           // Roster is best-effort: answering must not depend on it.
         }
+        // §7.16.2 read path (decision 27): DB-only MEMORY BLOCK build after
+        // the roster exists (the roster supplies the involved-people set;
+        // the bot's own id is excluded — decision 26). loadMemoryContext
+        // never throws; the wrapper is belt-and-suspenders.
+        if (memoryOn) {
+          try {
+            mem = loadMemoryContext({
+              guildId,
+              roster,
+              budgetChars: clampMemoryChars(settings.gork_memory_chars),
+              botId: auditClient?.user?.id ?? null,
+            });
+            // Capture for the post-send write turn (no re-query later;
+            // ctx is try-scoped, so its text is snapshotted here).
+            memJob = { roster, ctxText: ctx?.text || "" };
+          } catch {
+            // Degrade to no memory block; answering never depends on it.
+          }
+        }
         const system = buildSystemPrompt({
           extraRules: settings.gork_extra_rules,
         });
@@ -534,6 +612,16 @@ async function handleGorkMessage(client, message) {
         // separate search / page-read tallies, not the combined total).
         let searches = 0;
         let reads = 0;
+        // §7.16 recall counters: tool runs + memories actually fetched
+        // (found ids only) for the Q&A audit's Memory label (decision 27).
+        let recalls = 0;
+        let recalled = 0;
+        // §7.16 (decision 27): shared tool array — search pair and/or
+        // recall_memories; empty stays `undefined` (payload unchanged when
+        // both features are off).
+        const tools = [];
+        if (searchOn) tools.push(WEB_SEARCH_TOOL, READ_PAGE_TOOL);
+        if (memoryOn) tools.push(RECALL_MEMORIES_TOOL);
         const llmOpts = {
           messages: [
             { role: "system", content: system },
@@ -543,13 +631,12 @@ async function handleGorkMessage(client, message) {
                 question,
                 ctx,
                 formatRosterBlock(roster),
+                mem.block,
               ),
             },
           ],
           ...llmParams(),
-          tools: searchOn
-            ? [WEB_SEARCH_TOOL, READ_PAGE_TOOL]
-            : undefined,
+          tools: tools.length ? tools : undefined,
           executeTool: (name, args) => {
             if (name === "web_search") {
               searches += 1;
@@ -560,6 +647,23 @@ async function handleGorkMessage(client, message) {
               // The tool module coerces/dedupes/caps urls itself; pass
               // the raw args through (never throws).
               return executeReadPage(args);
+            }
+            if (name === "recall_memories") {
+              recalls += 1;
+              // Never throws (§7.16.2). Found ids count toward the audit
+              // label and stamp last_used_at so recalled rows win the
+              // eviction recency tie-break (§7.16.1); touch is best-effort.
+              return executeRecallMemory(args, {
+                guildId,
+                onRecall: (ids) => {
+                  recalled += ids.length;
+                  try {
+                    gorkMemoryTouch(guildId, ids);
+                  } catch {
+                    // touch failure must never break the tool loop
+                  }
+                },
+              });
             }
             return `unknown tool: ${name}`;
           },
@@ -612,6 +716,9 @@ async function handleGorkMessage(client, message) {
               allowedMentions: NO_PING_MENTIONS,
             });
           }
+          // §7.16.3 (decision 25): the write path may only feed on a real
+          // shipped (sanitized + capped) answer — never a canned reply.
+          shippedAnswer = capped;
           logGorkQa(auditClient, guildId, {
             user: message.author,
             question,
@@ -623,6 +730,10 @@ async function handleGorkMessage(client, message) {
             answer: capped,
             questionMessage: message,
             replyMessage,
+            // Read-side audit label (§7.16.3); OFF → undefined → no field.
+            memoryLabel: memoryOn
+              ? formatMemoryLabel(mem, recalled)
+              : undefined,
           }).catch(() => {});
         } else {
           // Failure / timeout / persistent empty answer: locked canned
@@ -653,6 +764,39 @@ async function handleGorkMessage(client, message) {
         clearInterval(typingInterval);
         gorkQueue.release({ guildId });
       }
+      // §7.16.3 write path (decisions 25/27): detached memory turn AFTER
+      // reply + audit + slot release — never adds user-visible latency
+      // and never holds the guild slot. Fires only with memory ON and a
+      // real sanitized answer shipped (not canned/failure), and only when
+      // the roster resolves real people: subjects are roster ∪ asker
+      // minus the bot id (§7.16.1, decision 26). memDate is the trigger
+      // message's UTC day, stamped server-side (never model-emitted).
+      if (memoryOn && shippedAnswer !== null && memJob?.roster?.entries?.size) {
+        const roster = memJob.roster;
+        const botId = auditClient?.user?.id ?? null;
+        void runMemoryTurn({
+          guildId,
+          auditClient,
+          question,
+          answer: shippedAnswer,
+          contextBlock: memJob.ctxText,
+          rosterBlock: formatRosterBlock(roster),
+          // Reuse the rows loaded on the read path — no re-query (§7.16.3).
+          existingMemoriesBlock: formatExistingMemoriesBlock(mem.allRows || []),
+          allowList: [...roster.entries.keys()].filter((id) => id !== botId),
+          memDate: memDateFromMessage(message),
+          sourceMessageIds: [message.id],
+          indexed: mem.indexed,
+        })
+          .then((res) => {
+            if (res && (res.stored > 0 || res.skippedInvalid > 0)) {
+              console.log(
+                `[gork] memory turn in ${guildId}: +${res.stored} stored · ${res.skippedInvalid} skipped_invalid`,
+              );
+            }
+          })
+          .catch(() => {});
+      }
     })().catch(() => {});
   } catch (err) {
     // 14. The pipeline must never see a rejection.
@@ -665,6 +809,7 @@ module.exports = {
   splitLongAnswer,
   capAnswerChars,
   buildUserContent,
+  memDateFromMessage,
   handleGorkMessage,
   gorkQueue,
   QUEUE_FULL_REPLY,
