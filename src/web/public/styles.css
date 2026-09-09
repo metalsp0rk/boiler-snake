@@ -778,3 +778,36 @@ th {
   .integ-write-form input[name="channel_id"],
   .integ-write-form input[name="message_id"] { min-width: 9rem; }
 }
+
+/* --- Ticket actions (Phase 3, subtask 30) --------------------------------- */
+/* Inline claim/close controls inside the open-ticket table cells; the
+   close form's optional reason field stays compact so rows scan fast. */
+.ticket-action-cells {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ticket-inline-form {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+.ticket-reason-label {
+  display: grid;
+  gap: 0.15rem;
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+.ticket-reason-label input {
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  min-width: 11rem;
+}
+.ticket-reason-cell { max-width: 22rem; overflow-wrap: anywhere; }
+.ticket-actions-table code { font-size: 0.8rem; }
