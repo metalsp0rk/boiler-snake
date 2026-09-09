@@ -540,7 +540,14 @@ describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () =
     // staff must TIER-DENY (403) there, never resolve. A 403 (not the
     // cross-guild 404) still proves the route is alive in guild B, so the
     // "gate ≠ dead data" control holds for the admin surfaces too.
-    const ADMIN_TIER_VIEWS = new Set(["/g/:guildId/system", "/g/:guildId/audit"]);
+    // Phase 3 (subtask 28) adds the XP GRANT page to the admin set: /grantxp
+    // is ManageGuild-only per AGENTS.md §4, so staff sees the generic 403 —
+    // the grant surface must NEVER resolve for guild-B staff.
+    const ADMIN_TIER_VIEWS = new Set([
+      "/g/:guildId/system",
+      "/g/:guildId/audit",
+      "/g/:guildId/xp/grant",
+    ]);
     for (const route of harness.listGetRoutesUnder(app, "/g/")) {
       if (route.params.length !== 1 || route.params[0] !== "guildId") continue;
       const url = harness.buildConcretePath(route.path, { guildId: GUILD_B });
