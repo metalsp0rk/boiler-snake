@@ -23,6 +23,11 @@ const { buildStaffRoleAllowPermissions } = require("./permissionsPayload");
 const {
   handleCommandPermissionOAuthCallback,
 } = require("./httpCallback");
+const {
+  SYNC_AUDIT_ACTION,
+  buildSyncAuditDetails,
+  runCommandVisibilitySync,
+} = require("./syncTrigger");
 
 function start(_client, _ctx) {
   const cfg = getCommandPermissionOAuthConfig();
@@ -55,5 +60,9 @@ module.exports = {
   maybeAutoSyncCommandPermissions,
   buildStaffRoleAllowPermissions,
   handleCommandPermissionOAuthCallback,
+  // shared sync TRIGGER core (subtask 31): slash + web call the SAME flow
+  SYNC_AUDIT_ACTION,
+  buildSyncAuditDetails,
+  runCommandVisibilitySync,
   SCOPE,
 };

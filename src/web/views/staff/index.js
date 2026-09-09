@@ -14,6 +14,15 @@
  * Every form embeds the hidden `_csrf` field from req.csrfToken (§8.7; the
  * /g/ CSRF middleware enforces it). No inline handlers anywhere (CSP).
  *
+ * Phase 3 (subtask 31) adds the ADMIN sync-trigger form INSIDE the sync
+ * panel (§8.6 "Command visibility … | Admin (sync)"): rendered ONLY when the
+ * viewer is admin AND the guild has a stored command-permission
+ * authorization AND the env is configured — POSTing it re-runs the SAME
+ * service the slash `/staff syncpermissions` runs against the SAME stored
+ * OAuth authorization (web login tokens are never sent to Discord —
+ * decision 9). The PRG flash banner (views/syncAction) renders ONLY
+ * whitelisted slugs — a hostile ?error= value is inert (§8.7).
+ *
  * COMPOSED ENTIRELY with the escaped-by-default `html` helper: role ids,
  * cached role names, the stored last_sync_error string, the derived
  * redirect URI and every env-var NAME interpolate through it — raw()
@@ -29,6 +38,10 @@
 const { html, raw } = require("../escape");
 const { emptyState, banner } = require("../components");
 const { formatWhen } = require("../users");
+const {
+  syncFlashBanner,
+  renderSyncTriggerForm,
+} = require("../syncAction");
 
 /** Whitelisted staff levels → CSS class suffix (never interpolate raw data). */
 const LEVEL_KINDS = Object.freeze({ junior: "junior", senior: "senior" });
@@ -75,9 +88,11 @@ function advisoryStrip() {
         admin)</strong> actions — the forms below carry the same
         <span class="badge badge-tier badge-tier-admin">admin</span> gate
         (§8.6). Web writes landed in Phase 2; level→role mapping writes match
-        the slash <code>/leveltorole</code> staff gate. The sync trigger
-        (<code>/staff syncpermissions</code>) stays slash-only until the web
-        action lands in Phase 3 (§8.8).
+        the slash <code>/leveltorole</code> staff gate. The command-visibility
+        sync trigger landed in Phase 3: admins re-run it from the panel below,
+        reusing the stored slash OAuth (§8.8) — the authorization itself stays
+        the slash's one-time Discord consent
+        (<code>/staff syncpermissions</code>).
       </p>
     </aside>`;
 }
@@ -244,16 +259,26 @@ function levelRoleForms({ guildId, csrfToken }) {
 
 /**
  * Command-visibility sync status panel (§8.6 "Command visibility: sync
- * status" row). Purely informational — it NEVER triggers an OAuth flow or
- * a sync (Phase 3 action, Admin tier, subtask 31).
+ * status + trigger" row). Status is ALWAYS informational; since Phase 3
+ * (subtask 31) it additionally carries the ADMIN trigger form — rendered
+ * ONLY with a server-supplied `trigger` context whose tier is admin, whose
+ * guild has a stored authorization and whose env is configured. The web
+ * NEVER runs OAuth (authorization stays the slash's one-time consent) and
+ * the POST route carries requireTier("admin") as the actual gate — a hidden
+ * form is UX, the middleware is security. The /commands page passes NO
+ * trigger context: that surface stays forms-free (Phase-1 pin).
  *
  * @param {object} input
  * @param {{available: boolean, status: object|null}} input.oauth from
  *   data/staffData.js (already token-stripped status projection)
  * @param {object|null} input.envConfig sanitized env config:
  *   { available, ready, redirectUri, missing[] } — NO secret values.
+ * @param {{guildId: string, csrfToken: string|null, tier: string|null}|null} [input.trigger]
+ *   render context for the ADMIN sync-trigger form (see above)
+ * @param {{done: string|null, error: string|null}|null} [input.flash]
+ *   whitelisted PRG flash (views/syncAction flashFromQuery output)
  */
-function renderSyncStatusPanel({ oauth, envConfig }) {
+function renderSyncStatusPanel({ oauth, envConfig, trigger, flash }) {
   const status = oauth && oauth.available ? oauth.status : null;
 
   const authBadge = !oauth.available
@@ -277,8 +302,8 @@ function renderSyncStatusPanel({ oauth, envConfig }) {
     : html`<p class="sync-meta">
         This guild has no stored command-permission authorization, so staff-tier
         slash commands show only to Manage Server members. An admin can authorize
-        and sync once via <code>/staff syncpermissions</code> in Discord (the web
-        trigger arrives in Phase 3).
+        and sync once via <code>/staff syncpermissions</code> in Discord — the web
+        trigger reuses that stored authorization, it never runs OAuth itself.
       </p>`;
 
   const envBlock =
@@ -302,11 +327,31 @@ function renderSyncStatusPanel({ oauth, envConfig }) {
       ? banner("error", `Last sync reported an error: ${status.lastSyncError}`)
       : html``;
 
+  // TRIGGER rendering policy (the POST route's requireTier("admin") is the
+  // security boundary): admin viewer + CSRF bound + stored authorization +
+  // env ready. Everything else keeps this panel purely informational.
+  const triggerBlock =
+    trigger &&
+    trigger.guildId &&
+    trigger.csrfToken &&
+    trigger.tier === "admin" &&
+    oauth.available &&
+    status &&
+    envConfig &&
+    envConfig.ready
+      ? renderSyncTriggerForm({
+          guildId: trigger.guildId,
+          csrfToken: trigger.csrfToken,
+          returnTarget: "staff",
+        })
+      : html``;
+
   return html`
     <section class="panel staff-sync-panel">
       <h2>Command visibility sync</h2>
+      ${syncFlashBanner(flash)}
       <p class="sync-state-row">Authorization ${authBadge} · ${envBadge}</p>
-      ${authorizedMeta} ${errorBlock} ${envBlock}
+      ${authorizedMeta} ${errorBlock} ${envBlock} ${triggerBlock}
       <p class="subheading">
        
       </p>
@@ -328,8 +373,10 @@ function renderSyncStatusPanel({ oauth, envConfig }) {
  * @param {string|null} [input.tier] viewer tier (req.guildAccess.tier):
  *   staff-role forms render ONLY for "admin" (§8.6 mutate tier)
  * @param {string|null} [input.csrfToken] req.csrfToken for hidden _csrf
+ * @param {{done: string|null, error: string|null}|null} [input.flash]
+ *   whitelisted PRG flash for the sync panel (views/syncAction)
  */
-function renderStaffBody({ view, resolveRoleName, envConfig, guildId, tier, csrfToken }) {
+function renderStaffBody({ view, resolveRoleName, envConfig, guildId, tier, csrfToken, flash }) {
   const roles = view.roles || { available: false, rows: [], seniors: 0, juniors: 0 };
   const levelRoles = view.levelRoles || { available: false, rows: [] };
   const counts = roles.available
@@ -353,7 +400,12 @@ function renderStaffBody({ view, resolveRoleName, envConfig, guildId, tier, csrf
       </section>
       ${canMutate ? levelRoleForms({ guildId, csrfToken }) : html``}
       ${advisoryStrip()}
-      ${renderSyncStatusPanel({ oauth: view.oauth, envConfig })}
+      ${renderSyncStatusPanel({
+        oauth: view.oauth,
+        envConfig,
+        trigger: { guildId, csrfToken, tier },
+        flash,
+      })}
     </div>`;
 }
 
@@ -361,13 +413,15 @@ function renderStaffBody({ view, resolveRoleName, envConfig, guildId, tier, csrf
  * Body for GET /g/:guildId/commands — the command-visibility sync status
  * view (§8.6 row; panel component shared with the staff page so the two
  * can never diverge). READ-ONLY — no forms here (the §8.8 Phase 1
- * "no forms on /commands" pin).
+ * "no forms on /commands" pin); it still renders the whitelisted PRG
+ * flash because the sync redirect may land here (return=commands).
  * @param {object} input see renderStaffBody (roles unused here)
+ * @param {{done: string|null, error: string|null}|null} [input.flash]
  */
-function renderCommandsBody({ view, envConfig }) {
+function renderCommandsBody({ view, envConfig, flash }) {
   return html`
     <div class="staff-grid">
-      ${renderSyncStatusPanel({ oauth: view.oauth, envConfig })}
+      ${renderSyncStatusPanel({ oauth: view.oauth, envConfig, flash })}
     </div>`;
 }
 

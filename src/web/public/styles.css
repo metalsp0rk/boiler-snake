@@ -811,3 +811,18 @@ th {
 }
 .ticket-reason-cell { max-width: 22rem; overflow-wrap: anywhere; }
 .ticket-actions-table code { font-size: 0.8rem; }
+
+/* --- Phase 3: command-visibility sync trigger (subtask 31, §8.6) --------- */
+/* Admin-only trigger form inside the sync panel (views/syncAction). Base
+   rules come from .staff-mutate-form; this only positions the button so the
+   panel's status blocks and the trigger stay visually distinct. */
+.sync-trigger-form {
+  margin-top: 0.85rem;
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+}
+.staff-sync-panel .sync-trigger-form .btn {
+  width: auto;
+}
+
