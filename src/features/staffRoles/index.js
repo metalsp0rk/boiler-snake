@@ -181,7 +181,7 @@ async function handleRoleAdd(interaction, ctx) {
   }
 
   const existing = getStaffRole(interaction.guildId, role.id);
-  addStaffRole(interaction.guildId, role.id, level);
+  addStaffRole(interaction.guildId, role.id, level, interaction.user.id);
 
   await logConfigChange(
     ctx?.client || interaction.client,
@@ -339,7 +339,17 @@ async function handleRoleList(interaction) {
   const juniors = rows.filter((r) => normalizeStaffLevel(r.level) === "junior");
 
   const fmt = (list) =>
-    list.length ? list.map((r) => `- <@&${r.role_id}>`).join("\n") : "_none_";
+    list.length
+      ? list
+          .map(
+            (r) =>
+              `- <@&${r.role_id}>` +
+              // added_by is NULL for rows trusted before migration 024 —
+              // omit rather than claim "unknown".
+              (r.added_by ? ` (added by <@${r.added_by}>)` : ""),
+          )
+          .join("\n")
+      : "_none_";
 
   await replyEphemeral(interaction, {
     content:
