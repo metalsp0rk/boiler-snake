@@ -370,7 +370,7 @@ async function softCloseTicket(opts) {
     const guild = channel.guild;
     const botMember = opts.botMember || guild?.members?.me || null;
     const botUserId = client.user?.id;
-    const { roleIds } = getManageableStaffRoleIds(guild, botMember);
+    const { roleIds } = await getManageableStaffRoleIds(guild, botMember);
 
     await applyTicketOverwrites(channel, {
       guildId: ticket.guild_id,

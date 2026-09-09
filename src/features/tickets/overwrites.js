@@ -75,43 +75,103 @@ function botHighestRolePosition(botMember) {
 }
 
 /**
- * Staff role IDs the bot can safely set overwrites for.
- * Skips missing roles and roles ranked above the bot.
+ * Resolve a staff role by id, falling back to a REST fetch on cache miss so a
+ * merely-uncached role is never misreported as deleted.
+ *
+ * discord.js v14 `guild.roles.fetch(id)` resolves `null` for genuinely deleted
+ * roles but *throws* for other API failures (missing access, rate limit, …) —
+ * keep those apart so the reported reason is truthful ("not found" vs
+ * "lookup failed: <cause>").
+ *
+ * @param {import("discord.js").Guild} guild
+ * @param {string} roleId
+ * @returns {Promise<{ role: import("discord.js").Role|null, error: string|null }>}
+ */
+async function resolveStaffRole(guild, roleId) {
+  const cached = guild?.roles?.cache?.get?.(roleId) || null;
+  if (cached) return { role: cached, error: null };
+  try {
+    const fetched = (await guild?.roles?.fetch?.(roleId)) || null;
+    return { role: fetched, error: null };
+  } catch (err) {
+    return { role: null, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Whether the bot member itself holds this role (cache-only, no fetch).
+ * @param {import("discord.js").GuildMember|null|undefined} botMember
+ * @param {string} roleId
+ * @returns {boolean}
+ */
+function botHoldsRole(botMember, roleId) {
+  if (!botMember) return false;
+  const cache = botMember.roles?.cache;
+  if (cache && typeof cache.has === "function") return cache.has(roleId);
+  return botMember.roles?.highest?.id === roleId;
+}
+
+/**
+ * Staff role IDs the bot can safely set overwrites for, plus one diagnostic
+ * entry per role it could not use (name + specific reason, never just a count).
+ *
+ * Async: a role-cache miss triggers `guild.roles.fetch(roleId)` before we
+ * conclude the role is gone — cache races and guilds fetched without roles
+ * look identical to deleted roles via `.get()` alone.
  *
  * @param {import("discord.js").Guild} guild
  * @param {import("discord.js").GuildMember|null|undefined} botMember
- * @returns {{ roleIds: string[], skipped: { id: string, reason: string }[] }}
+ * @returns {Promise<{ roleIds: string[], skipped: { id: string, name: string|null, reason: string }[] }>}
  */
 /**
  * Senior staff roles only (ticket channel visibility).
  * Junior staff pass requireStaff but do not get automatic ticket overwrites.
  */
-function getManageableStaffRoleIds(guild, botMember) {
+async function getManageableStaffRoleIds(guild, botMember) {
   const rows = listSeniorStaffRoles(guild.id);
   const botPos = botHighestRolePosition(botMember);
   const roleIds = [];
   const skipped = [];
 
   for (const row of rows) {
-    const role =
-      guild.roles?.cache?.get?.(row.role_id) ||
-      null;
+    const { role, error } = await resolveStaffRole(guild, row.role_id);
     if (!role) {
-      // Role deleted from Discord but still in staff_roles — skip (API may 404/50013)
-      skipped.push({ id: row.role_id, reason: "role not found in guild" });
+      // Deleted from Discord but still in staff_roles — setting an overwrite
+      // for it would 404/50013. A failed lookup is not evidence of deletion,
+      // so surface the API error instead of claiming "not found".
+      skipped.push({
+        id: row.role_id,
+        name: null,
+        reason: error
+          ? `role lookup failed (${error})`
+          : "role not found in guild",
+      });
       continue;
     }
     if (role.managed) {
-      skipped.push({ id: row.role_id, reason: "managed/integration role" });
+      skipped.push({
+        id: row.role_id,
+        name: role.name || null,
+        reason: "managed/bots-only role",
+      });
       continue;
     }
     // Bot can only set overwrites for roles strictly below its highest role
     // (same position is also unsafe). @everyone is always ok via guild.id.
     const rolePos = Number(role.position) || 0;
     if (botMember && rolePos >= botPos) {
+      if (botHoldsRole(botMember, row.role_id)) {
+        // The bot itself holds this staff role: an overwrite for it would only
+        // ever grant access to the bot, which already has its own user
+        // overwrite — counting that as "could not get channel access" is a
+        // false positive. Humans in that role need a distinct higher bot
+        // admin role, not a misleading note on every ticket.
+        continue;
+      }
       skipped.push({
         id: row.role_id,
-        reason: "role is above or equal to the bot's highest role — move the bot role higher",
+        name: role.name || null,
+        reason: "above bot role in hierarchy",
       });
       continue;
     }
@@ -119,6 +179,36 @@ function getManageableStaffRoleIds(guild, botMember) {
   }
 
   return { roleIds, skipped };
+}
+
+/**
+ * User-facing note for staff roles the bot could not grant channel access to:
+ * one line per role with **name** + specific reason (never a role ping).
+ * Returns "" for an empty list so callers can append after a length check.
+ *
+ * @param {{ id: string, name?: string|null, reason: string }[]|null|undefined} skipped
+ * @returns {string}
+ */
+function formatStaffRoleAccessNote(skipped) {
+  if (!skipped?.length) return "";
+  const lines = skipped.map(
+    (s) => `• ${s.name ? `**${s.name}**` : `\`${s.id}\``} — ${s.reason}`
+  );
+  return (
+    `\n\n_Note: ${skipped.length} staff role(s) could not get channel access:_\n` +
+    lines.join("\n")
+  );
+}
+
+/**
+ * One-line server-side mirror of the note for logs (name + id + reason).
+ * @param {{ id: string, name?: string|null, reason: string }[]} skipped
+ * @returns {string}
+ */
+function describeSkippedStaffRoles(skipped) {
+  return skipped
+    .map((s) => `${s.name ? `${s.name} (${s.id})` : s.id}: ${s.reason}`)
+    .join("; ");
 }
 
 /**
@@ -196,9 +286,9 @@ function assertBotCanCreateTickets(guild, botMember, categoryId) {
  * @param {string[]} [opts.staffRoleIds] pre-filtered manageable staff roles
  * @param {import("discord.js").Guild} [opts.guild] used to filter staff roles if staffRoleIds omitted
  * @param {import("discord.js").GuildMember} [opts.botMember]
- * @returns {object[]}
+ * @returns {Promise<object[]>}
  */
-function buildTicketOverwrites(opts) {
+async function buildTicketOverwrites(opts) {
   const { guildId, everyoneId, botUserId, ticket } = opts;
   const sensitive =
     opts.sensitive != null
@@ -255,8 +345,9 @@ function buildTicketOverwrites(opts) {
   let staffRoleIds = opts.staffRoleIds;
   if (!staffRoleIds) {
     if (opts.guild) {
-      staffRoleIds = getManageableStaffRoleIds(opts.guild, opts.botMember)
-        .roleIds;
+      staffRoleIds = (
+        await getManageableStaffRoleIds(opts.guild, opts.botMember)
+      ).roleIds;
     } else {
       // Senior only — junior staff never get automatic ticket visibility
       staffRoleIds = listSeniorStaffRoles(guildId).map((r) => r.role_id);
@@ -312,10 +403,10 @@ async function applyTicketOverwrites(channel, opts) {
     guild,
   };
   if (!merged.staffRoleIds && guild) {
-    const { roleIds } = getManageableStaffRoleIds(guild, opts.botMember);
+    const { roleIds } = await getManageableStaffRoleIds(guild, opts.botMember);
     merged.staffRoleIds = roleIds;
   }
-  const overwrites = buildTicketOverwrites(merged);
+  const overwrites = await buildTicketOverwrites(merged);
   if (typeof channel.permissionOverwrites?.set === "function") {
     await channel.permissionOverwrites.set(overwrites);
     return;
@@ -355,7 +446,10 @@ module.exports = {
   STAFF_ALLOW,
   BOT_ALLOW,
   botHighestRolePosition,
+  botHoldsRole,
   getManageableStaffRoleIds,
+  formatStaffRoleAccessNote,
+  describeSkippedStaffRoles,
   assertBotCanCreateTickets,
   buildTicketOverwrites,
   applyTicketOverwrites,
