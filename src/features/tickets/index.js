@@ -71,6 +71,8 @@ const { logConfigChange } = require("../logs/auditLog");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
+  formatStaffRoleAccessNote,
+  describeSkippedStaffRoles,
   assertBotCanCreateTickets,
   formatChannelCreateError,
   MEMBER_ALLOW,
@@ -697,14 +699,14 @@ async function openTicketChannel(opts) {
     throw err;
   }
 
-  const { roleIds: staffRoleIds, skipped } = getManageableStaffRoleIds(
+  const { roleIds: staffRoleIds, skipped } = await getManageableStaffRoleIds(
     guild,
     botMember,
   );
   if (skipped.length) {
     console.warn(
       `[tickets] Skipping ${skipped.length} staff role overwrite(s):`,
-      skipped.map((s) => `${s.id} (${s.reason})`).join("; "),
+      describeSkippedStaffRoles(skipped),
     );
   }
 
@@ -917,9 +919,7 @@ async function completeSelfCreate(interaction, ctx, reason) {
 
     let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened: ${channel}`;
     if (skippedStaffRoles?.length) {
-      msg +=
-        `\n\n_Note: ${skippedStaffRoles.length} staff role(s) could not get channel access ` +
-        `(bot role must be higher than staff roles, and roles must still exist)._`;
+      msg += formatStaffRoleAccessNote(skippedStaffRoles);
     }
     await interaction.editReply({ content: msg });
   } catch (err) {
@@ -1316,9 +1316,7 @@ async function handleFor(interaction, ctx) {
 
     let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened for <@${target.id}>: ${channel}`;
     if (skippedStaffRoles?.length) {
-      msg +=
-        `\n\n_Note: ${skippedStaffRoles.length} staff role(s) could not get channel access ` +
-        `(bot role must be higher than staff roles, and roles must still exist)._`;
+      msg += formatStaffRoleAccessNote(skippedStaffRoles);
     }
     await interaction.editReply({ content: msg });
   } catch (err) {
