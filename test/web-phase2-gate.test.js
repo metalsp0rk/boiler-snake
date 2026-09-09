@@ -88,6 +88,11 @@ const { loadDb } = require("./helpers/env");
 const { api, tmpDir } = loadDb();
 
 const harness = require("./helpers/access-matrix");
+// Shared mutation-gate harness (extracted VERBATIM from THIS file by
+// subtask 32 so the Phase-3 program gate runs the identical ladder over the
+// identical matrix — single source for fixtures, facade recorder, mirror
+// spy, the 40-row PARITY table and the ladder steps. Semantics unchanged.)
+const ladder = require("./helpers/mutation-ladder");
 const guildAccessMod = require("../src/web/auth/guildAccess");
 const { createWebApp, registerWebMutation } = require("../src/web/app");
 const sessionPolicy = require("../src/web/auth/sessions");
@@ -102,100 +107,52 @@ const dbFacade = require("../src/db");
 // so deterministic audit target ids need the sqlite_sequence row reset too,
 // not just DELETE. Same connection instance loadDb() bound to the temp DB.
 const { db: rawDb } = require("../src/db/connection");
+// The shared matrix's T3 row clears ticket_messages through this handle
+// (identical behavior to the pre-extraction inline statement).
+ladder.bindRawDelete((sql) => rawDb.prepare(sql).run());
+
+const { FIX, ENV_KEYS } = ladder;
+const {
+  GUILD_A,
+  GUILD_CROSS,
+  USER_ADMIN,
+  USER_STAFF,
+  USER_SENIOR,
+  USER_PLAIN,
+  USER_STRANGER,
+  ROLE_JUNIOR_TIER,
+  ROLE_SENIOR_TIER,
+  CH_AUDIT,
+  CH_MESSAGE,
+  CH_WARN,
+  CH_CMD,
+  CH_HONEY,
+  ROLE_STAFF,
+  ROLE_LEVEL,
+  ROLE_UPLOAD,
+  ROLE_TW,
+  ROLE_BAN,
+  ROLE_EXEMPT,
+  PANEL_MSG,
+  USER_GRANT,
+  USER_WARN_SUBJECT,
+  YT_ID,
+  YT_URL,
+  TW_ID,
+  TW_LOGIN,
+  GATE_CHANNEL_NAME,
+  BOT_GUILDS,
+} = FIX;
 
 // Clearly-fake sentinels / placeholders ONLY (AGENTS.md: never realistic).
 const SESSION_SECRET = "test-gate2-sentinel-session-secret-NOT-REAL-027";
 const YT_KEY = "YOUR_YOUTUBE_API_KEY-placeholder-not-real";
 
-const GUILD_A = "310000000000000001"; // bot + every test user
-const GUILD_CROSS = "310000000000000002"; // bot guild the users are NOT in
-
-const USER_ADMIN = "448190112345678901"; // owner snapshot ⇒ tier admin
-const USER_STAFF = "448190112345678902"; // junior staff role ⇒ tier staff
-const USER_SENIOR = "448190112345678903"; // senior staff role ⇒ tier senior
-const USER_PLAIN = "448190112345678904"; // guild-A member, no staff role
-const USER_STRANGER = "448190112345678905"; // member of NOTHING
-
-// Tier-resolution roles (deliberately NOT snowflake-shaped so they can never
-// be confused with mutation subject ids — same trick as subtask 25).
-const ROLE_JUNIOR_TIER = "role-junior-staff";
-const ROLE_SENIOR_TIER = "role-senior-staff";
-
-// Mutation subject ids (all PRESENT in the fake client cache below).
-const CH_AUDIT = "600000000000000111"; // settings logs/audit, yt notify, event reminders
-const CH_MESSAGE = "600000000000000112"; // settings message stream, twitch notify, RR panels
-const CH_WARN = "600000000000000113"; // settings warn-log
-const CH_CMD = "600000000000000114"; // command-channels add/remove
-const CH_HONEY = "600000000000000115"; // honeypot channel add/del
-const ROLE_STAFF = "500000000000000211"; // staff role add/remove/setlevel
-const ROLE_LEVEL = "500000000000000212"; // levelrole set/remove
-const ROLE_UPLOAD = "500000000000000213"; // youtube uploadrole
-const ROLE_TW = "500000000000000214"; // twitch notify role
-const ROLE_BAN = "500000000000000215"; // honeypot banrole
-const ROLE_EXEMPT = "500000000000000216"; // honeypot exempt
-const PANEL_MSG = "930000000000000001"; // fake channel send() message id
-const USER_GRANT = "448190112345678906"; // xp.grant subject (subtask 28) —
-// DELIBERATELY absent from the fake client cache: the grant exercises the
-// slash's member-miss path (awardXp resolves no member → role sync skipped),
-// exactly like a slash whose members.fetch fails (src/services/awardXp.js:46).
-const USER_WARN_SUBJECT = "448190112345678907"; // warn issue/void + note
-// subject (subtask 29) — likewise cache-absent: the mutations exercise the
-// cache-only DM seam's graceful-skip path (never a fetch on a request path).
-const YT_ID = "UC0123456789012345678901"; // /channel/ URL form parses this
-const YT_URL = `https://www.youtube.com/channel/${YT_ID}`;
-const TW_ID = "420000001";
-const TW_LOGIN = "gatestream";
-const GATE_CHANNEL_NAME = "GATE-LIVE-CH-NAME-4f7c"; // getClient-threading marker
-
-const BOT_GUILDS = [GUILD_A, GUILD_CROSS];
-
-const ENV_KEYS = [
-  "SESSION_SECRET",
-  "DB_PATH",
-  "DATA_DIR",
-  "CLIENT_ID",
-  "CLIENT_SECRET",
-  "PUBLIC_HTTP_PORT",
-  "TICKET_HTTP_PORT",
-  "PUBLIC_BASE_URL",
-  "TICKET_PUBLIC_BASE_URL",
-  "WEB_RATE_LIMIT_MUTATION_MAX",
-  "YOUTUBE_API_KEY",
-  "TWITCH_CLIENT_ID",
-  "TWITCH_CLIENT_SECRET",
-];
-
 // ---------------------------------------------------------------------------
 // Fake Discord transport under the REAL resolver (Phase-1 gate pattern)
 // ---------------------------------------------------------------------------
 
-function userOf(token) {
-  return String(token).replace(/^tok-/, "");
-}
-
-const fakeDiscord = {
-  async getUserGuilds(token) {
-    const userId = userOf(token);
-    if (userId === USER_ADMIN) {
-      return [{ id: GUILD_A, name: "Alpha HQ", icon: null, owner: true, permissions: "0" }];
-    }
-    if (userId === USER_STAFF || userId === USER_SENIOR || userId === USER_PLAIN) {
-      return [{ id: GUILD_A, name: "Alpha HQ", icon: null, owner: false, permissions: "0" }];
-    }
-    return []; // stranger: member of NOTHING ⇒ cross-guild doctrine ⇒ 404
-  },
-  async getUserGuildMember(token, guildId) {
-    const userId = userOf(token);
-    if (guildId !== GUILD_A) {
-      const err = new Error("Unknown Guild");
-      err.status = 404;
-      throw err;
-    }
-    if (userId === USER_STAFF) return { roles: [ROLE_JUNIOR_TIER] };
-    if (userId === USER_SENIOR) return { roles: [ROLE_SENIOR_TIER] };
-    return { roles: [] }; // plain member: in the guild, NO staff role
-  },
-};
+const fakeDiscord = ladder.makeFakeDiscord();
 
 // ---------------------------------------------------------------------------
 // Fake discord.js client — CACHE-ONLY seams (any network call in a request
@@ -248,101 +205,17 @@ const FAKE_CLIENT = {
 };
 
 // ---------------------------------------------------------------------------
-// SERVICE-LAYER counting proxy on the SHARED src/db facade object. Every web
-// route/data module resolves facade METHODS AT CALL TIME on this object
-// (settingsWrite DI, staff routes facade, integrations module-level db ===
-// this object), so the wrappers here are what the handlers actually call.
-// The audit middleware captures db.insertAdminAudit at createWebApp time —
-// installed BEFORE the app is built; the throw-flag toggle then reaches the
-// mounted middleware through the captured wrapper.
+// SERVICE-LAYER counting proxy on the SHARED src/db facade object, the
+// audit-channel MIRROR SPY (§8.1-7) and the ladder tick — all three now
+// live in test/helpers/mutation-ladder.js (extracted VERBATIM from this
+// file by subtask 32; semantics unchanged). The audit middleware captures
+// db.insertAdminAudit at createWebApp time — the recorder is installed
+// BEFORE the app is built; the throw-flag toggle then reaches the mounted
+// middleware through the captured wrapper. The mirror spy swaps the two
+// auditLog posters + binds a truthy fake so every row proves whether a
+// mirror WAS scheduled (settings/staff) or was NOT (integrations,
+// fail-closed).
 // ---------------------------------------------------------------------------
-
-const FACADE_METHODS = [
-  "getGuildSettings",
-  "updateGuildSettings",
-  "addAllowedCommandChannel",
-  "removeAllowedCommandChannel",
-  "getStaffRole",
-  "addStaffRole",
-  "setStaffRoleLevel",
-  "removeStaffRole",
-  "listLevelRoles",
-  "upsertLevelRole",
-  "deleteLevelRole",
-  "getYoutubeChannels",
-  "addYoutubeChannel",
-  "removeYoutubeChannel",
-  "getTwitchChannels",
-  "getTwitchChannel",
-  "addTwitchChannel",
-  "removeTwitchChannel",
-  "getReactionRolePanel",
-  "createReactionRolePanel",
-  "deleteReactionRolePanel",
-  "getReactionRoleOption",
-  "upsertReactionRoleOption",
-  "deleteReactionRoleOption",
-  "countReactionRoleOptions",
-  "listReactionRoleOptions",
-  "isHoneypotChannel",
-  "addHoneypotChannel",
-  "removeHoneypotChannel",
-  "isHoneypotBanRole",
-  "addHoneypotBanRole",
-  "removeHoneypotBanRole",
-  // Phase 3 (subtask 28) XP-grant surface: addXp/logActivity are the write
-  // helpers the awardXp SERVICE (the slash's own path) calls; getXp is the
-  // slash-parity before/after read (features/xp/index.js:446).
-  "addXp",
-  "logActivity",
-  "getXp",
-  // Phase 3 (subtask 29) moderation surface: the slash's OWN write helpers
-  // (warnings/index.js:458|747, staffNotes/index.js:277); getStaffNote is the
-  // issue-form note-link READ (routes/moderation.js parseWarnIssueInput).
-  "createWarning",
-  "voidWarning",
-  "createStaffNote",
-  "getStaffNote",
-  // Phase 3 (subtask 30) ticket surface: claimTicket is the slash's OWN
-  // write (features/tickets/index.js:1650); markTicketClosed runs INSIDE
-  // the slash's OWN softCloseTicket (features/tickets/close.js) — the
-  // gate lazy-loads close.js on the first web close (route seam), AFTER
-  // this install, so the feature's load-time destructure binds THE
-  // WRAPPER (recorded from inside = deep service-layer proof §8.6).
-  "claimTicket",
-  "markTicketClosed",
-];
-
-/** DB-mutating facade helpers — validation rejections must call ZERO of these. */
-const WRITE_HELPERS = new Set([
-  "updateGuildSettings",
-  "addAllowedCommandChannel",
-  "removeAllowedCommandChannel",
-  "addStaffRole",
-  "setStaffRoleLevel",
-  "removeStaffRole",
-  "upsertLevelRole",
-  "deleteLevelRole",
-  "addYoutubeChannel",
-  "removeYoutubeChannel",
-  "addTwitchChannel",
-  "removeTwitchChannel",
-  "createReactionRolePanel",
-  "deleteReactionRolePanel",
-  "upsertReactionRoleOption",
-  "deleteReactionRoleOption",
-  "addHoneypotChannel",
-  "removeHoneypotChannel",
-  "addHoneypotBanRole",
-  "removeHoneypotBanRole",
-  "addXp",
-  "logActivity",
-  "createWarning",
-  "voidWarning",
-  "createStaffNote",
-  "claimTicket",
-  "markTicketClosed",
-]);
 
 const recorder = {
   active: false,
@@ -350,37 +223,9 @@ const recorder = {
   auditThrow: false, // §8.1-7 fail-closed injection flag
 };
 
-function installFacadeRecorder(F) {
-  const originals = {};
-  for (const name of FACADE_METHODS) {
-    if (typeof F[name] !== "function") {
-      throw new Error(`gate precondition: facade helper "${name}" missing (renamed?)`);
-    }
-    originals[name] = F[name];
-    F[name] = function recorded(...args) {
-      if (recorder.active) recorder.log.push({ name, args });
-      return originals[name].apply(this, args);
-    };
-  }
-  const origInsert = F.insertAdminAudit;
-  F.insertAdminAudit = function recordedInsert(entry) {
-    if (recorder.active) recorder.log.push({ name: "insertAdminAudit", entry });
-    if (recorder.auditThrow) {
-      const err = new Error("admin_audit insert failed (gate injection)");
-      err.code = "GATE_AUDIT_INJECT";
-      throw err;
-    }
-    return origInsert.apply(this, arguments);
-  };
-  return function restore() {
-    for (const name of FACADE_METHODS) F[name] = originals[name];
-    F.insertAdminAudit = origInsert;
-  };
-}
+const restoreFacadeRecorder = ladder.installFacadeRecorder(dbFacade, recorder);
 
-// Install BEFORE createWebApp so the audit middleware captures the wrapper
-// (createAuditDeps() snapshots insertAdminAudit — §8.1-7).
-const restoreFacadeRecorder = installFacadeRecorder(dbFacade);
+const { writeCalls, WRITE_HELPERS } = ladder;
 
 function startWindow() {
   recorder.log = [];
@@ -391,35 +236,12 @@ function stopWindow() {
   return recorder.log.slice();
 }
 
-// ---------------------------------------------------------------------------
-// Mirror spy (§8.1-7): the audit middleware dispatches mirrors through the
-// REAL features/logs/auditLog module object (property resolves at dispatch
-// time) with the bound client (boundAuditClient read at dispatch time).
-// Swapping the two posters + binding a truthy fake proves per row whether a
-// mirror WAS scheduled (settings/staff) or was NOT (integrations, fail-closed).
-// ---------------------------------------------------------------------------
-
-const mirrorSpy = { log: [], sendAudit: null, sendWarn: null };
-
-function installMirrorSpy() {
-  mirrorSpy.sendAudit = auditLogMod.sendAuditLog;
-  mirrorSpy.sendWarn = auditLogMod.sendWarnLog;
-  auditLogMod.sendAuditLog = (...args) => {
-    mirrorSpy.log.push({ kind: "audit", args });
-    return Promise.resolve(true);
-  };
-  auditLogMod.sendWarnLog = (...args) => {
-    mirrorSpy.log.push({ kind: "warn", args });
-    return Promise.resolve(true);
-  };
-  bindAuditClient({ __gateFakeAuditClient: true });
-}
+const mirrorSpy = ladder.installMirrorSpy(auditLogMod, bindAuditClient);
 function restoreMirrorSpy() {
-  auditLogMod.sendAuditLog = mirrorSpy.sendAudit;
-  auditLogMod.sendWarnLog = mirrorSpy.sendWarn;
-  bindAuditClient(null);
+  mirrorSpy.restore();
 }
-const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+const tick = ladder.tick;
+
 
 // ---------------------------------------------------------------------------
 // PARITY TABLE — THE §8.8 PHASE-2 CHECKLIST ARTIFACT (living deliverable)
@@ -442,1016 +264,18 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 // ways: the gate can never silently drift from the mounted routes.
 // ---------------------------------------------------------------------------
 
-/** Audit-details expectation factory (static deep-equal target per row). */
-const D = (obj) => () => obj;
-
-const PARITY = [
-  // ---- Settings surface (subtask 24) — §8.6 "Settings" row ------------------
-  {
-    no: "S1",
-    area: "settings (xp, cooldowns, level curve)",
-    template: "/g/:guildId/settings/xp",
-    method: "POST",
-    tier: "staff",
-    slash: "/setxp → updateGuildSettings (src/features/xp/index.js:365)",
-    helpers: ["updateGuildSettings"],
-    action: "xp.settings_update",
-    targetType: "guild",
-    targetId: GUILD_A,
-    mirror: true,
-    // Form field name is "message" — buildXpPatch maps it to the msg_xp
-    // COLUMN (settingsWrite.js:151), exactly like /setxp message <n>.
-    fields: { message: "17" },
-    prepare: () => api.updateGuildSettings(GUILD_A, { msg_xp: 11 }),
-    details: D({ patch: { msg_xp: 17 } }),
-    okLocation: `/g/${GUILD_A}/settings?ok=xp`,
-    reject: { status: 302, location: `/g/${GUILD_A}/settings?err=xp`, fields: {} },
-  },
-  {
-    no: "S2",
-    area: "settings (decay)",
-    template: "/g/:guildId/settings/decay",
-    method: "POST",
-    tier: "staff",
-    slash: "/setdecay → updateGuildSettings (src/features/decay/index.js:94 audit)",
-    helpers: ["updateGuildSettings"],
-    action: "decay.settings_update",
-    targetType: "guild",
-    targetId: GUILD_A,
-    mirror: true,
-    fields: { percent: "25" },
-    prepare: () => api.updateGuildSettings(GUILD_A, { decay_percent: 0.5 }),
-    details: D({ patch: { decay_percent: 0.25 } }),
-    okLocation: `/g/${GUILD_A}/settings?ok=decay`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/settings?err=decay`,
-      fields: { percent: "900" },
-    },
-  },
-  {
-    no: "S3",
-    area: "settings (log channels)",
-    template: "/g/:guildId/settings/logs",
-    method: "POST",
-    tier: "staff",
-    slash: "/setlog → updateGuildSettings (src/features/logs/index.js:146)",
-    helpers: ["updateGuildSettings"],
-    action: "logs.channel_set",
-    targetType: "channel",
-    targetId: CH_AUDIT,
-    mirror: true,
-    fields: { stream: "audit", channel: CH_AUDIT },
-    prepare: () => api.updateGuildSettings(GUILD_A, { audit_log_channel_id: null }),
-    details: D({ stream: "audit", previous_channel_id: null }),
-    okLocation: `/g/${GUILD_A}/settings?ok=logs`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/settings?err=logs`,
-      fields: { stream: "bogus", channel: CH_AUDIT },
-    },
-  },
-  {
-    no: "S4",
-    area: "settings (warn log channel)",
-    template: "/g/:guildId/settings/warn-log",
-    method: "POST",
-    tier: "staff",
-    slash: "/setwarn log → updateGuildSettings (src/features/warnings/index.js:1166)",
-    helpers: ["updateGuildSettings"],
-    action: "warnings.log_channel_set",
-    targetType: "channel",
-    targetId: CH_WARN,
-    mirror: true,
-    fields: { channel: CH_WARN },
-    prepare: () => api.updateGuildSettings(GUILD_A, { warn_log_channel_id: null }),
-    details: D({ previous_channel_id: null, channel_id: CH_WARN }),
-    okLocation: `/g/${GUILD_A}/settings?ok=warn`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/settings?err=warn`,
-      fields: { channel: "not-a-snowflake" },
-    },
-  },
-  {
-    no: "S5",
-    area: "command channels (allow-list add)",
-    template: "/g/:guildId/settings/command-channels/add",
-    method: "POST",
-    tier: "admin",
-    slash: "/setcommandchannel add → addAllowedCommandChannel (src/features/commandChannels/index.js:65)",
-    helpers: ["addAllowedCommandChannel"],
-    action: "command_channels.add",
-    targetType: "channel",
-    targetId: CH_CMD,
-    mirror: true,
-    fields: { channel: CH_CMD },
-    prepare: () => api.removeAllowedCommandChannel(GUILD_A, CH_CMD),
-    details: D({ channel_id: CH_CMD }),
-    okLocation: `/g/${GUILD_A}/settings?ok=channels`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/settings?err=channels`,
-      fields: { channel: "nope" },
-    },
-  },
-  {
-    no: "S6",
-    area: "command channels (allow-list remove)",
-    template: "/g/:guildId/settings/command-channels/remove",
-    method: "POST",
-    tier: "admin",
-    slash: "/setcommandchannel remove → removeAllowedCommandChannel (src/features/commandChannels/index.js:87)",
-    helpers: ["removeAllowedCommandChannel"],
-    action: "command_channels.remove",
-    targetType: "channel",
-    targetId: CH_CMD,
-    mirror: true,
-    fields: { channel: CH_CMD },
-    prepare: () => api.addAllowedCommandChannel(GUILD_A, CH_CMD),
-    details: D({ channel_id: CH_CMD }),
-    okLocation: `/g/${GUILD_A}/settings?ok=channels`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/settings?err=channels`,
-      fields: { channel: "nope" },
-    },
-  },
-
-  // ---- Staff & roles (subtask 25) — §8.6 "Staff & roles" row = Admin -------
-  {
-    no: "R1",
-    area: "staff roles (add)",
-    template: "/g/:guildId/staff/role/add",
-    method: "POST",
-    tier: "admin",
-    slash: "/staff role add → addStaffRole (src/features/staffRoles/index.js:185)",
-    helpers: ["addStaffRole"],
-    action: "staff.role_add",
-    targetType: "role",
-    targetId: ROLE_STAFF,
-    mirror: true,
-    fields: { role_id: ROLE_STAFF, level: "junior" },
-    prepare: () => api.removeStaffRole(GUILD_A, ROLE_STAFF),
-    details: D({ level: "junior", previous_level: null }),
-    okLocation: `/g/${GUILD_A}/staff`,
-    reject: {
-      status: 400,
-      bodyMatch: /invalid role id/i,
-      fields: { role_id: "not-a-snowflake", level: "junior" },
-    },
-  },
-  {
-    no: "R2",
-    area: "staff roles (remove)",
-    template: "/g/:guildId/staff/role/remove",
-    method: "POST",
-    tier: "admin",
-    slash: "/staff role remove → removeStaffRole (src/features/staffRoles/index.js:243)",
-    helpers: ["removeStaffRole"],
-    action: "staff.role_remove",
-    targetType: "role",
-    targetId: ROLE_STAFF,
-    mirror: true,
-    fields: { role_id: ROLE_STAFF },
-    prepare: () => api.addStaffRole(GUILD_A, ROLE_STAFF, "senior"),
-    details: D({ previous_level: "senior" }),
-    okLocation: `/g/${GUILD_A}/staff`,
-    reject: { status: 400, bodyMatch: /invalid role id/i, fields: {} },
-  },
-  {
-    no: "R3",
-    area: "staff roles (level change)",
-    template: "/g/:guildId/staff/role/setlevel",
-    method: "POST",
-    tier: "admin",
-    slash: "/staff role setlevel → setStaffRoleLevel (src/features/staffRoles/index.js:306)",
-    helpers: ["setStaffRoleLevel"],
-    action: "staff.role_setlevel",
-    targetType: "role",
-    targetId: ROLE_STAFF,
-    mirror: true,
-    fields: { role_id: ROLE_STAFF, level: "senior" },
-    prepare: () => {
-      api.removeStaffRole(GUILD_A, ROLE_STAFF);
-      api.addStaffRole(GUILD_A, ROLE_STAFF, "junior");
-    },
-    details: D({ previous_level: "junior", level: "senior" }),
-    okLocation: `/g/${GUILD_A}/staff`,
-    reject: {
-      status: 400,
-      bodyMatch: /invalid staff level/i,
-      fields: { role_id: ROLE_STAFF, level: "boss" },
-    },
-  },
-  {
-    no: "R4",
-    area: "level roles (set)",
-    template: "/g/:guildId/staff/levelrole/set",
-    method: "POST",
-    tier: "staff",
-    slash: "/leveltorole set → upsertLevelRole (src/features/levelRoles/index.js:77)",
-    helpers: ["upsertLevelRole"],
-    action: "level_roles.set",
-    targetType: "role",
-    targetId: ROLE_LEVEL,
-    mirror: true,
-    fields: { role_id: ROLE_LEVEL, level: "5", drop_days: "2" },
-    prepare: () => api.deleteLevelRole(GUILD_A, ROLE_LEVEL),
-    details: D({ level_required: 5, drop_grace_days: 2 }),
-    okLocation: `/g/${GUILD_A}/staff`,
-    reject: {
-      status: 400,
-      bodyMatch: /invalid number/i,
-      fields: { role_id: ROLE_LEVEL, level: "1.5", drop_days: "0" },
-    },
-  },
-  {
-    no: "R5",
-    area: "level roles (remove)",
-    template: "/g/:guildId/staff/levelrole/remove",
-    method: "POST",
-    tier: "staff",
-    slash: "/leveltorole remove → deleteLevelRole (src/features/levelRoles/index.js:113)",
-    helpers: ["deleteLevelRole"],
-    action: "level_roles.remove",
-    targetType: "role",
-    targetId: ROLE_LEVEL,
-    mirror: true,
-    fields: { role_id: ROLE_LEVEL },
-    prepare: () => api.upsertLevelRole(GUILD_A, ROLE_LEVEL, 3, 1),
-    details: D(null), // slash /leveltorole remove writes NO details
-    okLocation: `/g/${GUILD_A}/staff`,
-    reject: { status: 400, bodyMatch: /invalid role id/i, fields: { role_id: "junk" } },
-  },
-
-  // ---- Integrations (subtask 26) — §8.6 "Integrations" row, per-command ----
-  {
-    no: "I1",
-    area: "youtube (channel add)",
-    template: "/g/:guildId/integrations/youtube/add",
-    method: "POST",
-    tier: "staff",
-    slash: "/youtube add → addYoutubeChannel (src/features/youtube/index.js:211|559)",
-    helpers: ["addYoutubeChannel"],
-    action: "youtube.channel_add",
-    targetType: "youtube_channel",
-    targetId: YT_ID,
-    mirror: false,
-    fields: { url: YT_URL },
-    prepare: () => api.removeYoutubeChannel(GUILD_A, YT_ID),
-    details: D({ channel_name: `Channel ID: ${YT_ID}`, url: YT_URL }),
-    okLocation: `/g/${GUILD_A}/integrations?done=yt_added`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=missing_field`,
-      fields: {},
-    },
-  },
-  {
-    no: "I2",
-    area: "youtube (channel remove)",
-    template: "/g/:guildId/integrations/youtube/remove",
-    method: "POST",
-    tier: "staff",
-    slash: "/youtube remove → removeYoutubeChannel (src/features/youtube/index.js:283)",
-    helpers: ["removeYoutubeChannel"],
-    action: "youtube.channel_remove",
-    targetType: "youtube_channel",
-    targetId: YT_ID,
-    mirror: false,
-    fields: { channel_id: YT_ID },
-    prepare: () => {
-      api.removeYoutubeChannel(GUILD_A, YT_ID);
-      api.addYoutubeChannel(GUILD_A, YT_ID, "Gate Tube", "https://youtu.be/seed", "");
-    },
-    details: D({ channel_name: "Gate Tube" }),
-    okLocation: `/g/${GUILD_A}/integrations?done=yt_removed`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=missing_field`,
-      fields: {},
-    },
-  },
-  {
-    no: "I3",
-    area: "youtube (notify channel)",
-    template: "/g/:guildId/integrations/youtube/channel",
-    method: "POST",
-    tier: "staff",
-    slash: "/setyoutube channel → updateGuildSettings (src/features/youtube/index.js:384)",
-    helpers: ["updateGuildSettings"],
-    action: "youtube.notify_channel_set",
-    targetType: "channel",
-    targetId: CH_AUDIT,
-    mirror: false,
-    fields: { channel_id: CH_AUDIT },
-    prepare: () => api.updateGuildSettings(GUILD_A, { youtube_notification_channel_id: null }),
-    details: D({ previous_channel_id: null }),
-    okLocation: `/g/${GUILD_A}/integrations?done=yt_channel_set`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_channel_id`,
-      fields: { channel_id: "x" },
-    },
-  },
-  {
-    no: "I4",
-    area: "youtube (polling interval)",
-    template: "/g/:guildId/integrations/youtube/interval",
-    method: "POST",
-    tier: "staff",
-    slash: "/setyoutube interval → updateGuildSettings (src/features/youtube/index.js:418)",
-    helpers: ["updateGuildSettings"],
-    action: "youtube.polling_interval_set",
-    targetType: "guild",
-    targetId: GUILD_A,
-    mirror: false,
-    fields: { minutes: "15" },
-    // Column is INTEGER NOT NULL DEFAULT 5 — seed the DEFAULT (web never
-    // nulls an interval); details prove previous_minutes is the OLD value.
-    prepare: () => api.updateGuildSettings(GUILD_A, { youtube_polling_interval_minutes: 5 }),
-    details: D({ previous_minutes: 5, minutes: 15 }),
-    okLocation: `/g/${GUILD_A}/integrations?done=yt_interval_set`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_interval`,
-      fields: { minutes: "999" },
-    },
-  },
-  {
-    no: "I5",
-    area: "youtube (upload role)",
-    template: "/g/:guildId/integrations/youtube/uploadrole",
-    method: "POST",
-    tier: "staff",
-    slash: "/setyoutube uploadrole → updateGuildSettings (src/features/youtube/index.js:442)",
-    helpers: ["updateGuildSettings"],
-    action: "youtube.upload_role_set",
-    targetType: "role",
-    targetId: ROLE_UPLOAD,
-    mirror: false,
-    fields: { role_id: ROLE_UPLOAD },
-    prepare: () => api.updateGuildSettings(GUILD_A, { youtube_upload_role_id: null }),
-    details: D({ role_id: ROLE_UPLOAD, previous_role_id: null }),
-    okLocation: `/g/${GUILD_A}/integrations?done=yt_upload_role_set`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_role_id`,
-      fields: { role_id: "x" },
-    },
-  },
-  {
-    no: "I6",
-    area: "twitch (channel add)",
-    template: "/g/:guildId/integrations/twitch/add",
-    method: "POST",
-    tier: "staff",
-    slash: "/twitch add → addTwitchChannel (src/features/twitch/index.js:142)",
-    helpers: ["addTwitchChannel"],
-    action: "twitch.channel_add",
-    targetType: "twitch_channel",
-    targetId: TW_ID,
-    mirror: false,
-    fields: { login: TW_LOGIN },
-    prepare: () => api.removeTwitchChannel(GUILD_A, TW_LOGIN),
-    details: D({ login: TW_LOGIN, display_name: "Gate Stream" }),
-    okLocation: `/g/${GUILD_A}/integrations?done=tw_added`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=missing_field`,
-      fields: {},
-    },
-  },
-  {
-    no: "I7",
-    area: "twitch (channel remove)",
-    template: "/g/:guildId/integrations/twitch/remove",
-    method: "POST",
-    tier: "staff",
-    slash: "/twitch remove → removeTwitchChannel (src/features/twitch/index.js:189)",
-    helpers: ["removeTwitchChannel"],
-    action: "twitch.channel_remove",
-    targetType: "twitch_channel",
-    targetId: TW_ID,
-    mirror: false,
-    fields: { channel: TW_LOGIN },
-    prepare: () => api.addTwitchChannel(GUILD_A, TW_ID, TW_LOGIN, "Gate Stream", ""),
-    details: D({ login: TW_LOGIN, display_name: "Gate Stream" }),
-    okLocation: `/g/${GUILD_A}/integrations?done=tw_removed`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=missing_field`,
-      fields: {},
-    },
-  },
-  {
-    no: "I8",
-    area: "twitch (notify channel)",
-    template: "/g/:guildId/integrations/twitch/channel",
-    method: "POST",
-    tier: "staff",
-    slash: "/settwitch channel → updateGuildSettings (src/features/twitch/index.js:261)",
-    helpers: ["updateGuildSettings"],
-    action: "twitch.notify_channel_set",
-    targetType: "channel",
-    targetId: CH_MESSAGE,
-    mirror: false,
-    fields: { channel_id: CH_MESSAGE },
-    prepare: () => api.updateGuildSettings(GUILD_A, { twitch_notification_channel_id: null }),
-    details: D({ previous_channel_id: null }),
-    okLocation: `/g/${GUILD_A}/integrations?done=tw_channel_set`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_channel_id`,
-      fields: { channel_id: "x" },
-    },
-  },
-  {
-    no: "I9",
-    area: "twitch (notify role)",
-    template: "/g/:guildId/integrations/twitch/role",
-    method: "POST",
-    tier: "staff",
-    slash: "/settwitch role → updateGuildSettings (src/features/twitch/index.js:289)",
-    helpers: ["updateGuildSettings"],
-    action: "twitch.notify_role_set",
-    targetType: "role",
-    targetId: ROLE_TW,
-    mirror: false,
-    fields: { role_id: ROLE_TW },
-    prepare: () => api.updateGuildSettings(GUILD_A, { twitch_notify_role_id: null }),
-    details: D({ role_id: ROLE_TW, previous_role_id: null }),
-    okLocation: `/g/${GUILD_A}/integrations?done=tw_role_set`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_role_id`,
-      fields: { role_id: "x" },
-    },
-  },
-  {
-    no: "I10",
-    area: "twitch (polling interval)",
-    template: "/g/:guildId/integrations/twitch/interval",
-    method: "POST",
-    tier: "staff",
-    slash: "/settwitch interval → updateGuildSettings (src/features/twitch/index.js:319)",
-    helpers: ["updateGuildSettings"],
-    action: "twitch.polling_interval_set",
-    targetType: "guild",
-    targetId: GUILD_A,
-    mirror: false,
-    fields: { minutes: "20" },
-    // Column is INTEGER NOT NULL DEFAULT 2 — seed the DEFAULT.
-    prepare: () => api.updateGuildSettings(GUILD_A, { twitch_polling_interval_minutes: 2 }),
-    details: D({ previous_minutes: 2, minutes: 20 }),
-    okLocation: `/g/${GUILD_A}/integrations?done=tw_interval_set`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_interval`,
-      fields: { minutes: "0" },
-    },
-  },
-  {
-    no: "I11",
-    area: "reaction roles (panel create)",
-    template: "/g/:guildId/integrations/reaction-roles/panel/create",
-    method: "POST",
-    tier: "staff",
-    slash: "/reactionrole panel create → createReactionRolePanel (src/features/reactionRoles/index.js:268)",
-    helpers: ["createReactionRolePanel"],
-    action: "reaction_roles.panel_create",
-    targetType: "reaction_role_panel",
-    targetId: PANEL_MSG,
-    mirror: false,
-    fields: { channel_id: CH_MESSAGE, title: "Gate Panel", description: "react to get roles" },
-    prepare: () => api.deleteReactionRolePanel(GUILD_A, PANEL_MSG),
-    details: D({ channel_id: CH_MESSAGE, title: "Gate Panel" }),
-    okLocation: `/g/${GUILD_A}/integrations?done=rr_panel_created`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_channel_id`,
-      fields: { title: "x" },
-    },
-  },
-  {
-    no: "I12",
-    area: "reaction roles (panel delete)",
-    template: "/g/:guildId/integrations/reaction-roles/panel/delete",
-    method: "POST",
-    tier: "staff",
-    slash: "/reactionrole panel delete → deleteReactionRolePanel (src/features/reactionRoles/index.js:427)",
-    helpers: ["deleteReactionRolePanel"],
-    action: "reaction_roles.panel_delete",
-    targetType: "reaction_role_panel",
-    targetId: PANEL_MSG,
-    mirror: false,
-    fields: { message_id: PANEL_MSG },
-    prepare: () => {
-      api.deleteReactionRolePanel(GUILD_A, PANEL_MSG);
-      api.createReactionRolePanel(GUILD_A, CH_MESSAGE, PANEL_MSG, "Gate Panel", "d");
-    },
-    details: D({ channel_id: CH_MESSAGE }),
-    okLocation: `/g/${GUILD_A}/integrations?done=rr_panel_deleted`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_message_id`,
-      fields: { message_id: "x".repeat(21) },
-    },
-  },
-  {
-    no: "I13",
-    area: "reaction roles (option add)",
-    template: "/g/:guildId/integrations/reaction-roles/option/add",
-    method: "POST",
-    tier: "staff",
-    slash: "/reactionrole option add → upsertReactionRoleOption (src/features/reactionRoles/service.js:434|942)",
-    helpers: ["upsertReactionRoleOption"],
-    action: "reaction_roles.option_add",
-    targetType: "reaction_role_panel",
-    targetId: PANEL_MSG,
-    mirror: false,
-    fields: { message_id: PANEL_MSG, role_id: ROLE_STAFF, emoji: "👍", level: "0" },
-    prepare: () => {
-      api.deleteReactionRolePanel(GUILD_A, PANEL_MSG);
-      api.createReactionRolePanel(GUILD_A, CH_MESSAGE, PANEL_MSG, "Gate Panel", "d");
-    },
-    details: D({ role_id: ROLE_STAFF, emoji: "👍", min_level: 0, removable: 1 }),
-    okLocation: `/g/${GUILD_A}/integrations?done=rr_option_added`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=rr_emoji_invalid`,
-      fields: { message_id: PANEL_MSG, role_id: ROLE_STAFF, emoji: "<broken>" },
-    },
-  },
-  {
-    no: "I14",
-    area: "reaction roles (option remove)",
-    template: "/g/:guildId/integrations/reaction-roles/option/remove",
-    method: "POST",
-    tier: "staff",
-    slash: "/reactionrole option remove → deleteReactionRoleOption (src/features/reactionRoles/service.js:981)",
-    helpers: ["deleteReactionRoleOption"],
-    action: "reaction_roles.option_remove",
-    targetType: "reaction_role_panel",
-    targetId: PANEL_MSG,
-    mirror: false,
-    fields: { message_id: PANEL_MSG, emoji: "👍" },
-    prepare: () => {
-      api.deleteReactionRolePanel(GUILD_A, PANEL_MSG);
-      api.createReactionRolePanel(GUILD_A, CH_MESSAGE, PANEL_MSG, "Gate Panel", "d");
-      api.upsertReactionRoleOption(GUILD_A, PANEL_MSG, "👍", "👍", ROLE_STAFF, 0, true);
-    },
-    details: D({ emoji: "👍" }),
-    okLocation: `/g/${GUILD_A}/integrations?done=rr_option_removed`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=rr_emoji_invalid`,
-      fields: { message_id: PANEL_MSG, emoji: "<broken>" },
-    },
-  },
-  {
-    no: "I15",
-    area: "event reminders (channel set — DELTA-A: setchannel ONLY)",
-    template: "/g/:guildId/integrations/event-reminders/channel",
-    method: "POST",
-    tier: "staff",
-    slash: "/eventreminder setchannel → updateGuildSettings (src/features/eventReminders/index.js:376)",
-    helpers: ["updateGuildSettings"],
-    action: "event_reminders.channel_set",
-    targetType: "guild",
-    targetId: GUILD_A,
-    mirror: false,
-    fields: { channel_id: CH_AUDIT },
-    prepare: () => api.updateGuildSettings(GUILD_A, { event_reminder_channel_id: null }),
-    details: D({ channel_id: CH_AUDIT }),
-    okLocation: `/g/${GUILD_A}/integrations?done=er_channel_set`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_channel_id`,
-      fields: { channel_id: "x" },
-    },
-  },
-  {
-    no: "I16",
-    area: "honeypot (channel add)",
-    template: "/g/:guildId/integrations/honeypot/channel/add",
-    method: "POST",
-    tier: "staff",
-    slash: "/honeypot channel add → addHoneypotChannel (src/features/honeypot/index.js:568)",
-    helpers: ["addHoneypotChannel"],
-    action: "honeypot.channel_add",
-    targetType: "channel",
-    targetId: CH_HONEY,
-    mirror: false,
-    fields: { channel_id: CH_HONEY },
-    prepare: () => api.removeHoneypotChannel(GUILD_A, CH_HONEY),
-    details: D(null),
-    okLocation: `/g/${GUILD_A}/integrations?done=hp_channel_added`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_channel_id`,
-      fields: { channel_id: "x" },
-    },
-  },
-  {
-    no: "I17",
-    area: "honeypot (channel del)",
-    template: "/g/:guildId/integrations/honeypot/channel/del",
-    method: "POST",
-    tier: "staff",
-    slash: "/honeypot channel del → removeHoneypotChannel (src/features/honeypot/index.js:598)",
-    helpers: ["removeHoneypotChannel"],
-    action: "honeypot.channel_del",
-    targetType: "channel",
-    targetId: CH_HONEY,
-    mirror: false,
-    fields: { channel_id: CH_HONEY },
-    prepare: () => api.addHoneypotChannel(GUILD_A, CH_HONEY),
-    details: D(null),
-    okLocation: `/g/${GUILD_A}/integrations?done=hp_channel_removed`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_channel_id`,
-      fields: { channel_id: "x" },
-    },
-  },
-  {
-    no: "I18",
-    area: "honeypot (ban role add)",
-    template: "/g/:guildId/integrations/honeypot/banrole/add",
-    method: "POST",
-    tier: "staff",
-    slash: "/honeypot banrole add → addHoneypotBanRole (src/features/honeypot/index.js:689)",
-    helpers: ["addHoneypotBanRole"],
-    action: "honeypot.ban_role_add",
-    targetType: "role",
-    targetId: ROLE_BAN,
-    mirror: false,
-    fields: { role_id: ROLE_BAN },
-    prepare: () => api.removeHoneypotBanRole(GUILD_A, ROLE_BAN),
-    details: D(null),
-    okLocation: `/g/${GUILD_A}/integrations?done=hp_banrole_added`,
-    reject: {
-      // @everyone twin (role id === guild id) — arithmetic refusal, zero writes
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=hp_role_everyone`,
-      fields: { role_id: GUILD_A },
-    },
-  },
-  {
-    no: "I19",
-    area: "honeypot (ban role del)",
-    template: "/g/:guildId/integrations/honeypot/banrole/del",
-    method: "POST",
-    tier: "staff",
-    slash: "/honeypot banrole del → removeHoneypotBanRole (src/features/honeypot/index.js:715)",
-    helpers: ["removeHoneypotBanRole"],
-    action: "honeypot.ban_role_del",
-    targetType: "role",
-    targetId: ROLE_BAN,
-    mirror: false,
-    fields: { role_id: ROLE_BAN },
-    prepare: () => api.addHoneypotBanRole(GUILD_A, ROLE_BAN),
-    details: D(null),
-    okLocation: `/g/${GUILD_A}/integrations?done=hp_banrole_removed`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_role_id`,
-      fields: { role_id: "x" },
-    },
-  },
-  {
-    no: "H1",
-    area: "honeypot exempt add — DELTA-C (maps onto staff.role_add, via=honeypot.exempt)",
-    template: "/g/:guildId/integrations/honeypot/exempt/add",
-    method: "POST",
-    tier: "admin",
-    slash: "/honeypot exempt add → addStaffRole alias (src/features/honeypot/index.js:758)",
-    helpers: ["addStaffRole"],
-    action: "staff.role_add",
-    targetType: "role",
-    targetId: ROLE_EXEMPT,
-    mirror: false,
-    fields: { role_id: ROLE_EXEMPT },
-    prepare: () => api.removeStaffRole(GUILD_A, ROLE_EXEMPT),
-    details: D({ via: "honeypot.exempt" }),
-    okLocation: `/g/${GUILD_A}/integrations?done=hp_exempt_added`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_role_id`,
-      fields: { role_id: "x" },
-    },
-  },
-  {
-    no: "H2",
-    area: "honeypot exempt del — DELTA-C (maps onto staff.role_remove, via=honeypot.exempt)",
-    template: "/g/:guildId/integrations/honeypot/exempt/del",
-    method: "POST",
-    tier: "admin",
-    slash: "/honeypot exempt del → removeStaffRole alias (src/features/honeypot/index.js:783)",
-    helpers: ["removeStaffRole"],
-    action: "staff.role_remove",
-    targetType: "role",
-    targetId: ROLE_EXEMPT,
-    mirror: false,
-    fields: { role_id: ROLE_EXEMPT },
-    prepare: () => api.addStaffRole(GUILD_A, ROLE_EXEMPT, "senior"),
-    details: D({ via: "honeypot.exempt" }),
-    okLocation: `/g/${GUILD_A}/integrations?done=hp_exempt_removed`,
-    reject: {
-      status: 302,
-      location: `/g/${GUILD_A}/integrations?error=invalid_role_id`,
-      fields: { role_id: "x" },
-    },
-  },
-  // ---- XP grant (subtask 28, Phase 3) — §8.6 "XP" row ADMIN mutate --------
-  {
-    no: "X1",
-    area: "xp (grant — Phase 3 action)",
-    template: "/g/:guildId/xp/grant",
-    method: "POST",
-    tier: "admin",
-    slash: "/grantxp → awardXp → addXp+logActivity (src/features/xp/index.js:448, src/services/awardXp.js:35-36)",
-    // addXp is the slash's OWN write, executed INSIDE the shared awardXp
-    // service — recording it here proves the web path runs THROUGH the
-    // service (the route never touches the DB write helpers itself).
-    helpers: ["addXp"],
-    action: "xp.grant",
-    targetType: "user",
-    targetId: USER_GRANT,
-    mirror: true, // the slash posts logConfigChange "XP granted" (index.js:473)
-    fields: { user_id: USER_GRANT, amount: "250", reason: "gate parity" },
-    // Deterministic baseline: XP 0 → the audit's before/after is static.
-    prepare: () => api.setXp(GUILD_A, USER_GRANT, 0),
-    details: D({ amount: 250, before_xp: 0, after_xp: 250, reason: "gate parity" }),
-    okLocation: `/g/${GUILD_A}/xp/grant?done=xp_granted`,
-    reject: {
-      // amount < 1 — the slash's explicit guard (index.js:439)
-      status: 302,
-      location: `/g/${GUILD_A}/xp/grant?error=invalid_amount`,
-      fields: { user_id: USER_GRANT, amount: "0" },
-    },
-  },
-  // ---- Moderation (subtask 29, Phase 3) — §8.6 "Moderation" rows, STAFF ----
-  // Routing DELTA (documented in routes/moderation.js): the void mutation
-  // carries the warning number on the BODY (`warning_number`), not a `:id`
-  // path segment — the methodGate matches mutation templates with :guildId
-  // as the ONLY param (app.js matchesMutationPath). Same contract.
-  {
-    no: "W1",
-    area: "warnings (issue — Phase 3 action)",
-    template: "/g/:guildId/moderation/warnings/issue",
-    method: "POST",
-    tier: "staff",
-    slash: "/warn add → createWarning (src/features/warnings/index.js:458, audit :492)",
-    helpers: ["createWarning"],
-    action: "warnings.add",
-    targetType: "user",
-    targetId: USER_WARN_SUBJECT,
-    mirror: true, // kind "warn" — the slash's logWarnEvent (warn-log channel)
-    fields: { user_id: USER_WARN_SUBJECT, reason: "gate warn reason" },
-    // Deterministic details: AUTOINCREMENT reset ⇒ id/number 1; guild default
-    // expiry 0 ⇒ expires_at NULL (the omitted-expires_days ≡ slash path).
-    prepare: () => {
-      purgeAutoincrement("warnings");
-      api.updateGuildSettings(GUILD_A, { warn_expiry_days: 0 });
-    },
-    details: D({
-      warning_id: 1,
-      warning_number: 1,
-      reason: "gate warn reason",
-      expires_at: null,
-      silent: false,
-    }),
-    okLocation: `/g/${GUILD_A}/warnings?done=warn_issued`,
-    reject: {
-      // malformed subject id — the route pre-validates, zero facade writes
-      status: 302,
-      location: `/g/${GUILD_A}/warnings?error=invalid_user`,
-      fields: { user_id: "x", reason: "gate warn reason" },
-    },
-  },
-  {
-    no: "W2",
-    area: "warnings (void — Phase 3 action)",
-    template: "/g/:guildId/moderation/warnings/void",
-    method: "POST",
-    tier: "staff",
-    slash: "/warn void → voidWarning (src/features/warnings/index.js:747, audit :781)",
-    helpers: ["voidWarning"],
-    action: "warnings.void",
-    targetType: "warning",
-    targetId: "1", // seeded W-1 rowid — static via purgeAutoincrement reset
-    mirror: true, // kind "warn" — the slash's logWarnEvent again
-    fields: { warning_number: "1", reason: "gate void reason" },
-    // Re-seed EXACTLY one active warning (number 1, id 1) under the subject.
-    prepare: () => {
-      purgeAutoincrement("warnings");
-      api.createWarning({
-        guildId: GUILD_A,
-        userId: USER_WARN_SUBJECT,
-        issuerId: USER_ADMIN,
-        reason: "seeded warning to void",
-        expiresDays: 0,
-      });
-    },
-    details: D({
-      warning_number: 1,
-      subject_user_id: USER_WARN_SUBJECT,
-      void_reason: "gate void reason",
-    }),
-    okLocation: `/g/${GUILD_A}/warnings?done=warn_voided`,
-    reject: {
-      // warning_number must be a positive integer — pre-validated refusal
-      status: 302,
-      location: `/g/${GUILD_A}/warnings?error=invalid_warning_number`,
-      fields: { warning_number: "x", reason: "gate void reason" },
-    },
-  },
-  {
-    no: "W3",
-    area: "staff notes (add — Phase 3 action)",
-    template: "/g/:guildId/moderation/notes",
-    method: "POST",
-    tier: "staff",
-    slash: "/note add → createStaffNote (src/features/staffNotes/index.js:277, audit :348)",
-    helpers: ["createStaffNote"],
-    action: "notes.add",
-    targetType: "note",
-    targetId: "1", // seeded note_number/id 1 via purgeAutoincrement reset
-    mirror: true, // default kind — the slash's logConfigChange audit channel
-    fields: { user_id: USER_WARN_SUBJECT, content: "gate note text" },
-    prepare: () => purgeAutoincrement("staff_notes"),
-    // snippetNote(shortText, 500) is the identity here — slash detail shape
-    // verbatim (features/staffNotes/index.js:348).
-    details: D({
-      note_number: 1,
-      subject_user_id: USER_WARN_SUBJECT,
-      content: "gate note text",
-    }),
-    okLocation: `/g/${GUILD_A}/notes?done=note_added`,
-    reject: {
-      // content > MAX_NOTE_CONTENT (2000) — the slash's maxLength option twin
-      status: 302,
-      location: `/g/${GUILD_A}/notes?error=content_too_long`,
-      fields: { user_id: USER_WARN_SUBJECT, content: "x".repeat(2001) },
-    },
-  },
-  // ---- Tickets (subtask 30, Phase 3) — §8.6 "Tickets" row, SENIOR only -----
-  // Documented TIER delta (routes/ticketActions.js header delta (1)): the
-  // slash gates claim/close/summarize behind requireStaff (staff suffices);
-  // §8.6 assigns the WEB surface "Senior: claim/close/summary regen" — the
-  // rows below carry tier "senior" and the senior wrong-tier branch proves
-  // junior is 403'd (STRICTENING only; junior read/transcript access is
-  // untouched — Phase 0c surfaces are unmutated by this module).
-  // Ticket identity is the DB row id on the BODY (channel-less seed rows:
-  // slash resolves tickets by CHANNEL, the web id rides the form — the
-  // audit targetId is String(ticket.id) on BOTH transports).
-  {
-    no: "T1",
-    area: "tickets (claim — Phase 3 action)",
-    template: "/g/:guildId/tickets/claim",
-    method: "POST",
-    tier: "senior",
-    slash: "/ticket claim → claimTicket (src/features/tickets/index.js:1650, audit :1651)",
-    helpers: ["claimTicket"],
-    action: "tickets.claim",
-    targetType: "ticket",
-    targetId: "1", // re-seeded ticket id 1 via purgeAutoincrement
-    mirror: false, // the slash claim handler posts NO channel embed
-    fields: { ticket_id: "1" },
-    prepare: () => {
-      purgeAutoincrement("tickets");
-      api.createTicket({
-        guildId: GUILD_A,
-        creatorUserId: "560000000000000301", // cache-absent requester (fake)
-        channelId: null,
-        reason: "gate claim seed",
-      });
-    },
-    details: D({ ticket_number: 1, previous_owner: null, staff_owner_id: USER_SENIOR }),
-    okLocation: `/g/${GUILD_A}/tickets?done=ticket_claimed`,
-    reject: {
-      // ticket_id field shape — refused BEFORE any facade call
-      status: 302,
-      location: `/g/${GUILD_A}/tickets?error=invalid_ticket_id`,
-      fields: { ticket_id: "x" },
-    },
-  },
-  {
-    no: "T2",
-    area: "tickets (close — Phase 3 action)",
-    template: "/g/:guildId/tickets/close",
-    method: "POST",
-    tier: "senior",
-    slash: "/ticket close → softCloseTicket → markTicketClosed (src/features/tickets/index.js:1401, features/tickets/close.js, audit :1410)",
-    // markTicketClosed is recorded from INSIDE the slash's OWN close helper
-    // — the deep-parity evidence. The seed row has NO channel: the cache-only
-    // seam hands the helper a null channel = the slash service's OWN
-    // degraded path (DB transition first, permission/notice skipped as
-    // warnings) — the flash claims only the transition, which truly ran.
-    helpers: ["markTicketClosed"],
-    action: "tickets.close",
-    targetType: "ticket",
-    targetId: "1",
-    mirror: false, // the slash close posts NO logConfigChange (its staff-note
-    // add-on is NOT part of the web surface — documented delta (4))
-    fields: { ticket_id: "1", reason: "gate close reason" },
-    prepare: () => {
-      purgeAutoincrement("tickets");
-      api.createTicket({
-        guildId: GUILD_A,
-        creatorUserId: "560000000000000301",
-        channelId: null,
-        reason: "gate close seed",
-      });
-    },
-    details: D({ ticket_number: 1, close_reason: "gate close reason", status: "closed" }),
-    okLocation: `/g/${GUILD_A}/tickets?done=ticket_closed`,
-    reject: {
-      // close-reason bound (MAX_TICKET_REASON = 1000) pre-validated — the
-      // helper is NEVER invoked
-      status: 302,
-      location: `/g/${GUILD_A}/tickets?error=close_reason_too_long`,
-      fields: { ticket_id: "1", reason: "x".repeat(1001) },
-    },
-  },
-  {
-    no: "T3",
-    area: "tickets (summary regen — Phase 3 action)",
-    template: "/g/:guildId/tickets/summarize",
-    method: "POST",
-    tier: "senior",
-    slash: "/ticket summarize → summarizeTicket (src/features/tickets/index.js:2143, audit :2145)",
-    // summarizeTicket sits ABOVE the facade (service seam, like awardXp /
-    // softCloseTicket) — the gate mounts a deterministic offline fake via
-    // createWebApp's ticketActions option below; on-demand regen persists
-    // NOTHING on either transport, so the only recorded write is the audit.
-    helpers: [],
-    action: "tickets.summarize",
-    targetType: "ticket",
-    targetId: "1",
-    mirror: false, // the slash summarize posts NO channel embed
-    fields: { ticket_id: "1" },
-    prepare: () => {
-      purgeAutoincrement("tickets");
-      rawDb.prepare("DELETE FROM ticket_messages").run(); // id 1 re-usable
-      api.createTicket({
-        guildId: GUILD_A,
-        creatorUserId: "560000000000000301",
-        channelId: null,
-        reason: "gate regen seed",
-      });
-      api.saveTicketMessages(1, [
-        { message_id: "9001", author_id: "560000000000000301", content: "one", sent_at: 1 },
-        { message_id: "9002", author_id: USER_SENIOR, content: "two", sent_at: 2 },
-      ]);
-    },
-    details: D({ ticket_number: 1, source: "fallback", message_count: 2 }),
-    okLocation: `/g/${GUILD_A}/tickets?done=summary_fallback`,
-    reject: {
-      // leading-zero id shape — parse-level refusal, zero facade calls
-      status: 302,
-      location: `/g/${GUILD_A}/tickets?error=invalid_ticket_id`,
-      fields: { ticket_id: "01" },
-    },
-  },
-  // ---- Command visibility (subtask 31, Phase 3) — §8.6 "Command visibility:
-  // sync status + trigger" row; the TRIGGER is ADMIN (slash /staff
-  // syncpermissions is ManageGuild-ONLY per AGENTS.md §4 — no delta). The
-  // sync itself runs behind the syncActions seam (the T3 doctrine): the gate
-  // fakes ONLY the outbound Discord leg of the SHARED core
-  // (runCommandVisibilitySync); every guard around it (tier ladder, CSRF,
-  // return-target whitelist, fail-closed audit, PRG slugs) is REAL here. The
-  // real core — real token store, real REST sequence, audit parity vs slash —
-  // is pinned end-to-end in test/web-visibility-sync.test.js (patched
-  // global.fetch, zero network).
-  {
-    no: "C1",
-    area: "command visibility (sync trigger — Phase 3 action)",
-    template: "/g/:guildId/commands/sync",
-    method: "POST",
-    tier: "admin",
-    slash: "/staff syncpermissions → handleSyncPermissions → runCommandVisibilitySync → applyGuildCommandPermissions (src/features/staffRoles/index.js + features/commandPermissions/syncTrigger.js, audit via recordSlashAudit)",
-    helpers: [], // the web twin touches NO facade helper besides the audit (seam replaces the Discord leg only; even the real core would list none)
-    action: "staff.sync_permissions",
-    targetType: "guild",
-    targetId: GUILD_A,
-    mirror: false, // the slash syncpermissions posts NO logConfigChange embed — parity = mirror nothing
-    fields: { return: "staff" },
-    prepare: () => {},
-    details: D({ role_count: 2, commands_updated: 3 }),
-    okLocation: `/g/${GUILD_A}/staff?done=sync_completed`,
-    reject: {
-      // `return` field whitelist — refused BEFORE the service runs, and the
-      // redirect falls back to the DEFAULT surface (never the submitted value).
-      status: 302,
-      location: `/g/${GUILD_A}/commands?error=invalid_return`,
-      fields: { return: "<bogus>" },
-    },
-  },
-];
+// THE PARITY MATRIX — the §8.8 Phase-2 checklist artifact — lives in
+// test/helpers/mutation-ladder.js (buildPhase2Rows), shared VERBATIM with
+// the Phase-3 program gate. Row columns (full legend in the helper):
+// template/method/tier (route identity + required tier per AGENTS.md §4),
+// slash (the mirrored slash command + the facade helper ITS handler calls,
+// file:line evidence), helpers (the SAME helper names the web path MUST
+// record on the counting proxy — §8.6 service layer), action (EXACT
+// admin_audit action string), mirror (§8.1-7 channel-mirror expectation),
+// okLocation (fixed PRG target), fields/prepare/reject (deterministic happy
+// payload, state re-seed, validation-rejection probe — ZERO writes, ZERO
+// audits). Cross-checked against the RUNTIME registry in suite A BOTH ways.
+const PARITY = ladder.buildPhase2Rows({ api, purgeAutoincrement });
 
 // Rows flip to "PASS" only when the positive-path test completed (the full
 // ladder ran for the row before it). Printed by the suite-G report.
@@ -1459,31 +283,10 @@ for (const row of PARITY) row.status = "PENDING";
 
 /**
  * AGENTS.md §4 tier classification DERIVED FROM THE TEMPLATE (no source
- * greps, no table lookup): staff-role mutations + command-channel add/remove
- * + honeypot exempt + the Phase-3 xp grant (ManageGuild-only /grantxp twin)
- * are admin; every other Phase-2 surface is staff. Cross-checked against the
- * table AND runtime behavior.
+ * greps, no table lookup) — shared with the Phase-3 program gate via the
+ * helper. Cross-checked against the table AND runtime ladder behavior.
  */
-function expectedTierFor(template) {
-  if (
-    template.startsWith("/g/:guildId/staff/role/") ||
-    template.startsWith("/g/:guildId/settings/command-channels/") ||
-    template.startsWith("/g/:guildId/integrations/honeypot/exempt/") ||
-    template.startsWith("/g/:guildId/xp/grant") ||
-    // /staff syncpermissions is ManageGuild-ONLY (AGENTS.md §4) — the web
-    // twin (subtask 31) inherits ADMIN with zero delta.
-    template.startsWith("/g/:guildId/commands/sync")
-  ) {
-    return "admin";
-  }
-  // §8.6 "Tickets | Senior: claim/close/summary regen" (subtask 30) — the
-  // web ticket mutations are SENIOR (a documented tightening vs the slash's
-  // requireStaff gate; see routes/ticketActions.js header delta (1)).
-  if (template.startsWith("/g/:guildId/tickets/")) {
-    return "senior";
-  }
-  return "staff";
-}
+const expectedTierFor = ladder.expectedTierFor;
 
 // ---------------------------------------------------------------------------
 // Synchronous boot: env → tier rows → sessions → recorder+mirror spy → APP.
@@ -1528,7 +331,10 @@ mkSession("senior", USER_SENIOR);
 mkSession("plain", USER_PLAIN);
 mkSession("stranger", USER_STRANGER);
 
-installMirrorSpy();
+// The mirror spy is ALREADY installed (module load, shared helper) — the
+// two posters are swapped and a truthy fake audit client is bound BEFORE
+// createWebApp runs below, same ordering guarantee as the pre-extraction
+// boot sequence.
 
 // Fresh REAL settings-data snapshot (cache starts cold; mutations invalidate).
 const settingsData = createSettingsData();
@@ -1636,11 +442,7 @@ function purgeAutoincrement(table) {
   }
 }
 
-function writeCalls(log) {
-  return log.filter((c) => WRITE_HELPERS.has(c.name));
-}
-
-const concretePath = (template, guild) => template.replace(":guildId", guild);
+const concretePath = ladder.concretePath;
 
 /** Per-row ladder evidence collector for the runtime tier classification. */
 const observed = {}; // template -> { anon, stranger, plain, cross, junior, senior }
@@ -1769,272 +571,36 @@ describe("B. per-mutation acceptance gate — ladder + service + audit + fail-cl
         return;
       }
 
-      const path = concretePath(row.template, GUILD_A);
-      const crossPath = concretePath(row.template, GUILD_CROSS);
-      // Senior-tier rows (ticket actions, subtask 30) run the positive path
-      // AS the senior user; below-staff tiers keep the junior viewer.
-      const viewer =
-        row.tier === "admin" ? "admin" : row.tier === "senior" ? "senior" : "staff";
-      const viewerUser =
-        row.tier === "admin"
-          ? USER_ADMIN
-          : row.tier === "senior"
-            ? USER_SENIOR
-            : USER_STAFF;
-
-      it("anon POST ⇒ 302 /auth/login?guild=<id> (guildScope answers before anything mutates)", async () => {
-        await harness.runOutcome({
-          base,
-          url: path,
-          method: "POST",
-          cookieId: null,
-          expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
-        });
-        evidence(row.template).anon = 302;
+      // THE LADDER — the shared harness's steps (extracted VERBATIM from
+      // this suite by subtask 32; step names + assertions unchanged). The
+      // row status flips only AFTER the positive step completed (the row's
+      // ladder ran fully before it, same ordering guarantee as before).
+      const steps = ladder.buildLadderSteps(row, {
+        get base() {
+          return base; // ephemeral server URL bound in suite A's before()
+        },
+        post,
+        harness,
+        cookieOf,
+        csrfOf,
+        recorder,
+        startWindow,
+        stopWindow,
+        writeCalls,
+        webAuditCount,
+        webAuditRows,
+        mirrorLog: () => mirrorSpy.log,
+        observe: (template, key, status) => {
+          (observed[template] ||= {})[key] = status;
+        },
+        tick,
       });
-
-      it("stranger session + VALID csrf ⇒ generic 404 bytes (never 403, §8.6)", async () => {
-        const { res, body } = await post(path, {
-          cookie: cookieOf.stranger,
-          fields: { ...row.fields, _csrf: csrfOf.stranger },
-        });
-        assert.equal(res.status, 404);
-        assert.equal(body, "Not found");
-        assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
-        evidence(row.template).stranger = 404;
-      });
-
-      it("in-guild plain member + VALID csrf ⇒ generic 404 (no-enumeration doctrine)", async () => {
-        const { res, body } = await post(path, {
-          cookie: cookieOf.plain,
-          fields: { ...row.fields, _csrf: csrfOf.plain },
-        });
-        assert.equal(res.status, 404);
-        assert.equal(body, "Not found");
-        evidence(row.template).plain = 404;
-      });
-
-      it("cross-guild + VALID csrf ⇒ the SAME generic 404 bytes (never 403/302)", async () => {
-        const { res, body } = await post(crossPath, {
-          cookie: cookieOf[viewer],
-          fields: { ...row.fields, _csrf: csrfOf[viewer] },
-        });
-        assert.equal(res.status, 404);
-        assert.equal(body, "Not found");
-        evidence(row.template).cross = 404;
-      });
-
-      if (row.tier === "admin") {
-        it("wrong-tier: junior AND senior get the FIXED 403, no write, no audit (AGENTS.md §4)", async () => {
-          const before = webAuditCount();
-          for (const key of ["staff", "senior"]) {
-            startWindow();
-            const { res, body } = await post(path, {
-              cookie: cookieOf[key],
-              fields: { ...row.fields, _csrf: csrfOf[key] },
-            });
-            const calls = stopWindow();
-            assert.equal(res.status, 403, `${key} on admin-tier ${row.template}`);
-            assert.equal(body, "Forbidden");
-            assert.equal(res.headers.get("cache-control"), "no-store");
-            assert.deepEqual(writeCalls(calls), [], `${key} denial wrote nothing`);
-            evidence(row.template)[key === "staff" ? "junior" : "senior"] = 403;
-          }
-          assert.equal(webAuditCount(), before, "tier denial audited nothing");
-        });
-      } else if (row.tier === "senior") {
-        it("wrong-tier (senior surface): junior gets the FIXED 403 with ZERO writes/audits; admin is NOT tier-denied (§8.6 Tickets row)", async () => {
-          // The documented tightening vs slash requireStaff: the WEB ticket
-          // mutations are senior-only; junior keeps the read surfaces and
-          // loses these writes (asserted HERE, per mutation).
-          const before = webAuditCount();
-          startWindow();
-          const { res, body } = await post(path, {
-            cookie: cookieOf.staff,
-            fields: { ...row.fields, _csrf: csrfOf.staff },
-          });
-          const calls = stopWindow();
-          assert.equal(res.status, 403, `junior on senior-tier ${row.template}`);
-          assert.equal(body, "Forbidden");
-          assert.equal(res.headers.get("cache-control"), "no-store");
-          assert.deepEqual(writeCalls(calls), [], "junior denial wrote nothing");
-          assert.equal(webAuditCount(), before, "junior denial audited nothing");
-          evidence(row.template).junior = 403;
-          const admin = await post(path, {
-            cookie: cookieOf.admin,
-            fields: { ...row.fields, _csrf: csrfOf.admin },
-          });
-          assert.notEqual(
-            admin.res.status,
-            403,
-            `admin must not be tier-denied on senior-tier ${row.template}`
-          );
-        });
-      } else {
-        it("staff tier: senior is NOT tier-denied (403 ladder is vacuous below staff; §8.6)", async () => {
-          // junior's pass-through is proven by the positive path below
-          // (junior is the viewer there); senior proves the full ladder.
-          const { res } = await post(path, {
-            cookie: cookieOf.senior,
-            fields: { ...row.fields, _csrf: csrfOf.senior },
-          });
-          assert.notEqual(
-            res.status,
-            403,
-            `senior must not be 403 on staff-tier ${row.template}`
-          );
-          evidence(row.template).senior = res.status;
+      for (const step of steps) {
+        it(step.name, async () => {
+          await step.fn();
+          if (step.kind === "positive") row.status = "PASS";
         });
       }
-
-      it("missing _csrf ⇒ 403 'Forbidden'; zero facade calls; zero audit", async () => {
-        const before = webAuditCount();
-        startWindow();
-        const { res, body } = await post(path, {
-          cookie: cookieOf[viewer],
-          fields: { ...row.fields },
-        });
-        const calls = stopWindow();
-        assert.equal(res.status, 403);
-        assert.equal(body, "Forbidden");
-        assert.equal(webAuditCount(), before);
-        assert.deepEqual(calls, [], "CSRF denial never reached the service layer");
-      });
-
-      it("tampered _csrf ⇒ 403; zero facade calls; zero audit", async () => {
-        const before = webAuditCount();
-        startWindow();
-        const { res } = await post(path, {
-          cookie: cookieOf[viewer],
-          fields: { ...row.fields, _csrf: "f".repeat(64) },
-        });
-        const calls = stopWindow();
-        assert.equal(res.status, 403);
-        assert.equal(webAuditCount(), before);
-        assert.deepEqual(calls, []);
-      });
-
-      it(`POSITIVE (identical body, valid csrf ⇒ replay passes): 302 PRG + helpers [${row.helpers.join(", ")}] + exactly ONE audit row '${row.action}'`, async () => {
-        row.prepare();
-        const before = webAuditCount();
-        mirrorSpy.log.length = 0;
-        startWindow();
-        const { res, body, location } = await post(path, {
-          cookie: cookieOf[viewer],
-          fields: { ...row.fields, _csrf: csrfOf[viewer] },
-        });
-        const calls = stopWindow();
-        await tick(); // let the fire-and-forget mirror dispatch run (§8.1-7)
-
-        // PRG: success is a redirect to a FIXED Location, empty body.
-        assert.equal(res.status, 302, `positive ${row.template}: status (body: ${body})`);
-        assert.equal(location, row.okLocation);
-        assert.equal(body, "");
-        assert.equal(res.headers.get("cache-control"), "no-store");
-
-        // SERVICE LAYER: the EXACT slash helper ran through the facade proxy.
-        const names = calls.map((c) => c.name);
-        for (const helper of row.helpers) {
-          assert.ok(
-            names.includes(helper),
-            `${row.template}: web path must call the slash helper ${helper} (slash evidence: ${row.slash})`
-          );
-        }
-        assert.ok(
-          names.includes("insertAdminAudit"),
-          `${row.template}: audit write happened through the facade`
-        );
-
-        // AUDIT: exactly one row, correct origin/action/guild/actor/target.
-        assert.equal(webAuditCount(), before + 1, `${row.template}: exactly one admin_audit row`);
-        const rows = webAuditRows().filter(
-          (r) => r.action === row.action && r.target_id === row.targetId
-        );
-        const mine = rows.find((r) => r.actor_user_id === viewerUser);
-        assert.ok(mine, `${row.template}: audit row '${row.action}' by the viewer`);
-        assert.equal(mine.origin, "web");
-        assert.equal(mine.guild_id, GUILD_A);
-        assert.equal(mine.actor_user_id, viewerUser);
-        assert.equal(mine.target_type, row.targetType);
-        assert.deepEqual(
-          mine.details,
-          row.details(),
-          `${row.template}: before/after detail shape (slash vocabulary)`
-        );
-
-        // MIRROR expectation (§8.1-7: embeds are mirrors — the DB row is truth).
-        assert.equal(
-          mirrorSpy.log.length,
-          row.mirror ? 1 : 0,
-          `${row.template}: mirror ${row.mirror ? "scheduled once" : "never scheduled"} (${JSON.stringify(mirrorSpy.log.map((m) => m.kind))})`
-        );
-
-        if (row.tier === "staff") evidence(row.template).junior = res.status;
-        if (row.tier === "senior") evidence(row.template).senior = res.status;
-        row.status = "PASS";
-      });
-
-      it(`REJECT (validation): ${row.reject.status === 400 ? "fixed 400 body" : "err-redirect slug"} · ZERO write-helper calls · ZERO audit`, async () => {
-        row.prepare();
-        const before = webAuditCount();
-        startWindow();
-        const { res, body, location } = await post(path, {
-          cookie: cookieOf[viewer],
-          fields: { ...row.reject.fields, _csrf: csrfOf[viewer] },
-        });
-        const calls = stopWindow();
-        assert.equal(res.status, row.reject.status, `reject ${row.template}: ${body}`);
-        if (row.reject.bodyMatch) {
-          // Fixed 400 body rejections (staff routes) carry text/plain.
-          assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
-          assert.match(body, row.reject.bodyMatch);
-        } else {
-          // Err-redirect rejections are bodyless 302s — no content-type,
-          // the SLUG is the contract (never a silent ok=).
-          assert.equal(res.headers.get("content-type"), null);
-          assert.equal(location, row.reject.location);
-          assert.equal(body, "");
-        }
-        assert.deepEqual(
-          writeCalls(calls),
-          [],
-          `${row.template}: validation rejection wrote via ZERO facade helpers (recorded: ${calls.map((c) => c.name).join(",")})`
-        );
-        assert.equal(webAuditCount(), before, `${row.template}: validation rejection audited NOTHING`);
-      });
-
-      it("AUDIT-FAIL INJECTION ⇒ generic 500, outcome NOT silently claimed, no audit row, NO mirror (§8.1-7 fail-closed)", async () => {
-        row.prepare();
-        const before = webAuditCount();
-        mirrorSpy.log.length = 0;
-        recorder.auditThrow = true;
-        const realError = console.error;
-        console.error = () => {}; // the expected 500 logger ×32 is noise here
-        let out;
-        try {
-          out = await post(path, {
-            cookie: cookieOf[viewer],
-            fields: { ...row.fields, _csrf: csrfOf[viewer] },
-          });
-          await tick();
-        } finally {
-          recorder.auditThrow = false;
-          console.error = realError;
-        }
-        assert.equal(out.res.status, 500, `${row.template}: audit failure must 500`);
-        assert.equal(out.body, "Internal error");
-        assert.equal(
-          out.location,
-          null,
-          `${row.template}: fail-closed ⇒ NO success redirect; the outcome is never silently claimed`
-        );
-        assert.equal(webAuditCount(), before, "the injected failure wrote no audit row");
-        assert.equal(
-          mirrorSpy.log.length,
-          0,
-          `${row.template}: a failed insert schedules NO channel mirror`
-        );
-      });
     });
   }
 });
