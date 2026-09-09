@@ -37,6 +37,7 @@ const { registerDashboardRoutes } = require("./routes/dashboard");
 const { registerVoiceRoutes } = require("./routes/voice");
 const { registerSystemRoutes } = require("./routes/system");
 const { registerXpActionsRoutes } = require("./routes/xpActions");
+const { registerTicketActionsRoutes } = require("./routes/ticketActions");
 const { createSessionMiddleware } = require("./middleware/session");
 const {
   createAuthRateLimit,
@@ -327,6 +328,15 @@ function createWebApp(options = {}) {
   // guild shell so /g/:guildId guildScope gates first; same shared resolver
   // instance keeps tier math undivided; getClient stays the cache-only seam.
   registerXpActionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, services: options.services });
+  // Ticket actions (Phase 3, subtask 30): senior-only claim/close/summary-
+  // regen forms + POSTs (§8.6 Tickets row "Senior: claim/close/summary
+  // regen"). Mutations flow EXCLUSIVELY through the tickets feature's own
+  // helpers (facade.claimTicket, close.js softCloseTicket, summary.js
+  // summarizeTicket) — the same code the slash handlers run — with audit
+  // origin 'web'. AFTER the guild shell so /g/:guildId guildScope gates
+  // first; same shared resolver instance keeps tier math undivided;
+  // getClient stays the cache-only seam (never a fetch on a request path).
+  registerTicketActionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, services: options.services, ticketActions: options.ticketActions });
 
   app.use(handleNotFound);
   app.use(handleAppError);

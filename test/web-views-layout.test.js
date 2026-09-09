@@ -458,7 +458,11 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
       ["/g/oops", cookieOf.admin], // malformed id, live session
       [`/g/${GUILD_B}`, cookieOf.admin], // cross-guild probe
       [`/g/${GUILD_NONAME}`, cookieOf.staff], // not in this viewer's list
-      [`/g/${GUILD_A}/tickets`, cookieOf.staff], // unmatched route, valid guild
+      // Phase 3 (subtask 30) took /g/:guildId/tickets over (senior GET page
+      // + POST mutations) — the unmatched-route probe moves one level
+      // deeper: GET on a POST-only mutation path is still a plain 404.
+      [`/g/${GUILD_A}/tickets/summarize`, cookieOf.staff], // GET ≠ POST ⇒ miss
+      [`/g/${GUILD_A}/tickets-legacy`, cookieOf.staff], // unmatched, valid guild
       [`/g/${GUILD_A}`, cookieOf.plain], // member without any tier
     ];
     for (const [p, cookie] of cases) {
@@ -467,6 +471,11 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
       assert.equal(body, "Not found", `${p} body — plain, indistinguishable`);
       assert.match(res.headers.get("content-type"), /^text\/plain/, `${p} type`);
     }
+    // The now-mounted ticket page answers the TIER GATE (fixed 403) for the
+    // staff viewer instead of the router miss — above-staff tier, right guild.
+    const tiered = await get(`/g/${GUILD_A}/tickets`, { cookie: cookieOf.staff });
+    assert.equal(tiered.res.status, 403, "senior-only page: staff tier ⇒ fixed 403");
+    assert.equal(tiered.body, "Forbidden");
   });
 
   // --- CSP (§8.7) -------------------------------------------------------
