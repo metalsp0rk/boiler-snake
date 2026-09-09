@@ -285,7 +285,10 @@ function persistNewNote(opts) {
       return { ok: false, error: err.message };
     }
     console.error("[staffNotes] create failed:", err);
-    return { ok: false, error: "Failed to save the note (database error)." };
+    return {
+      ok: false,
+      error: `Failed to save the note: ${err?.message || "database error"}`,
+    };
   }
 }
 
@@ -584,7 +587,7 @@ async function applyNoteEdit(
     }
     console.error("[staffNotes] edit failed:", err);
     await replyEphemeral(interaction, {
-      content: "Failed to update the note (database error).",
+      content: `Failed to update the note: ${err?.message || "database error"}`,
     });
     return;
   }
