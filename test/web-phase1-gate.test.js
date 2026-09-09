@@ -358,6 +358,10 @@ const PAGES = [
   { path: "/g/:guildId/voice", tier: "staff", marker: "<h1>Voice" },
   { path: "/g/:guildId/system", tier: "admin", marker: "<h1>System" },
   { path: "/g/:guildId/audit", tier: "admin", marker: "<h1>Audit log" },
+  // Phase 3 (subtask 28): admin-only grant-XP form page (§8.6 XP row is the
+  // staff READ surface; the GRANT action is the ADMIN mutate — /grantxp twin,
+  // AGENTS.md §4 ManageGuild-only). Live router enumeration must see it.
+  { path: "/g/:guildId/xp/grant", tier: "admin", marker: "<h1>Grant XP" },
 ];
 
 /** Pages whose data module caches per guild (§8.6 floor 30 s) — on these,
@@ -408,6 +412,12 @@ const STATEMENT_PINS = {
   "/g/:guildId/voice": { req1: 7, req2: 4 },
   "/g/:guildId/system": { req1: 5, req2: 5 },
   "/g/:guildId/audit": { req1: 6, req2: 6 },
+  // Phase 3 (subtask 28): the grant FORM page reads NOTHING but the session/
+  // tier plumbing (4 statements: session row, auth column, tier-resolution
+  // reads — all guild_id-scoped; the POST's XP reads/writes run through the
+  // awardXp service and are pinned by test/web-xp-grant.test.js, not the
+  // budget sweep). Measured via GATE_MEASURE=1 on this fixture.
+  "/g/:guildId/xp/grant": { req1: 4, req2: 4 },
   "/t": { req1: 5, req2: 5 },
 };
 
