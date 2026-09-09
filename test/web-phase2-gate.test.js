@@ -129,6 +129,10 @@ const ROLE_TW = "500000000000000214"; // twitch notify role
 const ROLE_BAN = "500000000000000215"; // honeypot banrole
 const ROLE_EXEMPT = "500000000000000216"; // honeypot exempt
 const PANEL_MSG = "930000000000000001"; // fake channel send() message id
+const USER_GRANT = "448190112345678906"; // xp.grant subject (subtask 28) —
+// DELIBERATELY absent from the fake client cache: the grant exercises the
+// slash's member-miss path (awardXp resolves no member → role sync skipped),
+// exactly like a slash whose members.fetch fails (src/services/awardXp.js:46).
 const YT_ID = "UC0123456789012345678901"; // /channel/ URL form parses this
 const YT_URL = `https://www.youtube.com/channel/${YT_ID}`;
 const TW_ID = "420000001";
@@ -278,6 +282,12 @@ const FACADE_METHODS = [
   "isHoneypotBanRole",
   "addHoneypotBanRole",
   "removeHoneypotBanRole",
+  // Phase 3 (subtask 28) XP-grant surface: addXp/logActivity are the write
+  // helpers the awardXp SERVICE (the slash's own path) calls; getXp is the
+  // slash-parity before/after read (features/xp/index.js:446).
+  "addXp",
+  "logActivity",
+  "getXp",
 ];
 
 /** DB-mutating facade helpers — validation rejections must call ZERO of these. */
@@ -302,6 +312,8 @@ const WRITE_HELPERS = new Set([
   "removeHoneypotChannel",
   "addHoneypotBanRole",
   "removeHoneypotBanRole",
+  "addXp",
+  "logActivity",
 ]);
 
 const recorder = {
@@ -1125,6 +1137,34 @@ const PARITY = [
       fields: { role_id: "x" },
     },
   },
+  // ---- XP grant (subtask 28, Phase 3) — §8.6 "XP" row ADMIN mutate --------
+  {
+    no: "X1",
+    area: "xp (grant — Phase 3 action)",
+    template: "/g/:guildId/xp/grant",
+    method: "POST",
+    tier: "admin",
+    slash: "/grantxp → awardXp → addXp+logActivity (src/features/xp/index.js:448, src/services/awardXp.js:35-36)",
+    // addXp is the slash's OWN write, executed INSIDE the shared awardXp
+    // service — recording it here proves the web path runs THROUGH the
+    // service (the route never touches the DB write helpers itself).
+    helpers: ["addXp"],
+    action: "xp.grant",
+    targetType: "user",
+    targetId: USER_GRANT,
+    mirror: true, // the slash posts logConfigChange "XP granted" (index.js:473)
+    fields: { user_id: USER_GRANT, amount: "250", reason: "gate parity" },
+    // Deterministic baseline: XP 0 → the audit's before/after is static.
+    prepare: () => api.setXp(GUILD_A, USER_GRANT, 0),
+    details: D({ amount: 250, before_xp: 0, after_xp: 250, reason: "gate parity" }),
+    okLocation: `/g/${GUILD_A}/xp/grant?done=xp_granted`,
+    reject: {
+      // amount < 1 — the slash's explicit guard (index.js:439)
+      status: 302,
+      location: `/g/${GUILD_A}/xp/grant?error=invalid_amount`,
+      fields: { user_id: USER_GRANT, amount: "0" },
+    },
+  },
 ];
 
 // Rows flip to "PASS" only when the positive-path test completed (the full
@@ -1134,14 +1174,16 @@ for (const row of PARITY) row.status = "PENDING";
 /**
  * AGENTS.md §4 tier classification DERIVED FROM THE TEMPLATE (no source
  * greps, no table lookup): staff-role mutations + command-channel add/remove
- * + honeypot exempt are ManageGuild-only (admin); every other Phase-2
- * surface is staff. Cross-checked against the table AND runtime behavior.
+ * + honeypot exempt + the Phase-3 xp grant (ManageGuild-only /grantxp twin)
+ * are admin; every other Phase-2 surface is staff. Cross-checked against the
+ * table AND runtime behavior.
  */
 function expectedTierFor(template) {
   if (
     template.startsWith("/g/:guildId/staff/role/") ||
     template.startsWith("/g/:guildId/settings/command-channels/") ||
-    template.startsWith("/g/:guildId/integrations/honeypot/exempt/")
+    template.startsWith("/g/:guildId/integrations/honeypot/exempt/") ||
+    template.startsWith("/g/:guildId/xp/grant")
   ) {
     return "admin";
   }
@@ -1636,7 +1678,7 @@ describe("C. tier correctness from runtime ladder evidence (AGENTS.md §4)", () 
     assert.deepEqual(
       adminRows.map((r) => r.template).sort(),
       derivedAdmin,
-      "the admin-tier set equals {staff/role/*, command-channels/*, honeypot/exempt/*} — §4"
+      "the admin-tier set equals {staff/role/*, command-channels/*, honeypot/exempt/*, xp/grant} — §4 (grantxp is ManageGuild-only)"
     );
   });
 
