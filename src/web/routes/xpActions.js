@@ -74,6 +74,7 @@ const {
 const { USER_ID_RE } = require("../data/leaderboard");
 const { validateXpValue, levelFromXp, MAX_XP_AWARD } = require("../../core/xpMath");
 const { readFields } = require("./shared/req.js");
+const { makeFlashRedirect } = require("./shared/flash.js");
 const { rawFlashQuery } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
 const { isProvenBot } = require("./shared/discord-cache.js");
@@ -173,26 +174,11 @@ function makeCacheOnlyGuild(client, guildId) {
 }
 
 
-/**
- * PRG 302 to the grant page with a WHITELISTED flash slug. Both the flag and
- * the slug are re-checked against the view's frozen vocabularies before the
- * Location is minted (settings.js redirectSettings doctrine): a bug at a
- * call site can still never reflect input into a redirect (§8.7).
- * @param {import("http").ServerResponse} res
- * @param {string} guildId server-derived (guildScope snowflake)
- * @param {"done"|"error"} flag
- * @param {string} slug
- */
-function respondGrantRedirect(res, guildId, flag, slug) {
-  const safeFlag = flag === "done" ? "done" : "error";
-  const table = safeFlag === "done" ? FLASH_DONE : FLASH_ERROR;
-  const safeSlug = typeof slug === "string" && table[slug] ? slug : Object.keys(table)[0];
-  res.writeHead(302, {
-    Location: `/g/${encodeURIComponent(guildId)}/xp/grant?${safeFlag}=${safeSlug}`,
-    "Cache-Control": "no-store",
-  });
-  res.end();
-}
+const respondGrantRedirect = makeFlashRedirect({
+  pageOf: (guildId) => `/g/${encodeURIComponent(guildId)}/xp/grant`,
+  doneTable: FLASH_DONE,
+  errorTable: FLASH_ERROR,
+});
 
 
 
