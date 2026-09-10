@@ -60,6 +60,52 @@ const {
 /** One gork queue per process (in-memory cooldowns + per-guild FIFO). */
 const gorkQueue = createGorkQueue();
 
+/**
+ * TEST SEAM — settle tracking for gork's detached work.
+ *
+ * The gork hook and everything it detaches (the LLM job, its audit posts,
+ * the §7.16 memory turn) never block the pipeline, which left integration
+ * tests no option but wall-clock sleeps to "confirm absence" of a reply.
+ * Every detached unit registers its completion promise here, so tests can
+ * `await whenGorkIdleForTests()` and observe a settled state
+ * deterministically. In production the set is write-only (read only by
+ * the ForTests drain) — shipped behavior unchanged, same spirit as the
+ * injectable `now` clock (queue.js) and music's `setManagerForTests`.
+ */
+const pendingGorkWork = new Set();
+
+/**
+ * Register a detached unit of gork work until it settles. Swallows any
+ * rejection into the tracked promise so tracking can never change error
+ * semantics or create unhandled rejections.
+ *
+ * @param {Promise<unknown>} promise
+ * @returns {Promise<void>}
+ */
+function trackGorkWork(promise) {
+  const tracked = Promise.resolve(promise)
+    .catch(() => {})
+    .then(() => {
+      pendingGorkWork.delete(tracked);
+    });
+  pendingGorkWork.add(tracked);
+  return tracked;
+}
+
+/**
+ * Resolves once every detached gork work unit started so far has settled.
+ * Settled jobs may register follow-up work (e.g. the memory turn after an
+ * answer job), so this keeps draining until the set stays empty.
+ * TEST ONLY — never called by the shipped paths.
+ *
+ * @returns {Promise<void>}
+ */
+async function whenGorkIdleForTests() {
+  while (pendingGorkWork.size > 0) {
+    await Promise.allSettled([...pendingGorkWork]);
+  }
+}
+
 /** Refresh the typing indicator on this cadence (spec: every 8s). */
 const TYPING_REFRESH_MS = 8000;
 
@@ -448,7 +494,7 @@ function withDeadline(promise, ms, fallback) {
  * @param {import("discord.js").Message} message
  * @returns {Promise<void>}
  */
-async function handleGorkMessage(client, message) {
+async function runGorkHook(client, message) {
   try {
     // 1. Guild-only; skip webhook (no author) and bot messages.
     if (!message?.guild || !message.author || message.author.bot) return;
@@ -540,9 +586,11 @@ async function handleGorkMessage(client, message) {
       TYPING_REFRESH_MS,
     );
 
-    // 13. Detached LLM job: fire-and-forget so the pipeline never awaits.
+    // 13. Detached LLM job: fire-and-forget so the pipeline never awaits
+    //     (registered with the test settle seam; see pendingGorkWork).
     const auditClient = client || message.guild.client || null;
-    void (async () => {
+    trackGorkWork(
+      (async () => {
       let replied = false;
       // §7.16 write-path state: the shipped sanitized answer (null = no
       // real answer went out → never extract from a canned reply) plus a
@@ -719,22 +767,26 @@ async function handleGorkMessage(client, message) {
           // §7.16.3 (decision 25): the write path may only feed on a real
           // shipped (sanitized + capped) answer — never a canned reply.
           shippedAnswer = capped;
-          logGorkQa(auditClient, guildId, {
-            user: message.author,
-            question,
-            contextLabel: describeContext(ctx),
-            searchQueries: searches,
-            pageReads: reads,
-            model: cfg.model,
-            durationMs: res.durationMs,
-            answer: capped,
-            questionMessage: message,
-            replyMessage,
-            // Read-side audit label (§7.16.3); OFF → undefined → no field.
-            memoryLabel: memoryOn
-              ? formatMemoryLabel(mem, recalled)
-              : undefined,
-          }).catch(() => {});
+          // Audit posts are fire-and-forget for Discord but tracked for the
+          // test settle seam, so "idle" also implies audit embeds landed.
+          trackGorkWork(
+            logGorkQa(auditClient, guildId, {
+              user: message.author,
+              question,
+              contextLabel: describeContext(ctx),
+              searchQueries: searches,
+              pageReads: reads,
+              model: cfg.model,
+              durationMs: res.durationMs,
+              answer: capped,
+              questionMessage: message,
+              replyMessage,
+              // Read-side audit label (§7.16.3); OFF → undefined → no field.
+              memoryLabel: memoryOn
+                ? formatMemoryLabel(mem, recalled)
+                : undefined,
+            }),
+          );
         } else {
           // Failure / timeout / persistent empty answer: locked canned
           // reply, never a silent hang.
@@ -749,11 +801,13 @@ async function handleGorkMessage(client, message) {
           console.warn(
             `[gork] LLM failure in ${guildId}: ${why} (model=${cfg.model}, toolCalls=${res.toolCalls ?? 0}, ${res.durationMs ?? 0}ms)`,
           );
-          logGorkFailure(auditClient, guildId, {
-            user: message.author,
-            question,
-            reason: why,
-          }).catch(() => {});
+          trackGorkWork(
+            logGorkFailure(auditClient, guildId, {
+              user: message.author,
+              question,
+              reason: why,
+            }),
+          );
         }
       } catch (err) {
         console.error(`[gork] job failed in ${guildId}:`, err?.message || err);
@@ -774,34 +828,54 @@ async function handleGorkMessage(client, message) {
       if (memoryOn && shippedAnswer !== null && memJob?.roster?.entries?.size) {
         const roster = memJob.roster;
         const botId = auditClient?.user?.id ?? null;
-        void runMemoryTurn({
-          guildId,
-          auditClient,
-          question,
-          answer: shippedAnswer,
-          contextBlock: memJob.ctxText,
-          rosterBlock: formatRosterBlock(roster),
-          // Reuse the rows loaded on the read path — no re-query (§7.16.3).
-          existingMemoriesBlock: formatExistingMemoriesBlock(mem.allRows || []),
-          allowList: [...roster.entries.keys()].filter((id) => id !== botId),
-          memDate: memDateFromMessage(message),
-          sourceMessageIds: [message.id],
-          indexed: mem.indexed,
-        })
-          .then((res) => {
-            if (res && (res.stored > 0 || res.skippedInvalid > 0)) {
-              console.log(
-                `[gork] memory turn in ${guildId}: +${res.stored} stored · ${res.skippedInvalid} skipped_invalid`,
-              );
-            }
+        // Tracked (not bare `void`) so the settle seam drains extraction
+        // turns too: after whenGorkIdleForTests(), the extraction decision
+        // AND its fetch are observably settled.
+        trackGorkWork(
+          runMemoryTurn({
+            guildId,
+            auditClient,
+            question,
+            answer: shippedAnswer,
+            contextBlock: memJob.ctxText,
+            rosterBlock: formatRosterBlock(roster),
+            // Reuse the rows loaded on the read path — no re-query (§7.16.3).
+            existingMemoriesBlock: formatExistingMemoriesBlock(mem.allRows || []),
+            allowList: [...roster.entries.keys()].filter((id) => id !== botId),
+            memDate: memDateFromMessage(message),
+            sourceMessageIds: [message.id],
+            indexed: mem.indexed,
           })
-          .catch(() => {});
+            .then((res) => {
+              if (res && (res.stored > 0 || res.skippedInvalid > 0)) {
+                console.log(
+                  `[gork] memory turn in ${guildId}: +${res.stored} stored · ${res.skippedInvalid} skipped_invalid`,
+                );
+              }
+            })
+            .catch(() => {}),
+        );
       }
-    })().catch(() => {});
+    })(),
+    );
   } catch (err) {
     // 14. The pipeline must never see a rejection.
     console.error("[gork] pipeline hook error:", err?.message || err);
   }
+}
+
+/**
+ * Pipeline-visible hook: the tracked wrapper around runGorkHook so the
+ * settle-tracking seam (`whenGorkIdleForTests`) also covers hook-only
+ * paths (cooldown clock reaction, banned/queue-full canned replies).
+ * Same contract as runGorkHook: never throws, never rejects.
+ *
+ * @param {import("discord.js").Client} client
+ * @param {import("discord.js").Message} message
+ * @returns {Promise<void>}
+ */
+function handleGorkMessage(client, message) {
+  return trackGorkWork(runGorkHook(client, message));
 }
 
 module.exports = {
@@ -824,4 +898,6 @@ module.exports = {
   ANSWER_TRUNCATE_MARKER,
   llmParams,
   describeLlmFailure,
+  /** TEST SEAM: settle-drain for detached gork work (see pendingGorkWork). */
+  whenGorkIdleForTests,
 };

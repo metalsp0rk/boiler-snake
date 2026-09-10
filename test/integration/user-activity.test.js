@@ -163,8 +163,12 @@ describe("integration: user activity", () => {
       assert.match(texts, /10.*pages|pages\/channel/i);
     }
 
-    // Wait briefly for background job to settle
-    await new Promise((r) => setTimeout(r, 50));
+    // Deterministic: drain the detached backfill job via the test seam in
+    // src/features/userActivity/backfill.js (replaces a 50ms guess-wait).
+    // Required AFTER the env is built so the module instance matches the
+    // pipeline's (createIntegrationEnv resets the src require cache).
+    const { whenBackfillSettledForTests } = require("../../src/features/userActivity/backfill");
+    await whenBackfillSettledForTests(env.guild.id);
     const settings = env.db.getGuildActivitySettings(env.guild.id);
     assert.ok(settings);
     assert.ok(
@@ -185,6 +189,13 @@ describe("integration: user activity", () => {
   });
 
   it("/activityconfig backfill cancel stops a running job", async () => {
+    // Same-instance module (require cache is reset by createIntegrationEnv):
+    // page-delay test seam + the job-settle drain (see backfill.js).
+    const {
+      setBackfillPageDelayForTests,
+      whenBackfillSettledForTests,
+    } = require("../../src/features/userActivity/backfill");
+
     // Prior tests may have marked channels guild-complete (empty history) — clear
     env.db.db
       .prepare(`DELETE FROM guild_channel_backfill_cursor WHERE guild_id=?`)
@@ -194,47 +205,69 @@ describe("integration: user activity", () => {
       guild_backfill_error: null,
     });
 
-    // Non-empty pages + slow fetch so the job is still active when we cancel
-    for (const ch of Object.values(env.channels)) {
-      if (!ch.messages) ch.messages = {};
-      let n = 0;
-      ch.messages.fetch = async () => {
-        n += 1;
-        await new Promise((r) => setTimeout(r, 150));
-        const batch = new Map();
-        // Full page so the walker does not treat history as exhausted
-        for (let i = 0; i < 100; i++) {
-          const id = `${ch.id}-p${n}-m${i}`;
-          batch.set(id, {
-            id,
-            createdTimestamp: Date.now() - 14 * 86400000,
-            author: { id: IDS.member, bot: false },
-          });
-        }
-        return batch;
-      };
+    // Deterministic stand-in for "the job is still running when we cancel":
+    // the FIRST page fetch parks on a test-held gate (no wall-clock sleep),
+    // so the job is structurally mid-flight by the time cancel runs. The
+    // page-delay seam zeroes the shipped inter-page pause so the
+    // cooperative stop resolves immediately after the gate opens (prod
+    // default DELAY_MS untouched).
+    setBackfillPageDelayForTests(0);
+    let releaseFirstFetch;
+    const firstFetchGate = new Promise((resolve) => {
+      releaseFirstFetch = resolve;
+    });
+    let gateHeld = true;
+    try {
+      for (const ch of Object.values(env.channels)) {
+        if (!ch.messages) ch.messages = {};
+        let n = 0;
+        ch.messages.fetch = async () => {
+          n += 1;
+          if (gateHeld) {
+            gateHeld = false;
+            await firstFetchGate; // park the job on the current page
+          }
+          const batch = new Map();
+          // Full page so the walker does not treat history as exhausted
+          for (let i = 0; i < 100; i++) {
+            const id = `${ch.id}-p${n}-m${i}`;
+            batch.set(id, {
+              id,
+              createdTimestamp: Date.now() - 14 * 86400000,
+              author: { id: IDS.member, bot: false },
+            });
+          }
+          return batch;
+        };
+      }
+
+      await env.runCommand({
+        commandName: "activityconfig",
+        subcommandGroup: "backfill",
+        subcommand: "all",
+        admin: true,
+        options: { max_pages: 20 },
+      });
+
+      const cancelIx = await env.runCommand({
+        commandName: "activityconfig",
+        subcommandGroup: "backfill",
+        subcommand: "cancel",
+        admin: true,
+      });
+      assertEphemeralReply(cancelIx, /Cancel requested|Cleared stale|cancel/i);
+
+      // Cooperative stop: let the parked page finish, then drain the job's
+      // promise (test seam) — status is final when it resolves. Replaces
+      // the old 2500ms "current page + ~1.1s delay" sleep.
+      releaseFirstFetch();
+      await whenBackfillSettledForTests(env.guild.id);
+      const settings = env.db.getGuildActivitySettings(env.guild.id);
+      assert.equal(settings?.guild_backfill_status, "cancelled");
+    } finally {
+      releaseFirstFetch(); // never leave a gated fake hanging
+      setBackfillPageDelayForTests(null); // restore shipped pacing
     }
-
-    await env.runCommand({
-      commandName: "activityconfig",
-      subcommandGroup: "backfill",
-      subcommand: "all",
-      admin: true,
-      options: { max_pages: 20 },
-    });
-
-    const cancelIx = await env.runCommand({
-      commandName: "activityconfig",
-      subcommandGroup: "backfill",
-      subcommand: "cancel",
-      admin: true,
-    });
-    assertEphemeralReply(cancelIx, /Cancel requested|Cleared stale|cancel/i);
-
-    // Cooperative stop: after current page + delay (~1.1s)
-    await new Promise((r) => setTimeout(r, 2500));
-    const settings = env.db.getGuildActivitySettings(env.guild.id);
-    assert.equal(settings?.guild_backfill_status, "cancelled");
   });
 
   it("Activity button requires senior staff; admin can open", async () => {
