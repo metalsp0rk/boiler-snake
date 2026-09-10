@@ -80,7 +80,7 @@
 
 - [x] **`roadmap/index.md` line 7 + §7 shipped inventory** — add `userActivity` / `/userinfo` Activity (migrations `013`/`014` — absent from roadmap entirely), `commandPermissions` (`016`), `ticket_panels` (`019`); reword line 7's "not tracked here", which contradicts line 11 (everything *is* tracked).
 - [x] **Bring `roadmap/web-admin.md` up to the repo's own decomposition bar** — no task-level breakdown, no estimates/Total Estimate/Complexity per `feature-breakdown.md`; Phase 1 bundles ~11 route areas in one row. Decompose Phase 0a–0c into 1–2 h checkbox tasks with Files/Estimate/Verification (pattern: `roadmap/gork.md` §7.15), or state estimates are intentionally deferred past Phase 0a.
-- [ ] **Adopt a single-source rule for open items** — the DM-transcript item lived in 3 places (`index.md` row 15, §8 line 146, `help-tickets.md` §1.11) and all three drifted stale together. Make feature-file checkboxes authoritative; index rows link, not restate.
+- [x] **Adopt a single-source rule for open items** — the DM-transcript item lived in 3 places (`index.md` row 15, §8 line 146, `help-tickets.md` §1.11) and all three drifted stale together. Make feature-file checkboxes authoritative; index rows link, not restate.
 *Note: the migration off-by-one fix (`017`→`018`) is tracked once in §1 — it also covers `roadmap/index.md` §7 lines 75/78.*
 
 ### Low
