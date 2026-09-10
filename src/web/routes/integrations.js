@@ -294,6 +294,71 @@ function registerIntegrationsRoutes(app, options = {}) {
     });
   }
 
+  /**
+   * The three settings-field shapes shared by the YouTube and Twitch twins
+   * (channel = required + preflight; role = optional, empty clears; interval
+   * = int range re-check). Facade order — read-before → update → audit →
+   * invalidate → redirect — is the parity anchor with the slash handlers
+   * these mirror; do not reorder.
+   */
+  function mountSettingsField(
+    path,
+    { kind, field, key = "channel_id", auditAction, detailsOf, done, doneCleared }
+  ) {
+    mountMutation(path, "staff", (req, res) => {
+      const guildId = guildOf(req);
+      let value;
+      let targetId;
+      let targetType;
+      if (kind === "interval") {
+        value = intInRange(bodyFields(req).minutes, POLL_MIN, POLL_MAX);
+        if (value === null) {
+          return redirectIntegrations(res, guildId, "error", "invalid_interval");
+        }
+        targetId = guildId;
+        targetType = "guild";
+      } else {
+        const parsed = snowflakeOrEmpty(bodyFields(req)[key]);
+        if (kind === "channel") {
+          if (!parsed.present || !parsed.ok) {
+            return redirectIntegrations(res, guildId, "error", "invalid_channel_id");
+          }
+          const fail = preflightChannel(guildFromCache(guildId), parsed.value);
+          if (fail) return redirectIntegrations(res, guildId, "error", fail);
+          value = parsed.value;
+          targetId = parsed.value;
+          targetType = "channel";
+        } else {
+          if (!parsed.ok) {
+            return redirectIntegrations(res, guildId, "error", "invalid_role_id");
+          }
+          if (parsed.present) {
+            const fail = preflightRole(guildFromCache(guildId), parsed.value);
+            if (fail) return redirectIntegrations(res, guildId, "error", fail);
+          }
+          value = parsed.value || null;
+          targetId = parsed.value || guildId;
+          targetType = "role";
+        }
+      }
+      const before = db.getGuildSettings(guildId)[field] ?? null;
+      db.updateGuildSettings(guildId, { [field]: value });
+      req.audit({
+        action: auditAction,
+        targetType,
+        targetId,
+        details: detailsOf(value, before),
+      });
+      invalidateCache(guildId);
+      redirectIntegrations(
+        res,
+        guildId,
+        "done",
+        doneCleared !== undefined && value === null ? doneCleared : done
+      );
+    });
+  }
+
   /** Guild id every handler works against (guildScope validated it). */
   const guildOf = (req) => req.guildAccess.guildId;
 
@@ -417,84 +482,41 @@ function registerIntegrationsRoutes(app, options = {}) {
     }
   );
 
-  /** POST .../youtube/channel — /setyoutube channel (notify channel). */
-  mountMutation(
-    "/g/:guildId/integrations/youtube/channel",
-    "staff",
-    (req, res) => {
-      const guildId = guildOf(req);
-      const parsed = snowflakeOrEmpty(bodyFields(req).channel_id);
-      if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_channel_id");
-      }
-      const fail = preflightChannel(guildFromCache(guildId), parsed.value);
-      if (fail) return redirectIntegrations(res, guildId, "error", fail);
 
-      const before = db.getGuildSettings(guildId).youtube_notification_channel_id;
-      db.updateGuildSettings(guildId, { youtube_notification_channel_id: parsed.value });
-      req.audit({
-        action: "youtube.notify_channel_set",
-        targetType: "channel",
-        targetId: parsed.value,
-        details: { previous_channel_id: before ?? null },
-      });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "yt_channel_set");
-    }
-  );
+
+
+
+  /** POST .../youtube/channel — /setyoutube channel (notify channel). */
+  mountSettingsField("/g/:guildId/integrations/youtube/channel", {
+    kind: "channel",
+    field: "youtube_notification_channel_id",
+    auditAction: "youtube.notify_channel_set",
+    detailsOf: (v, before) => ({ previous_channel_id: before }),
+    done: "yt_channel_set",
+  });
 
   /** POST .../youtube/interval — /setyoutube interval (1-60 re-check twin). */
-  mountMutation(
-    "/g/:guildId/integrations/youtube/interval",
-    "staff",
-    (req, res) => {
-      const guildId = guildOf(req);
-      const minutes = intInRange(bodyFields(req).minutes, POLL_MIN, POLL_MAX);
-      if (minutes === null) {
-        return redirectIntegrations(res, guildId, "error", "invalid_interval");
-      }
-      const before = db.getGuildSettings(guildId).youtube_polling_interval_minutes;
-      db.updateGuildSettings(guildId, { youtube_polling_interval_minutes: minutes });
-      req.audit({
-        action: "youtube.polling_interval_set",
-        targetType: "guild",
-        targetId: guildId,
-        details: { previous_minutes: before ?? null, minutes },
-      });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "yt_interval_set");
-    }
-  );
+  mountSettingsField("/g/:guildId/integrations/youtube/interval", {
+    kind: "interval",
+    field: "youtube_polling_interval_minutes",
+    auditAction: "youtube.polling_interval_set",
+    detailsOf: (v, before) => ({ previous_minutes: before, minutes: v }),
+    done: "yt_interval_set",
+  });
 
   /**
    * POST .../youtube/uploadrole — /setyoutube uploadrole; empty field clears
    * the role exactly like the slash's optional role option.
    */
-  mountMutation(
-    "/g/:guildId/integrations/youtube/uploadrole",
-    "staff",
-    (req, res) => {
-      const guildId = guildOf(req);
-      const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
-      if (!parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_role_id");
-      }
-      if (parsed.present) {
-        const fail = preflightRole(guildFromCache(guildId), parsed.value);
-        if (fail) return redirectIntegrations(res, guildId, "error", fail);
-      }
-      const before = db.getGuildSettings(guildId).youtube_upload_role_id;
-      db.updateGuildSettings(guildId, { youtube_upload_role_id: parsed.value || null });
-      req.audit({
-        action: "youtube.upload_role_set",
-        targetType: "role",
-        targetId: parsed.value || guildId,
-        details: { role_id: parsed.value || null, previous_role_id: before ?? null },
-      });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", parsed.value ? "yt_upload_role_set" : "yt_upload_role_cleared");
-    }
-  );
+  mountSettingsField("/g/:guildId/integrations/youtube/uploadrole", {
+    kind: "role",
+    key: "role_id",
+    field: "youtube_upload_role_id",
+    auditAction: "youtube.upload_role_set",
+    detailsOf: (v, before) => ({ role_id: v, previous_role_id: before }),
+    done: "yt_upload_role_set",
+    doneCleared: "yt_upload_role_cleared",
+  });
 
   // ---------------------------------------------------------------------
   // Twitch — staff tier
@@ -562,81 +584,38 @@ function registerIntegrationsRoutes(app, options = {}) {
     }
   );
 
-  /** POST .../twitch/channel — /settwitch channel (notify channel). */
-  mountMutation(
-    "/g/:guildId/integrations/twitch/channel",
-    "staff",
-    (req, res) => {
-      const guildId = guildOf(req);
-      const parsed = snowflakeOrEmpty(bodyFields(req).channel_id);
-      if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_channel_id");
-      }
-      const fail = preflightChannel(guildFromCache(guildId), parsed.value);
-      if (fail) return redirectIntegrations(res, guildId, "error", fail);
 
-      const before = db.getGuildSettings(guildId).twitch_notification_channel_id;
-      db.updateGuildSettings(guildId, { twitch_notification_channel_id: parsed.value });
-      req.audit({
-        action: "twitch.notify_channel_set",
-        targetType: "channel",
-        targetId: parsed.value,
-        details: { previous_channel_id: before ?? null },
-      });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "tw_channel_set");
-    }
-  );
+
+
+
+  /** POST .../twitch/channel — /settwitch channel (notify channel). */
+  mountSettingsField("/g/:guildId/integrations/twitch/channel", {
+    kind: "channel",
+    field: "twitch_notification_channel_id",
+    auditAction: "twitch.notify_channel_set",
+    detailsOf: (v, before) => ({ previous_channel_id: before }),
+    done: "tw_channel_set",
+  });
 
   /** POST .../twitch/role — /settwitch role; empty clears (parity). */
-  mountMutation(
-    "/g/:guildId/integrations/twitch/role",
-    "staff",
-    (req, res) => {
-      const guildId = guildOf(req);
-      const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
-      if (!parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_role_id");
-      }
-      if (parsed.present) {
-        const fail = preflightRole(guildFromCache(guildId), parsed.value);
-        if (fail) return redirectIntegrations(res, guildId, "error", fail);
-      }
-      const before = db.getGuildSettings(guildId).twitch_notify_role_id;
-      db.updateGuildSettings(guildId, { twitch_notify_role_id: parsed.value || null });
-      req.audit({
-        action: "twitch.notify_role_set",
-        targetType: "role",
-        targetId: parsed.value || guildId,
-        details: { role_id: parsed.value || null, previous_role_id: before ?? null },
-      });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", parsed.value ? "tw_role_set" : "tw_role_cleared");
-    }
-  );
+  mountSettingsField("/g/:guildId/integrations/twitch/role", {
+    kind: "role",
+    key: "role_id",
+    field: "twitch_notify_role_id",
+    auditAction: "twitch.notify_role_set",
+    detailsOf: (v, before) => ({ role_id: v, previous_role_id: before }),
+    done: "tw_role_set",
+    doneCleared: "tw_role_cleared",
+  });
 
   /** POST .../twitch/interval — /settwitch interval (picker min/max twin). */
-  mountMutation(
-    "/g/:guildId/integrations/twitch/interval",
-    "staff",
-    (req, res) => {
-      const guildId = guildOf(req);
-      const minutes = intInRange(bodyFields(req).minutes, POLL_MIN, POLL_MAX);
-      if (minutes === null) {
-        return redirectIntegrations(res, guildId, "error", "invalid_interval");
-      }
-      const before = db.getGuildSettings(guildId).twitch_polling_interval_minutes;
-      db.updateGuildSettings(guildId, { twitch_polling_interval_minutes: minutes });
-      req.audit({
-        action: "twitch.polling_interval_set",
-        targetType: "guild",
-        targetId: guildId,
-        details: { previous_minutes: before ?? null, minutes },
-      });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "tw_interval_set");
-    }
-  );
+  mountSettingsField("/g/:guildId/integrations/twitch/interval", {
+    kind: "interval",
+    field: "twitch_polling_interval_minutes",
+    auditAction: "twitch.polling_interval_set",
+    detailsOf: (v, before) => ({ previous_minutes: before, minutes: v }),
+    done: "tw_interval_set",
+  });
 
   // ---------------------------------------------------------------------
   // Reaction roles — staff tier
