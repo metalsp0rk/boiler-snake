@@ -7,7 +7,6 @@ Configure Boiler Snake for your server's needs using environment variables and i
 - [Environment Variables](#environment-variables)
 - [Per-Guild Settings](#per-guild-settings)
 - [Command Reference](#command-reference)
-- [Advanced Configuration](#advanced-configuration)
 
 ---
 
