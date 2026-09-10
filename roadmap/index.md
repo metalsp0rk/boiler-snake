@@ -4,7 +4,7 @@
 
 Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, Twitch stream notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, and music playback. This roadmap documents **planned** features and their implementation stages.
 
-**Shipped (see docs, not tracked here):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
+**Shipped (all tracked in this roadmap — feature index and §7 below; user docs in `docs/`):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, user activity tracking (`/userinfo` Activity + `/activityconfig`), help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
 
 ## Feature Index
 
@@ -45,6 +45,7 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | `ticket_members` | Extra member participants |
 | `ticket_staff` | Named staff allow-list on a ticket (sensitive / extras) — **not** the guild staff role list |
 | `ticket_messages` | Only for fully archived (non-sensitive) tickets |
+| `ticket_panels` | Stored panel registry — posted **Open ticket** panels (channel, message id, title/description) backing `/ticket panel create\|list\|edit\|delete` (**shipped**, migration `019`) |
 | `guild_settings.ticket_*` | category, archive channel, rate limit (**no** `ticket_staff_role`) |
 
 ### Event reminders
@@ -81,6 +82,16 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void (**shipped**) |
 | `guild_settings.warn_log_channel_id` | Dedicated warn issue/void log; audit fallback (**shipped**) |
 | `guild_settings.warn_expiry_days` | Default `0` (never); guild default for new warnings (**shipped**, migration `018`) |
+
+### User activity (`/userinfo` Activity)
+
+| Table / change | Notes |
+|----------------|-------|
+| `user_channel_message_daily` | Per-user per-channel daily message counters feeding the `/userinfo` Activity ranking — counts **every** human message, separate from the XP/decay `activity_log` (**shipped**, migration `013`) |
+| `activity_ignore` | Per-guild exclude list for stats (`kind` = `channel` \| `category`), managed via `/activityconfig ignore` (**shipped**, migration `013`) |
+| `user_activity_meta` | Per-user tracking floor (`tracking_since_ms`) + per-user backfill status/progress columns (**shipped**, migration `013`) |
+| `guild_activity_settings` | Guild collection floor (`collect_from_ms`) + backfill state; `014` added the `guild_backfill_*` columns for the single-pass all-users guild-wide backfill (**shipped**, migrations `013`/`014`) |
+| `user_channel_backfill_cursor` / `guild_channel_backfill_cursor` | Backfill resume cursors (oldest message id seen) — per user×channel (`013`) and per channel for the guild-wide pass (`014`) (**shipped**) |
 
 ### Gork (AI keyword Q&A)
 
