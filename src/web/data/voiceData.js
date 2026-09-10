@@ -51,7 +51,7 @@
  */
 
 const { isSecretColumnName } = require("./settingsData");
-const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, textOrNull, numOrNull, makeGuardRead, makeCacheSet } = require("./_shared");
+const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, textOrNull, numOrNull, makeGuardRead, makeCacheSet, withMusicPlayer } = require("./_shared");
 
 const guardRead = makeGuardRead("voice");
 
@@ -261,17 +261,7 @@ function projectTrackRow(track, position) {
  *   dashboardData's snapshotMusicPlayer)
  */
 function snapshotMusicState(client, guildId, musicApi = require("../../features/music/lavalink")) {
-  try {
-    if (!client) return { status: "unknown", detail: "no client wired" };
-    const manager = musicApi.getManager(client);
-    if (!manager) return { status: "unavailable", detail: "lavalink not configured" };
-    if (!musicApi.isNodeReady(client)) {
-      return { status: "unavailable", detail: "no lavalink node connected" };
-    }
-    const player = manager.getPlayer?.(guildId) || null;
-    if (!player) return { status: "idle", detail: "no active player in this guild" };
-
-    const current = player.queue?.current || null;
+  return withMusicPlayer(client, guildId, musicApi, (player, current) => {
     const status = current ? "playing" : "idle";
     const detail = current ? null : "queue empty";
 
@@ -293,10 +283,7 @@ function snapshotMusicState(client, guildId, musicApi = require("../../features/
     };
 
     return { status, detail, nowPlaying, queue };
-  } catch {
-    // Music state must never break the page — degrade to unknown.
-    return { status: "unknown", detail: "player read failed" };
-  }
+  });
 }
 
 /**
