@@ -50,7 +50,7 @@ const {
   snapshotTickerHealth,
   TICKER_STATUSES,
 } = require("./tickerHealth");
-const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, numOrNull, textOrNull, makeCacheSet } = require("./_shared");
+const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, numOrNull, textOrNull, makeCacheSet, withMusicPlayer } = require("./_shared");
 
 const asFiniteNumber = numOrNull;
 const clampText = textOrNull;
@@ -159,16 +159,7 @@ function normalizeNowPlaying(raw) {
  *   defaults to src/features/music/lavalink.js (test seam)
  */
 function snapshotMusicPlayer(client, guildId, musicApi = require("../../features/music/lavalink")) {
-  try {
-    if (!client) return { status: "unknown", detail: "no client wired" };
-    const manager = musicApi.getManager(client);
-    if (!manager) return { status: "unavailable", detail: "lavalink not configured" };
-    if (!musicApi.isNodeReady(client)) {
-      return { status: "unavailable", detail: "no lavalink node connected" };
-    }
-    const player = manager.getPlayer?.(guildId) || null;
-    if (!player) return { status: "idle", detail: "no active player in this guild" };
-    const current = player.queue?.current;
+  return withMusicPlayer(client, guildId, musicApi, (player, current) => {
     if (!current) return { status: "idle", detail: "queue empty" };
     const info = current.info || {};
     const upcoming = Array.isArray(player.queue?.tracks)
@@ -182,10 +173,7 @@ function snapshotMusicPlayer(client, guildId, musicApi = require("../../features
       positionMs: Number(player.position) || 0,
       upcoming,
     });
-  } catch {
-    // Music state must never break the dashboard — degrade to unknown.
-    return { status: "unknown", detail: "player read failed" };
-  }
+  });
 }
 
 /** Coerce one ticker entry from any injected provider to the view shape. */
