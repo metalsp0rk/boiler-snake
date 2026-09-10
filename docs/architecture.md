@@ -237,7 +237,7 @@ Router: `commands/router.js` → autocomplete / modal submit / button / chat inp
 
 ---
 
-## Testing
+## Testing Strategy
 
 ```bash
 npm test                 # unit + integration (node --test)
