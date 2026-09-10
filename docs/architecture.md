@@ -35,7 +35,7 @@ src/
 │   └── awardXp.js           # Unified XP → activity → roles → audit
 ├── features/
 │   ├── load.js              # applyFeaturesToRegistry / start / registerEvents
-│   ├── index.js             # Ordered feature list (20 modules)
+│   ├── index.js             # Ordered feature list (21 modules)
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
 │   ├── xp/                  # /xp /leaderboard /setxp /grantxp + award helpers
@@ -201,7 +201,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 
 ## Commands
 
-Slash builders and handlers are **co-located** on features. The registry exports **26** slash commands (unique names; see `test/registry.test.js`). Registration:
+Slash builders and handlers are **co-located** on features. The registry exports **27** slash commands (unique names; see `test/registry.test.js`). Registration:
 
 ```bash
 npm run register   # node src/commands/register.js
@@ -245,7 +245,7 @@ npm run test:unit        # test/*.test.js
 npm run test:integration # test/integration/*.test.js
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**22** commands, **17** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
+Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**27** commands, **21** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
 
 ---
 

@@ -25,4 +25,4 @@ function up(db, { addColumnIfMissing }) {
   `);
 }
 
-module.exports = { id: "017_warn_post_mvp", up };
+module.exports = { id: "018_warn_post_mvp", up };

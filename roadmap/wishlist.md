@@ -95,7 +95,7 @@
 
 ## 4. Cross-cutting theme
 
-- [ ] **One reconciliation pass** — staleness is the systemic issue: docs migration tables, AGENTS.md feature list, and roadmap statuses all lag shipped code in overlapping ways. A single "source of truth = `src/` + `src/db/migrations/` + `package.json`" pass clears roughly 15 items above in one sitting. Candidate: a tiny `npm run check:docs-drift` script that diffs the migration list and feature-module list against the tables that cite them.
+- [x] **One reconciliation pass** — staleness is the systemic issue: docs migration tables, AGENTS.md feature list, and roadmap statuses all lag shipped code in overlapping ways. A single "source of truth = `src/` + `src/db/migrations/` + `package.json`" pass clears roughly 15 items above in one sitting. Candidate: a tiny `npm run check:docs-drift` script that diffs the migration list and feature-module list against the tables that cite them.
 
 ---
 
