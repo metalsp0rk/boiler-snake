@@ -96,7 +96,7 @@ User commands:
 - `/leaderboard`
 
 Admin/mod commands (requires **Manage Guild** by default):
-- `/setxp message:<int> reaction:<int> voice:<int> msgcooldown:<int> reactioncooldown:<int>`
+- `/setxp message:<int> reaction:<int> voice:<int> msgcooldown:<int> reactioncooldown:<int> factor:<int>`
 - `/grantxp user:<user> amount:<int> [reason:<string>]` — manually grant XP (Manage Server only)
 - `/setdecay enabled:<bool> messages:<int> days:<int> percent:<0-95>`
 - `/leveltorole set role:<role> level:<int> dropdays:<int>`
@@ -110,11 +110,12 @@ Admin/mod commands (requires **Manage Guild** by default):
 - `/setcommandchannel list`
 - `/settings` (shows current guild settings, role mappings, allowed channels)
 - `/eventreminder create|edit|list|clear|sync|setchannel|optout|optin|mute|unmute|status` — scheduled event reminder pings
-- `/staff role add|remove|list` · `/staff settings` — guild staff roles (admin gate; also honeypot exemption)
+- `/staff role add|remove|setlevel|list` · `/staff settings` · `/staff syncpermissions` — guild staff roles (admin gate; also honeypot exemption)
 - `/note add|list|edit|delete|info|settings` — private staff notes about members
-- `/warn add|list|info|void|count|mine|settings` — formal permanent warnings
+- `/warn add|list|info|void|count|mine|export|settings` — formal permanent warnings
 - `/setwarn dm` — toggle member DMs on warn issue/void
 - `/setwarn log` — dedicated channel for warning issue/void embeds (falls back to audit log)
+- `/setwarn expiry` — default auto-void days for new warnings (0 = never, the default)
 - `/userinfo user:<member>` — staff card (XP + note/warning counts + Activity + drill-down buttons)
 - `/activityconfig ignore|backfill|status` — user-activity ignore list and history backfill (staff)
 - `/ticket create|for|close|archive|claim|…` — help tickets; `/ticket panel` posts Open-ticket button → modal
