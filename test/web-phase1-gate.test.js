@@ -389,18 +389,18 @@ const CACHED_PAGES = new Set([
  */
 const GATE_MEASURE = process.env.GATE_MEASURE === "1";
 /**
- * MEASURED ceilings (GATE_MEASURE run on this exact fixture, admin viewer).
- * users/:userId + activity run 98/89 statements — an N+1 in the profile/
- * activity DATA layer (per-day and per-ticket loops); recorded as a
- * must-improve finding in the subtask-23 report. The pin is the RATCHET:
- * counts may only go DOWN from here.
- */
-const STATEMENT_PINS = {
-  // pin keyed by ROUTE PATTERN (matches BUDGET_URLS labels): { req1, req2 }
-  "/g/:guildId": { req1: 11, req2: 3 },
-  "/g/:guildId/users": { req1: 4, req2: 4 },
-  "/g/:guildId/users/:userId": { req1: 98, req2: 98 },
-  "/g/:guildId/users/:userId/activity": { req1: 89, req2: 89 },
+  * MEASURED ceilings (GATE_MEASURE run on this exact fixture, admin viewer).
+  * users/:userId + activity: the profile/activity DATA-layer N+1 (per-channel
+  * honeypot + ignore-set re-reads, 4N+4 statements) was closed by a shared
+  * skip-context snapshot in userActivity/service.js — 98/89 → 20/11 measured.
+  * The pin is the RATCHET: counts may only go DOWN from here.
+  */
+ const STATEMENT_PINS = {
+   // pin keyed by ROUTE PATTERN (matches BUDGET_URLS labels): { req1, req2 }
+   "/g/:guildId": { req1: 11, req2: 3 },
+   "/g/:guildId/users": { req1: 4, req2: 4 },
+   "/g/:guildId/users/:userId": { req1: 20, req2: 20 },
+   "/g/:guildId/users/:userId/activity": { req1: 11, req2: 11 },
   "/g/:guildId/warnings": { req1: 6, req2: 6 },
   "/g/:guildId/notes": { req1: 6, req2: 6 },
   "/g/:guildId/settings": { req1: 8, req2: 4 },

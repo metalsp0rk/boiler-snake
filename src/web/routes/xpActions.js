@@ -401,12 +401,4 @@ function registerXpActionsRoutes(app, options = {}) {
 
 module.exports = {
   registerXpActionsRoutes,
-  // Grant surface (pinned by test/web-xp-grant.test.js + the Phase-2 gate)
-  GRANT_PATH,
-  AMOUNT_RE,
-  REASON_MAX_LEN,
-  parseGrantInput,
-  isProvenBot,
-  makeCacheOnlyGuild,
-  respondGrantRedirect,
 };

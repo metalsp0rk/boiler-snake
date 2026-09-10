@@ -129,8 +129,13 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
       assert.equal(dbApi.countAdminAudit(guild), 1, "exactly one row per call");
     });
 
-    it("resolves guild id in order: entry > req.guildId > req.params.guildId", () => {
-      const { req } = setup({ req: { guildId: "g-mw", params: { guildId: "g-params" } } });
+    it("resolves guild id in order: entry > req.guildAccess.guildId > req.params.guildId", () => {
+      // guildAccess is what guildScope actually publishes (guildScope.js
+      // :110-114) — the former req.guildId fixture documented a contract no
+      // middleware ever set.
+      const { req } = setup({
+        req: { guildAccess: { guildId: "g-mw" }, params: { guildId: "g-params" } },
+      });
       const viaReq = req.audit({ action: "a.viaReq" });
       assert.equal(viaReq.guild_id, "g-mw");
 

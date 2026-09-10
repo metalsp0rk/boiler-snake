@@ -105,7 +105,8 @@ function serializeAuditDetails(details) {
  * @param {string} [opts.targetId]
  * @param {object|string|null} [opts.details]  object → JSON.stringify; string must already be JSON
  * @param {number} [opts.createdAt]         epoch ms; defaults to now() (backdating for tests/mirrors)
- * @returns {object} inserted row (details_json as stored JSON text)
+ * @returns {object} stored row shape (id + all columns) assembled from the
+ *   insert — NOT re-read from the DB (details_json as stored JSON text)
  */
 function insertAdminAudit(opts) {
   const guildId = opts?.guildId == null ? "" : String(opts.guildId).trim();
@@ -127,6 +128,7 @@ function insertAdminAudit(opts) {
   const targetType = boundedField(opts?.targetType, MAX_AUDIT_TARGET, "Target type");
   const targetId = boundedField(opts?.targetId, MAX_AUDIT_TARGET, "Target id");
 
+  const createdAt = Number(opts?.createdAt) || now();
   const info = db
     .prepare(
       `
@@ -144,10 +146,25 @@ function insertAdminAudit(opts) {
       targetType,
       targetId,
       details.json,
-      Number(opts?.createdAt) || now()
+      createdAt
     );
 
-  return getAdminAuditById(Number(info.lastInsertRowid));
+  // Return the stored shape ASSEMBLED from the values we just wrote — no
+  // read-back SELECT. Every insert site (87 slash + 35 web) calls this as a
+  // statement; only the migration test reads the result, and the columns
+  // below are the full table (id + the 8 INSERT columns), so the contract
+  // "returns the inserted row" holds without a per-mutation PK round-trip.
+  return {
+    id: Number(info.lastInsertRowid),
+    guild_id: guildId,
+    actor_user_id: actorUserId,
+    origin: normalized.origin,
+    action,
+    target_type: targetType,
+    target_id: targetId,
+    details_json: details.json,
+    created_at: createdAt,
+  };
 }
 
 /**

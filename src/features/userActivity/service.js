@@ -13,6 +13,7 @@ const {
   earliestTrackedDay,
   getUserActivityMeta,
   isHoneypotChannel,
+  listHoneypotChannels,
 } = require("../../db");
 
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
@@ -201,16 +202,44 @@ function recordUserChannelMessage(message) {
 }
 
 /**
+ * Snapshot of everything shouldSkipChannel needs, built ONCE per ranking
+ * build (2 statements total). The per-row form (`shouldSkipChannel`) costs
+ * 2 statements PER CHANNEL PER WINDOW (ignore sets re-read per channel) —
+ * ranking filtered two windows × N channels, i.e. 4N+4 statements.
+ * better-sqlite3 is synchronous, so no mid-build mutation can tear the set.
+ * @param {string} guildId
+ * @returns {{honeypot: Set<string>, ignore: {channels: Set<string>, categories: Set<string>}}}
+ */
+function buildSkipContext(guildId) {
+  return {
+    honeypot: new Set(listHoneypotChannels(guildId).map((r) => r.channel_id)),
+    ignore: getActivityIgnoreSets(guildId),
+  };
+}
+
+/** Pure predicate form of shouldSkipChannel against a buildSkipContext snapshot. */
+function shouldSkipWith(skip, channelId, categoryId) {
+  if (skip.honeypot.has(channelId)) return true;
+  if (skip.ignore.channels.has(channelId)) return true;
+  if (categoryId && skip.ignore.categories.has(categoryId)) return true;
+  return false;
+}
+
+/**
  * Filter channel sums by ignore/honeypot using current guild channel parents.
+ * `skip` is an optional pre-built buildSkipContext snapshot (ranking builders
+ * share one across both windows); omitted = single-row live path.
  * @param {string} guildId
  * @param {import("discord.js").Guild|null|undefined} guild
  * @param {{ channel_id: string, count: number }[]} rows
+ * @param {{honeypot: Set<string>, ignore: object}|null} [skip]
  * @returns {{ channel_id: string, count: number }[]}
  */
-function filterCountedChannels(guildId, guild, rows) {
+function filterCountedChannels(guildId, guild, rows, skip = null) {
+  const ctx = skip || buildSkipContext(guildId);
   return rows.filter((r) => {
     const { categoryId } = resolveChannelMeta(guild, r.channel_id);
-    return !shouldSkipChannel(guildId, r.channel_id, categoryId);
+    return !shouldSkipWith(ctx, r.channel_id, categoryId);
   });
 }
 
@@ -226,15 +255,19 @@ function buildChannelRanking(opts) {
   const weeks = weeksForWindow(win, joinedMs);
   const joinWeeks = weeksSinceJoin(joinedMs);
 
+  // ONE honeypot+ignore snapshot shared by both windows (2 statements).
+  const skip = buildSkipContext(guildId);
   const windowRows = filterCountedChannels(
     guildId,
     guild,
-    sumByChannel(guildId, userId, { sinceDay })
+    sumByChannel(guildId, userId, { sinceDay }),
+    skip
   );
   const allTimeRows = filterCountedChannels(
     guildId,
     guild,
-    sumByChannel(guildId, userId, { sinceDay: null })
+    sumByChannel(guildId, userId, { sinceDay: null }),
+    skip
   );
 
   const windowTotal = windowRows.reduce((s, r) => s + r.count, 0);
@@ -283,15 +316,19 @@ function buildCategoryRanking(opts) {
   const weeks = weeksForWindow(win, joinedMs);
   const joinWeeks = weeksSinceJoin(joinedMs);
 
+  // ONE honeypot+ignore snapshot shared by both windows (2 statements).
+  const skip = buildSkipContext(guildId);
   const windowRows = filterCountedChannels(
     guildId,
     guild,
-    sumByChannel(guildId, userId, { sinceDay })
+    sumByChannel(guildId, userId, { sinceDay }),
+    skip
   );
   const allTimeRows = filterCountedChannels(
     guildId,
     guild,
-    sumByChannel(guildId, userId, { sinceDay: null })
+    sumByChannel(guildId, userId, { sinceDay: null }),
+    skip
   );
 
   /** @type {Map<string, number>} */
