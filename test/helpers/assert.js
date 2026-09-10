@@ -65,9 +65,13 @@ function assertRoleGranted(member, roleId) {
 }
 
 function assertRoleRemoved(member, roleId) {
+  const inCache = member.roles.cache.has(roleId);
+  const removalRecorded = member._removedRoles.includes(roleId);
   assert.ok(
-    !member.roles.cache.has(roleId) || member._removedRoles.includes(roleId),
-    `expected role ${roleId} removed`
+    !inCache && removalRecorded,
+    `expected role ${roleId} removed: role absent from cache AND removal recorded via roles.remove; ` +
+      `got cache.has=${inCache}, cache keys=${JSON.stringify([...member.roles.cache.keys()])}, ` +
+      `_removedRoles=${JSON.stringify(member._removedRoles)}`
   );
 }
 
