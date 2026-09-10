@@ -16,7 +16,7 @@
 
 ### High
 
-- [ ] **Add a real MIT `LICENSE` file at repo root** — `README.md:2`, `docs/index.md:113`, and `docs/FAQ.md:496` all claim MIT and link to `LICENSE`, which does not exist (404 links + legal gap; `package.json` already declares MIT).
+- [x] **Add a real MIT `LICENSE` file at repo root** — `README.md:2`, `docs/index.md:113`, and `docs/FAQ.md:496` all claim MIT and link to `LICENSE`, which does not exist (404 links + legal gap; `package.json` already declares MIT).
 - [x] **Fix phantom `/warn issue` → `/warn add`** — `docs/configuration.md:414` (command table) and `docs/architecture.md:187` (feature table). Real subcommands: `add|list|info|void|count|mine|export|settings` (`src/features/warnings/index.js`).
 
 ### Medium
