@@ -190,6 +190,6 @@ CREATE TABLE IF NOT EXISTS twitch_channels (
 
 **Still open (non-blocking):**
 
-- Exact default polling interval (recommend **2** minutes).
-- Whether to include game/category and viewer count on the embed (recommend **yes** for title + game; viewer count optional).
 - Test command in MVP vs follow-up.
+
+*(Previously open, resolved by shipping: the default polling interval is **2** minutes — §3.5 / §3.2 (`twitch_polling_interval_minutes` DEFAULT 2, clamped 1–60) — and the go-live embed ships title + game/category + viewer count — §3.3 (`createGoLiveEmbed` in `src/features/twitch/ticker.js` renders "Playing" and "Viewers" fields).)*
