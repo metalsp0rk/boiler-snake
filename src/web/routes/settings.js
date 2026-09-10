@@ -439,8 +439,4 @@ function registerSettingsRoutes(app, options = {}) {
 
 module.exports = {
   registerSettingsRoutes,
-  FLASH_KEYS,
-  redirectSettings,
-  readFlashFlag,
-  makeMutationHandler,
 };
