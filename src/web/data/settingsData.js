@@ -31,10 +31,6 @@
  * data/dashboardData.js).
  */
 
-/** §8.6 floor: per-guild cache ≥ 30 s. */
-const DEFAULT_CACHE_TTL_MS = 30_000;
-const MIN_CACHE_TTL_MS = 30_000;
-const DEFAULT_MAX_ENTRIES = 200;
 
 /**
  * Schema defaults mirrored for DISPLAY ONLY ("current vs default" column).
@@ -43,6 +39,10 @@ const DEFAULT_MAX_ENTRIES = 200;
  * (AGENTS.md: message 20 s / reaction 10 s). The test proves these match a
  * freshly-ensured settings row, so drift between the two fails loudly.
  */
+const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, textOrNull, numOrNull, makeGuardRead, makeCacheSet } = require("./_shared");
+
+
+const guardRead = makeGuardRead("settings");
 const DEFAULTS = Object.freeze({
   msgXp: 5,
   reactionXp: 2,
@@ -69,37 +69,8 @@ function isSecretColumnName(name) {
   return SECRET_COLUMN_RE.test(String(name));
 }
 
-/** Defensive text read: trim + cap, non-strings → null. */
-function textOrNull(value, max = 100) {
-  if (typeof value !== "string") return null;
-  const t = value.trim();
-  if (!t) return null;
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
-}
 
-/** Finite-number read (null when absent/non-finite). */
-function numOrNull(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
 
-/**
- * Guarded facade read: a failing cluster degrades to { available:false }
- * instead of 500ing the whole page (same discipline as dashboardData).
- * @param {() => unknown} read
- * @param {string} label static label for the loud log
- */
-function guardRead(read, label) {
-  try {
-    return { available: true, value: read() };
-  } catch (err) {
-    console.warn(
-      `[web] settings: ${label} read failed:`,
-      err?.code || err?.name || err?.message || "unknown"
-    );
-    return { available: false, value: null };
-  }
-}
 
 /**
  * Whitelist-project ONE raw guild_settings row onto the view model,
@@ -159,14 +130,7 @@ function createSettingsData(options = {}) {
   /** guildId → { data, cachedAt } (insertion-ordered bound, lazy expiry). */
   const cache = new Map();
 
-  function cacheSet(key, entry) {
-    cache.set(key, entry);
-    while (cache.size > maxEntries) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
-    }
-  }
+  const cacheSet = makeCacheSet(cache, maxEntries);
 
   /**
    * ONE uncached assembly = exactly 3 bounded facade queries.

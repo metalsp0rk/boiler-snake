@@ -46,11 +46,10 @@
  */
 
 const { isSecretColumnName } = require("./settingsData");
+const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, textOrNull, numOrNull, makeGuardRead, makeCacheSet } = require("./_shared");
 
-/** §8.6 floor: per-guild cache ≥ 30 s. */
-const DEFAULT_CACHE_TTL_MS = 30_000;
-const MIN_CACHE_TTL_MS = 30_000;
-const DEFAULT_MAX_ENTRIES = 200;
+const guardRead = makeGuardRead("integrations");
+
 
 /** §8.6 list budget: no panel of this page ever renders more than 100 rows. */
 const LIST_CAP = 100;
@@ -68,37 +67,8 @@ const DEFAULTS = Object.freeze({
   twitchPollingIntervalMinutes: 2,
 });
 
-/** Defensive text read: trim + cap, non-strings → null (settingsData twin). */
-function textOrNull(value, max = 100) {
-  if (typeof value !== "string") return null;
-  const t = value.trim();
-  if (!t) return null;
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
-}
 
-/** Finite-number read (null when absent/non-finite). */
-function numOrNull(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
 
-/**
- * Guarded facade read: a failing cluster degrades to { available:false }
- * instead of 500ing the whole page (same discipline as settingsData).
- * @param {() => unknown} read
- * @param {string} label static label for the loud log
- */
-function guardRead(read, label) {
-  try {
-    return { available: true, value: read() };
-  } catch (err) {
-    console.warn(
-      `[web] integrations: ${label} read failed:`,
-      err?.code || err?.name || err?.message || "unknown"
-    );
-    return { available: false, value: null };
-  }
-}
 
 /**
  * Environment gate for YouTube — mirrors src/features/youtube/ticker.js
@@ -248,14 +218,7 @@ function createIntegrationsData(options = {}) {
   /** guildId → { data, cachedAt } (insertion-ordered bound, lazy expiry). */
   const cache = new Map();
 
-  function cacheSet(key, entry) {
-    cache.set(key, entry);
-    while (cache.size > maxEntries) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
-    }
-  }
+  const cacheSet = makeCacheSet(cache, maxEntries);
 
   /**
    * ONE uncached assembly: 8 fixed guild-scoped facade reads + one indexed

@@ -50,12 +50,11 @@ const {
   snapshotTickerHealth,
   TICKER_STATUSES,
 } = require("./tickerHealth");
+const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, numOrNull, textOrNull, makeCacheSet } = require("./_shared");
 
-/** §8.6 floor: dashboard aggregates cached ≥ 30 s. Hard lower bound. */
-const DEFAULT_CACHE_TTL_MS = 30_000;
-const MIN_CACHE_TTL_MS = 30_000;
-/** Process bound for the per-guild cache (guilds are few; still bounded). */
-const DEFAULT_MAX_ENTRIES = 200;
+const asFiniteNumber = numOrNull;
+const clampText = textOrNull;
+
 
 /** Hard caps for every list section (§8.6: LIMIT ≤ 100; all well under). */
 const DASHBOARD_LIMITS = Object.freeze({
@@ -110,10 +109,6 @@ function guardRead(read, label) {
   }
 }
 
-function asFiniteNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
 
 /** Clamp helper: [min, max] with NaN → fallback. */
 function clampNum(value, { min, max, fallback }) {
@@ -122,12 +117,6 @@ function clampNum(value, { min, max, fallback }) {
   return Math.min(max, Math.max(min, n));
 }
 
-function clampText(value, max) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
-}
 
 /**
  * Normalize one injected now-playing provider result to the view contract.
@@ -255,15 +244,7 @@ function createDashboardData(options = {}) {
   /** guildId → { data, cachedAt, expiresAt, served } (never mutated after store) */
   const cache = new Map();
 
-  /** Insertion-ordered bound (same discipline as auth/guildAccess.js). */
-  function cacheSet(key, entry) {
-    cache.set(key, entry);
-    while (cache.size > maxEntries) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
-    }
-  }
+  const cacheSet = makeCacheSet(cache, maxEntries);
 
   async function readTickers() {
     const read = getTickerHealth || ((/* guildId */) => snapshotTickerHealth(now()));
