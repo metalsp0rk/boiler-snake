@@ -26,7 +26,6 @@ const express = require("express");
 const { registerTranscriptRoutes } = require("./routes/transcripts");
 const { registerOauthRoutes } = require("./routes/oauth");
 const { registerAuthRoutes } = require("./routes/auth");
-const { registerGuildShellRoutes } = require("./routes/guildShell");
 const { registerUsersRoutes } = require("./routes/users");
 const { registerModerationRoutes } = require("./routes/moderation");
 const { registerSettingsRoutes } = require("./routes/settings");
@@ -261,17 +260,14 @@ function createWebApp(options = {}) {
     botGuilds: options.botGuilds,
   });
   registerOauthRoutes(app);
-  // Guild shell (Phase 0c): scoped pages, guild switcher, login redirect for
-  // anonymous /g/*. The injectable seams keep it offline-testable against
-  // the same fake Discord the login routes use (guildScope needs
-  // getUserGuilds + getUserGuildMember, bot∩user intersection).
+  // Guild shell + dashboard (Phase 0c shell, Phase 1 dashboard): the scoped
+  // /g/:guildId surfaces. This registrar ALSO mounts the guildScope gate for
+  // every deeper /g/<id>/... route (mounted here, BEFORE all of them) and
+  // publishes the shared resolver onto `options` for the rest of this
+  // function — the injectable seams keep it offline-testable against the
+  // same fake Discord the login routes use (guildScope needs getUserGuilds +
+  // getUserGuildMember, bot∩user intersection).
   registerDashboardRoutes(app, options);
-  registerGuildShellRoutes(app, {
-    guildAccess: options.guildAccess,
-    apiBase: options.apiBase,
-    fetchImpl: options.fetchImpl,
-    botGuilds: options.botGuilds,
-  });
   // Ticket surface (Phase 0c, subtask 12): login-mandatory + staff-or-
   // participant gate (§8.4). Gets the SAME resolver seams as the /g shell —
   // an injected guildAccess covers both surfaces, so tests and future

@@ -62,7 +62,7 @@
  *
  * Success answers POST-Redirect-GET with a 302 to /g/:guildId/staff; user
  * validation errors answer 400 with a fixed plain-text message (inputs are
- * never echoed). Route position: AFTER routes/guildShell.js in app.js, so
+ * never echoed). Route position: AFTER routes/dashboard.js in app.js, so
  * the shell's /g/:guildId guildScope already ran (anon ⇒ login redirect,
  * cross-guild/stranger ⇒ generic 404 — §8.6 never-403 rule); requireTier
  * inside each route denies the wrong tier with the fixed generic 403. CSRF

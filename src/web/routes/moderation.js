@@ -3,8 +3,8 @@
  * (roadmap/web-admin.md §8.6 "Moderation: warnings list/issue/void, notes |
  * Staff | Staff | 1 read · 3 write"; subtask 29).
  *
- * Routes (UNDER the /g/:guildId guildScope mounted by dashboard/guildShell —
- * register AFTER registerGuildShellRoutes in app.js, like routes/users.js):
+ * Routes (UNDER the /g/:guildId guildScope mounted by dashboard.js —
+ * register AFTER registerDashboardRoutes in app.js, like routes/users.js):
  *   GET  /g/:guildId/warnings — staff+ — guild-wide warnings + the issue/void
  *        forms; filters: u (subject snowflake) · state=active|voided|all
  *        (default active, mirroring slash) · n page size (≤100) · o offset.
