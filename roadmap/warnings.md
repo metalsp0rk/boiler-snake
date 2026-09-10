@@ -247,6 +247,6 @@ Per-warning `expires_days` on `/warn add` overrides the guild default (`0` = nev
 
 **Still open (non-blocking):**
 
-- Whether void DMs use the same toggle as issue DMs (recommend **yes**).  
-- Cross-link UX: `/warn add` optional `note:` from staff notes.  
 - Export / prune policy for left members (recommend **keep forever**).
+
+*(Previously open, resolved by shipping: void DMs use the same `warn_dm_members` toggle as issue DMs — `warnDmEnabled` (`src/features/warnings/index.js:326`) gates both the issue and void DM paths; the cross-link UX shipped as the optional `note:` option on `/warn add`.)*
