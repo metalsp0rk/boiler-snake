@@ -74,10 +74,10 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | Table / change | Notes |
 |----------------|-------|
 | `warnings` | Permanent rows; void metadata; optional `related_note_id` → `staff_notes` (**shipped**, migration `009`) |
-| `warnings.expires_at` / evidence columns | Opt-in expiry + staff evidence (**shipped**, migration `017`) |
+| `warnings.expires_at` / evidence columns | Opt-in expiry + staff evidence (**shipped**, migration `018`) |
 | `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void (**shipped**) |
 | `guild_settings.warn_log_channel_id` | Dedicated warn issue/void log; audit fallback (**shipped**) |
-| `guild_settings.warn_expiry_days` | Default `0` (never); guild default for new warnings (**shipped**, migration `017`) |
+| `guild_settings.warn_expiry_days` | Default `0` (never); guild default for new warnings (**shipped**, migration `018`) |
 
 ### Gork (AI keyword Q&A)
 
