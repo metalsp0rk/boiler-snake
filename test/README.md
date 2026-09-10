@@ -31,6 +31,8 @@ npm test
 | `helpers/discord.js` | Plain-object Discord fakes |
 | `helpers/harness.js` | `createIntegrationEnv()` — DB + registry + mock guild graph |
 | `helpers/assert.js` | Reply / XP / ban / role assertions |
+| `helpers/fixtures.js` | Stable default IDs (`IDS`), `ADMIN_PERMS`, `uniqueId()` for isolation |
+| `helpers/lavalink.js` | In-memory Lavalink manager/player fake (`createFakeLavalinkManager`, `makeTrack`) injected via music's `setManagerForTests` |
 
 ### Adding a case
 
