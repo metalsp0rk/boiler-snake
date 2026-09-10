@@ -44,8 +44,52 @@ const DELAY_MS = 1100;
  */
 const guildJobs = new Map();
 
+/**
+ * TEST SEAM (precedent: music's `setManagerForTests`, gork's injectable
+ * `now` clock): live inter-page pacing for the backfill loops. Defaults to
+ * the shipped DELAY_MS — production behavior is unchanged — and tests
+ * lower it to 0 so a cancelled job exits the loop without burning the
+ * rate-limit pause in wall-clock time. See setBackfillPageDelayForTests.
+ */
+let pageDelayMs = DELAY_MS;
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * TEST SEAM: override the backfill loop's inter-page delay (ms >= 0).
+ * Pass null/undefined to restore the shipped DELAY_MS pacing. Never
+ * called by production paths; integration tests reset it in `finally`.
+ *
+ * @param {number|null|undefined} ms
+ */
+function setBackfillPageDelayForTests(ms) {
+  pageDelayMs =
+    ms != null && Number.isFinite(ms) && ms >= 0 ? Math.floor(ms) : DELAY_MS;
+}
+
+/**
+ * TEST SEAM: resolves once the in-process backfill job for `guildId` has
+ * settled (immediately when no job is running). The job promise is awaited
+ * to completion — including its finally-block status write — so tests can
+ * replace "wait ~2.5s and hope the cooperative stop landed" sleeps with a
+ * deterministic drain. Never rejects.
+ *
+ * @param {string} guildId
+ * @returns {Promise<void>}
+ */
+async function whenBackfillSettledForTests(guildId) {
+  let seen = null;
+  for (;;) {
+    const job = guildJobs.get(guildId);
+    // No job, or the same (already-awaited) job is still recorded: the
+    // finally-block delete has run (or a zero-await job settled before
+    // registration) — either way the guild is settled.
+    if (!job || job === seen) return;
+    seen = job;
+    await Promise.resolve(job.promise).catch(() => {});
+  }
 }
 
 /**
@@ -214,7 +258,9 @@ async function backfillChannelHistory(opts) {
     }
 
     pages += 1;
-    await sleep(DELAY_MS);
+    // Test seam: `pageDelayMs` is the shipped DELAY_MS unless a test
+    // overrode it (see setBackfillPageDelayForTests).
+    await sleep(pageDelayMs);
 
     if (isCancelled()) {
       return { counted, complete: false, partial: true, cancelled: true };
@@ -588,4 +634,7 @@ module.exports = {
   isBackfillCancelled,
   backfillChannel,
   backfillChannelHistory,
+  /** TEST SEAMS: settle-drain + page-delay override (see definitions). */
+  whenBackfillSettledForTests,
+  setBackfillPageDelayForTests,
 };
