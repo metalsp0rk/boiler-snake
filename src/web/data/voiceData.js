@@ -51,11 +51,10 @@
  */
 
 const { isSecretColumnName } = require("./settingsData");
+const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, textOrNull, numOrNull, makeGuardRead, makeCacheSet } = require("./_shared");
 
-/** §8.6 floor: per-guild cache ≥ 30 s (subtask floor is ≥5 s; we use 30). */
-const DEFAULT_CACHE_TTL_MS = 30_000;
-const MIN_CACHE_TTL_MS = 30_000;
-const DEFAULT_MAX_ENTRIES = 200;
+const guardRead = makeGuardRead("voice");
+
 
 /** §8.6 list cap: the session panel never renders or reads more. */
 const SESSIONS_CAP = 100;
@@ -69,19 +68,7 @@ const MUSIC_STATUSES = Object.freeze(["playing", "idle", "unavailable", "unknown
 
 const LIVE_UNAVAILABLE_DETAIL = "live state unavailable";
 
-/** Defensive text read: trim + cap, non-strings → null (settingsData twin). */
-function textOrNull(value, max = 100) {
-  if (typeof value !== "string") return null;
-  const t = value.trim();
-  if (!t) return null;
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
-}
 
-/** Finite-number read (null when absent/non-finite). */
-function numOrNull(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
 
 /** Non-negative integer read (null when absent/non-finite/negative). */
 function nonNegNumOrNull(value) {
@@ -89,23 +76,6 @@ function nonNegNumOrNull(value) {
   return n == null || n < 0 ? null : Math.floor(n);
 }
 
-/**
- * Guarded read: a failing cluster degrades to { available:false } instead of
- * 500ing the whole page (same discipline as settingsData/integrationsData).
- * @param {() => unknown} read
- * @param {string} label static label for the loud log
- */
-function guardRead(read, label) {
-  try {
-    return { available: true, value: read() };
-  } catch (err) {
-    console.warn(
-      `[web] voice: ${label} read failed:`,
-      err?.code || err?.name || err?.message || "unknown"
-    );
-    return { available: false, value: null };
-  }
-}
 
 /**
  * ONE bounded, guild-scoped, parameterized session read (see module header,
@@ -473,14 +443,7 @@ function createVoiceData(options = {}) {
   /** guildId → { data, cachedAt } (insertion-ordered bound, lazy expiry). */
   const cache = new Map();
 
-  function cacheSet(key, entry) {
-    cache.set(key, entry);
-    while (cache.size > maxEntries) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
-    }
-  }
+  const cacheSet = makeCacheSet(cache, maxEntries);
 
   /** Voice-XP config cluster: 1 PK row, whitelist projection only. */
   function buildConfig(guildId) {
