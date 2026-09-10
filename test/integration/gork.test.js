@@ -3,8 +3,13 @@
  * (roadmap/gork.md §7.12): real SQLite, mocked Discord I/O, and a mocked
  * global fetch — no real network.
  *
- * The gork pipeline hook is DETACHED (src/bot/pipelines.js never awaits it),
- * so these tests poll for the recorded reply after driving `onMessageCreate`.
+ * The gork pipeline hook is DETACHED (src/bot/pipelines.js never awaits
+ * it). Tests therefore await the trigger module's settle seam —
+ * `whenGorkIdleForTests()` (src/features/gork/trigger.js test seam: every
+ * detached unit — hook run, LLM job, audit posts, memory turn — registers
+ * there) — instead of any wall-clock sleep or polling. For a job parked
+ * behind a test-controlled gate (FIFO/queue-full tests) the queue state
+ * itself (`gorkQueue.waitingCount`) is the structural proof.
  *
  * Each test builds a FRESH integration env: `loadDb()` points DB_PATH at a new
  * temp SQLite file and resets the src require cache, so the in-memory gork
@@ -242,21 +247,29 @@ function embedText(embed) {
   return parts.join("\n");
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * The CURRENT env's trigger module instance. createIntegrationEnv() resets
+ * the src require cache, so this must be required AFTER freshEnv() to get
+ * the same module instance the pipeline uses — it carries the live
+ * gorkQueue AND the `whenGorkIdleForTests` settle seam (test seam in
+ * src/features/gork/trigger.js: hook runs, LLM jobs, audit posts and
+ * memory turns all register there). Awaiting it replaces every
+ * "wait to confirm absence" sleep and every poll: when it resolves, all
+ * detached gork work started so far has FULLY settled.
+ */
+function gorkIdle() {
+  return require("../../src/features/gork/trigger").whenGorkIdleForTests();
 }
 
 /**
- * Poll (every 25ms) until `predicate()` is truthy or the timeout elapses.
- * Needed because the gork LLM job is detached from the pipeline.
+ * Flush the microtask queue (macrotask boundary — NOT a timed sleep): lets
+ * the fully mocked (timer-free) Discord fake chains run until their next
+ * BLOCKING point (a test-held gate or a parked FIFO turn). Used where a
+ * trigger is intentionally parked: after this, "not answered yet" is a
+ * structural fact of the held gate/turn, not a timing assumption.
  */
-async function waitFor(predicate, timeoutMs = 2000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (predicate()) return true;
-    if (Date.now() >= deadline) return false;
-    await sleep(25);
-  }
+function flush() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 // ---------- env cleanup ----------
@@ -318,12 +331,11 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: why is the sky blue?",
       });
 
-      // The pipeline never awaits the gork job — poll for the reply.
+      // The pipeline never awaits the gork job — the settle seam drains
+      // hook + LLM job + audit posts deterministically (no polling).
       await env.onMessageCreate(message);
-      assert.ok(
-        await waitFor(() => replies.length >= 1),
-        "expected gork to reply to the keyword message"
-      );
+      await gorkIdle();
+      assert.ok(replies.length >= 1, "expected gork to reply to the keyword message");
       assert.equal(replies.length, 1, "expected exactly one reply");
       assert.equal(
         replies[0].content,
@@ -365,9 +377,10 @@ describe("integration: gork (AI keyword Q&A)", () => {
         userMsg.content.includes("[member] Anyone know about light scattering?")
       );
 
-      // Audit embed posted to the configured audit channel.
+      // Audit embed posted to the configured audit channel (the drain
+      // already covered it: audit posts are tracked gork work).
       assert.ok(
-        await waitFor(() => env.channels.log.sent.length >= 1),
+        env.channels.log.sent.length >= 1,
         "expected the Q&A audit embed in the audit channel"
       );
       const auditText = embedText(env.channels.log.sent[0].embeds[0]);
@@ -402,10 +415,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: first question",
       });
       await env.onMessageCreate(m1);
-      assert.ok(
-        await waitFor(() => r1.length >= 1),
-        "first trigger must be answered"
-      );
+      await gorkIdle(); // first trigger's job fully settled
+      assert.ok(r1.length >= 1, "first trigger must be answered");
       assert.deepEqual(
         c1,
         [],
@@ -417,12 +428,11 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: second question",
       });
       await env.onMessageCreate(m2);
-      assert.ok(
-        await waitFor(() => c2.length >= 1),
-        "cooldown hit must react with the clock emoji"
-      );
-      assert.deepEqual(c2, ["🕐"], "exactly one clock reaction on a hit");
-      await sleep(250); // give any erroneous reply/second react room to land
+      // Drain: the cooldown-hit hook (clock react → return) is fully
+      // processed; no LLM job exists for m2, so nothing can arrive later.
+      // Deterministic replacement for the old 250ms "room to land" sleep.
+      await gorkIdle();
+      assert.deepEqual(c2, ["🕐"], "cooldown hit must react with the clock emoji");
       assert.equal(
         r2.length,
         0,
@@ -462,10 +472,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         member: env.members.adminMember,
       });
       await env.onMessageCreate(m1);
-      assert.ok(
-        await waitFor(() => r1.length >= 1),
-        "staff first trigger must be answered"
-      );
+      await gorkIdle();
+      assert.ok(r1.length >= 1, "staff first trigger must be answered");
 
       const { message: m2, replies: r2, reacts: c2 } = makeGorkMessage(env, {
         id: "t-staff-2",
@@ -474,10 +482,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         member: env.members.adminMember,
       });
       await env.onMessageCreate(m2);
-      assert.ok(
-        await waitFor(() => r2.length >= 1),
-        "staff second trigger must bypass the cooldown"
-      );
+      await gorkIdle();
+      assert.ok(r2.length >= 1, "staff second trigger must bypass the cooldown");
       assert.equal(r2[0].content, "Second admin answer (staff bypass).");
       assert.equal(fetchMock.calls.length, 2, "both staff triggers run the LLM");
       assert.deepEqual(
@@ -505,8 +511,11 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
 
       // The pipeline must complete without throwing even with gork armed.
+      // Drain: the hook ran to its "no AI key" early return and fully
+      // settled — with no job started, silence is now provable, not
+      // observed after a 500ms guess.
       await env.onMessageCreate(message);
-      await sleep(500);
+      await gorkIdle();
       assert.equal(replies.length, 0, "no AI key -> no reply at all");
       assert.equal(fetchMock.calls.length, 0, "no AI key -> no fetch calls");
       assert.equal(typing.calls, 0, "no AI key -> no typing indicator");
@@ -585,8 +594,11 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
 
       await env.onMessageCreate(message);
-      const answered = await waitFor(() => replies.length >= 1);
-      assert.ok(answered, "keyword-alone with a reply reference must be answered");
+      await gorkIdle();
+      assert.ok(
+        replies.length >= 1,
+        "keyword-alone with a reply reference must be answered"
+      );
       assert.equal(
         replies[0].content,
         "Your keys, member. In the fridge, probably."
@@ -652,8 +664,12 @@ describe("integration: gork (AI keyword Q&A)", () => {
         member: env.members.member,
       });
       await env.onMessageCreate(mA);
-      assert.ok(
-        await waitFor(() => fetchMock.calls.length >= 1),
+      // Flush: A's job chain is timer-free mocks, so it now sits parked in
+      // the first LLM fetch (the gate) — the only blocking point.
+      await flush();
+      assert.equal(
+        fetchMock.calls.length,
+        1,
         "first trigger must start the LLM job"
       );
       const typingAfterA = typing.calls;
@@ -666,13 +682,22 @@ describe("integration: gork (AI keyword Q&A)", () => {
         member: env.members.member2,
       });
       await env.onMessageCreate(mB);
+      await flush(); // B's hook fully processed: typing sent + parked
 
       // Queued requests still start the typing indicator while waiting.
       assert.ok(
-        await waitFor(() => typing.calls > typingAfterA),
+        typing.calls > typingAfterA,
         "queued request must start typing while it waits"
       );
-      await sleep(200);
+      // Structural "not answered yet" (replaces the old 200ms sleep): B is
+      // provably parked on its FIFO turn — it cannot fetch or reply until
+      // A releases the slot.
+      const { gorkQueue } = require("../../src/features/gork/trigger");
+      assert.equal(
+        gorkQueue.waitingCount({ guildId: env.guild.id }),
+        1,
+        "second trigger must be parked in the FIFO while the first is in flight"
+      );
       assert.equal(
         rB.length,
         0,
@@ -680,8 +705,9 @@ describe("integration: gork (AI keyword Q&A)", () => {
       );
 
       releaseFirst();
+      await gorkIdle(); // both jobs (answers + audits) settled
       assert.ok(
-        await waitFor(() => rA.length >= 1 && rB.length >= 1, 5000),
+        rA.length >= 1 && rB.length >= 1,
         "both requests must be answered once the first completes"
       );
       assert.equal(rA[0].content, "Answer A (first in flight).");
@@ -763,35 +789,46 @@ describe("integration: gork (AI keyword Q&A)", () => {
         return { message, replies };
       });
       for (const { message } of entries) await env.onMessageCreate(message);
+      // Flush: every hook processed (all mocks are timer-free) — the 7th
+      // queue-full reply has landed and the first job sits parked in the
+      // gated fetch.
+      await flush();
 
       // The 7th (queue full) is dropped with the locked canned reply.
-      assert.ok(
-        await waitFor(() => entries[6].replies.length >= 1),
+      assert.equal(
+        entries[6].replies[0]?.content,
+        QUEUE_FULL_REPLY,
         "7th trigger must receive the queue-full reply"
       );
-      assert.equal(entries[6].replies[0].content, QUEUE_FULL_REPLY);
 
-      // Only the first request is in flight; requests 2-6 are still queued
-      // (the detached LLM jobs wait on their FIFO slot, so no fetch yet).
+      // Structural pre-release state (replaces the old 200ms sleep):
+      // request 1 is in flight parked on the test gate and requests 2-6
+      // are provably parked on their FIFO slots (waitingCount) — so no
+      // fetch beyond the first is possible and none of 1-6 can be
+      // answered yet.
+      const { gorkQueue } = require("../../src/features/gork/trigger");
+      assert.equal(
+        gorkQueue.waitingCount({ guildId: env.guild.id }),
+        5,
+        "requests 2-6 must be parked in the guild FIFO"
+      );
       assert.equal(
         fetchMock.calls.length,
         1,
         "only the first trigger runs the LLM while the rest are queued"
       );
-      await sleep(200);
       assert.equal(
         entries.slice(0, 6).every((e) => e.replies.length >= 1),
         false,
         "queued triggers must not be answered before the first completes"
       );
 
-      // Release the first: the five queued requests drain FIFO.
+      // Release the first: the five queued requests drain FIFO; the settle
+      // seam drains all six jobs (answers + audits) deterministically.
       releaseFirst();
+      await gorkIdle();
       assert.ok(
-        await waitFor(
-          () => entries.slice(0, 6).every((e) => e.replies.length >= 1),
-          5000
-        ),
+        entries.slice(0, 6).every((e) => e.replies.length >= 1),
         "all queued triggers must be answered once the first completes"
       );
       assert.equal(
@@ -866,8 +903,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
 
       await env.onMessageCreate(message);
-      const answered = await waitFor(() => replies.length >= 1, 3000);
-      assert.ok(answered, "expected a reply after the tool loop");
+      await gorkIdle(); // full tool loop (chat -> search -> answer) settled
+      assert.ok(replies.length >= 1, "expected a reply after the tool loop");
       assert.equal(
         replies[0].content,
         "Node streams are backpressure-aware pipes: you process data sequentially instead of buffering it all."
@@ -961,11 +998,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: how do I center a div?",
       });
       await env.onMessageCreate(message);
-
-      assert.ok(
-        await waitFor(() => replies.length >= 1, 5000),
-        "expected the read-page grounded answer"
-      );
+      await gorkIdle(); // tool loop settled: answer + page fetch are in
       assert.match(replies[0].content, /flex container/i);
 
       // Two chat calls + exactly one page fetch of the resolved URL.
@@ -1002,9 +1035,10 @@ describe("integration: gork (AI keyword Q&A)", () => {
         "nav must be stripped"
       );
 
-      // Audit records page reads separately from searches.
+      // Audit records page reads separately from searches (covered by the
+      // drain: the Q&A audit post is tracked gork work).
       assert.ok(
-        await waitFor(() => env.channels.log.sent.length >= 1),
+        env.channels.log.sent.length >= 1,
         "expected the Q&A audit embed"
       );
       const auditText = embedText(env.channels.log.sent[0].embeds[0]);
@@ -1120,7 +1154,9 @@ describe("integration: gork (AI keyword Q&A)", () => {
         channel: ch,
       });
       await env.onMessageCreate(message);
-      await sleep(500);
+      // Drain: the hook settled on its open-ticket early return — no job
+      // exists, so silence is provable (replaces the old 500ms sleep).
+      await gorkIdle();
       assert.equal(
         replies.length,
         0,
@@ -1222,8 +1258,11 @@ describe("integration: gork (AI keyword Q&A)", () => {
       assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.member2), false);
 
       // Audit trail recorded the ban + unban (not the failed attempts).
+      // The command handlers await logConfigChange before replying and the
+      // router awaits the handler, so the embeds have landed by now — no
+      // wait needed.
       assert.ok(
-        await waitFor(() => env.channels.log.sent.length >= 2),
+        env.channels.log.sent.length >= 2,
         "expected ban + unban audit embeds"
       );
       const auditAll = env.channels.log.sent
@@ -1283,8 +1322,10 @@ describe("integration: gork (AI keyword Q&A)", () => {
         id: "t-off-1",
         content: "gork: why is the sky blue?",
       });
+      // Drain: hook settled on the gork_enabled early return; silence is
+      // structural (replaces the old 500ms sleep).
       await env.onMessageCreate(message);
-      await sleep(500);
+      await gorkIdle();
       assert.equal(replies.length, 0, "disabled gork must not reply");
       assert.equal(fetchMock.calls.length, 0, "disabled gork must not call the LLM");
 
@@ -1305,10 +1346,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: why is the sky blue?",
       });
       await env.onMessageCreate(m2);
-      assert.ok(
-        await waitFor(() => r2.length >= 1),
-        "re-enabled gork must answer again"
-      );
+      await gorkIdle();
+      assert.ok(r2.length >= 1, "re-enabled gork must answer again");
       assert.equal(r2[0].content, "Rayleigh scattering, member.");
     } finally {
       restoreEnv(saved);
@@ -1339,10 +1378,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: why is the sky blue?",
       });
       await env.onMessageCreate(m1);
-      assert.ok(
-        await waitFor(() => r1.length >= 1),
-        "banned trigger must get the canned reply"
-      );
+      await gorkIdle(); // canned-reply hook settled
+      assert.ok(r1.length >= 1, "banned trigger must get the canned reply");
       assert.equal(r1[0].content, LUNCH, "ban must be disguised as a failure");
       assert.equal(fetchMock.calls.length, 0, "banned trigger must skip the LLM");
       assert.equal(typing.calls, 0, "banned trigger must not type");
@@ -1356,10 +1393,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         member: env.members.adminMember,
       });
       await env.onMessageCreate(m2);
-      assert.ok(
-        await waitFor(() => r2.length >= 1),
-        "banned staff trigger must get the canned reply"
-      );
+      await gorkIdle();
+      assert.ok(r2.length >= 1, "banned staff trigger must get the canned reply");
       assert.equal(r2[0].content, LUNCH);
       assert.equal(fetchMock.calls.length, 0, "banned staff must skip the LLM too");
 
@@ -1378,10 +1413,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: why is the sky blue?",
       });
       await env.onMessageCreate(m3);
-      assert.ok(
-        await waitFor(() => r3.length >= 1),
-        "unbanned trigger must be answered again"
-      );
+      await gorkIdle();
+      assert.ok(r3.length >= 1, "unbanned trigger must be answered again");
       assert.equal(r3[0].content, "Rayleigh scattering strikes again.");
       assert.equal(fetchMock.calls.length, 1, "exactly the unbanned trigger hit the LLM");
     } finally {
@@ -1486,10 +1519,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: `gork: who broke it? <@${IDS.member2}>`,
       });
       await env.onMessageCreate(message);
-      assert.ok(
-        await waitFor(() => replies.length >= 1),
-        "expected the sanitized answer"
-      );
+      await gorkIdle();
+      assert.ok(replies.length >= 1, "expected the sanitized answer");
 
       // Raw markup gone; resolved handle rendered instead.
       assert.ok(
@@ -1547,8 +1578,9 @@ describe("integration: gork (AI keyword Q&A)", () => {
         },
       });
       await env.onMessageCreate(message);
+      await gorkIdle();
       assert.ok(
-        await waitFor(() => replies.length >= 1),
+        replies.length >= 1,
         "deleted reference must degrade to backfill context, not crash"
       );
       assert.equal(replies[0].content, "Nothing survives deletion, member.");
@@ -1593,10 +1625,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: say something long and colorful",
       });
       await env.onMessageCreate(message);
-      assert.ok(
-        await waitFor(() => replies.length >= 1),
-        "expected the first chunk"
-      );
+      await gorkIdle(); // split answer fully sent
+      assert.ok(replies.length >= 1, "expected the first chunk");
 
       const sentPayloads = ch_all_sent(env);
       assert.ok(
@@ -1644,8 +1674,9 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: best unix for a 386?",
       });
       await env.onMessageCreate(message);
+      await gorkIdle(); // retry round settled
       assert.ok(
-        await waitFor(() => replies.length >= 1, 4000),
+        replies.length >= 1,
         "the retry answer must reach the channel"
       );
       assert.equal(replies[0].content, "NetBSD 1.3, obviously, member.");
@@ -1676,15 +1707,16 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: best unix for a 386?",
       });
       await env.onMessageCreate(message);
+      await gorkIdle(); // both rounds + the failure audit settled
       assert.ok(
-        await waitFor(() => replies.length >= 1, 4000),
+        replies.length >= 1,
         "a canned reply must still be sent"
       );
       assert.equal(replies[0].content, LLM_FAILURE_REPLY);
       assert.equal(fetchMock.calls.length, 2, "one retry attempted");
 
       assert.ok(
-        await waitFor(() => env.channels.log.sent.length >= 1),
+        env.channels.log.sent.length >= 1,
         "expected the failure audit one-liner"
       );
       const auditText = embedText(env.channels.log.sent[0].embeds[0]);
@@ -1741,8 +1773,9 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: best unix for a 386?",
       });
       await env.onMessageCreate(message);
+      await gorkIdle(); // capped tool loop settled
       assert.ok(
-        await waitFor(() => replies.length >= 1, 5000),
+        replies.length >= 1,
         "the capped partial answer must be delivered"
       );
       assert.notEqual(replies[0].content, LLM_FAILURE_REPLY);
@@ -1775,10 +1808,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: write me a poem about 386s",
       });
       await env.onMessageCreate(message);
-      assert.ok(
-        await waitFor(() => replies.length >= 1, 4000),
-        "expected the answer to reach the channel"
-      );
+      await gorkIdle();
+      assert.ok(replies.length >= 1, "expected the answer to reach the channel");
       const body = JSON.parse(fetchMock.calls[0].init.body);
       assert.equal(
         body.thinking_token_budget,
@@ -1813,10 +1844,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: best unix for a 386?",
       });
       await env.onMessageCreate(message);
-      assert.ok(
-        await waitFor(() => replies.length >= 1, 4000),
-        "expected the answer to reach the channel"
-      );
+      await gorkIdle();
+      assert.ok(replies.length >= 1, "expected the answer to reach the channel");
       const body = JSON.parse(fetchMock.calls[0].init.body);
       assert.ok(
         !("thinking_token_budget" in body),
@@ -1853,15 +1882,16 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: write me a poem about 386s",
       });
       await env.onMessageCreate(message);
+      await gorkIdle(); // both rounds + the failure audit settled
       assert.ok(
-        await waitFor(() => replies.length >= 1, 4000),
+        replies.length >= 1,
         "a canned reply must still be sent"
       );
       assert.equal(replies[0].content, LLM_FAILURE_REPLY);
       assert.equal(fetchMock.calls.length, 2, "one retry attempted");
 
       assert.ok(
-        await waitFor(() => env.channels.log.sent.length >= 1),
+        env.channels.log.sent.length >= 1,
         "expected the failure audit one-liner"
       );
       const auditText = embedText(env.channels.log.sent[0].embeds[0]);
@@ -1899,8 +1929,9 @@ describe("integration: gork (AI keyword Q&A)", () => {
         content: "gork: list every word you know",
       });
       await env.onMessageCreate(message);
+      await gorkIdle();
       assert.ok(
-        await waitFor(() => replies.length >= 1, 4000),
+        replies.length >= 1,
         "expected the capped answer to reach the channel"
       );
       const sentPayloads = ch_all_sent(env);
@@ -2024,8 +2055,9 @@ describe("integration: gork community memory (§7.16)", () => {
         content: "gork: what do you know about me?",
       });
       await env.onMessageCreate(message);
+      await gorkIdle(); // answer + audit settled
       assert.ok(
-        await waitFor(() => replies.length >= 1),
+        replies.length >= 1,
         "memory-off trigger must still be answered normally"
       );
 
@@ -2041,7 +2073,7 @@ describe("integration: gork community memory (§7.16)", () => {
       );
 
       assert.ok(
-        await waitFor(() => env.channels.log.sent.length >= 1),
+        env.channels.log.sent.length >= 1,
         "expected the Q&A audit embed"
       );
       const auditText = embedText(env.channels.log.sent[0].embeds[0]);
@@ -2050,9 +2082,11 @@ describe("integration: gork community memory (§7.16)", () => {
         `Q&A audit must have NO Memory field when off: ${auditText}`
       );
 
-      // No extraction turn either: the fetch count never grows past the
-      // single Q&A call the memory-off expectations already assert.
-      await sleep(300);
+      // No extraction turn either. The extraction DECISION runs at the end
+      // of the (tracked) answer job, and a scheduled extraction turn is
+      // tracked too — so after the drain the fetch count is final: 1 means
+      // memory OFF shipped nothing (replaces the old 300ms wait).
+      await gorkIdle();
       assert.equal(
         fetchMock.calls.length,
         1,
@@ -2112,10 +2146,10 @@ describe("integration: gork community memory (§7.16)", () => {
         content: "gork: what do you know about me?",
       });
       await env.onMessageCreate(message);
-      assert.ok(
-        await waitFor(() => replies.length >= 1),
-        "memory-on trigger must be answered"
-      );
+      // One drain covers the whole memory-on flow: answer job + Q&A audit
+      // + the tracked extraction turn that follows it.
+      await gorkIdle();
+      assert.ok(replies.length >= 1, "memory-on trigger must be answered");
 
       const body = JSON.parse(fetchMock.calls[0].init.body);
       const userMsg = body.messages.find((m) => m.role === "user");
@@ -2145,8 +2179,12 @@ describe("integration: gork community memory (§7.16)", () => {
         "recall_memories ships alongside (and only without) the disabled search tools"
       );
 
+      // Both covered by the drain above: audit embed landed and the
+      // tracked extraction turn (second fetch) fully settled before
+      // gorkIdle() resolved (the write path always fires after a real
+      // shipped answer).
       assert.ok(
-        await waitFor(() => env.channels.log.sent.length >= 1),
+        env.channels.log.sent.length >= 1,
         "expected the Q&A audit embed"
       );
       const auditText = embedText(env.channels.log.sent[0].embeds[0]);
@@ -2156,11 +2194,10 @@ describe("integration: gork community memory (§7.16)", () => {
         `read-side label must count the injected bodies: ${auditText}`
       );
 
-      // Drain the detached extraction request before the mock is restored
-      // (the write path always fires after a real shipped answer).
-      assert.ok(
-        await waitFor(() => fetchMock.calls.length >= 2, 5000),
-        "extraction turn must arrive after the answer"
+      assert.equal(
+        fetchMock.calls.length,
+        2,
+        "exactly the answer + extraction turn"
       );
     } finally {
       restoreEnv(saved);
@@ -2222,14 +2259,17 @@ describe("integration: gork community memory (§7.16)", () => {
         content: "gork: what do I own?",
       });
       await env.onMessageCreate(message);
+      // One drain: recall tool round + answer + audit + the tracked
+      // extraction turn all settled before this resolves.
+      await gorkIdle();
       assert.ok(
-        await waitFor(() => replies.length >= 1, 5000),
+        replies.length >= 1,
         "the recall round must still end in an answer"
       );
       assert.equal(replies[0].content, "Right, the red kayak named CSS.");
       assert.ok(
-        await waitFor(() => fetchMock.calls.length >= 3, 5000),
-        "extraction turn must arrive (drains before restore)"
+        fetchMock.calls.length >= 3,
+        "extraction turn arrived (drained before restore)"
       );
 
       // The tool result message fed back carries the seeded body.
@@ -2315,13 +2355,17 @@ describe("integration: gork community memory (§7.16)", () => {
         createdTimestamp: MEM_TRIGGER_TS, // server-stamped mem_date source
       });
       await env.onMessageCreate(message);
+      // The drain covers the answer, the audit, the slot release, and the
+      // full tracked extraction turn (its fetch + validation + memory
+      // audit embed included) — everything below observes final state.
+      await gorkIdle();
       assert.ok(
-        await waitFor(() => replies.length >= 1),
+        replies.length >= 1,
         "the answer must ship before any write-path work"
       );
       assert.ok(
-        await waitFor(() => fetchMock.calls.length >= 2, 5000),
-        "extraction request must arrive after the answer"
+        fetchMock.calls.length >= 2,
+        "extraction request arrived after the answer"
       );
 
       // The extraction turn fires only AFTER the finally-block slot
@@ -2387,14 +2431,12 @@ describe("integration: gork community memory (§7.16)", () => {
         "the out-of-roster entry must NOT be stored"
       );
 
-      // Write-side audit gets its own compact "Gork memory" entry.
+      // Write-side audit gets its own compact "Gork memory" entry — it is
+      // posted inside the tracked extraction turn, so the earlier
+      // gorkIdle() drain already waited for it (no polling needed).
       assert.ok(
-        await waitFor(
-          () =>
-            env.channels.log.sent.some((p) =>
-              embedText(p.embeds?.[0]).includes("Gork memory")
-            ),
-          5000
+        env.channels.log.sent.some((p) =>
+          embedText(p.embeds?.[0]).includes("Gork memory")
         ),
         "expected the 'Gork memory' audit embed"
       );
@@ -2457,9 +2499,11 @@ describe("integration: gork community memory (§7.16)", () => {
       assertEphemeralReply(denied, /permission/i);
       assert.equal(env.db.getGuildSettings(env.guild.id).gork_memory_enabled, 1);
 
-      // Audit trail: both config changes recorded (not the denial).
+      // Audit trail: both config changes recorded (not the denial). The
+      // /gork memory handlers await logConfigChange before replying (and
+      // the router awaits the handler), so both embeds have landed.
       assert.ok(
-        await waitFor(() => env.channels.log.sent.length >= 2),
+        env.channels.log.sent.length >= 2,
         "expected the two config-change audit embeds"
       );
       const auditAll = env.channels.log.sent
