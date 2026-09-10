@@ -88,6 +88,10 @@
  */
 
 const { createGuildAccessResolver } = require("../auth/guildAccess");
+const { readFields } = require("./shared/req.js");
+const { rawFlashQuery } = require("./shared/req.js");
+const { shellGuilds } = require("./shared/shell.js");
+const { makeGuildRoleNameResolver: makeRoleNameResolver } = require("./shared/discord-cache.js");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const {
@@ -106,7 +110,7 @@ const LEVELROLE_SET_PATH = "/g/:guildId/staff/levelrole/set";
 const LEVELROLE_REMOVE_PATH = "/g/:guildId/staff/levelrole/remove";
 
 /** Snowflake gate — same digit range as guildScope's GUILD_ID_RE. */
-const ROLE_ID_RE = /^[0-9]{5,20}$/;
+const { URL_ID_RE: ROLE_ID_RE } = require("../shared/snowflake");
 /** Whole numbers ≥ 0, ≤ 9 digits (slash IntegerOption min:0; DB/JS-safe). */
 const NONNEG_INT_RE = /^(0|[1-9][0-9]{0,8})$/;
 /**
@@ -137,29 +141,6 @@ const ERR_NOT_A_STAFF_ROLE =
 const ERR_ALREADY_LEVEL = (level) => `That role is already ${level} staff.`;
 const ERR_NOT_A_CONFIGURED_ROLE = "That role is not a configured staff role.";
 
-/**
- * Cache-only role-name resolver (never network): guildId → roleId →
- * name|null. A missing/throwing client degrades every lookup to null ⇒ the
- * page renders ids, exactly like the slash /staff list does for unknown
- * roles.
- * @param {(() => any)|null|undefined} getClient
- * @param {string} guildId
- */
-function makeRoleNameResolver(getClient, guildId) {
-  return function resolveRoleName(roleId) {
-    try {
-      const client = typeof getClient === "function" ? getClient() : null;
-      const name = client?.guilds?.cache?.get?.(guildId)?.roles?.cache?.get?.(
-        roleId
-      )?.name;
-      if (typeof name !== "string") return null;
-      const trimmed = name.trim();
-      return trimmed ? trimmed.slice(0, 100) : null;
-    } catch {
-      return null;
-    }
-  };
-}
 
 /**
  * Cache-only guild-role probe for the mutation preflight (NEVER a fetch):
@@ -204,11 +185,6 @@ function levelLabel(level) {
     : "senior";
 }
 
-/** Parsed urlencoded fields (bodyCap/CSRF contract — no express parsers). */
-function readFields(req) {
-  const src = req?.bodyFields;
-  return src && typeof src === "object" ? src : {};
-}
 
 /** Raw text/plain 400 with a FIXED message (input never echoed). */
 function respondMutationError(res, message) {
@@ -299,29 +275,7 @@ function readEnvConfig(oauthConfigFn) {
   }
 }
 
-/** Shared switcher list (same contract as routes/settings.js shellGuilds). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
-/**
- * Raw-url flash read (app doctrine: never req.query — the Express 5 "simple"
- * parser and path-to-regexp decoding must not decide behavior here). The
- * returned pair is WHITELIST-FILTERED by views/syncAction flashFromQuery:
- * unknown/hostile slugs render no banner (§8.7).
- * @param {string} rawUrl
- */
-function rawFlashQuery(rawUrl) {
-  const idx = String(rawUrl || "").indexOf("?");
-  const params = new URLSearchParams(idx === -1 ? "" : String(rawUrl).slice(idx + 1));
-  return { done: params.get("done"), error: params.get("error") };
-}
 
 /**
  * @param {import("express").Express} app

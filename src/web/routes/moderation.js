@@ -85,6 +85,11 @@ const {
 } = require("../data/moderation");
 const { getBoundAuditClient } = require("../middleware/audit");
 const { formatWarnRef, formatNoteRef, tsFull, Color } = require("../../core/theme");
+const { readFields } = require("./shared/req.js");
+const { rawFlashQuery } = require("./shared/req.js");
+const { rawParams } = require("./shared/req.js");
+const { shellGuilds } = require("./shared/shell.js");
+const { isProvenBot } = require("./shared/discord-cache.js");
 
 /** List pages (POST PRG redirect targets; staff tier like the mutations). */
 const WARNINGS_PAGE = "/g/:guildId/warnings";
@@ -105,66 +110,10 @@ const DAYS_RE = /^(0|[1-9][0-9]{0,3})$/;
 /** Checkbox spellings that mean "yes" (the form sends value="1"). */
 const TRUTHY = new Set(["1", "true", "on", "yes"]);
 
-/**
- * Parse the RAW url query (app doctrine: never req.query — the Express 5
- * "simple" parser and path-to-regexp decoding must not decide behavior
- * here; same local helper as routes/users.js, deliberately duplicated
- * rather than reaching into another owner's route module).
- * @param {string} rawUrl
- * @returns {URLSearchParams}
- */
-function rawParams(rawUrl) {
-  const idx = String(rawUrl || "").indexOf("?");
-  return new URLSearchParams(idx === -1 ? "" : String(rawUrl).slice(idx + 1));
-}
 
-/** Raw-url flash read (xpActions doctrine): { done, error } raw values. */
-function rawFlashQuery(rawUrl) {
-  const params = rawParams(rawUrl);
-  return { done: params.get("done"), error: params.get("error") };
-}
 
-/** Shared switcher list for shell pages (never fails the page open/closed). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
-/** Parsed urlencoded fields (bodyCap/CSRF contract — no express parsers). */
-function readFields(req) {
-  const src = req?.bodyFields;
-  return src && typeof src === "object" ? src : {};
-}
 
-/**
- * Cache-only bot probe (slash parity: `if (target.bot)` refusals in
- * handleAdd/handleNoteAdd). Reads the bot's caches ONLY — guild member
- * cache, then global user cache — and only ever REFUSES on PROVEN bot
- * status. An unanswerable cache (client unbound, user unknown) makes no
- * claim and lets the mutation proceed: the slash picker can only resolve
- * real users, and the orchestrator-mandated cache-only seam never fetches.
- * @param {any} client resolved client or null
- * @param {string} guildId
- * @param {string} userId
- * @returns {boolean} true ONLY when a cache proves the target is a bot
- */
-function isProvenBot(client, guildId, userId) {
-  try {
-    const guild = client?.guilds?.cache?.get?.(guildId) ?? null;
-    const member = guild?.members?.cache?.get?.(userId) ?? null;
-    const memberBot = member?.user?.bot === true || member?.bot === true;
-    if (memberBot) return true;
-    const cachedUser = client?.users?.cache?.get?.(userId) ?? null;
-    return cachedUser?.bot === true;
-  } catch {
-    return false; // a broken cache object can never PROVE a bot
-  }
-}
 
 /**
  * Cache-ONLY member/user resolution for the warn DM (slash void resolves

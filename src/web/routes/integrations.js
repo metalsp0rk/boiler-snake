@@ -76,13 +76,15 @@ const youtubeFeature = require("../../features/youtube");
 const { resolveTwitchUser: defaultResolveTwitchUser } = require("../../features/twitch/helix");
 const reactionRolesService = require("../../features/reactionRoles/service");
 const honeypotFeature = require("../../features/honeypot");
+const { shellGuilds } = require("./shared/shell.js");
+const { makeCacheNameResolver } = require("./shared/discord-cache.js");
 const {
   normalizeTwitchLogin,
   normalizeYoutubeName,
 } = require("../../db");
 
 /** Snowflake gate for channel/role form fields (service.js SNOWFLAKE_RE twin). */
-const SNOWFLAKE_RE = /^\d{17,20}$/;
+const { STRICT_SNOWFLAKE_RE: SNOWFLAKE_RE } = require("../shared/snowflake");
 /** Panel message ids: slash trims only — cap the shape, never the value set. */
 const MESSAGE_ID_MAX = 20;
 const POLL_MIN = 1;
@@ -92,38 +94,7 @@ const POLL_MAX = 60;
 const CHANNEL_TYPE_GUILD_TEXT = 0;
 const CHANNEL_TYPE_GUILD_ANNOUNCEMENT = 5;
 
-/**
- * Cache-only name resolver (never network) for one discord.js cache store
- * ("channels" | "roles"): returns id → name|null. A missing/throwing client
- * degrades every lookup to null ⇒ the page renders ids, exactly like the
- * slash commands do for uncached entities.
- * @param {(() => any)|null|undefined} getClient
- * @param {"channels"|"roles"} store
- */
-function makeCacheNameResolver(getClient, store) {
-  return function resolveName(id) {
-    try {
-      const client = typeof getClient === "function" ? getClient() : null;
-      const name = client?.[store]?.cache?.get?.(id)?.name;
-      if (typeof name !== "string") return null;
-      const trimmed = name.trim();
-      return trimmed ? trimmed.slice(0, 100) : null;
-    } catch {
-      return null;
-    }
-  };
-}
 
-/** Shared switcher list (same contract as routes/settings.js shellGuilds). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
 /** Parsed form fields — the body-cap middleware contract (req.bodyFields). */
 function bodyFields(req) {

@@ -32,7 +32,7 @@
 const { validateXpValue, MAX_XP_AWARD } = require("../../core/xpMath");
 
 /** Same snowflake gate the web layer uses everywhere (users/leaderboard). */
-const CHANNEL_ID_RE = /^[0-9]{5,20}$/;
+const { STRICT_SNOWFLAKE_RE: CHANNEL_ID_RE } = require("../shared/snowflake");
 
 /** Discord integer-option ceiling (2^53−1): no int mutation exceeds it. */
 const INT_MAX = Number.MAX_SAFE_INTEGER;

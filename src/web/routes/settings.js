@@ -46,38 +46,10 @@ const { renderSettingsBody } = require("../views/settings");
 const { createSettingsData } = require("../data/settingsData");
 const settingsWrite = require("../data/settingsWrite");
 const { diffConfigLines } = require("../../features/logs/auditLog");
+const { shellGuilds } = require("./shared/shell.js");
+const { makeCacheNameResolver } = require("./shared/discord-cache.js");
 
-/**
- * Shared cache-only channel-name resolver (never network): returns a
- * function channelId → name|null. A missing/throwing client degrades every
- * lookup to null ⇒ the page renders ids, exactly like the slash commands do
- * for uncached channels.
- * @param {(() => any)|null|undefined} getClient
- */
-function makeChannelNameResolver(getClient) {
-  return function resolveChannelName(channelId) {
-    try {
-      const client = typeof getClient === "function" ? getClient() : null;
-      const name = client?.channels?.cache?.get?.(channelId)?.name;
-      if (typeof name !== "string") return null;
-      const trimmed = name.trim();
-      return trimmed ? trimmed.slice(0, 100) : null;
-    } catch {
-      return null;
-    }
-  };
-}
 
-/** Shared switcher list (same contract as routes/users.js shellGuilds). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
 /** Whitelisted flash keys (rendered as fixed banners — never free text). */
 const FLASH_KEYS = new Set(["xp", "decay", "logs", "warn", "channels"]);
@@ -415,7 +387,7 @@ function registerSettingsRoutes(app, options = {}) {
           "Current guild configuration — values, defaults, and the slash command that owns each. Every form below mirrors one slash command at the same tier.",
         content: renderSettingsBody({
           snapshot,
-          resolveChannelName: makeChannelNameResolver(options.getClient),
+          resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
           csrfToken: req.csrfToken || null,
           guildId,
           flash: readFlashFlag(req),

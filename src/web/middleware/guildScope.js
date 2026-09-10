@@ -26,7 +26,7 @@
  */
 
 /** Same snowflake gate as login.js GUILD_TARGET_RE / routes/guildShell.js. */
-const GUILD_ID_RE = /^[0-9]{5,20}$/;
+const { URL_ID_RE: GUILD_ID_RE } = require("../shared/snowflake");
 
 /**
  * Login target for the anonymous/reauth redirect — mirrors guildShell's

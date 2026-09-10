@@ -74,30 +74,10 @@ const { dbPath } = require("../../db/connection");
 // Prune cadence constant only (the timer itself is not exposed in-process —
 // the panel says "unknown" instead of guessing).
 const { DEFAULT_PRUNE_INTERVAL_MS } = require("../auth/sessions");
+const { rawParams } = require("./shared/req.js");
+const { shellGuilds } = require("./shared/shell.js");
 
-/**
- * Parse the RAW url query (app doctrine: never req.query — the Express 5
- * "simple" parser and path-to-regexp decoding must not decide behavior
- * here; same local helper as routes/users.js and routes/moderation.js,
- * deliberately duplicated rather than reaching into another owner's file).
- * @param {string} rawUrl
- * @returns {URLSearchParams}
- */
-function rawParams(rawUrl) {
-  const idx = String(rawUrl || "").indexOf("?");
-  return new URLSearchParams(idx === -1 ? "" : String(rawUrl).slice(idx + 1));
-}
 
-/** Shared switcher list for shell pages (same contract as moderation.js). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
 /* ------------------------------------------------------------------ audit ---- */
 

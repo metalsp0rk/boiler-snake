@@ -32,42 +32,15 @@ const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const { renderVoiceBody } = require("../views/voice");
+const { shellGuilds } = require("./shared/shell.js");
+const { makeCacheNameResolver } = require("./shared/discord-cache.js");
 const {
   createVoiceData,
   makeMusicStateAccessor,
   makeLiveVoiceAccessor,
 } = require("../data/voiceData");
 
-/**
- * Cache-only channel-name resolver (never network) — integrations.js twin.
- * A missing/throwing client degrades every lookup to null ⇒ the page renders
- * ids, exactly like the slash commands do for uncached channels.
- * @param {(() => any)|null|undefined} getClient
- */
-function makeCacheNameResolver(getClient) {
-  return function resolveName(id) {
-    try {
-      const client = typeof getClient === "function" ? getClient() : null;
-      const name = client?.channels?.cache?.get?.(id)?.name;
-      if (typeof name !== "string") return null;
-      const trimmed = name.trim();
-      return trimmed ? trimmed.slice(0, 100) : null;
-    } catch {
-      return null;
-    }
-  };
-}
 
-/** Shared switcher list (same contract as routes/integrations.js). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
 /**
  * @param {import("express").Express} app
@@ -132,7 +105,7 @@ function registerVoiceRoutes(app, options = {}) {
             "Now-playing, queue and live voice state — read-only; player control lives in Discord only (§8.9).",
           content: renderVoiceBody({
             snapshot,
-            resolveChannelName: makeCacheNameResolver(options.getClient),
+            resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
           }),
           guilds: await shellGuilds(resolver, req),
         });
