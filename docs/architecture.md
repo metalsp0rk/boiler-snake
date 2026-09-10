@@ -144,7 +144,15 @@ Migrations on load:
 | `013_user_channel_activity` | daily per-channel message counters, ignore list, user backfill meta |
 | `014_guild_activity_backfill` | guild-wide activity backfill status + channel cursors |
 | `015_event_reminder_event_optouts` | per-event mute table for event reminders |
+| `016_command_permission_oauth` | OAuth token storage for slash command permission sync |
+| `017_event_reminder_persistent` | `persistent` flag on `event_reminder_configs` (skip auto-cleanup for recurring events) |
+| `018_warn_post_mvp` | `guild_settings.warn_expiry_days` + `warnings` expiry / evidence columns |
+| `019_ticket_panels` | `ticket_panels` registry (posted panels for list/edit/delete) |
 | `020_twitch` | twitch_channels table + twitch_* guild_settings columns |
+| `021_gork` | `gork_*` guild_settings columns (keyword, context window, rules, search, cooldown) |
+| `022_gork_access` | `gork_user_blocks` table + `gork_enabled` master switch |
+| `023_gork_memory` | `gork_memories` table + `gork_memory_enabled` / `gork_memory_chars` columns |
+| `024_staff_roles_added_by` | `staff_roles.added_by` provenance column (NULL = unknown) |
 
 ### Core XP API
 
