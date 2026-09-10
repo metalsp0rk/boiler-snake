@@ -339,61 +339,53 @@ function registerModerationRoutes(app, options = {}) {
   });
 
   // ---- staff: guild-wide warnings list -------------------------------------
-  app.get(WARNINGS_PAGE, requireTier("staff"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const params = rawParams(req.url);
-      const page = buildWarningsPage(guildId, {
-        u: params.get("u"),
-        state: params.get("state"),
-        n: params.get("n"),
-        o: params.get("o"),
-      });
-      const document = renderShellPage(req, {
-        title: "Warnings",
-        heading: "Warnings",
-        subheading: "Guild-wide formal record — voided rows stay, badged. Issue/void run the exact slash pipeline, audit included.",
-        content: renderWarningsBody(req, {
-          page,
-          flash: flashFromQuery(rawFlashQuery(req.url), WARN_FLASH_DONE, WARN_FLASH_ERROR),
-          csrfToken: req.csrfToken || null,
-          bounds: { maxReason: MAX_WARN_REASON, maxEvidence: MAX_EVIDENCE_TEXT, maxExpiryDays: MAX_EXPIRY_DAYS },
-        }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err); // → handleAppError: generic 500, nothing leaked
-    }
+  app.get(WARNINGS_PAGE, requireTier("staff"), async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const params = rawParams(req.url);
+    const page = buildWarningsPage(guildId, {
+      u: params.get("u"),
+      state: params.get("state"),
+      n: params.get("n"),
+      o: params.get("o"),
+    });
+    const document = renderShellPage(req, {
+      title: "Warnings",
+      heading: "Warnings",
+      subheading: "Guild-wide formal record — voided rows stay, badged. Issue/void run the exact slash pipeline, audit included.",
+      content: renderWarningsBody(req, {
+        page,
+        flash: flashFromQuery(rawFlashQuery(req.url), WARN_FLASH_DONE, WARN_FLASH_ERROR),
+        csrfToken: req.csrfToken || null,
+        bounds: { maxReason: MAX_WARN_REASON, maxEvidence: MAX_EVIDENCE_TEXT, maxExpiryDays: MAX_EXPIRY_DAYS },
+      }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // ---- staff: guild-wide staff-notes list ----------------------------------
-  app.get(NOTES_PAGE, requireTier("staff"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const params = rawParams(req.url);
-      const page = buildNotesPage(guildId, {
-        u: params.get("u"),
-        state: params.get("state"),
-        n: params.get("n"),
-        o: params.get("o"),
-      });
-      const document = renderShellPage(req, {
-        title: "Staff notes",
-        heading: "Staff notes",
-        subheading: "Guild-wide staff-only memory — soft-deleted rows stay hidden until revealed, exactly like /note list.",
-        content: renderNotesBody(req, {
-          page,
-          flash: flashFromQuery(rawFlashQuery(req.url), NOTE_FLASH_DONE, NOTE_FLASH_ERROR),
-          csrfToken: req.csrfToken || null,
-          bounds: { maxContent: MAX_NOTE_CONTENT },
-        }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err);
-    }
+  app.get(NOTES_PAGE, requireTier("staff"), async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const params = rawParams(req.url);
+    const page = buildNotesPage(guildId, {
+      u: params.get("u"),
+      state: params.get("state"),
+      n: params.get("n"),
+      o: params.get("o"),
+    });
+    const document = renderShellPage(req, {
+      title: "Staff notes",
+      heading: "Staff notes",
+      subheading: "Guild-wide staff-only memory — soft-deleted rows stay hidden until revealed, exactly like /note list.",
+      content: renderNotesBody(req, {
+        page,
+        flash: flashFromQuery(rawFlashQuery(req.url), NOTE_FLASH_DONE, NOTE_FLASH_ERROR),
+        csrfToken: req.csrfToken || null,
+        bounds: { maxContent: MAX_NOTE_CONTENT },
+      }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // =========================================================================
@@ -479,119 +471,116 @@ function registerModerationRoutes(app, options = {}) {
   }
 
   // ---- POST issue (slash /warn add twin) ------------------------------------
-  postMutation(WARN_ISSUE_PATH, async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const parsed = parseWarnIssueInput(readFields(req), guildId);
-      if (!parsed.ok) {
-        warnFlash(res, guildId, "error", parsed.errorSlug);
-        return;
-      }
-      const { userId, reason, relatedNoteId, expiresDays, evidenceMessageUrl, evidenceText, silent } = parsed;
-
-      // Client reads are CACHE-ONLY (never a network fetch on a request path).
-      let client = null;
-      try {
-        client = getClient();
-      } catch {
-        client = null;
-      }
-
-      // Slash parity: `if (target.bot)` refusal ("Warnings are for human
-      // members, not bots.") — refusal only on PROVEN bot evidence.
-      if (isProvenBot(client, guildId, userId)) {
-        warnFlash(res, guildId, "error", "bot_target");
-        return;
-      }
-
-      // Slash-identical expiry inputs (handleAdd: guildWarnExpiryDays +
-      // pass-through of expiresDays/guildDefaultDays to the repo, which
-      // resolves expires_at via resolveExpiryDays + warning_number
-      // allocation inside ONE transaction).
-      const settings = facade.getGuildSettings(guildId);
-      const guildDefaultDays = guildWarnExpiryDays(settings, MAX_EXPIRY_DAYS);
-
-      let warn;
-      try {
-        warn = facade.createWarning({
-          guildId,
-          userId,
-          issuerId: req.user.userId,
-          reason,
-          relatedNoteId,
-          expiresDays,
-          guildDefaultDays,
-          evidenceMessageUrl,
-          evidenceText,
-        });
-      } catch (err) {
-        // Every INVALID_* bound is pre-validated above; a throw here is a
-        // defense-in-depth backstop (zero rows written — the repo's tx
-        // aborted). Slash answers the repo message; the web collapses it to
-        // the matching fixed slug via WARN_THROW_SLUG (no echo, §8.7).
-        const slug = WARN_THROW_SLUG[err?.code];
-        if (slug) {
-          warnFlash(res, guildId, "error", slug);
-          return;
-        }
-        throw err; // DB error → generic 500 (slash logs + "database error")
-      }
-
-      const activeCount = facade.countActiveWarnings(guildId, userId);
-      const ref = formatWarnRef(warn.warning_number);
-
-      // Audit mirror of the slash recordSlashAudit call EXACTLY — action,
-      // target, and detail shape (origin stays the 'web' default, §8.6) —
-      // plus the logWarnEvent mirror (kind "warn": dedicated warn-log
-      // channel with audit fallback, same resolveLogChannel path).
-      req.audit({
-        action: "warnings.add",
-        targetType: "user",
-        targetId: userId,
-        guildId,
-        details: {
-          warning_id: warn.id,
-          warning_number: warn.warning_number,
-          reason: warn.reason,
-          expires_at: warn.expires_at ?? null,
-          silent,
-        },
-        mirror: {
-          kind: "warn",
-          title: "Warning issued",
-          command: "/warn add",
-          changes: [
-            `${ref} on <@${userId}>`,
-            `Active count: **${activeCount}**`,
-            snippetWarn(warn.reason, 120),
-            warn.expires_at != null
-              ? `Expires: ${tsFull(warn.expires_at)}`
-              : "Expires: never",
-          ],
-        },
-      });
-
-      // Member DM — slash order (record → log → DM), same toggle
-      // (warn_dm_members) and silent option; cache-only resolution, so an
-      // uncached member degrades exactly like slash's unresolvable-target
-      // path: warn + audit still happened, the DM is honestly skipped.
-      if (!silent && warnDmEnabled(settings)) {
-        const target = resolveUserCacheOnly(client, guildId, userId);
-        await tryDmUser(target, buildWarnIssueDm({
-          ref,
-          actorLabel: req.user.discordTag || "staff",
-          activeCount,
-          reason: warn.reason,
-          createdMs: warn.created_at,
-          expiresMs: warn.expires_at ?? null,
-          guildName: cachedGuildName(client, guildId),
-        }));
-      }
-
-      warnFlash(res, guildId, "done", "warn_issued");
-    } catch (err) {
-      next(err); // fail-closed: an audit throw aborts with the generic 500
+  postMutation(WARN_ISSUE_PATH, async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const parsed = parseWarnIssueInput(readFields(req), guildId);
+    if (!parsed.ok) {
+      warnFlash(res, guildId, "error", parsed.errorSlug);
+      return;
     }
+    const { userId, reason, relatedNoteId, expiresDays, evidenceMessageUrl, evidenceText, silent } = parsed;
+
+    // Client reads are CACHE-ONLY (never a network fetch on a request path).
+    let client = null;
+    try {
+      client = getClient();
+    } catch {
+      client = null;
+    }
+
+    // Slash parity: `if (target.bot)` refusal ("Warnings are for human
+    // members, not bots.") — refusal only on PROVEN bot evidence.
+    if (isProvenBot(client, guildId, userId)) {
+      warnFlash(res, guildId, "error", "bot_target");
+      return;
+    }
+
+    // Slash-identical expiry inputs (handleAdd: guildWarnExpiryDays +
+    // pass-through of expiresDays/guildDefaultDays to the repo, which
+    // resolves expires_at via resolveExpiryDays + warning_number
+    // allocation inside ONE transaction).
+    const settings = facade.getGuildSettings(guildId);
+    const guildDefaultDays = guildWarnExpiryDays(settings, MAX_EXPIRY_DAYS);
+
+    let warn;
+    try {
+      warn = facade.createWarning({
+        guildId,
+        userId,
+        issuerId: req.user.userId,
+        reason,
+        relatedNoteId,
+        expiresDays,
+        guildDefaultDays,
+        evidenceMessageUrl,
+        evidenceText,
+      });
+    } catch (err) {
+      // Every INVALID_* bound is pre-validated above; a throw here is a
+      // defense-in-depth backstop (zero rows written — the repo's tx
+      // aborted). Slash answers the repo message; the web collapses it to
+      // the matching fixed slug via WARN_THROW_SLUG (no echo, §8.7).
+      const slug = WARN_THROW_SLUG[err?.code];
+      if (slug) {
+        warnFlash(res, guildId, "error", slug);
+        return;
+      }
+      throw err; // DB error → generic 500 (slash logs + "database error")
+    }
+
+    const activeCount = facade.countActiveWarnings(guildId, userId);
+    const ref = formatWarnRef(warn.warning_number);
+
+    // Audit mirror of the slash recordSlashAudit call EXACTLY — action,
+    // target, and detail shape (origin stays the 'web' default, §8.6) —
+    // plus the logWarnEvent mirror (kind "warn": dedicated warn-log
+    // channel with audit fallback, same resolveLogChannel path).
+    req.audit({
+      action: "warnings.add",
+      targetType: "user",
+      targetId: userId,
+      guildId,
+      details: {
+        warning_id: warn.id,
+        warning_number: warn.warning_number,
+        reason: warn.reason,
+        expires_at: warn.expires_at ?? null,
+        silent,
+      },
+      mirror: {
+        kind: "warn",
+        title: "Warning issued",
+        command: "/warn add",
+        changes: [
+          `${ref} on <@${userId}>`,
+          `Active count: **${activeCount}**`,
+          snippetWarn(warn.reason, 120),
+          warn.expires_at != null
+            ? `Expires: ${tsFull(warn.expires_at)}`
+            : "Expires: never",
+        ],
+      },
+    });
+
+    // Member DM — slash order (record → log → DM), same toggle
+    // (warn_dm_members) and silent option; cache-only resolution, so an
+    // uncached member degrades exactly like slash's unresolvable-target
+    // path: warn + audit still happened, the DM is honestly skipped.
+    if (!silent && warnDmEnabled(settings)) {
+      const target = resolveUserCacheOnly(client, guildId, userId);
+      await tryDmUser(target, buildWarnIssueDm({
+        ref,
+        actorLabel: req.user.discordTag || "staff",
+        activeCount,
+        reason: warn.reason,
+        createdMs: warn.created_at,
+        expiresMs: warn.expires_at ?? null,
+        guildName: cachedGuildName(client, guildId),
+      }));
+    }
+
+    warnFlash(res, guildId, "done", "warn_issued");
+    // fail-closed: an audit throw aborts with the generic 500
   });
 
   /** Cache-only guild name for the DM title (slash: interaction.guild?.name). */
@@ -604,200 +593,192 @@ function registerModerationRoutes(app, options = {}) {
   }
 
   // ---- POST void (slash /warn void twin) -------------------------------------
-  postMutation(WARN_VOID_PATH, async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const fields = readFields(req);
+  postMutation(WARN_VOID_PATH, async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const fields = readFields(req);
 
-      // Warning NUMBER (slash IntegerOption id min:1) on the body — digits,
-      // ≥ 1; anything else never reaches the service.
-      const rawNumber = String(
-        fields.warning_number == null ? "" : fields.warning_number
-      ).trim();
-      if (!WARN_NUMBER_RE.test(rawNumber)) {
-        warnFlash(res, guildId, "error", "invalid_warning_number");
+    // Warning NUMBER (slash IntegerOption id min:1) on the body — digits,
+    // ≥ 1; anything else never reaches the service.
+    const rawNumber = String(
+      fields.warning_number == null ? "" : fields.warning_number
+    ).trim();
+    if (!WARN_NUMBER_RE.test(rawNumber)) {
+      warnFlash(res, guildId, "error", "invalid_warning_number");
+      return;
+    }
+    const warningNumber = Number(rawNumber);
+
+    // Void reason — same bounds as the slash (required, ≤ MAX_WARN_REASON,
+    // repo label "Void reason"). Pre-validated so a refusal writes NOTHING.
+    const rawReason = String(fields.reason == null ? "" : fields.reason);
+    const voidReason = rawReason.trim();
+    if (!voidReason) {
+      warnFlash(res, guildId, "error", "void_reason_missing");
+      return;
+    }
+    if (voidReason.length > MAX_WARN_REASON) {
+      warnFlash(res, guildId, "error", "void_reason_too_long");
+      return;
+    }
+
+    let warn;
+    try {
+      // Guild-scoped by construction: a number issued in guild B simply
+      // does not resolve under guild A (warn_not_found, zero side effects).
+      warn = facade.voidWarning(guildId, warningNumber, {
+        voidedBy: req.user.userId,
+        voidReason,
+      });
+    } catch (err) {
+      if (err?.code === "ALREADY_VOIDED") {
+        // Slash keeps the row and replies; the web throws PRE-update, so
+        // this refusal is zero-write by construction.
+        warnFlash(res, guildId, "error", "already_voided");
         return;
       }
-      const warningNumber = Number(rawNumber);
-
-      // Void reason — same bounds as the slash (required, ≤ MAX_WARN_REASON,
-      // repo label "Void reason"). Pre-validated so a refusal writes NOTHING.
-      const rawReason = String(fields.reason == null ? "" : fields.reason);
-      const voidReason = rawReason.trim();
-      if (!voidReason) {
+      if (err?.code === "INVALID_REASON") {
         warnFlash(res, guildId, "error", "void_reason_missing");
         return;
       }
-      if (voidReason.length > MAX_WARN_REASON) {
-        warnFlash(res, guildId, "error", "void_reason_too_long");
-        return;
-      }
-
-      let warn;
-      try {
-        // Guild-scoped by construction: a number issued in guild B simply
-        // does not resolve under guild A (warn_not_found, zero side effects).
-        warn = facade.voidWarning(guildId, warningNumber, {
-          voidedBy: req.user.userId,
-          voidReason,
-        });
-      } catch (err) {
-        if (err?.code === "ALREADY_VOIDED") {
-          // Slash keeps the row and replies; the web throws PRE-update, so
-          // this refusal is zero-write by construction.
-          warnFlash(res, guildId, "error", "already_voided");
-          return;
-        }
-        if (err?.code === "INVALID_REASON") {
-          warnFlash(res, guildId, "error", "void_reason_missing");
-          return;
-        }
-        throw err; // DB error → generic 500
-      }
-
-      if (!warn) {
-        warnFlash(res, guildId, "error", "warn_not_found");
-        return;
-      }
-
-      const activeCount = facade.countActiveWarnings(guildId, warn.user_id);
-      const ref = formatWarnRef(warn.warning_number);
-
-      // Slash-exact vocabulary + detail shape (features/warnings/index.js
-      // handleVoid recordSlashAudit), kind "warn" mirror (logWarnEvent path).
-      req.audit({
-        action: "warnings.void",
-        targetType: "warning",
-        targetId: String(warn.id),
-        guildId,
-        details: {
-          warning_number: warn.warning_number,
-          subject_user_id: warn.user_id,
-          void_reason: warn.void_reason,
-        },
-        mirror: {
-          kind: "warn",
-          title: "Warning voided",
-          command: "/warn void",
-          changes: [
-            `${ref} on <@${warn.user_id}>`,
-            `Remaining active: **${activeCount}**`,
-            snippetWarn(warn.void_reason, 120),
-          ],
-        },
-      });
-
-      // Member DM when the guild has warn DMs ON (slash handleVoid sends the
-      // void DM whenever warn_dm_members allows, no silent option on void).
-      const settings = facade.getGuildSettings(guildId);
-      if (warnDmEnabled(settings)) {
-        let client = null;
-        try {
-          client = getClient();
-        } catch {
-          client = null;
-        }
-        const target = resolveUserCacheOnly(client, guildId, warn.user_id);
-        await tryDmUser(target, buildWarnVoidDm({
-          ref,
-          actorLabel: req.user.discordTag || "staff",
-          activeCount,
-          voidReason: warn.void_reason,
-          guildName: cachedGuildName(client, guildId),
-        }));
-      }
-
-      warnFlash(res, guildId, "done", "warn_voided");
-    } catch (err) {
-      next(err);
+      throw err; // DB error → generic 500
     }
-  });
 
-  // ---- POST note add (slash /note add twin) ----------------------------------
-  postMutation(NOTE_ADD_PATH, async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const fields = readFields(req);
+    if (!warn) {
+      warnFlash(res, guildId, "error", "warn_not_found");
+      return;
+    }
 
-      const rawUser = String(fields.user_id == null ? "" : fields.user_id).trim();
-      if (!USER_ID_RE.test(rawUser) || rawUser === String(guildId)) {
-        noteFlash(res, guildId, "error", "invalid_user");
-        return;
-      }
+    const activeCount = facade.countActiveWarnings(guildId, warn.user_id);
+    const ref = formatWarnRef(warn.warning_number);
 
-      // Content — slash setMaxLength(MAX_NOTE_CONTENT) + the modal's
-      // required text (persistNewNote INVALID_CONTENT empty bound): bounds
-      // pre-validated, so a refusal reaches ZERO write helpers.
-      const rawContent = String(fields.content == null ? "" : fields.content);
-      const content = rawContent.trim();
-      if (!content) {
-        noteFlash(res, guildId, "error", "content_empty");
-        return;
-      }
-      if (content.length > MAX_NOTE_CONTENT) {
-        noteFlash(res, guildId, "error", "content_too_long");
-        return;
-      }
+    // Slash-exact vocabulary + detail shape (features/warnings/index.js
+    // handleVoid recordSlashAudit), kind "warn" mirror (logWarnEvent path).
+    req.audit({
+      action: "warnings.void",
+      targetType: "warning",
+      targetId: String(warn.id),
+      guildId,
+      details: {
+        warning_number: warn.warning_number,
+        subject_user_id: warn.user_id,
+        void_reason: warn.void_reason,
+      },
+      mirror: {
+        kind: "warn",
+        title: "Warning voided",
+        command: "/warn void",
+        changes: [
+          `${ref} on <@${warn.user_id}>`,
+          `Remaining active: **${activeCount}**`,
+          snippetWarn(warn.void_reason, 120),
+        ],
+      },
+    });
 
+    // Member DM when the guild has warn DMs ON (slash handleVoid sends the
+    // void DM whenever warn_dm_members allows, no silent option on void).
+    const settings = facade.getGuildSettings(guildId);
+    if (warnDmEnabled(settings)) {
       let client = null;
       try {
         client = getClient();
       } catch {
         client = null;
       }
-      // Slash parity: "Staff notes are for human members, not bots."
-      if (isProvenBot(client, guildId, rawUser)) {
-        noteFlash(res, guildId, "error", "bot_target");
+      const target = resolveUserCacheOnly(client, guildId, warn.user_id);
+      await tryDmUser(target, buildWarnVoidDm({
+        ref,
+        actorLabel: req.user.discordTag || "staff",
+        activeCount,
+        voidReason: warn.void_reason,
+        guildName: cachedGuildName(client, guildId),
+      }));
+    }
+
+    warnFlash(res, guildId, "done", "warn_voided");
+  });
+
+  // ---- POST note add (slash /note add twin) ----------------------------------
+  postMutation(NOTE_ADD_PATH, async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const fields = readFields(req);
+
+    const rawUser = String(fields.user_id == null ? "" : fields.user_id).trim();
+    if (!USER_ID_RE.test(rawUser) || rawUser === String(guildId)) {
+      noteFlash(res, guildId, "error", "invalid_user");
+      return;
+    }
+
+    // Content — slash setMaxLength(MAX_NOTE_CONTENT) + the modal's
+    // required text (persistNewNote INVALID_CONTENT empty bound): bounds
+    // pre-validated, so a refusal reaches ZERO write helpers.
+    const rawContent = String(fields.content == null ? "" : fields.content);
+    const content = rawContent.trim();
+    if (!content) {
+      noteFlash(res, guildId, "error", "content_empty");
+      return;
+    }
+    if (content.length > MAX_NOTE_CONTENT) {
+      noteFlash(res, guildId, "error", "content_too_long");
+      return;
+    }
+
+    let client = null;
+    try {
+      client = getClient();
+    } catch {
+      client = null;
+    }
+    // Slash parity: "Staff notes are for human members, not bots."
+    if (isProvenBot(client, guildId, rawUser)) {
+      noteFlash(res, guildId, "error", "bot_target");
+      return;
+    }
+
+    let note;
+    try {
+      // Sequential note_number + INVALID_CONTENT guard live in the repo —
+      // same helper the slash's persistNewNote calls, same args.
+      note = facade.createStaffNote({
+        guildId,
+        userId: rawUser,
+        authorId: req.user.userId,
+        content,
+      });
+    } catch (err) {
+      if (err?.code === "INVALID_CONTENT") {
+        noteFlash(res, guildId, "error", content ? "content_too_long" : "content_empty");
         return;
       }
-
-      let note;
-      try {
-        // Sequential note_number + INVALID_CONTENT guard live in the repo —
-        // same helper the slash's persistNewNote calls, same args.
-        note = facade.createStaffNote({
-          guildId,
-          userId: rawUser,
-          authorId: req.user.userId,
-          content,
-        });
-      } catch (err) {
-        if (err?.code === "INVALID_CONTENT") {
-          noteFlash(res, guildId, "error", content ? "content_too_long" : "content_empty");
-          return;
-        }
-        throw err; // DB error → generic 500
-      }
-
-      // Slash-exact vocabulary + detail shape (features/staffNotes/index.js
-      // handleAdd recordSlashAudit: content snippeted to 500 with the
-      // FEATURE's own snippet). Default mirror kind = logConfigChange's
-      // audit-channel path ("Staff note created", "/note add") — notes post
-      // NO warn-log embed and NEVER DM the subject (slash parity).
-      req.audit({
-        action: "notes.add",
-        targetType: "note",
-        targetId: String(note.id),
-        guildId,
-        details: {
-          note_number: note.note_number,
-          subject_user_id: rawUser,
-          content: snippetNote(note.content, 500),
-        },
-        mirror: {
-          title: "Staff note created",
-          command: "/note add",
-          changes: [
-            `${formatNoteRef(note.note_number)} on <@${rawUser}>`,
-            snippetNote(note.content, 120),
-          ],
-        },
-      });
-
-      noteFlash(res, guildId, "done", "note_added");
-    } catch (err) {
-      next(err);
+      throw err; // DB error → generic 500
     }
+
+    // Slash-exact vocabulary + detail shape (features/staffNotes/index.js
+    // handleAdd recordSlashAudit: content snippeted to 500 with the
+    // FEATURE's own snippet). Default mirror kind = logConfigChange's
+    // audit-channel path ("Staff note created", "/note add") — notes post
+    // NO warn-log embed and NEVER DM the subject (slash parity).
+    req.audit({
+      action: "notes.add",
+      targetType: "note",
+      targetId: String(note.id),
+      guildId,
+      details: {
+        note_number: note.note_number,
+        subject_user_id: rawUser,
+        content: snippetNote(note.content, 500),
+      },
+      mirror: {
+        title: "Staff note created",
+        command: "/note add",
+        changes: [
+          `${formatNoteRef(note.note_number)} on <@${rawUser}>`,
+          snippetNote(note.content, 120),
+        ],
+      },
+    });
+
+    noteFlash(res, guildId, "done", "note_added");
   });
 }
 

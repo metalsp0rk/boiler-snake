@@ -111,119 +111,107 @@ function registerUsersRoutes(app, options = {}) {
     });
 
   // ---- staff: search index ------------------------------------------------
-  app.get("/g/:guildId/users", requireTier("staff"), async (req, res, next) => {
-    try {
-      const q = rawParams(req.url).get("q");
-      const guilds = await shellGuilds(resolver, req);
-      const search = searchGuildUsers(req.guildAccess.guildId, q);
-      const page = renderUserSearchPage(req, { search });
-      const document = renderShellPage(req, {
-        title: "Users",
-        heading: "Users",
-        subheading: "Find a tracked member by user ID to open their unified profile.",
-        content: page.content,
-        guilds,
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err); // → handleAppError: generic 500, nothing leaked
-    }
+  app.get("/g/:guildId/users", requireTier("staff"), async (req, res) => {
+    const q = rawParams(req.url).get("q");
+    const guilds = await shellGuilds(resolver, req);
+    const search = searchGuildUsers(req.guildAccess.guildId, q);
+    const page = renderUserSearchPage(req, { search });
+    const document = renderShellPage(req, {
+      title: "Users",
+      heading: "Users",
+      subheading: "Find a tracked member by user ID to open their unified profile.",
+      content: page.content,
+      guilds,
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // ---- staff: unified profile (Activity SECTION gated senior on-page) -----
-  app.get("/g/:guildId/users/:userId", requireTier("staff"), async (req, res, next) => {
-    try {
-      const { userId } = req.params;
-      if (!USER_ID_RE.test(userId)) {
-        respondGenericNotFound(res);
-        return;
-      }
-      const guildId = req.guildAccess.guildId;
-      const params = rawParams(req.url);
-      const { guild, joinedMs, memberKnown } = resolveDiscordContext(options.getClient, guildId, userId);
+  app.get("/g/:guildId/users/:userId", requireTier("staff"), async (req, res) => {
+    const { userId } = req.params;
+    if (!USER_ID_RE.test(userId)) {
+      respondGenericNotFound(res);
+      return;
+    }
+    const guildId = req.guildAccess.guildId;
+    const params = rawParams(req.url);
+    const { guild, joinedMs, memberKnown } = resolveDiscordContext(options.getClient, guildId, userId);
 
-      const profile = buildUserProfile(guildId, userId, {
-        warnOffset: readOffset(params.get("w_off")),
-        noteOffset: readOffset(params.get("n_off")),
-        ticketOffset: readOffset(params.get("t_off")),
-      });
+    const profile = buildUserProfile(guildId, userId, {
+      warnOffset: readOffset(params.get("w_off")),
+      noteOffset: readOffset(params.get("n_off")),
+      ticketOffset: readOffset(params.get("t_off")),
+    });
 
-      if (!profile.known && !memberKnown) {
-        const document = renderShellError(req, {
-          status: 404,
-          title: "User not found",
-          message: String(renderUserNotFoundBody({ userId })),
-          guilds: await shellGuilds(resolver, req),
-        });
-        writeShellHtml(req, res, { status: 404, document });
-        return;
-      }
-
-      // Senior-only Activity SUMMARY (totals only; the ranking table lives on
-      // the senior route). Staff get the slash denial sentence instead —
-      // zero activity data leaves this function for lower tiers.
-      const visible = isSeniorTier(req);
-      const activity = visible
-        ? { visible: true, ...buildUserActivity(guildId, userId, { guild, joinedMs }) }
-        : { visible: false };
-
-      const document = renderShellPage(req, {
-        title: `User ${userId}`,
-        heading: "User profile",
-        subheading: `Unified view · XP + warnings + notes + tickets · activity ${visible ? "visible (senior)" : "restricted"}`,
-        content: renderUserProfileBody(req, { profile, activity }),
+    if (!profile.known && !memberKnown) {
+      const document = renderShellError(req, {
+        status: 404,
+        title: "User not found",
+        message: String(renderUserNotFoundBody({ userId })),
         guilds: await shellGuilds(resolver, req),
       });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err);
+      writeShellHtml(req, res, { status: 404, document });
+      return;
     }
+
+    // Senior-only Activity SUMMARY (totals only; the ranking table lives on
+    // the senior route). Staff get the slash denial sentence instead —
+    // zero activity data leaves this function for lower tiers.
+    const visible = isSeniorTier(req);
+    const activity = visible
+      ? { visible: true, ...buildUserActivity(guildId, userId, { guild, joinedMs }) }
+      : { visible: false };
+
+    const document = renderShellPage(req, {
+      title: `User ${userId}`,
+      heading: "User profile",
+      subheading: `Unified view · XP + warnings + notes + tickets · activity ${visible ? "visible (senior)" : "restricted"}`,
+      content: renderUserProfileBody(req, { profile, activity }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // ---- SENIOR: Activity tab (slash /userinfo Activity equivalent) ---------
-  app.get("/g/:guildId/users/:userId/activity", requireTier("senior"), async (req, res, next) => {
-    try {
-      const { userId } = req.params;
-      if (!USER_ID_RE.test(userId)) {
-        respondGenericNotFound(res);
-        return;
-      }
-      const guildId = req.guildAccess.guildId;
-      const { guild, joinedMs, memberKnown } = resolveDiscordContext(options.getClient, guildId, userId);
+  app.get("/g/:guildId/users/:userId/activity", requireTier("senior"), async (req, res) => {
+    const { userId } = req.params;
+    if (!USER_ID_RE.test(userId)) {
+      respondGenericNotFound(res);
+      return;
+    }
+    const guildId = req.guildAccess.guildId;
+    const { guild, joinedMs, memberKnown } = resolveDiscordContext(options.getClient, guildId, userId);
 
-      if (!userHasData(guildId, userId) && !memberKnown) {
-        const document = renderShellError(req, {
-          status: 404,
-          title: "User not found",
-          message: String(renderUserNotFoundBody({ userId })),
-          guilds: await shellGuilds(resolver, req),
-        });
-        writeShellHtml(req, res, { status: 404, document });
-        return;
-      }
-
-      const params = rawParams(req.url);
-      const activity = {
-        visible: true,
-        ...buildUserActivity(guildId, userId, {
-          win: params.get("win"),
-          page: params.get("page"),
-          guild,
-          joinedMs,
-        }),
-      };
-
-      const document = renderShellPage(req, {
-        title: `Activity · ${userId}`,
-        heading: "User profile",
-        subheading: `Activity tab (senior staff) · user ${userId}`,
-        content: renderUserActivityBody(req, { profile: { userId }, activity }),
+    if (!userHasData(guildId, userId) && !memberKnown) {
+      const document = renderShellError(req, {
+        status: 404,
+        title: "User not found",
+        message: String(renderUserNotFoundBody({ userId })),
         guilds: await shellGuilds(resolver, req),
       });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err);
+      writeShellHtml(req, res, { status: 404, document });
+      return;
     }
+
+    const params = rawParams(req.url);
+    const activity = {
+      visible: true,
+      ...buildUserActivity(guildId, userId, {
+        win: params.get("win"),
+        page: params.get("page"),
+        guild,
+        joinedMs,
+      }),
+    };
+
+    const document = renderShellPage(req, {
+      title: `Activity · ${userId}`,
+      heading: "User profile",
+      subheading: `Activity tab (senior staff) · user ${userId}`,
+      content: renderUserActivityBody(req, { profile: { userId }, activity }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 }
 
