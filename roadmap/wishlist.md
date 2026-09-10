@@ -48,7 +48,7 @@
 ### High
 
 - [x] **Fix temp-DB leak in the integration harness** — `test/helpers/env.js` / `createIntegrationEnv()` never close DBs or remove mkdtemp dirs. Current machine state: **~4,361 `/tmp/boiler-snake-it-*` dirs, ~1.8 GB**. Return `cleanup()` (close DB + `fs.rmSync(tmpDir, {recursive: true})`) from `loadDb()`/harness and call it in each file's `after()`; purge the existing dirs once.
-- [ ] **Test the OAuth exchange + public callback** — `src/features/commandPermissions/oauthTokens.js` (177 LOC) and `httpCallback.js` (165 LOC) have zero direct tests (only the missing-`CLIENT_SECRET` gate via `integration/staff-roles-sync.test.js`). Unit-test the callback handler with faked req/res + mocked fetch: valid state, tampered/expired state, Discord 4xx surfaced as specific cause, missing config.
+- [x] **Test the OAuth exchange + public callback** — `src/features/commandPermissions/oauthTokens.js` (177 LOC) and `httpCallback.js` (165 LOC) have zero direct tests (only the missing-`CLIENT_SECRET` gate via `integration/staff-roles-sync.test.js`). Unit-test the callback handler with faked req/res + mocked fetch: valid state, tampered/expired state, Discord 4xx surfaced as specific cause, missing config.
 
 ### Medium
 
