@@ -17,7 +17,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP) | EventSub; per-channel overrides; templates; go-offline; clips/VODs |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
-| 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + polish) | — |
+| 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + post-MVP polish) | — |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage, markdown + input policy |
 | 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
 

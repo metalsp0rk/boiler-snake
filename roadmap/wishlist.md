@@ -89,7 +89,7 @@
 - [x] **Sync `roadmap/warnings.md` §6.3/§6.5/§6.6 with its own status line** — add `/warn export`, `/setwarn expiry`, `expires_at`/evidence columns to the command/settings/schema drafts; decision 10 predates the `warn_log_channel_id` preference already recorded in §6.4.
 - [ ] **Prune `roadmap/staff-notes.md` "Still open" (lines 131–132)** — both shipped: guild-wide `/note list` without user (`staffNotes/index.js:87`) and the 2000-char content modal (`MAX_NOTE_CONTENT`).
 - [ ] **Prune `roadmap/twitch-notifications.md` "Still open" (lines 191–195)** — polling-interval default (2) and embed game/category were both decided and shipped (documented in the same file, §3.3/§3.5); keep only the `/testtwitchnotification` question.
-- [ ] **`roadmap/index.md` status-table wording** — row 6 "Shipped (MVP + polish)" vs `warnings.md` "Shipped (MVP + post-MVP polish)"; the one field that must match should do so verbatim.
+- [x] **`roadmap/index.md` status-table wording** — row 6 "Shipped (MVP + polish)" vs `warnings.md` "Shipped (MVP + post-MVP polish)"; the one field that must match should do so verbatim.
 
 ---
 
