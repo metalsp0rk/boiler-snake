@@ -7,6 +7,7 @@ export default defineConfig({
   description: 'Discord XP, leveling, roles, and server tools',
   base: '/boiler-snake/',
   cleanUrls: true,
+  lastUpdated: true,
   // GitHub-oriented index; VitePress home is docs/index.md
   srcExclude: ['README.md'],
   themeConfig: {

@@ -39,7 +39,7 @@
 - [x] **`.env.example:11` comment** — `YOUTUBE_API_KEY` says "(for futureEnhancements)"; YouTube notifications shipped.
 - [x] **Duplicate `## Testing` H2 in `docs/architecture.md`** (lines 9 and 232) — ambiguous `#testing` anchor; rename the second (e.g. "Testing Strategy").
 - [x] **`docs/index.md:50`** — Setup guide advertised "with video"; `docs/setup.md` has none. Drop "video".
-- [ ] **Enable `lastUpdated: true` in `docs/.vitepress/config.mjs`** (and/or front-matter dates) — no page carries an updated-stamp; this is why the drift above went unnoticed.
+- [x] **Enable `lastUpdated: true` in `docs/.vitepress/config.mjs`** (and/or front-matter dates) — no page carries an updated-stamp; this is why the drift above went unnoticed.
 
 ---
 
