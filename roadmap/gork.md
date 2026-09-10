@@ -17,7 +17,7 @@ engineering beyond documentation.
 
 ### Status
 
-**Shipped** — design locked in [7.14](#714-design-decisions-locked).
+**Shipped** — design locked in [7.14](#714-design-decisions-locked). One planned extension is design-locked but **not implemented**: [7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-unimplemented) (per-scope daily usage budget).
 
 ---
 
@@ -709,3 +709,173 @@ upsert/eviction → `/gork memory` commands + settings + audit fields → docs +
 `.env.example` + unit/integration fixtures (extraction JSON edges, validation drops,
 `normalizeTitle` collisions, mode-switch threshold + budget clamp, round-robin overflow
 order, keyed upsert overwrite, eviction order).
+
+---
+
+### 7.17 Daily usage budget by scope — 2026-09 design (LOCKED 2026-09-10 — decisions 30–37; unimplemented)
+
+**Why:** the per-user cooldown (7.6) paces *rate*, not *volume* — at the 180 s default a
+single user can still rack up hundreds of calls a day. Owners want a volume knob: **"a
+user gets X successful gork answers per day in this channel / category (guild-wide
+fallback)."** Cost + noise control, per-scope.
+
+**Requirements (owner, 2026-09-10):** per-scope daily budgets; a call counts **only when
+the bot produced the output without error**; the queue must never allow overages.
+
+#### 7.17.1 Scopes & precedence (decision 30)
+
+| Scope | Configured by | Counter key |
+|-------|---------------|-------------|
+| Channel | rule row on the channel id | (user, channel) |
+| Category | rule row on the category id — **shared budget across every channel in it** | (user, category) |
+| Guild default | `guild_settings.gork_daily_limit` | (user, guild) |
+
+Resolution (`resolveBudget()`): **channel rule → category rule → guild default →
+unlimited.** The most specific scope wins; the winning scope defines which single
+counter increments (a channel call never touches its category's counter unless the
+category rule is what applied). Pure function of
+`(rules, channelId, categoryId, defaultLimit)` → `{ scopeKind, scopeId, limit }` —
+unit-testable in isolation.
+
+#### 7.17.2 Limit semantics — tri-state (decision 31)
+
+| `limit` | Meaning |
+|---------|---------|
+| `-1` | **Blocked** — gork fully off in scope, **staff included** (kill switch) |
+| `0` | Unlimited (feature off) — the default everywhere; existing guilds change behavior zero days. Opt-in. |
+| `1–1000` | Successful answers per user per UTC day; clamped on write |
+
+`0 = unlimited` follows the repo idiom (cooldown `0` = off, memory budget `0` =
+unlimited); `-1` is added so a scope can be hard-blocked without touching the
+guild-wide `/gork enable` switch.
+
+#### 7.17.3 What counts as a call (decision 32)
+
+Increment **exactly once per trigger message, after ALL reply chunks delivered** —
+before the guild queue slot is released, so the next dequeue sees the authoritative
+count (see 7.17.4). Never counted:
+
+- LLM error / timeout / the canned failure reply (incl. the final empty-text canned
+  reply after the Fix 5 retry); **empty-then-retry success counts once** — the success
+  *is* the produced output;
+- any send failure mid-answer (chunk *n* fails → no count, even if chunk 1 landed; the
+  strictest reading of "no error in producing the output");
+- queue-full drops, cooldown 🕐 hits, banned users, blocked scopes (all never reach the
+  LLM, nothing to count).
+
+#### 7.17.4 Enforcement — check twice, never overage (decision 33)
+
+Budget checks are cheap SQLite reads at both ends of the queue:
+
+1. **Enqueue** (with the inline cooldown/queue-admission checks): resolve scope; blocked
+   → rejection; `used ≥ limit` → rejection; only then does the trigger occupy a queue
+   slot. Check order: match → resolve scope → blocked? → over budget? → cooldown →
+   queue admission.
+2. **Dequeue** (promotion into the single in-flight slot): re-check. With the cooldown
+   disabled a user can hold several queued triggers; earlier dequeues can spend the
+   remaining budget, so later ones must bounce **without an LLM call** and without a
+   count.
+
+Overage is impossible by construction: 1 in-flight per guild + increment-before-slot-
+release (7.17.3) ⇒ every dequeue reads post-increment counts. No hold/reservation
+ledger needed.
+
+#### 7.17.5 UX (decision 34)
+
+- **Over budget** → terse one-line reply to the trigger message naming the effective
+  scope and reset: `Daily gork budget reached in #general (5/day) — resets 00:00 UTC.`
+  **Ephemeral is impossible here** — gork triggers off plain messages, and Discord
+  ephemerals require an interaction token; a directed reply is the closest achievable.
+- **Blocked scope (`-1`)** → same surface: `gork isn't available in this channel.` (No
+  🕐 — the clock reaction stays cooldown-only; a day-scale block must explain itself,
+  unlike a 180 s silence.)
+- **Rejection-reply anti-spam:** at most one rejection reply per user per scope per
+  **hour** (in-memory); further triggers inside that window bounce silently. Keeps a
+  budget hit from becoming a reply spam loop.
+- **Staff are NOT exempt** (decision 35): unlike the cooldown, the budget counts and
+  rejects staff — it is a cost/noise control, not a politeness timer.
+
+#### 7.17.6 Day boundary & storage (decisions 36, 37)
+
+- Day = the trigger message's **UTC calendar date** (`YYYY-MM-DD`), reset 00:00 UTC —
+  same convention as memory `mem_date` (decision 26).
+- Usage is **DB-persisted, not in-memory** — a bot restart must not refund budgets
+  (deliberate split from the cooldown, which is in-memory by design). Upsert:
+  `INSERT … ON CONFLICT DO UPDATE count = count + 1`.
+- Lazy prune on the write path: `DELETE … WHERE day < yesterday_utc` — table stays
+  bounded with **no new ticker**.
+
+#### 7.17.7 Commands & surfaces (staff-gated `requireStaff`, decision 15 pattern)
+
+| Command | Description |
+|---------|-------------|
+| `/gork budget default <limit>` | Guild-default tri-state (`-1` blocked, `0` unlimited, `1–1000`) |
+| `/gork budget channel <channel> <limit>` | Add/replace a channel rule |
+| `/gork budget category <category> <limit>` | Add/replace a category rule |
+| `/gork budget remove channel\|category <id>` | Drop the rule (channels fall back to category → guild default) |
+| `/gork budget list` | Guild default + rules table with `created_by` provenance |
+
+- `/gork status` gains a `Budget` line (`default 5 · 3 rules`).
+- Rule add/replace/remove audited via the `logConfigChange` embed pattern (same as
+  cooldown/keyword changes).
+- Successful Q&A audit embed gains a `Budget` field (`3/5 in #general`) when the
+  effective limit is ≥ 1; **budget/block rejections are console-only** — the audit
+  channel must not fill with rejection spam.
+
+#### 7.17.8 Database
+
+Planned migration — **reserve the next free id at implementation time** (027 at
+planning-time; 025/026 are the web-admin placeholders per [index.md §7](index.md)):
+
+```sql
+ALTER TABLE guild_settings ADD COLUMN gork_daily_limit INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE gork_budget_rules (
+  guild_id   INTEGER NOT NULL,
+  scope_kind TEXT    NOT NULL,            -- 'channel' | 'category'
+  target_id  INTEGER NOT NULL,
+  daily_limit INTEGER NOT NULL,           -- -1 blocked | 0 unlimited | 1..1000
+  created_by INTEGER,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, scope_kind, target_id)
+);
+
+CREATE TABLE gork_usage (
+  guild_id   INTEGER NOT NULL,
+  user_id    INTEGER NOT NULL,
+  scope_kind TEXT    NOT NULL,            -- 'channel' | 'category' | 'guild'
+  scope_id   INTEGER NOT NULL,            -- channel/category id; 0 = guild default
+  day        TEXT    NOT NULL,            -- UTC date 'YYYY-MM-DD'
+  count      INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (guild_id, user_id, scope_kind, scope_id, day)
+);
+```
+
+`guildSettings` allow-list + defaults: `gork_daily_limit` (clamp `-1..1000`, default `0`).
+
+#### 7.17.9 Locked decisions (2026-09-10)
+
+| # | Decision |
+|---|----------|
+| 30 | Three scopes with **channel → category → guild default** precedence; most-specific wins; exactly one counter (the winning scope) per call; category rules pool all channels inside them. |
+| 31 | Tri-state limit: `-1` blocked, `0` unlimited (**default everywhere** — opt-in feature), `1–1000` capped with clamp-on-write. |
+| 32 | Count = **all reply chunks delivered**, once per trigger message, incremented **before queue-slot release**; errors, timeouts, canned replies, partial sends, cooldown/queue-full/ban/block drops never count; empty-text-retry success counts once. |
+| 33 | Checks at **both enqueue and dequeue**; 1-in-flight-per-guild + increment-before-release makes overage impossible without reservation accounting; dequeue bounce skips the LLM entirely. |
+| 34 | Rejections are a terse directed reply (ephemeral impossible on plain-message triggers) naming scope + 00:00 UTC reset; blocked scopes get their own line; rejection replies deduped 1/hour/scope in memory; 🕐 stays cooldown-only. |
+| 35 | **No staff exemption** for budgets — staff bypass only the cooldown. Budget is cost/noise control. |
+| 36 | Day = UTC calendar date of the trigger (matches decision 26); reset 00:00 UTC. |
+| 37 | DB-backed usage (restart-refund-proof) + lazy prune (no ticker); `/gork budget` command family; `logConfigChange` on rule mutations; `Budget` field on the Q&A audit embed; rejections console-only. |
+
+**Out of scope:** per-role budgets; banked/rollover allowance; channel-total (not
+per-user) budgets; rolling-window days instead of UTC dates; UI knobs beyond the
+command set above.
+
+**Implementation sketch:** migration (027 planning-time) + `guildSettings.gork_daily_limit`
+→ `gorkBudget` repository (pure `resolveBudget()`, `getUsage`, `incrementUsage` +
+prune, rule CRUD) → trigger wiring (enqueue check → dequeue re-check → completion
+increment before slot release; rejection replies + hourly dedup map) → `/gork budget`
+commands + `/gork status` + audit fields → docs (`docs/gork.md`,
+`docs/configuration.md`) → unit (resolver precedence, tri-state clamp, UTC day key,
+dedup window) + integration fixtures (exact cap reached, blocked scope, queued
+multi-request no-overage, partial-send not counted, staff counted, restart
+persistence, empty-retry success counted once).
