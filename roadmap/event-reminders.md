@@ -2,7 +2,7 @@
 
 ### Purpose
 
-Send configurable pre-event reminder pings for Discord’s built-in **Guild Scheduled Events**. Only users who marked **Interested** on the event are notified (via a per-event role). Anyone can **opt out** of reminder pings globally (per guild).
+Send configurable pre-event reminder pings for Discord’s built-in **Guild Scheduled Events**. Only users who marked **Interested** on the event are notified (via a per-event role). Anyone can **opt out** of reminder pings globally (per guild) or **mute** a single event.
 
 ### Status
 
@@ -15,11 +15,12 @@ Send configurable pre-event reminder pings for Discord’s built-in **Guild Sche
 ```
 Authorized user links reminders to a Discord scheduled event
         → bot creates role event-<shortname>
-        → syncs role to current “Interested” users (minus opt-outs)
+        → syncs role to current “Interested” users (minus opt-outs and mutes)
         → keeps role in sync on interest add/remove
         → at each configured offset before start, posts ONE message mentioning @event-<shortname>
         → when event completes/cancels (or manual clear): delete role + deactivate config
-          (cleanup prevents shortname/role collisions for future events)
+          (cleanup prevents shortname/role collisions for future events;
+           persistent/recurring configs skip the auto-cleanup — manual clear only)
 ```
 
 | Rule | Detail |
@@ -97,7 +98,7 @@ We do **not** need absolute date/time pickers for MVP: reminders are **offsets r
    - Compute `fire_at = eventStart - offset` for each; drop offsets that are already in the past (or warn and skip).
    - Create role `event-<shortname>` (`mentionable: false` preferred; bot still pings by ID). Hoist off.
    - Persist config + one **offset row** per fire (each gets its **own message** when due).
-   - Fetch interested users, skip guild opt-outs, assign role.
+   - Fetch interested users, skip guild opt-outs and per-event mutes, assign role.
    - Ephemeral confirm: role, offsets, channel, computed fire times.
 
 **Shortname rules:** lowercase `[a-z0-9-]`; unique among **active** configs in the guild. After event cleanup deletes the role and frees the shortname.
@@ -131,7 +132,8 @@ Pings are `@event-<shortname>` in message **content** plus an embed in the notif
   1. Delete the Discord role `event-<shortname>`.
   2. Mark config `active = 0` (or delete rows).
   3. Free shortname for future events → **prevents role collisions**.
-- Manual `/eventreminder clear` runs the same role deletion path.
+- **Persistent (recurring) configs** (`configs.persistent`, migration `017_event_reminder_persistent.js`) **skip the auto-cleanup** above so they survive recurring occurrences of the event *(shipped — the draft predated recurring events)*.
+- Manual `/eventreminder clear` runs the same role deletion path — and **overrides persistent** (forced cleanup).
 
 **Reschedule:** if event start time changes, recompute all **unsent** `fire_at` from new start − offsets.
 
@@ -193,6 +195,27 @@ CREATE TABLE IF NOT EXISTS event_reminder_optouts (
 
 Note: `UNIQUE (guild_id, shortname)` applies to all rows; if we soft-deactivate with `active=0`, either delete inactive configs on cleanup or use a partial unique index / include only active rows in uniqueness logic (prefer **delete role + delete or rename shortname on cleanup** so the unique constraint stays simple).
 
+**Shipped schema deltas** (added after this draft was written; `event_reminder_configs` = `006` base + `017` persistent):
+
+```sql
+-- 017_event_reminder_persistent.js (via addColumnIfMissing):
+-- recurring configs survive auto-cleanup so they can remind again next occurrence
+ALTER TABLE event_reminder_configs ADD COLUMN persistent INTEGER NOT NULL DEFAULT 0;
+
+-- 015_event_reminder_event_optouts.js: per-event mute (independent of guild-wide opt-out)
+CREATE TABLE IF NOT EXISTS event_reminder_event_optouts (
+    guild_id            TEXT NOT NULL,
+    user_id             TEXT NOT NULL,
+    scheduled_event_id  TEXT NOT NULL,
+    muted_at            INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id, scheduled_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_er_event_optouts_user
+  ON event_reminder_event_optouts(guild_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_er_event_optouts_event
+  ON event_reminder_event_optouts(guild_id, scheduled_event_id);
+```
+
 ---
 
 ### 2.8 db.js / module API (sketch)
@@ -208,7 +231,9 @@ Note: `UNIQUE (guild_id, shortname)` applies to all rows; if we soft-deactivate 
 - `getConfigByScheduledEventId(guildId, eventId)`
 - `canConfigureEventReminder(member, scheduledEvent)` → ManageGuild or creator
 
-Implementation module: `src/eventReminders.js` (ticker + role sync + delivery + cleanup).
+Implementation modules (shipped layout — the draft's single `src/eventReminders.js` never existed): `src/features/eventReminders/` — `index.js` (slash commands, modal/button handlers, gateway listeners), `service.js` (pure helpers + role sync/delivery/cleanup against Discord), `ticker.js` (node-cron delivery + safety cleanup). DB helpers live in `src/db/repositories/eventReminders.js`, re-exported through the `src/db` facade.
+
+*(Shipped: the opt-out helpers above exist with these names. The per-event mute pair — table `event_reminder_event_optouts`, migration `015` — shipped alongside: `isEventReminderMuted` / `setEventReminderMute` / `clearEventReminderMute` / `listEventReminderMutes` / `clearEventReminderMutesForEvent`, plus the combined check `isUserBlockedFromEventReminders(guildId, userId, eventId)` = guild opt-out **or** event mute. `persistent` (migration `017`) is set on create and toggled later via `updateEventReminderConfig`.)*
 
 ---
 
@@ -219,8 +244,8 @@ Implementation module: `src/eventReminders.js` (ticker + role sync + delivery + 
 | Modal submit (create / edit) | Role + config + offsets + initial subscriber sync |
 | `guildScheduledEventUserAdd` | Grant role if active and not opted out |
 | `guildScheduledEventUserRemove` | Remove role |
-| `guildScheduledEventUpdate` | Start time change → recompute unsent `fire_at`; completed/canceled → **cleanup role + config** |
-| `guildScheduledEventDelete` | **Cleanup role + config** |
+| `guildScheduledEventUpdate` | Start time change → recompute unsent `fire_at`; completed/canceled → **cleanup role + config** (auto-cleanup skips persistent configs) |
+| `guildScheduledEventDelete` | **Cleanup role + config** (skips persistent configs) |
 | Interval ticker | Deliver due offsets (**one message each**); safety cleanup after event end |
 | `/eventreminder optout` / `optin` / `mute` / `unmute` | Toggle guild opt-out or per-event mute + strip or re-sync roles |
 
@@ -245,7 +270,7 @@ Implementation module: `src/eventReminders.js` (ticker + role sync + delivery + 
 | 1 | **Modal UI:** no native date/time pickers on Discord modals. Use **relative offsets** (string **multi-select presets** + optional custom text). Channel override via **channel select**. Absolute datetimes not required for MVP. |
 | 2 | **One message per offset** (not a digest). |
 | 3 | **Permission:** `ManageGuild` **or** the scheduled event’s **creator**. Guild default channel: ManageGuild only. |
-| 4 | **Role cleanup after event completes/cancels** (and on clear) — primary defense against shortname/role collisions. |
+| 4 | **Role cleanup after event completes/cancels** (and on clear) — primary defense against shortname/role collisions. **Extended (shipped):** `persistent` recurring configs (migration `017`) are exempt from the auto-cleanup so they survive to the next occurrence; manual `/clear` still forces cleanup. |
 | 5 | **Opt-out:** guild-wide `/optout` **and** per-event `/mute`; guild opt-out always wins for grants. |
 | 6 | **Default preset selection** in modal: `1 day`, `1 hour`, `15 min` (user can change). |
 | 7 | **Delivery:** always embed + role mention in message content (embed mentions do not notify). |
