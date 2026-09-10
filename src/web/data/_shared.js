@@ -73,6 +73,35 @@ function makeCacheSet(cache, maxEntries) {
   };
 }
 
+/**
+ * Shared lavalink availability ladder for the dashboard/voice music cards.
+ * Returns the degrade sentinel {status, detail} for the unwired / unconfigured
+ * / node-down / no-player rungs, otherwise hands (player, current|null) to
+ * onReady for caller-specific shaping — and ANY throw (including inside
+ * onReady) degrades to "player read failed": music state must never break a
+ * page. detail/status strings are pinned by both page suites — change only
+ * with the tests.
+ * @param {any} client
+ * @param {string} guildId
+ * @param {{getManager: Function, isNodeReady: Function}} musicApi
+ * @param {(player: any, current: any) => any} onReady
+ */
+function withMusicPlayer(client, guildId, musicApi, onReady) {
+  try {
+    if (!client) return { status: "unknown", detail: "no client wired" };
+    const manager = musicApi.getManager(client);
+    if (!manager) return { status: "unavailable", detail: "lavalink not configured" };
+    if (!musicApi.isNodeReady(client)) {
+      return { status: "unavailable", detail: "no lavalink node connected" };
+    }
+    const player = manager.getPlayer?.(guildId) || null;
+    if (!player) return { status: "idle", detail: "no active player in this guild" };
+    return onReady(player, player.queue?.current || null);
+  } catch {
+    return { status: "unknown", detail: "player read failed" };
+  }
+}
+
 module.exports = {
   DEFAULT_CACHE_TTL_MS,
   MIN_CACHE_TTL_MS,
@@ -81,4 +110,5 @@ module.exports = {
   numOrNull,
   makeGuardRead,
   makeCacheSet,
+  withMusicPlayer,
 };
