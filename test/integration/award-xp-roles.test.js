@@ -1,4 +1,4 @@
-const { describe, it, before } = require("node:test");
+const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
 const { assertXp, assertRoleGranted } = require("../helpers/assert");
@@ -9,6 +9,11 @@ describe("integration: awardXp + level roles", () => {
   let env;
   let awardXp;
   let syncMemberRoles;
+
+  after(() => {
+    // Close SQLite handles and remove the temp dir created for this env.
+    env?.cleanup();
+  });
 
   before(async () => {
     env = await createIntegrationEnv();

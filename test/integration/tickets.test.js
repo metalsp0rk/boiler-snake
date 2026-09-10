@@ -52,7 +52,8 @@ describe("integration: tickets", () => {
   });
 
   after(() => {
-    // leave env as-is; process exit cleans temp dirs
+    // Close SQLite handles and remove the temp dir created for this env.
+    env?.cleanup();
   });
 
   /**

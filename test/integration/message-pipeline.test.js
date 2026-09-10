@@ -1,4 +1,4 @@
-const { describe, it, before } = require("node:test");
+const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
 const { assertXp, assertBanned, assertNotBanned } = require("../helpers/assert");
@@ -7,6 +7,11 @@ const { IDS } = require("../helpers/fixtures");
 describe("integration: message pipeline", () => {
   /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
   let env;
+
+  after(() => {
+    // Close SQLite handles and remove the temp dir created for this env.
+    env?.cleanup();
+  });
 
   before(async () => {
     env = await createIntegrationEnv();

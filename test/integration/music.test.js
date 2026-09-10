@@ -24,6 +24,8 @@ describe("integration: music", () => {
 
   after(() => {
     music.setManagerForTests(null);
+    // Close SQLite handles and remove the temp dir created for this env.
+    env?.cleanup();
   });
 
   function putInVoice(member, channelId = IDS.channelVoice) {
