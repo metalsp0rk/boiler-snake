@@ -3,8 +3,8 @@
  * subtask 15). GET only — no POST/PUT/DELETE exists on this surface (§8.8
  * Phase 1; the app-wide methodGate 405s everything else anyway).
  *
- * Routes (all UNDER the /g/:guildId guildScope mounted by guildShell.js —
- * this module MUST be registered after registerGuildShellRoutes in app.js):
+ * Routes (all UNDER the /g/:guildId guildScope mounted by dashboard.js —
+ * this module MUST be registered after registerDashboardRoutes in app.js):
  *   GET /g/:guildId/users                    — staff+ — ID search (≤50 rows)
  *   GET /g/:guildId/users/:userId            — staff+ — unified profile
  *   GET /g/:guildId/users/:userId/activity   — SENIOR — /userinfo Activity

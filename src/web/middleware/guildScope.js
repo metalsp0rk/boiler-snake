@@ -7,7 +7,7 @@
  *    body as the app-wide catch-all 404 — NEVER 403 and never a distinguishing
  *    message: the panel must not leak which guild ids exist (§8.6, §8.13-10).
  *  - anonymous ⇒ 302 to /auth/login (guild query only for snowflake ids),
- *    byte-identical to routes/guildShell.js's placeholder redirect that
+ *    byte-identical to the /g shell's placeholder redirect that
  *    test/web-auth-login.test.js already pins — so mounting this ahead of
  *    the shell (subtask 11) keeps that oracle green. A live-but-unusable
  *    session (decrypt failure / expired or revoked AT ⇒ resolver 'reauth')
@@ -25,11 +25,11 @@
  * an attacker learns nothing from an outage, and the visitor retries.
  */
 
-/** Same snowflake gate as login.js GUILD_TARGET_RE / routes/guildShell.js. */
+/** Same snowflake gate as login.js GUILD_TARGET_RE / routes/dashboard.js. */
 const { URL_ID_RE: GUILD_ID_RE } = require("../shared/snowflake");
 
 /**
- * Login target for the anonymous/reauth redirect — mirrors guildShell's
+ * Login target for the anonymous/reauth redirect — mirrors the shell's
  * placeholder exactly: snowflake ⇒ `?guild=` return target (signed into the
  * purpose-tagged state by login.js, never trusted raw), anything else ⇒ bare
  * /auth/login (never echo junk back through a query param).

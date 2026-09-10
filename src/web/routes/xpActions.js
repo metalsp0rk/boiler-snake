@@ -27,7 +27,7 @@
  * `requireAdmin(interaction)` (ManageGuild, src/core/permissions.js) and is
  * listed ManageGuild-ONLY in AGENTS.md §4 — the web tier ladder
  * (staff < senior < admin) resolves "admin" to exactly that gate. guildScope
- * (routes/guildShell.js, mounted earlier in app.js) already answered anon ⇒
+ * (routes/dashboard.js, mounted earlier in app.js) already answered anon ⇒
  * 302 login and cross-guild/stranger ⇒ generic 404 (never 403, §8.6).
  *
  * DISCORD-SIDE NICETIES = CACHE-ONLY SEAM, NEVER A FETCH. The route reads

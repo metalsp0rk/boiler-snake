@@ -26,7 +26,7 @@
  * TIER: requireTier("admin"). Slash evidence: /staff syncpermissions gates
  * on isAdminOrMod(interaction) (ManageGuild) and is listed ManageGuild-ONLY
  * in AGENTS.md §4 — the web tier ladder (staff < senior < admin) resolves
- * "admin" to exactly that gate. guildScope (routes/guildShell.js, mounted
+ * "admin" to exactly that gate. guildScope (routes/dashboard.js, mounted
  * earlier in app.js) already answered anon ⇒ 302 login and
  * cross-guild/stranger ⇒ generic 404 (never 403, §8.6).
  *
@@ -169,7 +169,7 @@ function respondSyncRedirect(res, guildId, target, flag, slug) {
  * @param {any} [options.guildAccess] accepted for mount-shape parity but NOT
  *   used here: this is a POST-only surface, so there is no guild switcher to
  *   build (shellGuilds lives in the GET modules). Tier comes from
- *   req.guildAccess, populated by guildScope (routes/guildShell.js) which
+ *   req.guildAccess, populated by guildScope (routes/dashboard.js) which
  *   app.js mounts BEFORE this module — the SAME resolver instance the shell
  *   uses (§8.3: one tier cache).
  * @param {string} [options.apiBase] @param {typeof fetch} [options.fetchImpl]
