@@ -114,8 +114,10 @@ Rules:
 
 | Migration | Change |
 |-----------|--------|
-| `024_web_sessions` | `web_sessions (id TEXT PK, user_id TEXT, discord_tag TEXT, created_at, last_seen_at, expires_at)` + `idx(user_id)`; prune index on `expires_at` |
-| `025_admin_audit` | `admin_audit (id, guild_id, actor_user_id, origin 'web'\|'slash'\|'system', action, target_type, target_id, details_json, created_at)` + `idx(guild_id, created_at)` |
+| `025_web_sessions` | `web_sessions (id TEXT PK, user_id TEXT, discord_tag TEXT, created_at, last_seen_at, expires_at)` + `idx(user_id)`; prune index on `expires_at` |
+| `026_admin_audit` | `admin_audit (id, guild_id, actor_user_id, origin 'web'\|'slash'\|'system', action, target_type, target_id, details_json, created_at)` + `idx(guild_id, created_at)` |
+
+> **Numbering note:** the migration ids above are planning-time placeholders. Every migration shipped after this plan was written shifts them — reserve the next free id at implementation time (verify against `src/db/migrations/` before numbering), never trust the numbers written here.
 
 No new tables for participants (existing ticket schema covers §8.4). Slash handlers gain a thin `admin_audit` write alongside their existing channel embeds so origin is consistent across transports.
 
