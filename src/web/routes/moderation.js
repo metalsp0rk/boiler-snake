@@ -108,6 +108,19 @@ const NOTE_NUMBER_RE = /^[1-9][0-9]{0,8}$/;
 /** Whole non-negative days ≤ 4 digits pre-screened against MAX_EXPIRY_DAYS. */
 const DAYS_RE = /^(0|[1-9][0-9]{0,3})$/;
 
+/**
+ * issueWarning defense-backstop: repo error code → fixed error slug.
+ * Unknown codes RE-THROW (generic 500) — a new repo code must be added
+ * here deliberately, never silently collapsed into a generic refusal.
+ */
+const WARN_THROW_SLUG = Object.freeze({
+  INVALID_REASON: "missing_reason",
+  INVALID_NOTE: "invalid_note",
+  INVALID_EVIDENCE_URL: "invalid_evidence_url",
+  INVALID_EVIDENCE_TEXT: "invalid_evidence_text",
+  INVALID_EXPIRY: "invalid_expiry",
+});
+
 /** Checkbox spellings that mean "yes" (the form sends value="1"). */
 const TRUTHY = new Set(["1", "true", "on", "yes"]);
 
@@ -515,26 +528,10 @@ function registerModerationRoutes(app, options = {}) {
         // Every INVALID_* bound is pre-validated above; a throw here is a
         // defense-in-depth backstop (zero rows written — the repo's tx
         // aborted). Slash answers the repo message; the web collapses it to
-        // the matching fixed slug (no echo, §8.7).
-        const code = err?.code;
-        if (code === "INVALID_REASON") {
-          warnFlash(res, guildId, "error", "missing_reason");
-          return;
-        }
-        if (code === "INVALID_NOTE") {
-          warnFlash(res, guildId, "error", "invalid_note");
-          return;
-        }
-        if (code === "INVALID_EVIDENCE_URL") {
-          warnFlash(res, guildId, "error", "invalid_evidence_url");
-          return;
-        }
-        if (code === "INVALID_EVIDENCE_TEXT") {
-          warnFlash(res, guildId, "error", "invalid_evidence_text");
-          return;
-        }
-        if (code === "INVALID_EXPIRY") {
-          warnFlash(res, guildId, "error", "invalid_expiry");
+        // the matching fixed slug via WARN_THROW_SLUG (no echo, §8.7).
+        const slug = WARN_THROW_SLUG[err?.code];
+        if (slug) {
+          warnFlash(res, guildId, "error", slug);
           return;
         }
         throw err; // DB error → generic 500 (slash logs + "database error")
