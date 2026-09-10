@@ -100,6 +100,7 @@ const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const { getBoundAuditClient } = require("../middleware/audit");
 const { readFields } = require("./shared/req.js");
+const { makeFlashRedirect } = require("./shared/flash.js");
 const { rawFlashQuery } = require("./shared/req.js");
 const { rawParams } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
@@ -311,17 +312,11 @@ function registerTicketActionsRoutes(app, options = {}) {
    * before the Location is minted (settings.js redirectSettings doctrine):
    * a bug at a call site can still never reflect input into a redirect.
    */
-  const flash = (res, guildId, flag, slug) => {
-    const safeFlag = flag === "done" ? "done" : "error";
-    const table = safeFlag === "done" ? FLASH_DONE : FLASH_ERROR;
-    const safeSlug =
-      typeof slug === "string" && table[slug] ? slug : Object.keys(table)[0];
-    res.writeHead(302, {
-      Location: `${actionsPage(guildId)}?${safeFlag}=${safeSlug}`,
-      "Cache-Control": "no-store",
-    });
-    res.end();
-  };
+  const flash = makeFlashRedirect({
+    pageOf: actionsPage,
+    doneTable: FLASH_DONE,
+    errorTable: FLASH_ERROR,
+  });
 
   /**
    * Load the ticket the body names and prove it belongs to THIS guild.
