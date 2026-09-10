@@ -8,7 +8,7 @@
  * viewer is read-only until a later phase, and the app-wide methodGate
  * 405s every other verb on these paths anyway: "no export, no deletes").
  *
- * Route position: registered AFTER routes/guildShell.js in app.js, so the
+ * Route position: registered AFTER routes/dashboard.js in app.js, so the
  * shell's `/g/:guildId` guildScope already ran (anon ⇒ login redirect,
  * cross-guild/stranger ⇒ generic 404 — §8.6 cross-cutting rule, never 403).
  * requireTier("admin") inside each route is the explicit §8.6 System-row

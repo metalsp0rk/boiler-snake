@@ -3,10 +3,14 @@
  * "Dashboard (activity, open tickets, ticker health, now-playing) | Staff |
  * — | 1 (data) / 4 (charts)", subtask 14).
  *
- * PATH TAKEOVER (coordinated with routes/guildShell.js): this registrar is
- * mounted BEFORE registerGuildShellRoutes in app.js, so this GET /g/:guildId
- * handler answers first and the shell's Phase 0c placeholder is superseded.
- * Behavior contract preserved EXACTLY (pinned by test/web-views-layout.test.js
+ * GUILD SHELL OWNER: this registrar is mounted FIRST among the /g
+ * registrars in app.js, so its guildScope mount (prefix-matched on
+ * /g/:guildId) gates EVERY deeper /g/<id>/... route registered after it —
+ * exactly once per request. It absorbed the Phase 0c shell placeholder
+ * (routes/guildShell.js, deleted in the post-merge cleanup: that module's
+ * GET was unreachable behind this one and its second scope mount only
+ * re-resolved from the shared TTL cache). Behavior contract preserved
+ * EXACTLY (pinned by test/web-views-layout.test.js
  * + test/web-auth-login.test.js):
  *  - the SAME guildScope middleware semantics run first (anon/reauth ⇒
  *    byte-identical login redirect; scoped-out/cross-guild/bad id ⇒ the
@@ -19,10 +23,13 @@
  *    rejects no-tier visitors with 404 — this is the explicit Phase 1
  *    tier-gate, mirroring the usage documented in middleware/requireTier.js).
  *
- * guildShell's own guildScope mount STAYS (registered right after us) so
- * every deeper /g/<id>/... route keeps its gate; on those paths both scope
- * passes run and the second resolves from the shared resolver's TTL cache —
- * a couple of cheap SQLite reads, zero network.
+ * 404 SHAPE DECISION (kept from the shell's header): scoped misses inside
+ * /g/* intentionally keep the app-wide plain-text "Not found" — guildScope
+ * already answers every deny with it, unmatched /g paths fall through to
+ * the app catch-all (same bytes), and unknown/cross-guild/nonexistent must
+ * stay indistinguishable. A shell-styled error page exists
+ * (views/layout.js renderShellError) for routes that need richer in-shell
+ * errors WITHOUT touching that indistinguishability contract.
  *
  * Read-only page (Phase 1): NO mutation routes are registered here. Data
  * comes exclusively from src/web/data/dashboardData.js — facade-only reads,
@@ -44,9 +51,9 @@ const {
  * @param {object} [options]
  * @param {{resolve: Function, listGuilds: Function}} [options.guildAccess]
  *   pre-built resolver (tests); default builds one from the seams below —
- *   and PUBLISHES it onto this options object so the registerGuildShellRoutes
- *   call that follows in app.js shares the SAME instance (single tier cache,
- *   single Discord read budget).
+ *   and PUBLISHES it onto this options object so the register calls that
+ *   follow in app.js share the SAME instance (single tier cache, single
+ *   Discord read budget).
  * @param {string} [options.apiBase] @param {typeof fetch} [options.fetchImpl]
  * @param {() => Promise<string[]>|string[]} [options.botGuilds]
  * @param {{getDashboard: Function}} [options.dashboardData]
@@ -65,8 +72,8 @@ function registerDashboardRoutes(app, options = {}) {
       fetchImpl: options.fetchImpl,
       botGuilds: options.botGuilds,
     });
-  // Shared-instance wiring (see the JSDoc above): guildShell re-reads
-  // options.guildAccess AFTER this line, so it reuses this resolver.
+  // Shared-instance wiring (see the JSDoc above): every later /g registrar
+  // in app.js re-reads options.guildAccess, so all share this resolver.
   options.guildAccess = resolver;
 
   const dashboard =
@@ -78,8 +85,9 @@ function registerDashboardRoutes(app, options = {}) {
         })
       : getDefaultDashboardData());
 
-  // Security gate FIRST — identical contract to routes/guildShell.js's mount
-  // (anon redirect / generic 404s are guildScope's documented behavior).
+  // Security gate FIRST — prefix-matched so it also gates every deeper /g
+  // route registered after this one (anon redirect / generic 404s are
+  // guildScope's documented behavior).
   app.use("/g/:guildId", createGuildScopeMiddleware({ resolver }));
 
   app.get("/g/:guildId", requireTier("staff"), async (req, res) => {
@@ -91,7 +99,7 @@ function registerDashboardRoutes(app, options = {}) {
 
     // Switcher from the SAME cached list resolve() just gated against
     // (normally zero network) — the viewed guild always renders even if the
-    // degraded read came back empty (exact guildShell placeholder pattern).
+    // degraded read came back empty (shell doctrine: the viewed guild always renders).
     const listed = await resolver.listGuilds(req.webSession);
     const guilds = listed.guilds.slice();
     if (!guilds.some((g) => g.id === guildId)) {

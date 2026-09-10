@@ -85,7 +85,7 @@ const ADMINISTRATOR_BIT = 1n << 3n;
 /** Unsigned decimal string only: rejects "", "1e10", "-32" (two's-complement
  *  BigInt &-tricks), garbage, and absurd lengths. Anything else ⇒ 0 bits. */
 const PERMISSIONS_DECIMAL_RE = /^\d{1,20}$/;
-/** Same snowflake gate as login.js GUILD_TARGET_RE / routes/guildShell. */
+/** Same snowflake gate as login.js GUILD_TARGET_RE / routes/dashboard. */
 const { URL_ID_RE: GUILD_ID_RE } = require("../shared/snowflake");
 
 const DEFAULT_MAX_CACHE_ENTRIES = 2000;
