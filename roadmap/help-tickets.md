@@ -349,9 +349,9 @@ Channel create is **bot-driven**.
 
 ---
 
-### 1.11 Planned fixes
+### 1.11 Planned fixes (both shipped)
 
-Two reported issues to fix next; both touch `src/features/tickets/`.
+Two reported issues — **both shipped** in `src/features/tickets/` (`overwrites.js`, `close.js`); unit tests in `test/tickets.test.js`, integration coverage in `test/integration/tickets.test.js`.
 
 #### Fix 1 — bogus “staff role(s) could not get channel access” note on ticket create
 
@@ -359,19 +359,19 @@ Two reported issues to fix next; both touch `src/features/tickets/`.
 
 **Where:** `getManageableStaffRoleIds()` in `src/features/tickets/overwrites.js`; the note is assembled in `src/features/tickets/index.js` (`completeSelfCreate` / `handleFor`).
 
-**Root causes to address:**
+**Root causes — all addressed:**
 
-- [ ] **Cache-miss false positive:** role lookup is `guild.roles.cache.get()` only. A staff role missing from the role cache (newly created, guild fetched without roles, cache race) is reported “role not found in guild”. Add a `guild.roles.fetch(roleId)` fallback before skipping.
-- [ ] **Bot holds the staff role itself:** the `rolePos >= botPos` check counts a staff role the bot also holds as “above/equal the bot” and skips it. When the bot holds the role, an overwrite is unnecessary for the bot — distinguish this case (and if any staff members hold it, recommend/rely on a distinct higher bot admin role instead of a misleading note).
-- [ ] **Undiagnosable note:** the note shows only a count. Include each skipped role's **mention/name + specific reason** (not found / managed role / hierarchy) so admins know what to fix; log the same detail.
-- [ ] Tests: unit cases for cache-miss fallback, bot-held staff role, managed role, true hierarchy skip; integration test that create succeeds with no note when the bot role is above staff roles.
+- [x] **Cache-miss false positive:** role lookup is `guild.roles.cache.get()` only. A staff role missing from the role cache (newly created, guild fetched without roles, cache race) is reported “role not found in guild”. Add a `guild.roles.fetch(roleId)` fallback before skipping. *(Shipped: `resolveStaffRole` — v14 semantics keep deleted-role `null` apart from API failures, which report “lookup failed: cause” instead of “not found”.)*
+- [x] **Bot holds the staff role itself:** the `rolePos >= botPos` check counts a staff role the bot also holds as “above/equal the bot” and skips it. When the bot holds the role, an overwrite is unnecessary for the bot — distinguish this case (and if any staff members hold it, recommend/rely on a distinct higher bot admin role instead of a misleading note). *(Shipped: `botHoldsRole` — silently skipped; the overwrite is still granted when the bot has a separate higher role.)*
+- [x] **Undiagnosable note:** the note shows only a count. Include each skipped role's **name** + specific reason (never a role ping) so admins know what to fix; log the same detail. *(Shipped: `formatStaffRoleAccessNote` — one line per role with name/id + reason; `describeSkippedStaffRoles` mirrors it to the log.)*
+- [x] Tests: unit cases for cache-miss fallback, bot-held staff role, managed role, true hierarchy skip; integration test that create succeeds with no note when the bot role is above staff roles.
 
 #### Fix 2 — DM the transcript link to the requester on archive
 
 **Requested change:** when a ticket is archived, the requester should receive the transcript link too — not only the staff archive channel. **Revises locked decision 3** (staff-only URL) for **non-sensitive** tickets only; the sensitive branch is unchanged (no transcript exists to send).
 
-- [ ] After the archive embed posts successfully (and before/after channel delete), DM `creator_user_id`: ticket ref, close reason, and `[View transcript](url)` when `TICKET_PUBLIC_BASE_URL` is configured.
-- [ ] Best-effort: closed DMs / blocked bot → ignore silently (optionally note in the closer's ephemeral reply as a warning). Never fail the archive because the DM failed.
-- [ ] Requester only — do not DM other ticket members.
-- [ ] Sensitive tickets: DM stays “closed + reason only”, never a URL (already the contract).
-- [ ] Update [docs/tickets.md](../docs/tickets.md) transcript access-control wording when shipped.
+- [x] After the archive embed posts successfully (and before/after channel delete), DM `creator_user_id`: ticket ref, close reason, and `[View transcript](url)` when `TICKET_PUBLIC_BASE_URL` is configured. *(Shipped: `notifyRequesterArchived` + `buildArchiveDmEmbed`; the link only appears when the public URL is configured.)*
+- [x] Best-effort: closed DMs / blocked bot → ignore silently (optionally note in the closer's ephemeral reply as a warning). Never fail the archive because the DM failed. *(Shipped: `{ ok:false, error }` return surfaced as a warning line on the archive reply; the archive never aborts.)*
+- [x] Requester only — do not DM other ticket members.
+- [x] Sensitive tickets: DM stays “closed + reason only”, never a URL (already the contract).
+- [x] Update [docs/tickets.md](../docs/tickets.md) transcript access-control wording when shipped. *(Done — staff archive embed **plus** requester DM wording, sensitive never gets a URL.)*

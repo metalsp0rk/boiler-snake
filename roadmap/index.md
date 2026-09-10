@@ -12,7 +12,7 @@ Each feature has its own file with the full design, status, and locked decisions
 
 | # | Feature | File | Status | Open items |
 |---|---------|------|--------|------------|
-| 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Fix staff-role skip note on create; DM transcript link to requester on archive; Discord OAuth on transcripts (→ covered by [web-admin.md](web-admin.md) §8.4); richer `/ticket list` filters |
+| 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Discord OAuth on transcripts (→ covered by [web-admin.md](web-admin.md) §8.4); richer `/ticket list` filters |
 | 2 | Scheduled Event Reminders | [event-reminders.md](event-reminders.md) | Shipped | — |
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP) | EventSub; per-channel overrides; templates; go-offline; clips/VODs |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags; `added_by`; audit embeds |
@@ -144,8 +144,8 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 ### Tickets
 
 - [x] Panel message + button → modal for ticket description  
-- [ ] **Fix:** ticket create warns “`N` staff role(s) could not get channel access” even when the bot role is above staff roles — make `getManageableStaffRoleIds` resilient (fetch role on cache miss, don't count roles the bot itself holds as skipped) and show per-role name + reason in the note (see [help-tickets.md §1.11](help-tickets.md))  
-- [ ] **Fix:** on archive, DM the requester the transcript link (non-sensitive tickets only) in addition to posting the archive-channel embed — revises locked decision 3 (see [help-tickets.md §1.11](help-tickets.md))  
+- [x] **Fix (shipped):** ticket create warned “`N` staff role(s) could not get channel access” even when the bot role is above staff roles — `getManageableStaffRoleIds` now resolves roles via `guild.roles.fetch` on cache miss, skips a role the bot itself holds silently, and lists per-role name + reason in the note (see [help-tickets.md §1.11](help-tickets.md))  
+- [x] **Fix (shipped):** on archive, DM the requester the transcript link (non-sensitive tickets only) in addition to posting the archive-channel embed — revises locked decision 3 (see [help-tickets.md §1.11](help-tickets.md))  
 - [ ] Login with Discord on transcript HTTP routes  
 - [x] Download/mirror all attachments into transcript storage at archive time (replace hotlinks)  
 - [ ] Richer `/ticket list` filters  
