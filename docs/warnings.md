@@ -189,7 +189,7 @@ CREATE TABLE warnings (
 );
 ```
 
-See [Database Schema](database.md) for indexes and migrations `009_warnings`, `012_warn_log_channel`, `017_warn_post_mvp`.
+See [Database Schema](database.md) for indexes and migrations `009_warnings`, `012_warn_log_channel`, `018_warn_post_mvp`.
 
 ## Design decisions
 
