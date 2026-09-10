@@ -6,7 +6,7 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 
 ### Status
 
-**Shipped (MVP + panel)** — see [docs/tickets.md](../docs/tickets.md). Design decisions locked in [1.10](#110-design-decisions-locked). Post-MVP remaining: Discord OAuth on transcripts; further attachment/panel polish.
+**Shipped (MVP, panel registry, two-phase close→archive, asset mirror)** — see [docs/tickets.md](../docs/tickets.md). Design decisions locked in [1.10](#110-design-decisions-locked). Post-MVP remaining: Discord OAuth on transcripts.
 
 ---
 
@@ -15,7 +15,7 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 | Command | Description |
 |---------|-------------|
 | `/ticket setcategory <category>` | Category where ticket channels are created |
-| `/ticket setarchive <channel>` | Channel that receives close-summary embeds + transcript links (staff-only channel recommended) |
+| `/ticket setarchive <channel>` | Channel that receives archive-summary embeds + transcript links (posted at `/ticket archive`; staff-only channel recommended) |
 | `/ticket setratelimit <minutes>` | Min minutes between self-created tickets per user (default **60** = 1/hour). `0` = disable |
 | `/ticket settings` | Show current ticket configuration (incl. which guild **staff roles** apply) |
 
@@ -29,7 +29,7 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 | `ticket_archive_channel_id` | Staff-visible channel for archive posts |
 | `ticket_rate_limit_minutes` | Cooldown for member self-create; default `60` |
 
-**Panel:** `/ticket panel` posts a public embed + **Open a ticket** button (no DB row; delete the Discord message to remove).
+**Panel:** `/ticket panel create` (staff) posts a public embed + **Open a ticket** button. Panels are a **stored registry**: every posted panel gets a row in `ticket_panels` (migration `src/db/migrations/019_ticket_panels.js` — guild/channel/message id + title/description), so `/ticket panel list|edit|delete` can find and manage them (delete removes both the Discord message and the row). *(Shipped — the original "no DB row; delete the Discord message to remove" draft was superseded; `handlePanelCreate|List|Edit|Delete` in `index.js`.)*
 
 ---
 
@@ -40,11 +40,11 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 | `/ticket create [reason]` | Any member | Open a ticket for yourself (subject to rate limit) |
 | `/ticket for <user> [reason]` | Staff | Pull a member into a **new** ticket (staff-initiated; **not** rate-limited like self-create) |
 
-**Create UX:** slash `/ticket create` + staff `/ticket for`, plus admin `/ticket panel` → button → **modal** for description (same self-create pipeline and rate limit).
+**Create UX:** slash `/ticket create` + staff `/ticket for`, plus staff `/ticket panel create` → button → **modal** for description (same self-create pipeline and rate limit).
 
 **On create:**
 
-1. Enforce rate limit for **member self-create** only (`/ticket create` / future panel). Staff `/ticket for` bypasses member cooldown. **No cap** on concurrent open tickets per user.
+1. Enforce rate limit for **member self-create** only (`/ticket create` and the panel-button modal). Staff `/ticket for` bypasses member cooldown. **No cap** on concurrent open tickets per user.
 2. Allocate next sequential `ticket_number` per guild.
 3. Create channel `ticket-<NUMBER>` under the configured category (if set).
 4. Apply permission overwrites (see [1.3](#13-permissions--sensitive-tickets)).
@@ -64,10 +64,10 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 |---------|--------|
 | `@everyone` | Deny `ViewChannel` |
 | Ticket **members** (creator + users added via `/ticket adduser`) | Allow view, send, attach, history; deny manage messages |
-| **Each guild staff role** (from `staff_roles` / generalized honeypot exempt list) | Full staff access (view, send, manage messages, etc.) |
+| **Senior guild staff roles** (rows in `staff_roles` at level **senior**) | Full staff access (view, send, manage messages, etc.). Junior roles get **no** automatic overwrite |
 | Bot | Full channel management |
 
-Any member with a configured staff role (or ManageGuild for commands) can help. If **no** staff roles are configured, only ManageGuild holders pass the command gate; channel overwrites still need at least one staff role for non-admin staff to see tickets—admins should run `/staff role add` first.
+Two tiers off one list (shipped): the **command gate** passes ManageGuild or **any** configured staff role, but **channel overwrites** are granted to **senior** staff roles only — `getManageableStaffRoleIds()` reads `listSeniorStaffRoles` in `overwrites.js`, so junior staff pass `requireStaff` yet get no automatic ticket visibility (promote with `/staff role setlevel`). `/ticket settings` shows which roles are senior. If **no** staff roles are configured, only ManageGuild holders pass the command gate and no role gets ticket overwrites—admins should run `/staff role add` first.
 
 #### Sensitive ticket
 
@@ -92,7 +92,7 @@ Everyone else, including other staff-role members, **cannot** view the channel.
 **Overwrite strategy when sensitive:**
 
 1. Keep `@everyone` deny view.
-2. **Remove allow / explicitly deny** every guild staff role on this channel.
+2. **Remove allow / explicitly deny** the staff-role overwrites on this channel (the senior set; junior roles never had an allow—the `@everyone` deny covers them).
 3. Allow only: each ticket member user + staff owner + each `/ticket addstaff` user + bot.
 4. Set `is_sensitive = 1` on the ticket row.
 
@@ -108,7 +108,8 @@ Everyone else, including other staff-role members, **cannot** view the channel.
 
 | Command | Description |
 |---------|-------------|
-| `/ticket close [reason]` | Close ticket (archive only if **not** sensitive—see [1.5](#15-close--archive-pipeline)) |
+| `/ticket close [reason] [staff_note]` | **Phase 1 (soft-close):** mark closed, strip non-staff members, DM the requester—**channel stays** for staff until archive (see [1.5](#15-close--archive-pipeline)) |
+| `/ticket archive` | **Phase 2:** on a closed ticket—transcript + archive post (only if **not** sensitive), then **delete the channel** (see [1.5](#15-close--archive-pipeline)) |
 | `/ticket adduser <user>` | Add a member participant |
 | `/ticket removeuser <user>` | Remove a member participant (creator removal: staff only; optional block) |
 | `/ticket claim` | Set yourself as staff owner |
@@ -123,60 +124,84 @@ Everyone else, including other staff-role members, **cannot** view the channel.
 
 ### 1.5 Close → Archive Pipeline
 
-Staff only, in a ticket channel.
+Staff only, in a ticket channel. **Shipped as two phases:** `/ticket close` soft-closes and **keeps** the channel; `/ticket archive` runs the archive pipeline on a closed ticket and **deletes** it (`softCloseTicket` + `archiveTicketPipeline` in `close.js`; `handleArchive` requires the ticket `status = closed` with the channel still live).
 
-#### Branch A — Sensitive ticket (**no content archive**; metadata stub required)
-
-Sensitive tickets **must not** be content-archived. On `/ticket close`:
+#### Phase 1 — `/ticket close` (soft-close; shipped)
 
 ```
-1. Update DB  — status=closed, closed_at, closed_by, close_reason; is_sensitive remains 1; archived=0
+1. Update DB   — status=closed, closed_at, closed_by, close_reason (markTicketClosed;
+                 is_sensitive untouched; archived stays 0)
+2. Strip access — member participants lose view (explicit deny); staff roles and
+                 named staff keep the channel
+3. In-channel  — close notice: reason + "run /ticket archive when ready to save the
+                 transcript and delete the channel" (sensitive: warns no content saves)
+4. DM requester — "closed + reason" only; never a transcript URL
+5. Optional    — one-shot staff note on the requester (staff_note option / Add staff note button)
+```
+
+Nothing is fetched, rendered, or summarized at close time—both branches below run in Phase 2.
+
+#### Phase 2 — `/ticket archive` (archive + channel delete)
+
+##### Branch A — Sensitive ticket (**no content archive**; metadata stub required)
+
+Sensitive tickets **must not** be content-archived. On `/ticket archive`:
+
+```
+1. Finalize DB— closeTicketSensitive (metadata only; is_sensitive remains 1; archived=0;
+                status/closed_at/close_reason were already set by the soft-close)
 2. No fetch   — do not paginate or store messages
 3. No HTML    — do not write transcript files
 4. No AI      — do not send content to any LLM
 5. No URL     — transcript_token / path stay null
 6. Stub post  — required: post a minimal, non-content embed in the archive channel, e.g.
-              “Ticket #42 closed (sensitive — not archived)” with closer, requester,
-              timestamps, and close reason only. No transcript link, no message excerpts.
+               “Ticket #42 closed (sensitive — not archived)” with closer, requester,
+               timestamps, and close reason only. No transcript link, no message excerpts.
 7. Delete     — delete the live Discord channel
-8. Optional DM to requester — “Your ticket was closed” only; never include a transcript link
+8. DM note    — the close DM (Phase 1) was “closed + reason” only; never a transcript link
 ```
 
 Rationale: privacy. Channel deletion is the disposal mechanism; DB + archive stub retain metadata only (who/when/sensitive flag), not conversation content.
 
-#### Branch B — Non-sensitive ticket (full archive)
+##### Branch B — Non-sensitive ticket (full archive)
 
 ```
-1. Freeze   — optional: deny send while archiving
-2. Fetch    — paginate all channel messages (oldest → newest)
-3. Persist  — store structured messages in ticket_messages (+ ticket meta)
-4. Render   — generate HTML transcript on disk
-5. Summarize— AI structured summary (or stats fallback if no AI key)
-6. Publish  — post embed to ticket_archive_channel with summary + transcript URL
-7. Delete   — delete the live Discord channel
-8. Notify   — DM the requester: closed + reason + **transcript URL** (see §1.11 fix;
+1. Freeze   — deny @everyone sends while archiving
+2. Fetch    — paginate all channel messages (oldest → newest); resolve display names
+3. Mirror   — download attachments / embed media into the transcript bundle and
+              rewrite URLs to local paths (see Attachments below)
+4. Persist  — store structured messages in ticket_messages (+ ticket meta)
+5. Render   — generate HTML transcript on disk
+6. Summarize— AI structured summary (or stats fallback if no AI key)
+7. Publish  — post embed to ticket_archive_channel with summary + transcript URL
+8. Notify   — once the embed posted, DM the requester: archived + reason +
+              **transcript URL** (see §1.11 fix; a failed DM is a warning line, and the
               sensitive branch still never sends a URL)
+9. Delete   — delete the live Discord channel (last; failure reported as a warning)
 ```
 
 #### HTML transcript (bot-served)
 
-- **Render:** standalone HTML — ticket meta, participants, chronological messages, **hotlinked** attachment URLs, timestamps.
-- **Store:** `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}.html` (UUID matches public token).
+- **Render:** standalone HTML — ticket meta, participants, chronological messages, attachment links (local `/t/{uuid}/assets/…` paths after mirroring; CDN hotlink as fallback), timestamps.
+- **Store:** one bundle dir per transcript: `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/index.html` + `assets/` (UUID matches public token; legacy flat `{uuid}.html` files stay readable — `transcript.js`).
 - **Serve:** small HTTP server in the bot process:
-  - Path: `/t/{uuid}` (UUID v4)
+  - Paths: `/t/{uuid}` (UUID v4) and `/t/{uuid}/assets/{file}` (mirrored media — `httpServer.js`)
   - Config: `TICKET_HTTP_PORT`, `TICKET_PUBLIC_BASE_URL` (public origin for embeds; reverse-proxy TLS documented for operators)
 - **Access control (MVP):**
   - UUID in the path (unguessable).
   - Link posted in the configured **staff** archive channel, and **DM’d to the ticket requester** at archive time for **non-sensitive** tickets (see §1.11; supersedes the original staff-only rule).
   - Other members / other staff never receive the transcript URL. Sensitive tickets never generate or send one.
   - **Later:** “Login with Discord” gate on `/t/{uuid}`.
-- **Attachments (MVP):** hotlink Discord CDN URLs in the HTML.  
-  **TODO (post-MVP):** at close time, download all thread assets into  
-  `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/assets/` and rewrite HTML to local paths (CDN links expire).
+- **Attachments (shipped):** at archive time all message attachments + embed media are downloaded into  
+  `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/assets/` and the transcript is rewritten to local  
+  `/t/{uuid}/assets/…` links (`mirrorTicketAssets` in `assets.js`, wired into the archive pipeline in `close.js`).  
+  ~~TODO (post-MVP): local mirror~~ **Shipped** — hotlinking CDN URLs alone was not durable (links expire).  
+  Files that fail to download or exceed the caps (defaults: `TICKET_MAX_ASSETS` 100, `TICKET_MAX_ASSET_BYTES` 50 MiB)  
+  keep their CDN hotlink and surface as warning lines; the archive never aborts on them.
 
 #### AI-generated structured summary
 
-Only for **non-sensitive** closes. Posted as embed fields in the archive channel (plus transcript link).
+Only for **non-sensitive** archives (runs inside `/ticket archive`). Posted as embed fields in the archive channel (plus transcript link).
 
 | Field | Example |
 |-------|---------|
@@ -189,7 +214,7 @@ Only for **non-sensitive** closes. Posted as embed fields in the archive channel
 | Close reason | Staff-provided |
 | Resolution | AI one-liner (or close reason if no AI) |
 | Summary | AI multi-sentence narrative |
-| Transcript | `[View HTML transcript](https://…/t/{uuid})` — staff archive only |
+| Transcript | `[View HTML transcript](https://…/t/{uuid})` — staff archive embed, plus requester DM (§1.11) |
 
 **Provider:** env-based OpenAI-compatible API (e.g. SpaceXAI). If no API key: non-AI fallback (stats + close reason + short excerpt). Sensitive path never calls the provider.
 
@@ -209,14 +234,14 @@ Docker: publish transcript port; persist `{DATA_DIR}/ticket-transcripts` on the 
 #### Archive channel message (non-sensitive)
 
 - Channel: `ticket_archive_channel_id` (must be staff-only in Discord permissions—bot cannot enforce “staff eyes only” on Discord itself beyond recommending this).
-- Embed: structured summary + transcript URL.
-- On partial failure: still prefer HTML on disk + DB close row; post “summary unavailable” if AI fails; alert closer if archive channel missing.
+- Embed: structured summary + transcript URL (posted during the `/ticket archive` phase).
+- On partial failure: still prefer HTML on disk + DB close row; post “summary unavailable” if AI fails; a missing/unwritable archive channel surfaces as a warning line on the archive reply.
 
 #### Archive channel message (sensitive — required stub)
 
-- Same channel, **metadata only**, clearly labeled **not archived** / **sensitive**.
+- Same channel, **metadata only**, clearly labeled **not archived** / **sensitive** (posted during the `/ticket archive` phase).
 - No link, no content, no AI.
-- If archive channel is unset, still close + delete; warn the closer that the stub could not be posted.
+- If archive channel is unset, the archive still runs and the channel is still deleted; the `/ticket archive` reply carries a warning that the stub could not be posted.
 
 ---
 
@@ -276,7 +301,8 @@ CREATE TABLE IF NOT EXISTS ticket_messages (
     author_id        TEXT NOT NULL,
     author_tag       TEXT NOT NULL,
     content          TEXT,
-    attachment_urls  TEXT,   -- JSON array of hotlinked CDN URLs (MVP)
+    attachment_urls  TEXT,   -- JSON array of attachment objects (CDN hotlinks pre-mirror;
+                              --   local /t/{uuid}/assets hrefs + source_url after mirroring)
     embeds_json      TEXT,
     sent_at          INTEGER NOT NULL,
     UNIQUE (ticket_id, message_id)
@@ -287,7 +313,10 @@ CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_
 --   ticket_category_id TEXT
 --   ticket_archive_channel_id TEXT
 --   ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60
--- Staff roles for overwrites + command gate: see staff_roles (generalized honeypot_exempt_roles)
+-- Staff roles: staff_roles (generalized honeypot_exempt_roles); rows at the SENIOR level get
+--   ticket channel overwrites, any level passes the command gate (see §1.3)
+-- ticket_panels (added post-draft, migration 019_ticket_panels.js): panel registry —
+--   guild_id, channel_id, message_id, title, description; PK (guild_id, message_id)
 ```
 
 ---
@@ -302,9 +331,12 @@ CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_
 - `setTicketSensitive` / `setTicketUnsensitive`
 - `addTicketMember` / `removeTicketMember` / `listTicketMembers`
 - `listOpenTickets(guildId, { userId? })`
-- `closeTicketSensitive(ticketId, { closedBy, closeReason })` — metadata only, `archived=0`
-- `closeTicketArchived(ticketId, { closedBy, closeReason, transcriptToken, transcriptPath, aiSummaryJson, archiveMessageId })` — `archived=1`
+- `markTicketClosed(ticketId, { closedBy, closeReason })` — phase 1 `/ticket close` (status/timestamps only)
+- `closeTicketSensitive(ticketId, { closedBy, closeReason })` — finalized at `/ticket archive`: metadata only, `archived=0`
+- `closeTicketArchived(ticketId, { closedBy, closeReason, transcriptToken, transcriptPath, aiSummaryJson, archiveMessageId })` — finalized at `/ticket archive`: `archived=1`
 - `saveTicketMessages(ticketId, messages[])`
+- `markTicketClosedByChannelDelete(channelId)` — `ChannelDelete` salvage path
+- Panel registry (shipped, `ticket_panels`): `createTicketPanel` / `listTicketPanels` / `updateTicketPanelText` / `deleteTicketPanel`
 
 ---
 
@@ -312,7 +344,7 @@ CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages(ticket_
 
 | Event | Purpose |
 |-------|---------|
-| Slash + panel button/modal | Create, for, close, sensitive, claim, adduser, addstaff; panel open → modal |
+| Slash + panel button/modal | Create, for, close, archive, sensitive, claim, adduser, addstaff; panel create/list/edit/delete (registry-backed); panel open → modal |
 | `ChannelDelete` | If ticket channel deleted outside `/ticket close`: mark `closed`, `archived=0`, no salvage for sensitive intent; non-sensitive best-effort only if we still have cache (usually not) |
 
 Channel create is **bot-driven**.
@@ -322,12 +354,12 @@ Channel create is **bot-driven**.
 ### 1.9 Implementation Order
 
 1. **Schema + settings** — migrations; setcategory / setarchive / setratelimit / settings (depends on [staff roles](staff-roles.md#4-guild-staff-roles-admin-gate) for gate + overwrites)  
-2. **Create paths** — `/ticket create`, `/ticket for`, overwrites for **all** staff roles, rate limit  
+2. **Create paths** — `/ticket create`, `/ticket for`, overwrites for staff roles *(shipped: **senior**-level rows only—§1.3)*, rate limit  
 3. **Claim / adduser / addstaff / sensitive** — overwrite rewrite (deny all staff roles when sensitive)  
-4. **Close (sensitive branch)** — metadata + required archive-channel stub + delete channel  
+4. **Close (sensitive branch)** — metadata + required archive-channel stub + delete channel *(shipped two-phase: `/ticket close` soft-closes, `/ticket archive` runs the branch—§1.5)*  
 5. **Close (archive branch)** — fetch, HTML, UUID route HTTP server, archive embed (stats fallback)  
 6. **AI summary** — non-sensitive only; graceful fallback  
-7. **Post-MVP** — Discord OAuth on `/t/{uuid}`; panel registry list/edit; further attachment polish (local mirror is already implemented)  
+7. **Post-MVP** — Discord OAuth on `/t/{uuid}`. *(Shipped since: panel registry list/edit — `ticket_panels` + `/ticket panel create|list|edit|delete`; local attachment mirror — `mirrorTicketAssets` in `assets.js`.)*  
 
 ---
 
@@ -339,13 +371,14 @@ Channel create is **bot-driven**.
 | 2 | **Sensitive tickets are never content-archived** — no message fetch, no HTML, no AI, no transcript URL; channel delete is disposal; **required** metadata-only archive stub |
 | 3 | ~~Transcript URL is staff-only~~ **Revised (see §1.11):** archive-channel embed **plus** DM of the transcript link to the **requester** for non-sensitive tickets; sensitive tickets never get any URL |
 | 4 | **MVP URL security:** UUID path `/t/{uuid}`; **later:** Login with Discord for real access control |
-| 5 | **Attachments MVP:** hotlink Discord CDN URLs; **TODO:** download all thread assets at archive time and serve locally |
+| 5 | ~~**Attachments MVP:** hotlink Discord CDN URLs; **TODO:** download all thread assets at archive time and serve locally~~ **Revised (shipped):** archive-time asset mirroring is live — media is downloaded into the transcript bundle and served from `/t/{uuid}/assets/…` (`mirrorTicketAssets`, `assets.js`, wired in `close.js`); CDN hotlink survives only as fallback for failed/over-cap downloads |
 | 6 | **Create UX:** slash `/ticket create` + staff `/ticket for @user` + **panel button → modal** for description (same pipeline) |
 | 7 | **Rate limit:** configurable per guild; **default 60 minutes** (1 self-create per hour); staff `/ticket for` not subject to member cooldown |
 | 8 | **No concurrent open-ticket cap** per user — rate limit only throttles new self-creates |
 | 9 | **Sensitive close stub required** in the archive channel (metadata only; no transcript) |
 | 10 | **`/ticket unsensitive`:** staff **owner** or anyone passing the [staff/admin gate](staff-roles.md#4-guild-staff-roles-admin-gate) |
-| 11 | **No ticket-only staff role** — use guild `staff_roles` (generalized `honeypot_exempt_roles`) for commands + channel overwrites |
+| 11 | **No ticket-only staff role** — use guild `staff_roles` (generalized `honeypot_exempt_roles`) for commands + channel overwrites. **Revised (shipped):** overwrites go to **senior**-level rows only (`listSeniorStaffRoles` in `overwrites.js`); any level passes the command gate (junior staff see no tickets without a named add) |
+| 12 | **Two-phase lifecycle (shipped):** `/ticket close` soft-closes (DB status + strip member access + requester DM, **channel kept** for staff); `/ticket archive` runs the archive pipeline and **deletes** the channel (`softCloseTicket` + `archiveTicketPipeline`, `close.js`). Supersedes the original one-shot close-and-archive design |
 
 ---
 
