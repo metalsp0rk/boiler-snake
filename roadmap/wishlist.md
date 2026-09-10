@@ -63,7 +63,7 @@
 - [x] **Rename camelCase unit files to kebab-case** — `staffNotes.test.js`, `xpMath.test.js`, `commandPermissionSync.test.js`, etc. violate the lowercase-with-dashes convention (`test/integration/` is already correct). Batch on next touch.
 - [ ] **`test/README.md` helper table** — add `helpers/fixtures.js` and `helpers/lavalink.js`.
 - [x] **Unit-test `src/config.js`** — 41 LOC of pure env parsing/validation gating boot; trivially testable, currently untested.
-- [ ] **Remaining low-priority coverage gaps** — `src/features/logs/auditLog.js` misconfig paths (med-low); `src/features/music/render.js` embeds (cosmetic). `index.js`/`client.js`/`register.js` intentionally skipped (need live Discord).
+- [x] **Remaining low-priority coverage gaps** — `src/features/logs/auditLog.js` misconfig paths (med-low); `src/features/music/render.js` embeds (cosmetic). `index.js`/`client.js`/`register.js` intentionally skipped (need live Discord).
 
 ---
 
