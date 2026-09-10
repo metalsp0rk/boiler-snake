@@ -23,7 +23,7 @@
 
 - [x] **Regenerate `docs/database.md` migration table** (~lines 1002–1023): remove nonexistent `017_warn_post_mvp` and the duplicate 017/018 row; add `021_gork`, `022_gork_access`, `023_gork_memory`, `024_staff_roles_added_by`. Verify against `src/db/migrations/`.
 - [x] **Add gork tables section to `docs/database.md`** — `gork_user_blocks` (022), `gork_memories` + `gork_memory_*` settings (023) are absent from the "Complete SQLite schema".
-- [ ] **Fix `docs/architecture.md` migration table (130–147)** — jumps 015→020; add `016_command_permission_oauth`, `017_event_reminder_persistent`, `018_warn_post_mvp`, `019_ticket_panels`, `021`–`024`.
+- [x] **Fix `docs/architecture.md` migration table (130–147)** — jumps 015→020; add `016_command_permission_oauth`, `017_event_reminder_persistent`, `018_warn_post_mvp`, `019_ticket_panels`, `021`–`024`.
 - [x] **Migration off-by-one: `017` → `018_warn_post_mvp`** — `docs/warnings.md:192` and `roadmap/index.md` §7 warnings rows (lines 75, 78). `017` is `event_reminder_persistent`.
 - [ ] **Add `/gork` to `docs/commands/index.md`** — no section and no permission-matrix row despite Gork shipping; mirror the subcommand table from `docs/gork.md:113–123`.
 - [ ] **Fix `docs/gork.md:186` values** — "2,000 tokens / 60s" contradicts code (`DEFAULT_LLM_MAX_TOKENS=6000`, `DEFAULT_LLM_TIMEOUT_MS=90000` in `src/features/gork/trigger.js:78–84`) *and the same file's lines 251/257*; update to 6,000 / 90s.
