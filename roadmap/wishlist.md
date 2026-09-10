@@ -54,7 +54,7 @@
 
 - [ ] **Eliminate wall-clock sleeps** — `test/integration/user-activity.test.js:230` (fixed 2,500 ms wait) and the 9 "wait to confirm absence" sleeps in `test/integration/gork.test.js` (25–500 ms; e.g. line 406). Replace with observable seams (awaitable backfill-cancel / queue-drain) or the injectable-clock pattern already used in unit `test/gork.test.js`.
 - [x] **De-duplicate DB bootstrap in 5 unit files** — `db-layer.test.js:15`, `gork-memory-repo.test.js:15`, `gork-memory-commands.test.js:85`, `registry.test.js:8`, `commandVisibility.test.js:8` hand-roll mkdtemp + `DB_PATH` + require-cache invalidation with fragile require-*order* guards against the root `xpbot.sqlite`; switch all to `helpers/env.loadDb()`.
-- [ ] **Add coverage instrumentation** — no coverage tooling today, so test-coverage.md targets (critical 100% / high 90%+) are untracked. Add `npm run test:coverage` via `node --test --experimental-test-coverage` (or `c8`) with per-directory reporting + thresholds.
+- [x] **Add coverage instrumentation** — no coverage tooling today, so test-coverage.md targets (critical 100% / high 90%+) are untracked. Add `npm run test:coverage` via `node --test --experimental-test-coverage` (or `c8`) with per-directory reporting + thresholds.
 
 ### Low
 

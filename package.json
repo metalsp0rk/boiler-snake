@@ -14,10 +14,12 @@
     "test": "node --test test/*.test.js test/integration/*.test.js",
     "test:unit": "node --test test/*.test.js",
     "test:integration": "node --test test/integration/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-coverage-exclude='test/**' --test-coverage-exclude='scripts/**' --test-coverage-exclude='node_modules/**' --test-coverage-lines=77 --test-coverage-branches=67 --test-coverage-functions=77 test/*.test.js test/integration/*.test.js",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
+  "//": "test:coverage = Node's built-in runner coverage (no deps) over src/ for BOTH suites in one run; include/exclude keep src/ only in the report. Threshold flags check OVERALL totals (node exits 1 when unmet). They baseline-lock the 2026-09-09 actuals (all files: lines 79.99%, branches 69.57%, funcs 79.72%) at ~3pts below: 77/67/77. Team targets are critical-paths 100% / high 90%+ (standards) — raise thresholds as coverage improves; never lower the gate to accommodate a regression.",
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
     "@napi-rs/canvas": "^0.1.67",
