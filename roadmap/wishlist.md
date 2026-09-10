@@ -59,7 +59,7 @@
 ### Low
 
 - [ ] **`src/core/permissions.js` truth-table unit test** — `requireStaff` tier logic (ManageGuild × junior × senior) only covered indirectly via ~50 scattered deny assertions; add boundary-exhaustive matrix for a security gate.
-- [ ] **Tighten `assertRoleRemoved` (`test/helpers/assert.js:67–72`)** — passes while a role is still cached whenever *any* removal was recorded; require `!cache.has(roleId)`.
+- [x] **Tighten `assertRoleRemoved` (`test/helpers/assert.js:67–72`)** — passes while a role is still cached whenever *any* removal was recorded; require `!cache.has(roleId)`.
 - [ ] **Rename camelCase unit files to kebab-case** — `staffNotes.test.js`, `xpMath.test.js`, `commandPermissionSync.test.js`, etc. violate the lowercase-with-dashes convention (`test/integration/` is already correct). Batch on next touch.
 - [ ] **`test/README.md` helper table** — add `helpers/fixtures.js` and `helpers/lavalink.js`.
 - [ ] **Unit-test `src/config.js`** — 41 LOC of pure env parsing/validation gating boot; trivially testable, currently untested.
