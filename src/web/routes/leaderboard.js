@@ -31,6 +31,8 @@
 const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, renderShellError, writeShellHtml } = require("../views/layout");
+const { rawParams } = require("./shared/req.js");
+const { shellGuilds } = require("./shared/shell.js");
 const {
   renderLeaderboardBody,
   renderUserXpBody,
@@ -53,16 +55,6 @@ function respondGenericNotFound(res) {
   res.end("Not found");
 }
 
-/**
- * Parse the RAW url query (app doctrine: never req.query — the Express 5
- * "simple" parser and path-to-regexp decoding must not decide behavior here).
- * @param {string} rawUrl
- * @returns {URLSearchParams}
- */
-function rawParams(rawUrl) {
-  const idx = String(rawUrl || "").indexOf("?");
-  return new URLSearchParams(idx === -1 ? "" : String(rawUrl).slice(idx + 1));
-}
 
 /**
  * Cache-only display-name read — the leaderboard counterpart of users.js
@@ -96,16 +88,6 @@ function resolveMemberNames(getClient, guildId, userIds) {
   return names;
 }
 
-/** Shared switcher list for shell pages (never fails the page open/closed). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
 /**
  * @param {import("express").Express} app

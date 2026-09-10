@@ -43,7 +43,7 @@ const {
 } = require("../../features/userActivity/service");
 
 /** Snowflake shape gate for :userId / search text (same shape as guild ids). */
-const USER_ID_RE = /^[0-9]{5,20}$/;
+const { URL_ID_RE: USER_ID_RE } = require("../shared/snowflake");
 
 /** Hard caps. LIST caps mirror the slash userinfo card (10 rows per view). */
 const SEARCH_LIMIT = 50;

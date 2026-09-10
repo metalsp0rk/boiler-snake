@@ -46,7 +46,7 @@ const { getUser, getGuildSettings, db } = require("../../db");
 const { levelFromXp, clampXpTotal } = require("../../core/xpMath");
 
 /** Snowflake shape gate for :userId (same shape as userProfile.js / guild ids). */
-const USER_ID_RE = /^[0-9]{5,20}$/;
+const { URL_ID_RE: USER_ID_RE } = require("../shared/snowflake");
 
 /** Page size: default 25, HARD CAP 100 (§8.6 "top-100 cap"). */
 const PAGE_SIZE_DEFAULT = 25;
