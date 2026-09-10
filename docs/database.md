@@ -49,6 +49,8 @@ boiler-snake/
 | `user_activity_meta` | Per-user backfill status for activity |
 | `user_channel_backfill_cursor` | Per-user per-channel history scan progress |
 | `guild_channel_backfill_cursor` | Guild-wide per-channel history scan progress |
+| `gork_user_blocks` | Users blocked from using gork (AI Q&A) per guild |
+| `gork_memories` | Gork community memory rows (per person; guild-scoped `#id` handles) |
 
 ---
 
@@ -179,6 +181,15 @@ CREATE TABLE guild_settings (
   twitch_notify_role_id TEXT,                    -- optional role pinged on go-live
   twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2,
 
+  gork_enabled INTEGER NOT NULL DEFAULT 1,       -- master switch; 0 = triggers ignored entirely
+  gork_keyword TEXT DEFAULT '@gork',             -- trigger keyword; NULL = disabled
+  gork_context_window INTEGER NOT NULL DEFAULT 10,   -- prior messages sent as context
+  gork_extra_rules TEXT NOT NULL DEFAULT '',     -- staff rules appended to the answer prompt
+  gork_search_enabled INTEGER NOT NULL DEFAULT 1,    -- web-search tool toggle per guild
+  gork_cooldown_sec INTEGER NOT NULL DEFAULT 180,    -- seconds between answers per user; 0 = off
+  gork_memory_enabled INTEGER NOT NULL DEFAULT 0,    -- community memory switch (default off)
+  gork_memory_chars INTEGER NOT NULL DEFAULT 12000,  -- memory-block char budget; 0 = unlimited
+
   audit_log_channel_id TEXT,                     -- NULL when not configured
   message_log_channel_id TEXT,                   -- NULL when not configured
   event_reminder_channel_id TEXT,                -- default channel for event reminders
@@ -212,6 +223,14 @@ CREATE TABLE guild_settings (
 | `twitch_notification_channel_id` | NULL | Channel for go-live alerts |
 | `twitch_notify_role_id` | NULL | Role mentioned on go-live (independent of YouTube) |
 | `twitch_polling_interval_minutes` | 2 | Helix check frequency |
+| `gork_enabled` | 1 | Master gork switch (`0` = keyword triggers ignored, other settings kept) |
+| `gork_keyword` | @gork | Trigger keyword; `NULL` = gork trigger disabled |
+| `gork_context_window` | 10 | Prior messages used as answer context (1–50) |
+| `gork_extra_rules` | (empty) | Extra staff rules appended to the answer prompt |
+| `gork_search_enabled` | 1 | Gork web-search tool toggle (also needs `SEARXNG_URL`) |
+| `gork_cooldown_sec` | 180 | Seconds between gork answers per user (`0` = off) |
+| `gork_memory_enabled` | 0 | Community memory master switch (memory inert until on) |
+| `gork_memory_chars` | 12000 | Memory-block char budget (`0` = unlimited) |
 | `audit_log_channel_id` | NULL | Staff audit log channel |
 | `message_log_channel_id` | NULL | Deleted-message log channel |
 | `event_reminder_channel_id` | NULL | Default event-reminder notify channel |
@@ -990,6 +1009,104 @@ CREATE TABLE guild_channel_backfill_cursor (
 ```
 
 See [User Activity Summary](user-activity.md).
+
+---
+
+### 19. Gork tables
+
+Access control and community memory for [Gork](gork.md) (AI keyword Q&A). Created by migrations `022_gork_access` and `023_gork_memory`; all gork configuration lives as `gork_*` columns on [`guild_settings`](#4-guild_settings) (added by migrations `021`–`023`).
+
+#### `gork_user_blocks`
+
+Users a guild has banned from using gork. Unlike the per-user cooldown, a block binds staff too (no bypass). Blocks are invisible to the blocked user (they get the locked LLM-failure canned reply), so this table is the only record.
+
+```sql
+CREATE TABLE gork_user_blocks (
+  guild_id   TEXT NOT NULL,
+  user_id    TEXT NOT NULL,
+  created_by TEXT,                    -- staff user id who issued the block (audit)
+  created_at INTEGER NOT NULL,        -- ms epoch when blocked
+  PRIMARY KEY (guild_id, user_id)
+);
+```
+
+**Query patterns**:
+```javascript
+// Block a user (idempotent, same membership-table pattern as honeypot_ban_roles)
+INSERT OR IGNORE INTO gork_user_blocks (guild_id, user_id, created_by, created_at)
+VALUES (?, ?, ?, ?)
+
+// Check before answering
+SELECT 1 AS ok FROM gork_user_blocks WHERE guild_id=? AND user_id=?
+
+// List blocked users for the guild (oldest first)
+SELECT user_id, created_by, created_at FROM gork_user_blocks
+WHERE guild_id=? ORDER BY created_at ASC, user_id ASC
+
+// Unblock (reports whether a row existed)
+DELETE FROM gork_user_blocks WHERE guild_id=? AND user_id=?
+```
+
+#### `gork_memories`
+
+Community memory (roadmap §7.16): one row per (guild, person, UTC day, normalized title). Memory stays fully inert until staff turn on `gork_memory_enabled` (default off).
+
+```sql
+CREATE TABLE gork_memories (
+  id INTEGER PRIMARY KEY,                 -- rowid alias = the /gork memory "#id" handle
+  guild_id TEXT NOT NULL,
+  subject_user_id TEXT NOT NULL,          -- person the memory is about
+  mem_date TEXT NOT NULL,                 -- YYYY-MM-DD UTC, server-stamped
+  title TEXT NOT NULL,                    -- display title (model casing)
+  title_key TEXT NOT NULL,                -- normalizeTitle() output (collision key half)
+  body TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'profile',   -- profile|preference|project|relationship|event
+  importance INTEGER NOT NULL DEFAULT 3,  -- 1..5
+  source_message_ids TEXT NOT NULL DEFAULT '[]', -- JSON array (merged, 20 newest kept)
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_used_at INTEGER,                   -- recall stamp (eviction tie-break)
+  UNIQUE (guild_id, subject_user_id, mem_date, title_key)
+);
+CREATE INDEX idx_gork_memories_subject
+  ON gork_memories(guild_id, subject_user_id);
+```
+
+| Column | Description |
+|--------|-------------|
+| `id` | Guild-scoped `#id` handle for `/gork memory` (rowid alias; reuse after eviction is acceptable) |
+| `mem_date` | UTC day the memory belongs to (`YYYY-MM-DD`), stamped by the server |
+| `title` | Display title keeping the model's casing |
+| `title_key` | Normalized title — collision-key half (SQLite BINARY collation is case-sensitive, so it needs its own column) |
+| `kind` | `profile` \| `preference` \| `project` \| `relationship` \| `event` |
+| `importance` | 1–5 ranking weight (drives recall order and eviction) |
+| `source_message_ids` | JSON array of source message ids (union-merged, capped at 20 newest) |
+| `last_used_at` | ms epoch of last recall; `NULL` until first used |
+
+**Query patterns**:
+```javascript
+// Same day+title_key updates in place (created_at / last_used_at survive)
+INSERT INTO gork_memories (guild_id, subject_user_id, mem_date, title_key, title,
+                           body, kind, importance, source_message_ids, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(guild_id, subject_user_id, mem_date, title_key) DO UPDATE SET ...
+
+// One person's memories, newest first
+SELECT * FROM gork_memories
+WHERE guild_id=? AND subject_user_id=? ORDER BY updated_at DESC, id DESC
+
+// Guild-scoped fetch / delete by the "#id" handle
+SELECT * FROM gork_memories WHERE guild_id=? AND id=?
+DELETE FROM gork_memories WHERE guild_id=? AND id=?
+
+// Wipe one person's memories, or the whole guild's
+DELETE FROM gork_memories WHERE guild_id=? AND subject_user_id=?
+DELETE FROM gork_memories WHERE guild_id=?
+```
+
+**Eviction**: each person's rows are capped (25 by default); overflow is deleted ranked by `importance DESC, COALESCE(last_used_at, updated_at) DESC, mem_date DESC, id DESC` — so recalling a memory (stamping `last_used_at`) protects it from eviction.
+
+See [Gork (AI Keyword Q&A)](gork.md).
 
 ---
 
