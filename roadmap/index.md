@@ -21,6 +21,8 @@ Each feature has its own file with the full design, status, and locked decisions
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Embed-based mention rendering (deferred — §7.15 Fix 1, would revise decision 11); live repro for the reply / `@user`-message crash triage (§7.15 Fix 3); markdown hygiene + zero-width/bidi input policy (§7.15 Fix 4) |
 | 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
 
+Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a work-as-time-allows backlog in [wishlist.md](wishlist.md) — feature files stay authoritative for design.
+
 ---
 
 ## 7. Database Migration Summary
