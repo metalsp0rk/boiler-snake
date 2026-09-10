@@ -395,43 +395,30 @@ const GATE_MEASURE = process.env.GATE_MEASURE === "1";
   * skip-context snapshot in userActivity/service.js — 98/89 → 20/11 measured.
   * The pin is the RATCHET: counts may only go DOWN from here.
   */
- const STATEMENT_PINS = {
-   // pin keyed by ROUTE PATTERN (matches BUDGET_URLS labels): { req1, req2 }
-   "/g/:guildId": { req1: 11, req2: 3 },
-   "/g/:guildId/users": { req1: 4, req2: 4 },
-   "/g/:guildId/users/:userId": { req1: 20, req2: 20 },
-   "/g/:guildId/users/:userId/activity": { req1: 11, req2: 11 },
-  "/g/:guildId/warnings": { req1: 6, req2: 6 },
-  "/g/:guildId/notes": { req1: 6, req2: 6 },
-  "/g/:guildId/settings": { req1: 8, req2: 4 },
-  "/g/:guildId/leaderboard": { req1: 8, req2: 8 },
-  "/g/:guildId/leaderboard/user/:userId": { req1: 9, req2: 9 },
-  // 6 → 7 (Phase 2, subtask 25): /staff gained EXACTLY ONE bounded per-guild
-  // config read — listLevelRoles(guildId), the level→role mapping table the
-  // staff page now lists and the /staff/levelrole/* forms mutate. Indexed
-  // guild_id point-range read (same shape as the existing listStaffRoles),
-  // no cache added (config must never render stale). Deliberate ratchet
-  // update per the GATE_MEASURE regeneration procedure above.
-  "/g/:guildId/staff": { req1: 7, req2: 7 },
-  "/g/:guildId/commands": { req1: 5, req2: 5 },
-  "/g/:guildId/integrations": { req1: 17, req2: 4 },
-  "/g/:guildId/voice": { req1: 7, req2: 4 },
-  "/g/:guildId/system": { req1: 5, req2: 5 },
-  "/g/:guildId/audit": { req1: 6, req2: 6 },
-  // Phase 3 (subtask 28): the grant FORM page reads NOTHING but the session/
-  // tier plumbing (4 statements: session row, auth column, tier-resolution
-  // reads — all guild_id-scoped; the POST's XP reads/writes run through the
-  // awardXp service and are pinned by test/web-xp-grant.test.js, not the
-  // budget sweep). Measured via GATE_MEASURE=1 on this fixture.
-  "/g/:guildId/xp/grant": { req1: 4, req2: 4 },
-  // Phase 3 (subtask 30): the ticket ACTIONS page adds EXACTLY ONE bounded
-  // read on top of the session/tier plumbing — listOpenTickets(guildId,
-  // {limit:50}), a guild_id+status indexed range read with a hard LIMIT
-  // (the repo clamps ≤50). The three POST mutations run the pinned ticket
-  // helpers, not budget-swept reads. Measured via GATE_MEASURE=1.
-  "/g/:guildId/tickets": { req1: 5, req2: 5 },
-  "/t": { req1: 5, req2: 5 },
-};
+  const STATEMENT_PINS = {
+    // pin keyed by ROUTE PATTERN (matches BUDGET_URLS labels): { req1, req2 }
+    // Post-merge cleanup: dropping the redundant second guildScope mount
+    // (routes/guildShell.js, deleted) removed one real per-request scope
+    // read from EVERY /g page — pins re-measured (GATE_MEASURE=1) ~1 lower.
+    "/g/:guildId": { req1: 11, req2: 3 },
+    "/g/:guildId/users": { req1: 3, req2: 3 },
+    "/g/:guildId/users/:userId": { req1: 19, req2: 19 },
+    "/g/:guildId/users/:userId/activity": { req1: 10, req2: 10 },
+    "/g/:guildId/warnings": { req1: 5, req2: 5 },
+    "/g/:guildId/notes": { req1: 5, req2: 5 },
+    "/g/:guildId/settings": { req1: 7, req2: 3 },
+    "/g/:guildId/leaderboard": { req1: 7, req2: 7 },
+    "/g/:guildId/leaderboard/user/:userId": { req1: 8, req2: 8 },
+    "/g/:guildId/staff": { req1: 6, req2: 6 },
+    "/g/:guildId/commands": { req1: 4, req2: 4 },
+    "/g/:guildId/integrations": { req1: 16, req2: 3 },
+    "/g/:guildId/voice": { req1: 6, req2: 3 },
+    "/g/:guildId/system": { req1: 4, req2: 4 },
+    "/g/:guildId/audit": { req1: 5, req2: 5 },
+    "/g/:guildId/xp/grant": { req1: 3, req2: 3 },
+    "/g/:guildId/tickets": { req1: 4, req2: 4 },
+    "/t": { req1: 5, req2: 5 },
+  };
 
 /** Collected measurements for the end-of-run gate report (§8.8 evidence). */
 const MEASURED = [];

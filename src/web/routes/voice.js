@@ -9,7 +9,7 @@
  * test pins that every other verb on this path hits the app-wide 405 gate
  * and that the rendered page contains no guild-scoped <form>/<button>.
  *
- * Route position: registered AFTER routes/guildShell.js in app.js, so the
+ * Route position: registered AFTER routes/dashboard.js in app.js, so the
  * shell's `/g/:guildId` guildScope already ran (anon ⇒ login redirect,
  * cross-guild/stranger ⇒ generic 404 — §8.6 cross-cutting rule, never 403).
  * requireTier("staff") inside the route is the explicit §8.6 view tier.

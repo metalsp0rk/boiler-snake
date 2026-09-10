@@ -18,7 +18,7 @@
  *     under the same outage, fake-clock TTL (role ids + guild list), uncached
  *     staff_roles (revocation), cache invalidation;
  *  D. HTTP middleware (express + real session rows + fetch): anon → login
- *     redirect parity with guildShell, tier matrix staff/senior/admin ×
+ *     redirect parity with the /g shell, tier matrix staff/senior/admin ×
  *     routes, cross-guild probe ⇒ 404 "Not found" (never 403/302),
  *     decrypt-fail row ⇒ re-auth redirect, requireTier mount-bug ⇒ 500.
  */
@@ -701,7 +701,7 @@ describe("guildScope + requireTier over HTTP", () => {
     return { res, body };
   }
 
-  it("anonymous /g/* redirect is byte-identical to the guildShell placeholder", () => {
+  it("anonymous /g/* redirect is byte-identical to the /g shell placeholder", () => {
     assert.equal(loginRedirectTarget(GUILD_A), `/auth/login?guild=${GUILD_A}`);
     assert.equal(loginRedirectTarget("oops"), "/auth/login");
     assert.equal(loginRedirectTarget(`${GUILD_A}/../../x`), "/auth/login");

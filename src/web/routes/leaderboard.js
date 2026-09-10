@@ -4,8 +4,8 @@
  * grant-xp MUTATION is Admin and belongs to Phase 3 (subtask 28); nothing
  * here writes (§8.8 Phase 1; the app-wide methodGate 405s every POST).
  *
- * Routes (all UNDER the /g/:guildId guildScope mounted by guildShell.js —
- * this module MUST be registered after registerGuildShellRoutes in app.js,
+ * Routes (all UNDER the /g/:guildId guildScope mounted by dashboard.js —
+ * this module MUST be registered after registerDashboardRoutes in app.js,
  * exactly like routes/users.js):
  *   GET /g/:guildId/leaderboard              — staff+ — paginated top-XP
  *   GET /g/:guildId/leaderboard/user/:userId — staff+ — rank/XP/level/
