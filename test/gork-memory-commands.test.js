@@ -2,8 +2,9 @@
  * `/gork memory` command tests (roadmap/gork.md §7.16.4 — contract H).
  *
  * Same fake-interaction style as the rest of the gork unit suite: real db
- * facade on a temp SQLite file (DB_PATH + db require-cache invalidation,
- * mirrors warnings.test.js / db-layer.test.js), real requireStaff gating,
+ * facade on a temp SQLite file via loadDb() from ./helpers/env (fresh temp
+ * DB_PATH + src require-cache reset + tracked cleanup), real requireStaff
+ * gating,
  * and createChatInputInteraction from the shared helpers. Audit assertions
  * ride the REAL logConfigChange path: the guild's audit channel is a fake
  * text channel whose `sent` payloads we inspect.
@@ -12,12 +13,12 @@
  * inside the budget handler; when the real module is not on disk yet this
  * file pre-seeds a contract-faithful clamp so it never depends on it.
  */
-const { describe, it, before } = require("node:test");
+const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const Module = require("module");
+
+const { loadDb } = require("./helpers/env");
 
 const {
   createChatInputInteraction,
@@ -77,24 +78,23 @@ function installMemoryShim() {
 
 let api;
 let gork;
+let cleanup;
 
 before(() => {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "boiler-snake-gorkmem-cmd-"),
-  );
-  process.env.DB_PATH = path.join(tmpDir, "test.sqlite");
-  for (const key of Object.keys(require.cache)) {
-    if (
-      key.includes(`${path.sep}src${path.sep}db`) ||
-      key.endsWith(`${path.sep}db.js`)
-    ) {
-      delete require.cache[key];
-    }
-  }
-  api = require("../src/db");
+  // Contract: loadDb() must run before every `src/` require in this file —
+  // installMemoryShim() and the gork feature require below load src modules
+  // that touch the db facade, so loadDb() has to point DB_PATH at a fresh
+  // temp SQLite file (and reset the src require cache) before they run;
+  // otherwise they would open the project-root xpbot.sqlite, which is racy
+  // across parallel `node --test` files.
+  ({ api, cleanup } = loadDb());
   installMemoryShim();
   gork = require("../src/features/gork/index.js");
 });
+
+// Closes the tracked DB handles and removes the temp dir (idempotent,
+// never throws).
+after(() => cleanup?.());
 
 // ---------- harness ----------
 
