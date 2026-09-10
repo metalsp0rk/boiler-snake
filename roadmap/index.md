@@ -15,7 +15,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Discord OAuth on transcripts (→ covered by [web-admin.md](web-admin.md) §8.4); richer `/ticket list` filters |
 | 2 | Scheduled Event Reminders | [event-reminders.md](event-reminders.md) | Shipped | — |
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP) | EventSub; per-channel overrides; templates; go-offline; clips/VODs |
-| 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags; `added_by`; audit embeds |
+| 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + polish) | — |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Embed-based mention rendering (deferred — §7.15 Fix 1, would revise decision 11); live repro for the reply / `@user`-message crash triage (§7.15 Fix 3); markdown hygiene + zero-width/bidi input policy (§7.15 Fix 4) |
@@ -31,7 +31,10 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 
 | Table / change | Notes |
 |----------------|-------|
-| `honeypot_exempt_roles` → `staff_roles` | Rename only; same columns (`guild_id`, `role_id`, `created_at`, PK). Existing exempt rows become staff roles. |
+| `staff_roles` | Generalized from `honeypot_exempt_roles` — legacy rows folded in + legacy table dropped (**shipped**, migration `008`; fresh DBs create `staff_roles` directly in `001`). Base columns `guild_id`, `role_id`, `created_at`, PK |
+| `staff_roles.level` | junior \| senior tier; existing rows defaulted **senior** (**shipped**, migration `011`) — senior adds ticket-channel overwrites + `/userinfo` Activity; the staff gate accepts both levels |
+| `staff_roles.added_by` | Provenance — actor user id on add; NULL on pre-migration rows (**shipped**, migration `024`) |
+| `guild_command_permission_oauth` | OAuth tokens + last-sync state for `/staff syncpermissions` slash-command visibility (**shipped**, migration `016`) |
 | — | No per-feature access-role tables for notes/warns/tickets |
 
 ### Tickets
@@ -137,9 +140,11 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 
 ### Guild staff roles
 
-- [ ] Optional capability flags per role (warn-only, config-only, …) — MVP is full admin-gate equivalence  
-- [ ] `added_by` column on `staff_roles`  
-- [ ] Audit embed when staff roles are added/removed  
+- [ ] Optional capability flags per role beyond **junior | senior** (warn-only, config-only, …) — the two-level tier shipped (migration `011`); anything finer is still open  
+- [x] `level` junior/senior tier (migration `011`) — `/staff role add` takes a required `level`, `/staff role setlevel` flips it; **senior** rows alone get ticket channel overwrites (`listSeniorStaffRoles` in `overwrites.js`) and `/userinfo` Activity (`requireSeniorStaff`)  
+- [x] `/staff syncpermissions` + OAuth slash-visibility sync (migration `016`, `src/features/commandPermissions/`) — ManageGuild picker defaults kept + per-guild allow overwrites for staff roles; auto-resync on role changes (see [staff-roles.md §4.4](staff-roles.md))  
+- [x] `added_by` column on `staff_roles` (migration `024`) — recorded on add via upsert (COALESCE keeps provenance), shown in `/staff role list`  
+- [x] Audit embed when staff roles are added/removed/leveled — `logConfigChange` in `src/features/staffRoles/index.js` (also on the `/honeypot exempt` alias paths)  
 
 ### Tickets
 
