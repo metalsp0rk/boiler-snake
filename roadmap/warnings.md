@@ -70,7 +70,10 @@ Staff / member lists history
 | `/warn info id:<warning_id\|W-n>` | Full detail: reason, issuer, timestamps, void metadata |
 | `/warn void id:<…> reason:<text>` | Void a warning (permanent row; marks inactive) |
 | `/warn count user:<member>` | Active warning count (+ optional recent snippet) |
+| `/warn export user:<member> [include_voided:<bool>] [include_deleted_notes:<bool>]` | Export the member's warnings + staff notes as an ephemeral markdown attachment (`staff-record-<user-id>-<date>.md`) for staff handoff; both include flags default **true** (**shipped**) |
 | `/warn settings` | DM flag, log target; points at `/staff role list` for access |
+
+**Shipped deltas** (post-MVP polish): `/warn add` gained `note:<n>` (link a staff note `N-<n>`), `message:<url>` + `evidence:<text>` (staff-only evidence fields), and `expires_days:<n>` (per-warning auto-void days, `0` = never; omitted → guild default set via `/setwarn expiry`).
 
 #### Config (ManageGuild only — same meta-privilege as staff role config)
 
@@ -125,6 +128,7 @@ When dedicated `warn_log_channel_id` is set **or** `audit_log_channel_id` is set
 | `/warn settings` | DM flag, log target |
 | `/setwarn dm <true\|false>` | Toggle member DMs (ManageGuild) |
 | `/setwarn log channel\|clear` | Dedicated warn log channel (ManageGuild); falls back to audit |
+| `/setwarn expiry days:<n>` | Default expiry in days for **new** warnings; `0` = never (ManageGuild). Per-issue override: `expires_days` on `/warn add` (**shipped**) |
 
 **Stored in `guild_settings`:**
 
@@ -132,6 +136,7 @@ When dedicated `warn_log_channel_id` is set **or** `audit_log_channel_id` is set
 |--------|---------|
 | `warn_dm_members` | `1` (default) / `0` — DM subject on issue/void |
 | `warn_log_channel_id` | Optional dedicated issue/void log channel (**shipped**) |
+| `warn_expiry_days` | `0` (default = never) / `N` — default expiry days applied to new warnings (**shipped**) |
 
 ---
 
@@ -160,6 +165,24 @@ CREATE INDEX IF NOT EXISTS idx_warnings_user
 CREATE INDEX IF NOT EXISTS idx_warnings_active
   ON warnings(guild_id, user_id) WHERE voided_at IS NULL;
 ```
+
+**Shipped schema deltas** (added after this draft was written; `warnings` + `guild_settings` gained expiry/evidence columns via `addColumnIfMissing` in migration `018_warn_post_mvp.js`; `warn_log_channel_id` came earlier from `012_warn_log_channel.js`, see [6.4](#64-member-notification--staff-log)):
+
+```sql
+-- 018_warn_post_mvp.js:
+ALTER TABLE guild_settings ADD COLUMN warn_expiry_days INTEGER NOT NULL DEFAULT 0;
+    -- default expiry (days) applied to new warnings; 0 = never
+
+ALTER TABLE warnings ADD COLUMN expires_at INTEGER;          -- absolute ms epoch; NULL = never
+ALTER TABLE warnings ADD COLUMN evidence_message_url TEXT;   -- staff-only evidence: canonical Discord message link
+ALTER TABLE warnings ADD COLUMN evidence_text TEXT;          -- staff-only evidence notes (max 500 chars)
+
+CREATE INDEX IF NOT EXISTS idx_warnings_expires
+  ON warnings(expires_at)
+  WHERE voided_at IS NULL AND expires_at IS NOT NULL;
+```
+
+Per-warning `expires_days` on `/warn add` overrides the guild default (`0` = never for that warning). Warnings past `expires_at` are **auto-voided** by a 60-second ticker (`src/features/warnings/ticker.js`) with void reason `Auto-voided: expiry date reached` — void semantics and permanence are unchanged (decisions 1–2 in [6.9](#69-design-decisions-locked) still hold; auto-void is a void, not a delete).
 
 **Repositories / db facade (sketch):**
 
@@ -220,7 +243,7 @@ CREATE INDEX IF NOT EXISTS idx_warnings_active
 | 7 | **`/setwarn dm`:** ManageGuild only (meta config). |
 | 8 | **Human ids** sequential per guild (`W-n`); stable forever including after void. |
 | 9 | **No auto-mod escalation in MVP**. |
-| 10 | **Audit stream:** reuse `audit_log_channel_id` when set. |
+| 10 | **Audit stream:** reuse `audit_log_channel_id` when set. *(Revision — shipped reality extends this: the dedicated `warn_log_channel_id` preference already recorded in [6.4](#64-member-notification--staff-log) (migration `012_warn_log_channel.js`, `/setwarn log`) **postdates this decision**; it is now the preferred target and `audit_log_channel_id` remains the fallback when the dedicated channel is unset.)* |
 
 **Still open (non-blocking):**
 
