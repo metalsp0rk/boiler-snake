@@ -38,7 +38,7 @@ const sessionPolicy = require("./sessions");
 const { setWebSessionAuth } = require("../../db");
 
 /** Snowflake-shaped guild ids only; anything else is dropped (never echoed). */
-const GUILD_TARGET_RE = /^[0-9]{5,20}$/;
+const { URL_ID_RE: GUILD_TARGET_RE } = require("../shared/snowflake");
 /** §8.11/docs: /users/@me/guilds returns ≤200 entries; hard-cap the snapshot. */
 const MAX_SNAPSHOT_GUILDS = 200;
 const MAX_TAG_LEN = 64;

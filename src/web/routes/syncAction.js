@@ -78,6 +78,7 @@
  */
 
 const { requireTier } = require("../middleware/requireTier");
+const { readFields } = require("./shared/req.js");
 const {
   FLASH_DONE,
   FLASH_ERROR,
@@ -105,11 +106,6 @@ const DEFAULT_RETURN = "commands";
  * (oauthTokens#getValidAccessToken) — both mean "slash re-auth needed". */
 const REAUTH_CODES = new Set(["reauth_required", "not_authorized"]);
 
-/** Parsed urlencoded fields (bodyCap/CSRF contract — no express parsers). */
-function readFields(req) {
-  const src = req?.bodyFields;
-  return src && typeof src === "object" ? src : {};
-}
 
 /**
  * Whitelisted `return` field → redirect surface. Unknown/hostile values are

@@ -30,6 +30,8 @@
 const { createGuildAccessResolver, TIER_RANK } = require("../auth/guildAccess");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, renderShellError, writeShellHtml } = require("../views/layout");
+const { rawParams } = require("./shared/req.js");
+const { shellGuilds } = require("./shared/shell.js");
 const {
   renderUserSearchPage,
   renderUserProfileBody,
@@ -55,16 +57,6 @@ function respondGenericNotFound(res) {
   res.end("Not found");
 }
 
-/**
- * Parse the RAW url query (app doctrine: never req.query — the Express 5
- * "simple" parser and path-to-regexp decoding must not decide behavior here).
- * @param {string} rawUrl
- * @returns {URLSearchParams}
- */
-function rawParams(rawUrl) {
-  const idx = String(rawUrl || "").indexOf("?");
-  return new URLSearchParams(idx === -1 ? "" : String(rawUrl).slice(idx + 1));
-}
 
 /**
  * Best-effort guild/member reads from the BOT's in-process caches (labels +
@@ -87,16 +79,6 @@ function resolveDiscordContext(getClient, guildId, userId) {
   }
 }
 
-/** Shared switcher list for shell pages (never fails the page open/closed). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
 /**
  * senior+ per the tier ladder published by guildScope (staff < senior <

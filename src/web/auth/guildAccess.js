@@ -86,7 +86,7 @@ const ADMINISTRATOR_BIT = 1n << 3n;
  *  BigInt &-tricks), garbage, and absurd lengths. Anything else ⇒ 0 bits. */
 const PERMISSIONS_DECIMAL_RE = /^\d{1,20}$/;
 /** Same snowflake gate as login.js GUILD_TARGET_RE / routes/guildShell. */
-const GUILD_ID_RE = /^[0-9]{5,20}$/;
+const { URL_ID_RE: GUILD_ID_RE } = require("../shared/snowflake");
 
 const DEFAULT_MAX_CACHE_ENTRIES = 2000;
 

@@ -73,6 +73,10 @@ const {
 } = require("../views/xpActions");
 const { USER_ID_RE } = require("../data/leaderboard");
 const { validateXpValue, levelFromXp, MAX_XP_AWARD } = require("../../core/xpMath");
+const { readFields } = require("./shared/req.js");
+const { rawFlashQuery } = require("./shared/req.js");
+const { shellGuilds } = require("./shared/shell.js");
+const { isProvenBot } = require("./shared/discord-cache.js");
 
 /** Grant surface (GET form + POST mutation share the exact template). */
 const GRANT_PATH = "/g/:guildId/xp/grant";
@@ -130,30 +134,6 @@ function parseGrantInput(fields, guildId) {
   return { ok: true, userId: rawUser, amount, reason: reason || null };
 }
 
-/**
- * Cache-only bot probe (slash parity: `if (target.bot)` refusal). Reads the
- * bot's caches ONLY — guild member cache, then global user cache — and only
- * ever REFUSES on PROVEN bot status. An unanswerable cache (client unbound,
- * user unknown) makes no claim and lets the grant through: exactly slash's
- * outcome for a human pick, and the orchestrator-mandated "cache-only seam,
- * graceful skip — never fetch" for the rest.
- * @param {any} client resolved client or null
- * @param {string} guildId
- * @param {string} userId
- * @returns {boolean} true ONLY when a cache proves the target is a bot
- */
-function isProvenBot(client, guildId, userId) {
-  try {
-    const guild = client?.guilds?.cache?.get?.(guildId) ?? null;
-    const member = guild?.members?.cache?.get?.(userId) ?? null;
-    const memberBot = member?.user?.bot === true || member?.bot === true;
-    if (memberBot) return true;
-    const cachedUser = client?.users?.cache?.get?.(userId) ?? null;
-    return cachedUser?.bot === true;
-  } catch {
-    return false; // a broken cache object can never PROVE a bot
-  }
-}
 
 /**
  * Cache-ONLY guild seam handed to awardXp. The service's own member
@@ -192,11 +172,6 @@ function makeCacheOnlyGuild(client, guildId) {
   };
 }
 
-/** Parsed urlencoded fields (bodyCap/CSRF contract — no express parsers). */
-function readFields(req) {
-  const src = req?.bodyFields;
-  return src && typeof src === "object" ? src : {};
-}
 
 /**
  * PRG 302 to the grant page with a WHITELISTED flash slug. Both the flag and
@@ -219,27 +194,7 @@ function respondGrantRedirect(res, guildId, flag, slug) {
   res.end();
 }
 
-/** Shared switcher list (same contract as routes/staff.js shellGuilds). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
-/**
- * Raw-url flash read (app doctrine: never req.query — the Express 5 "simple"
- * parser and path-to-regexp decoding must not decide behavior here).
- * @param {string} rawUrl
- */
-function rawFlashQuery(rawUrl) {
-  const idx = String(rawUrl || "").indexOf("?");
-  const params = new URLSearchParams(idx === -1 ? "" : String(rawUrl).slice(idx + 1));
-  return { done: params.get("done"), error: params.get("error") };
-}
 
 /**
  * @param {import("express").Express} app
