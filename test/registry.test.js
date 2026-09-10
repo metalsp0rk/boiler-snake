@@ -1,17 +1,22 @@
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 
+const { loadDb } = require("./helpers/env");
+
 // Loading the registry pulls in every feature module, which opens SQLite at
-// require time (db facade side effect). Point this process at a private temp
-// DB BEFORE any src/db require: the project-root default (xpbot.sqlite) is
-// racy when node --test runs files in parallel (SQLITE_ERROR flakes).
-process.env.DB_PATH = require("path").join(
-  require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "boiler-snake-registry-")),
-  "test.sqlite"
-);
+// require time (db facade side effect). CONTRACT: loadDb() must stay above
+// every `src/` require in this file — it points this process at a private
+// temp DB (fresh DB_PATH + src require-cache reset) before those requires
+// load, because the project-root default (xpbot.sqlite) is racy when
+// node --test runs files in parallel (SQLITE_ERROR flakes).
+const { cleanup } = loadDb();
 
 const { buildDefaultRegistry, createRegistry } = require("../src/commands/registry");
 const features = require("../src/features");
+
+// Closes the tracked DB handles and removes the temp dir (idempotent,
+// never throws).
+after(cleanup);
 
 describe("command definitions via registry", () => {
   it("exports 27 slash commands with unique names", () => {

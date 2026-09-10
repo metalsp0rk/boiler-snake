@@ -1,26 +1,25 @@
-const { describe, it, before } = require("node:test");
+const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
-const path = require("path");
-const os = require("os");
+
+const { loadDb } = require("./helpers/env");
 
 describe("db layer", () => {
   let api;
-  let tmpDir;
   let dbPath;
+  let cleanup;
 
   before(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "boiler-snake-db-"));
-    dbPath = path.join(tmpDir, "test.sqlite");
-    process.env.DB_PATH = dbPath;
-    // Fresh require after setting DB_PATH — clear cache for db modules
-    for (const key of Object.keys(require.cache)) {
-      if (key.includes(`${path.sep}src${path.sep}db`) || key.endsWith(`${path.sep}db.js`)) {
-        delete require.cache[key];
-      }
-    }
-    api = require("../src/db");
+    // Contract: loadDb() must run before any other `src/` require in this
+    // file — it points DB_PATH at a fresh temp SQLite file, resets the src
+    // require cache and only then loads src/db, so nothing ever opens the
+    // project-root xpbot.sqlite (racy across parallel `node --test` files).
+    ({ api, dbPath, cleanup } = loadDb());
   });
+
+  // Closes the tracked DB handles and removes the temp dir (idempotent,
+  // never throws).
+  after(() => cleanup?.());
 
   it("opens DB and runs migrations (users table exists)", () => {
     const row = api.db
