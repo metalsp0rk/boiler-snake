@@ -70,7 +70,7 @@ Every unit of functionality must be wrapped so a failure produces a **logged, sp
 5. **Bot role** must be above roles it manages
 6. **XP caps**: max award 1e9 per event; DB/JS-safe totals
 7. **Level→role drop**: grace days after falling below threshold
-8. **Leaderboard**: top 10 PNG via `@napi-rs/canvas`
+8. **Leaderboard**: paginated PNG via `@napi-rs/canvas`, 1–20 rows per page (default 10)
 
 ## Known Gotchas
 
