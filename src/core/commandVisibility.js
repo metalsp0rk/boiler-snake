@@ -20,7 +20,7 @@ const TIERS = Object.freeze({
 
 /**
  * Top-level command name → visibility tier.
- * Keep in sync with registered slash commands (see test/commandVisibility.test.js).
+ * Keep in sync with registered slash commands (see test/command-visibility.test.js).
  */
 const COMMAND_VISIBILITY = Object.freeze({
   // Public (mixed staff subcommands gated in handlers)
