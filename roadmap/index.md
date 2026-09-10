@@ -18,10 +18,12 @@ Each feature has its own file with the full design, status, and locked decisions
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + polish) | — |
-| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Embed-based mention rendering (deferred — §7.15 Fix 1, would revise decision 11); live repro for the reply / `@user`-message crash triage (§7.15 Fix 3); markdown hygiene + zero-width/bidi input policy (§7.15 Fix 4) |
+| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage, markdown + input policy |
 | 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
 
 Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a work-as-time-allows backlog in [wishlist.md](wishlist.md) — feature files stay authoritative for design.
+
+**Open items follow the same authority rule:** the feature files' checkboxes are the single source — the *Open items* cells here and the §8 bullets below hold only short summaries that link to the right section (e.g. "see [gork.md §7.15](gork.md)"), never restatements of multi-part open work, because parallel copies are what rot. Update the feature file first and trim the mirror to fit; genuinely short, unambiguous one-liners may stay.
 
 ---
 
@@ -122,6 +124,8 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 
 ## 8. Post-MVP TODOs
 
+> **Status: convenience mirror.** Feature files are authoritative for open items (rule above) — where a feature file exists, the open bullets below stay short summaries linking to the right section; the shipped blocks document landed work and stay as-is. This section is the sole record for work with no feature file (XP & leaderboard polish below).
+
 ### XP & leaderboard polish
 
 Both slash surfaces below are now shipped; the checkboxes document the work that landed.
@@ -153,7 +157,7 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 
 ### Guild staff roles
 
-- [ ] Optional capability flags per role beyond **junior | senior** (warn-only, config-only, …) — the two-level tier shipped (migration `011`); anything finer is still open  
+- [ ] Optional capability flags per role beyond **junior | senior** — short open list in [staff-roles.md §4.8](staff-roles.md)  
 - [x] `level` junior/senior tier (migration `011`) — `/staff role add` takes a required `level`, `/staff role setlevel` flips it; **senior** rows alone get ticket channel overwrites (`listSeniorStaffRoles` in `overwrites.js`) and `/userinfo` Activity (`requireSeniorStaff`)  
 - [x] `/staff syncpermissions` + OAuth slash-visibility sync (migration `016`, `src/features/commandPermissions/`) — ManageGuild picker defaults kept + per-guild allow overwrites for staff roles; auto-resync on role changes (see [staff-roles.md §4.4](staff-roles.md))  
 - [x] `added_by` column on `staff_roles` (migration `024`) — recorded on add via upsert (COALESCE keeps provenance), shown in `/staff role list`  
@@ -164,7 +168,7 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 - [x] Panel message + button → modal for ticket description  
 - [x] **Fix (shipped):** ticket create warned “`N` staff role(s) could not get channel access” even when the bot role is above staff roles — `getManageableStaffRoleIds` now resolves roles via `guild.roles.fetch` on cache miss, skips a role the bot itself holds silently, and lists per-role name + reason in the note (see [help-tickets.md §1.11](help-tickets.md))  
 - [x] **Fix (shipped):** on archive, DM the requester the transcript link (non-sensitive tickets only) in addition to posting the archive-channel embed — revises locked decision 3 (see [help-tickets.md §1.11](help-tickets.md))  
-- [ ] Login with Discord on transcript HTTP routes  
+- [ ] Login with Discord on transcript HTTP routes (→ covered by [web-admin.md](web-admin.md) §8.4)  
 - [x] Download/mirror all attachments into transcript storage at archive time (replace hotlinks)  
 - [ ] Richer `/ticket list` filters  
 - [x] Stored panel registry (list/edit/delete via commands)  
@@ -206,8 +210,8 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 
 - [x] **Fix (shipped):** raw `<@id>` markup in gork replies — `sanitizeAnswer()` rewrites mention tokens to display names and replies send `allowedMentions: { parse: [] }` (no unintended pings); **embed-based** "chip" rendering stays **deferred** (would revise locked decision 11 → needs decision 24; see [gork.md §7.15](gork.md))  
 - [x] **Fix (shipped):** user roster in the generation context — `src/features/gork/roster.js` (`id | @handle | display name (nickname)`; asker + authors + mentions) (see [gork.md §7.15](gork.md))  
-- [ ] **Fix (triage, open):** reported crash on reply / `@user`-mention messages — hang-read-as-crash fixed (20s context deadline, deleted/forwarded-reference fixtures), but **no live crash evidence captured yet**; keep collecting the real stack + payload (see [gork.md §7.15](gork.md))  
+- [ ] **Fix (triage, open):** reported crash on reply / `@user`-mention messages — still no live crash evidence captured; evidence list, fixed surface, and repro matrix are tracked in [gork.md §7.15](gork.md) (Fix 3)  
 - [x] **Fix (shipped):** special-character safety in chunking/truncation — `safeCutIndex`/`sliceSafe` code-point cuts + `pullBeforeTokens` token-aware chunks + capped context slices (see [gork.md §7.15](gork.md))  
-- [ ] **Fix (open):** markdown hygiene (balance/escape fences, spoilers, emphasis) + zero-width / bidi / homoglyph input policy (see [gork.md §7.15](gork.md))  
+- [ ] **Fix (open):** markdown hygiene + zero-width / bidi input policy (see [gork.md §7.15](gork.md), Fix 4)  
 - [x] **Feature (shipped):** gork community memory — per-person durable facts keyed **(person, date, title_key)** with server-stamped key fields; bodies-or-index MEMORY BLOCK per trigger (asker + mentioned + talked-about via the Fix 2 roster) under `gork_memory_chars`, `recall_memories` tool on overflow, post-send extraction turn after reply+audit+slot-release, staff-only `/gork memory show|forget|clear|on|off|budget` (locked decisions 25–29, migration `023`, default **off**; see [gork.md §7.16](gork.md))
 
