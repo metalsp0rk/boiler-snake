@@ -19,7 +19,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + polish) | Auto-mod thresholds |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | — |
-| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
+| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Shipped (phases 0a–3) | Phases 0a–3; login-mandatory transcripts |
 
 ---
 
