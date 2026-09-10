@@ -1017,10 +1017,14 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `014_guild_activity_backfill` | Guild-wide backfill columns on `guild_activity_settings` + `guild_channel_backfill_cursor` |
 | `015_event_reminder_event_optouts` | Per-event mute table for scheduled event reminders |
 | `016_command_permission_oauth` | OAuth token storage for slash command permission sync |
-| `017_warn_post_mvp` | `warn_expiry_days`; `warnings.expires_at` / evidence columns + expiry index |
-| `018_warn_post_mvp` | `warnings.expires_at` / evidence columns (post-MVP warning fields) |
+| `017_event_reminder_persistent` | `persistent` flag on `event_reminder_configs` (skip auto-cleanup so configs survive recurring events) |
+| `018_warn_post_mvp` | `warn_expiry_days`; `warnings.expires_at` / evidence columns + expiry index |
 | `019_ticket_panels` | `ticket_panels` registry (posted panel messages for list/edit/delete) |
 | `020_twitch` | `twitch_channels` table + `twitch_*` columns on `guild_settings` |
+| `021_gork` | Gork (AI keyword Q&A) `guild_settings` columns: keyword, context window, extra rules, search, cooldown |
+| `022_gork_access` | `gork_user_blocks` table + `gork_enabled` master switch on `guild_settings` |
+| `023_gork_memory` | `gork_memories` table (per-person community memory) + `gork_memory_enabled` / `gork_memory_chars` columns |
+| `024_staff_roles_added_by` | `staff_roles.added_by` provenance column (who added the role; NULL = unknown) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
