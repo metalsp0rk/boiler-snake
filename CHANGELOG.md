@@ -1,5 +1,53 @@
 # Changelog
 
+## [1.11.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.11.0...v1.11.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **ci:** build docs on node 22 to match engines floor ([c745af5](https://github.com/metalsp0rk/boiler-snake/commit/c745af502a9571f8f2a2b8a56f0c3af1df9bde47))
+* **docs:** add missing 016-019 and 021-024 rows to architecture.md migration table ([98fe1c9](https://github.com/metalsp0rk/boiler-snake/commit/98fe1c9a9dc3e06221bf56d0ca4bdd345a3c074e))
+* **docs:** align gork LLM token budget and timeout docs with shipped defaults ([600cab1](https://github.com/metalsp0rk/boiler-snake/commit/600cab169d49d878fe52627fb34cf2ae41d3a9cf))
+* **docs:** bump docs project-information version stamp to 1.11.0 ([a52e96c](https://github.com/metalsp0rk/boiler-snake/commit/a52e96c7cb5417243101cacd5cfaaae0b03f3646))
+* **docs:** correct leaderboard constraint wording to paginated 1-20 rows ([26b7d74](https://github.com/metalsp0rk/boiler-snake/commit/26b7d74a3e1a404672ebe5cf2ba9a81ec9181081))
+* **docs:** correct warnings post-MVP migration id from 017 to 018_warn_post_mvp ([d9920fe](https://github.com/metalsp0rk/boiler-snake/commit/d9920fe538dbb6908db49f7761ddfb39fed83821))
+* **docs:** disambiguate duplicate Testing headings in architecture.md anchor space ([43704b4](https://github.com/metalsp0rk/boiler-snake/commit/43704b425516f5502c49eaccaae638f7ed676f1a))
+* **docs:** document gork tables and settings columns in database.md ([33e3d8f](https://github.com/metalsp0rk/boiler-snake/commit/33e3d8fe5885af80d205cff83d973ce7b9d4645b))
+* **docs:** document shipped /gork commands in commands index and permission matrix ([f99e2a1](https://github.com/metalsp0rk/boiler-snake/commit/f99e2a162aa90fa12158328ba8584110430fef0b))
+* **docs:** drop dead Advanced Configuration TOC entry in configuration.md ([a5c3be7](https://github.com/metalsp0rk/boiler-snake/commit/a5c3be78cb8771514db9c6118dc623c7e15ca7c6))
+* **docs:** drop unverifiable video claim from setup blurb ([6768aa0](https://github.com/metalsp0rk/boiler-snake/commit/6768aa079c968e90ebea4bec674dc32568e9a796))
+* **docs:** enable VitePress lastUpdated so pages carry update stamps ([e9b3c50](https://github.com/metalsp0rk/boiler-snake/commit/e9b3c50ce2aa73dc5940692ab9a06b43b4f70d99))
+* **docs:** list commandPermissions, twitch, and gork in AGENTS.md features ([7e9e8e3](https://github.com/metalsp0rk/boiler-snake/commit/7e9e8e3a5d18b38a0d70918b40214b7739be3ee5))
+* **docs:** regenerate database.md migration table against shipped migrations ([7c5dd20](https://github.com/metalsp0rk/boiler-snake/commit/7c5dd20565390a9599304c568d3b5e9324f293de))
+* **docs:** replace phantom /warn issue subcommand with /warn add ([d94e338](https://github.com/metalsp0rk/boiler-snake/commit/d94e338bac12394e4e76a30db1a459265b5b856b))
+* **docs:** sync README command listings with shipped setxp, staff, and warn commands ([21fbacc](https://github.com/metalsp0rk/boiler-snake/commit/21fbacca85afb5c2f6352c215778b5b214b80b40))
+* **env:** correct YOUTUBE_API_KEY comment now that notifications shipped ([2ae1409](https://github.com/metalsp0rk/boiler-snake/commit/2ae140965066fa388fccb9970b0b8cc260f0893d))
+* **license:** add MIT license file backing the declared MIT licensing ([9976e76](https://github.com/metalsp0rk/boiler-snake/commit/9976e76c238193dc9973bd5e6fdcace9d1d42401))
+* reconcile feature/command counts, warnings open items, and 018 migration log id ([d4a2740](https://github.com/metalsp0rk/boiler-snake/commit/d4a2740b8d5a6f793f5fa1e21b14d14cc85be78f))
+* **roadmap:** align event-reminders paths and schema draft with shipped modules ([072e960](https://github.com/metalsp0rk/boiler-snake/commit/072e96033fefdcbc010de7731c1e81df91f847a7))
+* **roadmap:** close two shipped ticket fixes in help-tickets and index ([1393fb3](https://github.com/metalsp0rk/boiler-snake/commit/1393fb338358a9d599ac70073828cc1efc534f5e))
+* **roadmap:** decompose web-admin phases into estimated checkbox task breakdown ([4cbdf6d](https://github.com/metalsp0rk/boiler-snake/commit/4cbdf6dd6c89059f19e2b262fe68b81bbd727884))
+* **roadmap:** document shipped staff-roles tiers, provenance, and OAuth visibility ([c793949](https://github.com/metalsp0rk/boiler-snake/commit/c793949064ceda227344428c72ed4ec4fba4cd2a))
+* **roadmap:** index all shipped features and add 013/014/019 summary rows ([a070dc4](https://github.com/metalsp0rk/boiler-snake/commit/a070dc462607f13520accbb07b9320186281dc19))
+* **roadmap:** make feature files single source for open items, index mirrors link ([16f3f90](https://github.com/metalsp0rk/boiler-snake/commit/16f3f90720801b69d63eb84ec2c6ff13369ed684))
+* **roadmap:** match warnings status wording verbatim in index row ([ae91e13](https://github.com/metalsp0rk/boiler-snake/commit/ae91e13320caa43a839136d8f0b905246d4f0a9c))
+* **roadmap:** prune shipped twitch polling-interval and embed open items ([f0ffcbe](https://github.com/metalsp0rk/boiler-snake/commit/f0ffcbe957ca96d21d8449ae79e1ce61a9dd2386))
+* **roadmap:** reconcile help-tickets core sections with shipped ticket behavior ([9fd29ba](https://github.com/metalsp0rk/boiler-snake/commit/9fd29ba1c34d06302764a4e4050fed32f02c28fd))
+* **roadmap:** record shipped guild-wide note list and modal cap ([12e8728](https://github.com/metalsp0rk/boiler-snake/commit/12e8728f6b4fa42d94c61e7670e81ed487b78cb8))
+* **roadmap:** renumber planned web-admin migrations to 025/026 with reserve rule ([b78c9a0](https://github.com/metalsp0rk/boiler-snake/commit/b78c9a0acb81c7f4d5c305c6444be51f4b4bb99a))
+* **roadmap:** sync warnings roadmap drafts with shipped export, expiry, and evidence ([aad7c08](https://github.com/metalsp0rk/boiler-snake/commit/aad7c0803cbc755836f52cd85c8dc47aefaa9021))
+* **tests:** add boundary-exhaustive truth-table coverage for requireStaff tiers ([43268b1](https://github.com/metalsp0rk/boiler-snake/commit/43268b14b200016dd6a948c0c8a80f8fb89d96b2))
+* **tests:** add test:coverage script with baseline-locked thresholds ([fa42d5e](https://github.com/metalsp0rk/boiler-snake/commit/fa42d5e813c39e883ee4716530f40cb7f4f83e8f))
+* **tests:** close DB handles and remove temp dirs via integration harness cleanup ([f9d7048](https://github.com/metalsp0rk/boiler-snake/commit/f9d704832be52d94525e149604b0aded30a50732))
+* **tests:** cover auditLog misconfig branches and music render builders ([80a9391](https://github.com/metalsp0rk/boiler-snake/commit/80a939122371efeb9afee1bae234874ef376df81))
+* **tests:** cover OAuth token exchange and public callback handler paths ([3ab924b](https://github.com/metalsp0rk/boiler-snake/commit/3ab924b283017db6f9fe49b2623ae112eb2137ba))
+* **tests:** cover src/config.js env parsing and required-var gating ([84ff4b0](https://github.com/metalsp0rk/boiler-snake/commit/84ff4b04992b23a7e85f720c54fe3ead3f2f8183))
+* **tests:** list fixtures and lavalink helpers in test README ([cbd43f3](https://github.com/metalsp0rk/boiler-snake/commit/cbd43f3cf501d2139f5143b6f3a7b8253dd6991e))
+* **tests:** rename camelCase unit-test files to kebab-case convention ([2eeee8c](https://github.com/metalsp0rk/boiler-snake/commit/2eeee8c1fe3cd5a0dcf2f406e3faa9ad6396d244))
+* **tests:** replace wall-clock sleeps with settle seams in gork and user-activity suites ([ca1670c](https://github.com/metalsp0rk/boiler-snake/commit/ca1670c806bb3d9357dd6fe8a96f94d934d97a2d))
+* **tests:** require cache-absence and recorded removal in assertRoleRemoved ([a8f4f88](https://github.com/metalsp0rk/boiler-snake/commit/a8f4f88913851218dc4813d6fbadc00219b2dc96))
+* **tests:** route unit-test DB bootstrap through shared loadDb helper with cleanup ([6f4ca71](https://github.com/metalsp0rk/boiler-snake/commit/6f4ca7109e7795afceb77a0a602f7b097a1cb526))
+
 ## [1.11.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.10.0...v1.11.0) (2026-09-09)
 
 
