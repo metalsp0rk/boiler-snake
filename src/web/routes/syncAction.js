@@ -300,12 +300,7 @@ function registerSyncActionRoutes(app, options = {}) {
 
 module.exports = {
   registerSyncActionRoutes,
-  // Sync-trigger surface (pinned by test/web-visibility-sync.test.js + the
+  // Sync-trigger path (pinned by test/web-visibility-sync.test.js:89 + the
   // Phase-2 gate registry cross-check)
   SYNC_PATH,
-  RETURN_TARGETS,
-  DEFAULT_RETURN,
-  REAUTH_CODES,
-  parseReturnTarget,
-  respondSyncRedirect,
 };

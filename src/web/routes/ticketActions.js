@@ -638,10 +638,6 @@ module.exports = {
   CLAIM_PATH,
   CLOSE_PATH,
   SUMMARIZE_PATH,
-  // Validation shapes (pure helpers exercised directly by the test suite)
-  TICKET_ID_RE,
-  OPEN_LIST_LIMIT,
+  // Body-id parser (pinned directly at web-ticket-actions.test.js:575-578)
   parseTicketIdField,
-  resolveChannelCacheOnly,
-  resolveBotMemberCacheOnly,
 };

@@ -692,19 +692,6 @@ function registerStaffRoutes(app, options = {}) {
 
 module.exports = {
   registerStaffRoutes,
-  makeRoleNameResolver,
+  // Env-config probe (consumed by routes/system.js + web-routes-staff.test.js)
   readEnvConfig,
-  // Phase 2 mutation surface (pinned by test/web-staff-roles-writes.test.js)
-  ROLE_ADD_PATH,
-  ROLE_REMOVE_PATH,
-  ROLE_SETLEVEL_PATH,
-  LEVELROLE_SET_PATH,
-  LEVELROLE_REMOVE_PATH,
-  ROLE_ID_RE,
-  NONNEG_INT_RE,
-  STAFF_LEVEL_INPUTS,
-  probeGuildRole,
-  parseRoleId,
-  parseStaffLevelInput,
-  parseNonNegativeInt,
 };
