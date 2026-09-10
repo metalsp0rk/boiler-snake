@@ -950,6 +950,53 @@ Optional: `silent`, `note` (N-n), `message` (Discord jump link), `evidence` (sta
 
 **Permission**: Staff gate.
 
+### `/gork` - Gork AI Q&A (staff)
+
+Configure and moderate [Gork](../gork.md), the AI keyword Q&A bot. Q&A itself is triggered by typing the guild's keyword (`@gork` by default) in chat — `/gork` subcommands only configure and moderate it.
+
+**Permission**: **Staff gate** for **all** subcommands — Manage Server or a role from `/staff role list`. The command registers with a Manage Server default member permission, so staff roles see it in Discord's picker only after `/staff syncpermissions`; the handler enforces the staff gate either way.
+
+```bash
+/gork keyword @gork
+/gork keyword clear                # disables gork for the guild
+/gork context 10
+/gork cooldown 180
+/gork rules Keep answers about this server
+/gork search on
+/gork enable off
+/gork ban user:@SomeUser
+/gork unban user:@SomeUser
+/gork bans
+/gork memory show
+/gork status
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `keyword <text\|clear>` | Set the trigger keyword (1–50 chars); `clear` disables gork for the guild |
+| `context <1-50>` | Prior-message context window (default 10) |
+| `cooldown <seconds>` | Per-user cooldown (0–3600; default **180**, 0 = disabled). Staff always bypass |
+| `rules <text\|clear>` | Additional staff prompt rules (≤500 chars); `clear` removes them |
+| `search <on\|off>` | Toggle the SearXNG web-search / page-reading tools for this guild (shared lever) |
+| `enable <on\|off>` | Turn gork **entirely** on/off for this server — off makes every trigger silent; all other settings are kept |
+| `ban <user>` | Ban a user from gork in this server (they get the generic failure reply — never told it's a ban) |
+| `unban <user>` | Lift a user's gork ban |
+| `bans` | List the users banned from gork in this server |
+| `memory <action>` | Curate the per-person community memory — see below |
+| `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state |
+
+`/gork memory` carries the verbs as an `action` choice (Discord caps option depth at 2), plus optional `user`, `id`, `chars`, and `confirm` options:
+
+| Action | Description |
+|--------|-------------|
+| `show [user]` | Ephemeral listing with `#id` handles — one person's entries with `user:`, else the newest 25 in the guild |
+| `forget id:<n>` | Delete one memory by its `#id` handle (guild-scoped) |
+| `clear [user]` | Wipe one person's — or the whole guild's — memories. **Confirm-once:** without `confirm:true` it only previews the count |
+| `on` / `off` | Memory master switch (default **off** — each answered question costs an extra extraction call when on) |
+| `budget chars:<n>` | Memory-block cap (0–64,000; default **12,000**, 0 = unlimited; out-of-range values are clamped) |
+
+All `/gork` replies are ephemeral. Every config change — including bans and memory edits — posts a config-change embed to the audit channel (`/setlog audit`). See [Gork](../gork.md) for trigger, memory, and moderation behavior.
+
 ---
 
 ## Permission Matrix
@@ -1002,6 +1049,7 @@ Optional: `silent`, `note` (N-n), `message` (Discord jump link), `evidence` (sta
 | `/twitch add\|remove\|list` | Staff gate | Yes |
 | `/settwitch channel\|role\|interval\|settings` | Staff gate | Yes |
 | `/reactionrole panel\|option\|sync` | Staff gate | Yes |
+| `/gork keyword\|context\|cooldown\|rules\|search\|enable\|ban\|unban\|bans\|memory\|status` | Staff gate | Yes |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
 | `/setcommandchannel add\|remove\|list` | ManageGuild ¹ | Yes |
@@ -1073,6 +1121,7 @@ STAFF GATE (Manage Server OR any staff role):
 /twitch add|remove|list
 /settwitch channel|role|interval|settings
 /reactionrole panel|option|sync
+/gork keyword|context|cooldown|rules|search|enable|ban|unban|bans|memory|status
 /honeypot channel|banrole
 /eventreminder setchannel
 /eventreminder create|edit|clear|sync  → creator OR Manage Server
