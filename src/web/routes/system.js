@@ -308,50 +308,42 @@ function registerSystemRoutes(app, options = {}) {
     require("../../features/commandPermissions/config").getCommandPermissionOAuthConfig;
 
   // ---- admin: system health page (§8.6 System row = Admin) -----------------
-  app.get("/g/:guildId/system", requireTier("admin"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId; // never req.params (§8.6 scoping)
-      const status = await buildSystemStatus(guildId, {
-        getTickers,
-        getOauthStatus: (id) => staffData.getOauthStatus(id),
-        oauthConfigFn,
-      });
-      const document = renderShellPage(req, {
-        title: "System",
-        heading: "System",
-        subheading:
-          "Process health, ticker schedules, web-surface state and command-permission OAuth — status only; secret values are never shown.",
-        content: renderSystemBody({ status }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err); // → handleAppError: generic 500, nothing leaked
-    }
+  app.get("/g/:guildId/system", requireTier("admin"), async (req, res) => {
+    const guildId = req.guildAccess.guildId; // never req.params (§8.6 scoping)
+    const status = await buildSystemStatus(guildId, {
+      getTickers,
+      getOauthStatus: (id) => staffData.getOauthStatus(id),
+      oauthConfigFn,
+    });
+    const document = renderShellPage(req, {
+      title: "System",
+      heading: "System",
+      subheading:
+        "Process health, ticker schedules, web-surface state and command-permission OAuth — status only; secret values are never shown.",
+      content: renderSystemBody({ status }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // ---- admin: admin_audit viewer (§8.6 System row, Phase 1 read-only) ------
-  app.get("/g/:guildId/audit", requireTier("admin"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId; // guild-scoped ONLY (never from URL body)
-      const params = rawParams(req.url);
-      const page = buildAuditPage(guildId, {
-        origin: params.get("origin"),
-        n: params.get("n"),
-        o: params.get("o"),
-      });
-      const document = renderShellPage(req, {
-        title: "Audit log",
-        heading: "Audit log",
-        subheading:
-          "The append-only admin_audit trail (web + slash + system origins), newest first. Read-only — no exports, no deletes.",
-        content: renderAuditBody(req, { page }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err);
-    }
+  app.get("/g/:guildId/audit", requireTier("admin"), async (req, res) => {
+    const guildId = req.guildAccess.guildId; // guild-scoped ONLY (never from URL body)
+    const params = rawParams(req.url);
+    const page = buildAuditPage(guildId, {
+      origin: params.get("origin"),
+      n: params.get("n"),
+      o: params.get("o"),
+    });
+    const document = renderShellPage(req, {
+      title: "Audit log",
+      heading: "Audit log",
+      subheading:
+        "The append-only admin_audit trail (web + slash + system origins), newest first. Read-only — no exports, no deletes.",
+      content: renderAuditBody(req, { page }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 }
 
