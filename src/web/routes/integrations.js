@@ -67,6 +67,8 @@ const { renderShellPage, writeShellHtml } = require("../views/layout");
 const {
   renderIntegrationsBody,
   flashFromQuery,
+  FLASH_DONE,
+  FLASH_ERROR,
 } = require("../views/integrations");
 const { createIntegrationsData } = require("../data/integrationsData");
 
@@ -78,6 +80,7 @@ const reactionRolesService = require("../../features/reactionRoles/service");
 const honeypotFeature = require("../../features/honeypot");
 const { shellGuilds } = require("./shared/shell.js");
 const { makeCacheNameResolver } = require("./shared/discord-cache.js");
+const { makeFlashRedirect } = require("./shared/flash.js");
 const {
   normalizeTwitchLogin,
   normalizeYoutubeName,
@@ -153,16 +156,19 @@ function intInRange(value, min, max) {
   return Number.isInteger(n) && n >= min && n <= max ? n : null;
 }
 
-/** POST-REDIRECT-GET (302, empty body, never cached). */
-function redirectIntegrations(res, guildId, kind, slug) {
-  const qs = kind === "done" ? `done=${encodeURIComponent(slug)}` : `error=${encodeURIComponent(slug)}`;
-  res.writeHead(302, {
-    Location: `/g/${encodeURIComponent(guildId)}/integrations?${qs}`,
-    "Cache-Control": "no-store",
-    "X-Content-Type-Options": "nosniff",
-  });
-  res.end();
-}
+/**
+ * POST-REDIRECT-GET (302, empty body, never cached) — shared flash core,
+ * which RE-CHECKS the slug against the view's frozen vocabularies before
+ * minting Location (previously this surface interpolated the slug unchecked;
+ * all 50 call sites pass table literals, so bytes are unchanged — this is
+ * the §8.7 no-echo guarantee, not a behavior change).
+ */
+const redirectIntegrations = makeFlashRedirect({
+  pageOf: (guildId) => `/g/${encodeURIComponent(guildId)}/integrations`,
+  doneTable: FLASH_DONE,
+  errorTable: FLASH_ERROR,
+  headers: { "X-Content-Type-Options": "nosniff" },
+});
 
 /**
  * @param {import("express").Express} app

@@ -89,6 +89,7 @@ const { readFields } = require("./shared/req.js");
 const { rawFlashQuery } = require("./shared/req.js");
 const { rawParams } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
+const { makeFlashRedirect } = require("./shared/flash.js");
 const { isProvenBot } = require("./shared/discord-cache.js");
 
 /** List pages (POST PRG redirect targets; staff tier like the mutations). */
@@ -232,29 +233,6 @@ function buildWarnVoidDm({ ref, actorLabel, activeCount, voidReason, guildName }
   };
 }
 
-/**
- * PRG 302 to a list page with a WHITELISTED flash slug. Both the flag and
- * the slug are re-checked against the view's frozen vocabularies before the
- * Location is minted (settings.js redirectSettings doctrine): a bug at a
- * call site can still never reflect input into a redirect (§8.7).
- * @param {import("http").ServerResponse} res
- * @param {string} pageConcrete e.g. /g/123/warnings (server-derived ids only)
- * @param {"done"|"error"} flag
- * @param {string} slug
- * @param {Readonly<Record<string,string>>} doneTable
- * @param {Readonly<Record<string,string>>} errorTable
- */
-function respondFlash(res, pageConcrete, flag, slug, doneTable, errorTable) {
-  const safeFlag = flag === "done" ? "done" : "error";
-  const table = safeFlag === "done" ? doneTable : errorTable;
-  const safeSlug =
-    typeof slug === "string" && table[slug] ? slug : Object.keys(table)[0];
-  res.writeHead(302, {
-    Location: `${pageConcrete}?${safeFlag}=${safeSlug}`,
-    "Cache-Control": "no-store",
-  });
-  res.end();
-}
 
 /**
  * @param {import("express").Express} app
@@ -336,10 +314,16 @@ function registerModerationRoutes(app, options = {}) {
 
   const warnPage = (guildId) => `/g/${encodeURIComponent(guildId)}/warnings`;
   const notesPage = (guildId) => `/g/${encodeURIComponent(guildId)}/notes`;
-  const warnFlash = (res, guildId, flag, slug) =>
-    respondFlash(res, warnPage(guildId), flag, slug, WARN_FLASH_DONE, WARN_FLASH_ERROR);
-  const noteFlash = (res, guildId, flag, slug) =>
-    respondFlash(res, notesPage(guildId), flag, slug, NOTE_FLASH_DONE, NOTE_FLASH_ERROR);
+  const warnFlash = makeFlashRedirect({
+    pageOf: warnPage,
+    doneTable: WARN_FLASH_DONE,
+    errorTable: WARN_FLASH_ERROR,
+  });
+  const noteFlash = makeFlashRedirect({
+    pageOf: notesPage,
+    doneTable: NOTE_FLASH_DONE,
+    errorTable: NOTE_FLASH_ERROR,
+  });
 
   // ---- staff: guild-wide warnings list -------------------------------------
   app.get(WARNINGS_PAGE, requireTier("staff"), async (req, res, next) => {
