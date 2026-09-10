@@ -99,9 +99,11 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 
 | Table / change | Notes |
 |----------------|-------|
-| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**planned**, migration `024` — `023` shipped as `gork_memory`) |
-| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**planned**, migration `025`) |
+| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**planned**, migration `025` — `024` shipped as `staff_roles_added_by`) |
+| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**planned**, migration `026`) |
 | `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**planned**) |
+
+> **Migration numbering (planned):** the ids above (`025`/`026`) are planning-time placeholders — reserve the next free id at implementation time (verify against `src/db/migrations/` before numbering). See [web-admin.md §8.5](web-admin.md).
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
