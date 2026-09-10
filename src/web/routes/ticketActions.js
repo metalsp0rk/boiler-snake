@@ -341,28 +341,24 @@ function registerTicketActionsRoutes(app, options = {}) {
   // "never render a form that 403s" doctrine). The Phase-0c ticket READ
   // surfaces (/t index + transcripts, staff-or-participant §8.4) are
   // untouched by this module.
-  app.get(ACTIONS_PAGE, requireTier("senior"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const tickets = facade.listOpenTickets(guildId, { limit: OPEN_LIST_LIMIT });
-      const document = renderShellPage(req, {
-        title: "Ticket actions",
-        heading: "Ticket actions",
-        subheading:
-          "Senior staff — claim / close / summary regen run the exact slash pipelines (audit origin web). Archive and creation stay slash-only.",
-        content: renderTicketActionsBody({
-          guildId,
-          tickets,
-          csrfToken: req.csrfToken || null,
-          flash: flashFromQuery(rawFlashQuery(req.url)),
-          maxReason: MAX_TICKET_REASON,
-        }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err); // → handleAppError: generic 500, nothing leaked
-    }
+  app.get(ACTIONS_PAGE, requireTier("senior"), async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const tickets = facade.listOpenTickets(guildId, { limit: OPEN_LIST_LIMIT });
+    const document = renderShellPage(req, {
+      title: "Ticket actions",
+      heading: "Ticket actions",
+      subheading:
+        "Senior staff — claim / close / summary regen run the exact slash pipelines (audit origin web). Archive and creation stay slash-only.",
+      content: renderTicketActionsBody({
+        guildId,
+        tickets,
+        csrfToken: req.csrfToken || null,
+        flash: flashFromQuery(rawFlashQuery(req.url)),
+        maxReason: MAX_TICKET_REASON,
+      }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // =========================================================================
@@ -375,232 +371,221 @@ function registerTicketActionsRoutes(app, options = {}) {
   // =========================================================================
 
   // ---- POST claim (slash /ticket claim twin) ------------------------------
-  postMutation(CLAIM_PATH, async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const loaded = loadTicket(readFields(req), guildId);
-      if (!loaded.ok) {
-        if (loaded.refused === "not_found") {
-          sendNotFound(res);
-          return;
-        }
-        flash(res, guildId, "error", loaded.errorSlug);
-        return;
-      }
-      const { ticket } = loaded;
-
-      // Slash requireOpenTicketChannel (index.js:604): OPEN only. Refusal
-      // happens BEFORE claimTicket — zero writes, zero audit.
-      if (ticket.status !== "open") {
-        flash(res, guildId, "error", "ticket_not_open");
-        return;
-      }
-
-      // Slash-identical claim (handleClaim:1650): the SAME helper, actor =
-      // the web user. Idempotent takeover semantics preserved (no
-      // already-claimed rejection exists on the slash path).
-      const updated = facade.claimTicket(ticket.id, req.user.userId);
-
-      // Audit BEFORE the Discord niceties — the exact slash order
-      // (claimTicket → recordSlashAudit → overwrites → channel notice).
-      // Details shape = index.js:1651-1661; origin stays 'web'.
-      req.audit({
-        action: "tickets.claim",
-        targetType: "ticket",
-        targetId: String(ticket.id),
-        guildId,
-        details: {
-          ticket_number: ticket.ticket_number,
-          previous_owner: ticket.staff_owner_id ?? null,
-          staff_owner_id: updated?.staff_owner_id ?? req.user.userId,
-        },
-        // No mirror descriptor: the slash claim handler posts NO
-        // logConfigChange channel embed (§8.1-7 mirrors mirror slash).
-      });
-
-      // Best-effort Discord side effects — CACHE-ONLY seam, graceful skip
-      // (slash:1662-1682: `if (channel)` overwrites try/catch-warned, then
-      // the "claimed" channel notice try/catch-ignored).
-      const client = readClient();
-      const channel = resolveChannelCacheOnly(client, ticket.channel_id);
-      if (channel) {
-        const guild = resolveGuildCacheOnly(client, guildId);
-        try {
-          await applyOverwrites(channel, {
-            guildId,
-            everyoneId: guild?.id ?? guildId,
-            botUserId: client?.user?.id,
-            ticket: updated,
-          });
-        } catch (err) {
-          console.warn("[web.tickets] claim overwrites:", err?.message || err);
-        }
-        try {
-          if (channel.send) {
-            await channel.send(`<@${req.user.userId}> claimed this ticket.`);
-          }
-        } catch {
-          // slash ignores it too (index.js:1678-1682)
-        }
-      }
-
-      flash(res, guildId, "done", "ticket_claimed");
-    } catch (err) {
-      next(err); // fail-closed: an audit throw aborts with the generic 500
-    }
-  });
-
-  // ---- POST close (slash /ticket close twin — soft close) -----------------
-  postMutation(CLOSE_PATH, async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const fields = readFields(req);
-      const loaded = loadTicket(fields, guildId);
-      if (!loaded.ok) {
-        if (loaded.refused === "not_found") {
-          sendNotFound(res);
-          return;
-        }
-        flash(res, guildId, "error", loaded.errorSlug);
-        return;
-      }
-      const { ticket } = loaded;
-
-      // Slash requireOpenTicketChannel: close runs on OPEN tickets only
-      // (archive of a closed ticket stays slash /ticket archive — out of
-      // the §8.6 web mutation scope). Zero writes on refusal.
-      if (ticket.status !== "open") {
-        flash(res, guildId, "error", "ticket_not_open");
-        return;
-      }
-
-      // Close reason — the slash option bound (setMaxLength
-      // MAX_TICKET_REASON) pre-validated so a refusal reaches ZERO write
-      // helpers; trimmed-empty collapses to null (slash: `?? null` audit
-      // shape, repo normalizeTicketReason allowEmpty).
-      const rawReason = String(fields.reason == null ? "" : fields.reason).trim();
-      if (rawReason.length > MAX_TICKET_REASON) {
-        flash(res, guildId, "error", "close_reason_too_long");
-        return;
-      }
-      const closeReason = rawReason || null;
-
-      // The slash's OWN close helper with the same args
-      // (handleClose:1401 → softCloseTicket{client, channel, ticket,
-      // closedBy, closeReason, botMember}). Cache-only channel/member
-      // seams: a missing channel degrades exactly like the helper's own
-      // degraded path (DB transition committed first — WHERE status=
-      // 'open'; permission pass + close notice skipped as swallowed
-      // warnings; requester DM best-effort). The flash claims the close
-      // transition, which genuinely happened, and nothing more.
-      const client = readClient();
-      const channel = resolveChannelCacheOnly(client, ticket.channel_id);
-      const botMember = resolveBotMemberCacheOnly(client, guildId);
-      const result = await softClose({
-        client,
-        channel,
-        ticket,
-        closedBy: req.user.userId,
-        closeReason,
-        botMember,
-      });
-
-      // Slash-exact vocabulary + detail shape (handleClose:1410-1420).
-      req.audit({
-        action: "tickets.close",
-        targetType: "ticket",
-        targetId: String(ticket.id),
-        guildId,
-        details: {
-          ticket_number: ticket.ticket_number,
-          close_reason: closeReason ?? null,
-          status: result?.ticket?.status ?? ticket.status,
-        },
-        // No mirror: the slash close handler posts NO logConfigChange
-        // (only its staff-note add-on does — delta (4) drops the add-on).
-      });
-
-      flash(res, guildId, "done", "ticket_closed");
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  // ---- POST summarize (slash /ticket summarize twin — regen) --------------
-  postMutation(SUMMARIZE_PATH, async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const loaded = loadTicket(readFields(req), guildId);
-      if (!loaded.ok) {
-        if (loaded.refused === "not_found") {
-          sendNotFound(res);
-          return;
-        }
-        flash(res, guildId, "error", loaded.errorSlug);
-        return;
-      }
-      const { ticket } = loaded;
-
-      // Sensitive ⇒ generic 404 (delta (2)): BEFORE reading messages or the
-      // AI, indistinguishable from unknown/foreign. The web NEVER renders
-      // or regenerates sensitive-ticket summaries (§8.4).
-      if (Number(ticket.is_sensitive) === 1) {
+  postMutation(CLAIM_PATH, async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const loaded = loadTicket(readFields(req), guildId);
+    if (!loaded.ok) {
+      if (loaded.refused === "not_found") {
         sendNotFound(res);
         return;
       }
-
-      // Slash requireLiveTicketChannel archived rule (index.js:647):
-      // archived tickets are refused. Open AND soft-closed are allowed —
-      // exactly what slash status:"any" permits for live channels.
-      if (Number(ticket.archived) === 1) {
-        flash(res, guildId, "error", "ticket_archived");
-        return;
-      }
-
-      // AI guardrail (delta (3)): named-var refusal with ZERO AI calls —
-      // the slash silently returns a stats fallback here; the web refuses
-      // instead of pretending a "regeneration" happened without one.
-      if (!aiConfigured()) {
-        flash(res, guildId, "error", "ai_not_configured");
-        return;
-      }
-
-      // Stored rows ONLY (slash reads listTicketMessages first, then falls
-      // back to a channel FETCH — the web never fetches). Empty mirrors
-      // slash's read-failure reply ("Could not read the ticket
-      // conversation…") as a fixed slug; zero writes, zero audit.
-      const messages = facade.listTicketMessages(ticket.id);
-      if (!messages.length) {
-        flash(res, guildId, "error", "messages_unavailable");
-        return;
-      }
-
-      // The slash's OWN summarizer with the same args (handleSummarize:
-      // 2143: summarizeTicket(ticket, messages, {}) — AI when configured,
-      // stats fallback on any failure; it NEVER throws). Persisting the
-      // summary is NOT part of this path on either transport (only the
-      // archive pipeline writes ai_summary_json) — the audit row and the
-      // source-specific done slug carry the outcome.
-      const summary = await summarizeTicket(ticket, messages, {});
-
-      // Slash-exact vocabulary + detail shape (handleSummarize:2145-2155).
-      req.audit({
-        action: "tickets.summarize",
-        targetType: "ticket",
-        targetId: String(ticket.id),
-        guildId,
-        details: {
-          ticket_number: ticket.ticket_number,
-          source: summary?.source ?? null,
-          message_count: summary?.message_count ?? messages.length,
-        },
-        // No mirror: the slash summarize posts NO channel embed.
-      });
-
-      flash(res, guildId, "done", summary?.source === "ai" ? "summary_ai" : "summary_fallback");
-    } catch (err) {
-      next(err);
+      flash(res, guildId, "error", loaded.errorSlug);
+      return;
     }
+    const { ticket } = loaded;
+
+    // Slash requireOpenTicketChannel (index.js:604): OPEN only. Refusal
+    // happens BEFORE claimTicket — zero writes, zero audit.
+    if (ticket.status !== "open") {
+      flash(res, guildId, "error", "ticket_not_open");
+      return;
+    }
+
+    // Slash-identical claim (handleClaim:1650): the SAME helper, actor =
+    // the web user. Idempotent takeover semantics preserved (no
+    // already-claimed rejection exists on the slash path).
+    const updated = facade.claimTicket(ticket.id, req.user.userId);
+
+    // Audit BEFORE the Discord niceties — the exact slash order
+    // (claimTicket → recordSlashAudit → overwrites → channel notice).
+    // Details shape = index.js:1651-1661; origin stays 'web'.
+    req.audit({
+      action: "tickets.claim",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      guildId,
+      details: {
+        ticket_number: ticket.ticket_number,
+        previous_owner: ticket.staff_owner_id ?? null,
+        staff_owner_id: updated?.staff_owner_id ?? req.user.userId,
+      },
+      // No mirror descriptor: the slash claim handler posts NO
+      // logConfigChange channel embed (§8.1-7 mirrors mirror slash).
+    });
+
+    // Best-effort Discord side effects — CACHE-ONLY seam, graceful skip
+    // (slash:1662-1682: `if (channel)` overwrites try/catch-warned, then
+    // the "claimed" channel notice try/catch-ignored).
+    const client = readClient();
+    const channel = resolveChannelCacheOnly(client, ticket.channel_id);
+    if (channel) {
+      const guild = resolveGuildCacheOnly(client, guildId);
+      try {
+        await applyOverwrites(channel, {
+          guildId,
+          everyoneId: guild?.id ?? guildId,
+          botUserId: client?.user?.id,
+          ticket: updated,
+        });
+      } catch (err) {
+        console.warn("[web.tickets] claim overwrites:", err?.message || err);
+      }
+      try {
+        if (channel.send) {
+          await channel.send(`<@${req.user.userId}> claimed this ticket.`);
+        }
+      } catch {
+        // slash ignores it too (index.js:1678-1682)
+      }
+    }
+
+    flash(res, guildId, "done", "ticket_claimed");
+    // fail-closed: an audit throw aborts with the generic 500
+  });
+
+  // ---- POST close (slash /ticket close twin — soft close) -----------------
+  postMutation(CLOSE_PATH, async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const fields = readFields(req);
+    const loaded = loadTicket(fields, guildId);
+    if (!loaded.ok) {
+      if (loaded.refused === "not_found") {
+        sendNotFound(res);
+        return;
+      }
+      flash(res, guildId, "error", loaded.errorSlug);
+      return;
+    }
+    const { ticket } = loaded;
+
+    // Slash requireOpenTicketChannel: close runs on OPEN tickets only
+    // (archive of a closed ticket stays slash /ticket archive — out of
+    // the §8.6 web mutation scope). Zero writes on refusal.
+    if (ticket.status !== "open") {
+      flash(res, guildId, "error", "ticket_not_open");
+      return;
+    }
+
+    // Close reason — the slash option bound (setMaxLength
+    // MAX_TICKET_REASON) pre-validated so a refusal reaches ZERO write
+    // helpers; trimmed-empty collapses to null (slash: `?? null` audit
+    // shape, repo normalizeTicketReason allowEmpty).
+    const rawReason = String(fields.reason == null ? "" : fields.reason).trim();
+    if (rawReason.length > MAX_TICKET_REASON) {
+      flash(res, guildId, "error", "close_reason_too_long");
+      return;
+    }
+    const closeReason = rawReason || null;
+
+    // The slash's OWN close helper with the same args
+    // (handleClose:1401 → softCloseTicket{client, channel, ticket,
+    // closedBy, closeReason, botMember}). Cache-only channel/member
+    // seams: a missing channel degrades exactly like the helper's own
+    // degraded path (DB transition committed first — WHERE status=
+    // 'open'; permission pass + close notice skipped as swallowed
+    // warnings; requester DM best-effort). The flash claims the close
+    // transition, which genuinely happened, and nothing more.
+    const client = readClient();
+    const channel = resolveChannelCacheOnly(client, ticket.channel_id);
+    const botMember = resolveBotMemberCacheOnly(client, guildId);
+    const result = await softClose({
+      client,
+      channel,
+      ticket,
+      closedBy: req.user.userId,
+      closeReason,
+      botMember,
+    });
+
+    // Slash-exact vocabulary + detail shape (handleClose:1410-1420).
+    req.audit({
+      action: "tickets.close",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      guildId,
+      details: {
+        ticket_number: ticket.ticket_number,
+        close_reason: closeReason ?? null,
+        status: result?.ticket?.status ?? ticket.status,
+      },
+      // No mirror: the slash close handler posts NO logConfigChange
+      // (only its staff-note add-on does — delta (4) drops the add-on).
+    });
+
+    flash(res, guildId, "done", "ticket_closed");
+  });
+
+  // ---- POST summarize (slash /ticket summarize twin — regen) --------------
+  postMutation(SUMMARIZE_PATH, async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const loaded = loadTicket(readFields(req), guildId);
+    if (!loaded.ok) {
+      if (loaded.refused === "not_found") {
+        sendNotFound(res);
+        return;
+      }
+      flash(res, guildId, "error", loaded.errorSlug);
+      return;
+    }
+    const { ticket } = loaded;
+
+    // Sensitive ⇒ generic 404 (delta (2)): BEFORE reading messages or the
+    // AI, indistinguishable from unknown/foreign. The web NEVER renders
+    // or regenerates sensitive-ticket summaries (§8.4).
+    if (Number(ticket.is_sensitive) === 1) {
+      sendNotFound(res);
+      return;
+    }
+
+    // Slash requireLiveTicketChannel archived rule (index.js:647):
+    // archived tickets are refused. Open AND soft-closed are allowed —
+    // exactly what slash status:"any" permits for live channels.
+    if (Number(ticket.archived) === 1) {
+      flash(res, guildId, "error", "ticket_archived");
+      return;
+    }
+
+    // AI guardrail (delta (3)): named-var refusal with ZERO AI calls —
+    // the slash silently returns a stats fallback here; the web refuses
+    // instead of pretending a "regeneration" happened without one.
+    if (!aiConfigured()) {
+      flash(res, guildId, "error", "ai_not_configured");
+      return;
+    }
+
+    // Stored rows ONLY (slash reads listTicketMessages first, then falls
+    // back to a channel FETCH — the web never fetches). Empty mirrors
+    // slash's read-failure reply ("Could not read the ticket
+    // conversation…") as a fixed slug; zero writes, zero audit.
+    const messages = facade.listTicketMessages(ticket.id);
+    if (!messages.length) {
+      flash(res, guildId, "error", "messages_unavailable");
+      return;
+    }
+
+    // The slash's OWN summarizer with the same args (handleSummarize:
+    // 2143: summarizeTicket(ticket, messages, {}) — AI when configured,
+    // stats fallback on any failure; it NEVER throws). Persisting the
+    // summary is NOT part of this path on either transport (only the
+    // archive pipeline writes ai_summary_json) — the audit row and the
+    // source-specific done slug carry the outcome.
+    const summary = await summarizeTicket(ticket, messages, {});
+
+    // Slash-exact vocabulary + detail shape (handleSummarize:2145-2155).
+    req.audit({
+      action: "tickets.summarize",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      guildId,
+      details: {
+        ticket_number: ticket.ticket_number,
+        source: summary?.source ?? null,
+        message_count: summary?.message_count ?? messages.length,
+      },
+      // No mirror: the slash summarize posts NO channel embed.
+    });
+
+    flash(res, guildId, "done", summary?.source === "ai" ? "summary_ai" : "summary_fallback");
   });
 }
 

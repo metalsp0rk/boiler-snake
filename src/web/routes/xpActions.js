@@ -243,26 +243,22 @@ function registerXpActionsRoutes(app, options = {}) {
 
   // ---- admin: grant-XP form page (§8.6 XP row — the mutate surface is
   // ADMIN-only end to end, so staff/senior never even see a form that 403s) --
-  app.get(GRANT_PATH, requireTier("admin"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const document = renderShellPage(req, {
-        title: "Grant XP",
-        heading: "Grant XP",
-        subheading:
-          "Admin-only XP grant — the same award pipeline as slash /grantxp.",
-        content: renderGrantForm({
-          guildId,
-          csrfToken: req.csrfToken || null,
-          flash: flashFromQuery(rawFlashQuery(req.url)),
-          maxAward: MAX_XP_AWARD,
-        }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err); // → handleAppError: generic 500, nothing leaked
-    }
+  app.get(GRANT_PATH, requireTier("admin"), async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const document = renderShellPage(req, {
+      title: "Grant XP",
+      heading: "Grant XP",
+      subheading:
+        "Admin-only XP grant — the same award pipeline as slash /grantxp.",
+      content: renderGrantForm({
+        guildId,
+        csrfToken: req.csrfToken || null,
+        flash: flashFromQuery(rawFlashQuery(req.url)),
+        maxAward: MAX_XP_AWARD,
+      }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // =========================================================================
@@ -271,72 +267,69 @@ function registerXpActionsRoutes(app, options = {}) {
   // awardXp service (slash-identical args) → ONE req.audit row (fail-closed)
   // → 302 PRG with a whitelisted slug.
   // =========================================================================
-  postMutation(GRANT_PATH, async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const parsed = parseGrantInput(readFields(req), guildId);
-      if (!parsed.ok) {
-        respondGrantRedirect(res, guildId, "error", parsed.errorSlug);
-        return;
-      }
-      const { userId, amount, reason } = parsed;
-
-      // Client reads are CACHE-ONLY (never a network fetch on a request path).
-      let client = null;
-      try {
-        client = typeof options.getClient === "function" ? options.getClient() : null;
-      } catch {
-        client = null;
-      }
-
-      // Slash parity: `if (target.bot)` refusal — refusal only on PROVEN bot.
-      if (isProvenBot(client, guildId, userId)) {
-        respondGrantRedirect(res, guildId, "error", "bot_target");
-        return;
-      }
-
-      // Slash-identical read-then-award (features/xp/index.js:444–455).
-      const settings = facade.getGuildSettings(guildId);
-      const beforeXp = facade.getXp(guildId, userId);
-
-      const { newXp, level } = await awardXp(client, {
-        guild: makeCacheOnlyGuild(client, guildId),
-        userId,
-        delta: amount,
-        activityKind: "admin_grant",
-        levelXpFactor: settings.level_xp_factor,
-        source: "admin_grant",
-      });
-
-      // Audit mirror of the slash recordSlashAudit call EXACTLY — action,
-      // target, and detail shape (origin stays the 'web' default, §8.6).
-      const levelText =
-        level != null ? String(level) : String(levelFromXp(newXp, settings.level_xp_factor));
-      req.audit({
-        action: "xp.grant",
-        targetType: "user",
-        targetId: userId,
-        guildId,
-        details: { amount, before_xp: beforeXp, after_xp: newXp, reason },
-        // Same title/command/lines the slash logConfigChange posts (plain
-        // numbers — no locale-dependent formatting in a machine-facing mirror).
-        mirror: {
-          title: "XP granted",
-          command: "/grantxp",
-          changes: [
-            `Target: <@${userId}> (\`${userId}\`)`,
-            `Amount: **+${amount}** XP`,
-            `XP: **${beforeXp}** → **${newXp}**`,
-            `Level: **${levelText}**`,
-            reason ? `Reason: ${reason}` : null,
-          ].filter(Boolean),
-        },
-      });
-
-      respondGrantRedirect(res, guildId, "done", "xp_granted");
-    } catch (err) {
-      next(err); // fail-closed: an audit throw aborts with the generic 500
+  postMutation(GRANT_PATH, async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const parsed = parseGrantInput(readFields(req), guildId);
+    if (!parsed.ok) {
+      respondGrantRedirect(res, guildId, "error", parsed.errorSlug);
+      return;
     }
+    const { userId, amount, reason } = parsed;
+
+    // Client reads are CACHE-ONLY (never a network fetch on a request path).
+    let client = null;
+    try {
+      client = typeof options.getClient === "function" ? options.getClient() : null;
+    } catch {
+      client = null;
+    }
+
+    // Slash parity: `if (target.bot)` refusal — refusal only on PROVEN bot.
+    if (isProvenBot(client, guildId, userId)) {
+      respondGrantRedirect(res, guildId, "error", "bot_target");
+      return;
+    }
+
+    // Slash-identical read-then-award (features/xp/index.js:444–455).
+    const settings = facade.getGuildSettings(guildId);
+    const beforeXp = facade.getXp(guildId, userId);
+
+    const { newXp, level } = await awardXp(client, {
+      guild: makeCacheOnlyGuild(client, guildId),
+      userId,
+      delta: amount,
+      activityKind: "admin_grant",
+      levelXpFactor: settings.level_xp_factor,
+      source: "admin_grant",
+    });
+
+    // Audit mirror of the slash recordSlashAudit call EXACTLY — action,
+    // target, and detail shape (origin stays the 'web' default, §8.6).
+    const levelText =
+      level != null ? String(level) : String(levelFromXp(newXp, settings.level_xp_factor));
+    req.audit({
+      action: "xp.grant",
+      targetType: "user",
+      targetId: userId,
+      guildId,
+      details: { amount, before_xp: beforeXp, after_xp: newXp, reason },
+      // Same title/command/lines the slash logConfigChange posts (plain
+      // numbers — no locale-dependent formatting in a machine-facing mirror).
+      mirror: {
+        title: "XP granted",
+        command: "/grantxp",
+        changes: [
+          `Target: <@${userId}> (\`${userId}\`)`,
+          `Amount: **+${amount}** XP`,
+          `XP: **${beforeXp}** → **${newXp}**`,
+          `Level: **${levelText}**`,
+          reason ? `Reason: ${reason}` : null,
+        ].filter(Boolean),
+      },
+    });
+
+    respondGrantRedirect(res, guildId, "done", "xp_granted");
+    // fail-closed: an audit throw aborts with the generic 500
   });
 }
 

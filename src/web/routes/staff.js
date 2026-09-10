@@ -368,60 +368,52 @@ function registerStaffRoutes(app, options = {}) {
   };
 
   // ---- staff: staff_roles table view (+ sync panel, §8.6 rows) ------------
-  app.get("/g/:guildId/staff", requireTier("staff"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const view = staffData.getStaffView(guildId);
-      const document = renderShellPage(req, {
-        title: "Staff roles",
-        heading: "Staff roles",
-        subheading:
-          "Which roles the bot treats as staff (junior/senior), the level→role mappings, and the command-visibility sync state.",
-        content: renderStaffBody({
-          view,
-          resolveRoleName: makeRoleNameResolver(options.getClient, guildId),
-          envConfig: readEnvConfig(oauthConfigFn),
-          guildId,
-          tier: req.guildAccess.tier,
-          csrfToken: req.csrfToken || null,
-          // Phase-3: the panel derives the ADMIN trigger form from this
-          // same render context (guildId + tier + csrf are already bound
-          // for the Phase-2 forms) + reads the whitelisted PRG flash — a
-          // hostile query renders nothing (§8.7).
-          flash: flashFromQuery(rawFlashQuery(req.url)),
-        }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err); // → handleAppError: generic 500, nothing leaked
-    }
+  app.get("/g/:guildId/staff", requireTier("staff"), async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const view = staffData.getStaffView(guildId);
+    const document = renderShellPage(req, {
+      title: "Staff roles",
+      heading: "Staff roles",
+      subheading:
+        "Which roles the bot treats as staff (junior/senior), the level→role mappings, and the command-visibility sync state.",
+      content: renderStaffBody({
+        view,
+        resolveRoleName: makeRoleNameResolver(options.getClient, guildId),
+        envConfig: readEnvConfig(oauthConfigFn),
+        guildId,
+        tier: req.guildAccess.tier,
+        csrfToken: req.csrfToken || null,
+        // Phase-3: the panel derives the ADMIN trigger form from this
+        // same render context (guildId + tier + csrf are already bound
+        // for the Phase-2 forms) + reads the whitelisted PRG flash — a
+        // hostile query renders nothing (§8.7).
+        flash: flashFromQuery(rawFlashQuery(req.url)),
+      }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // ---- staff: command-visibility sync status page (§8.6 row) --------------
-  app.get("/g/:guildId/commands", requireTier("staff"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      // ONE bounded read — this surface never shows the roles table.
-      const view = staffData.getOauthStatus(guildId);
-      const document = renderShellPage(req, {
-        title: "Command visibility",
-        heading: "Command visibility",
-        subheading:
-          "OAuth authorization + last permission-sync state for the staff-tier slash commands — read-only; the Admin trigger lives on the staff page (Phase 3).",
-        content: renderCommandsBody({
-          view,
-          envConfig: readEnvConfig(oauthConfigFn),
-          // Same whitelisted flash vocabulary as the staff page — the PRG
-          // may target either surface; NO form renders here (Phase-1 pin).
-          flash: flashFromQuery(rawFlashQuery(req.url)),
-        }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err);
-    }
+  app.get("/g/:guildId/commands", requireTier("staff"), async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    // ONE bounded read — this surface never shows the roles table.
+    const view = staffData.getOauthStatus(guildId);
+    const document = renderShellPage(req, {
+      title: "Command visibility",
+      heading: "Command visibility",
+      subheading:
+        "OAuth authorization + last permission-sync state for the staff-tier slash commands — read-only; the Admin trigger lives on the staff page (Phase 3).",
+      content: renderCommandsBody({
+        view,
+        envConfig: readEnvConfig(oauthConfigFn),
+        // Same whitelisted flash vocabulary as the staff page — the PRG
+        // may target either surface; NO form renders here (Phase-1 pin).
+        flash: flashFromQuery(rawFlashQuery(req.url)),
+      }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // =========================================================================
@@ -434,122 +426,110 @@ function registerStaffRoutes(app, options = {}) {
   // ---- POST …/staff/role/add — ADMIN (slash isAdminOrMod; upsert parity:
   // re-adding an existing role updates its level, exactly like slash, and
   // the audit carries previous_level) ----------------------------------------
-  postMutation(ROLE_ADD_PATH, "admin", async (req, res, next) => {
-    try {
-      const parsed = parseStaffRoleInput(req, res, { level: true });
-      if (!parsed) return;
-      const { guildId, roleId, level } = parsed;
+  postMutation(ROLE_ADD_PATH, "admin", async (req, res) => {
+    const parsed = parseStaffRoleInput(req, res, { level: true });
+    if (!parsed) return;
+    const { guildId, roleId, level } = parsed;
 
-      const probe = probeGuildRole(options.getClient, guildId, roleId);
-      if (probe.verifiable && !probe.exists) {
-        respondMutationError(res, ERR_ROLE_NOT_IN_GUILD);
-        return;
-      }
-
-      const existing = facade.getStaffRole(guildId, roleId);
-      facade.addStaffRole(guildId, roleId, level);
-      req.audit({
-        action: "staff.role_add",
-        targetType: "role",
-        targetId: roleId,
-        guildId,
-        details: { level, previous_level: existing ? existing.level : null },
-        mirror: {
-          title: existing ? "Staff role level updated" : "Staff role added",
-          command: "/staff role add",
-          changes: [
-            roleChangeLine(roleId),
-            existing
-              ? `Level: **${levelLabel(existing.level)}** → **${level}**`
-              : `Level: **${level}**`,
-          ],
-        },
-      });
-      respondMutationRedirect(res, guildId);
-    } catch (err) {
-      next(err);
+    const probe = probeGuildRole(options.getClient, guildId, roleId);
+    if (probe.verifiable && !probe.exists) {
+      respondMutationError(res, ERR_ROLE_NOT_IN_GUILD);
+      return;
     }
+
+    const existing = facade.getStaffRole(guildId, roleId);
+    facade.addStaffRole(guildId, roleId, level);
+    req.audit({
+      action: "staff.role_add",
+      targetType: "role",
+      targetId: roleId,
+      guildId,
+      details: { level, previous_level: existing ? existing.level : null },
+      mirror: {
+        title: existing ? "Staff role level updated" : "Staff role added",
+        command: "/staff role add",
+        changes: [
+          roleChangeLine(roleId),
+          existing
+            ? `Level: **${levelLabel(existing.level)}** → **${level}**`
+            : `Level: **${level}**`,
+        ],
+      },
+    });
+    respondMutationRedirect(res, guildId);
   });
 
   // ---- POST …/staff/role/remove — ADMIN (slash: audit + mirror ONLY when a
   // row was actually deleted; "not a configured staff role" answers 400 with
   // NO db write and NO audit. No existence preflight: cleaning up rows whose
   // Discord role is already deleted must stay possible.) ---------------------
-  postMutation(ROLE_REMOVE_PATH, "admin", async (req, res, next) => {
-    try {
-      const parsed = parseStaffRoleInput(req, res, { level: false });
-      if (!parsed) return;
-      const { guildId, roleId } = parsed;
+  postMutation(ROLE_REMOVE_PATH, "admin", async (req, res) => {
+    const parsed = parseStaffRoleInput(req, res, { level: false });
+    if (!parsed) return;
+    const { guildId, roleId } = parsed;
 
-      const existing = facade.getStaffRole(guildId, roleId);
-      const removed = facade.removeStaffRole(guildId, roleId);
-      if (!removed) {
-        respondMutationError(res, ERR_NOT_A_CONFIGURED_ROLE);
-        return;
-      }
-      req.audit({
-        action: "staff.role_remove",
-        targetType: "role",
-        targetId: roleId,
-        guildId,
-        details: { previous_level: existing ? existing.level : null },
-        mirror: {
-          title: "Staff role removed",
-          command: "/staff role remove",
-          changes: [roleChangeLine(roleId)],
-        },
-      });
-      respondMutationRedirect(res, guildId);
-    } catch (err) {
-      next(err);
+    const existing = facade.getStaffRole(guildId, roleId);
+    const removed = facade.removeStaffRole(guildId, roleId);
+    if (!removed) {
+      respondMutationError(res, ERR_NOT_A_CONFIGURED_ROLE);
+      return;
     }
+    req.audit({
+      action: "staff.role_remove",
+      targetType: "role",
+      targetId: roleId,
+      guildId,
+      details: { previous_level: existing ? existing.level : null },
+      mirror: {
+        title: "Staff role removed",
+        command: "/staff role remove",
+        changes: [roleChangeLine(roleId)],
+      },
+    });
+    respondMutationRedirect(res, guildId);
   });
 
   // ---- POST …/staff/role/setlevel — ADMIN (slash: unknown role → "not a
   // staff role"; same level → "already X staff"; BOTH are rejections with
   // no write and no audit — mirrored exactly) --------------------------------
-  postMutation(ROLE_SETLEVEL_PATH, "admin", async (req, res, next) => {
-    try {
-      const parsed = parseStaffRoleInput(req, res, { level: true });
-      if (!parsed) return;
-      const { guildId, roleId, level } = parsed;
+  postMutation(ROLE_SETLEVEL_PATH, "admin", async (req, res) => {
+    const parsed = parseStaffRoleInput(req, res, { level: true });
+    if (!parsed) return;
+    const { guildId, roleId, level } = parsed;
 
-      const probe = probeGuildRole(options.getClient, guildId, roleId);
-      if (probe.verifiable && !probe.exists) {
-        respondMutationError(res, ERR_ROLE_NOT_IN_GUILD);
-        return;
-      }
-
-      const existing = facade.getStaffRole(guildId, roleId);
-      if (!existing) {
-        respondMutationError(res, ERR_NOT_A_STAFF_ROLE);
-        return;
-      }
-      if (facade.normalizeStaffLevel(existing.level) === level) {
-        respondMutationError(res, ERR_ALREADY_LEVEL(level));
-        return;
-      }
-
-      facade.setStaffRoleLevel(guildId, roleId, level);
-      req.audit({
-        action: "staff.role_setlevel",
-        targetType: "role",
-        targetId: roleId,
-        guildId,
-        details: { previous_level: existing.level, level },
-        mirror: {
-          title: "Staff role level changed",
-          command: "/staff role setlevel",
-          changes: [
-            roleChangeLine(roleId),
-            `Level: **${levelLabel(existing.level)}** → **${level}**`,
-          ],
-        },
-      });
-      respondMutationRedirect(res, guildId);
-    } catch (err) {
-      next(err);
+    const probe = probeGuildRole(options.getClient, guildId, roleId);
+    if (probe.verifiable && !probe.exists) {
+      respondMutationError(res, ERR_ROLE_NOT_IN_GUILD);
+      return;
     }
+
+    const existing = facade.getStaffRole(guildId, roleId);
+    if (!existing) {
+      respondMutationError(res, ERR_NOT_A_STAFF_ROLE);
+      return;
+    }
+    if (facade.normalizeStaffLevel(existing.level) === level) {
+      respondMutationError(res, ERR_ALREADY_LEVEL(level));
+      return;
+    }
+
+    facade.setStaffRoleLevel(guildId, roleId, level);
+    req.audit({
+      action: "staff.role_setlevel",
+      targetType: "role",
+      targetId: roleId,
+      guildId,
+      details: { previous_level: existing.level, level },
+      mirror: {
+        title: "Staff role level changed",
+        command: "/staff role setlevel",
+        changes: [
+          roleChangeLine(roleId),
+          `Level: **${levelLabel(existing.level)}** → **${level}**`,
+        ],
+      },
+    });
+    respondMutationRedirect(res, guildId);
   });
 
   // ---- POST …/staff/levelrole/set — STAFF (slash /leveltorole set gates on
@@ -558,89 +538,81 @@ function registerStaffRoutes(app, options = {}) {
   // checked cache-only because syncMemberRoles GRANTS this role to members:
   // a provably unmanageable mapping is refused with sync.js's own hierarchy
   // warning instead of being silently stored. --------------------------------
-  postMutation(LEVELROLE_SET_PATH, "staff", async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const fields = readFields(req);
-      const role = parseRoleId(fields.role_id, guildId);
-      if (role.error) {
-        respondMutationError(res, role.error);
-        return;
-      }
-      const level = parseNonNegativeInt(fields.level);
-      const dropDays = parseNonNegativeInt(fields.drop_days);
-      if (level === null || dropDays === null) {
-        respondMutationError(res, ERR_NUMBER_INVALID);
-        return;
-      }
-
-      const probe = probeGuildRole(options.getClient, guildId, role.roleId);
-      if (probe.verifiable && !probe.exists) {
-        respondMutationError(res, ERR_ROLE_NOT_IN_GUILD);
-        return;
-      }
-      if (probe.botBelow === true) {
-        respondMutationError(res, ERR_BOT_BELOW_ROLE);
-        return;
-      }
-
-      facade.upsertLevelRole(
-        guildId,
-        role.roleId,
-        Math.max(0, level),
-        Math.max(0, dropDays)
-      );
-      req.audit({
-        action: "level_roles.set",
-        targetType: "role",
-        targetId: role.roleId,
-        guildId,
-        details: { level_required: level, drop_grace_days: dropDays },
-        mirror: {
-          title: "Level→role mapping set",
-          command: "/leveltorole set",
-          changes: [
-            roleChangeLine(role.roleId),
-            `Level required: **${level}**`,
-            `Drop grace: **${dropDays}** day(s)`,
-          ],
-        },
-      });
-      respondMutationRedirect(res, guildId);
-    } catch (err) {
-      next(err);
+  postMutation(LEVELROLE_SET_PATH, "staff", async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const fields = readFields(req);
+    const role = parseRoleId(fields.role_id, guildId);
+    if (role.error) {
+      respondMutationError(res, role.error);
+      return;
     }
+    const level = parseNonNegativeInt(fields.level);
+    const dropDays = parseNonNegativeInt(fields.drop_days);
+    if (level === null || dropDays === null) {
+      respondMutationError(res, ERR_NUMBER_INVALID);
+      return;
+    }
+
+    const probe = probeGuildRole(options.getClient, guildId, role.roleId);
+    if (probe.verifiable && !probe.exists) {
+      respondMutationError(res, ERR_ROLE_NOT_IN_GUILD);
+      return;
+    }
+    if (probe.botBelow === true) {
+      respondMutationError(res, ERR_BOT_BELOW_ROLE);
+      return;
+    }
+
+    facade.upsertLevelRole(
+      guildId,
+      role.roleId,
+      Math.max(0, level),
+      Math.max(0, dropDays)
+    );
+    req.audit({
+      action: "level_roles.set",
+      targetType: "role",
+      targetId: role.roleId,
+      guildId,
+      details: { level_required: level, drop_grace_days: dropDays },
+      mirror: {
+        title: "Level→role mapping set",
+        command: "/leveltorole set",
+        changes: [
+          roleChangeLine(role.roleId),
+          `Level required: **${level}**`,
+          `Drop grace: **${dropDays}** day(s)`,
+        ],
+      },
+    });
+    respondMutationRedirect(res, guildId);
   });
 
   // ---- POST …/staff/levelrole/remove — STAFF (slash /leveltorole remove
   // deletes UNCONDITIONALLY (also clearing role_drop_state) and audits
   // unconditionally — the web mirrors that exactly, including removing a
   // mapping for a role Discord has already deleted; no preflight applies.) --
-  postMutation(LEVELROLE_REMOVE_PATH, "staff", async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      const role = parseRoleId(readFields(req).role_id, guildId);
-      if (role.error) {
-        respondMutationError(res, role.error);
-        return;
-      }
-
-      facade.deleteLevelRole(guildId, role.roleId);
-      req.audit({
-        action: "level_roles.remove",
-        targetType: "role",
-        targetId: role.roleId,
-        guildId,
-        mirror: {
-          title: "Level→role mapping removed",
-          command: "/leveltorole remove",
-          changes: [roleChangeLine(role.roleId)],
-        },
-      });
-      respondMutationRedirect(res, guildId);
-    } catch (err) {
-      next(err);
+  postMutation(LEVELROLE_REMOVE_PATH, "staff", async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const role = parseRoleId(readFields(req).role_id, guildId);
+    if (role.error) {
+      respondMutationError(res, role.error);
+      return;
     }
+
+    facade.deleteLevelRole(guildId, role.roleId);
+    req.audit({
+      action: "level_roles.remove",
+      targetType: "role",
+      targetId: role.roleId,
+      guildId,
+      mirror: {
+        title: "Level→role mapping removed",
+        command: "/leveltorole remove",
+        changes: [roleChangeLine(role.roleId)],
+      },
+    });
+    respondMutationRedirect(res, guildId);
   });
 }
 

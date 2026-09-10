@@ -91,28 +91,24 @@ function registerVoiceRoutes(app, options = {}) {
   app.get(
     "/g/:guildId/voice",
     requireTier("staff"),
-    async (req, res, next) => {
-      try {
-        const guildId = req.guildAccess.guildId;
-        // One cached per-guild snapshot (§8.6 floor 30 s; DB reads AND both
-        // runtime providers are skipped on a hit). Facade reads happen
-        // inside the data module — never here.
-        const snapshot = await voiceData.getVoice(guildId);
-        const document = renderShellPage(req, {
-          title: "Voice & music",
-          heading: "Voice & music",
-          subheading:
-            "Now-playing, queue and live voice state — read-only; player control lives in Discord only (§8.9).",
-          content: renderVoiceBody({
-            snapshot,
-            resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
-          }),
-          guilds: await shellGuilds(resolver, req),
-        });
-        writeShellHtml(req, res, { status: 200, document });
-      } catch (err) {
-        next(err); // → handleAppError: generic 500, nothing leaked
-      }
+    async (req, res) => {
+      const guildId = req.guildAccess.guildId;
+      // One cached per-guild snapshot (§8.6 floor 30 s; DB reads AND both
+      // runtime providers are skipped on a hit). Facade reads happen
+      // inside the data module — never here.
+      const snapshot = await voiceData.getVoice(guildId);
+      const document = renderShellPage(req, {
+        title: "Voice & music",
+        heading: "Voice & music",
+        subheading:
+          "Now-playing, queue and live voice state — read-only; player control lives in Discord only (§8.9).",
+        content: renderVoiceBody({
+          snapshot,
+          resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
+        }),
+        guilds: await shellGuilds(resolver, req),
+      });
+      writeShellHtml(req, res, { status: 200, document });
     }
   );
 }
