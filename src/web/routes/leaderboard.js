@@ -109,68 +109,60 @@ function registerLeaderboardRoutes(app, options = {}) {
     });
 
   // ---- staff: paginated top-XP leaderboard ---------------------------------
-  app.get("/g/:guildId/leaderboard", requireTier("staff"), async (req, res, next) => {
-    try {
-      const params = rawParams(req.url);
-      const guildId = req.guildAccess.guildId;
-      const board = buildLeaderboardPage(guildId, {
-        page: params.get("page"),
-        size: params.get("size"),
-      });
-      const names = resolveMemberNames(
-        options.getClient,
-        guildId,
-        board.rows.map((r) => r.user_id)
-      );
-      const guilds = await shellGuilds(resolver, req);
+  app.get("/g/:guildId/leaderboard", requireTier("staff"), async (req, res) => {
+    const params = rawParams(req.url);
+    const guildId = req.guildAccess.guildId;
+    const board = buildLeaderboardPage(guildId, {
+      page: params.get("page"),
+      size: params.get("size"),
+    });
+    const names = resolveMemberNames(
+      options.getClient,
+      guildId,
+      board.rows.map((r) => r.user_id)
+    );
+    const guilds = await shellGuilds(resolver, req);
 
-      const document = renderShellPage(req, {
-        title: "Leaderboard",
-        heading: "XP leaderboard",
-        subheading: `Top XP in this guild · page ${board.page} of ${board.totalPages} · ${board.size} per page (cap 100)`,
-        content: renderLeaderboardBody(req, { board, names }),
-        guilds,
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err); // → handleAppError: generic 500, nothing leaked
-    }
+    const document = renderShellPage(req, {
+      title: "Leaderboard",
+      heading: "XP leaderboard",
+      subheading: `Top XP in this guild · page ${board.page} of ${board.totalPages} · ${board.size} per page (cap 100)`,
+      content: renderLeaderboardBody(req, { board, names }),
+      guilds,
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // ---- staff: per-user XP (rank + level progress; history is not stored) --
-  app.get("/g/:guildId/leaderboard/user/:userId", requireTier("staff"), async (req, res, next) => {
-    try {
-      const { userId } = req.params;
-      if (!USER_ID_RE.test(userId)) {
-        respondGenericNotFound(res);
-        return;
-      }
-      const guildId = req.guildAccess.guildId;
+  app.get("/g/:guildId/leaderboard/user/:userId", requireTier("staff"), async (req, res) => {
+    const { userId } = req.params;
+    if (!USER_ID_RE.test(userId)) {
+      respondGenericNotFound(res);
+      return;
+    }
+    const guildId = req.guildAccess.guildId;
 
-      const summary = buildUserXpSummary(guildId, userId);
-      if (!summary) {
-        const document = renderShellError(req, {
-          status: 404,
-          title: "User not found",
-          message: renderUserXpNotFoundBody({ userId }),
-          guilds: await shellGuilds(resolver, req),
-        });
-        writeShellHtml(req, res, { status: 404, document });
-        return;
-      }
-
-      const names = resolveMemberNames(options.getClient, guildId, [userId]);
-      const document = renderShellPage(req, {
-        title: `XP · ${userId}`,
-        heading: "User XP",
-        subheading: `Rank #${summary.rank} of ${summary.total} · Level ${summary.level} · ${summary.xp} XP`,
-        content: renderUserXpBody(req, { summary, name: names.get(userId) ?? null }),
+    const summary = buildUserXpSummary(guildId, userId);
+    if (!summary) {
+      const document = renderShellError(req, {
+        status: 404,
+        title: "User not found",
+        message: renderUserXpNotFoundBody({ userId }),
         guilds: await shellGuilds(resolver, req),
       });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err);
+      writeShellHtml(req, res, { status: 404, document });
+      return;
     }
+
+    const names = resolveMemberNames(options.getClient, guildId, [userId]);
+    const document = renderShellPage(req, {
+      title: `XP · ${userId}`,
+      heading: "User XP",
+      subheading: `Rank #${summary.rank} of ${summary.total} · Level ${summary.level} · ${summary.xp} XP`,
+      content: renderUserXpBody(req, { summary, name: names.get(userId) ?? null }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 }
 

@@ -289,12 +289,8 @@ function registerIntegrationsRoutes(app, options = {}) {
    */
   function mountMutation(path, tier, handler) {
     registerWebMutation(app, "POST", path);
-    app.post(path, requireTier(tier), async (req, res, next) => {
-      try {
-        await handler(req, res);
-      } catch (err) {
-        next(err);
-      }
+    app.post(path, requireTier(tier), async (req, res) => {
+      await handler(req, res);
     });
   }
 
@@ -1171,31 +1167,27 @@ function registerIntegrationsRoutes(app, options = {}) {
   app.get(
     "/g/:guildId/integrations",
     requireTier("staff"),
-    async (req, res, next) => {
-      try {
-        const guildId = req.guildAccess.guildId;
-        // One cached per-guild snapshot (§8.6 floor 30 s). Facade reads
-        // happen inside the data module — never here.
-        const snapshot = integrationsData.getIntegrations(guildId);
-        const document = renderShellPage(req, {
-          title: "Integrations",
-          heading: "Integrations",
-          subheading:
-            "YouTube, Twitch, reaction roles, event reminders and honeypot — current values, the slash commands that own them, and the staff-tier write forms (honeypot exempt writes need admin).",
-          content: renderIntegrationsBody({
-            snapshot,
-            resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
-            resolveRoleName: makeCacheNameResolver(options.getClient, "roles"),
-            csrfToken: req.csrfToken || null,
-            tier: req.guildAccess.tier || null,
-            flash: flashFromQuery(req.query),
-          }),
-          guilds: await shellGuilds(resolver, req),
-        });
-        writeShellHtml(req, res, { status: 200, document });
-      } catch (err) {
-        next(err); // → handleAppError: generic 500, nothing leaked
-      }
+    async (req, res) => {
+      const guildId = req.guildAccess.guildId;
+      // One cached per-guild snapshot (§8.6 floor 30 s). Facade reads
+      // happen inside the data module — never here.
+      const snapshot = integrationsData.getIntegrations(guildId);
+      const document = renderShellPage(req, {
+        title: "Integrations",
+        heading: "Integrations",
+        subheading:
+          "YouTube, Twitch, reaction roles, event reminders and honeypot — current values, the slash commands that own them, and the staff-tier write forms (honeypot exempt writes need admin).",
+        content: renderIntegrationsBody({
+          snapshot,
+          resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
+          resolveRoleName: makeCacheNameResolver(options.getClient, "roles"),
+          csrfToken: req.csrfToken || null,
+          tier: req.guildAccess.tier || null,
+          flash: flashFromQuery(req.query),
+        }),
+        guilds: await shellGuilds(resolver, req),
+      });
+      writeShellHtml(req, res, { status: 200, document });
     }
   );
 }

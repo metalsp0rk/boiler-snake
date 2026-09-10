@@ -374,30 +374,26 @@ function registerSettingsRoutes(app, options = {}) {
 
   const deps = { db: options.db || require("../../db"), settingsData };
 
-  app.get("/g/:guildId/settings", requireTier("staff"), async (req, res, next) => {
-    try {
-      const guildId = req.guildAccess.guildId;
-      // One cached per-guild snapshot (§8.6 floor 30 s). Facade reads happen
-      // inside the data module — never here.
-      const snapshot = settingsData.getSettings(guildId);
-      const document = renderShellPage(req, {
-        title: "Settings",
-        heading: "Settings",
-        subheading:
-          "Current guild configuration — values, defaults, and the slash command that owns each. Every form below mirrors one slash command at the same tier.",
-        content: renderSettingsBody({
-          snapshot,
-          resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
-          csrfToken: req.csrfToken || null,
-          guildId,
-          flash: readFlashFlag(req),
-        }),
-        guilds: await shellGuilds(resolver, req),
-      });
-      writeShellHtml(req, res, { status: 200, document });
-    } catch (err) {
-      next(err); // → handleAppError: generic 500, nothing leaked
-    }
+  app.get("/g/:guildId/settings", requireTier("staff"), async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    // One cached per-guild snapshot (§8.6 floor 30 s). Facade reads happen
+    // inside the data module — never here.
+    const snapshot = settingsData.getSettings(guildId);
+    const document = renderShellPage(req, {
+      title: "Settings",
+      heading: "Settings",
+      subheading:
+        "Current guild configuration — values, defaults, and the slash command that owns each. Every form below mirrors one slash command at the same tier.",
+      content: renderSettingsBody({
+        snapshot,
+        resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
+        csrfToken: req.csrfToken || null,
+        guildId,
+        flash: readFlashFlag(req),
+      }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
   });
 
   // Phase 2 writes (§8.6): methodGate registration + mount in LOCKSTEP on
