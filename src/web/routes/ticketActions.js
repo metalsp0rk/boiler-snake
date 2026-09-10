@@ -99,6 +99,10 @@ const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const { getBoundAuditClient } = require("../middleware/audit");
+const { readFields } = require("./shared/req.js");
+const { rawFlashQuery } = require("./shared/req.js");
+const { rawParams } = require("./shared/req.js");
+const { shellGuilds } = require("./shared/shell.js");
 const {
   renderTicketActionsBody,
   flashFromQuery,
@@ -150,34 +154,9 @@ function sendNotFound(res) {
   res.end("Not found");
 }
 
-/** Parsed urlencoded fields (bodyCap/CSRF contract — no express parsers). */
-function readFields(req) {
-  const src = req?.bodyFields;
-  return src && typeof src === "object" ? src : {};
-}
 
-/** Raw-url query read (app doctrine: never req.query). */
-function rawParams(rawUrl) {
-  const idx = String(rawUrl || "").indexOf("?");
-  return new URLSearchParams(idx === -1 ? "" : String(rawUrl).slice(idx + 1));
-}
 
-/** Raw-url flash read (xpActions doctrine): { done, error } raw values. */
-function rawFlashQuery(rawUrl) {
-  const params = rawParams(rawUrl);
-  return { done: params.get("done"), error: params.get("error") };
-}
 
-/** Shared switcher list for shell pages (routes/staff.js contract). */
-async function shellGuilds(resolver, req) {
-  const listed = await resolver.listGuilds(req.webSession);
-  const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
-  }
-  return guilds;
-}
 
 /**
  * Cache-ONLY ticket-channel lookup (slash resolveChannel minus its fetch
