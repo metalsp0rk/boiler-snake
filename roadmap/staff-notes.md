@@ -40,7 +40,7 @@ Staff adds a note on a user
 | Command | Description |
 |---------|-------------|
 | `/note add user:<member> [content:<text>]` | Create a staff note (omit content → modal for long text) |
-| `/note list user:<member>` | List notes for a member (newest first; paginate if many) |
+| `/note list [user:<member>]` | List notes for a member (newest first; paginate if many); omit `user` → recent guild-wide feed (capped) |
 | `/note edit id:<note_id> content:<text>` | Replace note body; record `edited_at` / `edited_by` |
 | `/note delete id:<note_id>` | Soft-delete (`deleted_at`); keep row for audit |
 | `/note info id:<note_id>` | Single note detail (author, timestamps, body) |
@@ -126,7 +126,4 @@ Access checks live in `permissions.js` / staff roles — **not** a notes access-
 | 5 | **Access via guild staff roles** ([§4](staff-roles.md#4-guild-staff-roles-admin-gate)) — no `staff_note_access_roles` table. |
 | 6 | **Per-guild sequential `note_number`** for human-friendly refs (`N-12`). |
 
-**Still open (non-blocking):**
-
-- Whether `/note list` without a user lists recent guild-wide notes (recommend **yes**, capped, staff-only).  
-- Max content length (recommend **2000** chars).
+*(Previously open, resolved by shipping: `/note list` without a user lists recent guild-wide notes — `user` is optional (`src/features/staffNotes/index.js:87`), the feed is capped (`RECENT_GUILD_LIMIT = 15`, `handleList`) and staff-only/ephemeral like every other note command (`requireStaff`); max content length is **2000** chars — `MAX_NOTE_CONTENT` (`src/db/repositories/staffNotes.js:4`), enforced on the add/edit content modals via `setMaxLength` and in repository validation.)*
