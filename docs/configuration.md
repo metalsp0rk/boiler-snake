@@ -411,7 +411,7 @@ Pre-event pings for members who marked **Interested** on a Discord scheduled eve
 | Feature | Entry commands | Docs |
 |---------|----------------|------|
 | **Staff notes** | `/note add`, `/note list`, … | [Staff Notes](staff-notes.md) |
-| **Warnings** | `/warn issue`, `/warn mine`, `/setwarn` | [Warning System](warnings.md) |
+| **Warnings** | `/warn add`, `/warn mine`, `/setwarn` | [Warning System](warnings.md) |
 
 Notes are private staff context; warnings are formal permanent records (voidable). Both use the staff gate (Manage Server or a trusted staff role), including `/setwarn`.
 
