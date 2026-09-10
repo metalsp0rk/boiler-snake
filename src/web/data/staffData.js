@@ -40,6 +40,10 @@
  */
 
 /** Columns projectOauthView() may ever emit — pinned secret-free by tests. */
+const { textOrNull, numOrNull, makeGuardRead } = require("./_shared");
+
+
+const guardRead = makeGuardRead("staff");
 const OAUTH_PUBLIC_FIELDS = Object.freeze([
   "authorized",
   "authorizedByUserId",
@@ -48,19 +52,7 @@ const OAUTH_PUBLIC_FIELDS = Object.freeze([
   "lastSyncError",
 ]);
 
-/** Defensive text read: trim + cap, non-strings → null. */
-function textOrNull(value, max = 512) {
-  if (typeof value !== "string") return null;
-  const t = value.trim();
-  if (!t) return null;
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
-}
 
-/** Finite-number read (null when absent/non-finite). */
-function numOrNull(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
 
 /**
  * Whitelist-project the raw guild_command_permission_oauth row onto the
@@ -84,23 +76,6 @@ function projectOauthView(row) {
   };
 }
 
-/**
- * Guarded facade read: a failing cluster degrades to { available:false }
- * instead of 500ing the whole page (same discipline as settingsData).
- * @param {() => unknown} read
- * @param {string} label static label for the loud log
- */
-function guardRead(read, label) {
-  try {
-    return { available: true, value: read() };
-  } catch (err) {
-    console.warn(
-      `[web] staff: ${label} read failed:`,
-      err?.code || err?.name || err?.message || "unknown"
-    );
-    return { available: false, value: null };
-  }
-}
 
 /**
  * Pure factory for the staff/command-visibility read-model.
