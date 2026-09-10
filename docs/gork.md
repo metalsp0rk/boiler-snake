@@ -23,7 +23,7 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
    → queue? (1 in-flight + 5 waiting; full → canned drop reply)
    → typing indicator (refreshed every 8s until the reply lands)
    → context window: reply chain (with backfill) or N prior messages
-   → LLM (temperature 0.8, 60s total timeout; web_search + read_page tools if enabled)
+   → LLM (temperature 0.8, 90s total timeout; web_search + read_page tools if enabled)
    → plain-text reply to the keyword message (>2,000 chars → split)
    → audit embed to the audit channel
 ```
@@ -183,7 +183,7 @@ Gork can **remember durable facts about people** — preferences, ongoing projec
 | Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (0–3600, **0 = disabled**). **Staff** (Manage Server or any `staff_roles` role) **bypass** the cooldown entirely. Cooldown hit → the bot **reacts 🕐** on the trigger message (visible rate-limit signal; still no reply, no LLM call) |
 | Gork bans | `/gork ban` blocks a user per-guild. A banned trigger gets the LLM-failure canned reply, so the ban is **indistinguishable from a normal failure** — no LLM call, no audit Q&A entry. Unlike the cooldown, staff roles do **not** bypass a ban. The reply is paced by the normal per-user cooldown |
 | Concurrency / queue | **1 in-flight** gork request per guild; further triggers are **queued FIFO**, up to **5 waiting** (in-memory). When the queue is full, new triggers are **dropped** with the queue-full reply |
-| LLM parameters | Temperature **0.8** (sarcasm), completion budget **2,000** tokens, total timeout **60s** including the tool loop — each overridable via `GORK_LLM_MAX_TOKENS` / `GORK_LLM_TIMEOUT_MS` / `GORK_LLM_MAX_TOOL_ROUNDS`. Budget matters for **thinking models**: they spend it on hidden reasoning first, so the default leaves room for both |
+| LLM parameters | Temperature **0.8** (sarcasm), completion budget **6,000** tokens, total timeout **90s** including the tool loop — each overridable via `GORK_LLM_MAX_TOKENS` / `GORK_LLM_TIMEOUT_MS` / `GORK_LLM_MAX_TOOL_ROUNDS`. Budget matters for **thinking models**: they spend it on hidden reasoning first, so the default leaves room for both |
 | Empty answers | A provider response with no visible text is retried **once** automatically; only a second failure gets the canned reply. Tool-cap rounds that still carry a real (partial) answer are delivered instead of discarded |
 
 The fast checks (settings, match, skips, cooldown, queue admission) run inline in the message pipeline; the slow LLM job is fired as a detached promise so the pipeline never stalls.
