@@ -59,12 +59,22 @@ function createWebSession({ id, userId, discordTag = null, expiresAt }) {
  * `expires_at` to the current time (revocation must be observable, and the
  * auth layer applies the sliding/absolute policy).
  *
+ * EXPLICIT columns (never `SELECT *`): the 025 token columns
+ * (access_token_enc / token_expires_at / scopes / guild_snapshot) must not
+ * ride along on the general-purpose getter — token material flows ONLY
+ * through the named getWebSessionAuth path callers can audit (§8.3/§8.7).
+ *
  * @param {string} id
  * @returns {WebSessionRow|null}
  */
+const SESSION_COLUMNS =
+  "id, user_id, discord_tag, created_at, last_seen_at, expires_at";
 function getWebSession(id) {
   if (!id) return null;
-  return db.prepare(`SELECT * FROM web_sessions WHERE id=?`).get(id) || null;
+  return (
+    db.prepare(`SELECT ${SESSION_COLUMNS} FROM web_sessions WHERE id=?`).get(id) ||
+    null
+  );
 }
 
 /**

@@ -63,11 +63,15 @@ function startWebServer(options = {}) {
 
   server.on("error", (err) => {
     console.error("[http] server error:", err?.message || err);
+    // Bind failures (e.g. EADDRINUSE) never reach `listening`; drop the
+    // singleton so a later startWebServer() can retry instead of forever
+    // handing back the dead socket.
+    if (!server?.listening) server = null;
   });
 
   server.listen(port, () => {
     console.log(
-      `[http] Listening on port ${port} (transcripts: /t · OAuth: /oauth/command-permissions/callback)`
+      `[http] Listening on port ${port} (console: /g · transcripts: /t · login: /auth/login · oauth: /oauth/* · health: /health)`
     );
   });
 

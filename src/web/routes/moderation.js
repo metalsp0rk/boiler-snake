@@ -881,12 +881,4 @@ module.exports = {
   WARN_ISSUE_PATH,
   WARN_VOID_PATH,
   NOTE_ADD_PATH,
-  // Validation shapes (pure helpers exercised directly by the test suite)
-  WARN_NUMBER_RE,
-  NOTE_NUMBER_RE,
-  DAYS_RE,
-  isProvenBot,
-  resolveUserCacheOnly,
-  guildWarnExpiryDays,
-  warnDmEnabled,
 };

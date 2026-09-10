@@ -44,12 +44,13 @@
 
 const db = require("../../db");
 const auditLog = require("../../features/logs/auditLog");
+// §8.7 redaction belt: ONE implementation for both transports (slash side:
+// core/auditTrail.js). A fix to one copy must never miss the other — the
+// two hand-rolled copies this replaced had already drifted in comments.
+const { REDACT_KEY_PATTERN, redactSensitive } = require("../../core/auditTrail");
 
 /** Origin the web layer writes (§8.6); callers may override for slash reuse. */
 const DEFAULT_AUDIT_ORIGIN = "web";
-
-/** Details keys that smell like credentials never reach details_json. */
-const REDACT_KEY_PATTERN = /(token|secret|password|cookie)/i;
 
 /** Boot-bound Discord client for channel mirrors (bound via bindAuditClient). */
 let boundAuditClient = null;
@@ -58,32 +59,6 @@ function auditError(code, message) {
   const err = new Error(message);
   err.code = code;
   return err;
-}
-
-/**
- * Recursively strip credential-like keys. Returns a NEW structure (input is
- * never mutated); cycles collapse to null so the walker itself can never spin
- * (the repo's serializer guard stays the backstop).
- * @param {unknown} value
- * @param {WeakSet<object>} [seen]
- * @returns {unknown}
- */
-function redactSensitive(value, seen = new WeakSet()) {
-  if (value === null || typeof value !== "object") return value;
-  if (value instanceof Date) return new Date(value.getTime());
-  if (seen.has(value)) return null;
-  seen.add(value);
-
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSensitive(item, seen));
-  }
-
-  const out = {};
-  for (const key of Object.keys(value)) {
-    if (REDACT_KEY_PATTERN.test(key)) continue;
-    out[key] = redactSensitive(value[key], seen);
-  }
-  return out;
 }
 
 /**
@@ -108,14 +83,15 @@ function redactDetails(details) {
 }
 
 /**
- * Guild resolution order: explicit entry override → req.guildId (guildScope)
- * → req.params.guildId (routes mounted under /g/:guildId). Empty → null.
+ * Guild resolution order: explicit entry override → req.guildAccess.guildId
+ * (guildScope, the ONLY middleware that publishes guild context onto req) →
+ * req.params.guildId (routes mounted under /g/:guildId). Empty → null.
  * @param {object} req
  * @param {object} entry
  * @returns {string|null}
  */
 function resolveGuildId(req, entry) {
-  const raw = entry.guildId ?? req?.guildId ?? req?.params?.guildId;
+  const raw = entry.guildId ?? req?.guildAccess?.guildId ?? req?.params?.guildId;
   const text = raw == null ? "" : String(raw).trim();
   return text || null;
 }
