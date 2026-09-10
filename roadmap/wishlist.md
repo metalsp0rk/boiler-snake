@@ -30,7 +30,7 @@
 - [x] **Dead TOC anchor in `docs/configuration.md:10`** — links `#advanced-configuration`; no such heading on the page. Drop or re-point.
 - [x] **AGENTS.md "Features:" line is stale** — missing `gork`, `twitch`, `commandPermissions` (lists 18; `src/features/` has 21). Also flagged by roadmap review — one fix clears both.
 - [x] **AGENTS.md Intentions #8**: "Leaderboard: top 10 PNG" → "paginated 1–20 per page (default 10)" (`src/render/leaderboard.js` `MAX_ROWS=20`; `docs/leaderboard.md:11` agrees).
-- [ ] **Bump/remove version stamp in `docs/README.md:158`** — says 1.3.0; `package.json` is 1.11.0.
+- [x] **Bump/remove version stamp in `docs/README.md:158`** — says 1.3.0; `package.json` is 1.11.0.
 
 ### Low
 
