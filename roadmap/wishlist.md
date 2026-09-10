@@ -38,7 +38,7 @@
 - [x] **`docs.yml:29` node-version 20 → 22** — `package.json` engines is `>=22.22.2` (only EBADENGINE warnings today, but keep consistent).
 - [x] **`.env.example:11` comment** — `YOUTUBE_API_KEY` says "(for futureEnhancements)"; YouTube notifications shipped.
 - [x] **Duplicate `## Testing` H2 in `docs/architecture.md`** (lines 9 and 232) — ambiguous `#testing` anchor; rename the second (e.g. "Testing Strategy").
-- [ ] **`docs/index.md:50`** — Setup guide advertised "with video"; `docs/setup.md` has none. Drop "video".
+- [x] **`docs/index.md:50`** — Setup guide advertised "with video"; `docs/setup.md` has none. Drop "video".
 - [ ] **Enable `lastUpdated: true` in `docs/.vitepress/config.mjs`** (and/or front-matter dates) — no page carries an updated-stamp; this is why the drift above went unnoticed.
 
 ---

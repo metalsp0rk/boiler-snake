@@ -47,7 +47,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 ## Table of Contents
 
 ### Getting Started
-- [Setup and Installation](setup.md) - Complete installation guide with video, fonts, and permission setup
+- [Setup and Installation](setup.md) - Complete installation guide with fonts and permission setup
 - [Configuration Guide](configuration.md) - Environment variables and in-game command configuration
 - [Commands Reference](commands/) - Full documentation for all slash commands
 
