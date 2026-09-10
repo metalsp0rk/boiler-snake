@@ -20,10 +20,11 @@ const { IDS } = require("./fixtures");
  *
  * @param {object} [options]
  * @param {string} [options.guildId]
- * @returns {Promise<object>}
+ * @returns {Promise<object>} env; call `env.cleanup()` in the file's `after()`
+ *   hook to close DB handles and remove the temp dir (idempotent, never throws)
  */
 async function createIntegrationEnv(options = {}) {
-  const { api: db, tmpDir, dbPath } = loadDb();
+  const { api: db, tmpDir, dbPath, cleanup } = loadDb();
 
   // Require after loadDb so modules bind to temp SQLite
   const { handleInteraction } = require("../../src/commands/router");
@@ -266,6 +267,7 @@ async function createIntegrationEnv(options = {}) {
     db,
     tmpDir,
     dbPath,
+    cleanup,
     client,
     guild,
     registry,

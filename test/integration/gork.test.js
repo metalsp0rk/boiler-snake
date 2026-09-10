@@ -12,7 +12,7 @@
  * leak between tests.
  */
 
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
 const {
@@ -259,11 +259,30 @@ async function waitFor(predicate, timeoutMs = 2000) {
   }
 }
 
+// ---------- env cleanup ----------
+// Every test builds a FRESH env (module cache reset), so track each one and
+// tear them all down once at file end: close SQLite handles + remove temp
+// dirs. env.cleanup() is idempotent and never throws.
+
+const createdEnvs = [];
+
+/** createIntegrationEnv() + tracking so the file-level after() can clean up. */
+async function freshEnv(options) {
+  const env = await createIntegrationEnv(options);
+  createdEnvs.push(env);
+  return env;
+}
+
+after(() => {
+  for (const env of createdEnvs) env.cleanup();
+  createdEnvs.length = 0;
+});
+
 // ---------- tests ----------
 
 describe("integration: gork (AI keyword Q&A)", () => {
   it("full path: keyword message -> typing + plain-text reply to the message + audit embed", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse(
@@ -365,7 +384,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("per-user cooldown: second trigger inside the window gets the clock reaction (no reply, no fetch)", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse("Answer to the first question."),
@@ -422,7 +441,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("staff (ManageGuild) bypasses the per-user cooldown", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse("First admin answer."),
@@ -473,7 +492,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("no AI key: keyword message is fully silent (no reply, no fetch, no typing)", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([]); // any call rejects
     try {
@@ -498,7 +517,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("keyword-alone reply: reply-chain walk + backfill reach the prompt", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse("Your keys, member. In the fridge, probably."),
@@ -605,7 +624,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("busy guild: queued request is answered in FIFO order", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     let releaseFirst;
     const gate = new Promise((resolve) => {
@@ -689,7 +708,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("queue full: trigger beyond 1 in-flight + 5 waiting is dropped with the canned reply", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     // Same module instance the pipeline uses in this env (require cache).
     // The canned reply is exported from the trigger module (the feature
     // index only re-exports the handler surface).
@@ -794,7 +813,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("web search tool loop: web_search tool call -> SearXNG -> final answer", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       // 1) Model asks for a web search.
@@ -883,7 +902,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("read_page tool: model browses pages, answer is grounded in page content", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     // Public IPv4 literal: the SSRF guard validates it without DNS, so the
     // test is deterministic and never resolves real hostnames.
@@ -1000,7 +1019,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("/gork keyword + search update settings; /settings reflects them", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     clearAiKey(); // config commands do not need the AI key
     try {
@@ -1070,7 +1089,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("open ticket channel: keyword trigger is silently skipped", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([]); // any call rejects
     try {
@@ -1120,7 +1139,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("/gork ban/unban/bans: staff-gated command flow with db state + audit", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     clearAiKey(); // config commands do not need the AI key
     try {
@@ -1219,7 +1238,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("/gork enable off silences triggers (settings preserved); on restores; /settings reflects it", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const script = [];
     const fetchMock = mockFetch(script);
@@ -1298,7 +1317,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("banned user trigger: generic lunch reply, no LLM call; staff binds too; unban restores", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const script = [];
     const fetchMock = mockFetch(script);
@@ -1372,7 +1391,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("tickets AI regression: /ticket summarize works through the extracted src/core/ai.js", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const aiJson = JSON.stringify({
       resolution: "Mic fixed after restart",
@@ -1443,7 +1462,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   // ---------- roadmap/gork.md §7.15 regression fixtures (Fixes 1–4) ----------
 
   it("Fix 1+2: echoed <@id> markup is sanitized, never pings, and the roster reaches the prompt", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse(
@@ -1499,7 +1518,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 3: trigger replying to a deleted message answers via backfill (no crash, slot released)", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse("Nothing survives deletion, member."),
@@ -1555,7 +1574,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 4: emoji-heavy >2000-char answer splits safely (valid text, whole tokens, continuations sent)", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const heavy =
       "Long one: " +
@@ -1609,7 +1628,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 5: ok-with-empty-text is retried once; the retry's answer is delivered", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse(null), // thinking-model blank response
@@ -1638,7 +1657,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 5: empty twice -> canned reply + audit says 'empty answer' (not 'unknown')", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse(null),
@@ -1680,7 +1699,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 5: tool-round cap with real content delivers the partial answer (not the canned reply)", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const toolCall = (id) =>
       chatCompletionResponse(null, {
@@ -1735,7 +1754,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 6: thinking budget opt-in lands in the payload (+ max_tokens default 6000)", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse("Poem: ones are better off in Plan 9."),
@@ -1774,7 +1793,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 6: budget unset -> thinking_token_budget never appears in the payload", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse("Strict providers stay happy."),
@@ -1810,7 +1829,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 6: empty twice with finish_reason=length -> canned reply + diagnostics in audit", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse(null, { finish_reason: "length" }),
@@ -1861,7 +1880,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
   });
 
   it("Fix 6: GORK_MAX_ANSWER_CHARS caps the visible answer to one capped message", async () => {
-    const env = await createIntegrationEnv();
+    const env = await freshEnv();
     const saved = saveEnv();
     const long = "word ".repeat(200).trim(); // ~1000 chars, no line breaks
     const fetchMock = mockFetch([chatCompletionResponse(long)]);
@@ -1967,7 +1986,7 @@ describe("integration: gork community memory (§7.16)", () => {
     // feature must be byte-inert when off — even with rows seeded for the
     // asker, the prompt, the payload, the audit and the fetch count all
     // stay exactly what the memory-less path produces.
-    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memoff") });
+    const env = await freshEnv({ guildId: uniqueId("guild-memoff") });
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse("No memories required, member."),
@@ -2051,7 +2070,7 @@ describe("integration: gork community memory (§7.16)", () => {
     // seeded `(#id)` lines (bodies mode fits the default 12k budget), the
     // request carries the recall tool, and the Q&A audit embed records the
     // read-side Memory label.
-    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memon") });
+    const env = await freshEnv({ guildId: uniqueId("guild-memon") });
     const saved = saveEnv();
     const fetchMock = mockFetch([
       chatCompletionResponse("I remember, member."),
@@ -2155,7 +2174,7 @@ describe("integration: gork community memory (§7.16)", () => {
     // carries the full stored body, the recall stamps last_used_at
     // (gorkMemoryTouch side effect via the facade), and the answer path
     // costs exactly two chat completions (the recall adds one round).
-    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memrecall") });
+    const env = await freshEnv({ guildId: uniqueId("guild-memrecall") });
     const seeded = seedMemory(env, {
       subjectUserId: IDS.member,
       title: "Owns a kayak",
@@ -2253,7 +2272,7 @@ describe("integration: gork community memory (§7.16)", () => {
     // SERVER-STAMPED trigger-message UTC date and the normalized title_key
     // ("  Loves  Rust! " → "loves rust"); a subject outside the roster is
     // dropped (skipped_invalid) and never stored.
-    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memextract") });
+    const env = await freshEnv({ guildId: uniqueId("guild-memextract") });
     const saved = saveEnv([...AI_ENV_KEYS, "AI_SMALL_MODEL"]);
     const fetchMock = mockFetch([
       chatCompletionResponse("Noted, member."),
@@ -2397,7 +2416,7 @@ describe("integration: gork community memory (§7.16)", () => {
     // Objective (§7.16.4, decision 28): the staff command surface persists
     // gork_memory_enabled / gork_memory_chars through the real router and
     // audits every change; non-staff cannot touch it.
-    const env = await createIntegrationEnv({ guildId: uniqueId("guild-memcmd") });
+    const env = await freshEnv({ guildId: uniqueId("guild-memcmd") });
     const saved = saveEnv();
     clearAiKey(); // config commands do not need the AI key
     try {
