@@ -1,14 +1,16 @@
-const { describe, it, before } = require("node:test");
+const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 
+const { loadDb } = require("./helpers/env");
+
 // The registry require in before() opens SQLite at load time (feature
-// modules import the db facade). Use a private temp DB so this process
-// never races the project-root default (xpbot.sqlite) against the other
-// test files node --test runs in parallel.
-process.env.DB_PATH = require("path").join(
-  require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "boiler-snake-cvis-")),
-  "test.sqlite"
-);
+// modules import the db facade), and the src/ requires below may too.
+// CONTRACT: loadDb() must stay above every `src/` require in this file — it
+// points this process at a private temp DB (fresh DB_PATH + src require-cache
+// reset) before those requires load, so this process never races the
+// project-root default (xpbot.sqlite) against the other test files that
+// node --test runs in parallel.
+const { cleanup } = loadDb();
 
 const {
   TIERS,
@@ -26,6 +28,10 @@ const {
   verifyOAuthState,
   _resetNoncesForTests,
 } = require("../src/features/commandPermissions/oauthState");
+
+// Closes the tracked DB handles and removes the temp dir (idempotent,
+// never throws).
+after(cleanup);
 
 describe("commandVisibility", () => {
   /** @type {string[]} */
