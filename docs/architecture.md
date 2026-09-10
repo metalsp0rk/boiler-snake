@@ -184,7 +184,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |
 | **staffRoles** | `/staff` role list; junior (command gate) vs senior (ticket channel overwrites); ManageGuild for mutations |
 | **staffNotes** | `/note` private staff notes (`requireStaff`) |
-| **warnings** | `/warn` issue/void/list; `/warn mine` public; `/setwarn` staff gate |
+| **warnings** | `/warn` add/void/list; `/warn mine` public; `/setwarn` staff gate |
 | **userinfo** | Staff member card; note/warn buttons; Activity tab needs **senior** staff |
 | **userActivity** | Live per-channel counts; `/activityconfig` ignore/status/backfill (staff); feeds `/userinfo` Activity |
 | **tickets** | Support channels, sensitive mode, panel button→modal, HTML archive HTTP; senior roles get auto ticket view |
