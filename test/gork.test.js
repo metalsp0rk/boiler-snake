@@ -1190,3 +1190,122 @@ describe("capAnswerChars (Fix 6)", () => {
     }
   });
 });
+
+// ---------- channel context block (§7.18) ----------
+
+describe("channel context block (channel, §7.18)", () => {
+  const {
+    formatChannelBlock,
+    formatChannelLabel,
+    isThreadLike,
+    TOPIC_CHAR_CAP,
+    CHANNEL_BLOCK_CAP,
+  } = require("../src/features/gork/channel");
+
+  it("formats a guild text channel with name, id, category and topic", () => {
+    const block = formatChannelBlock({
+      id: "100",
+      name: "general",
+      topic: "Ask gork anything here",
+      parent: { name: "Support" },
+    });
+    assert.ok(block.includes("Current channel: #general (id 100)"));
+    assert.ok(block.includes('in category "Support"'));
+    assert.ok(block.includes("Ask gork anything here"));
+    // decision-21 guardrail: topic flagged as untrusted, never instructions
+    assert.ok(/never instructions/i.test(block), block);
+  });
+
+  it("omits category and topic segments when absent", () => {
+    const block = formatChannelBlock({ id: "1", name: "general" });
+    assert.ok(block.includes("#general"));
+    assert.ok(!block.includes("in category"), block);
+    assert.ok(!block.toLowerCase().includes("topic"), block);
+  });
+
+  it("formats a thread using isThread() and inherits the parent's topic", () => {
+    const block = formatChannelBlock({
+      id: "200",
+      name: "pricing",
+      isThread: () => true,
+      parent: { name: "support", topic: "Product Q&A" },
+    });
+    assert.ok(block.includes('thread "pricing"'), block);
+    assert.ok(block.includes("of #support"), block);
+    assert.ok(block.includes("Product Q&A"), block);
+    assert.ok(!block.includes("in category"), block);
+  });
+
+  it("falls back to numeric thread types when isThread() is absent", () => {
+    const block = formatChannelBlock({ id: "9", name: "t", type: 11, parent: { name: "p" } });
+    assert.ok(block.includes('thread "t"'), block);
+    assert.equal(isThreadLike({ type: 0 }), false);
+    assert.equal(isThreadLike({ type: 10 }), true);
+    assert.equal(isThreadLike({ type: 12 }), true);
+  });
+
+  it("caps the topic and the whole block", () => {
+    const block = formatChannelBlock({ id: "1", name: "c", topic: "x".repeat(2000) });
+    assert.ok(block.length <= CHANNEL_BLOCK_CAP, `block ${block.length} <= ${CHANNEL_BLOCK_CAP}`);
+    assert.ok(!/x{2000}/.test(block), "topic truncated");
+    assert.ok(block.length > TOPIC_CHAR_CAP, "channel head + capped topic");
+  });
+
+  it("never splits an emoji when capping the topic", () => {
+    const topic = `${"a".repeat(TOPIC_CHAR_CAP - 1)}\u{1F600}tail`;
+    const block = formatChannelBlock({ id: "1", name: "c", topic });
+    const hasLoneSurrogate = (s) => {
+      for (let i = 0; i < s.length; i += 1) {
+        const c = s.charCodeAt(i);
+        const isHigh = c >= 0xd800 && c <= 0xdbff;
+        const isLow = c >= 0xdc00 && c <= 0xdfff;
+        if (isHigh && !(i + 1 < s.length && s.charCodeAt(i + 1) >= 0xdc00 && s.charCodeAt(i + 1) <= 0xdfff)) return true;
+        if (isLow && !(i > 0 && s.charCodeAt(i - 1) >= 0xd800 && s.charCodeAt(i - 1) <= 0xdbff)) return true;
+      }
+      return false;
+    };
+    assert.ok(!hasLoneSurrogate(block), "no lone surrogates in the capped block");
+  });
+
+  it("degrades to empty id/name gracefully and blank input to ''", () => {
+    assert.equal(formatChannelBlock(null), "");
+    assert.equal(formatChannelBlock(undefined), "");
+    assert.equal(formatChannelBlock("nope"), "");
+    assert.equal(formatChannelBlock({}), "");
+    // name-only (no id) still renders a usable header
+    const nameOnly = formatChannelBlock({ name: "general" });
+    assert.ok(nameOnly.includes("#general"), nameOnly);
+    // id-only (no name) renders the unnamed placeholder
+    const idOnly = formatChannelBlock({ id: "777" });
+    assert.ok(idOnly.includes("(unnamed channel)"), idOnly);
+    assert.ok(idOnly.includes("(id 777)"), idOnly);
+  });
+
+  it("formatChannelLabel renders #channel / thread names, blank when unknown", () => {
+    assert.equal(formatChannelLabel({ name: "general" }), "#general");
+    assert.equal(formatChannelLabel({ name: "t", isThread: () => true }), 'thread "t"');
+    assert.equal(formatChannelLabel({ id: "1" }), "");
+    assert.equal(formatChannelLabel(null), "");
+  });
+
+  it("buildUserContent appends the channel block only when provided, after the context (before the roster)", () => {
+    const ctx = { text: "[alice] hi" };
+    assert.ok(!buildUserContent("q", ctx).includes("Current channel:"));
+    const withCh = buildUserContent("q", ctx, "u1 | @a | A", "", "Current channel: #general (id 1)");
+    assert.ok(withCh.includes("Current channel: #general (id 1)"), withCh);
+    assert.ok(
+      withCh.indexOf("Conversation context:") < withCh.indexOf("Current channel:"),
+      "channel block sits after the conversation context",
+    );
+    assert.ok(
+      withCh.indexOf("Current channel:") < withCh.indexOf("People roster:"),
+      "channel block sits before the roster",
+    );
+  });
+
+  it("whitespace-only channel block changes nothing", () => {
+    const plain = buildUserContent("q", { text: "[a] b" });
+    const blank = buildUserContent("q", { text: "[a] b" }, "", "", "   ");
+    assert.equal(blank, plain);
+  });
+});

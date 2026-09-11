@@ -4,7 +4,8 @@
  * Every completed Q&A posts a "Gork Q&A" embed to the guild's audit
  * channel (via logs/auditLog `sendAuditLog`): asker mention, question
  * (≤300 chars; "(keyword only)" when the trigger was just the keyword),
- * context mode (e.g. "reply chain (4 msgs)" / "10 prior messages"),
+ * context mode (e.g. "reply chain (4 msgs)" / "10 prior messages"), the
+ * channel the exchange happened in ("#general", §7.18),
  * search usage ("yes — 2 searches · 1 page read" / "no"), model + duration, the answer
  * (≤1000 chars), and jump links to the question and the gork reply.
  *
@@ -137,6 +138,9 @@ function jumpLink(label, guildId, message) {
  * @param {string} [opts.memoryLabel] formatMemoryLabel() output; the
  *   inline "Memory" field is added only when this is a non-empty string
  *   (READ-SIDE only — extraction ran after this embed, §7.16.3)
+ * @param {string} [opts.channelLabel] formatChannelLabel() output (e.g.
+ *   "#general"); the inline "Channel" field is added only when this is a
+ *   non-empty string (§7.18)
  * @returns {Promise<void>}
  */
 async function logGorkQa(client, guildId, opts = {}) {
@@ -152,6 +156,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     questionMessage,
     replyMessage,
     memoryLabel,
+    channelLabel,
   } = opts;
   try {
     const embed = baseEmbed({ color: Color.brand, title: "Gork Q&A", timestamp: true });
@@ -173,6 +178,11 @@ async function logGorkQa(client, guildId, opts = {}) {
       { name: "Asked by", value: askedBy, inline: true },
       { name: "Question", value: questionValue, inline: false },
       { name: "Context", value: contextLabel || "—", inline: true },
+      // §7.18: inline Channel field, only when the trigger supplied a
+      // non-empty label (unknown channel → field absent entirely).
+      ...(typeof channelLabel === "string" && channelLabel.trim()
+        ? [{ name: "Channel", value: truncateField(channelLabel.trim(), 256), inline: true }]
+        : []),
       { name: "Search", value: searchValue, inline: true },
       { name: "Model / duration", value: `${model || "unknown"}${durationSuffix}`, inline: true },
       { name: "Answer", value: answerValue, inline: false },
