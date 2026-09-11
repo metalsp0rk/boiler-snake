@@ -42,6 +42,8 @@ const Color = {
   music: 0x1db954,
   /** Twitch live */
   twitchLive: 0x9146ff,
+  /** GitHub release announcement (GitHub brand purple) */
+  githubRelease: 0x8b5cf6,
 };
 
 /** Standard permission denial (straight apostrophe). */

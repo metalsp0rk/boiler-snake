@@ -12,6 +12,7 @@ module.exports = [
   require("./logs"),
   require("./youtube"),
   require("./twitch"),
+  require("./githubReleases"),
   require("./honeypot"),
   require("./reactionRoles"),
   require("./eventReminders"),
