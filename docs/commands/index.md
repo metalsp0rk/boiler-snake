@@ -590,6 +590,52 @@ Set how often the bot checks Twitch (1–60 minutes, default 2).
 
 Shows credentials status, notification channel, ping role, interval, and subscription count.
 
+### `/github` - GitHub Release Notifications
+
+Track GitHub repositories and post release notes when new releases are cut (checked hourly). Multiple repositories per server, each with its own channel and ping role. See [GitHub Release Notifications](../github-releases.md).
+
+#### Subcommand: `watch` - Track Repository
+
+```bash
+/github watch repo:owner/name channel:#releases
+/github watch repo:https://github.com/owner/repo channel:#releases token:YOUR_TOKEN
+```
+
+Accepts `owner/name`, GitHub URL, or SSH remote. Optional `token` for private repos / higher rate limits (stored locally, never displayed). Re-running updates channel/token without resetting release state.
+
+#### Subcommand: `remove` - Stop Tracking
+
+```bash
+/github remove repo:owner/name
+```
+
+#### Subcommand: `list` - View Watches
+
+Show all watched repositories with their channels, ping roles, and token state.
+
+#### Subcommand: `channel` - Set Announcement Channel
+
+```bash
+/github channel repo:owner/name channel:#releases
+```
+
+#### Subcommand: `role` - Mention Role on Release
+
+```bash
+/github role repo:owner/name role:@Announcements
+/github role repo:owner/name
+# omit role → disable mentions
+```
+
+#### Subcommand: `check` - Probe Now
+
+Force an immediate release lookup for all (or one) watches instead of waiting for the hourly tick.
+
+```bash
+/github check
+/github check repo:owner/name
+```
+
 ### `/staff` - Staff Roles
 
 Configure trusted staff roles for the admin/staff gate, honeypot exemption, and ticket visibility. See [Staff Roles](../staff-roles.md).

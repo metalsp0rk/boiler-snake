@@ -48,6 +48,7 @@ const COMMAND_VISIBILITY = Object.freeze({
   testnotification: TIERS.staff,
   twitch: TIERS.staff,
   settwitch: TIERS.staff,
+  github: TIERS.staff,
   reactionrole: TIERS.staff,
   honeypot: TIERS.staff,
   note: TIERS.staff,

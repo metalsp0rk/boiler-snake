@@ -46,6 +46,7 @@ src/
 │   ├── logs/                # /setlog + auditLog + delete/ban/kick
 │   ├── youtube/             # YouTube commands + RSS/API ticker
 │   ├── twitch/              # /twitch /settwitch + Helix go-live ticker
+│   ├── githubReleases/      # /github + hourly GitHub releases ticker
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
 │   ├── reactionRoles/       # /reactionrole + panel service
 │   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
@@ -153,6 +154,7 @@ Migrations on load:
 | `022_gork_access` | `gork_user_blocks` table + `gork_enabled` master switch |
 | `023_gork_memory` | `gork_memories` table + `gork_memory_enabled` / `gork_memory_chars` columns |
 | `024_staff_roles_added_by` | `staff_roles.added_by` provenance column (NULL = unknown) |
+| `025_github_releases` | `github_watches` table (repo watches, routing, per-repo token, release pointer) |
 
 ### Core XP API
 
@@ -187,6 +189,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **logs** | Audit + message log channels; in-memory delete cache |
 | **youtube** | RSS + optional Data API; guild notification channel |
 | **twitch** | Helix poll (≤100 ids/req); go-live dedup by stream id; separate channel + role from YouTube |
+| **githubReleases** | Hourly GitHub releases poll; per-repo channel/token; one post per release via id pointer |
 | **honeypot** | Channel posts / ban-roles; warning PNG; exempt roles |
 | **reactionRoles** | Bot panels, min level, removable options |
 | **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |

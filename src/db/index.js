@@ -29,6 +29,7 @@ const tickets = require("./repositories/tickets");
 const userChannelActivity = require("./repositories/userChannelActivity");
 const commandPermissionOauth = require("./repositories/commandPermissionOauth");
 const twitch = require("./repositories/twitch");
+const githubWatches = require("./repositories/githubWatches");
 const gorkAccess = require("./repositories/gorkAccess");
 const gorkMemory = require("./repositories/gorkMemory");
 
@@ -119,6 +120,16 @@ module.exports = {
   addTwitchChannel: twitch.addTwitchChannel,
   removeTwitchChannel: twitch.removeTwitchChannel,
   updateTwitchChannelLiveState: twitch.updateTwitchChannelLiveState,
+
+  // GitHub releases
+  normalizeGithubRepo: githubWatches.normalizeGithubRepo,
+  getGithubWatches: githubWatches.getGithubWatches,
+  getAllGithubWatches: githubWatches.getAllGithubWatches,
+  getGithubWatch: githubWatches.getGithubWatch,
+  addGithubWatch: githubWatches.addGithubWatch,
+  removeGithubWatch: githubWatches.removeGithubWatch,
+  updateGithubWatch: githubWatches.updateGithubWatch,
+  updateGithubWatchReleaseState: githubWatches.updateGithubWatchReleaseState,
 
   // staff roles (generalized from honeypot_exempt_roles; junior | senior)
   STAFF_LEVELS: staffRoles.STAFF_LEVELS,
