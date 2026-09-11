@@ -28,6 +28,7 @@ boiler-snake/
 | `allowed_command_channels` | Command channel restrictions per guild |
 | `youtube_channels` | YouTube subscriptions and metadata |
 | `twitch_channels` | Twitch broadcaster subscriptions + live/stream dedup state |
+| `github_watches` | GitHub repos watched for releases + announcement routing/state |
 | `honeypot_channels` | Channels that ban non-exempt users who post |
 | `staff_roles` | Guild staff roles (admin gate + honeypot exemption); `level` junior\|senior |
 | `honeypot_ban_roles` | Roles that ban a member when granted |
@@ -452,6 +453,33 @@ WHERE guild_id=? AND broadcaster_id=?
 ```
 
 See [Twitch Stream Notifications](twitch-notifications.md).
+
+---
+
+### 8c. `github_watches`
+
+Per-guild watched GitHub repositories for release announcements. `token`
+(optional per-repo GitHub token) is stored locally and never surfaced by
+display queries — the ticker reads it via `getAllGithubWatches()` only.
+
+```sql
+CREATE TABLE github_watches (
+  guild_id                  TEXT NOT NULL,
+  repo                      TEXT NOT NULL,     -- normalized lowercase owner/name
+  repo_display              TEXT NOT NULL,     -- GitHub canonical full_name
+  channel_id                TEXT,              -- NULL until /github channel
+  role_id                   TEXT,              -- optional ping role
+  token                     TEXT,              -- optional per-repo API token
+  last_release_id           INTEGER,           -- newest announced release (pointer)
+  last_release_published_at INTEGER,
+  last_checked              INTEGER,
+  created_at                INTEGER NOT NULL,
+  updated_at                INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, repo)
+);
+```
+
+See [GitHub Release Notifications](github-releases.md).
 
 ---
 
@@ -1142,6 +1170,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `022_gork_access` | `gork_user_blocks` table + `gork_enabled` master switch on `guild_settings` |
 | `023_gork_memory` | `gork_memories` table (per-person community memory) + `gork_memory_enabled` / `gork_memory_chars` columns |
 | `024_staff_roles_added_by` | `staff_roles.added_by` provenance column (who added the role; NULL = unknown) |
+| `025_github_releases` | `github_watches` table (repo → channel routing, per-repo token, release pointer) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

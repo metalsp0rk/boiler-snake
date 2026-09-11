@@ -610,7 +610,9 @@ function createChatInputInteraction(opts) {
       interaction.deferred = true;
     },
     editReply: async (payload) => {
-      replies.push({ ...payload, _edited: true });
+      // discord.js accepts a plain string; normalize it to a payload object
+      const obj = typeof payload === "string" ? { content: payload } : { ...payload };
+      replies.push({ ...obj, _edited: true });
       return payload;
     },
     showModal: async (modal) => {
@@ -716,7 +718,9 @@ function createModalSubmitInteraction(opts) {
       interaction.deferred = true;
     },
     editReply: async (payload) => {
-      replies.push({ ...payload, _edited: true });
+      // discord.js accepts a plain string; normalize it to a payload object
+      const obj = typeof payload === "string" ? { content: payload } : { ...payload };
+      replies.push({ ...obj, _edited: true });
       return payload;
     },
     setAdmin(isAdmin) {
