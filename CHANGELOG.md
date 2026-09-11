@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.12.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.11.1...v1.12.0) (2026-09-11)
+
+
+### Features
+
+* **github:** per-guild GitHub release notifications (hourly ticker) ([725c4a2](https://github.com/metalsp0rk/boiler-snake/commit/725c4a22a9d450d5b516f1d4e870c09cf906a6b7))
+* **gork:** channel-aware answers (roadmap 7.18, locked decisions 38-41) ([6938084](https://github.com/metalsp0rk/boiler-snake/commit/6938084135cceab93e3d7ab831de08e0ae7ac8da))
+
 ## [1.11.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.11.0...v1.11.1) (2026-09-10)
 
 
