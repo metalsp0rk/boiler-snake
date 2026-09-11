@@ -31,6 +31,7 @@ const { getAiConfig, chatWithTools } = require("../../core/ai");
 const { safeCutIndex, sliceSafe } = require("../../core/text");
 const { buildContext, hasReference } = require("./context");
 const { buildRoster, formatRosterBlock } = require("./roster");
+const { formatChannelBlock, formatChannelLabel } = require("./channel");
 const { NO_PING_MENTIONS, sanitizeAnswer } = require("./sanitize");
 const { buildSystemPrompt } = require("./prompt");
 const { createGorkQueue, DEFAULT_COOLDOWN_SEC } = require("./queue");
@@ -406,26 +407,31 @@ function capAnswerChars(text, limit) {
  * When a roster block is provided (Fix 2), it is appended as a
  * "People roster" data block — the byte-locked base prompt stays
  * untouched (decision-21 guidance pattern). The optional 4th argument
- * appends the MEMORY BLOCK after the roster section (§7.16.2); 3-arg
- * callers are unaffected (empty/whitespace block changes nothing).
+ * appends the MEMORY BLOCK after the roster section (§7.16.2); the
+ * optional 5th appends the CHANNEL BLOCK after the conversation context
+ * (§7.18); 3-arg callers are unaffected (empty/whitespace blocks change
+ * nothing).
  *
  * @param {string} question trimmed question text ("" = keyword alone)
  * @param {{ text?: string }} ctx buildContext() result
  * @param {string} [rosterBlock] formatRosterBlock() result ("" = none)
  * @param {string} [memoryBlock] loadMemoryContext().block ("" = none)
+ * @param {string} [channelBlock] formatChannelBlock() result ("" = none)
  * @returns {string}
  */
-function buildUserContent(question, ctx, rosterBlock = "", memoryBlock = "") {
+function buildUserContent(question, ctx, rosterBlock = "", memoryBlock = "", channelBlock = "") {
   const context = (ctx?.text || "").trim() || "(none)";
   const roster = (rosterBlock || "").trim();
   const rosterSection = roster ? `\n\nPeople roster:\n${roster}` : "";
   const memorySection = (memoryBlock || "").trim() ? `\n\n${memoryBlock}` : "";
+  const channelSection = (channelBlock || "").trim() ? `\n\n${channelBlock}` : "";
   if (question) {
-    return `${question}\n\nConversation context:\n${context}${rosterSection}${memorySection}`;
+    return `${question}\n\nConversation context:\n${context}${channelSection}${rosterSection}${memorySection}`;
   }
   return (
     "The user sent only the keyword, replying to the message below. Answer from the conversation context.\n\n" +
     context +
+    channelSection +
     rosterSection +
     memorySection
   );
@@ -680,6 +686,9 @@ async function runGorkHook(client, message) {
                 ctx,
                 formatRosterBlock(roster),
                 mem.block,
+                // §7.18: where gork is being asked (channel/thread name,
+                // category, topic) — pure duck-typed read, never throws.
+                formatChannelBlock(channel),
               ),
             },
           ],
@@ -781,6 +790,8 @@ async function runGorkHook(client, message) {
               answer: capped,
               questionMessage: message,
               replyMessage,
+              // §7.18: which channel the exchange happened in.
+              channelLabel: formatChannelLabel(channel),
               // Read-side audit label (§7.16.3); OFF → undefined → no field.
               memoryLabel: memoryOn
                 ? formatMemoryLabel(mem, recalled)

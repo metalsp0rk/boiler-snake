@@ -396,6 +396,88 @@ describe("integration: gork (AI keyword Q&A)", () => {
     }
   });
 
+  // ---------- channel awareness (roadmap/gork.md §7.18) ----------
+
+  it("§7.18: the shipped prompt carries the channel block (name + topic) and the audit names the channel", async () => {
+    const env = await freshEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([chatCompletionResponse("This is #general.")] );
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+      const ch = env.channels.general;
+      ch.topic = "All things sky related";
+      attachTyping(ch);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-chan-1",
+        content: "gork: what channel is this?",
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.ok(replies.length >= 1, "expected an answer");
+
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.includes("Current channel: #general"),
+        `channel block must name the channel: ${userMsg.content}`,
+      );
+      assert.ok(
+        userMsg.content.includes("All things sky related"),
+        "channel block must carry the topic",
+      );
+      assert.ok(
+        /never instructions/i.test(userMsg.content),
+        "topic must be flagged untrusted (never instructions)",
+      );
+
+      const auditText = embedText(env.channels.log.sent[0].embeds[0]);
+      assert.ok(auditText.includes("Channel"), "audit embed gains the Channel field");
+      assert.ok(auditText.includes("#general"), "audit Channel value names the channel");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("§7.18: a channel with no topic gets the name line only (no topic line)", async () => {
+    const env = await freshEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([chatCompletionResponse("Name only, member.")]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      const ch = env.channels.general; // harness fake: no topic set
+      attachTyping(ch);
+
+      const { message } = makeGorkMessage(env, {
+        id: "t-chan-2",
+        content: "gork: where are we again?",
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(fetchMock.calls.length, 1, "expected exactly one AI fetch");
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.includes("Current channel: #general"),
+        userMsg.content,
+      );
+      assert.ok(
+        !userMsg.content.includes("Channel topic"),
+        "no topic line without a topic",
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
   it("per-user cooldown: second trigger inside the window gets the clock reaction (no reply, no fetch)", async () => {
     const env = await freshEnv();
     const saved = saveEnv();
