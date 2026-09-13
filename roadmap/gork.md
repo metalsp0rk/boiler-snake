@@ -70,6 +70,9 @@ Default **10**, range **1–50**.
 - **Broken chain links:** a deleted/unfetchable message in the chain is skipped;
   walking stops when the reference chain ends or X is reached.
 - **Shape:** one line per message, `[<username>] <content>`, oldest → newest.
+  *(Superseded by §7.15 Fix 7: lines render resolved roster identities —
+  `[Display (@handle)] <content>` — and the triggering user's lines get an
+  `ASKER ` marker inside the brackets.)*
 - **Caps:** 500 chars per message, 12,000 chars total context (same caps as the
   ticket transcript summarizer).
 
@@ -564,6 +567,51 @@ rejected) — hence opt-in with "not sent" as the default.
 tiny-limit hard slice without marker, no split emoji); integration — payload carries
 `thinking_token_budget` + `max_tokens` 6000 when set / omits it when unset,
 empty-twice surfaces `finish_reason=length` in the audit, capped answer ships as one message.
+
+#### Fix 7 — gork doesn't know who triggered it; who-said-what misattribution (2026-09-13)
+
+**Symptom (reported):** gork misattributes messages to the wrong users and doesn't know
+**who** asked. Root causes in the shipped prompt assembly:
+
+1. The question in the user message carried **no author at all** — first-person wording
+   ("what should I do?") had nothing to anchor to.
+2. The **keyword-alone flow never identified the asker**: the instruction said "the user"
+   and the trigger message itself is excluded from the context by spec, so the model
+   could not learn who triggered gork.
+3. Context lines used the raw `author.username` while the Fix 2 roster emphasizes display
+   names/nicknames — **two naming systems** for the same people.
+4. The roster lists participants but never flagged **which one is the asker** (the asker
+   merely sorts first — unobservable to the model).
+
+**Shipped — the attribution card (prompt-side only; base system prompt stays byte-locked,
+decision-21 guidance pattern; reply stays plain text, decision 11 untouched):**
+
+- [x] **Asker header on the question:** `buildUserContent` takes an optional asker label
+      and renders the question as `[ASKER Display (@handle)] <question>` — the same line
+      shape as the context, so "I/me/my" anchors to a real person.
+- [x] **Resolved context lines:** the trigger job re-renders the context AFTER the roster
+      exists (`formatContext(messages, { resolveName, askerId })` in
+      `src/features/gork/context.js`): `[Display (@handle)]` per line, `ASKER ` marker on
+      the asker's lines; unresolved ids degrade to the legacy `[username]` shape.
+      `buildContext()` still collects (and caps) as before — only the final render moved.
+- [x] **Roster flags the asker:** `formatRosterBlock(roster, { askerId })` appends
+      `| ASKER` to their line + one header sentence explaining the flag. The memory write
+      turn keeps the unflagged legacy call (§7.16.3 inputs byte-stable).
+- [x] **Keyword-alone names the asker:** "Display (@handle) sent only the gork keyword…"
+      replaces the anonymous "The user sent only the keyword…".
+- [x] **Degrade path:** roster build failure / member-fetch misses → raw usernames from
+      the message objects (old behavior); the asker label falls back to the trigger
+      author's `displayName`/`username`, which discord.js always provides.
+- [x] Caps unchanged (500/msg, 12k total, roster caps); omitted-arg call sites stay
+      byte-identical to the legacy shapes (unit-locked).
+
+**Tests:** unit — `formatMessageLine/formatContext` opts (resolved labels, ASKER marker,
+legacy fallback for unresolved ids + no opts), `formatRosterBlock` asker flag (+ legacy
+byte-identity), `formatUserLabel` matrix, `buildUserContent` question/keyword-alone asker
+variants; integration — shipped prompt starts with the `[ASKER …]` question line, context
+lines carry display names + the asker flag, roster ends with the unflagged author line,
+reply-chain keyword-alone names the asker; existing 5-arg `buildUserContent` byte tests in
+`test/gork-memory.test.js` stay green.
 
 ---
 

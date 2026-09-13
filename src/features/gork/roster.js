@@ -157,20 +157,54 @@ async function buildRoster(client, guild, triggerMessage, messages, question = "
 }
 
 /**
+ * Format one resolved identity as a single-line label for prompt
+ * attribution (Fix 7): `Display (@handle)`, or `@handle` when the two
+ * match / display is missing. Falls back to the raw user object
+ * (trigger author) when no roster entry resolved; null only when nothing
+ * is known (caller then degrades to the legacy `[username]` line).
+ *
+ * @param {{ display?: string|null, handle?: string|null }|null|undefined} entry roster entry (may be null)
+ * @param {{ username?: string, displayName?: string, id?: string }|null} [fallbackUser] raw discord.js user to fall back on
+ * @returns {string|null}
+ */
+function formatUserLabel(entry, fallbackUser = null) {
+  const display = entry?.display || fallbackUser?.displayName || null;
+  const handle = entry?.handle || fallbackUser?.username || null;
+  if (display && handle && display !== handle) return `${display} (@${handle})`;
+  if (handle) return `@${handle}`;
+  if (display) return display;
+  const id = entry?.id || fallbackUser?.id || null;
+  return id ? `user ${id}` : null;
+}
+
+/**
  * Render the roster as a model-facing block with usage guidance (the
  * decision-21 guidance pattern: the byte-locked base prompt stays
  * untouched; guidance lives in this data block).
  *
+ * Fix 7: `opts.askerId` marks the triggering user's line with a trailing
+ * `| ASKER` flag (plus one header sentence) so the model knows whose
+ * question it is answering. Without opts the block is byte-identical to
+ * the legacy rendering (the memory write turn keeps the old call).
+ *
  * @param {{ lines?: string[], truncated?: number }} roster buildRoster() result
+ * @param {{ askerId?: string|null }} [opts]
  * @returns {string} "" when the roster is empty
  */
-function formatRosterBlock(roster) {
+function formatRosterBlock(roster, opts = {}) {
   const lines = roster?.lines || [];
   if (!lines.length) return "";
-  const header =
+  let header =
     "People in this conversation (id | handle | display name). " +
     "Refer to members by their display names; never write raw <@id>, <@&id> or <#id> markup in your answer.";
-  const parts = [header, ...lines];
+  let rendered = lines;
+  if (opts.askerId) {
+    header +=
+      ' The line flagged "| ASKER" is the user who triggered gork — answer that person.';
+    const needle = String(opts.askerId).trim();
+    rendered = lines.map((line) => (line.startsWith(needle) ? `${line} | ASKER` : line));
+  }
+  const parts = [header, ...rendered];
   if (roster.truncated > 0) {
     parts.push(`(${roster.truncated} more participants not listed)`);
   }
@@ -184,6 +218,7 @@ module.exports = {
   collectParticipantIds,
   resolveEntry,
   formatRosterLine,
+  formatUserLabel,
   buildRoster,
   formatRosterBlock,
   MAX_ROSTER_USERS,

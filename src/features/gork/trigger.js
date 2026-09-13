@@ -29,8 +29,8 @@ const {
 } = require("../../db");
 const { getAiConfig, chatWithTools } = require("../../core/ai");
 const { safeCutIndex, sliceSafe } = require("../../core/text");
-const { buildContext, hasReference } = require("./context");
-const { buildRoster, formatRosterBlock } = require("./roster");
+const { buildContext, formatContext, hasReference } = require("./context");
+const { buildRoster, formatRosterBlock, formatUserLabel } = require("./roster");
 const { formatChannelBlock, formatChannelLabel } = require("./channel");
 const { NO_PING_MENTIONS, sanitizeAnswer } = require("./sanitize");
 const { buildSystemPrompt } = require("./prompt");
@@ -412,24 +412,45 @@ function capAnswerChars(text, limit) {
  * (§7.18); 3-arg callers are unaffected (empty/whitespace blocks change
  * nothing).
  *
+ * Fix 7 (roadmap/gork.md §7.15): the optional 6th argument names the
+ * asker — the user who triggered gork. When present the question is
+ * prefixed with a `[ASKER label]` line (same shape as context lines, so
+ * first-person wording anchors to a real person), and the keyword-alone
+ * instruction names them instead of the old "the user". Omitted → the
+ * output stays byte-identical to the legacy 5-arg shape.
+ *
  * @param {string} question trimmed question text ("" = keyword alone)
  * @param {{ text?: string }} ctx buildContext() result
  * @param {string} [rosterBlock] formatRosterBlock() result ("" = none)
  * @param {string} [memoryBlock] loadMemoryContext().block ("" = none)
  * @param {string} [channelBlock] formatChannelBlock() result ("" = none)
+ * @param {string} [askerLabel] formatUserLabel() result for the asker ("" = unknown → legacy shape)
  * @returns {string}
  */
-function buildUserContent(question, ctx, rosterBlock = "", memoryBlock = "", channelBlock = "") {
+function buildUserContent(
+  question,
+  ctx,
+  rosterBlock = "",
+  memoryBlock = "",
+  channelBlock = "",
+  askerLabel = "",
+) {
   const context = (ctx?.text || "").trim() || "(none)";
   const roster = (rosterBlock || "").trim();
   const rosterSection = roster ? `\n\nPeople roster:\n${roster}` : "";
   const memorySection = (memoryBlock || "").trim() ? `\n\n${memoryBlock}` : "";
   const channelSection = (channelBlock || "").trim() ? `\n\n${channelBlock}` : "";
+  const asker = (askerLabel || "").trim();
   if (question) {
-    return `${question}\n\nConversation context:\n${context}${channelSection}${rosterSection}${memorySection}`;
+    const askerLine = asker ? `[ASKER ${asker}] ` : "";
+    return `${askerLine}${question}\n\nConversation context:\n${context}${channelSection}${rosterSection}${memorySection}`;
   }
+  const instruction = asker
+    ? `${asker} sent only the gork keyword (the trigger message itself is not part of the context below). ` +
+      `They are the asker: answer them, using the conversation context.`
+    : "The user sent only the keyword, replying to the message below. Answer from the conversation context.";
   return (
-    "The user sent only the keyword, replying to the message below. Answer from the conversation context.\n\n" +
+    `${instruction}\n\n` +
     context +
     channelSection +
     rosterSection +
@@ -652,6 +673,29 @@ async function runGorkHook(client, message) {
             // Degrade to no memory block; answering never depends on it.
           }
         }
+        // Fix 7 (roadmap/gork.md §7.15): attribution card. The context was
+        // collected as raw `[username]` lines; now that the roster exists,
+        // re-render it with resolved identities (`Display (@handle)`) and
+        // flag the asker's lines, and name the asker above the question.
+        // Roster-less degradation (fetch misses / build failure) keeps the
+        // legacy raw-username shape; the asker label still comes from the
+        // trigger author object, which discord.js always provides.
+        const askerEntry = roster.entries?.get?.(message.author.id) || null;
+        const askerLabel = formatUserLabel(askerEntry, message.author) || "";
+        const ctxOpts = {
+          resolveName: (id) => {
+            const entry = roster.entries?.get?.(id) || null;
+            return entry && (entry.display || entry.handle)
+              ? formatUserLabel(entry)
+              : null; // unresolved → formatMessageLine degrades to [username]
+          },
+          askerId: message.author.id,
+        };
+        const promptCtx = {
+          ...ctx,
+          text: formatContext(ctx.messages || [], ctxOpts),
+        };
+        if (memJob) memJob.ctxText = promptCtx.text;
         const system = buildSystemPrompt({
           extraRules: settings.gork_extra_rules,
         });
@@ -683,12 +727,13 @@ async function runGorkHook(client, message) {
               role: "user",
               content: buildUserContent(
                 question,
-                ctx,
-                formatRosterBlock(roster),
+                promptCtx,
+                formatRosterBlock(roster, { askerId: message.author.id }),
                 mem.block,
                 // §7.18: where gork is being asked (channel/thread name,
                 // category, topic) — pure duck-typed read, never throws.
                 formatChannelBlock(channel),
+                askerLabel,
               ),
             },
           ],

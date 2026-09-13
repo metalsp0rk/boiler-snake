@@ -45,11 +45,11 @@ const { chatWithTools, chatCompletion } = require("../src/core/ai");
 const MAXID = "99999999999999999999";
 
 /** Fake message with the minimal surface context.js reads. */
-function makeMsg({ id, content = "", username = "user", channelId = null, reference = null, fetchReference }) {
+function makeMsg({ id, content = "", username = "user", authorId = null, channelId = null, reference = null, fetchReference }) {
   return {
     id,
     content,
-    author: { username },
+    author: { username, id: authorId },
     channelId,
     reference,
     fetchReference:
@@ -317,6 +317,30 @@ describe("buildContext (context)", () => {
     const r = await buildContext(trig, 10);
     assert.ok(r.text.length <= TOTAL_CHAR_CAP);
     assert.equal(r.collected, 10);
+  });
+
+  it("Fix 7: line opts render resolved labels and flag the asker; default stays legacy", () => {
+    const asker = makeMsg({ id: "m0001", content: "earlier thought", username: "alice", authorId: "1" });
+    const other = makeMsg({ id: "m0002", content: "replying to that", username: "bob_smith", authorId: "2" });
+    const unknown = makeMsg({ id: "m0003", content: "ghost", username: "ghostuser", authorId: "404" });
+
+    assert.equal(formatMessageLine(other), "[bob_smith] replying to that", "no opts = legacy");
+
+    const opts = {
+      resolveName: (id) => (id === "1" ? "Alice (@alice)" : id === "2" ? "@bob_smith" : null),
+      askerId: "1",
+    };
+    assert.equal(formatMessageLine(asker, opts), "[ASKER Alice (@alice)] earlier thought");
+    assert.equal(formatMessageLine(other, opts), "[@bob_smith] replying to that");
+    assert.equal(
+      formatMessageLine(unknown, opts),
+      "[ghostuser] ghost",
+      "unresolved id degrades to the raw username",
+    );
+
+    const joined = formatContext([asker, other], opts);
+    assert.equal(joined, "[ASKER Alice (@alice)] earlier thought\n[@bob_smith] replying to that");
+    assert.ok(formatContext([], opts) === "", "empty stays empty");
   });
 
   it("fetch failures never throw — degrade to empty or partial context", async () => {
@@ -763,6 +787,34 @@ describe("buildUserContent + locked canned replies (trigger)", () => {
     assert.ok(out.includes("[alice] because of light"));
   });
 
+  it("Fix 7: asker label prefixes the question line", () => {
+    const out = buildUserContent(
+      "what should I do next?",
+      { text: "[ASKER Alice (@alice)] I am stuck" },
+      "1 | @alice | Alice | ASKER",
+      "",
+      "",
+      "Alice (@alice)",
+    );
+    assert.ok(
+      out.startsWith("[ASKER Alice (@alice)] what should I do next?"),
+      out.slice(0, 80),
+    );
+    assert.ok(out.includes("Conversation context:"));
+  });
+
+  it("Fix 7: keyword-alone instruction names the asker (legacy without label)", () => {
+    const named = buildUserContent("", { text: "[bob] help" }, "", "", "", "Alice (@alice)");
+    assert.ok(named.startsWith("Alice (@alice) sent only the gork keyword"), named.slice(0, 90));
+    assert.ok(named.includes("They are the asker"), named);
+    const legacy = buildUserContent("", { text: "[bob] help" });
+    assert.ok(
+      legacy.startsWith(
+        "The user sent only the keyword, replying to the message below. Answer from the conversation context.",
+      ),
+    );
+  });
+
   it("QUEUE_FULL_REPLY is the locked wording, verbatim", () => {
     assert.equal(
       QUEUE_FULL_REPLY,
@@ -782,6 +834,7 @@ describe("user roster (roster)", () => {
     collectParticipantIds,
     buildRoster,
     formatRosterBlock,
+    formatUserLabel,
     MAX_ROSTER_USERS,
   } = require("../src/features/gork/roster");
 
@@ -862,6 +915,44 @@ describe("user roster (roster)", () => {
     assert.ok(block.includes("never write raw <@id>"), "usage guidance present");
     assert.ok(block.includes("u1 | @alice | Alice"));
     assert.ok(block.includes("2 more participants not listed"));
+    assert.ok(
+      !block.includes("ASKER"),
+      "no asker flag without opts: byte-identical legacy block",
+    );
+  });
+
+  it("Fix 7: formatRosterBlock flags the asker line and explains the flag", () => {
+    const block = formatRosterBlock(
+      { lines: ["1 | @alice | Alice", "2 | @bob_smith | Bob"], truncated: 0 },
+      { askerId: "1" },
+    );
+    const [aliceLine, bobLine] = block.split("\n").slice(1);
+    assert.equal(aliceLine, "1 | @alice | Alice | ASKER", "asker line flagged");
+    assert.equal(bobLine, "2 | @bob_smith | Bob", "others untouched");
+    assert.ok(block.includes('flagged "| ASKER" is the user who triggered gork'), block);
+    assert.equal(
+      formatRosterBlock({ lines: ["1 | @a | A"] }, { askerId: null }),
+      formatRosterBlock({ lines: ["1 | @a | A"] }),
+      "null askerId = legacy",
+    );
+  });
+
+  it("Fix 7: formatUserLabel matrix (entry, fallback user, nothing)", () => {
+    assert.equal(
+      formatUserLabel({ id: "1", handle: "alice", display: "Alice T" }),
+      "Alice T (@alice)",
+    );
+    assert.equal(
+      formatUserLabel({ id: "1", handle: "bob", display: "bob" }),
+      "@bob",
+      "display == handle collapses",
+    );
+    assert.equal(formatUserLabel({ id: "1", handle: "solo", display: null }), "@solo");
+    assert.equal(formatUserLabel({ id: "1", handle: null, display: "Display" }), "Display");
+    assert.equal(formatUserLabel(null, { id: "9", username: "carol", displayName: "Carol" }), "Carol (@carol)");
+    assert.equal(formatUserLabel(null, { id: "9", username: "carol", displayName: "carol" }), "@carol");
+    assert.equal(formatUserLabel({ id: "42", handle: null, display: null }), "user 42");
+    assert.equal(formatUserLabel(null, null), null);
   });
 
   it("buildUserContent appends the roster block only when provided", () => {
