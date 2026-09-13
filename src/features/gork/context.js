@@ -124,28 +124,53 @@ function hasContent(message) {
 }
 
 /**
- * Format one message as a context line: `[username] content` with the
- * content capped at MESSAGE_CHAR_CAP chars.
+ * Format one message as a context line: `[name] content` with the content
+ * capped at MESSAGE_CHAR_CAP chars.
+ *
+ * Fix 7 attribution (roadmap/gork.md §7.15): the optional `opts` lets the
+ * caller (the trigger job, after the roster exists) re-render the context
+ * with resolved identities instead of raw usernames:
+ * - `opts.resolveName(id)` returns the roster label for a user id
+ *   (e.g. `Alice (@alice)`, `@alice`); falsy → degrade to
+ *   `[username]` exactly like the legacy shape.
+ * - `opts.askerId` tags the triggering user's lines with an `ASKER `
+ *   marker inside the brackets so the model knows which participant asked.
+ * No opts → byte-identical legacy output (`[username] content`).
  *
  * @param {GorkMessage|null|undefined} message
+ * @param {{ resolveName?: (id: string) => string|null, askerId?: string|null }} [opts]
  * @returns {string}
  */
-function formatMessageLine(message) {
-  const username = (message && message.author && message.author.username) || "unknown";
+function formatMessageLine(message, opts = {}) {
+  const authorId = message && message.author ? message.author.id : null;
+  const resolved =
+    opts && typeof opts.resolveName === "function" && authorId
+      ? opts.resolveName(authorId)
+      : null;
+  const name =
+    resolved || (message && message.author && message.author.username) || "unknown";
+  const isAsker =
+    Boolean(opts && opts.askerId) &&
+    authorId != null &&
+    String(authorId) === String(opts.askerId);
   const body = sliceSafe(String((message && message.content) || ""), MESSAGE_CHAR_CAP);
-  return `[${username}] ${body}`;
+  return `[${isAsker ? "ASKER " : ""}${name}] ${body}`;
 }
 
 /**
  * Format an ordered (oldest → newest) list of messages into the final
  * context text: one line per message, joined with newlines, capped at
- * TOTAL_CHAR_CAP chars total.
+ * TOTAL_CHAR_CAP chars total. `opts` (Fix 7 attribution) is passed to
+ * every {@link formatMessageLine}; omitted → legacy formatting.
  *
  * @param {GorkMessage[]} messages oldest → newest
+ * @param {{ resolveName?: (id: string) => string|null, askerId?: string|null }} [opts]
  * @returns {string}
  */
-function formatContext(messages) {
-  const joined = (messages || []).map(formatMessageLine).join("\n");
+function formatContext(messages, opts = {}) {
+  const joined = (messages || [])
+    .map((m) => formatMessageLine(m, opts))
+    .join("\n");
   return sliceSafe(joined, TOTAL_CHAR_CAP);
 }
 
