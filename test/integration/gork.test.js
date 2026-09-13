@@ -370,11 +370,21 @@ describe("integration: gork (AI keyword Q&A)", () => {
       const userMsg = body.messages.find((m) => m.role === "user");
       assert.ok(userMsg.content.includes("why is the sky blue?"));
       assert.ok(userMsg.content.includes("Conversation context:"));
+      // Fix 7: context lines carry resolved identities; the asker (the
+      // trigger author, "member") is flagged in the question AND context.
       assert.ok(
-        userMsg.content.includes("[member2] Earlier chatter about the sky")
+        userMsg.content.includes("[@member2] Earlier chatter about the sky"),
+        userMsg.content,
       );
       assert.ok(
-        userMsg.content.includes("[member] Anyone know about light scattering?")
+        userMsg.content.includes(
+          "[ASKER @member] Anyone know about light scattering?",
+        ),
+        userMsg.content,
+      );
+      assert.ok(
+        userMsg.content.startsWith("[ASKER @member] why is the sky blue?"),
+        userMsg.content,
       );
 
       // Audit embed posted to the configured audit channel (the drain
@@ -389,6 +399,76 @@ describe("integration: gork (AI keyword Q&A)", () => {
       assert.ok(auditText.includes("2 prior messages"));
       assert.ok(
         auditText.includes("The sky is blue because of Rayleigh scattering.")
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  // ---------- asker attribution card (roadmap/gork.md §7.15 Fix 7) ----------
+
+  it("Fix 7: prompt attributes every line by resolved name and flags the asker", async () => {
+    const env = await freshEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([chatCompletionResponse("Fridge. Second shelf.")]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      // Distinct guild display names so the prompt must use them, not raw handles.
+      env.members.member.displayName = "Main Guy";
+      env.members.member2.displayName = "Two";
+
+      const ch = env.channels.general;
+      ch.addMessage({
+        id: "f7a",
+        content: "has anyone seen my notes app",
+        author: { id: IDS.member, username: "member", tag: "member#0000" },
+        createdTimestamp: Date.now() - 20000,
+      });
+      ch.addMessage({
+        id: "f7b",
+        content: "mine sync fine tbh",
+        author: { id: IDS.member2, username: "member2", tag: "member2#0000" },
+        createdTimestamp: Date.now() - 10000,
+      });
+      attachTyping(ch);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-f7-1",
+        content: "gork: did my notes show up?",
+        author: env.users.memberUser,
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.ok(replies.length >= 1, "expected a gork reply");
+
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      // Question line is attributed to the asker with their display name.
+      assert.ok(
+        userMsg.content.startsWith("[ASKER Main Guy (@member)] did my notes show up?"),
+        userMsg.content.slice(0, 120),
+      );
+      // Context lines use resolved display names and flag the asker's own message.
+      assert.ok(
+        userMsg.content.includes("[ASKER Main Guy (@member)] has anyone seen my notes app"),
+        userMsg.content,
+      );
+      // Roster names the asker explicitly with the | ASKER flag.
+      assert.ok(userMsg.content.includes("People roster:"), userMsg.content);
+      assert.ok(
+        userMsg.content.includes(`${IDS.member} | @member | Main Guy | ASKER`),
+        userMsg.content,
+      );
+      assert.ok(
+        userMsg.content.includes("[Two (@member2)] mine sync fine tbh"),
+        "context-author resolves to their display name too",
+      );
+      assert.ok(
+        userMsg.content.includes(`${IDS.member2} | @member2 | Two\n`) ||
+          userMsg.content.endsWith(`${IDS.member2} | @member2 | Two`),
+        "roster lists the author by display name without the ASKER flag",
       );
     } finally {
       restoreEnv(saved);
@@ -688,17 +768,19 @@ describe("integration: gork (AI keyword Q&A)", () => {
 
       const body = JSON.parse(fetchMock.calls[0].init.body);
       const userMsg = body.messages.find((m) => m.role === "user");
+      // Fix 7: the keyword-alone instruction names the asker (trigger author).
       assert.ok(
-        userMsg.content.includes(
-          "The user sent only the keyword, replying to the message below"
+        userMsg.content.startsWith(
+          "@member sent only the gork keyword (the trigger message itself is not part of the context below).",
         ),
-        "keyword-alone prompt must use the fixed instruction"
+        `keyword-alone prompt must name the asker, got: ${userMsg.content.slice(0, 160)}`
       );
       // Context must be backfill (a1, a2) then chain root -> newest (cA, cB).
-      const iA1 = userMsg.content.indexOf("[member2] Morning all");
-      const iA2 = userMsg.content.indexOf("[member] Did you lock the office?");
-      const iCA = userMsg.content.indexOf("[member] I lost my keys");
-      const iCB = userMsg.content.indexOf("[member2] Has anyone seen my keys?");
+      // Fix 7: resolved labels + ASKER flags (a2/cA are the asker's lines).
+      const iA1 = userMsg.content.indexOf("[@member2] Morning all");
+      const iA2 = userMsg.content.indexOf("[ASKER @member] Did you lock the office?");
+      const iCA = userMsg.content.indexOf("[ASKER @member] I lost my keys");
+      const iCB = userMsg.content.indexOf("[@member2] Has anyone seen my keys?");
       assert.ok(
         iA1 !== -1 && iA2 !== -1 && iCA !== -1 && iCB !== -1,
         `expected backfill + chain lines in the context, got: ${userMsg.content}`
@@ -1669,8 +1751,8 @@ describe("integration: gork (AI keyword Q&A)", () => {
       const body = JSON.parse(fetchMock.calls[0].init.body);
       const userMsg = body.messages.find((m) => m.role === "user");
       assert.ok(
-        userMsg.content.includes("[member2] Ancient context before the deletion"),
-        "backfill context must still feed the prompt",
+        userMsg.content.includes("[@member2] Ancient context before the deletion"),
+        "backfill context must still feed the prompt (Fix 7: resolved label)",
       );
 
       // The guild slot was released: the degraded job must not leak it.
