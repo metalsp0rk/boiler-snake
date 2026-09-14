@@ -864,7 +864,7 @@ ledger needed.
 | `/gork budget default <limit>` | Guild-default tri-state (`-1` blocked, `0` unlimited, `1–1000`) |
 | `/gork budget channel <channel> <limit>` | Add/replace a channel rule |
 | `/gork budget category <category> <limit>` | Add/replace a category rule |
-| `/gork budget remove channel\|category <id>` | Drop the rule (channels fall back to category → guild default) |
+| `/gork budget remove_channel\|remove_category <target\|id>` | Drop the rule (channels fall back to category → guild default; thread targets address the parent rule; raw `id` covers deleted channels) |
 | `/gork budget list` | Guild default + rules table with `created_by` provenance |
 
 - `/gork status` gains a `Budget` line (`default 5 · 3 rules`).

@@ -293,6 +293,7 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 4. Is the asker still within the per-user cooldown? A cooldown hit gets a **🕐 reaction** on the message and no reply (staff bypass; a 🕐 with no reply means "ask again in a bit")
 5. If **one specific user** always gets the "*brain went to lunch*" reply while others work — check `/gork bans`; banned users are answered with that exact text (no LLM call)
 6. Did a budget get configured (`/gork budget list`)? An over-budget or blocked scope replies with one terse line (then goes silent for an hour per user+scope); resets 00:00 UTC
+7. If the **budget check itself** fails (DB error), triggers fail **closed**: the "*brain went to lunch*" reply, no answers and no counts until the DB recovers (logged as `[gork] budget gate error`)
 
 ### Web search / page reading not happening
 

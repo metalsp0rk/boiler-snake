@@ -1013,12 +1013,12 @@ Configure and moderate [Gork](../gork.md), the AI keyword Q&A bot. Q&A itself is
 /gork ban user:@SomeUser
 /gork unban user:@SomeUser
 /gork bans
- /gork memory show
- /gork budget default 10
- /gork budget channel target:#general limit:3
- /gork budget list
- /gork status
- ```
+/gork memory show
+/gork budget default 10
+/gork budget channel target:#general limit:3
+/gork budget list
+/gork status
+```
 
 | Subcommand | Description |
 |------------|-------------|
@@ -1050,7 +1050,7 @@ Configure and moderate [Gork](../gork.md), the AI keyword Q&A bot. Q&A itself is
 | Action | Description |
 |--------|-------------|
 | `default limit:<n>` | Guild-default daily limit: `-1` blocked, `0` unlimited (**default**), `1–1000` successful answers per user per UTC day |
-| `channel target:<ch> limit:<n>` | Add/replace a channel rule (threads are channels) |
+| `channel target:<ch> limit:<n>` | Add/replace a channel rule (a thread target binds to its **parent channel**) |
 | `category target:<cat> limit:<n>` | Add/replace a category rule — pools every channel inside it |
 | `remove_channel target:<ch>` / `id:<n>` | Drop the rule — falls back to category → guild default |
 | `remove_category target:<cat>` / `id:<n>` | Drop the rule — falls back to the guild default |

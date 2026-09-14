@@ -733,7 +733,9 @@ async function runGorkHook(client, message) {
             return; // finally still runs: typing stops, slot releases
           }
           console.log(
-            `[gork] budget ${dequeueGate.kind} at dequeue in ${guildId}: user=${message.author.id} day=${budgetDay}`,
+            `[gork] budget ${dequeueGate.kind} at dequeue in ${guildId}: user=${message.author.id} scope=${
+              dequeueGate.scope ? `${dequeueGate.scope.scopeKind}/${dequeueGate.scope.scopeId}` : "?"
+            } day=${budgetDay}`,
           );
           if (
             shouldSendBudgetRejection({
