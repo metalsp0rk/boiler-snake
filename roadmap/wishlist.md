@@ -99,6 +99,16 @@
 
 ---
 
+## 5. Code-review leftovers (gork budget PR #72, 2026-09-16)
+
+Low-priority polish from the two deep-review passes on the daily-usage-budget PR — deliberately parked as non-blocking.
+
+- [ ] **Shared thread-type duck constant** — the `{10, 11, 12}` thread-type set exists three times: `THREAD_TYPES` in `src/features/gork/budget.js` (export it), `THREAD_TYPES` in `src/features/gork/channel.js`, and inline `[10, 11, 12]` literals in `src/features/gork/index.js` (`setBudgetScope` / `removeBudgetScope`). Export one constant (or an `isThreadLike(channel)` helper) from `budget.js` and import it everywhere — drift risk only; values match today.
+- [ ] **Fail-closed coverage for the `over`-branch build** — `checkGorkBudget()` promises "never throws for budget reasons; a throw maps to `kind:"error"` (fail-closed-loud)", but the `over` branch builds `scopeLabel(scope, channel)` OUTSIDE the two try blocks (`src/features/gork/budget.js`, over-budget reply construction). A throwing property getter on the channel object would escape to the trigger's outer catch → logged silent drop. Wrap the label/reply construction in the existing error try so any unexpected throw still becomes `kind: "error"`.
+- [ ] **Keep the DB-reopen integration test last** — `test/integration/gork-budget.test.js`'s reopen case calls `resetSrcModules()` mid-file (require-cache reset). Harmless today (it's the last test; each file is its own process), but moving it to its own file or leaving a "must stay last" comment would protect anyone appending below it.
+
+---
+
 ## Verified clean on 2026-09-09 — do NOT re-audit these
 
 - **Secrets**: repo-wide scan (docs, tests, roadmap, `.env.example`) found zero real/realistic-looking tokens; all placeholders clearly fake.
