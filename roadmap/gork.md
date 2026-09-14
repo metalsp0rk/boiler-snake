@@ -17,7 +17,7 @@ engineering beyond documentation.
 
 ### Status
 
-**Shipped** — design locked in [7.14](#714-design-decisions-locked). One planned extension is design-locked but **not implemented**: [7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-unimplemented) (per-scope daily usage budget).
+**Shipped** — design locked in [7.14](#714-design-decisions-locked). The per-scope daily usage budget extension ([7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-shipped)) is implemented (2026-09, migration `026_gork_budget`).
 
 ---
 
@@ -760,7 +760,11 @@ order, keyed upsert overwrite, eviction order).
 
 ---
 
-### 7.17 Daily usage budget by scope — 2026-09 design (LOCKED 2026-09-10 — decisions 30–37; unimplemented)
+### 7.17 Daily usage budget by scope — 2026-09 design (LOCKED 2026-09-10 — decisions 30–37; shipped)
+
+**Implemented 2026-09** as migration `026_gork_budget` + `src/db/repositories/gorkBudget.js` + `src/features/gork/budget.js` (gate/rejections/dedup) + trigger wiring + `/gork budget` + docs/tests. Two implementation facts differ from the planning-time sketch: the migration id is **026** (025 shipped as `github_releases` before this landed — the "reserve the next free id at implementation" rule in action), and id columns are **TEXT** per the shipped repo convention (`gork_user_blocks`/`gork_memories`), not the sketch's INTEGER.
+
+**Review revisions (2026-09 deep review, pre-PR):** (1) **threads bind their parent channel** — the channel rule layer resolves thread triggers to the parent channel id (`channelScopeIdFor` in `budget.js`), so a `-1` kill switch or cap on a channel covers its threads and one channel shares a single counter across them (mirrors the thread→category climb the design already implied); `/gork budget channel` normalizes a thread target to the parent id on both set and remove, so a thread-id rule can never exist and rot. (2) A budget-gate **DB-read failure fails closed AND loud**: no LLM call, no count, and the trigger gets the locked `LLM_FAILURE_REPLY` (throttled like a rejection) — per AGENTS.md the old silent drop was not acceptable. (3) Blocked-scope wording extends per winning scope ("this category." / "this server."), superseding the channel-only §7.17.5 example; the Q&A audit `Budget` field and rejection dedup semantics are unchanged.
 
 **Why:** the per-user cooldown (7.6) paces *rate*, not *volume* — at the 180 s default a
 single user can still rack up hundreds of calls a day. Owners want a volume knob: **"a
@@ -872,8 +876,9 @@ ledger needed.
 
 #### 7.17.8 Database
 
-Planned migration — **reserve the next free id at implementation time** (027 at
-planning-time; 025/026 are the web-admin placeholders per [index.md §7](index.md)):
+Shipped as `026_gork_budget` (027 was the planning-time guess; ids shift — see the
+reserve-at-implementation rule in [index.md §7](index.md)). Ids are TEXT columns
+(repo convention), not the INTEGER of this sketch:
 
 ```sql
 ALTER TABLE guild_settings ADD COLUMN gork_daily_limit INTEGER NOT NULL DEFAULT 0;

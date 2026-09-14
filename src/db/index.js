@@ -32,6 +32,7 @@ const twitch = require("./repositories/twitch");
 const githubWatches = require("./repositories/githubWatches");
 const gorkAccess = require("./repositories/gorkAccess");
 const gorkMemory = require("./repositories/gorkMemory");
+const gorkBudget = require("./repositories/gorkBudget");
 
 module.exports = {
   db,
@@ -294,6 +295,15 @@ module.exports = {
   gorkMemoryDeleteForGuild: gorkMemory.deleteForGuild,
   gorkMemoryCountForGuild: gorkMemory.countForGuild,
   gorkMemoryTouch: gorkMemory.touchMemories,
+
+  // gork daily usage budget (per-scope, roadmap §7.17)
+  resolveGorkBudget: gorkBudget.resolveBudget,
+  clampGorkDailyLimit: gorkBudget.clampDailyLimit,
+  upsertGorkBudgetRule: gorkBudget.upsertGorkBudgetRule,
+  deleteGorkBudgetRule: gorkBudget.deleteGorkBudgetRule,
+  listGorkBudgetRules: gorkBudget.listGorkBudgetRules,
+  getGorkUsage: gorkBudget.getGorkUsage,
+  incrementGorkUsage: gorkBudget.incrementGorkUsage,
 
   // ticket panels (stored registry)
   createTicketPanel: tickets.createTicketPanel,
