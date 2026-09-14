@@ -13,6 +13,9 @@
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-4o-mini";
 
+/** Max chars kept from a provider error response body for diagnostics. */
+const ERROR_BODY_MAX_CHARS = 300;
+
 /**
  * Fire one optional capture event. A sink failure must never break the
  * completion loop or escape into the reply path — it degrades to a warn
@@ -63,7 +66,11 @@ function getAiConfig() {
  * @returns {Promise<object>}
  *   ok:true → data (parsed JSON body).
  *   ok:false → status (HTTP code) and/or error + reason
- *   ("http" | "network" | "timeout").
+ *   ("http" | "network" | "timeout"), plus url (the endpoint that was
+ *   hit) and — on an HTTP error — errorBody: a truncated snippet of the
+ *   provider's error response body, which usually names the real cause
+ *   ("invalid API key", "model not found", context-length overflow…)
+ *   that a bare `HTTP 4xx` never tells.
  */
 async function requestCompletion(cfg, payload, opts = {}) {
   const controller = new AbortController();
@@ -77,8 +84,9 @@ async function requestCompletion(cfg, payload, opts = {}) {
     else opts.signal.addEventListener("abort", onAbort, { once: true });
   }
   const doFetch = opts.fetchImpl || globalThis.fetch;
+  const url = `${cfg.baseUrl}/chat/completions`;
   try {
-    const res = await doFetch(`${cfg.baseUrl}/chat/completions`, {
+    const res = await doFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -88,11 +96,25 @@ async function requestCompletion(cfg, payload, opts = {}) {
       signal: controller.signal,
     });
     if (!res.ok) {
+      // Diagnostic capture: the provider's error body almost always
+      // explains a fast reject (wrong model name, bad key, unknown
+      // param, context overflow). Read it best-effort — a broken/absent
+      // body reader must never change the result shape.
+      let errorBody = "";
+      try {
+        if (typeof res.text === "function") {
+          errorBody = (await res.text()).trim().slice(0, ERROR_BODY_MAX_CHARS);
+        }
+      } catch {
+        // Body unreadable: keep the status-only error.
+      }
       return {
         ok: false,
         status: res.status,
         reason: "http",
         error: `HTTP ${res.status}`,
+        url,
+        ...(errorBody ? { errorBody } : {}),
       };
     }
     const data = await res.json();
@@ -102,6 +124,7 @@ async function requestCompletion(cfg, payload, opts = {}) {
       ok: false,
       reason: controller.signal.aborted ? "timeout" : "network",
       error: err?.message || String(err),
+      url,
     };
   } finally {
     if (timer) clearTimeout(timer);
@@ -170,6 +193,10 @@ async function completeOnce(cfg, opts) {
       status: res.status ?? null,
       reason: res.reason,
       error: res.error,
+      // Endpoint + provider error-body snippet: a fast HTTP reject is
+      // meaningless without them (the interaction log records these).
+      url: res.url ?? null,
+      errorBody: res.errorBody ?? null,
       durationMs: Date.now() - httpStartedAt,
     });
     return res;
@@ -220,6 +247,10 @@ function failure(result, startedAt, toolCalls) {
     status: result.status ?? null,
     error: result.error || "unknown error",
     reason: result.reason || "network",
+    // Diagnostic passthrough (see requestCompletion): which endpoint was
+    // hit, and the provider's own words when it sent an error body.
+    url: result.url ?? null,
+    errorBody: result.errorBody ?? null,
     durationMs: Date.now() - startedAt,
     toolCalls,
     finishReason: null,
@@ -257,6 +288,9 @@ function success(content, startedAt, toolCalls, meta = {}) {
  * @property {string|null} error Human-readable failure reason
  * @property {number|null} status HTTP status on provider error
  * @property {string|null} reason "http" | "network" | "timeout" | "empty" | "cap" | null
+ * @property {string|null} url Endpoint hit on failure (null when absent)
+ * @property {string|null} errorBody Truncated provider error response body
+ *   on HTTP failure (null when absent/unreadable)
  * @property {number} durationMs Wall-clock ms for the whole call
  * @property {number} toolCalls Tool executions (tool loop only)
  * @property {string|null} finishReason Provider finish_reason of the final
