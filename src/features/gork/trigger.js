@@ -5,11 +5,15 @@
  * The pipeline hook runs only fast checks inline, in order:
  * guild + author + non-bot, text-based channel, guild enable switch +
  * keyword enabled, open-ticket channel skip, AI key present, keyword
- * match, keyword-alone rule, per-user cooldown (staff bypass; a hit reacts
- * to the trigger with a clock emoji), guild ban list (banned users get the
- * LLM-failure reply, no staff bypass), queue admission. The slow LLM job
- * is then fired as a detached promise (caught + logged) so the
- * onMessageCreate pipeline never stalls — XP awards keep flowing.
+ * match, keyword-alone rule, per-scope daily budget (§7.17: blocked or
+ * over-budget bounces with a terse deduped reply, staff included),
+ * per-user cooldown (staff bypass; a hit reacts to the trigger with a
+ * clock emoji), guild ban list (banned users get the LLM-failure reply,
+ * no staff bypass), queue admission. The slow LLM job is then fired as a
+ * detached promise (caught + logged) so the onMessageCreate pipeline never
+ * stalls — XP awards keep flowing. The job re-checks the budget at
+ * dequeue and counts a success once all reply chunks landed, before the
+ * queue slot is released (no overage by construction).
  *
  * Canned replies (LOCKED — roadmap/gork.md decision 20, verbatim):
  * - queue full:  "My one (1) brain is already busy, and the queue is full. Your question has been dropped — no hard feelings."
@@ -51,6 +55,12 @@ const {
   runMemoryTurn,
   formatExistingMemoriesBlock,
 } = require("./memory");
+const {
+  checkGorkBudget,
+  shouldSendBudgetRejection,
+  recordGorkBudgetUsage,
+  formatBudgetLabel,
+} = require("./budget");
 const {
   logGorkQa,
   logGorkFailure,
@@ -562,6 +572,63 @@ async function runGorkHook(client, message) {
     //    no LLM call, no reply (decision 3).
     if (!question && !hasReference(message)) return;
 
+    // 7.5. Daily usage budget (§7.17, decision 33): resolve the scope and
+    //      enforce BEFORE the cooldown (check order: match → scope → blocked
+    //      → over budget → cooldown → queue admission). Staff are NOT exempt
+    //      (decision 35). One UTC day key for the whole message lifetime —
+    //      enqueue check, dequeue re-check, and the success increment all
+    //      use the trigger message's day (decision 36). Rejections are
+    //      console-logged and replied at most 1×/user/scope/hour (decision
+    //      34); a budget-resolve DB error fails CLOSED with the locked
+    //      canned failure reply (logged; throttled like a rejection so a
+    //      broken settings read can't spam) — never a silent drop.
+    const budgetDay = memDateFromMessage(message);
+    const budgetGate = checkGorkBudget({
+      guildId,
+      userId: message.author.id,
+      channel,
+      day: budgetDay,
+    });
+    if (!budgetGate.allowed) {
+      if (budgetGate.kind === "error") {
+        // checkGorkBudget already console.error'd the cause. Fail closed:
+        // no LLM call, no count — but the user gets the sanctioned canned
+        // reply (an unexplained silence would be indistinguishable from
+        // gork being broken/disabled). Throttled via a synthetic scope so
+        // repeated DB failures can't turn every trigger into a reply.
+        console.error(
+          `[gork] budget gate error in ${guildId}: user=${message.author.id} day=${budgetDay} — failing closed`,
+        );
+        if (
+          shouldSendBudgetRejection({
+            guildId,
+            userId: message.author.id,
+            scope: { scopeKind: "error", scopeId: "0" },
+          })
+        ) {
+          await message.reply(LLM_FAILURE_REPLY).catch(() => {});
+        }
+        return;
+      }
+      console.log(
+        `[gork] budget ${budgetGate.kind} in ${guildId}: user=${message.author.id} scope=${
+          budgetGate.scope ? `${budgetGate.scope.scopeKind}/${budgetGate.scope.scopeId}` : "?"
+        } day=${budgetDay}`,
+      );
+      if (
+        shouldSendBudgetRejection({
+          guildId,
+          userId: message.author.id,
+          scope: budgetGate.scope,
+        })
+      ) {
+        await message
+          .reply({ content: budgetGate.reply, allowedMentions: NO_PING_MENTIONS })
+          .catch(() => {});
+      }
+      return;
+    }
+
     // 8. Staff (ManageGuild or any staff_roles role) bypass the cooldown.
     const staff =
       Boolean(
@@ -630,8 +697,59 @@ async function runGorkHook(client, message) {
       // §7.16.2 read-path result (decision 27) — declared here (not in the
       // try) so the post-send write turn after the finally can reuse it.
       let mem = { block: "", mode: "none", indexed: 0, selectedIds: [], rows: [], allRows: [] };
+      // Winning scope for the success increment (decision 30); refreshed by
+      // the dequeue re-check below in case rules changed while queued.
+      let budgetScope = budgetGate.scope;
       try {
         if (slot.queued) await slot.turn; // wait for our FIFO slot
+
+        // §7.17.4 dequeue re-check: with the cooldown disabled a user can
+        // hold several queued triggers, and earlier dequeues can spend the
+        // remaining budget — so this one bounces WITHOUT an LLM call and
+        // WITHOUT a count. Increment-before-slot-release (decision 32) makes
+        // overage impossible: every dequeue reads post-increment counts.
+        const dequeueGate = checkGorkBudget({
+          guildId,
+          userId: message.author.id,
+          channel,
+          day: budgetDay,
+        });
+        if (!dequeueGate.allowed) {
+          if (dequeueGate.kind === "error") {
+            // Fail closed with the canned reply (same contract as the
+            // enqueue site): no LLM call, no count, never silence.
+            console.error(
+              `[gork] budget gate error at dequeue in ${guildId}: user=${message.author.id} day=${budgetDay} — failing closed`,
+            );
+            if (
+              shouldSendBudgetRejection({
+                guildId,
+                userId: message.author.id,
+                scope: { scopeKind: "error", scopeId: "0" },
+              })
+            ) {
+              await message.reply(LLM_FAILURE_REPLY).catch(() => {});
+            }
+            return; // finally still runs: typing stops, slot releases
+          }
+          console.log(
+            `[gork] budget ${dequeueGate.kind} at dequeue in ${guildId}: user=${message.author.id} day=${budgetDay}`,
+          );
+          if (
+            shouldSendBudgetRejection({
+              guildId,
+              userId: message.author.id,
+              scope: dequeueGate.scope,
+            })
+          ) {
+            await message
+              .reply({ content: dequeueGate.reply, allowedMentions: NO_PING_MENTIONS })
+              .catch(() => {});
+          }
+          return; // finally still runs: typing stops, slot releases, no count
+        }
+        budgetScope = dequeueGate.scope;
+
         // Fix 3 hardening: buildContext is never-rejects by contract, but
         // a hung channel fetch would hold the guild slot forever (the
         // guild then looks "crashed"). Deadline it; degrade to no context.
@@ -821,6 +939,30 @@ async function runGorkHook(client, message) {
           // §7.16.3 (decision 25): the write path may only feed on a real
           // shipped (sanitized + capped) answer — never a canned reply.
           shippedAnswer = capped;
+          // §7.17.3 (decision 32): count this success exactly once now that
+          // EVERY reply chunk landed — deliberately here, inside the try and
+          // before the finally releases the queue slot, so the next dequeue
+          // reads the authoritative count (decision 33). An LLM failure, a
+          // mid-answer send failure, or a dequeue bounce never reaches this
+          // line and never counts. A failed increment is logged, not fatal:
+          // the answer already shipped (worst case the budget under-counts).
+          let budgetLabel;
+          try {
+            const used = recordGorkBudgetUsage({
+              guildId,
+              userId: message.author.id,
+              scope: budgetScope,
+              day: budgetDay,
+            });
+            if (used !== null) {
+              budgetLabel = formatBudgetLabel(budgetScope, used, channel);
+            }
+          } catch (err) {
+            console.error(
+              `[gork] budget increment failed in ${guildId}:`,
+              err?.message || err,
+            );
+          }
           // Audit posts are fire-and-forget for Discord but tracked for the
           // test settle seam, so "idle" also implies audit embeds landed.
           trackGorkWork(
@@ -841,6 +983,9 @@ async function runGorkHook(client, message) {
               memoryLabel: memoryOn
                 ? formatMemoryLabel(mem, recalled)
                 : undefined,
+              // Budget label (§7.17.7): "3/5 in #general" — only present
+              // when the effective limit is a real cap (>= 1).
+              budgetLabel,
             }),
           );
         } else {

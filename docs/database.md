@@ -52,6 +52,8 @@ boiler-snake/
 | `guild_channel_backfill_cursor` | Guild-wide per-channel history scan progress |
 | `gork_user_blocks` | Users blocked from using gork (AI Q&A) per guild |
 | `gork_memories` | Gork community memory rows (per person; guild-scoped `#id` handles) |
+| `gork_budget_rules` | Gork per-channel/category daily-limit rules (tri-state) |
+| `gork_usage` | Gork daily usage counters (per user + winning scope + UTC day) |
 
 ---
 
@@ -190,6 +192,7 @@ CREATE TABLE guild_settings (
   gork_cooldown_sec INTEGER NOT NULL DEFAULT 180,    -- seconds between answers per user; 0 = off
   gork_memory_enabled INTEGER NOT NULL DEFAULT 0,    -- community memory switch (default off)
   gork_memory_chars INTEGER NOT NULL DEFAULT 12000,  -- memory-block char budget; 0 = unlimited
+  gork_daily_limit INTEGER NOT NULL DEFAULT 0,       -- guild-default daily budget; -1 blocked | 0 unlimited | 1..1000
 
   audit_log_channel_id TEXT,                     -- NULL when not configured
   message_log_channel_id TEXT,                   -- NULL when not configured
@@ -232,6 +235,7 @@ CREATE TABLE guild_settings (
 | `gork_cooldown_sec` | 180 | Seconds between gork answers per user (`0` = off) |
 | `gork_memory_enabled` | 0 | Community memory master switch (memory inert until on) |
 | `gork_memory_chars` | 12000 | Memory-block char budget (`0` = unlimited) |
+| `gork_daily_limit` | 0 | Guild-default gork daily budget: `-1` blocked, `0` unlimited, `1–1000` (clamped on write) |
 | `audit_log_channel_id` | NULL | Staff audit log channel |
 | `message_log_channel_id` | NULL | Deleted-message log channel |
 | `event_reminder_channel_id` | NULL | Default event-reminder notify channel |
@@ -1042,7 +1046,7 @@ See [User Activity Summary](user-activity.md).
 
 ### 19. Gork tables
 
-Access control and community memory for [Gork](gork.md) (AI keyword Q&A). Created by migrations `022_gork_access` and `023_gork_memory`; all gork configuration lives as `gork_*` columns on [`guild_settings`](#4-guild_settings) (added by migrations `021`–`023`).
+Access control, community memory, and daily usage budgets for [Gork](gork.md) (AI keyword Q&A). Created by migrations `022_gork_access`, `023_gork_memory`, and `026_gork_budget`; all gork configuration lives as `gork_*` columns on [`guild_settings`](#4-guild_settings) (added by migrations `021`–`023`, `026`).
 
 #### `gork_user_blocks`
 
@@ -1134,6 +1138,52 @@ DELETE FROM gork_memories WHERE guild_id=?
 
 **Eviction**: each person's rows are capped (25 by default); overflow is deleted ranked by `importance DESC, COALESCE(last_used_at, updated_at) DESC, mem_date DESC, id DESC` — so recalling a memory (stamping `last_used_at`) protects it from eviction.
 
+#### `gork_budget_rules`
+
+Per-scope daily-limit overrides for the gork usage budget (roadmap §7.17). Resolution is **channel → category → guild default** (`guild_settings.gork_daily_limit`); the most specific rule wins and owns the single counter. Limits are tri-state and clamped on write.
+
+```sql
+CREATE TABLE gork_budget_rules (
+  guild_id    TEXT NOT NULL,
+  scope_kind  TEXT NOT NULL,                -- 'channel' | 'category'
+  target_id   TEXT NOT NULL,                -- channel/thread or category id
+  daily_limit INTEGER NOT NULL,             -- -1 blocked | 0 unlimited | 1..1000
+  created_by  TEXT,                         -- staff provenance (/gork budget list)
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (guild_id, scope_kind, target_id)
+);
+```
+
+#### `gork_usage`
+
+Daily success counters: one row per (user, **winning** scope, UTC day). DB-backed on purpose — a restart must not refund budgets. `day` is the trigger message's UTC calendar date (`YYYY-MM-DD`, reset 00:00 UTC); guild-default scope rows store `scope_id='0'`. Days older than yesterday are pruned lazily on the increment path (no ticker).
+
+```sql
+CREATE TABLE gork_usage (
+  guild_id   TEXT NOT NULL,
+  user_id    TEXT NOT NULL,
+  scope_kind TEXT NOT NULL,                 -- 'channel' | 'category' | 'guild'
+  scope_id   TEXT NOT NULL,                 -- channel/category id; '0' = guild default
+  day        TEXT NOT NULL,                 -- UTC date 'YYYY-MM-DD'
+  count      INTEGER NOT NULL DEFAULT 0,    -- successful (fully-delivered) answers
+  PRIMARY KEY (guild_id, user_id, scope_kind, scope_id, day)
+);
+```
+
+**Query patterns**:
+```javascript
+// Count one success (upsert +1) — called once per trigger after every reply
+// chunk landed, before the guild queue slot is released
+INSERT INTO gork_usage (guild_id, user_id, scope_kind, scope_id, day, count)
+VALUES (?, ?, ?, ?, ?, 1)
+ON CONFLICT(...) DO UPDATE SET count = count + 1;
+DELETE FROM gork_usage WHERE day < ?;   -- lazy prune (< yesterday), same write path
+
+// Budget check (enqueue AND dequeue): used >= limit → bounce
+SELECT count FROM gork_usage
+WHERE guild_id=? AND user_id=? AND scope_kind=? AND scope_id=? AND day=?
+```
+
 See [Gork (AI Keyword Q&A)](gork.md).
 
 ---
@@ -1171,6 +1221,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `023_gork_memory` | `gork_memories` table (per-person community memory) + `gork_memory_enabled` / `gork_memory_chars` columns |
 | `024_staff_roles_added_by` | `staff_roles.added_by` provenance column (who added the role; NULL = unknown) |
 | `025_github_releases` | `github_watches` table (repo → channel routing, per-repo token, release pointer) |
+| `026_gork_budget` | `gork_budget_rules` + `gork_usage` tables + `gork_daily_limit` column (gork daily usage budget, roadmap §7.17) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
