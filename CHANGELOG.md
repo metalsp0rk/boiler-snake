@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.13.0...v1.14.0) (2026-09-14)
+
+
+### Features
+
+* **gork:** debug instrumentation for fast LLM failures ([4a252d9](https://github.com/metalsp0rk/boiler-snake/commit/4a252d986c9b1d9cb61fe85f7c7291cf413e97c8))
+
 ## [1.13.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.12.0...v1.13.0) (2026-09-14)
 
 
