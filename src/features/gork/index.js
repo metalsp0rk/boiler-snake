@@ -878,7 +878,9 @@ async function setBudgetScope(client, interaction, guildId, scopeKind) {
     command: "/gork budget",
     actor: interaction.user,
     changes: [
-      `${scopeKind} ${target.name || targetId} (\`${targetId}\`): ${formatDailyLimit(stored)} (\`${stored}\`)`,
+      `${scopeKind} ${target.name || targetId} (\`${targetId}\`): ${formatDailyLimit(stored)} (\`${stored}\`)${
+        boundToThreadParent ? " — bound from thread target to its parent channel" : ""
+      }`,
     ],
   }).catch(() => {});
   // Categories don't render as <#id> mentions on Discord — backtick them
@@ -916,7 +918,15 @@ async function removeBudgetScope(client, interaction, guildId, scopeKind) {
       typeof target.isThread === "function"
         ? Boolean(target.isThread())
         : [10, 11, 12].includes(Number(target.type));
-    if (isThread && target.parent?.id) targetId = String(target.parent.id);
+    if (isThread) {
+      if (!target.parent?.id) {
+        return replyEphemeral(
+          interaction,
+          "Could not resolve that thread's parent channel — remove the rule by the parent channel or its raw `id`.",
+        );
+      }
+      targetId = String(target.parent.id);
+    }
   }
   const removed = deleteGorkBudgetRule(guildId, scopeKind, targetId);
   if (!removed) {
