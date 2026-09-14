@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.13.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.12.0...v1.13.0) (2026-09-14)
+
+
+### Features
+
+* **gork:** full interaction logging for E2E replay ([0315120](https://github.com/metalsp0rk/boiler-snake/commit/031512080d9d6498cabb521d4bd39bcdb15e73d3))
+* **gork:** per-scope daily usage budget (roadmap 7.17, decisions 30-37) ([42bc640](https://github.com/metalsp0rk/boiler-snake/commit/42bc640695008dfbb5d029f57705900462997ecd))
+
+
+### Bug Fixes
+
+* **gork:** budget review nits — thread-binding docs, dequeue log scope, remove-side parity ([160814a](https://github.com/metalsp0rk/boiler-snake/commit/160814a5fb7116da5d13d26640484150ed9b707c))
+
 ## [1.12.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.11.1...v1.12.0) (2026-09-13)
 
 
