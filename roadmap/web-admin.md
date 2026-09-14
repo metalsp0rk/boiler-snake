@@ -114,8 +114,8 @@ Rules:
 
 | Migration | Change |
 |-----------|--------|
-| `025_web_sessions` | `web_sessions (id TEXT PK, user_id TEXT, discord_tag TEXT, created_at, last_seen_at, expires_at)` + `idx(user_id)`; prune index on `expires_at` |
-| `026_admin_audit` | `admin_audit (id, guild_id, actor_user_id, origin 'web'\|'slash'\|'system', action, target_type, target_id, details_json, created_at)` + `idx(guild_id, created_at)` |
+| `027_web_sessions` | `web_sessions (id TEXT PK, user_id TEXT, discord_tag TEXT, created_at, last_seen_at, expires_at)` + `idx(user_id)`; prune index on `expires_at` |
+| `028_admin_audit` | `admin_audit (id, guild_id, actor_user_id, origin 'web'\|'slash'\|'system', action, target_type, target_id, details_json, created_at)` + `idx(guild_id, created_at)` |
 
 > **Numbering note:** the migration ids above are planning-time placeholders. Every migration shipped after this plan was written shifts them — reserve the next free id at implementation time (verify against `src/db/migrations/` before numbering), never trust the numbers written here.
 
@@ -309,8 +309,8 @@ extraction onto Express 5 under `src/web/`. No behavior change, no auth yet.
 content yet.
 
 - [ ] **Task 0b.1:** `web_sessions` migration (**reserve the next free id at implementation
-    time** per the §8.5 note; planned `025`) + session repository + prune job on boot
-  - **Files:** `src/db/migrations/025_web_sessions.js`, `src/db/repositories/webSessions.js`
+    time** per the §8.5 note; planned `027`) + session repository + prune job on boot
+  - **Files:** `src/db/migrations/027_web_sessions.js`, `src/db/repositories/webSessions.js`
   - **Estimate:** 1.5 h
   - **Dependencies:** none
   - **Verification:** migration applies to fresh **and** existing DBs; prune unit test removes
@@ -497,9 +497,9 @@ per the §8.6 query-budget rule, and access-matrix entries.
 - [ ] **Task 1.11:** System — health, ticker states, OAuth state summary +
     **`admin_audit` viewer** (admin-only; queryable trail per §8.5); includes the audit-trail
     groundwork so a trail exists **before** the first web mutation (Phase 2): the
-    `admin_audit` migration (**reserve id at implementation time**, planned `026`), the
+    `admin_audit` migration (**reserve id at implementation time**, planned `028`), the
     `recordAudit()` helper, and the thin slash-handler write alongside existing embeds (§8.5)
-  - **Files:** `src/web/routes/system.js`, `src/db/migrations/026_admin_audit.js`,
+  - **Files:** `src/web/routes/system.js`, `src/db/migrations/028_admin_audit.js`,
     `src/db/repositories/adminAudit.js`, `src/web/middleware/audit.js`
   - **Estimate:** 4 h · **Dependencies:** Phase 0c
   - **Verification:** admin-only (staff/senior 404); viewer paginates `admin_audit` with the

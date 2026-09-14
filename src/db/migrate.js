@@ -33,6 +33,7 @@ const migrations = [
   require("./migrations/023_gork_memory"),
   require("./migrations/024_staff_roles_added_by"),
   require("./migrations/025_github_releases"),
+  require("./migrations/026_gork_budget"),
 ];
 
 const helpers = {

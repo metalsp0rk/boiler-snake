@@ -5,7 +5,9 @@
  *   per-user cooldown, staff prompt rules, the SearXNG web_search toggle,
  *   and the guild master enable switch; ban/unban/list users blocked from
  *   using gork in this guild; curate the per-person community memory
- *   (roadmap/gork.md §7.16) with `/gork memory` (off by default).
+ *   (roadmap/gork.md §7.16) with `/gork memory` (off by default); manage
+ *   per-scope daily usage budgets with `/gork budget` (roadmap/gork.md
+ *   §7.17 — tri-state `-1/0/cap`, channel → category → guild default).
  * - `handleGorkMessage`: the onMessageCreate pipeline hook — answers
  *   keyword triggers using conversation context and optional web search.
  *
@@ -18,7 +20,11 @@
  * failure; unlike the cooldown, staff status does NOT bypass a ban.
  */
 
-const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
+const {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  ChannelType,
+} = require("discord.js");
 const {
   getGuildSettings,
   updateGuildSettings,
@@ -32,6 +38,10 @@ const {
   gorkMemoryDeleteForSubject,
   gorkMemoryDeleteForGuild,
   gorkMemoryCountForGuild,
+  upsertGorkBudgetRule,
+  deleteGorkBudgetRule,
+  listGorkBudgetRules,
+  clampGorkDailyLimit,
 } = require("../../db");
 const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
@@ -40,6 +50,7 @@ const { sliceSafe } = require("../../core/text");
 const { getAiConfig } = require("../../core/ai");
 const { logConfigChange } = require("../logs/auditLog");
 const { handleGorkMessage, gorkQueue } = require("./trigger");
+const { formatDailyLimit } = require("./budget");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -57,6 +68,11 @@ const MEMORIES_LIST_MAX = 25;
 const MEMORY_BODY_MAX = 120;
 /** Char budget for the whole `/gork memory show` listing (then "…and N more"). */
 const MEMORY_LIST_TOTAL_MAX = 3800;
+/** Tri-state budget bounds (roadmap §7.17.2, decision 31). */
+const BUDGET_MIN = -1;
+const BUDGET_MAX = 1000;
+/** Max budget rules listed by `/gork budget list` (rest summarized). */
+const BUDGET_RULES_LIST_MAX = 25;
 
 const commands = [
   new SlashCommandBuilder()
@@ -227,6 +243,55 @@ const commands = [
           opt
             .setName("confirm")
             .setDescription("Set true to actually erase (clear)"),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("budget")
+        .setDescription(
+          "Per-user daily gork budgets per channel/category (roadmap §7.17).",
+        )
+        // Discord caps option depth at 2 → action choices carry the verbs.
+        .addStringOption((opt) =>
+          opt
+            .setName("action")
+            .setDescription("Which budget action to run")
+            .setRequired(true)
+            .addChoices(
+              { name: "default", value: "default" },
+              { name: "channel", value: "channel" },
+              { name: "category", value: "category" },
+              { name: "remove_channel", value: "remove_channel" },
+              { name: "remove_category", value: "remove_category" },
+              { name: "list", value: "list" },
+            ),
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("limit")
+            .setDescription(
+              "Successful answers per user per UTC day: -1 blocked, 0 unlimited, 1-1000",
+            )
+            .setMinValue(BUDGET_MIN)
+            .setMaxValue(BUDGET_MAX),
+        )
+        .addChannelOption((opt) =>
+          opt
+            .setName("target")
+            .setDescription("Channel or category for channel/category actions")
+            .addChannelTypes(
+              ChannelType.GuildText,
+              ChannelType.GuildAnnouncement,
+              ChannelType.GuildCategory,
+              ChannelType.PublicThread,
+              ChannelType.PrivateThread,
+            ),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("id")
+            .setDescription("Raw scope id for remove_* (when the picker lacks the channel)")
+            .setMaxLength(25),
         ),
     )
     .addSubcommand((sc) =>
@@ -719,6 +784,224 @@ async function handleMemory(client, interaction, guildId) {
 }
 
 /**
+ * `/gork budget default <limit>`: guild-default tri-state limit
+ * (-1 blocked, 0 unlimited, 1–1000 successful answers per user per UTC
+ * day; clamped by the settings layer — roadmap §7.17.2).
+ */
+async function setBudgetDefault(client, interaction, guildId) {
+  const limit = interaction.options.getInteger("limit");
+  if (limit === null) {
+    return replyEphemeral(
+      interaction,
+      `Provide \`limit\`: \`-1\` blocked · \`0\` unlimited · \`1–${BUDGET_MAX}\` successful answers per user per UTC day.`,
+    );
+  }
+  const settings = updateGuildSettings(guildId, { gork_daily_limit: limit });
+  const stored = settings.gork_daily_limit;
+  await logConfigChange(client, guildId, {
+    title: "Gork budget default updated",
+    command: "/gork budget",
+    actor: interaction.user,
+    changes: [`Guild-default daily budget: ${formatDailyLimit(stored)} (\`${stored}\`)`],
+  }).catch(() => {});
+  return replyEphemeral(
+    interaction,
+    `Guild-default daily budget set to **${formatDailyLimit(stored)}** (\`${stored}\`).`,
+  );
+}
+
+/**
+ * `/gork budget channel|category <target> <limit>`: add/replace a per-scope
+ * rule. The most specific scope wins (channel → category → guild default);
+ * a category rule pools every channel inside it (decision 30).
+ */
+async function setBudgetScope(client, interaction, guildId, scopeKind) {
+  const limit = interaction.options.getInteger("limit");
+  if (limit === null) {
+    return replyEphemeral(
+      interaction,
+      `Provide \`limit\`: \`-1\` blocked · \`0\` unlimited · \`1–${BUDGET_MAX}\` successful answers per user per UTC day.`,
+    );
+  }
+  const target = interaction.options.getChannel("target");
+  if (!target?.id) {
+    return replyEphemeral(
+      interaction,
+      `Pick the ${scopeKind} in \`target\` (or use \`/gork budget default\` for the guild-wide limit).`,
+    );
+  }
+  // Guard the picker against kind mismatches: a category rule on a text
+  // channel id (or vice versa) could never match a trigger — reject rather
+  // than store a dead rule.
+  const isCategory = Number(target.type) === ChannelType.GuildCategory;
+  if (scopeKind === "category" && !isCategory) {
+    return replyEphemeral(
+      interaction,
+      "`target` must be a **category** for `category` rules (a rule on a text channel belongs to `channel`).",
+    );
+  }
+  if (scopeKind === "channel" && isCategory) {
+    return replyEphemeral(
+      interaction,
+      "`target` must be a **channel/thread** for `channel` rules (use `category` for categories).",
+    );
+  }
+  // Threads bind their PARENT channel (mirrors the trigger-side resolution
+  // in budget.js `channelScopeIdFor`): a rule stored on a thread id could
+  // never match (thread triggers resolve to the parent), so normalize here
+  // instead of leaving a silent dead rule.
+  const isThread =
+    typeof target.isThread === "function"
+      ? Boolean(target.isThread())
+      : [10, 11, 12].includes(Number(target.type));
+  let targetId = String(target.id);
+  let boundToThreadParent = false;
+  if (scopeKind === "channel" && isThread) {
+    if (!target.parent?.id) {
+      return replyEphemeral(
+        interaction,
+        "Could not resolve that thread's parent channel — pick the parent channel directly instead.",
+      );
+    }
+    targetId = String(target.parent.id);
+    boundToThreadParent = true;
+  }
+  const stored = clampGorkDailyLimit(limit);
+  if (!upsertGorkBudgetRule(guildId, scopeKind, targetId, stored, interaction.user.id)) {
+    return replyEphemeral(
+      interaction,
+      `Could not store the ${scopeKind} rule for \`${targetId}\` — invalid target.`,
+    );
+  }
+  await logConfigChange(client, guildId, {
+    title: `Gork budget ${scopeKind} rule updated`,
+    command: "/gork budget",
+    actor: interaction.user,
+    changes: [
+      `${scopeKind} ${target.name || targetId} (\`${targetId}\`): ${formatDailyLimit(stored)} (\`${stored}\`)`,
+    ],
+  }).catch(() => {});
+  // Categories don't render as <#id> mentions on Discord — backtick them
+  // (same convention as `/gork budget list` and the remove replies).
+  const ref = scopeKind === "channel" ? `<#${targetId}>` : `\`${target.id}\` (\`${target.name ?? targetId}\`)`;
+  const threadNote = boundToThreadParent
+    ? " — thread target bound to its **parent channel** (threads share their parent's rule)"
+    : "";
+  return replyEphemeral(
+    interaction,
+    `Daily gork budget for ${scopeKind} ${ref} is now **${formatDailyLimit(stored)}** (\`${stored}\`)${threadNote}.`,
+  );
+}
+
+/**
+ * `/gork budget remove_channel|remove_category <id>`: drop a rule so the
+ * scope falls back to category → guild default. Accepts the picker or a raw
+ * id (deleted channels the picker cannot offer).
+ */
+async function removeBudgetScope(client, interaction, guildId, scopeKind) {
+  const target = interaction.options.getChannel("target");
+  const rawId = (interaction.options.getString("id") || "").trim();
+  let targetId = target?.id ? String(target.id) : rawId;
+  if (!targetId) {
+    return replyEphemeral(
+      interaction,
+      `Pick \`target\` or type the raw \`id\` of the ${scopeKind} rule to remove.`,
+    );
+  }
+  // Mirror the set-side normalization: thread targets address the PARENT
+  // channel's rule (thread-id rules are never stored, so deleting by thread
+  // id would falsely report "no rule").
+  if (scopeKind === "channel" && target) {
+    const isThread =
+      typeof target.isThread === "function"
+        ? Boolean(target.isThread())
+        : [10, 11, 12].includes(Number(target.type));
+    if (isThread && target.parent?.id) targetId = String(target.parent.id);
+  }
+  const removed = deleteGorkBudgetRule(guildId, scopeKind, targetId);
+  if (!removed) {
+    return replyEphemeral(
+      interaction,
+      `No \`${scopeKind}\` budget rule for \`${targetId}\` in this server.`,
+    );
+  }
+  await logConfigChange(client, guildId, {
+    title: `Gork budget ${scopeKind} rule removed`,
+    command: "/gork budget",
+    actor: interaction.user,
+    changes: [`Removed ${scopeKind} budget rule \`${targetId}\``],
+  }).catch(() => {});
+  const ref = scopeKind === "channel" ? `<#${targetId}>` : `\`${targetId}\``;
+  const fallback = scopeKind === "channel" ? "its category → the guild default" : "the guild default";
+  return replyEphemeral(
+    interaction,
+    `Removed the ${scopeKind} budget rule for ${ref} — it falls back to ${fallback}.`,
+  );
+}
+
+/**
+ * `/gork budget list`: guild default + every rule with `created_by`
+ * provenance (decision 37).
+ */
+async function listBudget(interaction, guildId) {
+  const settings = getGuildSettings(guildId);
+  const rules = listGorkBudgetRules(guildId);
+  const lines = rules.slice(0, BUDGET_RULES_LIST_MAX).map((r) => {
+    const ref = r.scope_kind === "channel" ? `<#${r.target_id}>` : `\`${r.target_id}\``;
+    const by = r.created_by ? ` · by <@${r.created_by}>` : "";
+    return `${r.scope_kind === "channel" ? "Channel" : "Category"} ${ref} — **${formatDailyLimit(r.daily_limit)}**${by}`;
+  });
+  if (rules.length > lines.length) {
+    lines.push(`…and ${rules.length - lines.length} more`);
+  }
+  const embed = baseEmbed({
+    color: Color.brand,
+    title: "Gork daily budgets",
+    timestamp: true,
+  });
+  embed.addFields(
+    {
+      name: "Guild default",
+      value: formatDailyLimit(settings.gork_daily_limit ?? 0),
+      inline: true,
+    },
+    {
+      name: "Rules",
+      value: lines.length
+        ? lines.join("\n")
+        : "none — the guild default applies everywhere",
+      inline: false,
+    },
+  );
+  await replyEphemeral(interaction, { embeds: [embed] });
+}
+
+/**
+ * /gork budget dispatcher (action option → verb).
+ */
+async function handleBudget(client, interaction, guildId) {
+  const action = (interaction.options.getString("action") || "").toLowerCase();
+  switch (action) {
+    case "default":
+      return setBudgetDefault(client, interaction, guildId);
+    case "channel":
+    case "category":
+      return setBudgetScope(client, interaction, guildId, action);
+    case "remove_channel":
+      return removeBudgetScope(client, interaction, guildId, "channel");
+    case "remove_category":
+      return removeBudgetScope(client, interaction, guildId, "category");
+    case "list":
+      return listBudget(interaction, guildId);
+    default:
+      return replyEphemeral(
+        interaction,
+        `Unknown budget action: \`${action}\`.`,
+      );
+  }
+}
+
+/**
  * /gork status: ephemeral embed of the current configuration.
  */
 async function showStatus(interaction, guildId) {
@@ -731,6 +1014,7 @@ async function showStatus(interaction, guildId) {
   const banCount = listGorkBlocks(guildId).length;
   const memoryOn = Number(settings.gork_memory_enabled ?? 0) === 1;
   const memoryCount = gorkMemoryCountForGuild(guildId);
+  const budgetRules = listGorkBudgetRules(guildId);
   const ai = getAiConfig();
   const searxngSet = Boolean(
     typeof process.env.SEARXNG_URL === "string" && process.env.SEARXNG_URL.trim(),
@@ -760,6 +1044,14 @@ async function showStatus(interaction, guildId) {
       value: memoryOn
         ? `on · ${Number(settings.gork_memory_chars ?? 12000)} chars · ${memoryCount} stored`
         : "off",
+      inline: true,
+    },
+    {
+      // §7.17.7: `default 5 · 3 rules` (tri-state rendered via formatDailyLimit).
+      name: "Budget",
+      value: `default ${formatDailyLimit(settings.gork_daily_limit ?? 0)} · ${budgetRules.length} rule${
+        budgetRules.length === 1 ? "" : "s"
+      }`,
       inline: true,
     },
   );
@@ -800,6 +1092,8 @@ async function handleGork(interaction, ctx) {
       return showBans(interaction, guildId);
     case "memory":
       return handleMemory(client, interaction, guildId);
+    case "budget":
+      return handleBudget(client, interaction, guildId);
     case "status":
       return showStatus(interaction, guildId);
     default:

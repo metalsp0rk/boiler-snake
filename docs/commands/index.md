@@ -1013,9 +1013,12 @@ Configure and moderate [Gork](../gork.md), the AI keyword Q&A bot. Q&A itself is
 /gork ban user:@SomeUser
 /gork unban user:@SomeUser
 /gork bans
-/gork memory show
-/gork status
-```
+ /gork memory show
+ /gork budget default 10
+ /gork budget channel target:#general limit:3
+ /gork budget list
+ /gork status
+ ```
 
 | Subcommand | Description |
 |------------|-------------|
@@ -1029,7 +1032,8 @@ Configure and moderate [Gork](../gork.md), the AI keyword Q&A bot. Q&A itself is
 | `unban <user>` | Lift a user's gork ban |
 | `bans` | List the users banned from gork in this server |
 | `memory <action>` | Curate the per-person community memory — see below |
-| `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state |
+| `budget <action>` | Per-user daily usage budgets per channel/category/server (tri-state, off by default) — see below |
+| `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state, budget default + rule count |
 
 `/gork memory` carries the verbs as an `action` choice (Discord caps option depth at 2), plus optional `user`, `id`, `chars`, and `confirm` options:
 
@@ -1041,7 +1045,20 @@ Configure and moderate [Gork](../gork.md), the AI keyword Q&A bot. Q&A itself is
 | `on` / `off` | Memory master switch (default **off** — each answered question costs an extra extraction call when on) |
 | `budget chars:<n>` | Memory-block cap (0–64,000; default **12,000**, 0 = unlimited; out-of-range values are clamped) |
 
-All `/gork` replies are ephemeral. Every config change — including bans and memory edits — posts a config-change embed to the audit channel (`/setlog audit`). See [Gork](../gork.md) for trigger, memory, and moderation behavior.
+`/gork budget` also carries its verbs as an `action` choice, plus `limit` (integer, −1–1000), `target` (channel/category picker), and `id` (raw scope id for removes):
+
+| Action | Description |
+|--------|-------------|
+| `default limit:<n>` | Guild-default daily limit: `-1` blocked, `0` unlimited (**default**), `1–1000` successful answers per user per UTC day |
+| `channel target:<ch> limit:<n>` | Add/replace a channel rule (threads are channels) |
+| `category target:<cat> limit:<n>` | Add/replace a category rule — pools every channel inside it |
+| `remove_channel target:<ch>` / `id:<n>` | Drop the rule — falls back to category → guild default |
+| `remove_category target:<cat>` / `id:<n>` | Drop the rule — falls back to the guild default |
+| `list` | Guild default + rules table with `created_by` provenance |
+
+Precedence is **channel → category → guild default → unlimited**; the winning scope owns the single counter. Checked at queue entry **and** promotion (overage impossible), staff are **not** exempt, counts only on fully-delivered answers, reset 00:00 UTC. See [Daily usage budget](../gork.md#daily-usage-budget).
+
+All `/gork` replies are ephemeral. Every config change — including bans, memory edits, and budget rule changes — posts a config-change embed to the audit channel (`/setlog audit`). See [Gork](../gork.md) for trigger, memory, and moderation behavior.
 
 ---
 

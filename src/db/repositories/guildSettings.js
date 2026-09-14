@@ -43,6 +43,17 @@ function normalizeGorkFlag(value) {
 }
 
 /**
+ * Normalize the guild-default gork daily budget (roadmap §7.17.2, decision
+ * 31): tri-state integer clamped to -1..1000. -1 = blocked (kill switch),
+ * 0 = unlimited (the default — the feature is opt-in), 1..1000 = successful
+ * answers per user per UTC day. Non-numeric input degrades to 0 (unlimited,
+ * i.e. feature off), never to a silent block.
+ */
+function clampGorkDailyLimit(value) {
+  return clampInt(value, -1, 1000, 0);
+}
+
+/**
  * Normalize the gork memory-block char budget (roadmap §7.16.2): integer in
  * 0–64,000. 0 is a VALID value (= unlimited), so this must NOT collapse 0 to
  * the default; over-range clamps down to 64,000, while negatives and any
@@ -110,6 +121,7 @@ function getGuildSettings(guildId) {
       gork_enabled: 1,
       gork_memory_enabled: 0,
       gork_memory_chars: 12000,
+      gork_daily_limit: 0,
       updated_at: now(),
     };
   }
@@ -153,6 +165,7 @@ function updateGuildSettings(guildId, patch) {
     "gork_enabled",
     "gork_memory_enabled",
     "gork_memory_chars",
+    "gork_daily_limit",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
@@ -205,6 +218,9 @@ function updateGuildSettings(guildId, patch) {
   }
   if (safePatch.gork_memory_chars !== undefined) {
     safePatch.gork_memory_chars = clampGorkMemoryChars(safePatch.gork_memory_chars);
+  }
+  if (safePatch.gork_daily_limit !== undefined) {
+    safePatch.gork_daily_limit = clampGorkDailyLimit(safePatch.gork_daily_limit);
   }
 
   // A sanitized value of undefined means "rejected" (over-length keyword) —

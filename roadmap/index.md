@@ -18,7 +18,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + post-MVP polish) | — |
-| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage, markdown + input policy; per-scope daily usage budget — design locked, unimplemented ([gork.md §7.17](gork.md)) |
+| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage, markdown + input policy; per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)) |
 | 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
 
 Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a work-as-time-allows backlog in [wishlist.md](wishlist.md) — feature files stay authoritative for design.
@@ -107,17 +107,17 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | `gork_user_blocks` | Per-guild gork ban list — `guild_id`+`user_id` PK, `created_by`, `created_at` (**shipped**, migration `022`) |
 | `guild_settings.gork_enabled` | Master server switch; `0` = fully silent (**shipped**, migration `022`) |
 | `gork_memories` + `guild_settings.gork_memory_enabled` / `gork_memory_chars` | Community memory (**shipped**, migration `023`) — memories keyed `(guild, person, date, title_key)` (key fields server-stamped); per-person cap + eviction; **off** by default; bodies-or-index block budget default 12,000 ([gork.md §7.16](gork.md)) |
-| `guild_settings.gork_daily_limit` + `gork_budget_rules` + `gork_usage` | Per-scope daily usage budget — tri-state limit (`-1` blocked / `0` unlimited / cap), channel → category → guild-default precedence, enqueue+dequeue checks, success-only counting (**planned**, `027` at planning-time — reserve next free id at implementation; [gork.md §7.17](gork.md)) |
+| `guild_settings.gork_daily_limit` + `gork_budget_rules` + `gork_usage` | Per-scope daily usage budget — tri-state limit (`-1` blocked / `0` unlimited / cap), channel → category → guild-default precedence, enqueue+dequeue checks, success-only counting (**shipped**, migration `026`; [gork.md §7.17](gork.md)) |
 
 ### Web admin console (planned)
 
 | Table / change | Notes |
 |----------------|-------|
-| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**planned**, migration `025` — `024` shipped as `staff_roles_added_by`) |
-| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**planned**, migration `026`) |
+| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**planned**, `027` at re-planning — `025` shipped as `github_releases`, `026` as `gork_budget`) |
+| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**planned**, `028` at re-planning) |
 | `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**planned**) |
 
-> **Migration numbering (planned):** the ids above (`025`/`026`) are planning-time placeholders — reserve the next free id at implementation time (verify against `src/db/migrations/` before numbering). See [web-admin.md §8.5](web-admin.md).
+> **Migration numbering (planned):** the ids above (`027`/`028`) are planning-time placeholders — reserve the next free id at implementation time (verify against `src/db/migrations/` before numbering). See [web-admin.md §8.5](web-admin.md).
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
@@ -215,5 +215,5 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 - [x] **Fix (shipped):** special-character safety in chunking/truncation — `safeCutIndex`/`sliceSafe` code-point cuts + `pullBeforeTokens` token-aware chunks + capped context slices (see [gork.md §7.15](gork.md))  
 - [ ] **Fix (open):** markdown hygiene + zero-width / bidi input policy (see [gork.md §7.15](gork.md), Fix 4)  
 - [x] **Feature (shipped):** gork community memory — per-person durable facts keyed **(person, date, title_key)** with server-stamped key fields; bodies-or-index MEMORY BLOCK per trigger (asker + mentioned + talked-about via the Fix 2 roster) under `gork_memory_chars`, `recall_memories` tool on overflow, post-send extraction turn after reply+audit+slot-release, staff-only `/gork memory show|forget|clear|on|off|budget` (locked decisions 25–29, migration `023`, default **off**; see [gork.md §7.16](gork.md))
-- [ ] **Feature (planned, design locked 2026-09-10):** per-scope daily usage budget — per-user X successful answers/day per channel/category (guild-default fallback, tri-state `-1/0/cap`), success-only counting, enqueue+dequeue no-overage checks (see [gork.md §7.17](gork.md))
+- [x] **Feature (shipped 2026-09):** per-scope daily usage budget — per-user X successful answers/day per channel/category (guild-default fallback, tri-state `-1/0/cap`), success-only counting, enqueue+dequeue no-overage checks (locked decisions 30–37, migration `026`, `/gork budget` command family; see [gork.md §7.17](gork.md))
 

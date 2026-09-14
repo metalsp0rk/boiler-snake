@@ -141,6 +141,10 @@ function jumpLink(label, guildId, message) {
  * @param {string} [opts.channelLabel] formatChannelLabel() output (e.g.
  *   "#general"); the inline "Channel" field is added only when this is a
  *   non-empty string (§7.18)
+ * @param {string} [opts.budgetLabel] formatBudgetLabel() output (e.g.
+ *   "3/5 in #general"); the inline "Budget" field is added only when this
+ *   is a non-empty string — i.e. an effective cap >= 1 applied (§7.17.7,
+ *   decision 37). Rejections never reach this embed (console-only).
  * @returns {Promise<void>}
  */
 async function logGorkQa(client, guildId, opts = {}) {
@@ -157,6 +161,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     replyMessage,
     memoryLabel,
     channelLabel,
+    budgetLabel,
   } = opts;
   try {
     const embed = baseEmbed({ color: Color.brand, title: "Gork Q&A", timestamp: true });
@@ -194,6 +199,16 @@ async function logGorkQa(client, guildId, opts = {}) {
       embed.addFields({
         name: "Memory",
         value: truncateField(memoryLabel.trim(), 1024),
+        inline: true,
+      });
+    }
+
+    // §7.17.7: inline Budget field ("3/5 in #general"), only when an
+    // effective cap >= 1 applied (unlimited/blocked → field absent).
+    if (typeof budgetLabel === "string" && budgetLabel.trim()) {
+      embed.addFields({
+        name: "Budget",
+        value: truncateField(budgetLabel.trim(), 1024),
         inline: true,
       });
     }

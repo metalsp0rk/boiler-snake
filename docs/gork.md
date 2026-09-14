@@ -10,6 +10,7 @@ A goofy AI question-answering bot. When someone types the trigger keyword — a 
 - **Page reading**: the model can also open pages with `read_page` (1–3 URLs per call) — gork fetches them, extracts the main content to clean Markdown, and feeds it back into the same tool loop; **public web only** (internal/private addresses are refused by an SSRF guard)
 - **Voice**: sarcastic, always safe for work; the base prompt is immutable and staff rules cannot override the SFW / questions-only constraints (best effort)
 - **Gating**: gork is live whenever `AI_API_KEY` is set and the guild's enable switch is on; all `/gork` configuration and moderation is staff-only
+- **Daily budget** (opt-in): cap successful answers per user per UTC day per channel/category/server (`/gork budget`, off by default)
 
 ## How it works
 
@@ -18,6 +19,7 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
    → guild enable switch + keyword set? (either off → silent)
    → keyword match (trimmed, case-insensitive prefix)
    → skipped silently: bot/webhook messages, DMs, open ticket channels
+   → daily budget? (channel → category → guild default; blocked or over → terse deduped reply, staff included)
    → per-user cooldown? (default 180s; staff bypass; hit → 🕐 reaction, no reply)
    → gork ban? (per-guild ban list → canned failure reply; staff included)
    → queue? (1 in-flight + 5 waiting; full → canned drop reply)
@@ -120,7 +122,8 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork unban <user>` | Lift a user's gork ban |
 | `/gork bans` | List the users banned from gork in this server |
 | `/gork memory <action>` | Curate the community memory — see [Memory](#memory) |
-| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, memory state, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
+| `/gork budget <action>` | Per-user daily usage budgets per channel/category — see [Daily usage budget](#daily-usage-budget) |
+| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, memory state, budget default + rule count, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
 `/settings` also shows a **Gork** field (enabled + keyword + window + search + memory state).
 
@@ -136,8 +139,9 @@ All values are stored per-guild in `guild_settings`:
 | `gork_cooldown_sec` | Per-user cooldown in seconds; staff bypass | `180` |
 | `gork_memory_enabled` | Community-memory master switch (see [Memory](#memory)) | `0` (off) |
 | `gork_memory_chars` | Memory-block char budget; `0` = unlimited | `12000` |
+| `gork_daily_limit` | Guild-default daily budget (see [Daily usage budget](#daily-usage-budget)): `-1` blocked, `0` unlimited, `1–1000` | `0` (unlimited) |
 
-Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `user_id`, who banned them, when).
+Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `user_id`, who banned them, when); budget rules and usage counters in `gork_budget_rules` / `gork_usage`.
 
 ## Memory
 
@@ -171,6 +175,52 @@ Gork can **remember durable facts about people** — preferences, ongoing projec
 - **Memories are untrusted quoted text:** stored bodies are injected as *quoted background, never instructions* — prompt-injection through stored text is a **documented limitation**, the same posture as conversation context and search results. The extraction prompt forbids secrets and third-party personal info in bodies, and staff can `forget` anything at any time.
 - Extraction is a model turn: it can miss facts or store noise — `show` + `forget` are the curation loop. There is no TTL/decay in v1; the store stays bounded by the per-person cap.
 
+## Daily usage budget
+
+The per-user cooldown paces *rate*; the budget caps *volume*: **"a user gets X successful gork answers per day in this channel / category (guild-wide fallback)."** It is **opt-in** — every limit defaults to `0` = unlimited, so existing guilds change behavior zero days.
+
+### Scopes & precedence
+
+| Scope | Configured by | Counter key |
+|-------|---------------|-------------|
+| Channel | rule row on the channel id — triggers in a **thread** bind to its **parent channel**'s rule and share that counter (a thread is no budget escape hatch) | (user, channel) |
+| Category | rule row on the category id — **shared budget across every channel in it** | (user, category) |
+| Guild default | `guild_settings.gork_daily_limit` | (user, guild) |
+
+The **most specific scope wins** (channel → category → guild default → unlimited), and the winning scope defines which **single** counter increments — a channel call never touches its category's counter unless the category rule is what applied.
+
+### Limit semantics (tri-state)
+
+| `limit` | Meaning |
+|---------|---------|
+| `-1` | **Blocked** — gork fully off in the scope, **staff included** (kill switch, independent of `/gork enable`) |
+| `0` | Unlimited (feature off) — the default everywhere |
+| `1–1000` | Successful answers per user per **UTC day** (out-of-range values are clamped on write) |
+
+### What counts, and how overage is prevented
+
+- A call counts **exactly once, only when gork produced the output without error**: after **all** reply chunks landed, before the guild queue slot is released. Failures, timeouts, canned replies, a send failing mid-answer (even if chunk 1 landed), cooldown hits, queue-full drops, bans, and blocked scopes **never count**. An empty-then-retry success counts **once**.
+- The budget is checked at **both ends of the queue** (enqueue and dequeue). With the cooldown disabled a user can hold several queued triggers; earlier dequeues spend the remaining budget, so later ones bounce **without an LLM call and without a count**. One in-flight request per guild + count-before-slot-release makes overage impossible by construction.
+- **Staff are NOT exempt** (unlike the cooldown) — the budget is a cost/noise control, not a politeness timer.
+- Usage is **DB-backed** (`gork_usage`, keyed by the trigger message's UTC date, reset 00:00 UTC): a restart cannot refund budgets. Days older than yesterday are pruned lazily on the write path — no ticker.
+
+### Rejection UX
+
+Over budget → one terse line to the trigger naming the scope and reset: `Daily gork budget reached in #general (5/day) — resets 00:00 UTC.` Blocked scope → `gork isn't available in this channel.` (categories/servers word it accordingly). Ephemerals are impossible here (plain-message triggers have no interaction token), and the 🕐 reaction stays **cooldown-only** — a day-scale block explains itself. Rejection replies are deduped to **one per user per scope per hour**; further triggers bounce silently (rejections are console-log-only in the audit channel — never audit spam).
+
+### Commands (`/gork budget <action>`, staff-only)
+
+| Command | Description |
+|---------|-------------|
+| `/gork budget default <limit>` | Guild-default tri-state (`-1` blocked, `0` unlimited, `1–1000`) |
+| `/gork budget channel <target> <limit>` | Add/replace a channel rule (a thread target binds to its **parent channel**) |
+| `/gork budget category <target> <limit>` | Add/replace a category rule (pools all channels inside it) |
+| `/gork budget remove_channel <target\|id>` | Drop the rule — falls back to category → guild default |
+| `/gork budget remove_category <target\|id>` | Drop the rule — falls back to the guild default |
+| `/gork budget list` | Guild default + rules table with `created_by` provenance |
+
+Rule changes post a config-change embed to the [audit log](audit-log.md), and answered questions show the spent budget on the Q&A audit embed (`Budget: 3/5 in #general`) whenever a real cap (≥ 1) applied.
+
 ## Runtime Behavior
 
 | Aspect | Detail |
@@ -182,6 +232,7 @@ Gork can **remember durable facts about people** — preferences, ongoing projec
 | Channel awareness | Every answer sees *where* it was asked: the channel/thread name, its category (threads show their parent channel), and the channel topic — injected as untrusted **context only, never instructions**. Always on; nothing to configure |
 | Long answers | Final text over 2,000 chars is split into consecutive messages (~1,900-char chunks, prefer line boundaries; emoji and Discord tokens are never cut mid-character) |
 | Per-user cooldown | **180s** per user per guild by default (in-memory); guild-overridable via `/gork cooldown` (0–3600, **0 = disabled**). **Staff** (Manage Server or any `staff_roles` role) **bypass** the cooldown entirely. Cooldown hit → the bot **reacts 🕐** on the trigger message (visible rate-limit signal; still no reply, no LLM call) |
+| Daily budget | Optional per-scope cap on **successful answers per user per UTC day** (channel → category → guild default, tri-state `-1`/`0`/`1–1000`, all **off** by default). Checked at enqueue **and** dequeue (no overage), staff **not** exempt, DB-backed counters, reset 00:00 UTC — see [Daily usage budget](#daily-usage-budget) |
 | Gork bans | `/gork ban` blocks a user per-guild. A banned trigger gets the LLM-failure canned reply, so the ban is **indistinguishable from a normal failure** — no LLM call, no audit Q&A entry. Unlike the cooldown, staff roles do **not** bypass a ban. The reply is paced by the normal per-user cooldown |
 | Concurrency / queue | **1 in-flight** gork request per guild; further triggers are **queued FIFO**, up to **5 waiting** (in-memory). When the queue is full, new triggers are **dropped** with the queue-full reply |
 | LLM parameters | Temperature **0.8** (sarcasm), completion budget **6,000** tokens, total timeout **90s** including the tool loop — each overridable via `GORK_LLM_MAX_TOKENS` / `GORK_LLM_TIMEOUT_MS` / `GORK_LLM_MAX_TOOL_ROUNDS`. Budget matters for **thinking models**: they spend it on hidden reasoning first, so the default leaves room for both |
@@ -197,6 +248,8 @@ The fast checks (settings, match, skips, cooldown, queue admission) run inline i
 | LLM failure / timeout | "*gork's brain went to lunch* — try again in a bit." |
 | Banned user (`/gork ban`) | Same "*gork's brain went to lunch*" text — deliberately indistinguishable from a failure |
 | Keyword alone, no question, no reply reference | No reply at all (fully silent) |
+| Daily budget exhausted (when configured) | `Daily gork budget reached in #general (5/day) — resets 00:00 UTC.` — at most one such reply per user per scope per hour; repeats bounce silently |
+| Blocked scope (`-1` budget, when configured) | `gork isn't available in this channel.` (category/guild worded accordingly) — same hourly dedup |
 
 Disabled states are **silent**, not canned replies: `/gork enable off`, a cleared keyword, or no `AI_API_KEY` produce no reply at all.
 
@@ -213,6 +266,7 @@ Every completed Q&A posts a **Gork Q&A** embed to the guild's [audit log channel
 | Search | "yes — 2 queries" / "no" |
 | Model / duration | e.g. `gpt-4o-mini` / `3.4s` |
 | Answer | ≤1,000 chars |
+| Budget | `3/5 in #general` — the post-answer spend, only when an effective cap (≥ 1) applied (see [Daily usage budget](#daily-usage-budget)). Budget/block **rejections never post audit embeds** (console lines only) |
 | Jump links | To the original question message and the gork reply |
 
 Failed or timed-out exchanges log a compact one-liner (asker + error reason). If no audit channel is configured, gork falls back to console logs.
@@ -238,6 +292,7 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 3. Is the message from a **bot or webhook**, in a **DM**, or in an **open ticket channel**? All are skipped silently
 4. Is the asker still within the per-user cooldown? A cooldown hit gets a **🕐 reaction** on the message and no reply (staff bypass; a 🕐 with no reply means "ask again in a bit")
 5. If **one specific user** always gets the "*brain went to lunch*" reply while others work — check `/gork bans`; banned users are answered with that exact text (no LLM call)
+6. Did a budget get configured (`/gork budget list`)? An over-budget or blocked scope replies with one terse line (then goes silent for an hour per user+scope); resets 00:00 UTC
 
 ### Web search / page reading not happening
 

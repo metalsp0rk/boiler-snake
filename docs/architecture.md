@@ -155,6 +155,7 @@ Migrations on load:
 | `023_gork_memory` | `gork_memories` table + `gork_memory_enabled` / `gork_memory_chars` columns |
 | `024_staff_roles_added_by` | `staff_roles.added_by` provenance column (NULL = unknown) |
 | `025_github_releases` | `github_watches` table (repo watches, routing, per-repo token, release pointer) |
+| `026_gork_budget` | `gork_budget_rules` + `gork_usage` tables + `gork_daily_limit` column (gork daily usage budget, roadmap §7.17) |
 
 ### Core XP API
 
