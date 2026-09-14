@@ -218,9 +218,24 @@ function describeLlmFailure(res) {
   }
   const bits = [];
   if (res?.reason) bits.push(res.reason);
+  if (res?.url) bits.push(`url=${res.url}`);
   if (res?.status) bits.push(`HTTP ${res.status}`);
   if (res?.error) bits.push(String(res.error).slice(0, 160));
+  // The provider's own words (truncated by core/ai) — the only thing
+  // that explains a bare "HTTP 4xx" fast reject (bad key/model name,
+  // context overflow, unknown param…).
+  if (res?.errorBody) bits.push(`body=${String(res.errorBody).slice(0, 300)}`);
   return bits.length ? bits.join(": ") : "unknown error";
+}
+
+/**
+ * Opt-in verbose phase tracing (`GORK_DEBUG=1`, re-read per job like the
+ * other env knobs). Off by default — production stays byte-identical.
+ *
+ * @returns {boolean} true when gork job-phase debug lines are enabled
+ */
+function gorkDebugEnabled() {
+  return /^(1|true|yes|on)$/i.test(String(process.env.GORK_DEBUG ?? "").trim());
 }
 
 /** Max wait for the channel-history fetch phase (§7.15 Fix 3 hardening). */
@@ -706,6 +721,17 @@ async function runGorkHook(client, message) {
       const logOn = isInteractionLogEnabled(settings);
       const jobStartedAt = Date.now();
       let qaRecorder = null;
+      // GORK_DEBUG=1 phase trace (off by default → zero output): one line
+      // per job phase with cumulative job time, so a fast failure shows
+      // WHERE the job died (dequeue bounce? context? which LLM round?).
+      const debugOn = gorkDebugEnabled();
+      const dbg = (msg) => {
+        if (!debugOn) return;
+        console.log(
+          `[gork] dbg guild=${guildId} user=${message.author.id} ${msg} t=${Date.now() - jobStartedAt}ms`,
+        );
+      };
+      dbg(`job start queued=${slot.queued ? 1 : 0}`);
       // §7.16 (decision 29): per-guild memory master switch, default OFF
       // — when OFF the prompt, tool payload, and audit stay byte-identical.
       const memoryOn = Number(settings.gork_memory_enabled ?? 0) === 1;
@@ -730,6 +756,7 @@ async function runGorkHook(client, message) {
           day: budgetDay,
         });
         if (!dequeueGate.allowed) {
+          dbg(`budget dequeue bounce kind=${dequeueGate.kind}`);
           if (dequeueGate.kind === "error") {
             // Fail closed with the canned reply (same contract as the
             // enqueue site): no LLM call, no count, never silence.
@@ -766,6 +793,7 @@ async function runGorkHook(client, message) {
           return; // finally still runs: typing stops, slot releases, no count
         }
         budgetScope = dequeueGate.scope;
+        dbg("budget dequeue ok");
 
         // Fix 3 hardening: buildContext is never-rejects by contract, but
         // a hung channel fetch would hold the guild slot forever (the
@@ -775,6 +803,7 @@ async function runGorkHook(client, message) {
           CONTEXT_DEADLINE_MS,
           { text: "", mode: "prior", collected: 0, messages: [] },
         );
+        dbg(`context built mode=${ctx.mode ?? "?"} collected=${ctx.collected ?? 0}`);
         // Fix 2: compact roster of the people involved (asker, context
         // authors, mentioned users) so the model can map names ↔ ids.
         let roster = { entries: new Map(), lines: [], truncated: 0 };
@@ -789,6 +818,7 @@ async function runGorkHook(client, message) {
         } catch {
           // Roster is best-effort: answering must not depend on it.
         }
+        dbg(`roster built entries=${roster.entries?.size ?? 0}`);
         // §7.16.2 read path (decision 27): DB-only MEMORY BLOCK build after
         // the roster exists (the roster supplies the involved-people set;
         // the bot's own id is excluded — decision 26). loadMemoryContext
@@ -993,7 +1023,11 @@ async function runGorkHook(client, message) {
                 onEvent: (evt) => qaRecorder.onEvent({ ...evt, attempt }),
               }
             : llmOpts;
+        dbg(`llm call start model=${cfg.model} url=${cfg.baseUrl}`);
         let res = await chatWithTools(cfg, qaCallOpts(1));
+        dbg(
+          `llm call done ok=${res.ok ? 1 : 0} durMs=${res.durationMs ?? 0} toolCalls=${res.toolCalls ?? 0}`,
+        );
 
         // Providers occasionally answer OK-with-empty-text (thinking-model
         // budget hiccups, transient upstream quirks). One retry beats the
@@ -1002,7 +1036,11 @@ async function runGorkHook(client, message) {
           console.log(
             `[gork] ${describeLlmFailure(res)} from ${cfg.model} in ${guildId} (${res.durationMs ?? 0}ms); retrying once`,
           );
+          dbg("retrying empty answer (attempt 2)");
           res = await chatWithTools(cfg, qaCallOpts(2));
+          dbg(
+            `llm retry done ok=${res.ok ? 1 : 0} durMs=${res.durationMs ?? 0} toolCalls=${res.toolCalls ?? 0}`,
+          );
         }
 
         const answerText = (res.content || "").trim();
@@ -1035,6 +1073,7 @@ async function runGorkHook(client, message) {
             allowedMentions: NO_PING_MENTIONS,
           });
           replied = true;
+          dbg(`reply shipped chunks=${chunks.length}`);
           for (let i = 1; i < chunks.length; i += 1) {
             await channel.send({
               content: chunks[i],
@@ -1138,6 +1177,7 @@ async function runGorkHook(client, message) {
         }
       } catch (err) {
         console.error(`[gork] job failed in ${guildId}:`, err?.message || err);
+        dbg(`job error: ${err?.message || err}`);
         // Interaction log: the job itself exploded (e.g. a reply send threw
         // mid-answer). Recorder finalize is idempotent — on already-written
         // paths this is a no-op; with logging off qaRecorder is null.
@@ -1330,6 +1370,7 @@ module.exports = {
   ANSWER_TRUNCATE_MARKER,
   llmParams,
   describeLlmFailure,
+  gorkDebugEnabled,
   /** TEST SEAM: settle-drain for detached gork work (see pendingGorkWork). */
   whenGorkIdleForTests,
 };
