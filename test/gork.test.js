@@ -591,6 +591,76 @@ describe("chatWithTools (core/ai)", () => {
     assert.ok(!r.ok);
     assert.equal(r.reason, "network");
   });
+
+  it("chatCompletion: HTTP failure captures endpoint url + provider error body", async () => {
+    const r = await chatCompletion(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      fetchImpl: async () => ({
+        ok: false,
+        status: 400,
+        text: async () => '{"error":{"message":"model not found: gpt-99"}}',
+      }),
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.status, 400);
+    assert.equal(r.reason, "http");
+    assert.equal(r.url, "https://ai.example/v1/chat/completions");
+    assert.ok(r.errorBody.includes("model not found"), r.errorBody);
+  });
+
+  it("chatCompletion: HTTP failure tolerates a response with no body reader", async () => {
+    const r = await chatCompletion(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      fetchImpl: async () => ({ ok: false, status: 502 }),
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.status, 502);
+    assert.equal(r.url, "https://ai.example/v1/chat/completions");
+    assert.equal(r.errorBody, null, "absent body → null, never a crash");
+  });
+
+  it("chatCompletion: HTTP failure tolerates a throwing body reader", async () => {
+    const r = await chatCompletion(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      fetchImpl: async () => ({
+        ok: false,
+        status: 503,
+        text: async () => { throw new Error("body gone"); },
+      }),
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.status, 503);
+    assert.equal(r.errorBody, null);
+  });
+
+  it("chatCompletion: network failure surfaces the endpoint url", async () => {
+    const r = await chatCompletion(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      fetchImpl: async () => { throw new Error("ECONNREFUSED"); },
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.reason, "network");
+    assert.equal(r.url, "https://ai.example/v1/chat/completions");
+  });
+
+  it("chatCompletion: failure onEvent carries url + truncated error body", async () => {
+    const events = [];
+    const r = await chatCompletion(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      fetchImpl: async () => ({
+        ok: false,
+        status: 400,
+        text: async () => "x".repeat(500),
+      }),
+      onEvent: (evt) => events.push(evt),
+    });
+    assert.ok(!r.ok);
+    const resp = events.find((e) => e.type === "response");
+    assert.ok(resp, "response event emitted");
+    assert.equal(resp.ok, false);
+    assert.equal(resp.url, "https://ai.example/v1/chat/completions");
+    assert.equal(resp.errorBody.length, 300, "body truncated to 300 chars");
+  });
 });
 
 // ---------- rate limiting / queue ----------
@@ -1197,7 +1267,50 @@ describe("llmParams + describeLlmFailure (trigger, Fix 5)", () => {
     const http = describeLlmFailure({ ok: false, reason: "http", status: 403, error: "HTTP 403" });
     assert.ok(http.startsWith("http:"), http);
     assert.ok(http.includes("403"), http);
+    // url + provider error body surface (the cause of fast HTTP rejects)
+    const withDiag = describeLlmFailure({
+      ok: false,
+      reason: "http",
+      status: 400,
+      error: "HTTP 400",
+      url: "https://ai.example/v1/chat/completions",
+      errorBody: '{"error":{"message":"model not found: gpt-99"}}',
+    });
+    assert.ok(withDiag.includes("url=https://ai.example/v1/chat/completions"), withDiag);
+    assert.ok(withDiag.includes("body="), withDiag);
+    assert.ok(withDiag.includes("model not found"), withDiag);
     assert.equal(describeLlmFailure({}), "unknown error");
+  });
+});
+
+// ---------- GORK_DEBUG env knob ----------
+
+describe("gorkDebugEnabled (GORK_DEBUG knob)", () => {
+  const { gorkDebugEnabled } = require("../src/features/gork/trigger");
+
+  function withDebugEnv(value, fn) {
+    const had = Object.prototype.hasOwnProperty.call(process.env, "GORK_DEBUG");
+    const saved = process.env.GORK_DEBUG;
+    if (value === undefined) delete process.env.GORK_DEBUG;
+    else process.env.GORK_DEBUG = value;
+    try {
+      fn();
+    } finally {
+      delete process.env.GORK_DEBUG;
+      if (had) process.env.GORK_DEBUG = saved;
+    }
+  }
+
+  it("enables on 1/true/yes/on (case-insensitive, trimmed); re-read per call", () => {
+    for (const v of ["1", "true", "TRUE", "yes", "on", " 1 "]) {
+      withDebugEnv(v, () => assert.equal(gorkDebugEnabled(), true, `${v} → on`));
+    }
+  });
+
+  it("off when unset, empty, 0, or garbage", () => {
+    for (const v of [undefined, "", "0", "false", "bogus", "2"]) {
+      withDebugEnv(v, () => assert.equal(gorkDebugEnabled(), false, `${String(v)} → off`));
+    }
   });
 });
 
