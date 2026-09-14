@@ -54,6 +54,7 @@ boiler-snake/
 | `gork_memories` | Gork community memory rows (per person; guild-scoped `#id` handles) |
 | `gork_budget_rules` | Gork per-channel/category daily-limit rules (tri-state) |
 | `gork_usage` | Gork daily usage counters (per user + winning scope + UTC day) |
+| `gork_interactions` | Gork interaction log: one captured request/response per agent call (replay fixtures) |
 
 ---
 
@@ -1046,7 +1047,7 @@ See [User Activity Summary](user-activity.md).
 
 ### 19. Gork tables
 
-Access control, community memory, and daily usage budgets for [Gork](gork.md) (AI keyword Q&A). Created by migrations `022_gork_access`, `023_gork_memory`, and `026_gork_budget`; all gork configuration lives as `gork_*` columns on [`guild_settings`](#4-guild_settings) (added by migrations `021`–`023`, `026`).
+Access control, community memory, daily usage budgets, and the interaction log for [Gork](gork.md) (AI keyword Q&A). Created by migrations `022_gork_access`, `023_gork_memory`, `026_gork_budget`, and `027_gork_interaction_log`; all gork configuration lives as `gork_*` columns on [`guild_settings`](#4-guild_settings) (added by migrations `021`–`023`, `026`, `027`).
 
 #### `gork_user_blocks`
 
@@ -1184,7 +1185,92 @@ SELECT count FROM gork_usage
 WHERE guild_id=? AND user_id=? AND scope_kind=? AND scope_id=? AND day=?
 ```
 
-See [Gork (AI Keyword Q&A)](gork.md).
+#### `gork_interactions`
+
+Gork interaction log (E2E capture, session 2026-09-13): **one row per agent
+call** — the exact prompts sent, sampling params, tool schemas, the guild
+settings / context / roster / memory snapshots, the full per-round wire
+transcript, and the raw + shipped answer. Default ON per guild
+(`guild_settings.gork_interaction_log_enabled`, migration `027` adds it with
+`DEFAULT 1`); staff opt out with `/gork log off`, and `GORK_INTERACTION_LOG=0`
+is the process-wide kill-switch. Rows export as replay fixtures via
+`scripts/export-gork-log.js`. See [Gork Interaction Logging](gork-logging.md).
+
+```sql
+CREATE TABLE gork_interactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uid TEXT NOT NULL UNIQUE,               -- crypto.randomUUID handle (export CLI)
+  kind TEXT NOT NULL DEFAULT 'qa',        -- qa | memory_turn
+  parent_uid TEXT,                        -- memory_turn → qa uid
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,               -- trigger message
+  user_id TEXT NOT NULL,                  -- asker
+  status TEXT NOT NULL,                   -- shipped | partial | failure | error
+  started_at INTEGER NOT NULL,            -- job start (epoch ms)
+  duration_ms INTEGER,
+  model TEXT,
+  params TEXT,                            -- JSON: camelCase sampling params as sent
+  tools TEXT,                             -- JSON: tool schemas array actually sent (or null)
+  settings TEXT,                          -- JSON: relevant guild_settings snapshot
+  system_prompt TEXT,                     -- exact system prompt as sent
+  user_prompt TEXT,                       -- exact composed user content as sent
+  trigger_content TEXT,                   -- RAW trigger message content (with keyword)
+  reply_to_message_id TEXT,               -- message.reference?.messageId ?? null
+  context_meta TEXT,                      -- JSON: {mode, collected, chars}
+  context_messages TEXT,                  -- JSON: [{id,authorId,content,timestamp}]
+  roster_meta TEXT,                       -- JSON: {entries, truncated}
+  roster_block TEXT,                      -- roster block text as sent
+  roster_entries TEXT,                    -- JSON: [{id,display,handle,nickname}] for replay
+  memory_meta TEXT,                       -- JSON: {mode,indexed,selectedIds,blockChars} or null
+  transcript TEXT,                        -- JSON: {events:[...], truncated} — wire capture
+  answer_raw TEXT,                        -- raw model answer
+  answer_shipped TEXT,                    -- post sanitize+cap, exactly what was posted
+  finish_reason TEXT,
+  usage TEXT,                             -- JSON provider usage
+  tool_call_count INTEGER NOT NULL DEFAULT 0,
+  error TEXT,                             -- specific failure cause
+  created_at INTEGER NOT NULL);           -- epoch ms (retention prune column)
+CREATE INDEX idx_gork_interactions_guild   ON gork_interactions (guild_id, created_at);
+CREATE INDEX idx_gork_interactions_msg     ON gork_interactions (guild_id, message_id);
+CREATE INDEX idx_gork_interactions_kind    ON gork_interactions (kind, created_at);
+CREATE INDEX idx_gork_interactions_uid     ON gork_interactions (uid);
+CREATE INDEX idx_gork_interactions_created ON gork_interactions (created_at); -- retention-prune scan
+```
+
+| Column | Description |
+|--------|-------------|
+| `uid` | External handle (`crypto.randomUUID`) for `--uid` export; `UNIQUE` so rows survive id churn |
+| `kind` / `parent_uid` | `qa` = the keyword answer call; `memory_turn` = a memory-extraction call linked to its qa row via `parent_uid` |
+| `status` | `shipped` (answer delivered / extraction got an ok LLM response) \| `partial` (tool-round cap hit but content still shipped) \| `failure` (canned LLM reply; memory_turn with no successful extraction response) \| `error` (job crashed) |
+| `params` | JSON of the sampling params actually sent — **camelCase keys**: `temperature`, `maxTokens`, `timeoutMs`, `maxToolRounds`, `thinkingTokenBudget` (memory_turn rows add the extraction outcome: `stored`, `skippedInvalid`) |
+| `system_prompt` / `user_prompt` | Byte-exact prompt strings as placed on the wire (memory_turn rows leave these `NULL`; their extraction prompts ride inside `transcript` request events) |
+| `trigger_content` / `reply_to_message_id` | The raw trigger message + reply reference, so a fixture can re-drive the pipeline |
+| `context_*` / `roster_*` / `memory_meta` | As-collected snapshots (replayable: ids, authors, contents, roster handles) |
+| `transcript` | Ordered `{events, truncated}` capture of `request`/`response`/`tool` events per round and attempt (oldest events dropped first to stay under `GORK_INTERACTION_LOG_MAX_JSON_CHARS`) |
+| `answer_raw` / `answer_shipped` | Model output vs. what was actually posted (sanitize + cap applied) |
+| `created_at` | Epoch ms; the lazy retention prune (per insert, `GORK_INTERACTION_LOG_RETENTION_DAYS`, default 30) deletes `created_at < cutoff` — served by `idx_gork_interactions_created` |
+
+**Query patterns**:
+```javascript
+// Insert (recorder finalize) — JSON columns arrive already-stringified;
+// a successful insert lazily prunes the retention window in the same call
+INSERT INTO gork_interactions (uid, kind, parent_uid, guild_id, ...) VALUES (?, ?, ?, ?, ...)
+
+// Staff listing: summaries ONLY (no prompt/transcript blobs), newest first
+SELECT id, uid, kind, status, model, user_id, channel_id, message_id,
+       duration_ms, tool_call_count, created_at, error
+FROM gork_interactions WHERE guild_id=? ORDER BY id DESC LIMIT ?
+
+// Full row (incl. transcript) for export/replay — by the uid handle
+SELECT * FROM gork_interactions WHERE uid=?
+
+// /gork status / /gork log row counts; wipe one guild's log
+SELECT COUNT(*) FROM gork_interactions WHERE guild_id=?
+DELETE FROM gork_interactions WHERE guild_id=?
+```
+
+See [Gork (AI Keyword Q&A)](gork.md) and [Gork Interaction Logging](gork-logging.md).
 
 ---
 
@@ -1222,6 +1308,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `024_staff_roles_added_by` | `staff_roles.added_by` provenance column (who added the role; NULL = unknown) |
 | `025_github_releases` | `github_watches` table (repo → channel routing, per-repo token, release pointer) |
 | `026_gork_budget` | `gork_budget_rules` + `gork_usage` tables + `gork_daily_limit` column (gork daily usage budget, roadmap §7.17) |
+| `027_gork_interaction_log` | `gork_interactions` table — captured agent calls for replay fixtures (see [Gork logging](gork-logging.md)) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

@@ -122,6 +122,7 @@ function getGuildSettings(guildId) {
       gork_memory_enabled: 0,
       gork_memory_chars: 12000,
       gork_daily_limit: 0,
+      gork_interaction_log_enabled: 1,
       updated_at: now(),
     };
   }
@@ -166,6 +167,7 @@ function updateGuildSettings(guildId, patch) {
     "gork_memory_enabled",
     "gork_memory_chars",
     "gork_daily_limit",
+    "gork_interaction_log_enabled",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
@@ -221,6 +223,11 @@ function updateGuildSettings(guildId, patch) {
   }
   if (safePatch.gork_daily_limit !== undefined) {
     safePatch.gork_daily_limit = clampGorkDailyLimit(safePatch.gork_daily_limit);
+  }
+  if (safePatch.gork_interaction_log_enabled !== undefined) {
+    safePatch.gork_interaction_log_enabled = normalizeGorkFlag(
+      safePatch.gork_interaction_log_enabled
+    );
   }
 
   // A sanitized value of undefined means "rejected" (over-length keyword) —

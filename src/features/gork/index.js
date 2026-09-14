@@ -38,6 +38,7 @@ const {
   gorkMemoryDeleteForSubject,
   gorkMemoryDeleteForGuild,
   gorkMemoryCountForGuild,
+  countGorkInteractions,
   upsertGorkBudgetRule,
   deleteGorkBudgetRule,
   listGorkBudgetRules,
@@ -292,6 +293,17 @@ const commands = [
             .setName("id")
             .setDescription("Raw scope id for remove_* (when the picker lacks the channel)")
             .setMaxLength(25),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("log")
+        .setDescription("Toggle the interaction log (every agent call stored for replay/debug).")
+        .addBooleanOption((opt) =>
+          opt
+            .setName("enabled")
+            .setDescription("Record every gork agent call in this server (on/off)")
+            .setRequired(true),
         ),
     )
     .addSubcommand((sc) =>
@@ -725,6 +737,42 @@ async function setMemoryEnabled(client, interaction, guildId, action) {
 }
 
 /**
+ * /gork log <enabled>: per-guild switch for the interaction log (E2E
+ * capture). ON stores one gork_interactions row per agent call (exact
+ * prompts, transcript, outcome) for replay/debug; rows age out on the
+ * env-configured retention window. Mirrors the memory toggle's shape.
+ */
+async function setInteractionLog(client, interaction, guildId) {
+  const enabled = interaction.options.getBoolean("enabled") === true;
+  let settings;
+  try {
+    settings = updateGuildSettings(guildId, {
+      gork_interaction_log_enabled: enabled ? 1 : 0,
+    });
+  } catch (err) {
+    // Surface the specific cause (AGENTS.md): never a bare generic failure.
+    return replyEphemeral(
+      interaction,
+      `Could not update the interaction log setting: ${err?.message || err}`,
+    );
+  }
+  const on = Number(settings.gork_interaction_log_enabled ?? 1) === 1;
+  await logConfigChange(client, guildId, {
+    title: `Gork interaction log ${on ? "enabled" : "disabled"}`,
+    command: "/gork log",
+    actor: interaction.user,
+    changes: [`Interaction log: ${on ? "on" : "off"}`],
+  }).catch(() => {});
+  const rows = countGorkInteractions(guildId);
+  await replyEphemeral(
+    interaction,
+    on
+      ? `Gork interaction log is now **on** — every gork agent call in this server is recorded (\`${rows}\` row${rows === 1 ? "" : "s"} stored so far).`
+      : `Gork interaction log is now **off** — agent calls are no longer recorded (\`${rows}\` row${rows === 1 ? "" : "s"} remain; they age out with retention).`,
+  );
+}
+
+/**
  * /gork memory budget <chars>: cap for the injected memory block
  * (0–64,000; 0 = unlimited; garbage → default 12,000).
  */
@@ -1024,6 +1072,9 @@ async function showStatus(interaction, guildId) {
   const banCount = listGorkBlocks(guildId).length;
   const memoryOn = Number(settings.gork_memory_enabled ?? 0) === 1;
   const memoryCount = gorkMemoryCountForGuild(guildId);
+  const interactionLogOn =
+    Number(settings.gork_interaction_log_enabled ?? 1) === 1;
+  const interactionLogRows = countGorkInteractions(guildId);
   const budgetRules = listGorkBudgetRules(guildId);
   const ai = getAiConfig();
   const searxngSet = Boolean(
@@ -1054,6 +1105,12 @@ async function showStatus(interaction, guildId) {
       value: memoryOn
         ? `on · ${Number(settings.gork_memory_chars ?? 12000)} chars · ${memoryCount} stored`
         : "off",
+      inline: true,
+    },
+    {
+      // E2E capture switch; the count is every row stored for this guild.
+      name: "Interaction Log",
+      value: interactionLogOn ? `On (${interactionLogRows} rows)` : "Off",
       inline: true,
     },
     {
@@ -1104,6 +1161,8 @@ async function handleGork(interaction, ctx) {
       return handleMemory(client, interaction, guildId);
     case "budget":
       return handleBudget(client, interaction, guildId);
+    case "log":
+      return setInteractionLog(client, interaction, guildId);
     case "status":
       return showStatus(interaction, guildId);
     default:

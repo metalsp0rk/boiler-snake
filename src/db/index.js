@@ -33,6 +33,7 @@ const githubWatches = require("./repositories/githubWatches");
 const gorkAccess = require("./repositories/gorkAccess");
 const gorkMemory = require("./repositories/gorkMemory");
 const gorkBudget = require("./repositories/gorkBudget");
+const gorkInteractions = require("./repositories/gorkInteractions");
 
 module.exports = {
   db,
@@ -304,6 +305,14 @@ module.exports = {
   listGorkBudgetRules: gorkBudget.listGorkBudgetRules,
   getGorkUsage: gorkBudget.getGorkUsage,
   incrementGorkUsage: gorkBudget.incrementGorkUsage,
+
+  // gork interaction logging (full request/response capture)
+  insertGorkInteraction: gorkInteractions.insertGorkInteraction,
+  listGorkInteractions: gorkInteractions.listGorkInteractions,
+  getGorkInteractionByUid: gorkInteractions.getGorkInteractionByUid,
+  countGorkInteractions: gorkInteractions.countGorkInteractions,
+  pruneGorkInteractions: gorkInteractions.pruneGorkInteractions,
+  deleteGorkInteractionsForGuild: gorkInteractions.deleteGorkInteractionsForGuild,
 
   // ticket panels (stored registry)
   createTicketPanel: tickets.createTicketPanel,
