@@ -156,6 +156,7 @@ Migrations on load:
 | `024_staff_roles_added_by` | `staff_roles.added_by` provenance column (NULL = unknown) |
 | `025_github_releases` | `github_watches` table (repo watches, routing, per-repo token, release pointer) |
 | `026_gork_budget` | `gork_budget_rules` + `gork_usage` tables + `gork_daily_limit` column (gork daily usage budget, roadmap §7.17) |
+| `027_gork_interaction_log` | `gork_interactions` table — default-on (opt-out) interaction capture (see [Gork logging](gork-logging.md)) |
 
 ### Core XP API
 

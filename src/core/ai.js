@@ -14,6 +14,23 @@ const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_MODEL = "gpt-4o-mini";
 
 /**
+ * Fire one optional capture event. A sink failure must never break the
+ * completion loop or escape into the reply path — it degrades to a warn
+ * (same never-throw sink idiom as the gork audit log).
+ *
+ * @param {Function|null|undefined} onEvent capture sink (inert when absent)
+ * @param {object} evt capture event ({type:"request"|"response"|"tool", ...})
+ */
+function emitEvent(onEvent, evt) {
+  if (typeof onEvent !== "function") return;
+  try {
+    onEvent(evt);
+  } catch (err) {
+    console.warn("[ai] interaction event failed:", err?.message || err);
+  }
+}
+
+/**
  * Read AI provider config from env.
  * AI_* vars take precedence over OPENAI_* fallbacks; baseUrl has its
  * trailing slash stripped.
@@ -110,6 +127,12 @@ async function requestCompletion(cfg, payload, opts = {}) {
  * @param {number} [opts.timeoutMs]
  * @param {AbortSignal} [opts.signal]
  * @param {Function} [opts.fetchImpl]
+ * @param {(evt: object) => void} [opts.onEvent] Capture sink (optional,
+ *   never affects behavior; sink errors are caught). Emits, in order:
+ *   `{type:"request", payload}` — the exact wire body, right after build;
+ *   then `{type:"response", ok, status?, reason?, error?, data?,
+ *   finishReason?, usage?, durationMs}` — `data` is the raw parsed body on
+ *   success only (omitted on failure to keep captures small).
  * @returns {Promise<object>}
  *   ok:true → message (raw assistant message, may include tool_calls)
  *   plus finishReason/usage from the provider response.
@@ -134,16 +157,47 @@ async function completeOnce(cfg, opts) {
   if (opts.responseFormat) payload.response_format = opts.responseFormat;
   if (opts.tools?.length) payload.tools = opts.tools;
 
+  // Capture seam: the request event carries the exact wire body, emitted
+  // before the HTTP attempt so a network-level failure still has its request
+  // recorded. opts.onEvent is deliberately NOT part of the payload above.
+  emitEvent(opts.onEvent, { type: "request", payload });
+  const httpStartedAt = Date.now();
   const res = await requestCompletion(cfg, payload, opts);
-  if (!res.ok) return res;
+  if (!res.ok) {
+    emitEvent(opts.onEvent, {
+      type: "response",
+      ok: false,
+      status: res.status ?? null,
+      reason: res.reason,
+      error: res.error,
+      durationMs: Date.now() - httpStartedAt,
+    });
+    return res;
+  }
   const message = res.data?.choices?.[0]?.message;
   if (!message) {
+    emitEvent(opts.onEvent, {
+      type: "response",
+      ok: false,
+      status: null,
+      reason: "empty",
+      error: "no assistant message in response",
+      durationMs: Date.now() - httpStartedAt,
+    });
     return {
       ok: false,
       reason: "empty",
       error: "no assistant message in response",
     };
   }
+  emitEvent(opts.onEvent, {
+    type: "response",
+    ok: true,
+    data: res.data,
+    finishReason: res.data?.choices?.[0]?.finish_reason ?? null,
+    usage: res.data?.usage ?? null,
+    durationMs: Date.now() - httpStartedAt,
+  });
   return {
     ok: true,
     message,
@@ -225,6 +279,9 @@ function success(content, startedAt, toolCalls, meta = {}) {
  * @param {object} [opts.responseFormat] e.g. { type: "json_object" }.
  * @param {number} [opts.timeoutMs] Overall timeout for this request (ms).
  * @param {Function} [opts.fetchImpl] Injectable fetch (tests).
+ * @param {(evt: object) => void} [opts.onEvent] Capture sink forwarded to
+ *   completeOnce: `{type:"request", payload}` + `{type:"response", ok, ...}`
+ *   events (see completeOnce); strictly optional, never affects behavior.
  * @returns {Promise<AiResult>}
  *   ok is true whenever the provider round trip succeeded (content may
  *   still be null — callers should check content). ok:false → status
@@ -248,9 +305,13 @@ async function chatCompletion(cfg, opts = {}) {
  * @param {object[]} conversation
  * @param {object[]} calls assistant message tool_calls
  * @param {(name: string, args: object) => (string|Promise<string>)} executeTool
+ * @param {Function|null} [onEvent] Capture sink (optional): emits
+ *   `{type:"tool", name, args, output, ok, durationMs}` per execution;
+ *   `ok:false` when executeTool threw (the failure string still feeds the
+ *   model, exactly as before).
  * @returns {Promise<{ conversation: object[], count: number }>}
  */
-async function applyToolCalls(conversation, calls, executeTool) {
+async function applyToolCalls(conversation, calls, executeTool, onEvent = null) {
   let count = 0;
   let next = conversation;
   for (const call of calls) {
@@ -263,19 +324,24 @@ async function applyToolCalls(conversation, calls, executeTool) {
       args = {};
     }
     let output;
+    let ok = true;
+    const toolStartedAt = Date.now();
     try {
       output = await executeTool(name, args);
     } catch (err) {
       output = `tool "${name}" failed: ${err?.message || String(err)}`;
+      ok = false;
     }
-    next = [
-      ...next,
-      {
-        role: "tool",
-        tool_call_id: call?.id || "",
-        content: output == null ? "" : String(output),
-      },
-    ];
+    const content = output == null ? "" : String(output);
+    emitEvent(onEvent, {
+      type: "tool",
+      name,
+      args,
+      output: content,
+      ok,
+      durationMs: Date.now() - toolStartedAt,
+    });
+    next = [...next, { role: "tool", tool_call_id: call?.id || "", content }];
   }
   return { conversation: next, count };
 }
@@ -304,6 +370,10 @@ async function applyToolCalls(conversation, calls, executeTool) {
  *   forwarded to every round (sent only when a positive finite number).
  * @param {number} [opts.timeoutMs] Overall timeout for the whole loop (ms).
  * @param {Function} [opts.fetchImpl] Injectable fetch (tests).
+ * @param {(evt: object) => void} [opts.onEvent] Capture sink, every event
+ *   round-tagged: `{type:"request"|"response", round, ...}` per wire round
+ *   plus `{type:"tool", round, name, args, output, ok, durationMs}` per
+ *   tool execution (see completeOnce); strictly optional.
  * @returns {Promise<AiResult>}
  *   content is the final assistant text; toolCalls is the total number of
  *   tool executions; durationMs covers the whole loop. ok:false → reason
@@ -323,6 +393,9 @@ async function chatWithTools(cfg, opts) {
   };
   armDeadline();
   const maxRounds = Math.max(0, Math.trunc(opts.maxToolRounds ?? 3));
+  // Capture seam: one round-tagging wrapper around the caller's sink;
+  // undefined when no sink was passed so every downstream emit stays inert.
+  const emit = typeof opts.onEvent === "function" ? opts.onEvent : null;
   let conversation = [...(opts.messages || [])];
   let toolCalls = 0;
   try {
@@ -338,6 +411,9 @@ async function chatWithTools(cfg, opts) {
           toolCalls,
         };
       }
+      // Per-round capture wrapper (`let round` gives each iteration its own
+      // binding); undefined stays fully inert in the sinks below.
+      const child = emit ? (evt) => emit({ ...evt, round }) : undefined;
       const res = await completeOnce(cfg, {
         messages: conversation,
         tools: opts.tools,
@@ -346,6 +422,7 @@ async function chatWithTools(cfg, opts) {
         thinkingTokenBudget: opts.thinkingTokenBudget,
         signal: controller.signal,
         fetchImpl: opts.fetchImpl,
+        onEvent: child,
       });
       if (!res.ok) return failure(res, startedAt, toolCalls);
       const message = res.message;
@@ -374,7 +451,7 @@ async function chatWithTools(cfg, opts) {
           usage: res.usage ?? null,
         };
       }
-      const applied = await applyToolCalls(conversation, calls, opts.executeTool);
+      const applied = await applyToolCalls(conversation, calls, opts.executeTool, child);
       conversation = applied.conversation;
       toolCalls += applied.count;
       armDeadline();

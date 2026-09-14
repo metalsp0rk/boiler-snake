@@ -31,7 +31,7 @@ const {
   isGorkBlocked,
   memberHasStaffRole,
 } = require("../../db");
-const { getAiConfig, chatWithTools } = require("../../core/ai");
+const { getAiConfig, chatCompletion, chatWithTools } = require("../../core/ai");
 const { safeCutIndex, sliceSafe } = require("../../core/text");
 const { buildContext, formatContext, hasReference } = require("./context");
 const { buildRoster, formatRosterBlock, formatUserLabel } = require("./roster");
@@ -53,8 +53,14 @@ const {
   clampMemoryChars,
   loadMemoryContext,
   runMemoryTurn,
+  memoryTurnConfig,
   formatExistingMemoriesBlock,
 } = require("./memory");
+const {
+  isInteractionLogEnabled,
+  buildSettingsSnapshot,
+  createInteractionRecorder,
+} = require("./interactionLog");
 const {
   checkGorkBudget,
   shouldSendBudgetRejection,
@@ -691,6 +697,15 @@ async function runGorkHook(client, message) {
       // reference to the read-path data (roster/ctx captured in the try).
       let shippedAnswer = null;
       let memJob = null;
+      // Interaction log (E2E capture): guild switch + env kill-switch checked
+      // once per job; jobStartedAt anchors every duration. The qa recorder
+      // is created right after llmOpts is assembled and finalized exactly
+      // once on EVERY terminal path (the recorder itself is idempotent and
+      // never throws). Budget bounces / cooldown / queue-full never create
+      // one — no agent call happened, so there is nothing to record.
+      const logOn = isInteractionLogEnabled(settings);
+      const jobStartedAt = Date.now();
+      let qaRecorder = null;
       // §7.16 (decision 29): per-guild memory master switch, default OFF
       // — when OFF the prompt, tool payload, and audit stay byte-identical.
       const memoryOn = Number(settings.gork_memory_enabled ?? 0) === 1;
@@ -840,24 +855,33 @@ async function runGorkHook(client, message) {
         const tools = [];
         if (searchOn) tools.push(WEB_SEARCH_TOOL, READ_PAGE_TOOL);
         if (memoryOn) tools.push(RECALL_MEMORIES_TOOL);
+        // Fix 2: the roster block is computed ONCE here (previously inline
+        // in llmOpts) so the prompt and the interaction-log snapshot carry
+        // byte-identical strings. The memory write turn keeps its own
+        // legacy formatRosterBlock(roster) call (untouched by design).
+        const rosterBlock = formatRosterBlock(roster, {
+          askerId: message.author.id,
+        });
+        const userPrompt = buildUserContent(
+          question,
+          promptCtx,
+          rosterBlock,
+          mem.block,
+          // §7.18: where gork is being asked (channel/thread name,
+          // category, topic) — pure duck-typed read, never throws.
+          formatChannelBlock(channel),
+          askerLabel,
+        );
+        // Snapshot of the sampling params actually spread into llmOpts
+        // (re-read per job like every other knob); the interaction log
+        // records exactly these.
+        const llmParamsUsed = llmParams();
         const llmOpts = {
           messages: [
             { role: "system", content: system },
-            {
-              role: "user",
-              content: buildUserContent(
-                question,
-                promptCtx,
-                formatRosterBlock(roster, { askerId: message.author.id }),
-                mem.block,
-                // §7.18: where gork is being asked (channel/thread name,
-                // category, topic) — pure duck-typed read, never throws.
-                formatChannelBlock(channel),
-                askerLabel,
-              ),
-            },
+            { role: "user", content: userPrompt },
           ],
-          ...llmParams(),
+          ...llmParamsUsed,
           tools: tools.length ? tools : undefined,
           executeTool: (name, args) => {
             if (name === "web_search") {
@@ -890,7 +914,86 @@ async function runGorkHook(client, message) {
             return `unknown tool: ${name}`;
           },
         };
-        let res = await chatWithTools(cfg, llmOpts);
+        // Interaction log: snapshot everything THIS agent call receives
+        // (locked spec §4). Creation is best-effort — a broken recorder may
+        // never alter the reply path (and the recorder itself never throws).
+        if (logOn) {
+          try {
+            qaRecorder = createInteractionRecorder({
+              kind: "qa",
+              guildId,
+              channelId: message.channelId,
+              messageId: message.id,
+              userId: message.author.id,
+              question,
+              triggerContent: message.content,
+              replyToMessageId: message.reference?.messageId ?? null,
+              model: cfg.model,
+              params: { ...llmParamsUsed },
+              tools: llmOpts.tools ?? null,
+              settings: buildSettingsSnapshot(settings),
+              system,
+              user: userPrompt,
+              contextMeta: {
+                mode: ctx.mode ?? null,
+                collected: ctx.collected ?? 0,
+                chars: (promptCtx.text || "").length,
+              },
+              // Reuse the already-fetched rows (oldest→newest as collected,
+              // cap 60); null-safe against discord.js test fakes. This set
+              // already contains the walked reply chain (backfill + chain,
+              // per buildContext), so a replay fixture can rebuild the
+              // prompt's reply context from these rows alone.
+              contextMessages: (ctx.messages || []).slice(-60).map((m) => ({
+                id: m.id ?? null,
+                authorId: m.author?.id ?? null,
+                content: m.content ?? "",
+                timestamp: m.createdAt
+                  ? new Date(m.createdAt).getTime()
+                  : null,
+              })),
+              rosterMeta: {
+                entries: roster.entries?.size ?? 0,
+                truncated: roster.truncated ?? 0,
+              },
+              rosterBlock,
+              rosterEntries: [...(roster.entries?.values?.() ?? [])].map(
+                (e) => ({
+                  id: e.id ?? null,
+                  display: e.display ?? null,
+                  handle: e.handle ?? null,
+                  nickname: e.nickname ?? null,
+                }),
+              ),
+              memoryMeta: memoryOn
+                ? {
+                    mode: mem.mode,
+                    indexed: mem.indexed ?? 0,
+                    selectedIds: mem.selectedIds ?? [],
+                    blockChars: (mem.block || "").length,
+                  }
+                : null,
+              startedAt: jobStartedAt,
+            });
+          } catch (err) {
+            console.warn(
+              `[gork] interaction log recorder build failed in ${guildId}:`,
+              err?.message || err,
+            );
+            qaRecorder = null;
+          }
+        }
+        // Attempt tagging: the one retry shares the SAME record, so every
+        // captured event carries its attempt number. llmOpts itself stays
+        // free of onEvent — with logging off the call is byte-identical.
+        const qaCallOpts = (attempt) =>
+          qaRecorder
+            ? {
+                ...llmOpts,
+                onEvent: (evt) => qaRecorder.onEvent({ ...evt, attempt }),
+              }
+            : llmOpts;
+        let res = await chatWithTools(cfg, qaCallOpts(1));
 
         // Providers occasionally answer OK-with-empty-text (thinking-model
         // budget hiccups, transient upstream quirks). One retry beats the
@@ -899,7 +1002,7 @@ async function runGorkHook(client, message) {
           console.log(
             `[gork] ${describeLlmFailure(res)} from ${cfg.model} in ${guildId} (${res.durationMs ?? 0}ms); retrying once`,
           );
-          res = await chatWithTools(cfg, llmOpts);
+          res = await chatWithTools(cfg, qaCallOpts(2));
         }
 
         const answerText = (res.content || "").trim();
@@ -941,6 +1044,18 @@ async function runGorkHook(client, message) {
           // §7.16.3 (decision 25): the write path may only feed on a real
           // shipped (sanitized + capped) answer — never a canned reply.
           shippedAnswer = capped;
+          // Interaction log: answer shipped. 'partial' mirrors the cap
+          // branch above (!res.ok with real content); finalize never throws
+          // and is a no-op if some earlier path already wrote the row.
+          qaRecorder?.finalize({
+            status: res.ok ? "shipped" : "partial",
+            answerRaw: res.content ?? null,
+            answerShipped: capped,
+            finishReason: res.finishReason ?? null,
+            usage: res.usage ?? null,
+            toolCallCount: res.toolCalls ?? 0,
+            durationMs: res.durationMs ?? Date.now() - jobStartedAt,
+          });
           // §7.17.3 (decision 32): count this success exactly once now that
           // EVERY reply chunk landed — deliberately here, inside the try and
           // before the finally releases the queue slot, so the next dequeue
@@ -1004,6 +1119,15 @@ async function runGorkHook(client, message) {
           console.warn(
             `[gork] LLM failure in ${guildId}: ${why} (model=${cfg.model}, toolCalls=${res.toolCalls ?? 0}, ${res.durationMs ?? 0}ms)`,
           );
+          // Interaction log: canned failure — the specific cause is stored.
+          qaRecorder?.finalize({
+            status: "failure",
+            error: why,
+            finishReason: res.finishReason ?? null,
+            usage: res.usage ?? null,
+            toolCallCount: res.toolCalls ?? 0,
+            durationMs: res.durationMs ?? Date.now() - jobStartedAt,
+          });
           trackGorkWork(
             logGorkFailure(auditClient, guildId, {
               user: message.author,
@@ -1014,6 +1138,14 @@ async function runGorkHook(client, message) {
         }
       } catch (err) {
         console.error(`[gork] job failed in ${guildId}:`, err?.message || err);
+        // Interaction log: the job itself exploded (e.g. a reply send threw
+        // mid-answer). Recorder finalize is idempotent — on already-written
+        // paths this is a no-op; with logging off qaRecorder is null.
+        qaRecorder?.finalize({
+          status: "error",
+          error: err?.message || String(err),
+          durationMs: Date.now() - jobStartedAt,
+        });
         if (!replied) {
           await message.reply(LLM_FAILURE_REPLY).catch(() => {});
         }
@@ -1031,6 +1163,70 @@ async function runGorkHook(client, message) {
       if (memoryOn && shippedAnswer !== null && memJob?.roster?.entries?.size) {
         const roster = memJob.roster;
         const botId = auditClient?.user?.id ?? null;
+        // Interaction log: the extraction turn gets its OWN row
+        // (kind 'memory_turn') linked to the qa record via parent_uid. Its
+        // prompts are captured through onEvent (chatImpl wraps the default
+        // chatCompletion — memory.js stays untouched); with logging OFF
+        // chatImpl stays undefined so runMemoryTurn's default is used
+        // byte-identically. memParams collects the extraction outcome and
+        // is serialized into the row's params column at finalize time.
+        const memStartedAt = Date.now();
+        const memParams = {};
+        let memRecorder = null;
+        let memChatImpl;
+        let memRawContent = null;
+        // Truthful status inputs: runMemoryTurn NEVER rejects — its failure
+        // paths resolve zeros either WITHOUT any chat call or with a call
+        // whose response events are all ok:false. So "a successful LLM
+        // response was seen" is the only honest shipped/failure signal;
+        // memLastError keeps the last failure event's cause for the row.
+        let memSawOkResponse = false;
+        let memLastError = null;
+        if (logOn) {
+          try {
+            memRecorder = createInteractionRecorder({
+              kind: "memory_turn",
+              guildId,
+              channelId: message.channelId,
+              messageId: message.id,
+              userId: message.author.id,
+              parentUid: qaRecorder?.uid ?? null,
+              question,
+              triggerContent: message.content,
+              replyToMessageId: message.reference?.messageId ?? null,
+              model: memoryTurnConfig().model,
+              params: memParams,
+              startedAt: memStartedAt,
+            });
+            memChatImpl = (c, o) =>
+              chatCompletion(c, {
+                ...o,
+                onEvent: (evt) => {
+                  if (evt?.type === "response") {
+                    if (evt.ok) {
+                      memSawOkResponse = true;
+                      // Best-effort raw extraction content for answer_raw
+                      // (from the ok response event's wire body).
+                      const raw = evt.data?.choices?.[0]?.message?.content;
+                      if (typeof raw === "string") memRawContent = raw;
+                    } else {
+                      memLastError = `${evt.reason || "llm"}: ${
+                        evt.error || evt.status || "failed"
+                      }`;
+                    }
+                  }
+                  memRecorder.onEvent(evt);
+                },
+              });
+          } catch (err) {
+            console.warn(
+              `[gork] interaction log memory recorder failed in ${guildId}:`,
+              err?.message || err,
+            );
+            memRecorder = null;
+            memChatImpl = undefined;
+          }
+        }
         // Tracked (not bare `void`) so the settle seam drains extraction
         // turns too: after whenGorkIdleForTests(), the extraction decision
         // AND its fetch are observably settled.
@@ -1048,6 +1244,7 @@ async function runGorkHook(client, message) {
             memDate: memDateFromMessage(message),
             sourceMessageIds: [message.id],
             indexed: mem.indexed,
+            ...(memChatImpl ? { chatImpl: memChatImpl } : {}),
           })
             .then((res) => {
               if (res && (res.stored > 0 || res.skippedInvalid > 0)) {
@@ -1055,8 +1252,40 @@ async function runGorkHook(client, message) {
                   `[gork] memory turn in ${guildId}: +${res.stored} stored · ${res.skippedInvalid} skipped_invalid`,
                 );
               }
+              if (memRecorder) {
+                // 'shipped' ONLY when the extraction actually got a
+                // successful LLM response (stored/skippedInvalid ride along
+                // in params); zeros without one are a silent-drop FAILURE
+                // of the extraction, and the row says so.
+                memParams.stored = res?.stored ?? 0;
+                memParams.skippedInvalid = res?.skippedInvalid ?? 0;
+                memRecorder.finalize({
+                  status: memSawOkResponse ? "shipped" : "failure",
+                  answerRaw: memRawContent,
+                  durationMs: Date.now() - memStartedAt,
+                  ...(memSawOkResponse
+                    ? {}
+                    : {
+                        error:
+                          memLastError ||
+                          "memory extraction: no successful LLM response",
+                      }),
+                });
+              }
             })
-            .catch(() => {}),
+            .catch((err) => {
+              // runMemoryTurn promises never to reject; if that contract is
+              // ever broken it lands HERE — logged, never silently dropped.
+              console.warn(
+                `[gork] memory turn crashed in ${guildId}:`,
+                err?.message || err,
+              );
+              memRecorder?.finalize({
+                status: "failure",
+                error: err?.message || String(err),
+                durationMs: Date.now() - memStartedAt,
+              });
+            }),
         );
       }
     })(),
