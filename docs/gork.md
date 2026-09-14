@@ -11,6 +11,7 @@ A goofy AI question-answering bot. When someone types the trigger keyword — a 
 - **Voice**: sarcastic, always safe for work; the base prompt is immutable and staff rules cannot override the SFW / questions-only constraints (best effort)
 - **Gating**: gork is live whenever `AI_API_KEY` is set and the guild's enable switch is on; all `/gork` configuration and moderation is staff-only
 - **Daily budget** (opt-in): cap successful answers per user per UTC day per channel/category/server (`/gork budget`, off by default)
+- **Interaction logging** (opt-out): every question/answer is captured end-to-end (exact prompts, context, roster, transcript) and exportable as replay fixtures — see [Gork interaction logging](gork-logging.md)
 
 ## How it works
 
