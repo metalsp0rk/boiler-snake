@@ -49,6 +49,7 @@ const MEMORY_PER_PERSON_CAP = 25;
 /** Extraction-turn LLM params (decision 25: bounded ~20s, silent drop). */
 const MEMORY_TEMPERATURE = 0.2;
 const MEMORY_MAX_TOKENS = 1500;
+/** Default extraction-turn deadline (kept at 20s; raise via env below). */
 const MEMORY_TURN_TIMEOUT_MS = 20_000;
 /** Cap on the existing-memories block fed to the extractor (prompt guard). */
 const EXISTING_BLOCK_MAX_CHARS = 6000;
@@ -417,6 +418,21 @@ function memoryTurnConfig() {
   return { ...cfg, model: small || cfg.model };
 }
 
+/**
+ * Extraction-turn deadline, re-read AT CALL TIME like every other knob:
+ * GORK_MEMORY_TURN_TIMEOUT_MS overrides MEMORY_TURN_TIMEOUT_MS. Thinking
+ * extraction models (AI_SMALL_MODEL unset → full-size AI_MODEL) routinely
+ * need more than the 20s default; unset/invalid env keeps the default.
+ * (Parsed locally rather than importing trigger.js's envPositiveInt —
+ * trigger requires this module, so the dependency must stay one-way.)
+ *
+ * @returns {number} timeout in ms (≥ 1)
+ */
+function memoryTurnTimeoutMs() {
+  const n = Number(process.env.GORK_MEMORY_TURN_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : MEMORY_TURN_TIMEOUT_MS;
+}
+
 /** Empty load result (memory OFF, nobody involved, or any failure). */
 function emptyMemoryContext() {
   return { block: "", mode: "none", indexed: 0, selectedIds: [], rows: [], allRows: [] };
@@ -546,7 +562,7 @@ async function runMemoryTurn(opts = {}) {
       temperature: MEMORY_TEMPERATURE,
       maxTokens: MEMORY_MAX_TOKENS,
       responseFormat: { type: "json_object" },
-      timeoutMs: MEMORY_TURN_TIMEOUT_MS,
+      timeoutMs: memoryTurnTimeoutMs(),
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     });
     if (!res?.ok) {
@@ -606,6 +622,7 @@ module.exports = {
   parseExtractionJson,
   buildExtractionMessages,
   memoryTurnConfig,
+  memoryTurnTimeoutMs,
   // orchestrators (deps injectable, never throw)
   loadMemoryContext,
   runMemoryTurn,

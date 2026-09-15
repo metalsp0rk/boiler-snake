@@ -669,6 +669,31 @@ describe("runMemoryTurn (memory)", () => {
     }
   });
 
+  it("GORK_MEMORY_TURN_TIMEOUT_MS drives the deadline; default otherwise", async () => {
+    const saved = process.env.GORK_MEMORY_TURN_TIMEOUT_MS;
+    const restore = () => {
+      if (saved === undefined) delete process.env.GORK_MEMORY_TURN_TIMEOUT_MS;
+      else process.env.GORK_MEMORY_TURN_TIMEOUT_MS = saved;
+    };
+    try {
+      process.env.GORK_MEMORY_TURN_TIMEOUT_MS = "90000";
+      const fast = turnOpts();
+      await mem.runMemoryTurn(fast.opts);
+      assert.equal(fast.chatSeen[0].opts.timeoutMs, 90000, "env override per turn");
+      assert.equal(mem.memoryTurnTimeoutMs(), 90000);
+
+      delete process.env.GORK_MEMORY_TURN_TIMEOUT_MS;
+      assert.equal(mem.memoryTurnTimeoutMs(), 20000, "unset → 20s default");
+
+      for (const bogus of ["0", "-5", "bogus"]) {
+        process.env.GORK_MEMORY_TURN_TIMEOUT_MS = bogus;
+        assert.equal(mem.memoryTurnTimeoutMs(), 20000, `${bogus} → default`);
+      }
+    } finally {
+      restore();
+    }
+  });
+
   it("an empty allow-list skips the LLM round entirely", async () => {
     const t = turnOpts();
     const res = await mem.runMemoryTurn({ ...t.opts, allowList: [] });
