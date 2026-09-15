@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.14.0...v1.14.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **gork:** env-configurable memory-turn timeout (GORK_MEMORY_TURN_TIMEOUT_MS) ([2f92d12](https://github.com/metalsp0rk/boiler-snake/commit/2f92d12e3344474e9029525f5fbe7589091516c1))
+
 ## [1.14.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.13.0...v1.14.0) (2026-09-14)
 
 
