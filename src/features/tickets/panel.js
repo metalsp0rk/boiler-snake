@@ -54,6 +54,7 @@ const {
   editEphemeral,
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -161,6 +162,14 @@ async function handlePanelCreate(interaction, ctx) {
       description,
     );
 
+    recordSlashAudit({
+      interaction,
+      action: "tickets.panel_create",
+      targetType: "ticket_panel",
+      targetId: message.id,
+      details: { channel_id: targetChannel.id, title },
+    });
+
     await logConfigChange(
       ctx?.client || interaction.client,
       interaction.guildId,
@@ -255,6 +264,17 @@ async function handlePanelEdit(interaction, ctx) {
     return;
   }
 
+  recordSlashAudit({
+    interaction,
+    action: "tickets.panel_update",
+    targetType: "ticket_panel",
+    targetId: messageId,
+    details: {
+      title_updated: title != null,
+      description_updated: description != null,
+    },
+  });
+
   const panel = getTicketPanel(interaction.guildId, messageId);
   const finalTitle =
     (title != null ? title.trim() : panel?.title) || DEFAULT_PANEL_TITLE;
@@ -343,6 +363,14 @@ async function handlePanelDelete(interaction, ctx) {
   }
 
   if (removed) {
+    recordSlashAudit({
+      interaction,
+      action: "tickets.panel_delete",
+      targetType: "ticket_panel",
+      targetId: messageId,
+      details: { channel_id: channel_id ?? null },
+    });
+
     await logConfigChange(
       ctx?.client || interaction.client,
       interaction.guildId,
