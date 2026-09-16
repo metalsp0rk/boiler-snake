@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.16.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.15.0...v1.16.0) (2026-09-16)
+
+
+### Features
+
+* **db:** web_sessions and admin_audit migrations with repository helpers ([6809383](https://github.com/metalsp0rk/boiler-snake/commit/6809383f89342fc33228fabedb3ce98fe1324b24))
+* **web:** command-visibility sync trigger - shared sync core reused by slash and web (phase 3) ([99f6aeb](https://github.com/metalsp0rk/boiler-snake/commit/99f6aebe10209aa866ca27fca2bacaa2a9b3c57c))
+* **web:** extract HTTP surface to src/web on Express 5 (byte-identical, dark-by-default) ([6dd2864](https://github.com/metalsp0rk/boiler-snake/commit/6dd28646016572fa801e396765b40ddc24a6d3f9))
+* **web:** grant XP admin action via awardXp service - slash audit parity (phase 3) ([4544ee3](https://github.com/metalsp0rk/boiler-snake/commit/4544ee3d1585f5fbb2b88a6ef94abdf9ccf83ea6))
+* **web:** leaderboard, moderation lists, settings views (read-only, query-budgeted) ([a575957](https://github.com/metalsp0rk/boiler-snake/commit/a575957da90b94dd5727d1f85749ea26e3625e53))
+* **web:** login-mandatory tickets (staff-or-participant), dashboard data page, unified user profile ([f3c6204](https://github.com/metalsp0rk/boiler-snake/commit/f3c6204b39d4ee1f289f942235f065ef25f779fc))
+* **web:** mutation registry gate + audit middleware mount (Phase 2 foundation) ([19961de](https://github.com/metalsp0rk/boiler-snake/commit/19961deb26077408385a3b050cb6a04abbab6470))
+* **web:** phase 0b auth core - discord login, csrf/rate-limit middleware, audit writer, session tokens (025) ([fe94b0f](https://github.com/metalsp0rk/boiler-snake/commit/fe94b0ffe68e43449ca018eac3e9c00ff3775eae))
+* **web:** phase 2 config writes - settings, staff CRUD, level-roles, integrations (CSRF+audit+PRG) ([18d7c06](https://github.com/metalsp0rk/boiler-snake/commit/18d7c06cc6e8b187b64b5736208a03d5dd4c7a51))
+* **web:** session core with DB sessions, cookie hygiene, and secret/TTL config ([d11e2dc](https://github.com/metalsp0rk/boiler-snake/commit/d11e2dc00aa1f2b0c7afdfa3cb7ab5edc0bdddd2))
+* **web:** shell layout with escaped templates, CSP nonce, vendored htmx, guild switcher ([f19f383](https://github.com/metalsp0rk/boiler-snake/commit/f19f383cc8b787fae99153a25432ea298789dbfa))
+* **web:** staff roles + command-visibility view, integrations views, 0c exit suite (110-cell access matrix) ([0b3129c](https://github.com/metalsp0rk/boiler-snake/commit/0b3129c1dfb158d9d6fca8306993a1a8524f1bf6))
+* **web:** ticket claim/close/summarize senior-tier actions reusing slash ticket flows (phase 3) ([8e76b71](https://github.com/metalsp0rk/boiler-snake/commit/8e76b7136b988fa08292393569c0932d3d3cffa0))
+* **web:** tier resolution gate (guildAccess/requireTier/guildScope) + slash-side audit trail ([4813044](https://github.com/metalsp0rk/boiler-snake/commit/48130440ca7ebc82629c5d6d40f00bd5e0dcb217))
+* **web:** voice/music view-only page, system page + admin audit viewer ([8a21678](https://github.com/metalsp0rk/boiler-snake/commit/8a216788969b1678d2198536ee9922af428a0d8f))
+* **web:** warn issue/void + staff-note actions via slash-identical helpers (phase 3) ([c5eca32](https://github.com/metalsp0rk/boiler-snake/commit/c5eca32d661cbc2cdccf2ef9d881396aa0b93942))
+
+
+### Bug Fixes
+
+* **web:** audit-block placement + gork auditTrail import ([ff2f73b](https://github.com/metalsp0rk/boiler-snake/commit/ff2f73b0624fa497b152d8e7125a46795e79f365))
+* **web:** re-wire slash audit trail into post-refactor modules (eventReminders/gork/tickets/warnings) ([17e0dd0](https://github.com/metalsp0rk/boiler-snake/commit/17e0dd08b44af5fac16c77a2c99ec6e3ea85daec))
+* **web:** renumbered migration references (028-030) + registry feature count ([7503657](https://github.com/metalsp0rk/boiler-snake/commit/75036572c6bf0dfa32d9f6365b772d0962f5a9f4))
+
 ## [1.15.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.14.2...v1.15.0) (2026-09-16)
 
 
