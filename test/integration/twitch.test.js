@@ -416,6 +416,39 @@ describe("integration: twitch", () => {
     }
   });
 
+  it("go-live embed expands Helix thumbnail template braces", async () => {
+    // Regression: Helix returns thumbnail_url as a `{width}x{height}`
+    // template; sending it raw made Discord reject EVERY go-live message
+    // with 400 "Invalid Form Body".
+    env.db.updateGuildSettings(env.guild.id, {
+      twitch_notification_channel_id: IDS.channelNotify,
+    });
+    let sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    await processSubscription(env.client, env.guild.id, sub, undefined); // offline first
+    sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    env.channels.notify.sent.length = 0;
+
+    const stream = {
+      id: "stream-thumb",
+      user_id: "333000",
+      title: "Templated thumbnail",
+      started_at: new Date().toISOString(),
+      thumbnail_url:
+        "https://static-cdn.jtvnw.net/previews-ttv/live_user_livestreamer-{width}x{height}.jpg",
+    };
+    await processSubscription(env.client, env.guild.id, sub, stream);
+
+    assert.ok(env.channels.notify.sent.length >= 1);
+    const sent = env.channels.notify.sent[env.channels.notify.sent.length - 1];
+    const thumb = sent.embeds[0].data.thumbnail?.url;
+    assert.ok(thumb, "embed should carry a thumbnail");
+    assert.ok(
+      !thumb.includes("{") && !thumb.includes("}"),
+      `thumbnail still templated: ${thumb}`,
+    );
+    assert.match(thumb, /-640x360\.jpg$/);
+  });
+
   it("denies non-staff /twitch", async () => {
     const interaction = await env.runCommand({
       commandName: "twitch",

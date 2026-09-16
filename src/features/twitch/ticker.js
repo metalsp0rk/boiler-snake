@@ -8,7 +8,11 @@ const {
   removeTwitchChannel,
   updateTwitchChannelLiveState,
 } = require("../../db");
-const { resolveTwitchUser, fetchStreams } = require("./helix");
+const {
+  resolveTwitchUser,
+  fetchStreams,
+  expandThumbnailUrl,
+} = require("./helix");
 
 /** @type {{ resolveUser: Function, fetchStreams: Function }} */
 const defaultDeps = { resolveUser: resolveTwitchUser, fetchStreams };
@@ -29,7 +33,11 @@ function createGoLiveEmbed(sub, stream) {
     })
     .setTitle(stream.title || "Untitled stream")
     .setDescription(`[Watch on Twitch](https://twitch.tv/${sub.login})`)
-    .setThumbnail(stream.thumbnail_url || sub.profile_image_url || undefined)
+    .setThumbnail(
+      expandThumbnailUrl(stream.thumbnail_url) ||
+        sub.profile_image_url ||
+        undefined,
+    )
     .setTimestamp(new Date(stream.started_at || Date.now()));
 
   const fields = [];
