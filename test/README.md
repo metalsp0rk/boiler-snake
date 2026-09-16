@@ -39,7 +39,7 @@ npm test
 1. Prefer `createIntegrationEnv()` then `runCommand()` or `emitMessage()` / pipeline helpers.
 2. Use unique user/guild IDs when in-memory cooldowns or honeypot ban sets could collide.
 3. Mock only Discord side effects; assert on SQLite + captured `interaction.replies` / channel `sent` arrays.
-4. Do not call `client.login` or feature `start()` timers in tests — invoke ticks (`runVoiceTick`, `runDecayForGuild`, `processChannel`) explicitly.
+4. Do not call `client.login` or feature `start()` timers in tests — invoke ticks (`runVoiceTick`, `runDecayForGuild`, `processChannel`) explicitly. Named jobs live in `src/core/scheduler.js`; unit-test the scheduler with `createScheduler({ setTimeoutFn, … })` rather than real clocks.
 
 ### Production test seams
 

@@ -1,9 +1,9 @@
 /**
  * Delivery scheduler for scheduled event reminders + safety cleanup.
- * Uses node-cron (same dependency as decay) on a 60s cadence.
+ * Minute cron plus a 5s first pass after ready.
  */
 
-const cron = require("node-cron");
+const { registerJob } = require("../../core/scheduler");
 const {
   claimDueReminders,
   markReminderSent,
@@ -159,19 +159,14 @@ async function safetyCleanup(client, nowMs) {
 
 /**
  * @param {import("discord.js").Client} client
- * @returns {import("node-cron").ScheduledTask}
  */
 function startEventReminderTicker(client) {
-  const task = cron.schedule(REMINDER_CRON, () => {
-    runEventReminderTick(client).catch((err) => {
-      console.error("[eventReminders] tick error:", err?.message || err);
-    });
+  registerJob({
+    name: "eventReminders",
+    cron: REMINDER_CRON,
+    delayFirstMs: 5_000,
+    run: () => runEventReminderTick(client),
   });
-  // First pass shortly after ready (don't wait for the next minute boundary)
-  setTimeout(() => {
-    runEventReminderTick(client).catch(() => {});
-  }, 5_000);
-  return task;
 }
 
 module.exports = {
