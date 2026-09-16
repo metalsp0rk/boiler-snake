@@ -28,6 +28,7 @@ const { key } = require("../../core/cooldowns");
 const { isAdminOrMod, isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logHoneypotTrigger } = require("../logs/auditLog");
+const { registerJob } = require("../../core/scheduler");
 const { renderHoneypotWarningPng } = require("./renderWarning");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -784,23 +785,12 @@ function registerEvents(client) {
 }
 
 function start(client) {
-  sweepHoneypotWarningReactions(client).catch((e) =>
-    console.warn(
-      "[honeypot] Initial warning reaction sweep failed:",
-      e?.message || e,
-    ),
-  );
-  setInterval(
-    () => {
-      sweepHoneypotWarningReactions(client).catch((e) =>
-        console.warn(
-          "[honeypot] Warning reaction sweep failed:",
-          e?.message || e,
-        ),
-      );
-    },
-    10 * 60 * 1000,
-  );
+  registerJob({
+    name: "honeypotSweep",
+    intervalMs: 10 * 60 * 1000,
+    runImmediately: true,
+    run: () => sweepHoneypotWarningReactions(client),
+  });
 }
 
 module.exports = {

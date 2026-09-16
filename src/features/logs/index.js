@@ -16,6 +16,7 @@ const {
   logHoneypotTrigger,
   logLevelRoleChanges,
   diffConfigLines,
+  startMessageCacheSweep,
 } = require("./auditLog");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -194,6 +195,10 @@ function registerEvents(client) {
   });
 }
 
+function start() {
+  startMessageCacheSweep();
+}
+
 module.exports = {
   name: "logs",
   commands,
@@ -201,6 +206,7 @@ module.exports = {
     setlog: handleSetlog,
   },
   registerEvents,
+  start,
   cacheMessage,
   logMessageDelete,
   logMessageBulkDelete,
