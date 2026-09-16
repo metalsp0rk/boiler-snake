@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require("discord.js");
 const { Color } = require("../../core/theme");
+const { registerJob } = require("../../core/scheduler");
 const {
   getAllTwitchChannels,
   getGuildSettings,
@@ -265,8 +266,6 @@ async function runTwitchTick(client, deps = defaultDeps) {
   }
 }
 
-let ticking = false;
-
 /**
  * Start the Twitch polling ticker (aligned to minute boundaries).
  * @param {import("discord.js").Client} client
@@ -279,29 +278,13 @@ function startTwitchTicker(client) {
     return;
   }
 
-  const tick = () => {
-    if (ticking) {
-      console.log("[twitch] Previous tick still running; skipping");
-      return;
-    }
-    ticking = true;
-    runTwitchTick(client)
-      .catch((err) =>
-        console.error("[twitch] Tick failed:", err?.message || err),
-      )
-      .finally(() => {
-        ticking = false;
-      });
-  };
-
-  const msToNextMinute = 60_000 - (Date.now() % 60_000);
-
-  tick();
-
-  setTimeout(() => {
-    tick();
-    setInterval(tick, 60_000);
-  }, msToNextMinute);
+  registerJob({
+    name: "twitch",
+    intervalMs: 60_000,
+    align: true,
+    runImmediately: true,
+    run: () => runTwitchTick(client),
+  });
 }
 
 module.exports = {

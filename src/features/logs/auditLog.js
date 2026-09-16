@@ -92,16 +92,21 @@ function takeCachedMessage(messageId) {
   return entry;
 }
 
-// Periodic sweep so TTL is enforced without waiting for get
-setInterval(
-  () => {
-    const cutoff = Date.now() - MESSAGE_CACHE_TTL_MS;
-    for (const [id, entry] of messageCache.entries()) {
-      if (entry.cachedAt < cutoff) messageCache.delete(id);
-    }
-  },
-  10 * 60 * 1000,
-).unref?.();
+function sweepMessageCache() {
+  const cutoff = Date.now() - MESSAGE_CACHE_TTL_MS;
+  for (const [id, entry] of messageCache.entries()) {
+    if (entry.cachedAt < cutoff) messageCache.delete(id);
+  }
+}
+
+function startMessageCacheSweep() {
+  const { registerJob } = require("../../core/scheduler");
+  registerJob({
+    name: "messageCacheSweep",
+    intervalMs: 10 * 60 * 1000,
+    run: sweepMessageCache,
+  });
+}
 
 // ---------- Helpers ----------
 
@@ -977,6 +982,7 @@ module.exports = {
   logLevelRoleChanges,
   logConfigChange,
   logWarnEvent,
+  startMessageCacheSweep,
   AuditLogEvent,
   BULK_SAMPLE_LIMIT,
 };

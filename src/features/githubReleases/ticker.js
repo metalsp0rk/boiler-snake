@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require("discord.js");
 const { Color } = require("../../core/theme");
+const { registerJob } = require("../../core/scheduler");
 const {
   getAllGithubWatches,
   updateGithubWatchReleaseState,
@@ -214,36 +215,18 @@ async function runGithubReleaseTick(client, deps = defaultDeps) {
   }
 }
 
-let ticking = false;
-
 /**
  * Start the hourly GitHub release ticker (aligned to hour boundaries).
  * @param {import("discord.js").Client} client
  */
 function startGithubReleaseTicker(client) {
-  const tick = () => {
-    if (ticking) {
-      console.log("[github] Previous tick still running; skipping");
-      return;
-    }
-    ticking = true;
-    runGithubReleaseTick(client)
-      .catch((err) =>
-        console.error("[github] Tick failed:", err?.message || err),
-      )
-      .finally(() => {
-        ticking = false;
-      });
-  };
-
-  const msToNextHour = 3_600_000 - (Date.now() % 3_600_000);
-
-  tick();
-
-  setTimeout(() => {
-    tick();
-    setInterval(tick, 3_600_000);
-  }, msToNextHour);
+  registerJob({
+    name: "githubReleases",
+    intervalMs: 3_600_000,
+    align: true,
+    runImmediately: true,
+    run: () => runGithubReleaseTick(client),
+  });
 }
 
 module.exports = {

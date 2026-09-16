@@ -1,5 +1,6 @@
 const { getGuildSettings } = require("../../db");
 const { awardXp } = require("../../services/awardXp");
+const { registerJob } = require("../../core/scheduler");
 
 function isMutedOrDeafened(voiceState) {
   return !!(
@@ -61,11 +62,12 @@ async function runVoiceTick(client) {
 }
 
 function startVoiceTicker(client) {
-  const msToNextMinute = 60000 - (Date.now() % 60000);
-  setTimeout(() => {
-    runVoiceTick(client).catch(() => {});
-    setInterval(() => runVoiceTick(client).catch(() => {}), 60000);
-  }, msToNextMinute);
+  registerJob({
+    name: "voice",
+    intervalMs: 60_000,
+    align: true,
+    run: () => runVoiceTick(client),
+  });
 }
 
 function start(client) {

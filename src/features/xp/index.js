@@ -20,6 +20,7 @@ const { Color, baseEmbed } = require("../../core/theme");
 const { awardXp } = require("../../services/awardXp");
 const { renderLeaderboardPng } = require("../../render/leaderboard");
 const { logConfigChange, diffConfigLines } = require("../logs/auditLog");
+const { registerJob } = require("../../core/scheduler");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 const adminPerms = PermissionFlagsBits.ManageGuild;
@@ -522,13 +523,14 @@ function registerEvents(client, ctx) {
 }
 
 function start(_client) {
-  setInterval(
-    () => {
+  registerJob({
+    name: "xpCooldownSweep",
+    intervalMs: 10 * 60 * 1000,
+    run: () => {
       sweepCooldownMap(msgCooldown, 6 * 60 * 60 * 1000);
       sweepCooldownMap(reactionCooldown, 6 * 60 * 60 * 1000);
     },
-    10 * 60 * 1000,
-  );
+  });
 }
 
 module.exports = {

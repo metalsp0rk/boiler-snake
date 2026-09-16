@@ -1,5 +1,6 @@
 const https = require("https");
 const { Color } = require("../../core/theme");
+const { registerJob } = require("../../core/scheduler");
 const {
   normalizeYoutubeName,
   getAllYoutubeChannels,
@@ -631,17 +632,13 @@ function startYoutubeTicker(client) {
     return;
   }
 
-  const msToNext5Minutes = 5 * 60000 - (Date.now() % (5 * 60000));
-
-  runYoutubeTick(client).catch(() => {});
-
-  setTimeout(() => {
-    runYoutubeTick(client).catch(() => {});
-
-    setInterval(() => {
-      runYoutubeTick(client).catch(() => {});
-    }, 5 * 60000);
-  }, msToNext5Minutes);
+  registerJob({
+    name: "youtube",
+    intervalMs: 5 * 60_000,
+    align: true,
+    runImmediately: true,
+    run: () => runYoutubeTick(client),
+  });
 }
 
 async function fetchChannelInfo(channelId) {
