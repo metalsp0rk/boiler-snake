@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.2](https://github.com/metalsp0rk/boiler-snake/compare/v1.14.1...v1.14.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* **twitch:** make go-live notifications actually reach Discord ([4b99aaf](https://github.com/metalsp0rk/boiler-snake/commit/4b99aafb8ed862bef6f229e74e8bf62b96cc431b))
+
 ## [1.14.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.14.0...v1.14.1) (2026-09-15)
 
 
