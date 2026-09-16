@@ -737,15 +737,15 @@ async function handleSettings(interaction) {
 async function handleSetDm(interaction, ctx) {
   const enabled = interaction.options.getBoolean("enabled", true);
   const before = warnDmEnabled(interaction.guildId);
+  updateGuildSettings(interaction.guildId, {
+    warn_dm_members: enabled ? 1 : 0,
+  });
   recordSlashAudit({
     interaction,
     action: "warnings.dm_set",
     targetType: "guild",
     targetId: interaction.guildId,
     details: { before: before ? 1 : 0, after: enabled ? 1 : 0 },
-  });
-  updateGuildSettings(interaction.guildId, {
-    warn_dm_members: enabled ? 1 : 0,
   });
 
   await logConfigChange(interaction.client, interaction.guildId, {
@@ -789,6 +789,7 @@ async function handleSetLog(interaction, ctx) {
           : "Warn log: was already unset",
       ],
     }).catch(() => {});
+    updateGuildSettings(interaction.guildId, { warn_log_channel_id: null });
     recordSlashAudit({
       interaction,
       action: "warnings.log_channel_clear",
@@ -796,7 +797,6 @@ async function handleSetLog(interaction, ctx) {
       targetId: interaction.guildId,
       details: { previous_channel_id: beforeId ?? null },
     });
-    updateGuildSettings(interaction.guildId, { warn_log_channel_id: null });
     const auditFallback = settings.audit_log_channel_id
       ? ` Issue/void will use audit log <#${settings.audit_log_channel_id}>.`
       : " No audit log is set either — issue/void will not post channel embeds until one is configured.";
@@ -815,6 +815,7 @@ async function handleSetLog(interaction, ctx) {
     return;
   }
 
+  updateGuildSettings(interaction.guildId, { warn_log_channel_id: ch.id });
   recordSlashAudit({
     interaction,
     action: "warnings.log_channel_set",
@@ -822,7 +823,6 @@ async function handleSetLog(interaction, ctx) {
     targetId: ch.id,
     details: { previous_channel_id: beforeId ?? null, channel_id: ch.id },
   });
-  updateGuildSettings(interaction.guildId, { warn_log_channel_id: ch.id });
 
   await logConfigChange(interaction.client, interaction.guildId, {
     title: "Warning log channel set",
@@ -857,15 +857,15 @@ async function handleSetExpiry(interaction, ctx) {
   }
 
   const before = guildWarnExpiryDays(interaction.guildId);
+  updateGuildSettings(interaction.guildId, {
+    warn_expiry_days: parsed.days,
+  });
   recordSlashAudit({
     interaction,
     action: "warnings.expiry_set",
     targetType: "guild",
     targetId: interaction.guildId,
     details: { previous_days: before, days: parsed.days },
-  });
-  updateGuildSettings(interaction.guildId, {
-    warn_expiry_days: parsed.days,
   });
 
   await logConfigChange(interaction.client, interaction.guildId, {
