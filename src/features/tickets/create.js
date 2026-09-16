@@ -54,6 +54,7 @@ const {
   editEphemeral,
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -121,6 +122,18 @@ async function completeSelfCreate(interaction, ctx, reason) {
       creatorUserId: interaction.user.id,
       reason,
       openedByStaffId: null,
+    });
+
+    recordSlashAudit({
+      interaction,
+      action: "tickets.create",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        channel_id: channel?.id ?? null,
+        reason: reason ?? null,
+      },
     });
 
     let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened: ${channel}`;
@@ -244,6 +257,19 @@ async function handleFor(interaction, ctx) {
       creatorUserId: target.id,
       reason,
       openedByStaffId: interaction.user.id,
+    });
+
+    recordSlashAudit({
+      interaction,
+      action: "tickets.create",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        channel_id: channel?.id ?? null,
+        subject_user_id: target.id,
+        reason: reason ?? null,
+      },
     });
 
     // Best-effort DM
