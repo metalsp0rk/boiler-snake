@@ -8,7 +8,7 @@ const os = require("os");
  * Migration 028_web_sessions + webSessions repository helpers
  * (roadmap/web-admin.md §8.3 / §8.5).
  */
-describe("web sessions (migration 023 + repo helpers)", () => {
+describe("web sessions (migration 028 + repo helpers)", () => {
   let api;
   let tmpDir;
   let dbPath;
@@ -38,7 +38,7 @@ describe("web sessions (migration 023 + repo helpers)", () => {
       );
     });
 
-    it("030_web_session_tokens is registered AFTER 023 in migrate.js", () => {
+    it("030_web_session_tokens is registered AFTER 028 in migrate.js", () => {
       const { migrations } = require("../src/db/migrate");
       const i023 = migrations.findIndex((m) => m.id === "028_web_sessions");
       const i025 = migrations.findIndex((m) => m.id === "030_web_session_tokens");
@@ -46,9 +46,9 @@ describe("web sessions (migration 023 + repo helpers)", () => {
       assert.ok(i025 > i023, "025 extends the table 023 creates");
     });
 
-    it("creates web_sessions with the §8.5 columns + the 025 token extension", () => {
+    it("creates web_sessions with the §8.5 columns + the 030 token extension", () => {
       const cols = api.db.prepare(`PRAGMA table_info(web_sessions)`).all();
-      // 023 base (roadmap §8.5) + 030_web_session_tokens (Phase 0b: the
+      // 028 base (roadmap §8.5) + 030_web_session_tokens (Phase 0b: the
       // encrypted user AT + metadata the login callback attaches).
       assert.deepEqual(
         cols.map((c) => c.name),
