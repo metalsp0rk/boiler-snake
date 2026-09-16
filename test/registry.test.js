@@ -97,7 +97,7 @@ describe("buildDefaultRegistry", () => {
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 22);
+    assert.equal(features.length, 23);
   });
 
   it("registers userinfo button handler", () => {
