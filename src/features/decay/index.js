@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
-const cron = require("node-cron");
+const { registerJob } = require("../../core/scheduler");
 const {
   allUsersInGuild,
   countMessagesInWindow,
@@ -190,14 +190,14 @@ async function runDecayForGuild(client, guildId) {
 }
 
 function startDecayScheduler(client) {
-  cron.schedule(DECAY_CRON, async () => {
-    try {
+  registerJob({
+    name: "decay",
+    cron: DECAY_CRON,
+    run: async () => {
       for (const guild of client.guilds.cache.values()) {
         await runDecayForGuild(client, guild.id);
       }
-    } catch (err) {
-      console.error("[decay] scheduler error:", err?.message || err);
-    }
+    },
   });
 }
 

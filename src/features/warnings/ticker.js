@@ -1,9 +1,9 @@
 /**
  * Auto-void warnings past expires_at (opt-in per warning / guild default).
- * Uses node-cron on a 60s cadence (same pattern as event reminders / decay).
+ * Minute cron via the shared scheduler.
  */
 
-const cron = require("node-cron");
+const { registerJob } = require("../../core/scheduler");
 const {
   listExpiredActiveWarnings,
   voidWarning,
@@ -130,16 +130,14 @@ async function maybeDmExpiry(client, warn, activeCount) {
 
 /**
  * @param {import("discord.js").Client} client
- * @returns {import("node-cron").ScheduledTask}
  */
 function startWarnExpiryTicker(client) {
-  const task = cron.schedule(EXPIRY_CRON, () => {
-    runWarnExpiryTick(client).catch((err) => {
-      console.error("[warnings] expiry tick failed:", err?.message || err);
-    });
+  registerJob({
+    name: "warningsExpiry",
+    cron: EXPIRY_CRON,
+    run: () => runWarnExpiryTick(client),
   });
   console.log("[warnings] Expiry ticker started (every minute)");
-  return task;
 }
 
 module.exports = {

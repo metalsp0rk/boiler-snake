@@ -30,12 +30,17 @@ src/
 │   ├── xpMath.js            # levelFromXp, clamps, validateXpValue
 │   ├── cooldowns.js
 │   ├── permissions.js       # isAdminOrMod / isStaff / isSeniorStaff + require*
-│   └── interaction.js
+│   ├── interaction.js
+│   ├── ai.js                # shared OpenAI-compatible client (tickets + gork)
+│   ├── commandVisibility.js # slash picker tiers (public/staff/admin)
+│   ├── scheduler.js         # named jobs: overlap skip, align, cron, snapshots
+│   ├── theme.js
+│   └── text.js
 ├── services/
 │   └── awardXp.js           # Unified XP → activity → roles → audit
 ├── features/
 │   ├── load.js              # applyFeaturesToRegistry / start / registerEvents
-│   ├── index.js             # Ordered feature list (21 modules)
+│   ├── index.js             # Ordered feature list (22 modules)
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
 │   ├── xp/                  # /xp /leaderboard /setxp /grantxp + award helpers
@@ -51,11 +56,13 @@ src/
 │   ├── reactionRoles/       # /reactionrole + panel service
 │   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
 │   ├── staffRoles/          # /staff role gate (isStaff / requireStaff; junior|senior)
+│   ├── commandPermissions/  # OAuth slash visibility sync (no slash of its own)
 │   ├── staffNotes/          # /note staff-only private notes
 │   ├── warnings/            # /warn + /setwarn formal disciplinary records
 │   ├── userinfo/            # /userinfo staff card + note/warn/activity buttons
 │   ├── userActivity/        # /activityconfig + channel message counters + backfill
-│   └── tickets/             # /ticket support channels + panel button/modal + archive HTTP
+│   ├── tickets/             # /ticket support channels + panel button/modal + archive HTTP
+│   └── gork/                # keyword AI Q&A, memory, budget, interaction log
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch
@@ -102,8 +109,10 @@ module.exports = {
   commands: [/* SlashCommandBuilder */],
   handlers: { example: async (interaction, ctx) => {} },
   autocomplete: { example: async (interaction, ctx) => {} }, // optional
+  modalHandlers: { "prefix:": async (interaction, ctx) => {} }, // optional
+  buttonHandlers: { "prefix:": async (interaction, ctx) => {} }, // optional
   registerEvents(client, ctx) {},  // optional
-  start(client, ctx) {},           // optional (ClientReady)
+  start(client, ctx) {},           // optional (ClientReady) — register scheduler jobs here
 };
 ```
 
@@ -111,7 +120,7 @@ module.exports = {
 
 | Event | Order |
 |-------|--------|
-| **MessageCreate** | cache → pending RR emoji → honeypot → user channel activity → message XP |
+| **MessageCreate** | cache → pending RR emoji → honeypot → gork (detached) → user channel activity → message XP |
 | **MessageReactionAdd** | partials → honeypot warning strip → RR panels → reaction XP |
 | **MessageReactionRemove** | reaction-role remove |
 
@@ -185,8 +194,8 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | Feature | Notes |
 |---------|--------|
 | **xp** | Cooldowns in-memory; PNG leaderboard via `render/leaderboard` |
-| **voice** | Per-minute; ≥2 eligible humans; skip mute/deafen/AFK |
-| **decay** | Cron `0 4 * * *` local; re-syncs level + reaction roles |
+| **voice** | Per-minute; ≥2 eligible humans; skip mute/deafen/AFK; job `voice` on `core/scheduler` |
+| **decay** | Cron `0 4 * * *` local; re-syncs level + reaction roles; job `decay` |
 | **levelRoles** | Grace-period drop via `levelRoles/sync.js` |
 | **logs** | Audit + message log channels; in-memory delete cache |
 | **youtube** | RSS + optional Data API; guild notification channel |
@@ -201,12 +210,17 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **userinfo** | Staff member card; note/warn buttons; Activity tab needs **senior** staff |
 | **userActivity** | Live per-channel counts; `/activityconfig` ignore/status/backfill (staff); feeds `/userinfo` Activity |
 | **tickets** | Support channels, sensitive mode, panel button→modal, HTML archive HTTP; senior roles get auto ticket view |
+| **music** | Lavalink `/play` `/music`; optional when `LAVALINK_HOST` unset |
+| **gork** | Keyword Q&A; detached from MessageCreate; per-guild queue + budget |
+| **commandPermissions** | OAuth slash visibility for `staff_roles`; HTTP callback on the public ticket server |
+
+Tickers (voice, youtube, twitch, githubReleases, eventReminders, warnings expiry, decay, honeypot sweep, XP cooldown sweep, audit message-cache) register named jobs on `src/core/scheduler.js`. The scheduler skips overlapping runs, always logs tick failures as `[scheduler] <name> tick failed:`, and exposes `snapshot()` (`lastTickAt`, `intervalMs`, `running`) for dashboards. Feature `start()` still decides *whether* a job is armed (e.g. YouTube skips without `YOUTUBE_API_KEY`). Invoke `runVoiceTick` / `runYoutubeTick` / … directly in tests — do not start timers.
 
 ---
 
 ## Commands
 
-Slash builders and handlers are **co-located** on features. The registry exports **27** slash commands (unique names; see `test/registry.test.js`). Registration:
+Slash builders and handlers are **co-located** on features. The registry exports **28** slash commands (unique names; see `test/registry.test.js`). Registration:
 
 ```bash
 npm run register   # node src/commands/register.js
@@ -250,7 +264,7 @@ npm run test:unit        # test/*.test.js
 npm run test:integration # test/integration/*.test.js
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**27** commands, **21** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
+Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**28** commands, **22** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
 
 ---
 
