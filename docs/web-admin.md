@@ -27,16 +27,16 @@ Tiers mirror the bot's gates exactly — the same staff roles apply:
 
 | Tier | Who (same as slash) | Console access |
 |------|---------------------|----------------|
-| **Staff** | `ManageGuild` **or** any `staff_roles` level ([Staff Roles](staff-roles.md)) | Dashboard, users, leaderboard, moderation (warns/notes), settings, staff list, integrations, voice (read), system pages; ticket actions staff-tier slash commands allow |
-| **Senior** | senior `staff_roles` rows | Everything staff sees **plus** sensitive-ticket summarize and senior-tier actions (mirrors `/userinfo` Activity / ticket-overwrite seniority) |
-| **Admin** | `ManageGuild` only | ManageGuild-tier mutations only: grant XP, staff-role mutations, command-visibility sync, honeypot exempt |
+| **Staff** | `ManageGuild` **or** any `staff_roles` level ([Staff Roles](staff-roles.md)) | Dashboard, users, leaderboard, moderation (warns/notes pages + issue/void), settings reads + staff-tier writes (XP rate, decay, log channels, level roles), staff list, integrations (YouTube/Twitch/reaction-roles/event-reminders/honeypot), voice (read), ticket list + transcripts |
+| **Senior** | senior `staff_roles` rows | Everything staff sees **plus** ticket claim/close/summarize and the user Activity tab (mirrors `/userinfo` Activity / ticket-overwrite seniority) |
+| **Admin** | `ManageGuild` only | Everything above **plus** system + audit-trail pages and ManageGuild-tier mutations: grant XP, staff-role add/remove/setlevel, command-channel edits, command-visibility sync, honeypot exempt |
 
 Two deliberate deltas from slash (asserted by tests, not accidents):
 
 - Ticket claim/close/summarize writes are **senior-tier on web** (slash allows staff) — the console is a tighter surface.
 - Sensitive-ticket summarize answers **404** to non-senior users rather than "forbidden" — the console never confirms a sensitive ticket exists to someone who can't see it.
 
-Not in v1 by design: gork administration, music queue control, public (non-staff) pages.
+Not in v1 by design: gork administration, music queue control, public (non-staff) pages — and anything merged after the console was designed (GitHub Releases watches, gork daily budget/memory knobs) has slash-only config for now.
 
 ## Security model
 
@@ -55,9 +55,9 @@ Not in v1 by design: gork administration, music queue control, public (non-staff
 - **`/g/{guildId}/tickets`** — ticket list + claim/close/summarize; archived transcript viewing
 - **`/g/{guildId}/settings`** — read view of every guild setting + staff-tier writes (command channels, level roles, integrations, cooldowns, decay, …)
 - **`/g/{guildId}/staff`** — staff roles + command-visibility panel (incl. `/staff syncpermissions` trigger)
-- **`/g/{guildId}/integrations`** — YouTube / Twitch / GitHub Releases watches
-- **`/g/{guildId}/voice`**, **`/g/{guildId}/system`** — voice state, DB/queue/health status
-- **`/g/{guildId}/audit`** — the `admin_audit` trail, filtered by guild
+- **`/g/{guildId}/integrations`** — YouTube / Twitch watches, reaction roles, event reminders, honeypot
+- **`/g/{guildId}/voice`** — live voice state (read-only; no queue control)
+- **`/g/{guildId}/system`**, **`/g/{guildId}/audit`** — process/DB/queue health and the `admin_audit` trail, filtered by guild (both **admin-only**)
 
 ## Troubleshooting
 
