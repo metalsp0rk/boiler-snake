@@ -6,7 +6,7 @@ Replace the minimal, mostly-unauthenticated HTTP surface (`src/features/tickets/
 
 ### Status
 
-**Planned** — design v2 (post critical review). No code yet. Program runs Phases 0a → 3, polish in Phase 4. Task-level breakdown and estimates (Phases 0a–1): [§8.14](#814-task-breakdown-planned).
+**Shipped (Phases 0a–3)** — merged to `main` 2026-09-16 (PR #55, rebase-merged): login-mandatory web console on Express 5 (`src/web/`), `admin_audit` DB trail with `web`/`slash`/`system` origins, migrations `028`–`030`, full slash↔web parity gates. Phase 4 polish: docs page + env table shipped with it; **dashboard charts, mobile pass, and session admin (list/revoke) remain open**. User/operator guide: `docs/web-admin.md`. Task-level breakdown (all tasks shipped): [§8.14](#814-task-breakdown-shipped).
 
 ---
 
@@ -114,10 +114,11 @@ Rules:
 
 | Migration | Change |
 |-----------|--------|
-| `027_web_sessions` | `web_sessions (id TEXT PK, user_id TEXT, discord_tag TEXT, created_at, last_seen_at, expires_at)` + `idx(user_id)`; prune index on `expires_at` |
-| `028_admin_audit` | `admin_audit (id, guild_id, actor_user_id, origin 'web'\|'slash'\|'system', action, target_type, target_id, details_json, created_at)` + `idx(guild_id, created_at)` |
+| `028_web_sessions` | `web_sessions (id TEXT PK, user_id TEXT, discord_tag, created_at, last_seen_at, expires_at)` + `idx(user_id)`; prune index on `expires_at` (**shipped**) |
+| `029_admin_audit` | `admin_audit (id, guild_id, actor_user_id, origin 'web'\|'slash'\|'system', action, target_type, target_id, details_json, created_at)` + `idx(guild_id, created_at)` (**shipped**) |
+| `030_web_session_tokens` | `web_session_tokens` — Discord access token stored server-side per session (decision 9; no refresh flow in v1 — AT lifetime ≈ session cap) (**shipped**) |
 
-> **Numbering note:** the migration ids above are planning-time placeholders. Every migration shipped after this plan was written shifts them — reserve the next free id at implementation time (verify against `src/db/migrations/` before numbering), never trust the numbers written here.
+> **Numbering (resolved):** shipped as `028`–`030` — the reserve-the-next-free-id rule applied at implementation time (planning-time `027`/`028` shifted because `023`–`027` shipped after this design was written). `web_session_tokens` was added during implementation (§8.1 decision 9).
 
 No new tables for participants (existing ticket schema covers §8.4). Slash handlers gain a thin `admin_audit` write alongside their existing channel embeds so origin is consistent across transports.
 
@@ -179,7 +180,9 @@ No new tables for participants (existing ticket schema covers §8.4). Slash hand
 
 Each phase ships dark-by-default: with `PUBLIC_HTTP_PORT` unset, boot behavior is unchanged.
 
-**Task breakdown & estimates:** Phases 0a–0c are decomposed into 1–2 h checkbox tasks (Files / Estimate / Dependencies / Verification) and the Phase 1 row above is split into per-area tasks in [§8.14](#814-task-breakdown-planned). **Phases 2–4 estimates are intentionally deferred** — those phases keep exactly the row-level fidelity above and get their own task breakdown only after Phase 0a completes (the test net + extraction lands first, so the remaining estimates land on proven ground).
+**Status (2026-09-16):** Phases 0a–3 shipped (PR #55). Phase 4: docs page + env table + VitePress sidebar shipped with it; dashboard charts, mobile pass, session admin (list/revoke) still open.
+
+**Task breakdown & estimates:** Phases 0a–0c are decomposed into 1–2 h checkbox tasks (Files / Estimate / Dependencies / Verification) and the Phase 1 row above is split into per-area tasks in [§8.14](#814-task-breakdown-shipped). **Phases 2–4 estimates are intentionally deferred** — those phases keep exactly the row-level fidelity above and get their own task breakdown only after Phase 0a completes (the test net + extraction lands first, so the remaining estimates land on proven ground).
 
 ---
 
@@ -231,11 +234,10 @@ Each phase ships dark-by-default: with `PUBLIC_HTTP_PORT` unset, boot behavior i
 
 ---
 
-### 8.14 Task breakdown (Planned)
+### 8.14 Task breakdown (Shipped)
 
-> **All work in this section is Planned — none of it exists or has shipped.** File paths are
-> planned locations (per §8.2); migration ids follow the §8.5 reserve-the-next-free-id note —
-> verify against `src/db/migrations/` at implementation time, never trust the numbers here.
+> **All tasks below shipped with PR #55 (merged 2026-09-16).** File paths are the shipped
+> locations; migration ids shipped as `028`–`030` per the §8.5 resolved note.
 
 **Estimate scope:** Phases 0a–0c are decomposed into 1–2 h tasks and Phase 1 is split into
 per-area tasks (coarser, roughly half-day units). **Phases 2–4 are intentionally left
@@ -250,7 +252,7 @@ Files / Estimate / Dependencies / Verification — cf. `roadmap/gork.md` §7.15)
 **Goal:** HTTP-level test net on the current raw `node:http` server, then a byte-identical
 extraction onto Express 5 under `src/web/`. No behavior change, no auth yet.
 
-- [ ] **Task 0a.1:** HTTP-level test net — `fetch` against the current `httpServer.js` on an
+- [x] **Task 0a.1:** HTTP-level test net — `fetch` against the current `httpServer.js` on an
       ephemeral port: `/health`, `/t` (pagination + `?guild=`), `/t/{uuid}`,
       `/t/{uuid}/assets/…`, `/oauth/command-permissions/callback` (success + error paths)
   - **Files:** `test/integration/web-http.test.js` (new)
@@ -258,33 +260,33 @@ extraction onto Express 5 under `src/web/`. No behavior change, no auth yet.
   - **Dependencies:** none
   - **Verification:** `node --test test/integration/web-http.test.js` green **before** any
     refactor; all five route families covered.
-- [ ] **Task 0a.2:** Retire the `handleRequest(mockReq, mockRes)` seam — port anything unique
+- [x] **Task 0a.2:** Retire the `handleRequest(mockReq, mockRes)` seam — port anything unique
     in the old unit seam to the 0a.1 HTTP tests, then delete the seam
   - **Files:** `test/tickets.test.js`
   - **Estimate:** 1 h
   - **Dependencies:** 0a.1
   - **Verification:** no `handleRequest`/mock-req references left under `test/`; full suite green.
-- [ ] **Task 0a.3:** Express 5 (pinned) + pure app factory + server wrapper owning
+- [x] **Task 0a.3:** Express 5 (pinned) + pure app factory + server wrapper owning
     `PUBLIC_HTTP_PORT` — `listen()` lives only in `server.js`; app boots in tests without it
   - **Files:** `package.json`, `src/web/app.js`, `src/web/server.js`
   - **Estimate:** 2 h
   - **Dependencies:** 0a.1
   - **Verification:** factory boots on an ephemeral port in tests; empty app 404s; no route
     logic in `server.js`.
-- [ ] **Task 0a.4:** Extract `/health` + `/t` index **byte-identical** (same HTML, pagination,
+- [x] **Task 0a.4:** Extract `/health` + `/t` index **byte-identical** (same HTML, pagination,
     `?guild=` param, headers)
   - **Files:** `src/web/routes/system.js`, `src/web/routes/transcripts.js`
   - **Estimate:** 1.5 h
   - **Dependencies:** 0a.3
   - **Verification:** the 0a.1 health/index cases pass through the Express app — zero route diff.
-- [ ] **Task 0a.5:** Extract `/t/{uuid}` + `/t/{uuid}/assets/…` byte-identical — keeps the
+- [x] **Task 0a.5:** Extract `/t/{uuid}` + `/t/{uuid}/assets/…` byte-identical — keeps the
     path-traversal guard, sensitive 404, and the generic-500 no-leak rule (§8 error-handling law)
   - **Files:** `src/web/routes/transcripts.js`
   - **Estimate:** 2 h
   - **Dependencies:** 0a.4
   - **Verification:** transcript + asset cases (incl. traversal attempts and sensitive tickets)
     pass unchanged.
-- [ ] **Task 0a.6:** Mount the existing command-permissions OAuth callback
+- [x] **Task 0a.6:** Mount the existing command-permissions OAuth callback
     (`handleCommandPermissionOAuthCallback`, unchanged) on the app; leave compat shims in
     `tickets/httpServer.js` so `transcriptPublicUrl`/config imports keep working
   - **Files:** `src/web/app.js`, `src/features/tickets/httpServer.js`,
@@ -293,14 +295,14 @@ extraction onto Express 5 under `src/web/`. No behavior change, no auth yet.
   - **Dependencies:** 0a.3
   - **Verification:** OAuth callback cases from 0a.1 green; `tickets/close.js` and
     `tickets/summary.js` imports unbroken.
-- [ ] **Task 0a.7:** Boot ownership move — `src/web/` becomes the `web` feature module that
+- [x] **Task 0a.7:** Boot ownership move — `src/web/` becomes the `web` feature module that
     starts the server when `PUBLIC_HTTP_PORT` is set; tickets stops starting it
   - **Files:** `src/features/index.js`, `src/web/server.js`, `src/features/tickets/index.js`
   - **Estimate:** 2 h
   - **Dependencies:** 0a.4–0a.6
   - **Verification:** boot with the port unset behaves exactly as before (dark by default);
     with it set, exactly one listener; the start path stays idempotent.
-- [ ] **Task 0a.8:** Phase 0a sign-off — drop the legacy `node:http` request path, keep only
+- [x] **Task 0a.8:** Phase 0a sign-off — drop the legacy `node:http` request path, keep only
     the shim exports; run the full suite; record route parity
   - **Files:** `src/features/tickets/httpServer.js`
   - **Estimate:** 1 h
@@ -315,14 +317,14 @@ extraction onto Express 5 under `src/web/`. No behavior change, no auth yet.
 **Goal:** Discord login, DB sessions, tier resolution, and the middleware stack — no page
 content yet.
 
-- [ ] **Task 0b.1:** `web_sessions` migration (**reserve the next free id at implementation
+- [x] **Task 0b.1:** `web_sessions` migration (**reserve the next free id at implementation
     time** per the §8.5 note; planned `027`) + session repository + prune job on boot
   - **Files:** `src/db/migrations/027_web_sessions.js`, `src/db/repositories/webSessions.js`
   - **Estimate:** 1.5 h
   - **Dependencies:** none
   - **Verification:** migration applies to fresh **and** existing DBs; prune unit test removes
     expired rows only.
-- [ ] **Task 0b.2:** Purpose-tagged OAuth state — signed payload gains `purpose`
+- [x] **Task 0b.2:** Purpose-tagged OAuth state — signed payload gains `purpose`
     (`web_login` / `cmd_perms`); each callback rejects a mismatch (no cross-flow substitution)
   - **Files:** `src/features/commandPermissions/oauthState.js`,
     `src/features/commandPermissions/httpCallback.js`
@@ -330,7 +332,7 @@ content yet.
   - **Dependencies:** none
   - **Verification:** unit test — `cmd_perms` state on the web callback rejected and vice versa;
     existing sync flow still green.
-- [ ] **Task 0b.3:** Login flow — `/auth/login` redirect + `/auth/login/callback` (register in
+- [x] **Task 0b.3:** Login flow — `/auth/login` redirect + `/auth/login/callback` (register in
     Dev Portal per §8.10); injectable Discord API base; fetch guilds + member role ids;
     **session id rotates on login**
   - **Files:** `src/web/auth/login.js`
@@ -338,7 +340,7 @@ content yet.
   - **Dependencies:** 0b.1, 0b.2
   - **Verification:** integration test against a mocked Discord API — login stores the session,
     sets the cookie, and the pre-login id no longer resolves.
-- [ ] **Task 0b.4:** Session lifecycle — create/touch/destroy, sliding 12 h + absolute 7 d
+- [x] **Task 0b.4:** Session lifecycle — create/touch/destroy, sliding 12 h + absolute 7 d
     (both env-tunable), cookie hygiene (`httpOnly`, `SameSite=Lax`, `Secure` on https),
     `SESSION_SECRET` with `CLIENT_SECRET` fallback + boot warning
   - **Files:** `src/web/auth/sessions.js`, `.env.example`
@@ -346,7 +348,7 @@ content yet.
   - **Dependencies:** 0b.1
   - **Verification:** unit matrix for touch/expiry/cap/destroy; cookie flags asserted in the
     0b.3 integration test; fallback path logs its warning.
-- [ ] **Task 0b.5:** `guildAccess` tier resolution — admin/senior/staff from `(roleIds,
+- [x] **Task 0b.5:** `guildAccess` tier resolution — admin/senior/staff from `(roleIds,
     manageGuildBit, staffRoleIds)`; role-ids cache ≤60 s, ManageGuild bitmask 5 min +
     role-event invalidation; degradation matrix (§8.3) honored
   - **Files:** `src/web/auth/guildAccess.js`
@@ -354,7 +356,7 @@ content yet.
   - **Dependencies:** 0b.3
   - **Verification:** unit matrix admin/senior/staff/denied + one test per §8.3 degradation row;
     cache-TTL boundary cases; guild hidden when bot absent.
-- [ ] **Task 0b.6:** Route middleware — `session` (cookie → `req.user`, null = anonymous),
+- [x] **Task 0b.6:** Route middleware — `session` (cookie → `req.user`, null = anonymous),
     `guildScope` (`:guildId` ∈ viewer list else **404, never 403**), `requireTier`
     (staff/senior/admin equivalents of `core/permissions`)
   - **Files:** `src/web/middleware/session.js`, `src/web/middleware/guildScope.js`,
@@ -363,14 +365,14 @@ content yet.
   - **Dependencies:** 0b.4, 0b.5
   - **Verification:** unauthenticated `/g/*` → login redirect; foreign guild → 404; below-tier →
     the designed deny — all as unit + integration cases.
-- [ ] **Task 0b.7:** CSRF (per-session token; form field + `X-CSRF-Token` for htmx, required on
+- [x] **Task 0b.7:** CSRF (per-session token; form field + `X-CSRF-Token` for htmx, required on
     all non-GET) + rate-limit buckets (login, OAuth callback, mutations — per IP + per user)
   - **Files:** `src/web/middleware/csrf.js`, `src/web/middleware/rateLimit.js`
   - **Estimate:** 2 h
   - **Dependencies:** 0b.4
   - **Verification:** non-GET without/with-wrong token → 403; bucket-limit unit cases; body-size
     cap holds.
-- [ ] **Task 0b.8:** Env wiring + HTTPS validation — `WEB_TIER_CACHE_TTL_MS`,
+- [x] **Task 0b.8:** Env wiring + HTTPS validation — `WEB_TIER_CACHE_TTL_MS`,
     `WEB_SESSION_TTL_HOURS`, `PUBLIC_BASE_URL` reuse; non-localhost `http://` base → loud boot
     warning + `Secure`-cookie caveat in setup docs
   - **Files:** `src/web/server.js`, `.env.example`, `docs/setup.md`
@@ -378,7 +380,7 @@ content yet.
   - **Dependencies:** 0b.4
   - **Verification:** warning observed on an `http://` prod base; env overrides provably reach
     the caches/TTLs.
-- [ ] **Task 0b.9:** Auth integration suite + **access-matrix scaffold** (§8.11) — every route
+- [x] **Task 0b.9:** Auth integration suite + **access-matrix scaffold** (§8.11) — every route
     × {anonymous, stranger-in-guild, staff, senior, admin, participant} against stub routes
   - **Files:** `test/integration/web-auth.test.js`, `test/web.test.js` (tier/session units)
   - **Estimate:** 2 h
@@ -394,7 +396,7 @@ content yet.
 **Goal:** Rendered shell with the guild switcher, and ticket routes become login-mandatory
 with the §8.4 access rule. First user-visible behavior change of the program.
 
-- [ ] **Task 0c.1:** View layer — escaped-by-default templates, layout, CSP wiring
+- [x] **Task 0c.1:** View layer — escaped-by-default templates, layout, CSP wiring
     (`default-src 'self'`, `'nonce-…'` scripts, `frame-ancestors 'none'`, nosniff kept),
     vendored htmx pinned with the version-stamp header comment
   - **Files:** `src/web/views/layout.js`, `src/web/app.js`, `src/web/public/htmx.min.js`
@@ -402,21 +404,21 @@ with the §8.4 access rule. First user-visible behavior change of the program.
   - **Dependencies:** Phase 0b
   - **Verification:** CSP header asserts incl. nonce on every response; no inline handlers exist;
     htmx loads with its version comment.
-- [ ] **Task 0c.2:** Shell + guild switcher — lists the session's guilds where **the bot is
+- [x] **Task 0c.2:** Shell + guild switcher — lists the session's guilds where **the bot is
     also present**; selecting scopes `/g/:guildId`; minimal `/g/:guildId` placeholder page
   - **Files:** `src/web/views/shell.js`, `src/web/routes/dashboard.js`
   - **Estimate:** 2 h
   - **Dependencies:** 0c.1
   - **Verification:** bot-less guild hidden and its routes 404; switch re-scopes every page
     (probe case added to the matrix).
-- [ ] **Task 0c.3:** `/t` index gating — login required; guild-scoped to the viewer's access
+- [x] **Task 0c.3:** `/t` index gating — login required; guild-scoped to the viewer's access
     list; `?guild=` honored **only** for accessible guilds (closes the cross-guild leak)
   - **Files:** `src/web/routes/transcripts.js`
   - **Estimate:** 1.5 h
   - **Dependencies:** 0c.2
   - **Verification:** anonymous → login redirect; foreign `?guild=` shows only own rows;
     sensitive tickets still absent.
-- [ ] **Task 0c.4:** `/t/{uuid}` + `/t/{uuid}/assets/…` gating — staff tier **or** participant
+- [x] **Task 0c.4:** `/t/{uuid}` + `/t/{uuid}/assets/…` gating — staff tier **or** participant
     (`tickets.creator_user_id`, `ticket_members`, `ticket_staff`, `ticket_messages.author_id`);
     per-row check — a UUID alone is never sufficient; sensitive tickets stay 404
   - **Files:** `src/web/routes/transcripts.js`, `src/db/repositories/tickets.js`
@@ -424,13 +426,13 @@ with the §8.4 access rule. First user-visible behavior change of the program.
   - **Dependencies:** 0b.5, 0c.3
   - **Verification:** per-transcript matrix — staff 200, each participant class 200, authenticated
     stranger 404, anonymous redirect, sensitive 404; assets follow the parent's verdict.
-- [ ] **Task 0c.5:** 0c suite hardening — full §8.11 access matrix on every route live at the
+- [x] **Task 0c.5:** 0c suite hardening — full §8.11 access matrix on every route live at the
     end of 0c + cross-guild probe (valid guild-A session → all guild-B routes 404)
   - **Files:** `test/integration/web-transcripts.test.js`
   - **Estimate:** 2 h
   - **Dependencies:** 0c.3, 0c.4
   - **Verification:** suite green in CI; no route returns 403 where 404 is specified.
-- [ ] **Task 0c.6:** Operator notes for the breaking change — second redirect URI
+- [x] **Task 0c.6:** Operator notes for the breaking change — second redirect URI
     (`{base}/auth/login/callback`), transcripts-require-login with **no opt-out flag** in
     setup docs + the §8.12 release-note blurb
   - **Files:** `docs/setup.md`, `roadmap/web-admin.md` (§8.12 update on completion)
@@ -448,60 +450,60 @@ area; estimates are coarser per-area units (half-day scale), not 1–2 h steps. 
 shares the same acceptance bar: correct view tier, cross-guild 404, `LIMIT ≤ 100` + cursor
 per the §8.6 query-budget rule, and access-matrix entries.
 
-- [ ] **Task 1.1:** Dashboard data — recent activity, open tickets, ticker health,
+- [x] **Task 1.1:** Dashboard data — recent activity, open tickets, ticker health,
     now-playing; guild aggregates cached ≥ 30 s (shared-process budget)
   - **Files:** `src/web/routes/dashboard.js`, `src/web/views/dashboard.js`
   - **Estimate:** 4 h · **Dependencies:** Phase 0c
   - **Verification:** staff sees all panels, stranger 404s; no per-request full-table scans
     (seeded-DB check in 1.12); cache holds under repeat loads.
-- [ ] **Task 1.2:** Users — unified profile read (XP/level, warnings incl. voided, staff notes)
+- [x] **Task 1.2:** Users — unified profile read (XP/level, warnings incl. voided, staff notes)
   - **Files:** `src/web/routes/users.js`, `src/web/views/users.js`
   - **Estimate:** 3 h · **Dependencies:** Phase 0c
   - **Verification:** matches what `/xp`, `/warn list`, `/note list` show for the same user;
     senior-only Activity tab stays hidden until 1.3.
-- [ ] **Task 1.3:** Users — Activity tab, **senior-tier only** (mirrors `/userinfo` Activity)
+- [x] **Task 1.3:** Users — Activity tab, **senior-tier only** (mirrors `/userinfo` Activity)
   - **Files:** `src/web/routes/users.js`
   - **Estimate:** 2 h · **Dependencies:** 1.2
   - **Verification:** junior-staff session → tab absent **and** data route 404; senior → renders.
-- [ ] **Task 1.4:** XP — leaderboard + per-user history (paginated, capped)
+- [x] **Task 1.4:** XP — leaderboard + per-user history (paginated, capped)
   - **Files:** `src/web/routes/xp.js`
   - **Estimate:** 2 h · **Dependencies:** Phase 0c
   - **Verification:** ordering matches `topUsers()`; cap + cursor enforced; staff gate on both.
-- [ ] **Task 1.5:** Moderation — warnings list + notes list with filters
+- [x] **Task 1.5:** Moderation — warnings list + notes list with filters
     (user / status / date range)
   - **Files:** `src/web/routes/moderation.js`
   - **Estimate:** 3 h · **Dependencies:** Phase 0c
   - **Verification:** list output consistent with `/warn list` / `/note list` for the same
     filters; staff gate; limits honored.
-- [ ] **Task 1.6:** Settings view — guild settings, command channels, logs channels,
+- [x] **Task 1.6:** Settings view — guild settings, command channels, logs channels,
     cooldowns, decay (read-only; writes land in Phase 2)
   - **Files:** `src/web/routes/settings.js`
   - **Estimate:** 3 h · **Dependencies:** Phase 0c
   - **Verification:** every value shown equals what the matching slash command displays; staff
     view gate; no mutation routes exist yet.
-- [ ] **Task 1.7:** Staff & roles view — `staff_roles` with levels + `added_by` provenance
+- [x] **Task 1.7:** Staff & roles view — `staff_roles` with levels + `added_by` provenance
   - **Files:** `src/web/routes/staff.js`
   - **Estimate:** 2 h · **Dependencies:** Phase 0c
   - **Verification:** equals `/staff role list`; view = staff tier (writes are Admin, Phase 2).
-- [ ] **Task 1.8:** Command visibility — sync status + last-sync state (trigger action
+- [x] **Task 1.8:** Command visibility — sync status + last-sync state (trigger action
     lands in Phase 3)
   - **Files:** `src/web/routes/staff.js`
   - **Estimate:** 2 h · **Dependencies:** 1.7
   - **Verification:** status reads from `guild_command_permission_oauth` state only; no sync
     POST route exists yet.
-- [ ] **Task 1.9:** Integrations view — YouTube, Twitch, reaction roles, event reminders,
+- [x] **Task 1.9:** Integrations view — YouTube, Twitch, reaction roles, event reminders,
     honeypot (per-config status; writes land in Phase 2)
   - **Files:** `src/web/routes/integrations.js`
   - **Estimate:** 3 h · **Dependencies:** Phase 0c
   - **Verification:** each panel matches its `/set…`/`/… list` command output; staff view gate;
     honeypot exempt list shown read-only (its write is Admin-only, Phase 2).
-- [ ] **Task 1.10:** Voice & music — now-playing + queue **view only** (control stays out of
+- [x] **Task 1.10:** Voice & music — now-playing + queue **view only** (control stays out of
     scope per §8.9)
   - **Files:** `src/web/routes/system.js`
   - **Estimate:** 2 h · **Dependencies:** Phase 0c
   - **Verification:** snapshot rendered without touching player state; staff gate; zero control
     routes exist.
-- [ ] **Task 1.11:** System — health, ticker states, OAuth state summary +
+- [x] **Task 1.11:** System — health, ticker states, OAuth state summary +
     **`admin_audit` viewer** (admin-only; queryable trail per §8.5); includes the audit-trail
     groundwork so a trail exists **before** the first web mutation (Phase 2): the
     `admin_audit` migration (**reserve id at implementation time**, planned `028`), the
@@ -512,7 +514,7 @@ per the §8.6 query-budget rule, and access-matrix entries.
   - **Verification:** admin-only (staff/senior 404); viewer paginates `admin_audit` with the
     `idx(guild_id, created_at)` path; slash mutations land `origin='slash'` rows with embeds
     still posting unchanged; no secrets/tokens rendered.
-- [ ] **Task 1.12:** Phase 1 hardening — access matrix filled for **every** read route +
+- [x] **Task 1.12:** Phase 1 hardening — access matrix filled for **every** read route +
     query-budget suite on a seeded DB (10k users / 10k messages): `LIMIT ≤ 100`, no full scans,
     no per-request JS aggregation
   - **Files:** `test/integration/web-reads.test.js` (new), `test/integration/web-auth.test.js`
