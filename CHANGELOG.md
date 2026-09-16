@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.14.2...v1.15.0) (2026-09-16)
+
+
+### Features
+
+* **gork:** no-markdown-tables base prompt line (roadmap decision 43) ([e9da2e3](https://github.com/metalsp0rk/boiler-snake/commit/e9da2e3741d81c66b585ea9025481c423bf571b1))
+
 ## [1.14.2](https://github.com/metalsp0rk/boiler-snake/compare/v1.14.1...v1.14.2) (2026-09-16)
 
 
