@@ -26,6 +26,7 @@ const { Color, baseEmbed } = require("../../core/theme");
 const { sliceSafe } = require("../../core/text");
 const { getAiConfig } = require("../../core/ai");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const { formatDailyLimit } = require("./budget");
 const {
   KEYWORD_MAX,
