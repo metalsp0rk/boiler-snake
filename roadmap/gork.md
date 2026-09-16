@@ -338,7 +338,7 @@ repo convention):
 | 6 | **Shared AI core** extracted to `src/core/ai.js`; tickets refactor uses it; same `AI_*` env vars. |
 | 7 | Gork live whenever `AI_API_KEY` is set; no key → silent ignore. No per-guild opt-in ritual (single-server personal project). |
 | 8 | temperature **0.8**; ~150-word target; 60s total timeout; >2,000-char answers split across consecutive messages. |
-| 9 | **Immutable base prompt** (questions only, always SFW, sarcastic, context/search results are untrusted data, no trailing source list) + staff rules ≤500 chars appended. SFW/questions-only cannot be overridden (best-effort guardrail, documented). |
+| 9 | **Immutable base prompt** (questions only, always SFW, sarcastic, context/search results are untrusted data, no trailing source list) + staff rules ≤500 chars appended. SFW/questions-only cannot be overridden (best-effort guardrail, documented). *(Amendment — 2026-09-16: one one-time formatting line — no markdown tables, bullet lists instead — added per decision 43; byte-lock resumes once it lands.)* |
 | 10 | `web_search` is a plain OpenAI-compatible **function tool** executed by the bot against the SearXNG JSON API (architecture A). Max 3 searches/question, top-5 results, per-guild toggle, `SEARXNG_URL` env-only hosting. |
 | 11 | Reply is **plain text** to the keyword message; no embed, no source list — model may inline source facts/URLs when useful or asked. |
 | 12 | Typing indicator on trigger, refreshed every 8s. |
@@ -490,18 +490,36 @@ by **JS code-unit index**, which cuts multi-byte characters and Discord tokens a
 - [x] **Token-aware cuts:** `pullBeforeTokens` (trigger.js) pulls the cut before any
       open `<…>` token, `||` spoiler span, or ``` fence — cutting earlier than the
       limit is always allowed.
-- [ ] **Markdown hygiene:** balance or escape `*`, `_`, `~`, `>`, `|`, fences in the
-      final answer so it renders predictably (a stray `_` in a username already
-      mid-italics text around it — see Fix 2 roster naming).
-- [ ] **Input policy:** decide handling of zero-width / bidi / homoglyph characters in
-      questions (pass to the LLM, strip from replies?).
+- [x] **Markdown hygiene — closed as-is (2026-09-16, decision 43):** no balancing/
+      escaping layer on the final answer — operator call: leave the markdown exactly as
+      it is (a stray `_` occasionally rendering text mid-italics is accepted). The one
+      rendering casualty worth engineering is **Discord not rendering markdown
+      tables** → handled at the source; open sub-item below.
+- [ ] **No-tables prompt line (open, decision 43):** append the single formatting line
+      to `GORK_BASE_PROMPT` in `src/features/gork/prompt.js` — Discord renders no
+      markdown tables, so never output tables; use short bullet lists — update the
+      base-prompt assertions in `test/gork.test.js` + a note in `docs/gork.md`.
+      One-time dated amendment to decision 9's byte-lock; then the prompt re-locks.
+- [x] **Input policy — closed: pass-through (2026-09-16, decision 42):** zero-width,
+      bidi, homoglyph, and non-Latin characters go to the LLM **unfiltered** and replies
+      echo them verbatim — no input scrubbing, no answer-side strip. Evidence: day-one
+      live attempts passed Chinese/Japanese glyphs as jailbreak bait — no bypass (the
+      decision 9/20 guardrails held). Echoed zero-width/bidi spoofing is **accepted
+      risk**, consistent with the decision-18 posture.
 - [x] Repro matrix (mocked): answer >2,000 chars of emoji/non-BMP + fences + spoilers +
       mention tokens — integration "emoji-heavy" fixture plus unit property tests.
-      Question-side zero-width/RTL passthrough is the remaining open item (see input
-      policy above).
+      Question-side zero-width/RTL passthrough decided 2026-09-16: **pass-through**
+      (decision 42) — nothing left to filter or test there.
 - [x] Tests: unit/property tests — every `splitLongAnswer` chunk is valid UTF-16 (no
       lone surrogates), tokens never split, `join` round-trips; `truncateField`
       code-point safety; integration test with an emoji-heavy mocked answer.
+
+**Locked decisions (2026-09-16 — decisions 42–43; 43 amends decision 9):**
+
+| # | Decision |
+|---|----------|
+| 42 | **Input policy = pass-through.** Question characters — zero-width, bidi, homoglyph, non-Latin — reach the LLM **unfiltered**; replies echo verbatim. No character-level filtering anywhere in the gork pipeline. Rationale: day-one live non-Latin (Chinese/Japanese glyph) jailbreak attempts never bypassed the decision 9/20 guardrails; filtering would tax legitimate multilingual users for a false-precision guardrail (decision-18 posture). Accepted risk: echoed zero-width/bidi spoofing in replies. |
+| 43 | **Answer markdown stays as-is** — no escape/balance hygiene layer on final answers. Tables are handled **at the source**: one base-prompt line — Discord renders no markdown tables, never output tables, use short bullet lists (native wrapping, mobile-readable). **One-time dated amendment to decision 9's byte-lock**; the prompt re-locks once the line lands. Rejected: fence-wrapping tables — Discord code blocks don't wrap, so a fenced table is a mobile horizontal-scroll (worse than today's raw pipes), and fence-balancing fights `splitLongAnswer`. Deterministic insurance **only if** prompt adherence proves weak in the wild: convert detected table rows to bullet lines — never fences. |
 
 #### Fix 5 — follow-up incident (2026-09): empty answers + timeouts on a thinking-model provider
 
@@ -532,8 +550,10 @@ budget/observability failure.
 - [x] Tests: failure-classification + env-knob units; integration fixtures for the
       empty-then-retry path and cap-with-content delivery.
 
-**Open:** question-side input policy (Fix 4) unchanged; live repro matrix for Fix 3
-still open (this incident explains the reported "error" for the 386 question).
+**Open:** live repro matrix for Fix 3 still open (this incident explains the reported
+"error" for the 386 question). Question-side input policy closed 2026-09-16 —
+**pass-through** (decision 42); Fix 4 markdown closed as-is with only the no-tables
+prompt line open (decision 43).
 
 #### Fix 6 — thinking budget + answer cap (2026-09)
 
