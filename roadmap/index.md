@@ -18,7 +18,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + post-MVP polish) | — |
-| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage, no-tables prompt line (input policy **closed** — pass-through; [decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)) |
+| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)) |
 | 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
 
 Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a work-as-time-allows backlog in [wishlist.md](wishlist.md) — feature files stay authoritative for design.
@@ -213,7 +213,7 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 - [x] **Fix (shipped):** user roster in the generation context — `src/features/gork/roster.js` (`id | @handle | display name (nickname)`; asker + authors + mentions) (see [gork.md §7.15](gork.md))  
 - [ ] **Fix (triage, open):** reported crash on reply / `@user`-mention messages — still no live crash evidence captured; evidence list, fixed surface, and repro matrix are tracked in [gork.md §7.15](gork.md) (Fix 3)  
 - [x] **Fix (shipped):** special-character safety in chunking/truncation — `safeCutIndex`/`sliceSafe` code-point cuts + `pullBeforeTokens` token-aware chunks + capped context slices (see [gork.md §7.15](gork.md))  
-- [x] **Policy (closed 2026-09-16):** Fix 4 closed — answer markdown stays as-is; input policy = **pass-through**; tables → base-prompt no-tables line (implementation still open) (locked decisions 42–43; see [gork.md §7.15](gork.md), Fix 4)  
+- [x] **Policy (closed & shipped 2026-09-16):** Fix 4 closed — answer markdown stays as-is; input policy = **pass-through**; tables → base-prompt no-tables line shipped (locked decisions 42–43; see [gork.md §7.15](gork.md), Fix 4)  
 - [x] **Feature (shipped):** gork community memory — per-person durable facts keyed **(person, date, title_key)** with server-stamped key fields; bodies-or-index MEMORY BLOCK per trigger (asker + mentioned + talked-about via the Fix 2 roster) under `gork_memory_chars`, `recall_memories` tool on overflow, post-send extraction turn after reply+audit+slot-release, staff-only `/gork memory show|forget|clear|on|off|budget` (locked decisions 25–29, migration `023`, default **off**; see [gork.md §7.16](gork.md))
 - [x] **Feature (shipped 2026-09):** per-scope daily usage budget — per-user X successful answers/day per channel/category (guild-default fallback, tri-state `-1/0/cap`), success-only counting, enqueue+dequeue no-overage checks (locked decisions 30–37, migration `026`, `/gork budget` command family; see [gork.md §7.17](gork.md))
 
