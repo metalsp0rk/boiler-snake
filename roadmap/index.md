@@ -19,7 +19,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + post-MVP polish) | — |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)) |
-| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Planned (design v2) | Phases 0a–3; login-mandatory transcripts |
+| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | **Shipped** (Phases 0a–3, PR #55) | Login-mandatory transcripts + staff console; Phase 4 polish items open |
 
 Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a work-as-time-allows backlog in [wishlist.md](wishlist.md) — feature files stay authoritative for design.
 
@@ -109,15 +109,16 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | `gork_memories` + `guild_settings.gork_memory_enabled` / `gork_memory_chars` | Community memory (**shipped**, migration `023`) — memories keyed `(guild, person, date, title_key)` (key fields server-stamped); per-person cap + eviction; **off** by default; bodies-or-index block budget default 12,000 ([gork.md §7.16](gork.md)) |
 | `guild_settings.gork_daily_limit` + `gork_budget_rules` + `gork_usage` | Per-scope daily usage budget — tri-state limit (`-1` blocked / `0` unlimited / cap), channel → category → guild-default precedence, enqueue+dequeue checks, success-only counting (**shipped**, migration `026`; [gork.md §7.17](gork.md)) |
 
-### Web admin console (planned)
+### Web admin console (shipped — PR #55)
 
 | Table / change | Notes |
 |----------------|-------|
-| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**planned**, `027` at re-planning — `025` shipped as `github_releases`, `026` as `gork_budget`) |
-| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**planned**, `028` at re-planning) |
-| `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**planned**) |
+| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**shipped**, migration `028`) |
+| `web_session_tokens` | Server-side OAuth artifacts on sessions — access token, no refresh flow in v1 (**shipped**, migration `030`) |
+| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**shipped**, migration `029`) |
+| `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**shipped**) |
 
-> **Migration numbering (planned):** the ids above (`027`/`028`) are planning-time placeholders — reserve the next free id at implementation time (verify against `src/db/migrations/` before numbering). See [web-admin.md §8.5](web-admin.md).
+> **Migration numbering (resolved):** shipped as `028`–`030`, reserved at implementation time per the rule above. See [web-admin.md §8.5](web-admin.md).
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
 
