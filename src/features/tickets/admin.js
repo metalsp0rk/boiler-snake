@@ -54,6 +54,7 @@ const {
   editEphemeral,
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -243,6 +244,18 @@ async function handleSummarize(interaction, ctx) {
   }
 
   const summary = await summarizeTicket(ticket, messages, {});
+
+  recordSlashAudit({
+    interaction,
+    action: "tickets.summarize",
+    targetType: "ticket",
+    targetId: String(ticket.id),
+    details: {
+      ticket_number: ticket.ticket_number,
+      source: summary.source ?? null,
+      message_count: summary.message_count ?? messages.length,
+    },
+  });
   const sourceNote =
     summary.source === "ai"
       ? `AI summary (model: ${summary.model})`
@@ -280,6 +293,12 @@ async function handleSetCategory(interaction, ctx) {
   updateGuildSettings(interaction.guildId, {
     ticket_category_id: category.id,
   });
+  recordSlashAudit({
+    interaction,
+    action: "tickets.category_set",
+    targetType: "channel",
+    targetId: category.id,
+  });
   await logConfigChange(
     ctx?.client || interaction.client,
     interaction.guildId,
@@ -300,6 +319,12 @@ async function handleSetArchive(interaction, ctx) {
   const channel = interaction.options.getChannel("channel", true);
   updateGuildSettings(interaction.guildId, {
     ticket_archive_channel_id: channel.id,
+  });
+  recordSlashAudit({
+    interaction,
+    action: "tickets.archive_channel_set",
+    targetType: "channel",
+    targetId: channel.id,
   });
   await logConfigChange(
     ctx?.client || interaction.client,
@@ -323,6 +348,13 @@ async function handleSetRateLimit(interaction, ctx) {
   const minutes = interaction.options.getInteger("minutes", true);
   updateGuildSettings(interaction.guildId, {
     ticket_rate_limit_minutes: minutes,
+  });
+  recordSlashAudit({
+    interaction,
+    action: "tickets.rate_limit_set",
+    targetType: "guild",
+    targetId: interaction.guildId,
+    details: { minutes },
   });
   await logConfigChange(
     ctx?.client || interaction.client,

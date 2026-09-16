@@ -29,6 +29,7 @@ const {
 } = require("../../db");
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logWarnEvent } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const { buildStaffRecordMarkdown, exportFilename } = require("./exportRecord");
 const {
   formatWarnRef,
@@ -139,6 +140,20 @@ async function handleAdd(interaction, ctx) {
 
   const activeCount = countActiveWarnings(interaction.guildId, target.id);
   const ref = formatWarnRef(warn.warning_number);
+
+  recordSlashAudit({
+    interaction,
+    action: "warnings.add",
+    targetType: "user",
+    targetId: target.id,
+    details: {
+      warning_id: warn.id,
+      warning_number: warn.warning_number,
+      reason: warn.reason,
+      expires_at: warn.expires_at ?? null,
+      silent,
+    },
+  });
 
   await logWarnEvent(interaction.client, interaction.guildId, {
     title: "Warning issued",
@@ -414,6 +429,18 @@ async function handleVoid(interaction, ctx) {
 
   const activeCount = countActiveWarnings(interaction.guildId, warn.user_id);
   const ref = formatWarnRef(warn.warning_number);
+
+  recordSlashAudit({
+    interaction,
+    action: "warnings.void",
+    targetType: "warning",
+    targetId: String(warn.id),
+    details: {
+      warning_number: warn.warning_number,
+      subject_user_id: warn.user_id,
+      void_reason: warn.void_reason,
+    },
+  });
 
   await logWarnEvent(interaction.client, interaction.guildId, {
     title: "Warning voided",
@@ -710,6 +737,13 @@ async function handleSettings(interaction) {
 async function handleSetDm(interaction, ctx) {
   const enabled = interaction.options.getBoolean("enabled", true);
   const before = warnDmEnabled(interaction.guildId);
+  recordSlashAudit({
+    interaction,
+    action: "warnings.dm_set",
+    targetType: "guild",
+    targetId: interaction.guildId,
+    details: { before: before ? 1 : 0, after: enabled ? 1 : 0 },
+  });
   updateGuildSettings(interaction.guildId, {
     warn_dm_members: enabled ? 1 : 0,
   });
@@ -755,6 +789,13 @@ async function handleSetLog(interaction, ctx) {
           : "Warn log: was already unset",
       ],
     }).catch(() => {});
+    recordSlashAudit({
+      interaction,
+      action: "warnings.log_channel_clear",
+      targetType: "guild",
+      targetId: interaction.guildId,
+      details: { previous_channel_id: beforeId ?? null },
+    });
     updateGuildSettings(interaction.guildId, { warn_log_channel_id: null });
     const auditFallback = settings.audit_log_channel_id
       ? ` Issue/void will use audit log <#${settings.audit_log_channel_id}>.`
@@ -774,6 +815,13 @@ async function handleSetLog(interaction, ctx) {
     return;
   }
 
+  recordSlashAudit({
+    interaction,
+    action: "warnings.log_channel_set",
+    targetType: "channel",
+    targetId: ch.id,
+    details: { previous_channel_id: beforeId ?? null, channel_id: ch.id },
+  });
   updateGuildSettings(interaction.guildId, { warn_log_channel_id: ch.id });
 
   await logConfigChange(interaction.client, interaction.guildId, {
@@ -809,6 +857,13 @@ async function handleSetExpiry(interaction, ctx) {
   }
 
   const before = guildWarnExpiryDays(interaction.guildId);
+  recordSlashAudit({
+    interaction,
+    action: "warnings.expiry_set",
+    targetType: "guild",
+    targetId: interaction.guildId,
+    details: { previous_days: before, days: parsed.days },
+  });
   updateGuildSettings(interaction.guildId, {
     warn_expiry_days: parsed.days,
   });
