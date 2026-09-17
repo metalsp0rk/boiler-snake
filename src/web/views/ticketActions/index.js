@@ -18,7 +18,7 @@
  */
 
 const { html } = require("../escape");
-const { banner } = require("../components");
+const { banner, userRef } = require("../components");
 const { formatTicketRef } = require("../../../core/theme");
 
 /**
@@ -99,15 +99,15 @@ function flashBanner(flash) {
  * @param {string} input.csrfToken
  * @param {number} input.maxReason MAX_TICKET_REASON (browser hint only)
  */
-function renderTicketRow({ ticket, guildId, csrfToken, maxReason }) {
+function renderTicketRow({ ticket, guildId, csrfToken, maxReason, names = null }) {
   const gid = encodeURIComponent(guildId);
   const reasonSnippet = String(ticket.reason || "—").slice(0, 120);
   return html`
     <tr>
       <td><code>${ticket.id}</code></td>
       <td>${formatTicketRef(ticket.ticket_number)}</td>
-      <td><code>${ticket.creator_user_id}</code></td>
-      <td>${ticket.staff_owner_id ? html`<code>${ticket.staff_owner_id}</code>` : html`—`}</td>
+      <td>${userRef(guildId, ticket.creator_user_id, names)}</td>
+      <td>${ticket.staff_owner_id ? userRef(guildId, ticket.staff_owner_id, names) : html`—`}</td>
       <td class="ticket-reason-cell">${reasonSnippet}</td>
       <td class="ticket-action-cells">
         <form class="ticket-inline-form" method="post" action="/g/${gid}/tickets/claim">
@@ -144,12 +144,12 @@ function renderTicketRow({ ticket, guildId, csrfToken, maxReason }) {
  * @param {{done: string|null, error: string|null}|null} [input.flash]
  * @param {number} input.maxReason MAX_TICKET_REASON bound (rendered as a hint)
  */
-function renderTicketActionsBody({ guildId, tickets, csrfToken, flash, maxReason }) {
+function renderTicketActionsBody({ guildId, tickets, csrfToken, flash, maxReason, names = null }) {
   const gid = encodeURIComponent(guildId);
   // Array (not .join("")) — html renders SafeString arrays element-by-
   // element; a joined PLAIN string would be escaped as inert text.
   const rows = (tickets || []).map((ticket) =>
-    renderTicketRow({ ticket, guildId, csrfToken, maxReason })
+    renderTicketRow({ ticket, guildId, csrfToken, maxReason, names })
   );
   return html`
     ${flashBanner(flash)}

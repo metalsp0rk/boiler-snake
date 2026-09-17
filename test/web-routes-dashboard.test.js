@@ -293,7 +293,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
         assert.equal(res.headers.get("cache-control"), "no-store");
         assert.equal(res.headers.get("x-content-type-options"), "nosniff");
         assert.ok(body.includes("Open tickets"));
-        assert.ok(body.includes("Ticker health"));
+        assert.ok(body.includes("Background jobs"));
         assert.ok(body.includes("now playing"));
         assert.ok(!body.includes("<script>alert"), "no live script payload");
         assert.equal(body.match(/\son[a-z]+\s*=\s*["']/i), null);
@@ -349,7 +349,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
       assert.equal(res.status, 200);
       assert.ok(body.includes("Now-playing status: unknown"));
       assert.ok(
-        body.includes("No ticker sources report in yet"),
+        body.includes("No background jobs report in yet"),
         "tickers render 'unknown' until sources register"
       );
     });
@@ -368,7 +368,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
       const { res, body } = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("Now-playing status: unknown"));
-      assert.ok(body.includes("No ticker sources report in yet"));
+      assert.ok(body.includes("No background jobs report in yet"));
     });
 
     it("a wired now-playing provider renders the snapshot", async () => {

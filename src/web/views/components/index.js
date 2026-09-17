@@ -58,7 +58,31 @@ function banner(kind, message) {
 }
 
 /** Re-export for view authors composing tables/forms in one import. */
+const USER_ID_OK = /^[0-9]{5,20}$/;
+
+/**
+ * User reference: a link into the unified profile, LABELED with the cached
+ * display name when one is known (UX v1.1 §8.15 "resolve user ids to
+ * names"), falling back to the raw id — same honesty doctrine as the slash
+ * commands. names is the Map from shared/discord-cache.resolveMemberNames
+ * (cache-only; miss/null ⇒ id label). Non-ids render as plain code.
+ * @param {string} guildId
+ * @param {string} userId
+ * @param {Map<string,string|null>|null} [names]
+ * @returns {import("../escape").SafeString}
+ */
+function userRef(guildId, userId, names = null) {
+  const id = String(userId ?? "");
+  if (!USER_ID_OK.test(id)) return html`<code class="user-id">${id}</code>`;
+  const known = names instanceof Map ? names.get(id) : null;
+  const name = typeof known === "string" && known.trim() ? known.trim().slice(0, 100) : null;
+  return html`<a class="user-id" href="/g/${guildId}/users/${id}"${
+    name ? html` title="${id}"` : html``
+  }>${name || id}</a>`;
+}
+
 module.exports = {
+  userRef,
   TIER_LABELS,
   tierBadge,
   degradedBanner,

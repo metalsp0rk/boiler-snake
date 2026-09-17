@@ -826,3 +826,140 @@ th {
   width: auto;
 }
 
+
+/* ---- UX v1.1 (roadmap/web-admin.md §8.15): sidebar shell, guild list ---- */
+
+/* Two-column console shell: fixed nav rail + fluid content. Replaces the
+   old centered max-width main for guild pages (lobby/root keeps center). */
+.shell-body {
+  display: grid;
+  grid-template-columns: 15.5rem minmax(0, 1fr);
+  gap: 1.6rem;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1.1rem 1.25rem 2.5rem;
+  flex: 1 0 auto;
+}
+
+.shell-body .shell-main {
+  max-width: none;
+  margin: 0;
+  padding: 0 0 2rem;
+  min-width: 0;
+}
+
+.shell-nav {
+  align-self: start;
+  position: sticky;
+  top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.shell-nav-group h2 {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin: 0 0 0.35rem;
+}
+
+.shell-nav a {
+  display: block;
+  padding: 0.45rem 0.6rem;
+  min-height: 44px;
+  box-sizing: border-box;
+  border-radius: 6px;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 0.92rem;
+}
+
+.shell-nav a:hover { background: var(--bg-raised); }
+
+.shell-nav a.active {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  font-weight: 600;
+}
+
+/* Root guild list */
+.guild-list {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.guild-list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+}
+
+.guild-list-link {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--fg);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.guild-list-link:hover { text-decoration: underline; }
+
+/* Full-width dashboard panels (tickets first) + readable tables */
+.dashboard-panel-wide { grid-column: 1 / -1; }
+
+.dashboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.dashboard-table th,
+.dashboard-table td {
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.dashboard-table td { overflow-wrap: anywhere; }
+.dashboard-table td code { overflow-wrap: anywhere; }
+
+/* Narrow screens: nav becomes a horizontal strip above the content. */
+@media (max-width: 880px) {
+  .shell-body {
+    grid-template-columns: 1fr;
+    gap: 0.9rem;
+    padding: 0.9rem 0.8rem 2rem;
+  }
+
+  .shell-nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.1rem;
+  }
+
+  .shell-nav-group {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.15rem;
+  }
+
+  .shell-nav-group h2 { margin: 0 0.5rem 0 0; }
+
+  .shell-nav a {
+    padding: 0.4rem 0.65rem;
+    min-height: 40px;
+    font-size: 0.88rem;
+  }
+}

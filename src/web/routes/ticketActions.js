@@ -100,6 +100,7 @@ const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const { getBoundAuditClient } = require("../middleware/audit");
 const { readFields } = require("./shared/req.js");
+const { resolveMemberNames } = require("./shared/discord-cache");
 const { makeFlashRedirect } = require("./shared/flash.js");
 const { rawFlashQuery } = require("./shared/req.js");
 const { rawParams } = require("./shared/req.js");
@@ -344,6 +345,15 @@ function registerTicketActionsRoutes(app, options = {}) {
   app.get(ACTIONS_PAGE, requireTier("senior"), async (req, res) => {
     const guildId = req.guildAccess.guildId;
     const tickets = facade.listOpenTickets(guildId, { limit: OPEN_LIST_LIMIT });
+    // UX v1.1 (§8.15): display names for creator + current claimant.
+    const nameIds = [
+      ...new Set(
+        (Array.isArray(tickets) ? tickets : [])
+          .flatMap((t) => [t.creator_user_id, t.staff_owner_id])
+          .filter((v) => typeof v === "string" && /^[0-9]{5,20}$/.test(v))
+      ),
+    ];
+    const names = resolveMemberNames(options.getClient, guildId, nameIds);
     const document = renderShellPage(req, {
       title: "Ticket actions",
       heading: "Ticket actions",
@@ -352,6 +362,7 @@ function registerTicketActionsRoutes(app, options = {}) {
       content: renderTicketActionsBody({
         guildId,
         tickets,
+        names,
         csrfToken: req.csrfToken || null,
         flash: flashFromQuery(rawFlashQuery(req.url)),
         maxReason: MAX_TICKET_REASON,

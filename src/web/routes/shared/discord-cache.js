@@ -76,8 +76,43 @@ function makeGuildRoleNameResolver(getClient, guildId) {
   };
 }
 
+/**
+ * Cache-only display-name read — bot client cache ONLY, never a network
+ * fetch on a request path (roadmap/web-admin.md §8.6 doctrine). Absent
+ * client (dark boot / tests) ⇒ nulls; callers fall back to the raw id
+ * exactly like slash does on a member-cache miss. Lifted from
+ * routes/leaderboard.js so every surface (dashboard, tickets, moderation,
+ * leaderboard) resolves names the same way (UX v1.1, §8.15).
+ * @param {(() => any)|null|undefined} getClient
+ * @param {string} guildId
+ * @param {string[]} userIds
+ * @returns {Map<string, string|null>}
+ */
+function resolveMemberNames(getClient, guildId, userIds) {
+  const names = new Map();
+  let client = null;
+  try {
+    client = typeof getClient === "function" ? getClient() : null;
+  } catch {
+    client = null;
+  }
+  const members = client?.guilds?.cache?.get?.(guildId)?.members?.cache ?? null;
+  for (const userId of userIds) {
+    let name = null;
+    try {
+      const m = members?.get?.(userId) ?? null;
+      name = m?.displayName || m?.user?.username || null;
+    } catch {
+      name = null;
+    }
+    names.set(userId, name);
+  }
+  return names;
+}
+
 module.exports = {
   isProvenBot,
   makeCacheNameResolver,
   makeGuildRoleNameResolver,
+  resolveMemberNames,
 };

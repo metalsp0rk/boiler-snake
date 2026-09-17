@@ -30,6 +30,7 @@
 
 const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { requireTier } = require("../middleware/requireTier");
+const { resolveMemberNames } = require("./shared/discord-cache");
 const { renderShellPage, renderShellError, writeShellHtml } = require("../views/layout");
 const { rawParams } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
@@ -54,40 +55,6 @@ function respondGenericNotFound(res) {
   res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
   res.end("Not found");
 }
-
-
-/**
- * Cache-only display-name read — the leaderboard counterpart of users.js
- * resolveDiscordContext: bot client cache ONLY, never a network fetch on a
- * request path. Absent client (dark boot / tests) ⇒ nulls; the view falls
- * back to `User ${id}` exactly like slash does on a member-cache miss.
- * @param {(() => any)|null|undefined} getClient
- * @param {string} guildId
- * @param {string[]} userIds
- * @returns {Map<string, string|null>}
- */
-function resolveMemberNames(getClient, guildId, userIds) {
-  const names = new Map();
-  let client = null;
-  try {
-    client = typeof getClient === "function" ? getClient() : null;
-  } catch {
-    client = null;
-  }
-  const members = client?.guilds?.cache?.get?.(guildId)?.members?.cache ?? null;
-  for (const userId of userIds) {
-    let name = null;
-    try {
-      const m = members?.get?.(userId) ?? null;
-      name = m?.displayName || m?.user?.username || null;
-    } catch {
-      name = null;
-    }
-    names.set(userId, name);
-  }
-  return names;
-}
-
 
 /**
  * @param {import("express").Express} app

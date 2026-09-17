@@ -6,7 +6,7 @@ Replace the minimal, mostly-unauthenticated HTTP surface (`src/features/tickets/
 
 ### Status
 
-**Shipped (Phases 0a–3)** — merged to `main` 2026-09-16 (PR #55, rebase-merged): login-mandatory web console on Express 5 (`src/web/`), `admin_audit` DB trail with `web`/`slash`/`system` origins, migrations `028`–`030`, full slash↔web parity gates. Phase 4 polish: docs page + env table shipped with it; **dashboard charts, mobile pass, and session admin (list/revoke) remain open**. User/operator guide: `docs/web-admin.md`. Task-level breakdown (all tasks shipped): [§8.14](#814-task-breakdown-shipped).
+**Shipped (Phases 0a–3)** — merged to `main` 2026-09-16 (PR #55, rebase-merged): login-mandatory web console on Express 5 (`src/web/`), `admin_audit` DB trail with `web`/`slash`/`system` origins, migrations `028`–`030`, full slash↔web parity gates. Phase 4 polish: docs page + env table shipped with it; **dashboard charts, mobile pass, and session admin (list/revoke) remain open**. User/operator guide: `docs/web-admin.md`. **UX v1.1** (root guild list, sidebar nav, member names, background-jobs copy) shipped 2026-09-17 — [§8.15](#815-ux-v11--first-run-usability-pass-shipped-2026-09-17); open follow-up: job-state registry wiring (§8.15 task 15.6). Task-level breakdown (all tasks shipped): [§8.14](#814-task-breakdown-shipped).
 
 ---
 
@@ -542,3 +542,77 @@ intentionally deferred, see §8.14 preamble):
 
 Estimates include writing the tests named in each Verification line; they exclude review
 round-trips and any Phase 0a discovery that reopens a locked §8.1 decision.
+
+---
+
+## 8.15 UX v1.1 — first-run usability pass (SHIPPED 2026-09-17)
+
+Post-launch operator feedback (first real login, 2026-09-16) drove a contained UX
+pass. No auth-model changes: every gate stays in middleware; the nav/list are
+cosmetic views of the same decisions.
+
+**Root cause discovered during design:** `GET /` was a legacy alias of the
+transcript archive (`app.get(["/", "/t", "/t/", …])`), so a fresh login (which
+redirects to `/` with no guild target) landed on the archive with no path into
+the console — the §8.6 "root shows a guild picker" design was never built.
+
+**Changes (all shipped):**
+
+- **Root page = guild list** (`GET /`): the viewer's own staff guilds
+  (`listGuilds` bot∩user), per-row tier badge from `resolve()`, links into
+  `/g/:guildId`; anonymous keeps the byte-identical login redirect the ticket
+  surface used; a session with no staff guild gets an honest empty state
+  (200, not 404 — it only ever shows the user's OWN data). **Accepted
+  change:** the legacy `/` transcript-archive alias is removed; `/t` + `/t/`
+  remain canonical and unchanged.
+- **Left sidebar nav** in the guild shell (`views/layout.js`
+  `renderSideNav`): Overview / Moderation / Configuration groups; items
+  carry `minTier` mirroring each page's ROUTE tier (System/Audit/Grant-XP =
+  admin, Ticket actions = senior); active page highlighted from `req.path`;
+  pure SSR links, responsive to a horizontal strip ≤ 880 px.
+- **Shared cache-only member names**: `resolveMemberNames` lifted into
+  `routes/shared/discord-cache.js` (was leaderboard-local) +
+  `components.userRef(guildId, id, names)` — display name label with the id
+  kept as `title`, miss ⇒ raw id (slash-parity honesty). Wired: dashboard
+  (ticket creators, XP leaders), ticket-actions page, warnings + notes
+  lists. Doctrine unchanged: client cache ONLY, never a request-path fetch.
+- **Tickets panel full width** on the dashboard (`dashboard-panel-wide`,
+  `grid-column: 1/-1`) + readable table rules (wrap anywhere, real padding)
+  so the reason column stops being 2 chars wide.
+- **"Ticker health" → "Background jobs"**: friendly labels
+  (`JOB_LABELS`), plain-language status explainer (ok/stale/down), renamed
+  columns. Honest empty state stands until features report state (below).
+- **Shell CSS**: two-column `shell-body` grid (15.5 rem rail + fluid main,
+  cap 1400 px) replacing the centered 1100 px main; switcher hidden on
+  lobby-style pages with no guild context.
+
+**Follow-up (open):** *job-state registry wiring* — features (voice, youtube,
+twitch, decay, github-releases, reminders) still register nothing with
+`data/tickerHealth.js`, so the section renders its empty state in production.
+Wiring is per-feature (stamp a last-run timestamp in each ticker, register a
+getter at boot); tracked here until done.
+
+- [x] **Task 15.1:** Root guild list (route + view + legacy alias removal)
+  - **Files:** `src/web/routes/dashboard.js`, `src/web/views/root/index.js`, `src/web/routes/transcripts.js`
+  - **Estimate:** 2 h · **Dependencies:** — 
+  - **Verification:** anon `/` keeps the ticket-surface login-redirect bytes; staff sees guild rows + tier badges; no-staff-guild session gets 200 empty state; `/t` archive unchanged (net-test suite green); `test/web-ux-v1.test.js`
+- [x] **Task 15.2:** Sidebar nav + shell CSS rework
+  - **Files:** `src/web/views/layout.js`, `src/web/public/styles.css`
+  - **Estimate:** 2 h · **Dependencies:** 15.1 (lobby switcher guard)
+  - **Verification:** nav tier matrix (staff/senior/admin item visibility), active-path highlight, no nav on lobby; `web-ux-v1` + `web-views-layout` suites
+- [x] **Task 15.3:** Shared member-name seam + view wiring
+  - **Files:** `src/web/routes/shared/discord-cache.js`, `src/web/views/components/index.js`, dashboard/ticketActions/moderation routes + views, `src/web/app.js` (moderation gets `getClient`), `routes/leaderboard.js` (uses shared copy)
+  - **Estimate:** 2 h · **Dependencies:** —
+  - **Verification:** cached id ⇒ display name + `title=id`; no client ⇒ raw ids, 200 OK (dark-boot test); leaderboard behavior unchanged (33/33)
+- [x] **Task 15.4:** Dashboard jobs section + tickets full-width
+  - **Files:** `src/web/views/dashboard/dashboardPage.js`, `src/web/public/styles.css`
+  - **Estimate:** 1 h · **Dependencies:** —
+  - **Verification:** "Background jobs" heading + explainer renders; empty state honest; tickets panel spans the grid row
+- [x] **Task 15.5:** Docs + test sync (this PR)
+  - **Files:** `docs/web-admin.md`, `test/web-http-net.test.js` (`/t` retarget), `test/web-routes-dashboard.test.js` (string re-pins), `test/web-ux-v1.test.js` (new)
+  - **Estimate:** 1 h · **Dependencies:** 15.1–15.4
+  - **Verification:** `npm test` 2916/2916; `npm run docs:build` green
+- [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
+  - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
+  - **Estimate:** 2 h · **Dependencies:** —
+  - **Verification:** Background jobs table shows ≥ 4 named jobs with ok/stale derived from last-run stamps; a stalled ticker renders `stale`

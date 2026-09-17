@@ -89,6 +89,19 @@ const { readFields } = require("./shared/req.js");
 const { rawFlashQuery } = require("./shared/req.js");
 const { rawParams } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
+const { resolveMemberNames } = require("./shared/discord-cache");
+
+/** Digits-only user ids across the given row fields (UX v1.1 §8.15 names). */
+function collectRowUserIds(rows, fields) {
+  const ids = new Set();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    for (const f of fields) {
+      const v = r && r[f];
+      if (typeof v === "string" && /^[0-9]{5,20}$/.test(v)) ids.add(v);
+    }
+  }
+  return [...ids];
+}
 const { makeFlashRedirect } = require("./shared/flash.js");
 const { isProvenBot } = require("./shared/discord-cache.js");
 
@@ -348,12 +361,18 @@ function registerModerationRoutes(app, options = {}) {
       n: params.get("n"),
       o: params.get("o"),
     });
+    const names = resolveMemberNames(
+      options.getClient,
+      guildId,
+      collectRowUserIds(page.rows, ["user_id", "issuer_id"])
+    );
     const document = renderShellPage(req, {
       title: "Warnings",
       heading: "Warnings",
       subheading: "Guild-wide formal record — voided rows stay, badged. Issue/void run the exact slash pipeline, audit included.",
       content: renderWarningsBody(req, {
         page,
+        names,
         flash: flashFromQuery(rawFlashQuery(req.url), WARN_FLASH_DONE, WARN_FLASH_ERROR),
         csrfToken: req.csrfToken || null,
         bounds: { maxReason: MAX_WARN_REASON, maxEvidence: MAX_EVIDENCE_TEXT, maxExpiryDays: MAX_EXPIRY_DAYS },
@@ -373,12 +392,18 @@ function registerModerationRoutes(app, options = {}) {
       n: params.get("n"),
       o: params.get("o"),
     });
+    const names = resolveMemberNames(
+      options.getClient,
+      guildId,
+      collectRowUserIds(page.rows, ["user_id", "author_id"])
+    );
     const document = renderShellPage(req, {
       title: "Staff notes",
       heading: "Staff notes",
       subheading: "Guild-wide staff-only memory — soft-deleted rows stay hidden until revealed, exactly like /note list.",
       content: renderNotesBody(req, {
         page,
+        names,
         flash: flashFromQuery(rawFlashQuery(req.url), NOTE_FLASH_DONE, NOTE_FLASH_ERROR),
         csrfToken: req.csrfToken || null,
         bounds: { maxContent: MAX_NOTE_CONTENT },
