@@ -116,7 +116,7 @@ Rules:
 |-----------|--------|
 | `028_web_sessions` | `web_sessions (id TEXT PK, user_id TEXT, discord_tag, created_at, last_seen_at, expires_at)` + `idx(user_id)`; prune index on `expires_at` (**shipped**) |
 | `029_admin_audit` | `admin_audit (id, guild_id, actor_user_id, origin 'web'\|'slash'\|'system', action, target_type, target_id, details_json, created_at)` + `idx(guild_id, created_at)` (**shipped**) |
-| `030_web_session_tokens` | `web_session_tokens` — Discord access token stored server-side per session (decision 9; no refresh flow in v1 — AT lifetime ≈ session cap) (**shipped**) |
+| `030_web_session_tokens` | OAuth columns on `web_sessions` (`access_token_enc`, `token_expires_at`, `scopes`, `guild_snapshot`) — Discord access token per session, no refresh flow in v1 (decision 9; AT lifetime ≈ session cap). Not a separate table (**shipped**) |
 
 > **Numbering (resolved):** shipped as `028`–`030` — the reserve-the-next-free-id rule applied at implementation time (planning-time `027`/`028` shifted because `023`–`027` shipped after this design was written). `web_session_tokens` was added during implementation (§8.1 decision 9).
 
