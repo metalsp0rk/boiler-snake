@@ -905,7 +905,7 @@ describe("F. getClient boot wiring (features/web start → startWebServer({getCl
         stopWebServer: async () => {},
       },
     };
-    const bootClient = { __gateBootClient: true, guilds: { cache: { keyArray: () => [GUILD_A] } } };
+    const bootClient = { __gateBootClient: true, guilds: { cache: new Map([[GUILD_A, {}]]) } };
     try {
       delete require.cache[featurePath];
       const webFeature = require(featurePath);
