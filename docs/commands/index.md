@@ -1000,6 +1000,8 @@ Optional: `silent`, `note` (N-n), `message` (Discord jump link), `evidence` (sta
 
 Configure and moderate [Gork](../gork.md), the AI keyword Q&A bot. Q&A itself is triggered by typing the guild's keyword (`@gork` by default) in chat — `/gork` subcommands only configure and moderate it.
 
+Gork's `read_discord` tool (reading a pasted message/channel link) is **always on** whenever gork is live — there is no command or setting for it.
+
 **Permission**: **Staff gate** for **all** subcommands — Manage Server or a role from `/staff role list`. The command registers with a Manage Server default member permission, so staff roles see it in Discord's picker only after `/staff syncpermissions`; the handler enforces the staff gate either way.
 
 ```bash
