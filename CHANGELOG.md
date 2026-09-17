@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.24.0...v1.24.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **web:** integrations dropdowns labeled '(undefined)' — label fns read row fields off flattened id strings ([4f22959](https://github.com/metalsp0rk/boiler-snake/commit/4f22959e6e37887d2f969e0204028c44de479011))
+
 ## [1.24.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.23.1...v1.24.0) (2026-09-17)
 
 
