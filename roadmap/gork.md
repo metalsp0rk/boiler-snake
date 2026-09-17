@@ -1018,3 +1018,126 @@ existing context window.
 `isThreadLike`) wired per job in `trigger.js` (block into `buildUserContent`, label
 into the audit call) + the optional `Channel` field in `audit.js`; unit tests in
 `test/gork.test.js` (thread detection, caps + code-point safety, degradation ladder).
+
+---
+
+### 7.19 Linked message / channel reading — `read_discord` tool — 2026-09 design (LOCKED 2026-09-16 — decisions 44–48; implementation pending)
+
+**Why:** gork keeps running into Discord links it can't see — a question like "what did
+they decide in this thread? <#…>" or a pasted message link (including gork's own audit
+jump links) can only be guessed at from whatever happens to sit in the context window.
+`read_page` covers the public web only. A gork-local read needs Discord fetches with
+permission semantics, so it gets its own tool — and as a **tool call** (not automatic
+link expansion in `buildContext`) the model decides which links actually matter and
+only pays the fetch for those.
+
+**Shape** (one tool, one required string; the executor discriminates):
+
+```
+read_discord(link)
+  message link   https://discord.com/channels/<guildId>/<channelId>/<messageId>
+  channel        <#id> mention · channel URL · bare channel id
+→ channel:   the 50 most recent messages
+→ message:   the linked message + up to 40 before it + up to 10 after it
+```
+
+#### 7.19.1 Tool shape, always on (decision 44)
+
+- One OpenAI-compatible function tool `read_discord(link: string)` — a single param
+  keeps the model's job simple; parsing (message URL vs channel forms) lives in the
+  executor. Same module shape as `tools/webSearch.js` / `tools/recallMemories.js`.
+- **Always on** whenever gork is live (AI key present, guild enabled): no setting, no
+  command, no migration — the decision-38 precedent. `tools[]` therefore always
+  contains at least this tool; the trigger's "empty stays `undefined`" payload note
+  becomes moot for the tool array.
+- Usage guidance lives in the **schema description** (decision-21 pattern; base
+  prompt byte-lock untouched), including the routing rule: discord.com channel/message
+  links go to `read_discord`, **not** `read_page` — and `readPage.js` refuses
+  `discord.com/channels/...` URLs so a misroute doesn't waste an HTTP fetch.
+
+#### 7.19.2 Read windows & output format (decision 45)
+
+- **Channel** → `messages.fetch({ limit: 50 })`, reversed to oldest→newest.
+- **Message link** → three exact fetches: the anchor (`channel.messages.fetch(id)`),
+  up to **40** `before:` the anchor, up to **10** `after:` it (`around:` cannot give
+  an asymmetric window). Missing edges simply return fewer messages; an unreadable or
+  deleted anchor → failure string, **no partial window fallback**.
+- Output lines `id | timestamp | @author: content` (context.js style so the model can
+  cite ids), oldest→newest, anchor marked. Caps join the decision-5 family: **500**
+  chars/message, **12,000** total, code-point-safe via `sliceSafe`/`safeCutIndex`;
+  attachments collapse to `[N attachment(s)]` (bodies/embeds out of scope).
+- Only channels exposing a `messages.fetch` seam read (text channels, threads,
+  voice-text); forums/categories or duck-typed garbage → failure string.
+
+#### 7.19.3 Security — guild isolation, asker parity, ticket blackout (decision 46)
+
+- **Guild isolation:** the guild in a message link must equal the current guild and
+  channel ids resolve only in-guild — a cross-guild link is rejected **without any
+  fetch** (the bot may be a member elsewhere; that data is not this guild's).
+- **Asker parity:** the **asking user** (not just the bot) must hold ViewChannel on
+  the target — checked with `channel.permissionsFor(asker)` (member fetched via
+  `guild.members.fetch`, denied on fetch failure). Gork must never become an oracle
+  into channels the asker can't see.
+- **Open-ticket blackout:** open (unarchived) ticket channels (a `tickets` row whose
+  `archived` is falsy) are **always refused as read targets** — decision 19 already
+  keeps gork silent inside open tickets; this closes the "trigger in #general + link
+  to someone's open ticket" read path.
+- Bot missing ViewChannel/ReadMessageHistory, unknown channel/message ids, fetch
+  rejections → graceful failure strings (§7.19.4), never a stack, never a partial leak.
+
+#### 7.19.4 Never-throws & untrusted-data contract (decision 47)
+
+- The executor **never throws**: every failure resolves to
+  `Could not read <target>: <reason>` so the tool loop continues (webSearch /
+  recallMemories contract) — one more reason the Fix 3 crash triage keeps demanding
+  evidence: this module must be provably non-crashing by construction.
+- Fetched messages arrive as `tool`-message **data** — the decision-9 untrusted-data
+  posture applies; content is quoted context, never instructions. Replies keep
+  `allowedMentions: { parse: [] }` (Fix 1 precedent), so ids echoed from fetched
+  content can't ping anyone.
+
+#### 7.19.5 Audit & interaction log (decision 48)
+
+- Q&A audit embed gains a `Link reads: N` tally beside the existing Search /
+  Page-read counters (per-job counter in `trigger.js`, label in `audit.js`).
+- The interaction log picks the tool up automatically via the `llmOpts.tools`
+  snapshot; tool-loop events already land in the interaction log via `onEvent`.
+- Cooldown, queue, and §7.17 budget semantics unchanged (success-only counting,
+  decision 32 — a link read that fails doesn't consume anything extra).
+
+#### 7.19.6 Locked decisions (2026-09-16)
+
+| # | Decision |
+|---|----------|
+| 44 | **`read_discord(link)` is a single function tool** — accepts a message link (`discord.com/channels/<guildId>/<channelId>/<messageId>`), channel URL, `<#id>` mention, or bare channel id. **Always on** when gork is live: no setting, command, or migration (decision-38 precedent). Routing/guidance lives in the schema description (decision-21 pattern); base prompt byte-locked; `read_page` refuses `discord.com/channels/...` URLs. |
+| 45 | **Windows:** channel → 50 latest; message link → anchor + up to 40 before + up to 10 after (three exact fetches; missing edges return less; unreadable anchor → failure string, no partial fallback). Output `id \| timestamp \| @author: content` oldest→newest with the anchor marked; caps 500/message + 12,000 total (`sliceSafe`); attachments → `[N attachment(s)]`; no-`messages`-seam channels → failure string. |
+| 46 | **Security:** guild isolation (cross-guild links rejected without fetch; channels resolve in-guild only) + **asker parity** (the asking user must hold ViewChannel on the target — not bot-only) + **open-ticket blackout** (`tickets` row not archived → always refused; extends decision 19). Missing bot perms / unknown ids → graceful failure strings. |
+| 47 | **Never-throws + untrusted data:** every failure resolves to `Could not read <target>: <reason>` (tool loop continues); fetched content is tool-message data, never instructions (decision 9); replies keep `allowedMentions: { parse: [] }`. |
+| 48 | **Audit/log:** Q&A audit embed gains `Link reads: N` beside the Search/Page-read tallies; interaction log gets it via the existing `llmOpts.tools` snapshot; cooldown/queue/budget semantics unchanged. |
+
+**Out of scope:** per-guild toggle or window-size knobs (deliberate — decisions table
+above; revisit only if a guild needs it disabled); attachment/embed body reading;
+cross-guild reads; model-controlled window params; message **search** (link/mention
+targets only); writing anything to Discord.
+
+**Implementation checklist (pending):**
+
+- [ ] `src/features/gork/tools/readDiscord.js` — link parser (message URL / channel
+      URL / `<#id>` / bare id), guild isolation, asker-parity + ticket blackout
+      checks, fetch windows, formatter; never-throws executor; injected `fetcher`
+      seam for tests (context.js pattern)
+- [ ] `trigger.js` — push `READ_DISCORD_TOOL` into the shared `tools[]`
+      (unconditionally), `linkReads` counter in `executeTool` + audit call
+- [ ] `readPage.js` — refuse `discord.com/channels/...` URLs (graceful string
+      pointing at `read_discord`)
+- [ ] `constants.js` — window sizes (50/40/10) + char caps; `audit.js` —
+      `Link reads` label
+- [ ] Unit tests (`test/gork.test.js`) — parsing forms + garbage, cross-guild
+      reject, window math with injected fetchers (missing edges, deleted anchor),
+      parity/blackout denials, truncation, failure strings
+- [ ] Integration tests (`test/integration/gork.test.js`) — mocked tool loop:
+      channel read answers from fetched content; message-link read window; asker
+      parity denial; open-ticket denial; read_page discord-URL refusal
+- [ ] `docs/gork.md` + `docs/commands/index.md` mention (no new command) +
+      `npm run docs:build`
+- [ ] Tick this checklist + §8 in `index.md`; status line here → shipped
