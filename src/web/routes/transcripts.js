@@ -348,8 +348,9 @@ async function dispatchTranscripts(req, res, ctx) {
 
   const url = new URL(req.url || "/", "http://localhost");
 
-  // Root → index (legacy: "/", "/t", "/t/" all render the archive index)
-  if (url.pathname === "/" || url.pathname === "/t" || url.pathname === "/t/") {
+  // Index (UX v1.1 §8.15: "/" moved to the guild list; /t and /t/ serve
+  // the archive index)
+  if (url.pathname === "/t" || url.pathname === "/t/") {
     return serveArchiveIndex(req, res, url, ctx);
   }
 
@@ -401,7 +402,7 @@ function registerTranscriptRoutes(app, options = {}) {
   // Express 5 forwards rejected async handlers to the app error middleware
   // (generic 500) — the deliberate §8.4 failure contract lives INSIDE the
   // gate helpers (fail closed); decode/file errors keep the Phase 0a 500.
-  app.get(["/", "/t", "/t/", "/t/{*splat}"], (req, res) =>
+  app.get(["/t", "/t/", "/t/{*splat}"], (req, res) =>
     dispatchTranscripts(req, res, ctx)
   );
 }

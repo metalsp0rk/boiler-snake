@@ -12,6 +12,7 @@
  */
 
 const { html } = require("../escape");
+const { userRef } = require("../components");
 
 const UNKNOWN = "unknown";
 
@@ -49,14 +50,31 @@ function formatAge(ms) {
   return `${h}h ${m % 60}m`;
 }
 
+/**
+ * Friendly labels for registered background jobs (UX v1.1 §8.15). Raw
+ * registry names still render for anything not listed here — the section
+ * explains itself; operators never have to decode internal ids.
+ */
+const JOB_LABELS = Object.freeze({
+  voice: "Voice XP ticks",
+  youtube: "YouTube video polls",
+  twitch: "Twitch live polls",
+  decay: "XP decay sweep",
+  "github-releases": "GitHub release polls",
+  "event-reminders": "Event reminder checks",
+  sessions: "Web session cleanup",
+  gork: "Gork job queue",
+});
+
 // ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
 
-function renderTicketsSection(tickets) {
+function renderTicketsSection(tickets, ctx = {}) {
+  const { guildId = "", names = null } = ctx;
   if (!tickets || tickets.available !== true) {
     return html`
-      <section class="dashboard-panel dashboard-tickets">
+      <section class="dashboard-panel dashboard-panel-wide dashboard-tickets">
         <h2>Open tickets</h2>
         <p class="empty-state">Ticket data is unavailable right now.</p>
       </section>`;
@@ -68,12 +86,12 @@ function renderTicketsSection(tickets) {
     html`<tr>
       <td>#${t.ticketNumber}</td>
       <td>${t.reason || html`<em>no reason</em>`}</td>
-      <td><code>${t.creatorUserId}</code></td>
+      <td>${userRef(guildId, t.creatorUserId, names)}</td>
       <td>${formatUtc(t.createdAt)}</td>
     </tr>`
   );
   return html`
-    <section class="dashboard-panel dashboard-tickets">
+    <section class="dashboard-panel dashboard-panel-wide dashboard-tickets">
       <h2>Open tickets</h2>
       <p class="dashboard-count">${countLabel} open in this guild${tickets.openCountSaturated ? html` (display capped at 50)` : html``}.</p>
       ${newest.length
@@ -87,7 +105,8 @@ function renderTicketsSection(tickets) {
     </section>`;
 }
 
-function renderActivitySection(activity) {
+function renderActivitySection(activity, ctx = {}) {
+  const { guildId = "", names = null } = ctx;
   const tracking = activity?.messageTracking || null;
   const leaders = Array.isArray(activity?.xpLeaders) ? activity.xpLeaders : null;
 
@@ -118,7 +137,7 @@ function renderActivitySection(activity) {
       ? html`<p class="empty-state">XP leaders are unavailable right now.</p>`
       : leaders.length
         ? html`<ol class="dashboard-leaders">
-            ${leaders.map((l) => html`<li><code>${l.userId}</code> — ${formatCount(l.xp)} XP</li>`)}
+            ${leaders.map((l) => html`<li>${userRef(guildId, l.userId, names)} — ${formatCount(l.xp)} XP</li>`)}
           </ol>`
         : html`<p class="empty-state">No XP rows yet.</p>`;
 
@@ -131,10 +150,10 @@ function renderActivitySection(activity) {
     </section>`;
 }
 
-function renderTickersSection(tickers) {
+function renderJobsSection(tickers, ctx = {}) {
   const rows = (Array.isArray(tickers) ? tickers : []).map((t) =>
     html`<tr>
-      <td>${t.name}</td>
+      <td>${JOB_LABELS[t.name] || t.name}</td>
       <td><span class="badge badge-ticker-${t.status || UNKNOWN}">${t.status || UNKNOWN}</span></td>
       <td>${t.lastTickAt ? formatUtc(t.lastTickAt) : UNKNOWN}</td>
       <td>${Number.isFinite(Number(t.ageMs)) && t.lastTickAt ? formatAge(t.ageMs) : ""}</td>
@@ -144,15 +163,21 @@ function renderTickersSection(tickers) {
   const body = rows.length
     ? html`<table class="dashboard-table">
         <thead>
-          <tr><th scope="col">Source</th><th scope="col">Status</th><th scope="col">Last tick (UTC)</th><th scope="col">Age</th><th scope="col">Detail</th></tr>
+          <tr><th scope="col">Job</th><th scope="col">Status</th><th scope="col">Last run (UTC)</th><th scope="col">Age</th><th scope="col">Detail</th></tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>`
-    : html`<p class="empty-state">No ticker sources report in yet — status unknown until the tickers expose state.</p>`;
+    : html`<p class="empty-state">No background jobs report in yet — features have not started publishing job state to the console.</p>`;
 
   return html`
     <section class="dashboard-panel dashboard-tickers">
-      <h2>Ticker health</h2>
+      <h2>Background jobs</h2>
+      <p class="subheading">
+        Automated tasks that keep features fresh. <strong>ok</strong> = ran
+        within ~2.5× its interval · <strong>stale</strong> = overdue ·
+        <strong>down</strong> = not running. Unknown = the feature has not
+        started reporting state.
+      </p>
       ${body}
     </section>`;
 }
@@ -189,10 +214,16 @@ function renderNowPlayingSection(nowPlaying) {
  * Full dashboard body (goes into the shell via renderShellPage).
  * @param {object} data snapshot from src/web/data/dashboardData.js
  *   ({ tickets, activity, tickers, nowPlaying, freshness })
+ * @param {object} [opts] UX v1.1 context: guildId + cached display names
+ *   (Map from shared/discord-cache.resolveMemberNames) for id columns
  * @returns {import("../escape").SafeString}
  */
-function renderDashboardContent(data) {
+function renderDashboardContent(data, opts = {}) {
   const d = data || {};
+  const ctx = {
+    guildId: String(opts.guildId || ""),
+    names: opts.names instanceof Map ? opts.names : null,
+  };
   const freshness = d.freshness || null;
   const stamp = freshness
     ? html` <span class="subheading">snapshot ${formatUtc(freshness.generatedAt)} UTC${freshness.fromCache ? html` (cached, ${formatAge(freshness.ageMs || 0)} ago)` : html``}</span>`
@@ -200,12 +231,13 @@ function renderDashboardContent(data) {
 
   return html`
     <div class="dashboard">
-      ${renderTicketsSection(d.tickets)} ${renderActivitySection(d.activity)}
-      ${renderTickersSection(d.tickers)} ${renderNowPlayingSection(d.nowPlaying)}
+      ${renderTicketsSection(d.tickets, ctx)} ${renderActivitySection(d.activity, ctx)}
+      ${renderJobsSection(d.tickers, ctx)} ${renderNowPlayingSection(d.nowPlaying)}
       <p class="subheading dashboard-stamp">Aggregates cached at least 30 s per guild (§8.6 query budget).${stamp}</p>
     </div>`;
 }
 
 module.exports = {
   renderDashboardContent,
+  JOB_LABELS,
 };

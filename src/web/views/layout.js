@@ -1,7 +1,7 @@
 /**
  * The guild-shell layout for every authenticated /g/:guildId page
  * (roadmap/web-admin.md §8.2, §8.6 "every /g/:guildId page renders in the
- * shell"; §8.8 Phase 0c "guild switcher shell").
+ * shell"; §8.8 Phase 0c "guild switcher shell"; §8.15 UX v1.1 left sidebar).
  *
  * COMPOSED ENTIRELY with the escaped-by-default `html` helper
  * (./escape.js): guild names, user tags and every other interpolated value
@@ -24,8 +24,9 @@
  *   writeShellHtml(req, res, { status: 200, document: doc });
  * renderShellPage pulls user/tag (req.user), the tier badge
  * (req.guildAccess.tier — set by middleware/guildScope.js), the CSRF token
- * (req.csrfToken — set by middleware/csrf.js) and the per-response CSP nonce
- * (res.locals.cspNonce — set by middleware/csp.js) off the request.
+ * (req.csrfToken — set by middleware/csrf.js), the active-nav path (req.path)
+ * and the per-response CSP nonce (res.locals.cspNonce — set by
+ * middleware/csp.js) off the request.
  */
 
 const { html, raw } = require("./escape");
@@ -35,6 +36,80 @@ const { tierBadge, degradedBanner } = require("./components");
 const HTMX_SRC = "/static/vendor/htmx.2.0.10.min.js";
 const APP_SRC = "/static/app.js";
 const STYLES_SRC = "/static/styles.css";
+
+/**
+ * LEFT SIDEBAR NAV (UX v1.1, roadmap/web-admin.md §8.15). Static definition:
+ * groups in visual order, items keyed by the path suffix under /g/:guildId.
+ * minTier mirrors the ROUTE tier of the target page — the nav only hides
+ * what the middleware would deny anyway; it is cosmetic, NEVER a gate.
+ */
+const TIER_RANK = Object.freeze({ staff: 1, senior: 2, admin: 3 });
+const NAV_GROUPS = Object.freeze([
+  {
+    label: "Overview",
+    items: [
+      { suffix: "", label: "Dashboard" },
+      { suffix: "/voice", label: "Voice" },
+      { suffix: "/system", label: "System", minTier: "admin" },
+      { suffix: "/audit", label: "Audit trail", minTier: "admin" },
+    ],
+  },
+  {
+    label: "Moderation",
+    items: [
+      { suffix: "/users", label: "Users" },
+      { suffix: "/leaderboard", label: "Leaderboard" },
+      { suffix: "/warnings", label: "Warnings" },
+      { suffix: "/notes", label: "Staff notes" },
+      { suffix: "/xp/grant", label: "Grant XP", minTier: "admin" },
+      { suffix: "/tickets", label: "Ticket actions", minTier: "senior" },
+    ],
+  },
+  {
+    label: "Configuration",
+    items: [
+      { suffix: "/settings", label: "Settings" },
+      { suffix: "/staff", label: "Staff roles" },
+      { suffix: "/commands", label: "Command visibility" },
+      { suffix: "/integrations", label: "Integrations" },
+    ],
+  },
+]);
+
+/**
+ * Tier-gated sidebar navigation for a guild page. Renders NOTHING without a
+ * guild or a resolvable tier. Pure SSR — links only, no JS (§8.2 SSR-first).
+ *
+ * @param {string|null} guildId
+ * @param {string|null} tier viewer tier in this guild
+ * @param {string} path current request path (drives the active highlight)
+ * @returns {import("./escape").SafeString}
+ */
+function renderSideNav(guildId, tier, path) {
+  const rank = TIER_RANK[tier] ?? 0;
+  if (!guildId || rank === 0) return html``;
+  const base = `/g/${guildId}`;
+  let sub = typeof path === "string" ? path : "";
+  if (sub.startsWith(base)) sub = sub.slice(base.length);
+  if (!sub.startsWith("/")) sub = `/${sub}`;
+  if (sub.length > 1 && sub.endsWith("/")) sub = sub.slice(0, -1);
+  if (sub === "/") sub = "";
+  const groups = NAV_GROUPS.map((group) => {
+    const items = group.items
+      .filter((it) => (TIER_RANK[it.minTier] ?? 1) <= rank)
+      .map((it) => {
+        const active =
+          sub === it.suffix ||
+          (it.suffix !== "" && sub.startsWith(`${it.suffix}/`));
+        return html`<a href="${base}${it.suffix}"${
+          active ? raw(' class="active" aria-current="page"') : html``
+        }>${it.label}</a>`;
+      });
+    if (!items.length) return html``;
+    return html`<div class="shell-nav-group"><h2>${group.label}</h2>${items}</div>`;
+  });
+  return html`<aside class="shell-nav" aria-label="Console navigation">${groups}</aside>`;
+}
 
 /** Display name for a guild entry (never empty — fall back to the id). */
 function guildLabel(guild) {
@@ -47,7 +122,8 @@ function guildLabel(guild) {
  * (bot∩user list from auth/guildAccess.js — never the bot's full guild list,
  * never guilds the viewer cannot open; §8.3). Navigation is wired by
  * app.js via the data-guild-switcher attribute (no inline on* handler);
- * <noscript> users keep the page they are on.
+ * <noscript> users keep the page they are on. Hidden entirely when the
+ * list is empty (root/lobby pages render their guild list in the body).
  *
  * @param {Array<{id: string, name?: string|null}>} guilds
  * @param {string|null} currentGuildId
@@ -68,7 +144,8 @@ function renderGuildSwitcher(guilds, currentGuildId) {
 
 /**
  * Full shell document. Prefer {@link renderShellPage} (derives everything
- * from the request); call this directly only for specially-shaped pages.
+ * from the request); call this directly only for specially-shaped pages
+ * (the root guild list renders with currentGuildId = null → no sidebar).
  *
  * @param {object} opts
  * @param {string} opts.title <title> text
@@ -77,11 +154,12 @@ function renderGuildSwitcher(guilds, currentGuildId) {
  * @param {string} [opts.subheading]
  * @param {Array<{id: string, name?: string|null}>} [opts.guilds] switcher list
  * @param {string|null} [opts.currentGuildId]
- * @param {string|null} [opts.tier] current guild tier → badge
+ * @param {string|null} [opts.tier] current guild tier → badge + nav gate
  * @param {boolean} [opts.degraded] §8.3 degraded-resolver banner
  * @param {{userId?: string, discordTag?: string|null}|null} [opts.user]
  * @param {string|null} [opts.csrfToken] logout-form token
  * @param {string} [opts.nonce] per-response CSP nonce (res.locals.cspNonce)
+ * @param {string} [opts.path] request path (sidebar active item)
  * @returns {import("./escape").SafeString}
  */
 function renderLayout(opts) {
@@ -97,6 +175,7 @@ function renderLayout(opts) {
     user = null,
     csrfToken = null,
     nonce = "",
+    path = "",
   } = opts;
 
   // Every <script> tag carries the per-response nonce (external files do not
@@ -105,6 +184,10 @@ function renderLayout(opts) {
   const nonceAttr = nonce ? html` nonce="${nonce}"` : html``;
   const homeHref = currentGuildId ? `/g/${currentGuildId}` : "/";
   const userTag = user ? user.discordTag || user.userId || "signed in" : "";
+  const switcher =
+    Array.isArray(guilds) && guilds.length
+      ? renderGuildSwitcher(guilds, currentGuildId)
+      : html``;
 
   return html`<!DOCTYPE html>
 <html lang="en">
@@ -119,7 +202,7 @@ function renderLayout(opts) {
 <body data-csrf-token="${csrfToken || ""}">
 <header class="shell-bar">
   <a class="brand" href="${homeHref}">Boiler Snake</a>
-  ${renderGuildSwitcher(guilds, currentGuildId)}
+  ${switcher}
   ${tierBadge(tier)}
   <div class="user-box">
     <span class="user-tag">${userTag}</span>
@@ -131,11 +214,14 @@ function renderLayout(opts) {
 </header>
 ${degraded ? degradedBanner() : html``}
 <noscript><p class="noscript-hint">Guild switching needs JavaScript; every page is still reachable via its /g/&lt;guildId&gt; URL.</p></noscript>
+<div class="shell-body">
+${renderSideNav(currentGuildId, tier, path)}
 <main class="shell-main">
   <h1>${heading}</h1>
   ${subheading ? html`<p class="subheading">${subheading}</p>` : html``}
   ${content}
 </main>
+</div>
 <footer class="shell-footer">Boiler Snake web console · <a href="/health">/health</a></footer>
 </body>
 </html>`;
@@ -153,6 +239,7 @@ ${degraded ? degradedBanner() : html``}
  * @param {string} [page.heading]
  * @param {string} [page.subheading]
  * @param {Array<{id: string, name?: string|null}>} [page.guilds]
+ * @param {string} [page.path] override active-nav path (tests); default req.path
  * @param {string} [page.nonce] override (tests); default res.locals.cspNonce
  * @returns {import("./escape").SafeString}
  */
@@ -170,6 +257,7 @@ function renderShellPage(req, page) {
     user: req.user || null,
     csrfToken: req.csrfToken || null,
     nonce: page.nonce ?? (req.res && req.res.locals ? req.res.locals.cspNonce : "") ?? "",
+    path: page.path ?? (req.path || ""),
   });
 }
 
@@ -222,7 +310,9 @@ module.exports = {
   renderLayout,
   renderShellPage,
   renderShellError,
+  renderSideNav,
   writeShellHtml,
+  NAV_GROUPS,
   HTMX_SRC,
   APP_SRC,
   STYLES_SRC,

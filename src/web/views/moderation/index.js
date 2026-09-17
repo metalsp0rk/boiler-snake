@@ -25,7 +25,7 @@
  */
 
 const { html, raw } = require("../escape");
-const { emptyState, banner } = require("../components");
+const { emptyState, banner, userRef } = require("../components");
 const { formatWarnRef, formatNoteRef } = require("../../../core/theme");
 const { formatWhen, snippet } = require("../users");
 
@@ -222,13 +222,6 @@ function pill(kind, label) {
   return html`<span class="state-pill state-pill-${cls}">${label}</span>`;
 }
 
-/** Digits-only user id → link into the unified profile; anything else plain. */
-function userRef(guildId, userId) {
-  const id = String(userId ?? "");
-  if (!/^[0-9]{5,20}$/.test(id)) return html`<code class="user-id">${id}</code>`;
-  return html`<a class="user-id" href="/g/${guildId}/users/${id}">${id}</a>`;
-}
-
 /**
  * Preserve the current filters while paging: rebuild the query from
  * validated pieces only (u = digits, state = whitelist, n/o = integers).
@@ -342,7 +335,7 @@ function warnMeta(w) {
  *          bounds?: { maxReason: number, maxEvidence: number, maxExpiryDays: number } }} data
  *   page = buildWarningsPage() result
  */
-function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds = {} }) {
+function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds = {}, names = null }) {
   const guildId = req.guildAccess.guildId;
   const base = `/g/${guildId}/warnings`;
   const emptyMessage =
@@ -358,8 +351,8 @@ function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds 
           ${page.rows.map((w) => html`
             <tr class="row-warn${w.voided_at != null ? raw(" row-voided") : html``}">
               <td>${formatWarnRef(w.warning_number)}</td>
-              <td>${userRef(guildId, w.user_id)}</td>
-              <td>${userRef(guildId, w.issuer_id)}</td>
+              <td>${userRef(guildId, w.user_id, names)}</td>
+              <td>${userRef(guildId, w.issuer_id, names)}</td>
               <td>${formatWhen(w.created_at)}</td>
               <td>${warnStatePill(w, Date.now())}</td>
               <td class="reason-cell">${snippet(w.reason)}${warnMeta(w)}</td>
@@ -398,7 +391,7 @@ function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds 
  *          csrfToken?: string|null, bounds?: { maxContent: number } }} data
  *   page = buildNotesPage() result
  */
-function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {} }) {
+function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {}, names = null }) {
   const guildId = req.guildAccess.guildId;
   const base = `/g/${guildId}/notes`;
   const emptyMessage =
@@ -414,8 +407,8 @@ function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {
           ${page.rows.map((n) => html`
             <tr class="row-note${n.deleted_at != null ? raw(" row-deleted") : html``}">
               <td>${formatNoteRef(n.note_number)}</td>
-              <td>${userRef(guildId, n.user_id)}</td>
-              <td>${userRef(guildId, n.author_id)}</td>
+              <td>${userRef(guildId, n.user_id, names)}</td>
+              <td>${userRef(guildId, n.author_id, names)}</td>
               <td>${formatWhen(n.created_at)}</td>
               <td>${n.deleted_at != null
                 ? pill("deleted", "deleted")
