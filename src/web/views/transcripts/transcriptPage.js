@@ -95,6 +95,14 @@ function renderMessage(m) {
 /** AI/fallback summary card — the frozen archive NEVER showed this (§8.15). */
 function renderSummary(summary) {
   if (!summary || typeof summary !== "object") return html``;
+  // THE AI narrative lives in `summary` — the stored paragraph is the
+  // point of the whole feature; subject/resolution are context bits.
+  // (Bug 2026-09-19: the card rendered the bits but never this field,
+  // so AI summaries looked no different from the fallback.)
+  const prose = String(summary.summary || "").trim();
+  const para = prose
+    ? raw(escapeHtml(prose).replace(/\n/g, "<br/>"))
+    : null;
   const bits = [];
   if (summary.subject) bits.push(html`<dt>Subject</dt><dd>${summary.subject}</dd>`);
   if (summary.resolution) bits.push(html`<dt>Resolution</dt><dd>${summary.resolution}</dd>`);
@@ -102,7 +110,7 @@ function renderSummary(summary) {
   if (summary.message_count != null) {
     bits.push(html`<dt>Messages</dt><dd>${String(summary.message_count)}</dd>`);
   }
-  if (!bits.length) return html``;
+  if (!bits.length && !para) return html``;
   const src =
     summary.source === "ai"
       ? html`AI summary${summary.model ? html` · ${summary.model}` : html``}`
@@ -110,7 +118,8 @@ function renderSummary(summary) {
   return html`
     <section class="panel transcript-summary">
       <h2>Summary <span class="badge">${src}</span></h2>
-      <dl class="dashboard-dl">${bits}</dl>
+      ${para ? html`<p class="summary-prose">${para}</p>` : html``}
+      ${bits.length ? html`<dl class="dashboard-dl">${bits}</dl>` : html``}
     </section>`;
 }
 

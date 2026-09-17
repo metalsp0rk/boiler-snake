@@ -131,7 +131,14 @@ describe("themed transcript view (§8.15 amendment)", () => {
           sent_at: Date.now(),
         },
       ],
-      { source: "ai", model: "test-model", subject: "lost keys", resolution: "found them" },
+      {
+        source: "ai",
+        model: "test-model",
+        subject: "lost keys",
+        resolution: "found them",
+        summary:
+          "Member reported lost keys after Linux Weekly 21.\nStaff walked the checklist; keys found under the desk.",
+      },
       1
     );
     mk([], null, 2); // empty-messages ticket (second token not exercised here)
@@ -185,6 +192,13 @@ describe("themed transcript view (§8.15 amendment)", () => {
     assert.match(body, /Summary/, "summary card renders");
     assert.ok(body.includes("lost keys") && body.includes("found them"));
     assert.ok(body.includes("test-model"), "summary provenance shown");
+    // THE bug: the AI narrative (summary.summary) used to be dropped.
+    assert.match(
+      body,
+      new RegExp('<p class="summary-prose">Member reported lost keys after Linux Weekly 21\\.<br/>'),
+      "AI paragraph renders, newlines kept"
+    );
+    assert.match(body, /keys found under the desk/, "full narrative tail renders");
     assert.ok(body.includes(`/t/${token}/raw`), "raw export link present");
     // Active nav = the archive surface, never the dashboard (bug: empty
     // path used to highlight Dashboard on every transcript page).

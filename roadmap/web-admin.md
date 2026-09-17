@@ -745,6 +745,23 @@ getter at boot); tracked here until done.
   - **Verification:** 7 new tests (card shape/warm/gates, audit names,
     creator+owner digit matches, mixed-attr presence/absence, chip hook);
     full suite 2970/2970
+- [x] **Task 15.12:** Show the close-time summary everywhere tickets are
+  (2026-09-19) — operator bug: "tickets aren't showing the AI summary".
+  Root cause: the AI narrative is stored in `summary.summary` (up to
+  2000 chars) while the transcript card rendered only the context bits
+  (subject/resolution/close_reason) — the generated paragraph was
+  dropped by the VIEW, not the pipeline. Fallback summaries masked this
+  (their summary ≈ close_reason, already displayed).
+  - Transcript card: full narrative paragraph (`<p class="summary-prose">`,
+    escaped, newlines preserved) above the bits; the AI/auto provenance
+    badge now actually distinguishes the two artifacts.
+  - Archive rows (both /t and /g/:guildId/t): a compact recap line under
+    the reason — provenance badge + 160-char snippet of the narrative —
+    malformed stored JSON degrades to no note (never a broken row).
+  - **Verification:** transcript fixture now stores the REAL shape
+    including the narrative field (assert paragraph + newline handling +
+    tail); archive-row recap asserted present-with-summary and absent
+    without; 2971/2971. Raw export untouched.
 - [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
   - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
   - **Estimate:** 2 h · **Dependencies:** —

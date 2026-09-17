@@ -146,7 +146,7 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
     return { res, body: await res.text() };
   }
 
-  function seedArchived({ reason, closeReason, creator, owner }) {
+  function seedArchived({ reason, closeReason, creator, owner, summary = null }) {
     const token = api.generateTranscriptToken();
     const t = api.createTicket({
       guildId: GUILD_A,
@@ -161,6 +161,7 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
       closeReason,
       transcriptToken: token,
       transcriptPath: `tickets/${token}/index.html`,
+      aiSummaryJson: summary ? JSON.stringify(summary) : null,
     });
     return t;
   }
@@ -206,6 +207,13 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
       closeReason: "resolved",
       creator: USER_KING,
       owner: USER_OWNER,
+      summary: {
+        source: "ai",
+        model: "unit-model",
+        subject: "spoon shortage",
+        resolution: "spork delivered",
+        summary: "AI says: member lacked spoons; staff resolved with a spork.",
+      },
     });
     seedArchived({
       reason: "unrelated matter",
@@ -336,6 +344,16 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
       !cross.body.includes("data-lookup-users="),
       "cross-guild /t has NO single-guild suggestions (nothing to resolve against)"
     );
+  });
+
+  it("archive rows recap the close-time summary (AI badge + narrative)", async () => {
+    const { body } = await req(`/g/${GUILD_A}/t`, cookieOf.staff);
+    assert.match(body, /row-summary/, "recap line present");
+    assert.ok(body.includes("AI says: member lacked spoons"), "narrative snippet renders");
+    assert.match(body, /<span class="badge badge-tiny">AI<\/span>/, "AI provenance badge");
+    // the summary-less archive ticket stays clean (no empty recap shell)
+    const only = await req(`/g/${GUILD_A}/t?q=unrelated`, cookieOf.staff);
+    assert.ok(!only.body.includes("row-summary"), "no recap when no summary stored");
   });
 
   it("every userRef chip now carries the lazy card hook", () => {
