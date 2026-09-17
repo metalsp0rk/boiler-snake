@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.16.1...v1.17.0) (2026-09-17)
+
+
+### Features
+
+* **web:** UX v1.1 — root guild list, sidebar nav, member names, background jobs ([6cbeb46](https://github.com/metalsp0rk/boiler-snake/commit/6cbeb46b7becbc60fbfbb54462092cca21a74388))
+
 ## [1.16.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.16.0...v1.16.1) (2026-09-17)
 
 
