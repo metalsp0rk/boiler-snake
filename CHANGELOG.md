@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.16.0...v1.16.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **web:** bot-guild provider used removed Collection#keyArray ([975f9d2](https://github.com/metalsp0rk/boiler-snake/commit/975f9d2dae1b7a2c0bae2ae5acd5acbc6124e46a))
+
 ## [1.16.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.15.0...v1.16.0) (2026-09-16)
 
 
