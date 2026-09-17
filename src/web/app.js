@@ -286,7 +286,7 @@ function createWebApp(options = {}) {
   // (§8.6 Staff row, read-only). Registered after the shell like the other
   // Phase 1 surfaces so /g/:guildId guildScope gates first; same resolver
   // seams keep tier math undivided. Warn/issue/void writes land in Phase 3.
-  registerModerationRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds });
+  registerModerationRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
   // Settings surface (Phase 1, subtask 18): read-only guild settings view
   // (§8.6 Staff row). Also AFTER the guild shell so /g/:guildId guildScope
   // gates it; same shared resolver instance keeps tier math undivided.

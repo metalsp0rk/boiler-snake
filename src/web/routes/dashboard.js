@@ -45,6 +45,22 @@ const {
   getDefaultDashboardData,
   createDashboardData,
 } = require("../data/dashboardData");
+const { renderLayout } = require("../views/layout");
+const { renderGuildListBody } = require("../views/root");
+const { resolveMemberNames } = require("./shared/discord-cache");
+
+/** Root guild-list render cap (resolve() per row is cache-cheap, but stay bounded). */
+const MAX_ROOT_GUILDS = 30;
+
+/** Login redirect framing identical to the ticket surface's (anonymous "/"). */
+function respondLoginRedirectRoot(res) {
+  res.writeHead(302, {
+    Location: "/auth/login",
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+  });
+  res.end();
+}
 
 /**
  * @param {import("express").Express} app
@@ -90,12 +106,74 @@ function registerDashboardRoutes(app, options = {}) {
   // guildScope's documented behavior).
   app.use("/g/:guildId", createGuildScopeMiddleware({ resolver }));
 
+  // ---- ROOT PAGE = guild list (UX v1.1, §8.15) ----------------------------
+  // Replaces the legacy "/" alias of the transcript archive (archive keeps
+  // its canonical /t route; the "/" → archive parity tests were retargeted
+  // as part of this accepted change). Anonymous ⇒ same login redirect the
+  // ticket surface used to give; authenticated ⇒ the viewer's OWN staff
+  // guilds (bot∩user ∩ tier-resolvable) — never the bot's full list.
+  app.get("/", async (req, res) => {
+    if (!req.webSession) {
+      respondLoginRedirectRoot(res);
+      return;
+    }
+    try {
+      const listed = await resolver.listGuilds(req.webSession);
+      if (listed.reauth) {
+        respondLoginRedirectRoot(res);
+        return;
+      }
+      const capped = listed.guilds.slice(0, MAX_ROOT_GUILDS);
+      const rows = [];
+      for (const g of capped) {
+        const access = await resolver.resolve(req.webSession, g.id);
+        rows.push({
+          id: g.id,
+          name: g.name,
+          tier: access.status === "ok" ? access.tier : null,
+        });
+      }
+      const document = renderLayout({
+        title: "Guilds",
+        heading: "Your guilds",
+        subheading: rows.length
+          ? "Pick a guild to open its console."
+          : null,
+        content: renderGuildListBody({
+          rows,
+          degraded: !!listed.degraded,
+          truncated: listed.guilds.length > capped.length,
+        }),
+        currentGuildId: null,
+        tier: null,
+        user: req.user || null,
+        csrfToken: req.csrfToken || null,
+        nonce: (req.res && req.res.locals ? req.res.locals.cspNonce : "") || "",
+      });
+      writeShellHtml(req, res, { status: 200, document });
+    } catch (err) {
+      console.error("[web] root guild list failed:", err?.code || err?.message || err);
+      res.writeHead(500, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end("Internal error");
+    }
+  });
+
   app.get("/g/:guildId", requireTier("staff"), async (req, res) => {
     const guildId = req.guildAccess.guildId;
     // One cached per-guild snapshot (30 s floor). Sections degrade
     // individually inside; only a programmer error reaches here as a throw,
     // which the app's terminal error middleware turns into the generic 500.
     const data = await dashboard.getDashboard(guildId);
+
+    // UX v1.1 (§8.15): resolve member display names for the rows this
+    // snapshot shows — cache-only seam, miss ⇒ raw id labels in the view.
+    const nameIds = [
+      ...((data && data.tickets && data.tickets.newest) || []).map((t) => t.creatorUserId),
+      ...((data && data.activity && data.activity.xpLeaders) || []).map((l) => l.userId),
+    ];
 
     // Switcher from the SAME cached list resolve() just gated against
     // (normally zero network) — the viewed guild always renders even if the
@@ -110,8 +188,11 @@ function registerDashboardRoutes(app, options = {}) {
       title: "Console",
       heading: "Dashboard",
       subheading:
-        "Live guild overview — open tickets, activity, ticker health, now-playing (data only; charts land in Phase 4).",
-      content: renderDashboardContent(data),
+        "Live guild overview — open tickets, activity, background jobs, now-playing.",
+      content: renderDashboardContent(data, {
+        guildId,
+        names: resolveMemberNames(options.getClient, guildId, nameIds),
+      }),
       guilds,
     });
     writeShellHtml(req, res, { status: 200, document });

@@ -11,7 +11,7 @@ The console is **dark by default** — nothing listens unless you set `PUBLIC_HT
 1. Set `PUBLIC_HTTP_PORT` and `PUBLIC_BASE_URL` in `.env` (production must be **https** — the bot warns on non-localhost `http://`; put TLS/reverse proxy in front).
 2. Set `SESSION_SECRET` (falls back to `CLIENT_SECRET` with a warning).
 3. In the Discord Developer Portal, add the OAuth redirect `{PUBLIC_BASE_URL}/auth/login/callback`.
-4. Restart the bot and open `{PUBLIC_BASE_URL}/` — you'll be redirected to **Log in with Discord**.
+4. Restart the bot and open `{PUBLIC_BASE_URL}/` — you'll be redirected to **Log in with Discord**, then land on the **guild list**: pick a guild to open its console.
 
 | Variable | Meaning |
 |----------|---------|
@@ -27,8 +27,8 @@ Tiers mirror the bot's gates exactly — the same staff roles apply:
 
 | Tier | Who (same as slash) | Console access |
 |------|---------------------|----------------|
-| **Staff** | `ManageGuild` **or** any `staff_roles` level ([Staff Roles](staff-roles.md)) | Dashboard, users, leaderboard, moderation (warns/notes pages + issue/void), settings reads + staff-tier writes (XP rate, decay, log channels, level roles), staff list, integrations (YouTube/Twitch/reaction-roles/event-reminders/honeypot), voice (read), ticket list + transcripts |
-| **Senior** | senior `staff_roles` rows | Everything staff sees **plus** ticket claim/close/summarize and the user Activity tab (mirrors `/userinfo` Activity / ticket-overwrite seniority) |
+| **Staff** | `ManageGuild` **or** any `staff_roles` level ([Staff Roles](staff-roles.md)) | Dashboard, users, leaderboard, moderation (warns/notes pages + issue/void), settings reads + staff-tier writes (XP rate, decay, log channels, level roles), staff list, integrations (YouTube/Twitch/reaction-roles/event-reminders/honeypot), voice (read), ticket transcripts (`/t`) |
+| **Senior** | senior `staff_roles` rows | Everything staff sees **plus** the ticket actions page (list, claim/close/summarize) and the user Activity tab (mirrors `/userinfo` Activity / ticket-overwrite seniority) |
 | **Admin** | `ManageGuild` only | Everything above **plus** system + audit-trail pages and ManageGuild-tier mutations: grant XP, staff-role add/remove/setlevel, command-channel edits, command-visibility sync, honeypot exempt |
 
 Two deliberate deltas from slash (asserted by tests, not accidents):
@@ -48,11 +48,13 @@ Not in v1 by design: gork administration, music queue control, public (non-staff
 
 ## Pages
 
-- **`/`** — guild picker (your staff guilds)
+Every `/g/{guildId}` page carries a **sidebar** (Overview / Moderation / Configuration) to the
+different areas — items you don't have tier for are hidden. Pages:
+- **`/`** — guild list: your staff guilds with tier badges, links into each console (transcripts live at `/t`)
 - **`/g/{guildId}`** — dashboard (bot status, XP/voice/ticket/gork summary cards)
 - **`/g/{guildId}/users`, `/leaderboard`** — member search, XP detail, leaderboard (same data as `/xp` / `/leaderboard`)
 - **`/g/{guildId}/moderation`** — warnings (`/warn` twin), staff notes (`/note` twin), ticket moderation
-- **`/g/{guildId}/tickets`** — ticket list + claim/close/summarize; archived transcript viewing
+- **`/g/{guildId}/tickets`** — ticket actions page (**senior**): open-ticket list with claim/close/summarize (transcripts: `/t`)
 - **`/g/{guildId}/settings`** — read view of every guild setting + staff-tier writes (command channels, level roles, integrations, cooldowns, decay, …)
 - **`/g/{guildId}/staff`** — staff roles + command-visibility panel (incl. `/staff syncpermissions` trigger)
 - **`/g/{guildId}/integrations`** — YouTube / Twitch watches, reaction roles, event reminders, honeypot

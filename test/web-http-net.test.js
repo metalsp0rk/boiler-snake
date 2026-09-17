@@ -390,8 +390,11 @@ describe("web http net (tickets + oauth callback)", () => {
   // only the request posture moved.
   // ------------------------------------------------------------------
 
-  it("GET /, /t and /t/ render the archive index with hardened headers", async () => {
-    for (const pathName of ["/", "/t", "/t/"]) {
+  it("GET /t and /t/ render the archive index with hardened headers", async () => {
+    // UX v1.1 (§8.15): "/" became the root GUILD LIST; the archive index
+    // keeps its canonical /t + /t/ aliases (guild list covered by
+    // test/web-ux-v1.test.js).
+    for (const pathName of ["/t", "/t/"]) {
       const res = await authFetch(pathName);
       assert.equal(res.status, 200, `${pathName} status`);
       assert.match(
