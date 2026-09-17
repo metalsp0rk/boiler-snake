@@ -247,7 +247,8 @@ describe("layout (shell chrome)", () => {
     for (const u of urls) {
       assert.ok(
         u.startsWith("/static/") || u.startsWith("/g/") || u === "/health" ||
-          u.startsWith("/g/") || u === "/auth/logout" || u.startsWith("/auth/"),
+          u.startsWith("/g/") || u === "/auth/logout" || u.startsWith("/auth/") ||
+          u === "/t" || u.startsWith("/t/") || u.startsWith("/t?"),
         `unexpected external URL: ${u}`
       );
     }
