@@ -9,7 +9,8 @@
  * that provider:
  *
  *  - production: features/web boot wires it to the discord.js v14 client
- *    (`client.guilds.cache.keyArray()`), re-read at every login;
+ *    (`[...client.guilds.cache.keys()]` — spread, NOT the removed
+ *    Collection#keyArray), re-read at every login;
  *  - tests: `setBotGuildsProvider(() => [...])` fake;
  *  - unwired: resolves to an empty list (login still succeeds with an
  *    empty guild snapshot — guild routing shows nothing until wired) and

@@ -25,7 +25,10 @@ module.exports = {
     // complete after READY — a login racing cold boot may briefly see a
     // partial list; the snapshot refreshes on the next login (07 re-checks
     // per TTL). Guarded so tests/harnesses without a client never throw.
-    setBotGuildsProvider(() => client?.guilds?.cache?.keyArray?.() ?? []);
+    // NOTE: spread [...keys()] — discord.js 14.26 (@discordjs/collection v4)
+    // removed Collection#keyArray; an optional-call on it fails SILENTLY to []
+    // and every guild disappears from the console (prod incident 2026-09-17).
+    setBotGuildsProvider(() => (client?.guilds?.cache ? [...client.guilds.cache.keys()] : []));
     // Bind the client for the audit middleware's best-effort channel-embed
     // mirror (§8.1-7): the admin_audit DB row is authoritative; the embed is
     // fire-and-forget and no-ops cleanly when the client is absent.
