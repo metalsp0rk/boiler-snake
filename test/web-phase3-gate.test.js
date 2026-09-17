@@ -942,6 +942,8 @@ const PAGES = [
   { path: "/g/:guildId/xp/grant", tier: "admin", marker: "<h1>Grant XP" },
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
   { path: "/g/:guildId/t", tier: "staff", marker: "<h1>Ticket archive" },
+  { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
+  { path: "/g/:guildId/lookups/roles", tier: "staff", json: true },
 ];
 
 const RANK = { staff: 0, senior: 1, admin: 2 };
@@ -997,9 +999,11 @@ describe("C. tier conformance sweep — final GET surface + mutation ladder evid
           base: baseMain,
           url,
           cookieId: sessionIdOf[key],
-          expect: allowed
-            ? harness.expectShellOk(page.marker)
-            : harness.expectForbidden(),
+          expect: !allowed
+            ? harness.expectForbidden()
+            : page.json
+              ? harness.expectJsonOk()
+              : harness.expectShellOk(page.marker),
           label: `${key} ${page.path}`,
         });
         assert.ok(uid, "viewer id sanity");

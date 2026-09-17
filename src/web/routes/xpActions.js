@@ -71,7 +71,7 @@ const {
   FLASH_DONE,
   FLASH_ERROR,
 } = require("../views/xpActions");
-const { USER_ID_RE } = require("../data/leaderboard");
+const { normalizeUserId } = require("./shared/discordInput");
 const { validateXpValue, levelFromXp, MAX_XP_AWARD } = require("../../core/xpMath");
 const { readFields } = require("./shared/req.js");
 const { makeFlashRedirect } = require("./shared/flash.js");
@@ -110,8 +110,10 @@ const REASON_MAX_LEN = 200;
  *          | { ok: false, errorSlug: string }}
  */
 function parseGrantInput(fields, guildId) {
-  const rawUser = String(fields.user_id == null ? "" : fields.user_id).trim();
-  if (!USER_ID_RE.test(rawUser) || rawUser === String(guildId)) {
+  // §8.15-15.10: plain snowflake OR a pasted <@…>/<@!…> mention; digits
+  // only ever reach the services after normalization.
+  const rawUser = normalizeUserId(fields.user_id);
+  if (!rawUser || rawUser === String(guildId)) {
     return { ok: false, errorSlug: "invalid_user" };
   }
 

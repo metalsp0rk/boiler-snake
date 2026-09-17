@@ -1073,3 +1073,20 @@ p.panel-foot {
   font-size: 0.85rem;
   word-break: break-all;
 }
+
+/* Identifier type-ahead (§8.15-15.10): floating suggestion list anchored to
+   the input's <label> (made position:relative via .lookup-host by app.js). */
+.lookup-host { position: relative; display: block; }
+.lookup-pop {
+  position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 30;
+  background: var(--panel, #1a1d24); border: 1px solid var(--border, #2c313c);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  max-height: 260px; overflow-y: auto; padding: 4px;
+}
+.lookup-opt {
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  padding: 6px 10px; border-radius: 6px; cursor: pointer;
+}
+.lookup-opt:hover, .lookup-opt.is-active { background: var(--hover, #242a36); }
+.lookup-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lookup-id { flex: 0 0 auto; font-size: .8em; opacity: .55; font-family: monospace; }

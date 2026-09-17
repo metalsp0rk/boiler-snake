@@ -136,7 +136,34 @@ function resolveMemberNames(getClient, guildId, userIds) {
   return names;
 }
 
+/**
+ * Member cache as {id,name} suggestion candidates (display-name precedence
+ * nickname > display > username — same as resolveMemberNames). Cache-only,
+ * never fetches; tolerates missing caches and mid-iteration races.
+ * @param {any} guild discord.js Guild (or null)
+ * @returns {Array<{id: string, name: string|null}>}
+ */
+function memberNameCandidates(guild) {
+  const out = [];
+  try {
+    const members = guild?.members?.cache ?? null;
+    if (!members || typeof members.values !== "function") return out;
+    for (const m of members.values()) {
+      const id = m?.id ? String(m.id) : null;
+      if (!id) continue;
+      const name = String(
+        m?.nickname || m?.displayName || m?.user?.username || ""
+      ).trim();
+      out.push({ id, name: name || null });
+    }
+  } catch {
+    /* cache raced away mid-iteration — partial list is fine */
+  }
+  return out;
+}
+
 module.exports = {
+  memberNameCandidates,
   isProvenBot,
   makeCacheNameResolver,
   makeGuildRoleNameResolver,

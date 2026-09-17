@@ -249,11 +249,11 @@ function renderUserSearchPage(req, { guilds, search }) {
     </tr>`);
   const content = html`
     <form class="search-form" method="get" action="${base}">
-      <label for="q">User ID</label>
-      <input id="q" type="search" name="q" value="${search.query}" placeholder="digits of a user ID…" maxlength="64"/>
+      <label for="q">User</label>
+      <input id="q" type="search" name="q" value="${search.query}" placeholder="name or user ID…" maxlength="64" data-lookup="users" data-lookup-url="/g/${req.guildAccess.guildId}/lookups/users"/>
       <button type="submit" class="btn">Search</button>
     </form>
-    <p class="hint">Search matches tracked users by ID (exact or prefix) — display-name search is not available offline. Results are capped at 50.</p>
+    <p class="hint">ID search matches tracked users (exact or prefix). Name search matches members currently cached by the bot (it warms as you browse); tracked members are always found by ID. Results are capped at 50.</p>
     ${search.searched
       ? rows.length
         ? html`<table class="list-table">

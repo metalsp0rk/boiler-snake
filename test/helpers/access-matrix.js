@@ -165,6 +165,14 @@ function expectMethodNotAllowed() {
   return { kind: "methodNotAllowed" };
 }
 /**
+ * Read-only JSON API surface under /g/ (§8.15-15.10 identifier lookups):
+ * 200 + application/json + no-store, body parseable — gates identical to
+ * shell pages (anon 302, no-tier generic 404, cross-guild generic 404).
+ */
+function expectJsonOk() {
+  return { kind: "json" };
+}
+/**
  * Allowed page INSIDE the guild shell: 200 HTML, contains the shell markers
  * AND the page-specific heading marker (unique per page), Cache-Control
  * no-store (console pages are session-scoped — §8.7). Phase 1+ gate suites
@@ -219,6 +227,15 @@ async function runOutcome(cell) {
       `${label}${cell.url}: content-type`
     );
     assertNoEcho(res, e.forbid);
+  } else if (e.kind === "json") {
+    assert.equal(res.status, 200, `${label}${cell.url}: status`);
+    assert.match(
+      res.headers.get("content-type") || "",
+      /^application\/json/,
+      `${label}${cell.url}: JSON API framing`
+    );
+    assert.equal(res.headers.get("cache-control"), "no-store", `${label}${cell.url}: no-store`);
+    JSON.parse(res.body); // parseable JSON — never an HTML error page
   } else if (e.kind === "transcript") {
     assert.equal(res.status, 200, `${label}${cell.url}: status`);
     assert.match(res.headers.get("content-type") || "", /^text\/html/, `${label}${cell.url}: content-type`);
@@ -411,6 +428,7 @@ module.exports = {
   expectAssetOk,
   expectMethodNotAllowed,
   expectShellOk,
+  expectJsonOk,
   expectForbidden,
   SHELL_MARKER,
   createLoginSession,
