@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.21.0...v1.22.0) (2026-09-17)
+
+
+### Features
+
+* **web:** type-ahead names on every identifier field — pick people/roles, don't paste snowflakes ([aa1e6d7](https://github.com/metalsp0rk/boiler-snake/commit/aa1e6d72616d84179e43e5db8b822d38ab98e4b3))
+
 ## [1.21.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.20.0...v1.21.0) (2026-09-17)
 
 
