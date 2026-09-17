@@ -32,7 +32,7 @@ const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, renderShellError, writeShellHtml } = require("../views/layout");
 const { rawParams } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
-const { memberNameCandidates } = require("./shared/discord-cache");
+const { memberNameCandidates, resolveMemberNames } = require("./shared/discord-cache");
 const { rankSuggestions } = require("./shared/discordInput");
 const {
   renderUserSearchPage,
@@ -190,6 +190,95 @@ function registerUsersRoutes(app, options = {}) {
   });
 
   // ---- SENIOR: Activity tab (slash /userinfo Activity equivalent) ---------
+  // ---- staff: hover PROFILE CARD JSON (§8.15-15.11) ----------------------
+  // Powers the [data-user-card] popups in app.js: name, id, avatar and role
+  // chips sourced CACHE-ONLY (roles cache is complete without intents;
+  // member fields appear as the member-fetch queue warms — first hover may
+  // be partial, later hovers complete; nothing here ever fetches on the
+  // request path). Staff+ (lives behind guildScope + requireTier like the
+  // profile page); generic 404 for malformed ids; no-store JSON.
+  app.get("/g/:guildId/users/:userId/card", requireTier("staff"), (req, res) => {
+    try {
+      const { userId } = req.params;
+      if (!USER_ID_RE.test(userId)) {
+        respondGenericNotFound(res);
+        return;
+      }
+      const guildId = req.guildAccess.guildId;
+      const client = typeof options.getClient === "function" ? options.getClient() : null;
+      const guild = client?.guilds?.cache?.get?.(guildId) ?? null;
+      const member = guild?.members?.cache?.get?.(userId) ?? null;
+
+      // Cache miss ⇒ background warm-up (self-healing cards, zero API on
+      // this path). resolveMemberNames enqueues exactly this id.
+      resolveMemberNames(options.getClient ?? null, guildId, [userId]);
+
+      const user = member?.user ?? null;
+      let avatar = null;
+      try {
+        if (user && typeof user.displayAvatarURL === "function") {
+          avatar = user.displayAvatarURL({ size: 64 });
+        }
+      } catch {
+        avatar = null;
+      }
+      if (!avatar) {
+        // Discord default-avatar rule for username-migrated users.
+        try {
+          const idx = Number((BigInt(userId) >> 22n) % 6n);
+          avatar = `https://cdn.discordapp.com/embed/avatars/${idx}.png`;
+        } catch {
+          avatar = null;
+        }
+      }
+
+      const name = String(
+        member?.nickname || member?.displayName || user?.username || ""
+      ).trim().slice(0, 100) || null;
+
+      // Role chips: this member's roles by NAME via the complete role
+      // cache, @everyone excluded, highest first when positions exist.
+      const roleChips = [];
+      try {
+        const memberRoles = member?.roles?.cache ?? null;
+        const guildRoles = guild?.roles?.cache ?? null;
+        if (memberRoles && typeof memberRoles.values === "function") {
+          for (const r of memberRoles.values()) {
+            const rid = String(r?.id ?? "");
+            if (!rid || rid === String(guildId)) continue;
+            const known = guildRoles?.get?.(rid) ?? r;
+            const rname = String(known?.name ?? "").trim().slice(0, 100);
+            if (!rname) continue;
+            roleChips.push({
+              name: rname,
+              color: typeof known?.hexColor === "string" ? known.hexColor : null,
+            });
+          }
+        }
+      } catch {
+        /* partial chips are fine — a card is an enhancement */
+      }
+
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      });
+      res.end(JSON.stringify({
+        id: userId,
+        known: !!member,
+        name,
+        tag: String(user?.tag || user?.username || "").slice(0, 80) || null,
+        avatar,
+        roles: roleChips.slice(0, 25),
+      }));
+    } catch (err) {
+      console.error(`[web] user card failed (guild=${req.guildAccess?.guildId}):`, err?.message || err);
+      res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ error: "card_failed" }));
+    }
+  });
+
   app.get("/g/:guildId/users/:userId/activity", requireTier("senior"), async (req, res) => {
     const { userId } = req.params;
     if (!USER_ID_RE.test(userId)) {

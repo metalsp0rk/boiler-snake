@@ -44,6 +44,7 @@ const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const { renderSystemBody, renderAuditBody } = require("../views/system");
+const { resolveMemberNames } = require("./shared/discord-cache");
 // Reuse the SANITIZED env projection + the OAuth status read from the staff
 // surface (§8.7): imported on purpose so the two surfaces can never diverge.
 const { readEnvConfig } = require("./staff");
@@ -335,12 +336,19 @@ function registerSystemRoutes(app, options = {}) {
       n: params.get("n"),
       o: params.get("o"),
     });
+    // §8.15-15.11: actor ids render as names when the member cache knows
+    // them (cache-only, never fetch on the request path — misses warm via
+    // the background member-fetch queue and self-heal on the next page view).
+    const actorIds = [...new Set(
+      page.rows.map((row) => row.actor_user_id).filter(Boolean).map(String)
+    )].slice(0, 200);
+    const names = resolveMemberNames(options.getClient ?? null, guildId, actorIds);
     const document = renderShellPage(req, {
       title: "Audit log",
       heading: "Audit log",
       subheading:
         "The append-only admin_audit trail (web + slash + system origins), newest first. Read-only — no exports, no deletes.",
-      content: renderAuditBody(req, { page }),
+      content: renderAuditBody(req, { page, names }),
       guilds: await shellGuilds(resolver, req),
     });
     writeShellHtml(req, res, { status: 200, document });

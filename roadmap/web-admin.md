@@ -715,6 +715,36 @@ getter at boot); tracked here until done.
   - **Open follow-up (unpicked):** autocomplete could also feed the
     integrations pages (reaction-role/reminder role pickers) if those
     forms ever gain free-text role fields
+- [x] **Task 15.11:** Hover profile cards + actor names + person search
+  (2026-09-19) — three operator-reported gaps, one coherent surface:
+  - **Profile cards:** `GET /g/:guildId/users/:userId/card` (staff+, JSON,
+    no-store) serves name/tag/avatar/role-chips CACHE-ONLY; unknown ids
+    answer `known:false` with the default avatar and warm via
+    memberFetchQueue (cards self-heal, zero request-path fetches). Every
+    `userRef` chip carries `data-user-card`; app.js pops a lazy tooltip
+    after 300 ms intent, textContent-built, avatar accepted only from
+    https://cdn.discordapp.com (CSP gained exactly that one `img-src`).
+  - **Audit actors** render as resolved name chips (was raw ids); the
+    link-free invariant was scoped to DETAILS (attacker free-text); the
+    actor cell is now the single sanctioned userRef (id is auth-derived).
+  - **Archive person search:** pure-digit q matches creator, handling
+    staff, and linked ticket members (was ticket-number + reason-text
+    only — an 18-digit id previously LIKE-scanned the text, which matched
+    nothing useful); search bars where ONE guild resolves (shell archive,
+    guild-filtered /t) gained MIXED user+role type-ahead — picking a
+    person filters their tickets, picking a role fills its name. The
+    cross-guild /t stays suggestion-free (no guild to resolve against).
+  - Also: transcript pages' active nav fixed (was highlighting Dashboard
+    — empty path defaulted to the dashboard suffix match), and the two
+    vacuous CSP pins (`/n 'self'/` — heredoc-era corruption) were made
+    real assertions.
+  - **Files:** `routes/users.js` (card), `components/index.js` (chip hook),
+    `app.js` (hover card + mixed mode), `db/repositories/tickets.js`
+    (clause), `routes/system.js` + system view (actors), `csp.js`,
+    gate PAGES + pins (card = 2/2 floor), new `test/web-user-card.test.js`
+  - **Verification:** 7 new tests (card shape/warm/gates, audit names,
+    creator+owner digit matches, mixed-attr presence/absence, chip hook);
+    full suite 2970/2970
 - [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
   - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
   - **Estimate:** 2 h · **Dependencies:** —

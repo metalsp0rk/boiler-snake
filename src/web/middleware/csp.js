@@ -62,6 +62,11 @@ function createCspMiddleware({ generateNonce } = {}) {
       "Content-Security-Policy",
       [
         "default-src 'self'",
+        // §8.15-15.11 profile-card avatars come from Discord's CDN — this
+        // is the ONLY cross-origin asset the console loads; the endpoint
+        // hands out URLs we construct/validate ourselves, and img cannot
+        // read data back.
+        "img-src 'self' https://cdn.discordapp.com",
         `script-src 'self' 'nonce-${nonce}'`,
         "style-src 'self' 'unsafe-inline'", // see header comment — tracked concession
         "object-src 'none'",

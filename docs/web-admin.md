@@ -82,6 +82,16 @@ rows. Everything works with JavaScript disabled too — the suggestions are
 an enhancement, and the server accepts names, `<@…>` / `<@&…>` mentions,
 and plain IDs alike.
 
+## People everywhere
+
+Every user chip in the console (audit trail, warnings, notes, archives,
+transcripts) **pops a profile card on hover** — avatar, name, ID and role
+chips. Cards load lazily from the bot's local cache: the first hover of a
+brand-new member may show just the ID while details fill themselves in a
+moment later. The archive search bar understands people too: type a name,
+pick it, and you get that person's tickets (as creator, handler, or
+participant); role names are suggested as well.
+
 ## Troubleshooting
 
 - **`/` shows "Log in with Discord" forever / redirect URI mismatch** → the Portal redirect must match `{PUBLIC_BASE_URL}/auth/login/callback` exactly (scheme, host, port, path).

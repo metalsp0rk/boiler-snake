@@ -76,7 +76,9 @@ function userRef(guildId, userId, names = null) {
   if (!USER_ID_OK.test(id)) return html`<code class="user-id">${id}</code>`;
   const known = names instanceof Map ? names.get(id) : null;
   const name = typeof known === "string" && known.trim() ? known.trim().slice(0, 100) : null;
-  return html`<a class="user-id" href="/g/${guildId}/users/${id}"${
+  // §8.15-15.11: data-user-card powers the lazy hover profile card
+  // (app.js fetches it on hover; card data is cache-only + self-warming).
+  return html`<a class="user-id" href="/g/${guildId}/users/${id}" data-user-card="/g/${guildId}/users/${id}/card"${
     name ? html` title="${id}"` : html``
   }>${name || id}</a>`;
 }

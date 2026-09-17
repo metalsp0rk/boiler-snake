@@ -370,6 +370,7 @@ const PAGES = [
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
   { path: "/g/:guildId/t", tier: "staff", marker: "<h1>Ticket archive" },
   // §8.15-15.10 read-only JSON type-ahead APIs (json:true → expectJsonOk)
+  { path: "/g/:guildId/users/:userId/card", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/roles", tier: "staff", json: true },
 ];
@@ -425,6 +426,8 @@ const GATE_MEASURE = process.env.GATE_MEASURE === "1";
     "/t": { req1: 5, req2: 5 },
     // §8.15-15.10 lookups: no q ⇒ early-empty; the whole stack is just
     // auth + one scope read (measured 2/2 — the floor for any /g page).
+    // §8.15-15.11 profile card: pure cache reads → the auth+scope floor.
+    "/g/:guildId/users/:userId/card": { req1: 2, req2: 2 },
     "/g/:guildId/lookups/users": { req1: 2, req2: 2 },
     "/g/:guildId/lookups/roles": { req1: 2, req2: 2 },
   };

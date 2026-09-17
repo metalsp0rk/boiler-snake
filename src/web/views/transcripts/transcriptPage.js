@@ -199,7 +199,10 @@ function renderTranscriptPage({
     user: req && req.user ? req.user : null,
     csrfToken: (req && req.csrfToken) || null,
     nonce: (res && res.locals && res.locals.cspNonce) || "",
-    path: "",
+    // Active nav: the transcript lives on the archive surface, NOT the
+    // dashboard. "" used to highlight Dashboard (empty sub ⇒ dashboard's
+    // suffix match) — "/t" marks the Ticket archive item active.
+    path: "/t",
   });
 }
 
