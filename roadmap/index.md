@@ -114,7 +114,7 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | Table / change | Notes |
 |----------------|-------|
 | `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**shipped**, migration `028`) |
-| `web_session_tokens` | Server-side OAuth artifacts on sessions — access token, no refresh flow in v1 (**shipped**, migration `030`) |
+| OAuth columns on `web_sessions` | Server-side Discord access token per session, no refresh flow in v1 (**shipped**, migration `030` — extends `web_sessions`, not a separate table) |
 | `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**shipped**, migration `029`) |
 | `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**shipped**) |
 
