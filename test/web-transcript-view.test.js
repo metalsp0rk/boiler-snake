@@ -186,6 +186,10 @@ describe("themed transcript view (§8.15 amendment)", () => {
     assert.ok(body.includes("lost keys") && body.includes("found them"));
     assert.ok(body.includes("test-model"), "summary provenance shown");
     assert.ok(body.includes(`/t/${token}/raw`), "raw export link present");
+    // Active nav = the archive surface, never the dashboard (bug: empty
+    // path used to highlight Dashboard on every transcript page).
+    const active = [...body.matchAll(/<a[^>]*aria-current="page"[^>]*>([^<]*)</g)].map((m) => m[1].trim());
+    assert.deepEqual(active, ["Ticket archive"], "exactly one active nav item");
   });
 
   it("participant: SAME content, chrome-free — zero /g/ links", async () => {

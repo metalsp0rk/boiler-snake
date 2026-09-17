@@ -170,10 +170,18 @@ function renderTicketIndexContent({
         </nav>`
       : html``;
 
+  // §8.15-15.11: when the page resolves ONE guild (shell view, or the
+  // canonical /t with an honored guild filter) the search bar type-aheads
+  // people AND roles. Picking a person inserts their id — pure-digit q
+  // now matches creator/handler/ticket-members; picking a role inserts
+  // its name (text match). No guild ⇒ no suggestions (nothing to resolve).
+  const lookupAttrs = guildId
+    ? html` data-lookup="mixed" data-lookup-users="/g/${guildId}/lookups/users" data-lookup-roles="/g/${guildId}/lookups/roles"`
+    : html``;
   const searchForm = html`
   <form class="archive-search" method="get" action="${baseUrl}">
     ${guildId && !inShell ? html`<input type="hidden" name="guild" value="${guildId}">` : html``}
-    <input type="search" name="q" maxlength="100" placeholder="Ticket number or reason text"
+    <input type="search" name="q" maxlength="100" placeholder="Number, reason, or type a name…"${lookupAttrs}
       ${q ? html`value="${q}"` : html``} aria-label="Search archived tickets">
     <button type="submit">Search</button>
     ${q ? html`<a class="search-clear" href="${hrefFor(1)}">Clear</a>` : html``}

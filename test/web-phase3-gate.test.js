@@ -942,6 +942,7 @@ const PAGES = [
   { path: "/g/:guildId/xp/grant", tier: "admin", marker: "<h1>Grant XP" },
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
   { path: "/g/:guildId/t", tier: "staff", marker: "<h1>Ticket archive" },
+  { path: "/g/:guildId/users/:userId/card", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/roles", tier: "staff", json: true },
 ];

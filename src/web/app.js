@@ -320,7 +320,7 @@ function createWebApp(options = {}) {
   // guild ⇒ 404, same-guild staff/senior ⇒ 403). AFTER the guild shell so
   // /g/:guildId guildScope gates first; same shared resolver instance keeps
   // tier math undivided. GET-only — the methodGate 405s every verb else.
-  registerSystemRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getTickerHealth: options.getTickerHealth, staffData: options.staffData, oauthConfig: options.oauthConfig });
+  registerSystemRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, getTickerHealth: options.getTickerHealth, staffData: options.staffData, oauthConfig: options.oauthConfig });
   // XP grant action (Phase 3, subtask 28): admin-only grant form + POST (§8.6
   // XP row; /grantxp is ManageGuild-only per AGENTS.md §4). Grants flow
   // EXCLUSIVELY through src/services/awardXp.js — the SAME service the slash

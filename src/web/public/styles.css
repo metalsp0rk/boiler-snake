@@ -1090,3 +1090,22 @@ p.panel-foot {
 .lookup-opt:hover, .lookup-opt.is-active { background: var(--hover, #242a36); }
 .lookup-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lookup-id { flex: 0 0 auto; font-size: .8em; opacity: .55; font-family: monospace; }
+
+/* Lazy profile cards on user-chip hover (§8.15-15.11) + suggestion kinds. */
+.user-card {
+  position: fixed; z-index: 60; background: var(--panel, #1a1d24);
+  border: 1px solid var(--border, #2c313c); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.5); padding: 10px 12px;
+  font-size: .9rem; line-height: 1.35;
+}
+.user-card-head { display: flex; gap: 10px; align-items: center; }
+.user-card-avatar { border-radius: 50%; flex: 0 0 auto; }
+.user-card-name { font-weight: 600; word-break: break-word; }
+.user-card-id { font-family: monospace; font-size: .8em; opacity: .6; }
+.user-card-roles { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.user-card-role {
+  border: 1px solid var(--border, #2c313c); border-radius: 999px;
+  padding: 1px 8px; font-size: .78em; opacity: .9;
+}
+.user-card-warm { margin-top: 8px; font-size: .75em; opacity: .55; font-style: italic; }
+.lookup-kind { font-size: .7em; opacity: .5; text-transform: uppercase; letter-spacing: .05em; margin-left: 6px; }

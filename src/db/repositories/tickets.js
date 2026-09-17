@@ -686,10 +686,25 @@ function archiveSearchClause(rawQ) {
   const str = String(rawQ ?? "").trim().slice(0, ARCHIVE_Q_MAX_CHARS);
   if (!str) return { sql: "", params: [] };
   const like = "%" + str.replace(/[\\%_]/g, (c) => "\\" + c) + "%";
-  if (/^\d{1,9}$/.test(str)) {
+  // §8.15-15.11: a pure-digit query is a PERSON or a NUMBER. Ticket rows
+  // match on their person fields (creator, handling staff, and anyone
+  // linked as a member of the ticket) — the id chips/lookups hand these
+  // ids to the search bar, so picking a name filters to their tickets.
+  if (/^\d{1,20}$/.test(str)) {
+    const person =
+      "creator_user_id = ? OR staff_owner_id = ? OR EXISTS (" +
+      "SELECT 1 FROM ticket_members tm WHERE tm.ticket_id = tickets.id AND tm.user_id = ?)";
+    const text =
+      "reason LIKE ? ESCAPE '\\' OR close_reason LIKE ? ESCAPE '\\'";
+    if (/^\d{1,9}$/.test(str)) {
+      return {
+        sql: ` AND (ticket_number = ? OR ${person} OR ${text})`,
+        params: [Number(str), str, str, str, like, like],
+      };
+    }
     return {
-      sql: " AND (ticket_number = ? OR reason LIKE ? ESCAPE '\\' OR close_reason LIKE ? ESCAPE '\\')",
-      params: [Number(str), like, like],
+      sql: ` AND (${person} OR ${text})`,
+      params: [str, str, str, like, like],
     };
   }
   return {
