@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.20.0...v1.21.0) (2026-09-17)
+
+
+### Features
+
+* **web:** themed transcript view — record is the truth, /raw is the export ([263a59b](https://github.com/metalsp0rk/boiler-snake/commit/263a59b4d8f08c5dbe082e891c67fbee60125cd2))
+
 ## [1.20.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.19.0...v1.20.0) (2026-09-17)
 
 
