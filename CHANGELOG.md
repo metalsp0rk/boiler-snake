@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.23.0...v1.23.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **web:** surface the close-time summary — the AI narrative was stored but never rendered ([e67ec90](https://github.com/metalsp0rk/boiler-snake/commit/e67ec90db3c3cc6dd3a640f076a1638f5b1757ea))
+
 ## [1.23.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.22.0...v1.23.0) (2026-09-17)
 
 
