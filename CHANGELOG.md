@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.23.1...v1.24.0) (2026-09-17)
+
+
+### Features
+
+* **web:** participants return to their ticket after login and get a Your-tickets list ([cb98071](https://github.com/metalsp0rk/boiler-snake/commit/cb98071836cfb354f5475573f8b49612e6b6f4dc))
+
 ## [1.23.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.23.0...v1.23.1) (2026-09-17)
 
 
