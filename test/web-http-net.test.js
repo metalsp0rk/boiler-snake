@@ -379,7 +379,19 @@ describe("web http net (tickets + oauth callback)", () => {
           redirect: "manual",
         });
         assert.equal(res.status, 302, `${pathName} → login redirect`);
-        assert.equal(res.headers.get("location"), "/auth/login");
+        // whitelisted ticket shapes round-trip through login (§8.15-15.13);
+        // non-matching /t junk keeps the bare redirect
+        assert.equal(
+          res.headers.get("location"),
+          pathName === "/t" || pathName === "/t/" || pathName.startsWith("/t?")
+            ? "/auth/login?next=%2Ft"
+            : pathName === `/t/${tokenA}` ||
+              pathName === `/t/${tokenA}/` ||
+              pathName === `/t/${tokenA}/raw` ||
+              pathName.startsWith(`/t/${tokenA}/assets/`)
+              ? `/auth/login?next=%2Ft%2F${tokenA}`
+              : "/auth/login"
+        );
         assert.equal(res.headers.get("cache-control"), "no-store");
         assert.equal(res.headers.get("referrer-policy"), "no-referrer");
         assert.equal(await res.text(), "", "no body leaks before login");

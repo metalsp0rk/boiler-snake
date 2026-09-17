@@ -382,13 +382,18 @@ describe("web archive first-class (§8.15)", () => {
   it("anon archive still 302s to login (gate unchanged)", async () => {
     const { res } = await req(`/t?q=spoon`);
     assert.equal(res.status, 302);
-    assert.equal(res.headers.get("location"), "/auth/login");
+    // §8.15-15.13: the ticket index returns you to the archive after login
+    assert.equal(res.headers.get("location"), "/auth/login?next=%2Ft");
   });
 
-  it("no-staff session: archive index renders empty, scoped, 200", async () => {
+  it("no-staff session: sees their OWN (empty) participant list, 200", async () => {
+    // §8.15-15.13: no staffed guild ⇒ participant scope (their linked
+    // tickets) — for a user with NO ticket history that is an honest empty
+    // list, never guild-A's rows.
     const { res, body } = await req(`/t`, cookieOf.nowhere);
     assert.equal(res.status, 200);
-    assert.match(body, /No archived transcripts yet\./);
+    assert.match(body, /Your tickets/);
+    assert.match(body, /No archived tickets involve you yet/i);
     assert.ok(!body.includes(`>#${tSpoon.ticket_number}<`));
   });
 });

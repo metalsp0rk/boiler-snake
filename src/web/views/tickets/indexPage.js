@@ -25,7 +25,7 @@
  * influenced data and must never inject markup (§8.7 XSS).
  *
  * The pinned markup patterns of the Phase 0a oracle net are preserved
- * verbatim — heading "Archived tickets", the "staff use only" sub line,
+ * verbatim — heading "Archived tickets", the "${viewerMode === "participant" ? "yours alone" : "staff use only"}" sub line,
  * "Guild filter:"/"All guilds", the `>View</a>` cell, `Page X / Y`,
  * `class="disabled">Next` and "No archived transcripts yet." — ONLY the
  * stale "This index is not login-gated (MVP)" warning is replaced (the
@@ -92,13 +92,16 @@ function renderTicketIndexContent({
   consoleLink = null,
   baseUrl = "/t",
   inShell = false,
+  viewerMode = "staff",
 }) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   // In-shell view (/g/:guildId/t) is already guild-scoped by its URL — no
   // "guild filter" needed; the bare /t index keeps the legacy filter note.
-  const filterNote = inShell
-    ? html`This guild's archive`
-    : guildId
+  const filterNote = viewerMode === "participant"
+    ? html`Tickets involving you`
+    : inShell
+      ? html`This guild's archive`
+      : guildId
       ? html`Guild filter: <code>${guildId}</code>`
       : html`All guilds`;
   const searchNote = q
@@ -126,10 +129,23 @@ function renderTicketIndexContent({
   const rows = (tickets || []).map((t) => {
     const href = `/t/${encodeURIComponent(t.transcript_token)}`;
     const names = namesByGuild?.get(t.guild_id) ?? null;
-    const creator = userRef(t.guild_id, String(t.creator_user_id), names);
-    const owner = t.staff_owner_id
-      ? userRef(t.guild_id, String(t.staff_owner_id), names)
-      : html`—`;
+    // §8.15-15.13 participant mode: plain text people — a /g/ profile link
+    // is a guaranteed 404 for a non-staff viewer (§8.6 zero dead links).
+    const plain = (id) => {
+      const known = names instanceof Map ? names.get(String(id)) : null;
+      return known
+        ? html`<span class="who-name">${known}</span>`
+        : html`<code class="user-id">${String(id)}</code>`;
+    };
+    const creator =
+      viewerMode === "participant"
+        ? plain(t.creator_user_id)
+        : userRef(t.guild_id, String(t.creator_user_id), names);
+    const owner = !t.staff_owner_id
+      ? html`—`
+      : viewerMode === "participant"
+        ? plain(t.staff_owner_id)
+        : userRef(t.guild_id, String(t.staff_owner_id), names);
     return html`
       <tr>
         <td><a href="${href}">#${String(t.ticket_number)}</a></td>
@@ -149,7 +165,11 @@ function renderTicketIndexContent({
     ? html``
     : q
       ? html`<tr><td colspan="7" class="empty">No archived transcripts match that search.</td></tr>`
-      : html`<tr><td colspan="7" class="empty">No archived transcripts yet.</td></tr>`;
+      : html`<tr><td colspan="7" class="empty">${
+        viewerMode === "participant"
+          ? "No archived tickets involve you yet."
+          : "No archived transcripts yet."
+      }</td></tr>`;
 
   /**
    * Pager href builder. Composed with the html tag (NOT a URLSearchParams
@@ -190,7 +210,7 @@ function renderTicketIndexContent({
   // people AND roles. Picking a person inserts their id — pure-digit q
   // now matches creator/handler/ticket-members; picking a role inserts
   // its name (text match). No guild ⇒ no suggestions (nothing to resolve).
-  const lookupAttrs = guildId
+  const lookupAttrs = guildId && viewerMode === "staff"
     ? html` data-lookup="mixed" data-lookup-users="/g/${guildId}/lookups/users" data-lookup-roles="/g/${guildId}/lookups/roles"`
     : html``;
   const searchForm = html`
@@ -268,10 +288,12 @@ function renderTicketIndexPage({
   degraded = false,
   tier = null,
   path = "",
+  viewerMode = "staff",
 }) {
+  const heading = viewerMode === "participant" ? "Your tickets" : "Archived tickets";
   return renderLayout({
-    title: "Archived tickets",
-    heading: "Archived tickets",
+    title: heading,
+    heading,
     content: renderTicketIndexContent({
       tickets,
       total,
@@ -283,6 +305,7 @@ function renderTicketIndexPage({
       consoleLink,
       baseUrl,
       inShell,
+      viewerMode,
     }),
     guilds,
     // In-shell mode (/g/:guildId/t) renders INSIDE the guild shell with the
