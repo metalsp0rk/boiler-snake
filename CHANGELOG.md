@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.17.1...v1.18.0) (2026-09-17)
+
+
+### Features
+
+* **web:** lazy member-fetch queue — names resolve off the request path ([1c6345c](https://github.com/metalsp0rk/boiler-snake/commit/1c6345c4864fcf083af8030adc35301e9dbc4d95))
+
 ## [1.17.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.17.0...v1.17.1) (2026-09-17)
 
 
