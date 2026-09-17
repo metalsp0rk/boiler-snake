@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.17.0...v1.17.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **web:** version shell asset URLs (immutable static cache pinned stale CSS) ([708157a](https://github.com/metalsp0rk/boiler-snake/commit/708157a574de8cdb0c11af98ddf00b83b527b3fc))
+
 ## [1.17.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.16.1...v1.17.0) (2026-09-17)
 
 
