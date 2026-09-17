@@ -61,9 +61,16 @@ different areas — items you don't have tier for are hidden. Pages:
 - **`/g/{guildId}/voice`** — live voice state (read-only; no queue control)
 - **`/g/{guildId}/system`**, **`/g/{guildId}/audit`** — process/DB/queue health and the `admin_audit` trail, filtered by guild (both **admin-only**)
 
+**Display names vs raw ids:** pages read names from the bot's in-memory member
+cache only — a page never waits on Discord. Cache misses show the raw id (as
+hover-text/label), and a quiet background fetcher resolves those misses right
+after; reloading the page usually fills the names in. A member who **left the
+guild** keeps their raw id permanently — that's honest, not a bug.
+
 ## Troubleshooting
 
 - **`/` shows "Log in with Discord" forever / redirect URI mismatch** → the Portal redirect must match `{PUBLIC_BASE_URL}/auth/login/callback` exactly (scheme, host, port, path).
 - **Cookie rejected / sessions drop instantly** → production served over plain http (Secure cookies need TLS) or `SESSION_SECRET` changed between restarts.
 - **A revoked staff member still sees pages for a few seconds** → expected; bounded by `WEB_TIER_CACHE_TTL_MS` (≤ 60 s).
 - **Everything 404s for your guild** → you don't hold `ManageGuild` or a `staff_roles` role there (404, not 403, by design — see security model).
+- **Lots of raw ids on a page** → the bot's member cache is cold (fresh restart, or you don't subscribe to the members intent). The background fetcher fills names as it goes; reload once or twice. Ids that never resolve are ex-members.

@@ -618,6 +618,18 @@ getter at boot); tracked here until done.
   - **Files:** `docs/web-admin.md`, `test/web-http-net.test.js` (`/t` retarget), `test/web-routes-dashboard.test.js` (string re-pins), `test/web-ux-v1.test.js` (new)
   - **Estimate:** 1 h · **Dependencies:** 15.1–15.4
   - **Verification:** `npm test` 2916/2916; `npm run docs:build` green
+- [x] **Task 15.7:** Lazy member-fetch queue (option C, 2026-09-18) — cache misses from
+  `resolveMemberNames` (dashboard/tickets/moderation/leaderboard) enqueue to
+  `src/web/services/memberFetchQueue.js`: round-robin ticker (one guild per 2 s tick,
+  ≤60 fetches/guild/flush, ≤1000 pending/guild) drains via `guild.members.fetch`
+  (rate-limit-aware rest manager); per-(guild,user) cooldown 10 min, 24 h negative
+  cache for Unknown-Member; all failures logged with ids; unref'd self-catching tick.
+  Requests stay cache-only — a miss renders the id NOW and the NEXT render shows
+  the name. Fakes/dark boot never enqueue.
+  - **Files:** `src/web/services/memberFetchQueue.js`, `routes/shared/discord-cache.js`
+  - **Estimate:** 3 h · **Dependencies:** 15.3
+  - **Verification:** `test/web-member-fetch-queue.test.js` (10: hero flow, dedupe,
+    cooldown, 10007 park, budgets, caps, vanished guild, dark boot); full suite green
 - [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
   - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
   - **Estimate:** 2 h · **Dependencies:** —
