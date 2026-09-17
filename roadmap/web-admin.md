@@ -630,6 +630,26 @@ getter at boot); tracked here until done.
   - **Estimate:** 3 h · **Dependencies:** 15.3
   - **Verification:** `test/web-member-fetch-queue.test.js` (10: hero flow, dedupe,
     cooldown, 10007 park, budgets, caps, vanished guild, dark boot); full suite green
+- [x] **Task 15.8:** Archive first-class (2026-09-18) — the `/t` archive became a
+  first-class console citizen WITHOUT touching the Phase 0a byte-parity contract
+  (archived transcripts/assets remain raw documents; the oracle net re-passes):
+  - sidebar "Ticket archive" item (staff, absolute href `/t?guild=` — reuses the
+    existing vetted guild-filter, no new route or gate);
+  - search: `q` narrows the index (numeric ⇒ ticket number OR reason; else
+    reason/close_reason LIKE, escaped + bound, `archiveSearchClause` in the repo;
+    purely additive — empty q yields byte-identical SQL);
+  - people cells: cache-only creator/owner display names (shared `resolveMemberNames` + `userRef`; misses enqueue background fetches like every other surface);
+  - tier-checked links back into the console (senior ⇒ actions page, staff ⇒
+    dashboard — never a guaranteed-404 link) + cross-links from the dashboard
+    tickets panel and the ticket-actions panel;
+  - q rides every pagination/filter link; empty state distinguishes "no matches".
+  - **Files:** `routes/transcripts.js`, `views/tickets/indexPage.js`,
+    `views/layout.js` (abs nav items), `dashboardPage.js`,
+    `ticketActions/index.js`, `db/repositories/tickets.js`, `app.js`, styles
+  - **Estimate:** 3 h · **Dependencies:** 15.2, 15.3
+  - **Verification:** `test/web-archive-firstclass.test.js` (14: scope-never-widens,
+    injection-literal, escape, pagination×q, links, names, gates unchanged) +
+    oracle byte-parity suite green
 - [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
   - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
   - **Estimate:** 2 h · **Dependencies:** —
