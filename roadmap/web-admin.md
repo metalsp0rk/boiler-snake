@@ -762,6 +762,42 @@ getter at boot); tracked here until done.
     including the narrative field (assert paragraph + newline handling +
     tail); archive-row recap asserted present-with-summary and absent
     without; 2971/2971. Raw export untouched.
+- [x] **Task 15.13:** Participant login round-trip + "Your tickets" list
+  (2026-09-19) — operator ask: a participant clicking a ticket link hit
+  the login wall and landed on the STAFF HOME ("/"), stranded. Now the
+  ticket gate hands the callback a return path and `/t` serves participants
+  their own archive.
+  - **Round-trip:** the four ticket-surface login redirects carry
+    `?next=` ONLY for whitelisted shapes (`ticketLoginNext`; `/t`,
+    `/t/{token}`, `/t/{token}[/raw]` — assets and every non-ticket path
+    fall back to bare `/auth/login`). `next` rides inside the HMAC-signed
+    OAuth state (new `nx` field, fully backward compatible) and is
+    RE-checked against the whitelist after verify (defense in depth —
+    forged/tampered states can't name `/g/…` or off-site targets).
+    Callback destination priority: signed `next` (appends `?logged-in=1`,
+    which renders a one-time "Signed in" banner + your-tickets link) →
+    signed `?guild=` → `/`. Staff flows byte-unchanged (auth suite
+    27/27 green untouched).
+  - **Own list:** a logged-in viewer with ZERO staffed guilds gets
+    `serveParticipantArchive` on `/t` — `listArchivedTicketsForUser` /
+    `countArchivedTicketsForUser` (creator OR staff_owner OR
+    ticket_members linkage, archived rows only, `?guild=` narrows but can
+    never widen). Participant mode view: "Your tickets" heading, plain
+    people cells + no type-ahead (console links would 404), "yours alone"
+    note. Staffed viewers keep the staff-scoped list exactly as before;
+    `/g/:guildId/t` untouched.
+  - **Files:** `auth/login.js`, `commandPermissions/oauthState.js`,
+    `routes/transcripts.js`, `views/transcripts/transcriptPage.js`,
+    `views/tickets/indexPage.js`, `db/repositories/tickets.js` + facade;
+    pins updated in web-ticket-gating / web-http-net /
+    web-archive-firstclass; access-matrix-0c now asserts the STRONGER
+    invariant "every ticket link an index shows you, YOU can open"
+    (replaces the blanket non-staff-see-no-rows pin).
+  - **Verification:** new `test/web-ticket-roundtrip.test.js` (6): anon
+    gate emits next, full mock-OAuth round-trip lands ON the ticket
+    chrome-free with banner, own list shows exactly linked rows (foreign
+    tokens absent), non-whitelisted next values dropped to `/`, forged-`nx`
+    state dropped, no-next flow unchanged. Full suite 2977/2977.
 - [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
   - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
   - **Estimate:** 2 h · **Dependencies:** —

@@ -39,6 +39,10 @@ function sweepNonces(now = Date.now()) {
  * @param {object} payload
  * @param {string} [payload.guildId] required for cmd_perms; optional web_login
  *   return target (`/g/:guildId`)
+ * @param {string} [payload.next] §8.15-15.13 web_login ONLY: whitelisted
+ *   same-origin RETURN PATH (ticket URLs). Signed like everything else —
+ *   the callback re-checks the whitelist, so a tampered value is dropped
+ *   (the destination can never be attacker-chosen: no open redirect).
  * @param {string} [payload.userId] required for cmd_perms; absent for web_login
  * @param {number} [payload.exp]
  * @param {string} [payload.purpose] one of PURPOSES; untagged ⇒ cmd_perms
@@ -62,6 +66,7 @@ function createOAuthState(payload) {
   const body = {};
   if (payload.guildId) body.g = payload.guildId;
   if (payload.userId) body.u = payload.userId;
+  if (payload.next) body.nx = String(payload.next);
   body.n = nonce;
   body.e = exp;
   if (purpose) body.p = purpose;
@@ -116,6 +121,7 @@ function verifyOAuthState(state) {
 
   return {
     guildId: body.g ? String(body.g) : null,
+    next: body.nx ? String(body.nx) : null,
     userId: body.u ? String(body.u) : null,
     exp: Number(body.e),
     purpose,

@@ -279,6 +279,8 @@ module.exports = {
   listArchivedTickets: tickets.listArchivedTickets,
   countArchivedTickets: tickets.countArchivedTickets,
   listArchivedTicketsForGuilds: tickets.listArchivedTicketsForGuilds,
+  listArchivedTicketsForUser: tickets.listArchivedTicketsForUser,
+  countArchivedTicketsForUser: tickets.countArchivedTicketsForUser,
   countArchivedTicketsForGuilds: tickets.countArchivedTicketsForGuilds,
   hasTicketMember: tickets.hasTicketMember,
   hasTicketStaff: tickets.hasTicketStaff,

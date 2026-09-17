@@ -1024,6 +1024,72 @@ function deleteTicketPanel(guildId, messageId) {
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// Participant-scoped archive (§8.15-15.13): "my tickets" for people WITHOUT
+// any staff role. A person is linked to a ticket as creator (requester),
+// handling staff owner, or an added member (ticket_members) — the SAME
+// linkage the transcript gate honors, expressed as SQL. Narrowing only:
+// guild filter and q are AND-ed on top; nothing here can widen scope.
+// ---------------------------------------------------------------------------
+
+const PARTICIPANT_LINK =
+  "(creator_user_id=? OR staff_owner_id=? OR EXISTS (SELECT 1 FROM ticket_members tm" +
+  " WHERE tm.ticket_id = tickets.id AND tm.user_id=?))";
+
+/**
+ * Archived, transcript-bearing tickets linked to ONE user (any guild).
+ * @param {string} userId
+ * @param {object} [opts]
+ * @param {string} [opts.guildId] optional AND narrowing (never widening)
+ * @param {string} [opts.q] search term (same clause as the staffed list)
+ * @param {number} [opts.limit=50]
+ * @param {number} [opts.offset=0]
+ * @returns {object[]}
+ */
+function listArchivedTicketsForUser(userId, opts = {}) {
+  const user = String(userId ?? "");
+  if (!user) return [];
+  const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
+  const offset = Math.max(Number(opts.offset) || 0, 0);
+  const search = archiveSearchClause(opts.q);
+  const guildFilter = opts.guildId ? " AND guild_id=?" : "";
+  const guildParams = opts.guildId ? [String(opts.guildId)] : [];
+  return db
+    .prepare(
+      `
+    SELECT * FROM tickets
+    WHERE archived=1 AND transcript_token IS NOT NULL
+      AND ${PARTICIPANT_LINK}${guildFilter}${search.sql}
+    ORDER BY closed_at DESC, guild_id ASC, ticket_number DESC
+    LIMIT ? OFFSET ?
+  `
+    )
+    .all(user, user, user, ...guildParams, ...search.params, limit, offset);
+}
+
+/**
+ * Count for listArchivedTicketsForUser (same filters).
+ * @param {string} userId
+ * @param {object} [opts] { guildId?, q? }
+ * @returns {number}
+ */
+function countArchivedTicketsForUser(userId, opts = {}) {
+  const user = String(userId ?? "");
+  if (!user) return 0;
+  const search = archiveSearchClause(opts.q);
+  const guildFilter = opts.guildId ? " AND guild_id=?" : "";
+  const guildParams = opts.guildId ? [String(opts.guildId)] : [];
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM tickets
+       WHERE archived=1 AND transcript_token IS NOT NULL
+         AND ${PARTICIPANT_LINK}${guildFilter}${search.sql}`
+    )
+    .get(user, user, user, ...guildParams, ...search.params);
+  return Number(row?.n) || 0;
+}
+
 module.exports = {
   MAX_TICKET_REASON,
   normalizeTicketReason,
@@ -1050,6 +1116,8 @@ module.exports = {
   listArchivedTickets,
   countArchivedTickets,
   listArchivedTicketsForGuilds,
+  listArchivedTicketsForUser,
+  countArchivedTicketsForUser,
   countArchivedTicketsForGuilds,
   hasTicketMember,
   hasTicketStaff,

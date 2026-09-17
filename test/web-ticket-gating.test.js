@@ -525,7 +525,16 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
 
   // -- anonymous (§8.1-3 login-mandatory) -----------------------------------
 
-  it("anonymous: index aliases, transcript and asset all 302 to /auth/login", async () => {
+  it("anonymous: index aliases, transcript and asset all 302 to /auth/login (ticket paths carry a signed-able ?next)", async () => {
+    // §8.15-15.13: /t paths return users to the ticket after login; the
+    // non-/t surfaces keep the bare redirect. Whitelisted shapes only.
+    const expectLoc = (p) => {
+      if (p === "/t" || p === "/t/") return "/auth/login?next=%2Ft";
+      if (p.startsWith(`/t/${tokenA}`)) {
+        return `/auth/login?next=%2Ft%2F${tokenA}`;
+      }
+      return "/auth/login";
+    };
     for (const pathName of [
       "/",
       "/t",
@@ -535,7 +544,7 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
     ]) {
       const { res, body } = await req(pathName);
       assert.equal(res.status, 302, `${pathName}`);
-      assert.equal(res.headers.get("location"), "/auth/login");
+      assert.equal(res.headers.get("location"), expectLoc(pathName));
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal(res.headers.get("referrer-policy"), "no-referrer");
       assert.equal(body, "", "no content leaks pre-login (§8.4)");
@@ -543,10 +552,15 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
   });
 
   it("broken session (corrupt AT): transcript AND index redirect to re-auth", async () => {
+    const brokenExpect = {
+      [`/t/${tokenA}`]: `/auth/login?next=%2Ft%2F${tokenA}`,
+      "/t": "/auth/login?next=%2Ft",
+      "/": "/auth/login",
+    };
     for (const pathName of [`/t/${tokenA}`, "/t", "/"]) {
       const { res } = await req(pathName, cookieFor("broken"));
       assert.equal(res.status, 302, `${pathName} re-auth redirect`);
-      assert.equal(res.headers.get("location"), "/auth/login");
+      assert.equal(res.headers.get("location"), brokenExpect[pathName]);
     }
   });
 
@@ -660,10 +674,15 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
     assert.match(body, new RegExp(tokenA), "viewer's own scope still renders");
   });
 
-  it("logged-in non-staff sees the EMPTY scoped index (choice: empty, not redirect)", async () => {
+  it("logged-in non-staff sees their OWN list (participant scope; still 200, not redirect)", async () => {
+    // §8.15-15.13: the /t default for a viewer with no staffed guild is
+    // THEIR tickets (linked rows only) — previously a bare empty index.
     const { res, body } = await req("/t", cookieFor("stranger"));
-    assert.equal(res.status, 200, "scoped default — deliberate §8.4 choice");
-    assert.match(body, /No archived transcripts/i);
+    assert.equal(res.status, 200, "participant scope — deliberate §8.15-15.13 choice");
+    assert.match(body, /Your tickets/);
+    assert.match(body, /No archived tickets involve you yet/i);
+    // and NOTHING staff-scoped leaks into it
+    assert.doesNotMatch(body, new RegExp(tokenA));
   });
 
   // -- sensitive tickets (never content-archived ⇒ 404 unchanged, §8.4) -------

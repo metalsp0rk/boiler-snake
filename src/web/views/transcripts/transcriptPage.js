@@ -156,6 +156,7 @@ function renderTranscriptPage({
   summary,
   staff,
   tier,
+  signedIn = false,
   names,
   guilds = [],
   degraded = false,
@@ -181,6 +182,12 @@ function renderTranscriptPage({
     ? html`<div class="transcript-messages">${messages.map(renderMessage)}</div>`
     : html`<p class="empty-state">No messages were archived for this ticket.</p>`;
 
+  // One-time "you're signed in" acknowledgment after the login round-trip
+  // (§8.15-15.13 ?logged-in=1). /t now lists a participant's own tickets.
+  const loginNote = signedIn
+    ? html`<p class="subheading">✓ Signed in with Discord. <a href="/t">Your tickets →</a></p>`
+    : html``;
+
   const content = html`
     <section class="panel transcript-header">
       <p class="subheading">
@@ -190,6 +197,7 @@ function renderTranscriptPage({
       </p>
       ${meta}
     </section>
+    ${loginNote}
     ${renderSummary(summary)}
     ${body}`;
 
