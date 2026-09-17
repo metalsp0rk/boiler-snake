@@ -642,7 +642,13 @@ getter at boot); tracked here until done.
   - tier-checked links back into the console (senior ⇒ actions page, staff ⇒
     dashboard — never a guaranteed-404 link) + cross-links from the dashboard
     tickets panel and the ticket-actions panel;
-  - q rides every pagination/filter link; empty state distinguishes "no matches".
+  - q rides every pagination/filter link; empty state distinguishes "no matches";
+  - **15.8b follow-up (same day, operator feedback):** the archive ALSO gets a
+    guild-shell route `/g/:guildId/t` (sidebar preserved, active nav, tier
+    `staff`, plain user 404s via guildScope) — nav + cross-links now point
+    there. `/t` remains canonical (ticket-link doctrine, Phase 0a); the bare
+    index keeps its guild-filter + console links. Gate maps + statement-budget
+    ratchet (5/5) extended in both phase-gate suites.
   - **Files:** `routes/transcripts.js`, `views/tickets/indexPage.js`,
     `views/layout.js` (abs nav items), `dashboardPage.js`,
     `ticketActions/index.js`, `db/repositories/tickets.js`, `app.js`, styles
