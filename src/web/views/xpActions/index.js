@@ -92,7 +92,7 @@ function renderGrantForm({ guildId, csrfToken, flash, maxAward }) {
       <form class="integ-write-form xp-grant-form" method="post" action="${actionPath}">
         <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>
         <div class="integ-write-fields">
-          <label>User ID<input name="user_id" type="text" inputmode="numeric" autocomplete="off" placeholder="Discord user id" maxlength="20"/></label>
+          <label>User (name or ID)<input name="user_id" autocomplete="off" placeholder="type a name…" maxlength="100" data-lookup="users" data-lookup-url="/g/${encodeURIComponent(guildId)}/lookups/users"/></label>
           <label>Amount (XP)<input name="amount" type="number" min="1" max="${maxAward}" step="1"/></label>
           <label>Reason (optional)<input name="reason" type="text" maxlength="200" autocomplete="off" placeholder="shown in the audit trail"/></label>
         </div>

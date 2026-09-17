@@ -69,6 +69,19 @@ hover-text/label), and a quiet background fetcher resolves those misses right
 after; reloading the page usually fills the names in. A member who **left the
 guild** keeps their raw id permanently — that's honest, not a bug.
 
+## Type-ahead & friendly identifiers
+
+Staff fields that name a person or a role (grant XP, issue warning, add
+note, staff-role management, the user search) accept **names, pasted
+mentions, or raw IDs** — typing suggests real names from the bot's cache
+(arrow keys + Enter to pick). The role list is always complete; member
+names fill in as the bot's cache warms (browsing people pages and granting
+XP speeds this up, and unknown IDs are looked up in the background
+automatically). Name search finds *tracked* members; IDs always find exact
+rows. Everything works with JavaScript disabled too — the suggestions are
+an enhancement, and the server accepts names, `<@…>` / `<@&…>` mentions,
+and plain IDs alike.
+
 ## Troubleshooting
 
 - **`/` shows "Log in with Discord" forever / redirect URI mismatch** → the Portal redirect must match `{PUBLIC_BASE_URL}/auth/login/callback` exactly (scheme, host, port, path).
