@@ -232,6 +232,16 @@ Each phase ships dark-by-default: with `PUBLIC_HTTP_PORT` unset, boot behavior i
 
 1. Express 5, single port, opt-in. 2. SSR + vendored htmx + nonce'd vanilla JS; **no Alpine/React/build step** (CSP-safe). 3. Ticket routes login-mandatory, no flag; access = staff-tier **or** participant. 4. Tiers mirror bot gates via shared decision inputs; degradation matrix defined. 5. DB sessions, ≤60 s revocation, `SESSION_SECRET`. 6. Purpose-tagged OAuth state; web login tokens separate from command-permission tokens. 7. `admin_audit` DB trail (channel embeds remain mirrors). 8. HTTPS required; Secure cookies. 9. Phase 0a re-establishes the HTTP test net **before** extraction. 10. Cross-guild 404 rule + query budget are review-blocking acceptance criteria.
 
+> **Amendment 2026-09-19 (decision 3, operator-approved — §8.15 task 15.9):**
+> login-mandatory + staff-or-participant access is UNCHANGED. What changed:
+> `GET /t/{token}` is now the themed console page rendered from the immutable
+> DB record (ticket + messages + summary); the frozen archive document moved
+> to `GET /t/{token}/raw` with its Phase 0a headers and byte-parity oracle
+> intact. Storage is unchanged — files are still written at close as the
+> export/backup. Integrity doctrine refined: the RECORD is immutable; the
+> page is a view of it.
+
+
 ---
 
 ### 8.14 Task breakdown (Shipped)
@@ -656,6 +666,23 @@ getter at boot); tracked here until done.
   - **Verification:** `test/web-archive-firstclass.test.js` (14: scope-never-widens,
     injection-literal, escape, pagination×q, links, names, gates unchanged) +
     oracle byte-parity suite green
+- [x] **Task 15.9:** Themed transcript view (2026-09-19) — `GET /t/{token}` renders
+  the archived record (ticket row + `ticket_messages` + `ai_summary_json`) through
+  the console theme; chrome follows the ACCESS DECISION: staff get sidebar +
+  switcher + linked people for the ticket's guild, participants get the identical
+  content chrome-free (zero dead `/g/` links). The frozen document is now
+  `GET /t/{token}/raw` — Phase 0a headers (`private, max-age=300`) and the byte
+  oracle re-anchored there; files still written at close as export/backup. A lost
+  file can no longer blank a transcript (the DB is the record). Summary card and
+  member names are NEW affordances the frozen HTML never had. Gates unchanged
+  (staff-or-participant, generic 404s byte-identical).
+  - **Files:** `views/transcripts/transcriptPage.js`, `routes/transcripts.js`
+    (view + /raw dispatch), styles, oracle pins re-anchored (net, gating,
+    access-matrix helper seeds now persist messages like the real close flow)
+  - **Estimate:** 4 h · **Dependencies:** 15.3
+  - **Verification:** `test/web-transcript-view.test.js` (chrome-by-decision,
+    no /g/ leak for participants, summary card, missing-file resilience);
+    oracle suites green; 2950/2950
 - [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
   - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
   - **Estimate:** 2 h · **Dependencies:** —

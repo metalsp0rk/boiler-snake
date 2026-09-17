@@ -199,26 +199,29 @@ describe("web http net (tickets + oauth callback)", () => {
       channelId: "ch-web-http-serve",
       reason: "web http net subject",
     });
+    const msgs = [
+      {
+        message_id: "m1",
+        author_id: "u-web",
+        author_tag: "web user",
+        content: "hello http net",
+        attachment_urls: [
+          {
+            href: `/t/${tokenA}/assets/001_photo.png`,
+            name: "photo.png",
+            kind: "image",
+          },
+        ],
+        sent_at: Date.now(),
+      },
+    ];
     const written = writeTranscriptFile(
       { ...ticketA, close_reason: "done", closed_at: Date.now() },
       tokenA,
-      [
-        {
-          message_id: "m1",
-          author_id: "u-web",
-          author_tag: "web user",
-          content: "hello http net",
-          attachment_urls: [
-            {
-              href: `/t/${tokenA}/assets/001_photo.png`,
-              name: "photo.png",
-              kind: "image",
-            },
-          ],
-          sent_at: Date.now(),
-        },
-      ]
+      msgs
     );
+    // the record the themed view reads (real close flow persists these)
+    db.saveTicketMessages(ticketA.id, msgs);
     pngBytes = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
       "base64"
@@ -449,7 +452,10 @@ describe("web http net (tickets + oauth callback)", () => {
   // /t/{uuid} happy path — authenticated staff viewer
   // ------------------------------------------------------------------
 
-  it("GET /t/{uuid} serves the transcript with nosniff + private cache", async () => {
+  // §8.15 amendment: /t/{uuid} is the THEMED record-rendered page (no-store
+  // shell framing); the frozen document — the Phase 0a byte oracle — now
+  // lives at /t/{uuid}/raw with its original headers untouched.
+  it("GET /t/{uuid} renders the themed transcript (no-store shell)", async () => {
     const res = await authFetch(`/t/${tokenA}`);
     assert.equal(res.status, 200);
     assert.match(
@@ -457,18 +463,27 @@ describe("web http net (tickets + oauth callback)", () => {
       /^text\/html; charset=utf-8/
     );
     assert.equal(res.headers.get("x-content-type-options"), "nosniff");
-    assert.equal(res.headers.get("cache-control"), "private, max-age=300");
+    assert.equal(res.headers.get("cache-control"), "no-store");
 
     const body = await res.text();
     assert.match(body, /hello http net/);
     assert.match(body, /Ticket #/);
 
-    // Trailing slash variant is the same document
-    const slashed = await authFetch(`/t/${tokenA}/`);
-    assert.equal(slashed.status, 200);
-    assert.match(await slashed.text(), /hello http net/);
-
     const head = await authFetch(`/t/${tokenA}`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+  });
+
+  it("GET /t/{uuid}/raw keeps the frozen byte contract (oracle home)", async () => {
+    const res = await authFetch(`/t/${tokenA}/raw`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "private, max-age=300");
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+    const body = await res.text();
+    assert.ok(body.startsWith("<!DOCTYPE html>"), "served file bytes, not a wrapper");
+    assert.match(body, /hello http net/);
+
+    const head = await authFetch(`/t/${tokenA}/raw`, { method: "HEAD" });
     assert.equal(head.status, 200);
     assert.equal(await head.text(), "");
   });
@@ -504,10 +519,12 @@ describe("web http net (tickets + oauth callback)", () => {
     assert.equal(await res.text(), "Not found");
   });
 
-  it("GET /t/{uuid} when transcript file is missing → 404 distinct message", async () => {
-    const res = await authFetch(`/t/${tokenC}`);
-    assert.equal(res.status, 404);
-    assert.equal(await res.text(), "Transcript file missing");
+  it("missing export file: themed page STILL renders from the DB; /raw 404s", async () => {
+    const themed = await authFetch(`/t/${tokenC}`);
+    assert.equal(themed.status, 200, "the record is the source of truth now");
+    const raw = await authFetch(`/t/${tokenC}/raw`);
+    assert.equal(raw.status, 404);
+    assert.equal(await raw.text(), "Transcript file missing");
   });
 
   // ------------------------------------------------------------------

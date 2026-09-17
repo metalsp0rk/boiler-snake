@@ -7,8 +7,11 @@
  * exactly like the legacy server did):
  *   GET /                          — archive index (legacy alias)
  *   GET /t, /t/                    — archive index
- *   GET /t/{uuid}[/]               — single HTML transcript
- *   GET /t/{uuid}/assets/{file}[/] — transcript asset
+ *   GET /t/{uuid}[/]               — THEMED transcript page (record-rendered,
+ *                                     §8.15 amendment; console chrome by decision)
+ *   GET /t/{uuid}/raw              — frozen archive document (byte-parity
+ *                                     oracle; export of the same record)
+ *   GET /t/{uuid}/assets/{file}[/] — transcript asset (untouched)
  *
  * §8.4 ACCESS CONTRACT (locked decision §8.1-3 — login-mandatory, NO flag):
  *  - every path above (root aliases included) requires a live session;
@@ -59,6 +62,8 @@ const {
   contentTypeForFilename,
 } = require("../../features/tickets/assets");
 const { resolveMemberNames } = require("./shared/discord-cache");
+const { renderTranscriptPage } = require("../views/transcripts/transcriptPage");
+const { listTicketMessages } = require("../../db");
 const { renderTicketIndexPage } = require("../views/tickets/indexPage");
 const { writeShellHtml } = require("../views/layout");
 const { createGuildAccessResolver } = require("../auth/guildAccess");
@@ -322,12 +327,93 @@ async function serveTranscriptAsset(req, res, tokenRaw, filenameRaw, ctx) {
 }
 
 /**
- * @param {import("http").IncomingMessage & {webSession?: object|null}} req
- * @param {import("http").ServerResponse} res
- * @param {string} tokenRaw
- * @param {{ticketAccess: {resolveTicketAccess: Function}}} ctx
+ * Themed transcript VIEW (§8.15 amendment): renders the immutable DB record
+ * (tickets row + ticket_messages + ai_summary_json) inside console chrome on
+ * request. Same gate as everything on this surface — login + staff-or-
+ * participant (§8.4), unknown/unarchived/sensitive ⇒ the same generic 404.
+ * Chrome level follows the DECISION that admitted the viewer (never the
+ * URL): staff get switcher+sidebar for the ticket's guild; participants get
+ * the same content chrome-free.
  */
-async function serveTranscript(req, res, tokenRaw, ctx) {
+async function serveTranscriptView(req, res, tokenRaw, ctx) {
+  const token = decodeURIComponent(tokenRaw);
+  if (!UUID_RE.test(token)) {
+    sendNotFound(res);
+    return;
+  }
+
+  const ticket = getTicketByTranscriptToken(token);
+  if (!ticket || !ticket.archived) {
+    sendNotFound(res);
+    return;
+  }
+
+  const decision = await ctx.ticketAccess.resolveTicketAccess(req.webSession, ticket);
+  if (!decision.allowed) {
+    if (decision.staffStatus === "reauth" || decision.staffStatus === "anon") {
+      respondLoginRedirect(res);
+    } else {
+      sendNotFound(res);
+    }
+    return;
+  }
+  const staff = decision.via === "staff";
+  const tier = staff ? decision.tier || null : null;
+  const guildId = String(ticket.guild_id ?? "");
+
+  // The record itself. A read failure here is a real outage: let it surface
+  // as the app's logged 500 (AGENTS.md) — never a blank "empty" transcript.
+  const messages = listTicketMessages(ticket.id);
+
+  const nameIds = [ticket.creator_user_id, ticket.staff_owner_id, ticket.closed_by_user_id]
+    .filter(Boolean)
+    .map(String);
+
+  let guilds = [];
+  let degraded = false;
+  if (staff) {
+    try {
+      const listed = await ctx.guildAccess.listGuilds(req.webSession);
+      guilds = (listed && listed.guilds ? listed.guilds : []).slice();
+      if (!guilds.some((g) => g.id === guildId)) {
+        guilds.unshift({ id: guildId, name: guildId });
+      }
+      degraded = !!(listed && listed.degraded);
+    } catch {
+      guilds = [{ id: guildId, name: guildId }];
+    }
+  }
+
+  let summary = null;
+  try {
+    if (ticket.ai_summary_json) summary = JSON.parse(ticket.ai_summary_json);
+  } catch {
+    summary = null; // malformed legacy JSON must not blank the transcript
+  }
+
+  const document = renderTranscriptPage({
+    req,
+    res,
+    ticket,
+    messages,
+    summary,
+    staff,
+    tier,
+    names: resolveMemberNames(ctx.getClient, guildId, nameIds),
+    guilds,
+    degraded,
+  });
+  writeShellHtml(req, res, { status: 200, document });
+}
+
+/**
+ * Raw frozen archive document — the EXPORT (§8.15 amendment). Byte-for-byte
+ * what writeTranscriptFile wrote at close, headers and `private,
+ * max-age=300` kept verbatim (the Phase 0a oracle lives HERE now). Missing
+ * file is still "Transcript file missing" — while the themed VIEW above
+ * keeps rendering from the DB regardless.
+ */
+async function serveTranscriptRaw(req, res, tokenRaw, ctx) {
   const token = decodeURIComponent(tokenRaw);
   if (!UUID_RE.test(token)) {
     sendNotFound(res);
@@ -411,13 +497,19 @@ async function dispatchTranscripts(req, res, ctx) {
     return serveTranscriptAsset(req, res, assetMatch[1], assetMatch[2], ctx);
   }
 
-  // Transcript HTML: /t/{uuid}
+  // Raw frozen document (export): /t/{uuid}/raw
+  const rawMatch = url.pathname.match(/^\/t\/([^/]+)\/raw\/?$/);
+  if (rawMatch) {
+    return serveTranscriptRaw(req, res, rawMatch[1], ctx);
+  }
+
+  // Themed transcript page: /t/{uuid}
   const match = url.pathname.match(/^\/t\/([^/]+)\/?$/);
   if (!match) {
     return sendNotFound(res);
   }
 
-  return serveTranscript(req, res, match[1], ctx);
+  return serveTranscriptView(req, res, match[1], ctx);
 }
 
 /**

@@ -56,7 +56,7 @@ different areas — items you don't have tier for are hidden. Pages:
 - **`/g/{guildId}/moderation`** — warnings (`/warn` twin), staff notes (`/note` twin), ticket moderation
 - **`/g/{guildId}/tickets`** — ticket actions page (**senior**): open-ticket list with claim/close/summarize (transcripts: `/t`)
 - **`/g/{guildId}/t`** — the **archive for that guild** (staff), inside the console shell with the sidebar; search by ticket number or reason text, see creator/owner names.
-- **`/t`** — the **cross-guild archive** (staff+): every content-archived transcript from your staffed guilds (canonical URL — links posted in tickets always point here). Filter by guild (`/t?guild=…`) and jump back into the console. Transcripts themselves are immutable archived documents
+- **`/t`** — the **cross-guild archive** (staff+): every content-archived transcript from your staffed guilds (canonical URL — links posted in tickets always point here). Filter by guild (`/t?guild=…`) and jump back into the console. Transcripts render the immutable record with the summary AI generated at close; every page links its raw archived document (`…/raw`)
 - **`/g/{guildId}/settings`** — read view of every guild setting + staff-tier writes (command channels, level roles, integrations, cooldowns, decay, …)
 - **`/g/{guildId}/staff`** — staff roles + command-visibility panel (incl. `/staff syncpermissions` trigger)
 - **`/g/{guildId}/integrations`** — YouTube / Twitch watches, reaction roles, event reminders, honeypot

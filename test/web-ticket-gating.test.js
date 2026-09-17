@@ -209,6 +209,20 @@ function archiveTicket({ guildId, creatorUserId, channelId, reason, withAsset })
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "001_photo.png"), PNG);
   }
+  // Real close flow persists the SAME messages the file renders — the
+  // themed view reads them back from the DB (§8.15 amendment).
+  api.saveTicketMessages(ticket.id, [
+    {
+      message_id: "m-fix",
+      author_id: creatorUserId,
+      author_tag: "fixture",
+      content: "hello participant net",
+      attachment_urls: withAsset
+        ? [{ href: `/t/${token}/assets/001_photo.png`, name: "photo.png", kind: "image" }]
+        : [],
+      sent_at: Date.now(),
+    },
+  ]);
   api.markTicketClosed(ticket.id, { closedBy: "mod", closeReason: "done" });
   api.closeTicketArchived(ticket.id, {
     closedBy: "mod",
@@ -541,8 +555,16 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
   it("staff tier via a real staff_roles row → 200 with the transcript bytes", async () => {
     const { res, body } = await req(`/t/${tokenA}`, cookieFor("staff"));
     assert.equal(res.status, 200);
-    assert.match(body, /hello participant net/);
-    assert.equal(res.headers.get("cache-control"), "private, max-age=300");
+    assert.match(body, /hello participant net/, "themed page renders the DB record");
+    assert.equal(res.headers.get("cache-control"), "no-store", "dynamic shell page");
+    assert.ok(body.includes(`/t/${tokenA}/raw`), "raw export link present");
+
+    // the frozen document keeps the Phase 0a byte contract at /raw
+    const raw = await req(`/t/${tokenA}/raw`, cookieFor("staff"));
+    assert.equal(raw.res.status, 200);
+    assert.equal(raw.res.headers.get("cache-control"), "private, max-age=300");
+    assert.match(raw.body, /hello participant net/);
+    assert.ok(raw.body.startsWith("<!DOCTYPE html>"), "raw doc stays the frozen file");
   });
 
   it("admin snapshot FAST PATH → 200 with ZERO member fetches (§8.3)", async () => {
