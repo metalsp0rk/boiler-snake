@@ -226,10 +226,12 @@ async function runOutcome(cell) {
       res.body.includes(e.marker),
       `${label}${cell.url}: transcript body must contain the fixture marker`
     );
+    // §8.15 amendment: /t/{uuid} is the themed record-rendered shell page
+    // (no-store); the frozen document — private, max-age=300 — is /raw.
     assert.equal(
       res.headers.get("cache-control"),
-      "private, max-age=300",
-      `${label}${cell.url}: transcript cache framing`
+      "no-store",
+      `${label}${cell.url}: themed transcript framing`
     );
   } else if (e.kind === "asset") {
     assert.equal(res.status, 200, `${label}${cell.url}: status`);
@@ -349,22 +351,26 @@ function seedArchivedTicket(deps, spec) {
     channelId: spec.channelId,
     reason: spec.reason,
   });
+  const msgs = [
+    {
+      message_id: `msg-${token.slice(0, 8)}`,
+      author_id: spec.creatorUserId,
+      author_tag: "exit-fixture",
+      content: spec.marker,
+      attachment_urls: spec.withAsset
+        ? [{ href: `/t/${token}/assets/${assetName}`, name: assetName, kind: "image" }]
+        : [],
+      sent_at: Date.now(),
+    },
+  ];
   const written = writeTranscriptFile(
     { ...ticket, close_reason: spec.reason, closed_at: Date.now() },
     token,
-    [
-      {
-        message_id: `msg-${token.slice(0, 8)}`,
-        author_id: spec.creatorUserId,
-        author_tag: "exit-fixture",
-        content: spec.marker,
-        attachment_urls: spec.withAsset
-          ? [{ href: `/t/${token}/assets/${assetName}`, name: assetName, kind: "image" }]
-          : [],
-        sent_at: Date.now(),
-      },
-    ]
+    msgs
   );
+  // The DB record mirrors the file (what the real close flow does) — the
+  // themed /t/{uuid} view reads these rows (§8.15 amendment).
+  api.saveTicketMessages(ticket.id, msgs);
   if (spec.withAsset) {
     const dir = absoluteAssetsDir(spec.guildId, token);
     fs.mkdirSync(dir, { recursive: true });
