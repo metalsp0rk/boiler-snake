@@ -1141,3 +1141,134 @@ targets only); writing anything to Discord.
 - [ ] `docs/gork.md` + `docs/commands/index.md` mention (no new command) +
       `npm run docs:build`
 - [ ] Tick this checklist + §8 in `index.md`; status line here → shipped
+
+---
+
+### 7.20 STE answer style — anti-slop writing layer — 2026-09 design (LOCKED 2026-09-17 — decisions 49–52; implementation pending)
+
+**Why:** gork's answers drift into AI slop — "Great question!", "let me dive into",
+"delve", "I hope this helps", stacked hedges, 40-word passive sentences — the voice of a
+content mill instead of a person on Discord. The cure tested at
+[chele.bi/videos/the-cure-for-ai-slop](https://www.chele.bi/videos/the-cure-for-ai-slop)
+is **ASD-STE100** ("Simplified Technical English", the 1986 aircraft-manual standard)
+distilled into a compact writing system: measured **50–74% fewer violations per 100
+words** vs a ~4/100w baseline, while banned-word lists alone came last. The lever that
+works is handing the model an actual system of machine-checkable rules — so that is the
+whole feature: one distilled card, injected when the guild turns it on. *Light* STE: the
+kit's own **flavored** mode (its default), not strict aircraft mode — form tightens,
+persona stays. Scope note from the kit itself: chat replies to a person take both of its
+layers (words + reply shape).
+
+**Shape** (when `gork_ste_enabled` = 1, per job):
+
+```
+system prompt = GORK_BASE_PROMPT (byte-locked, untouched)
+              + GORK_STE_CARD  (≤1,500 chars, new, only when on)
+              + staff gork_extra_rules (≤500, unchanged)
+```
+
+Draft card (content locks with the impl PR; the char-count test pins whatever lands):
+
+```
+Write like a person on Discord, not like a helpdesk.
+Short sentences — one idea each, under ~20 words. Active voice: "the bot posts
+the alert", not "the alert is posted by". Simple tenses: "we got it", never
+"we have received it". Start/use/help/make sure/get/before/after — never
+commence/utilize/facilitate/ensure/obtain/prior to/subsequent to. One name for
+one thing — don't rotate check/verify/confirm. No marketing words: seamless,
+robust, game-changing, unlock, leverage. No delve, comprehensive, moreover,
+furthermore. Contractions are fine — "it's", "don't". No semicolons, no
+em dashes. Skip "spin up", "dive into", "circle back".
+Answer on line one — never "Great question" or "Let me…". No recap, no
+sign-off — never "hope this helps" or "let me know if". Cut hedges that add no
+fact ("perhaps", "arguably"); keep hedges that bound a claim ("on macOS only").
+Action lists max 5 items — keep the top 5. One question at a time; offer the
+tangent as a separate question. Estimates in real units, never "a bit".
+Keep the sarcasm. Drop the padding.
+```
+
+#### 7.20.1 Card shape & placement (decision 49)
+
+- Conditional block in the **system prompt**, between the byte-locked base and the
+  staff rules — the decision-9 amendment placement (like the §7.18 blocks ride the
+  user message, the card rides the system prompt the way `extraRules` already does);
+  base prompt bytes untouched, the base-prompt byte-lock test keeps passing untouched.
+- **Flavored, not strict**: sarcasm/persona survive (decision 8 tone stays); the card
+  is a *writing* system, not a voice rewrite. Documented deviations from strict STE,
+  deliberate for the "real actor" goal: **contractions allowed** (humans write
+  "it's"; strict STE forbids them) and **em dashes banned** (STE itself only bans
+  semicolons — slop culture bans the dash; gork follows the culture).
+- **Not a tool call** — a style layer the model cannot opt out of; the tool array
+  (§7.19) is untouched by this feature.
+
+#### 7.20.2 Toggle (decision 50)
+
+- `guild_settings.gork_ste_enabled`, migration **031**, default **0 (off)** — the
+  card changes gork's voice, so guilds opt in (memory's default-off precedent,
+  §7.16); fresh DBs get the column in `001` per migration convention.
+- `/gork ste on|off` — requireStaff (decision 15), config-change audited like every
+  other `/gork` toggle; reflected in `/gork status` and the `/settings` Gork field
+  (decision 23 pattern).
+- Re-read per job like every other knob (no restart); off → the prompt is exactly the
+  pre-7.20 prompt.
+
+#### 7.20.3 Content governance (decision 51)
+
+- The card is a **byte-locked constant** `GORK_STE_CARD` in `constants.js` (same
+  byte-lock culture as the base prompt) with a unit test pinning length ≤ **1,500**
+  chars — the 12k context budget (decision 5) plus prompt bloat is the reason the
+  card stays distilled; it is not a second home for staff rules.
+- Staff tuning stays in the existing `gork_extra_rules` (≤500); **no per-guild custom
+  style text** — that's the scope-creep vector this decision closes.
+
+#### 7.20.4 Audit & log (decision 52)
+
+- Q&A audit embed gains an inline `STE: on/off` (the decision-41 `Channel` field
+  precedent — non-surprising, one token); the failure one-liner is unchanged.
+- The interaction log already snapshots the exact system prompt per job, so the
+  card's presence is captured automatically — no schema change.
+- Budget/cooldown semantics unchanged (decision 32 — same job, one LLM call; there is
+  deliberately **no repair regeneration** in v1, see Deferred).
+
+#### 7.20.5 Locked decisions (2026-09-17)
+
+| # | Decision |
+|---|----------|
+| 49 | **`GORK_STE_CARD` is a ≤1,500-char writing-system block** appended to the system prompt between the byte-locked base prompt and the staff rules when the guild's toggle is on (decision-9 amendment placement; base bytes untouched). **STE-flavored, not strict**: persona/sarcasm preserved; contractions allowed and em dashes banned (both documented deviations from strict STE, chosen for human-on-Discord voice). Not a tool — the model cannot opt out; §7.19's tool array untouched. |
+| 50 | **Toggle:** `guild_settings.gork_ste_enabled` (migration `031`, default **off**) via `/gork ste on\|off` (requireStaff, config-change audited); surfaced in `/gork status` + the `/settings` Gork field; re-read per job. Off = the prompt is exactly the pre-7.20 prompt. |
+| 51 | **Content governance:** the card is a byte-locked constant in `constants.js` with a length-pin unit test (≤1,500 chars); staff tuning rides the existing `gork_extra_rules` (≤500); no per-guild custom style text. |
+| 52 | **Audit/log:** inline `STE: on/off` token on the Q&A audit embed (decision-41 precedent); interaction log captures the card via its existing system-prompt snapshot; budget/cooldown semantics unchanged (no extra LLM calls in v1). |
+
+**Out of scope:** the deterministic linter + bounded repair regeneration (**deferred**,
+see below); per-guild custom style text; per-user toggles; strict STE mode; editing the
+base prompt; anything applied to memory-extraction turns, audit text, or non-gork
+features.
+
+**Deferred (recorded, not built) — the measurement ladder:** (1) port the kit's
+machine-checkable subset to `src/features/gork/steLint.js` (pure regex checks —
+long sentences, passive w/ known actor, perfect tenses/modal stacks, nominalizations,
+phrasal/banned/marketing words, semicolons, hedging openers/closers/recaps, >5-item
+lists; code spans stripped first; never throws) scoring violations per 100 words to the
+audit embed; (2) one deadline-bounded **repair** regeneration when a draft scores over
+threshold (hard cap 1, keep the original on any failure). Built only if the card alone
+proves insufficient — and the lint score is what would prove it.
+
+**Implementation checklist (pending):**
+
+- [ ] `constants.js` — `GORK_STE_CARD` (final wording locks here) + length-pin test
+- [ ] `prompt.js` — `buildSystemPrompt` optional card slot between base and staff
+      rules; **off-state byte-identical prompt test** (exact pre-7.20 bytes)
+- [ ] `trigger.js` — read `gork_ste_enabled` per job, pass the card, pass the
+      audit label
+- [ ] migration `031_gork_ste_enabled.js` (+ `001` for fresh DBs) + settings repo
+- [ ] `/gork ste on|off` in `commands.js`/`index.js` — requireStaff, audited,
+      `/gork status` + `/settings` Gork field rows
+- [ ] `audit.js` — `STE: on/off` token
+- [ ] Unit tests (`test/gork.test.js`) — card slot ordering, off = byte-identical,
+      length cap, command round-trip
+- [ ] Integration (`test/integration/gork.test.js`) — toggle on → mocked-LLM system
+      prompt contains base bytes + card + rules in order; toggle off → unchanged;
+      audit label renders
+- [ ] `docs/gork.md` + `docs/commands/index.md` + configuration row +
+      `npm run docs:build`
+- [ ] Tick this checklist + §8 in `index.md`; status line here → shipped
