@@ -941,6 +941,7 @@ const PAGES = [
   { path: "/g/:guildId/audit", tier: "admin", marker: "<h1>Audit log" },
   { path: "/g/:guildId/xp/grant", tier: "admin", marker: "<h1>Grant XP" },
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
+  { path: "/g/:guildId/t", tier: "staff", marker: "<h1>Ticket archive" },
 ];
 
 const RANK = { staff: 0, senior: 1, admin: 2 };

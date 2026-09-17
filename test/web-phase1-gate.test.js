@@ -368,6 +368,7 @@ const PAGES = [
   // the untouched Phase-0c READ surfaces; this page is the documented §8.6
   // senior tighten (requireTier("senior") — outcomeFor's ladder proves it).
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
+  { path: "/g/:guildId/t", tier: "staff", marker: "<h1>Ticket archive" },
 ];
 
 /** Pages whose data module caches per guild (§8.6 floor 30 s) — on these,
@@ -417,6 +418,7 @@ const GATE_MEASURE = process.env.GATE_MEASURE === "1";
     "/g/:guildId/audit": { req1: 5, req2: 5 },
     "/g/:guildId/xp/grant": { req1: 3, req2: 3 },
     "/g/:guildId/tickets": { req1: 4, req2: 4 },
+    "/g/:guildId/t": { req1: 5, req2: 5 },
     "/t": { req1: 5, req2: 5 },
   };
 
