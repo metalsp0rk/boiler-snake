@@ -6,7 +6,13 @@
  * on a cold cache so one missing entry can't break a page. These replaced
  * seven forked copies; the guild-scoped vs global store split is real and
  * MUST stay (roles resolve per-guild, channels resolve globally).
+ *
+ * Resolution is STILL cache-only at render time; misses are handed to the
+ * background member-fetch queue (§8.15) so later renders can show names —
+ * the request path itself never awaits Discord.
  */
+
+const { queueMissingMembers } = require("../../services/memberFetchQueue");
 
 /**
  * True only when the cache can PROVE the user is a bot (member.user.bot /
@@ -77,12 +83,18 @@ function makeGuildRoleNameResolver(getClient, guildId) {
 }
 
 /**
- * Cache-only display-name read — bot client cache ONLY, never a network
- * fetch on a request path (roadmap/web-admin.md §8.6 doctrine). Absent
+ * Cache-read display names — bot client cache ONLY, never a network
+ * fetch ON a request path (roadmap/web-admin.md §8.6 doctrine). Absent
  * client (dark boot / tests) ⇒ nulls; callers fall back to the raw id
  * exactly like slash does on a member-cache miss. Lifted from
  * routes/leaderboard.js so every surface (dashboard, tickets, moderation,
  * leaderboard) resolves names the same way (UX v1.1, §8.15).
+ *
+ * Cache misses are queued for OFF-path background resolution
+ * (services/memberFetchQueue): the next page render picks the name up once
+ * discord.js's rate-limited rest manager has fetched the member. Fake/absent
+ * clients (no `members.fetch`) never enqueue, so tests and dark boot are
+ * unaffected.
  * @param {(() => any)|null|undefined} getClient
  * @param {string} guildId
  * @param {string[]} userIds
@@ -96,7 +108,9 @@ function resolveMemberNames(getClient, guildId, userIds) {
   } catch {
     client = null;
   }
-  const members = client?.guilds?.cache?.get?.(guildId)?.members?.cache ?? null;
+  const guild = client?.guilds?.cache?.get?.(guildId) ?? null;
+  const members = guild?.members?.cache ?? null;
+  const missing = [];
   for (const userId of userIds) {
     let name = null;
     try {
@@ -106,6 +120,18 @@ function resolveMemberNames(getClient, guildId, userIds) {
       name = null;
     }
     names.set(userId, name);
+    if (name === null && typeof userId === "string" && userId) missing.push(userId);
+  }
+  if (missing.length > 0 && typeof guild?.members?.fetch === "function") {
+    try {
+      queueMissingMembers(getClient, guildId, missing);
+    } catch (err) {
+      // Queueing is best-effort: a broken queue can't degrade a render.
+      console.error(
+        `[web] member-fetch enqueue failed guild=${guildId}:`,
+        err?.message || err
+      );
+    }
   }
   return names;
 }

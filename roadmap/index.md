@@ -19,7 +19,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + post-MVP polish) | — |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)) |
-| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | **Shipped** (Phases 0a–3, PR #55) | Login-mandatory transcripts + staff console; **UX v1.1 shipped 2026-09-17** (root guild list, sidebar, names); Phase 4 polish + job-state wiring open |
+| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | **Shipped** (Phases 0a–3, PR #55) | Login-mandatory transcripts + staff console; **UX v1.1 shipped 2026-09-17** (root guild list, sidebar, names + lazy member-fetch queue); Phase 4 polish + job-state wiring open |
 
 Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a work-as-time-allows backlog in [wishlist.md](wishlist.md) — feature files stay authoritative for design.
 
