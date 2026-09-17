@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.18.0...v1.19.0) (2026-09-17)
+
+
+### Features
+
+* **web:** archive first-class — sidebar entry, search, people cells, console links ([3eb1182](https://github.com/metalsp0rk/boiler-snake/commit/3eb11820557b0ea2e94a22d1a2da50885f692314))
+
 ## [1.18.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.17.1...v1.18.0) (2026-09-17)
 
 
