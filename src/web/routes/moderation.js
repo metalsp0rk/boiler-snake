@@ -81,8 +81,8 @@ const {
 const {
   buildWarningsPage,
   buildNotesPage,
-  USER_ID_RE,
 } = require("../data/moderation");
+const { normalizeUserId } = require("./shared/discordInput");
 const { getBoundAuditClient } = require("../middleware/audit");
 const { formatWarnRef, formatNoteRef, tsFull, Color } = require("../../core/theme");
 const { readFields } = require("./shared/req.js");
@@ -433,8 +433,9 @@ function registerModerationRoutes(app, options = {}) {
    * @param {string} guildId server-derived (guildScope snowflake)
    */
   function parseWarnIssueInput(fields, guildId) {
-    const rawUser = String(fields.user_id == null ? "" : fields.user_id).trim();
-    if (!USER_ID_RE.test(rawUser) || rawUser === String(guildId)) {
+    // §8.15-15.10: plain snowflake OR pasted mention (normalized to digits).
+    const rawUser = normalizeUserId(fields.user_id);
+    if (!rawUser || rawUser === String(guildId)) {
       return { ok: false, errorSlug: "invalid_user" };
     }
 
@@ -728,8 +729,9 @@ function registerModerationRoutes(app, options = {}) {
     const guildId = req.guildAccess.guildId;
     const fields = readFields(req);
 
-    const rawUser = String(fields.user_id == null ? "" : fields.user_id).trim();
-    if (!USER_ID_RE.test(rawUser) || rawUser === String(guildId)) {
+    // §8.15-15.10: plain snowflake OR pasted mention (normalized to digits).
+    const rawUser = normalizeUserId(fields.user_id);
+    if (!rawUser || rawUser === String(guildId)) {
       noteFlash(res, guildId, "error", "invalid_user");
       return;
     }

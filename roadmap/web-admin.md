@@ -683,6 +683,38 @@ getter at boot); tracked here until done.
   - **Verification:** `test/web-transcript-view.test.js` (chrome-by-decision,
     no /g/ leak for participants, summary card, missing-file resilience);
     oracle suites green; 2950/2950
+- [x] **Task 15.10:** Identifier type-ahead + tolerant parsing (2026-09-19) —
+  every console field that took a raw snowflake (XP grant, warn issue, note
+  add, staff-role/level-role `role_id`, user search) now accepts NAMES.
+  - Read-only JSON endpoints `GET /g/:guildId/lookups/{users,roles}?q=`
+    (staff+, no-store): roles rank the ALWAYS-COMPLETE role cache; users
+    rank the member cache (offline doctrine) — an exact id/mention answers
+    even cold and the miss warms via memberFetchQueue. @everyone never
+    suggested.
+  - `app.js` combobox: debounce+fetch, aria listbox, arrow/enter/escape,
+    exact>prefix>substring>subsequence ranking; textContent-built (no
+    innerHTML) — an enhancement only, every page still works JS-off (§8.2).
+  - Server parsers widened to match reality (mentions are what operators
+    paste): `<@id>`/`<@!id>`/`<@&id>` unwrap to digits; role fields also
+    resolve UNIQUE case-insensitive role names via the cache — ambiguity is
+    an error, never a guess; every submission reaching a service is pure
+    digits. Grants/warnings/notes/staff adds all accept all three forms.
+  - `/users?q=` name search: member-cache ids → tracked rows only
+    (untracked members stay invisible — the page's contract unchanged).
+  - Gate drift suites caught the new GET routes → both PAGES maps gained
+    `json:true` entries (expectJsonOk in the access-matrix harness) +
+    statement pins 2/2 (auth + scope read floor).
+  - **Files:** `routes/shared/discordInput.js`, `routes/lookups.js`,
+    view inputs (`data-lookup-url`), `public/app.js`, `data/userProfile.js`,
+    routes users/staff/moderation/xpActions validators.
+  - **Estimate:** 5 h · **Dependencies:** 15.3
+  - **Verification:** `test/web-lookups.test.js` (13: parser unit rules,
+    lookup JSON + gates, mention grants reach awardXp as digits, name
+    resolves staff-role add, ambiguity/everyone refused, tracked-only name
+    search, app.js no-innerHTML pin); both gate suites extended
+  - **Open follow-up (unpicked):** autocomplete could also feed the
+    integrations pages (reaction-role/reminder role pickers) if those
+    forms ever gain free-text role fields
 - [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
   - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
   - **Estimate:** 2 h · **Dependencies:** —

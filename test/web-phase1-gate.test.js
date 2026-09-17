@@ -369,6 +369,9 @@ const PAGES = [
   // senior tighten (requireTier("senior") — outcomeFor's ladder proves it).
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
   { path: "/g/:guildId/t", tier: "staff", marker: "<h1>Ticket archive" },
+  // §8.15-15.10 read-only JSON type-ahead APIs (json:true → expectJsonOk)
+  { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
+  { path: "/g/:guildId/lookups/roles", tier: "staff", json: true },
 ];
 
 /** Pages whose data module caches per guild (§8.6 floor 30 s) — on these,
@@ -420,6 +423,10 @@ const GATE_MEASURE = process.env.GATE_MEASURE === "1";
     "/g/:guildId/tickets": { req1: 4, req2: 4 },
     "/g/:guildId/t": { req1: 5, req2: 5 },
     "/t": { req1: 5, req2: 5 },
+    // §8.15-15.10 lookups: no q ⇒ early-empty; the whole stack is just
+    // auth + one scope read (measured 2/2 — the floor for any /g page).
+    "/g/:guildId/lookups/users": { req1: 2, req2: 2 },
+    "/g/:guildId/lookups/roles": { req1: 2, req2: 2 },
   };
 
 /** Collected measurements for the end-of-run gate report (§8.8 evidence). */
@@ -584,9 +591,8 @@ function outcomeFor(viewerKey, page) {
   }
   const rank = { junior: 1, senior: 2, admin: 3 }[viewerKey];
   const need = { staff: 1, senior: 2, admin: 3 }[page.tier];
-  return rank >= need
-    ? harness.expectShellOk(page.marker)
-    : harness.expectForbidden();
+  if (rank < need) return harness.expectForbidden();
+  return page.json ? harness.expectJsonOk() : harness.expectShellOk(page.marker);
 }
 
 // ---------------------------------------------------------------------------
@@ -783,7 +789,9 @@ describe("E. cross-guild probes at scale", () => {
         expect:
           page.tier !== "staff"
             ? harness.expectForbidden()
-            : harness.expectShellOk(page.marker),
+            : page.json
+              ? harness.expectJsonOk()
+              : harness.expectShellOk(page.marker),
         label: "[staffB]",
       });
     }

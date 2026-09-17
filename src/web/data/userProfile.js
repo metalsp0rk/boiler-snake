@@ -234,12 +234,21 @@ function buildUserActivity(guildId, userId, opts = {}) {
  * @param {string|null|undefined} rawQuery
  * @returns {{ query: string, results: { user_id: string, xp: number, level: number }[], searched: boolean }}
  */
-function searchGuildUsers(guildId, rawQuery) {
+function searchGuildUsers(guildId, rawQuery, opts = {}) {
   const q = String(rawQuery ?? "").trim().slice(0, 64);
   if (!q) return { query: "", results: [], searched: false };
   const settings = getGuildSettings(guildId);
   const factor = settings?.level_xp_factor ?? null;
-  const rows = searchUsersRepo(guildId, q, { limit: SEARCH_LIMIT });
+  // §8.15-15.10: numeric queries keep the exact/prefix id search (works
+  // offline, DB-only). NAME queries resolve through caller-supplied
+  // member-cache ids (opts.nameMatchIds — the ROUTE owns the cache);
+  // untracked members never appear here, only tracked rows.
+  const numeric = /^[0-9]{1,20}$/.test(q);
+  const rows = numeric
+    ? searchUsersRepo(guildId, q, { limit: SEARCH_LIMIT })
+    : (Array.isArray(opts.nameMatchIds) ? opts.nameMatchIds : [])
+        .slice(0, SEARCH_LIMIT)
+        .flatMap((id) => searchUsersRepo(guildId, String(id), { limit: 1 }));
   return {
     query: q,
     searched: true,

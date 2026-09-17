@@ -88,6 +88,7 @@
  */
 
 const { createGuildAccessResolver } = require("../auth/guildAccess");
+const { normalizeRoleRef, findRoleIdByName } = require("./shared/discordInput");
 const { readFields } = require("./shared/req.js");
 const { rawFlashQuery } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
@@ -213,9 +214,16 @@ function respondMutationRedirect(res, guildId) {
  * @param {unknown} raw
  * @param {string} guildId
  */
-function parseRoleId(raw, guildId) {
-  const value = String(raw == null ? "" : raw).trim();
-  if (!ROLE_ID_RE.test(value)) return { error: ERR_ROLE_INVALID };
+function parseRoleId(raw, guildId, getClient = null) {
+  // §8.15-15.10: id, <@&…> mention, OR a unique role NAME (cache-only,
+  // case-insensitive; ambiguity is an error — never a guess).
+  const ref = normalizeRoleRef(raw);
+  if (!ref) return { error: ERR_ROLE_INVALID };
+  const value =
+    ref.kind === "id"
+      ? ref.value
+      : findRoleIdByName(getClient, guildId, ref.value);
+  if (!value || !ROLE_ID_RE.test(value)) return { error: ERR_ROLE_INVALID };
   if (value === String(guildId)) return { error: ERR_EVERYONE };
   return { roleId: value };
 }
@@ -351,7 +359,7 @@ function registerStaffRoutes(app, options = {}) {
   const parseStaffRoleInput = (req, res, { level: needLevel }) => {
     const guildId = req.guildAccess.guildId;
     const fields = readFields(req);
-    const role = parseRoleId(fields.role_id, guildId);
+    const role = parseRoleId(fields.role_id, guildId, options.getClient);
     if (role.error) {
       respondMutationError(res, role.error);
       return null;
@@ -541,7 +549,7 @@ function registerStaffRoutes(app, options = {}) {
   postMutation(LEVELROLE_SET_PATH, "staff", async (req, res) => {
     const guildId = req.guildAccess.guildId;
     const fields = readFields(req);
-    const role = parseRoleId(fields.role_id, guildId);
+    const role = parseRoleId(fields.role_id, guildId, options.getClient);
     if (role.error) {
       respondMutationError(res, role.error);
       return;
@@ -594,7 +602,7 @@ function registerStaffRoutes(app, options = {}) {
   // mapping for a role Discord has already deleted; no preflight applies.) --
   postMutation(LEVELROLE_REMOVE_PATH, "staff", async (req, res) => {
     const guildId = req.guildAccess.guildId;
-    const role = parseRoleId(readFields(req).role_id, guildId);
+    const role = parseRoleId(readFields(req).role_id, guildId, options.getClient);
     if (role.error) {
       respondMutationError(res, role.error);
       return;

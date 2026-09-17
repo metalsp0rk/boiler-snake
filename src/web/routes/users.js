@@ -32,6 +32,8 @@ const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, renderShellError, writeShellHtml } = require("../views/layout");
 const { rawParams } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
+const { memberNameCandidates } = require("./shared/discord-cache");
+const { rankSuggestions } = require("./shared/discordInput");
 const {
   renderUserSearchPage,
   renderUserProfileBody,
@@ -114,7 +116,22 @@ function registerUsersRoutes(app, options = {}) {
   app.get("/g/:guildId/users", requireTier("staff"), async (req, res) => {
     const q = rawParams(req.url).get("q");
     const guilds = await shellGuilds(resolver, req);
-    const search = searchGuildUsers(req.guildAccess.guildId, q);
+    // §8.15-15.10: name queries resolve through the member cache (ranked,
+    // ≤50 ids); the data layer still only returns TRACKED rows. Numeric
+    // queries keep the pure-DB exact/prefix id search (offline-safe).
+    let nameMatchIds = [];
+    const trimmed = String(q ?? "").trim();
+    if (trimmed && !/^[0-9]{1,20}$/.test(trimmed)) {
+      const client = typeof options.getClient === "function" ? options.getClient() : null;
+      const guild = client?.guilds?.cache?.get?.(req.guildAccess.guildId) ?? null;
+      nameMatchIds = rankSuggestions(
+        memberNameCandidates(guild).filter((c) => c.name),
+        trimmed.toLowerCase()
+      )
+        .slice(0, 50)
+        .map((c) => c.id);
+    }
+    const search = searchGuildUsers(req.guildAccess.guildId, q, { nameMatchIds });
     const page = renderUserSearchPage(req, { search });
     const document = renderShellPage(req, {
       title: "Users",

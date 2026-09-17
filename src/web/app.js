@@ -38,6 +38,7 @@ const { registerSystemRoutes } = require("./routes/system");
 const { registerXpActionsRoutes } = require("./routes/xpActions");
 const { registerTicketActionsRoutes } = require("./routes/ticketActions");
 const { registerGuildArchiveRoutes } = require("./routes/guildArchive");
+const { registerLookupRoutes } = require("./routes/lookups");
 const { registerSyncActionRoutes } = require("./routes/syncAction");
 const { createSessionMiddleware } = require("./middleware/session");
 const {
@@ -348,6 +349,12 @@ function createWebApp(options = {}) {
   // the guild shell so /g/:guildId guildScope gates first; same shared
   // resolver instance keeps tier math undivided.
   registerSyncActionRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, syncActions: options.syncActions });
+  // Identifier lookups (roadmap §8.15 task 15.10): read-only JSON type-ahead
+  // for user/role text fields (GET /g/:guildId/lookups/{users,roles}). Roles
+  // read the always-complete role cache; users read the member cache only
+  // (exact ids still answer, and cache misses warm via memberFetchQueue).
+  // AFTER the guild shell so /g/:guildId guildScope gates first; staff+ only.
+  registerLookupRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
 
   app.use(handleNotFound);
   app.use(handleAppError);

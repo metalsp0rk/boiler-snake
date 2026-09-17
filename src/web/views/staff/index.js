@@ -178,10 +178,12 @@ function csrfInput(csrfToken) {
 }
 
 /** Shared role-id text input (numeric snowflake; the route re-validates). */
-function roleIdInput() {
-  return html`<label>Role ID
-    <input type="text" name="role_id" inputmode="numeric" autocomplete="off"
-      placeholder="e.g. 500000000000000001" required maxlength="20"/>
+function roleIdInput(guildId) {
+  const url = `/g/${encodeURIComponent(guildId)}/lookups/roles`;
+  return html`<label>Role (name, mention, or ID)
+    <input type="text" name="role_id" autocomplete="off"
+      placeholder="type a role name…" required maxlength="100"
+      data-lookup="roles" data-lookup-url="${url}"/>
   </label>`;
 }
 
@@ -211,15 +213,15 @@ function staffRoleForms({ guildId, csrfToken }) {
         origin <code>web</code>) is written per mutation.
       </p>
       <form class="staff-mutate-form" method="post" action="${base}/add">
-        ${csrfInput(csrfToken)} ${roleIdInput()} ${staffLevelSelect("level")}
+        ${csrfInput(csrfToken)} ${roleIdInput(guildId)} ${staffLevelSelect("level")}
         <button type="submit" class="btn">Add / update staff role</button>
       </form>
       <form class="staff-mutate-form" method="post" action="${base}/setlevel">
-        ${csrfInput(csrfToken)} ${roleIdInput()} ${staffLevelSelect("level")}
+        ${csrfInput(csrfToken)} ${roleIdInput(guildId)} ${staffLevelSelect("level")}
         <button type="submit" class="btn">Change level</button>
       </form>
       <form class="staff-mutate-form" method="post" action="${base}/remove">
-        ${csrfInput(csrfToken)} ${roleIdInput()}
+        ${csrfInput(csrfToken)} ${roleIdInput(guildId)}
         <button type="submit" class="btn btn-danger">Remove staff role</button>
       </form>
     </section>`;
@@ -241,7 +243,7 @@ function levelRoleForms({ guildId, csrfToken }) {
         to be above it; Discord rejects the assignment otherwise.
       </p>
       <form class="staff-mutate-form" method="post" action="${base}/set">
-        ${csrfInput(csrfToken)} ${roleIdInput()}
+        ${csrfInput(csrfToken)} ${roleIdInput(guildId)}
         <label>Level required
           <input type="number" name="level" min="0" step="1" required/>
         </label>
@@ -251,7 +253,7 @@ function levelRoleForms({ guildId, csrfToken }) {
         <button type="submit" class="btn">Set mapping</button>
       </form>
       <form class="staff-mutate-form" method="post" action="${base}/remove">
-        ${csrfInput(csrfToken)} ${roleIdInput()}
+        ${csrfInput(csrfToken)} ${roleIdInput(guildId)}
         <button type="submit" class="btn btn-danger">Remove mapping</button>
       </form>
     </section>`;
