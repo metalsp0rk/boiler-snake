@@ -92,6 +92,14 @@ moment later. The archive search bar understands people too: type a name,
 pick it, and you get that person's tickets (as creator, handler, or
 participant); role names are suggested as well.
 
+## Ticket summaries
+
+Archived tickets carry the summary generated at close time (AI if the
+bot has a model configured, otherwise an automatic recap — each labeled).
+The full text shows on the transcript page under **Summary**; the archive
+lists a one-line recap with its provenance badge under each ticket's
+reason.
+
 ## Troubleshooting
 
 - **`/` shows "Log in with Discord" forever / redirect URI mismatch** → the Portal redirect must match `{PUBLIC_BASE_URL}/auth/login/callback` exactly (scheme, host, port, path).
