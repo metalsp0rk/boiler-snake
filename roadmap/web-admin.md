@@ -585,6 +585,12 @@ the console — the §8.6 "root shows a guild picker" design was never built.
 - **Shell CSS**: two-column `shell-body` grid (15.5 rem rail + fluid main,
   cap 1400 px) replacing the centered 1100 px main; switcher hidden on
   lobby-style pages with no guild context.
+- **Asset cache-busting (follow-up fix, v1.17.1)**: `/static/app.js` and
+  `/static/styles.css` now carry `?v=<package version>`. /static is served
+  `immutable` for a year with no validators, so the bare URLs pinned stale
+  CSS against new markup on first real browser (unstyled sidebar). Doctrine
+  correction: any asset whose URL lacks a version component is NEVER safe
+  to change in place — bump the query or the filename with every edit.
 
 **Follow-up (open):** *job-state registry wiring* — features (voice, youtube,
 twitch, decay, github-releases, reminders) still register nothing with
