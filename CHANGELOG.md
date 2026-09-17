@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.22.0...v1.23.0) (2026-09-17)
+
+
+### Features
+
+* **web:** hover profile cards, named audit actors, person-aware archive search ([c83edb5](https://github.com/metalsp0rk/boiler-snake/commit/c83edb5de308ca574ee012858cda5090d081ae1d))
+
 ## [1.22.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.21.0...v1.22.0) (2026-09-17)
 
 
