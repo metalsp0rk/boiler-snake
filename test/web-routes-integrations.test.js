@@ -490,6 +490,32 @@ describe("web integrations page (GET /g/:guildId/integrations, staff tier, read-
       assert.ok(body.includes("/reactionrole panel|option"), "slash cross-reference");
     });
 
+    it("panel dropdowns label options with the panel title — never '(undefined)'", async () => {
+      // Regression (§8.15 follow-up): panelSelect flattened panels to id
+      // STRINGS while its label fn read `p.title`/`p.messageId` — every
+      // panel dropdown rendered "panel (undefined)". The label must come
+      // from the panel row now; values stay the message id (POST bodies
+      // unchanged).
+      const { body } = await req(`/g/${GUILD_A}/integrations`, { cookie: cookieOf.admin });
+      const wanted = `<option value="922000000000000201">Grab your roles (922000000000000201)</option>`;
+      const occurrences = body.split(wanted).length - 1;
+      assert.ok(occurrences >= 3, `titled label in every panel dropdown (got ${occurrences})`);
+      // the SAME flaw existed in the YouTube + Twitch unsubscribe selects
+      // (label fn read row fields off flattened id strings) — the global
+      // pin below catches any regression of those too.
+      assert.ok(
+        body.includes(`<option value="UCytseed001">Daily Uploads (UCytseed001)</option>`),
+        "youtube unsubscribe option labeled with channel name"
+      );
+      assert.ok(
+        body.includes(`<option value="coolstreamer">Cool Streamer (coolstreamer)</option>`),
+        "twitch unsubscribe option labeled with display name"
+      );
+      assert.ok(!body.includes("(undefined)"), "no (undefined) anywhere on the page");
+      // values are unchanged: the delete form still posts message ids
+      assert.match(body, /name="message_id"[\s\S]{0,400}?value="922000000000000201"/, "id value kept");
+    });
+
     it("event reminders render config + next-fire derived from stored offsets", async () => {
       const { body } = await req(`/g/${GUILD_A}/integrations`, { cookie: cookieOf.staff });
       const row = api.getGuildSettings(GUILD_A);
