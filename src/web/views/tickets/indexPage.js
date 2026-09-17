@@ -90,11 +90,17 @@ function renderTicketIndexContent({
   q = "",
   namesByGuild = null,
   consoleLink = null,
+  baseUrl = "/t",
+  inShell = false,
 }) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const filterNote = guildId
-    ? html`Guild filter: <code>${guildId}</code>`
-    : html`All guilds`;
+  // In-shell view (/g/:guildId/t) is already guild-scoped by its URL — no
+  // "guild filter" needed; the bare /t index keeps the legacy filter note.
+  const filterNote = inShell
+    ? html`This guild's archive`
+    : guildId
+      ? html`Guild filter: <code>${guildId}</code>`
+      : html`All guilds`;
   const searchNote = q
     ? html` · matching <code>${q}</code>`
     : html``;
@@ -144,11 +150,11 @@ function renderTicketIndexContent({
     // interpolated values stay escaped, the separators stay literal
     // (same byte trick as before; q rides every pager/filter link).
     const parts = [];
-    if (guildId) parts.push(html`guild=${guildId}`);
+    if (guildId && !inShell) parts.push(html`guild=${guildId}`);
     if (q) parts.push(html`q=${q}`);
     if (p > 1) parts.push(html`page=${p}`);
-    if (parts.length === 0) return html`/t`;
-    return html`/t?${parts.reduce((acc, seg) => (acc ? html`${acc}&${seg}` : seg))}`;
+    if (parts.length === 0) return html`${baseUrl}`;
+    return html`${baseUrl}?${parts.reduce((acc, seg) => (acc ? html`${acc}&${seg}` : seg))}`;
   };
 
   const nav =
@@ -165,8 +171,8 @@ function renderTicketIndexContent({
       : html``;
 
   const searchForm = html`
-  <form class="archive-search" method="get" action="/t">
-    ${guildId ? html`<input type="hidden" name="guild" value="${guildId}">` : html``}
+  <form class="archive-search" method="get" action="${baseUrl}">
+    ${guildId && !inShell ? html`<input type="hidden" name="guild" value="${guildId}">` : html``}
     <input type="search" name="q" maxlength="100" placeholder="Ticket number or reason text"
       ${q ? html`value="${q}"` : html``} aria-label="Search archived tickets">
     <button type="submit">Search</button>
@@ -177,9 +183,13 @@ function renderTicketIndexContent({
   <p class="subheading">${filterNote}${searchNote}${consoleNote} · <strong>${total}</strong> transcript${total === 1 ? "" : "s"} · staff use only</p>
   ${searchForm}
   <div class="banner banner-warn" role="status">
-    Login is required for every ticket page (§8.1-3). This index lists archived
-    transcripts ONLY for guilds where you hold a staff tier; sensitive tickets
-    are never content-archived and never appear here.
+    ${inShell
+      ? html`Archived transcripts for THIS guild only. Sensitive tickets are
+        never content-archived and never appear here; the cross-guild archive
+        lives at <a href="/t">/t</a>.`
+      : html`Login is required for every ticket page (§8.1-3). This index lists archived
+        transcripts ONLY for guilds where you hold a staff tier; sensitive tickets
+        are never content-archived and never appear here.`}
   </div>
   ${nav}
   <table>
@@ -229,8 +239,12 @@ function renderTicketIndexPage({
   q = "",
   namesByGuild = null,
   consoleLink = null,
+  baseUrl = "/t",
+  inShell = false,
   guilds = [],
   degraded = false,
+  tier = null,
+  path = "",
 }) {
   return renderLayout({
     title: "Archived tickets",
@@ -244,9 +258,15 @@ function renderTicketIndexPage({
       q,
       namesByGuild,
       consoleLink,
+      baseUrl,
+      inShell,
     }),
     guilds,
-    currentGuildId: null, // the ticket index is not guild-scoped by URL
+    // In-shell mode (/g/:guildId/t) renders INSIDE the guild shell with the
+    // sidebar; the bare /t index keeps the switcher-lobby framing.
+    currentGuildId: inShell ? guildId : null,
+    tier: inShell ? tier : null,
+    path: inShell ? path : "",
     degraded,
     user: req && req.user ? req.user : null,
     csrfToken: (req && req.csrfToken) || null,

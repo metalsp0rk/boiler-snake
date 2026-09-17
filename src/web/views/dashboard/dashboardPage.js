@@ -103,7 +103,7 @@ function renderTicketsSection(tickets, ctx = {}) {
           </table>`
         : html`<p class="empty-state">Nothing open.</p>`}
       ${guildId
-        ? html`<p class="panel-foot"><a href="/t?guild=${guildId}">Ticket archive →</a></p>`
+        ? html`<p class="panel-foot"><a href="/g/${guildId}/t">Ticket archive →</a></p>`
         : html``}
     </section>`;
 }

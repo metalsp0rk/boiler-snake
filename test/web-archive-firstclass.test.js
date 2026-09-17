@@ -25,6 +25,7 @@ const ROLE_SENIOR = "arch1-role-senior";
 const USER_ADMIN = "830000000000000021";
 const USER_STAFF = "830000000000000022";
 const USER_SENIOR = "830000000000000023";
+const USER_PLAIN = "830000000000000025"; // in the guild, NO staff role ⇒ no tier
 
 const CREATOR_ID = "830000000000000090";
 const CREATOR_NAME = "ArchiveCreator";
@@ -161,6 +162,7 @@ describe("web archive first-class (§8.15)", () => {
     cookieOf.staff = `web_session=${mkSession(USER_STAFF)}`;
     cookieOf.senior = `web_session=${mkSession(USER_SENIOR)}`;
     cookieOf.nowhere = `web_session=${mkSession(USER_NOWHERE)}`;
+    cookieOf.plain = `web_session=${mkSession(USER_PLAIN)}`;
 
     tSpoon = seedArchived(GUILD_A, {
       reason: "spoon shortage",
@@ -220,10 +222,10 @@ describe("web archive first-class (§8.15)", () => {
 
   // ---- sidebar / cross links ------------------------------------------------
 
-  it("sidebar: staff dashboard shows 'Ticket archive' linking to /t?guild=<own>", async () => {
+  it("sidebar: staff dashboard shows 'Ticket archive' at the in-shell path", async () => {
     const { body } = await req(`/g/${GUILD_A}`, cookieOf.staff);
     assert.match(body, /Ticket archive/);
-    assert.ok(body.includes(`/t?guild=${GUILD_A}`));
+    assert.ok(body.includes(`/g/${GUILD_A}/t`), "nav + footer use the shell route");
     // dashboard footer link too
     assert.match(body, /Ticket archive →/);
   });
@@ -232,7 +234,7 @@ describe("web archive first-class (§8.15)", () => {
     const { res, body } = await req(`/g/${GUILD_A}/tickets`, cookieOf.senior);
     assert.equal(res.status, 200);
     assert.match(body, /Archived tickets →/);
-    assert.ok(body.includes(`/t?guild=${GUILD_A}`));
+    assert.ok(body.includes(`/g/${GUILD_A}/t`), "link points at the shell archive");
   });
 
   // ---- console links out of the archive -------------------------------------
@@ -267,7 +269,9 @@ describe("web archive first-class (§8.15)", () => {
 
   it("q can NEVER widen scope: guild-B-only match stays invisible to guild-A staff", async () => {
     const { body } = await req(`/t?q=orbit`, cookieOf.staff);
-    assert.ok(!body.includes(`>#${tForeign.ticket_number}<`), "foreign row leaked");
+    // "orbit" alone appears as the echoed search term — check the row's
+    // actual subject text instead.
+    assert.ok(!body.includes("spoon orbit"), "foreign row leaked");
     assert.match(body, /No archived transcripts match that search/);
   });
 
@@ -315,6 +319,62 @@ describe("web archive first-class (§8.15)", () => {
     // tRules creator = USER_STAFF — NOT in the fake member cache.
     const { body } = await req(`/t?q=rules`, cookieOf.staff);
     assert.ok(body.includes(USER_STAFF), "raw id shown for uncached creator");
+  });
+
+  // ---- in-shell archive: /g/:guildId/t -----------------------------------------
+
+  it("in-shell archive: staff gets 200 WITH sidebar + active nav + rows", async () => {
+    const { res, body } = await req(`/g/${GUILD_A}/t`, cookieOf.staff);
+    assert.equal(res.status, 200);
+    assert.match(body, /<aside class="shell-nav"/, "sidebar renders (the regression)");
+    assert.match(body, /aria-current="page"[^>]*>Ticket archive</, "nav marks archive active");
+    assert.ok(body.includes("This guild's archive"));
+    assert.match(body, /Page 1 \/ 2/, "the guild's rows paginate");
+    assert.ok(body.includes(`action="/g/${GUILD_A}/t"`), "search posts to the shell route");
+    assert.ok(!body.includes("Guild filter:"), "no redundant filter chrome in-shell");
+  });
+
+  it("in-shell search: narrows, escapes, and never crosses guilds", async () => {
+    const { body } = await req(`/g/${GUILD_A}/t?q=spoon`, cookieOf.staff);
+    assert.ok(body.includes("matching <code>spoon</code>"));
+    assert.ok(!body.includes(`>#${tRules.ticket_number}<`), "non-match excluded");
+    // ticket numbers are PER GUILD (guild B's first ticket is also #1) —
+    // scope must be proven on content, not on the number.
+    assert.ok(!body.includes("orbit"), "guild-B row leaked into guild-A archive");
+    const inj = await req(
+      `/g/${GUILD_A}/t?q=${encodeURIComponent("' or 1=1 --")}`,
+      cookieOf.staff
+    );
+    assert.equal(inj.res.status, 200);
+    assert.match(inj.body, /No archived transcripts match that search/);
+    const xss = await req(
+      `/g/${GUILD_A}/t?q=${encodeURIComponent("<img src=x onerror=1>")}`,
+      cookieOf.staff
+    );
+    assert.ok(!xss.body.includes("<img"), "escaped, never live markup");
+  });
+
+  it("in-shell people cells: cached names with ids as hover text", async () => {
+    const { body } = await req(`/g/${GUILD_A}/t?q=spoon`, cookieOf.staff);
+    assert.ok(body.includes(CREATOR_NAME));
+    assert.ok(body.includes(OWNER_NAME));
+    assert.ok(body.includes(`title="${CREATOR_ID}"`));
+  });
+
+  it("in-shell pagination rides q (50/page)", async () => {
+    const { body } = await req(`/g/${GUILD_A}/t?q=matchme`, cookieOf.staff);
+    assert.ok(body.includes("q=matchme&page=2"));
+    const p2 = await req(`/g/${GUILD_A}/t?q=matchme&page=2`, cookieOf.staff);
+    assert.match(p2.body, /Page 2 \/ 2/);
+  });
+
+  it("in-shell gates: plain user 404 (no tier), anon 302 to login", async () => {
+    const anon = await fetch(`${base}/g/${GUILD_A}/t`, { redirect: "manual" });
+    assert.equal(anon.status, 302);
+    assert.match(anon.headers.get("location") || "", /^\/auth\/login/);
+    const plain = await req(`/g/${GUILD_A}/t`, cookieOf.plain);
+    assert.equal(plain.res.status, 404);
+    assert.equal(plain.body, "Not found");
   });
 
   // ---- untouched gates --------------------------------------------------------

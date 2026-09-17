@@ -37,6 +37,7 @@ const { registerVoiceRoutes } = require("./routes/voice");
 const { registerSystemRoutes } = require("./routes/system");
 const { registerXpActionsRoutes } = require("./routes/xpActions");
 const { registerTicketActionsRoutes } = require("./routes/ticketActions");
+const { registerGuildArchiveRoutes } = require("./routes/guildArchive");
 const { registerSyncActionRoutes } = require("./routes/syncAction");
 const { createSessionMiddleware } = require("./middleware/session");
 const {
@@ -335,6 +336,7 @@ function createWebApp(options = {}) {
   // first; same shared resolver instance keeps tier math undivided;
   // getClient stays the cache-only seam (never a fetch on a request path).
   registerTicketActionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, services: options.services, ticketActions: options.ticketActions });
+  registerGuildArchiveRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
   // Command-visibility sync trigger (Phase 3, subtask 31): admin-only
   // POST /g/:guildId/commands/sync — the web twin of slash
   // /staff syncpermissions (§8.6 "Command visibility" row = Admin trigger;

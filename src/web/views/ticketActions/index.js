@@ -155,7 +155,7 @@ function renderTicketActionsBody({ guildId, tickets, csrfToken, flash, maxReason
     ${flashBanner(flash)}
     <section class="panel ticket-actions-panel">
       <h2>Open tickets</h2>
-      <p class="panel-foot"><a href="/t?guild=${gid}">Archived tickets →</a></p>
+      <p class="panel-foot"><a href="/g/${gid}/t">Archived tickets →</a></p>
       ${tickets && tickets.length
         ? html`<table class="list-table ticket-actions-table">
             <thead>
