@@ -108,6 +108,21 @@ function renderTicketIndexContent({
     ? html` · <a class="index-back" href="${consoleLink.href}">${consoleLink.label}</a>`
     : html``;
 
+  // One-line recap of the close-time summary (AI narrative when there is
+  // one, else the auto recap) — §8.15-15.12. Malformed JSON: no note.
+  const summaryNote = (rawJson) => {
+    if (!rawJson) return html``;
+    let s = null;
+    try {
+      s = JSON.parse(String(rawJson));
+    } catch {
+      return html``;
+    }
+    const text = String(s?.summary || s?.resolution || "").trim();
+    if (!text) return html``;
+    const src = s?.source === "ai" ? "AI" : "auto";
+    return html`<div class="row-summary"><span class="badge badge-tiny">${src}</span> ${snippet(text, 160)}</div>`;
+  };
   const rows = (tickets || []).map((t) => {
     const href = `/t/${encodeURIComponent(t.transcript_token)}`;
     const names = namesByGuild?.get(t.guild_id) ?? null;
@@ -124,7 +139,7 @@ function renderTicketIndexContent({
           <div class="who sub">owner ${owner}</div>
         </td>
         <td>${formatTs(t.closed_at)}</td>
-        <td class="reason">${snippet(t.reason, 100)}</td>
+        <td class="reason">${snippet(t.reason, 100)}${summaryNote(t.ai_summary_json)}</td>
         <td class="reason">${snippet(t.close_reason, 80)}</td>
         <td><a href="${href}">View</a></td>
       </tr>`;
