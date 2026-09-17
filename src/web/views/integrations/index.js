@@ -344,7 +344,9 @@ function youtubeSection(yt, ctx) {
       ${yt.rows.length
         ? writeForm(`${base}/remove`, csrfToken,
             idSelect("channel_id", yt.rows.map((r) => r.id).filter(Boolean),
-              (r) => `${r.channelName ?? "—"} (${r.id})`, null),
+              // label from the ROW (was `r.channelName` on a bare id
+              // string → "— (undefined)" on every unsubscribe option)
+              (id) => `${yt.rows.find((r) => r.id === id)?.channelName ?? "—"} (${id})`, null),
             "Unsubscribe")
         : html``}
     </details>
@@ -439,7 +441,8 @@ function twitchSection(tw, ctx) {
       ${tw.rows.length
         ? writeForm(`${base}/remove`, csrfToken,
             idSelect("channel", tw.rows.map((r) => r.login).filter(Boolean),
-              (r) => `${r.displayName ?? "—"} (${r.login})`, null),
+              // label from the ROW (same string-vs-row flaw as YouTube)
+              (id) => `${tw.rows.find((r) => r.login === id)?.displayName ?? "—"} (${id})`, null),
             "Unsubscribe")
         : html``}
     </details>
@@ -496,9 +499,19 @@ function reactionRolesSection(rr, ctx) {
     : emptyState("No reaction-role panels stored.");
 
   const base = `/g/${encodeURIComponent(String(guildId || ""))}/integrations/reaction-roles`;
+  // id → panel map so dropdown labels come from the PANEL rows. (The old
+  // one-liner fed idSelect messageId strings while the label fn still
+  // read `p.title`/`p.messageId` off them — every option rendered the
+  // infamous "panel (undefined)". Values stay the messageId, so every
+  // POST body is unchanged.)
+  const panelById = new Map(
+    rr.panels.filter((p) => p.messageId).map((p) => [p.messageId, p])
+  );
   const panelSelect = (name) =>
-    idSelect(name, rr.panels.map((p) => p.messageId).filter(Boolean),
-      (p) => `${p.title ?? "panel"} (${p.messageId})`, null);
+    idSelect(name, [...panelById.keys()], (id) => {
+      const title = panelById.get(id)?.title;
+      return title ? `${title} (${id})` : `panel (${id})`;
+    }, null);
   const forms = html`
     <details class="integ-write">
       <summary>Panel (staff — create posts a live embed in the channel)</summary>
@@ -679,7 +692,12 @@ function honeypotSection(hp, ctx) {
           ${ex.rows.length
             ? writeForm(`${base}/exempt/del`, csrfToken,
                 idSelect("role_id", ex.rows.map((r) => r.roleId).filter(Boolean),
-                  (r) => r.roleId, null),
+                  // was `(r) => r.roleId` on flattened STRINGS → blank
+                  // labels; decorate with the cached role name instead
+                  (id) => {
+                    const name = resolveRoleName ? resolveRoleName(id) : null;
+                    return name ? `${name} (${id})` : id;
+                  }, null),
                 "Remove exempt role")
             : html``}
         </details>`

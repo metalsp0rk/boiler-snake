@@ -798,6 +798,18 @@ getter at boot); tracked here until done.
     chrome-free with banner, own list shows exactly linked rows (foreign
     tokens absent), non-whitelisted next values dropped to `/`, forged-`nx`
     state dropped, no-next flow unchanged. Full suite 2977/2977.
+- [x] **Task 15.14:** Fix "panel (undefined)" dropdown labels on
+  integrations (2026-09-19) — operator report; root cause was one pattern
+  FOUR times in `views/integrations/index.js`: `idSelect(name, rows.map(
+  r => r.id), labelOf)` flattens rows to id STRINGS, but these label fns
+  still read ROW fields (`r.title`, `r.channelName`, `r.displayName`,
+  `r.roleId`) → reaction-role panel selects showed "panel (undefined)",
+  YouTube/Twitch unsubscribe showed "— (undefined)", exempt-role removal
+  rendered BLANK labels. Labels now resolve from the row (panel title /
+  channel name / display name, id fallback); option VALUES stay the ids
+  so every POST body is byte-identical. Verification: new render test
+  pins titled labels in all three panel selects + both name-decorated
+  selects + a whole-page "no (undefined) anywhere" pin; 2978/2978.
 - [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
   - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
   - **Estimate:** 2 h · **Dependencies:** —
