@@ -12,8 +12,11 @@
  * constants. XSS + sentinel probes live in test/web-routes-system.test.js.
  *
  * Viewer invariants (pinned by the route + these views):
- *  - LINK-FREE rows: details may contain ids and URLs — ids render as plain
- *    <code> text and URLs are NEVER auto-linked (no <a> in an audit row);
+ *  - LINK-FREE DETAILS: details may contain ids and URLs — ids render as
+ *    plain <code> text and URLs are NEVER auto-linked (no <a> from row
+ *    content). The ACTOR cell is the single sanctioned exception (§8.15
+ *    15.11): a validated userRef chip like every other page's — its id is
+ *    the acting principal's own (auth-derived), never attacker free-text.
  *  - details_json is pretty-printed, DISPLAY-truncated at the same 4000-char
  *    budget the repo enforces on storage (defense in depth: a legacy/longer
  *    row can never balloon the page), and escaped like everything else;
@@ -22,7 +25,7 @@
  */
 
 const { html } = require("../escape");
-const { emptyState, banner } = require("../components");
+const { emptyState, banner, userRef } = require("../components");
 const { formatWhen } = require("../users");
 // Shared sync-status panel from the staff surface (§8.6 "Command visibility"
 // row): imported so /system and /staff can never diverge on the OAuth read
@@ -273,7 +276,7 @@ function pager(base, page) {
  * @param {object} req
  * @param {{ page: object }} data page = buildAuditPage() result
  */
-function renderAuditBody(req, { page }) {
+function renderAuditBody(req, { page, names = null }) {
   const guildId = req.guildAccess.guildId;
   const base = `/g/${guildId}/audit`;
   const filterOrigin = page.origin || "all";
@@ -289,7 +292,7 @@ function renderAuditBody(req, { page }) {
               <td class="audit-id">${row.id}</td>
               <td>${formatWhen(row.created_at)}</td>
               <td>${row.actor_user_id
-                ? html`<code class="user-id">${String(row.actor_user_id)}</code>`
+                ? userRef(guildId, String(row.actor_user_id), names)
                 : html`<span class="muted">—</span>`}</td>
               <td>${originBadge(row.origin)}</td>
               <td><code class="audit-action">${row.action}</code></td>

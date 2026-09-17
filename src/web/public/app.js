@@ -147,10 +147,21 @@
       opt.appendChild(nm);
       opt.appendChild(id);
       opt._lookupPick = function () {
-        input.value = String(it.id);
+        // A role picked in a SEARCH bar filters by name (rows carry text);
+        // everything else (form fields, people) submits the pure id.
+        input.value = it.kind === "roles" &&
+            input.getAttribute("data-lookup") === "mixed"
+          ? String(it.name || it.id)
+          : String(it.id);
         closeLookup(input);
         input.dispatchEvent(new Event("input", { bubbles: true }));
       };
+      if (it.kind) {
+        var tag = document.createElement("span");
+        tag.className = "lookup-kind";
+        tag.textContent = it.kind === "roles" ? "role" : "user";
+        opt.appendChild(tag);
+      }
       pop.appendChild(opt);
     });
     if (!shown.length) return closeLookup(input);
@@ -178,24 +189,46 @@
     return false;
   }
 
+  function fetchLookup(url, q, kind) {
+    return fetch(url + (url.indexOf("?") === -1 ? "?" : "&") + "q=" + encodeURIComponent(q), {
+      credentials: "same-origin",
+    })
+      .then(function (r) { return r.ok ? r.json() : {}; })
+      .then(function (data) {
+        return lookupItems(data, kind).map(function (it) {
+          return { id: it.id, name: it.name, kind: kind };
+        });
+      });
+  }
+
   document.addEventListener("input", function (evt) {
     var input = evt.target;
     if (!lookupInputActive(input)) return;
-    var kind = input.getAttribute("data-lookup") === "roles" ? "roles" : "users";
-    var url = input.getAttribute("data-lookup-url");
+    var mode = input.getAttribute("data-lookup");
     var q = String(input.value || "").trim();
     if (input._lookupSeq === undefined) input._lookupSeq = 0;
     var seq = ++input._lookupSeq;
     if (input._lookupTimer) clearTimeout(input._lookupTimer);
     if (!q) return closeLookup(input);
+    // mixed = search bars (archive): people AND roles at once. Single-kind
+    // = the old data-lookup-url fields (forms get one list).
+    var sources = mode === "mixed"
+      ? [
+          { url: input.getAttribute("data-lookup-users"), kind: "users" },
+          { url: input.getAttribute("data-lookup-roles"), kind: "roles" },
+        ].filter(function (src) { return src.url; })
+      : [{
+          url: input.getAttribute("data-lookup-url"),
+          kind: mode === "roles" ? "roles" : "users",
+        }];
+    if (!sources.length) return;
     input._lookupTimer = setTimeout(function () {
-      fetch(url + (url.indexOf("?") === -1 ? "?" : "&") + "q=" + encodeURIComponent(q), {
-        credentials: "same-origin",
-      })
-        .then(function (r) { return r.ok ? r.json() : { }; })
-        .then(function (data) {
+      Promise.all(sources.map(function (src) {
+        return fetchLookup(src.url, q, src.kind).catch(function () { return []; });
+      }))
+        .then(function (parts) {
           if (input._lookupSeq !== seq) return; // stale response
-          showLookup(input, lookupItems(data, kind), q);
+          showLookup(input, [].concat.apply([], parts), q);
         })
         .catch(function () { closeLookup(input); }); // enhancement may fail silently
     }, LOOKUP_DEBOUNCE_MS);
@@ -216,4 +249,147 @@
     if (!lookupInputActive(input)) return;
     setTimeout(function () { closeLookup(input); }, 150); // let mousedown win
   });
+
+  // 4. Lazy PROFILE CARDS on user-chip hover (§8.15 task 15.11) — any
+  //    [data-user-card] element (every userRef chip) pops a card after a
+  //    short intent delay: avatar, name, id, role chips. Data is fetched
+  //    per chip URL, cached for the page lifetime, and the SERVER side is
+  //    cache-only + self-warming — a cold chip shows an id card immediately
+  //    and the next hover after the queue catches up shows the full card.
+  //    DOM built via textContent; the avatar URL is only ever accepted from
+  //    the Discord CDN (mirrors the CSP img-src).
+  var CARD_HOVER_MS = 300;
+  var CARD_HIDE_MS = 150;
+  var CDN_PREFIX = "https://cdn.discordapp.com/";
+  var cardEl = null;
+  var cardShowTimer = null;
+  var cardHideTimer = null;
+  var cardCache = Object.create(null);
+  var cardSeq = 0;
+
+  function ensureCard() {
+    if (cardEl) return cardEl;
+    cardEl = document.createElement("div");
+    cardEl.className = "user-card";
+    cardEl.setAttribute("role", "tooltip");
+    cardEl.hidden = true;
+    document.body.appendChild(cardEl);
+    cardEl.addEventListener("mouseenter", function () {
+      if (cardHideTimer) { clearTimeout(cardHideTimer); cardHideTimer = null; }
+    });
+    cardEl.addEventListener("mouseleave", hideCardSoon);
+    return cardEl;
+  }
+
+  function hideCardSoon() {
+    if (cardHideTimer) clearTimeout(cardHideTimer);
+    cardHideTimer = setTimeout(function () {
+      if (cardEl) cardEl.hidden = true;
+    }, CARD_HIDE_MS);
+  }
+
+  function renderCard(rect, data) {
+    var el = ensureCard();
+    while (el.firstChild) el.removeChild(el.firstChild);
+    var head = document.createElement("div");
+    head.className = "user-card-head";
+    if (data.avatar && String(data.avatar).indexOf(CDN_PREFIX) === 0) {
+      var img = document.createElement("img");
+      img.className = "user-card-avatar";
+      img.src = String(data.avatar);
+      img.alt = "";
+      img.width = 48;
+      img.height = 48;
+      head.appendChild(img);
+    }
+    var who = document.createElement("div");
+    var nm = document.createElement("div");
+    nm.className = "user-card-name";
+    nm.textContent = data.name || data.tag || "(name unknown yet)";
+    var idc = document.createElement("div");
+    idc.className = "user-card-id";
+    idc.textContent = String(data.id);
+    who.appendChild(nm);
+    who.appendChild(idc);
+    head.appendChild(who);
+    el.appendChild(head);
+    if (Array.isArray(data.roles) && data.roles.length) {
+      var roles = document.createElement("div");
+      roles.className = "user-card-roles";
+      data.roles.slice(0, 12).forEach(function (r) {
+        var chip = document.createElement("span");
+        chip.className = "user-card-role";
+        chip.textContent = String(r.name || "");
+        if (r.color && /^#[0-9a-fA-F]{6}$/.test(String(r.color))) {
+          chip.style.borderColor = String(r.color);
+        }
+        roles.appendChild(chip);
+      });
+      if (data.roles.length > 12) {
+        var more = document.createElement("span");
+        more.className = "user-card-role user-card-more";
+        more.textContent = "+" + (data.roles.length - 12);
+        roles.appendChild(more);
+      }
+      el.appendChild(roles);
+    }
+    if (!data.known) {
+      var warm = document.createElement("div");
+      warm.className = "user-card-warm";
+      warm.textContent = "not cached yet — details fill in shortly";
+      el.appendChild(warm);
+    }
+    var w = 260;
+    var left = Math.max(8, Math.min(window.innerWidth - w - 8, rect.left));
+    var top = rect.bottom + 6;
+    el.style.left = left + "px";
+    el.style.top = top + "px";
+    el.style.width = w + "px";
+    el.hidden = false;
+  }
+
+  function openCard(chip) {
+    var url = chip.getAttribute("data-user-card");
+    if (!url) return;
+    var rect = chip.getBoundingClientRect();
+    var hit = cardCache[url];
+    if (hit) return renderCard(rect, hit);
+    var seq = ++cardSeq;
+    fetch(url, { credentials: "same-origin" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data || !data.id) return;
+        cardCache[url] = data;
+        if (seq === cardSeq) renderCard(rect, data); // chip hover still current
+      })
+      .catch(function () { /* enhancement may fail silently */ });
+  }
+
+  document.addEventListener("mouseover", function (evt) {
+    var el = evt.target && evt.target.closest ? evt.target.closest("[data-user-card]") : null;
+    if (!el) return;
+    if (cardEl && !cardEl.hidden && cardEl._openFor === el) return;
+    if (cardShowTimer) clearTimeout(cardShowTimer);
+    cardShowTimer = setTimeout(function () {
+      cardSeq++; // invalidate in-flight fetches for other chips
+      var c = ensureCard();
+      c._openFor = el;
+      openCard(el);
+    }, CARD_HOVER_MS);
+  });
+
+  document.addEventListener("mouseout", function (evt) {
+    var el = evt.target && evt.target.closest ? evt.target.closest("[data-user-card]") : null;
+    if (!el) return;
+    if (evt.relatedTarget && el.contains(evt.relatedTarget)) return;
+    if (cardShowTimer) { clearTimeout(cardShowTimer); cardShowTimer = null; }
+    hideCardSoon();
+  });
+
+  document.addEventListener("keydown", function (evt) {
+    if (evt.key === "Escape" && cardEl) cardEl.hidden = true;
+  });
+  window.addEventListener("scroll", function () {
+    if (cardEl) cardEl.hidden = true;
+  }, { passive: true, capture: true });
 })();
