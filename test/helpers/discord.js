@@ -137,13 +137,22 @@ function createTextChannel(opts = {}) {
           if (messages.has(arg)) return messages.get(arg);
           return null;
         }
-        // fetch({ limit, before }) collection-like
+        // fetch({ limit, before|after }) collection-like. Selection follows
+        // the Discord REST contract: `before` → the limit messages NEAREST
+        // the cursor (descending); `after`-only → the limit messages
+        // NEAREST the cursor (ascending); bare limit → newest.
         const limit = arg?.limit || 100;
+        const ascending = Boolean(arg?.after) && !arg?.before;
         let all = [...messages.values()].sort((a, b) =>
-          String(b.id).localeCompare(String(a.id))
+          ascending
+            ? String(a.id).localeCompare(String(b.id))
+            : String(b.id).localeCompare(String(a.id))
         );
         if (arg?.before) {
           all = all.filter((m) => String(m.id) < String(arg.before));
+        }
+        if (arg?.after) {
+          all = all.filter((m) => String(m.id) > String(arg.after));
         }
         const slice = all.slice(0, limit);
         return new Map(slice.map((m) => [m.id, m]));

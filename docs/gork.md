@@ -8,6 +8,7 @@ A goofy AI question-answering bot. When someone types the trigger keyword — a 
 - **Context-aware**: answers from the reply chain when the keyword message replies to something, otherwise from the N most recent messages (default 10, max 50)
 - **Optional web search**: the model can call a `web_search` tool the bot executes against a SearXNG instance's JSON API (up to 3 searches per question)
 - **Page reading**: the model can also open pages with `read_page` (1–3 URLs per call) — gork fetches them, extracts the main content to clean Markdown, and feeds it back into the same tool loop; **public web only** (internal/private addresses are refused by an SSRF guard)
+- **Discord link reading**: `read_discord` is **always on** — paste a message link or channel mention next to the keyword and gork actually reads it (the linked message plus surrounding context, or the channel's latest 50), subject to the asker's own view permissions
 - **Voice**: sarcastic, always safe for work; the base prompt is immutable and staff rules cannot override the SFW / questions-only constraints (best effort)
 - **Gating**: gork is live whenever `AI_API_KEY` is set and the guild's enable switch is on; all `/gork` configuration and moderation is staff-only
 - **Daily budget** (opt-in): cap successful answers per user per UTC day per channel/category/server (`/gork budget`, off by default)
@@ -26,7 +27,7 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
    → queue? (1 in-flight + 5 waiting; full → canned drop reply)
    → typing indicator (refreshed every 8s until the reply lands)
    → context window: reply chain (with backfill) or N prior messages
-   → LLM (temperature 0.8, 90s total timeout; web_search + read_page tools if enabled)
+   → LLM (temperature 0.8, 90s total timeout; read_discord always on, web_search + read_page when enabled)
    → plain-text reply to the keyword message (>2,000 chars → split)
    → audit embed to the audit channel
 ```
@@ -106,6 +107,30 @@ When a search snippet (or the conversation itself) points at a page that likely 
 | Failure mode | Per-page: `"Could not read: <reason>"` inline — one dead page never kills the answer |
 
 Reading is grounded strictly in the fetched content — extraction strips scripts, nav, and chrome, so the model sees article text, not page furniture.
+
+### Discord link reading (`read_discord`)
+
+Gork used to be blind to Discord links — a pasted message link or a `<#channel>` mention could only be guessed at from whatever sat in the context window. `read_discord` fixes that: the model calls it with any Discord link and gork reads it through the bot, returning real messages as data it can quote and cite.
+
+It is **always on** — no setting, command, or env var. When gork answers at all, the reader is available (it shares the same 3-round tool budget as search/page reading).
+
+| Aspect | Detail |
+|--------|--------|
+| Accepted links | A message link (`discord.com/channels/<guild>/<channel>/<message>`), a channel URL, a `<#channel>` mention, or a bare channel id |
+| Message link | The linked message **plus up to 40 older / 10 newer** messages; the anchor is marked |
+| Channel | The **50 most recent** messages |
+| Output | `id \| timestamp \| @author: content` lines, oldest→newest; attachments collapse to `[N attachment(s)]`; ≤500 chars/message, ≤12,000 total |
+| Routing | `read_page` **refuses** `discord.com/channels/...` links and points the model at `read_discord` instead |
+
+**Security** — gork is never an oracle into things the asker can't see:
+
+- **Guild isolation**: only links to the *current* server are read; cross-guild links are rejected outright
+- **Asker parity**: the **asking user** (not just the bot) must be able to view the target channel — gork won't read a private channel on behalf of someone who can't open it
+- **Ticket blackout**: **open** (unarchived) ticket channels are always refused, even by staff who can see them (extends gork's silence inside open tickets)
+- **Read-only**: the tool never posts, reacts, or writes anything to Discord
+- **Fail-soft**: every denial returns a plain `Could not read …: <reason>` and the model answers from what it has — a refused read never breaks the reply
+
+Fetched messages arrive as **data, never instructions**, so message content can't steer gork; replies keep pings disabled, so ids quoted from the fetched text can't notify anyone.
 
 ## Commands
 
@@ -299,9 +324,17 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 ### Web search / page reading not happening
 
 - `SEARXNG_URL` must be set **and** the instance must have JSON format enabled (`formats: [json]` in SearXNG settings); otherwise the model is told search is unavailable and answers from context alone
-- `/gork search off` disables **both** tools for the guild (search and page reading share the lever)
-- `/gork status` shows whether `SEARXNG_URL` is set; the budget is max **3 tool rounds** per question (searches + page reads combined)
+- `/gork search off` disables **both** tools for the guild (search and page reading share the lever) — `read_discord` is unaffected (always on)
+- `/gork status` shows whether `SEARXNG_URL` is set; the budget is max **3 tool rounds** per question (searches + page reads + link reads combined)
 - `read_page` **cannot open internal URLs** (LAN hosts, `localhost`, cloud metadata) — the SSRF guard refuses them by design; only public web pages are readable
+- Discord links (`discord.com/channels/...`) are read by `read_discord`, **not** `read_page` — if gork says it couldn't open a Discord page, that routing is why it works
+
+### `read_discord` says it can't read a link
+
+- **Another server**: links pointing at a different guild are refused without any lookup — that server's messages are not this guild's data
+- **The asker can't see it**: reads require the *asking user's* own ViewChannel on the target, not just the bot's — gork can't leak a private channel to someone who can't open it
+- **Open ticket**: unarchived ticket channels are always off-limits (archived ones are readable again)
+- **Deleted message / unknown id / unreadable channel type** (forum, category): graceful `Could not read …` — the model answers from context instead
 
 ### Gork feels slow or drops questions
 

@@ -48,23 +48,29 @@ function describeContext(ctx = {}) {
 }
 
 /**
- * Render the audit "Search" field from the two per-job tool counters.
- * Searches and page reads are counted separately (locked wording):
- * "yes — 2 searches · 1 page read"; "no" when neither tool ran.
+ * Render the audit "Search" field from the per-job tool counters.
+ * Searches, page reads, and link reads (read_discord, §7.19 decision 48)
+ * are counted separately (locked wording):
+ * "yes — 2 searches · 1 page read · 1 link read"; "no" when no tool ran.
  *
  * @param {unknown} searchQueries web_search tool executions
  * @param {unknown} pageReads read_page tool executions
+ * @param {unknown} [linkReads] read_discord tool executions
  * @returns {string}
  */
-function formatToolUsage(searchQueries, pageReads) {
+function formatToolUsage(searchQueries, pageReads, linkReads) {
   const queries = Math.max(0, Math.floor(Number(searchQueries) || 0));
   const pages = Math.max(0, Math.floor(Number(pageReads) || 0));
+  const links = Math.max(0, Math.floor(Number(linkReads) || 0));
   const parts = [];
   if (queries > 0) {
     parts.push(queries === 1 ? "1 search" : `${queries} searches`);
   }
   if (pages > 0) {
     parts.push(pages === 1 ? "1 page read" : `${pages} page reads`);
+  }
+  if (links > 0) {
+    parts.push(links === 1 ? "1 link read" : `${links} link reads`);
   }
   return parts.length ? `yes — ${parts.join(" · ")}` : "no";
 }
@@ -130,6 +136,7 @@ function jumpLink(label, guildId, message) {
  * @param {string} [opts.contextLabel] describeContext() output
  * @param {number} [opts.searchQueries] web_search tool executions (0 = none)
  * @param {number} [opts.pageReads] read_page tool executions (0 = none)
+ * @param {number} [opts.linkReads] read_discord tool executions (0 = none, §7.19)
  * @param {string} [opts.model] AI model used
  * @param {number} [opts.durationMs] wall-clock ms of the LLM call
  * @param {string} [opts.answer] final answer text
@@ -154,6 +161,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     contextLabel,
     searchQueries,
     pageReads,
+    linkReads,
     model,
     durationMs,
     answer,
@@ -170,7 +178,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     const questionValue = question?.trim()
       ? truncateField(question, QUESTION_MAX_CHARS)
       : "(keyword only)";
-    const searchValue = formatToolUsage(searchQueries, pageReads);
+    const searchValue = formatToolUsage(searchQueries, pageReads, linkReads);
     const durationSuffix =
       typeof durationMs === "number" && Number.isFinite(durationMs)
         ? ` / ${(durationMs / 1000).toFixed(1)}s`

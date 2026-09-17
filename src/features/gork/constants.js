@@ -21,6 +21,18 @@ const BUDGET_MAX = 1000;
 /** Max budget rules listed by `/gork budget list` (rest summarized). */
 const BUDGET_RULES_LIST_MAX = 25;
 
+/* read_discord windows & caps (roadmap §7.19.2, decision 45) */
+/** Channel reads: the N most recent messages. */
+const READ_DISCORD_CHANNEL_WINDOW = 50;
+/** Message-link reads: up to N messages before the anchor. */
+const READ_DISCORD_BEFORE_WINDOW = 40;
+/** Message-link reads: up to N messages after the anchor. */
+const READ_DISCORD_AFTER_WINDOW = 10;
+/** Per-message content cap (same family as the context caps). */
+const READ_DISCORD_MESSAGE_CHAR_CAP = 500;
+/** Total output cap for one read (code-point-safe via sliceSafe). */
+const READ_DISCORD_TOTAL_CHAR_CAP = 12000;
+
 module.exports = {
   KEYWORD_MAX,
   CONTEXT_MIN,
@@ -35,4 +47,9 @@ module.exports = {
   BUDGET_MIN,
   BUDGET_MAX,
   BUDGET_RULES_LIST_MAX,
+  READ_DISCORD_CHANNEL_WINDOW,
+  READ_DISCORD_BEFORE_WINDOW,
+  READ_DISCORD_AFTER_WINDOW,
+  READ_DISCORD_MESSAGE_CHAR_CAP,
+  READ_DISCORD_TOTAL_CHAR_CAP,
 };
