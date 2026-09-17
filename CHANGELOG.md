@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.19.0...v1.20.0) (2026-09-17)
+
+
+### Features
+
+* **web:** archive lives in the shell — /g/:guildId/t with sidebar ([c799aea](https://github.com/metalsp0rk/boiler-snake/commit/c799aeae31e40abbb6b18c1e53cf99858fec74f0))
+
 ## [1.19.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.18.0...v1.19.0) (2026-09-17)
 
 
