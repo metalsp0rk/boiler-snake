@@ -34,6 +34,7 @@
 
 const { html } = require("../escape");
 const { renderLayout } = require("../layout");
+const { userRef } = require("../components");
 
 /**
  * @param {number|null|undefined} ms
@@ -72,20 +73,50 @@ function snippet(s, max = 80) {
  * @param {number} opts.page
  * @param {number} opts.pageSize
  * @param {string|null} [opts.guildId] honored ?guild= filter (already vetted)
+ * @param {string} [opts.q] archive search term (route-trimmed)
+ * @param {Map<string, Map<string, string|null>>|null} [opts.namesByGuild]
+ *   guildId -> (userId -> display name|null) from the cache-only seam;
+ *   missing entries render the raw id (never breaks the row)
+ * @param {{href: string, label: string}|null} [opts.consoleLink] way back
+ *   into the console when guild-filtered (route tier-checked)
  * @returns {import("../escape").SafeString}
  */
-function renderTicketIndexContent({ tickets, total, page, pageSize, guildId }) {
+function renderTicketIndexContent({
+  tickets,
+  total,
+  page,
+  pageSize,
+  guildId,
+  q = "",
+  namesByGuild = null,
+  consoleLink = null,
+}) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const filterNote = guildId
     ? html`Guild filter: <code>${guildId}</code>`
     : html`All guilds`;
+  const searchNote = q
+    ? html` · matching <code>${q}</code>`
+    : html``;
+  const consoleNote = consoleLink
+    ? html` · <a class="index-back" href="${consoleLink.href}">${consoleLink.label}</a>`
+    : html``;
 
   const rows = (tickets || []).map((t) => {
     const href = `/t/${encodeURIComponent(t.transcript_token)}`;
+    const names = namesByGuild?.get(t.guild_id) ?? null;
+    const creator = userRef(t.guild_id, String(t.creator_user_id), names);
+    const owner = t.staff_owner_id
+      ? userRef(t.guild_id, String(t.staff_owner_id), names)
+      : html`—`;
     return html`
       <tr>
         <td><a href="${href}">#${String(t.ticket_number)}</a></td>
         <td><code class="gid">${t.guild_id}</code></td>
+        <td class="people">
+          <div class="who">${creator}</div>
+          <div class="who sub">owner ${owner}</div>
+        </td>
         <td>${formatTs(t.closed_at)}</td>
         <td class="reason">${snippet(t.reason, 100)}</td>
         <td class="reason">${snippet(t.close_reason, 80)}</td>
@@ -95,7 +126,9 @@ function renderTicketIndexContent({ tickets, total, page, pageSize, guildId }) {
 
   const empty = rows.length
     ? html``
-    : html`<tr><td colspan="6" class="empty">No archived transcripts yet.</td></tr>`;
+    : q
+      ? html`<tr><td colspan="7" class="empty">No archived transcripts match that search.</td></tr>`
+      : html`<tr><td colspan="7" class="empty">No archived transcripts yet.</td></tr>`;
 
   /**
    * Pager href builder. Composed with the html tag (NOT a URLSearchParams
@@ -107,10 +140,15 @@ function renderTicketIndexContent({ tickets, total, page, pageSize, guildId }) {
    * @returns {import("../escape").SafeString}
    */
   const hrefFor = (p) => {
-    if (guildId && p > 1) return html`/t?guild=${guildId}&page=${p}`;
-    if (guildId) return html`/t?guild=${guildId}`;
-    if (p > 1) return html`/t?page=${p}`;
-    return html`/t`;
+    // Params as an ordered list of SAFE segments joined with raw '&' —
+    // interpolated values stay escaped, the separators stay literal
+    // (same byte trick as before; q rides every pager/filter link).
+    const parts = [];
+    if (guildId) parts.push(html`guild=${guildId}`);
+    if (q) parts.push(html`q=${q}`);
+    if (p > 1) parts.push(html`page=${p}`);
+    if (parts.length === 0) return html`/t`;
+    return html`/t?${parts.reduce((acc, seg) => (acc ? html`${acc}&${seg}` : seg))}`;
   };
 
   const nav =
@@ -126,8 +164,18 @@ function renderTicketIndexContent({ tickets, total, page, pageSize, guildId }) {
         </nav>`
       : html``;
 
+  const searchForm = html`
+  <form class="archive-search" method="get" action="/t">
+    ${guildId ? html`<input type="hidden" name="guild" value="${guildId}">` : html``}
+    <input type="search" name="q" maxlength="100" placeholder="Ticket number or reason text"
+      ${q ? html`value="${q}"` : html``} aria-label="Search archived tickets">
+    <button type="submit">Search</button>
+    ${q ? html`<a class="search-clear" href="${hrefFor(1)}">Clear</a>` : html``}
+  </form>`;
+
   return html`
-  <p class="subheading">${filterNote} · <strong>${total}</strong> transcript${total === 1 ? "" : "s"} · staff use only</p>
+  <p class="subheading">${filterNote}${searchNote}${consoleNote} · <strong>${total}</strong> transcript${total === 1 ? "" : "s"} · staff use only</p>
+  ${searchForm}
   <div class="banner banner-warn" role="status">
     Login is required for every ticket page (§8.1-3). This index lists archived
     transcripts ONLY for guilds where you hold a staff tier; sensitive tickets
@@ -178,13 +226,25 @@ function renderTicketIndexPage({
   page,
   pageSize,
   guildId = null,
+  q = "",
+  namesByGuild = null,
+  consoleLink = null,
   guilds = [],
   degraded = false,
 }) {
   return renderLayout({
     title: "Archived tickets",
     heading: "Archived tickets",
-    content: renderTicketIndexContent({ tickets, total, page, pageSize, guildId }),
+    content: renderTicketIndexContent({
+      tickets,
+      total,
+      page,
+      pageSize,
+      guildId,
+      q,
+      namesByGuild,
+      consoleLink,
+    }),
     guilds,
     currentGuildId: null, // the ticket index is not guild-scoped by URL
     degraded,

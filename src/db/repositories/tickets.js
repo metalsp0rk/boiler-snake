@@ -670,41 +670,71 @@ function listTicketMessages(ticketId) {
     .all(ticketId);
 }
 
+const ARCHIVE_Q_MAX_CHARS = 100;
+
+/**
+ * Optional `q` search clause for the archive listings (§8.15 first-class
+ * archive). Purely additive — empty/missing q yields an EMPTY clause (SQL
+ * byte-identical to before). Numeric-looking q also matches the ticket
+ * NUMBER; every value is a bound parameter and LIKE wildcards are escaped
+ * with a declared ESCAPE char, so user input can never act as SQL or as a
+ * pattern. Guild allow-listing stays entirely in the caller's WHERE.
+ * @param {unknown} rawQ
+ * @returns {{ sql: string, params: (string|number)[] }}
+ */
+function archiveSearchClause(rawQ) {
+  const str = String(rawQ ?? "").trim().slice(0, ARCHIVE_Q_MAX_CHARS);
+  if (!str) return { sql: "", params: [] };
+  const like = "%" + str.replace(/[\\%_]/g, (c) => "\\" + c) + "%";
+  if (/^\d{1,9}$/.test(str)) {
+    return {
+      sql: " AND (ticket_number = ? OR reason LIKE ? ESCAPE '\\' OR close_reason LIKE ? ESCAPE '\\')",
+      params: [Number(str), like, like],
+    };
+  }
+  return {
+    sql: " AND (reason LIKE ? ESCAPE '\\' OR close_reason LIKE ? ESCAPE '\\')",
+    params: [like, like],
+  };
+}
+
 /**
  * Content-archived tickets (non-sensitive full archive with transcript).
  * @param {object} [opts]
  * @param {string} [opts.guildId] filter to one guild
  * @param {number} [opts.limit=50]
  * @param {number} [opts.offset=0]
+ * @param {string} [opts.q] optional search term (see archiveSearchClause)
  * @returns {object[]}
  */
 function listArchivedTickets(opts = {}) {
   const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
   const offset = Math.max(Number(opts.offset) || 0, 0);
+  const search = archiveSearchClause(opts.q);
 
   if (opts.guildId) {
     return db
       .prepare(
         `
       SELECT * FROM tickets
-      WHERE guild_id=? AND archived=1 AND transcript_token IS NOT NULL
+      WHERE guild_id=? AND archived=1 AND transcript_token IS NOT NULL${search.sql}
       ORDER BY closed_at DESC, ticket_number DESC
       LIMIT ? OFFSET ?
     `
       )
-      .all(opts.guildId, limit, offset);
+      .all(opts.guildId, ...search.params, limit, offset);
   }
 
   return db
     .prepare(
       `
     SELECT * FROM tickets
-    WHERE archived=1 AND transcript_token IS NOT NULL
+    WHERE archived=1 AND transcript_token IS NOT NULL${search.sql}
     ORDER BY closed_at DESC, guild_id ASC, ticket_number DESC
     LIMIT ? OFFSET ?
   `
     )
-    .all(limit, offset);
+    .all(...search.params, limit, offset);
 }
 
 /**
@@ -713,25 +743,26 @@ function listArchivedTickets(opts = {}) {
  * @returns {number}
  */
 function countArchivedTickets(opts = {}) {
+  const search = archiveSearchClause(opts.q);
   if (opts.guildId) {
     const row = db
       .prepare(
         `
       SELECT COUNT(*) AS n FROM tickets
-      WHERE guild_id=? AND archived=1 AND transcript_token IS NOT NULL
+      WHERE guild_id=? AND archived=1 AND transcript_token IS NOT NULL${search.sql}
     `
       )
-      .get(opts.guildId);
+      .get(opts.guildId, ...search.params);
     return Number(row?.n || 0);
   }
   const row = db
     .prepare(
       `
     SELECT COUNT(*) AS n FROM tickets
-    WHERE archived=1 AND transcript_token IS NOT NULL
+    WHERE archived=1 AND transcript_token IS NOT NULL${search.sql}
   `
     )
-    .get();
+    .get(...search.params);
   return Number(row?.n || 0);
 }
 
@@ -821,36 +852,38 @@ function listArchivedTicketsForGuilds(opts = {}) {
   const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const placeholders = ids.map(() => "?").join(",");
+  const search = archiveSearchClause(opts.q);
   return db
     .prepare(
       `
     SELECT * FROM tickets
     WHERE archived=1 AND transcript_token IS NOT NULL
-      AND guild_id IN (${placeholders})
+      AND guild_id IN (${placeholders})${search.sql}
     ORDER BY closed_at DESC, guild_id ASC, ticket_number DESC
     LIMIT ? OFFSET ?
   `
     )
-    .all(...ids, limit, offset);
+    .all(...ids, ...search.params, limit, offset);
 }
 
 /**
  * @param {string[]} guildIds pre-vetted guild allow-list
  * @returns {number}
  */
-function countArchivedTicketsForGuilds(guildIds) {
+function countArchivedTicketsForGuilds(guildIds, q) {
   const ids = normalizeGuildIdList(guildIds);
   if (ids.length === 0) return 0;
   const placeholders = ids.map(() => "?").join(",");
+  const search = archiveSearchClause(q);
   const row = db
     .prepare(
       `
     SELECT COUNT(*) AS n FROM tickets
     WHERE archived=1 AND transcript_token IS NOT NULL
-      AND guild_id IN (${placeholders})
+      AND guild_id IN (${placeholders})${search.sql}
   `
     )
-    .get(...ids);
+    .get(...ids, ...search.params);
   return Number(row?.n || 0);
 }
 

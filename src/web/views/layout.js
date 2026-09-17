@@ -73,6 +73,13 @@ const NAV_GROUPS = Object.freeze([
       { suffix: "/notes", label: "Staff notes" },
       { suffix: "/xp/grant", label: "Grant XP", minTier: "admin" },
       { suffix: "/tickets", label: "Ticket actions", minTier: "senior" },
+      // §8.15 first-class archive: canonical /t surface, pre-filtered to
+      // this guild (the route already scopes ?guild= to staffed guilds).
+      {
+        label: "Ticket archive",
+        minTier: "staff",
+        abs: (guildId) => `/t?guild=${guildId}`,
+      },
     ],
   },
   {
@@ -108,10 +115,14 @@ function renderSideNav(guildId, tier, path) {
     const items = group.items
       .filter((it) => (TIER_RANK[it.minTier] ?? 1) <= rank)
       .map((it) => {
+        // abs items leave the /g/ shell (e.g. the /t archive) — never
+        // "active" here, since the active path lives inside the shell.
+        const href = typeof it.abs === "function" ? it.abs(guildId) : `${base}${it.suffix}`;
         const active =
-          sub === it.suffix ||
-          (it.suffix !== "" && sub.startsWith(`${it.suffix}/`));
-        return html`<a href="${base}${it.suffix}"${
+          typeof it.abs !== "function" &&
+          (sub === it.suffix ||
+            (it.suffix !== "" && sub.startsWith(`${it.suffix}/`)));
+        return html`<a href="${href}"${
           active ? raw(' class="active" aria-current="page"') : html``
         }>${it.label}</a>`;
       });

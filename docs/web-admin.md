@@ -55,6 +55,7 @@ different areas — items you don't have tier for are hidden. Pages:
 - **`/g/{guildId}/users`, `/leaderboard`** — member search, XP detail, leaderboard (same data as `/xp` / `/leaderboard`)
 - **`/g/{guildId}/moderation`** — warnings (`/warn` twin), staff notes (`/note` twin), ticket moderation
 - **`/g/{guildId}/tickets`** — ticket actions page (**senior**): open-ticket list with claim/close/summarize (transcripts: `/t`)
+- **`/t`** — the **archive** (staff+): every content-archived transcript from your staffed guilds. Search by ticket number or reason text, filter by guild (`/t?guild=…`), see creator/owner names, and jump back into the console. Transcripts themselves are immutable archived documents
 - **`/g/{guildId}/settings`** — read view of every guild setting + staff-tier writes (command channels, level roles, integrations, cooldowns, decay, …)
 - **`/g/{guildId}/staff`** — staff roles + command-visibility panel (incl. `/staff syncpermissions` trigger)
 - **`/g/{guildId}/integrations`** — YouTube / Twitch watches, reaction roles, event reminders, honeypot

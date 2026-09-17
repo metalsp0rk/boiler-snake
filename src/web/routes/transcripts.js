@@ -58,6 +58,7 @@ const {
   resolveAssetAbsolutePath,
   contentTypeForFilename,
 } = require("../../features/tickets/assets");
+const { resolveMemberNames } = require("./shared/discord-cache");
 const { renderTicketIndexPage } = require("../views/tickets/indexPage");
 const { writeShellHtml } = require("../views/layout");
 const { createGuildAccessResolver } = require("../auth/guildAccess");
@@ -186,25 +187,70 @@ async function serveArchiveIndex(req, res, url, ctx) {
   let page = Number(url.searchParams.get("page") || 1);
   if (!Number.isFinite(page) || page < 1) page = 1;
 
+  // §8.15 first-class archive: free-text/number search. The clause is built
+  // parameterized in the repo (escapes LIKE wildcards); it narrows rows but
+  // NEVER widens scope — guild allow-listing is untouched above.
+  const q = String(url.searchParams.get("q") || "").trim().slice(0, 100);
+
   const scoped = staffed.guildIds.length > 0;
   let total = 0;
   let tickets = [];
   if (scoped) {
     total = guildId
-      ? countArchivedTickets({ guildId })
-      : countArchivedTicketsForGuilds(staffed.guildIds);
+      ? countArchivedTickets({ guildId, q })
+      : countArchivedTicketsForGuilds(staffed.guildIds, q);
 
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
     if (page > totalPages) page = totalPages;
 
     const offset = (page - 1) * PAGE_SIZE;
     tickets = guildId
-      ? listArchivedTickets({ guildId, limit: PAGE_SIZE, offset })
+      ? listArchivedTickets({ guildId, limit: PAGE_SIZE, offset, q })
       : listArchivedTicketsForGuilds({
           guildIds: staffed.guildIds,
           limit: PAGE_SIZE,
           offset,
+          q,
         });
+  }
+
+  // People cells resolve display names per row's guild via the shared
+  // cache-only seam (misses enqueue background fetches; §8.6 doctrine).
+  const namesByGuild = new Map();
+  if (typeof ctx.getClient === "function" && tickets.length > 0) {
+    const idsByGuild = new Map();
+    for (const t of tickets) {
+      const ids = idsByGuild.get(t.guild_id) ?? new Set();
+      for (const id of [t.creator_user_id, t.staff_owner_id, t.closed_by_user_id]) {
+        if (id) ids.add(String(id));
+      }
+      idsByGuild.set(t.guild_id, ids);
+    }
+    for (const [g, set] of idsByGuild) {
+      if (set.size > 0) {
+        namesByGuild.set(g, resolveMemberNames(ctx.getClient, g, [...set]));
+      }
+    }
+  }
+
+  // Guild-filtered views get an honest way back INTO the console:
+  // senior+ sees the open-ticket actions page, staff the guild dashboard
+  // (staff has no /tickets actions access — never link a guaranteed 404).
+  let consoleLink = null;
+  if (guildId) {
+    let tier = null;
+    try {
+      const access = await ctx.guildAccess.resolve(req.webSession, guildId);
+      tier = access?.tier ?? null;
+    } catch {
+      tier = null; // link is a convenience; its absence can't fail the page
+    }
+    consoleLink =
+      tier === "senior" || tier === "admin"
+        ? { href: `/g/${guildId}/tickets`, label: "Open tickets →" }
+        : tier
+          ? { href: `/g/${guildId}`, label: "Guild dashboard →" }
+          : null;
   }
 
   const document = renderTicketIndexPage({
@@ -215,6 +261,9 @@ async function serveArchiveIndex(req, res, url, ctx) {
     page,
     pageSize: PAGE_SIZE,
     guildId,
+    q,
+    namesByGuild,
+    consoleLink,
     guilds: staffed.guilds,
     degraded: staffed.degraded,
   });
@@ -385,6 +434,7 @@ async function dispatchTranscripts(req, res, ctx) {
  * @param {{resolve: Function, listGuilds: Function}} [options.guildAccess]
  * @param {string} [options.apiBase] @param {typeof fetch} [options.fetchImpl]
  * @param {() => Promise<string[]>|string[]} [options.botGuilds]
+ * @param {(() => object|null)|null} [options.getClient] live client thunk (names)
  */
 function registerTranscriptRoutes(app, options = {}) {
   const guildAccess =
@@ -397,6 +447,8 @@ function registerTranscriptRoutes(app, options = {}) {
   const ctx = Object.freeze({
     guildAccess,
     ticketAccess: createTicketAccessResolver({ guildAccess }),
+    // Optional live bot client for name resolution (dark boot ⇒ raw ids).
+    getClient: typeof options.getClient === "function" ? options.getClient : null,
   });
 
   // Express 5 forwards rejected async handlers to the app error middleware

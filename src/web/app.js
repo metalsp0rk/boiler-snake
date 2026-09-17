@@ -277,6 +277,7 @@ function createWebApp(options = {}) {
     apiBase: options.apiBase,
     fetchImpl: options.fetchImpl,
     botGuilds: options.botGuilds,
+    getClient: options.getClient,
   });
   // Users surface (Phase 1, subtask 15): unified profile + senior Activity tab
   // (§8.6). Registered AFTER the guild shell so /g/:guildId guildScope runs
