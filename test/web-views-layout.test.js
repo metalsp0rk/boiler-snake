@@ -734,7 +734,7 @@ describe("vendored htmx + app.js wiring", () => {
     const { HTMX_SRC, APP_SRC, STYLES_SRC } = require("../src/web/views/layout");
     for (const srcPath of [HTMX_SRC, APP_SRC, STYLES_SRC]) {
       assert.ok(srcPath.startsWith("/static/"), srcPath);
-      const abs = path.join(PUBLIC_DIR, srcPath.replace("/static/", ""));
+      const abs = path.join(PUBLIC_DIR, srcPath.replace("/static/", "").split("?")[0]);
       assert.ok(fs.existsSync(abs), `${srcPath} → ${abs} missing`);
     }
   });

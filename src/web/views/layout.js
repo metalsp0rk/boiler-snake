@@ -32,10 +32,20 @@
 const { html, raw } = require("./escape");
 const { tierBadge, degradedBanner } = require("./components");
 
+/**
+ * ASSET CACHE-BUSTING (§8.7): /static/* is served immutable, max-age=1y,
+ * no ETag/Last-Modified — the URL is the ONLY invalidation lever. UX v1.1
+ * proved the doctrine bites: bare "/static/styles.css" pinned one-year-old
+ * CSS against new markup (unstyled sidebar). The release version rides as
+ * a query and changes on every release; htmx stays filename-stamped.
+ * (The static middleware ignores queries when resolving files.)
+ */
+const ASSET_VERSION = require("../../../package.json").version;
+
 /** Vendored htmx — bump together with the file under public/vendor (§8.7). */
 const HTMX_SRC = "/static/vendor/htmx.2.0.10.min.js";
-const APP_SRC = "/static/app.js";
-const STYLES_SRC = "/static/styles.css";
+const APP_SRC = `/static/app.js?v=${ASSET_VERSION}`;
+const STYLES_SRC = `/static/styles.css?v=${ASSET_VERSION}`;
 
 /**
  * LEFT SIDEBAR NAV (UX v1.1, roadmap/web-admin.md §8.15). Static definition:
