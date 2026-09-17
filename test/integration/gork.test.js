@@ -1173,12 +1173,13 @@ describe("integration: gork (AI keyword Q&A)", () => {
       assert.equal(chat.length, 2, "two chat round trips");
       assert.equal(page.length, 1, "the tool fetched the page once");
 
-      // Both tools offered to the model when search is enabled.
+      // All three tools offered when search is enabled (read_discord is
+      // always on — decision 44).
       const firstBody = JSON.parse(chat[0].init.body);
       const toolNames = (firstBody.tools || [])
         .map((t) => t.function.name)
         .sort();
-      assert.deepEqual(toolNames, ["read_page", "web_search"]);
+      assert.deepEqual(toolNames, ["read_discord", "read_page", "web_search"]);
 
       // Extracted page content entered the conversation as a tool result;
       // scripts/nav stripped by extraction.
@@ -2231,9 +2232,17 @@ describe("integration: gork community memory (§7.16)", () => {
         !userMsg.content.includes("What you remember"),
         `prompt must carry NO memory block: ${userMsg.content}`
       );
+      // read_discord is always on (decision 44), so the payload always
+      // carries a tools array now. The memory-inert claim is narrower and
+      // unchanged: recall_memories is absent when memory is off.
+      const offToolNames = (body.tools || []).map((t) => t.function.name);
       assert.ok(
-        !("tools" in body),
-        "payload must carry NO tools array (recall_memories absent) when memory is off"
+        offToolNames.includes("read_discord"),
+        "read_discord is offered unconditionally (decision 44)"
+      );
+      assert.ok(
+        !offToolNames.includes("recall_memories"),
+        `recall_memories must be absent when memory is off: ${offToolNames}`
       );
 
       assert.ok(
@@ -2339,8 +2348,8 @@ describe("integration: gork community memory (§7.16)", () => {
       const toolNames = (body.tools || []).map((t) => t.function.name);
       assert.deepEqual(
         toolNames,
-        ["recall_memories"],
-        "recall_memories ships alongside (and only without) the disabled search tools"
+        ["read_discord", "recall_memories"],
+        "recall_memories ships alongside the always-on read_discord (search off)"
       );
 
       // Both covered by the drain above: audit embed landed and the
@@ -2678,6 +2687,321 @@ describe("integration: gork community memory (§7.16)", () => {
       assert.ok(auditAll.includes("/gork memory"), auditAll);
     } finally {
       restoreEnv(saved);
+    }
+  });
+
+  // ---------- §7.19 read_discord (always-on linked message/channel reader) ----------
+
+  /** A model turn calling read_discord with one link arg. */
+  function readDiscordToolCall(id, link) {
+    return chatCompletionResponse(null, {
+      tool_calls: [
+        {
+          id,
+          type: "function",
+          function: {
+            name: "read_discord",
+            arguments: JSON.stringify({ link }),
+          },
+        },
+      ],
+    });
+  }
+
+  /** Add a text channel seeded with messages to the env guild. */
+  function addSeedChannel(env, { id, name, seeds }) {
+    const ch = env.createTextChannel({ id, guild: env.guild, name });
+    env.guild.addChannel(ch);
+    seeds.forEach((s, i) =>
+      ch.addMessage({
+        id: s.id,
+        content: s.content,
+        author: s.author || env.users.member2User,
+        createdTimestamp: Date.UTC(2026, 8, 16, 12, 0, i),
+      })
+    );
+    return ch;
+  }
+
+  /** The tool-result content fed back on the NEXT chat call (second call). */
+  function toolResultOf(fetchMock) {
+    const chat = fetchMock.calls.filter((c) =>
+      c.url.includes("/chat/completions")
+    );
+    const body = JSON.parse(chat[1].init.body);
+    return body.messages
+      .filter((m) => m.role === "tool")
+      .map((m) => m.content)
+      .join("\n");
+  }
+
+  it("read_discord: channel mention read feeds history into the answer — tool always on, chat-only loop", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-rdchan") });
+    const saved = saveEnv();
+    const target = addSeedChannel(env, {
+      id: "chan-rd-target",
+      name: "decisions",
+      seeds: [
+        { id: "r1", content: "we should pick a database" },
+        { id: "r2", content: "DECISION: SQLite it is, no exceptions" },
+        { id: "r3", content: "agreed, shipping tonight" },
+      ],
+    });
+    const fetchMock = mockFetch([
+      readDiscordToolCall("call_rd1", `<#${target.id}>`),
+      chatCompletionResponse("You locked in SQLite — decided in #decisions."),
+    ]);
+    try {
+      enableAiKey();
+      delete process.env.SEARXNG_URL; // search OFF — read_discord stands alone
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-rdchan-1",
+        content: `gork: what did we decide here? <#${target.id}>`,
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.match(replies[0].content, /SQLite/i);
+
+      // Decision 44: with search unconfigured and memory off, the payload
+      // STILL carries the always-on reader.
+      const firstBody = JSON.parse(fetchMock.calls[0].init.body);
+      assert.deepEqual(
+        (firstBody.tools || []).map((t) => t.function.name),
+        ["read_discord"],
+        "read_discord is offered unconditionally"
+      );
+
+      // Decision 45/47: fetched history returns as tool DATA, oldest→newest.
+      const toolMsg = toolResultOf(fetchMock);
+      assert.ok(toolMsg, "tool result must feed the second chat call");
+      assert.ok(
+        toolMsg.includes("@member2: DECISION: SQLite it is, no exceptions"),
+        `fetched lines: ${toolMsg.slice(0, 200)}`
+      );
+      assert.ok(
+        toolMsg.indexOf("pick a database") < toolMsg.indexOf("shipping tonight"),
+        "oldest → newest"
+      );
+
+      // The read is a Discord-side data path — zero HTTP round trips beyond chat.
+      assert.equal(
+        fetchMock.calls.filter((c) => !c.url.includes("/chat/completions"))
+          .length,
+        0,
+        "a channel read never touches HTTP"
+      );
+
+      // Decision 48: the Q&A audit gains the link-read tally.
+      const auditText = embedText(env.channels.log.sent[0].embeds[0]);
+      assert.ok(auditText.includes("yes — 1 link read"), auditText);
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("read_discord: message link reads the anchor window with the anchor marked", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-rdmsg") });
+    const saved = saveEnv();
+    const target = addSeedChannel(env, {
+      id: "chan-rd-msg",
+      name: "rolling-thread",
+      seeds: [
+        { id: "m1", content: "before one" },
+        { id: "m2", content: "before two" },
+        { id: "m3", content: "THE ANCHORED POINT" },
+        { id: "m4", content: "after one" },
+        { id: "m5", content: "after two" },
+      ],
+    });
+    const link = `https://discord.com/channels/${env.guild.id}/${target.id}/m3`;
+    const fetchMock = mockFetch([
+      readDiscordToolCall("call_rd2", link),
+      chatCompletionResponse("The anchored point was raised mid-thread."),
+    ]);
+    try {
+      enableAiKey();
+      delete process.env.SEARXNG_URL;
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-rdmsg-1",
+        content: `gork: context around this? ${link}`,
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.match(replies[0].content, /anchored/i);
+
+      const toolMsg = toolResultOf(fetchMock);
+      const lines = toolMsg.split("\n");
+      assert.equal(lines.length, 5, "whole five-message window");
+      assert.ok(
+        lines[2].includes("THE ANCHORED POINT [LINKED MESSAGE]"),
+        `anchor line carries the marker: ${lines[2]}`
+      );
+      assert.equal(
+        lines.filter((l) => l.includes("[LINKED MESSAGE]")).length,
+        1,
+        "exactly one anchor"
+      );
+      assert.ok(
+        lines.every((l, i) => i === 0 || l.split(" ")[0] >= lines[i - 1].split(" ")[0]),
+        "ids ascending = oldest → newest"
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("read_discord: denies channels the ASKER cannot view — bot-only access is not enough", async () => {
+    const { PermissionFlagsBits } = require("discord.js");
+    const env = await freshEnv({ guildId: uniqueId("guild-rdparity") });
+    const saved = saveEnv();
+    const target = addSeedChannel(env, {
+      id: "chan-rd-parity",
+      name: "surprise-party",
+      seeds: [{ id: "p1", content: "CLASSIFIED: surprise party for gork" }],
+    });
+    // The ASKER (IDS.member) cannot view the channel; the bot can.
+    target.permissionsFor = (member) => ({
+      has: (flag) =>
+        !(
+          String(member?.id ?? "") === IDS.member &&
+          flag === PermissionFlagsBits.ViewChannel
+        ),
+    });
+    const fetchMock = mockFetch([
+      readDiscordToolCall("call_rd3", `<#${target.id}>`),
+      chatCompletionResponse("I could not open that channel for you."),
+    ]);
+    try {
+      enableAiKey();
+      delete process.env.SEARXNG_URL;
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-rdparity-1",
+        content: `gork: read me this <#${target.id}>`,
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      // The loop CONTINUES on the denial (never-throws contract)…
+      assert.match(replies[0].content, /could not open/i);
+      // …and the tool data carries the failure string, never the content.
+      const toolMsg = toolResultOf(fetchMock);
+      assert.ok(toolMsg.includes("Could not read"), toolMsg);
+      assert.ok(!toolMsg.includes("CLASSIFIED"), "no content leak through the denial");
+      assert.ok(/asking user cannot view/.test(toolMsg), toolMsg);
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("read_discord: open ticket channels are always refused (decision 19's read-path close)", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-rdticket") });
+    const saved = saveEnv();
+    const target = addSeedChannel(env, {
+      id: "chan-rd-ticket",
+      name: "ticket-7",
+      seeds: [{ id: "k1", content: "PRIVATE: billing dispute details" }],
+    });
+    env.db.createTicket({
+      guildId: env.guild.id,
+      creatorUserId: IDS.member2,
+      channelId: target.id,
+      reason: "billing dispute",
+    });
+    const fetchMock = mockFetch([
+      readDiscordToolCall("call_rd4", `<#${target.id}>`),
+      chatCompletionResponse("Tickets stay private."),
+    ]);
+    try {
+      enableAiKey();
+      delete process.env.SEARXNG_URL;
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-rdticket-1",
+        content: `gork: what is happening in <#${target.id}>?`,
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.match(replies[0].content, /private/i);
+      const toolMsg = toolResultOf(fetchMock);
+      assert.ok(toolMsg.includes("open help ticket"), toolMsg);
+      assert.ok(!toolMsg.includes("PRIVATE"), "no ticket leak");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("read_page refuses discord.com links and routes the model to read_discord (no HTTP wasted)", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-rdroute") });
+    const saved = saveEnv();
+    const discordUrl = `https://discord.com/channels/${env.guild.id}/${IDS.channelGeneral}/123456789012345678`;
+    const fetchMock = mockFetch([
+      chatCompletionResponse(null, {
+        tool_calls: [
+          {
+            id: "call_rp_bad",
+            type: "function",
+            function: {
+              name: "read_page",
+              arguments: JSON.stringify({ urls: [discordUrl] }),
+            },
+          },
+        ],
+      }),
+      chatCompletionResponse("That was a Discord link — wrong tool, no HTTP fired."),
+    ]);
+    try {
+      enableAiKey();
+      process.env.SEARXNG_URL = "https://searxng.test";
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_search_enabled: 1,
+      });
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-rdroute-1",
+        content: `gork: what does this say? ${discordUrl}`,
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.match(replies[0].content, /discord link/i);
+      const toolMsg = toolResultOf(fetchMock);
+      assert.ok(toolMsg.includes("Could not read"), toolMsg);
+      assert.ok(toolMsg.includes("read_discord"), "refusal points at the right tool");
+      assert.equal(
+        fetchMock.calls.filter((c) => c.url.includes("discord.com")).length,
+        0,
+        "the misroute fired zero HTTP fetches"
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
     }
   });
 });

@@ -1021,7 +1021,7 @@ into the audit call) + the optional `Channel` field in `audit.js`; unit tests in
 
 ---
 
-### 7.19 Linked message / channel reading — `read_discord` tool — 2026-09 design (LOCKED 2026-09-16 — decisions 44–48; implementation pending)
+### 7.19 Linked message / channel reading — `read_discord` tool — 2026-09 design (LOCKED 2026-09-16 — decisions 44–48; shipped)
 
 **Why:** gork keeps running into Discord links it can't see — a question like "what did
 they decide in this thread? <#…>" or a pasted message link (including gork's own audit
@@ -1120,27 +1120,29 @@ above; revisit only if a guild needs it disabled); attachment/embed body reading
 cross-guild reads; model-controlled window params; message **search** (link/mention
 targets only); writing anything to Discord.
 
-**Implementation checklist (pending):**
+**Implementation checklist (done — PR `feat/gork-read-discord`):**
 
-- [ ] `src/features/gork/tools/readDiscord.js` — link parser (message URL / channel
+- [x] `src/features/gork/tools/readDiscord.js` — link parser (message URL / channel
       URL / `<#id>` / bare id), guild isolation, asker-parity + ticket blackout
       checks, fetch windows, formatter; never-throws executor; injected `fetcher`
       seam for tests (context.js pattern)
-- [ ] `trigger.js` — push `READ_DISCORD_TOOL` into the shared `tools[]`
+- [x] `trigger.js` — push `READ_DISCORD_TOOL` into the shared `tools[]`
       (unconditionally), `linkReads` counter in `executeTool` + audit call
-- [ ] `readPage.js` — refuse `discord.com/channels/...` URLs (graceful string
+- [x] `readPage.js` — refuse `discord.com/channels/...` URLs (graceful string
       pointing at `read_discord`)
-- [ ] `constants.js` — window sizes (50/40/10) + char caps; `audit.js` —
+- [x] `constants.js` — window sizes (50/40/10) + char caps; `audit.js` —
       `Link reads` label
-- [ ] Unit tests (`test/gork.test.js`) — parsing forms + garbage, cross-guild
-      reject, window math with injected fetchers (missing edges, deleted anchor),
-      parity/blackout denials, truncation, failure strings
-- [ ] Integration tests (`test/integration/gork.test.js`) — mocked tool loop:
+- [x] Unit tests — `test/gork-read-discord.test.js` (read-page's one-file-per-tool
+      precedent instead of appending to `gork.test.js`): parsing forms + garbage,
+      cross-guild reject, window math with injected fetchers (missing edges,
+      deleted anchor), parity/blackout denials, truncation, failure strings
+- [x] Integration tests (`test/integration/gork.test.js`) — mocked tool loop:
       channel read answers from fetched content; message-link read window; asker
       parity denial; open-ticket denial; read_page discord-URL refusal
-- [ ] `docs/gork.md` + `docs/commands/index.md` mention (no new command) +
+      (fake-harness `messages.fetch` gained the REST `after:` selection contract)
+- [x] `docs/gork.md` + `docs/commands/index.md` mention (no new command) +
       `npm run docs:build`
-- [ ] Tick this checklist + §8 in `index.md`; status line here → shipped
+- [x] Tick this checklist + §8 in `index.md`; status line here → shipped
 
 ---
 

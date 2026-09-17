@@ -27,6 +27,7 @@ const { IDS, uniqueId } = require("../helpers/fixtures");
 const { LLM_FAILURE_REPLY } = require("../../src/features/gork/trigger");
 const { GORK_BASE_PROMPT } = require("../../src/features/gork/prompt");
 const { ENV_KEYS: IL_ENV_KEYS } = require("../../src/features/gork/interactionLog");
+const { READ_DISCORD_TOOL } = require("../../src/features/gork/tools/readDiscord");
 
 // ---------- env hygiene (same local save/restore pair as gork.test.js) ----------
 
@@ -323,10 +324,13 @@ describe("integration: gork interaction log", () => {
         maxToolRounds: 3,
         thinkingTokenBudget: 0,
       });
-      assert.equal(
+      // read_discord is ALWAYS on (decision 44): even with SEARXNG_URL
+      // unset and memory off, the tools column snapshots exactly the
+      // reader — the payload is never tool-less anymore.
+      assert.deepEqual(
         j(qa.tools),
-        null,
-        "no SEARXNG_URL + memory off → no tools column (call byte-identical to no-log)",
+        [READ_DISCORD_TOOL],
+        "no SEARXNG_URL + memory off → exactly the always-on read_discord",
       );
 
       // Settings snapshot of the guild at call time (NOT NULL column defaults
@@ -464,10 +468,11 @@ describe("integration: gork interaction log", () => {
       assert.equal(qa.status, "shipped");
       assert.equal(qa.tool_call_count, 1, "one web_search executed");
 
-      // Tools column: the exact schemas sent, in wire order (search enabled)
+      // Tools column: the exact schemas sent, in wire order (search
+      // enabled; read_discord first — always-on reader, decision 44)
       assert.deepEqual(
         j(qa.tools).map((t) => t.function.name),
-        ["web_search", "read_page"],
+        ["read_discord", "web_search", "read_page"],
       );
 
       // Full ordered transcript of the loop, attempt-tagged on every event

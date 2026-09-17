@@ -46,6 +46,10 @@ const {
 } = require("./tools/webSearch");
 const { READ_PAGE_TOOL, executeReadPage } = require("./tools/readPage");
 const {
+  READ_DISCORD_TOOL,
+  executeReadDiscord,
+} = require("./tools/readDiscord");
+const {
   RECALL_MEMORIES_TOOL,
   executeRecallMemory,
 } = require("./tools/recallMemories");
@@ -875,14 +879,19 @@ async function runGorkHook(client, message) {
         // separate search / page-read tallies, not the combined total).
         let searches = 0;
         let reads = 0;
+        // §7.19: read_discord tool runs counted for the audit "Link reads"
+        // label (decision 48). Failing reads count too (a run is a run).
+        let linkReads = 0;
         // §7.16 recall counters: tool runs + memories actually fetched
         // (found ids only) for the Q&A audit's Memory label (decision 27).
         let recalls = 0;
         let recalled = 0;
-        // §7.16 (decision 27): shared tool array — search pair and/or
-        // recall_memories; empty stays `undefined` (payload unchanged when
-        // both features are off).
-        const tools = [];
+        // §7.16 (decision 27) + §7.19 (decision 44): shared tool array —
+        // read_discord is ALWAYS on (no setting, no toggle); the search
+        // pair and/or recall_memories join when their features are on.
+        // (The array is never empty now, so the "empty stays undefined"
+        // payload note is moot for the tool array itself.)
+        const tools = [READ_DISCORD_TOOL];
         if (searchOn) tools.push(WEB_SEARCH_TOOL, READ_PAGE_TOOL);
         if (memoryOn) tools.push(RECALL_MEMORIES_TOOL);
         // Fix 2: the roster block is computed ONCE here (previously inline
@@ -923,6 +932,17 @@ async function runGorkHook(client, message) {
               // The tool module coerces/dedupes/caps urls itself; pass
               // the raw args through (never throws).
               return executeReadPage(args);
+            }
+            if (name === "read_discord") {
+              linkReads += 1;
+              // Never throws (§7.19.4): parses the link itself, gates on
+              // guild isolation + asker parity + open-ticket blackout,
+              // and resolves a graceful failure string on any denial.
+              return executeReadDiscord(args?.link, {
+                guildId,
+                guild: message.guild,
+                askerId: message.author.id,
+              });
             }
             if (name === "recall_memories") {
               recalls += 1;
@@ -1128,6 +1148,8 @@ async function runGorkHook(client, message) {
               contextLabel: describeContext(ctx),
               searchQueries: searches,
               pageReads: reads,
+              // §7.19 (decision 48): read_discord runs join the tally.
+              linkReads,
               model: cfg.model,
               durationMs: res.durationMs,
               answer: capped,

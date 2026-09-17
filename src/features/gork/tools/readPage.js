@@ -548,6 +548,29 @@ function normalizeUrls(raw) {
 
 /* ------------------------------ per page ------------------------------- */
 
+/**
+ * Whether a URL is a Discord channel/message link (§7.19 decision 44).
+ * `read_page` reads the public web only — Discord links belong to
+ * `read_discord` (which has the guild-isolation / asker-parity /
+ * ticket-blackout semantics); refusing here saves a doomed HTTP fetch
+ * and tells the model where to go.
+ * @param {unknown} rawUrl
+ * @returns {boolean}
+ */
+function isDiscordChannelUrl(rawUrl) {
+  let host = "";
+  let path = "";
+  try {
+    const parsed = new URL(String(rawUrl).trim());
+    host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    path = parsed.pathname || "";
+  } catch {
+    return false;
+  }
+  const isDiscordHost = host === "discord.com" || host === "discordapp.com";
+  return isDiscordHost && path.startsWith("/channels/");
+}
+
 function hostnameOf(rawUrl) {
   try {
     return new URL(String(rawUrl).trim()).hostname;
@@ -565,6 +588,14 @@ function hostnameOf(rawUrl) {
  */
 async function readOneUrl(rawUrl, deps) {
   try {
+    // §7.19 (decision 44): Discord links route to read_discord — refuse
+    // pre-fetch so a misroute wastes no HTTP request.
+    if (isDiscordChannelUrl(rawUrl)) {
+      return failBlock(
+        rawUrl,
+        "Discord link — use the read_discord tool for discord.com channel/message links",
+      );
+    }
     const fetched = await fetchReadablePage(rawUrl, deps);
     if (!fetched.ok) return failBlock(rawUrl, fetched.reason);
 
@@ -652,6 +683,7 @@ module.exports = Object.freeze({
   normalizeUrls,
   isPublicAddress,
   isBlockedHostname,
+  isDiscordChannelUrl,
   DEFAULT_TIMEOUT_MS,
   MAX_URLS,
   MAX_PAGE_CHARS,
