@@ -390,9 +390,28 @@ const ALLOWED = {
   unknown: new Set(),
 };
 
+/**
+ * §8.15-15.13: ticket-surface login redirects carry the whitelisted
+ * ?next return path (mirrors routes/transcripts.js ticketLoginNext —
+ * keep in lockstep; the round-trip suite proves the REAL behavior).
+ */
+function ticketLoginLocation(urlPath) {
+  if (urlPath === "/t" || urlPath === "/t/") return "/auth/login?next=%2Ft";
+  const m = urlPath.match(/^\/t\/([0-9a-fA-F-]{36})(?:\/raw|\/assets\/.*)?\/?$/);
+  return m
+    ? `/auth/login?next=${encodeURIComponent(`/t/${m[1].toLowerCase()}`)}`
+    : "/auth/login";
+}
+
 function outcome(viewerKey, ticketKey, surface) {
   const t = T[ticketKey];
-  if (viewerKey === "anon") return harness.expectLoginRedirect("/auth/login"); // §8.1-3
+  if (viewerKey === "anon") {
+    // §8.1-3 + §8.15-15.13: login redirect WITH the ticket ?next
+    return harness.expectLoginRedirect(
+      `/auth/login?next=${encodeURIComponent(`/t/${t.token}`)
+      }`
+    );
+  }
   if (ALLOWED[ticketKey].has(viewerKey)) {
     return surface === "asset"
       ? harness.expectAssetOk(harness.PNG)
@@ -595,7 +614,7 @@ describe("C | login-mandatory sweep (§8.1-3)", () => {
       await harness.runOutcome({
         base,
         url,
-        expect: harness.expectLoginRedirect("/auth/login"),
+        expect: harness.expectLoginRedirect(ticketLoginLocation(url)),
         label: `anon ${url}`,
       });
     }
@@ -625,7 +644,7 @@ describe("C | login-mandatory sweep (§8.1-3)", () => {
         base,
         url,
         cookieId: cookies.broken,
-        expect: harness.expectLoginRedirect("/auth/login"),
+        expect: harness.expectLoginRedirect(ticketLoginLocation(url)),
         label: `reauth ${url}`,
       });
     }
@@ -708,8 +727,31 @@ describe("D | sensitive tickets never leak (§8.4)", () => {
         assert.ok(res.body.includes(T.normalA.token), `${label}: staffed rows render`);
         assert.ok(!res.body.includes(T.crossB.token), `${label}: foreign rows NEVER render`);
       } else {
-        assert.ok(!res.body.includes(T.normalA.token), `${label}: non-staff see no rows`);
-        assert.match(res.body, /No archived transcripts/i, `${label}: scoped default`);
+        // §8.15-15.13: non-staff viewers get their OWN list (participant
+        // linkage). The invariant that replaces the old "no rows ever" pin:
+        // every ticket link this index shows MUST be a transcript that very
+        // viewer can open. Rows they cannot open (foreign or sensitive)
+        // are the leak this guards.
+        const listed = [...res.body.matchAll(/\/t\/([0-9a-fA-F-]{36})/g)].map(
+          (m) => m[1]
+        );
+        for (const token of listed) {
+          const open = await harness.request(base, `/t/${token}`, {
+            cookieId: cookieOf(viewer),
+          });
+          assert.equal(
+            open.status,
+            200,
+            `${label}: listed ticket ${token.slice(0, 8)} must be openable by this viewer`
+          );
+        }
+        if (listed.length === 0) {
+          assert.match(
+            res.body,
+            /No archived transcripts|No archived tickets involve you yet/i,
+            `${label}: empty scope renders the empty copy`
+          );
+        }
       }
     }
   });

@@ -41,6 +41,7 @@ Not in v1 by design: gork administration, music queue control, public (non-staff
 ## Security model
 
 - **Login is mandatory** on every console and transcript route (`/t/…` included — no anonymous transcript reads, no feature flag). Only `/health` and the OAuth endpoints are public.
+- **Ticket links round-trip through login:** opening a ticket URL while signed out sends you to Discord sign-in and brings you back to **that exact ticket** (the return path travels inside the signed OAuth state and is whitelisted to ticket URLs — it can never redirect you elsewhere). Staff return links and the guild switcher are unchanged.
 - **Cross-guild isolation:** a session valid for guild A gets the same generic **404** on every guild-B route as a stranger would — you can't probe whether a guild uses the bot.
 - **Same services, same validation:** mutations call the existing service layer (XP, warnings, staff roles, tickets, …) — never a parallel implementation.
 - **Queryable audit trail:** web and slash mutations both write `admin_audit` rows with an `origin` column (`web` / `slash` / `system`); channel embeds remain best-effort mirrors. The audit viewer is a console page.
@@ -57,6 +58,7 @@ different areas — items you don't have tier for are hidden. Pages:
 - **`/g/{guildId}/tickets`** — ticket actions page (**senior**): open-ticket list with claim/close/summarize (transcripts: `/t`)
 - **`/g/{guildId}/t`** — the **archive for that guild** (staff), inside the console shell with the sidebar; search by ticket number or reason text, see creator/owner names.
 - **`/t`** — the **cross-guild archive** (staff+): every content-archived transcript from your staffed guilds (canonical URL — links posted in tickets always point here). Filter by guild (`/t?guild=…`) and jump back into the console. Transcripts render the immutable record with the summary AI generated at close; every page links its raw archived document (`…/raw`)
+- **`/t` for non-staff** — if you hold no staff tier anywhere, `/t` becomes **Your tickets**: exactly the archived transcripts your links open (as creator, handler, or participant), never anyone else's and never staff rows. `?guild=` narrows that list, never widens it.
 - **`/g/{guildId}/settings`** — read view of every guild setting + staff-tier writes (command channels, level roles, integrations, cooldowns, decay, …)
 - **`/g/{guildId}/staff`** — staff roles + command-visibility panel (incl. `/staff syncpermissions` trigger)
 - **`/g/{guildId}/integrations`** — YouTube / Twitch watches, reaction roles, event reminders, honeypot

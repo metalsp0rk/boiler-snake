@@ -53,6 +53,8 @@ const {
   countArchivedTickets,
   listArchivedTicketsForGuilds,
   countArchivedTicketsForGuilds,
+  listArchivedTicketsForUser,
+  countArchivedTicketsForUser,
 } = require("../../db");
 const {
   resolveTranscriptAbsolutePath,
@@ -90,13 +92,32 @@ function sendNotFound(res) {
  * the login flow's `?guild=` target would skip straight past the ticket).
  * @param {import("http").ServerResponse} res
  */
-function respondLoginRedirect(res) {
+function respondLoginRedirect(res, nextPath = null) {
   res.writeHead(302, {
-    Location: "/auth/login",
+    // §8.15-15.13: carry the ticket path through login so participants
+    // (who have NO console surface to land on) come BACK to their ticket
+    // instead of the staff home. login.js whitelists this exact shape
+    // before signing and again before honoring it — never attacker-widened.
+    Location: nextPath
+      ? `/auth/login?next=${encodeURIComponent(nextPath)}`
+      : "/auth/login",
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
   });
   res.end();
+}
+
+/**
+ * The signed return path for THIS /t request (null ⇒ plain /auth/login).
+ * Only ever a whitelisted shape (mirrors login.js TICKET_NEXT_RE); assets
+ * round-trip to their transcript page.
+ * @param {string} pathname raw (undecoded) pathname
+ * @returns {string|null}
+ */
+function ticketLoginNext(pathname) {
+  if (pathname === "/t" || pathname === "/t/") return "/t";
+  const m = pathname.match(/^\/t\/([0-9a-fA-F-]{36})(?:\/raw|\/assets\/.*)?\/?$/);
+  return m ? `/t/${m[1].toLowerCase()}` : null;
 }
 
 /**
@@ -159,11 +180,85 @@ async function allowTicketView(req, res, ctx, ticket) {
   const decision = await ctx.ticketAccess.resolveTicketAccess(req.webSession, ticket);
   if (decision.allowed) return true;
   if (decision.staffStatus === "reauth" || decision.staffStatus === "anon") {
-    respondLoginRedirect(res);
+    respondLoginRedirect(res, req.ticketNext || null);
     return false;
   }
   sendNotFound(res);
   return false;
+}
+
+/**
+ * GET /t for a viewer with NO staffed guild: "your tickets" (§8.15-15.13).
+ * Same rows, same transcript links, same search — but the ROW SET is the
+ * participant-scoped query and the page never renders /g/ affordances
+ * (console links, people links, type-ahead): none of them would open for
+ * this viewer. Data never includes rows the transcript URL would deny.
+ * @param {import("http").IncomingMessage & {webSession?: object|null}} req
+ * @param {import("http").ServerResponse} res
+ * @param {URL} url
+ * @param {{guildAccess: object, ticketAccess: object, getClient?: Function}} ctx
+ */
+async function serveParticipantArchive(req, res, url, ctx) {
+  const userId = req.webSession && req.webSession.userId
+    ? String(req.webSession.userId)
+    : null;
+  if (!userId) {
+    respondLoginRedirect(res, req.ticketNext || null);
+    return;
+  }
+
+  const guildFilter = url.searchParams.get("guild") || null; // AND-narrowing only
+  const q = String(url.searchParams.get("q") || "").trim().slice(0, 100);
+  let page = Number(url.searchParams.get("page") || 1);
+  if (!Number.isFinite(page) || page < 1) page = 1;
+
+  const total = countArchivedTicketsForUser(userId, {
+    guildId: guildFilter && /^[0-9]{5,20}$/.test(guildFilter) ? guildFilter : null,
+    q,
+  });
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (page > totalPages) page = totalPages;
+  const offset = (page - 1) * PAGE_SIZE;
+  const tickets = listArchivedTicketsForUser(userId, {
+    guildId: guildFilter && /^[0-9]{5,20}$/.test(guildFilter) ? guildFilter : null,
+    q,
+    limit: PAGE_SIZE,
+    offset,
+  });
+
+  // cache-only display names (plain text in this mode — §8.6 no dead links)
+  const namesByGuild = new Map();
+  if (typeof ctx.getClient === "function" && tickets.length > 0) {
+    const idsByGuild = new Map();
+    for (const t of tickets) {
+      const ids = idsByGuild.get(t.guild_id) ?? new Set();
+      for (const id of [t.creator_user_id, t.staff_owner_id, t.closed_by_user_id]) {
+        if (id) ids.add(String(id));
+      }
+      idsByGuild.set(t.guild_id, ids);
+    }
+    for (const [g, set] of idsByGuild) {
+      if (set.size > 0) {
+        namesByGuild.set(g, resolveMemberNames(ctx.getClient, g, [...set]));
+      }
+    }
+  }
+
+  const document = renderTicketIndexPage({
+    req,
+    res,
+    tickets,
+    total,
+    page,
+    pageSize: PAGE_SIZE,
+    guildId: guildFilter && /^[0-9]{5,20}$/.test(guildFilter) ? guildFilter : null,
+    q,
+    namesByGuild,
+    consoleLink: null,
+    baseUrl: "/t",
+    viewerMode: "participant",
+  });
+  writeShellHtml(req, res, { status: 200, document });
 }
 
 /**
@@ -181,8 +276,16 @@ async function serveArchiveIndex(req, res, url, ctx) {
   // it names one of these guilds, otherwise it is ignored (scoped default).
   const staffed = await listStaffedGuilds(ctx.guildAccess, req.webSession);
   if (staffed.reauth) {
-    respondLoginRedirect(res);
+    respondLoginRedirect(res, req.ticketNext || null);
     return;
+  }
+
+  // §8.15-15.13: NO staffed guild ⇒ PARTICIPANT view of the same surface:
+  // the archive rows THIS USER is linked to (requester/handler/member —
+  // the exact linkage the transcript gate honors) across all guilds.
+  // Staffed viewers keep the staff scope (superset; unchanged behavior).
+  if (staffed.guildIds.length === 0) {
+    return serveParticipantArchive(req, res, url, ctx);
   }
 
   const requested = url.searchParams.get("guild") || null;
@@ -351,7 +454,7 @@ async function serveTranscriptView(req, res, tokenRaw, ctx) {
   const decision = await ctx.ticketAccess.resolveTicketAccess(req.webSession, ticket);
   if (!decision.allowed) {
     if (decision.staffStatus === "reauth" || decision.staffStatus === "anon") {
-      respondLoginRedirect(res);
+      respondLoginRedirect(res, req.ticketNext || null);
     } else {
       sendNotFound(res);
     }
@@ -391,6 +494,8 @@ async function serveTranscriptView(req, res, tokenRaw, ctx) {
     summary = null; // malformed legacy JSON must not blank the transcript
   }
 
+  const signedInOnce =
+    new URL(req.url || "/", "http://local").searchParams.get("logged-in") === "1";
   const document = renderTranscriptPage({
     req,
     res,
@@ -399,6 +504,7 @@ async function serveTranscriptView(req, res, tokenRaw, ctx) {
     summary,
     staff,
     tier,
+    signedIn: signedInOnce,
     names: resolveMemberNames(ctx.getClient, guildId, nameIds),
     guilds,
     degraded,
@@ -476,12 +582,13 @@ async function dispatchTranscripts(req, res, ctx) {
   // transcripts, assets) — no config flag, no escape hatch. The methodGate
   // in app.js still 405s non-GET/HEAD BEFORE this gate, so the legacy 405
   // bytes are untouched.
+  const url = new URL(req.url || "/", "http://localhost");
+  req.ticketNext = ticketLoginNext(url.pathname);
+
   if (!req.webSession) {
-    respondLoginRedirect(res);
+    respondLoginRedirect(res, req.ticketNext);
     return;
   }
-
-  const url = new URL(req.url || "/", "http://localhost");
 
   // Index (UX v1.1 §8.15: "/" moved to the guild list; /t and /t/ serve
   // the archive index)

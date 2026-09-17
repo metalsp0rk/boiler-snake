@@ -146,6 +146,25 @@ function readGuildTarget(url) {
 }
 
 /**
+ * §8.15-15.13 ticket return paths. Participants (people with access to
+ * ONE ticket, no console role) arrive on /t/{token}, bounce to login, and
+ * must land back ON THAT URL — "/" is the staff home and a dead end for
+ * them. The whitelist is a FIXED shape (never a prefix rule): the archive
+ * index or one transcript URL; no /g/ paths (a participant hitting one
+ * would 404 — the point of the trip is the ticket, not the console).
+ * Minted from the ticket gate's own request path, so the value is never
+ * attacker-chosen; the callback re-verifies it against this same regex.
+ */
+const TICKET_NEXT_RE =
+  /^\/t(?:\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?(?:\/raw)?$/i;
+
+/** @param {URL} url @returns {string|null} */
+function readNextTarget(url) {
+  const raw = url.searchParams.get("next");
+  return raw && TICKET_NEXT_RE.test(raw) ? raw : null;
+}
+
+/**
  * Display-name snapshot for the session row (v10: global_name ?? username).
  * @param {{ global_name?: string|null, username?: string|null }} user
  * @returns {string|null}
@@ -249,6 +268,7 @@ function createLoginHandlers(options = {}) {
     const state = stateApi.createOAuthState({
       purpose: stateApi.PURPOSES.WEB_LOGIN,
       guildId: readGuildTarget(url) || undefined,
+      next: readNextTarget(url) || undefined,
     });
     respondRedirect(
       res,
@@ -360,9 +380,20 @@ function createLoginHandlers(options = {}) {
         guildSnapshot: JSON.stringify(snapshot),
       });
 
-      const location = verified.guildId
-        ? `/g/${encodeURIComponent(verified.guildId)}`
-        : "/";
+      // Destination priority (§8.15-15.13): signed ticket next — RE-
+      // checked against the whitelist here (defense in depth: a forged or
+      // tampered state can never name a non-ticket path) — then the signed
+      // guild return target, then home. `logged-in=1` lets the transcript
+      // acknowledge the sign-in exactly once.
+      const nextPath =
+        verified.next && TICKET_NEXT_RE.test(verified.next)
+          ? verified.next
+          : null;
+      const location = nextPath
+        ? `${nextPath}${nextPath.includes("?") ? "&" : "?"}logged-in=1`
+        : verified.guildId
+          ? `/g/${encodeURIComponent(verified.guildId)}`
+          : "/";
       respondRedirect(res, location, sessions.buildSessionCookie(session.id));
     } catch (err) {
       // Static log line: codes/messages only — never codes, tokens, or
