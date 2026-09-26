@@ -17,7 +17,7 @@ Each feature has its own file with the full design, status, and locked decisions
 
 | # | Feature | File | Status | Open items |
 |---|---------|------|--------|------------|
-| 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Discord OAuth on transcripts (→ covered by [web-admin.md](web-admin.md) §8.4); richer `/ticket list` filters |
+| 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Richer `/ticket list` filters (OAuth-on-transcripts closed — shipped via [web-admin.md](web-admin.md) §8.4) |
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP + EventSub + clips/VODs) | Per-channel overrides; templates; go-offline messages |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)); `read_discord` linked message/channel reader **shipped** ([gork.md §7.19](gork.md)); STE anti-slop answer style **design locked, impl pending** ([gork.md §7.20](gork.md)) |
@@ -113,7 +113,7 @@ Event reminders, staff notes, and warnings migration tables: see [index-complete
 - [x] Panel message + button → modal for ticket description  
 - [x] **Fix (shipped):** ticket create warned “`N` staff role(s) could not get channel access” even when the bot role is above staff roles — `getManageableStaffRoleIds` now resolves roles via `guild.roles.fetch` on cache miss, skips a role the bot itself holds silently, and lists per-role name + reason in the note (see [help-tickets.md §1.11](help-tickets.md))  
 - [x] **Fix (shipped):** on archive, DM the requester the transcript link (non-sensitive tickets only) in addition to posting the archive-channel embed — revises locked decision 3 (see [help-tickets.md §1.11](help-tickets.md))  
-- [ ] Login with Discord on transcript HTTP routes (→ covered by [web-admin.md](web-admin.md) §8.4)  
+- [x] Login with Discord on transcript HTTP routes (shipped via [web-admin.md](web-admin.md) §8.4 / tasks 15.9 + 15.13)  
 - [x] Download/mirror all attachments into transcript storage at archive time (replace hotlinks)  
 - [ ] Richer `/ticket list` filters  
 - [x] Stored panel registry (list/edit/delete via commands)  
