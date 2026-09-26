@@ -25,6 +25,9 @@ const {
   startSessionPruneJob,
   stopSessionPruneJob,
 } = require("./auth/sessions");
+const {
+  registerSchedulerJobHealthSources,
+} = require("./data/schedulerJobHealth");
 
 /** @type {import("http").Server|null} */
 let server = null;
@@ -58,6 +61,21 @@ function startWebServer(options = {}) {
     );
   }
   startSessionPruneJob();
+
+  // Task 15.6 bridge: expose the core scheduler's per-job state to the
+  // ticker-health registry (dashboard "Background jobs" + /system panels).
+  // Reached ONLY behind the port gate above → PUBLIC_HTTP_PORT unset registers
+  // nothing (dark-by-default, boot unchanged). Idempotent (registry keys by
+  // name); guarded so a bridge fault degrades job rows to unknown instead of
+  // killing web boot (AGENTS.md error law: logged, never silent).
+  try {
+    registerSchedulerJobHealthSources();
+  } catch (err) {
+    console.error(
+      "[web] scheduler job-health bridge failed:",
+      err?.message || err
+    );
+  }
 
   server = http.createServer(createWebApp(options));
 
