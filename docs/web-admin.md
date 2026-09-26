@@ -52,7 +52,7 @@ Not in v1 by design: gork administration, music queue control, public (non-staff
 Every `/g/{guildId}` page carries a **sidebar** (Overview / Moderation / Configuration) to the
 different areas — items you don't have tier for are hidden. Pages:
 - **`/`** — guild list: your staff guilds with tier badges, links into each console (transcripts live at `/t`)
-- **`/g/{guildId}`** — dashboard (bot status, XP/voice/ticket/gork summary cards)
+- **`/g/{guildId}`** — dashboard (bot status, XP/voice/ticket/gork summary cards, **activity & XP charts**, background jobs)
 - **`/g/{guildId}/users`, `/leaderboard`** — member search, XP detail, leaderboard (same data as `/xp` / `/leaderboard`)
 - **`/g/{guildId}/moderation`** — warnings (`/warn` twin), staff notes (`/note` twin), ticket moderation
 - **`/g/{guildId}/tickets`** — ticket actions page (**senior**): open-ticket list with claim/close/summarize (transcripts: `/t`)
@@ -63,7 +63,13 @@ different areas — items you don't have tier for are hidden. Pages:
 - **`/g/{guildId}/staff`** — staff roles + command-visibility panel (incl. `/staff syncpermissions` trigger)
 - **`/g/{guildId}/integrations`** — YouTube / Twitch watches, reaction roles, event reminders, honeypot
 - **`/g/{guildId}/voice`** — live voice state (read-only; no queue control)
+- **`/g/{guildId}/sessions`** — **Your sessions**: every live sign-in on *your own* account (browser, sign-in/last-seen/expiry times) with revoke. Revoking the row marked *current* is a clean logout. You can never see or touch anyone else's sessions from here.
 - **`/g/{guildId}/system`**, **`/g/{guildId}/audit`** — process/DB/queue health and the `admin_audit` trail, filtered by guild (both **admin-only**)
+- **`/g/{guildId}/system/sessions`** — **admin**: every live web session in the console (sessions are account-level, not per-guild — the page says so plainly), with revoke for any of them — kill a stale or stolen sign-in without restarting the bot. Reokes are audited (`sessions.revoke`); session ids are never shown.
+
+**Dashboard charts** render client-side (vendored Chart.js — pinned file, no CDN) from small JSON endpoints at `/g/{guildId}/api/dashboard/…` (staff tier, unauthenticated callers get the same generic 404 as the pages). They are an **enhancement**: with JavaScript off — or if a fetch fails — the same numbers stay visible in the SSR tables, and a chart failure says so in its corner instead of breaking the page. These endpoints are the first slice of the console's long-term API surface.
+
+**Background jobs** (dashboard) reflects real ticker state: registered scheduler jobs report honest `ok` / `stale` / `unknown` from their last completed tick — a stalled loop goes `stale`, cron-scheduled jobs never fake a status.
 
 **Display names vs raw ids:** pages read names from the bot's in-memory member
 cache only — a page never waits on Discord. Cache misses show the raw id (as
