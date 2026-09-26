@@ -82,6 +82,7 @@ module.exports = {
   totalChannelPosts: userChannelActivity.totalPosts,
   earliestTrackedDay: userChannelActivity.earliestTrackedDay,
   guildActivityStats: userChannelActivity.guildActivityStats,
+  guildDailyMessageTotals: userChannelActivity.guildDailyMessageTotals,
   getUserActivityMeta: userChannelActivity.getUserActivityMeta,
   upsertUserActivityMeta: userChannelActivity.upsertUserActivityMeta,
   getBackfillCursor: userChannelActivity.getBackfillCursor,

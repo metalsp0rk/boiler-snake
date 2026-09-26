@@ -394,6 +394,53 @@ function guildActivityStats(guildId) {
   };
 }
 
+/** Hard ceiling for guildDailyMessageTotals (§8.6: every read LIMIT ≤ 100;
+ *  a day-granular series can never meaningfully exceed one row per day). */
+const GUILD_DAILY_TOTALS_MAX_DAYS = 31;
+
+/**
+ * Guild-wide message totals per UTC day over a bounded day window — the
+ * dashboard "daily activity" series (roadmap/web-admin.md §8.6 Dashboard
+ * row, Phase 4 charts). Aggregation is SQL-side (GROUP BY day) over the
+ * guild's PK prefix with a `day >=` range predicate: NO full-table scan,
+ * NO JS-side aggregation of raw rows, and the result is hard-capped
+ * (ORDER BY day DESC + LIMIT keeps the NEWEST N days even if the caller
+ * passes a wider sinceDay). Rows come back ASCENDING by day.
+ *
+ * This closes the "no bounded last-N-days guild totals helper" gap listed
+ * in src/web/data/dashboardData.js (data-source gap #2, 2026-09-08).
+ *
+ * @param {string} guildId
+ * @param {{ sinceDay: string, limitDays?: number }} opts
+ *   sinceDay inclusive lower bound (YYYY-MM-DD); limitDays max distinct days
+ *   returned (clamped 1..31, default 31).
+ * @returns {{ day: string, total: number }[]} ascending by day
+ */
+function guildDailyMessageTotals(guildId, { sinceDay, limitDays = GUILD_DAILY_TOTALS_MAX_DAYS } = {}) {
+  if (typeof sinceDay !== "string" || !sinceDay) {
+    throw new TypeError("guildDailyMessageTotals: sinceDay (YYYY-MM-DD) is required");
+  }
+  const cap = Math.min(
+    GUILD_DAILY_TOTALS_MAX_DAYS,
+    Math.max(1, Math.floor(Number(limitDays)) || GUILD_DAILY_TOTALS_MAX_DAYS)
+  );
+  const rows = db
+    .prepare(
+      `
+  SELECT day, SUM(count) AS total
+  FROM user_channel_message_daily
+  WHERE guild_id=? AND day >= ?
+  GROUP BY day
+  ORDER BY day DESC
+  LIMIT ?
+  `
+    )
+    .all(guildId, sinceDay, cap);
+  return rows
+    .map((r) => ({ day: String(r.day), total: Number(r.total) || 0 }))
+    .reverse();
+}
+
 /**
  * @param {string} guildId
  * @param {string} userId
@@ -661,6 +708,8 @@ module.exports = {
   totalPosts,
   earliestTrackedDay,
   guildActivityStats,
+  GUILD_DAILY_TOTALS_MAX_DAYS,
+  guildDailyMessageTotals,
   getUserActivityMeta,
   upsertUserActivityMeta,
   getBackfillCursor,

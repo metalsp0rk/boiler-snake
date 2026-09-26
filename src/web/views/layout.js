@@ -44,6 +44,16 @@ const ASSET_VERSION = require("../../../package.json").version;
 
 /** Vendored htmx — bump together with the file under public/vendor (§8.7). */
 const HTMX_SRC = "/static/vendor/htmx.2.0.10.min.js";
+/**
+ * Vendored Chart.js UMD (Phase 4 charts, operator decision 2026-09-25) —
+ * same §8.7 procedure as htmx: npm-tarball sha512-verified, version baked
+ * into the FILENAME (the cache-buster, /static is immutable), MIT text in
+ * public/vendor/LICENSE.md beside it. Classic <script src> from self:
+ * CSP `script-src 'self'` admits it without a nonce; the nonce ATTRIBUTE
+ * still rides every tag (auditable "the middleware ran", see renderLayout).
+ * defer keeps document order → globalThis.Chart exists before app.js runs.
+ */
+const CHART_SRC = "/static/vendor/chart.4.5.1.min.js";
 const APP_SRC = `/static/app.js?v=${ASSET_VERSION}`;
 const STYLES_SRC = `/static/styles.css?v=${ASSET_VERSION}`;
 
@@ -215,6 +225,7 @@ function renderLayout(opts) {
 <title>${title} · Boiler Snake</title>
 <link rel="stylesheet" href="${STYLES_SRC}"/>
 <script src="${HTMX_SRC}" defer${nonceAttr}></script>
+<script src="${CHART_SRC}" defer${nonceAttr}></script>
 <script src="${APP_SRC}" defer${nonceAttr}></script>
 </head>
 <body data-csrf-token="${csrfToken || ""}">
@@ -332,6 +343,7 @@ module.exports = {
   writeShellHtml,
   NAV_GROUPS,
   HTMX_SRC,
+  CHART_SRC,
   APP_SRC,
   STYLES_SRC,
 };

@@ -24,9 +24,11 @@
  *     per kind). idx_activity_recent leads with user_id, so a guild-wide
  *     window scan would need a new (guild_id, created_at, kind) index + a
  *     `activityKindTotals(guildId, sinceMs)` helper. → NOT rendered.
- *  2. user_channel_message_daily: no bounded "last N days guild totals"
- *     helper (would be a cheap PK-prefix day-range scan, LIMIT ≤31).
- *     → substituted with the cached all-time guildActivityStats snapshot.
+ *  2. user_channel_message_daily: CLOSED (Phase 4): the repo now has the
+ *     bounded helper — guildDailyMessageTotals(guildId, { sinceDay,
+ *     limitDays ≤ 31 }) feeds getDailyActivitySeries() for the JSON chart
+ *     API. The page snapshot keeps rendering the all-time
+ *     guildActivityStats totals (unchanged Phase 1 behavior).
  *  3. voice_sessions: facade has only per-user get (no per-guild list) →
  *     live voice occupancy is NOT rendered; a `listVoiceSessions(guildId)`
  *     helper (table is bounded by connected users) would fix this.
@@ -63,8 +65,44 @@ const DASHBOARD_LIMITS = Object.freeze({
   NEWEST_TICKETS: 5, // rows rendered in the "newest" section
 });
 
+/**
+ * Phase 4 CHART SERIES caps (§8.6): the JSON API endpoints under
+ * /g/:guildId/api/dashboard/... are fed ONLY through the cached getters
+ * below — same per-guild cache discipline (≥30 s TTL) as the page snapshot.
+ * Both backing reads are SQL-side aggregated and hard-capped:
+ *  - daily activity: guildDailyMessageTotals → GROUP BY day over a bounded
+ *    window, LIMIT 31 max (the repo clamps; DAILY_ACTIVITY_DAYS stays ≤31);
+ *  - XP leaders: topUsers(guildId, XP_LEADERS) — SQL LIMIT 10, the same
+ *    bounded read the page snapshot already runs.
+ */
+const SERIES_LIMITS = Object.freeze({
+  DAILY_ACTIVITY_DAYS: 30, // x-axis window (repo hard-caps rows at 31)
+  XP_LEADERS: 10, // topUsers SQL LIMIT
+});
+
+/** ms per UTC calendar day (day-window math for the activity series). */
+const DAY_MS = 86_400_000;
+
 const SECTION_OK = "ok";
 const SECTION_UNAVAILABLE = "unavailable";
+
+/**
+ * UTC "YYYY-MM-DD" from epoch ms — MIRRORS utcDayKey in
+ * src/db/repositories/userChannelActivity.js (the user_channel_message_daily
+ * `day` PK contract; same mirror precedent: test/helpers/seed-10k.js).
+ * Local on purpose: importing the repository here would bind the SQLite
+ * connection at load time, which the fake-facade unit tests avoid.
+ * @param {number} ms
+ * @returns {string|null} null for non-finite input (caller degrades)
+ */
+function utcDayKeyUtc(ms) {
+  const d = new Date(Number(ms));
+  if (!Number.isFinite(d.getTime())) return null;
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 /**
  * Live env read (every knob in this project reads env live). The value may
@@ -234,6 +272,126 @@ function createDashboardData(options = {}) {
 
   const cacheSet = makeCacheSet(cache, maxEntries);
 
+  /**
+   * SERIES cache (Phase 4 chart endpoints): `guildId|kind[|days]` →
+   * { data, cachedAt, expiresAt }. Shares this instance's TTL (env-clamped
+   * to the §8.6 30 s floor) and maxEntries; hits run ZERO DB reads, exactly
+   * like the page snapshot cache. A degraded (failed) read is cached too —
+   * a broken DB must not be re-hammered every request (same trade the page
+   * snapshot already makes by caching degraded sections).
+   */
+  const seriesCache = new Map();
+  const seriesCacheSet = makeCacheSet(seriesCache, maxEntries);
+
+  const seriesFreshness = (cachedAt, expiresAt, at) => ({
+    generatedAt: cachedAt,
+    cacheExpiresAt: expiresAt,
+    ageMs: Math.max(0, at - cachedAt),
+    fromCache: true,
+  });
+
+  /**
+   * Shared cached-loader frame for the series getters: key lookup → fresh
+   * build under buildFn(key) → store. buildFn must never throw (it uses
+   * guardRead) and returns the data object to cache.
+   */
+  async function cachedSeries(key, build) {
+    const at = now();
+    const cached = seriesCache.get(key);
+    if (cached && cached.expiresAt > at) {
+      return { ...cached.data, freshness: seriesFreshness(cached.cachedAt, cached.expiresAt, at) };
+    }
+    const data = build();
+    seriesCacheSet(key, { data, cachedAt: at, expiresAt: at + ttlMs });
+    return {
+      ...data,
+      freshness: { generatedAt: at, cacheExpiresAt: at + ttlMs, ageMs: 0, fromCache: false },
+    };
+  }
+
+  /**
+   * Cached daily message totals for the dashboard LINE chart
+   * (GET /g/:guildId/api/dashboard/activity.json). SQL-side GROUP BY day
+   * over a bounded day window (≤31 rows, no raw-row JS aggregation); the
+   * window days with no rows are zero-filled — a true reading of "no
+   * tracked messages that day" (§8.6 honesty: real tables only).
+   *
+   * @param {string} guildId
+   * @param {{ days?: number }} [opts] window size, clamped 1..31
+   */
+  async function getDailyActivitySeries(guildId, opts = {}) {
+    if (typeof guildId !== "string" || !guildId) {
+      throw new TypeError("getDailyActivitySeries: guildId must be a non-empty string");
+    }
+    // 0 / junk / omitted → the 30-day default; anything else clamps into
+    // 1..31 (the repo hard cap GUILD_DAILY_TOTALS_MAX_DAYS; §8.6 budget).
+    const days = clampNum(Math.round(Number(opts.days)) || SERIES_LIMITS.DAILY_ACTIVITY_DAYS, {
+      min: 1,
+      max: 31,
+      fallback: SERIES_LIMITS.DAILY_ACTIVITY_DAYS,
+    });
+    const key = `${guildId}|daily|${days}`;
+    return cachedSeries(key, () => {
+      const at = now();
+      const toMs = at;
+      const fromMs = at - (days - 1) * DAY_MS;
+      const toDay = utcDayKeyUtc(toMs);
+      const fromDay = utcDayKeyUtc(fromMs);
+      const base = { guildId, series: "daily_activity", days, fromDay, toDay };
+      if (!fromDay || !toDay) {
+        return { ...base, available: false, points: [] };
+      }
+      const res = guardRead(
+        () => facade.guildDailyMessageTotals(guildId, { sinceDay: fromDay, limitDays: days }),
+        "daily activity series"
+      );
+      if (!res.ok || !Array.isArray(res.value)) {
+        return { ...base, available: false, points: [] };
+      }
+      const totals = new Map(
+        res.value.map((r) => [String(r.day), Number(r.total) || 0])
+      );
+      const points = [];
+      for (let i = days - 1; i >= 0; i -= 1) {
+        const day = utcDayKeyUtc(at - i * DAY_MS);
+        if (!day) continue;
+        points.push({ day, messages: totals.get(day) || 0 });
+      }
+      return { ...base, available: true, points };
+    });
+  }
+
+  /**
+   * Cached top-XP leaders for the dashboard BAR chart
+   * (GET /g/:guildId/api/dashboard/xp-leaders.json). Same bounded
+   * topUsers(10) read the page snapshot already performs.
+   * @param {string} guildId
+   */
+  async function getXpLeadersSeries(guildId) {
+    if (typeof guildId !== "string" || !guildId) {
+      throw new TypeError("getXpLeadersSeries: guildId must be a non-empty string");
+    }
+    const key = `${guildId}|xp-leaders`;
+    return cachedSeries(key, () => {
+      const res = guardRead(
+        () => facade.topUsers(guildId, SERIES_LIMITS.XP_LEADERS),
+        "xp leaders series"
+      );
+      const leaders = res.ok && Array.isArray(res.value)
+        ? res.value
+            .slice(0, SERIES_LIMITS.XP_LEADERS)
+            .map((r) => ({ userId: String(r.user_id ?? ""), xp: Number(r.xp) || 0 }))
+        : [];
+      return {
+        guildId,
+        series: "xp_leaders",
+        available: res.ok,
+        limit: SERIES_LIMITS.XP_LEADERS,
+        leaders,
+      };
+    });
+  }
+
   async function readTickers() {
     const read = getTickerHealth || ((/* guildId */) => snapshotTickerHealth(now()));
     try {
@@ -379,16 +537,27 @@ function createDashboardData(options = {}) {
     };
   }
 
-  /** Drop one guild's entry (or all). Exposed for wiring/tests. */
+  /** Drop one guild's entry (or all) — page snapshot AND chart series. */
   function invalidate(guildId) {
-    if (guildId === undefined) cache.clear();
-    else cache.delete(guildId);
+    if (guildId === undefined) {
+      cache.clear();
+      seriesCache.clear();
+      return;
+    }
+    cache.delete(guildId);
+    const prefix = `${guildId}|`;
+    for (const key of [...seriesCache.keys()]) {
+      if (key.startsWith(prefix)) seriesCache.delete(key);
+    }
   }
 
   return {
     getDashboard,
+    getDailyActivitySeries,
+    getXpLeadersSeries,
     invalidate,
     _cacheSizeForTests: () => cache.size,
+    _seriesCacheSizeForTests: () => seriesCache.size,
   };
 }
 
@@ -407,6 +576,7 @@ module.exports = {
   DEFAULT_CACHE_TTL_MS,
   MIN_CACHE_TTL_MS,
   DASHBOARD_LIMITS,
+  SERIES_LIMITS,
   getDashboardCacheTtlMs,
   snapshotMusicPlayer,
   createDashboardData,

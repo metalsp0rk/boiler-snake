@@ -298,3 +298,73 @@ describe("userActivity db counters", () => {
     assert.equal(again.collect_from_ms, s.collect_from_ms);
   });
 });
+
+describe("guildDailyMessageTotals (bounded guild×day aggregation)", () => {
+  const DAY = 86_400_000;
+  /** Fixed UTC YYYY-MM-DD for deterministic window math. */
+  function fixedDay(offsetDays) {
+    const d = new Date(Date.UTC(2026, 0, 1) + offsetDays * DAY);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+      d.getUTCDate()
+    ).padStart(2, "0")}`;
+  }
+
+  let db;
+  before(() => {
+    db = loadDb().api; // fresh temp SQLite; facade re-export must exist
+  });
+
+  it("sums users+channels per day, ASC, guild-scoped, sinceDay-bounded", () => {
+    const g = "g-gdt";
+    const other = "g-gdt-other";
+    const d0 = fixedDay(0);
+    const d1 = fixedDay(1);
+    const d2 = fixedDay(2);
+
+    db.incrementDaily(g, "u1", "c1", d2, 2);
+    db.incrementDaily(g, "u2", "c1", d2, 3); // same day, other user
+    db.incrementDaily(g, "u1", "c2", d1, 4); // same user, other channel
+    db.incrementDaily(g, "u1", "c1", d0, 5);
+    db.incrementDaily(g, "u1", "c1", "2020-01-01", 999); // outside window
+    db.incrementDaily(other, "u1", "c1", d2, 7); // other guild
+
+    const rows = db.guildDailyMessageTotals(g, { sinceDay: d0 });
+    assert.deepEqual(rows, [
+      { day: d0, total: 5 },
+      { day: d1, total: 4 },
+      { day: d2, total: 5 }, // 2 + 3, cross-user/channel roll-up
+    ]);
+    assert.ok(!rows.some((r) => r.day === "2020-01-01"), "sinceDay excludes old days");
+    assert.ok(!rows.some((r) => r.total === 7 || r.total === 12), "guild-scoped (§8.2)");
+
+    assert.deepEqual(db.guildDailyMessageTotals("g-gdt-none", { sinceDay: d0 }), [],
+      "guild with no rows ⇒ empty, not an error");
+  });
+
+  it("hard row cap: LIMIT clamps to 31 NEWEST days even for greedy callers", () => {
+    const repo = require("../src/db/repositories/userChannelActivity");
+    assert.equal(repo.GUILD_DAILY_TOTALS_MAX_DAYS, 31, "§8.6: day-granular reads cap at 31 rows");
+
+    const g = "g-gdt-cap";
+    for (let i = 0; i < 35; i += 1) {
+      db.incrementDaily(g, "u1", "c1", fixedDay(i), 1);
+    }
+    // Greedy caller: sinceDay covers all 35 days, limitDays unclamped →
+    // must return the NEWEST 31 days, still ASCENDING.
+    const rows = db.guildDailyMessageTotals(g, { sinceDay: fixedDay(0), limitDays: 999 });
+    assert.equal(rows.length, 31);
+    assert.equal(rows[0].day, fixedDay(4), "oldest days drop first (newest kept)");
+    assert.equal(rows[rows.length - 1].day, fixedDay(34));
+    for (let i = 1; i < rows.length; i += 1) {
+      assert.ok(rows[i - 1].day < rows[i].day, "ascending order");
+    }
+
+    const tiny = db.guildDailyMessageTotals(g, { sinceDay: fixedDay(0), limitDays: 3 });
+    assert.deepEqual(tiny.map((r) => r.day), [fixedDay(32), fixedDay(33), fixedDay(34)]);
+  });
+
+  it("bad input fails loudly, never silently", () => {
+    assert.throws(() => db.guildDailyMessageTotals("g-gdt", {}), /sinceDay/);
+    assert.throws(() => db.guildDailyMessageTotals("g-gdt", { sinceDay: 20260101 }), /sinceDay/);
+  });
+});
