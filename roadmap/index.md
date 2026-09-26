@@ -2,8 +2,9 @@
 
 > ✅ **Fully implemented features are archived in [index-completed.md](index-completed.md).**
 > A feature moves there once it is shipped with **zero open items** in its feature
-> file (currently: Scheduled Event Reminders, Staff Notes, Warnings, plus the
-> XP & leaderboard polish). This file tracks everything still open or planned.
+> file (currently: Scheduled Event Reminders, Staff Notes, Warnings, the
+> Web Admin Console, plus the XP & leaderboard polish). This file tracks
+> everything still open or planned.
 
 ## Project Overview
 
@@ -21,11 +22,10 @@ Each feature has its own file with the full design, status, and locked decisions
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP + EventSub + clips/VODs) | Per-channel overrides; templates; go-offline messages |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)); `read_discord` linked message/channel reader **shipped** ([gork.md §7.19](gork.md)); STE anti-slop answer style **design locked, impl pending** ([gork.md §7.20](gork.md)) |
-| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | **Shipped** (Phases 0a–4; PR #55 + 2026-09-25) | Task 15.6 open — wire real job state into `tickerHealth` (see [web-admin.md](web-admin.md)); moves to [index-completed.md](index-completed.md) when ticked |
 | 9 | Fluxer (Discord + Fluxer endpoints) | [fluxer.md](fluxer.md) | **Spec** (reviewed, no code) | Phase 0 spike, then 11 PRs in [fluxer.md](fluxer.md) |
 | 10 | Channel bridge (Discord ↔ Fluxer) | [bridge.md](bridge.md) | **Draft** (reviewed, no code) | Depends on Fluxer Phases 2–3; spikes in [bridge.md](bridge.md) (Open Questions) |
 
-Completed features (**2** Scheduled Event Reminders, **5** Staff Notes, **6** Warnings) live in [index-completed.md](index-completed.md) — original numbers are kept for cross-reference.
+Completed features (**2** Scheduled Event Reminders, **5** Staff Notes, **6** Warnings, **8** Web Admin Console) live in [index-completed.md](index-completed.md) — original numbers are kept for cross-reference.
 
 Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a work-as-time-allows backlog in [wishlist.md](wishlist.md) — feature files stay authoritative for design.
 
@@ -81,18 +81,7 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | `gork_memories` + `guild_settings.gork_memory_enabled` / `gork_memory_chars` | Community memory (**shipped**, migration `023`) — memories keyed `(guild, person, date, title_key)` (key fields server-stamped); per-person cap + eviction; **off** by default; bodies-or-index block budget default 12,000 ([gork.md §7.16](gork.md)) |
 | `guild_settings.gork_daily_limit` + `gork_budget_rules` + `gork_usage` | Per-scope daily usage budget — tri-state limit (`-1` blocked / `0` unlimited / cap), channel → category → guild-default precedence, enqueue+dequeue checks, success-only counting (**shipped**, migration `026`; [gork.md §7.17](gork.md)) |
 
-### Web admin console (shipped — PR #55)
-
-| Table / change | Notes |
-|----------------|-------|
-| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**shipped**, migration `028`) |
-| OAuth columns on `web_sessions` | Server-side Discord access token per session, no refresh flow in v1 (**shipped**, migration `030` — extends `web_sessions`, not a separate table) |
-| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**shipped**, migration `029`) |
-| `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**shipped**) |
-
-> **Migration numbering (resolved):** shipped as `028`–`030`, reserved at implementation time per the rule above. See [web-admin.md §8.5](web-admin.md).
-
-Event reminders, staff notes, and warnings migration tables: see [index-completed.md §7](index-completed.md).
+Event reminders, staff notes, warnings, and web admin console migration tables: see [index-completed.md §7](index-completed.md).
 
 ---
 
