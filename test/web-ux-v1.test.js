@@ -296,4 +296,132 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
       await once(dark, "close");
     }
   });
+
+  // -- mobile pass (Phase 4 §8.8, 360–430px) ---------------------------------
+  // Render-assertion style like every suite above: pin the class/markup
+  // hooks the phone CSS attaches to, plus the responsive Chart.js container
+  // contract as authored. The desktop assertions above stay untouched —
+  // everything added here is scoped inside max-width media queries.
+
+  const STYLES_PATH = require("node:path").join(
+    __dirname,
+    "../src/web/public/styles.css"
+  );
+  const APP_PATH = require("node:path").join(__dirname, "../src/web/public/app.js");
+
+  it("mobile nav strip: session pages are reachable for staff + admin", async () => {
+    // The collapsed ≤880px strip must carry the NEW Phase-4 destinations —
+    // otherwise a phone user cannot reach them at all.
+    const { body: staffBody } = await req(`/g/${GUILD_A}`, cookieOf.staff);
+    assert.ok(staffBody.includes(`/g/${GUILD_A}/sessions"`), "Your sessions link (staff)");
+    assert.ok(staffBody.includes("Your sessions"), "Your sessions label");
+    const { body: adminBody } = await req(`/g/${GUILD_A}`, cookieOf.admin);
+    assert.ok(adminBody.includes(`/g/${GUILD_A}/system/sessions"`), "Web sessions link (admin)");
+    assert.ok(adminBody.includes("Web sessions"), "Web sessions label");
+  });
+
+  it("mobile: dashboard chart canvases sit in their own position:relative boxes", async () => {
+    // Chart.js responsive contract (vendored 4.5.1 docs): container is
+    // dedicated to the canvas only — the phone pass relies on this box for
+    // width:100% + explicit height re-rendering.
+    const { body } = await req(`/g/${GUILD_A}`, cookieOf.staff);
+    const boxes = body.match(/<div class="chart-box"/g) || [];
+    assert.equal(boxes.length, 2, "both chart containers rendered");
+    assert.equal(
+      (body.match(/<div class="chart-box"[^>]*>\s*<canvas/g) || []).length,
+      2,
+      "each .chart-box wraps ONLY its canvas"
+    );
+  });
+
+  it("mobile: your-sessions page renders its table panel + revoke controls", async () => {
+    const { res, body } = await req(`/g/${GUILD_A}/sessions`, cookieOf.staff);
+    assert.equal(res.status, 200);
+    assert.ok(body.includes("sessions-panel"), "panel wrapper (mobile scroll hook)");
+    assert.ok(body.includes("list-table sessions-table"), "wrapping table class");
+    assert.ok(body.includes("ticket-inline-form"), "inline PRG revoke form");
+    assert.ok(body.includes("Revoke"), "revoke control present");
+  });
+
+  it("mobile: admin web-sessions page renders its table panel + revoke controls", async () => {
+    const { res, body } = await req(`/g/${GUILD_A}/system/sessions`, cookieOf.admin);
+    assert.equal(res.status, 200);
+    assert.ok(body.includes("system-sessions-panel"), "panel wrapper (mobile scroll hook)");
+    assert.ok(body.includes("list-table system-sessions-table"), "wrapping table class");
+    assert.ok(body.includes("Revoke"), "revoke control present");
+  });
+
+  it("mobile: in-shell archive wraps the table in the scroll box", async () => {
+    const { res, body } = await req(`/g/${GUILD_A}/t`, cookieOf.staff);
+    assert.equal(res.status, 200);
+    assert.ok(body.includes('class="table-scroll"'), "archive table inside .table-scroll");
+  });
+
+  it("mobile: styles.css carries the phone-pass rules (360–430px)", () => {
+    const css = fsx.readFileSync(STYLES_PATH, "utf8");
+    // Collapsed nav strip (≤880) + the Phase-4 phone block (≤480) contents.
+    assert.match(css, /@media \(max-width: 880px\)/, "nav-strip breakpoint exists");
+    assert.match(
+      css,
+      /@media \(max-width: 880px\)[\s\S]*?\.shell-nav\s*\{[^}]*flex-direction:\s*row/,
+      "nav becomes a horizontal strip ≤880px"
+    );
+    assert.match(
+      css,
+      /\.shell-nav-group h2\s*\{[^}]*flex:\s*1 0 100%/,
+      "nav group labels get their own line at phone width (no clipping)"
+    );
+    assert.match(
+      css,
+      /\.panel,\s*\.moderation,\s*\.table-scroll\s*\{[^}]*overflow-x:\s*auto/,
+      "tables scroll INSIDE their own box (the .dashboard-panel contract)"
+    );
+    assert.match(
+      css,
+      /\.list-table th,\s*\.list-table td\s*\{[^}]*overflow-wrap:\s*anywhere/,
+      "table cells wrap aggressively at phone width"
+    );
+    assert.match(
+      css,
+      /\.leaderboard-pager\s*\{[^}]*flex-wrap:\s*wrap/,
+      "pager bars wrap on phones"
+    );
+    assert.match(
+      css,
+      /\.settings-form,\s*\.staff-mutate-form,\s*\.integ-write-form,\s*\.integ-write-fields\s*\{[^}]*flex-direction:\s*column/,
+      "write forms stack at phone width (every control reachable)"
+    );
+  });
+
+  it("mobile: styles.css keeps the Chart.js container contract (canvas unstyled)", () => {
+    const css = fsx.readFileSync(STYLES_PATH, "utf8");
+    assert.match(
+      css,
+      /\.dashboard-charts \.chart-box\s*\{[^}]*position:\s*relative/,
+      "chart container is the positioned box Chart.js watches"
+    );
+    assert.match(
+      css,
+      /\.dashboard-charts \.chart-box\s*\{[^}]*width:\s*100%/,
+      "chart fills the panel width at any viewport"
+    );
+    assert.match(
+      css,
+      /\.dashboard-charts \.chart-box\s*\{[^}]*height:\s*\d+px/,
+      "explicit container height (predictable vertical space)"
+    );
+    assert.ok(!/canvas\s*\{/.test(css), "canvas stays UNSIZED/UNSTYLED (library-managed)");
+    assert.ok(!/\.chart-box\s+canvas/.test(css), "no canvas-level styling smuggled in");
+  });
+
+  it("mobile: app.js keeps the responsive chart options + resize debounce", () => {
+    const src = fsx.readFileSync(APP_PATH, "utf8");
+    assert.ok(src.includes("responsive: true"), "charts track the container");
+    assert.ok(src.includes("maintainAspectRatio: false"), "container CSS owns the height");
+    assert.equal(
+      (src.match(/resizeDelay:\s*150/g) || []).length,
+      2,
+      "both charts debounce mobile URL-bar resize storms"
+    );
+  });
 });
