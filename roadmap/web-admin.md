@@ -6,7 +6,7 @@ Replace the minimal, mostly-unauthenticated HTTP surface (`src/features/tickets/
 
 ### Status
 
-**Shipped (Phases 0a–3)** — merged to `main` 2026-09-16 (PR #55, rebase-merged): login-mandatory web console on Express 5 (`src/web/`), `admin_audit` DB trail with `web`/`slash`/`system` origins, migrations `028`–`030`, full slash↔web parity gates. Phase 4 polish: docs page + env table shipped with it; **dashboard charts, mobile pass, and session admin (list/revoke) remain open**. User/operator guide: `docs/web-admin.md`. **UX v1.1** (root guild list, sidebar nav, member names, background-jobs copy) shipped 2026-09-17 — [§8.15](#815-ux-v11--first-run-usability-pass-shipped-2026-09-17); open follow-up: job-state registry wiring (§8.15 task 15.6). Task-level breakdown (all tasks shipped): [§8.14](#814-task-breakdown-shipped).
+**Shipped (Phases 0a–4)** — Phases 0a–3 merged to `main` 2026-09-16 (PR #55, rebase-merged): login-mandatory web console on Express 5 (`src/web/`), `admin_audit` DB trail with `web`/`slash`/`system` origins, migrations `028`–`030`, full slash↔web parity gates. **Phase 4 shipped 2026-09-25:** dashboard charts (vendored Chart.js 4.5.1, client-rendered from staff-tier JSON API endpoints — §8.13 amendment 2026-09-25), mobile pass (360–430px), session admin ("Your sessions" self-service + admin-tier web-sessions viewer, both with revoke). **§8.15 task 15.6 shipped 2026-09-25:** scheduler→`tickerHealth` bridge wires real job state into Background jobs. User/operator guide: `docs/web-admin.md`. **UX v1.1** (root guild list, sidebar nav, member names, background-jobs copy) shipped 2026-09-17 — [§8.15](#815-ux-v11--first-run-usability-pass-shipped-2026-09-17). Task-level breakdown (all tasks shipped): [§8.14](#814-task-breakdown-shipped).
 
 ---
 
@@ -15,7 +15,7 @@ Replace the minimal, mostly-unauthenticated HTTP surface (`src/features/tickets/
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 1 | **Express 5** replaces raw `node:http`; single server on `PUBLIC_HTTP_PORT` | CJS-native, mature; keeps one container/port/topology. Pin version (path-to-regexp v8 route-syntax changes). |
-| 2 | **SSR templates + vendored htmx + small nonce'd vanilla JS modules. No Alpine, no React, no build step** | Alpine's `x-*` attributes need `unsafe-eval`/`unsafe-hashes` under CSP — unacceptable on an admin panel. No build step keeps Docker/CI unchanged. |
+| 2 | **SSR templates + vendored htmx + small nonce'd vanilla JS modules. No Alpine, no React, no build step** *(amended 2026-09-25: vendored Chart.js sanctioned for client-side dashboard charts — see the §8.13 amendment)* | Alpine's `x-*` attributes need `unsafe-eval`/`unsafe-hashes` under CSP — unacceptable on an admin panel. No build step keeps Docker/CI unchanged. |
 | 3 | **Login is required (no flag, no escape hatch)** for `/t` index, `/t/{uuid}` transcripts, and transcript assets. Only `/health` and OAuth endpoints stay public | Operator decision. Closes [help-tickets.md](help-tickets.md) open item and the "not login-gated (MVP)" warning in the index page. |
 | 4 | **Transcript access = guild staff-tier OR ticket participant** | Staff can moderate; the people a transcript is *about* keep the right to read it. Participants resolve from existing tables — no new schema. |
 | 5 | Panel tiers mirror the bot gates exactly (Staff / Senior / ManageGuild-only) | Handlers are the source of truth; the panel must never be a bypass. |
@@ -162,7 +162,9 @@ No new tables for participants (existing ticket schema covers §8.4). Slash hand
   pinned version, re-vendor from the registry tarball, drop the old file, and bump
   `HTMX_SRC` in `src/web/views/layout.js` — the filename is the cache-buster
   (`/static/*` is served `immutable`), and `test/web-views-layout.test.js` pins both
-  the banner and the layout reference.
+  the banner and the layout reference. Chart.js follows the identical procedure —
+  **pinned:** `chart.js@4.5.1` → `src/web/public/vendor/chart.4.5.1.min.js`
+  (+ `LICENSE.md`); pin + upgrade wording in the [§8.13 amendment 2026-09-25](#813-design-decisions-locked--summary).
 
 ---
 
@@ -180,7 +182,7 @@ No new tables for participants (existing ticket schema covers §8.4). Slash hand
 
 Each phase ships dark-by-default: with `PUBLIC_HTTP_PORT` unset, boot behavior is unchanged.
 
-**Status (2026-09-16):** Phases 0a–3 shipped (PR #55). Phase 4: docs page + env table + VitePress sidebar shipped with it; dashboard charts, mobile pass, session admin (list/revoke) still open.
+**Status (2026-09-25):** All phases shipped. Phases 0a–3 (PR #55); Phase 4 docs page/env table/sidebar shipped with PR #55; **dashboard charts, mobile pass, and session admin shipped 2026-09-25** (charts: vendored `chart.js@4.5.1` client-rendered from `/g/:guildId/api/dashboard/*.json` per the §8.13 amendment; session admin: self-service `Your sessions` + admin-tier `Web sessions` with revoke; mobile: 360–430px media pass). §8.15 task 15.6 (job-state wiring) shipped 2026-09-25.
 
 **Task breakdown & estimates:** Phases 0a–0c are decomposed into 1–2 h checkbox tasks (Files / Estimate / Dependencies / Verification) and the Phase 1 row above is split into per-area tasks in [§8.14](#814-task-breakdown-shipped). **Phases 2–4 estimates are intentionally deferred** — those phases keep exactly the row-level fidelity above and get their own task breakdown only after Phase 0a completes (the test net + extraction lands first, so the remaining estimates land on proven ground).
 
@@ -240,6 +242,23 @@ Each phase ships dark-by-default: with `PUBLIC_HTTP_PORT` unset, boot behavior i
 > intact. Storage is unchanged — files are still written at close as the
 > export/backup. Integrity doctrine refined: the RECORD is immutable; the
 > page is a view of it.
+
+> **Amendment 2026-09-25 (decision 2, operator-approved — Phase 4 charts work):**
+> SSR-first rendering is UNCHANGED and the ban on Alpine/React/build step stands.
+> What changed: vendored **Chart.js** (UMD build, version-pinned exactly like htmx
+> per the §8.7 upgrade procedure — npm-registry tarball sha512-verified at vendor
+> time, banner comment first bytes, version in the filename as the cache-buster,
+> self-origin `/static/vendor/` script only, no CDN) is sanctioned for **CLIENT-side
+> dashboard chart rendering** fed by the staff-tier JSON API endpoints under
+> `/g/:guildId/api/…`. Endpoints obey the §8.6 query budget (`no-store`,
+> `LIMIT ≤ 100`, dashboard aggregates cached ≥30 s) and the existing tier gates.
+> Charts are progressive enhancement — the SSR tables remain and every page must
+> still work with JS off. Direction: this bends decision 2's SSR-only posture
+> toward the operator's long-term client-server/API path (possible future Flutter
+> frontend); it does NOT reopen Alpine/React/build-step territory.
+> **Pinned:** `chart.js@4.5.1` → `src/web/public/vendor/chart.4.5.1.min.js`
+> (MIT; `vendor/LICENSE.md` shipped; UMD dist auto-registers all controllers —
+> no `Chart.register` needed; loads as classic self-origin script, no CSP change).
 
 
 ---
@@ -602,11 +621,12 @@ the console — the §8.6 "root shows a guild picker" design was never built.
   correction: any asset whose URL lacks a version component is NEVER safe
   to change in place — bump the query or the filename with every edit.
 
-**Follow-up (open):** *job-state registry wiring* — features (voice, youtube,
-twitch, decay, github-releases, reminders) still register nothing with
-`data/tickerHealth.js`, so the section renders its empty state in production.
-Wiring is per-feature (stamp a last-run timestamp in each ticker, register a
-getter at boot); tracked here until done.
+**Follow-up (SHIPPED 2026-09-25):** *job-state registry wiring* — `src/web/data/schedulerJobHealth.js`
+bridges `src/core/scheduler.js` snapshots into `data/tickerHealth.js` at web boot
+(one getter per registered job, live job lookup, dark-by-default behind
+`PUBLIC_HTTP_PORT`, boot-guarded). Interval jobs derive ok/stale from the real
+cadence; cron rows never fake a status (honest `unknown` + real last-tick);
+`lastError` text never surfaces.
 
 - [x] **Task 15.1:** Root guild list (route + view + legacy alias removal)
   - **Files:** `src/web/routes/dashboard.js`, `src/web/views/root/index.js`, `src/web/routes/transcripts.js`
@@ -810,7 +830,7 @@ getter at boot); tracked here until done.
   so every POST body is byte-identical. Verification: new render test
   pins titled labels in all three panel selects + both name-decorated
   selects + a whole-page "no (undefined) anywhere" pin; 2978/2978.
-- [ ] **Task 15.6 (OPEN):** Wire real job state into `data/tickerHealth.js`
-  - **Files:** `src/features/{voice,youtube,twitch,xp,githubReleases,eventReminders}/`, registry registration at boot
+- [x] **Task 15.6 (shipped 2026-09-25):** Wire real job state into `data/tickerHealth.js`
+  - **Files:** `src/web/data/schedulerJobHealth.js` (new bridge), `src/web/server.js` (boot registration); scheduler features (voice, youtube, twitch, xp, githubReleases, eventReminders) needed no edits — every recurring job already runs through `scheduler.registerJob`
   - **Estimate:** 2 h · **Dependencies:** —
-  - **Verification:** Background jobs table shows ≥ 4 named jobs with ok/stale derived from last-run stamps; a stalled ticker renders `stale`
+  - **Verification:** Background jobs table shows ≥ 4 named jobs with ok/stale derived from real stamps (dashboard/system suites); a stalled fake ticker renders `stale`; idle cron jobs stay honest (`unknown`, never `down`)
