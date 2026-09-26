@@ -562,8 +562,13 @@ describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () =
     // Phase 3 (subtask 28) adds the XP GRANT page to the admin set: /grantxp
     // is ManageGuild-only per AGENTS.md §4, so staff sees the generic 403 —
     // the grant surface must NEVER resolve for guild-B staff.
+    // Phase 4 (component C) adds the System "Web sessions" viewer to the
+    // admin set (§8.6 System row = Admin): guild-B staff tier-denies there
+    // with the same 403 — the SELF surface (/g/:guildId/sessions) stays a
+    // staff-tier view and must RESOLVE below (it is not in this set).
     const ADMIN_TIER_VIEWS = new Set([
       "/g/:guildId/system",
+      "/g/:guildId/system/sessions",
       "/g/:guildId/audit",
       "/g/:guildId/xp/grant",
     ]);

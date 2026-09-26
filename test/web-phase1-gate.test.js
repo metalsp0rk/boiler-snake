@@ -356,7 +356,12 @@ const PAGES = [
   { path: "/g/:guildId/commands", tier: "staff", marker: "<h1>Command visibility" },
   { path: "/g/:guildId/integrations", tier: "staff", marker: "<h1>Integrations" },
   { path: "/g/:guildId/voice", tier: "staff", marker: "<h1>Voice" },
+  // Phase 4 session admin (component C): self-service surface rides the
+  // SHELL tier (guildScope denies tier-less visitors upstream with the
+  // generic 404); the global viewer sits in the System area (admin).
+  { path: "/g/:guildId/sessions", tier: "staff", marker: "<h1>Your sessions" },
   { path: "/g/:guildId/system", tier: "admin", marker: "<h1>System" },
+  { path: "/g/:guildId/system/sessions", tier: "admin", marker: "<h1>Web sessions" },
   { path: "/g/:guildId/audit", tier: "admin", marker: "<h1>Audit log" },
   // Phase 3 (subtask 28): admin-only grant-XP form page (§8.6 XP row is the
   // staff READ surface; the GRANT action is the ADMIN mutate — /grantxp twin,
@@ -418,7 +423,11 @@ const GATE_MEASURE = process.env.GATE_MEASURE === "1";
     "/g/:guildId/commands": { req1: 4, req2: 4 },
     "/g/:guildId/integrations": { req1: 16, req2: 3 },
     "/g/:guildId/voice": { req1: 6, req2: 3 },
+    // Phase-4 session pages: auth+scope shell floor + ONE bounded session
+    // list each (values MEASURED via GATE_MEASURE=1 on this fixture).
+    "/g/:guildId/sessions": { req1: 4, req2: 4 },
     "/g/:guildId/system": { req1: 4, req2: 4 },
+    "/g/:guildId/system/sessions": { req1: 4, req2: 4 },
     "/g/:guildId/audit": { req1: 5, req2: 5 },
     "/g/:guildId/xp/grant": { req1: 3, req2: 3 },
     "/g/:guildId/tickets": { req1: 4, req2: 4 },

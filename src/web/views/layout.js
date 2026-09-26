@@ -60,7 +60,12 @@ const NAV_GROUPS = Object.freeze([
     items: [
       { suffix: "", label: "Dashboard" },
       { suffix: "/voice", label: "Voice" },
+      // Phase 4 self-service session control (shell floor — every console
+      // visitor has their own sessions to audit/revoke).
+      { suffix: "/sessions", label: "Your sessions" },
       { suffix: "/system", label: "System", minTier: "admin" },
+      // Phase 4 admin global session control (System-area surface).
+      { suffix: "/system/sessions", label: "Web sessions", minTier: "admin" },
       { suffix: "/audit", label: "Audit trail", minTier: "admin" },
     ],
   },

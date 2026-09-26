@@ -39,6 +39,7 @@ const { registerLeaderboardRoutes } = require("./routes/leaderboard");
 const { registerDashboardRoutes } = require("./routes/dashboard");
 const { registerVoiceRoutes } = require("./routes/voice");
 const { registerSystemRoutes } = require("./routes/system");
+const { registerSessionsRoutes } = require("./routes/sessions");
 const { registerXpActionsRoutes } = require("./routes/xpActions");
 const { registerTicketActionsRoutes } = require("./routes/ticketActions");
 const { registerGuildArchiveRoutes } = require("./routes/guildArchive");
@@ -338,6 +339,15 @@ function createWebApp(options = {}) {
   // /g/:guildId guildScope gates first; same shared resolver instance keeps
   // tier math undivided. GET-only — the methodGate 405s every verb else.
   registerSystemRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, getTickerHealth: options.getTickerHealth, staffData: options.staffData, oauthConfig: options.oauthConfig });
+  // Self-service "Your sessions" (Phase 4, subtask 2, component C): any
+  // console visitor lists + revokes their OWN web sessions (current-row
+  // revoke = clean logout); the ADMIN global viewer lives on the System
+  // area (routes/system.js). Reads/revokes flow exclusively through
+  // auth/sessions.js policy → the src/db facade (zero route SQL); session
+  // ids are never rendered (§8.7). AFTER the guild shell so /g/:guildId
+  // guildScope gates first; same shared resolver instance keeps tier math
+  // undivided.
+  registerSessionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds });
   // XP grant action (Phase 3, subtask 28): admin-only grant form + POST (§8.6
   // XP row; /grantxp is ManageGuild-only per AGENTS.md §4). Grants flow
   // EXCLUSIVELY through src/services/awardXp.js — the SAME service the slash

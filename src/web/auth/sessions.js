@@ -27,6 +27,11 @@ const {
   destroyWebSession,
   pruneWebSessions,
 } = require("../../db");
+// Administration helpers below call the facade through this MODULE OBJECT
+// (property access at CALL time, not a top-level destructure) so test/gate
+// recorders installed on the shared src/db facade are the functions the
+// handlers actually run — same recorder doctrine as routes/ticketActions.js.
+const dbFacade = require("../../db");
 const { getSessionTtlMs, isSecureBaseUrl } = require("../config");
 
 const SESSION_COOKIE_NAME = "web_session";
@@ -195,6 +200,82 @@ function pruneExpiredSessions(now = Date.now()) {
   return pruneWebSessions(now);
 }
 
+// ---------------------------------------------------------------------------
+// Session ADMINISTRATION (Phase 4: self-service "Your sessions" + admin
+// session control). Policy layer only — audit + response shaping belong to
+// the routes; this module never touches req/res (§8.2 layering).
+// ---------------------------------------------------------------------------
+
+/**
+ * One user's LIVE sessions (newest activity first, bounded by
+ * MAX_SESSION_LIST_LIMIT at the repo). Rows past their sliding expiry are
+ * filtered HERE (the policy layer owns the live/expired decision): the
+ * console never presents a dead session as revocable, and "already revoked
+ * or expired" stays the single honest answer for both states.
+ * @param {string} userId
+ * @param {number} [now]
+ * @param {{ limit?: number }} [opts]
+ * @returns {WebSession[]}
+ */
+function listLiveSessionsForUser(userId, now = Date.now(), opts = {}) {
+  if (!userId) return [];
+  return dbFacade
+    .listWebSessionsByUser(String(userId), opts)
+    .map(toSession)
+    .filter((s) => s.expiresAt > now);
+}
+
+/**
+ * EVERY live session in the store (system-wide — web_sessions carries no
+ * guild column, and no per-guild list is faked), bounded + policy-filtered
+ * exactly like listLiveSessionsForUser.
+ * @param {number} [now]
+ * @param {{ limit?: number }} [opts]
+ * @returns {WebSession[]}
+ */
+function listLiveSessions(now = Date.now(), opts = {}) {
+  return dbFacade
+    .listAllWebSessions(opts)
+    .map(toSession)
+    .filter((s) => s.expiresAt > now);
+}
+
+/**
+ * Revoke one session by id. Honest outcome, never a silent success: deleting
+ * an already-gone row answers `{ ok: false }` so the caller can report the
+ * known state instead of claiming a revocation that did not happen.
+ * @param {string} id
+ * @returns {{ ok: true, session: WebSession } | { ok: false }}
+ */
+function revokeSessionById(id) {
+  const row = dbFacade.deleteWebSessionById(id);
+  if (!row) return { ok: false };
+  return { ok: true, session: toSession(row) };
+}
+
+/**
+ * Resolve a session from a list by its NON-SECRET selector (created_at):
+ * the browser never learns or carries a session id — the console lists
+ * timestamps, and the revoke form names the row by (owner, created_at).
+ * On a created_at collision the CURRENT row wins (deterministic, and the
+ * current session is the one a user means by "this device").
+ * @param {WebSession[]} sessions already-listed live sessions to search
+ * @param {number} createdAt selector (unix ms)
+ * @param {WebSession|null} [currentSession] the caller's own live session
+ * @returns {WebSession|null}
+ */
+function pickSessionByCreatedAt(sessions, createdAt, currentSession = null) {
+  if (!Number.isInteger(createdAt)) return null;
+  if (
+    currentSession &&
+    currentSession.createdAt === createdAt &&
+    sessions.some((s) => s.id === currentSession.id)
+  ) {
+    return currentSession;
+  }
+  return sessions.find((s) => s.createdAt === createdAt) || null;
+}
+
 /** @type {NodeJS.Timeout|null} */
 let pruneTimer = null;
 
@@ -304,6 +385,11 @@ module.exports = {
   rotateSession,
   destroySession,
   pruneExpiredSessions,
+  MAX_SESSION_LIST_LIMIT: dbFacade.MAX_SESSION_LIST_LIMIT,
+  listLiveSessionsForUser,
+  listLiveSessions,
+  revokeSessionById,
+  pickSessionByCreatedAt,
   startSessionPruneJob,
   stopSessionPruneJob,
   sessionCookieMaxAgeSec,

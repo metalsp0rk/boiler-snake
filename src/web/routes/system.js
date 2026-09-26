@@ -4,9 +4,12 @@
  * "System: health, tickers, OAuth state, audit viewer (admin_audit) | Admin
  * | — | 1 (viewer)" — subtask 22).
  *
- * GET ONLY — no POST/PUT/DELETE is registered here (§8.8 Phase 1; the
- * viewer is read-only until a later phase, and the app-wide methodGate
- * 405s every other verb on these paths anyway: "no export, no deletes").
+ * The two Phase-1 pages stay GET-only (the audit viewer is read-only — "no
+ * export, no deletes" — and the app-wide methodGate 405s every other verb
+ * on their paths). The ONE exception is the Phase-4 System "Web sessions"
+ * page, whose revoke mutation registers through registerWebMutation +
+ * app.post in lockstep (routes/sessions.js carries the shared selector
+ * parser + view vocabulary, so the two session scopes cannot drift).
  *
  * Route position: registered AFTER routes/dashboard.js in app.js, so the
  * shell's `/g/:guildId` guildScope already ran (anon ⇒ login redirect,
@@ -75,8 +78,22 @@ const { dbPath } = require("../../db/connection");
 // Prune cadence constant only (the timer itself is not exposed in-process —
 // the panel says "unknown" instead of guessing).
 const { DEFAULT_PRUNE_INTERVAL_MS } = require("../auth/sessions");
-const { rawParams } = require("./shared/req.js");
+const { rawParams, readFields, rawFlashQuery } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
+const { makeFlashRedirect } = require("./shared/flash.js");
+// Phase-4 System "Web sessions" (admin global session control): the policy
+// layer + the SELF surface's shared vocabulary (selector parser, flash
+// tables) — imported on purpose so both scopes validate identically.
+const sessionPolicy = require("../auth/sessions");
+const {
+  parseRevokeField,
+} = require("./sessions");
+const {
+  renderSystemSessionsBody,
+  flashFromQuery: flashFromQuerySessions,
+  FLASH_DONE: FLASH_DONE_SESSIONS,
+  FLASH_ERROR: FLASH_ERROR_SESSIONS,
+} = require("../views/sessions");
 
 
 
@@ -352,6 +369,143 @@ function registerSystemRoutes(app, options = {}) {
       guilds: await shellGuilds(resolver, req),
     });
     writeShellHtml(req, res, { status: 200, document });
+  });
+
+  // =========================================================================
+  // Phase 4 — System "Web sessions" (subtask web-admin-phase4-02, operator
+  // decision BOTH scopes): ADMIN-tier global session list + revoke.
+  //
+  // HONEST FRAMING: web_sessions carries NO guild column — sessions are
+  // global — so the page lists every live console session system-wide
+  // instead of faking a per-guild slice (the guild shell only provides the
+  // URL scope + audit guild; the audit viewer's guild-scoping rule does NOT
+  // extend to a table that has no guild axis). Tier math is unchanged:
+  // requireTier("admin") gates both the page and the mutation (in-guild
+  // staff/senior ⇒ 403; cross-guild/stranger/anon ⇒ 404/302 upstream).
+  //
+  // Revocation semantics are the SELF surface's, verbatim: selector =
+  // (target_user_id, created_at) — both non-secret, id NEVER accepted or
+  // rendered (§8.7); already-gone ⇒ ?error=session_gone with zero writes;
+  // exactly ONE fail-closed admin_audit row per success
+  // (action sessions.revoke, details.scope "admin"); revoking the ADMIN'S
+  // OWN current session through this page still performs the clean-logout
+  // teardown (row + cookie) exactly like the self surface.
+  // =========================================================================
+
+  // LAZY require (ticketActions doctrine): app.js loads this module while
+  // app.js itself is still loading; register only runs from createWebApp().
+  const { registerWebMutation } = require("../app");
+
+  /** Registry entry + Express route minted from ONE template constant. */
+  const postSystemMutation = (template, handler) => {
+    registerWebMutation(app, "POST", template);
+    app.post(template, requireTier("admin"), handler);
+  };
+
+  const systemSessionsPageOf = (guildId) =>
+    `/g/${encodeURIComponent(guildId)}/system/sessions`;
+
+  const flashSessions = makeFlashRedirect({
+    pageOf: systemSessionsPageOf,
+    doneTable: FLASH_DONE_SESSIONS,
+    errorTable: FLASH_ERROR_SESSIONS,
+  });
+
+  // ---- admin: global live-session list (System area) -----------------------
+  app.get("/g/:guildId/system/sessions", requireTier("admin"), async (req, res) => {
+    const guildId = req.guildAccess.guildId; // shell scope (list is system-wide)
+    const sessions = sessionPolicy.listLiveSessions();
+    // §8.15-15.11 names from the member cache ONLY (misses show ids; the
+    // sessions are global so many owners are legitimately unknown here).
+    const userIds = [...new Set(sessions.map((s) => s.userId))]
+      .filter((id) => /^[0-9]{5,20}$/.test(String(id)))
+      .slice(0, 200);
+    const names = resolveMemberNames(options.getClient ?? null, guildId, userIds);
+    const document = renderShellPage(req, {
+      title: "Web sessions",
+      heading: "Web sessions",
+      subheading:
+        "Every live web console session (system-wide — sessions are not per-guild). Revoke kills a lost or stolen device's cookie immediately.",
+      content: renderSystemSessionsBody({
+        guildId,
+        sessions,
+        currentId: req.webSession ? req.webSession.id : null,
+        csrfToken: req.csrfToken || null,
+        flash: flashFromQuerySessions(rawFlashQuery(req.url)),
+        names,
+      }),
+      guilds: await shellGuilds(resolver, req),
+    });
+    writeShellHtml(req, res, { status: 200, document });
+  });
+
+  // ---- POST revoke ANY session (admin global control) ----------------------
+  postSystemMutation("/g/:guildId/system/sessions/revoke", async (req, res) => {
+    const guildId = req.guildAccess.guildId;
+    const current = req.webSession || null;
+    const fields = readFields(req);
+
+    // Validation at the boundary — refusal answers PRG with ZERO write
+    // helpers touched (ladder reject contract).
+    const parsed = parseRevokeField(fields);
+    if (!parsed.ok) {
+      flashSessions(res, guildId, "error", parsed.errorSlug);
+      return;
+    }
+    const targetUserId = String(fields.target_user_id == null ? "" : fields.target_user_id).trim();
+    if (!/^[0-9]{5,20}$/.test(targetUserId)) {
+      flashSessions(res, guildId, "error", "invalid_selection");
+      return;
+    }
+
+    // Resolve WITHIN the named owner's own live rows (the pair
+    // (target_user_id, created_at) must both match a live row — a stale or
+    // hostile pairing is the honest session_gone answer, never a guess).
+    const owned = sessionPolicy.listLiveSessionsForUser(targetUserId);
+    const target = sessionPolicy.pickSessionByCreatedAt(
+      owned,
+      parsed.createdAt,
+      current && current.userId === targetUserId ? current : null
+    );
+    if (!target) {
+      flashSessions(res, guildId, "error", "session_gone");
+      return;
+    }
+
+    const revoked = sessionPolicy.revokeSessionById(target.id);
+    if (!revoked.ok) {
+      flashSessions(res, guildId, "error", "session_gone");
+      return;
+    }
+
+    const isCurrent = !!current && target.id === current.id;
+    req.audit({
+      action: "sessions.revoke",
+      targetType: "session",
+      targetId: String(target.createdAt),
+      guildId,
+      details: {
+        scope: "admin",
+        target_user_id: target.userId,
+        created_at: target.createdAt,
+        current: isCurrent,
+      },
+      // No mirror descriptor: no slash surface mirrors to a channel here.
+    });
+
+    if (isCurrent) {
+      // The admin revoked their OWN current session through the admin page:
+      // same clean-logout teardown as POST /auth/logout (row already gone).
+      res.writeHead(302, {
+        Location: "/",
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+        "Set-Cookie": sessionPolicy.buildClearSessionCookie(),
+      });
+      res.end();
+      return;
+    }
+    flashSessions(res, guildId, "done", "session_revoked");
   });
 }
 

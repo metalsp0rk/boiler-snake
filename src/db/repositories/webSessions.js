@@ -131,6 +131,89 @@ function pruneWebSessions(at = now()) {
 }
 
 // ---------------------------------------------------------------------------
+// Session administration (Phase 4 "Your sessions" + admin session control)
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard bound shared by every administration list (§8.6 query budget): a
+ * console page NEVER pulls more than this many rows, whatever the caller
+ * requests. Active sessions per user are naturally few (login rotates the
+ * id, so one browser ≈ one row); the bound only caps hostile/duplicate data.
+ */
+const MAX_SESSION_LIST_LIMIT = 100;
+
+/**
+ * List a user's sessions, newest activity first (bounded, explicit columns —
+ * token material NEVER rides along, same rule as getWebSession). Served by
+ * idx_web_sessions_user. Expiry is NOT filtered here (repo policy: the auth
+ * layer applies the live/expired decision so callers stay honest about what
+ * the table actually holds).
+ *
+ * @param {string} userId
+ * @param {{ limit?: number }} [opts]
+ * @returns {WebSessionRow[]}
+ */
+function listWebSessionsByUser(userId, { limit = MAX_SESSION_LIST_LIMIT } = {}) {
+  if (!userId || typeof userId !== "string") return [];
+  const cap = Math.max(
+    1,
+    Math.min(Number.isInteger(limit) ? limit : MAX_SESSION_LIST_LIMIT, MAX_SESSION_LIST_LIMIT)
+  );
+  return db
+    .prepare(
+      `SELECT ${SESSION_COLUMNS} FROM web_sessions
+       WHERE user_id=?
+       ORDER BY last_seen_at DESC, created_at DESC, id ASC
+       LIMIT ?`
+    )
+    .all(userId, cap);
+}
+
+/**
+ * List every session in the store, newest activity first (bounded). The
+ * console surface labels this honestly as SYSTEM-WIDE — web_sessions carries
+ * no guild column, so no per-guild query exists and none is faked. The sort
+ * touches only the (small, bounded) live-session set; the LIMIT keeps the
+ * read bounded regardless of table growth.
+ *
+ * @param {{ limit?: number }} [opts]
+ * @returns {WebSessionRow[]}
+ */
+function listAllWebSessions({ limit = MAX_SESSION_LIST_LIMIT } = {}) {
+  const cap = Math.max(
+    1,
+    Math.min(Number.isInteger(limit) ? limit : MAX_SESSION_LIST_LIMIT, MAX_SESSION_LIST_LIMIT)
+  );
+  return db
+    .prepare(
+      `SELECT ${SESSION_COLUMNS} FROM web_sessions
+       ORDER BY last_seen_at DESC, created_at DESC, id ASC
+       LIMIT ?`
+    )
+    .all(cap);
+}
+
+/**
+ * Delete a session BY ID and hand back the row that was removed (the
+ * administration layer needs the owner/timestamps for the audit entry —
+ * destroyWebSession stays the fire-and-forget logout path). Deleting a
+ * missing row returns null WITHOUT error: "already gone" is an honest,
+ * reportable outcome, never a silent success.
+ *
+ * @param {string} id
+ * @returns {WebSessionRow|null} the removed row, or null when none matched
+ */
+function deleteWebSessionById(id) {
+  if (!id || typeof id !== "string") return null;
+  const row = db
+    .prepare(`SELECT ${SESSION_COLUMNS} FROM web_sessions WHERE id=?`)
+    .get(id);
+  if (!row) return null;
+  const result = db.prepare(`DELETE FROM web_sessions WHERE id=?`).run(id);
+  return result.changes > 0 ? row : null;
+}
+
+// ---------------------------------------------------------------------------
 // Session-attached OAuth artifacts (migration 030_web_session_tokens)
 // ---------------------------------------------------------------------------
 
@@ -206,6 +289,10 @@ module.exports = {
   touchWebSession,
   destroyWebSession,
   pruneWebSessions,
+  MAX_SESSION_LIST_LIMIT,
+  listWebSessionsByUser,
+  listAllWebSessions,
+  deleteWebSessionById,
   setWebSessionAuth,
   getWebSessionAuth,
 };
