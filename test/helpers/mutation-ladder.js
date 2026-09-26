@@ -3,7 +3,7 @@
  *
  * Extracted VERBATIM from test/web-phase2-gate.test.js so the Phase-3
  * program gate (test/web-phase3-gate.test.js) runs the EXACT same
- * per-mutation acceptance ladder over the same 40-mutation matrix without
+ * per-mutation acceptance ladder over the same mutation matrix without
  * a second copy of the table or the ladder logic. This is a TEST-ONLY
  * helper (test/helpers/, never required by src/): moving the code here is
  * the single-source guarantee — the Phase-2 gate stays the historical
@@ -19,7 +19,7 @@
  *  - makeFakeChannel / makeFakeDiscord / buildFakeCacheClient — offline
  *    discord.js-cache fakes (cache-ONLY seams; any network call in a
  *    request path throws as an unstubbed-method error)
- *  - buildPhase2Rows .... the 40-row PARITY matrix (the §8.8 checklist
+ *  - buildPhase2Rows .... the 42-row PARITY matrix (the §8.8 checklist
  *     artifact — runtime registry is the ground truth both gates assert
  *     against; this factory returns fresh row objects per call)
  *  - buildLadderSteps ... the per-mutation acceptance ladder (anon ⇒ 302,
@@ -117,7 +117,11 @@ function expectedTierFor(template) {
     template.startsWith("/g/:guildId/xp/grant") ||
     // /staff syncpermissions is ManageGuild-ONLY (AGENTS.md §4) — the web
     // twin (subtask 31) inherits ADMIN with zero delta.
-    template.startsWith("/g/:guildId/commands/sync")
+    template.startsWith("/g/:guildId/commands/sync") ||
+    // Phase 4 component C: revoking SOMEONE ELSE's session is the System
+    // row (Admin); the self-service "/sessions" template falls through to
+    // staff (a visitor always manages their OWN sessions).
+    template.startsWith("/g/:guildId/system/sessions")
   ) {
     return "admin";
   }
@@ -170,6 +174,10 @@ const WRITE_HELPERS = new Set([
   "createStaffNote",
   "claimTicket",
   "markTicketClosed",
+  // Phase 4 (component C) session admin surface: deleteWebSessionById is the
+  // revoke write (runs INSIDE auth/sessions.js revokeSessionById via the
+  // facade — the recorder doctrine the ticket rows already prove).
+  "deleteWebSessionById",
 ]);
 
 /** Every facade helper the counting proxy wraps (reads + writes + audit). */
@@ -227,6 +235,11 @@ const FACADE_METHODS = [
   // WRAPPER (recorded from inside = deep service-layer proof §8.6).
   "claimTicket",
   "markTicketClosed",
+  // Phase 4 (component C) session admin surface: the revoke write (the
+  // rows' `helpers` evidence) + the bounded list reads the handlers run.
+  "deleteWebSessionById",
+  "listWebSessionsByUser",
+  "listAllWebSessions",
 ];
 
 /**
@@ -500,6 +513,22 @@ function buildFakeCacheClient(spec) {
  */
 function buildPhase2Rows({ api, purgeAutoincrement }) {
   const F = FIX;
+  // ---- Phase 4 (component C) session-admin fixture constants --------------
+  // Fixed created_at SELECTORS (the revoke forms carry these timestamps —
+  // NEVER a session id, §8.7) + far-future expiries so the prepared rows
+  // stay LIVE through the whole run. prepSession() re-mints a live session
+  // row deterministically: delete-by-id (idempotent re-prepare), insert via
+  // the REAL repo, then pin the timestamps (createWebSession stamps now()).
+  const SEL_SELF = 1700000000001; // both SS1 actors (staff + senior probe)
+  const SEL_TARGET = 1700000000002; // SS2's revocation subject (plain user)
+  const EXPIRES_FAR = 4102444800000; // year 2100 — never pruned mid-run
+  const prepSession = (id, userId, discordTag, createdAt) => {
+    rawDelete(`DELETE FROM web_sessions WHERE id='${id}'`);
+    api.createWebSession({ id, userId, discordTag, expiresAt: EXPIRES_FAR });
+    rawDelete(
+      `UPDATE web_sessions SET created_at=${createdAt}, last_seen_at=${createdAt}, expires_at=${EXPIRES_FAR} WHERE id='${id}'`
+    );
+  };
   return [
     // ---- Settings surface (subtask 24) — §8.6 "Settings" row ------------------
     {
@@ -1504,6 +1533,86 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         status: 302,
         location: `/g/${F.GUILD_A}/commands?error=invalid_return`,
         fields: { return: "<bogus>" },
+      },
+    },
+    // ---- Sessions (subtask phase4-C) — WEB-ONLY surface (NO slash twin: the
+    // roadmap §8.3 session admin exists only in the web console). The
+    // "slash" evidence column therefore names the SERVICE the web path runs
+    // (auth/sessions.js policy → facade deleteWebSessionById — the same
+    // code POST /auth/logout's destroy runs beside). Selector hygiene (§8.7):
+    // the forms carry created_at / (target_user_id, created_at) — NEVER a
+    // session id — so the audit targetId is the created_at selector.
+    {
+      no: "SS1",
+      area: "sessions (revoke own — Phase 4 self-service)",
+      template: "/g/:guildId/sessions/revoke",
+      method: "POST",
+      tier: "staff",
+      slash: "WEB-ONLY twin of POST /auth/logout (src/web/auth/login.js logout) — revoke runs auth/sessions.js revokeSessionById → facade deleteWebSessionById (audit in the route, which logout has no need of)",
+      helpers: ["deleteWebSessionById"],
+      action: "sessions.revoke",
+      targetType: "session",
+      targetId: String(SEL_SELF), // the NON-SECRET selector (never a session id)
+      mirror: false, // no slash surface mirrors anything for sessions
+      fields: { created_at: String(SEL_SELF) },
+      // Re-mint a LIVE session at the SEL_SELF selector for BOTH staff-tier
+      // actors: the positive viewer (USER_STAFF) AND the staff-row
+      // wrongTier senior pass-through, which is a REAL successful run whose
+      // audit row the ledger books (a senior's list must contain the row
+      // their body selects — selection is scoped to the viewer's own rows).
+      // The viewers' LOGIN sessions stay untouched (their created_at is mint
+      // time ≠ SEL_SELF), so current-session logout never fires in-gate.
+      prepare: () => {
+        prepSession("1".repeat(64), F.USER_STAFF, "gate-self#0001", SEL_SELF);
+        prepSession("2".repeat(64), F.USER_SENIOR, "gate-self2#0002", SEL_SELF);
+      },
+      details: D({
+        scope: "self",
+        target_user_id: F.USER_STAFF,
+        created_at: SEL_SELF,
+        current: false, // never the viewer's login session (Exit C scope rule)
+      }),
+      okLocation: `/g/${F.GUILD_A}/sessions?done=session_revoked`,
+      reject: {
+        // created_at field shape — refused BEFORE any facade call
+        status: 302,
+        location: `/g/${F.GUILD_A}/sessions?error=invalid_selection`,
+        fields: { created_at: "x" },
+      },
+    },
+    {
+      no: "SS2",
+      area: "sessions (revoke any — Phase 4 System admin control)",
+      template: "/g/:guildId/system/sessions/revoke",
+      method: "POST",
+      tier: "admin",
+      slash: "WEB-ONLY System-area control (no slash twin) — resolve (target_user_id, created_at) within the named owner's own live rows, then the SAME auth/sessions.js revokeSessionById → facade deleteWebSessionById as SS1",
+      helpers: ["deleteWebSessionById"],
+      action: "sessions.revoke",
+      targetType: "session",
+      targetId: String(SEL_TARGET), // the NON-SECRET selector (never a session id)
+      mirror: false, // sessions never mirror to a channel on either scope
+      fields: { target_user_id: F.USER_PLAIN, created_at: String(SEL_TARGET) },
+      // Re-mint the SUBJECT's (USER_PLAIN — a tier-less in-guild member, the
+      // honest "revoke someone else" subject) live session at the fixed
+      // selector. ADMIN never touches their own login session here
+      // (current:false), so the admin cookie survives every step.
+      prepare: () => {
+        prepSession("3".repeat(64), F.USER_PLAIN, "gate-target#0004", SEL_TARGET);
+      },
+      details: D({
+        scope: "admin",
+        target_user_id: F.USER_PLAIN,
+        created_at: SEL_TARGET,
+        current: false,
+      }),
+      okLocation: `/g/${F.GUILD_A}/system/sessions?done=session_revoked`,
+      reject: {
+        // created_at shape on the ADMIN surface too (same parser, shared
+        // routes/sessions.js parseRevokeField — the two scopes cannot drift)
+        status: 302,
+        location: `/g/${F.GUILD_A}/system/sessions?error=invalid_selection`,
+        fields: { target_user_id: F.USER_PLAIN, created_at: "x" },
       },
     },
   ];

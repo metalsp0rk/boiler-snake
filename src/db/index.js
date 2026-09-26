@@ -354,6 +354,10 @@ module.exports = {
   pruneWebSessions: webSessions.pruneWebSessions,
   setWebSessionAuth: webSessions.setWebSessionAuth,
   getWebSessionAuth: webSessions.getWebSessionAuth,
+  MAX_SESSION_LIST_LIMIT: webSessions.MAX_SESSION_LIST_LIMIT,
+  listWebSessionsByUser: webSessions.listWebSessionsByUser,
+  listAllWebSessions: webSessions.listAllWebSessions,
+  deleteWebSessionById: webSessions.deleteWebSessionById,
 
   // admin audit trail (roadmap/web-admin.md §8.5; consumed by phases 0b–3)
   AUDIT_ORIGINS: adminAudit.AUDIT_ORIGINS,

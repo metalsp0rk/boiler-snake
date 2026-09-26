@@ -45,9 +45,14 @@ const { createWebApp } = require("../src/web/app");
 const { createGuildAccessResolver } = require("../src/web/auth/guildAccess");
 const sessionPolicy = require("../src/web/auth/sessions");
 const tokens = require("../src/web/auth/tokens");
+const csrfMod = require("../src/web/middleware/csrf");
 const {
   registerTickerHealthSource,
 } = require("../src/web/data/tickerHealth");
+const { createScheduler } = require("../src/core/scheduler");
+const {
+  registerSchedulerJobHealthSources,
+} = require("../src/web/data/schedulerJobHealth");
 const systemRoutes = require("../src/web/routes/system");
 
 // Clearly-fake placeholders ONLY (AGENTS.md: never real-looking secrets).
@@ -99,6 +104,38 @@ function count(haystack, needle) {
     i = haystack.indexOf(needle, i + needle.length);
   }
   return n;
+}
+
+/** Drain microtasks so the scheduler stamps lastFinishedAt at the fake stamp. */
+function settleAsync() {
+  return new Promise((r) => setImmediate(r));
+}
+
+/** Fake timer set for createScheduler — same harness as test/scheduler.test.js. */
+function fakeTimers() {
+  let nextId = 1;
+  const timeouts = [];
+  const intervals = [];
+  return {
+    setTimeoutFn: (fn, ms) => {
+      const id = nextId++;
+      timeouts.push({ id, fn, ms });
+      return { id, unref() {} };
+    },
+    clearTimeoutFn: (handle) => {
+      const i = timeouts.findIndex((t) => t.id === (handle?.id ?? handle));
+      if (i >= 0) timeouts.splice(i, 1);
+    },
+    setIntervalFn: (fn, ms) => {
+      const id = nextId++;
+      intervals.push({ id, fn, ms });
+      return { id, unref() {} };
+    },
+    clearIntervalFn: (handle) => {
+      const i = intervals.findIndex((t) => t.id === (handle?.id ?? handle));
+      if (i >= 0) intervals.splice(i, 1);
+    },
+  };
 }
 
 function insertAudit(entry) {
@@ -556,6 +593,118 @@ describe("GET /g/:guildId/system — process/ticker/web-surface/OAuth panels", (
 });
 
 // ===========================================================================
+// C2. Task 15.6 — scheduler → tickerHealth bridge wiring: /system renders
+// NAMED honest job rows from real scheduler state (fresh ok / aged stale /
+// idle-cron unknown, never down / failed tick = fixed detail only).
+// ===========================================================================
+describe("scheduler bridge wiring — named job rows on /system (Task 15.6)", () => {
+  it("real scheduler jobs render honest statuses; stalled ticker stale; cron never down; error text never leaks", async () => {
+    const timers = fakeTimers();
+    let stampAt = Date.now();
+    const cronCalls = [];
+    const scheduler = createScheduler({
+      now: () => stampAt,
+      setTimeoutFn: timers.setTimeoutFn,
+      clearTimeoutFn: timers.clearTimeoutFn,
+      setIntervalFn: timers.setIntervalFn,
+      clearIntervalFn: timers.clearIntervalFn,
+      cronSchedule: (expr, fn) => {
+        cronCalls.push({ expr, fn });
+        return { stop() {} };
+      },
+    });
+    const LEAK = "internal-scheduler-error-DETAIL-9001-NEVER-RENDERS";
+    let bridgeOff = null;
+    try {
+      scheduler.registerJob({ name: "voice", intervalMs: 60_000, run: () => {} });
+      scheduler.registerJob({ name: "twitch", intervalMs: 60_000, run: () => {} });
+      scheduler.registerJob({ name: "youtube", intervalMs: 5 * 60_000, run: () => {} });
+      scheduler.registerJob({
+        name: "eventReminders",
+        intervalMs: 60_000,
+        run: () => {
+          throw new Error(LEAK);
+        },
+      });
+      scheduler.registerJob({ name: "decay", cron: "0 4 * * *", run: () => {} });
+
+      const NOW = Date.now();
+      const origErr = console.error;
+      console.error = () => {}; // the scheduler logs the failed tick itself
+      try {
+        for (const [name, at] of [
+          ["youtube", NOW - 13 * 60_000], // STALLED fake ticker → stale
+          ["voice", NOW - 5_000],
+          ["twitch", NOW - 8_000],
+          ["eventReminders", NOW - 9_000],
+        ]) {
+          stampAt = at;
+          scheduler.runNow(name);
+          await settleAsync(); // stamp lastFinishedAt at the intended time
+        }
+        stampAt = NOW - 20 * 3_600_000; // decay (cron) last fired 20 h ago
+        for (const c of cronCalls) c.fn();
+        await settleAsync();
+      } finally {
+        console.error = origErr;
+      }
+
+      bridgeOff = registerSchedulerJobHealthSources(scheduler);
+      const { res, body } = await hit(SYS, { key: "admin" });
+      assert.equal(res.status, 200);
+
+      const row = (name) => {
+        const start = body.indexOf(`<td>${name}</td>`);
+        assert.notEqual(start, -1, `${name} row rendered`);
+        return body.slice(start, body.indexOf("</tr>", start));
+      };
+
+      assert.ok(row("voice").includes("badge-ticker-ok"), "fresh stamp ⇒ ok");
+      assert.ok(row("twitch").includes("badge-ticker-ok"), "fresh stamp ⇒ ok");
+      assert.ok(
+        row("youtube").includes("badge-ticker-stale"),
+        "aged fake ticker (13 min on a 5-min cadence) ⇒ stale"
+      );
+      const cronRow = row("decay");
+      assert.ok(cronRow.includes("badge-ticker-unknown"), "idle cron ⇒ honest unknown");
+      assert.ok(!cronRow.includes("badge-ticker-down"), "idle cron NEVER renders down");
+      assert.ok(cronRow.includes("cron cadence; no derived status"), "fixed cron detail");
+      const failedRow = row("eventReminders");
+      assert.ok(failedRow.includes("last tick failed"), "fixed failure detail");
+      assert.ok(!failedRow.includes(LEAK), "raw lastError text never renders (§8.7)");
+      assert.ok(
+        !body.includes("badge-ticker-down"),
+        "NO row fabricates down on the whole page"
+      );
+    } finally {
+      if (bridgeOff) bridgeOff();
+      scheduler.stop();
+    }
+  });
+
+  it("bridge registration is idempotent and the empty-registry state is restored after unregister", async () => {
+    const timers = fakeTimers();
+    const scheduler = createScheduler({ now: () => Date.now(), ...timers });
+    scheduler.registerJob({ name: "voice", intervalMs: 60_000, run: () => {} });
+    const off1 = registerSchedulerJobHealthSources(scheduler);
+    const off2 = registerSchedulerJobHealthSources(scheduler); // double boot
+    try {
+      const { body } = await hit(SYS, { key: "admin" });
+      assert.equal(count(body, 'class="row-ticker"'), 1, "voice registered ONCE");
+    } finally {
+      off1();
+      off2();
+      scheduler.stop();
+    }
+    const { body } = await hit(SYS, { key: "admin" });
+    assert.ok(
+      body.includes("No ticker health sources are registered"),
+      "registry back to the honest empty state"
+    );
+  });
+});
+
+// ===========================================================================
 // D. GET /g/:guildId/audit — viewer: order, filters, paging, escaping
 // ===========================================================================
 describe("GET /g/:guildId/audit — newest-first viewer with origin filter + paging", () => {
@@ -812,5 +961,220 @@ describe("audit viewer read model — facade contract, clamps, filter normalizat
     assert.equal(sys.total, 1);
     assert.equal(sys.rows[0].action, "decay.apply");
     assert.equal(sys.rows[0].actor_user_id, null);
+  });
+});
+
+// ===========================================================================
+// G. System "Web sessions" (subtask web-admin-phase4-02 component C) — the
+// ADMIN global session list + revoke. §8.6 System row (admin) + §8.1
+// cross-guild = generic 404 + §8.7 (a session id is a credential: never
+// rendered, never accepted as input — the selectors are (target_user_id,
+// created_at), both non-secret).
+// ===========================================================================
+describe("System Web sessions — admin global list + revoke (Phase 4 component C)", () => {
+  const SYS_SESS = `${SYS}/sessions`;
+  const REVOKE = `${SYS_SESS}/revoke`;
+  const CROSS_SYS_SESS = `/g/${GUILD_B}/system/sessions`;
+  const CROSS_REVOKE = `${CROSS_SYS_SESS}/revoke`;
+
+  /** CSRF tokens are SESSION-scoped (never path-scoped) — derive per key. */
+  const csrfFor = (key) =>
+    csrfMod.deriveCsrfToken(suite.cookies[key], SESSION_SECRET_SENTINEL);
+
+  const seededIds = [];
+  const allCookieIds = () => Object.values(suite.cookies);
+
+  const seedTargetSession = () => {
+    const s = sessionPolicy.createSession({ userId: USER_PLAIN, discordTag: "target#0004" });
+    seededIds.push(s.id);
+    return s;
+  };
+
+  const postForm = async (key, fields, path = REVOKE) => {
+    const headers = { "content-type": "application/x-www-form-urlencoded" };
+    if (key) headers.cookie = `web_session=${suite.cookies[key]}`;
+    const res = await fetch(suite.base + path, {
+      method: "POST",
+      redirect: "manual",
+      headers,
+      body: new URLSearchParams({ ...fields }).toString(),
+    });
+    return { res, body: await res.text(), location: res.headers.get("location") };
+  };
+
+  const revokeRows = () =>
+    api
+      .listAdminAudit(GUILD_A, { limit: 100 })
+      .filter((r) => r.action === "sessions.revoke");
+
+  it("GET access matrix — anon 302 · plain 404 · staff AND senior FIXED 403 · cross 404 · admin 200", async () => {
+    const anon = await fetch(`${suite.base}${SYS_SESS}`, { redirect: "manual" });
+    assert.equal(anon.status, 302);
+    assert.equal(anon.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+    await anon.text();
+
+    const plain = await hit(SYS_SESS, { key: "plain" });
+    assert.equal(plain.res.status, 404, "tier-less member ⇒ generic 404, never 403");
+    assert.equal(plain.body, "Not found");
+
+    for (const key of ["staff", "senior"]) {
+      const wrong = await hit(SYS_SESS, { key });
+      assert.equal(wrong.res.status, 403, `${key} on admin-tier System page`);
+      assert.equal(wrong.body, "Forbidden");
+    }
+
+    const cross = await hit(CROSS_SYS_SESS, { key: "admin" });
+    assert.equal(cross.res.status, 404, "cross-guild ⇒ generic 404 (§8.1)");
+    assert.equal(cross.body, "Not found");
+
+    const admin = await hit(SYS_SESS, { key: "admin" });
+    assert.equal(admin.res.status, 200);
+    assert.ok(admin.body.includes("<h1>Web sessions"), "admin sees the System session page");
+    assert.ok(admin.body.includes("system-wide"), "honest system-wide framing (no fake guild slice)");
+  });
+
+  it("lists live sessions system-wide and renders NO raw session id (§8.7 canary)", async () => {
+    const target = seedTargetSession();
+    const { body } = await hit(SYS_SESS, { key: "admin" });
+    assert.equal(target && body.includes(USER_PLAIN), true, "subject user listed");
+    assert.ok(body.includes("target#0004"), "tag snapshot listed");
+    assert.ok(body.includes(USER_ADMIN), "admin's own session listed (system-wide)");
+    assert.ok(body.includes("current"), "own row marked current");
+    for (const id of [...allCookieIds(), ...seededIds]) {
+      assert.ok(!body.includes(id), "raw session id NEVER renders (§8.7)");
+    }
+    assert.ok(!body.includes('name="session_id"') && !body.includes('name="id"'), "no id-selector field");
+    assert.ok(body.includes('name="target_user_id"') && body.includes('name="created_at"'), "non-secret selectors only");
+  });
+
+  it("POST revoke — PRG + row destroyed + exactly ONE 'web' audit row naming NO session id", async () => {
+    const target = seedTargetSession();
+    const before = revokeRows().length;
+    const out = await postForm("admin", {
+      _csrf: csrfFor("admin"),
+      target_user_id: USER_PLAIN,
+      created_at: String(target.createdAt),
+    });
+    assert.equal(out.res.status, 302, `revoke status (body: ${out.body})`);
+    assert.equal(out.location, `${SYS_SESS}?done=session_revoked`);
+    assert.equal(out.body, "");
+    assert.equal(api.getWebSession(target.id), null, "row destroyed immediately");
+
+    const rows = revokeRows();
+    assert.equal(rows.length, before + 1, "exactly one audit row per revoke");
+    const row = rows[0]; // newest first
+    assert.equal(row.origin, "web");
+    assert.equal(row.actor_user_id, USER_ADMIN);
+    assert.equal(row.guild_id, GUILD_A);
+    assert.equal(row.target_type, "session");
+    assert.equal(row.target_id, String(target.createdAt), "targetId = NON-SECRET selector");
+    assert.deepEqual(JSON.parse(row.details_json), {
+      scope: "admin",
+      target_user_id: USER_PLAIN,
+      created_at: target.createdAt,
+      current: false,
+    });
+    const raw = JSON.stringify(row);
+    for (const id of [...allCookieIds(), ...seededIds]) {
+      assert.ok(!raw.includes(id), "audit row carries NO session id (§8.7)");
+    }
+  });
+
+  it("revoking an already-gone selector ⇒ ?error=session_gone (known state, zero writes, zero audit)", async () => {
+    const before = revokeRows().length;
+    // Same fields as the previous test — the row is already gone.
+    const targetSession = sessionPolicy.getSession(seededIds[seededIds.length - 1]);
+    const gone = await postForm("admin", {
+      _csrf: csrfFor("admin"),
+      target_user_id: USER_PLAIN,
+      created_at: String(targetSession ? targetSession.createdAt : 1),
+    });
+    assert.equal(gone.location, `${SYS_SESS}?error=session_gone`);
+    assert.equal(revokeRows().length, before, "never a silent success, never an extra audit row");
+  });
+
+  it("invalid selectors ⇒ invalid_selection with ZERO audit (both fields shape-gated)", async () => {
+    const before = revokeRows().length;
+    const a = await postForm("admin", { _csrf: csrfFor("admin"), target_user_id: USER_PLAIN, created_at: "x" });
+    assert.equal(a.location, `${SYS_SESS}?error=invalid_selection`);
+    const b = await postForm("admin", { _csrf: csrfFor("admin"), target_user_id: "x", created_at: "1700000000001" });
+    assert.equal(b.location, `${SYS_SESS}?error=invalid_selection`);
+    assert.equal(revokeRows().length, before, "refusals audited NOTHING");
+  });
+
+  it("POST tier ladder — staff/senior 403 with the target SURVIVING · cross 404 · CSRF missing/tampered 403", async () => {
+    const target = seedTargetSession();
+    const fields = { target_user_id: USER_PLAIN, created_at: String(target.createdAt) };
+    const before = revokeRows().length;
+
+    for (const key of ["staff", "senior"]) {
+      const denied = await postForm(key, { ...fields, _csrf: csrfFor(key) });
+      assert.equal(denied.res.status, 403, `${key} on admin-tier revoke`);
+      assert.equal(denied.body, "Forbidden");
+    }
+    const cross = await postForm("admin", { ...fields, _csrf: csrfFor("admin") }, CROSS_REVOKE);
+    assert.equal(cross.res.status, 404, "cross-guild revoke ⇒ generic 404, never 403");
+    assert.equal(cross.body, "Not found");
+
+    const noCsrf = await postForm("admin", fields);
+    assert.equal(noCsrf.res.status, 403);
+    const tampered = await postForm("admin", { ...fields, _csrf: "f".repeat(64) });
+    assert.equal(tampered.res.status, 403);
+
+    assert.ok(api.getWebSession(target.id), "the target survived every denial");
+    assert.equal(revokeRows().length, before, "denials audited NOTHING");
+  });
+
+  it("an admin revoking their OWN current session through the admin page = clean logout", async () => {
+    // Fresh admin-tier viewer (USER_ADMIN2 is owner in the fake) so the
+    // suite's primary admin cookie stays usable for whatever runs later.
+    const s2 = sessionPolicy.createSession({ userId: USER_ADMIN2, discordTag: "admin2#0005" });
+    api.setWebSessionAuth(s2.id, {
+      accessTokenEnc: tokens.encryptAccessToken(`tok-${USER_ADMIN2}`),
+      tokenExpiresAt: Date.now() + 3_600_000,
+      scopes: "identify guilds guilds.members.read",
+      guildSnapshot: JSON.stringify([
+        { id: GUILD_A, name: "A", icon: null, owner: true, permissions: "0" },
+      ]),
+    });
+    suite.cookies.admin2 = s2.id;
+    seededIds.push(s2.id);
+    const me = sessionPolicy.getSession(s2.id);
+
+    const out = await postForm("admin2", {
+      _csrf: csrfFor("admin2"),
+      target_user_id: USER_ADMIN2,
+      created_at: String(me.createdAt),
+    });
+    assert.equal(out.res.status, 302);
+    assert.equal(out.location, "/", "logout-shaped redirect (current-row teardown)");
+    assert.match(out.res.headers.get("set-cookie") || "", /^web_session=;.*Max-Age=0/, "cookie torn down");
+    assert.equal(api.getWebSession(s2.id), null, "row destroyed");
+
+    const next = await fetch(`${suite.base}${SYS_SESS}`, {
+      headers: { cookie: `web_session=${s2.id}` },
+      redirect: "manual",
+    });
+    assert.equal(next.status, 302, "next request with the dead cookie redirects to login");
+    assert.equal(next.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+    await next.text();
+
+    const row = revokeRows().find((r) => JSON.parse(r.details_json).current === true);
+    assert.ok(row, "current admin-page revoke audited with details.current=true + scope admin");
+    assert.equal(JSON.parse(row.details_json).scope, "admin");
+  });
+
+  it("GET on the revoke path stays a generic 404; PUT/DELETE byte-405 (methodGate doctrine)", async () => {
+    const g = await hit(REVOKE, { key: "admin" });
+    assert.equal(g.res.status, 404, "GET never advertises the mutation");
+    assert.equal(g.body, "Not found");
+    for (const method of ["PUT", "DELETE"]) {
+      const res = await fetch(suite.base + REVOKE, {
+        method,
+        headers: { cookie: `web_session=${suite.cookies.admin}` },
+      });
+      assert.equal(res.status, 405, `${method} byte-405`);
+      assert.equal(await res.text(), "Method not allowed");
+    }
   });
 });
