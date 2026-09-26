@@ -44,6 +44,7 @@ const { registerXpActionsRoutes } = require("./routes/xpActions");
 const { registerTicketActionsRoutes } = require("./routes/ticketActions");
 const { registerGuildArchiveRoutes } = require("./routes/guildArchive");
 const { registerLookupRoutes } = require("./routes/lookups");
+const { registerDashboardApiRoutes } = require("./routes/dashboardApi");
 const { registerSyncActionRoutes } = require("./routes/syncAction");
 const { createSessionMiddleware } = require("./middleware/session");
 const {
@@ -382,6 +383,18 @@ function createWebApp(options = {}) {
   // (exact ids still answer, and cache misses warm via memberFetchQueue).
   // AFTER the guild shell so /g/:guildId guildScope gates first; staff+ only.
   registerLookupRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
+  // Dashboard JSON API for the client-rendered charts (Phase 4, operator
+  // decision 2026-09-25): GET /g/:guildId/api/dashboard/{activity,xp-leaders}
+  // .json — staff tier, no-store, backed ONLY by the ≥30 s per-guild cache
+  // in data/dashboardData.js (the SAME instance the dashboard page resolved
+  // and published onto options above — one query budget per guild, §8.6).
+  // AFTER the guild shell so /g/:guildId guildScope gates first; same shared
+  // resolver instance keeps tier math undivided.
+  registerDashboardApiRoutes(app, {
+    guildAccess: options.guildAccess,
+    dashboardData: options.dashboardData,
+    getClient: options.getClient,
+  });
 
   app.use(handleNotFound);
   app.use(handleAppError);

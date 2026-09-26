@@ -392,4 +392,133 @@
   window.addEventListener("scroll", function () {
     if (cardEl) cardEl.hidden = true;
   }, { passive: true, capture: true });
+
+  // 5. DASHBOARD CHARTS (Phase 4, operator decision 2026-09-25) — ONE-SHOT
+  //    progressive enhancement. The SSR dashboard already shows every number
+  //    (tables/dl/lists); this fills the [data-chart-src] boxes on the
+  //    guild dashboard with Chart.js visuals fetched from the staff-tier
+  //    JSON API (no-store, ≥30 s cached server-side per §8.6). With JS off,
+  //    a fetch failure, or a missing vendor artifact, the page loses ONLY
+  //    the picture — a small honest "unavailable" note replaces it, never a
+  //    broken layout and never fabricated points. Chart.js is the vendored
+  //    UMD (globalThis.Chart, everything auto-registered, loaded before
+  //    this file via defer order in views/layout.js). XSS-safe by
+  //    construction: textContent/DOM APIs only — zero HTML-string sinks.
+  var ChartLib = globalThis.Chart || null;
+
+  function chartFail(box, detail) {
+    console.warn("[charts] " + detail);
+    var note = document.createElement("p");
+    note.className = "chart-unavailable";
+    note.textContent = "chart unavailable — the tables on this page carry the same data";
+    var figure = box.parentNode;
+    (figure || box).appendChild(note);
+  }
+
+  function fetchJson(url) {
+    return fetch(url, { credentials: "same-origin" }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  // htmx-safety per the vendored-build notes: never double-instantiate on a
+  // canvas that already carries a live chart — destroy first, then create.
+  function mountChart(canvas, config) {
+    if (ChartLib.getChart(canvas)) ChartLib.getChart(canvas).destroy();
+    return new ChartLib(canvas, config);
+  }
+
+  // Dark/light readable strokes; the Colors plugin stays the fallback.
+  var LINE_COLOR = "#5b9dff"; // rides the --link token family
+  var BAR_FILL = "rgba(91, 157, 255, 0.45)";
+  var BAR_EDGE = "rgb(91, 157, 255)";
+
+  function lineConfig(data) {
+    return {
+      type: "line",
+      data: {
+        labels: data.points.map(function (p) { return p.day.slice(5); }), // MM-DD
+        datasets: [{
+          label: "Messages",
+          data: data.points.map(function (p) { return p.messages; }),
+          borderColor: LINE_COLOR,
+          backgroundColor: "rgba(91, 157, 255, 0.15)",
+          fill: true,
+          pointRadius: 0, // 30-day window: clean line, tooltips stay usable
+          tension: 0.1, // honest near-straight daily counts
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false, // container CSS owns the height
+        animation: false, // admin panel: instant, predictable repaint
+        interaction: { mode: "index", intersect: false }, // touch-friendly
+        plugins: { legend: { display: false } }, // single dataset
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+      },
+    };
+  }
+
+  function barConfig(data) {
+    return {
+      type: "bar",
+      data: {
+        labels: data.leaders.map(function (l) { return l.name || String(l.userId); }),
+        datasets: [{
+          label: "XP",
+          data: data.leaders.map(function (l) { return l.xp; }),
+          backgroundColor: BAR_FILL,
+          borderColor: BAR_EDGE,
+          borderWidth: 1,
+          borderRadius: 4,
+        }],
+      },
+      options: {
+        indexAxis: "y", // member labels read left-to-right at any width
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true } },
+      },
+    };
+  }
+
+  function renderChartBox(box) {
+    var kind = box.getAttribute("data-chart");
+    var src = box.getAttribute("data-chart-src");
+    var canvas = box.querySelector("canvas");
+    if (!src || !canvas) return;
+    if (!ChartLib) {
+      chartFail(box, "Chart.js vendor artifact missing");
+      return;
+    }
+    if (kind !== "line" && kind !== "bar") return; // unknown kind: leave inert
+    fetchJson(src)
+      .then(function (data) {
+        if (kind === "line") {
+          if (!data || !Array.isArray(data.points) || !data.points.length) {
+            throw new Error("bad activity payload");
+          }
+          mountChart(canvas, lineConfig(data));
+        } else {
+          if (!data || !Array.isArray(data.leaders)) throw new Error("bad leaders payload");
+          if (!data.leaders.length) {
+            // Empty real data is a real state: say so, render nothing fake.
+            var note = document.createElement("p");
+            note.className = "chart-unavailable";
+            note.textContent = "no XP rows yet";
+            (box.parentNode || box).appendChild(note);
+            return;
+          }
+          mountChart(canvas, barConfig(data));
+        }
+      })
+      .catch(function (err) {
+        chartFail(box, "chart render failed: " + (err && err.message ? err.message : err));
+      });
+  }
+
+  document.querySelectorAll("[data-chart-src]").forEach(renderChartBox);
 })();

@@ -83,7 +83,10 @@ const ENV_KEYS = [
 let savedEnv;
 
 const PUBLIC_DIR = path.join(__dirname, "..", "src", "web", "public");
-const VENDOR_FILE = path.join(PUBLIC_DIR, "vendor", "htmx.2.0.10.min.js");
+const VENDOR_DIR = path.join(PUBLIC_DIR, "vendor");
+const VENDOR_FILE = path.join(VENDOR_DIR, "htmx.2.0.10.min.js");
+const CHART_VENDOR_FILE = path.join(VENDOR_DIR, "chart.4.5.1.min.js");
+const CHART_LICENSE_FILE = path.join(VENDOR_DIR, "LICENSE.md");
 
 before(() => {
   savedEnv = ENV_KEYS.reduce((acc, k) => ((acc[k] = process.env[k]), acc), {});
@@ -550,6 +553,15 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
       assert.ok(text.includes("var htmx=function", "library bytes follow verbatim"));
     });
 
+    it("serves the vendored chart.js UMD (banner first, immutable cache)", async () => {
+      const res = await fetch(`${base}/static/vendor/chart.4.5.1.min.js`);
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      assert.ok(text.startsWith("/*!\n * Chart.js v4.5.1"), "version banner is the first bytes");
+      assert.match(res.headers.get("cache-control"), /max-age=31536000.*immutable/);
+      assert.equal(Number(res.headers.get("content-length")), 208_522);
+    });
+
     it("HEAD works; unknown paths answer the plain 404", async () => {
       const head = await fetch(`${base}/static/app.js`, { method: "HEAD" });
       assert.equal(head.status, 200);
@@ -588,6 +600,29 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   // --- /g pages pull the shell onto EVERY Phase-1 route (§8.6): the one
   //     real /g page asserts the full chrome; deep unmatched routes 404 plain
   //     (documented decision above).
+
+  it("dashboard SSR ships the chart hooks + accessible canvases (JS-off fallback intact)", async () => {
+    const { body } = await get(`/g/${GUILD_A}`, { cookie: cookieOf.admin });
+    assert.ok(body.includes('data-chart="line"'), "line chart hook rendered SSR");
+    assert.ok(body.includes('data-chart="bar"'), "bar chart hook rendered SSR");
+    assert.ok(
+      body.includes(`data-chart-src="/g/${GUILD_A}/api/dashboard/activity.json"`),
+      "line chart fed by the JSON API endpoint"
+    );
+    assert.ok(
+      body.includes(`data-chart-src="/g/${GUILD_A}/api/dashboard/xp-leaders.json"`),
+      "bar chart fed by the JSON API endpoint"
+    );
+    assert.equal(
+      (body.match(/<canvas[^>]*role="img"[^>]*aria-label="/g) || []).length,
+      2,
+      "every canvas is a labelled image (SSR a11y contract)"
+    );
+    // The tables stay the JS-off data surface — nothing was removed for charts.
+    assert.ok(body.includes("Open tickets") && body.includes("Top XP"), "SSR tables retained");
+    // and the vendored chart is loaded SELF-origin with the response nonce
+    assert.ok(body.includes(`src="/static/vendor/chart.4.5.1.min.js"`), "vendored chart script pinned in the shell");
+  });
 });
 
 // ===========================================================================
@@ -703,8 +738,61 @@ describe("vendored htmx + app.js wiring", () => {
     assert.ok(text.includes("MIT"));
     assert.ok(text.includes("var htmx=function", "library follows the banner"));
     assert.ok(text.length > 50_000, "full minified build");
-    const dir = fs.readdirSync(path.dirname(VENDOR_FILE));
-    assert.deepEqual(dir, ["htmx.2.0.10.min.js"], "exactly the pinned version committed");
+    const dir = fs.readdirSync(VENDOR_DIR).sort();
+    assert.deepEqual(
+      dir,
+      ["LICENSE.md", "chart.4.5.1.min.js", "htmx.2.0.10.min.js"],
+      "exactly the pinned artifacts committed (§8.7: one LICENSE.md beside the vendored chart.js)"
+    );
+  });
+
+  // Vendored Chart.js (Phase 4 charts, §8.7 procedure mirrored from htmx):
+  // the artifact is the npm tarball's package/dist/chart.umd.min.js byte for
+  // byte — sha512 GIjfiT9dbmHRiYi6Nl2yFCq7kkwdkp1W/lp2J99rX0yo9tgJGn3lKQAT
+  // ztIjb5tVtevcBtIdICNWqlq5+E8/Pw== of chart.js-4.5.1.tgz (verified 2026-09-25
+  // against registry.npmjs.org; see .tmp/external-context/chartjs/.manifest.json
+  // and this pin: exact size + upstream banner as the FIRST bytes). The MIT
+  // text rides beside it as LICENSE.md (upstream package/LICENSE.md).
+  it("vendored chart.js is the sha-verified 4.5.1 UMD artifact (§8.7)", () => {
+    const text = fs.readFileSync(CHART_VENDOR_FILE, "utf8");
+    assert.equal(
+      fs.statSync(CHART_VENDOR_FILE).size,
+      208_522,
+      "byte size of the npm dist file (cache-buster filename must match content)"
+    );
+    assert.match(
+      text,
+      /^\/\*!\n \* Chart\.js v4\.5\.1\n \* https:\/\/www\.chartjs\.org\n \* \(c\) 2025 Chart\.js Contributors\n \* Released under the MIT License\n \*\//,
+      "upstream version banner is the first bytes"
+    );
+    // CSP floor (csp-safety note, trust-but-verify on the DIST bundle):
+    assert.equal(text.includes("new Function"), false, "no dynamic code compilation");
+    assert.equal(/\beval[ \t]*\(/.test(text), false, "no eval call sites");
+    // UMD global contract the client depends on (no bundler, no imports):
+    assert.ok(text.slice(0, 300).includes("globalThis"), "UMD factory uses globalThis");
+  });
+
+  it("chart.js MIT license text is shipped beside the artifact", () => {
+    const lic = fs.readFileSync(CHART_LICENSE_FILE, "utf8");
+    assert.ok(lic.includes("The MIT License (MIT)"), "MIT header");
+    assert.ok(lic.includes("Copyright (c) 2014-2024 Chart.js Contributors"), "attribution");
+    assert.ok(lic.includes("permission notice shall be included"), "redistribution clause");
+  });
+
+  it("layout.js pins the versioned chart filename and loads it before app.js", () => {
+    const { CHART_SRC } = require("../src/web/views/layout");
+    assert.equal(CHART_SRC, "/static/vendor/chart.4.5.1.min.js", "version in the FILENAME (§8.7 cache-buster)");
+    assert.doesNotMatch(CHART_SRC, /\?v=/, "filename is the buster — no query needed");
+    const doc = String(renderShellPage(fakeReq(), { title: "Console" }));
+    const h = doc.indexOf("htmx.2.0.10.min.js");
+    const c = doc.indexOf("chart.4.5.1.min.js");
+    const a = doc.indexOf("app.js?v=");
+    assert.ok(h !== -1 && c !== -1 && a !== -1, "all three scripts present");
+    assert.ok(h < c && c < a, "defer order: htmx → Chart.js → app.js (Chart exists before use)");
+    const tag = /<script[^>]*chart\.4\.5\.1\.min\.js[^>]*>/.exec(doc)[0];
+    assert.ok(tag.includes(`nonce="TESTNONCE123"`), "nonce attribute rides every script tag");
+    assert.ok(tag.includes("defer"), "deferred classic script from self");
+    assert.doesNotMatch(doc, /https?:\/\/[^"]*chartjs/i, "zero CDN references (§8.7)");
   });
 
   it("no build-step/framework artifacts under public/", () => {
@@ -732,13 +820,27 @@ describe("vendored htmx + app.js wiring", () => {
   });
 
   it("layout references resolve to files that exist under public/", () => {
-    const { HTMX_SRC, APP_SRC, STYLES_SRC } = require("../src/web/views/layout");
-    for (const srcPath of [HTMX_SRC, APP_SRC, STYLES_SRC]) {
+    const { HTMX_SRC, CHART_SRC, APP_SRC, STYLES_SRC } = require("../src/web/views/layout");
+    for (const srcPath of [HTMX_SRC, CHART_SRC, APP_SRC, STYLES_SRC]) {
       assert.ok(srcPath.startsWith("/static/"), srcPath);
       const abs = path.join(PUBLIC_DIR, srcPath.replace("/static/", "").split("?")[0]);
       assert.ok(fs.existsSync(abs), `${srcPath} → ${abs} missing`);
     }
   });
+
+  it("app.js chart client is progressive enhancement with destroy hygiene", () => {
+    const src = fs.readFileSync(path.join(PUBLIC_DIR, "app.js"), "utf8");
+    assert.ok(src.includes('querySelectorAll("[data-chart-src]")'), "detects SSR chart hooks");
+    assert.ok(src.includes("getChart"), "Chart.getChart destroy guard before instantiate (htmx-swap safety)");
+    assert.ok(src.includes(".destroy()"), "previous instance destroyed, never leaked");
+    assert.ok(
+      src.includes("maintainAspectRatio: false"),
+      "container CSS owns the size (responsive contract)"
+    );
+    assert.ok(!/\.innerHTML\s*=/.test(src), "untrusted JSON never becomes markup (textContent/DOM APIs only)");
+  });
+
+
 
   it("styles.css: dark-by-default palette + prefers-color-scheme light override", () => {
     const css = fs.readFileSync(path.join(PUBLIC_DIR, "styles.css"), "utf8");

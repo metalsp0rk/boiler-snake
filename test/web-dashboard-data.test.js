@@ -22,6 +22,7 @@ const {
   DEFAULT_CACHE_TTL_MS,
   MIN_CACHE_TTL_MS,
   DASHBOARD_LIMITS,
+  SERIES_LIMITS,
 } = require("../src/web/data/dashboardData");
 
 const {
@@ -91,11 +92,25 @@ function makeFakeDb(overrides = {}) {
               created_at: 1000 + i,
             })))
       ),
+      guildDailyMessageTotals: track(
+        "guildDailyMessageTotals",
+        overrides.guildDailyMessageTotals || ((/* g, opts */) => [])
+      ),
     },
   };
 }
 
 const T0 = 1_757_000_000_000; // frozen epoch ms for the fake clock
+const DAY_MS = 86_400_000;
+
+/** UTC YYYY-MM-DD mirror (test-local, same formula as utcDayKey in src). */
+function dayKey(ms) {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
 
 /** Drain the microtask + macrotask queue so scheduler .finally stamps land. */
 function settle() {
@@ -746,5 +761,161 @@ describe("scheduler→tickerHealth bridge (Task 15.6: honest job state)", () => 
       inFlight: true,
     });
     assert.deepEqual(cronInFlight, { lastTickAt: 2000, running: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 4 CHART SERIES (operator decision 2026-09-25): the JSON API data
+// layer. Same §8.6 cache discipline as the page snapshot — one bounded read
+// per guild per window, ≥30 s cache, zero-fill of inactive days (real
+// tables only), honest available:false on read failure (never a chart
+// built on fabricated numbers).
+// ---------------------------------------------------------------------------
+describe("dashboardData: chart series (cache + zero fill + honesty)", () => {
+  it("daily activity: one bounded windowed read, zero-filled ascending days", async () => {
+    const { db, calls } = makeFakeDb({
+      guildDailyMessageTotals: (guildId, opts) => {
+        assert.equal(guildId, GUILD);
+        assert.equal(opts.limitDays, SERIES_LIMITS.DAILY_ACTIVITY_DAYS); // 30
+        assert.equal(opts.sinceDay, dayKey(T0 - 29 * DAY_MS)); // window start
+        return [
+          { day: dayKey(T0 - 29 * DAY_MS), total: 5 }, // window edge
+          { day: dayKey(T0 - 2 * DAY_MS), total: 3 },
+          { day: dayKey(T0), total: 7 }, // today
+        ];
+      },
+    });
+    let nowMs = T0;
+    const dash = createDashboardData({ db, now: () => nowMs, ttlMs: 30_000 });
+
+    const out = await dash.getDailyActivitySeries(GUILD);
+    assert.equal(calls.length, 1, "exactly one facade read");
+    assert.equal(out.series, "daily_activity");
+    assert.equal(out.available, true);
+    assert.equal(out.days, 30);
+    assert.equal(out.fromDay, dayKey(T0 - 29 * DAY_MS));
+    assert.equal(out.toDay, dayKey(T0));
+    assert.equal(out.points.length, 30, "full window, one point per day");
+    assert.equal(out.points[0].day, dayKey(T0 - 29 * DAY_MS));
+    assert.deepEqual(out.points[0], { day: dayKey(T0 - 29 * DAY_MS), messages: 5 });
+    assert.deepEqual(out.points[27], { day: dayKey(T0 - 2 * DAY_MS), messages: 3 });
+    assert.deepEqual(out.points[29], { day: dayKey(T0), messages: 7 });
+    assert.deepEqual(out.points[15], { day: dayKey(T0 - 14 * DAY_MS), messages: 0 }, "inactive day is a TRUE zero, not a gap");
+    assert.equal(out.freshness.fromCache, false);
+
+    // Cache: every read inside the TTL window runs ZERO facade reads.
+    nowMs += 10_000;
+    const warm = await dash.getDailyActivitySeries(GUILD);
+    assert.equal(calls.length, 1, "cache hit must not touch the facade (§8.6)");
+    assert.equal(warm.freshness.fromCache, true);
+    assert.equal(warm.points.length, 30);
+
+    // Past the TTL: exactly one fresh windowed read.
+    nowMs += 25_000;
+    const stale = await dash.getDailyActivitySeries(GUILD);
+    assert.equal(calls.length, 2, "expired cache re-reads once");
+    assert.equal(stale.freshness.fromCache, false);
+  });
+
+  it("daily activity: window clamped 1..31 rows (repo hard cap, §8.6 LIMIT budget)", async () => {
+    const { db, calls } = makeFakeDb();
+    const dash = createDashboardData({ db, now: () => T0, ttlMs: 30_000 });
+
+    const greedy = await dash.getDailyActivitySeries(GUILD, { days: 900 });
+    assert.equal(greedy.days, 31, "clamped to the repo row cap");
+    assert.equal(calls[0].args[1].limitDays, 31, "helper receives the clamp");
+    assert.equal(greedy.points.length, 31);
+
+    const junk = await dash.getDailyActivitySeries(GUILD, { days: 0 });
+    assert.equal(junk.days, SERIES_LIMITS.DAILY_ACTIVITY_DAYS, "junk days falls back to 30");
+
+    await assert.rejects(() => dash.getDailyActivitySeries(""), TypeError);
+  });
+
+  it("daily activity: a failing read reports available:false and is cached (no DB hammering)", async () => {
+    const { db, calls } = makeFakeDb({
+      guildDailyMessageTotals: () => {
+        throw new Error("SQLITE_BUSY");
+      },
+    });
+    const realWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const dash = createDashboardData({ db, now: () => T0, ttlMs: 30_000 });
+      const out = await dash.getDailyActivitySeries(GUILD);
+      assert.equal(out.available, false, "honest degradation, never fabricated points");
+      assert.deepEqual(out.points, []);
+      const warm = await dash.getDailyActivitySeries(GUILD);
+      assert.equal(calls.length, 1, "the failed state is cached like any other build");
+      assert.equal(warm.available, false);
+    } finally {
+      console.warn = realWarn;
+    }
+  });
+
+  it("xp leaders: topUsers(10) mapping + cache + honest failure", async () => {
+    const { db, calls } = makeFakeDb({
+      topUsers: (/* g, limit */) => [
+        { user_id: "u1", xp: 90 },
+        { user_id: "u2", xp: 80 },
+      ],
+    });
+    let nowMs = T0;
+    const dash = createDashboardData({ db, now: () => nowMs, ttlMs: 30_000 });
+
+    const out = await dash.getXpLeadersSeries(GUILD);
+    const call = calls.find((c) => c.name === "topUsers");
+    assert.equal(call.args[1], SERIES_LIMITS.XP_LEADERS, "SQL LIMIT 10 — same read the SSR snapshot runs");
+    assert.equal(out.series, "xp_leaders");
+    assert.equal(out.available, true);
+    assert.deepEqual(out.leaders, [
+      { userId: "u1", xp: 90 },
+      { userId: "u2", xp: 80 },
+    ]);
+
+    nowMs += 5_000;
+    await dash.getXpLeadersSeries(GUILD);
+    assert.equal(calls.filter((c) => c.name === "topUsers").length, 1, "cached (§8.6)");
+  });
+
+  it("xp leaders: failure degrades to available:false (route maps it to 500 JSON)", async () => {
+    const { db } = makeFakeDb({
+      topUsers: () => {
+        throw new Error("disk gone");
+      },
+    });
+    const realWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const dash = createDashboardData({ db, now: () => T0, ttlMs: 30_000 });
+      const out = await dash.getXpLeadersSeries(GUILD);
+      assert.equal(out.available, false);
+      assert.deepEqual(out.leaders, []);
+    } finally {
+      console.warn = realWarn;
+    }
+  });
+
+  it("invalidate(guildId) clears the series cache too; entries stay bounded", async () => {
+    const { db } = makeFakeDb();
+    const dash = createDashboardData({ db, now: () => T0, ttlMs: 30_000 });
+    await dash.getDailyActivitySeries(GUILD);
+    await dash.getXpLeadersSeries(GUILD);
+    assert.equal(dash._seriesCacheSizeForTests(), 2);
+    dash.invalidate(GUILD);
+    assert.equal(dash._seriesCacheSizeForTests(), 0, "per-guild invalidate drops the guild's series keys");
+    await dash.getDailyActivitySeries(GUILD);
+    dash.invalidate();
+    assert.equal(dash._seriesCacheSizeForTests(), 0, "full invalidate clears everything");
+  });
+
+  it("series windows are independent per guild and per window size", async () => {
+    const { db, calls } = makeFakeDb();
+    const dash = createDashboardData({ db, now: () => T0, ttlMs: 30_000 });
+    await dash.getDailyActivitySeries(GUILD, { days: 7 });
+    await dash.getDailyActivitySeries(GUILD, { days: 30 });
+    await dash.getDailyActivitySeries("700000000000000099", { days: 7 });
+    assert.equal(calls.length, 3, "distinct keys: guild × window size");
+    assert.equal(dash._seriesCacheSizeForTests(), 3);
   });
 });
