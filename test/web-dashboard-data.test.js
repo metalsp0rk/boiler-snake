@@ -32,6 +32,16 @@ const {
   _clearTickerHealthForTests,
 } = require("../src/web/data/tickerHealth");
 
+const { createScheduler } = require("../src/core/scheduler");
+
+const {
+  registerSchedulerJobHealthSources,
+  schedulerJobToTickerResult,
+  DETAIL_LAST_TICK_FAILED,
+  DETAIL_NO_TICK_YET,
+  DETAIL_CRON_NO_DERIVED,
+} = require("../src/web/data/schedulerJobHealth");
+
 const GUILD = "700000000000000001";
 
 /**
@@ -86,6 +96,45 @@ function makeFakeDb(overrides = {}) {
 }
 
 const T0 = 1_757_000_000_000; // frozen epoch ms for the fake clock
+
+/** Drain the microtask + macrotask queue so scheduler .finally stamps land. */
+function settle() {
+  return new Promise((r) => setImmediate(r));
+}
+
+/**
+ * Fake timer set for createScheduler({ ... }) — same harness pattern as
+ * test/scheduler.test.js: NO real timers, cron fires are captured callbacks.
+ */
+function fakeTimers() {
+  const timeouts = [];
+  const intervals = [];
+  let nextId = 1;
+  return {
+    timeouts,
+    intervals,
+    setTimeoutFn: (fn, ms) => {
+      const id = nextId++;
+      timeouts.push({ id, fn, ms });
+      return { id, unref() {} };
+    },
+    clearTimeoutFn: (handle) => {
+      const id = handle?.id ?? handle;
+      const i = timeouts.findIndex((t) => t.id === id);
+      if (i >= 0) timeouts.splice(i, 1);
+    },
+    setIntervalFn: (fn, ms) => {
+      const id = nextId++;
+      intervals.push({ id, fn, ms });
+      return { id, unref() {} };
+    },
+    clearIntervalFn: (handle) => {
+      const id = handle?.id ?? handle;
+      const i = intervals.findIndex((t) => t.id === id);
+      if (i >= 0) intervals.splice(i, 1);
+    },
+  };
+}
 
 describe("dashboardData: cache + query budget", () => {
   afterEach(() => {
@@ -432,5 +481,270 @@ describe("snapshotMusicPlayer (read-only lavalink snapshot)", () => {
       apiOf({ getPlayer: () => playerWith({ paused: true }) })
     );
     assert.equal(paused.paused, true);
+  });
+});
+
+// ===========================================================================
+// Task 15.6 — scheduler → tickerHealth bridge (real job state on the panel)
+// ===========================================================================
+
+/**
+ * Real createScheduler + fake timers + a movable injected clock. The bridge
+ * runs against a REAL scheduler instance (wiring fidelity), while every
+ * timestamp flows from `setStamp` — staleness is derived by the registry
+ * at snapshot time, never fabricated by the bridge.
+ */
+function makeBridgeHarness() {
+  const timers = fakeTimers();
+  let stampAt = T0;
+  const cronCalls = [];
+  const s = createScheduler({
+    now: () => stampAt,
+    ...timers,
+    cronSchedule: (expr, fn) => {
+      cronCalls.push({ expr, fn });
+      return { stop() {} };
+    },
+  });
+  return {
+    s,
+    timers,
+    cronCalls,
+    setStamp(ms) {
+      stampAt = ms;
+    },
+    /** fire + drain, so lastFinishedAt stamps at the CURRENT stampAt. */
+    async fire(name, at) {
+      stampAt = at;
+      s.runNow(name);
+      await settle();
+    },
+    async fireCron(index, at) {
+      stampAt = at;
+      cronCalls[index].fn();
+      await settle();
+    },
+  };
+}
+
+describe("scheduler→tickerHealth bridge (Task 15.6: honest job state)", () => {
+  let bridgeOff = null;
+  let harness = null;
+
+  afterEach(() => {
+    if (bridgeOff) {
+      bridgeOff();
+      bridgeOff = null;
+    }
+    if (harness) {
+      harness.s.stop();
+      harness = null;
+    }
+    _clearTickerHealthForTests();
+  });
+
+  /** The real recurring-job set, registered exactly like the features do. */
+  const INTERVAL_JOBS = ["voice", "youtube", "twitch", "githubReleases", "xpCooldownSweep"];
+  const CRON_JOBS = ["decay", "eventReminders"];
+
+  function registerRealJobSet(h) {
+    h.s.registerJob({ name: "voice", intervalMs: 60_000, align: true, run: () => {} });
+    h.s.registerJob({ name: "youtube", intervalMs: 5 * 60_000, align: true, run: () => {} });
+    h.s.registerJob({ name: "twitch", intervalMs: 60_000, align: true, run: () => {} });
+    h.s.registerJob({ name: "githubReleases", intervalMs: 3_600_000, align: true, run: () => {} });
+    h.s.registerJob({ name: "xpCooldownSweep", intervalMs: 10 * 60_000, run: () => {} });
+    h.s.registerJob({ name: "decay", cron: "0 4 * * *", run: () => {} });
+    h.s.registerJob({ name: "eventReminders", cron: "* * * * *", run: () => {} });
+  }
+
+  it("real scheduler wiring: every named job appears in the panel data with honest statuses", async () => {
+    const h = makeBridgeHarness();
+    harness = h;
+    registerRealJobSet(h);
+    // cron jobs last fired 20 h ago; interval jobs fired just now.
+    await h.fireCron(0, T0 - 20 * 3_600_000); // decay
+    await h.fireCron(1, T0 - 20 * 3_600_000); // eventReminders (cron idle like decay)
+    for (const name of INTERVAL_JOBS) await h.fire(name, T0);
+
+    bridgeOff = registerSchedulerJobHealthSources(h.s);
+    assert.deepEqual(
+      listTickerHealthNames().slice().sort(),
+      [...INTERVAL_JOBS, ...CRON_JOBS].sort(),
+      "one registry source per scheduler job"
+    );
+
+    const rows = await snapshotTickerHealth(T0);
+    const by = Object.fromEntries(rows.map((r) => [r.name, r]));
+    for (const name of INTERVAL_JOBS) {
+      assert.equal(by[name].status, "ok", `${name} fresh stamp ⇒ ok`);
+    }
+    for (const name of CRON_JOBS) {
+      assert.equal(by[name].status, "unknown", `${name} idle cron ⇒ honest unknown`);
+      assert.notEqual(by[name].status, "down", `${name} idle cron must NEVER read down`);
+      assert.equal(by[name].detail, DETAIL_CRON_NO_DERIVED);
+      assert.equal(by[name].lastTickAt, T0 - 20 * 3_600_000, "last tick still shown");
+    }
+
+    // Panel data through the REAL default provider path (registry → dashboardData):
+    const { db } = makeFakeDb();
+    const dash = createDashboardData({ db, now: () => T0, ttlMs: 30_000 });
+    const tickers = (await dash.getDashboard(GUILD)).tickers;
+    assert.ok(tickers.length >= 4, `≥4 named jobs, got ${tickers.length}`);
+    const pByName = Object.fromEntries(tickers.map((t) => [t.name, t]));
+    for (const name of ["voice", "youtube", "twitch", "decay", "githubReleases"]) {
+      assert.ok(pByName[name], `${name} present in panel data`);
+    }
+    assert.equal(pByName.voice.status, "ok");
+    assert.equal(pByName.decay.status, "unknown");
+  });
+
+  it("stale derivation: age > 2.5× interval ⇒ stale; fresh stamps ⇒ ok", async () => {
+    const h = makeBridgeHarness();
+    harness = h;
+    h.s.registerJob({ name: "voice", intervalMs: 60_000, run: () => {} });
+    h.s.registerJob({ name: "twitch", intervalMs: 60_000, run: () => {} });
+    h.s.registerJob({ name: "youtube", intervalMs: 5 * 60_000, run: () => {} });
+
+    // Fake AGED ticker: youtube's last completed tick is 13 min old vs a
+    // 5-min cadence (2.5× = 12.5 min) — a stalled-but-alive interval job.
+    await h.fire("youtube", T0 - 13 * 60_000);
+    await h.fire("voice", T0 - 5_000);
+    await h.fire("twitch", T0 - 8_000);
+
+    bridgeOff = registerSchedulerJobHealthSources(h.s);
+    const by = Object.fromEntries((await snapshotTickerHealth(T0)).map((r) => [r.name, r]));
+    assert.equal(by.youtube.status, "stale", "aged fake ticker renders stale");
+    assert.ok(by.youtube.ageMs > 2.5 * 5 * 60_000, "age really exceeds 2.5× cadence");
+    assert.equal(by.voice.status, "ok", "freshly stamped job renders ok");
+    assert.equal(by.twitch.status, "ok");
+  });
+
+  it("cron-only rows never fabricate ok/down: idle ⇒ unknown, in-flight ⇒ ok", async () => {
+    const h = makeBridgeHarness();
+    harness = h;
+    let release;
+    h.s.registerJob({
+      name: "decay",
+      cron: "0 4 * * *",
+      run: () => new Promise((r) => { release = r; }),
+    });
+    bridgeOff = registerSchedulerJobHealthSources(h.s);
+
+    // IN FLIGHT: a tick is executing right now ⇒ ok (no lastFinishedAt yet).
+    h.setStamp(T0 - 20 * 3_600_000);
+    h.cronCalls[0].fn();
+    const flying = (await snapshotTickerHealth(T0))[0];
+    assert.equal(flying.status, "ok", "in-flight tick ⇒ ok");
+    assert.equal(flying.lastTickAt, T0 - 20 * 3_600_000, "started-at shown while running");
+
+    // IDLE (the gotcha: running=false + intervalMs=null between fires):
+    // must be unknown with last-tick info — NEVER down.
+    release();
+    await settle();
+    const idle = (await snapshotTickerHealth(T0))[0];
+    assert.equal(idle.status, "unknown");
+    assert.notEqual(idle.status, "down", "idle cron must never read down");
+    assert.equal(idle.detail, DETAIL_CRON_NO_DERIVED);
+    assert.equal(idle.lastTickAt, T0 - 20 * 3_600_000);
+  });
+
+  it("never-ticked and stopped jobs stay unknown — no fabricated tick", async () => {
+    const h = makeBridgeHarness();
+    harness = h;
+    h.s.registerJob({ name: "voice", intervalMs: 60_000, run: () => {} });
+    h.s.registerJob({ name: "decay", cron: "0 4 * * *", run: () => {} });
+    bridgeOff = registerSchedulerJobHealthSources(h.s);
+
+    const by = Object.fromEntries((await snapshotTickerHealth(T0)).map((r) => [r.name, r]));
+    for (const name of ["voice", "decay"]) {
+      assert.equal(by[name].status, "unknown", `${name} never ticked ⇒ unknown`);
+      assert.equal(by[name].detail, DETAIL_NO_TICK_YET);
+      assert.equal(by[name].lastTickAt, undefined, "no fabricated last tick");
+    }
+
+    // Stopped job ⇒ the live getter reads null ⇒ registry "not wired".
+    h.s.stop("voice");
+    const after = Object.fromEntries((await snapshotTickerHealth(T0)).map((r) => [r.name, r]));
+    assert.equal(after.voice.status, "unknown");
+    assert.equal(after.voice.detail, "not wired");
+  });
+
+  it("scheduler lastError text NEVER reaches the panel — fixed detail only (§8.7)", async () => {
+    const SENTINEL = "SQLITE_BUSY-internal-path-detail-MUST-NOT-LEAK";
+    const h = makeBridgeHarness();
+    harness = h;
+    h.s.registerJob({
+      name: "voice",
+      intervalMs: 60_000,
+      run: () => {
+        throw new Error(SENTINEL);
+      },
+    });
+    const origErr = console.error;
+    console.error = () => {}; // the scheduler logs the failure itself
+    try {
+      await h.fire("voice", T0 - 1_000);
+    } finally {
+      console.error = origErr;
+    }
+    bridgeOff = registerSchedulerJobHealthSources(h.s);
+
+    const rows = await snapshotTickerHealth(T0);
+    assert.equal(rows[0].status, "ok", "a fresh-but-failed tick still ticks on schedule");
+    assert.equal(rows[0].detail, DETAIL_LAST_TICK_FAILED, "fixed detail string");
+    assert.ok(
+      !JSON.stringify(rows).includes(SENTINEL),
+      "raw lastError text never lands in the snapshot"
+    );
+  });
+
+  it("registration is idempotent and getters track LIVE job state", async () => {
+    const h = makeBridgeHarness();
+    harness = h;
+    h.s.registerJob({ name: "voice", intervalMs: 60_000, run: () => {} });
+    await h.fire("voice", T0 - 5_000);
+
+    const off1 = registerSchedulerJobHealthSources(h.s);
+    const off2 = registerSchedulerJobHealthSources(h.s); // double-boot safe
+    bridgeOff = () => {
+      off1();
+      off2();
+    };
+    assert.equal(listTickerHealthNames().filter((n) => n === "voice").length, 1);
+    assert.equal((await snapshotTickerHealth(T0))[0].status, "ok");
+
+    // Feature re-registers the SAME job with a slower cadence and an aged
+    // tick: the getter must reflect the NEW live job (stale vs 10-min
+    // cadence: 26 min > 2.5×10 min).
+    h.s.registerJob({ name: "voice", intervalMs: 10 * 60_000, run: () => {} });
+    await h.fire("voice", T0 - 26 * 60_000);
+    assert.equal((await snapshotTickerHealth(T0))[0].status, "stale");
+  });
+
+  it("schedulerJobToTickerResult: pure adapter never sets a status", () => {
+    assert.equal(schedulerJobToTickerResult(null), null);
+    assert.equal(schedulerJobToTickerResult(undefined), null);
+    assert.equal(schedulerJobToTickerResult("junk"), null);
+
+    const interval = schedulerJobToTickerResult({
+      name: "voice",
+      intervalMs: 60_000,
+      lastFinishedAt: 1000,
+      inFlight: false,
+      lastError: null,
+    });
+    assert.deepEqual(interval, { lastTickAt: 1000, intervalMs: 60_000 });
+    assert.equal(interval.status, undefined, "status is the registry's to derive");
+    assert.equal(interval.running, undefined, "running:false is never forwarded");
+
+    const cronInFlight = schedulerJobToTickerResult({
+      name: "decay",
+      cron: "0 4 * * *",
+      intervalMs: null,
+      lastStartedAt: 2000,
+      lastFinishedAt: null,
+      inFlight: true,
+    });
+    assert.deepEqual(cronInFlight, { lastTickAt: 2000, running: true });
   });
 });
