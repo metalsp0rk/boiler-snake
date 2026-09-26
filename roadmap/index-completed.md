@@ -19,14 +19,15 @@ features" there points here.
 | 2 | Scheduled Event Reminders | [event-reminders.md](event-reminders.md) | Shipped | [docs/event-reminders.md](../docs/event-reminders.md) |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | [docs/staff-notes.md](../docs/staff-notes.md) |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + post-MVP polish) | [docs/warnings.md](../docs/warnings.md) |
+| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | Shipped (Phases 0a–4; PR #55 + Phase 4 2026-09-25) | [docs/web-admin.md](../docs/web-admin.md) |
 
 Also completed here: **XP & leaderboard polish** (§8 below — work with no
 feature file of its own) and the **Honeypot** note (§7 below).
 
 **Moved out of this archive:** nothing so far. A feature only lands here when
-its feature file has no unchecked boxes — e.g. Web Admin stays in
-[index.md](index.md) while `web-admin.md` Task 15.6 (tickerHealth job-state
-wiring) is open.
+its feature file has no unchecked boxes — e.g. Web Admin was archived once
+`web-admin.md` Task 15.6 (tickerHealth job-state wiring) shipped with
+Phase 4 (PR #116).
 
 ---
 
@@ -57,6 +58,17 @@ wiring) is open.
 | `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void (**shipped**) |
 | `guild_settings.warn_log_channel_id` | Dedicated warn issue/void log; audit fallback (**shipped**) |
 | `guild_settings.warn_expiry_days` | Default `0` (never); guild default for new warnings (**shipped**, migration `018`) |
+
+### Web admin console (shipped — PR #55 + PR #116)
+
+| Table / change | Notes |
+|----------------|-------|
+| `web_sessions` | DB-backed login sessions; cookie carries opaque id only (**shipped**, migration `028`) |
+| OAuth columns on `web_sessions` | Server-side Discord access token per session, no refresh flow in v1 (**shipped**, migration `030` — extends `web_sessions`, not a separate table) |
+| `admin_audit` | Queryable mutation trail, `origin` = web/slash/system; channel embeds stay mirrors (**shipped**, migration `029`) |
+| `tickets` / `ticket_members` / `ticket_staff` / `ticket_messages` | Reused as-is for transcript participant access — **no schema change** (**shipped**) |
+
+> **Migration numbering (resolved):** shipped as `028`–`030`, reserved at implementation time per the rule above. See [web-admin.md §8.5](web-admin.md).
 
 **Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (tracked in [index.md](index.md) / [staff-roles.md](staff-roles.md)).
 
