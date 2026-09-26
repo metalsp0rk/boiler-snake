@@ -214,6 +214,50 @@ function renderNowPlayingSection(nowPlaying) {
 }
 
 /**
+ * CHARTS panel (Phase 4, operator decision 2026-09-25): client-rendered
+ * Chart.js canvases fed by the /g/:guildId/api/dashboard/*.json endpoints.
+ * PURE PROGRESSIVE ENHANCEMENT — this markup is inert without JavaScript:
+ * the SSR tables/dl above stay the complete, accessible data surface, the
+ * canvases carry role=img + honest aria-labels, and src/web/public/app.js
+ * (nonced, no innerHTML) fills them from the JSON API at view time.
+ * Each .chart-box is position:relative and holds ONLY its canvas — the
+ * exact container contract the vendored Chart.js responsive mode requires.
+ *
+ * @param {{guildId: string}} ctx
+ * @returns {import("../escape").SafeString}
+ */
+function renderChartsSection(ctx) {
+  const guildId = String(ctx.guildId || "");
+  const activitySrc = guildId ? `/g/${guildId}/api/dashboard/activity.json` : "";
+  const leadersSrc = guildId ? `/g/${guildId}/api/dashboard/xp-leaders.json` : "";
+  return html`
+    <section class="dashboard-panel dashboard-panel-wide dashboard-charts">
+      <h2>Trends</h2>
+      <p class="subheading">
+        Charts render in your browser from the guild JSON API (cached
+        aggregates). Every value also lives in the tables on this page —
+        with JavaScript off, only the pictures are missing.
+      </p>
+      <figure class="chart-figure">
+        <figcaption>Messages per day · last 30 days</figcaption>
+        <div class="chart-box"${
+          activitySrc ? html` data-chart="line" data-chart-src="${activitySrc}"` : html``
+        }>
+          <canvas role="img" aria-label="Line chart: tracked guild messages per day over the last 30 days (rendered in the browser; totals table above)."></canvas>
+        </div>
+      </figure>
+      <figure class="chart-figure">
+        <figcaption>Top XP members</figcaption>
+        <div class="chart-box"${
+          leadersSrc ? html` data-chart="bar" data-chart-src="${leadersSrc}"` : html``
+        }>
+          <canvas role="img" aria-label="Bar chart: top 10 members by XP (rendered in the browser; Top XP list above)."></canvas>
+        </div>
+      </figure>
+    </section>`;
+}
+
+/**
  * Full dashboard body (goes into the shell via renderShellPage).
  * @param {object} data snapshot from src/web/data/dashboardData.js
  *   ({ tickets, activity, tickers, nowPlaying, freshness })
@@ -235,6 +279,7 @@ function renderDashboardContent(data, opts = {}) {
   return html`
     <div class="dashboard">
       ${renderTicketsSection(d.tickets, ctx)} ${renderActivitySection(d.activity, ctx)}
+      ${renderChartsSection(ctx)}
       ${renderJobsSection(d.tickers, ctx)} ${renderNowPlayingSection(d.nowPlaying)}
       <p class="subheading dashboard-stamp">Aggregates cached at least 30 s per guild (§8.6 query budget).${stamp}</p>
     </div>`;

@@ -378,6 +378,11 @@ const PAGES = [
   { path: "/g/:guildId/users/:userId/card", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/roles", tier: "staff", json: true },
+  // Phase 4 (subtask 03): dashboard CHART series endpoints (§8.7 progressive
+  // enhancement) — staff-tier JSON, no-store, one bounded ≤31-row read per
+  // guild behind the ≥30 s dashboardData series cache.
+  { path: "/g/:guildId/api/dashboard/activity.json", tier: "staff", json: true },
+  { path: "/g/:guildId/api/dashboard/xp-leaders.json", tier: "staff", json: true },
 ];
 
 /** Pages whose data module caches per guild (§8.6 floor 30 s) — on these,
@@ -387,6 +392,10 @@ const CACHED_PAGES = new Set([
   "/g/:guildId/settings",
   "/g/:guildId/integrations",
   "/g/:guildId/voice",
+  // Phase 4 chart-series endpoints share the SAME dashboardData instance
+  // (per-guild series cache) — warm reads must be strictly cheaper.
+  "/g/:guildId/api/dashboard/activity.json",
+  "/g/:guildId/api/dashboard/xp-leaders.json",
 ]);
 
 /**
@@ -439,6 +448,11 @@ const GATE_MEASURE = process.env.GATE_MEASURE === "1";
     "/g/:guildId/users/:userId/card": { req1: 2, req2: 2 },
     "/g/:guildId/lookups/users": { req1: 2, req2: 2 },
     "/g/:guildId/lookups/roles": { req1: 2, req2: 2 },
+    // Phase 4 chart series: auth+scope floor (2) + ONE bounded windowed read
+    // cold (guildDailyMessageTotals / topUsers LIMIT ≤31); warm = cached ⇒
+    // floor only. (MEASURED via GATE_MEASURE=1 on this fixture.)
+    "/g/:guildId/api/dashboard/activity.json": { req1: 3, req2: 2 },
+    "/g/:guildId/api/dashboard/xp-leaders.json": { req1: 3, req2: 2 },
   };
 
 /** Collected measurements for the end-of-run gate report (§8.8 evidence). */

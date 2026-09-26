@@ -100,6 +100,11 @@ function registerDashboardRoutes(app, options = {}) {
           getTickerHealth: options.getTickerHealth,
         })
       : getDefaultDashboardData());
+  // Publish the RESOLVED instance back onto options (same shared-instance
+  // wiring as the resolver above): routes/dashboardApi.js registers after
+  // this registrar and MUST use the identical per-guild cache — one 30 s
+  // aggregate budget for page + chart JSON reads (§8.6).
+  options.dashboardData = dashboard;
 
   // Security gate FIRST — prefix-matched so it also gates every deeper /g
   // route registered after this one (anon redirect / generic 404s are

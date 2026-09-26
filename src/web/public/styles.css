@@ -1109,3 +1109,31 @@ p.panel-foot {
 }
 .user-card-warm { margin-top: 8px; font-size: .75em; opacity: .55; font-style: italic; }
 .lookup-kind { font-size: .7em; opacity: .5; text-transform: uppercase; letter-spacing: .05em; margin-left: 6px; }
+
+/* ---- dashboard charts (Phase 4, client-rendered enhancement) -------------
+   Chart.js responsive contract (vendored 4.5.1 docs): the CONTAINER is
+   position:relative with an explicit height and holds ONLY the canvas;
+   the canvas itself stays UNSIZED/UNSTYLED — library-managed. The SSR
+   tables are the JS-off + accessible fallback; nothing here gates content. */
+.dashboard-charts .chart-figure {
+  margin: 0 0 1.1rem;
+}
+.dashboard-charts .chart-figure:last-of-type {
+  margin-bottom: 0;
+}
+.dashboard-charts .chart-figure figcaption {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+.dashboard-charts .chart-box {
+  position: relative;
+  width: 100%;
+  height: 260px; /* explicit height + maintainAspectRatio:false (client) */
+}
+.dashboard-charts .chart-unavailable {
+  margin: 0.4rem 0 0;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  font-style: italic;
+}
