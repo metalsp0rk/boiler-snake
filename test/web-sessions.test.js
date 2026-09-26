@@ -722,4 +722,368 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       assert.equal(await res.text(), "Not found");
     });
   });
+
+  // ===========================================================================
+  // Phase 4 session ADMINISTRATION — policy layer first (pure SQLite), then
+  // the mounted self-service "Your sessions" lifecycle (Exit C of the
+  // subtask: self list/revoke, revoke-other isolation, current-revoke ==
+  // clean logout). roadmap/web-admin.md §8.3 + §8.7 secret hygiene.
+  // ===========================================================================
+
+  describe("session administration — policy layer (listLive*, revoke, pick)", () => {
+    const liveFor = () => Date.now() + 3 * DAY;
+
+    it("listLiveSessionsForUser: own rows only, live only, newest activity first", () => {
+      const u = "u-admin-list";
+      const other = sessions.createSession({ userId: "u-admin-other", discordTag: "other#9" });
+      const a = sessions.createSession({ userId: u, discordTag: "a#1" });
+      const b = sessions.createSession({ userId: u });
+      setRowTimes(b.id, { createdAt: b.createdAt, lastSeenAt: Date.now() + 5_000_000, expiresAt: liveFor() });
+      const dead = sessions.createSession({ userId: u });
+      setRowTimes(dead.id, { createdAt: dead.createdAt, lastSeenAt: dead.lastSeenAt, expiresAt: Date.now() - 1 });
+
+      const list = sessions.listLiveSessionsForUser(u);
+      assert.deepEqual(list.map((s) => s.id).sort(), [a.id, b.id].sort(), "own live rows only");
+      assert.equal(list[0].id, b.id, "newest last_seen first");
+      assert.equal(sessions.listLiveSessionsForUser("u-who").length, 0);
+
+      for (const s of [other, a, b, dead]) sessions.destroySession(s.id);
+    });
+
+    it("bounded reads: a 102-row user still answers at most MAX_SESSION_LIST_LIMIT", () => {
+      const u = "u-admin-bound";
+      const ids = [];
+      for (let i = 0; i < 102; i += 1) {
+        const id = sessions.newSessionId();
+        api.createWebSession({ id, userId: u, expiresAt: Date.now() + DAY });
+        ids.push(id);
+      }
+      assert.equal(sessions.MAX_SESSION_LIST_LIMIT, 100);
+      assert.equal(sessions.listLiveSessionsForUser(u).length, 100, "repo LIMIT clamp holds");
+      assert.equal(
+        sessions.listLiveSessionsForUser(u, Date.now(), { limit: 999 }).length,
+        100,
+        "hostile limit clamped"
+      );
+      for (const id of ids) sessions.destroySession(id);
+    });
+
+    it("listLiveSessions: system-wide, multi-user, expired rows never listed", () => {
+      const a = sessions.createSession({ userId: "u-all-1" });
+      const b = sessions.createSession({ userId: "u-all-2" });
+      const dead = expiredRowFixture("u-all-dead"); // already expired
+      const ids = sessions.listLiveSessions().map((s) => s.id);
+      assert.ok(ids.includes(a.id) && ids.includes(b.id), "both users listed");
+      assert.ok(!ids.includes(dead.id), "expired row never listed");
+      sessions.destroySession(a.id);
+      sessions.destroySession(b.id);
+    });
+
+    it("revokeSessionById: honest outcome — the row hands back once, then not_found", () => {
+      const s = sessions.createSession({ userId: "u-rev", discordTag: "rev#1" });
+      const gone = sessions.revokeSessionById(s.id);
+      assert.equal(gone.ok, true);
+      assert.equal(gone.session.userId, "u-rev");
+      assert.equal(gone.session.id, s.id, "removed row returned for the audit entry");
+      assert.equal(rawRow(s.id), null);
+      assert.equal(sessions.revokeSessionById(s.id).ok, false, "already gone ⇒ NOT a silent success");
+      assert.equal(sessions.revokeSessionById(null).ok, false);
+    });
+
+    it("pickSessionByCreatedAt: exact selector match; current wins ties; junk selectors never match", () => {
+      const now = Date.now();
+      const mk = (lastOffset) => {
+        const s = sessions.createSession({ userId: "u-pick" });
+        setRowTimes(s.id, {
+          createdAt: 1700000009999,
+          lastSeenAt: now + lastOffset,
+          expiresAt: now + DAY,
+        });
+        return s;
+      };
+      const first = mk(5000); // listed FIRST (newest activity)
+      const second = mk(1000);
+      const list = sessions.listLiveSessionsForUser("u-pick");
+      assert.equal(list.length, 2);
+      assert.equal(sessions.pickSessionByCreatedAt(list, 1700000009999, null).id, first.id);
+      // The current-session snapshot a route holds is the FRESH row (its
+      // created_at IS the selector value) — pick it out of the same list.
+      const currentRow = list.find((s) => s.id === second.id);
+      assert.equal(
+        sessions.pickSessionByCreatedAt(list, 1700000009999, currentRow).id,
+        second.id,
+        "the CURRENT row wins a created_at collision"
+      );
+      assert.equal(sessions.pickSessionByCreatedAt(list, 999, null), null, "selector miss");
+      assert.equal(sessions.pickSessionByCreatedAt(list, "1700000009999", null), null, "string junk");
+      assert.equal(sessions.pickSessionByCreatedAt(list, Number.NaN, null), null);
+      for (const s of [first, second]) sessions.destroySession(s.id);
+    });
+
+    it("deleteWebSessionById hands back the removed ROW (audit data); null for unknown ids", () => {
+      const s = sessions.createSession({ userId: "u-del-row", discordTag: "del#1" });
+      const row = api.deleteWebSessionById(s.id);
+      assert.equal(row.id, s.id);
+      assert.equal(row.user_id, "u-del-row");
+      assert.equal(api.deleteWebSessionById(s.id), null, "second delete matches nothing");
+      assert.equal(api.deleteWebSessionById(""), null);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Mounted self-service "Your sessions" — the FULL lifecycle over the real
+  // app stack (session → CSRF → guildScope → requireTier("staff") → route),
+  // fake-Discord resolver + real SQLite, same pattern as the route suites.
+  // ---------------------------------------------------------------------------
+
+  describe("mounted self-service 'Your sessions' (list / revoke / current-revoke-logout)", () => {
+    const GUILD_S = "770000000000000077";
+    const GUILD_NO = "770000000000000099"; // bot is NOT here
+    const ROLE_JR_S = "880000000000000088";
+    const U_STAFF = "771000000000000001";
+    const U_SENIOR = "771000000000000002";
+    const U_PLAIN = "771000000000000003";
+    const SECRET_S = "test-self-sessions-secret-NOT-REAL-4242";
+
+    /** @type {import("http").Server} */
+    let serverS;
+    let baseS = "";
+    const cookieOf = {};
+    const csrfOf = {};
+    const loginIds = {}; // viewer key → their login session id (canary)
+    let savedSecret;
+    let savedBaseUrl;
+
+    /** All session ids this suite knows — the §8.7 HTML canary set. */
+    const allKnownIds = () => Object.values(loginIds);
+
+    before(async () => {
+      savedSecret = process.env.SESSION_SECRET;
+      savedBaseUrl = process.env.PUBLIC_BASE_URL;
+      process.env.SESSION_SECRET = SECRET_S;
+      delete process.env.PUBLIC_BASE_URL;
+
+      const { createWebApp } = require("../src/web/app");
+      const { createGuildAccessResolver } = require("../src/web/auth/guildAccess");
+      const tokens = require("../src/web/auth/tokens");
+      const csrfMod = require("../src/web/middleware/csrf");
+
+      api.addStaffRole(GUILD_S, ROLE_JR_S, "junior");
+
+      const fakeDiscord = {
+        async getUserGuilds(token) {
+          const userId = String(token).replace(/^tok-/, "");
+          if ([U_STAFF, U_SENIOR, U_PLAIN].includes(userId)) {
+            return [
+              {
+                id: GUILD_S,
+                name: "Self Guild",
+                icon: null,
+                owner: false,
+                permissions: "104324673",
+              },
+            ];
+          }
+          return [];
+        },
+        async getUserGuildMember(token, guildId) {
+          const userId = String(token).replace(/^tok-/, "");
+          if (guildId === GUILD_S) {
+            if (userId === U_STAFF) return { roles: [ROLE_JR_S] };
+            if (userId === U_SENIOR) return { roles: [ROLE_JR_S] };
+            return { roles: [] };
+          }
+          const err = new Error("Unknown Guild");
+          err.status = 404;
+          throw err;
+        },
+      };
+      const resolver = createGuildAccessResolver({
+        discord: fakeDiscord,
+        botGuilds: async () => [GUILD_S],
+        now: Date.now,
+        ttlMs: 60_000,
+      });
+      const app = createWebApp({ guildAccess: resolver });
+      serverS = http.createServer(app);
+      serverS.listen(0, "127.0.0.1");
+      await once(serverS, "listening");
+      baseS = `http://127.0.0.1:${serverS.address().port}`;
+
+      for (const [key, uid] of [
+        ["staff", U_STAFF],
+        ["senior", U_SENIOR],
+        ["plain", U_PLAIN],
+      ]) {
+        const s = sessions.createSession({ userId: uid, discordTag: `${key}#0001` });
+        api.setWebSessionAuth(s.id, {
+          accessTokenEnc: tokens.encryptAccessToken(`tok-${uid}`),
+          tokenExpiresAt: Date.now() + 3_600_000,
+          scopes: "identify guilds guilds.members.read",
+          guildSnapshot: JSON.stringify([
+            { id: GUILD_S, name: "S", icon: null, owner: false, permissions: "104324673" },
+          ]),
+        });
+        cookieOf[key] = `web_session=${s.id}`;
+        loginIds[key] = s.id;
+        csrfOf[key] = csrfMod.deriveCsrfToken(s.id, SECRET_S);
+      }
+    });
+
+    after(async () => {
+      if (serverS) {
+        serverS.close();
+        await once(serverS, "close");
+      }
+      if (savedSecret === undefined) delete process.env.SESSION_SECRET;
+      else process.env.SESSION_SECRET = savedSecret;
+      if (savedBaseUrl === undefined) delete process.env.PUBLIC_BASE_URL;
+      else process.env.PUBLIC_BASE_URL = savedBaseUrl;
+    });
+
+    const PAGE = `/g/${GUILD_S}/sessions`;
+
+    const getPage = async (key, path = PAGE) => {
+      const res = await fetch(baseS + path, {
+        redirect: "manual",
+        headers: key ? { cookie: cookieOf[key] } : undefined,
+      });
+      return { res, text: await res.text() };
+    };
+
+    const postRevoke = async (key, fields) => {
+      const res = await fetch(`${baseS}${PAGE}/revoke`, {
+        method: "POST",
+        redirect: "manual",
+        headers: key
+          ? { cookie: cookieOf[key], "content-type": "application/x-www-form-urlencoded" }
+          : { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ ...(fields || {}) }).toString(),
+      });
+      return { res, text: await res.text(), location: res.headers.get("location") };
+    };
+
+    const revokeAuditRows = () =>
+      api
+        .listAdminAudit(GUILD_S, { limit: 100 })
+        .filter((r) => r.action === "sessions.revoke");
+
+    it("anon ⇒ 302 login; no-tier member ⇒ generic 404 (the shell floor applies)", async () => {
+      const anon = await getPage(null);
+      assert.equal(anon.res.status, 302);
+      assert.equal(anon.res.headers.get("location"), `/auth/login?guild=${GUILD_S}`);
+      const plain = await getPage("plain");
+      assert.equal(plain.res.status, 404);
+      assert.equal(plain.text, "Not found");
+    });
+
+    it("cross-guild probe ⇒ generic 404 (never 403)", async () => {
+      const cross = await getPage("staff", `/g/${GUILD_NO}/sessions`);
+      assert.equal(cross.res.status, 404);
+      assert.equal(cross.text, "Not found");
+    });
+
+    it("staff sees ONLY their own session; no raw session id ever renders", async () => {
+      const { res, text } = await getPage("staff");
+      assert.equal(res.status, 200);
+      assert.ok(text.includes("<h1>Your sessions"), "page heading");
+      assert.ok(text.includes("staff#0001"), "own tag listed");
+      assert.ok(!text.includes(U_SENIOR) && !text.includes(U_PLAIN), "no other users");
+      for (const id of allKnownIds()) {
+        assert.ok(!text.includes(id), "raw session id never rendered (§8.7)");
+      }
+      assert.ok(!text.includes('name="session_id"') && !text.includes('name="id"'), "no id selector field");
+      assert.equal((text.match(/name="created_at"/g) || []).length, 1, "one own row, one selector");
+    });
+
+    it("revoke ANOTHER own session kills it while the current cookie keeps working", async () => {
+      const extra = sessions.createSession({ userId: U_STAFF, discordTag: "staff#0001" });
+      const { location } = await postRevoke("staff", {
+        _csrf: csrfOf.staff,
+        created_at: String(extra.createdAt),
+      });
+      assert.equal(location, `${PAGE}?done=session_revoked`);
+      assert.equal(rawRow(extra.id), null, "row destroyed immediately");
+
+      // The CURRENT cookie survives: same visitor, same page, 200.
+      const page = await getPage("staff");
+      assert.equal(page.res.status, 200);
+
+      // Exactly ONE audit row, correct shape, NO session id anywhere in it.
+      const rows = revokeAuditRows();
+      assert.equal(rows.length, 1);
+      const row = rows[0];
+      assert.equal(row.origin, "web");
+      assert.equal(row.actor_user_id, U_STAFF);
+      assert.equal(row.target_type, "session");
+      assert.equal(row.target_id, String(extra.createdAt), "targetId is the NON-SECRET selector");
+      const details = JSON.parse(row.details_json);
+      assert.deepEqual(details, {
+        scope: "self",
+        target_user_id: U_STAFF,
+        created_at: extra.createdAt,
+        current: false,
+      });
+      const raw = JSON.stringify(row);
+      for (const id of [...allKnownIds(), extra.id]) {
+        assert.ok(!raw.includes(id), "audit row carries NO session id (§8.7)");
+      }
+    });
+
+    it("revoke a selector outside the viewer's own list ⇒ session_gone, zero writes", async () => {
+      const seniorRowBefore = rawRow(loginIds.senior);
+      const before = revokeAuditRows().length;
+      // senior's login created_at — staff must NOT be able to address it:
+      const seniorSession = sessions.getSession(loginIds.senior);
+      const { location } = await postRevoke("staff", {
+        _csrf: csrfOf.staff,
+        created_at: String(seniorSession.createdAt),
+      });
+      assert.equal(location, `${PAGE}?error=session_gone`);
+      assert.ok(rawRow(loginIds.senior), "senior's session survived (Exit C isolation)");
+      assert.ok(seniorRowBefore, "sanity: it was there");
+      assert.equal(revokeAuditRows().length, before, "failed revoke audited NOTHING");
+    });
+
+    it("junk selector ⇒ invalid_selection with zero audit; missing _csrf ⇒ 403", async () => {
+      const before = revokeAuditRows().length;
+      const bad = await postRevoke("staff", { _csrf: csrfOf.staff, created_at: "x" });
+      assert.equal(bad.location, `${PAGE}?error=invalid_selection`);
+      const noCsrf = await postRevoke("staff", { created_at: String(Date.now()) });
+      assert.equal(noCsrf.res.status, 403);
+      assert.equal(noCsrf.text, "Forbidden");
+      assert.equal(revokeAuditRows().length, before, "refusals audited nothing");
+    });
+
+    it("REVOKING THE CURRENT SESSION == clean logout (row gone + cookie torn down + next request → login)", async () => {
+      const me = sessions.getSession(loginIds.staff);
+      const { res, location } = await postRevoke("staff", {
+        _csrf: csrfOf.staff,
+        created_at: String(me.createdAt),
+      });
+      assert.equal(res.status, 302);
+      assert.equal(location, "/", "logout-shaped redirect (POST /auth/logout precedent)");
+      const setCookie = res.headers.get("set-cookie") || "";
+      assert.match(setCookie, /^web_session=;.*Max-Age=0/, "cookie torn down");
+      assert.equal(rawRow(loginIds.staff), null, "session row destroyed");
+
+      // Next request with the (now dead) cookie redirects to login:
+      const next = await getPage("staff");
+      assert.equal(next.res.status, 302);
+      assert.equal(next.res.headers.get("location"), `/auth/login?guild=${GUILD_S}`);
+
+      const rows = revokeAuditRows();
+      const currentRow = rows.find((r) => JSON.parse(r.details_json).current === true);
+      assert.ok(currentRow, "current revoke audited with details.current=true");
+      assert.equal(currentRow.target_id, String(me.createdAt));
+    });
+
+    it("the senior visitor is untouched: their own page lists only their own row", async () => {
+      const { res, text } = await getPage("senior");
+      assert.equal(res.status, 200);
+      assert.ok(text.includes("senior#0001"));
+      assert.ok(!text.includes(U_STAFF), "the ex-staff user is invisible here");
+      assert.equal((text.match(/name="created_at"/g) || []).length, 1);
+    });
+  });
 });

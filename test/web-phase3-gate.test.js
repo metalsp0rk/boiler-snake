@@ -6,7 +6,7 @@
  *
  * WHAT THIS GATE IS:
  *  THE MATRIX (A): the ground truth for "what is a mutation" is the RUNTIME
- *  registry app.locals.webMutations (40 templates). Every template has a
+ *  registry app.locals.webMutations (42 templates). Every template has a
  *  row in the shared PARITY matrix (test/helpers/mutation-ladder.js —
  *  extracted VERBATIM from the Phase-2 gate, so the ladder a row walks here
  *  is BIT-IDENTICAL to the ladder the Phase-2 gate walks); the four §8.6
@@ -20,7 +20,7 @@
  *  body/query, the default is the constant 'web', recordSlashAudit defaults
  *  'slash', recordSystemAudit is 'system' by construction, and the
  *  repository whitelist is EXACTLY ['web','slash','system'] (unknown
- *  values normalize — pinned at runtime); (2) forgery: EVERY one of the 40
+ *  values normalize — pinned at runtime); (2) forgery: EVERY one of the 42
  *  mutations is POSTed with forged origin / audit_origin / actor_user_id /
  *  guild_id / target fields — the mutation still succeeds writing ITS OWN
  *  origin 'web' row with ITS OWN actor/guild/target; (3) fail-closed probes
@@ -280,7 +280,7 @@ const mirrorSpy = ladder.installMirrorSpy(auditLogMod, bindAuditClient, {
 // ---------------------------------------------------------------------------
 // Boot: env → tier rows → sessions → audit-channel seeds → THREE apps →
 // ledger. (appMain: the subtask-30/31 seams (deterministic fake summarizer
-// + fake sync leg) so the 40-row ladder stays offline and static;
+// + fake sync leg) so the 42-row ladder stays offline and static;
 // appReal: NO sync seam + AI-guardrail-only seam → the REAL sync core and
 // the REAL summarize service run on it; appNoAi: isAiConfigured=false →
 // the ai_not_configured refusal delta.)
@@ -670,7 +670,7 @@ after(() => {
 // registry is the ground truth — both directions or the gate fails by name).
 // ===========================================================================
 
-describe("A1. registry ↔ matrix integrity — 40 mutations, no drift (§8.8)", () => {
+describe("A1. registry ↔ matrix integrity — 42 mutations, no drift (§8.8)", () => {
   before(async () => {
     for (const [app, setter] of [
       [appMain, (b) => (baseMain = b)],
@@ -687,7 +687,7 @@ describe("A1. registry ↔ matrix integrity — 40 mutations, no drift (§8.8)",
 
   it("runtime registry covers EVERY mutation AND every matrix row exists (no drift either way)", () => {
     const registry = appMain.locals.webMutations;
-    assert.equal(registry.length, 40, "the final surface is 40 mutations (31 + the 9 Phase-3 templates… verified 1:1 below)");
+    assert.equal(registry.length, 42, "the final surface is 42 mutations (40 Phase-0a→3 + the 2 Phase-4 session revokes… verified 1:1 below)");
     const regTemplates = new Set(registry.map((m) => m.path));
     const tableTemplates = new Set(PARITY.map((r) => r.template));
     assert.deepEqual(
@@ -726,11 +726,11 @@ describe("A1. registry ↔ matrix integrity — 40 mutations, no drift (§8.8)",
 });
 
 // ===========================================================================
-// A2. THE per-mutation acceptance ladder over ALL 40 — the shared ladder
+// A2. THE per-mutation acceptance ladder over ALL 42 — the shared ladder
 // (extracted VERBATIM from the Phase-2 gate). Ledger books every success.
 // ===========================================================================
 
-describe("A2. per-mutation acceptance ladder — all 40 mutations (four §8.6 rules + service + audit + fail-closed)", () => {
+describe("A2. per-mutation acceptance ladder — all 42 mutations (four §8.6 rules + service + audit + fail-closed)", () => {
   for (const entry of appMain.locals.webMutations) {
     const row = PARITY.find((r) => r.template === entry.path);
     const label = row
@@ -937,7 +937,11 @@ const PAGES = [
   { path: "/g/:guildId/commands", tier: "staff", marker: "<h1>Command visibility" },
   { path: "/g/:guildId/integrations", tier: "staff", marker: "<h1>Integrations" },
   { path: "/g/:guildId/voice", tier: "staff", marker: "<h1>Voice" },
+  // Phase 4 session admin (component C): self-service at the shell floor +
+  // the global viewer in the System area (admin).
+  { path: "/g/:guildId/sessions", tier: "staff", marker: "<h1>Your sessions" },
   { path: "/g/:guildId/system", tier: "admin", marker: "<h1>System" },
+  { path: "/g/:guildId/system/sessions", tier: "admin", marker: "<h1>Web sessions" },
   { path: "/g/:guildId/audit", tier: "admin", marker: "<h1>Audit log" },
   { path: "/g/:guildId/xp/grant", tier: "admin", marker: "<h1>Grant XP" },
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
@@ -1032,9 +1036,9 @@ describe("C. tier conformance sweep — final GET surface + mutation ladder evid
     }
     // the derived sets equal the runtime sets (the §4 vocabulary is exact)
     const derived = (t) => PARITY.filter((r) => ladder.expectedTierFor(r.template) === t).length;
-    assert.equal(derived("admin"), 9, "9 admin mutations (role×3, channels×2, exempt×2, grant, sync)");
+    assert.equal(derived("admin"), 10, "10 admin mutations (role×3, channels×2, exempt×2, grant, sync, system sessions revoke)");
     assert.equal(derived("senior"), 3, "3 senior mutations (claim/close/summarize — §8.6 Tickets row)");
-    assert.equal(derived("staff"), 28, "28 staff mutations");
+    assert.equal(derived("staff"), 29, "29 staff mutations (28 + Phase-4 self sessions revoke)");
   });
 });
 
