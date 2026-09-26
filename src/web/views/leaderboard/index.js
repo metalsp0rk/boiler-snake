@@ -68,13 +68,15 @@ function renderLeaderboardBody(req, { board, names }) {
         <td class="lb-level">${entry.level}</td>
       </tr>`
   );
+  // table-scroll (mobile pass, Phase 4): presentational wrapper only — wide
+  // boards scroll inside the div at 360–430px instead of the page.
   const table = board.rows.length
-    ? html`<table class="list-table leaderboard-table">
+    ? html`<div class="table-scroll"><table class="list-table leaderboard-table">
         <thead>
           <tr><th>#</th><th>User</th><th>XP</th><th>Level</th></tr>
         </thead>
         <tbody>${rows}</tbody>
-      </table>`
+      </table></div>`
     : emptyState("No XP data yet in this guild.");
   return html`
     ${board.total > 0 ? boardPager(board, guildId) : html``}

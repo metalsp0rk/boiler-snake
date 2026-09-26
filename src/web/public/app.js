@@ -452,6 +452,7 @@
       options: {
         responsive: true,
         maintainAspectRatio: false, // container CSS owns the height
+        resizeDelay: 150, // mobile: debounce URL-bar/rotation resize storms
         animation: false, // admin panel: instant, predictable repaint
         interaction: { mode: "index", intersect: false }, // touch-friendly
         plugins: { legend: { display: false } }, // single dataset
@@ -478,6 +479,7 @@
         indexAxis: "y", // member labels read left-to-right at any width
         responsive: true,
         maintainAspectRatio: false,
+        resizeDelay: 150, // mobile: debounce URL-bar/rotation resize storms
         animation: false,
         plugins: { legend: { display: false } },
         scales: { x: { beginAtZero: true } },

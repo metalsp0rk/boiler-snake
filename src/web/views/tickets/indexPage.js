@@ -222,6 +222,28 @@ function renderTicketIndexContent({
     ${q ? html`<a class="search-clear" href="${hrefFor(1)}">Clear</a>` : html``}
   </form>`;
 
+  // table-scroll (mobile pass, Phase 4): purely presentational wrapper so
+  // wide archive rows scroll inside the div instead of forcing the whole
+  // page sideways at 360–430px. Markup inside stays byte-untouched.
+  const tableBlock = html`<div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticket</th>
+          <th>Guild</th>
+          <th>Closed</th>
+          <th>Subject</th>
+          <th>Close reason</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+        ${empty}
+      </tbody>
+    </table>
+  </div>`;
+
   return html`
   <p class="subheading">${filterNote}${searchNote}${consoleNote} · <strong>${total}</strong> transcript${total === 1 ? "" : "s"} · staff use only</p>
   ${searchForm}
@@ -235,22 +257,7 @@ function renderTicketIndexContent({
         are never content-archived and never appear here.`}
   </div>
   ${nav}
-  <table>
-    <thead>
-      <tr>
-        <th>Ticket</th>
-        <th>Guild</th>
-        <th>Closed</th>
-        <th>Subject</th>
-        <th>Close reason</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      ${rows}
-      ${empty}
-    </tbody>
-  </table>
+  ${tableBlock}
   ${nav}`;
 }
 
