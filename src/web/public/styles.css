@@ -1137,3 +1137,81 @@ p.panel-foot {
   color: var(--fg-muted);
   font-style: italic;
 }
+
+/* ---- mobile pass (Phase 4, §8.8): usable at 360–430px ----------------------
+   Every rule below lives INSIDE a max-width media query — the desktop rules
+   above are untouched, pixel-for-pixel. Fix vocabulary is the console's own
+   (UX v1.1 dashboard panels): wrap text first, let the control's OWN box
+   scroll second — never a page-level horizontal scrollbar. */
+
+@media (max-width: 480px) {
+  /* Shell bar rhythm: brand / switcher / tier badge / user-box stack into
+     short rows at 360px instead of clipping each other. */
+  .shell-bar { gap: 0.5rem 0.7rem; }
+  .user-box { flex-wrap: wrap; }
+
+  /* Collapsed sidebar strip (horizontal at ≤880px): every nav GROUP label
+     gets its own line, then the links wrap freely under it — every
+     destination, including the Phase-4 "Your sessions" / "Web sessions"
+     items, stays reachable without horizontal clipping. */
+  .shell-nav { gap: 0.2rem 0.6rem; }
+  .shell-nav-group h2 { flex: 1 0 100%; margin-right: 0; }
+
+  /* Tables: aggressive wrapping first… */
+  .list-table th,
+  .list-table td { overflow-wrap: anywhere; }
+
+  /* …then scroll the table's OWN box (the .dashboard-panel contract from
+     UX v1.1) for the sections that host multi-column tables: the unstyled
+     .panel wrapper used by every console page (settings, staff,
+     integrations, voice, system, users, sessions, ticket actions), the
+     .moderation page wrapper (warnings, notes, audit), and .table-scroll —
+     the wrapper div added where a table sits bare in the flow (the archive
+     index, the leaderboard board). */
+  .panel,
+  .moderation,
+  .table-scroll {
+    overflow-x: auto;
+  }
+
+  /* Leaderboard keeps its numeric columns without eating the row. */
+  .leaderboard-table .lb-xp,
+  .leaderboard-table .lb-level { width: 5.5rem; }
+
+  /* Pager bars stack instead of forcing one unbreakable line. */
+  .leaderboard-pager { flex-wrap: wrap; }
+
+  /* PRG write forms go single-column at phone width: every field, select,
+     textarea and submit button is reachable without sideways page scroll.
+     The inline chip variants (.settings-form-inline, .ticket-inline-form)
+     are explicitly restored to row layout — they are ONE control wide and
+     stack badly, not well. */
+  .settings-form,
+  .staff-mutate-form,
+  .integ-write-form,
+  .integ-write-fields {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .settings-form .btn,
+  .staff-mutate-form .btn,
+  .integ-write-form .btn { width: 100%; }
+  .settings-form-inline,
+  .ticket-inline-form {
+    flex-direction: row;
+    align-items: center;
+  }
+  .settings-form-inline .btn { width: auto; }
+  .setting-input,
+  .staff-mutate-form input,
+  .staff-mutate-form select,
+  .integ-write-form input:not([type="hidden"]):not([type="checkbox"]),
+  .integ-write-form select,
+  .integ-write-form textarea {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .setting-input-number { width: 100%; }
+  .moderation .filter-form input[type="search"] { min-width: 0; width: 100%; }
+}
