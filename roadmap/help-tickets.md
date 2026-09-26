@@ -6,7 +6,7 @@ Ephemeral per-server ticket support: members open private channels with staff, s
 
 ### Status
 
-**Shipped (MVP, panel registry, two-phase close→archive, asset mirror)** — see [docs/tickets.md](../docs/tickets.md). Design decisions locked in [1.10](#110-design-decisions-locked). Post-MVP remaining: Discord OAuth on transcripts.
+**Shipped (MVP, panel registry, two-phase close→archive, asset mirror)** — see [docs/tickets.md](../docs/tickets.md). Design decisions locked in [1.10](#110-design-decisions-locked). ~~Post-MVP remaining: Discord OAuth on transcripts~~ **Shipped** — login-mandatory transcript routes via [web-admin.md](web-admin.md) §8.4 (staff-or-participant access; §8.15 tasks 15.9 + 15.13).
 
 ---
 
@@ -191,7 +191,7 @@ Rationale: privacy. Channel deletion is the disposal mechanism; DB + archive stu
   - UUID in the path (unguessable).
   - Link posted in the configured **staff** archive channel, and **DM’d to the ticket requester** at archive time for **non-sensitive** tickets (see §1.11; supersedes the original staff-only rule).
   - Other members / other staff never receive the transcript URL. Sensitive tickets never generate or send one.
-  - **Later:** “Login with Discord” gate on `/t/{uuid}`.
+  - ~~**Later:** “Login with Discord” gate on `/t/{uuid}`.~~ **Shipped** — login-mandatory per [web-admin.md](web-admin.md) §8.4 (staff-or-participant; §8.15 tasks 15.9 + 15.13).
 - **Attachments (shipped):** at archive time all message attachments + embed media are downloaded into  
   `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/assets/` and the transcript is rewritten to local  
   `/t/{uuid}/assets/…` links (`mirrorTicketAssets` in `assets.js`, wired into the archive pipeline in `close.js`).  
@@ -359,7 +359,7 @@ Channel create is **bot-driven**.
 4. **Close (sensitive branch)** — metadata + required archive-channel stub + delete channel *(shipped two-phase: `/ticket close` soft-closes, `/ticket archive` runs the branch—§1.5)*  
 5. **Close (archive branch)** — fetch, HTML, UUID route HTTP server, archive embed (stats fallback)  
 6. **AI summary** — non-sensitive only; graceful fallback  
-7. **Post-MVP** — Discord OAuth on `/t/{uuid}`. *(Shipped since: panel registry list/edit — `ticket_panels` + `/ticket panel create|list|edit|delete`; local attachment mirror — `mirrorTicketAssets` in `assets.js`.)*  
+7. **Post-MVP** — ~~Discord OAuth on `/t/{uuid}`~~ **Shipped**: login-mandatory transcripts per [web-admin.md](web-admin.md) §8.4. *(Shipped since: panel registry list/edit — `ticket_panels` + `/ticket panel create|list|edit|delete`; local attachment mirror — `mirrorTicketAssets` in `assets.js`.)*  
 
 ---
 
@@ -370,7 +370,7 @@ Channel create is **bot-driven**.
 | 1 | **Ownership:** claim / auto-claim on sensitive; `/ticket transfer`; `/ticket addstaff` for extra named staff without restoring staff role |
 | 2 | **Sensitive tickets are never content-archived** — no message fetch, no HTML, no AI, no transcript URL; channel delete is disposal; **required** metadata-only archive stub |
 | 3 | ~~Transcript URL is staff-only~~ **Revised (see §1.11):** archive-channel embed **plus** DM of the transcript link to the **requester** for non-sensitive tickets; sensitive tickets never get any URL |
-| 4 | **MVP URL security:** UUID path `/t/{uuid}`; **later:** Login with Discord for real access control |
+| 4 | **MVP URL security:** UUID path `/t/{uuid}`; ~~**later:** Login with Discord for real access control~~ **Shipped:** login-mandatory per [web-admin.md](web-admin.md) §8.4 (staff-or-participant; §8.15 tasks 15.9 + 15.13) |
 | 5 | ~~**Attachments MVP:** hotlink Discord CDN URLs; **TODO:** download all thread assets at archive time and serve locally~~ **Revised (shipped):** archive-time asset mirroring is live — media is downloaded into the transcript bundle and served from `/t/{uuid}/assets/…` (`mirrorTicketAssets`, `assets.js`, wired in `close.js`); CDN hotlink survives only as fallback for failed/over-cap downloads |
 | 6 | **Create UX:** slash `/ticket create` + staff `/ticket for @user` + **panel button → modal** for description (same pipeline) |
 | 7 | **Rate limit:** configurable per guild; **default 60 minutes** (1 self-create per hour); staff `/ticket for` not subject to member cooldown |
