@@ -302,8 +302,10 @@ async function handleLeaderboardButton(interaction, ctx) {
     return;
   }
 
+  let deferred = false;
   if (typeof interaction.deferUpdate === "function") {
     await interaction.deferUpdate();
+    deferred = true;
   }
 
   const payload = await buildLeaderboardPagePayload(
@@ -313,13 +315,19 @@ async function handleLeaderboardButton(interaction, ctx) {
     parsed.limit,
     parsed.page,
   );
+  let finalPayload = payload;
   if (payload.empty) {
     const { empty, ...rest } = payload;
     void empty;
-    await interaction.update(rest);
-    return;
+    finalPayload = rest;
   }
-  await interaction.update(payload);
+  // discord.js >= 14.16: update() throws InteractionAlreadyReplied once the
+  // interaction is deferred; editReply() finalizes a deferred message update.
+  if (deferred) {
+    await interaction.editReply(finalPayload);
+  } else {
+    await interaction.update(finalPayload);
+  }
 }
 
 async function handleSetXp(interaction, ctx) {
