@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.25.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.24.1...v1.25.0) (2026-09-27)
+
+
+### Features
+
+* **gork:** add read_discord linked message/channel reader ([19ef51f](https://github.com/metalsp0rk/boiler-snake/commit/19ef51f9f887821c0bd0c29d5591080218f224d5))
+
+
+### Bug Fixes
+
+* **xp:** finalize leaderboard pagination with editReply after deferUpdate ([7b61702](https://github.com/metalsp0rk/boiler-snake/commit/7b61702395bf47838dd4cbe49dd68d5b3e1d47ed))
+
 ## [1.24.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.24.0...v1.24.1) (2026-09-17)
 
 
