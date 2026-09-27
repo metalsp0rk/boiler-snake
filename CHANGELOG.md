@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.27.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.26.0...v1.27.0) (2026-09-27)
+
+
+### Features
+
+* **web:** client-side Chart.js dashboard charts fed by staff-tier JSON API endpoints ([31e11ac](https://github.com/metalsp0rk/boiler-snake/commit/31e11ac2dd48c46fcd4712c2a9b169a577e9b740))
+* **web:** mobile pass - usable console at 360-430px (nav wrap, table scroll contract, stacked forms, chart resize) ([3f5c9d7](https://github.com/metalsp0rk/boiler-snake/commit/3f5c9d7c0b252636b8e13f9f435f0b630053d222))
+* **web:** session admin - self-service Your-sessions + admin-tier global viewer with revoke ([876596c](https://github.com/metalsp0rk/boiler-snake/commit/876596ce2c2590872a372065b23a949e00f2f41c))
+* **web:** wire scheduler job state into ticker-health registry (roadmap 15.6) ([9d2b18a](https://github.com/metalsp0rk/boiler-snake/commit/9d2b18ab27f85f64be92883dcd5b94ac8ac1c3c8))
+
 ## [1.26.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.25.0...v1.26.0) (2026-09-27)
 
 
