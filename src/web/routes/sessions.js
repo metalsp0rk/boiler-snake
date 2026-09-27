@@ -20,8 +20,10 @@
  *  - revoking a NON-current row kills it (row gone ⇒ the cookie is dead on
  *    its next request, same resolution as logout);
  *  - revoking the CURRENT row is a clean logout: row destroyed, cookie torn
- *    down (Max-Age=0) and 302 to "/" — byte-shaped like POST /auth/logout
- *    (login.js respondRedirect), so the next request lands on login;
+ *    down (Max-Age=0) and 302 to the signed-out landing
+ *    (login.js SIGNED_OUT_TARGET) — byte-shaped like POST /auth/logout
+ *    (login.js respondRedirect), so the visitor sees the "signed out"
+ *    landing instead of an instant OAuth bounce;
  *  - revoking an already-gone/expired row reports `?error=session_gone`
  *    (known state, zero writes) — never a silent success.
  *
@@ -37,6 +39,7 @@
  */
 
 const { createGuildAccessResolver } = require("../auth/guildAccess");
+const { SIGNED_OUT_TARGET } = require("../auth/login");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const sessions = require("../auth/sessions");
@@ -126,13 +129,13 @@ function registerSessionsRoutes(app, options = {}) {
    * Clean-logout response for the current-session revocation: identical
    * header shape to POST /auth/logout (login.js respondRedirect +
    * buildClearSessionCookie) — the row is already destroyed by the caller;
-   * this only tears the cookie down and sends the browser to the root,
-   * which re-redirects to login (next request = login, per Exit C).
+   * this only tears the cookie down and sends the browser to the signed-out
+   * landing (same destination as logout, per Exit C).
    * @param {import("http").ServerResponse} res
    */
   const respondLoggedOut = (res) => {
     res.writeHead(302, {
-      Location: "/",
+      Location: SIGNED_OUT_TARGET,
       "Cache-Control": "no-store",
       "Referrer-Policy": "no-referrer",
       "Set-Cookie": sessions.buildClearSessionCookie(),

@@ -179,7 +179,11 @@ describe("participant ticket round-trip + own-tickets list (§8.15-15.13)", () =
 
   /** Full login flow → { cookie, location } from the callback. */
   async function login(next) {
-    const q = next ? `?next=${encodeURIComponent(next)}` : "";
+    // ?continue=1 skips the public landing (GET /auth/login without it
+    // just renders the sign-in explanation page).
+    const q = next
+      ? `?next=${encodeURIComponent(next)}&continue=1`
+      : "?continue=1";
     const start = await fetch(`${appBase}/auth/login${q}`, { redirect: "manual" });
     const authorize = new URL(start.headers.get("location"));
     const state = authorize.searchParams.get("state");
