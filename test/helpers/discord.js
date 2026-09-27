@@ -795,13 +795,44 @@ function createButtonInteraction(opts) {
       return payload;
     },
     update: async (payload) => {
+      // Mirrors discord.js >= 14.16: update() throws once deferred or replied.
+      if (interaction.deferred || interaction.replied) {
+        const err = new Error(
+          "The reply to this interaction has already been sent or deferred.",
+        );
+        err.name = "DiscordjsError";
+        err.code = "InteractionAlreadyReplied";
+        throw err;
+      }
       interaction.replied = true;
       updates.push(payload);
       // Also mirror into replies so assert helpers can see embeds
       replies.push({ ...payload, _updated: true });
       return payload;
     },
+    editReply: async (payload) => {
+      if (!interaction.deferred && !interaction.replied) {
+        const err = new Error("Interaction has already been replied to.");
+        err.name = "DiscordjsError";
+        err.code = "InteractionNotReplied";
+        throw err;
+      }
+      interaction.deferred = false;
+      interaction.replied = true;
+      const obj = typeof payload === "string" ? { content: payload } : payload;
+      updates.push(obj);
+      replies.push({ ...obj, _updated: true });
+      return obj;
+    },
     deferUpdate: async () => {
+      if (interaction.deferred || interaction.replied) {
+        const err = new Error(
+          "The reply to this interaction has already been sent or deferred.",
+        );
+        err.name = "DiscordjsError";
+        err.code = "InteractionAlreadyReplied";
+        throw err;
+      }
       interaction.deferred = true;
     },
     showModal: async (modal) => {
