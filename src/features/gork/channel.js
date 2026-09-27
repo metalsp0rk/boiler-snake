@@ -30,33 +30,12 @@
  */
 
 const { sliceSafe } = require("../../core/text");
+const { isThreadLike } = require("./budget");
 
 /** Per-field cap for the channel topic (same as the per-message cap). */
 const TOPIC_CHAR_CAP = 500;
 /** Total cap for the whole channel block (protects the context budget). */
 const CHANNEL_BLOCK_CAP = 1000;
-/** Numeric ChannelType values that are threads (Announcement/Public/Private). */
-const THREAD_TYPES = new Set([10, 11, 12]);
-
-/**
- * Is this channel a thread? Prefers the discord.js `isThread()` method
- * (prototype method — present on real instances, lost by spreads), then
- * falls back to the numeric thread type (covers plain fakes that spread or
- * set `type` directly).
- *
- * @param {object} channel duck-typed discord.js channel
- * @returns {boolean}
- */
-function isThreadLike(channel) {
-  if (typeof channel.isThread === "function") {
-    try {
-      return Boolean(channel.isThread());
-    } catch {
-      // A throwing duck-type probe just means "not a thread".
-    }
-  }
-  return THREAD_TYPES.has(channel.type);
-}
 
 /**
  * Trimmed non-empty string from an arbitrary value, or "" (topics can be
