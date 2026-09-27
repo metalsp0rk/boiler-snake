@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.27.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.27.0...v1.27.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **gork:** fail closed when over-budget reply construction throws ([227ce73](https://github.com/metalsp0rk/boiler-snake/commit/227ce73b7f535da15aea4ca6644d86c41375baa8))
+* **gork:** pin the DB-reopen integration test as last in file ([8712e9e](https://github.com/metalsp0rk/boiler-snake/commit/8712e9e0fe283c5629519c7d6f956a475e97cdad))
+* **gork:** share the thread-type duck constant from budget.js ([8c725ad](https://github.com/metalsp0rk/boiler-snake/commit/8c725add82eb47950ccfaf98536e429c2555164b))
+
 ## [1.27.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.26.0...v1.27.0) (2026-09-27)
 
 
