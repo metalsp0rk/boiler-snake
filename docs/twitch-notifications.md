@@ -1,10 +1,12 @@
 # Twitch Stream Notifications
 
-Get notified when any of your subscribed Twitch streamers go live. Subscribe to **any number of channels** per server, pick where the alerts post, and optionally ping a role.
+Get notified when any of your subscribed Twitch streamers go live. Subscribe to **any number of channels** per server, pick where the alerts post, and optionally ping a role. Opt in per-channel to **new clips** and **new VODs** too.
 
 ## Overview
 
 - **Go-live detection**: one alert per new stream session (deduped by stream id)
+- **EventSub fast path (optional)**: Twitch pushes go-live/offline webhooks for near-instant alerts; the poller keeps running as reconciliation/fallback
+- **Clips & VODs (optional, per channel)**: announce new clips and new archive VODs (both **off** by default)
 - **Flexible input**: Twitch login, `https://twitch.tv/…` URL, or numeric user id
 - **Separate from YouTube**: its own notification channel and ping role
 - **Polling**: the bot checks Helix on a minute-aligned cadence; each guild's `interval` (1–60 min, default 2) controls how often its subscriptions are re-checked
@@ -27,6 +29,24 @@ TWITCH_CLIENT_SECRET=your_twitch_client_secret
 4. No user OAuth is needed — the bot uses the Client Credentials grant
 
 Without these variables the Twitch feature is disabled: `/twitch add` will tell you, and the poller won't start.
+
+### Optional: EventSub fast path (push notifications)
+
+Enable Twitch **webhook** EventSub so go-live/offline arrives in seconds instead of waiting up to one poll interval. Everything keeps working without it (pure polling). All three pieces are required:
+
+```bash
+TWITCH_EVENTSUB_SECRET=generate-a-random-string-10-100-chars
+TWITCH_EVENTSUB_CALLBACK_URL=https://bot.example.com/hooks/twitch  # optional; defaults to PUBLIC_BASE_URL + /hooks/twitch
+TWITCH_EVENTSUB_MAX_CHANNELS=50                                    # optional quota guard
+```
+
+Requirements:
+
+- The bot's [public web server](/web-admin) must be reachable at an **HTTPS URL on port 443** (a reverse proxy terminating TLS in front of `PUBLIC_HTTP_PORT` is fine). Plain HTTP is rejected by Twitch and by the bot at startup.
+- `TWITCH_EVENTSUB_SECRET` signs every delivery (HMAC-SHA256); the bot rejects bad signatures and deliveries older than 10 minutes.
+- The subscription endpoint must be `POST {callback}`; the bot serves it at `/hooks/twitch` on the public web server.
+
+`/settwitch settings` shows whether EventSub is enabled, how many subscriptions are healthy, and any failures. The bot self-heals: subscriptions are created when you `/twitch add`, deleted when the last guild removes the broadcaster, and an hourly reconcile prunes orphans and retries failures. Twitch redeliveries are deduped against the poller, so you never get double alerts.
 
 ### Subscribe a Channel
 
@@ -70,7 +90,21 @@ Unsubscribe (autocomplete over the guild's subscriptions).
 
 ### `/twitch list`
 
-List subscribed channels, which ones are currently **LIVE**, plus the notification channel and ping role.
+List subscribed channels, which ones are currently **LIVE**, whether clips/VOD alerts are on, plus the notification channel and ping role.
+
+### `/twitch clips` / `/twitch vod`
+
+Opt one of your subscriptions in to **new clip** / **new VOD** alerts (default **off**):
+
+```bash
+/twitch clips channel:SomeStreamer enabled:True
+/twitch vod channel:SomeStreamer enabled:True
+```
+
+- Clips: announced when Helix lists a clip **created after** you enabled the toggle (older clips are never backfilled). Up to 5 clips per poll per channel.
+- VODs: **archive** broadcasts only (past broadcasts saved to your channel), newest-first, same flood cap. Highlights/uploads are not announced.
+- Clip/VOD alerts post to the same `/settwitch channel` but **never ping** the role.
+- Helix has no push API for clips/VODs, so these ride the normal poll interval.
 
 ## Configuration Commands
 
@@ -158,21 +192,33 @@ Show current channel, ping role, interval, subscription count, and whether bot c
 
 1. **`GET /users`** — resolve a login or id to a broadcaster (on subscribe + lazy re-resolve)
 2. **`GET /streams`** — batched (≤100 ids per request) current-stream lookup for all subscriptions
+3. **`GET /clips`** — per opted-in channel, `started_at` windowed poll for new clips
+4. **`GET /videos`** — per opted-in channel, `type=archive` poll for new VODs
+5. **`POST/DELETE/GET /eventsub/subscriptions`** — manage the webhook fast path (when enabled)
 
 Auth is a cached app access token from `id.twitch.tv/oauth2/token` (Client Credentials), refreshed ~60s before expiry.
 
 ### State
 
-- `twitch_channels`: one row per guild + broadcaster (login, display name, avatar, `is_live`, `last_stream_id`, `last_checked`)
+- `twitch_channels`: one row per guild + broadcaster (login, display name, avatar, `is_live`, `last_stream_id`, `last_checked`, media flags: `notify_clips`, `notify_vods`, `last_clip_id`, `last_clip_created_at`, `last_video_id`, `last_video_created_at`)
+- `twitch_eventsub_subs`: one row per subscription type + broadcaster (Twitch subscription id, status, last error) — the bot's view of its EventSub subscriptions
 - `guild_settings`: `twitch_notification_channel_id`, `twitch_notify_role_id`, `twitch_polling_interval_minutes`
 
 ### Poller
 
-Runs on a minute-aligned interval after login. Each pass: resolve any pending logins → filter subscriptions by each guild's polling interval → batch-fetch streams (≤100 ids/request) → compare against stored `last_stream_id` → notify new go-lives → update live state.
+Runs on a minute-aligned interval after login. Each pass: resolve any pending logins → filter subscriptions by each guild's polling interval → batch-fetch streams (≤100 ids/request) → compare against stored `last_stream_id` → notify new go-lives → update live state → run clip/VOD polls for opted-in subscriptions.
 
 - A **failed** stream fetch leaves live state untouched (no false offline → no duplicate go-live next tick)
 - An in-flight guard prevents overlapping ticks
 - Helix requests time out after 15s
+
+### EventSub webhook (fast path)
+
+- Route: `POST /hooks/twitch` on the [public web server](/web-admin) — the only non-`/g/` public POST besides logout; authenticated by HMAC-SHA256 (`twitch-eventsub-message-signature`), not by login/CSRF
+- `webhook_callback_verification` → replies with the challenge; `notification` → answers 204 **first**, then processes (Twitch revokes subscriptions whose handler is slow); `revocation` → recorded and pruned
+- `stream.online` events are enriched with one `GET /streams` lookup (title/game/thumbnail); if that fetch fails the bot falls back to the event payload — the stream id in the event matches Helix, so the poller still won't duplicate
+- Go-live/offline claims are write-first in SQLite (`claimTwitchStream`/`claimTwitchOffline`), so webhook + poller can never both announce the same session
+- Hourly reconcile: create missing subs, delete subs for untracked broadcasters, enforce `TWITCH_EVENTSUB_MAX_CHANNELS`, and self-heal verification failures
 
 ## Troubleshooting
 

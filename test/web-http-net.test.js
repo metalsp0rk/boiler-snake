@@ -656,6 +656,32 @@ describe("web http net (tickets + oauth callback)", () => {
     assert.equal(await put.text(), "Method not allowed");
   });
 
+  it("POST /hooks/twitch clears the gate; every other shape still 405s", async () => {
+    // The EventSub webhook is an exact-match public POST carve-out. With no
+    // TWITCH_EVENTSUB_* env here the handler itself answers 404 (disabled) —
+    // proving the request reached it instead of being gated out.
+    const hook = await fetch(`${baseUrl}/hooks/twitch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(hook.status, 404);
+
+    // GET survives the gate (GET is always allowed through) but no GET
+    // route exists → catch-all 404, proving only POST is carved out.
+    const getHook = await fetch(`${baseUrl}/hooks/twitch`);
+    assert.equal(getHook.status, 404);
+    assert.equal(await getHook.text(), "Not found");
+
+    const nearMiss = await fetch(`${baseUrl}/hooks/twitch/extra`, { method: "POST" });
+    assert.equal(nearMiss.status, 405);
+    assert.equal(await nearMiss.text(), "Method not allowed");
+
+    const otherHook = await fetch(`${baseUrl}/hooks/other`, { method: "POST" });
+    assert.equal(otherHook.status, 405);
+    assert.equal(await otherHook.text(), "Method not allowed");
+  });
+
   // ------------------------------------------------------------------
   // pagination (§8.8 0a: /t incl. pagination param) — authenticated staff
   // viewer; guild honored (staff+ on guildPaged) so byte behavior is intact
