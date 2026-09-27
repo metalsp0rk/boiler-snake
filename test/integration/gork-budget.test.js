@@ -740,6 +740,12 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
     }
   });
 
+  // MUST STAY LAST in this file (wishlist §5): the literal-restart case calls
+  // resetSrcModules(), which wipes the src/ require cache mid-file — any test
+  // appended below would run against a torn-down module graph (fresh db
+  // connections, empty in-memory state). Each file is its own `node --test`
+  // process, so being last keeps the wipe contained. If this grows a sibling,
+  // move the reopen case to its own file instead of appending here.
   it("counters survive a real DB reopen (decision 37, literal)", async () => {
     const env = await freshEnv();
     const saved = saveEnv();
