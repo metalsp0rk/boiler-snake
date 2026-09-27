@@ -1147,7 +1147,11 @@ describe("System Web sessions — admin global list + revoke (Phase 4 component 
       created_at: String(me.createdAt),
     });
     assert.equal(out.res.status, 302);
-    assert.equal(out.location, "/", "logout-shaped redirect (current-row teardown)");
+    assert.equal(
+      out.location,
+      "/auth/login?signedout=1",
+      "logout-shaped redirect (current-row teardown → signed-out landing)"
+    );
     assert.match(out.res.headers.get("set-cookie") || "", /^web_session=;.*Max-Age=0/, "cookie torn down");
     assert.equal(api.getWebSession(s2.id), null, "row destroyed");
 

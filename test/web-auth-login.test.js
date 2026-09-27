@@ -321,11 +321,14 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
   });
 
   /**
-   * Drive GET /auth/login and return the parsed authorize URL.
+   * Drive GET /auth/login?continue=1 (the OAuth start — the bare route now
+   * serves the public landing page, see the landing describe below) and
+   * return the parsed authorize URL.
    * @param {{ cookie?: string, query?: string }} [opts]
    */
   async function loginStart(opts = {}) {
-    const res = await fetch(`${appBase}/auth/login${opts.query || ""}`, {
+    const q = opts.query ? `${opts.query}&continue=1` : "?continue=1";
+    const res = await fetch(`${appBase}/auth/login${q}`, {
       redirect: "manual",
       headers: opts.cookie ? { cookie: opts.cookie } : undefined,
     });
@@ -394,6 +397,98 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
         assert.equal(res.status, 503);
         assert.match(await res.text(), /not configured/i);
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /auth/login — public sign-in landing (user-feedback fix: no more
+  // instant OAuth bounce; the redirect only fires from ?continue=1)
+  // -------------------------------------------------------------------------
+
+  describe("GET /auth/login landing (public, zero OAuth)", () => {
+    /** Fetch the landing with a raw query suffix (no continue param). */
+    async function landing(query = "") {
+      const res = await fetch(`${appBase}/auth/login${query}`, {
+        redirect: "manual",
+      });
+      return { res, body: await res.text() };
+    }
+
+    it("renders 200 HTML explaining the console, with the continue link — and NO redirect", async () => {
+      const { res, body } = await landing();
+      assert.equal(res.status, 200);
+      assert.match(res.headers.get("content-type"), /text\/html/);
+      assert.equal(res.headers.get("cache-control"), "no-store");
+      assert.equal(res.headers.get("referrer-policy"), "no-referrer");
+      assert.equal(res.headers.get("location"), null, "landing never redirects");
+      assert.equal(res.headers.getSetCookie().length, 0, "no cookies on the landing");
+      assert.match(body, /Boiler Snake web console/i);
+      assert.match(body, /Continue with Discord/);
+      assert.match(body, /href="\/auth\/login\?continue=1"/);
+      // Tells the visitor what the OAuth scopes are for (the whole point).
+      assert.match(body, /guild list/i);
+      assert.match(body, /staff access/i);
+      // Landing content is fully static text — no nonce'd scripts needed.
+      assert.doesNotMatch(body, /<script/);
+    });
+
+    it("signedout=1 shows the signed-out banner; the flag never appears without it", async () => {
+      const out = await landing("?signedout=1");
+      assert.equal(out.res.status, 200);
+      assert.match(out.body, /signed out/i);
+      assert.match(
+        out.body,
+        /Continue with Discord/,
+        "signed-out state keeps the re-login path"
+      );
+      const plain = await landing();
+      assert.doesNotMatch(plain.body, /signed out/i);
+    });
+
+    it("whitelisted guild/next params ride into the continue link (context banner, raw id never echoed)", async () => {
+      const { body } = await landing(`?guild=${GUILD_BOT_ONLY}`);
+      assert.match(
+        body,
+        /href="\/auth\/login\?continue=1&amp;guild=/,
+        "validated guild target re-encoded into the continue href"
+      );
+      assert.match(body, /guild console/i);
+      assert.equal(
+        body.split(GUILD_BOT_ONLY).length - 1,
+        1,
+        "guild id appears ONLY inside the continue href (fixed copy, no raw echo in text)"
+      );
+
+      const ticket = await landing(
+        `?next=${encodeURIComponent("/t/00000000-0000-4000-8000-000000000000")}`
+      );
+      assert.match(ticket.body, /ticket transcript/i);
+      assert.match(
+        ticket.body,
+        /href="\/auth\/login\?continue=1&amp;next=%2Ft%2F/,
+        "whitelisted ticket path survives into the continue href"
+      );
+    });
+
+    it("junk guild/next params are dropped from the continue link (never echoed)", async () => {
+      const { res, body } = await landing("?guild=..%2Fevil&next=%2Fadmin");
+      assert.equal(res.status, 200);
+      assert.match(body, /href="\/auth\/login\?continue=1"/);
+      assert.doesNotMatch(body, /evil|%2Fevil|admin/i, "no param echo, no widened target");
+      assert.doesNotMatch(body, /ticket transcript|guild console/);
+    });
+
+    it("the landing leaks nothing: no session state, no user data, no state token", async () => {
+      const { body } = await landing();
+      assert.doesNotMatch(body, /web_session/);
+      assert.doesNotMatch(body, /state=/);
+      assert.doesNotMatch(body, new RegExp(GUILD_SHARED));
+    });
+
+    it("continue=1 still starts the OAuth redirect exactly as before (state minted, 302)", async () => {
+      const { res, authorizeUrl } = await loginStart();
+      assert.equal(res.status, 302);
+      assert.ok(authorizeUrl.searchParams.get("state"));
     });
   });
 
@@ -509,7 +604,11 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
         },
       });
       assert.equal(lres.status, 302);
-      assert.equal(lres.headers.get("location"), "/");
+      assert.equal(
+        lres.headers.get("location"),
+        "/auth/login?signedout=1",
+        "logout lands on the signed-out landing (no instant OAuth bounce)"
+      );
       const clear = lres.headers.getSetCookie()[0];
       assert.match(clear, /^web_session=; /);
       assert.match(clear, /Max-Age=0/);

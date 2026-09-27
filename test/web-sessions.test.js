@@ -1062,7 +1062,11 @@ describe("web session core (auth/sessions, middleware, config)", () => {
         created_at: String(me.createdAt),
       });
       assert.equal(res.status, 302);
-      assert.equal(location, "/", "logout-shaped redirect (POST /auth/logout precedent)");
+      assert.equal(
+        location,
+        "/auth/login?signedout=1",
+        "logout-shaped redirect (POST /auth/logout precedent: signed-out landing)"
+      );
       const setCookie = res.headers.get("set-cookie") || "";
       assert.match(setCookie, /^web_session=;.*Max-Age=0/, "cookie torn down");
       assert.equal(rawRow(loginIds.staff), null, "session row destroyed");
