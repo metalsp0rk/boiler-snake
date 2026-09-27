@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.25.0...v1.26.0) (2026-09-27)
+
+
+### Features
+
+* **twitch:** EventSub webhook fast path + clips/VOD notifications ([abdb2c4](https://github.com/metalsp0rk/boiler-snake/commit/abdb2c462b3e01b2e95e7ef6cd58aba386727d82))
+
 ## [1.25.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.24.1...v1.25.0) (2026-09-27)
 
 
