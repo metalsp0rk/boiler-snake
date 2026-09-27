@@ -63,6 +63,8 @@ src/web/
 
 **Login flow** — Discord OAuth2, scopes `identify guilds guilds.members.read`:
 
+- **Landing-first sign-in (amendment 2026-09-27, user feedback):** `GET /auth/login` renders the public sign-in landing (what the console is, what the scopes grant); the authorize redirect fires only from `GET /auth/login?continue=1`. Return targets (`?guild=`, `?next=`) ride landing → continue link → signed state unchanged (same whitelists). Logout + current-session revocations land on `/auth/login?signedout=1` (the landing with a signed-out banner) instead of `/` (which instantly re-bounced into OAuth). Gates keep redirecting to `/auth/login…` unchanged — every entry point converges on the landing.
+
 - New callback route `/auth/login/callback` (register it in the Dev Portal next to the existing command-permissions callback; both paths documented in `docs/setup.md`).
 - State tokens reuse `commandPermissions/oauthState.js` but the signed payload gains a **`purpose` field** (`web_login` vs `cmd_perms`); the callback rejects purpose mismatch → no cross-flow substitution.
 - Callback fetches member role IDs per accessible guild (via the user access token), stores session, **rotates the session id** on login.

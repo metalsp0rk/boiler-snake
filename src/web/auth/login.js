@@ -3,9 +3,15 @@
  * §8.8 Phase 0b).
  *
  * Flow:
- *  1. GET /auth/login — mint a purpose-tagged signed state (`web_login`) and
- *     302 to Discord's authorize URL (scopes identify guilds
- *     guilds.members.read, prompt configurable, default consent).
+ *  1. GET /auth/login — the PUBLIC sign-in landing (200): explains the
+ *     console and what signing in grants; OAuth never fires from a bare
+ *     GET (user-feedback fix: visitors used to bounce straight into
+ *     Discord's consent screen with zero context). Only
+ *     GET /auth/login?continue=1 mints a purpose-tagged signed state
+ *     (`web_login`) and 302s to Discord's authorize URL (scopes identify
+ *     guilds guilds.members.read, prompt configurable, default consent).
+ *     ?guild= / ?next= return targets ride the landing → continue link →
+ *     state unchanged (same whitelists as before).
  *  2. GET /auth/login/callback — verify state (signature + expiry + single-
  *     use nonce + purpose === 'web_login': a command-permissions state can
  *     never be replayed here and vice-versa), exchange the code (form-
@@ -16,7 +22,8 @@
  *     metadata + guild snapshot on the new row, Set-Cookie the new opaque
  *     id, 302 to '/' (or '/g/:guildId' when a return target was signed in
  *     the state).
- *  3. POST /auth/logout — destroy the row, clear the cookie, 302 '/'.
+ *  3. POST /auth/logout — destroy the row, clear the cookie, 302 to the
+ *     signed-out landing ('/auth/login?signedout=1').
  *
  * Everything injectable (discord API, bot-guild provider, session policy,
  * token crypto, state) so tests fake Discord entirely offline.
@@ -31,6 +38,10 @@ const {
   PURPOSES,
 } = require("../../features/commandPermissions/oauthState");
 const { getWebLoginConfig } = require("../config");
+const {
+  renderSignInPage,
+  buildContinueHref,
+} = require("../views/landing");
 const { createDiscordApi } = require("./discordApi");
 const { getBotGuildIds } = require("./botGuilds");
 const { encryptAccessToken } = require("./tokens");
@@ -131,6 +142,15 @@ const INVALID_LINK_HTML = authPage(
    <a href="/auth/login">Log in with Discord</a>.</p>`,
   false
 );
+
+/**
+ * Post-logout destination: the sign-in landing with the signed-out banner.
+ * A fixed constant path (never derived from the request) — no open redirect,
+ * and no bounce back into OAuth the way '/' used to immediately re-trigger.
+ * Shared by every clean-logout responder (routes/sessions.js,
+ * routes/system.js keep byte-parity with POST /auth/logout).
+ */
+const SIGNED_OUT_TARGET = "/auth/login?signedout=1";
 
 /**
  * Signed `?guild=` return target from the raw URL (optional, snowflake
@@ -243,7 +263,12 @@ function createLoginHandlers(options = {}) {
   const store = options.store || { setWebSessionAuth };
 
   /**
-   * GET /auth/login — authorize redirect.
+   * GET /auth/login — public sign-in landing; GET /auth/login?continue=1 —
+   * the authorize redirect. The landing fires NO OAuth: it explains the
+   * console and hands out one whitelisted continue link, so "what am I
+   * signing in for" is answered before Discord ever sees the visitor
+   * (user-feedback fix — the old behavior bounced straight to the consent
+   * screen, and logout snapped right back into it).
    * @param {import("http").IncomingMessage & { webSession?: object|null }} req
    * @param {import("http").ServerResponse} res
    */
@@ -265,10 +290,35 @@ function createLoginHandlers(options = {}) {
     }
 
     const url = new URL(req.url || "/", "http://web.local");
+    // Whitelisted return targets (snowflake / ticket-path regexes only).
+    // The landing renders enum context flags — never the raw values — and
+    // re-encodes the validated pair into its single continue href, so the
+    // state below receives exactly what it used to.
+    const guildTarget = readGuildTarget(url);
+    const nextTarget = readNextTarget(url);
+
+    if (url.searchParams.get("continue") !== "1") {
+      respondHtml(
+        res,
+        200,
+        String(
+          renderSignInPage({
+            notice: url.searchParams.get("signedout") === "1" ? "signedout" : null,
+            context: nextTarget ? "ticket" : guildTarget ? "guild" : null,
+            continueHref: buildContinueHref({
+              guild: guildTarget,
+              next: nextTarget,
+            }),
+          })
+        )
+      );
+      return;
+    }
+
     const state = stateApi.createOAuthState({
       purpose: stateApi.PURPOSES.WEB_LOGIN,
-      guildId: readGuildTarget(url) || undefined,
-      next: readNextTarget(url) || undefined,
+      guildId: guildTarget || undefined,
+      next: nextTarget || undefined,
     });
     respondRedirect(
       res,
@@ -432,7 +482,7 @@ function createLoginHandlers(options = {}) {
         console.warn("[web] logout: session destroy failed:", err?.message || err);
       }
     }
-    respondRedirect(res, "/", sessions.buildClearSessionCookie());
+    respondRedirect(res, SIGNED_OUT_TARGET, sessions.buildClearSessionCookie());
   }
 
   return { startLogin, handleLoginCallback, logout };
@@ -445,4 +495,6 @@ module.exports = {
   readDiscordTag,
   GUILD_TARGET_RE,
   MAX_SNAPSHOT_GUILDS,
+  // clean-logout destination (sessions.js / system.js parity + tests):
+  SIGNED_OUT_TARGET,
 };

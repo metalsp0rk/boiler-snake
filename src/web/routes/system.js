@@ -44,6 +44,7 @@
  */
 
 const { createGuildAccessResolver } = require("../auth/guildAccess");
+const { SIGNED_OUT_TARGET } = require("../auth/login");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const { renderSystemBody, renderAuditBody } = require("../views/system");
@@ -495,9 +496,11 @@ function registerSystemRoutes(app, options = {}) {
 
     if (isCurrent) {
       // The admin revoked their OWN current session through the admin page:
-      // same clean-logout teardown as POST /auth/logout (row already gone).
+      // same clean-logout teardown as POST /auth/logout (row already gone),
+      // same signed-out landing destination (parity with login.js +
+      // routes/sessions.js).
       res.writeHead(302, {
-        Location: "/",
+        Location: SIGNED_OUT_TARGET,
         "Cache-Control": "no-store",
         "Referrer-Policy": "no-referrer",
         "Set-Cookie": sessionPolicy.buildClearSessionCookie(),

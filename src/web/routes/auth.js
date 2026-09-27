@@ -2,12 +2,16 @@
  * Auth route mounting on Express 5 (roadmap/web-admin.md §8.2 layout:
  * routes/ mounts, auth/ owns logic).
  *
- * GET  /auth/login           — public: authorize redirect (login start).
+ * GET  /auth/login           — public: sign-in LANDING page (explains the
+ *                              console + hands out the ?continue=1 link).
+ * GET  /auth/login?continue=1— public: the actual OAuth authorize redirect
+ *                              (login start; ?guild=/?next= return targets).
  * GET  /auth/login/callback  — public by design (§8.1 decision 3: only
  *                              /health and OAuth endpoints stay login-free;
  *                              this IS the OAuth endpoint).
  * POST /auth/logout          — destroys the caller's own session; anonymous
- *                              calls are no-ops (idempotent).
+ *                              calls are no-ops (idempotent); lands on the
+ *                              signed-out landing (SIGNED_OUT_TARGET).
  *
  * The login routes are mounted PUBLIC deliberately: login/callback must
  * resolve without a session, and logout must work even when the session is

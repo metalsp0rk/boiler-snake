@@ -1215,3 +1215,56 @@ p.panel-foot {
   .setting-input-number { width: 100%; }
   .moderation .filter-form input[type="search"] { min-width: 0; width: 100%; }
 }
+
+/* ---- public sign-in landing (views/landing) -------------------------- */
+/* Signed-out face of the console: centered card, no shell, no scripts. */
+
+.signin-body {
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+.signin-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 2rem;
+  max-width: 36rem;
+  width: 100%;
+}
+
+.signin-title { font-size: 1.4rem; margin: 0 0 1rem; }
+
+.signin-lede { margin: 0 0 1rem; }
+
+.signin-what { margin: 0 0 1rem; }
+
+.signin-what h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  margin: 0 0 0.4rem;
+}
+
+.signin-what ul { margin: 0 0 0.5rem; padding-left: 1.3rem; }
+
+.signin-what li { padding: 0.15rem 0; }
+
+.signin-what p { margin: 0.4rem 0 0; color: var(--fg-muted); font-size: 0.9rem; }
+
+.signin-card .banner { margin: 0 0 1rem; }
+
+a.btn-signin {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.signin-footnote {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
