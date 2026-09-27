@@ -257,14 +257,23 @@ function checkGorkBudget({ guildId, userId, channel, day }) {
     console.error(`[gork] budget usage read failed in ${guildId}:`, err?.message || err);
     return { allowed: false, kind: "error", reply: "", scope: null };
   }
-  if (used >= scope.limit) {
-    const label = scopeLabel(scope, channel);
-    return {
-      allowed: false,
-      kind: "over",
-      reply: `Daily gork budget reached in ${label} (${scope.limit}/day) — resets 00:00 UTC.`,
-      scope,
-    };
+  // The over-branch construction (scopeLabel + reply template) also runs
+  // against the duck-typed channel — a throwing property getter must still
+  // land on the fail-closed error surface, never escape to the trigger's
+  // outer catch as a logged silent drop (wishlist §5).
+  try {
+    if (used >= scope.limit) {
+      const label = scopeLabel(scope, channel);
+      return {
+        allowed: false,
+        kind: "over",
+        reply: `Daily gork budget reached in ${label} (${scope.limit}/day) — resets 00:00 UTC.`,
+        scope,
+      };
+    }
+  } catch (err) {
+    console.error(`[gork] budget over-reply build failed in ${guildId}:`, err?.message || err);
+    return { allowed: false, kind: "error", reply: "", scope: null };
   }
   return { allowed: true, scope };
 }

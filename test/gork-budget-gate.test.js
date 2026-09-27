@@ -330,6 +330,35 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
     assert.equal(res.kind, "blocked", "kill switch covers threads under the blocked channel");
   });
 
+  it("over-budget reply construction that throws fails closed (kind=error)", () => {
+    const g = "g-gate-throw";
+    const day = today();
+    api.upsertGorkBudgetRule(g, "channel", "c1", 1, null);
+    const first = checkGorkBudget({ guildId: g, userId: "u1", channel: channel("c1"), day });
+    assert.equal(first.allowed, true);
+    recordGorkBudgetUsage({ guildId: g, userId: "u1", scope: first.scope, day });
+
+    // At the cap AND the duck-typed channel throws while the rejection
+    // label is built (scopeLabel reads `name` for the matching channel id):
+    // the "never throws" contract says that lands on the error surface —
+    // it must not escape to the trigger's outer catch as a silent drop.
+    const hostile = {
+      id: "c1",
+      parent: null,
+      get name() {
+        throw new Error("hostile getter");
+      },
+    };
+    let res;
+    assert.doesNotThrow(() => {
+      res = checkGorkBudget({ guildId: g, userId: "u1", channel: hostile, day });
+    });
+    assert.equal(res.allowed, false);
+    assert.equal(res.kind, "error");
+    assert.equal(res.reply, "");
+    assert.equal(res.scope, null);
+  });
+
   it("formatBudgetLabel renders 'n/limit in scope' only for real caps", () => {
     const ch = { id: "c1", name: "general" };
     assert.equal(
