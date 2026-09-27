@@ -7,6 +7,8 @@ const {
   addTwitchChannel,
   removeTwitchChannel,
   normalizeTwitchLogin,
+  setTwitchChannelMediaFlags,
+  getTwitchEventsubSubs,
 } = require("../../db");
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
@@ -14,6 +16,14 @@ const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { resolveTwitchUser } = require("./helix");
 const { startTwitchTicker } = require("./ticker");
+const {
+  startEventsub,
+  getEventsubConfig,
+} = require("./eventsub");
+const {
+  syncBroadcaster,
+  pruneBroadcasterIfUntracked,
+} = require("./eventsub/subscriptions");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -48,7 +58,49 @@ const commands = [
     })
     .addSubcommand((sc) =>
       sc.setName("list").setDescription("List all subscribed channels."),
-    ),
+    )
+    .addSubcommand((sc) => {
+      const sub = sc
+        .setName("clips")
+        .setDescription(
+          "Toggle new-clip notifications for a subscribed channel (staff).",
+        );
+      sub.addStringOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("Twitch channel")
+          .setRequired(true)
+          .setAutocomplete(true),
+      );
+      sub.addBooleanOption((opt) =>
+        opt
+          .setName("enabled")
+          .setDescription("Notify when new clips are posted")
+          .setRequired(true),
+      );
+      return sub;
+    })
+    .addSubcommand((sc) => {
+      const sub = sc
+        .setName("vod")
+        .setDescription(
+          "Toggle new-VOD (past-broadcast) notifications for a channel (staff).",
+        );
+      sub.addStringOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("Twitch channel")
+          .setRequired(true)
+          .setAutocomplete(true),
+      );
+      sub.addBooleanOption((opt) =>
+        opt
+          .setName("enabled")
+          .setDescription("Notify when new VODs are published")
+          .setRequired(true),
+      );
+      return sub;
+    }),
 
   new SlashCommandBuilder()
     .setName("settwitch")
@@ -147,6 +199,10 @@ async function handleTwitch(interaction, ctx) {
       user.profile_image_url,
     );
 
+    // EventSub fast path (fire-and-forget; the hourly reconcile sweep is
+    // the backstop, polling keeps working if this fails).
+    syncBroadcaster(user.id).catch(() => {});
+
     recordSlashAudit({
       interaction,
       action: "twitch.channel_add",
@@ -187,6 +243,9 @@ async function handleTwitch(interaction, ctx) {
     }
 
     removeTwitchChannel(guildId, found.login);
+    // Drop the broadcaster's EventSub subscriptions if no guild still
+    // tracks it (quota hygiene). Fire-and-forget; the sweep also prunes.
+    pruneBroadcasterIfUntracked(found.broadcaster_id).catch(() => {});
     recordSlashAudit({
       interaction,
       action: "twitch.channel_remove",
@@ -229,7 +288,12 @@ async function handleTwitch(interaction, ctx) {
 
     const lines = channels.map((c) => {
       const live = c.is_live ? " — **LIVE**" : "";
-      return `• **${c.display_name}** (\`${c.login}\`)${live}`;
+      const flags = [
+        c.notify_clips ? "clips" : null,
+        c.notify_vods ? "vods" : null,
+      ].filter(Boolean);
+      const flagText = flags.length ? ` _(${flags.join(" + ")})_` : "";
+      return `• **${c.display_name}** (\`${c.login}\`)${live}${flagText}`;
     });
 
     await replyEphemeral(interaction, {
@@ -237,8 +301,68 @@ async function handleTwitch(interaction, ctx) {
         `**Twitch subscriptions** (${channels.length})\n` +
         `Notification channel: ${notifyChannel}\n` +
         `Ping role: ${notifyRole}\n\n` +
-        lines.join("\n"),
+        lines.join("\n") +
+        `\n\n_Toggle clip/VOD alerts with \`/twitch clips\` / \`/twitch vod\`._`,
     });
+    return;
+  }
+
+  if (sub === "clips" || sub === "vod") {
+    const raw = interaction.options.getString("channel", true);
+    const enabled = interaction.options.getBoolean("enabled", true);
+    const found = getTwitchChannel(guildId, raw);
+    if (!found) {
+      await replyEphemeral(interaction, {
+        content: "No matching subscription found.",
+      });
+      return;
+    }
+
+    const isClips = sub === "clips";
+    const updated = setTwitchChannelMediaFlags(
+      guildId,
+      found.broadcaster_id,
+      {
+        notifyClips: isClips ? enabled : !!found.notify_clips,
+        notifyVods: isClips ? !!found.notify_vods : enabled,
+      },
+    );
+    if (!updated) {
+      await replyEphemeral(interaction, {
+        content: "No matching subscription found.",
+      });
+      return;
+    }
+
+    const label = isClips ? "clips" : "VODs";
+    recordSlashAudit({
+      interaction,
+      action: isClips ? "twitch.clips_toggle" : "twitch.vod_toggle",
+      targetType: "twitch_channel",
+      targetId: found.broadcaster_id,
+      details: { login: found.login, enabled },
+    });
+    await logConfigChange(client, guildId, {
+      title: `Twitch ${label} notifications ${enabled ? "enabled" : "disabled"}`,
+      command: `/twitch ${sub}`,
+      actor: interaction.user,
+      changes: [
+        `Channel: **${found.display_name}**`,
+        `${isClips ? "Clips" : "VODs"}: → **${enabled ? "on" : "off"}**`,
+      ],
+    }).catch(() => {});
+
+    const settings = getGuildSettings(guildId);
+    let msg;
+    if (enabled) {
+      msg = `I'll announce new **${label}** from **${found.display_name}**`;
+      msg += settings.twitch_notification_channel_id
+        ? ` to <#${settings.twitch_notification_channel_id}>. Only ${label} published AFTER now are announced.`
+        : " — but no notification channel is set yet; run `/settwitch channel`.";
+    } else {
+      msg = `Stopped announcing new **${label}** from **${found.display_name}**.`;
+    }
+    await replyEphemeral(interaction, { content: msg });
     return;
   }
 }
@@ -347,10 +471,22 @@ async function handleSetTwitch(interaction, ctx) {
     const configured =
       !!process.env.TWITCH_CLIENT_ID && !!process.env.TWITCH_CLIENT_SECRET;
 
+    let eventsubLine = "";
+    try {
+      const esCfg = getEventsubConfig();
+      const tracked = getTwitchEventsubSubs().length;
+      eventsubLine = esCfg.enabled
+        ? `EventSub fast path: **enabled** (${tracked} tracked subscription(s))\n`
+        : `EventSub fast path: disabled (missing ${esCfg.missing.join(", ")})\n`;
+    } catch {
+      // settings stays renderable even if the config resolver misbehaves
+    }
+
     await replyEphemeral(interaction, {
       content:
         `**Twitch notification settings**\n` +
         `Bot credentials: ${configured ? "configured" : "not configured"}\n` +
+        eventsubLine +
         `Notification channel: ${notifyChannel}\n` +
         `Ping role: ${notifyRole}\n` +
         `Polling interval: **${settings.twitch_polling_interval_minutes}** minute(s)\n` +
@@ -387,6 +523,7 @@ async function handleTwitchAutocomplete(interaction) {
 
 function start(client) {
   startTwitchTicker(client);
+  startEventsub();
 }
 
 module.exports = {

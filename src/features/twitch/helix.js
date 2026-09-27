@@ -115,32 +115,40 @@ function helixUrl(path, query) {
 }
 
 /**
- * One authenticated Helix GET. Returns the raw response, or null when the
- * request never completed (network error).
+ * One authenticated Helix request. Returns the raw response, or null when
+ * the request never completed (network error). `body` (an object) is sent as
+ * JSON; method defaults to GET.
  * @param {string} path
  * @param {string} url
  * @param {string} token
+ * @param {{ method?: string, body?: object }} [opts]
  * @returns {Promise<Response|null>}
  */
-async function requestHelix(path, url, token) {
+async function requestHelix(path, url, token, opts = {}) {
+  const { method = "GET", body } = opts;
+  const headers = {
+    "Client-Id": process.env.TWITCH_CLIENT_ID,
+    Authorization: `Bearer ${token}`,
+  };
+  if (body != null) headers["Content-Type"] = "application/json";
   try {
     return await fetch(url, {
-      headers: {
-        "Client-Id": process.env.TWITCH_CLIENT_ID,
-        Authorization: `Bearer ${token}`,
-      },
+      method,
+      headers,
+      body: body != null ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (err) {
-    console.error(`[twitch] Helix ${path} failed:`, describeError(err));
+    console.error(`[twitch] Helix ${method} ${path} failed:`, describeError(err));
     return null;
   }
 }
 
 /**
- * Generic Helix GET with app token. A 401 (expired/revoked app token, e.g.
- * after a client-secret rotation) drops the cached token and retries once
- * with a fresh one instead of staying broken until the cache expiry.
+ * Helix GET with app token + one-shot 401 token refresh. A 401 (expired /
+ * revoked app token, e.g. after a client-secret rotation) drops the cached
+ * token and retries once with a fresh one instead of staying broken until the
+ * cache expiry.
  * @param {string} path e.g. "/streams"
  * @param {object} [query]
  * @returns {Promise<object|null>} parsed JSON body, or null on any failure
@@ -170,6 +178,41 @@ async function helixGet(path, query = {}) {
   }
 
   return res.json().catch(() => null);
+}
+
+/**
+ * Helix request that PRESERVES the HTTP status (EventSub create/delete need
+ * to tell 202/204 apart from 409 conflict / 422 quota / 429 rate-limit, which
+ * the status-swallowing helixGet cannot do). 401 refreshes once like helixGet.
+ *
+ * @param {string} method HTTP verb (POST/DELETE/…)
+ * @param {string} path
+ * @param {{ query?: object, body?: object }} [opts]
+ * @returns {Promise<{ status: number, body: object|null }|null>}
+ *   null = the request never completed (network/timeout); otherwise the
+ *   status code + parsed body (body null for 204/unparseable).
+ */
+async function helixRequest(method, path, { query = {}, body } = {}) {
+  let token = await getAppToken();
+  if (!token) return null;
+
+  const url = helixUrl(path, query);
+  let res = await requestHelix(path, url, token, { method, body });
+  if (!res) return null;
+
+  if (res.status === 401) {
+    console.warn(
+      `[twitch] Helix ${method} ${path} returned 401; refreshing app token and retrying`,
+    );
+    clearAppTokenCache();
+    token = await getAppToken();
+    if (!token) return null;
+    res = await requestHelix(path, url, token, { method, body });
+    if (!res) return null;
+  }
+
+  const parsed = res.status === 204 ? null : await res.json().catch(() => null);
+  return { status: res.status, body: parsed };
 }
 
 /**
@@ -235,6 +278,132 @@ async function fetchStreams(broadcasterIds) {
   return streams;
 }
 
+// ---- EventSub webhook subscription management (app access token) ----
+
+/**
+ * Create a webhook EventSub subscription for one broadcaster.
+ * @param {{ type: string, version?: string, condition: object,
+ *   callback: string, secret: string }} opts
+ *   condition is e.g. { broadcaster_user_id } ; callback must be HTTPS:443.
+ * @returns {Promise<{ ok: boolean, conflict?: boolean, status: number,
+ *   subscription?: object, error?: string }>}
+ *   ok=true on 202/200 (webhook is verification-pending until Twitch's
+ *   challenge round-trip completes). conflict=true on 409 (already exists —
+ *   treat as success). error carries a Twitch/HTTP reason otherwise.
+ */
+async function createEventsubSubscription({
+  type,
+  version = "1",
+  condition,
+  callback,
+  secret,
+}) {
+  const res = await helixRequest("POST", "/eventsub/subscriptions", {
+    body: {
+      type,
+      version,
+      condition,
+      transport: { method: "webhook", callback, secret },
+    },
+  });
+  if (!res) return { ok: false, status: 0, error: "network error" };
+  const sub = res.body?.data?.[0] ?? undefined;
+  if (res.status === 409) {
+    return { ok: true, conflict: true, status: 409, subscription: sub };
+  }
+  if (res.status >= 200 && res.status < 300) {
+    return { ok: true, status: res.status, subscription: sub };
+  }
+  const reason = res.body?.message || res.body?.error || `HTTP ${res.status}`;
+  return { ok: false, status: res.status, error: reason, subscription: sub };
+}
+
+/**
+ * Delete an EventSub subscription by its Twitch subscription id.
+ * @returns {Promise<{ ok: boolean, status: number, gone?: boolean }>}
+ *   gone=true on 404 (already deleted elsewhere — treat as success).
+ */
+async function deleteEventsubSubscription(subscriptionId) {
+  const id = String(subscriptionId || "").trim();
+  if (!id) return { ok: false, status: 0, error: "no id" };
+  const res = await helixRequest("DELETE", "/eventsub/subscriptions", {
+    query: { id },
+  });
+  if (!res) return { ok: false, status: 0 };
+  if (res.status === 404) return { ok: true, status: 404, gone: true };
+  return { ok: res.status >= 200 && res.status < 300, status: res.status };
+}
+
+/**
+ * List current EventSub subscriptions (paged) so the reconciler can prune
+ * orphans that exist on Twitch but are no longer wanted. A single failed
+ * page aborts with what was collected so far (best-effort reconcile).
+ * @param {{ status?: string, type?: string }} [filter]
+ * @returns {Promise<Array<object>|null>}
+ */
+async function listEventsubSubscriptions(filter = {}) {
+  const subs = [];
+  let cursor = null;
+  for (let page = 0; page < 10; page += 1) {
+    const query = { ...filter, first: "100" };
+    if (cursor) query.cursor = cursor;
+    const body = await helixGet("/eventsub/subscriptions", query);
+    if (!body || !Array.isArray(body.data)) return subs.length ? subs : null;
+    subs.push(...body.data);
+    cursor = body.pagination?.cursor || null;
+    if (!cursor) return subs;
+  }
+  return subs;
+}
+
+// ---- Clips + VODs (Helix polling — no EventSub topic exists) ----
+
+/**
+ * Clips for a broadcaster, newest-creation first is NOT guaranteed (Helix
+ * returns them in descending view order), so callers filter by created_at
+ * watermark, never by position. `startedAt`/`endedAt` are RFC3339 strings
+ * bounding the clip creation time (this bounds the result set so the
+ * view-order top-N still covers the whole window).
+ *
+ * @param {string} broadcasterId
+ * @param {{ startedAt?: string, endedAt?: string, first?: number }} [opts]
+ * @returns {Promise<Array<object>|null>} null = lookup failed (unknown),
+ *   [] = confirmed no clips in the window.
+ */
+async function fetchClips(broadcasterId, opts = {}) {
+  if (!broadcasterId) return [];
+  const body = await helixGet("/clips", {
+    broadcaster_id: broadcasterId,
+    started_at: opts.startedAt || undefined,
+    ended_at: opts.endedAt || undefined,
+    first: opts.first || 100,
+  });
+  if (!body || !Array.isArray(body.data)) return null;
+  return body.data;
+}
+
+/**
+ * Archive VODs for a broadcaster (Get Videos uses `user_id=` for the
+ * broadcaster id, unlike Get Clips' `broadcaster_id=` — Helix quirk).
+ * Returns newest-created first (default sort=time) so a created_at watermark
+ * can stop at the first known video.
+ *
+ * @param {string} broadcasterId
+ * @param {{ first?: number }} [opts]
+ * @returns {Promise<Array<object>|null>} null = lookup failed, [] = none.
+ */
+async function fetchArchives(broadcasterId, opts = {}) {
+  if (!broadcasterId) return [];
+  const body = await helixGet("/videos", {
+    user_id: broadcasterId,
+    type: "archive",
+    sort: "time",
+    first: opts.first || 20,
+  });
+  if (!body || !Array.isArray(body.data)) return null;
+  return body.data;
+}
+
 // ---- token cache (module-level, overridable for tests) ----
 
 let tokenCache = { token: null, expiresAt: 0 };
@@ -254,12 +423,32 @@ function clearAppTokenCache() {
   tokenCache = { token: null, expiresAt: 0 };
 }
 
+/**
+ * RFC3339 → epoch ms (tolerant of Twitch's nanosecond timestamps: Date.parse
+ * handles the truncation). null for empty/unparseable input.
+ * @param {string|number|null|undefined} value
+ * @returns {number|null}
+ */
+function parseTwitchTimestamp(value) {
+  if (value == null || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : null;
+}
+
 module.exports = {
   describeError,
   expandThumbnailUrl,
+  parseTwitchTimestamp,
   getAppToken,
   helixGet,
+  helixRequest,
   resolveTwitchUser,
   fetchStreams,
+  createEventsubSubscription,
+  deleteEventsubSubscription,
+  listEventsubSubscriptions,
+  fetchClips,
+  fetchArchives,
   clearAppTokenCache,
 };

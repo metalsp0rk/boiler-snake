@@ -6,7 +6,11 @@ Notify a guild when any subscribed Twitch channel goes live. Supports **any numb
 
 ### Status
 
-**Shipped (MVP)** — implemented in `src/features/twitch/` with migration `020_twitch`. Go-live notifications via Helix polling, multi-channel per guild, separate notify channel + ping role. See [docs/twitch-notifications.md](../docs/twitch-notifications.md). Design decisions in [3.8](#38-design-decisions-locked) remain the product contract. Post-MVP: EventSub, per-channel overrides, templates, go-offline, clips/VODs.
+**Shipped (MVP + EventSub fast path + clips/VODs)** — implemented in `src/features/twitch/` (+ `src/features/twitch/eventsub/`) with migration `020_twitch` and `032_twitch_eventsub_media`. Go-live notifications via Helix polling, multi-channel per guild, separate notify channel + ping role. See [docs/twitch-notifications.md](https://github.com/metalsp0rk/boiler-snake/blob/main/docs/twitch-notifications.md). Design decisions in [3.8](#38-design-decisions-locked) remain the product contract. Post-MVP additions now shipped:
+
+- **EventSub webhooks (opt-in)** — `TWITCH_EVENTSUB_SECRET` (+ HTTPS `PUBLIC_BASE_URL`) enables push `stream.online`/`stream.offline` on `POST /hooks/twitch` (HMAC-SHA256 verified, 204-first processing). Polling stays as reconciliation/fallback; claim-first SQLite watermarks (`claimTwitchStream`/`claimTwitchOffline`) dedup webhook vs poller so a session announces exactly once. Hourly reconcile creates/prunes/self-heals subscriptions (`twitch_eventsub_subs`, cap `TWITCH_EVENTSUB_MAX_CHANNELS` default 50). Webhook transport only — WebSocket transport requires a user token, app tokens can't use it.
+- **Clips + VOD alerts (opt-in per subscription, default off)** — `/twitch clips` / `/twitch vod` set `notify_clips`/`notify_vods` on `twitch_channels`; Helix `GET /clips` (windowed by `started_at`, client-side `created_at` watermark) and `GET /videos` (`user_id=`, `type=archive`, `sort=time`) ride the poll tick, ≤5 announcements per poll, watermarks seeded at opt-in (no backfill). VOD watermark uses immutable `created_at` so late-processing sessions can't slip through.
+- **Remaining post-MVP:** per-channel Discord channel/role overrides, message templates, explicit go-offline messages.
 
 ---
 

@@ -503,11 +503,14 @@ describe("A. mutation registry integrity + PARITY checklist coverage (§8.8/§8.
       const paths = Array.isArray(route.path) ? route.path : [route.path];
       for (const p of paths) mountedPost.push(p);
     }
-    // /auth/logout is the ONLY POST route riding the methodGate exception
-    // without a registry entry (app.js LOGOUT_POST_PATH) — everything else
+    // Public POST carve-outs riding the methodGate exception without a
+    // registry entry (app.js PUBLIC_POST_PATHS): /auth/logout + the
+    // HMAC-authenticated /hooks/twitch EventSub webhook. Everything else
     // must match the registry exactly, in both directions.
     const registry = app.locals.webMutations.map((m) => m.path).sort();
-    const mounted = mountedPost.filter((p) => p !== "/auth/logout").sort();
+    const mounted = mountedPost
+      .filter((p) => p !== "/auth/logout" && p !== "/hooks/twitch")
+      .sort();
     assert.deepEqual(mounted, registry, "mounted POST templates == registry templates");
     for (const m of app.locals.webMutations) {
       assert.equal(m.method, "POST", `registry entry ${m.path} is POST-only`);

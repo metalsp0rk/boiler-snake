@@ -25,6 +25,10 @@
 const express = require("express");
 const { registerTranscriptRoutes } = require("./routes/transcripts");
 const { registerOauthRoutes } = require("./routes/oauth");
+const {
+  registerTwitchEventsubRoutes,
+  EVENTSUB_PATH,
+} = require("./routes/twitchEventsub");
 const { registerAuthRoutes } = require("./routes/auth");
 const { registerUsersRoutes } = require("./routes/users");
 const { registerModerationRoutes } = require("./routes/moderation");
@@ -62,6 +66,14 @@ const { createAuditMiddleware } = require("./middleware/audit");
 const LOGOUT_POST_PATH = "/auth/logout";
 
 /**
+ * Public POST carve-outs that are NOT /g/:guildId mutations: logout (§8.3)
+ * and the Twitch EventSub webhook (HMAC-authenticated, cannot be CSRF/
+ * login-gated — Twitch posts here). Exact raw-path match; anything else
+ * non-GET still 405s byte-identically.
+ */
+const PUBLIC_POST_PATHS = new Set([LOGOUT_POST_PATH, EVENTSUB_PATH]);
+
+/**
  * Segment-wise match of a raw path against a mounted mutation template
  * (templates are the literal Express mount paths, e.g.
  * "/g/:guildId/settings/decay"). ":guildId" matches exactly one non-empty
@@ -90,7 +102,8 @@ function matchesMutationPath(rawPath, template) {
  * Method policy — one source of truth, 405-before-everything doctrine
  * preserved from Phase 0a:
  *  - GET/HEAD: always proceed (unchanged).
- *  - POST /auth/logout: proceeds (unchanged 0b exception).
+   *  - POST /auth/logout and POST /hooks/twitch: proceed (public POST
+   *    carve-outs; the EventSub webhook authenticates via its HMAC).
  *  - ANY other non-GET/HEAD: proceeds ONLY if the raw path matches a
  *    mutation route registered via registerWebMutation() at boot (exact
  *    template match). Everything else gets the legacy byte-identical
@@ -106,7 +119,7 @@ function makeMethodGate(mutations) {
       return;
     }
     const path = String(req.url || "/").split("?")[0];
-    if (req.method === "POST" && path === LOGOUT_POST_PATH) {
+    if (req.method === "POST" && PUBLIC_POST_PATHS.has(path)) {
       next();
       return;
     }
@@ -262,6 +275,10 @@ function createWebApp(options = {}) {
     botGuilds: options.botGuilds,
   });
   registerOauthRoutes(app);
+  // Twitch EventSub webhook (HMAC-authenticated public POST carve-out —
+  // roadmap/twitch-notifications.md). Reads req.rawBody set by the body-cap
+  // middleware; CSRF never fires on this path (not under /g or /auth).
+  registerTwitchEventsubRoutes(app, { getClient: options.getClient });
   // Guild shell + dashboard (Phase 0c shell, Phase 1 dashboard): the scoped
   // /g/:guildId surfaces. This registrar ALSO mounts the guildScope gate for
   // every deeper /g/<id>/... route (mounted here, BEFORE all of them) and
