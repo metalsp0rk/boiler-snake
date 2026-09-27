@@ -1,25 +1,31 @@
 # Boiler Snake Roadmap
 
+> ✅ **Fully implemented features are archived in [index-completed.md](index-completed.md).**
+> A feature moves there once it is shipped with **zero open items** in its feature
+> file (currently: Scheduled Event Reminders, Staff Notes, Warnings, plus the
+> XP & leaderboard polish). This file tracks everything still open or planned.
+
 ## Project Overview
 
-Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, Twitch stream notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, and music playback. This roadmap documents **planned** features and their implementation stages.
+Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, Twitch stream notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, and music playback. This roadmap documents **planned** features and their implementation stages; completed features are archived in [index-completed.md](index-completed.md).
 
-**Shipped (all tracked in this roadmap — feature index and §7 below; user docs in `docs/`):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP + EventSub fast path + clips/VOD alerts), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, user activity tracking (`/userinfo` Activity + `/activityconfig`), help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
+**Shipped (user docs in `docs/`; completed-feature records in [index-completed.md](index-completed.md) §7; rows for features with open work below):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP + EventSub fast path + clips/VOD alerts), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, user activity tracking (`/userinfo` Activity + `/activityconfig`), help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
 
 ## Feature Index
 
-Each feature has its own file with the full design, status, and locked decisions. Cross-feature tracking (this index, the migration summary, and post-MVP TODOs) stays here. When updating a feature, edit its file; update the status table below when its status changes.
+Each feature has its own file with the full design, status, and locked decisions. Cross-feature tracking (this index, the migration summary, and post-MVP TODOs) stays here — or in [index-completed.md](index-completed.md) once a feature fully ships. When updating a feature, edit its file; update the status table below when its status changes; when the last checkbox in a shipped feature's file gets ticked, move its row (and its §7/§8 blocks) to [index-completed.md](index-completed.md).
 
 | # | Feature | File | Status | Open items |
 |---|---------|------|--------|------------|
 | 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Discord OAuth on transcripts (→ covered by [web-admin.md](web-admin.md) §8.4); richer `/ticket list` filters |
-| 2 | Scheduled Event Reminders | [event-reminders.md](event-reminders.md) | Shipped | — |
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP + EventSub + clips/VODs) | Per-channel overrides; templates; go-offline messages |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
-| 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
-| 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + post-MVP polish) | — |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)); `read_discord` linked message/channel reader **shipped** ([gork.md §7.19](gork.md)); STE anti-slop answer style **design locked, impl pending** ([gork.md §7.20](gork.md)) |
-| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | **Shipped** (Phases 0a–3, PR #55) | Login-mandatory transcripts + staff console; **UX v1.1 shipped 2026-09-17** (root guild list, sidebar, names, lazy member-fetch, archive first-class); Phase 4 polish + job-state wiring open |
+| 8 | Web Admin Console (panel overhaul) | [web-admin.md](web-admin.md) | **Shipped** (Phases 0a–4; PR #55 + 2026-09-25) | Task 15.6 open — wire real job state into `tickerHealth` (see [web-admin.md](web-admin.md)); moves to [index-completed.md](index-completed.md) when ticked |
+| 9 | Fluxer (Discord + Fluxer endpoints) | [fluxer.md](fluxer.md) | **Spec** (reviewed, no code) | Phase 0 spike, then 11 PRs in [fluxer.md](fluxer.md) |
+| 10 | Channel bridge (Discord ↔ Fluxer) | [bridge.md](bridge.md) | **Draft** (reviewed, no code) | Depends on Fluxer Phases 2–3; spikes in [bridge.md](bridge.md) (Open Questions) |
+
+Completed features (**2** Scheduled Event Reminders, **5** Staff Notes, **6** Warnings) live in [index-completed.md](index-completed.md) — original numbers are kept for cross-reference.
 
 Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a work-as-time-allows backlog in [wishlist.md](wishlist.md) — feature files stay authoritative for design.
 
@@ -50,16 +56,6 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | `ticket_panels` | Stored panel registry — posted **Open ticket** panels (channel, message id, title/description) backing `/ticket panel create\|list\|edit\|delete` (**shipped**, migration `019`) |
 | `guild_settings.ticket_*` | category, archive channel, rate limit (**no** `ticket_staff_role`) |
 
-### Event reminders
-
-| Table / change | Notes |
-|----------------|-------|
-| `event_reminder_configs` | Event ↔ role ↔ channel ↔ template (**shipped**, migration `006`) |
-| `event_reminder_event_optouts` | Per-event mute (**shipped**, migration `015`) |
-| `event_reminder_offsets` | Each “X before” fire + sent state (**shipped**) |
-| `event_reminder_optouts` | Per-guild user opt-out (**shipped**) |
-| `guild_settings.event_reminder_channel_id` | Default notify channel (**shipped**) |
-
 ### Twitch stream notifications
 
 | Table / change | Notes |
@@ -70,32 +66,6 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | `guild_settings.twitch_polling_interval_minutes` | Poll interval (default 2) (**shipped**) |
 | `twitch_channels.notify_clips` / `notify_vods` + `last_clip_*` / `last_video_*` | Per-subscription clip/VOD alerts + watermarks (**shipped**, migration `032`) |
 | `twitch_eventsub_subs` | Bot's EventSub webhook subscriptions (type+broadcaster → id/status) (**shipped**, migration `032`) |
-
-### Staff notes
-
-| Table / change | Notes |
-|----------------|-------|
-| `staff_notes` | Per-guild sequential notes; soft-delete; edit metadata (**shipped**) |
-
-### Warnings
-
-| Table / change | Notes |
-|----------------|-------|
-| `warnings` | Permanent rows; void metadata; optional `related_note_id` → `staff_notes` (**shipped**, migration `009`) |
-| `warnings.expires_at` / evidence columns | Opt-in expiry + staff evidence (**shipped**, migration `018`) |
-| `guild_settings.warn_dm_members` | Default `1` — DM subject on issue/void (**shipped**) |
-| `guild_settings.warn_log_channel_id` | Dedicated warn issue/void log; audit fallback (**shipped**) |
-| `guild_settings.warn_expiry_days` | Default `0` (never); guild default for new warnings (**shipped**, migration `018`) |
-
-### User activity (`/userinfo` Activity)
-
-| Table / change | Notes |
-|----------------|-------|
-| `user_channel_message_daily` | Per-user per-channel daily message counters feeding the `/userinfo` Activity ranking — counts **every** human message, separate from the XP/decay `activity_log` (**shipped**, migration `013`) |
-| `activity_ignore` | Per-guild exclude list for stats (`kind` = `channel` \| `category`), managed via `/activityconfig ignore` (**shipped**, migration `013`) |
-| `user_activity_meta` | Per-user tracking floor (`tracking_since_ms`) + per-user backfill status/progress columns (**shipped**, migration `013`) |
-| `guild_activity_settings` | Guild collection floor (`collect_from_ms`) + backfill state; `014` added the `guild_backfill_*` columns for the single-pass all-users guild-wide backfill (**shipped**, migrations `013`/`014`) |
-| `user_channel_backfill_cursor` / `guild_channel_backfill_cursor` | Backfill resume cursors (oldest message id seen) — per user×channel (`013`) and per channel for the guild-wide pass (`014`) (**shipped**) |
 
 ### Gork (AI keyword Q&A)
 
@@ -122,42 +92,13 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 
 > **Migration numbering (resolved):** shipped as `028`–`030`, reserved at implementation time per the rule above. See [web-admin.md §8.5](web-admin.md).
 
-**Removed from roadmap as standalone product:** Honeypot feature (implemented — see `docs/honeypot.md`). Exempt roles are **absorbed** into guild staff roles (§4).
+Event reminders, staff notes, and warnings migration tables: see [index-completed.md §7](index-completed.md).
 
 ---
 
 ## 8. Post-MVP TODOs
 
-> **Status: convenience mirror.** Feature files are authoritative for open items (rule above) — where a feature file exists, the open bullets below stay short summaries linking to the right section; the shipped blocks document landed work and stay as-is. This section is the sole record for work with no feature file (XP & leaderboard polish below).
-
-### XP & leaderboard polish
-
-Both slash surfaces below are now shipped; the checkboxes document the work that landed.
-
-#### `/setxp` — expose `level_xp_factor`
-
-**Shipped.** `guild_settings.level_xp_factor` (default `100`) is now exposed as the `factor` option on `/setxp`.
-
-- [x] Add optional integer option `factor` on `/setxp`, min **1**, max **10000**
-- [x] Persist via `updateGuildSettings`; included in `/setxp` audit `logConfigChange` payload
-- [x] Reply shows before/after factor and a one-line reminder of the formula (`L² × factor` XP for level L)
-- [x] Unit/integration: set factor → `/xp` level and leaderboard level labels match new curve
-- [x] Update [docs/commands](../docs/commands/index.md), [configuration](../docs/configuration.md), [xp-and-leveling](../docs/xp-and-leveling.md), FAQ
-
-**Out of scope:** per-user curve overrides; non-sqrt formulas.
-
-#### `/leaderboard` — honor `limit` + pagination
-
-**Shipped.** `limit` is the page size (default **10**, min **1**, max **20**). `renderLeaderboardPng` renders a dynamic row count (1–20), and each message gets **◀ Prev / Next ▶** buttons so the caller can page through the whole list. Paging is caller-only, re-queries current XP on every click, and re-fetches `limit × page + 1` rows to detect the last page (no count query). See [docs/leaderboard.md](../docs/leaderboard.md).
-
-- [x] Read `interaction.options.getInteger("limit")` with clamp (default **10**, min **1**, max **20**)
-- [x] Pass clamped limit into `topUsers(guildId, n)` (per page: `limit × page + 1`)
-- [x] Resize PNG layout (`render/leaderboard.js`) for `n` rows (dynamic height, 1–20 rows)
-- [x] Message content: `**Leaderboard — ranks first–last**` reflecting the applied page
-- [x] Integration tests: 12 seeded users; page 2 shows ranks 11–12; prev/next button states; caller-only; customId parse/clamp unit cases
-- [x] Update [docs/commands](../docs/commands/index.md) and [leaderboard](../docs/leaderboard.md) (removed “limit unused” note)
-
-**Out of scope:** jump-to-page input; ephemeral vs public toggle.
+> **Status: convenience mirror.** Feature files are authoritative for open items (rule above) — where a feature file exists, the open bullets below stay short summaries linking to the right section; the shipped blocks document landed work and stay as-is. Work with no feature file (the XP & leaderboard polish) is fully landed and recorded in [index-completed.md §8](index-completed.md).
 
 ### Guild staff roles
 
@@ -177,13 +118,6 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 - [ ] Richer `/ticket list` filters  
 - [x] Stored panel registry (list/edit/delete via commands)  
 
-### Event reminders
-
-- [x] Richer templates / embed reminders (always embed + placeholders `{url}` `{description}` `{offset}`)  
-- [x] Per-event mute (`/mute` / `/unmute`; guild `/optout` still wins)  
-- [x] Auto-suggest shortname from event title (+ collision suffix `-2`…)  
-- [x] **Fix:** `/eventreminder create`/`edit` modal exceeded Discord's 5-component limit — dropped the `persistent` select from the modal (back to 5); create now takes an optional `persistent` boolean (encoded in the modal customId `:p1`) and a **♾️ Recurring: on/off** button on the create/edit confirmation toggles it for either flow (see [event-reminders.md §2.12](event-reminders.md))  
-
 ### Twitch stream notifications
 
 - [x] MVP: multi-channel go-live alerts via Helix polling; `/twitch add|remove|list`; `/settwitch channel|role|interval|settings`; stream-id dedup  
@@ -193,23 +127,6 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 - [ ] Custom go-live message templates  
 - [ ] Optional go-offline message (default off)  
 - [ ] Clip / VOD hooks (out of scope for stream-live MVP)  
-
-### Staff notes
-
-- [x] Guild-wide recent notes feed without targeting a user (`/note list` without `user`)  
-- [x] Attach note from ticket close flow (`staff_note` option + **Add staff note** button → modal)  
-- [x] Content modal for long notes (omit slash `content` on add/edit; max 2000)  
-- [x] Wire access to full staff roles once §4 ships (`isStaff` already the call site)  
-
-### Warnings
-
-- [x] MVP: issue / list / info / void / count / mine + `/setwarn dm` + audit + optional note link  
-
-- [x] Dedicated `warn_log_channel_id` separate from general audit log (`/setwarn log`; falls back to audit)  
-- [x] Warning expiry / auto-void after N days (opt-in; default still permanent) — guild `/setwarn expiry` + per-warn `expires_days`  
-- [x] Export user record (notes + warnings) for staff handoff — `/warn export` ephemeral `.md`  
-- [x] ~~Un-void / re-activate~~ — **skipped**; prefer re-issue (no un-void command)  
-- [x] Evidence: message jump link + freeform staff-only notes on `/warn add` (not in member DM / `/warn mine`)
 
 ### Gork
 
@@ -223,3 +140,10 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 - [x] **Feature (shipped 2026-09):** `read_discord` tool — read a linked message (anchor + 40 before / 10 after) or channel (50 latest) via one tool call; guild isolation, asker ViewChannel parity, open-ticket blackout (locked decisions 44–48; see [gork.md §7.19](gork.md))
 - [ ] **Feature (design locked 2026-09-17, impl pending):** STE answer style — toggle-able anti-slop writing-system card (`/gork ste`, migration `031`, default off) so answers read like a person, not a slop factory; flavored mode keeps the persona; linter + repair loop deferred (locked decisions 49–52; see [gork.md §7.20](gork.md))
 
+### Fluxer (multi-platform endpoints)
+
+- [ ] **Spec, no code.** Reviewed implementation spec: [fluxer.md](fluxer.md). Eleven PRs, starting with a live Phase 0 spike. Do not squat migration `031` (gork STE); the communities migration takes the next free id (`033`+ on today's tree — `032` shipped for twitch EventSub/clips).
+
+### Channel bridge (Discord ↔ Fluxer)
+
+- [ ] **Draft only.** Specified in [bridge.md](bridge.md). Not part of the Fluxer adapter (`src/platform/`). Do not squat migration `031`.
