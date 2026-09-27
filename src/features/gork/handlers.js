@@ -27,7 +27,7 @@ const { sliceSafe } = require("../../core/text");
 const { getAiConfig } = require("../../core/ai");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { formatDailyLimit } = require("./budget");
+const { formatDailyLimit, isThreadLike } = require("./budget");
 const {
   KEYWORD_MAX,
   CONTEXT_MIN,
@@ -683,10 +683,7 @@ async function setBudgetScope(client, interaction, guildId, scopeKind) {
   // in budget.js `channelScopeIdFor`): a rule stored on a thread id could
   // never match (thread triggers resolve to the parent), so normalize here
   // instead of leaving a silent dead rule.
-  const isThread =
-    typeof target.isThread === "function"
-      ? Boolean(target.isThread())
-      : [10, 11, 12].includes(Number(target.type));
+  const isThread = isThreadLike(target);
   let targetId = String(target.id);
   let boundToThreadParent = false;
   if (scopeKind === "channel" && isThread) {
@@ -747,11 +744,7 @@ async function removeBudgetScope(client, interaction, guildId, scopeKind) {
   // channel's rule (thread-id rules are never stored, so deleting by thread
   // id would falsely report "no rule").
   if (scopeKind === "channel" && target) {
-    const isThread =
-      typeof target.isThread === "function"
-        ? Boolean(target.isThread())
-        : [10, 11, 12].includes(Number(target.type));
-    if (isThread) {
+    if (isThreadLike(target)) {
       if (!target.parent?.id) {
         return replyEphemeral(
           interaction,

@@ -69,8 +69,33 @@ function categoryIdForChannel(channel) {
 }
 
 /** discord.js ChannelType thread values (isThread()-less duck fallback):
- * 10 = news thread, 11 = public thread, 12 = private thread. */
+ * 10 = news thread, 11 = public thread, 12 = private thread.
+ * SINGLE SOURCE OF TRUTH for the thread-type duck check — channel.js and
+ * handlers.js import isThreadLike()/THREAD_TYPES from here (wishlist §5:
+ * three copies of the set had drifted into a drift risk). */
 const THREAD_TYPES = new Set([10, 11, 12]);
+
+/**
+ * Is this channel a thread? Prefers the discord.js `isThread()` method
+ * (prototype method — present on real instances, lost by spreads), then
+ * falls back to the numeric thread types (covers plain fakes that spread or
+ * set `type` directly). Never throws: a throwing duck-type probe or a
+ * missing channel degrades to "not a thread".
+ *
+ * @param {object|null|undefined} channel duck-typed discord.js channel
+ * @returns {boolean}
+ */
+function isThreadLike(channel) {
+  if (!channel) return false;
+  if (typeof channel.isThread === "function") {
+    try {
+      return Boolean(channel.isThread());
+    } catch {
+      // A throwing duck-type probe just means "not a thread" — use the type.
+    }
+  }
+  return THREAD_TYPES.has(Number(channel.type));
+}
 
 /**
  * The channel id that budget rules bind for a trigger channel (pure).
@@ -88,10 +113,7 @@ const THREAD_TYPES = new Set([10, 11, 12]);
 function channelScopeIdFor(channel) {
   if (!channel || channel.id == null) return null;
   const parent = channel.parent ?? null;
-  const isThread =
-    typeof channel.isThread === "function"
-      ? Boolean(channel.isThread())
-      : THREAD_TYPES.has(Number(channel.type));
+  const isThread = isThreadLike(channel);
   if (isThread && parent?.id != null) return String(parent.id);
   return String(channel.id);
 }
@@ -308,6 +330,8 @@ function resetBudgetRejectThrottleForTests() {
 module.exports = {
   REJECT_DEDUP_MS,
   BLOCKED_SURFACES,
+  THREAD_TYPES,
+  isThreadLike,
   formatDailyLimit,
   categoryIdForChannel,
   channelScopeIdFor,
