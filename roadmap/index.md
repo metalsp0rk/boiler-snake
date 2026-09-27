@@ -4,7 +4,7 @@
 
 Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, Twitch stream notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, and music playback. This roadmap documents **planned** features and their implementation stages.
 
-**Shipped (all tracked in this roadmap — feature index and §7 below; user docs in `docs/`):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, user activity tracking (`/userinfo` Activity + `/activityconfig`), help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
+**Shipped (all tracked in this roadmap — feature index and §7 below; user docs in `docs/`):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP + EventSub fast path + clips/VOD alerts), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, user activity tracking (`/userinfo` Activity + `/activityconfig`), help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
 
 ## Feature Index
 
@@ -14,7 +14,7 @@ Each feature has its own file with the full design, status, and locked decisions
 |---|---------|------|--------|------------|
 | 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Discord OAuth on transcripts (→ covered by [web-admin.md](web-admin.md) §8.4); richer `/ticket list` filters |
 | 2 | Scheduled Event Reminders | [event-reminders.md](event-reminders.md) | Shipped | — |
-| 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP) | EventSub; per-channel overrides; templates; go-offline; clips/VODs |
+| 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP + EventSub + clips/VODs) | Per-channel overrides; templates; go-offline messages |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 5 | Staff Notes System | [staff-notes.md](staff-notes.md) | Shipped | — |
 | 6 | Warning System | [warnings.md](warnings.md) | Shipped (MVP + post-MVP polish) | — |
@@ -68,6 +68,8 @@ Review findings and small fixes (docs, tests, roadmap hygiene) are tracked as a 
 | `guild_settings.twitch_notification_channel_id` | Go-live Discord channel (**shipped**) |
 | `guild_settings.twitch_notify_role_id` | Optional ping role (≠ YouTube roles) (**shipped**) |
 | `guild_settings.twitch_polling_interval_minutes` | Poll interval (default 2) (**shipped**) |
+| `twitch_channels.notify_clips` / `notify_vods` + `last_clip_*` / `last_video_*` | Per-subscription clip/VOD alerts + watermarks (**shipped**, migration `032`) |
+| `twitch_eventsub_subs` | Bot's EventSub webhook subscriptions (type+broadcaster → id/status) (**shipped**, migration `032`) |
 
 ### Staff notes
 
@@ -185,7 +187,8 @@ Both slash surfaces below are now shipped; the checkboxes document the work that
 ### Twitch stream notifications
 
 - [x] MVP: multi-channel go-live alerts via Helix polling; `/twitch add|remove|list`; `/settwitch channel|role|interval|settings`; stream-id dedup  
-- [ ] Twitch EventSub (webhook or conduit) instead of / in addition to polling  
+- [x] Twitch EventSub webhooks as push fast path (`POST /hooks/twitch`, HMAC + hourly reconcile; polling kept as fallback, claim-first dedup; migration `032`)  
+- [x] Clips/VOD alerts — `/twitch clips` / `/twitch vod` per-subscription opt-in (default off; archive VODs only; `032` watermarks)  
 - [ ] Per-channel Discord channel or role overrides  
 - [ ] Custom go-live message templates  
 - [ ] Optional go-offline message (default off)  

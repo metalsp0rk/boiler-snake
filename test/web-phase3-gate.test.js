@@ -1053,7 +1053,11 @@ describe("D. registry integrity — mounted routes, legacy ban, byte-parity 405 
         const paths = Array.isArray(route.path) ? route.path : [route.path];
         for (const p of paths) out.push(p);
       }
-      return out.filter((p) => p !== "/auth/logout").sort(); // the ONE exception
+      // Public POST carve-outs (app.js PUBLIC_POST_PATHS): logout (§8.3)
+      // + the HMAC-authenticated Twitch EventSub webhook.
+      return out
+        .filter((p) => p !== "/auth/logout" && p !== "/hooks/twitch")
+        .sort();
     };
     for (const app of [appMain, appReal, appNoAi]) {
       assert.deepEqual(

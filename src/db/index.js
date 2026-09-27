@@ -29,6 +29,7 @@ const tickets = require("./repositories/tickets");
 const userChannelActivity = require("./repositories/userChannelActivity");
 const commandPermissionOauth = require("./repositories/commandPermissionOauth");
 const twitch = require("./repositories/twitch");
+const twitchEventsub = require("./repositories/twitchEventsub");
 const githubWatches = require("./repositories/githubWatches");
 const gorkAccess = require("./repositories/gorkAccess");
 const gorkMemory = require("./repositories/gorkMemory");
@@ -124,9 +125,25 @@ module.exports = {
   getTwitchChannels: twitch.getTwitchChannels,
   getAllTwitchChannels: twitch.getAllTwitchChannels,
   getTwitchChannel: twitch.getTwitchChannel,
+  getTwitchSubsByBroadcaster: twitch.getTwitchSubsByBroadcaster,
   addTwitchChannel: twitch.addTwitchChannel,
   removeTwitchChannel: twitch.removeTwitchChannel,
   updateTwitchChannelLiveState: twitch.updateTwitchChannelLiveState,
+  claimTwitchStream: twitch.claimTwitchStream,
+  claimTwitchOffline: twitch.claimTwitchOffline,
+  setTwitchChannelMediaFlags: twitch.setTwitchChannelMediaFlags,
+  updateTwitchChannelClipState: twitch.updateTwitchChannelClipState,
+  updateTwitchChannelVideoState: twitch.updateTwitchChannelVideoState,
+  // Twitch EventSub subscription state
+  EVENTSUB_TYPES: twitchEventsub.EVENTSUB_TYPES,
+  isValidEventsubType: twitchEventsub.isValidEventsubType,
+  getTwitchEventsubSubs: twitchEventsub.getTwitchEventsubSubs,
+  getTwitchEventsubSubsForBroadcaster:
+    twitchEventsub.getTwitchEventsubSubsForBroadcaster,
+  getTwitchEventsubSub: twitchEventsub.getTwitchEventsubSub,
+  upsertTwitchEventsubSub: twitchEventsub.upsertTwitchEventsubSub,
+  markTwitchEventsubSubStatus: twitchEventsub.markTwitchEventsubSubStatus,
+  deleteTwitchEventsubSub: twitchEventsub.deleteTwitchEventsubSub,
 
   // GitHub releases
   normalizeGithubRepo: githubWatches.normalizeGithubRepo,
