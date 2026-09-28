@@ -1019,6 +1019,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 /gork budget default 10
 /gork budget channel target:#general limit:3
 /gork budget list
+/gork log off
 /gork summarize last:200 channel:#support
 /gork summarize from:https://discord.com/channels/…/…/… to:https://discord.com/channels/…/…/…
 /gork status
@@ -1037,6 +1038,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 | `bans` | List the users banned from gork in this server |
 | `memory <action>` | Curate the per-person community memory — see below |
 | `budget <action>` | Per-user daily usage budgets per channel/category/server (tri-state, off by default) — see below |
+| `log <on\|off>` | Toggle the gork [interaction log](../gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
 | `summarize <mode>` | Conversation rundown embed for a message range (staff, shared 10-min guild cooldown) — see below |
 | `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state, budget default + rule count |
 
@@ -1119,7 +1121,7 @@ The **rundown itself posts publicly** in the channel (embed, never pings); its u
 | `/twitch add\|remove\|list` | Staff gate | Yes |
 | `/settwitch channel\|role\|interval\|settings` | Staff gate | Yes |
 | `/reactionrole panel\|option\|sync` | Staff gate | Yes |
-| `/gork keyword\|context\|cooldown\|rules\|search\|enable\|ban\|unban\|bans\|memory\|status` | Staff gate | Yes |
+| `/gork keyword\|context\|cooldown\|rules\|search\|enable\|ban\|unban\|bans\|memory\|budget\|log\|status` | Staff gate | Yes |
 | `/gork summarize` | Staff gate | No — rundown embed posts publicly (gate/error replies ephemeral) |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
@@ -1192,7 +1194,7 @@ STAFF GATE (Manage Server OR any staff role):
 /twitch add|remove|list
 /settwitch channel|role|interval|settings
 /reactionrole panel|option|sync
-/gork keyword|context|cooldown|rules|search|enable|ban|unban|bans|memory|status
+/gork keyword|context|cooldown|rules|search|enable|ban|unban|bans|memory|budget|log|status
 /gork summarize (from|to|last)       → conversation rundown (10-min guild cooldown)
 /honeypot channel|banrole
 /eventreminder setchannel
