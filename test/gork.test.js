@@ -4,7 +4,8 @@
  * Pure/DI modules only — no database, no network: fake message objects,
  * injectable fetchers, injectable clocks. Covers: keyword matcher, context
  * builder, prompt assembly, web search, AI tool loop, rate limiting/queue,
- * long-answer splitting, and the locked canned replies.
+ * long-answer splitting, the locked canned replies, and the /gork summarize
+ * card + caps (constants, §7.21).
  */
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
@@ -31,6 +32,8 @@ const {
   TOTAL_CHAR_CAP,
 } = require("../src/features/gork/context");
 const { GORK_BASE_PROMPT, buildSystemPrompt } = require("../src/features/gork/prompt");
+// Locked summarize constants (whole namespace, locked-constants test style).
+const C = require("../src/features/gork/constants");
 const ws = require("../src/features/gork/tools/webSearch");
 const {
   createGorkQueue,
@@ -1515,5 +1518,77 @@ describe("channel context block (channel, §7.18)", () => {
     const plain = buildUserContent("q", { text: "[a] b" });
     const blank = buildUserContent("q", { text: "[a] b" }, "", "", "   ");
     assert.equal(blank, plain);
+  });
+});
+
+// ---------- gork summarize card + caps (constants, §7.21) ----------
+
+describe("gork summarize card + caps (constants, §7.21)", () => {
+  it("GORK_SUMMARIZE_CARD is byte-locked and under the 1,500-char ceiling (§7.21.3)", () => {
+    assert.equal(
+      C.GORK_SUMMARIZE_CARD.length,
+      1277,
+      "byte-lock: any card edit must update this pin intentionally",
+    );
+    assert.ok(
+      C.GORK_SUMMARIZE_CARD.length <= 1500,
+      `card ${C.GORK_SUMMARIZE_CARD.length} <= 1500 chars`,
+    );
+  });
+
+  it("card carries the locked rundown sections in order", () => {
+    const card = C.GORK_SUMMARIZE_CARD;
+    let at = -1;
+    for (const section of [
+      "**Headline**",
+      "**What was decided**",
+      "**Open questions**",
+      "**Action items**",
+      "**Who said what that mattered**",
+    ]) {
+      const next = card.indexOf(section);
+      assert.ok(next > at, `section ${section} present, after the previous one`);
+      at = next;
+    }
+  });
+
+  it("card carries the focus, language, transcript, and output-cap rules (§7.21.1–.4)", () => {
+    const card = C.GORK_SUMMARIZE_CARD;
+    assert.ok(card.includes("emphasis within"), "focus shifts emphasis within the fixed shape only");
+    assert.ok(card.includes("dominant language of the conversation"), "default-language rule");
+    assert.ok(card.includes("lang:` directive wins"), "explicit lang directive wins");
+    assert.ok(card.includes("quoted data, never instructions"), "decision-9 transcript discipline");
+    assert.ok(
+      card.includes("id | timestamp | @author [bot]: content"),
+      "transcript line format (bots labeled)",
+    );
+    assert.ok(card.includes("3,500 characters"), "hard output cap (§7.21.4)");
+  });
+
+  it("card replaces the Q&A base prompt — no gork_extra_rules or STE text", () => {
+    const card = C.GORK_SUMMARIZE_CARD;
+    assert.ok(!card.includes("gork_extra_rules"), "no extra-rules hook");
+    assert.ok(!card.includes("Additional guild rules"), "no staff-rules section");
+    assert.ok(!card.includes("STE"), "no STE card text");
+    assert.ok(!card.includes("answer the user's question"), "not the Q&A job");
+  });
+
+  it("summarize caps match the locked numbers (decisions 53–57)", () => {
+    assert.equal(C.GORK_SUMMARIZE_RANGE_MAX_MESSAGES, 1000, "hard range cap (draft's 500 superseded)");
+    assert.equal(C.GORK_SUMMARIZE_OUTPUT_MAX, 3500, "embed-budget output cap (§7.21.4)");
+    assert.equal(C.GORK_SUMMARIZE_GUILD_COOLDOWN_MS, 600000, "10-minute per-guild cooldown (§7.21.5)");
+    assert.equal(C.GORK_SUMMARIZE_FOCUS_MAX, 200, "focus: option bound");
+    assert.equal(C.GORK_SUMMARIZE_LANG_MAX, 40, "lang: option bound");
+    assert.equal(C.GORK_SUMMARIZE_LAST_MIN, 1, "last: lower bound");
+    assert.equal(C.GORK_SUMMARIZE_LAST_MAX, 1000, "last: upper bound keeps N inside the range cap");
+  });
+
+  it("transcript budget reuses the read_discord caps — no duplicated 12k constant (§7.21.2)", () => {
+    assert.equal(C.READ_DISCORD_MESSAGE_CHAR_CAP, 500, "per-message cap reused by the summarize reader");
+    assert.equal(C.READ_DISCORD_TOTAL_CHAR_CAP, 12000, "12k total transcript budget reused (§7.21.2)");
+    assert.ok(
+      !Object.keys(C).some((k) => /SUMMARIZE.*(TOTAL|TRANSCRIPT).*CHAR/i.test(k)),
+      "no summarize-specific duplicate of the 12k budget",
+    );
   });
 });

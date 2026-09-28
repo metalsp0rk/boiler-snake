@@ -1019,6 +1019,8 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 /gork budget default 10
 /gork budget channel target:#general limit:3
 /gork budget list
+/gork summarize last:200 channel:#support
+/gork summarize from:https://discord.com/channels/…/…/… to:https://discord.com/channels/…/…/…
 /gork status
 ```
 
@@ -1035,6 +1037,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 | `bans` | List the users banned from gork in this server |
 | `memory <action>` | Curate the per-person community memory — see below |
 | `budget <action>` | Per-user daily usage budgets per channel/category/server (tri-state, off by default) — see below |
+| `summarize <mode>` | Conversation rundown embed for a message range (staff, shared 10-min guild cooldown) — see below |
 | `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state, budget default + rule count |
 
 `/gork memory` carries the verbs as an `action` choice (Discord caps option depth at 2), plus optional `user`, `id`, `chars`, and `confirm` options:
@@ -1060,7 +1063,9 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 
 Precedence is **channel → category → guild default → unlimited**; the winning scope owns the single counter. Checked at queue entry **and** promotion (overage impossible), staff are **not** exempt, counts only on fully-delivered answers, reset 00:00 UTC. See [Daily usage budget](../gork.md#daily-usage-budget).
 
-All `/gork` replies are ephemeral. Every config change — including bans, memory edits, and budget rule changes — posts a config-change embed to the audit channel (`/setlog audit`). See [Gork](../gork.md) for trigger, memory, and moderation behavior.
+`/gork summarize` needs **exactly one** anchor mode: `from`+`to` (closed, inclusive, both in one channel — a newer `from` swaps), `from` alone (through the channel's newest message), or `last:<N>` (newest N readable messages, integer **1–1000**). Anchors are message links or bare ids (bare ids need `channel:` or run in that channel); `channel` defaults to the command's channel. `focus` (≤200 chars) shifts emphasis **within** the fixed rundown sections; `lang` (≤40 chars) overrides the output language (default: the conversation's dominant language). Caps: 1,000 messages / 12,000-char transcript (clamped with the actually-read window disclosed in the embed) / 3,500-char output. Bots and webhooks are included labeled `[bot]`; system messages are skipped. One rundown posts per server per **10 minutes** (arms only when the embed lands; failures never arm it), and a success counts against the invoker's daily gork budget. Refused: other servers, cross-channel ranges, and channels the invoker can't view (open tickets always). See [Conversation rundown](../gork.md#conversation-rundown).
+
+The **rundown itself posts publicly** in the channel (embed, never pings); its usage/cooldown/budget rejections are ephemeral. Every config change — including bans, memory edits, and budget rule changes — posts a config-change embed to the audit channel (`/setlog audit`). See [Gork](../gork.md) for trigger, memory, and moderation behavior.
 
 ---
 
@@ -1115,6 +1120,7 @@ All `/gork` replies are ephemeral. Every config change — including bans, memor
 | `/settwitch channel\|role\|interval\|settings` | Staff gate | Yes |
 | `/reactionrole panel\|option\|sync` | Staff gate | Yes |
 | `/gork keyword\|context\|cooldown\|rules\|search\|enable\|ban\|unban\|bans\|memory\|status` | Staff gate | Yes |
+| `/gork summarize` | Staff gate | No — rundown embed posts publicly (gate/error replies ephemeral) |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
 | `/setcommandchannel add\|remove\|list` | ManageGuild ¹ | Yes |
@@ -1187,6 +1193,7 @@ STAFF GATE (Manage Server OR any staff role):
 /settwitch channel|role|interval|settings
 /reactionrole panel|option|sync
 /gork keyword|context|cooldown|rules|search|enable|ban|unban|bans|memory|status
+/gork summarize (from|to|last)       → conversation rundown (10-min guild cooldown)
 /honeypot channel|banrole
 /eventreminder setchannel
 /eventreminder create|edit|clear|sync  → creator OR Manage Server

@@ -15,6 +15,10 @@ const {
   RULES_MAX,
   BUDGET_MIN,
   BUDGET_MAX,
+  GORK_SUMMARIZE_LAST_MIN,
+  GORK_SUMMARIZE_LAST_MAX,
+  GORK_SUMMARIZE_FOCUS_MAX,
+  GORK_SUMMARIZE_LANG_MAX,
 } = require("./constants");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -248,6 +252,68 @@ const commands = [
             .setName("enabled")
             .setDescription("Record every gork agent call in this server (on/off)")
             .setRequired(true),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("summarize")
+        .setDescription(
+          "Conversation rundown embed — pick a mode: from+to, from→now, or last:N.",
+        )
+        // All options optional: the three anchor modes are discrete and
+        // mutually exclusive, which Discord can't express — the handler
+        // validates and names the modes on bad combinations (§7.21.1, 53).
+        .addStringOption((opt) =>
+          opt
+            .setName("from")
+            .setDescription(
+              "Start anchor: message link, or a bare id resolved in `channel`/this channel",
+            ),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("to")
+            .setDescription(
+              "End anchor (inclusive): link or bare id; only with `from` — same-channel closed range",
+            ),
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("last")
+            .setDescription(
+              "Newest N readable messages (1-1000); use alone, never with from/to",
+            )
+            .setMinValue(GORK_SUMMARIZE_LAST_MIN)
+            .setMaxValue(GORK_SUMMARIZE_LAST_MAX),
+        )
+        .addChannelOption((opt) =>
+          opt
+            .setName("channel")
+            .setDescription(
+              "Channel or thread holding the range (default: this channel)",
+            )
+            .addChannelTypes(
+              ChannelType.GuildText,
+              ChannelType.GuildAnnouncement,
+              ChannelType.PublicThread,
+              ChannelType.PrivateThread,
+            ),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("focus")
+            .setDescription(
+              "Steer the rundown (staff instruction, max 200 chars), e.g. the event-date decisions only",
+            )
+            .setMaxLength(GORK_SUMMARIZE_FOCUS_MAX),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("lang")
+            .setDescription(
+              "Output language override (e.g. spanish; max 40); default: dominant language of the chat",
+            )
+            .setMaxLength(GORK_SUMMARIZE_LANG_MAX),
         ),
     )
     .addSubcommand((sc) =>

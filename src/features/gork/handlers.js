@@ -21,13 +21,42 @@ const {
   listGorkBudgetRules,
   clampGorkDailyLimit,
 } = require("../../db");
-const { replyEphemeral } = require("../../core/interaction");
+const { replyEphemeral, editEphemeral } = require("../../core/interaction");
 const { Color, baseEmbed } = require("../../core/theme");
 const { sliceSafe } = require("../../core/text");
 const { getAiConfig } = require("../../core/ai");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { formatDailyLimit, isThreadLike } = require("./budget");
+const {
+  formatDailyLimit,
+  isThreadLike,
+  checkGorkBudget,
+  shouldSendBudgetRejection,
+  recordGorkBudgetUsage,
+} = require("./budget");
+const { gorkQueue, QUEUE_FULL_REPLY } = require("./trigger");
+const { validateSummarizeMode, readSummarizeRange } = require("./summarizeRange");
+const {
+  generateSummarize,
+  SUMMARIZE_TEMPERATURE,
+  SUMMARIZE_MAX_TOKENS,
+} = require("./summarize");
+const {
+  renderSummarizeEmbeds,
+  buildRundownPayloads,
+} = require("./summarizeEmbed");
+const {
+  checkSummarizeGuildCooldown,
+  armSummarizeGuildCooldown,
+  summarizeCooldownMinutesRemaining,
+} = require("./summarizeCooldown");
+const {
+  logGorkSummarize,
+  logGorkSummarizeFailure,
+  createSummarizeInteractionRecorder,
+} = require("./audit");
+const { NO_PING_MENTIONS } = require("./sanitize");
+const { formatChannelLabel } = require("./channel");
 const {
   KEYWORD_MAX,
   CONTEXT_MIN,
@@ -42,6 +71,7 @@ const {
   BUDGET_MIN,
   BUDGET_MAX,
   BUDGET_RULES_LIST_MAX,
+  GORK_SUMMARIZE_GUILD_COOLDOWN_MS,
 } = require("./constants");
 
 /**
@@ -903,6 +933,485 @@ async function showStatus(interaction, guildId) {
   await replyEphemeral(interaction, { embeds: [embed] });
 }
 
+/* ---------------------- /gork summarize (§7.21) ---------------------- */
+
+/** Guild-cooldown window in whole minutes (constant is minutes-exact). */
+const SUMMARIZE_WINDOW_MINUTES = Math.max(
+  1,
+  Math.round(GORK_SUMMARIZE_GUILD_COOLDOWN_MS / 60000),
+);
+
+/** UTC day key (YYYY-MM-DD) for the invoker's daily budget (§7.17). */
+function summarizeBudgetDay() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * The `channel:` option is a channel PICKER (object) on the slash surface;
+ * the range reader wants its id string (bare ids parse fine — decision 54).
+ */
+function summarizeChannelArg(interaction) {
+  const raw = interaction.options.getChannel("channel");
+  if (raw == null) return null;
+  const id =
+    typeof raw === "string"
+      ? raw.trim()
+      : raw?.id != null
+        ? String(raw.id)
+        : String(raw).trim();
+  return id || null;
+}
+
+/**
+ * Post the rendered payloads IN ORDER, one embed per message, every payload
+ * already carrying `allowedMentions: NO_PING_MENTIONS` (buildRundownPayloads).
+ * All-chunks-land semantics (decision 32): the caller bookkeeps success ONLY
+ * when `ok:true`; a mid-sequence failure reports exactly how many landed and
+ * the cause (repo partial-results rule — the poster arms nothing, counts
+ * nothing). The first payload resolves the deferred interaction (editReply),
+ * continuations follow as channel messages (followUp).
+ *
+ * @returns {Promise<{ ok: boolean, posted: object[], error?: string }>}
+ */
+async function postRundownPayloads(interaction, payloads) {
+  const posted = [];
+  try {
+    for (let i = 0; i < payloads.length; i += 1) {
+      const msg =
+        i === 0
+          ? await interaction.editReply(payloads[i])
+          : await interaction.followUp(payloads[i]);
+      posted.push(msg ?? {});
+    }
+    return { ok: true, posted };
+  } catch (err) {
+    return { ok: false, posted, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Compact failure-audit call (the audit variant never throws; the wrapper is
+ * belt-and-suspenders so an audit can never derail the reply path).
+ */
+async function summarizeFailureAudit(client, guildId, base, reason) {
+  try {
+    await logGorkSummarizeFailure(client, guildId, { ...base, reason });
+  } catch (err) {
+    console.error(
+      `[gork] summarize failure audit threw in ${guildId}:`,
+      err?.message || err,
+    );
+  }
+}
+
+/**
+ * The queued job body (roadmap §7.21.5, decision 34): dequeue-time budget
+ * re-check → range read → one-shot generation → embed post → success
+ * bookkeeping. Runs INSIDE the shared per-guild gork queue slot; every
+ * branch replies with its specific cause (AGENTS.md) and bookkeeps success
+ * (cooldown arm + budget count) ONLY when every embed landed. Never throws.
+ */
+async function runSummarizeJob({
+  client,
+  interaction,
+  guildId,
+  userId,
+  day,
+  opts,
+  mode,
+  settings,
+}) {
+  const guild = interaction.guild;
+  const startedAt = Date.now();
+  const channelBase = {
+    user: interaction.user,
+    channelId: interaction.channelId,
+    channelLabel: formatChannelLabel(interaction.channel),
+  };
+
+  // §7.17.4 dequeue re-check (mirrors trigger.js): queued work can arrive
+  // after the budget spent itself — bounce WITHOUT the LLM call, WITHOUT a
+  // count, and WITHOUT arming the guild cooldown.
+  const budgetChannel = interaction.channel ?? { id: interaction.channelId };
+  const gate = checkGorkBudget({ guildId, userId, channel: budgetChannel, day });
+  if (!gate.allowed) {
+    if (gate.kind === "error") {
+      console.error(
+        `[gork] summarize budget gate error at dequeue in ${guildId}: user=${userId} day=${day} — failing closed`,
+      );
+      return interaction.editReply(
+        "Could not re-check your gork daily budget when the rundown job started (database error, logged) — nothing was generated or counted.",
+      );
+    }
+    console.log(
+      `[gork] summarize budget ${gate.kind} at dequeue in ${guildId}: user=${userId} scope=${
+        gate.scope ? `${gate.scope.scopeKind}/${gate.scope.scopeId}` : "?"
+      } day=${day} — bounced, no LLM call`,
+    );
+    return interaction.editReply(gate.reply);
+  }
+
+  // Range read (§7.21.2). A bare anchor / `last:` defaults to the channel
+  // the command ran in.
+  const read = await readSummarizeRange(
+    { from: opts.from, to: opts.to, last: opts.last, channel: opts.channel },
+    {
+      guildId,
+      guild,
+      invokerId: userId,
+      fallbackChannelId: interaction.channelId,
+    },
+  );
+  if (!read.ok) {
+    console.error(
+      `[gork] summarize read failed in ${guildId}: user=${userId} channel=${interaction.channelId} mode=${mode.mode} cmd=/gork summarize code=${read.code} — ${read.error}`,
+    );
+    await summarizeFailureAudit(client, guildId, channelBase, `range read failed (${read.code}): ${read.error}`);
+    let text = read.error;
+    if (read.code === "fetch" && read.partial) {
+      // Partial-results rule (repo standard): disclose the window that WAS
+      // read and why no rundown came out of it.
+      text += `\nPartial window actually read: **${read.partial.count}** message(s) (${read.partial.firstId} → ${read.partial.lastId}) — discarded; the rundown needs the complete range, so nothing was produced or counted.`;
+    }
+    return interaction.editReply(text);
+  }
+
+  // Interaction log (migration 027, §7.21.5): one summarize row per agent
+  // call, built right before the call so onEvent captures the exact wire
+  // payload (decision 9's quote discipline is auditable byte-for-byte).
+  // null = logging off / build failure — creation may never alter the reply
+  // path, and finalize is idempotent on EVERY terminal path below.
+  let recorder = null;
+  try {
+    recorder = createSummarizeInteractionRecorder({
+      settings,
+      guildId,
+      channelId: interaction.channelId,
+      interactionId: interaction.id ?? null,
+      userId,
+      mode: read.mode,
+      lastCount: read.requestedLast,
+      range: {
+        channelId: read.channelId,
+        firstMessageId: read.firstId,
+        lastMessageId: read.lastId,
+        collected: read.count,
+        clamped: read.clamped,
+      },
+      focus: opts.focus,
+      lang: opts.lang,
+      model: getAiConfig().model,
+      params: {
+        temperature: SUMMARIZE_TEMPERATURE,
+        maxTokens: SUMMARIZE_MAX_TOKENS,
+      },
+      tools: null, // no tool loop (decision 55)
+      startedAt,
+    });
+  } catch (err) {
+    console.warn(
+      `[gork] summarize interaction log recorder build failed in ${guildId}:`,
+      err?.message || err,
+    );
+    recorder = null;
+  }
+
+  // Generation (§7.21.3): one-shot, dedicated card, queue/budget-blind.
+  const gen = await generateSummarize(read, {
+    guildId,
+    guild,
+    client,
+    focus: opts.focus,
+    lang: opts.lang,
+    ...(recorder ? { onEvent: (evt) => recorder.onEvent(evt) } : {}),
+  });
+  if (!gen.ok) {
+    console.error(
+      `[gork] summarize generation failed in ${guildId}: user=${userId} mode=${read.mode} cmd=/gork summarize code=${gen.code} — ${gen.error}`,
+    );
+    recorder?.finalize({
+      status: "failure",
+      error: gen.error,
+      durationMs: Date.now() - startedAt,
+    });
+    await summarizeFailureAudit(client, guildId, channelBase, `generation failed (${gen.code}): ${gen.error}`);
+    return interaction.editReply(
+      `${gen.error}\nNothing was posted, no cooldown was armed, and your budget was not counted — you can retry.`,
+    );
+  }
+
+  // Render + post (§7.21.4). More than one embed is the emergency
+  // continuation path (model overflowed the one-embed budget) — log it.
+  const embeds = renderSummarizeEmbeds(gen.text, {
+    guildId,
+    mode: read.mode,
+    range: {
+      firstId: read.firstId,
+      lastId: read.lastId,
+      channelId: read.channelId,
+    },
+    invoker: interaction.user,
+    // Reader's clamp wording verbatim — decision 54's disclosed window.
+    ...(read.clampNote ? { disclosure: read.clampNote } : {}),
+    timestamp: true,
+  });
+  if (embeds.length > 1) {
+    console.log(
+      `[gork] summarize overflow in ${guildId}: user=${userId} ${embeds.length} continuation embeds (model exceeded the one-embed budget)`,
+    );
+  }
+  const payloads = buildRundownPayloads(embeds).map((payload, i) =>
+    // §7.21.2: the disclosed window repeats as the reply text itself, not
+    // only inside the embed's "Disclosed window" field.
+    i === 0 && read.clampNote ? { ...payload, content: read.clampNote } : payload,
+  );
+  const post = await postRundownPayloads(interaction, payloads);
+  if (!post.ok) {
+    console.error(
+      `[gork] summarize embed post failed in ${guildId}: user=${userId} mode=${read.mode} cmd=/gork summarize — posted ${post.posted.length}/${payloads.length}: ${post.error}`,
+    );
+    recorder?.finalize({
+      status: "error",
+      error: `embed post failed after ${post.posted.length}/${payloads.length} embeds: ${post.error}`,
+      answerShipped: gen.text,
+      durationMs: Date.now() - startedAt,
+    });
+    await summarizeFailureAudit(
+      client,
+      guildId,
+      channelBase,
+      `embed post failed after ${post.posted.length}/${payloads.length}: ${post.error}`,
+    );
+    // Report posted count + cause; arm nothing, count nothing (decision 32).
+    const note = `⚠️ Could not finish posting the rundown: ${post.error} — **${post.posted.length}** of ${payloads.length} embed${payloads.length === 1 ? "" : "s"} landed. No cooldown was armed and your budget was not counted; you can retry.`;
+    try {
+      await interaction.followUp({ content: note, allowedMentions: NO_PING_MENTIONS });
+    } catch (reportErr) {
+      console.error(
+        `[gork] summarize post-failure followUp failed in ${guildId}:`,
+        reportErr?.message || reportErr,
+      );
+      await interaction.channel
+        ?.send({ content: note, allowedMentions: NO_PING_MENTIONS })
+        .catch(() => {});
+    }
+    return undefined;
+  }
+
+  // ---- Full success (every embed landed): arm, count, record, audit ----
+
+  // Decision 57: the guild cooldown arms the moment the rundown lands —
+  // and NOWHERE else (usage/empty/security/fetch/generation failures never
+  // lock the guild out of an immediate retry).
+  armSummarizeGuildCooldown(guildId);
+
+  // Decision 32: count the invoker's daily budget exactly once, only now.
+  // A failed increment is logged, not fatal (the rundown already shipped).
+  try {
+    recordGorkBudgetUsage({ guildId, userId, scope: gate.scope, day });
+  } catch (err) {
+    console.error(
+      `[gork] summarize budget increment failed in ${guildId}:`,
+      err?.message || err,
+    );
+  }
+
+  recorder?.finalize({
+    status: "shipped",
+    answerShipped: gen.text,
+    finishReason: gen.meta?.finishReason ?? null,
+    usage: gen.meta?.usage ?? null,
+    toolCallCount: 0,
+    durationMs:
+      gen.meta?.durationMs ?? Date.now() - startedAt,
+  });
+
+  const readChannel = guild?.channels?.cache?.get(read.channelId) ?? null;
+  await logGorkSummarize(client, guildId, {
+    user: interaction.user,
+    mode: read.mode,
+    lastCount: read.requestedLast,
+    channelLabel: formatChannelLabel(readChannel) || undefined,
+    channelId: read.channelId,
+    firstMessage: read.firstId,
+    lastMessage: read.lastId,
+    messageCount: read.count,
+    focus: opts.focus,
+    lang: opts.lang,
+    model: gen.meta?.model ?? null,
+    durationMs: gen.meta?.durationMs ?? null,
+    rundown: gen.text,
+    replyMessage: post.posted[0] ?? null,
+    outcome:
+      payloads.length > 1
+        ? `posted (${payloads.length} embeds — output overflow)`
+        : "posted",
+  }).catch((err) =>
+    console.error(
+      `[gork] summarize audit failed in ${guildId}:`,
+      err?.message || err,
+    ),
+  );
+  return undefined;
+}
+
+/**
+ * /gork summarize body — gate order per §7.21.5 / subtask 08:
+ * mode gate → guild cooldown → budget (enqueue) → defer → shared queue slot
+ * → (dequeue re-check) → read → generate → post → success bookkeeping.
+ */
+async function summarizeMain(client, interaction, guildId) {
+  const userId = interaction.user?.id ?? null;
+  const opts = {
+    from: (interaction.options.getString("from") || "").trim() || null,
+    to: (interaction.options.getString("to") || "").trim() || null,
+    last: interaction.options.getInteger("last"),
+    channel: summarizeChannelArg(interaction),
+    focus: (interaction.options.getString("focus") || "").trim() || null,
+    lang: (interaction.options.getString("lang") || "").trim() || null,
+  };
+
+  // 1. Mode exclusivity (decision 53) BEFORE deferring: invalid combos get
+  //    an instant EPHEMERAL usage error quoting the reader's own sentence
+  //    naming the three modes (identical strings, one source of truth).
+  const mode = validateSummarizeMode({
+    from: opts.from,
+    to: opts.to,
+    last: opts.last,
+  });
+  if (!mode.ok) {
+    console.log(
+      `[gork] summarize usage error in ${guildId}: user=${userId} cmd=/gork summarize — ${mode.error}`,
+    );
+    return replyEphemeral(interaction, mode.error);
+  }
+
+  // 2. Per-guild summarize cooldown (§7.21.5, decision 57): while armed,
+  //    whole minutes remaining — the range is NOT read, nothing generates.
+  const cooldownMs = checkSummarizeGuildCooldown(guildId);
+  if (cooldownMs > 0) {
+    const mins = summarizeCooldownMinutesRemaining(cooldownMs);
+    console.log(
+      `[gork] summarize guild cooldown hit in ${guildId}: user=${userId} mode=${mode.mode} cmd=/gork summarize remainingMin=${mins} — rejected without read or LLM call`,
+    );
+    return replyEphemeral(
+      interaction,
+      `One rundown per server per ${SUMMARIZE_WINDOW_MINUTES} minutes — this server already posted one. Try again in **${mins} minute${mins === 1 ? "" : "s"}**. Nothing was read or generated.`,
+    );
+  }
+
+  // 3. Daily budget at enqueue (§7.17, decisions 33/35): same gate, same
+  //    locked reply, same 1×/user/scope/hour throttle as the Q&A trigger —
+  //    staff are NOT exempt. One UTC day key for the whole invocation.
+  const day = summarizeBudgetDay();
+  const budgetChannel = interaction.channel ?? { id: interaction.channelId };
+  const budgetGate = checkGorkBudget({ guildId, userId, channel: budgetChannel, day });
+  if (!budgetGate.allowed) {
+    if (budgetGate.kind === "error") {
+      // checkGorkBudget already console.error'd the DB cause. Fail CLOSED.
+      // (The keyword path answers this with the locked "brain went to
+      // lunch" mask — that disguise exists only to hide bans from the
+      // trigger UX; a staff-invoked rundown carries the real cause.)
+      console.error(
+        `[gork] summarize budget gate error in ${guildId}: user=${userId} day=${day} cmd=/gork summarize — failing closed`,
+      );
+      return replyEphemeral(
+        interaction,
+        "Could not check your gork daily budget — the server's daily-limit settings lookup failed (logged). Nothing was read or generated; try again in a moment.",
+      );
+    }
+    console.log(
+      `[gork] summarize budget ${budgetGate.kind} in ${guildId}: user=${userId} scope=${
+        budgetGate.scope ? `${budgetGate.scope.scopeKind}/${budgetGate.scope.scopeId}` : "?"
+      } day=${day}`,
+    );
+    if (shouldSendBudgetRejection({ guildId, userId, scope: budgetGate.scope })) {
+      return replyEphemeral(interaction, budgetGate.reply);
+    }
+    // Throttled (decision 34): the full rejection already went out this
+    // hour — resolve the command with a terse echo; never leave the
+    // invoker staring at nothing.
+    return replyEphemeral(
+      interaction,
+      budgetGate.kind === "blocked"
+        ? "gork is blocked for this channel/category/server scope (see the full notice you already received) — the rundown did not run."
+        : "You are still over your daily gork budget (full notice above from the last attempt) — it resets 00:00 UTC.",
+    );
+  }
+
+  // 4. Deferred BEFORE any range read or generation (reads paginate up to
+  //    1,000 messages; generation runs to a 60s deadline).
+  await interaction.deferReply();
+
+  const settings = getGuildSettings(guildId);
+
+  // 5. The job runs on the SHARED per-guild gork queue (decision 34) — a
+  //    rundown never stampedes a Q&A answer. runExclusive admits, waits the
+  //    FIFO turn, runs the body, and releases exactly once in a finally; a
+  //    rejecting body resolves to {error} — the slot (and the login) always
+  //    survive.
+  const slot = await gorkQueue.runExclusive(guildId, () =>
+    runSummarizeJob({
+      client,
+      interaction,
+      guildId,
+      userId,
+      day,
+      opts,
+      mode,
+      settings,
+    }),
+  );
+
+  if (slot.dropped) {
+    // Queue full: locked gork voice + the explicit nothing-ran clause.
+    console.log(
+      `[gork] summarize queue full in ${guildId}: user=${userId} mode=${mode.mode} cmd=/gork summarize — dropped, nothing was read or generated`,
+    );
+    return interaction.editReply(
+      `${QUEUE_FULL_REPLY} Nothing was read or generated for this rundown.`,
+    );
+  }
+  if (slot.error) {
+    // runSummarizeJob holds its own net; this guards against a silent drop
+    // if that contract is ever broken (AGENTS.md: never a silent failure).
+    console.error(
+      `[gork] summarize queue job threw in ${guildId}: user=${userId} mode=${mode.mode} cmd=/gork summarize:`,
+      slot.error?.message || slot.error,
+    );
+    return interaction.editReply(
+      `The rundown job crashed: ${slot.error?.message || slot.error} — no cooldown was armed and no budget was counted.`,
+    );
+  }
+  return undefined;
+}
+
+/**
+ * /gork summarize: staff conversation rundown (roadmap/gork.md §7.21,
+ * decisions 53–57). Dispatcher (index.js) already gated requireStaff. The
+ * rundown is a themed embed posted to the invoking channel; usage errors,
+ * cooldown/budget bounces, and every failure branch reply with the specific
+ * cause. Success bookkeeping (guild cooldown arm + one budget unit + audit +
+ * interaction-log row) happens ONLY when every embed landed.
+ */
+async function handleSummarize(client, interaction, guildId) {
+  try {
+    return await summarizeMain(client, interaction, guildId);
+  } catch (err) {
+    // Last-resort net for a bug in the paths above: logged with ids and
+    // surfaced verbatim — never a silent deferred spinner (AGENTS.md).
+    console.error(
+      `[gork] summarize crashed in ${guildId}: user=${interaction.user?.id ?? "?"} cmd=/gork summarize id=${interaction.id ?? "-"}`,
+      err?.message || err,
+    );
+    const text = `Could not run /gork summarize: ${err?.message || err}`;
+    if (interaction.deferred || interaction.replied) {
+      return editEphemeral(interaction, text).catch(() => {});
+    }
+    return replyEphemeral(interaction, text).catch(() => {});
+  }
+}
+
 module.exports = {
   setKeyword,
   setContext,
@@ -917,4 +1426,7 @@ module.exports = {
   handleBudget,
   setInteractionLog,
   showStatus,
+  handleSummarize,
+  /** TEST SEAM: ordered rundown poster with all-chunks-land accounting. */
+  postRundownPayloads,
 };
