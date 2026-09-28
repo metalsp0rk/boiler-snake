@@ -150,6 +150,7 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork bans` | List the users banned from gork in this server |
 | `/gork memory <action>` | Curate the community memory — see [Memory](#memory) |
 | `/gork budget <action>` | Per-user daily usage budgets per channel/category — see [Daily usage budget](#daily-usage-budget) |
+| `/gork log <on\|off>` | Toggle the gork [interaction log](gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
 | `/gork summarize <mode>` | Conversation rundown of a message range — see [Conversation rundown](#conversation-rundown) |
 | `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, memory state, budget default + rule count, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
