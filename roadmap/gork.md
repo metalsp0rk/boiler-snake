@@ -17,7 +17,7 @@ engineering beyond documentation.
 
 ### Status
 
-**Shipped** — design locked in [7.14](#714-design-decisions-locked). The per-scope daily usage budget extension ([7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-shipped)) is implemented (2026-09, migration `026_gork_budget`). Open extension in draft: conversation rundown `/gork summarize` ([7.21](#721-conversation-rundown--gork-summarize--2026-09-design-draft-2026-09-27--proposed-decisions-5357)).
+**Shipped** — design locked in [7.14](#714-design-decisions-locked). The per-scope daily usage budget extension ([7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-shipped)) is implemented (2026-09, migration `026_gork_budget`). Shipped extension: conversation rundown `/gork summarize` ([7.21](#721-conversation-rundown--gork-summarize--2026-09-design-locked-2026-09-27--decisions-5357)) — decisions 53–57 locked with the MVP impl 2026-09-27.
 
 ---
 
@@ -1276,7 +1276,15 @@ proves insufficient — and the lint score is what would prove it.
 
 ---
 
-### 7.21 Conversation rundown — `/gork summarize` — 2026-09 design (DRAFT 2026-09-27 — proposed decisions 53–57)
+### 7.21 Conversation rundown — `/gork summarize` — 2026-09 design (LOCKED 2026-09-27 — decisions 53–57)
+
+> **Revised 2026-09-27 (same-day design Q&A):** three discrete anchor modes
+> (closed range, `from`→now, `last:<N>`), optional `focus:`/`lang:` steering,
+> transcripts include bot messages **labeled**, the hard range cap is **1,000
+> messages** (up from 500) with clamp-and-disclose, and a per-guild **10-minute**
+> summarize cooldown (armed on success only) was added. The decisions below
+> reflect all of it. **Locked 2026-09-27 with the MVP impl** (decisions 53–57
+> confirmed).
 
 **Why:** long channels bury the signal. Staff want a *rundown*: point gork at a
 stretch of conversation — "from this post to that post" — and get a digest of what
@@ -1291,67 +1299,104 @@ range and the moment); an automatic ticker is explicitly out of scope (see below
 | **MVP** | Staff run `/gork summarize` with a message range; gork reads that range and posts the rundown back **to Discord as an embed**. No new tables, no new env, no migration. |
 | **V2** | Post the same rundown to a **Discourse forum** (topic per rundown) and reply with the topic link. New per-guild config + env secrets + one migration (number reserved at impl time — **not** `031`). |
 
-This section is a **draft** (the `bridge.md` / `fluxer.md` pattern): decisions 53–57 are
-*proposed*, not locked; they lock with the MVP impl PR, at which point this header flips
-to LOCKED with the decision numbers confirmed.
+This section followed the `bridge.md` / `fluxer.md` draft-then-lock pattern: decisions
+53–57 were proposed in the 2026-09-27 draft and **locked with the MVP impl PR the same
+day**, exactly as written above.
 
-#### 7.21.1 Command shape (proposed decision 53)
+#### 7.21.1 Command shape (locked decision 53)
 
-- `/gork summarize from:<message link or id> to:<message link or id> [channel:<channel>]`
+- `/gork summarize [from:<message link or id>] [to:<message link or id>]
+  [last:<N>] [channel:<channel>] [focus:<text>] [lang:<text>]`
   — a staff-tier subcommand (requireStaff, decision 15; ManageGuild
   `defaultMemberPermissions` picker like the rest of the staff-tier gork family).
+- **Three discrete anchor modes — exactly one, never mixed:**
+  1. **`from` + `to`** — closed range, inclusive of both anchors; if `from` is
+     newer than `to`, they swap.
+  2. **`from` only** — "from X until now": the anchor through the newest
+     readable message in its channel.
+  3. **`last:<N>`** — the newest `N` readable messages in the channel
+     (integer option bounded **1–1000** at the builder level).
+  Any other combination (`from` + `last`, `to` without `from`, neither an
+  anchor nor `last`) is a usage error that names the three modes.
 - **Anchors** reuse the `read_discord` grammar (§7.19): a full
   `https://discord.com/channels/<guild>/<channel>/<message>` link carries its own
   channel; a **bare message id** is accepted only together with `channel:` (or the
   invocation channel), since a bare id has no channel. Links to another guild are
   rejected before any fetch (decision 46's guild isolation).
-- **Same-channel rule:** both anchors must resolve to one channel — a cross-channel
-  range is a usage error, not two reads stitched together (keeps §7.19's read
-  semantics untouched). If `from` is newer than `to`, they swap (the range is
-  inclusive of both anchors).
+- **Same-channel rule:** with both anchors present they must resolve to one
+  channel — a cross-channel range is a usage error, not two reads stitched
+  together (keeps §7.19's read semantics untouched). `last:` reads exactly one
+  channel (`channel:` or the invocation channel).
+- **`focus:` (≤200 chars, enforced by the option)** — optional free-text
+  steering ("only the decisions about the event date"). It is a bounded
+  *instruction from the invoking staff member*, riding in the instruction zone
+  beside the card's fixed sections; the conversation itself stays quoted data
+  (decision 9's discipline unchanged: instructions come from staff, never from
+  transcript content).
+- **`lang:` (≤40 chars)** — optional output-language override, free text
+  ("spanish", "en"); when omitted the card writes the rundown in the **dominant
+  language of the conversation**.
 - **Works in** channels and threads that have a `messages.fetch` seam; forum
   channels stay refused exactly as in `read_discord` (parent has no timeline).
 - Deferred reply like every gork command surface; the invocation channel is the
   posting channel (MVP does not target an arbitrary channel).
 
-#### 7.21.2 Range read (proposed decision 54)
+#### 7.21.2 Range read (locked decision 54)
 
 - New helper in `src/features/gork/tools/readDiscord.js`'s orbit (shared link/id
-  parsing), paginating `channel.messages.fetch` with `after:` from the `from` anchor
-  toward the `to` anchor (100/page), stopping at `to` or at the caps.
-- **Caps:** hard max **500 messages** AND the decision-5-family total budget
-  (per-message cap + **12,000-char** total, code-point-safe via `sliceSafe`,
-  attachments collapsed to `[N attachment(s)]`, `id | timestamp | @author: content`
-  lines oldest→newest — the §7.19 output format, so the roster (§7.15 Fix 2) and
-  any prompt plumbing all speak one format). Hitting a cap is **not** silent: the
-  rundown names the truncated window it actually read.
+  parsing). `from`-anchored modes paginate `channel.messages.fetch` with `after:`
+  from the `from` anchor — toward `to`, or to the newest message in `from`-only
+  mode; `last:<N>` paginates with `before:` from the newest message backwards,
+  then reverses to oldest→newest.
+- **Caps:** hard max **1,000 messages** (raised from the draft's 500 at the
+  2026-09-27 design Q&A) AND the decision-5-family total budget (per-message cap
+  + **12,000-char** total, code-point-safe via `sliceSafe`, attachments collapsed
+  to `[N attachment(s)]`, `id | timestamp | @author: content` lines oldest→newest
+  — the §7.19 output format, so the roster (§7.15 Fix 2) and any prompt plumbing
+  all speak one format).
+- **Clamp and disclose, never silently:** hitting any cap is visible in the
+  output. An over-long `from`→`to` range summarizes the window that was actually
+  read (oldest-first from `from` until a cap bites); `last:<N>` beyond what the
+  caps allow delivers the largest window that fits. The rundown names the window
+  it actually read and the Discord reply repeats the same disclosure. The
+  `last:` option's Discord bound (1–1000) keeps N itself inside the hard cap.
+- **Bots ride along, labeled:** bot and webhook messages are part of the
+  transcript, rendered `id | timestamp | @author [bot]: content` — gork's own
+  answers and other bots are often the story in support channels. Discord system
+  messages (joins, pins, call starts) are skipped: not conversational content.
+  The roster resolves human display names exactly as before.
 - **Security inherits decision 46 wholesale:** guild isolation, asker ViewChannel
-  parity for the invoker, and the **open-ticket blackout** (rundowns of live tickets
-  are the ticket AI's job at close; decision 19's rationale stands).
+  parity for the invoker, and the **open-ticket blackout** (rundowns of live
+  tickets are the ticket AI's job at close; decision 19's rationale stands).
 - Never-throws contract at the service boundary (decision 47 culture), but unlike
   the tool path the *handler* surfaces every failure with a specific reply — a
   missing/deleted anchor, a fetch failure mid-range (report the partial range read
   and why no rundown was produced, per the repo's partial-results rule), or
-  zero readable human messages in range.
+  zero readable messages in range (after the system-message filter).
 
-#### 7.21.3 Generation (proposed decision 55)
+#### 7.21.3 Generation (locked decision 55)
 
 - One-shot LLM call on the shared AI core (§7.3) with a **dedicated
   `GORK_SUMMARIZE_CARD`** (byte-locked in `constants.js`, §7.20 governance style,
-  ≤1,500 chars) — the rundown card **replaces** the Q&A base prompt for this job;
-  gork's persona survives but the product is a digest, not an answer. Staff
+  ≤1,500 chars — sized to also carry the focus + language rules) — the rundown
+  card **replaces** the Q&A base prompt for this job; gork's persona survives but
+  the product is a digest, not an answer. Staff
   `gork_extra_rules` do **not** ride (they tune answers, not summaries); STE (§7.20)
   does not apply.
 - **No tool loop** (no web search, no `read_discord` re-entry): the range content is
   handed over in the prompt; a tool round-trip adds cost/latency and no value here.
 - Prompt data/quote discipline unchanged (decision 9): the conversation is quoted
-  data, never instructions; the roster resolves author display names;
-  `sanitizeAnswer` runs on the output.
+  data, never instructions. The `focus:` text and the language directive are the
+  only instruction-zone additions — both are staff-provided, and when `lang:` is
+  omitted the card itself decides "write in the dominant language of the
+  conversation". The roster resolves author display names; `sanitizeAnswer` runs
+  on the output.
 - Rundown shape the card asks for: headline, what was decided, open questions,
   action items, who said what that mattered — under a hard output cap (≤3,500
-  chars so one embed always holds it, see 7.21.4).
+  chars so one embed always holds it, see 7.21.4). `focus:` shifts emphasis
+  *within* that fixed shape; it never replaces the sections.
 
-#### 7.21.4 Delivery — embed, not plain text (proposed decision 56)
+#### 7.21.4 Delivery — embed, not plain text (locked decision 56)
 
 - The rundown posts as a **themed embed** (`EmbedBuilder` via the `src/core/theme.js`
   chrome — title, sections as fields/inline description blocks, footer with the
@@ -1368,15 +1413,27 @@ to LOCKED with the decision numbers confirmed.
   role/user mentions even if the summary text names people (sanitize already
   rewrites the tokens).
 
-#### 7.21.5 Runtime, V2 sketch, and the rules that bind both (proposed decision 57)
+#### 7.21.5 Runtime, V2 sketch, and the rules that bind both (locked decision 57)
 
 - **Queue/cooldown/budget:** runs as a gork job on the per-guild queue slot
   (decision 34) so a rundown can't stampede a Q&A answer; staff cooldown bypass
   applies; counts against the invoker's daily budget on success like any other job
   (decision 32 — success-only counting). Interaction log (migration `027`) records
-  it; audit gets a summarize variant of the Q&A embed.
-- **MVP needs no migration and no new env** — every input is a command option
-  (decision 44's "no setting, command, or migration" precedent).
+  it; audit gets a summarize variant of the Q&A embed (mode, resolved range,
+  focus, lang).
+- **Per-guild summarize cooldown:** one posted rundown per guild per
+  **10 minutes** (`GORK_SUMMARIZE_GUILD_COOLDOWN_MS`, a `constants.js` constant,
+  not per-guild configurable — constants-first like the rest of gork). It
+  **arms on success only**, the moment the rundown embed lands — mirroring
+  decision 32's success-only counting, so usage errors, empty ranges, and failed
+  generations never lock a guild out of an immediate retry. In-memory state; a
+  bot restart clears it (accepted: queue + daily budget still bound abuse).
+  While armed, the command replies with the minutes remaining.
+- **MVP needs no migration and no *required* env** — every input is a command
+  option (decision 44's "no setting, command, or migration" precedent). The one
+  new env *name* is the optional tuning override `GORK_SUMMARIZE_TURN_TIMEOUT_MS`
+  (one-shot generation deadline), following the shipped
+  `GORK_MEMORY_TURN_TIMEOUT_MS` idiom — the feature works with it unset.
 - **V2 (Discourse) sketch — recorded, not built:** per-guild forum target
   (base URL + category) in a new table or `guild_settings` columns; the API
   credential comes from env only (`DISCOURSE_API_KEY` / `DISCOURSE_API_USERNAME`
@@ -1393,20 +1450,30 @@ to LOCKED with the decision numbers confirmed.
   ranges, forum-channel reads, per-message citations in V2, editing reposted
   topics, non-Discourse forums (Fluxer can wait for a real request).
 
-**Implementation checklist (MVP — pending; locks decisions 53–57):**
+**Implementation checklist (done — MVP shipped 2026-09-27; decisions 53–57 locked):**
 
-- [ ] `constants.js` — `GORK_SUMMARIZE_CARD` + caps (message range max, output cap)
-      + length-pin test
-- [ ] Range reader — shared anchor parsing (link/bare id + channel), same-channel +
-      guild-isolation checks, `after:` pagination, caps via `sliceSafe`; unit tests
-      mirroring `test/gork-read-discord.test.js`
-- [ ] `/gork summarize` builder + handler (requireStaff, deferred reply, specific
-      error replies for every failure branch, partial-results reporting)
-- [ ] Generation job on the shared AI core with the summarize card; roster +
-      `sanitizeAnswer` on output; queue/budget integration
-- [ ] Embed renderer (theme chrome, footer range links, continuation-embed overflow)
-- [ ] Audit variant + interaction-log row
-- [ ] Unit + integration tests (`test/gork*.test.js`, `test/integration/gork.test.js`)
-      — range end-to-end with mocked fetch, caps, blackout, embed budget
-- [ ] `docs/gork.md` + `docs/commands/index.md` + `npm run docs:build`
-- [ ] Tick this checklist + §8 in `index.md`; header → LOCKED (decisions 53–57)
+- [x] `constants.js` — `GORK_SUMMARIZE_CARD` + caps (1,000-message range max,
+      12k transcript budget, 3,500 output cap, 10-min guild cooldown,
+      `focus:`/`lang:` option lengths) + length-pin test
+- [x] Range reader — shared anchor parsing (link/bare id + channel), mode
+      resolution (from+to / from→now / last:N), same-channel + guild-isolation
+      checks, `after:`/`before:` pagination, bots-labeled lines + system-message
+      filter, caps via `sliceSafe` with clamp-and-disclose; unit tests mirroring
+      `test/gork-read-discord.test.js`
+- [x] `/gork summarize` builder + handler (requireStaff, deferred reply, option
+      bounds `last:` 1–1000 / `focus:` ≤200 / `lang:` ≤40, mode-exclusivity usage
+      errors, specific error replies for every failure branch, partial-results
+      reporting)
+- [x] Generation job on the shared AI core with the summarize card; focus +
+      language directives in the instruction zone; roster + `sanitizeAnswer` on
+      output; queue/budget integration
+- [x] Per-guild cooldown gate (success-armed, in-memory, minutes-remaining
+      reply) + unit tests
+- [x] Embed renderer (theme chrome, footer range links, disclosed-window line
+      when a cap clamped, continuation-embed overflow)
+- [x] Audit variant + interaction-log row
+- [x] Unit + integration tests (`test/gork*.test.js`, `test/integration/gork.test.js`)
+      — all three modes end-to-end with mocked fetch, caps, blackout, cooldown,
+      embed budget
+- [x] `docs/gork.md` + `docs/commands/index.md` + `npm run docs:build`
+- [x] Tick this checklist + §8 in `index.md`; header → LOCKED (decisions 53–57)
