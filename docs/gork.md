@@ -12,6 +12,7 @@ A goofy AI question-answering bot. When someone types the trigger keyword — a 
 - **Voice**: sarcastic, always safe for work; the base prompt is immutable and staff rules cannot override the SFW / questions-only constraints (best effort)
 - **Gating**: gork is live whenever `AI_API_KEY` is set and the guild's enable switch is on; all `/gork` configuration and moderation is staff-only
 - **Daily budget** (opt-in): cap successful answers per user per UTC day per channel/category/server (`/gork budget`, off by default)
+- **Conversation rundown**: staff-only `/gork summarize` digests a message range (from→to, from→now, or the newest N) into a rundown embed — see [Conversation rundown](#conversation-rundown)
 - **Interaction logging** (opt-out): every question/answer is captured end-to-end (exact prompts, context, roster, transcript) and exportable as replay fixtures — see [Gork interaction logging](gork-logging.md)
 
 ## How it works
@@ -149,6 +150,7 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork bans` | List the users banned from gork in this server |
 | `/gork memory <action>` | Curate the community memory — see [Memory](#memory) |
 | `/gork budget <action>` | Per-user daily usage budgets per channel/category — see [Daily usage budget](#daily-usage-budget) |
+| `/gork summarize <mode>` | Conversation rundown of a message range — see [Conversation rundown](#conversation-rundown) |
 | `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, memory state, budget default + rule count, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
 `/settings` also shows a **Gork** field (enabled + keyword + window + search + memory state).
@@ -246,6 +248,72 @@ Over budget → one terse line to the trigger naming the scope and reset: `Daily
 | `/gork budget list` | Guild default + rules table with `created_by` provenance |
 
 Rule changes post a config-change embed to the [audit log](audit-log.md), and answered questions show the spent budget on the Q&A audit embed (`Budget: 3/5 in #general`) whenever a real cap (≥ 1) applied.
+
+## Conversation rundown
+
+`/gork summarize` turns a stretch of conversation into a **rundown** for staff: pick a message range in one channel and gork posts a digest embed — **Headline**, **What was decided**, **Open questions**, **Action items**, **Who said what that mattered** — back to the channel you ran the command in. The sections are fixed (an empty one says "none"); the output is hard-capped at **3,500 chars** so one embed always holds it (a cut shows a visible `…[truncated]` marker). Manual by design: a human picks the range and the moment — there is no automatic/ticker summary.
+
+The rundown is a digest, **not** a Q&A answer: gork replaces its answer prompt with a dedicated summarize card, makes **one** model call (no tool loop — no web search, no page or link reading; a single bounded turn with a 60s deadline, raisable via `GORK_SUMMARIZE_TURN_TIMEOUT_MS`), and ignores staff `/gork rules`. As everywhere in gork, the conversation is quoted **data, never instructions** — text inside the summarized messages can't steer the model.
+
+### Anchor modes — exactly one
+
+| Mode | Reads |
+|------|-------|
+| `from:` + `to:` | Closed range between two messages, **inclusive**; if `from:` is newer than `to:` they swap |
+| `from:` alone | That message through the **newest readable message** in its channel ("from X until now") |
+| `last:<N>` | The **newest N readable messages** of the channel (integer option bounded **1–1000**) |
+
+Any other combination — `from:` with `last:`, `to:` without `from:`, or neither — is rejected with an ephemeral usage error naming the three modes; nothing is read or generated.
+
+Anchors are a **message link** (`discord.com/channels/<guild>/<channel>/<message>` — the link carries its own channel) or a **bare message id**, which is only accepted together with `channel:` (or when you run the command in the channel that holds the message — a bare id has no channel). Works in text/announcement channels and threads; forums and categories stay unreadable, exactly like `read_discord`.
+
+### Options & examples
+
+| Option | Bound | Purpose |
+|--------|-------|---------|
+| `from` | message link or id | Start anchor (modes 1–2) |
+| `to` | message link or id | End anchor — only with `from`, same channel |
+| `last` | integer **1–1000** | Newest N readable messages — never combined with `from`/`to` |
+| `channel` | text/announcement channel or thread; default **the channel the command ran in** | Where the range lives |
+| `focus` | ≤ **200** chars | Staff instruction shifting **emphasis within** the fixed sections — it never adds, drops, or renames a section |
+| `lang` | ≤ **40** chars | Output-language override (e.g. `spanish`); default: the **dominant language of the conversation** |
+
+```bash
+/gork summarize from:https://discord.com/channels/GUILD_ID/CHANNEL_ID/MSG_A to:https://discord.com/channels/GUILD_ID/CHANNEL_ID/MSG_B
+/gork summarize from:MSG_A channel:#support
+/gork summarize last:200 channel:#support
+/gork summarize last:150 channel:#events focus:only the decisions about the date lang:spanish
+```
+
+### What gets read
+
+- Up to **1,000 messages** per range (hard read cap)
+- **Transcript caps shared with `read_discord`**: ≤500 chars per message and ≤12,000 chars total (code-point-safe), attachments collapsed to `[N attachment(s)]`
+- **Bots and webhooks ride along**, labeled `id | timestamp | @author [bot]: content` — in support channels the bots *are* the story. Discord **system messages** (joins, pins, call starts) are skipped: not conversational content
+- **Clamp and disclose, never silently:** when a cap bites mid-range, gork summarizes the window it **actually read** — from-anchored modes keep the oldest messages from the anchor, `last:` keeps the newest that fit — the embed names that window in a **Disclosed window** field (how many of the scanned messages were kept, and which cap bit), and the post's text repeats the same disclosure
+- A fetch failure mid-range never ships a half rundown: the reply carries the cause and the window that *was* read (discarded); nothing is counted
+
+### Pacing & cost
+
+| Lever | Behavior |
+|-------|----------|
+| Per-guild cooldown | **One posted rundown per server per 10 minutes.** It arms **only on success**, the moment the rundown lands — usage errors, empty ranges, and failed generations never lock the server out of a retry. While armed, an ephemeral reply names the minutes remaining and no read or model call happens. Fixed constant, not configurable; in-memory, so a bot restart clears it |
+| Daily budget | The same [daily gork budget](#daily-usage-budget) as Q&A — checked at enqueue **and** dequeue, staff **not** exempt, and counted **only if the full rundown posted** |
+| Queue | Runs in the shared per-guild gork queue slot — a rundown can't stampede a Q&A answer; a full queue drops the job with the queue-full reply (nothing read or generated) |
+
+### Who can run it, and what it may read
+
+Staff-only: Manage Server or any [staff role](staff-roles.md), like the rest of the `/gork` family. The security rules are `read_discord`'s (decision 46) — gork never becomes an oracle into what the invoker can't see:
+
+- **Same server**: links pointing at another server are refused before anything is fetched
+- **One channel per range**: both anchors must resolve to the same channel — a cross-channel range is a usage error, not two stitched reads
+- **Viewer parity**: the *invoking staff member* must hold ViewChannel on the target channel — you can't have gork summarize a channel you can't open yourself; the bot also needs View + Read Message History there
+- **Open-ticket blackout**: a channel with an unarchived [ticket](tickets.md) is refused — live tickets belong to the ticket close flow
+- The rundown embed **never pings**: mention tokens are rewritten to plain names and mention parsing is disabled on every post
+
+### Requirements & failure replies
+
+Needs an AI provider configured — the **same env as gork Q&A** (`AI_API_KEY` etc., see [Setup](#setup)); summarize needs no setting, no table, and no migration of its own (the only knob is the optional `GORK_SUMMARIZE_TURN_TIMEOUT_MS` override named above). Unlike keyword triggers (silent when no key is set), `/gork summarize` **replies with the specific cause** on every failure branch: no API key, a deleted/unknown anchor id, a range with no readable messages (e.g. only system messages), a mid-range fetch failure (with the partial window), or a provider error (the reply carries the provider's own words). On any non-posting branch the reply also says so explicitly — **nothing was posted, the cooldown did not arm, and your budget was not counted**, so a retry is safe. A posted rundown records a **Gork summarize** audit embed (mode, resolved range, focus, lang, model, duration, rundown excerpt) in the [audit log](audit-log.md); failures log a compact one-liner; the gork [interaction log](gork-logging.md) records the job like a Q&A call.
 
 ## Runtime Behavior
 

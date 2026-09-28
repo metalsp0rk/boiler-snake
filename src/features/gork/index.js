@@ -38,6 +38,7 @@ const {
   handleBudget,
   setInteractionLog,
   showStatus,
+  handleSummarize,
 } = require("./handlers");
 
 /**
@@ -78,6 +79,11 @@ async function handleGork(interaction, ctx) {
       return handleBudget(client, interaction, guildId);
     case "log":
       return setInteractionLog(client, interaction, guildId);
+    case "summarize":
+      // requireStaff above gates the whole /gork family (decision 53: the
+      // rundown is staff-only); the handler owns the mode/cooldown/budget
+      // gates and the queue + post pipeline.
+      return handleSummarize(client, interaction, guildId);
     case "status":
       return showStatus(interaction, guildId);
     default:
