@@ -17,7 +17,7 @@ engineering beyond documentation.
 
 ### Status
 
-**Shipped** — design locked in [7.14](#714-design-decisions-locked). The per-scope daily usage budget extension ([7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-shipped)) is implemented (2026-09, migration `026_gork_budget`).
+**Shipped** — design locked in [7.14](#714-design-decisions-locked). The per-scope daily usage budget extension ([7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-shipped)) is implemented (2026-09, migration `026_gork_budget`). Open extension in draft: conversation rundown `/gork summarize` ([7.21](#721-conversation-rundown--gork-summarize--2026-09-design-draft-2026-09-27--proposed-decisions-5357)).
 
 ---
 
@@ -384,14 +384,13 @@ content (incl. `<@…>`, `<@&…>`, `<#…>`) to the LLM untouched; the plain-te
 - [x] **Ping control:** `NO_PING_MENTIONS = { parse: [] }` (per the
       `src/features/reactionRoles/service.js` precedent) is passed on the reply **and**
       every continuation message, so echoed tokens never ping.
-- [ ] **Proper mention rendering (embeds):** **DEFERRED** (2026-09: shipped the
-      sanitize + no-ping path instead; plain-text style, decision 11, stays locked until
-      a decision 24 is explicitly locked). The house style shows mentions in embed fields
-      (`<@id>` renders as a chip there — e.g. the Subject field in
-      `src/features/warnings/index.js`). Moving answers into an embed **revises locked
-      decision 11** (plain text, no embed) → lock a new decision (24) first. Remember
-      **mentions inside embeds do not notify** — any intended ping must stay in message
-      content (repo convention, cf. `src/features/eventReminders/ticker.js`).
+- [x] **Proper mention rendering (embeds):** **closed — REJECTED from the roadmap
+      (2026-09-27), do not reopen.** The shipped sanitize + no-ping path above already
+      removes raw `<@id>` markup and never pings; embed "chip" rendering is purely
+      cosmetic — mentions inside embeds do not notify either (repo convention, cf.
+      `src/features/eventReminders/ticker.js`), so plain-text answers lose nothing
+      functional. Decision 11 (plain text, no embed) **stands as locked** — no
+      decision 24 will ever be needed for this.
 - [x] Tests: unit cases for the output sanitizer (`test/gork.test.js` — user/role/channel
       markup, unknown ids, emoji/timestamp passthrough, code spans); integration test
       where the answer echoes `<@id>` → reply has no raw mention tokens and the send
@@ -1272,5 +1271,142 @@ proves insufficient — and the lint score is what would prove it.
       prompt contains base bytes + card + rules in order; toggle off → unchanged;
       audit label renders
 - [ ] `docs/gork.md` + `docs/commands/index.md` + configuration row +
-      `npm run docs:build`
+       `npm run docs:build`
 - [ ] Tick this checklist + §8 in `index.md`; status line here → shipped
+
+---
+
+### 7.21 Conversation rundown — `/gork summarize` — 2026-09 design (DRAFT 2026-09-27 — proposed decisions 53–57)
+
+**Why:** long channels bury the signal. Staff want a *rundown*: point gork at a
+stretch of conversation — "from this post to that post" — and get a digest of what
+actually happened (decisions made, questions answered, action items, notable
+disagreements) that can be pinned or linked. Manual from day one (a human picks the
+range and the moment); an automatic ticker is explicitly out of scope (see below).
+
+**Two targets:**
+
+| Target | Deliverable |
+|--------|-------------|
+| **MVP** | Staff run `/gork summarize` with a message range; gork reads that range and posts the rundown back **to Discord as an embed**. No new tables, no new env, no migration. |
+| **V2** | Post the same rundown to a **Discourse forum** (topic per rundown) and reply with the topic link. New per-guild config + env secrets + one migration (number reserved at impl time — **not** `031`). |
+
+This section is a **draft** (the `bridge.md` / `fluxer.md` pattern): decisions 53–57 are
+*proposed*, not locked; they lock with the MVP impl PR, at which point this header flips
+to LOCKED with the decision numbers confirmed.
+
+#### 7.21.1 Command shape (proposed decision 53)
+
+- `/gork summarize from:<message link or id> to:<message link or id> [channel:<channel>]`
+  — a staff-tier subcommand (requireStaff, decision 15; ManageGuild
+  `defaultMemberPermissions` picker like the rest of the staff-tier gork family).
+- **Anchors** reuse the `read_discord` grammar (§7.19): a full
+  `https://discord.com/channels/<guild>/<channel>/<message>` link carries its own
+  channel; a **bare message id** is accepted only together with `channel:` (or the
+  invocation channel), since a bare id has no channel. Links to another guild are
+  rejected before any fetch (decision 46's guild isolation).
+- **Same-channel rule:** both anchors must resolve to one channel — a cross-channel
+  range is a usage error, not two reads stitched together (keeps §7.19's read
+  semantics untouched). If `from` is newer than `to`, they swap (the range is
+  inclusive of both anchors).
+- **Works in** channels and threads that have a `messages.fetch` seam; forum
+  channels stay refused exactly as in `read_discord` (parent has no timeline).
+- Deferred reply like every gork command surface; the invocation channel is the
+  posting channel (MVP does not target an arbitrary channel).
+
+#### 7.21.2 Range read (proposed decision 54)
+
+- New helper in `src/features/gork/tools/readDiscord.js`'s orbit (shared link/id
+  parsing), paginating `channel.messages.fetch` with `after:` from the `from` anchor
+  toward the `to` anchor (100/page), stopping at `to` or at the caps.
+- **Caps:** hard max **500 messages** AND the decision-5-family total budget
+  (per-message cap + **12,000-char** total, code-point-safe via `sliceSafe`,
+  attachments collapsed to `[N attachment(s)]`, `id | timestamp | @author: content`
+  lines oldest→newest — the §7.19 output format, so the roster (§7.15 Fix 2) and
+  any prompt plumbing all speak one format). Hitting a cap is **not** silent: the
+  rundown names the truncated window it actually read.
+- **Security inherits decision 46 wholesale:** guild isolation, asker ViewChannel
+  parity for the invoker, and the **open-ticket blackout** (rundowns of live tickets
+  are the ticket AI's job at close; decision 19's rationale stands).
+- Never-throws contract at the service boundary (decision 47 culture), but unlike
+  the tool path the *handler* surfaces every failure with a specific reply — a
+  missing/deleted anchor, a fetch failure mid-range (report the partial range read
+  and why no rundown was produced, per the repo's partial-results rule), or
+  zero readable human messages in range.
+
+#### 7.21.3 Generation (proposed decision 55)
+
+- One-shot LLM call on the shared AI core (§7.3) with a **dedicated
+  `GORK_SUMMARIZE_CARD`** (byte-locked in `constants.js`, §7.20 governance style,
+  ≤1,500 chars) — the rundown card **replaces** the Q&A base prompt for this job;
+  gork's persona survives but the product is a digest, not an answer. Staff
+  `gork_extra_rules` do **not** ride (they tune answers, not summaries); STE (§7.20)
+  does not apply.
+- **No tool loop** (no web search, no `read_discord` re-entry): the range content is
+  handed over in the prompt; a tool round-trip adds cost/latency and no value here.
+- Prompt data/quote discipline unchanged (decision 9): the conversation is quoted
+  data, never instructions; the roster resolves author display names;
+  `sanitizeAnswer` runs on the output.
+- Rundown shape the card asks for: headline, what was decided, open questions,
+  action items, who said what that mattered — under a hard output cap (≤3,500
+  chars so one embed always holds it, see 7.21.4).
+
+#### 7.21.4 Delivery — embed, not plain text (proposed decision 56)
+
+- The rundown posts as a **themed embed** (`EmbedBuilder` via the `src/core/theme.js`
+  chrome — title, sections as fields/inline description blocks, footer with the
+  range `[first id → last id]` links and the invoking user).
+- **Why an embed:** the whole point is length headroom. Plain message content caps at
+  **2,000 chars**; an embed gets ~**6,000 chars total** (256 title + 4,096
+  description + 25 fields × (256 name + 1,024 value)), so the entire rundown fits
+  in **one message** instead of a splitLongAnswer-style multi-message wall. The
+  generation output cap (≤3,500) is sized to that budget.
+- Emergency chunking only: if the model ever overflows the embed budget, send the
+  first embed plus **continuation embeds** (never a plain-text dump), same
+  all-chunks-land counting as decision 32.
+- `allowedMentions: NO_PING_MENTIONS` on every post (Fix 1 precedent); no pings, no
+  role/user mentions even if the summary text names people (sanitize already
+  rewrites the tokens).
+
+#### 7.21.5 Runtime, V2 sketch, and the rules that bind both (proposed decision 57)
+
+- **Queue/cooldown/budget:** runs as a gork job on the per-guild queue slot
+  (decision 34) so a rundown can't stampede a Q&A answer; staff cooldown bypass
+  applies; counts against the invoker's daily budget on success like any other job
+  (decision 32 — success-only counting). Interaction log (migration `027`) records
+  it; audit gets a summarize variant of the Q&A embed.
+- **MVP needs no migration and no new env** — every input is a command option
+  (decision 44's "no setting, command, or migration" precedent).
+- **V2 (Discourse) sketch — recorded, not built:** per-guild forum target
+  (base URL + category) in a new table or `guild_settings` columns; the API
+  credential comes from env only (`DISCOURSE_API_KEY` / `DISCOURSE_API_USERNAME`
+  style — `.env`/secret manager; docs use `YOUR_DISCOURSE_API_KEY` placeholders,
+  never real-looking keys, per AGENTS.md). Posting = Discourse's `POST /posts`
+  topic-creation endpoint (markdown body = the same rundown + a source-range link
+  footer); the Discord reply becomes the confirmation with the topic URL. The
+  client is **greenfield** (the repo has zero Discourse code) — the V2 PR must fetch
+  current Discourse API docs (context7/ExternalScout) for auth params, rate limits,
+  and topic-vs-reply semantics before writing code, plus a local HTTP fixture test.
+  **Migration id:** the next free id when the PR is written; **do not squat `031`**
+  (gork STE) or any id this draft does not own.
+- **Out of scope (both targets):** auto/ticker-triggered summaries, cross-channel
+  ranges, forum-channel reads, per-message citations in V2, editing reposted
+  topics, non-Discourse forums (Fluxer can wait for a real request).
+
+**Implementation checklist (MVP — pending; locks decisions 53–57):**
+
+- [ ] `constants.js` — `GORK_SUMMARIZE_CARD` + caps (message range max, output cap)
+      + length-pin test
+- [ ] Range reader — shared anchor parsing (link/bare id + channel), same-channel +
+      guild-isolation checks, `after:` pagination, caps via `sliceSafe`; unit tests
+      mirroring `test/gork-read-discord.test.js`
+- [ ] `/gork summarize` builder + handler (requireStaff, deferred reply, specific
+      error replies for every failure branch, partial-results reporting)
+- [ ] Generation job on the shared AI core with the summarize card; roster +
+      `sanitizeAnswer` on output; queue/budget integration
+- [ ] Embed renderer (theme chrome, footer range links, continuation-embed overflow)
+- [ ] Audit variant + interaction-log row
+- [ ] Unit + integration tests (`test/gork*.test.js`, `test/integration/gork.test.js`)
+      — range end-to-end with mocked fetch, caps, blackout, embed budget
+- [ ] `docs/gork.md` + `docs/commands/index.md` + `npm run docs:build`
+- [ ] Tick this checklist + §8 in `index.md`; header → LOCKED (decisions 53–57)

@@ -21,7 +21,7 @@ Each feature has its own file with the full design, status, and locked decisions
 | 1 | Help Ticket System | [help-tickets.md](help-tickets.md) | Shipped (MVP + panel) | Richer `/ticket list` filters (OAuth-on-transcripts closed — shipped via [web-admin.md](web-admin.md) §8.4) |
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP + EventSub + clips/VODs) | Per-channel overrides; templates; go-offline messages |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
-| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): embed-based mention rendering (deferred), reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)); `read_discord` linked message/channel reader **shipped** ([gork.md §7.19](gork.md)); STE anti-slop answer style **design locked, impl pending** ([gork.md §7.20](gork.md)) |
+| 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)); `read_discord` linked message/channel reader **shipped** ([gork.md §7.19](gork.md)); STE anti-slop answer style **design locked, impl pending** ([gork.md §7.20](gork.md)); `/gork summarize` conversation rundown **draft** ([gork.md §7.21](gork.md)) |
 | 9 | Fluxer (Discord + Fluxer endpoints) | [fluxer.md](fluxer.md) | **Spec** (reviewed, no code) | Phase 0 spike, then 11 PRs in [fluxer.md](fluxer.md) |
 | 10 | Channel bridge (Discord ↔ Fluxer) | [bridge.md](bridge.md) | **Draft** (reviewed, no code) | Depends on Fluxer Phases 2–3; spikes in [bridge.md](bridge.md) (Open Questions) |
 
@@ -119,7 +119,7 @@ Event reminders, staff notes, warnings, and web admin console migration tables: 
 
 ### Gork
 
-- [x] **Fix (shipped):** raw `<@id>` markup in gork replies — `sanitizeAnswer()` rewrites mention tokens to display names and replies send `allowedMentions: { parse: [] }` (no unintended pings); **embed-based** "chip" rendering stays **deferred** (would revise locked decision 11 → needs decision 24; see [gork.md §7.15](gork.md))  
+- [x] **Fix (shipped):** raw `<@id>` markup in gork replies — `sanitizeAnswer()` rewrites mention tokens to display names and replies send `allowedMentions: { parse: [] }` (no unintended pings); **embed-based** "chip" rendering **rejected** — decision 11 (plain text) stands (see [gork.md §7.15](gork.md))  
 - [x] **Fix (shipped):** user roster in the generation context — `src/features/gork/roster.js` (`id | @handle | display name (nickname)`; asker + authors + mentions) (see [gork.md §7.15](gork.md))  
 - [ ] **Fix (triage, open):** reported crash on reply / `@user`-mention messages — still no live crash evidence captured; evidence list, fixed surface, and repro matrix are tracked in [gork.md §7.15](gork.md) (Fix 3)  
 - [x] **Fix (shipped):** special-character safety in chunking/truncation — `safeCutIndex`/`sliceSafe` code-point cuts + `pullBeforeTokens` token-aware chunks + capped context slices (see [gork.md §7.15](gork.md))  
@@ -128,6 +128,7 @@ Event reminders, staff notes, warnings, and web admin console migration tables: 
 - [x] **Feature (shipped 2026-09):** per-scope daily usage budget — per-user X successful answers/day per channel/category (guild-default fallback, tri-state `-1/0/cap`), success-only counting, enqueue+dequeue no-overage checks (locked decisions 30–37, migration `026`, `/gork budget` command family; see [gork.md §7.17](gork.md))
 - [x] **Feature (shipped 2026-09):** `read_discord` tool — read a linked message (anchor + 40 before / 10 after) or channel (50 latest) via one tool call; guild isolation, asker ViewChannel parity, open-ticket blackout (locked decisions 44–48; see [gork.md §7.19](gork.md))
 - [ ] **Feature (design locked 2026-09-17, impl pending):** STE answer style — toggle-able anti-slop writing-system card (`/gork ste`, migration `031`, default off) so answers read like a person, not a slop factory; flavored mode keeps the persona; linter + repair loop deferred (locked decisions 49–52; see [gork.md §7.20](gork.md))
+- [ ] **Feature (draft 2026-09-27, decisions 53–57 proposed):** `/gork summarize` conversation rundown — staff point gork at a message range ("from X to Y"), gork reads the range (decision-46 security) and posts a digest **as an embed** (~6k chars vs 2k plain — one message, no chunk wall); V2 posts the rundown to a Discourse forum (see [gork.md §7.21](gork.md))
 
 ### Fluxer (multi-platform endpoints)
 
