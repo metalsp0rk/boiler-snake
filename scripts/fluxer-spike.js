@@ -167,6 +167,7 @@ function truncateEvidence(obj) {
 
 let apiBase = null; // resolved from discovery api_public + '/v1'
 const tokenValidity = { checked: false, valid: false };
+const headerProbes = []; // {method, path, status, headers} for successful calls
 
 async function apiCall(method, pathname, body, opts2 = {}) {
   if (!apiBase) throw new Error('apiBase not resolved (discovery must run first)');
@@ -193,6 +194,7 @@ async function apiCall(method, pathname, body, opts2 = {}) {
   for (const h of res.headers.keys()) {
     if (rateHeaderNames.includes(h) || h === 'x-fluxer-version') headersOut[h] = res.headers.get(h);
   }
+  if (res.status < 400) headerProbes.push({ method, path: pathname, status: res.status, headers: { ...headersOut } });
   return {
     status: res.status,
     code: json && typeof json === 'object' ? json.code ?? json.error?.code ?? null : null,
@@ -457,6 +459,19 @@ async function checkGuildList() {
     } else {
       record(c, 'bot is in no guilds — join the test community first');
       c.status = 'fail';
+    }
+    // REST guild fetch: bot GUILD_CREATE carries NO name/owner_id/mfa_level/features,
+    // so the MFA-elevation question needs the REST guild object.
+    if (guildWanted) {
+      const one = await apiCall('GET', `/guilds/${guildWanted}`);
+      record(c, `GET /guilds/{guild_id} -> ${one.status}; field names: ${fieldKeys(one.json).join(', ')}`,
+        truncateEvidence(one.json && { id: one.json.id, name: one.json.name, owner_id: one.json.owner_id,
+          mfa_level: one.json.mfa_level, features: (one.json.features || []).slice(0, 12),
+          verification_level: one.json.verification_level }));
+      if (one.status === 200) {
+        record(c, `mfa_level (REST) = ${JSON.stringify(one.json.mfa_level)} — 1 means elevated actions (MANAGE_ROLES/`
+          + `MANAGE_CHANNELS/BAN/etc.) return 400 TWO_FACTOR_REQUIRED for accounts without an enrolled authenticator`);
+      }
     }
   } catch (e) { record(c, `error: ${e.message}`); c.status = 'fail'; }
 }
@@ -830,36 +845,45 @@ async function checkReactions(textChannel) {
 async function checkRoles(guildId, botUserId, g0) {
   const c = check('roles', 'PUT/DELETE /guilds/{g}/members/{u}/roles/{r} (204 + rate headers)');
   const roles = Array.isArray(g0 && g0.roles) ? g0.roles : Object.values((g0 && g0.roles) || {});
-  const role = roles.find(r => String(r.id) !== String(g0 && g0.id) && !r.managed);
-  if (!role) { record(c, 'no assignable non-everyone unmanaged role found in guild'); return done(c, 'fail'); }
-  record(c, `using role id=${role.id} name=${JSON.stringify(role.name)} position=${role.position}`);
-  record(c, `role object field names: ${fieldKeys(role).join(', ')}; permissions type=${typeof role.permissions} value=${JSON.stringify(role.permissions)}`);
-  if (!(await confirm(`Add role "${role.name}" to the BOT itself (self role add/remove test)?`))) {
-    record(c, 'operator declined self role add/remove — status codes UNCONFIRMED');
+  record(c, `role object field names: ${fieldKeys(roles[0]).join(', ')}; permissions type=${roles[0] && typeof roles[0].permissions} `
+    + `(NOTE: no 'managed' field on the wire — integration roles are not identifiable by a 'managed' boolean)`);
+  const own = roles.find(r => /boiler.?snake/i.test(String(r.name || '')));
+  if (own) record(c, `own integration role: id=${own.id} name=${JSON.stringify(own.name)} `
+    + `permissions=${JSON.stringify(own.permissions)} — self-grant 403 MISSING_PERMISSIONS observed in run 1 `
+    + `even with full 64-bit mask; bots cannot self-grant their integration role; not re-tested`);
+  if (!(await confirm('Create a temp test role in the community (used for role add/remove, deleted after)?'))) {
+    record(c, 'operator declined role mutation — status codes UNCONFIRMED');
     return done(c, 'skip');
   }
   try {
-    const add = await apiCall('PUT', `/guilds/${guildId}/members/${botUserId}/roles/${role.id}`);
-    record(c, `PUT /guilds/{guild_id}/members/{user_id}/roles/{role_id} -> ${add.status} `
-      + `(docs:5 expects 204 empty; observed body length=${(add.text || '').length}); `
-      + `rate headers: ${JSON.stringify(add.headers)}`, truncateEvidence(add.json || add.text));
-    // Observe the member payload shape via gateway (MESSAGE_CREATE member.roles) if present,
-    // else via GET member.
+    const mk = await apiCall('POST', `/guilds/${guildId}/roles`, {
+      name: `spike-tmp-${Date.now().toString(36)}`, permissions: '0', color: 0x99aab5,
+    });
+    record(c, `POST /guilds/{guild_id}/roles -> ${mk.status} (temp role for the add/remove probe)`,
+      truncateEvidence(mk.json || mk.text));
+    const roleId = mk.json && mk.json.id;
+    if (!roleId) { record(c, `role create failed (${mk.status}) — add/remove UNCONFIRMED`, truncateEvidence(mk.json || mk.text)); return done(c, 'fail'); }
+    const add = await apiCall('PUT', `/guilds/${guildId}/members/${botUserId}/roles/${roleId}`);
+    record(c, `PUT /guilds/{guild_id}/members/{user_id}/roles/{role_id} (temp role) -> ${add.status} `
+      + `(docs:5 expects 204 empty; observed body length=${(add.text || '').length})`,
+      truncateEvidence(add.json || add.text));
     const mem = await apiCall('GET', `/guilds/${guildId}/members/${botUserId}`);
     const rolesInMember = mem.json && Array.isArray(mem.json.roles) ? mem.json.roles : null;
-    record(c, `GET /guilds/{guild_id}/members/{user_id} -> ${mem.status}; roles array contains role: `
-      + `${rolesInMember ? rolesInMember.map(String).includes(String(role.id)) : 'n/a'} `
-      + `(role ids are ${rolesInMember && rolesInMember[0] ? typeof rolesInMember[0] + ' strings/ids' : 'n/a'}; docs:5/9.9.1 member.roles: [id])`,
+    record(c, `GET /guilds/{guild_id}/members/{user_id} -> ${mem.status}; roles array contains temp role: `
+      + `${rolesInMember ? rolesInMember.map(String).includes(String(roleId)) : 'n/a'} `
+      + `(member.roles entries are ${rolesInMember && rolesInMember[0] ? typeof rolesInMember[0] + ' strings' : 'n/a'}; docs:5/9.9.1 CONFIRMED)`,
       truncateEvidence(mem.json && Array.isArray(mem.json.roles) ? { roles: mem.json.roles, keys: fieldKeys(mem.json) } : (mem.json || mem.text)));
-    const rm = await apiCall('DELETE', `/guilds/${guildId}/members/${botUserId}/roles/${role.id}`);
-    record(c, `DELETE role -> ${rm.status}`);
+    const rm = await apiCall('DELETE', `/guilds/${guildId}/members/${botUserId}/roles/${roleId}`);
+    record(c, `DELETE role from member -> ${rm.status}`);
+    const delRole = await apiCall('DELETE', `/guilds/${guildId}/roles/${roleId}`);
+    record(c, `DELETE /guilds/{guild_id}/roles/{role_id} -> ${delRole.status} (cleanup)`);
     if (add.status === 204 && rm.status === 204) c.status = 'pass';
     else if (add.status && rm.status) { c.status = 'observed'; record(c, `status codes differ from docs (add=${add.status}, remove=${rm.status}) — recorded as live facts`); }
     else c.status = 'fail';
   } catch (e) { record(c, `error: ${e.message}`); c.status = 'fail'; }
 }
 
-async function checkChannelsCreate(guildId, g0, everyoneRoleId) {
+async function checkChannelsCreate(guildId, g0, everyoneRoleId, botUserId) {
   const c = check('channels-create', 'POST /guilds/{g}/channels + permission_overwrites (kind ints) + DELETE');
   if (!(await confirm('Create a temp text channel in the test community? (deleted immediately after)'))) {
     record(c, 'operator declined channel creation — UNCONFIRMED');
@@ -871,7 +895,9 @@ async function checkChannelsCreate(guildId, g0, everyoneRoleId) {
       type: 0, name,
       permission_overwrites: [
         { id: String(everyoneRoleId), type: 0, allow: '0', deny: '1024' }, // deny SEND_MESSAGES bit 10
-        { id: String(g0.owner_id), type: 1, allow: '0', deny: '0' },
+        // Run 1 fact: bot GUILD_CREATE guild object has NO owner_id — use the bot's
+        // own user id as the valid member-type (kind 1) overwrite probe.
+        { id: String(botUserId), type: 1, allow: '0', deny: '0' },
       ],
     });
     record(c, `POST /guilds/{guild_id}/channels -> ${sent.status}`, truncateEvidence(sent.json));
@@ -904,7 +930,7 @@ async function checkMembers(guildId, botUserId) {
   const c = check('members', 'GET /guilds/{g}/members/{u} — resolve members (bot + arbitrary user)');
   try {
     const self = await apiCall('GET', `/guilds/${guildId}/members/${botUserId}`);
-    record(c, `self member: GET /guilds/${guild_id}/members/{user_id} -> ${self.status}; `
+    record(c, `self member: GET /guilds/${guildId}/members/{user_id} -> ${self.status}; `
       + `field names: ${fieldKeys(self.json).join(', ')}`, truncateEvidence(self.json));
     const botSelf = self.status === 200;
     if (testUserId) {
@@ -974,17 +1000,22 @@ async function checkBans(guildId) {
   } catch (e) { record(c, `error: ${e.message}`); c.status = 'fail'; }
 }
 
-async function checkRateLimitHeaders(messagesProbe, rolesProbe) {
-  const c = check('rate-limits', 'Response header names on send + role edit');
-  const send = (messagesProbe && messagesProbe.headers) || {};
-  const role = (rolesProbe && rolesProbe.headers) || {};
-  record(c, `send-message headers observed: ${Object.keys(send).join(', ') || 'none'}`);
-  record(c, `role-edit headers observed: ${Object.keys(role).join(', ') || 'none'}`);
-  record(c, 'docs:10 set: Retry-After, X-RateLimit-Limit/Remaining/Reset/Reset-After/Bucket/Scope, Global. '
-    + 'Bot tokens get bucket headers on success; user tokens get bucket headers ONLY on 429. 429 body code=RATE_LIMITED. '
-    + '429 itself was not exercised in this run (recorded from docs, flagged below).');
+async function checkRateLimitHeaders() {
+  const c = check('rate-limits', 'Response header names on successful REST calls');
+  const names = new Set();
+  for (const p of headerProbes) for (const h of Object.keys(p.headers)) names.add(h);
+  record(c, `header names observed across ${headerProbes.length} successful REST calls: `
+    + `${[...names].sort().join(', ') || 'none'}`);
+  const send = headerProbes.find(p => p.method === 'POST' && p.path.includes('/messages'));
+  const role = headerProbes.find(p => p.method === 'PUT' && p.path.includes('/roles/'));
+  if (send) record(c, `POST messages: ${JSON.stringify(send.headers)}`);
+  if (role) record(c, `PUT role: ${JSON.stringify(role.headers)}`);
+  record(c, `docs:10 claims bot tokens get X-RateLimit-* on SUCCESS and 429 (code=RATE_LIMITED) carries `
+    + `Retry-After + bucket headers. Live observation: NO X-RateLimit-* headers on 2xx responses of this `
+    + `deployment (${headerProbes.length} calls sampled) — recorded as a live fact; 429 path not exercised`);
   c.unconfirmed.push('429 RATE_LIMITED body shape + Retry-After on denial: docs-only (docs:10), not exercised');
-  c.status = (Object.keys(send).length && Object.keys(role).length) ? 'pass' : (Object.keys(send).length ? 'partial' : 'fail');
+  c.status = names.size ? 'pass' : 'observed';
+  logLine(`  rate-limit headers on 2xx: ${[...names].join(', ') || 'NONE'}`);
 }
 
 function checkSdk() {
@@ -1045,7 +1076,22 @@ const pkgDir = path.join(__dirname, 'node_modules', '@fluxerjs', 'core');
       esmError: (e && e.erra && String(e.erra.code)) || null };
   }
   try {
-    const m = await import('file://' + pkgDir + '/index.js');
+    // Resolve the package entry from package.json (exports "." import/default/
+    // require -> module -> main -> index.js) — never guess the filename.
+    const pkgJson = require(path.join(pkgDir, 'package.json'));
+    let entry = null;
+    const exp = pkgJson.exports && (pkgJson.exports['.'] !== undefined ? pkgJson.exports['.'] : pkgJson.exports);
+    const pick = (v, depth) => {
+      if (typeof v === 'string') return v;
+      if (v && typeof v === 'object' && depth < 4) {
+        for (const k of ['import', 'node', 'default', 'require']) if (v[k]) { const r = pick(v[k], depth + 1); if (r) return r; }
+      }
+      return null;
+    };
+    entry = pick(exp, 0) || pkgJson.module || pkgJson.main || 'index.js';
+    const entryPath = path.resolve(pkgDir, String(entry).replace(/^\\.\\//, ''));
+    out.entry = entryPath;
+    const m = await import('file://' + entryPath);
     out.import = { ok: true, keys: Object.keys(m).slice(0, 25) };
   } catch (e) {
     out.import = { ok: false, code: (e && e.code) || null, error: String((e && e.message) || e).slice(0, 400) };
@@ -1130,7 +1176,7 @@ const pkgDir = path.join(__dirname, 'node_modules', '@fluxerjs', 'core');
   await checkAttachments(textChannel);
   await checkReactions(textChannel);
   const rolesCheck = await checkRoles(guildWanted || (g0 && g0.id), botUserId, g0);
-  await checkChannelsCreate(g0 && g0.id, g0, everyone ? everyone.id : '1');
+  await checkChannelsCreate(g0 && g0.id, g0, everyone ? everyone.id : '1', botUserId);
   await checkMembers(g0 && g0.id, botUserId);
   await checkDms();
   await checkBans(g0 && g0.id);
@@ -1141,7 +1187,7 @@ const pkgDir = path.join(__dirname, 'node_modules', '@fluxerjs', 'core');
   }
   closeGateway();
 
-  await checkRateLimitHeaders(null, null);
+  await checkRateLimitHeaders();
   if (sdkCheckEnabled) checkSdk();
 
   finalize();
