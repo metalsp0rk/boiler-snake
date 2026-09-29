@@ -20,6 +20,9 @@ const {
   GORK_SUMMARIZE_FOCUS_MAX,
   GORK_SUMMARIZE_LANG_MAX,
   GORK_SUMMARIZE_RANGE_MAX_MESSAGES,
+  GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT,
+  GORK_SUMMARIZE_INPUT_TOKENS_MIN,
+  GORK_SUMMARIZE_INPUT_TOKENS_MAX,
 } = require("../src/features/gork/constants.js");
 const { PermissionFlagsBits } = require("./helpers/discord.js");
 
@@ -134,5 +137,41 @@ describe("/gork summarize command surface", () => {
     }
     const last = sum.options.find((o) => o.name === "last");
     assert.match(last.description, /1-1000/, "bounds disclosed in the description");
+  });
+});
+
+describe("/gork summarize-budget command surface", () => {
+  function budgetJson() {
+    const sub = commands[0].toJSON().options.find((o) => o.name === "summarize-budget");
+    assert.ok(sub, "summarize-budget subcommand present on /gork");
+    return sub;
+  }
+
+  it("exposes one required integer `tokens` option bounded 8000-120000", () => {
+    const sub = budgetJson();
+    assert.equal(sub.type, T_SUB, "sub-command");
+    assert.equal(sub.options.length, 1, "one option: tokens");
+    const tokens = sub.options[0];
+    assert.equal(tokens.name, "tokens");
+    assert.equal(tokens.type, T_INT, "integer option");
+    assert.equal(tokens.required, true, "budget value is required");
+    assert.equal(tokens.min_value, 8000, "min 8000");
+    assert.equal(tokens.max_value, 120000, "max 120000");
+    assert.equal(tokens.min_value, GORK_SUMMARIZE_INPUT_TOKENS_MIN, "bound from constants.js");
+    assert.equal(tokens.max_value, GORK_SUMMARIZE_INPUT_TOKENS_MAX, "bound from constants.js");
+  });
+
+  it("description fits Discord's limits and names the default", () => {
+    const sub = budgetJson();
+    assert.ok(sub.description.length <= 100, "subcommand description ≤ 100");
+    assert.match(sub.description, /8000-120000/, "bounds disclosed in the description");
+    assert.ok(
+      sub.options[0].description.includes(String(GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT)),
+      "default disclosed in the option description",
+    );
+    assert.ok(
+      sub.options[0].description.length >= 1 && sub.options[0].description.length <= 125,
+      "option description within 1-125 chars",
+    );
   });
 });

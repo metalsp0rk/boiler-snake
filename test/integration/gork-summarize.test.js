@@ -692,7 +692,9 @@ describe("integration: /gork summarize (§7.21)", () => {
     const fetchMock = mockFetch([chatCompletionResponse("Headline — a very long thread.")]);
     try {
       enableAiKey();
-      setupGuild(env);
+      // 12k-token budget (40k-char transcript) so the char cap bites on top
+      // of the message cap — short seeded lines fit the 80k default.
+      setupGuild(env, env.guild.id, { gork_summarize_input_tokens: 12000 });
       const frank = makeSpeaker(env, "frank", "Frank");
       const { ch, ids } = seedChannel(env, {
         name: "flood",
@@ -715,7 +717,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       assert.ok(text.includes("1000-message read cap"), "names the message cap");
       assert.match(text, /kept \d+ of 1000 read messages/, "names scanned=1000 vs delivered");
 
-      // The prompt only ever saw the window that fit the 12k transcript budget.
+      // The prompt only ever saw the window that fit the 40k-char transcript budget.
       const user = aiBody(fetchMock).messages.find((m) => m.role === "user");
       assert.ok(user.content.includes(`${ids[10]} | `), "early delivered messages present");
       assert.ok(!user.content.includes(`${ids[999]} | `), "scanned-but-undelivered messages absent");
@@ -738,19 +740,20 @@ describe("integration: /gork summarize (§7.21)", () => {
     }
   });
 
-  it("12,000-char transcript budget: a 12k+ range keeps the newest suffix and the reply + embed disclose it", async () => {
+  it("gork_summarize_input_tokens 8000: a 30k+-char range keeps the newest suffix and the reply + embed disclose it", async () => {
     const env = await freshEnv({ guildId: snowGuild() });
     const saved = saveEnv();
     const fetchMock = mockFetch([chatCompletionResponse("Headline — dense discussion.")]);
     try {
       enableAiKey();
-      setupGuild(env);
+      // Per-guild budget: 8,000 tokens → 8,000×4 − 8,000 = 24,000-char cap.
+      setupGuild(env, env.guild.id, { gork_summarize_input_tokens: 8000 });
       const ginny = makeSpeaker(env, "ginny", "Ginny");
       const { ch, ids } = seedChannel(env, {
         name: "dense",
         n: 150,
         speakers: [ginny],
-        contentLen: 150, // ~200-char lines × 150 → far past the 12k transcript budget
+        contentLen: 150, // ~200-char lines × 150 → past the 24k transcript budget
       });
 
       const ixn = await runSummarize(env, { last: 150, channel: ch });
@@ -759,7 +762,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       const payload = editedPayload(ixn);
       const text = embedText(payload.embeds[0]);
       assert.ok(text.includes("Disclosed window"), "embed carries the disclosed-window line");
-      assert.match(text, /12000-character transcript budget kept \d+ of 150 read messages/, text.slice(0, 400));
+      assert.match(text, /24000-character transcript budget kept \d+ of 150 read messages/, text.slice(0, 400));
       // §7.21.2: the reply TEXT repeats the same disclosure.
       assert.ok(
         String(payload.content || "").includes("Disclosed window"),

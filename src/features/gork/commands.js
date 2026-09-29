@@ -19,6 +19,9 @@ const {
   GORK_SUMMARIZE_LAST_MAX,
   GORK_SUMMARIZE_FOCUS_MAX,
   GORK_SUMMARIZE_LANG_MAX,
+  GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT,
+  GORK_SUMMARIZE_INPUT_TOKENS_MIN,
+  GORK_SUMMARIZE_INPUT_TOKENS_MAX,
 } = require("./constants");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -314,6 +317,23 @@ const commands = [
               "Output language override (e.g. spanish; max 40); default: dominant language of the chat",
             )
             .setMaxLength(GORK_SUMMARIZE_LANG_MAX),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("summarize-budget")
+        .setDescription(
+          "Set the /gork summarize input token budget (8000-120000; default 80000).",
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("tokens")
+            .setDescription(
+              `Input token budget for one rundown (${GORK_SUMMARIZE_INPUT_TOKENS_MIN}-${GORK_SUMMARIZE_INPUT_TOKENS_MAX}; default ${GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT})`,
+            )
+            .setRequired(true)
+            .setMinValue(GORK_SUMMARIZE_INPUT_TOKENS_MIN)
+            .setMaxValue(GORK_SUMMARIZE_INPUT_TOKENS_MAX),
         ),
     )
     .addSubcommand((sc) =>

@@ -37,11 +37,68 @@ const READ_DISCORD_TOTAL_CHAR_CAP = 12000;
 /** Hard max messages in one summarize range (raised from the draft's 500; §7.21.2). */
 const GORK_SUMMARIZE_RANGE_MAX_MESSAGES = 1000;
 /*
- * Transcript char budget REUSES the read_discord family above —
- * READ_DISCORD_MESSAGE_CHAR_CAP (500) per message plus the 12,000-char total
- * READ_DISCORD_TOTAL_CHAR_CAP, clamp-and-disclose (§7.21.2). Deliberately no
- * duplicated 12k constant: the summarize range reader imports these two.
+ * Transcript budget: per-message cap REUSES the read_discord family
+ * (READ_DISCORD_MESSAGE_CHAR_CAP, 500) — per-message formatting lives in
+ * formatReadLine. The TOTAL input budget is per-guild configurable:
+ * gork_summarize_input_tokens (default 80,000 tokens, set via
+ * /gork summarize-budget) converted to a transcript char cap via
+ * summarizeInputTokenCapChars(), clamp-and-disclose (§7.21.2). The
+ * read_discord Q&A/tool reads keep their own 12,000-char cap untouched.
  */
+/** Default per-guild /gork summarize INPUT token budget (input to the one-shot generation). */
+const GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT = 80000;
+/** Lower bound of the per-guild summarize input token budget. */
+const GORK_SUMMARIZE_INPUT_TOKENS_MIN = 8000;
+/** Upper bound of the per-guild summarize input token budget (fits common 128k-context models). */
+const GORK_SUMMARIZE_INPUT_TOKENS_MAX = 120000;
+/** Conservative chars-per-token estimate used to convert the token budget to a char cap. */
+const GORK_TOKEN_CHAR_RATIO = 4;
+/**
+ * Char headroom reserved INSIDE the token budget for the prompt zones that
+ * ride with the transcript: card (≤1,500), roster (≤1,200), focus/lang
+ * directives, transcript headers, and the disclosed-window line.
+ */
+const GORK_SUMMARIZE_PROMPT_RESERVE_CHARS = 8000;
+/** Floor for the transcript char cap so the smallest budget still carries real content. */
+const GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR = 1000;
+
+/**
+ * Clamp a per-guild /gork summarize input token budget to 8,000–120,000.
+ * Out-of-range numbers clamp to the nearest bound; null/undefined/non-numeric
+ * fall back to the 80,000 default. The settings layer clamps on write
+ * (guildSettings mirrors these bounds); consumers re-clamp at read time
+ * (the gork clamp-double pattern, cf. clampWindowSize in context.js).
+ *
+ * @param {unknown} value raw configured value
+ * @returns {number} clamped token budget
+ */
+function clampSummarizeInputTokens(value) {
+  if (value === null || value === undefined) return GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT;
+  return Math.min(
+    GORK_SUMMARIZE_INPUT_TOKENS_MAX,
+    Math.max(GORK_SUMMARIZE_INPUT_TOKENS_MIN, Math.floor(n)),
+  );
+}
+
+/**
+ * Transcript char cap for a /gork summarize input token budget:
+ * tokens × 4 chars/token minus the prompt-zone reserve, floored so even the
+ * smallest budget keeps a usable transcript. The 80,000-token default yields
+ * 312,000 chars (≈25.6k tokens), leaving the reserve for the card, roster,
+ * directives, and headers — so total input stays inside the token budget.
+ *
+ * @param {unknown} value token budget (clamped via clampSummarizeInputTokens)
+ * @returns {number} transcript char cap
+ */
+function summarizeInputTokenCapChars(value) {
+  const tokens = clampSummarizeInputTokens(value);
+  return Math.max(
+    GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR,
+    tokens * GORK_TOKEN_CHAR_RATIO - GORK_SUMMARIZE_PROMPT_RESERVE_CHARS,
+  );
+}
 /** Hard output cap for one generated rundown — sized so a single embed always holds it (§7.21.4). */
 const GORK_SUMMARIZE_OUTPUT_MAX = 3500;
 /** One posted rundown per guild per 10 minutes; arms on success only (§7.21.5). Fixed constant, not per-guild configurable. */
@@ -104,6 +161,14 @@ module.exports = {
   READ_DISCORD_TOTAL_CHAR_CAP,
   GORK_SUMMARIZE_CARD,
   GORK_SUMMARIZE_RANGE_MAX_MESSAGES,
+  GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT,
+  GORK_SUMMARIZE_INPUT_TOKENS_MIN,
+  GORK_SUMMARIZE_INPUT_TOKENS_MAX,
+  GORK_TOKEN_CHAR_RATIO,
+  GORK_SUMMARIZE_PROMPT_RESERVE_CHARS,
+  GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR,
+  clampSummarizeInputTokens,
+  summarizeInputTokenCapChars,
   GORK_SUMMARIZE_OUTPUT_MAX,
   GORK_SUMMARIZE_GUILD_COOLDOWN_MS,
   GORK_SUMMARIZE_FOCUS_MAX,

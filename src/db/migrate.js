@@ -39,6 +39,7 @@ const migrations = [
   require("./migrations/029_admin_audit"),
   require("./migrations/030_web_session_tokens"),
   require("./migrations/032_twitch_eventsub_media"),
+  require("./migrations/033_gork_summarize_input_tokens"),
 ];
 
 const helpers = {

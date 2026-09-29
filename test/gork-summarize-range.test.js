@@ -9,7 +9,8 @@
  * defaults, guild isolation (rejected WITHOUT any fetch), same-channel
  * rule, ViewChannel parity + open-ticket blackout, bot/webhook `[bot]`
  * labeling, system-message skipping, attachment collapse, the 1,000-message
- * clamp, the 12,000-char clamp with the disclosed window, zero-readable
+ * clamp, the input-token-budget char clamp (per-guild, default 80k tokens →
+ * 312k chars) with the disclosed window, zero-readable
  * errors, mid-range fetch-failure partial reporting, and the never-throws
  * `{ ok:false, error }` boundary.
  */
@@ -601,38 +602,71 @@ describe("readSummarizeRange — transcript line format (§7.19 + [bot] labels)"
 describe("readSummarizeRange — caps with clamp-and-disclose (§7.21.2)", () => {
   const fatRange = (from, to) => range(from, to, "alice", () => "💯".repeat(250));
 
-  it("12k char clamp (from-modes): keeps the oldest-first window, discloses it", async () => {
-    const channel = makeChannel({ messages: fatRange(4001, 4040) });
+  it("token-budget char clamp (from-modes): keeps the oldest-first window, discloses it", async () => {
+    const channel = makeChannel({ messages: fatRange(4001, 4100) });
     const guild = makeGuild({ channels: [channel] });
-    const res = await readSummarizeRange({ from: msgLink(4001), to: msgLink(4040) }, opts({ guild }));
+    const res = await readSummarizeRange(
+      { from: msgLink(4001), to: msgLink(4100) },
+      opts({ guild, tokenBudget: 12000 }),
+    );
     assert.equal(res.ok, true, res.error);
-    assert.equal(res.scannedCount, 40, "the full range was READ from Discord");
-    assert.ok(res.count < 40 && res.count > 10, `budget kept some tail: kept ${res.count}`);
+    assert.equal(res.tokenBudget, 12000, "the guild token budget rides on the result");
+    assert.equal(res.charCap, 40000, "12k tokens × 4 chars/token − 8k prompt reserve");
+    assert.equal(res.scannedCount, 100, "the full range was READ from Discord");
+    assert.ok(res.count < 100 && res.count > 10, `budget kept some tail: kept ${res.count}`);
     assert.equal(res.firstId, "4001", "from-modes keep the OLDEST-first window");
     assert.equal(res.lastId, String(4000 + res.count));
     assert.equal(res.clamped, true);
     assert.deepEqual(res.clampReasons, ["chars"]);
-    assert.ok(res.transcript.length <= C.READ_DISCORD_TOTAL_CHAR_CAP);
-    assert.ok(res.transcript.length > 11000, `budget is actually used: ${res.transcript.length}`);
+    assert.ok(res.transcript.length <= res.charCap);
+    assert.ok(res.transcript.length > 38000, `budget is actually used: ${res.transcript.length}`);
     assert.equal(res.transcript.split("\n").length, res.count);
-    assert.match(res.clampNote, /12000-character transcript budget kept \d+ of 40/);
+    assert.match(res.clampNote, /40000-character transcript budget kept \d+ of 100 read messages/);
     assert.match(res.clampNote, new RegExp(`Disclosed window 4001 → ${res.lastId}`));
     assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(res.transcript), "code-point-safe");
   });
 
-  it("12k char clamp (last:): keeps the NEWEST window that fits — the largest window", async () => {
-    const channel = makeChannel({ messages: fatRange(4001, 4040) });
+  it("token-budget char clamp (last:): keeps the NEWEST window that fits — the largest window", async () => {
+    const channel = makeChannel({ messages: fatRange(4001, 4100) });
     const guild = makeGuild({ channels: [channel] });
-    const res = await readSummarizeRange({ last: 40 }, opts({ guild }));
+    const res = await readSummarizeRange({ last: 100 }, opts({ guild, tokenBudget: 12000 }));
     assert.equal(res.ok, true, res.error);
-    assert.equal(res.scannedCount, 40);
-    assert.ok(res.count < 40, `kept ${res.count}`);
-    assert.equal(res.lastId, "4040", "last: keeps the newest end");
-    assert.equal(res.firstId, String(4040 - res.count + 1), "contiguous newest window");
+    assert.equal(res.scannedCount, 100);
+    assert.ok(res.count < 100, `kept ${res.count}`);
+    assert.equal(res.lastId, "4100", "last: keeps the newest end");
+    assert.equal(res.firstId, String(4100 - res.count + 1), "contiguous newest window");
     assert.equal(res.clamped, true);
     assert.deepEqual(res.clampReasons, ["chars"]);
-    assert.ok(res.transcript.length <= C.READ_DISCORD_TOTAL_CHAR_CAP);
-    assert.match(res.clampNote, /Disclosed window .* → 4040/);
+    assert.ok(res.transcript.length <= res.charCap);
+    assert.match(res.clampNote, /Disclosed window .* → 4100/);
+  });
+
+  it("garbage tokenBudget falls back to the 80k default (312,000-char cap)", async () => {
+    const channel = makeChannel({ messages: fatRange(4001, 4040) });
+    const guild = makeGuild({ channels: [channel] });
+    const res = await readSummarizeRange({ last: 40 }, opts({ guild, tokenBudget: "nonsense" }));
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.tokenBudget, 80000, "garbage → default budget");
+    assert.equal(res.charCap, 312000, "default → 312,000-char transcript cap");
+    assert.equal(res.count, 40, "40 fat messages fit the default budget untouched");
+    assert.equal(res.clamped, false);
+    assert.equal(res.clampNote, null);
+  });
+
+  it("the 80k default budget clamps 1,000 fat messages (≈540k chars) and discloses it", async () => {
+    const channel = makeChannel({ messages: fatRange(2001, 3000) });
+    const guild = makeGuild({ channels: [channel] });
+    const res = await readSummarizeRange({ from: msgLink(2001) }, opts({ guild }));
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.tokenBudget, 80000, "no tokenBudget passed → default 80k");
+    assert.equal(res.charCap, 312000, "default char cap from the 80k budget");
+    assert.equal(res.scannedCount, 1000, "the whole range was read (exactly at the message cap)");
+    assert.ok(res.count < 1000 && res.count > 100, `budget kept a prefix: kept ${res.count}`);
+    assert.equal(res.clamped, true);
+    assert.deepEqual(res.clampReasons, ["chars"], "message cap not hit at exactly 1,000");
+    assert.ok(res.transcript.length <= 312000, `transcript within budget: ${res.transcript.length}`);
+    assert.ok(res.transcript.length > 310000, `budget is actually used: ${res.transcript.length}`);
+    assert.match(res.clampNote, /312000-character transcript budget kept \d+ of 1000 read messages/);
   });
 
   it("1,000-message read cap bites on huge ranges and is disclosed", async () => {
@@ -644,9 +678,12 @@ describe("readSummarizeRange — caps with clamp-and-disclose (§7.21.2)", () =>
     assert.equal(res.scannedCount, C.GORK_SUMMARIZE_RANGE_MAX_MESSAGES, "hard 1,000-message read cap");
     assert.equal(res.clamped, true);
     assert.ok(res.clampReasons.includes("messages"), res.clampReasons.join(","));
-    assert.ok(res.clampReasons.includes("chars"), "the char budget also trimmed the transcript");
+    assert.ok(
+      !res.clampReasons.includes("chars"),
+      "short messages fit the 80k default budget — only the message cap bites",
+    );
     assert.equal(res.firstId, "2001");
-    assert.ok(res.count < res.scannedCount);
+    assert.equal(res.count, 1000, "every read message rides the transcript");
     assert.match(res.clampNote, /1000-message read cap was hit/);
     assert.ok(
       many[1000].id > res.transcript.split("\n").pop().split(" | ")[0],
@@ -654,14 +691,16 @@ describe("readSummarizeRange — caps with clamp-and-disclose (§7.21.2)", () =>
     );
   });
 
-  it("a range of EXACTLY 1,000 readable messages ends naturally — no messages clamp (peek honesty)", async () => {
+  it("a range of EXACTLY 1,000 readable messages fits the 80k default budget — no clamps", async () => {
     const channel = makeChannel({ messages: range(2001, 3000) });
     const guild = makeGuild({ channels: [channel] });
     const res = await readSummarizeRange({ from: msgLink(2001) }, opts({ guild }));
     assert.equal(res.ok, true, res.error);
     assert.equal(res.scannedCount, 1000, "scan covered the whole natural range");
     assert.ok(!res.clampReasons.includes("messages"), res.clampReasons.join(","));
-    assert.ok(res.clampReasons.includes("chars"), "12k budget still trims the transcript");
+    assert.ok(!res.clampReasons.includes("chars"), "1,000 short messages fit the 312k-char default");
+    assert.equal(res.count, 1000);
+    assert.equal(res.clamped, false);
   });
 
   it("last:N stays inside the hard cap via the option bounds", () => {

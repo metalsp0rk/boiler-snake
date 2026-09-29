@@ -5,6 +5,10 @@
  * `chatCompletion` on the shared AI core (§7.3): no tool loop, no web
  * search, no `read_discord` re-entry — the range content is handed over in
  * the prompt, a tool round-trip would add cost/latency and no value.
+ * The transcript arrives pre-clamped by the range reader to the guild's
+ * INPUT token budget (gork_summarize_input_tokens, default 80,000 →
+ * 312,000-char transcript cap); this module adds only the fixed prompt
+ * zones on top, which fit inside the budget's reserve.
  *
  * Prompt zone discipline (decision 9, decision 55):
  * - Instruction zone (system message) = the byte-locked GORK_SUMMARIZE_CARD

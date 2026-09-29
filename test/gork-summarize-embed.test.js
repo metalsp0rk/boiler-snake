@@ -254,8 +254,8 @@ describe("formatWindowDisclosure", () => {
       "Cap hit — read 42 messages",
     );
     assert.equal(
-      SE.formatWindowDisclosure({ clamped: true, reason: "12k transcript cap" }),
-      "Cap hit — read the largest window the caps allow: 12k transcript cap",
+      SE.formatWindowDisclosure({ clamped: true, reason: "312k transcript cap" }),
+      "Cap hit — read the largest window the caps allow: 312k transcript cap",
     );
     assert.equal(SE.formatWindowDisclosure({ clamped: true }), "Cap hit — read the largest window the caps allow");
   });

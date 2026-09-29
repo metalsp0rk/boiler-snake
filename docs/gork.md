@@ -152,9 +152,10 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork budget <action>` | Per-user daily usage budgets per channel/category — see [Daily usage budget](#daily-usage-budget) |
 | `/gork log <on\|off>` | Toggle the gork [interaction log](gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
 | `/gork summarize <mode>` | Conversation rundown of a message range — see [Conversation rundown](#conversation-rundown) |
-| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, memory state, budget default + rule count, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
+| `/gork summarize-budget <tokens>` | Set the per-guild **input token budget** for `/gork summarize` (8,000–120,000; default 80,000) |
+| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, memory state, budget default + rule count, summarize input token budget, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
-`/settings` also shows a **Gork** field (enabled + keyword + window + search + memory state).
+`/settings` also shows a **Gork** field (enabled + keyword + window + search + memory state + summarize input budget).
 
 All values are stored per-guild in `guild_settings`:
 
@@ -169,6 +170,7 @@ All values are stored per-guild in `guild_settings`:
 | `gork_memory_enabled` | Community-memory master switch (see [Memory](#memory)) | `0` (off) |
 | `gork_memory_chars` | Memory-block char budget; `0` = unlimited | `12000` |
 | `gork_daily_limit` | Guild-default daily budget (see [Daily usage budget](#daily-usage-budget)): `-1` blocked, `0` unlimited, `1–1000` | `0` (unlimited) |
+| `gork_summarize_input_tokens` | Input token budget for one `/gork summarize` rundown (see [Conversation rundown](#conversation-rundown)) | `80000` |
 
 Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `user_id`, who banned them, when); budget rules and usage counters in `gork_budget_rules` / `gork_usage`.
 
@@ -289,7 +291,7 @@ Anchors are a **message link** (`discord.com/channels/<guild>/<channel>/<message
 ### What gets read
 
 - Up to **1,000 messages** per range (hard read cap)
-- **Transcript caps shared with `read_discord`**: ≤500 chars per message and ≤12,000 chars total (code-point-safe), attachments collapsed to `[N attachment(s)]`
+- **Transcript budget**: ≤500 chars per message (shared with `read_discord`); the total is the guild's **input token budget** — `gork_summarize_input_tokens`, set via `/gork summarize-budget` (8,000–120,000, default **80,000** tokens). The budget converts to a transcript char cap at a conservative 4 chars/token minus an 8,000-char reserve for the prompt (card, roster, directives) — **312,000 chars at the default** — applied code-point-safely, attachments collapsed to `[N attachment(s)]`
 - **Bots and webhooks ride along**, labeled `id | timestamp | @author [bot]: content` — in support channels the bots *are* the story. Discord **system messages** (joins, pins, call starts) are skipped: not conversational content
 - **Clamp and disclose, never silently:** when a cap bites mid-range, gork summarizes the window it **actually read** — from-anchored modes keep the oldest messages from the anchor, `last:` keeps the newest that fit — the embed names that window in a **Disclosed window** field (how many of the scanned messages were kept, and which cap bit), and the post's text repeats the same disclosure
 - A fetch failure mid-range never ships a half rundown: the reply carries the cause and the window that *was* read (discarded); nothing is counted
@@ -299,6 +301,7 @@ Anchors are a **message link** (`discord.com/channels/<guild>/<channel>/<message
 | Lever | Behavior |
 |-------|----------|
 | Per-guild cooldown | **One posted rundown per server per 10 minutes.** It arms **only on success**, the moment the rundown lands — usage errors, empty ranges, and failed generations never lock the server out of a retry. While armed, an ephemeral reply names the minutes remaining and no read or model call happens. Fixed constant, not configurable; in-memory, so a bot restart clears it |
+| Input token budget | The transcript stays inside the guild's `gork_summarize_input_tokens` — **8,000–120,000 tokens, default 80,000** — set per server with `/gork summarize-budget`. Converted to a transcript char cap at 4 chars/token minus an 8,000-char prompt reserve; a range that exceeds it degrades to the largest window that fits (disclosed), not a provider context-overflow error |
 | Daily budget | The same [daily gork budget](#daily-usage-budget) as Q&A — checked at enqueue **and** dequeue, staff **not** exempt, and counted **only if the full rundown posted** |
 | Queue | Runs in the shared per-guild gork queue slot — a rundown can't stampede a Q&A answer; a full queue drops the job with the queue-full reply (nothing read or generated) |
 
@@ -314,7 +317,7 @@ Staff-only: Manage Server or any [staff role](staff-roles.md), like the rest of 
 
 ### Requirements & failure replies
 
-Needs an AI provider configured — the **same env as gork Q&A** (`AI_API_KEY` etc., see [Setup](#setup)); summarize needs no setting, no table, and no migration of its own (the only knob is the optional `GORK_SUMMARIZE_TURN_TIMEOUT_MS` override named above). Unlike keyword triggers (silent when no key is set), `/gork summarize` **replies with the specific cause** on every failure branch: no API key, a deleted/unknown anchor id, a range with no readable messages (e.g. only system messages), a mid-range fetch failure (with the partial window), or a provider error (the reply carries the provider's own words). On any non-posting branch the reply also says so explicitly — **nothing was posted, the cooldown did not arm, and your budget was not counted**, so a retry is safe. A posted rundown records a **Gork summarize** audit embed (mode, resolved range, focus, lang, model, duration, rundown excerpt) in the [audit log](audit-log.md); failures log a compact one-liner; the gork [interaction log](gork-logging.md) records the job like a Q&A call.
+Needs an AI provider configured — the **same env as gork Q&A** (`AI_API_KEY` etc., see [Setup](#setup)); summarize needs no setting to get started — the only knobs are the per-guild `/gork summarize-budget` (default 80,000 input tokens) and the optional `GORK_SUMMARIZE_TURN_TIMEOUT_MS` env override named above. Unlike keyword triggers (silent when no key is set), `/gork summarize` **replies with the specific cause** on every failure branch: no API key, a deleted/unknown anchor id, a range with no readable messages (e.g. only system messages), a mid-range fetch failure (with the partial window), or a provider error (the reply carries the provider's own words). On any non-posting branch the reply also says so explicitly — **nothing was posted, the cooldown did not arm, and your budget was not counted**, so a retry is safe. A posted rundown records a **Gork summarize** audit embed (mode, resolved range, focus, lang, model, duration, rundown excerpt) in the [audit log](audit-log.md); failures log a compact one-liner; the gork [interaction log](gork-logging.md) records the job like a Q&A call.
 
 ## Runtime Behavior
 

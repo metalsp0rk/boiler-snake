@@ -134,7 +134,7 @@ function formatRangeLabel(range, guildId) {
  * - `windowLabel` e.g. "1234567→1234599" / "the 850 oldest in range"
  * - `read`       messages actually read
  * - `requested`  messages the caller asked for (only shown when > read)
- * - `reason`     which cap bit ("over the 1,000-message cap" / "12k transcript cap")
+ * - `reason`     which cap bit ("over the 1,000-message cap" / "312k transcript cap")
  *
  * @param {{ clamped?: boolean, windowLabel?: string, read?: number, requested?: number, reason?: string }|null|undefined} clamp
  * @returns {string} formatted disclosure line, or ""

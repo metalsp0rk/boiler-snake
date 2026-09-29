@@ -79,6 +79,7 @@ const SETTINGS_KEYS = new Set([
   "gork_budget_threads",
   "gork_budget_guild",
   "gork_interaction_log_enabled",
+  "gork_summarize_input_tokens",
 ]);
 
 /** Read a fixture JSON file (v1). */

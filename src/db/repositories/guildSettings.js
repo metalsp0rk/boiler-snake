@@ -7,6 +7,11 @@ const GORK_RULES_MAX_LEN = 500;
 const GORK_KEYWORD_MAX_LEN = 50;
 const GORK_DEFAULT_MEMORY_CHARS = 12000;
 const GORK_MEMORY_CHARS_MAX = 64000;
+// Mirrors GORK_SUMMARIZE_INPUT_TOKENS_* in src/features/gork/constants.js
+// (the db layer keeps its constants local — same pattern as BUDGET_MIN/MAX).
+const GORK_DEFAULT_SUMMARIZE_INPUT_TOKENS = 80000;
+const GORK_SUMMARIZE_INPUT_TOKENS_MIN = 8000;
+const GORK_SUMMARIZE_INPUT_TOKENS_MAX = 120000;
 
 /** Clamp to an integer range; null/non-finite input falls back to the default. */
 function clampInt(value, min, max, fallback) {
@@ -69,6 +74,15 @@ function clampGorkMemoryChars(value) {
 }
 
 /**
+ * Normalize the per-guild /gork summarize input token budget: integer clamped
+ * to 8,000–120,000. Out-of-range numbers clamp to the nearest bound; null
+ * and non-numeric input fall back to the 80,000 default.
+ */
+function clampGorkSummarizeInputTokens(value) {
+  return clampInt(value, GORK_SUMMARIZE_INPUT_TOKENS_MIN, GORK_SUMMARIZE_INPUT_TOKENS_MAX, GORK_DEFAULT_SUMMARIZE_INPUT_TOKENS);
+}
+
+/**
  * Ensure a settings row exists for a guild.
  * This also ensures defaults are present for all columns (including migrated ones).
  */
@@ -123,6 +137,7 @@ function getGuildSettings(guildId) {
       gork_memory_chars: 12000,
       gork_daily_limit: 0,
       gork_interaction_log_enabled: 1,
+      gork_summarize_input_tokens: 80000,
       updated_at: now(),
     };
   }
@@ -168,6 +183,7 @@ function updateGuildSettings(guildId, patch) {
     "gork_memory_chars",
     "gork_daily_limit",
     "gork_interaction_log_enabled",
+    "gork_summarize_input_tokens",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
@@ -227,6 +243,11 @@ function updateGuildSettings(guildId, patch) {
   if (safePatch.gork_interaction_log_enabled !== undefined) {
     safePatch.gork_interaction_log_enabled = normalizeGorkFlag(
       safePatch.gork_interaction_log_enabled
+    );
+  }
+  if (safePatch.gork_summarize_input_tokens !== undefined) {
+    safePatch.gork_summarize_input_tokens = clampGorkSummarizeInputTokens(
+      safePatch.gork_summarize_input_tokens
     );
   }
 

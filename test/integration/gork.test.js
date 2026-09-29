@@ -1258,6 +1258,23 @@ describe("integration: gork (AI keyword Q&A)", () => {
       text = embedText(settings.replies[settings.replies.length - 1].embeds[0]);
       assert.ok(text.includes("Search **off**"));
 
+      // summarize-budget: set the per-guild input token budget
+      ixn = await env.runCommand({
+        commandName: "gork",
+        subcommand: "summarize-budget",
+        admin: true,
+        options: { tokens: 40000 },
+      });
+      assertEphemeralReply(ixn);
+      assertReplyContains(ixn, "40000");
+      assert.equal(env.db.getGuildSettings(env.guild.id).gork_summarize_input_tokens, 40000);
+      settings = await env.runCommand({ commandName: "settings", admin: true });
+      text = embedText(settings.replies[settings.replies.length - 1].embeds[0]);
+      assert.ok(
+        text.includes("Summarize **40000 input tokens**"),
+        `Gork field shows the new budget: ${text.slice(0, 400)}`,
+      );
+
       // keyword: clear (disable)
       ixn = await env.runCommand({
         commandName: "gork",
