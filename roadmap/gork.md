@@ -1145,7 +1145,7 @@ targets only); writing anything to Discord.
 
 ---
 
-### 7.20 STE answer style — anti-slop writing layer — 2026-09 design (LOCKED 2026-09-17 — decisions 49–52; implementation pending)
+### 7.20 STE answer style — anti-slop writing layer — 2026-09 design (LOCKED 2026-09-17 — decisions 49–52; SHIPPED 2026-09-28)
 
 **Why:** gork's answers drift into AI slop — "Great question!", "let me dive into",
 "delve", "I hope this helps", stacked hedges, 40-word passive sentences — the voice of a
@@ -1153,7 +1153,9 @@ content mill instead of a person on Discord. The cure tested at
 [chele.bi/videos/the-cure-for-ai-slop](https://www.chele.bi/videos/the-cure-for-ai-slop)
 is **ASD-STE100** ("Simplified Technical English", the 1986 aircraft-manual standard)
 distilled into a compact writing system: measured **50–74% fewer violations per 100
-words** vs a ~4/100w baseline, while banned-word lists alone came last. The lever that
+words** vs a ~4/100w baseline, while banned-word lists alone came last (n = 6 tasks,
+two models; the stark "banned words do nothing" figure is Claude-specific — −3%
+there vs −40% on gpt-5.5). The lever that
 works is handing the model an actual system of machine-checkable rules — so that is the
 whole feature: one distilled card, injected when the guild turns it on. *Light* STE: the
 kit's own **flavored** mode (its default), not strict aircraft mode — form tightens,
@@ -1188,6 +1190,13 @@ tangent as a separate question. Estimates in real units, never "a bit".
 Keep the sarcasm. Drop the padding.
 ```
 
+**Self-compliance (locks with the final wording):** the draft above breaks its own
+rules — em dashes throughout, one semicolon. The shipped card must not: it is the
+feature's own exhibit A, and the deferred linter (see Deferred below) scores
+semicolons and banned words, so a card that fails its own check is a credibility
+trap. Measured 1,054 chars as drafted; the ≤1,500 pin leaves ~450 chars of headroom
+to tighten.
+
 #### 7.20.1 Card shape & placement (decision 49)
 
 - Conditional block in the **system prompt**, between the byte-locked base and the
@@ -1206,7 +1215,10 @@ Keep the sarcasm. Drop the padding.
 
 - `guild_settings.gork_ste_enabled`, migration **031**, default **0 (off)** — the
   card changes gork's voice, so guilds opt in (memory's default-off precedent,
-  §7.16); fresh DBs get the column in `001` per migration convention.
+  §7.16). The migration is additive (`addColumnIfMissing`) and `001` stays frozen:
+  fresh DBs get the column when `031` runs, the gork-settings convention (`021`/`022`/
+  `023`/`026`/`033` all add their own settings columns; `001_base_schema` contains
+  no gork columns at all).
 - `/gork ste on|off` — requireStaff (decision 15), config-change audited like every
   other `/gork` toggle; reflected in `/gork status` and the `/settings` Gork field
   (decision 23 pattern).
@@ -1254,25 +1266,27 @@ audit embed; (2) one deadline-bounded **repair** regeneration when a draft score
 threshold (hard cap 1, keep the original on any failure). Built only if the card alone
 proves insufficient — and the lint score is what would prove it.
 
-**Implementation checklist (pending):**
+**Implementation checklist (shipped 2026-09-28):**
 
-- [ ] `constants.js` — `GORK_STE_CARD` (final wording locks here) + length-pin test
-- [ ] `prompt.js` — `buildSystemPrompt` optional card slot between base and staff
+- [x] `constants.js` — `GORK_STE_CARD` (final wording locks here) + length-pin test
+      (1,063 chars, self-compliant: no em dashes, no semicolons)
+- [x] `prompt.js` — `buildSystemPrompt` optional card slot between base and staff
       rules; **off-state byte-identical prompt test** (exact pre-7.20 bytes)
-- [ ] `trigger.js` — read `gork_ste_enabled` per job, pass the card, pass the
+- [x] `trigger.js` — read `gork_ste_enabled` per job, pass the card, pass the
       audit label
-- [ ] migration `031_gork_ste_enabled.js` (+ `001` for fresh DBs) + settings repo
-- [ ] `/gork ste on|off` in `commands.js`/`index.js` — requireStaff, audited,
+- [x] migration `031_gork_ste_enabled.js` — additive `addColumnIfMissing` (no `001`
+      edit; gork-settings convention per `021`/`022`/`023`/`026`/`033`) + settings repo
+- [x] `/gork ste on|off` in `commands.js`/`index.js` — requireStaff, audited,
       `/gork status` + `/settings` Gork field rows
-- [ ] `audit.js` — `STE: on/off` token
-- [ ] Unit tests (`test/gork.test.js`) — card slot ordering, off = byte-identical,
+- [x] `audit.js` — `STE: on/off` token
+- [x] Unit tests (`test/gork.test.js`) — card slot ordering, off = byte-identical,
       length cap, command round-trip
-- [ ] Integration (`test/integration/gork.test.js`) — toggle on → mocked-LLM system
+- [x] Integration (`test/integration/gork.test.js`) — toggle on → mocked-LLM system
       prompt contains base bytes + card + rules in order; toggle off → unchanged;
       audit label renders
-- [ ] `docs/gork.md` + `docs/commands/index.md` + configuration row +
+- [x] `docs/gork.md` + `docs/commands/index.md` + configuration row +
        `npm run docs:build`
-- [ ] Tick this checklist + §8 in `index.md`; status line here → shipped
+- [x] Tick this checklist + §8 in `index.md`; status line here → shipped
 
 ---
 

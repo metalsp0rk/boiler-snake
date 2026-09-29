@@ -6,8 +6,12 @@
  * (≤500 chars, clamped in the settings layer) which may shape tone or
  * subject preference but cannot override the SFW / questions-only
  * constraints. These are model-level guardrails — best effort, not a hard
- * guarantee (per roadmap/gork.md §7.4).
+ * guarantee (per roadmap/gork.md §7.4). The STE answer-style card
+ * (roadmap §7.20) is a third, byte-locked layer that rides between the
+ * base and staff rules only while the guild's toggle is on.
  */
+
+const { GORK_STE_CARD } = require("./constants");
 
 /**
  * Immutable base system prompt (locked spec: roadmap/gork.md §7.4).
@@ -39,13 +43,21 @@ function normalizeExtraRules(extraRules) {
 /**
  * Builds the full Gork system prompt: the immutable base plus, when
  * non-empty, staff rules under an "Additional guild rules:" heading.
- * @param {{ extraRules?: string }} [options] guild staff rules (`gork_extra_rules`)
+ * When `steEnabled` is true, the byte-locked STE answer-style card
+ * (roadmap §7.20, decision 49) rides between the base bytes and the staff
+ * rules. Off (the default) the result is byte-identical to pre-7.20.
+ * @param {{ extraRules?: string, steEnabled?: boolean }} [options] guild staff rules (`gork_extra_rules`) + STE toggle
  * @returns {string} the full system prompt
  */
-function buildSystemPrompt({ extraRules = "" } = {}) {
+function buildSystemPrompt({ extraRules = "", steEnabled = false } = {}) {
   const rules = normalizeExtraRules(extraRules);
-  if (!rules) return GORK_BASE_PROMPT;
-  return `${GORK_BASE_PROMPT}\n\nAdditional guild rules:\n${rules}`;
+  if (!steEnabled) {
+    if (!rules) return GORK_BASE_PROMPT;
+    return `${GORK_BASE_PROMPT}\n\nAdditional guild rules:\n${rules}`;
+  }
+  const head = `${GORK_BASE_PROMPT}\n\n${GORK_STE_CARD}`;
+  if (!rules) return head;
+  return `${head}\n\nAdditional guild rules:\n${rules}`;
 }
 
 module.exports = Object.freeze({

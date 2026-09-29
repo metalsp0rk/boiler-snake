@@ -6,7 +6,7 @@
 | Date | 2026-09-25 |
 | Status | Draft |
 | Supersedes | The 2026-09-24 research draft that previously lived in this file. That research is retained; its open decisions (old §9.10) are closed here. |
-| Migration id | **Not 031.** `031` is reserved by gork STE (`roadmap/gork.md` §7.20, `roadmap/index.md` §8). Highest shipped migration is `030_web_session_tokens`. This work uses the next free id **other than 031**. With the tree as of this date, that file is `src/db/migrations/032_communities.js`. If a higher id has landed and is not 031, use that next integer instead. Do not hardcode 031. |
+| Migration id | **Not 031.** `031` is reserved by gork STE (`roadmap/gork.md` §7.20, `roadmap/index.md` §8). Highest shipped migration is `033_gork_summarize_input_tokens`. This work uses the next free id **other than 031**. With the tree as of this date, that file is `src/db/migrations/034_communities.js`. If a higher id has landed and is not 031, use that next integer instead. Do not hardcode 031. |
 
 ---
 
@@ -788,7 +788,7 @@ The two flag columns are instance-wide facts stored on each community row so a t
 
 ### Cutover (exact, one PR, no dual-read)
 
-The migration runs inside a single `db.transaction` from `032_communities.js` (or whatever free id is chosen under the rule at the top). `runMigrations` already runs before login.
+The migration runs inside a single `db.transaction` from `034_communities.js` (or whatever free id is chosen under the rule at the top). `runMigrations` already runs before login.
 
 1. Create `communities`.
 2. Insert one row per distinct `guild_id` found in the guild-scoped tables listed below, with `platform='discord'`, `instance_key='discord'`, `external_guild_id=<that snowflake>`.
@@ -1221,7 +1221,7 @@ None. The Fluxer web-session question is K11: one `web_session_fx` cookie, rotat
 - `src/features/xp/index.js`, `src/render/leaderboard.js`.
 - `src/features/gork/sanitize.js` (`sanitizeAnswer`), `src/features/gork/queue.js`, `src/features/gork/tools/readDiscord.js`, `src/features/gork/trigger.js` (`memDateFromMessage`).
 - `src/features/logs/auditLog.js` (`messageCache`).
-- `src/db/migrations/001_base_schema.js` through `030_web_session_tokens.js`. Migration `003` is the table-rebuild precedent.
+- `src/db/migrations/001_base_schema.js` through `033_gork_summarize_input_tokens.js`. Migration `003` is the table-rebuild precedent.
 - `test/helpers/harness.js` — `createIntegrationEnv`.
 - Fluxer, re-read 2026-09-25 for paths the draft omitted: [OAuth2](https://docs.fluxer.app/http-api/oauth2/) (`GET /v1/oauth2/authorize`, `POST /v1/oauth2/token`, `GET /v1/oauth2/userinfo`, PKCE S256, 7-day access, rotating 30-day refresh), [Instance discovery](https://docs.fluxer.app/http-api/instance/) (scheme rules, `api_public` vs `api`, `presigned_attachment_uploads`, `direct_messages_disabled`).
 - Draft sources that this spec does not overturn: permissions, snowflakes, channels, messages, Fluxer.js prefix and multi-instance guides. Re-read them at the start of Phase 0; the API is moving.
@@ -1240,7 +1240,7 @@ Each PR is independently reviewable. `npm test` stays green on a Discord-only ch
 
 ### PR 2 — `feat: communities table and internal guild key`
 
-- **Files:** `src/db/migrations/032_communities.js` (id skipped if 032 is taken; never `031`), `src/db/migrate.js`, `src/platform/community.js`, `src/platform/discord/outbound.js` (Discord wrapper only), `src/services/awardXp.js`, every repository under `src/db/repositories/`, every feature and web call site that passes a guild snowflake into the db facade or into `awardXp`, `src/web/shared/snowflake.js` (community-id route gate only), `src/web/routes/**` (`/g/:communityId`), `src/features/tickets/transcript.js`, `src/core/cooldowns.js`, `src/features/gork/queue.js`, `src/features/logs/auditLog.js`, `src/features/reactionRoles/service.js`, `src/features/honeypot/index.js`, `src/features/userActivity/backfill.js`, `src/web/auth/guildAccess.js`, `src/web/services/memberFetchQueue.js`, `src/db/migrations` backfill of `web_sessions.platform` / `instance_key` / nullable refresh columns plus `fluxer_oauth_transactions`, `test/helpers/harness.js`, integration tests.
+- **Files:** `src/db/migrations/034_communities.js` (id chosen at PR time; never `031`), `src/db/migrate.js`, `src/platform/community.js`, `src/platform/discord/outbound.js` (Discord wrapper only), `src/services/awardXp.js`, every repository under `src/db/repositories/`, every feature and web call site that passes a guild snowflake into the db facade or into `awardXp`, `src/web/shared/snowflake.js` (community-id route gate only), `src/web/routes/**` (`/g/:communityId`), `src/features/tickets/transcript.js`, `src/core/cooldowns.js`, `src/features/gork/queue.js`, `src/features/logs/auditLog.js`, `src/features/reactionRoles/service.js`, `src/features/honeypot/index.js`, `src/features/userActivity/backfill.js`, `src/web/auth/guildAccess.js`, `src/web/services/memberFetchQueue.js`, `src/db/migrations` backfill of `web_sessions.platform` / `instance_key` / nullable refresh columns plus `fluxer_oauth_transactions`, `test/helpers/harness.js`, integration tests.
 - **Depends on:** none (can merge in parallel with PR 1; must merge before PR 6).
 - **Description:** The cutover in Data Model Changes, including every secondary index and unchanged parent integer ids. Repositories accept only `assertCommunityId`. `awardXp(outbound, { communityId, ... })` lands here. Discord rows are inserted with `elevated_permissions=0`, and the role-sync skip runs only when `outbound.platform === "fluxer"` and that flag is 0. The Discord path still calls `members.fetch` and `syncMemberRoles` and does not read the flag, so Discord XP behavior does not change. No Fluxer client and no Fluxer row written by product code. Collision test and the "snowflake is rejected" test land here. Transcript directories move to `communityId`. In-memory keys switch in this PR. Discord slash behavior is unchanged apart from `/g/` URLs now using the integer id.
 

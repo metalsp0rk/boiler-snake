@@ -264,6 +264,42 @@ async function setSearch(client, interaction, guildId) {
 }
 
 /**
+ * /gork ste: toggle the STE answer style (roadmap §7.20, decision 50).
+ * On = the byte-locked anti-slop card rides between the base prompt and
+ * staff rules for every Q&A job in this guild. Off (default) = answers
+ * are generated with exactly the pre-7.20 prompt. Re-read per job.
+ */
+async function setSte(client, interaction, guildId) {
+  const raw = (interaction.options.getString("ste") || "").toLowerCase();
+  if (raw !== "on" && raw !== "off") {
+    return replyEphemeral(interaction, "STE must be `on` or `off`.");
+  }
+  const settings = updateGuildSettings(guildId, {
+    gork_ste_enabled: raw === "on" ? 1 : 0,
+  });
+  const on = Number(settings.gork_ste_enabled) === 1;
+  recordSlashAudit({
+    interaction,
+    action: "gork.ste_set",
+    targetType: "guild",
+    targetId: guildId,
+    details: { enabled: on ? 1 : 0 },
+  });
+  await logConfigChange(client, guildId, {
+    title: `Gork STE answer style ${on ? "enabled" : "disabled"}`,
+    command: "/gork ste",
+    actor: interaction.user,
+    changes: [`STE answer style: ${on ? "on" : "off"}`],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    on
+      ? "Gork STE answer style is now **on** — answers follow the anti-slop writing rules (short active sentences, answer first, no padding). The sarcasm stays."
+      : "Gork STE answer style is now **off** — answers are written with the standard prompt again.",
+  );
+}
+
+/**
  * /gork enable: master on/off switch for the whole gork feature in this
  * guild. Off makes triggers fully silent; every other gork setting
  * (keyword, rules, cooldown, bans, ...) is preserved for re-enable.
@@ -906,6 +942,12 @@ async function showStatus(interaction, guildId) {
     { name: "Rules", value: rules || "none", inline: true },
     { name: "Search (SearXNG)", value: searchOn ? "on" : "off", inline: true },
     {
+      // §7.20: STE anti-slop answer style (decision 50 surface).
+      name: "STE answer style",
+      value: Number(settings.gork_ste_enabled ?? 0) === 1 ? "on" : "off",
+      inline: true,
+    },
+    {
       name: "AI provider",
       value: ai.apiKey ? "configured" : "**not configured**",
       inline: true,
@@ -1473,6 +1515,7 @@ module.exports = {
   setCooldown,
   setRules,
   setSearch,
+  setSte,
   setEnable,
   banUser,
   unbanUser,

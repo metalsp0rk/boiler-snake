@@ -412,6 +412,83 @@ describe("prompt assembly (prompt)", () => {
   });
 });
 
+// ---------- STE answer style (constants + prompt + command, §7.20) ----------
+
+describe("STE answer style (§7.20)", () => {
+  it("GORK_STE_CARD is byte-locked and under the 1,500-char ceiling (§7.20.3)", () => {
+    assert.equal(
+      C.GORK_STE_CARD.length,
+      1063,
+      "byte-lock: any card edit must update this pin intentionally",
+    );
+    assert.ok(
+      C.GORK_STE_CARD.length <= 1500,
+      `card ${C.GORK_STE_CARD.length} <= 1500 chars`,
+    );
+  });
+
+  it("card obeys its own bans: no em dashes, no semicolons in the card text", () => {
+    // The card bans em dashes and semicolons; a card that breaks its own
+    // rules is a credibility trap (the deferred linter scores both).
+    assert.ok(!C.GORK_STE_CARD.includes("\u2014"), "no em dashes");
+    assert.ok(!C.GORK_STE_CARD.includes(";"), "no semicolons");
+  });
+
+  it("steEnabled injects the card between the base bytes and the staff rules", () => {
+    const prompt = buildSystemPrompt({
+      extraRules: "Prefer short answers.",
+      steEnabled: true,
+    });
+    assert.ok(
+      prompt.startsWith(`${GORK_BASE_PROMPT}\n\n${C.GORK_STE_CARD}\n\n`),
+      "base bytes first, card second",
+    );
+    assert.ok(
+      prompt.endsWith("\n\nAdditional guild rules:\nPrefer short answers."),
+      "staff rules stay last",
+    );
+  });
+
+  it("steEnabled without rules: base + card, no rules heading", () => {
+    const prompt = buildSystemPrompt({ steEnabled: true });
+    assert.equal(prompt, `${GORK_BASE_PROMPT}\n\n${C.GORK_STE_CARD}`);
+    assert.ok(!prompt.includes("Additional guild rules:"));
+  });
+
+  it("steEnabled off/omitted yields the exact pre-§7.20 prompt bytes", () => {
+    assert.equal(buildSystemPrompt({}), GORK_BASE_PROMPT);
+    assert.equal(buildSystemPrompt({ steEnabled: false }), GORK_BASE_PROMPT);
+    assert.equal(
+      buildSystemPrompt({ extraRules: "Prefer short answers." }),
+      GORK_BASE_PROMPT + "\n\nAdditional guild rules:\nPrefer short answers.",
+    );
+    assert.equal(
+      buildSystemPrompt({ extraRules: "Prefer short answers.", steEnabled: false }),
+      GORK_BASE_PROMPT + "\n\nAdditional guild rules:\nPrefer short answers.",
+    );
+  });
+
+  it("/gork ste subcommand: on/off choice, required, staff-gated (decision 50)", () => {
+    const { commands } = require("../src/features/gork/commands");
+    const json = commands[0].toJSON();
+    assert.equal(json.name, "gork");
+    const ste = (json.options || []).find((o) => o.name === "ste");
+    assert.ok(ste, "ste subcommand exists");
+    assert.equal(ste.options.length, 1);
+    assert.equal(ste.options[0].name, "ste");
+    assert.equal(ste.options[0].required, true);
+    assert.deepEqual(
+      ste.options[0].choices.map((c) => c.value),
+      ["on", "off"],
+    );
+    // Same staff gate as the rest of /gork (ManageGuild default perms).
+    assert.equal(
+      json.default_member_permissions,
+      String(1n << 5n), // PermissionFlagsBits.ManageGuild
+    );
+  });
+});
+
 // ---------- web search ----------
 
 describe("web search (tools/webSearch)", () => {

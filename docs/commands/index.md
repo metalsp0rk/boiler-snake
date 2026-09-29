@@ -1011,6 +1011,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 /gork cooldown 180
 /gork rules Keep answers about this server
 /gork search on
+/gork ste on
 /gork enable off
 /gork ban user:@SomeUser
 /gork unban user:@SomeUser
@@ -1033,6 +1034,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 | `cooldown <seconds>` | Per-user cooldown (0–3600; default **180**, 0 = disabled). Staff always bypass |
 | `rules <text\|clear>` | Additional staff prompt rules (≤500 chars); `clear` removes them |
 | `search <on\|off>` | Toggle the SearXNG web-search / page-reading tools for this guild (shared lever) |
+| `ste <on\|off>` | Toggle the **STE answer style** — anti-slop writing rules (ASD-STE100-distilled card) for gork's answers in this guild; **off** by default — see [Gork](../gork.md#answer-style-ste) |
 | `enable <on\|off>` | Turn gork **entirely** on/off for this server — off makes every trigger silent; all other settings are kept |
 | `ban <user>` | Ban a user from gork in this server (they get the generic failure reply — never told it's a ban) |
 | `unban <user>` | Lift a user's gork ban |
@@ -1042,7 +1044,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 | `log <on\|off>` | Toggle the gork [interaction log](../gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
 | `summarize <mode>` | Conversation rundown embed for a message range (staff, shared 10-min guild cooldown) — see below |
 | `summarize-budget <tokens>` | Per-guild **input token budget** for `/gork summarize` (8,000–120,000; default 80,000) — see below |
-| `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state, budget default + rule count, summarize input token budget |
+| `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, ste, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state, budget default + rule count, summarize input token budget |
 
 `/gork memory` carries the verbs as an `action` choice (Discord caps option depth at 2), plus optional `user`, `id`, `chars`, and `confirm` options:
 
@@ -1123,7 +1125,7 @@ The **rundown itself posts publicly** in the channel (embed, never pings); its u
 | `/twitch add\|remove\|list` | Staff gate | Yes |
 | `/settwitch channel\|role\|interval\|settings` | Staff gate | Yes |
 | `/reactionrole panel\|option\|sync` | Staff gate | Yes |
-| `/gork keyword\|context\|cooldown\|rules\|search\|enable\|ban\|unban\|bans\|memory\|budget\|log\|status` | Staff gate | Yes |
+| `/gork keyword\|context\|cooldown\|rules\|search\|ste\|enable\|ban\|unban\|bans\|memory\|budget\|log\|status` | Staff gate | Yes |
 | `/gork summarize` | Staff gate | No — rundown embed posts publicly (gate/error replies ephemeral) |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |

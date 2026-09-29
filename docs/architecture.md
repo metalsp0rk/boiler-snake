@@ -182,7 +182,8 @@ Migrations on load:
 | `028_web_sessions` | `web_sessions` table — opaque session ids → Discord user, sliding expiry (web console) |
 | `029_admin_audit` | `admin_audit` table — one row per mutating action across web / slash / system origins |
 | `030_web_session_tokens` | OAuth artifacts on sessions (access token, refresh) for per-request Discord calls |
-| `032_twitch_eventsub_media` | Twitch EventSub fast-path + clips/VOD hooks (`031` is reserved for gork STE answer style) |
+| `031_gork_ste_enabled` | `gork_ste_enabled` guild_settings column (gork STE answer style, roadmap §7.20) |
+| `032_twitch_eventsub_media` | Twitch EventSub fast-path + clips/VOD hooks (`twitch_eventsub_subs` table, clip/VOD alert columns + watermarks) |
 | `033_gork_summarize_input_tokens` | `guild_settings.gork_summarize_input_tokens` (per-guild `/gork summarize` input token budget) |
 
 ### Core XP API
