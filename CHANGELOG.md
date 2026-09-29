@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.28.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.27.1...v1.28.0) (2026-09-29)
+
+
+### Features
+
+* **gork:** /gork summarize conversation rundown MVP (decisions 53-57 locked) ([0020ec6](https://github.com/metalsp0rk/boiler-snake/commit/0020ec6f646a40ce631b74f4fc91a02b3697f3ed))
+* **web:** sign-in landing instead of instant OAuth redirect ([12a4d1a](https://github.com/metalsp0rk/boiler-snake/commit/12a4d1a5270b58cc27dac34b6901388dcda44fcc))
+
 ## [1.27.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.27.0...v1.27.1) (2026-09-27)
 
 
