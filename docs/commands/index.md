@@ -1022,6 +1022,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 /gork log off
 /gork summarize last:200 channel:#support
 /gork summarize from:https://discord.com/channels/…/…/… to:https://discord.com/channels/…/…/…
+/gork summarize-budget 80000
 /gork status
 ```
 
@@ -1040,7 +1041,8 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 | `budget <action>` | Per-user daily usage budgets per channel/category/server (tri-state, off by default) — see below |
 | `log <on\|off>` | Toggle the gork [interaction log](../gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
 | `summarize <mode>` | Conversation rundown embed for a message range (staff, shared 10-min guild cooldown) — see below |
-| `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state, budget default + rule count |
+| `summarize-budget <tokens>` | Per-guild **input token budget** for `/gork summarize` (8,000–120,000; default 80,000) — see below |
+| `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state, budget default + rule count, summarize input token budget |
 
 `/gork memory` carries the verbs as an `action` choice (Discord caps option depth at 2), plus optional `user`, `id`, `chars`, and `confirm` options:
 
@@ -1065,7 +1067,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 
 Precedence is **channel → category → guild default → unlimited**; the winning scope owns the single counter. Checked at queue entry **and** promotion (overage impossible), staff are **not** exempt, counts only on fully-delivered answers, reset 00:00 UTC. See [Daily usage budget](../gork.md#daily-usage-budget).
 
-`/gork summarize` needs **exactly one** anchor mode: `from`+`to` (closed, inclusive, both in one channel — a newer `from` swaps), `from` alone (through the channel's newest message), or `last:<N>` (newest N readable messages, integer **1–1000**). Anchors are message links or bare ids (bare ids need `channel:` or run in that channel); `channel` defaults to the command's channel. `focus` (≤200 chars) shifts emphasis **within** the fixed rundown sections; `lang` (≤40 chars) overrides the output language (default: the conversation's dominant language). Caps: 1,000 messages / 12,000-char transcript (clamped with the actually-read window disclosed in the embed) / 3,500-char output. Bots and webhooks are included labeled `[bot]`; system messages are skipped. One rundown posts per server per **10 minutes** (arms only when the embed lands; failures never arm it), and a success counts against the invoker's daily gork budget. Refused: other servers, cross-channel ranges, and channels the invoker can't view (open tickets always). See [Conversation rundown](../gork.md#conversation-rundown).
+`/gork summarize` needs **exactly one** anchor mode: `from`+`to` (closed, inclusive, both in one channel — a newer `from` swaps), `from` alone (through the channel's newest message), or `last:<N>` (newest N readable messages, integer **1–1000**). Anchors are message links or bare ids (bare ids need `channel:` or run in that channel); `channel` defaults to the command's channel. `focus` (≤200 chars) shifts emphasis **within** the fixed rundown sections; `lang` (≤40 chars) overrides the output language (default: the conversation's dominant language). Caps: 1,000 messages / the guild's **input token budget** (`/gork summarize-budget`, 8,000–120,000 tokens, default 80,000 → a 312,000-char transcript at 4 chars/token minus a prompt reserve; clamped with the actually-read window disclosed in the embed) / 3,500-char output. Bots and webhooks are included labeled `[bot]`; system messages are skipped. One rundown posts per server per **10 minutes** (arms only when the embed lands; failures never arm it), and a success counts against the invoker's daily gork budget. Refused: other servers, cross-channel ranges, and channels the invoker can't view (open tickets always). See [Conversation rundown](../gork.md#conversation-rundown).
 
 The **rundown itself posts publicly** in the channel (embed, never pings); its usage/cooldown/budget rejections are ephemeral. Every config change — including bans, memory edits, and budget rule changes — posts a config-change embed to the audit channel (`/setlog audit`). See [Gork](../gork.md) for trigger, memory, and moderation behavior.
 
