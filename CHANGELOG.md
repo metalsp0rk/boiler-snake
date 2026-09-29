@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.28.0...v1.29.0) (2026-09-29)
+
+
+### Features
+
+* **gork:** per-guild /gork summarize input token budget (default 80k) ([51b5348](https://github.com/metalsp0rk/boiler-snake/commit/51b53485c7cfa3e8d38a3d99b390a6f40ab231ee))
+
 ## [1.28.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.27.1...v1.28.0) (2026-09-29)
 
 
