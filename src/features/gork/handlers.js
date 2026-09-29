@@ -72,6 +72,10 @@ const {
   BUDGET_MAX,
   BUDGET_RULES_LIST_MAX,
   GORK_SUMMARIZE_GUILD_COOLDOWN_MS,
+  GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT,
+  GORK_SUMMARIZE_INPUT_TOKENS_MIN,
+  GORK_SUMMARIZE_INPUT_TOKENS_MAX,
+  clampSummarizeInputTokens,
 } = require("./constants");
 
 /**
@@ -929,6 +933,12 @@ async function showStatus(interaction, guildId) {
       }`,
       inline: true,
     },
+    {
+      // Per-guild /gork summarize INPUT token budget (8k–120k, default 80k).
+      name: "Summarize budget",
+      value: `${clampSummarizeInputTokens(settings.gork_summarize_input_tokens)} input tokens`,
+      inline: true,
+    },
   );
   await replyEphemeral(interaction, { embeds: [embed] });
 }
@@ -1052,7 +1062,9 @@ async function runSummarizeJob({
   }
 
   // Range read (§7.21.2). A bare anchor / `last:` defaults to the channel
-  // the command ran in.
+  // the command ran in. The guild's per-guild input token budget
+  // (gork_summarize_input_tokens, default 80,000) clamps the transcript.
+  const tokenBudget = clampSummarizeInputTokens(settings?.gork_summarize_input_tokens);
   const read = await readSummarizeRange(
     { from: opts.from, to: opts.to, last: opts.last, channel: opts.channel },
     {
@@ -1060,6 +1072,7 @@ async function runSummarizeJob({
       guild,
       invokerId: userId,
       fallbackChannelId: interaction.channelId,
+      tokenBudget,
     },
   );
   if (!read.ok) {
@@ -1104,6 +1117,7 @@ async function runSummarizeJob({
       params: {
         temperature: SUMMARIZE_TEMPERATURE,
         maxTokens: SUMMARIZE_MAX_TOKENS,
+        inputTokenBudget: tokenBudget,
       },
       tools: null, // no tool loop (decision 55)
       startedAt,
@@ -1387,6 +1401,47 @@ async function summarizeMain(client, interaction, guildId) {
 }
 
 /**
+ * /gork summarize-budget: set the per-guild INPUT token budget for
+ * /gork summarize (8,000–120,000; default 80,000). The range reader
+ * converts it to a transcript char cap (4 chars/token minus the prompt-zone
+ * reserve), so the LLM input stays inside the configured budget.
+ */
+async function setSummarizeBudget(client, interaction, guildId) {
+  const raw = interaction.options.getInteger("tokens");
+  if (
+    !Number.isFinite(raw) ||
+    raw < GORK_SUMMARIZE_INPUT_TOKENS_MIN ||
+    raw > GORK_SUMMARIZE_INPUT_TOKENS_MAX
+  ) {
+    return replyEphemeral(
+      interaction,
+      `The summarize input token budget must be ${GORK_SUMMARIZE_INPUT_TOKENS_MIN}-${GORK_SUMMARIZE_INPUT_TOKENS_MAX} tokens.`,
+    );
+  }
+  const settings = updateGuildSettings(guildId, {
+    gork_summarize_input_tokens: raw,
+  });
+  const stored = clampSummarizeInputTokens(settings.gork_summarize_input_tokens);
+  recordSlashAudit({
+    interaction,
+    action: "gork.summarize_budget_set",
+    targetType: "guild",
+    targetId: guildId,
+    details: { summarize_input_tokens: stored },
+  });
+  await logConfigChange(client, guildId, {
+    title: "Gork summarize budget updated",
+    command: "/gork summarize-budget",
+    actor: interaction.user,
+    changes: [`Summarize input token budget: ${stored} tokens`],
+  }).catch(() => {});
+  await replyEphemeral(
+    interaction,
+    `Gork summarize input budget set to **${stored}** tokens (default ${GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT}).`,
+  );
+}
+
+/**
  * /gork summarize: staff conversation rundown (roadmap/gork.md §7.21,
  * decisions 53–57). Dispatcher (index.js) already gated requireStaff. The
  * rundown is a themed embed posted to the invoking channel; usage errors,
@@ -1427,6 +1482,7 @@ module.exports = {
   setInteractionLog,
   showStatus,
   handleSummarize,
+  setSummarizeBudget,
   /** TEST SEAM: ordered rundown poster with all-chunks-land accounting. */
   postRundownPayloads,
 };

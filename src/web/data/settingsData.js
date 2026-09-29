@@ -61,11 +61,23 @@ const SECRET_COLUMN_RE =
   /(?:token|secret|pass(?:word|wd)|credential|oauth|client_?id|api_?key|(^|_)key$|auth)/i;
 
 /**
+ * Reviewed non-secret token-shaped columns. `gork_summarize_input_tokens`
+ * is the per-guild /gork summarize INPUT TOKEN BUDGET (integer, 8k–120k;
+ * migration 033) — "tokens" names LLM tokens, not a credential. Reviewed
+ * 2026-09-28 when the column was added; new token-shaped columns are NOT
+ * exempt and still trip the guard for review.
+ */
+const NON_SECRET_TOKEN_COLUMNS = Object.freeze(
+  new Set(["gork_summarize_input_tokens"]),
+);
+
+/**
  * True when a column name looks like it carries a secret. Exported for the
  * test that pins the guild_settings row shape stays secret-free.
  * @param {string} name
  */
 function isSecretColumnName(name) {
+  if (NON_SECRET_TOKEN_COLUMNS.has(String(name))) return false;
   return SECRET_COLUMN_RE.test(String(name));
 }
 

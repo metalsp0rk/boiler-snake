@@ -372,6 +372,52 @@ describe("db layer", () => {
     });
   });
 
+  describe("gork summarize input token budget (migration 033)", () => {
+    it("033_gork_summarize_input_tokens is registered and adds the column", () => {
+      const { migrations } = require("../src/db/migrate");
+      assert.ok(
+        migrations.some((m) => m.id === "033_gork_summarize_input_tokens"),
+        "033_gork_summarize_input_tokens must be registered in migrate.js"
+      );
+      const cols = new Set(
+        api.db.prepare(`PRAGMA table_info(guild_settings)`).all().map((c) => c.name)
+      );
+      assert.ok(
+        cols.has("gork_summarize_input_tokens"),
+        "missing column: gork_summarize_input_tokens"
+      );
+    });
+
+    it("fresh guild row defaults gork_summarize_input_tokens to 80000", () => {
+      const s = api.getGuildSettings("g-gork-sumtok-fresh");
+      assert.equal(s.gork_summarize_input_tokens, 80000);
+    });
+
+    it("gork_summarize_input_tokens clamps to 8000-120000 (garbage -> 80000)", () => {
+      const g = "g-gork-sumtok";
+      const expectTokens = (value, expected) => {
+        const s = api.updateGuildSettings(g, { gork_summarize_input_tokens: value });
+        assert.equal(
+          s.gork_summarize_input_tokens,
+          expected,
+          `gork_summarize_input_tokens ${value} -> ${expected}`
+        );
+      };
+      expectTokens(80000, 80000);
+      expectTokens(8000, 8000);
+      expectTokens(120000, 120000);
+      expectTokens(0, 8000);
+      expectTokens(-100, 8000);
+      expectTokens(120001, 120000);
+      expectTokens(999999, 120000);
+      expectTokens(45000.9, 45000);
+      expectTokens("abc", 80000);
+      expectTokens(null, 80000);
+      const s = api.getGuildSettings(g);
+      assert.equal(s.gork_summarize_input_tokens, 80000, "value persists across reads");
+    });
+  });
+
   describe("staff_roles added_by (migration 024)", () => {
     it("024_staff_roles_added_by is registered and adds the nullable column", () => {
       const { migrations } = require("../src/db/migrate");

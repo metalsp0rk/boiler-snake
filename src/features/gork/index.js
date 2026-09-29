@@ -7,7 +7,9 @@
  *   using gork in this guild; curate the per-person community memory
  *   (roadmap/gork.md §7.16) with `/gork memory` (off by default); manage
  *   per-scope daily usage budgets with `/gork budget` (roadmap/gork.md
- *   §7.17 — tri-state `-1/0/cap`, channel → category → guild default).
+ *   §7.17 — tri-state `-1/0/cap`, channel → category → guild default);
+ *   set the /gork summarize input token budget with
+ *   `/gork summarize-budget` (8,000–120,000; default 80,000 tokens).
  * - `handleGorkMessage`: the onMessageCreate pipeline hook — answers
  *   keyword triggers using conversation context and optional web search.
  *
@@ -39,6 +41,7 @@ const {
   setInteractionLog,
   showStatus,
   handleSummarize,
+  setSummarizeBudget,
 } = require("./handlers");
 
 /**
@@ -84,6 +87,8 @@ async function handleGork(interaction, ctx) {
       // rundown is staff-only); the handler owns the mode/cooldown/budget
       // gates and the queue + post pipeline.
       return handleSummarize(client, interaction, guildId);
+    case "summarize-budget":
+      return setSummarizeBudget(client, interaction, guildId);
     case "status":
       return showStatus(interaction, guildId);
     default:

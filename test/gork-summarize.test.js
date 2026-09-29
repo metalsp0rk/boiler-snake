@@ -535,3 +535,77 @@ describe("/gork — summarize subcommand dispatch", () => {
     assert.equal(nope.interaction.deferred, false);
   });
 });
+
+// ---------- /gork summarize-budget (per-guild input token budget) ----------
+
+describe("/gork summarize-budget", () => {
+  function budgetEnv(tokens) {
+    const env = makeEnv({});
+    const ixn = D.createChatInputInteraction({
+      commandName: "gork",
+      subcommand: "summarize-budget",
+      guild: env.guild,
+      user: env.user,
+      member: env.member,
+      admin: true,
+      channel: env.channel,
+      channelId: env.channel.id,
+      client: env.client,
+      options: { tokens },
+    });
+    return { env, ixn };
+  }
+
+  it("stores a valid budget and replies with the stored value", async () => {
+    const { env, ixn } = budgetEnv(50000);
+    await H.setSummarizeBudget(env.client, ixn, env.guildId);
+    assert.equal(D.lastReplyEphemeral(ixn), true, "ephemeral confirmation");
+    assert.match(D.lastReplyContent(ixn), /\*\*50000\*\* tokens/, "reply echoes the stored budget");
+    assert.equal(api.getGuildSettings(env.guildId).gork_summarize_input_tokens, 50000);
+  });
+
+  it("out-of-range input gets the specific range reply — settings untouched", async () => {
+    const { env, ixn } = budgetEnv(5000);
+    await H.setSummarizeBudget(env.client, ixn, env.guildId);
+    assert.equal(D.lastReplyEphemeral(ixn), true);
+    assert.match(D.lastReplyContent(ixn), /8000-120000 tokens/, "names the allowed range");
+    assert.equal(
+      api.getGuildSettings(env.guildId).gork_summarize_input_tokens,
+      80000,
+      "prior value kept — nothing written",
+    );
+  });
+
+  it("the guild's gork_summarize_input_tokens clamps the rundown transcript", async () => {
+    const env = makeEnv({ last: 103 });
+    // 8,000 tokens → 8,000 × 4 − 8,000 = 24,000-char transcript budget.
+    api.updateGuildSettings(env.guildId, { gork_summarize_input_tokens: 8000 });
+    // 100 fat messages on top of the seeded 3 (≈460-char lines → ~46k chars).
+    for (let i = 0; i < 100; i += 1) {
+      env.channel.addMessage({
+        id: (1000000000000000104n + BigInt(i)).toString(),
+        content: "x".repeat(400),
+        author: { id: "4444", username: "frank" },
+      });
+    }
+    stubAi();
+    await run(env);
+
+    assert.equal(env.interaction.deferred, true);
+    assert.equal(aiCalls.length, 1, "exactly one one-shot AI call");
+    const user = aiCalls[0].body.messages.find((m) => m.role === "user");
+    assert.ok(
+      user.content.includes("1000000000000000203 | "),
+      "last: keeps the NEWEST messages",
+    );
+    assert.ok(
+      !user.content.includes("1000000000000000101 | "),
+      "the custom budget clamped the oldest lines away",
+    );
+    const edits = editedReplies(env.interaction);
+    assert.ok(
+      String(edits[0].content).includes("24000-character transcript budget"),
+      `disclosure names the guild budget: ${String(edits[0].content).slice(0, 200)}`,
+    );
+  });
+});

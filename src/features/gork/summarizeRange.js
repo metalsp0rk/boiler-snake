@@ -23,9 +23,12 @@
  * - SCAN: collect readable messages (system messages skipped, bots kept)
  *   until the range ends or the GORK_SUMMARIZE_RANGE_MAX_MESSAGES (1,000)
  *   hard cap bites — the cap bounds Discord work; disclosure is mandatory.
- * - BUDGET: the transcript keeps the largest window fitting the decision-5
- *   family total (READ_DISCORD_TOTAL_CHAR_CAP, code-point-safe via
- *   sliceSafe): the oldest-first PREFIX for from-modes ("oldest-first from
+ * - BUDGET: the transcript keeps the largest window fitting the guild's
+ *   summarize INPUT token budget (options.tokenBudget, default 80,000 tokens
+ *   via gork_summarize_input_tokens) converted to a transcript char cap by
+ *   summarizeInputTokenCapChars() — 4 chars/token minus the prompt-zone
+ *   reserve, 312,000 chars at the default; code-point-safe via sliceSafe.
+ *   The oldest-first PREFIX for from-modes ("oldest-first from
  *   the from anchor until a cap bites"), the newest SUFFIX for `last:` (the
  *   largest window that fits — the newest messages are the ones `last:`
  *   asked for). Per-message caps + attachment collapse live in
@@ -50,8 +53,9 @@
  *
  * Dependencies are injectable for tests (readDiscord.js pattern):
  * `options.channelResolver`, `options.memberFetcher`, `options.fetcher`,
- * `options.repo`. No new npm deps, no new constants.js entries (§7.21.2
- * reuses the read_discord cap family).
+ * `options.repo`, `options.tokenBudget`. No new npm deps; the transcript
+ * budget is per-guild configurable (gork_summarize_input_tokens, default
+ * 80,000 input tokens → summarizeInputTokenCapChars()).
  */
 
 const { PermissionFlagsBits } = require("discord.js");
@@ -59,10 +63,11 @@ const { sliceSafe } = require("../../core/text");
 const { parseDiscordLink, formatReadLine } = require("./tools/readDiscord");
 const {
   READ_DISCORD_CHANNEL_WINDOW,
-  READ_DISCORD_TOTAL_CHAR_CAP,
   GORK_SUMMARIZE_RANGE_MAX_MESSAGES,
   GORK_SUMMARIZE_LAST_MIN,
   GORK_SUMMARIZE_LAST_MAX,
+  clampSummarizeInputTokens,
+  summarizeInputTokenCapChars,
 } = require("./constants");
 
 /**
@@ -508,26 +513,30 @@ async function scanBackward(channel, fetcher, requestedN, progress) {
 
 /**
  * Largest PREFIX (in the given order) of whole lines that fits
- * READ_DISCORD_TOTAL_CHAR_CAP. The very first line always rides, sliced
+ * `totalCharCap` (derived from the guild's summarize input token budget).
+ * The very first line always rides, sliced
  * code-point-safe if it alone overflows (never an empty transcript when
  * something readable was found). `lines`/`messages` are parallel.
  *
+ * @param {object[]} messages scanned messages (parallel to `lines`)
+ * @param {string[]} lines formatted transcript lines
+ * @param {number} totalCharCap transcript char budget for this read
  * @returns {{ pairs: {msg: object, line: string}[], clampedByChars: boolean }}
  */
-function fitBudget(messages, lines) {
+function fitBudget(messages, lines, totalCharCap) {
   const pairs = [];
   let used = 0;
   let clampedByChars = false;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     if (pairs.length === 0) {
-      const kept = sliceSafe(line, READ_DISCORD_TOTAL_CHAR_CAP);
+      const kept = sliceSafe(line, totalCharCap);
       pairs.push({ msg: messages[i], line: kept });
       used = kept.length;
       if (kept.length !== line.length) clampedByChars = true;
       continue;
     }
-    if (used + 1 + line.length > READ_DISCORD_TOTAL_CHAR_CAP) {
+    if (used + 1 + line.length > totalCharCap) {
       clampedByChars = true; // whole lines past this point do not fit
       break;
     }
@@ -553,13 +562,16 @@ function fitBudget(messages, lines) {
  * @param {object} options.guild    duck-typed guild (channels.fetch, members.fetch, members.me)
  * @param {string} options.invokerId invoking user (parity gate subject)
  * @param {string} [options.fallbackChannelId] invocation channel (bare-id / last: default)
+ * @param {number|string} [options.tokenBudget] guild input token budget
+ *   (gork_summarize_input_tokens; clamped at read time, default 80,000)
  * @param {(guild: object, channelId: string) => Promise<object|null>} [options.channelResolver]
  * @param {(guild: object, userId: string) => Promise<object|null>} [options.memberFetcher]
  * @param {(channel: object, opts: object|string) => Promise<unknown>} [options.fetcher]
  * @param {object} [options.repo] db facade override (default lazy `require("../../db")`)
  * @returns {Promise<{ ok: true, mode: string, channelId: string, messages: object[],
  *   transcript: string, firstId: string, lastId: string, count: number, scannedCount: number,
- *   requestedLast: number|null, clamped: boolean, clampReasons: string[], clampNote: string|null }
+ *   requestedLast: number|null, tokenBudget: number, charCap: number,
+ *   clamped: boolean, clampReasons: string[], clampNote: string|null }
  *   | { ok: false, code: string, error: string, partial?: object }>}
  */
 async function readSummarizeRange(args = {}, options = {}) {
@@ -658,7 +670,10 @@ async function readSummarizeRange(args = {}, options = {}) {
     // Budget phase: from-modes keep the oldest-first prefix; last: keeps
     // the newest suffix (§7.21.2 "largest window that fits"). The scan
     // order IS the keep-order for both (oldest→newest vs newest→oldest).
-    const budget = fitBudget(scan.messages, scan.messages.map(formatTranscriptLine));
+    // The guild's input token budget (default 80,000) sets the char cap.
+    const tokenBudget = clampSummarizeInputTokens(o.tokenBudget);
+    const charCap = summarizeInputTokenCapChars(tokenBudget);
+    const budget = fitBudget(scan.messages, scan.messages.map(formatTranscriptLine), charCap);
     const window =
       mode.mode === MODE_LAST ? budget.pairs.slice().reverse() : budget.pairs; // oldest→newest
 
@@ -672,15 +687,17 @@ async function readSummarizeRange(args = {}, options = {}) {
       mode: mode.mode,
       channelId: String(channel.id),
       messages,
-      transcript: sliceSafe(window.map((p) => p.line).join("\n"), READ_DISCORD_TOTAL_CHAR_CAP),
+      transcript: sliceSafe(window.map((p) => p.line).join("\n"), charCap),
       firstId,
       lastId,
       count: window.length,
       scannedCount: scan.messages.length,
       requestedLast: mode.mode === MODE_LAST ? mode.last : null,
+      tokenBudget,
+      charCap,
       clamped: clampReasons.length > 0,
       clampReasons,
-      clampNote: buildClampNote(clampReasons, window.length, scan.messages.length, firstId, lastId),
+      clampNote: buildClampNote(clampReasons, window.length, scan.messages.length, firstId, lastId, charCap),
     };
   } catch (err) {
     const detail = err?.message != null ? String(err.message) : String(err);
@@ -704,14 +721,14 @@ async function readSummarizeRange(args = {}, options = {}) {
 }
 
 /** One-sentence disclosure of every cap that bit (reply + embed repeat it). */
-function buildClampNote(clampReasons, delivered, scanned, firstId, lastId) {
+function buildClampNote(clampReasons, delivered, scanned, firstId, lastId, charCap) {
   const parts = [];
   if (clampReasons.includes("messages")) {
     parts.push(`the ${GORK_SUMMARIZE_RANGE_MAX_MESSAGES}-message read cap was hit before the end of the range`);
   }
   if (clampReasons.includes("chars")) {
     parts.push(
-      `the ${READ_DISCORD_TOTAL_CHAR_CAP}-character transcript budget kept ${delivered} of ${scanned} read messages`,
+      `the ${charCap}-character transcript budget kept ${delivered} of ${scanned} read messages`,
     );
   }
   if (!parts.length) return null;

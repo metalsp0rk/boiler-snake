@@ -1583,12 +1583,42 @@ describe("gork summarize card + caps (constants, §7.21)", () => {
     assert.equal(C.GORK_SUMMARIZE_LAST_MAX, 1000, "last: upper bound keeps N inside the range cap");
   });
 
-  it("transcript budget reuses the read_discord caps — no duplicated 12k constant (§7.21.2)", () => {
+  it("summarize input budget: 80k tokens default, clamped 8k-120k, 312k-char transcript (§7.21.2)", () => {
+    assert.equal(C.GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT, 80000, "default input token budget");
+    assert.equal(C.GORK_SUMMARIZE_INPUT_TOKENS_MIN, 8000, "lower bound");
+    assert.equal(C.GORK_SUMMARIZE_INPUT_TOKENS_MAX, 120000, "upper bound");
+    assert.equal(C.GORK_TOKEN_CHAR_RATIO, 4, "conservative chars-per-token estimate");
+    assert.equal(C.GORK_SUMMARIZE_PROMPT_RESERVE_CHARS, 8000, "prompt-zone reserve");
+    assert.equal(C.GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR, 1000, "transcript char floor");
+    assert.equal(
+      C.summarizeInputTokenCapChars(80000),
+      312000,
+      "default budget → 312,000-char transcript cap",
+    );
     assert.equal(C.READ_DISCORD_MESSAGE_CHAR_CAP, 500, "per-message cap reused by the summarize reader");
-    assert.equal(C.READ_DISCORD_TOTAL_CHAR_CAP, 12000, "12k total transcript budget reused (§7.21.2)");
+    assert.equal(C.READ_DISCORD_TOTAL_CHAR_CAP, 12000, "read_discord Q&A/tool reads keep their own 12k cap");
+  });
+
+  it("clampSummarizeInputTokens: bounds clamp, garbage falls back to the 80k default", () => {
+    assert.equal(C.clampSummarizeInputTokens(undefined), 80000, "undefined → default");
+    assert.equal(C.clampSummarizeInputTokens(null), 80000, "null → default");
+    assert.equal(C.clampSummarizeInputTokens("abc"), 80000, "garbage → default");
+    assert.equal(C.clampSummarizeInputTokens(NaN), 80000, "NaN → default");
+    assert.equal(C.clampSummarizeInputTokens(0), 8000, "below min clamps up");
+    assert.equal(C.clampSummarizeInputTokens(-999), 8000, "negative clamps up");
+    assert.equal(C.clampSummarizeInputTokens(1e9), 120000, "above max clamps down");
+    assert.equal(C.clampSummarizeInputTokens(50000.7), 50000, "fraction floors");
+    assert.equal(C.clampSummarizeInputTokens(20000), 20000, "in-range passes through");
+  });
+
+  it("summarizeInputTokenCapChars: token budget → transcript char cap with reserve", () => {
+    assert.equal(C.summarizeInputTokenCapChars(80000), 312000, "default: 80k tokens × 4 − 8k reserve");
+    assert.equal(C.summarizeInputTokenCapChars(20000), 72000, "20k tokens: 80k − 8k chars");
+    assert.equal(C.summarizeInputTokenCapChars(8000), 24000, "minimum budget keeps a usable transcript");
+    assert.equal(C.summarizeInputTokenCapChars("nonsense"), 312000, "garbage → default budget");
     assert.ok(
-      !Object.keys(C).some((k) => /SUMMARIZE.*(TOTAL|TRANSCRIPT).*CHAR/i.test(k)),
-      "no summarize-specific duplicate of the 12k budget",
+      C.summarizeInputTokenCapChars(-99999) >= C.GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR,
+      "cap never below the floor",
     );
   });
 });

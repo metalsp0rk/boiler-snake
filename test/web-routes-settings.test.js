@@ -443,6 +443,11 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       assert.equal(settingsDataMod.isSecretColumnName("refresh_password"), true);
       assert.equal(settingsDataMod.isSecretColumnName("audit_log_channel_id"), false);
       assert.equal(settingsDataMod.isSecretColumnName("decay_percent"), false);
+      // Reviewed exemption (migration 033): the summarize INPUT TOKEN budget
+      // is an integer config value, not a credential.
+      assert.equal(settingsDataMod.isSecretColumnName("gork_summarize_input_tokens"), false);
+      // The guard stays strict for every OTHER token-shaped name:
+      assert.equal(settingsDataMod.isSecretColumnName("gork_summarize_output_tokens"), true);
     });
 
     it("non-whitelisted setting values never reach the page", async () => {
