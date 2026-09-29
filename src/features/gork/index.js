@@ -3,7 +3,8 @@
  *
  * - `/gork` (staff): configure the trigger keyword, context window,
  *   per-user cooldown, staff prompt rules, the SearXNG web_search toggle,
- *   and the guild master enable switch; ban/unban/list users blocked from
+ *   the STE anti-slop answer style (§7.20), and the guild master enable
+ *   switch; ban/unban/list users blocked from
  *   using gork in this guild; curate the per-person community memory
  *   (roadmap/gork.md §7.16) with `/gork memory` (off by default); manage
  *   per-scope daily usage budgets with `/gork budget` (roadmap/gork.md
@@ -32,6 +33,7 @@ const {
   setCooldown,
   setRules,
   setSearch,
+  setSte,
   setEnable,
   banUser,
   unbanUser,
@@ -68,6 +70,8 @@ async function handleGork(interaction, ctx) {
       return setRules(client, interaction, guildId);
     case "search":
       return setSearch(client, interaction, guildId);
+    case "ste":
+      return setSte(client, interaction, guildId);
     case "enable":
       return setEnable(client, interaction, guildId);
     case "ban":

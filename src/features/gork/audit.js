@@ -181,6 +181,9 @@ function jumpLink(label, guildId, message) {
  *   "3/5 in #general"); the inline "Budget" field is added only when this
  *   is a non-empty string — i.e. an effective cap >= 1 applied (§7.17.7,
  *   decision 37). Rejections never reach this embed (console-only).
+ * @param {string} [opts.steLabel] "on"/"off" for the guild's STE answer
+ *   style (§7.20, decision 52); the inline "STE" field is added only when
+ *   this is a non-empty string. Q&A audits always set it.
  * @returns {Promise<void>}
  */
 async function logGorkQa(client, guildId, opts = {}) {
@@ -199,6 +202,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     memoryLabel,
     channelLabel,
     budgetLabel,
+    steLabel,
   } = opts;
   try {
     const embed = baseEmbed({ color: Color.brand, title: "Gork Q&A", timestamp: true });
@@ -226,6 +230,11 @@ async function logGorkQa(client, guildId, opts = {}) {
         ? [{ name: "Channel", value: truncateField(channelLabel.trim(), 256), inline: true }]
         : []),
       { name: "Search", value: searchValue, inline: true },
+      // §7.20 (decision 52): inline STE token, only when the trigger
+      // supplied a non-empty label (Q&A audits always do).
+      ...(typeof steLabel === "string" && steLabel.trim()
+        ? [{ name: "STE", value: truncateField(steLabel.trim(), 16), inline: true }]
+        : []),
       { name: "Model / duration", value: `${model || "unknown"}${durationSuffix}`, inline: true },
       { name: "Answer", value: answerValue, inline: false },
     );

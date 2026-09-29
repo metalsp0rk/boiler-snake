@@ -138,6 +138,7 @@ function getGuildSettings(guildId) {
       gork_daily_limit: 0,
       gork_interaction_log_enabled: 1,
       gork_summarize_input_tokens: 80000,
+      gork_ste_enabled: 0,
       updated_at: now(),
     };
   }
@@ -184,6 +185,7 @@ function updateGuildSettings(guildId, patch) {
     "gork_daily_limit",
     "gork_interaction_log_enabled",
     "gork_summarize_input_tokens",
+    "gork_ste_enabled",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
@@ -244,6 +246,9 @@ function updateGuildSettings(guildId, patch) {
     safePatch.gork_interaction_log_enabled = normalizeGorkFlag(
       safePatch.gork_interaction_log_enabled
     );
+  }
+  if (safePatch.gork_ste_enabled !== undefined) {
+    safePatch.gork_ste_enabled = normalizeGorkFlag(safePatch.gork_ste_enabled);
   }
   if (safePatch.gork_summarize_input_tokens !== undefined) {
     safePatch.gork_summarize_input_tokens = clampGorkSummarizeInputTokens(

@@ -144,6 +144,7 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork cooldown <seconds>` | Per-user cooldown in seconds (0–3600; default **180**, 0 = disabled). Staff always bypass |
 | `/gork rules <text>` | Set additional staff prompt rules (≤500 chars). `/gork rules clear` removes them |
 | `/gork search <on\|off>` | Toggle the SearXNG `web_search` tool for this guild |
+| `/gork ste <on\|off>` | Toggle the **STE answer style** — anti-slop writing rules for gork's answers; see [Answer style (STE)](#answer-style-ste) |
 | `/gork enable <on\|off>` | Turn gork **entirely** on/off for this server — off makes every trigger silent; all other settings are kept |
 | `/gork ban <user>` | Ban a user from gork in this server (they keep getting the generic reply — never told it's a ban) |
 | `/gork unban <user>` | Lift a user's gork ban |
@@ -153,9 +154,9 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork log <on\|off>` | Toggle the gork [interaction log](gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
 | `/gork summarize <mode>` | Conversation rundown of a message range — see [Conversation rundown](#conversation-rundown) |
 | `/gork summarize-budget <tokens>` | Set the per-guild **input token budget** for `/gork summarize` (8,000–120,000; default 80,000) |
-| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, memory state, budget default + rule count, summarize input token budget, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
+| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, ste state, memory state, budget default + rule count, summarize input token budget, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
-`/settings` also shows a **Gork** field (enabled + keyword + window + search + memory state + summarize input budget).
+`/settings` also shows a **Gork** field (enabled + keyword + window + search + ste + memory state + summarize input budget).
 
 All values are stored per-guild in `guild_settings`:
 
@@ -166,6 +167,7 @@ All values are stored per-guild in `guild_settings`:
 | `gork_context_window` | Prior-message context size | `10` |
 | `gork_extra_rules` | Staff prompt additions (≤500 chars) | *(empty)* |
 | `gork_search_enabled` | SearXNG `web_search` tool toggle | `1` (on) |
+| `gork_ste_enabled` | STE answer-style card toggle (see [Answer style (STE)](#answer-style-ste)) | `0` (off) |
 | `gork_cooldown_sec` | Per-user cooldown in seconds; staff bypass | `180` |
 | `gork_memory_enabled` | Community-memory master switch (see [Memory](#memory)) | `0` (off) |
 | `gork_memory_chars` | Memory-block char budget; `0` = unlimited | `12000` |
@@ -173,6 +175,34 @@ All values are stored per-guild in `guild_settings`:
 | `gork_summarize_input_tokens` | Input token budget for one `/gork summarize` rundown (see [Conversation rundown](#conversation-rundown)) | `80000` |
 
 Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `user_id`, who banned them, when); budget rules and usage counters in `gork_budget_rules` / `gork_usage`.
+
+## Answer style (STE)
+
+Gork's answers can drift into AI slop: "Great question!", "let's dive into",
+"delve", stacked hedges, sign-off filler. **STE answer style** is the cure: a
+distilled, machine-checkable writing system based on ASD-STE100 (the 1986
+Simplified Technical English standard for aircraft manuals), injected as one
+compact card into gork's system prompt when the guild turns it on.
+
+- `/gork ste on` — every answer in this server is written under the card:
+  short active sentences, simple tenses, one name for one thing, banned
+  puffery ("seamless", "robust", "delve"), the answer on line one, no recap
+  and no sign-off, action lists capped at five items. Gork's sarcastic
+  persona stays: this is a *writing* system, not a voice rewrite.
+- `/gork ste off` — back to the standard prompt, byte-for-byte.
+
+The toggle is per-guild (`guild_settings.gork_ste_enabled`, default **off**),
+re-read per question (no restart), and shows up in `/gork status`, `/settings`,
+and the Q&A audit embed (inline `STE: on/off` token). Staff tone tuning keeps
+riding `/gork rules` — the card itself is a fixed, code-owned constant; there
+is no per-guild custom style text.
+
+The card is evidence-based: measured **50–74% fewer writing violations per
+100 words** versus a no-instruction baseline in the source study
+([the cure for AI slop is a 1986 aircraft manual](https://www.chele.bi/videos/the-cure-for-ai-slop)).
+A deterministic linter + auto-repair pass is recorded as a deferred follow-up
+in [roadmap §7.20](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/gork.md)
+— built only if the card alone proves insufficient.
 
 ## Memory
 

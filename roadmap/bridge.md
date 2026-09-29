@@ -43,7 +43,7 @@ What exists today that the design has to fit:
 - `onMessageCreate` in `src/bot/pipelines.js` returns immediately when `message.author?.bot` is set, then runs cache → reaction-role capture → honeypot → gork (detached) → `recordUserChannelMessage` → `tryAwardMessageXp`. Bot and webhook posts already earn no XP and do not increment user-activity counters.
 - Staff gates are `requireStaff` (Manage Guild **or** any `staff_roles` row) versus Manage Guild only (`src/core/permissions.js`, `src/core/commandVisibility.js`). Staff-tier slash commands set `defaultMemberPermissions` to Manage Guild; `/staff syncpermissions` later allows staff roles to see them. Handlers remain the security check.
 - Services return `{ ok: false, error }` and do not reply to Discord. User-facing errors name the cause (`AGENTS.md`). `MSG_DENIED` is `You don't have permission to use this.` (`src/core/theme.js`). `safeErrorReply` / `MSG_GENERIC_ERROR` stay the router’s last resort only.
-- Migrations are idempotent modules in `src/db/migrations/`, registered in order in `src/db/migrate.js`. Shipped ids run through `030_web_session_tokens`. **`031` is already named by the gork STE design** ([gork.md](gork.md) §7.20, [index.md](index.md) §8). This draft does not reserve a number.
+- Migrations are idempotent modules in `src/db/migrations/`, registered in order in `src/db/migrate.js`. Shipped ids run through `033_gork_summarize_input_tokens`. **`031` is already named by the gork STE design** ([gork.md](gork.md) §7.20, [index.md](index.md) §8). This draft does not reserve a number.
 - Feature shape is `src/features/<name>/` with `name`, `commands`, `handlers`, optional `start`, wired from `src/features/index.js` and `src/features/load.js`. Cross-feature message ordering stays in `src/bot/pipelines.js`, not in a feature’s private listener.
 
 ---
@@ -898,7 +898,7 @@ Endpoint-spec open decision §9.10.2 (DM versus in-channel for sensitive output)
 - Honeypot channel check: `isHoneypotChannel` in `src/db/repositories/honeypot.js`. Foreign keys are off: `src/db/connection.js`.
 - Audit: `src/core/auditTrail.js`, `src/db/migrations/029_admin_audit.js` (`guild_id` is a bare snowflake), `src/features/logs/auditLog.js`.
 - Message cache TTL: `src/features/logs/auditLog.js` (`MESSAGE_CACHE_TTL_MS`).
-- Scheduler: `src/core/scheduler.js`. Migrations: `src/db/migrate.js` (through `030`).
+- Scheduler: `src/core/scheduler.js`. Migrations: `src/db/migrate.js` (through `033`).
 - discord.js 14.16 `attachmentSizeLimit` is on `BaseInteraction` only (`node_modules/discord.js/src/structures/BaseInteraction.js`).
 - Fluxer messages (attachments, signed URLs, flags, spoilers, voice messages, allowed mentions, 50 MiB bot clamp on upload declarations, sticker items have no URL): <https://docs.fluxer.app/http-api/messages/> — re-read 2026-09-25.
 - Fluxer webhooks (`MANAGE_WEBHOOKS`, MFA, create route, execute `username` / `avatar_url` / multipart / nonce / `wait`, 60/minute execute, `MAX_WEBHOOKS_PER_GUILD` and `MAX_WEBHOOKS_PER_CHANNEL`, token returned in full): <https://docs.fluxer.app/http-api/webhooks/> — re-read 2026-09-25.

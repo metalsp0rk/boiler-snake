@@ -1309,6 +1309,12 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `025_github_releases` | `github_watches` table (repo → channel routing, per-repo token, release pointer) |
 | `026_gork_budget` | `gork_budget_rules` + `gork_usage` tables + `gork_daily_limit` column (gork daily usage budget, roadmap §7.17) |
 | `027_gork_interaction_log` | `gork_interactions` table — captured agent calls for replay fixtures (see [Gork logging](gork-logging.md)) |
+| `028_web_sessions` | `web_sessions` table — web admin console sessions (see [Web admin console](web-admin.md)) |
+| `029_admin_audit` | `admin_audit` trail table — one row per mutating action (`web`/`slash`/`system` origins) |
+| `030_web_session_tokens` | OAuth columns on `web_sessions` (access token, expiry, scopes, guild snapshot) |
+| `031_gork_ste_enabled` | `guild_settings.gork_ste_enabled` — STE anti-slop answer style toggle (roadmap §7.20, see [Gork](gork.md#answer-style-ste)) |
+| `032_twitch_eventsub_media` | `twitch_eventsub_subs` table + per-subscription clip/VOD alert columns with watermarks |
+| `033_gork_summarize_input_tokens` | `guild_settings.gork_summarize_input_tokens` — per-guild `/gork summarize` input token budget |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
