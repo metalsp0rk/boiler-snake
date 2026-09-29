@@ -40,7 +40,7 @@ src/
 │   └── awardXp.js           # Unified XP → activity → roles → audit
 ├── features/
 │   ├── load.js              # applyFeaturesToRegistry / start / registerEvents
-│   ├── index.js             # Ordered feature list (22 modules)
+│   ├── index.js             # Ordered feature list (23 modules)
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
 │   ├── xp/                  # /xp /leaderboard /setxp /grantxp + award helpers
@@ -62,7 +62,8 @@ src/
 │   ├── userinfo/            # /userinfo staff card + note/warn/activity buttons
 │   ├── userActivity/        # /activityconfig + channel message counters + backfill
 │   ├── tickets/             # /ticket support channels + panel button/modal + archive HTTP
-│   └── gork/                # keyword AI Q&A, memory, budget, interaction log
+│   ├── gork/                # keyword AI Q&A, memory, budget, interaction log
+│   └── web/                 # Web admin console boot feature (starts src/web server)
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch
@@ -75,6 +76,16 @@ src/
 │   └── repositories/
 ├── render/
 │   └── leaderboard.js       # PNG leaderboard (@napi-rs/canvas)
+├── web/                     # Web admin console (Express-style app, dark by default)
+│   ├── server.js            # startWebServer() — listens only when PUBLIC_HTTP_PORT (or ticket alias) is set
+│   ├── app.js               # App assembly: routes + middleware
+│   ├── config.js            # PUBLIC_HTTP_PORT / PUBLIC_BASE_URL contract (+ legacy TICKET_* aliases)
+│   ├── auth/                # Discord OAuth login, sessions, bot-guild provider
+│   ├── routes/              # dashboard, users, tickets, moderation, settings, sessions, system, …
+│   ├── views/               # Server-rendered pages per console area
+│   ├── data/                # Data-access layer for views (guild/ticket/dashboard data)
+│   ├── middleware/          # auth guards, audit mirror, rate limiting
+│   └── public/              # Static assets (app.js, styles.css, vendored Chart.js)
 └── (compat shims)           # auditLog.js, roles.js, decay.js, … → features
 
 xpbot.sqlite
@@ -100,6 +111,8 @@ client.once(ClientReady, () => startAllFeatures(client, features, ctx));
 client.on(InteractionCreate, (i) => handleInteraction(i, ctx));
 client.login(token);
 ```
+
+The **web** feature's `start()` wires the Discord seams (`setBotGuildsProvider`, audit client binding) and calls `startWebServer()` — the public HTTP console. It is **dark by default**: nothing listens unless `PUBLIC_HTTP_PORT` (or the legacy `TICKET_HTTP_PORT` alias) is set. See [web-admin.md](./web-admin.md).
 
 ### Feature module contract
 
@@ -166,6 +179,11 @@ Migrations on load:
 | `025_github_releases` | `github_watches` table (repo watches, routing, per-repo token, release pointer) |
 | `026_gork_budget` | `gork_budget_rules` + `gork_usage` tables + `gork_daily_limit` column (gork daily usage budget, roadmap §7.17) |
 | `027_gork_interaction_log` | `gork_interactions` table — default-on (opt-out) interaction capture (see [Gork logging](gork-logging.md)) |
+| `028_web_sessions` | `web_sessions` table — opaque session ids → Discord user, sliding expiry (web console) |
+| `029_admin_audit` | `admin_audit` table — one row per mutating action across web / slash / system origins |
+| `030_web_session_tokens` | OAuth artifacts on sessions (access token, refresh) for per-request Discord calls |
+| `032_twitch_eventsub_media` | Twitch EventSub fast-path + clips/VOD hooks (`031` is reserved for gork STE answer style) |
+| `033_gork_summarize_input_tokens` | `guild_settings.gork_summarize_input_tokens` (per-guild `/gork summarize` input token budget) |
 
 ### Core XP API
 
@@ -212,6 +230,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **tickets** | Support channels, sensitive mode, panel button→modal, HTML archive HTTP; senior roles get auto ticket view |
 | **music** | Lavalink `/play` `/music`; optional when `LAVALINK_HOST` unset |
 | **gork** | Keyword Q&A; detached from MessageCreate; per-guild queue + budget |
+| **web** | Web admin console (OAuth sign-in, guild-scoped pages, audit trail); boot feature starts the HTTP server dark-by-default — see [web-admin.md](./web-admin.md) |
 | **commandPermissions** | OAuth slash visibility for `staff_roles`; HTTP callback on the public ticket server |
 
 Tickers (voice, youtube, twitch, githubReleases, eventReminders, warnings expiry, decay, honeypot sweep, XP cooldown sweep, audit message-cache) register named jobs on `src/core/scheduler.js`. The scheduler skips overlapping runs, always logs tick failures as `[scheduler] <name> tick failed:`, and exposes `snapshot()` (`lastTickAt`, `intervalMs`, `running`) for dashboards. Feature `start()` still decides *whether* a job is armed (e.g. YouTube skips without `YOUTUBE_API_KEY`). Invoke `runVoiceTick` / `runYoutubeTick` / … directly in tests — do not start timers.
@@ -264,7 +283,7 @@ npm run test:unit        # test/*.test.js
 npm run test:integration # test/integration/*.test.js
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**28** commands, **22** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
+Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**28** commands, **23** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
 
 ---
 
@@ -274,6 +293,7 @@ Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), 
 - YouTube (optional): `YOUTUBE_API_KEY` — see [youtube-notifications.md](./youtube-notifications.md)
 - Twitch (optional): `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` — see [twitch-notifications.md](./twitch-notifications.md)
 - Tickets (optional): `TICKET_HTTP_PORT`, `TICKET_PUBLIC_BASE_URL`, `TICKET_MAX_ASSET_BYTES`, `TICKET_MAX_ASSETS`; AI close summaries: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` — see [tickets.md](./tickets.md)
+- Web console (optional): `PUBLIC_HTTP_PORT`, `PUBLIC_BASE_URL` (+ `CLIENT_SECRET` for OAuth login) — see [web-admin.md](./web-admin.md)
 - Docker: `DATA_DIR=/data` volume; persist WAL siblings
 - Fonts for PNG: Noto / DejaVu (image includes them)
 - Bot role must sit above managed roles
