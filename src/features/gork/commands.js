@@ -111,6 +111,23 @@ const commands = [
     )
     .addSubcommand((sc) =>
       sc
+        .setName("ste")
+        .setDescription(
+          "Toggle the STE answer style: anti-slop writing rules for gork's answers.",
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("ste")
+            .setDescription("Enable (on) or disable (off) the STE answer style")
+            .setRequired(true)
+            .addChoices(
+              { name: "on", value: "on" },
+              { name: "off", value: "off" },
+            ),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
         .setName("enable")
         .setDescription(
           "Enable or disable gork entirely for this server (settings are kept).",

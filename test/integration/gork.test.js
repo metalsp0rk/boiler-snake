@@ -29,6 +29,10 @@ const { IDS, uniqueId } = require("../helpers/fixtures");
 /** Locked canned failure reply (from the trigger module). */
 const { LLM_FAILURE_REPLY } = require("../../src/features/gork/trigger");
 
+/** §7.20: byte-locked STE card + pure prompt builder (integration asserts). */
+const { GORK_STE_CARD } = require("../../src/features/gork/constants");
+const { GORK_BASE_PROMPT, buildSystemPrompt } = require("../../src/features/gork/prompt");
+
 // ---------- env hygiene ----------
 // (test/helpers/env.js has no save/restore helpers, so keep a local pair;
 // loadDb() in the harness still owns DB_PATH / DATA_DIR.)
@@ -3042,3 +3046,156 @@ function hasLoneSurrogate(s) {
   }
   return false;
 }
+
+// ---------- roadmap/gork.md §7.20 STE answer style ----------
+
+describe("integration: gork STE answer style (§7.20)", () => {
+  it("ste on: system prompt carries base bytes + card + staff rules, in order", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-ste-on") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Rayleigh scattering, obviously."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_ste_enabled: 1,
+        gork_extra_rules: "Prefer short answers.",
+      });
+
+      attachTyping(env.channels.general);
+      const { message } = makeGorkMessage(env, {
+        id: "t-ste-on-1",
+        content: "gork: why is the sky blue?",
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(fetchMock.calls.length, 1, "expected exactly one AI fetch");
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const sys = body.messages.find((m) => m.role === "system").content;
+      assert.equal(sys.startsWith(GORK_BASE_PROMPT), true, "base bytes first");
+      const cardAt = sys.indexOf(`\n\n${GORK_STE_CARD}\n\n`, GORK_BASE_PROMPT.length);
+      assert.ok(cardAt === GORK_BASE_PROMPT.length, "card rides directly after the base bytes");
+      const rulesAt = sys.indexOf("Additional guild rules:\nPrefer short answers.");
+      assert.ok(
+        rulesAt > GORK_BASE_PROMPT.length + GORK_STE_CARD.length,
+        "staff rules stay after the card",
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("ste off (default): system prompt is byte-identical to the pre-§7.20 prompt", async () => {
+    // Decision 50: off = the exact pre-7.20 prompt — no card bytes anywhere.
+    const env = await freshEnv({ guildId: uniqueId("guild-ste-off") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Rayleigh scattering, obviously."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_extra_rules: "Prefer short answers.",
+      });
+
+      attachTyping(env.channels.general);
+      const { message } = makeGorkMessage(env, {
+        id: "t-ste-off-1",
+        content: "gork: why is the sky blue?",
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(fetchMock.calls.length, 1, "expected exactly one AI fetch");
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const sys = body.messages.find((m) => m.role === "system").content;
+      assert.equal(
+        sys,
+        buildSystemPrompt({ extraRules: "Prefer short answers." }),
+        "off-state system prompt must be byte-identical to the pure builder",
+      );
+      assert.ok(!sys.includes(GORK_STE_CARD), "no card bytes when ste is off");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("ste on: Q&A audit embed carries the STE on token (§7.20.4)", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-ste-audit") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Rayleigh scattering, obviously."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        gork_ste_enabled: 1,
+        audit_log_channel_id: IDS.channelLog,
+      });
+
+      attachTyping(env.channels.general);
+      const { message } = makeGorkMessage(env, {
+        id: "t-ste-audit-1",
+        content: "gork: why is the sky blue?",
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.ok(
+        env.channels.log.sent.length >= 1,
+        "expected the Q&A audit embed in the audit channel",
+      );
+      const auditText = embedText(env.channels.log.sent[0].embeds[0]);
+      assert.ok(auditText.includes("Gork Q&A"), "Q&A audit embed landed");
+      const fields = env.channels.log.sent[0].embeds[0];
+      const data =
+        typeof fields.toJSON === "function" ? fields.toJSON() : fields.data || fields;
+      const steField = (data.fields || []).find((f) => f.name === "STE");
+      assert.ok(steField, "inline STE field present on the audit embed");
+      assert.equal(steField.value, "on", "STE token reflects the guild toggle");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("ste off: Q&A audit embed shows the STE off token", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-ste-audit-off") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Rayleigh scattering, obviously."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.guild.id, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+
+      attachTyping(env.channels.general);
+      const { message } = makeGorkMessage(env, {
+        id: "t-ste-audit-off-1",
+        content: "gork: why is the sky blue?",
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      const embed = env.channels.log.sent[0].embeds[0];
+      const data =
+        typeof embed.toJSON === "function" ? embed.toJSON() : embed.data || embed;
+      const steField = (data.fields || []).find((f) => f.name === "STE");
+      assert.ok(steField, "inline STE field present on the audit embed");
+      assert.equal(steField.value, "off", "default off renders as the off token");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+});

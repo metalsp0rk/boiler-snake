@@ -865,8 +865,14 @@ async function runGorkHook(client, message) {
           text: formatContext(ctx.messages || [], ctxOpts),
         };
         if (memJob) memJob.ctxText = promptCtx.text;
+        // §7.20 (decision 50): STE anti-slop answer style — re-read per job
+        // like every other knob. Off → the prompt is exactly the pre-7.20
+        // prompt (byte-identical); on → the byte-locked card rides between
+        // the base bytes and the staff rules.
+        const steOn = Number(settings.gork_ste_enabled ?? 0) === 1;
         const system = buildSystemPrompt({
           extraRules: settings.gork_extra_rules,
+          steEnabled: steOn,
         });
         const searchOn = isWebSearchEnabled(settings);
         // Fix 6: visible-answer hard cap, re-read per job like the other
@@ -1164,6 +1170,9 @@ async function runGorkHook(client, message) {
               // Budget label (§7.17.7): "3/5 in #general" — only present
               // when the effective limit is a real cap (>= 1).
               budgetLabel,
+              // §7.20 (decision 52): inline STE: on/off token — always set
+              // for Q&A audits (unlike the opt-in memory/budget labels).
+              steLabel: steOn ? "on" : "off",
             }),
           );
         } else {

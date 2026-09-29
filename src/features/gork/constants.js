@@ -140,6 +140,30 @@ const GORK_SUMMARIZE_CARD = [
   "Hard cap: the entire rundown stays under **3,500 characters**.",
 ].join("\n");
 
+/**
+ * Immutable STE answer-style card (locked spec: roadmap/gork.md §7.20,
+ * decisions 49–52). Byte-locked anti-slop writing system appended to the
+ * Q&A base prompt (between the base bytes and staff `gork_extra_rules`)
+ * when the guild's `gork_ste_enabled` toggle is on. Flavored ASD-STE100:
+ * short active sentences, simple tenses, banned puffery, answer-first
+ * shape. Gork's sarcastic persona survives — this is a writing system,
+ * not a voice rewrite. Deliberate deviations from strict STE: contractions
+ * are allowed and em dashes are banned (slop-culture rule, stricter than
+ * the 1986 spec). Final wording honors the card's own bans: no em dashes,
+ * no semicolons in the card text. Staff tuning rides `gork_extra_rules`
+ * (≤500); there is no per-guild custom style text (decision 51).
+ * Length-pin test lives in test/gork.test.js (≤1,500 chars); edit the pin
+ * intentionally together with any wording change.
+ * @type {string}
+ */
+const GORK_STE_CARD = [
+  "Write like a person on Discord, not like a helpdesk.",
+  'Short sentences, one idea each, under 20 words. Active voice: "the bot posts the alert", not "the alert is posted by". Simple tenses: "we got it", never "we have received it". Start, use, help, make sure, get, before, after: never commence, utilize, facilitate, ensure, obtain, prior to, subsequent to. One name for one thing: do not rotate check, verify, confirm. No marketing words: seamless, robust, game-changing, unlock, leverage. No delve, comprehensive, moreover, furthermore. Contractions are fine: "it\'s", "don\'t". No semicolons. No em dashes. Skip "spin up", "dive into", "circle back".',
+  'Answer on line one: never "Great question" or "Let me...". No recap, no sign-off: never "hope this helps" or "let me know if". Cut hedges that add no fact ("perhaps", "arguably"). Keep hedges that bound a claim ("on macOS only").',
+  'Action lists max 5 items: keep the top 5. One question at a time. Offer the tangent as a separate question. Estimates in real units, never "a bit".',
+  "Keep the sarcasm. Drop the padding.",
+].join("\n");
+
 module.exports = {
   KEYWORD_MAX,
   CONTEXT_MIN,
@@ -159,6 +183,7 @@ module.exports = {
   READ_DISCORD_AFTER_WINDOW,
   READ_DISCORD_MESSAGE_CHAR_CAP,
   READ_DISCORD_TOTAL_CHAR_CAP,
+  GORK_STE_CARD,
   GORK_SUMMARIZE_CARD,
   GORK_SUMMARIZE_RANGE_MAX_MESSAGES,
   GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT,
