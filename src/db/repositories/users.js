@@ -1,13 +1,19 @@
 const { db, now } = require("../connection");
 const { MAX_SAFE_XP, clampDelta, clampXpTotal } = require("../../core/xpMath");
 
-function ensureUser(guildId, userId) {
+// src/platform/community.js requires the db facade (src/db/index.js), so a
+// top-level require here would be a load-time cycle (partial exports). The
+// lazy require resolves after boot; assertCommunityId stays single-source.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
+function ensureUser(communityId, userId) {
+  assertCommunityId(communityId);
   const t = now();
   db.prepare(`
-  INSERT INTO users (guild_id, user_id, xp, created_at, updated_at)
+  INSERT INTO users (community_id, user_id, xp, created_at, updated_at)
   VALUES (?, ?, 0, ?, ?)
-  ON CONFLICT(guild_id, user_id) DO UPDATE SET updated_at=excluded.updated_at
-  `).run(guildId, userId, t, t);
+  ON CONFLICT(community_id, user_id) DO UPDATE SET updated_at=excluded.updated_at
+  `).run(communityId, userId, t, t);
 }
 
 /**
@@ -15,14 +21,15 @@ function ensureUser(guildId, userId) {
  * Also clamps XP to a JS-safe range to prevent Infinity/precision loss.
  * Returns the new XP.
  */
-function addXp(guildId, userId, delta) {
-  const tx = db.transaction((gId, uId, d) => {
-    ensureUser(gId, uId);
+function addXp(communityId, userId, delta) {
+  assertCommunityId(communityId);
+  const tx = db.transaction((cId, uId, d) => {
+    ensureUser(cId, uId);
     const t = now();
 
     const currentRow = db
-      .prepare(`SELECT xp FROM users WHERE guild_id=? AND user_id=?`)
-      .get(gId, uId);
+      .prepare(`SELECT xp FROM users WHERE community_id=? AND user_id=?`)
+      .get(cId, uId);
     const currentXp = clampXpTotal(currentRow?.xp ?? 0);
 
     let safeDelta = clampDelta(d);
@@ -40,61 +47,64 @@ function addXp(guildId, userId, delta) {
       UPDATE users
       SET xp = MIN(?, MAX(0, xp + ?)),
           updated_at = ?
-      WHERE guild_id=? AND user_id=?
-    `).run(MAX_SAFE_XP, safeDelta, t, gId, uId);
+      WHERE community_id=? AND user_id=?
+    `).run(MAX_SAFE_XP, safeDelta, t, cId, uId);
 
     const row = db
-      .prepare(`SELECT xp FROM users WHERE guild_id=? AND user_id=?`)
-      .get(gId, uId);
+      .prepare(`SELECT xp FROM users WHERE community_id=? AND user_id=?`)
+      .get(cId, uId);
 
     const safeXp = clampXpTotal(row?.xp ?? 0);
     if (row && row.xp !== safeXp) {
       db.prepare(`
         UPDATE users
         SET xp=?, updated_at=?
-        WHERE guild_id=? AND user_id=?
-      `).run(safeXp, now(), gId, uId);
+        WHERE community_id=? AND user_id=?
+      `).run(safeXp, now(), cId, uId);
     }
     return safeXp;
   });
 
-  return tx(guildId, userId, delta);
+  return tx(communityId, userId, delta);
 }
 
-function setXp(guildId, userId, xp) {
-  ensureUser(guildId, userId);
+function setXp(communityId, userId, xp) {
+  assertCommunityId(communityId);
+  ensureUser(communityId, userId);
   const safe = clampXpTotal(xp);
 
   db.prepare(`
   UPDATE users
   SET xp=?, updated_at=?
-  WHERE guild_id=? AND user_id=?
-  `).run(safe, now(), guildId, userId);
+  WHERE community_id=? AND user_id=?
+  `).run(safe, now(), communityId, userId);
 }
 
-function getXp(guildId, userId) {
-  const row = db.prepare(`SELECT xp FROM users WHERE guild_id=? AND user_id=?`).get(guildId, userId);
+function getXp(communityId, userId) {
+  assertCommunityId(communityId);
+  const row = db.prepare(`SELECT xp FROM users WHERE community_id=? AND user_id=?`).get(communityId, userId);
   const safe = clampXpTotal(row?.xp ?? 0);
 
   if (row && row.xp !== safe) {
     db.prepare(`
     UPDATE users
     SET xp=?, updated_at=?
-    WHERE guild_id=? AND user_id=?
-    `).run(safe, now(), guildId, userId);
+    WHERE community_id=? AND user_id=?
+    `).run(safe, now(), communityId, userId);
   }
 
   return safe;
 }
 
-function topUsers(guildId, limit = 10) {
+function topUsers(communityId, limit = 10) {
+  assertCommunityId(communityId);
   const rows = db.prepare(`
   SELECT user_id, xp
   FROM users
-  WHERE guild_id=?
+  WHERE community_id=?
   ORDER BY xp DESC
   LIMIT ?
-  `).all(guildId, limit);
+  `).all(communityId, limit);
 
   let changed = false;
   const out = rows.map((r) => {
@@ -108,11 +118,11 @@ function topUsers(guildId, limit = 10) {
     const stmt = db.prepare(`
     UPDATE users
     SET xp=?, updated_at=?
-    WHERE guild_id=? AND user_id=?
+    WHERE community_id=? AND user_id=?
     `);
     const tx = db.transaction(() => {
       for (const r of out) {
-        stmt.run(r.xp, t, guildId, r.user_id);
+        stmt.run(r.xp, t, communityId, r.user_id);
       }
     });
     tx();
@@ -123,16 +133,17 @@ function topUsers(guildId, limit = 10) {
 
 /**
  * Point-read one user's row (web profile existence check). No row ⇒ the bot
- * has never tracked XP for this member in this guild. Read-only (unlike
+ * has never tracked XP for this member in this community. Read-only (unlike
  * getXp, never seeds or clamps-writes).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @returns {{ user_id: string, xp: number }|null}
  */
-function getUser(guildId, userId) {
+function getUser(communityId, userId) {
+  assertCommunityId(communityId);
   const row = db
-    .prepare(`SELECT user_id, xp FROM users WHERE guild_id=? AND user_id=?`)
-    .get(guildId, userId);
+    .prepare(`SELECT user_id, xp FROM users WHERE community_id=? AND user_id=?`)
+    .get(communityId, userId);
   if (!row) return null;
   return { user_id: row.user_id, xp: clampXpTotal(row.xp) };
 }
@@ -141,22 +152,23 @@ function getUser(guildId, userId) {
 const SEARCH_LIMIT = 50;
 
 /**
- * Search tracked users of ONE guild by snowflake text (web users index).
+ * Search tracked users of ONE community by snowflake text (web users index).
  *
  * Boundedness (§8.6): the users table stores NO display names, so name/LIKE
  * search is impossible without a per-request Discord fan-out; this helper
  * therefore answers EXACT and PREFIX id matches only — both served by the
- * (guild_id, user_id) PK index, no scans. Non-digit queries can never match
- * a numeric id and short-circuit to [] WITHOUT touching the DB.
+ * (community_id, user_id) PK index, no scans. Non-digit queries can never
+ * match a numeric id and short-circuit to [] WITHOUT touching the DB.
  * LIKE metacharacters are escaped with ESCAPE '\' so junk input cannot
  * widen the pattern (defense in depth — the digit guard already blocks %).
  *
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} query raw search text (trimmed by the caller)
  * @param {{ limit?: number }} [opts]
  * @returns {{ user_id: string, xp: number }[]}
  */
-function searchUsers(guildId, query, opts = {}) {
+function searchUsers(communityId, query, opts = {}) {
+  assertCommunityId(communityId);
   const q = String(query ?? "").trim();
   // Snowflake-ish guard: digits only, 1..20 chars. Anything else matches no
   // id, and we refuse to run a scan-shaped query for it.
@@ -166,8 +178,8 @@ function searchUsers(guildId, query, opts = {}) {
 
   // Two index-friendly point/prefix reads, merged exact-first (§ PK use).
   const exact = db
-    .prepare(`SELECT user_id, xp FROM users WHERE guild_id=? AND user_id=?`)
-    .all(guildId, q);
+    .prepare(`SELECT user_id, xp FROM users WHERE community_id=? AND user_id=?`)
+    .all(communityId, q);
   if (exact.length >= limit) {
     return exact.slice(0, limit).map((r) => ({ user_id: r.user_id, xp: clampXpTotal(r.xp) }));
   }
@@ -175,23 +187,24 @@ function searchUsers(guildId, query, opts = {}) {
   const prefix = db
     .prepare(
       `SELECT user_id, xp FROM users
-       WHERE guild_id=? AND user_id LIKE ? ESCAPE '\\'
+       WHERE community_id=? AND user_id LIKE ? ESCAPE '\\'
        ORDER BY user_id ASC
        LIMIT ?`
     )
-    .all(guildId, `${like}%`, limit);
+    .all(communityId, `${like}%`, limit);
 
   const seen = new Set(exact.map((r) => r.user_id));
   const out = [...exact, ...prefix.filter((r) => !seen.has(r.user_id))].slice(0, limit);
   return out.map((r) => ({ user_id: r.user_id, xp: clampXpTotal(r.xp) }));
 }
 
-function allUsersInGuild(guildId) {
+function allUsersInCommunity(communityId) {
+  assertCommunityId(communityId);
   const rows = db.prepare(`
   SELECT user_id, xp
   FROM users
-  WHERE guild_id=?
-  `).all(guildId);
+  WHERE community_id=?
+  `).all(communityId);
 
   return rows.map((r) => ({ user_id: r.user_id, xp: clampXpTotal(r.xp) }));
 }
@@ -205,5 +218,5 @@ module.exports = {
   searchUsers,
   SEARCH_LIMIT,
   topUsers,
-  allUsersInGuild,
+  allUsersInCommunity,
 };

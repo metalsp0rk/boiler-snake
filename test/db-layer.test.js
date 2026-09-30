@@ -2,7 +2,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 describe("db layer", () => {
   let api;
@@ -29,18 +29,18 @@ describe("db layer", () => {
     assert.ok(fs.existsSync(dbPath));
   });
 
-  it("youtube_channels has composite primary key (guild_id, id)", () => {
+  it("youtube_channels has composite primary key (community_id, id)", () => {
     const pk = api.db
       .prepare(`PRAGMA table_info(youtube_channels)`)
       .all()
       .filter((c) => c.pk > 0)
       .sort((a, b) => a.pk - b.pk)
       .map((c) => c.name);
-    assert.deepEqual(pk, ["guild_id", "id"]);
+    assert.deepEqual(pk, ["community_id", "id"]);
   });
 
   it("addXp / getXp / topUsers round-trip", () => {
-    const guildId = "g-test";
+    const guildId = communityKey("g-test");
     const userId = "u-test";
     const xp = api.addXp(guildId, userId, 150);
     assert.equal(xp, 150);
@@ -51,7 +51,7 @@ describe("db layer", () => {
   });
 
   it("getGuildSettings returns defaults and accepts patch", () => {
-    const guildId = "g-settings";
+    const guildId = communityKey("g-settings");
     const s = api.getGuildSettings(guildId);
     assert.equal(s.msg_xp, 5);
     const updated = api.updateGuildSettings(guildId, { msg_xp: 10 });
@@ -88,7 +88,7 @@ describe("db layer", () => {
     });
 
     it("fresh guild row gets the gork column defaults", () => {
-      const s = api.getGuildSettings("g-gork-fresh");
+      const s = api.getGuildSettings(communityKey("g-gork-fresh"));
       assert.equal(s.gork_keyword, "@gork");
       assert.equal(s.gork_context_window, 10);
       assert.equal(s.gork_extra_rules, "");
@@ -97,7 +97,7 @@ describe("db layer", () => {
     });
 
     it("gork_context_window clamps to 1-50 (invalid -> 10)", () => {
-      const g = "g-gork-window";
+      const g = communityKey("g-gork-window");
       const expectWindow = (value, expected) => {
         const s = api.updateGuildSettings(g, { gork_context_window: value });
         assert.equal(s.gork_context_window, expected, `window ${value} -> ${expected}`);
@@ -113,7 +113,7 @@ describe("db layer", () => {
     });
 
     it("gork_cooldown_sec clamps to 0-3600 (invalid -> 180)", () => {
-      const g = "g-gork-cooldown";
+      const g = communityKey("g-gork-cooldown");
       const expectCooldown = (value, expected) => {
         const s = api.updateGuildSettings(g, { gork_cooldown_sec: value });
         assert.equal(s.gork_cooldown_sec, expected, `cooldown ${value} -> ${expected}`);
@@ -129,7 +129,7 @@ describe("db layer", () => {
     });
 
     it("gork_extra_rules is truncated at 500 chars", () => {
-      const g = "g-gork-rules";
+      const g = communityKey("g-gork-rules");
       const exact = api.updateGuildSettings(g, { gork_extra_rules: "r".repeat(500) });
       assert.equal(exact.gork_extra_rules, "r".repeat(500));
       const long = api.updateGuildSettings(g, {
@@ -141,7 +141,7 @@ describe("db layer", () => {
     });
 
     it("gork_keyword: empty/whitespace clears to NULL (disabled)", () => {
-      const g = "g-gork-keyword-clear";
+      const g = communityKey("g-gork-keyword-clear");
       const set = api.updateGuildSettings(g, { gork_keyword: "@gork" });
       assert.equal(set.gork_keyword, "@gork");
       const emptied = api.updateGuildSettings(g, { gork_keyword: "" });
@@ -153,7 +153,7 @@ describe("db layer", () => {
     });
 
     it("gork_keyword stores trimmed 1-50 char keywords; over-length keeps prior value", () => {
-      const g = "g-gork-keyword";
+      const g = communityKey("g-gork-keyword");
       const kw50 = "k".repeat(50);
       const s50 = api.updateGuildSettings(g, { gork_keyword: kw50 });
       assert.equal(s50.gork_keyword, kw50);
@@ -166,7 +166,7 @@ describe("db layer", () => {
     });
 
     it("gork_search_enabled coerces to 0/1", () => {
-      const g = "g-gork-search";
+      const g = communityKey("g-gork-search");
       const expectSearch = (value, expected) => {
         const s = api.updateGuildSettings(g, { gork_search_enabled: value });
         assert.equal(s.gork_search_enabled, expected, `search ${value} -> ${expected}`);
@@ -182,7 +182,7 @@ describe("db layer", () => {
     });
 
     it("all five gork keys round-trip in one patch", () => {
-      const g = "g-gork-roundtrip";
+      const g = communityKey("g-gork-roundtrip");
       const s = api.updateGuildSettings(g, {
         gork_keyword: "@gork",
         gork_context_window: 20,
@@ -224,12 +224,12 @@ describe("db layer", () => {
     });
 
     it("fresh guild row defaults gork_enabled to 1", () => {
-      const s = api.getGuildSettings("g-gork-enabled-fresh");
+      const s = api.getGuildSettings(communityKey("g-gork-enabled-fresh"));
       assert.equal(s.gork_enabled, 1);
     });
 
     it("gork_enabled coerces to 0/1 and round-trips", () => {
-      const g = "g-gork-enabled";
+      const g = communityKey("g-gork-enabled");
       const expectEnabled = (value, expected) => {
         const s = api.updateGuildSettings(g, { gork_enabled: value });
         assert.equal(s.gork_enabled, expected, `gork_enabled ${value} -> ${expected}`);
@@ -245,7 +245,7 @@ describe("db layer", () => {
     });
 
     it("adding a block preserves keyword and other settings", () => {
-      const g = "g-gork-enable-preserves";
+      const g = communityKey("g-gork-enable-preserves");
       api.updateGuildSettings(g, { gork_keyword: "@ask", gork_cooldown_sec: 45 });
       api.updateGuildSettings(g, { gork_enabled: 0 });
       const s = api.getGuildSettings(g);
@@ -255,8 +255,8 @@ describe("db layer", () => {
     });
 
     it("addGorkBlock / isGorkBlocked / listGorkBlocks / removeGorkBlock round-trip", () => {
-      const g = "g-gork-blocks";
-      const other = "g-gork-blocks-other";
+      const g = communityKey("g-gork-blocks");
+      const other = communityKey("g-gork-blocks-other");
       assert.equal(api.isGorkBlocked(g, "u1"), false);
 
       api.addGorkBlock(g, "u1", "staff-1");
@@ -277,9 +277,18 @@ describe("db layer", () => {
       assert.equal(api.listGorkBlocks(other).length, 0);
     });
 
-    it("isGorkBlocked degrades to false for missing identity", () => {
-      assert.equal(api.isGorkBlocked(null, "u1"), false);
-      assert.equal(api.isGorkBlocked("g-gork-blocks", ""), false);
+    it("isGorkBlocked rejects a missing community id (PR 2 programmer-error contract)", () => {
+      // Post-034: a missing/invalid community id is a programmer error and
+      // throws (assertCommunityId); a missing USER id still degrades to false.
+      assert.throws(
+        () => api.isGorkBlocked(null, "u1"),
+        /community id required, got object/
+      );
+      assert.equal(
+        api.isGorkBlocked(communityKey("g-gork-blocks"), ""),
+        false,
+        "missing user id still degrades to false"
+      );
     });
   });
 
@@ -318,13 +327,13 @@ describe("db layer", () => {
     });
 
     it("fresh guild row defaults the memory keys to 0 / 12000", () => {
-      const s = api.getGuildSettings("g-gork-mem-fresh");
+      const s = api.getGuildSettings(communityKey("g-gork-mem-fresh"));
       assert.equal(s.gork_memory_enabled, 0, "memory is default-OFF");
       assert.equal(s.gork_memory_chars, 12000);
     });
 
     it("gork_memory_enabled coerces to 0/1 and persists", () => {
-      const g = "g-gork-mem-enabled";
+      const g = communityKey("g-gork-mem-enabled");
       const expectEnabled = (value, expected) => {
         const s = api.updateGuildSettings(g, { gork_memory_enabled: value });
         assert.equal(
@@ -344,7 +353,7 @@ describe("db layer", () => {
     });
 
     it("gork_memory_chars clamps 0-64000 with 0 VALID (garbage -> 12000)", () => {
-      const g = "g-gork-mem-chars";
+      const g = communityKey("g-gork-mem-chars");
       const expectChars = (value, expected) => {
         const s = api.updateGuildSettings(g, { gork_memory_chars: value });
         assert.equal(s.gork_memory_chars, expected, `gork_memory_chars ${value} -> ${expected}`);
@@ -358,7 +367,7 @@ describe("db layer", () => {
     });
 
     it("memory keys round-trip alongside the other gork settings", () => {
-      const g = "g-gork-mem-roundtrip";
+      const g = communityKey("g-gork-mem-roundtrip");
       const s = api.updateGuildSettings(g, {
         gork_memory_enabled: 1,
         gork_memory_chars: 4000,
@@ -389,12 +398,12 @@ describe("db layer", () => {
     });
 
     it("fresh guild row defaults gork_summarize_input_tokens to 80000", () => {
-      const s = api.getGuildSettings("g-gork-sumtok-fresh");
+      const s = api.getGuildSettings(communityKey("g-gork-sumtok-fresh"));
       assert.equal(s.gork_summarize_input_tokens, 80000);
     });
 
     it("gork_summarize_input_tokens clamps to 8000-120000 (garbage -> 80000)", () => {
-      const g = "g-gork-sumtok";
+      const g = communityKey("g-gork-sumtok");
       const expectTokens = (value, expected) => {
         const s = api.updateGuildSettings(g, { gork_summarize_input_tokens: value });
         assert.equal(
@@ -444,19 +453,19 @@ describe("db layer", () => {
       // Simulate a legacy row: raw insert that predates added_by entirely.
       api.db
         .prepare(
-          `INSERT INTO staff_roles (guild_id, role_id, created_at) VALUES (?, ?, ?)`
+          `INSERT INTO staff_roles (community_id, role_id, created_at) VALUES (?, ?, ?)`
         )
-        .run("g-addedby-legacy", "role-legacy", Date.now());
+        .run(communityKey("g-addedby-legacy"), "role-legacy", Date.now());
       const row = api.db
         .prepare(
-          `SELECT added_by FROM staff_roles WHERE guild_id=? AND role_id=?`
+          `SELECT added_by FROM staff_roles WHERE community_id=? AND role_id=?`
         )
-        .get("g-addedby-legacy", "role-legacy");
+        .get(communityKey("g-addedby-legacy"), "role-legacy");
       assert.equal(row.added_by, null);
     });
 
     it("repo round-trip: add stores added_by; reads expose it; NULL stays NULL", () => {
-      const g = "g-addedby-repo";
+      const g = communityKey("g-addedby-repo");
       api.addStaffRole(g, "role-1", "senior", "admin-1");
       assert.equal(api.getStaffRole(g, "role-1").added_by, "admin-1");
       assert.equal(
@@ -478,7 +487,7 @@ describe("db layer", () => {
     });
 
     it("re-add refreshes provenance with the actor; actorless re-add preserves it", () => {
-      const g = "g-addedby-upsert";
+      const g = communityKey("g-addedby-upsert");
       api.addStaffRole(g, "role-1", "senior", "admin-1");
 
       api.addStaffRole(g, "role-1", "junior", "admin-2"); // re-add with actor

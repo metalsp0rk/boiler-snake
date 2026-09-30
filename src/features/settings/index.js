@@ -7,6 +7,9 @@ const {
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { Color, baseEmbed } = require("../../core/theme");
+// Edge pattern (roadmap/fluxer.md § Repository boundary): Discord snowflake →
+// internal community id at the entry point; repositories take the integer.
+const { ensureCommunity } = require("../../platform/community");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -24,14 +27,21 @@ async function handleSettings(interaction) {
   }
 
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
+  // Slash handlers are the edge: resolve the Discord snowflake once, then the
+  // converted repositories receive only the integer community id.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
 
-  const chans = listAllowedCommandChannels(guildId);
+  const chans = listAllowedCommandChannels(communityId);
   const chanText = chans.length
     ? chans.map((r) => `<#${r.channel_id}>`).join(", ")
     : "All channels (no restriction set)";
 
-  const roles = listLevelRoles(guildId);
+  const roles = listLevelRoles(communityId);
   const roleText = roles.length
     ? roles
         .map(

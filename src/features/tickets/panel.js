@@ -55,6 +55,10 @@ const {
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+// Discord edge: snowflake → integer community id for repository calls;
+// cached OutboundClient for the logs feature (auditLog takes OutboundClient).
+const { ensureCommunity } = require("../../platform/community");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -115,6 +119,11 @@ const {
 
 
 async function handlePanelCreate(interaction, ctx) {
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
   const targetChannel =
     interaction.options.getChannel("channel") ||
     (await resolveChannel(interaction, ctx));
@@ -155,7 +164,7 @@ async function handlePanelCreate(interaction, ctx) {
 
     // Store panel in registry
     createTicketPanel(
-      interaction.guildId,
+      communityId,
       targetChannel.id,
       message.id,
       title,
@@ -164,6 +173,7 @@ async function handlePanelCreate(interaction, ctx) {
 
     recordSlashAudit({
       interaction,
+      communityId,
       action: "tickets.panel_create",
       targetType: "ticket_panel",
       targetId: message.id,
@@ -171,7 +181,7 @@ async function handlePanelCreate(interaction, ctx) {
     });
 
     await logConfigChange(
-      ctx?.client || interaction.client,
+      getDiscordOutbound(ctx?.client || interaction.client),
       interaction.guildId,
       {
         title: "Ticket panel created",
@@ -210,7 +220,12 @@ async function handlePanelCreate(interaction, ctx) {
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  */
 async function handlePanelList(interaction) {
-  const panels = listTicketPanels(interaction.guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const panels = listTicketPanels(communityId);
   if (!panels.length) {
     await interaction.reply({
       content:
@@ -237,6 +252,11 @@ async function handlePanelList(interaction) {
  * @param {object} ctx
  */
 async function handlePanelEdit(interaction, ctx) {
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
   const messageId = interaction.options.getString("message_id", true).trim();
   const title = interaction.options.getString("title");
   const description = interaction.options.getString("description");
@@ -250,7 +270,7 @@ async function handlePanelEdit(interaction, ctx) {
   }
 
   const updated = updateTicketPanelText(
-    interaction.guildId,
+    communityId,
     messageId,
     title != null ? title.trim() : null,
     description != null ? description.trim() : null,
@@ -266,6 +286,7 @@ async function handlePanelEdit(interaction, ctx) {
 
   recordSlashAudit({
     interaction,
+    communityId,
     action: "tickets.panel_update",
     targetType: "ticket_panel",
     targetId: messageId,
@@ -275,7 +296,7 @@ async function handlePanelEdit(interaction, ctx) {
     },
   });
 
-  const panel = getTicketPanel(interaction.guildId, messageId);
+  const panel = getTicketPanel(communityId, messageId);
   const finalTitle =
     (title != null ? title.trim() : panel?.title) || DEFAULT_PANEL_TITLE;
   const finalDesc =
@@ -308,7 +329,7 @@ async function handlePanelEdit(interaction, ctx) {
   }
 
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: "Ticket panel edited",
@@ -335,9 +356,14 @@ async function handlePanelEdit(interaction, ctx) {
  * @param {object} ctx
  */
 async function handlePanelDelete(interaction, ctx) {
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
   const messageId = interaction.options.getString("message_id", true).trim();
   const { removed, channel_id } = deleteTicketPanel(
-    interaction.guildId,
+    communityId,
     messageId,
   );
 
@@ -365,6 +391,7 @@ async function handlePanelDelete(interaction, ctx) {
   if (removed) {
     recordSlashAudit({
       interaction,
+      communityId,
       action: "tickets.panel_delete",
       targetType: "ticket_panel",
       targetId: messageId,
@@ -372,7 +399,7 @@ async function handlePanelDelete(interaction, ctx) {
     });
 
     await logConfigChange(
-      ctx?.client || interaction.client,
+      getDiscordOutbound(ctx?.client || interaction.client),
       interaction.guildId,
       {
         title: "Ticket panel deleted",

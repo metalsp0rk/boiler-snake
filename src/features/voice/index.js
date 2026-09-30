@@ -1,6 +1,8 @@
 const { getGuildSettings } = require("../../db");
 const { awardXp } = require("../../services/awardXp");
 const { registerJob } = require("../../core/scheduler");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 
 function isMutedOrDeafened(voiceState) {
   return !!(
@@ -12,9 +14,17 @@ function isMutedOrDeafened(voiceState) {
 }
 
 async function runVoiceTick(client) {
+  const outbound = getDiscordOutbound(client);
   for (const guild of client.guilds.cache.values()) {
     const guildId = guild.id;
-    const settings = getGuildSettings(guildId);
+    // Edge resolution: the ticker iterates Discord guilds, so this is the
+    // entry point where the snowflake becomes the internal community id.
+    const communityId = ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: guildId,
+    });
+    const settings = getGuildSettings(communityId);
     const xpPerMin = Math.max(0, Number(settings.voice_xp_per_min) || 0);
     if (xpPerMin <= 0) continue;
 
@@ -43,8 +53,9 @@ async function runVoiceTick(client) {
 
       for (const member of members) {
         try {
-          await awardXp(client, {
-            guild,
+          await awardXp(outbound, {
+            communityId,
+            externalGuildId: guildId,
             userId: member.id,
             delta: xpPerMin,
             activityKind: "voice_minute",

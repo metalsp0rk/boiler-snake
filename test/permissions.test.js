@@ -30,7 +30,7 @@
  */
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 const {
   createChatInputInteraction,
   createGuild,
@@ -116,10 +116,12 @@ describe("permissions.js — requireStaff/requireSeniorStaff truth-table matrix"
     perms = require("../src/core/permissions.js"); // binds to THIS db
     MSG_DENIED = require("../src/core/theme").MSG_DENIED;
 
-    // Seed one guild per staff_roles config (deterministic, upsert-safe).
+    // Fluxer PR 2: staff_roles is keyed by the integer communities.id. Each
+    // fixture guild gets its community row; Discord fixtures keep the snowflake.
     for (const cfg of CONFIGS) {
-      if (cfg.junior) db.addStaffRole(cfg.guildId, JR, "junior");
-      if (cfg.senior) db.addStaffRole(cfg.guildId, SR, "senior");
+      cfg.communityId = communityKey(cfg.guildId);
+      if (cfg.junior) db.addStaffRole(cfg.communityId, JR, "junior");
+      if (cfg.senior) db.addStaffRole(cfg.communityId, SR, "senior");
     }
   });
 
@@ -330,21 +332,23 @@ describe("permissions.js — requireStaff/requireSeniorStaff truth-table matrix"
 
     before(() => {
       cmdGuild = createGuild({ id: G });
+      // Fluxer PR 2: command_channels/tickets key by integer community id.
+      const Gc = communityKey(G);
       // Restrictive allow-list: ONLY LISTED is configured → every UNLISTED
       // row proves the exception under test rather than an open guild.
-      db.addAllowedCommandChannel(G, LISTED);
+      db.addAllowedCommandChannel(Gc, LISTED);
 
-      db.createTicket({ guildId: G, creatorUserId: "u-req", channelId: CH_OPEN });
+      db.createTicket({ communityId: Gc, creatorUserId: "u-req", channelId: CH_OPEN });
 
       const soft = db.createTicket({
-        guildId: G,
+        communityId: Gc,
         creatorUserId: "u-req",
         channelId: CH_SOFT,
       });
       db.markTicketClosed(soft.id, { closedBy: "u-staff" });
 
       const arch = db.createTicket({
-        guildId: G,
+        communityId: Gc,
         creatorUserId: "u-req",
         channelId: CH_ARCH,
       });

@@ -1,10 +1,18 @@
 /**
  * HTTP handler for OAuth redirect after command-permission authorization.
+ *
+ * The signed OAuth state carries the EXTERNAL Discord guild id (it is minted
+ * from interaction.guildId). This callback is the edge: it resolves the
+ * internal community id via ensureCommunity before touching any converted
+ * repository (roadmap/fluxer.md § Repository boundary).
  */
 
 const {
   verifyOAuthState,
 } = require("./oauthState");
+const {
+  ensureCommunity,
+} = require("../../platform/community");
 const { exchangeAuthorizationCode } = require("./oauthTokens");
 const { applyGuildCommandPermissions } = require("./sync");
 

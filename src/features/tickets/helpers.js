@@ -55,6 +55,8 @@ const {
   editEphemeral,
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+// Discord edge: snowflake → integer community id for repository calls.
+const { ensureCommunity } = require("../../platform/community");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -198,7 +200,9 @@ function attachStaffNoteFromTicket(opts) {
   }
   try {
     const note = createStaffNote({
-      guildId: ticket.guild_id,
+      // Ticket rows carry the integer community key (migration 034); the
+      // staffNotes repo is community-keyed, so pass it straight through.
+      communityId: ticket.community_id,
       userId: ticket.creator_user_id,
       authorId,
       content,
@@ -281,7 +285,19 @@ async function resolveChannel(interaction, ctx) {
  */
 async function requireOpenTicketChannel(interaction, ctx) {
   const channel = await resolveChannel(interaction, ctx);
-  const ticket = getTicketByChannel(interaction.channelId);
+  // Community key is guild-scoped: DM interactions have no guild, so they
+  // keep the "not a ticket channel" reply instead of a mapping throw.
+  const communityId = interaction.guildId
+    ? ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: interaction.guildId,
+      })
+    : null;
+  const ticket =
+    communityId != null
+      ? getTicketByChannel(communityId, interaction.channelId)
+      : null;
   if (!ticket || ticket.status !== "open") {
     await replyEphemeral(interaction, {
       content: "This command only works inside an **open ticket** channel.",
@@ -302,7 +318,19 @@ async function requireOpenTicketChannel(interaction, ctx) {
 async function requireLiveTicketChannel(interaction, ctx, opts = {}) {
   const statusWant = opts.status || "any";
   const channel = await resolveChannel(interaction, ctx);
-  const ticket = getTicketByChannel(interaction.channelId);
+  // Community key is guild-scoped: DM interactions have no guild, so they
+  // keep the "not a ticket channel" reply instead of a mapping throw.
+  const communityId = interaction.guildId
+    ? ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: interaction.guildId,
+      })
+    : null;
+  const ticket =
+    communityId != null
+      ? getTicketByChannel(communityId, interaction.channelId)
+      : null;
   if (!ticket || !ticket.channel_id) {
     await replyEphemeral(interaction, {
       content: "This command only works inside a **ticket** channel.",
@@ -353,11 +381,23 @@ async function resolveBotMember(guild, client) {
 /**
  * Create Discord channel + DB row.
  * @param {object} opts
+ * @param {number} [opts.communityId] integer community id (resolved at the
+ *   caller's Discord edge); derived from opts.guild.id when omitted.
  */
 async function openTicketChannel(opts) {
   const { guild, client, creatorUserId, reason, openedByStaffId } = opts;
+  // Integer community key for the DB writes below. Interaction handlers resolve
+  // it once at their entry point and pass it in; external callers of this
+  // exported helper get the same mapping from the Discord edge here.
+  const communityId = Number.isInteger(opts.communityId)
+    ? opts.communityId
+    : ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: guild.id,
+      });
 
-  const settings = getTicketSettings(guild.id);
+  const settings = getTicketSettings(communityId);
   const botUserId = client.user?.id;
   if (!botUserId) {
     throw new Error("Bot user not ready");
@@ -387,7 +427,7 @@ async function openTicketChannel(opts) {
   }
 
   const { nextTicketNumber } = require("../../db/repositories/tickets");
-  const ticketNumber = nextTicketNumber(guild.id);
+  const ticketNumber = nextTicketNumber(communityId);
   const channelName = `ticket-${ticketNumber}`.slice(0, 100);
 
   // Minimal safe overwrites at create time (no ManageChannels on staff).
@@ -450,7 +490,7 @@ async function openTicketChannel(opts) {
   let ticket;
   try {
     ticket = createTicket({
-      guildId: guild.id,
+      communityId,
       creatorUserId,
       channelId: channel.id,
       reason: reason || null,

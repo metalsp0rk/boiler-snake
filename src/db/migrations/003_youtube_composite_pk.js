@@ -12,8 +12,14 @@ function up(db, { tableExists, getPrimaryKeyColumns }) {
   if (!tableExists("youtube_channels")) return;
 
   const pkCols = getPrimaryKeyColumns("youtube_channels");
+  // Fluxer PR 2: accept the post-034 shape too. Re-running this migration
+  // after 034 renamed guild_id -> community_id must NOT rebuild the table
+  // back to the guild-keyed schema (the "re-running migrations is safe"
+  // unit test calls runMigrations() a second time).
   const hasComposite =
-    pkCols.length >= 2 && pkCols.includes("guild_id") && pkCols.includes("id");
+    pkCols.length >= 2 &&
+    (pkCols.includes("guild_id") || pkCols.includes("community_id")) &&
+    pkCols.includes("id");
   if (hasComposite) return;
 
   // Old or unexpected PK shape → rebuild with composite key

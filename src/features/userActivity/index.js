@@ -26,6 +26,8 @@ const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { recordUserChannelMessage } = require("./service");
+const { ensureCommunity } = require("../../platform/community");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const {
   startUserBackfill,
   startGuildBackfill,
@@ -140,6 +142,13 @@ async function handleActivityConfig(interaction, ctx) {
   const sub = interaction.options.getSubcommand(true);
   const guildId = interaction.guildId;
   const client = interaction.client;
+  // Fluxer PR 2: repos key by integer community id; auditLog keys by outbound.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const outbound = getDiscordOutbound(client);
 
   if (group === "ignore" && sub === "add") {
     const kind = normalizeIgnoreKind(
@@ -161,7 +170,7 @@ async function handleActivityConfig(interaction, ctx) {
       return;
     }
 
-    const inserted = addActivityIgnore(guildId, target.id, kind);
+    const inserted = addActivityIgnore(communityId, target.id, kind);
     if (inserted) {
       recordSlashAudit({
         interaction,
@@ -170,7 +179,7 @@ async function handleActivityConfig(interaction, ctx) {
         targetId: target.id,
         details: { kind },
       });
-      await logConfigChange(client, guildId, {
+      await logConfigChange(outbound, guildId, {
         title: "Activity ignore added",
         command: "/activityconfig ignore add",
         actor: interaction.user,
@@ -187,7 +196,7 @@ async function handleActivityConfig(interaction, ctx) {
 
   if (group === "ignore" && sub === "remove") {
     const target = interaction.options.getChannel("target", true);
-    const removed = removeActivityIgnore(guildId, target.id);
+    const removed = removeActivityIgnore(communityId, target.id);
     if (removed) {
       recordSlashAudit({
         interaction,
@@ -195,7 +204,7 @@ async function handleActivityConfig(interaction, ctx) {
         targetType: "channel",
         targetId: target.id,
       });
-      await logConfigChange(client, guildId, {
+      await logConfigChange(outbound, guildId, {
         title: "Activity ignore removed",
         command: "/activityconfig ignore remove",
         actor: interaction.user,
@@ -211,7 +220,7 @@ async function handleActivityConfig(interaction, ctx) {
   }
 
   if (group === "ignore" && sub === "list") {
-    const rows = listActivityIgnore(guildId);
+    const rows = listActivityIgnore(communityId);
     if (!rows.length) {
       await replyEphemeral(interaction, {
         content:
@@ -237,9 +246,9 @@ async function handleActivityConfig(interaction, ctx) {
   }
 
   if (sub === "status") {
-    ensureGuildActivitySettings(guildId);
-    const settings = getGuildActivitySettings(guildId);
-    const stats = guildActivityStats(guildId);
+    ensureGuildActivitySettings(communityId);
+    const settings = getGuildActivitySettings(communityId);
+    const stats = guildActivityStats(communityId);
     const collectFrom = settings?.collect_from_ms
       ? tsShort(settings.collect_from_ms)
       : "—";
@@ -280,7 +289,7 @@ async function handleActivityConfig(interaction, ctx) {
         targetId: guildId,
         details: { kind: result.kind ?? null },
       });
-      await logConfigChange(client, guildId, {
+      await logConfigChange(outbound, guildId, {
         title: "Activity backfill cancel",
         command: "/activityconfig backfill cancel",
         actor: interaction.user,
@@ -330,7 +339,7 @@ async function handleActivityConfig(interaction, ctx) {
         max_pages: pages,
       },
     });
-    await logConfigChange(client, guildId, {
+    await logConfigChange(outbound, guildId, {
       title: "Activity guild backfill started",
       command: "/activityconfig backfill all",
       actor: interaction.user,

@@ -1,5 +1,10 @@
 /**
  * Discord OAuth2 token exchange / refresh for command permissions scope.
+ *
+ * The `guild_command_permission_oauth` rows are community-keyed (roadmap/
+ * fluxer.md § Repository boundary): every storage function here takes the
+ * integer `communityId` resolved by the caller at the edge (the OAuth state
+ * carries the Discord snowflake; httpCallback.js converts it).
  */
 
 const {
@@ -51,7 +56,8 @@ async function postToken(form, clientId, clientSecret) {
 /**
  * Exchange authorization code for tokens and store them.
  * @param {object} opts
- * @param {string} opts.guildId
+ * @param {number} opts.communityId internal communities.id (the OAuth state's
+ *   Discord guild id resolved at the callback edge via ensureCommunity)
  * @param {string} opts.code
  * @param {string} [opts.authorizedByUserId]
  * @returns {Promise<{ accessToken: string }>}
@@ -79,7 +85,7 @@ async function exchangeAuthorizationCode(opts) {
   const expiresIn = Number(json.expires_in) || 604800;
   const accessExpiresAt = Date.now() + expiresIn * 1000;
 
-  upsertCommandPermissionOauth(opts.guildId, {
+  upsertCommandPermissionOauth(opts.communityId, {
     refreshToken: json.refresh_token,
     accessToken: json.access_token,
     accessExpiresAt,
@@ -90,12 +96,12 @@ async function exchangeAuthorizationCode(opts) {
 }
 
 /**
- * Ensure a valid access token for the guild (refresh if needed).
- * @param {string} guildId
+ * Ensure a valid access token for a community (refresh if needed).
+ * @param {number} communityId
  * @returns {Promise<string>} access token
  */
-async function getValidAccessToken(guildId) {
-  const row = getCommandPermissionOauth(guildId);
+async function getValidAccessToken(communityId) {
+  const row = getCommandPermissionOauth(communityId);
   if (!row?.refresh_token) {
     const err = new Error("Guild has not authorized command permission sync");
     err.code = "not_authorized";
@@ -133,7 +139,7 @@ async function getValidAccessToken(guildId) {
     const expiresIn = Number(json.expires_in) || 604800;
     const accessExpiresAt = Date.now() + expiresIn * 1000;
     updateCommandPermissionAccessToken(
-      guildId,
+      communityId,
       json.access_token,
       accessExpiresAt,
       json.refresh_token || undefined
@@ -141,7 +147,7 @@ async function getValidAccessToken(guildId) {
     return json.access_token;
   } catch (err) {
     if (err.status === 400 || err.status === 401) {
-      deleteCommandPermissionOauth(guildId);
+      deleteCommandPermissionOauth(communityId);
       err.code = "reauth_required";
     }
     throw err;

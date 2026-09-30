@@ -1,5 +1,11 @@
 /**
  * Apply staff_roles allow-list overwrites to staff-tier slash commands.
+ *
+ * Keyed by the internal communities.id (roadmap/fluxer.md § Repository
+ * boundary): DB reads/writes (staff roles, OAuth tokens, sync results) take
+ * the integer. The Discord REST calls keep the external snowflake, resolved
+ * from the communities registry — the reverse-lookup path the spec reserves
+ * for outbound adapters (src/platform/community.js#getCommunityById).
  */
 
 const { REST, Routes } = require("discord.js");
@@ -8,6 +14,7 @@ const {
   setCommandPermissionSyncResult,
   hasCommandPermissionOauth,
 } = require("../../db");
+const { getCommunityById } = require("../../platform/community");
 const { staffSyncCommandNames } = require("../../core/commandVisibility");
 const { buildStaffRoleAllowPermissions } = require("./permissionsPayload");
 const { getValidAccessToken } = require("./oauthTokens");
@@ -52,7 +59,7 @@ async function fetchWithRetry(url, opts = {}) {
 
 /**
  * Fetch guild command name → id map using the bot token.
- * @param {string} guildId
+ * @param {string} guildId Discord guild snowflake (external id, REST path only)
  * @returns {Promise<Map<string, string>>}
  */
 async function fetchGuildCommandIdMap(guildId) {
@@ -111,8 +118,8 @@ async function putCommandPermissions(opts) {
 }
 
 /**
- * Sync staff-tier command overwrites for a guild.
- * @param {string} guildId
+ * Sync staff-tier command overwrites for one community.
+ * @param {number} communityId internal communities.id (asserted by the repos)
  * @param {object} [opts]
  * @param {string} [opts.accessToken] skip token load when just exchanged
  * @returns {Promise<{
@@ -122,18 +129,35 @@ async function putCommandPermissions(opts) {
  *   roleCount: number,
  * }>}
  */
-async function applyGuildCommandPermissions(guildId, opts = {}) {
+async function applyGuildCommandPermissions(communityId, opts = {}) {
   const applicationId = process.env.CLIENT_ID;
   if (!applicationId) throw new Error("CLIENT_ID required");
 
+  // Discord slash-command permissions only exist on Discord. Resolve the
+  // external snowflake for the REST calls from the communities registry;
+  // a missing row means the guild was never seen (edge never ran
+  // ensureCommunity), and a non-Discord community has no command API.
+  const community = getCommunityById(communityId);
+  if (!community) {
+    throw new Error(
+      `command-permissions sync: community ${communityId} is not registered in the communities table`,
+    );
+  }
+  if (community.platform !== "discord") {
+    throw new Error(
+      `command-permissions sync: community ${communityId} is platform "${community.platform}" — command visibility is Discord-only`,
+    );
+  }
+  const externalGuildId = community.externalGuildId;
+
   let accessToken = opts.accessToken;
   if (!accessToken) {
-    accessToken = await getValidAccessToken(guildId);
+    accessToken = await getValidAccessToken(communityId);
   }
 
-  const roleIds = listStaffRoles(guildId).map((r) => r.role_id);
+  const roleIds = listStaffRoles(communityId).map((r) => r.role_id);
   const permissions = buildStaffRoleAllowPermissions(roleIds);
-  const idMap = await fetchGuildCommandIdMap(guildId);
+  const idMap = await fetchGuildCommandIdMap(externalGuildId);
   const targets = staffSyncCommandNames();
 
   const updated = [];
@@ -149,7 +173,7 @@ async function applyGuildCommandPermissions(guildId, opts = {}) {
     try {
       await putCommandPermissions({
         applicationId,
-        guildId,
+        guildId: externalGuildId,
         commandId,
         accessToken,
         permissions,
@@ -174,8 +198,8 @@ async function applyGuildCommandPermissions(guildId, opts = {}) {
       ? failed.map((f) => `${f.name}: ${f.error}`).join("; ").slice(0, 500)
       : null;
 
-  if (hasCommandPermissionOauth(guildId)) {
-    setCommandPermissionSyncResult(guildId, {
+  if (hasCommandPermissionOauth(communityId)) {
+    setCommandPermissionSyncResult(communityId, {
       lastSyncAt: Date.now(),
       lastSyncError: errorSummary,
     });
@@ -191,26 +215,26 @@ async function applyGuildCommandPermissions(guildId, opts = {}) {
 
 /**
  * Best-effort re-sync after staff role changes (never throws to caller path).
- * @param {string} guildId
+ * @param {number} communityId
  * @returns {Promise<void>}
  */
-async function maybeAutoSyncCommandPermissions(guildId) {
-  if (!hasCommandPermissionOauth(guildId)) return;
+async function maybeAutoSyncCommandPermissions(communityId) {
+  if (!hasCommandPermissionOauth(communityId)) return;
   try {
-    const result = await applyGuildCommandPermissions(guildId);
+    const result = await applyGuildCommandPermissions(communityId);
     if (result.failed.length) {
       console.warn(
-        `[commandPermissions] auto-sync partial failure for ${guildId}:`,
+        `[commandPermissions] auto-sync partial failure for community ${communityId}:`,
         result.failed.map((f) => f.name).join(", ")
       );
     } else {
       console.log(
-        `[commandPermissions] auto-synced ${result.updated.length} commands for ${guildId} (${result.roleCount} staff roles)`
+        `[commandPermissions] auto-synced ${result.updated.length} commands for community ${communityId} (${result.roleCount} staff roles)`
       );
     }
   } catch (err) {
     console.warn(
-      `[commandPermissions] auto-sync failed for ${guildId}:`,
+      `[commandPermissions] auto-sync failed for community ${communityId}:`,
       err?.message || err
     );
   }

@@ -12,6 +12,9 @@
 
 const { Events } = require("discord.js");
 const { markTicketClosedByChannelDelete } = require("../../db");
+// Discord edge: gateway events resolve the event's guild id to the integer
+// community key before touching community-scoped repositories.
+const { ensureCommunity } = require("../../platform/community");
 const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { formatTicketRef } = require("../../core/theme");
@@ -128,7 +131,15 @@ function registerEvents(client) {
   client.on(Events.ChannelDelete, (channel) => {
     try {
       if (!channel?.id) return;
-      const closed = markTicketClosedByChannelDelete(channel.id);
+      // DM channels have no guild (and no tickets); guild channels map to
+      // the integer community key the tickets repo is now scoped by.
+      if (!channel.guild?.id) return;
+      const communityId = ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: channel.guild.id,
+      });
+      const closed = markTicketClosedByChannelDelete(communityId, channel.id);
       if (closed) {
         console.log(
           `[tickets] Channel deleted externally; closed ticket #${closed.ticket_number} (no archive)`,

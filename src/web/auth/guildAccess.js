@@ -69,6 +69,7 @@ const {
   memberHasStaffRole,
   memberHasSeniorStaffRole,
 } = require("../../db");
+const { getCommunityById } = require("../../platform/community");
 
 /** Tier ladder: higher rank satisfies every lower requirement (§8.6). */
 const TIER_RANK = Object.freeze({ staff: 1, senior: 2, admin: 3 });
@@ -133,11 +134,11 @@ function snapshotGrantsAdmin(snapshotEntry) {
  * failed): only the snapshot admin path survives, everything else is null —
  * never a guess.
  *
- * @param {string} guildId part of the mandated resolver signature (unused by
+ * @param {number} communityId part of the mandated resolver signature (unused by
  *   the pure math; kept so call sites and the equivalence tests share one fn)
  * @param {object} ctx
  * @param {{owner?: boolean, permissions?: string}|null} [ctx.snapshotEntry]
- *   this viewer's guild_snapshot entry for guildId (decimal-string perms +
+ *   this viewer's guild_snapshot entry for the guild (decimal-string perms +
  *   owner flag)
  * @param {string[]|null} [ctx.memberRoleIds] role ids from
  *   guilds.members.read (null = unresolvable)
@@ -145,7 +146,7 @@ function snapshotGrantsAdmin(snapshotEntry) {
  *   of roleIds ∩ staff_roles (see {@link staffRoleTierFor})
  * @returns {null|"staff"|"senior"|"admin"}
  */
-function resolveTier(guildId, ctx = {}) {
+function resolveTier(communityId, ctx = {}) {
   const { snapshotEntry = null, memberRoleIds = null, staffRoleTier = null } = ctx;
   if (snapshotGrantsAdmin(snapshotEntry)) return "admin";
   if (!Array.isArray(memberRoleIds)) return null; // fail closed, no role ids
@@ -158,15 +159,15 @@ function resolveTier(guildId, ctx = {}) {
  * roleIds ∩ staff_roles as a tier, via the SAME db predicates the slash
  * gates use (uncached, §8.3 — cheap SQLite; revoking a staff role therefore
  * takes effect on the next request, not on the next TTL).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string[]|null} memberRoleIds
  * @param {{memberHasStaffRole: Function, memberHasSeniorStaffRole: Function}} staffRoleApi
  * @returns {"staff"|"senior"|null}
  */
-function staffRoleTierFor(guildId, memberRoleIds, staffRoleApi) {
+function staffRoleTierFor(communityId, memberRoleIds, staffRoleApi) {
   if (!Array.isArray(memberRoleIds) || memberRoleIds.length === 0) return null;
-  if (staffRoleApi.memberHasSeniorStaffRole(guildId, memberRoleIds)) return "senior";
-  if (staffRoleApi.memberHasStaffRole(guildId, memberRoleIds)) return "staff";
+  if (staffRoleApi.memberHasSeniorStaffRole(communityId, memberRoleIds)) return "senior";
+  if (staffRoleApi.memberHasStaffRole(communityId, memberRoleIds)) return "staff";
   return null;
 }
 
@@ -343,17 +344,41 @@ function createGuildAccessResolver(options = {}) {
   }
 
   /**
-   * Resolve the viewer's tier for one guild. Never throws: every failure
+   * Resolve the viewer's tier for one community. Never throws: every failure
    * lands in a status the middleware maps to redirect / 404 / proceed.
    * @param {{id: string, userId: string}|null} session req.webSession
-   * @param {string} guildId
+   * @param {number|string} communityId internal communities.id (fluxer PR 2 —
+   *   the route carries the integer; a numeric string is accepted and
+   *   canonicalized, snowflakes fail the gate)
    */
-  async function resolve(session, guildId) {
+  async function resolve(session, communityId) {
     if (!session || !session.id || !session.userId) {
       return { status: "anon" };
     }
-    if (typeof guildId !== "string" || !GUILD_ID_RE.test(guildId)) {
+    const cid = typeof communityId === "string" ? Number(communityId) : communityId;
+    if (
+      typeof cid !== "number" ||
+      !Number.isSafeInteger(cid) ||
+      cid < 1 ||
+      cid > 2_147_483_647
+    ) {
       return { status: "deny", reason: "bad_guild_id" };
+    }
+    // Map the internal id to the Discord-facing external id (REST + snapshot
+    // keys are external). A community with no discord row cannot be tiered
+    // from Discord data: deny (renders the generic 404).
+    let externalGuildId = null;
+    try {
+      externalGuildId = getCommunityById(cid)?.externalGuildId ?? null;
+    } catch (err) {
+      console.warn(
+        "[web] guildAccess: community lookup failed:",
+        err?.code || err?.message || err
+      );
+      return { status: "deny", reason: "store_unavailable", retry: true };
+    }
+    if (!externalGuildId) {
+      return { status: "deny", reason: "not_in_access_list" };
     }
     const at = now();
 
@@ -380,7 +405,7 @@ function createGuildAccessResolver(options = {}) {
     }
     if (lists.reauth) return { status: "reauth", reason: "token_revoked" };
 
-    const entry = lists.list.get(guildId);
+    const entry = lists.list.get(externalGuildId);
     if (!entry) {
       // Not bot∩user: hidden from the switcher, routes 404 (matrix row 1).
       return { status: "deny", reason: "not_in_access_list", degraded: !!lists.degraded };
@@ -392,7 +417,7 @@ function createGuildAccessResolver(options = {}) {
       // Admin tier is decided from the snapshot ALONE — the member read is
       // only needed for staff/senior, which is exactly what lets admins
       // keep working through a member-fetch outage (matrix row 2).
-      const roles = await getMemberRoleIds(session, guildId, tok.token, at);
+      const roles = await getMemberRoleIds(session, externalGuildId, tok.token, at);
       if (roles.reauth) return { status: "reauth", reason: "token_revoked" };
       if (roles.memberLeft) {
         // Matrix row 4: deny now, refresh this session's guild list next
@@ -409,10 +434,10 @@ function createGuildAccessResolver(options = {}) {
       memberRoleIds = roles.roleIds;
     }
 
-    const staffRoleTier = staffRoleTierFor(guildId, memberRoleIds, staffRoleApi);
-    const tier = resolveTier(guildId, { snapshotEntry: entry, memberRoleIds, staffRoleTier });
+    const staffRoleTier = staffRoleTierFor(cid, memberRoleIds, staffRoleApi);
+    const tier = resolveTier(cid, { snapshotEntry: entry, memberRoleIds, staffRoleTier });
     if (!tier) return { status: "deny", reason: "no_tier", degraded };
-    return { status: "ok", tier, guildId, degraded };
+    return { status: "ok", tier, guildId: externalGuildId, communityId: cid, degraded };
   }
 
   /**

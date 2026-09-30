@@ -1,9 +1,16 @@
 /**
  * User channel message activity — daily counters, ignore list, backfill meta.
  * Independent of activity_log / XP cooldowns.
+ *
+ * Keyed by the internal communities.id (roadmap/fluxer.md § Repository
+ * boundary): every exported function asserts the numeric community id.
  */
 
 const { db, now } = require("../connection");
+
+// Lazy require: src/platform/community.js requires the db facade, so a
+// top-level require would be a load-time cycle. See src/db/repositories/users.js.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
 
 const IGNORE_KINDS = Object.freeze(["channel", "category"]);
 const BACKFILL_STATUSES = Object.freeze([
@@ -58,12 +65,13 @@ function normalizeIgnoreKind(kind) {
  * Ensure guild has a collect_from watermark.
  * First touch sets watermark (default: now). Prefer passing the first message's
  * createdTimestamp so the triggering message is not rejected by clock ordering.
- * @param {string} guildId
+ * @param {string} communityId
  * @param {{ collectFromMs?: number }} [opts]
- * @returns {{ guild_id: string, collect_from_ms: number, created_at: number }}
+ * @returns {{ community_id: string, collect_from_ms: number, created_at: number }}
  */
-function ensureGuildActivitySettings(guildId, opts = {}) {
-  const existing = getGuildActivitySettings(guildId);
+function ensureGuildActivitySettings(communityId, opts = {}) {
+  assertCommunityId(communityId);
+  const existing = getGuildActivitySettings(communityId);
   if (existing) return existing;
 
   const t =
@@ -73,14 +81,14 @@ function ensureGuildActivitySettings(guildId, opts = {}) {
   const created = now();
   db.prepare(
     `
-  INSERT INTO guild_activity_settings (guild_id, collect_from_ms, created_at)
+  INSERT INTO guild_activity_settings (community_id, collect_from_ms, created_at)
   VALUES (?, ?, ?)
   `
-  ).run(guildId, t, created);
+  ).run(communityId, t, created);
 
   return (
-    getGuildActivitySettings(guildId) || {
-      guild_id: guildId,
+    getGuildActivitySettings(communityId) || {
+      community_id: communityId,
       collect_from_ms: t,
       created_at: created,
     }
@@ -88,35 +96,37 @@ function ensureGuildActivitySettings(guildId, opts = {}) {
 }
 
 const GUILD_SETTINGS_COLS = `
-  guild_id, collect_from_ms, created_at,
+  community_id, collect_from_ms, created_at,
   guild_backfill_status, guild_backfill_started_at, guild_backfill_finished_at,
   guild_backfill_error, guild_backfill_channels_done, guild_backfill_channels_total,
   guild_backfill_messages_counted
 `;
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @returns {object|null}
  */
-function getGuildActivitySettings(guildId) {
+function getGuildActivitySettings(communityId) {
+  assertCommunityId(communityId);
   return (
     db
       .prepare(
-        `SELECT ${GUILD_SETTINGS_COLS} FROM guild_activity_settings WHERE guild_id=?`
+        `SELECT ${GUILD_SETTINGS_COLS} FROM guild_activity_settings WHERE community_id=?`
       )
-      .get(guildId) || null
+      .get(communityId) || null
   );
 }
 
 /**
  * Patch guild activity settings (backfill progress, etc.).
- * @param {string} guildId
+ * @param {string} communityId
  * @param {object} patch
  * @returns {object|null}
  */
-function patchGuildActivitySettings(guildId, patch = {}) {
-  ensureGuildActivitySettings(guildId);
-  const existing = getGuildActivitySettings(guildId);
+function patchGuildActivitySettings(communityId, patch = {}) {
+  assertCommunityId(communityId);
+  ensureGuildActivitySettings(communityId);
+  const existing = getGuildActivitySettings(communityId);
   if (!existing) return null;
 
   const next = {
@@ -160,7 +170,7 @@ function patchGuildActivitySettings(guildId, patch = {}) {
     guild_backfill_channels_done=?,
     guild_backfill_channels_total=?,
     guild_backfill_messages_counted=?
-  WHERE guild_id=?
+  WHERE community_id=?
   `
   ).run(
     next.guild_backfill_status,
@@ -170,101 +180,107 @@ function patchGuildActivitySettings(guildId, patch = {}) {
     next.guild_backfill_channels_done,
     next.guild_backfill_channels_total,
     next.guild_backfill_messages_counted,
-    guildId
+    communityId
   );
-  return getGuildActivitySettings(guildId);
+  return getGuildActivitySettings(communityId);
 }
 
 /**
  * Increment daily counter (live or backfill).
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} userId
  * @param {string} channelId
  * @param {string} day YYYY-MM-DD
  * @param {number} [n=1]
  */
-function incrementDaily(guildId, userId, channelId, day, n = 1) {
+function incrementDaily(communityId, userId, channelId, day, n = 1) {
+  assertCommunityId(communityId);
   const amount = Math.max(0, Math.floor(Number(n) || 0));
   if (!amount) return;
   db.prepare(
     `
-  INSERT INTO user_channel_message_daily (guild_id, user_id, channel_id, day, count)
+  INSERT INTO user_channel_message_daily (community_id, user_id, channel_id, day, count)
   VALUES (?, ?, ?, ?, ?)
-  ON CONFLICT(guild_id, user_id, channel_id, day)
+  ON CONFLICT(community_id, user_id, channel_id, day)
   DO UPDATE SET count = count + excluded.count
   `
-  ).run(guildId, userId, channelId, day, amount);
+  ).run(communityId, userId, channelId, day, amount);
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} targetId
  * @param {"channel"|"category"} kind
  * @returns {boolean} true if inserted
  */
-function addActivityIgnore(guildId, targetId, kind) {
+function addActivityIgnore(communityId, targetId, kind) {
+  assertCommunityId(communityId);
   const k = normalizeIgnoreKind(kind);
   const result = db
     .prepare(
       `
-  INSERT OR IGNORE INTO activity_ignore (guild_id, target_id, kind, created_at)
+  INSERT OR IGNORE INTO activity_ignore (community_id, target_id, kind, created_at)
   VALUES (?, ?, ?, ?)
   `
     )
-    .run(guildId, targetId, k, now());
+    .run(communityId, targetId, k, now());
   return result.changes > 0;
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} targetId
  * @returns {boolean}
  */
-function removeActivityIgnore(guildId, targetId) {
+function removeActivityIgnore(communityId, targetId) {
+  assertCommunityId(communityId);
   const result = db
-    .prepare(`DELETE FROM activity_ignore WHERE guild_id=? AND target_id=?`)
-    .run(guildId, targetId);
+    .prepare(`DELETE FROM activity_ignore WHERE community_id=? AND target_id=?`)
+    .run(communityId, targetId);
   return result.changes > 0;
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @returns {{ target_id: string, kind: string, created_at: number }[]}
  */
-function listActivityIgnore(guildId) {
+function listActivityIgnore(communityId) {
+  assertCommunityId(communityId);
   return db
     .prepare(
       `
   SELECT target_id, kind, created_at
   FROM activity_ignore
-  WHERE guild_id=?
+  WHERE community_id=?
   ORDER BY kind ASC, created_at ASC
   `
     )
-    .all(guildId);
+    .all(communityId);
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} targetId
  * @returns {boolean}
  */
-function isActivityIgnored(guildId, targetId) {
+function isActivityIgnored(communityId, targetId) {
+  assertCommunityId(communityId);
   const row = db
     .prepare(
-      `SELECT 1 AS ok FROM activity_ignore WHERE guild_id=? AND target_id=?`
+      `SELECT 1 AS ok FROM activity_ignore WHERE community_id=? AND target_id=?`
     )
-    .get(guildId, targetId);
+    .get(communityId, targetId);
   return !!row;
 }
 
 /**
  * Set of ignored channel ids and category ids for a guild.
- * @param {string} guildId
+ * @param {string} communityId
  * @returns {{ channels: Set<string>, categories: Set<string> }}
  */
-function getActivityIgnoreSets(guildId) {
-  const rows = listActivityIgnore(guildId);
+function getActivityIgnoreSets(communityId) {
+  assertCommunityId(communityId);
+  const rows = listActivityIgnore(communityId);
   const channels = new Set();
   const categories = new Set();
   for (const r of rows) {
@@ -277,12 +293,13 @@ function getActivityIgnoreSets(guildId) {
 /**
  * Sum counts by channel for a user, optional lower day bound (inclusive).
  * Does not apply ignore rules (service layer filters).
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} userId
  * @param {{ sinceDay?: string|null }} [opts]
  * @returns {{ channel_id: string, count: number }[]}
  */
-function sumByChannel(guildId, userId, opts = {}) {
+function sumByChannel(communityId, userId, opts = {}) {
+  assertCommunityId(communityId);
   const sinceDay = opts.sinceDay || null;
   if (sinceDay) {
     return db
@@ -290,13 +307,13 @@ function sumByChannel(guildId, userId, opts = {}) {
         `
     SELECT channel_id, SUM(count) AS count
     FROM user_channel_message_daily
-    WHERE guild_id=? AND user_id=? AND day >= ?
+    WHERE community_id=? AND user_id=? AND day >= ?
     GROUP BY channel_id
     HAVING SUM(count) > 0
     ORDER BY count DESC
     `
       )
-      .all(guildId, userId, sinceDay)
+      .all(communityId, userId, sinceDay)
       .map((r) => ({ channel_id: r.channel_id, count: Number(r.count) || 0 }));
   }
   return db
@@ -304,23 +321,24 @@ function sumByChannel(guildId, userId, opts = {}) {
       `
   SELECT channel_id, SUM(count) AS count
   FROM user_channel_message_daily
-  WHERE guild_id=? AND user_id=?
+  WHERE community_id=? AND user_id=?
   GROUP BY channel_id
   HAVING SUM(count) > 0
   ORDER BY count DESC
   `
     )
-    .all(guildId, userId)
+    .all(communityId, userId)
     .map((r) => ({ channel_id: r.channel_id, count: Number(r.count) || 0 }));
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} userId
  * @param {{ sinceDay?: string|null }} [opts]
  * @returns {number}
  */
-function totalPosts(guildId, userId, opts = {}) {
+function totalPosts(communityId, userId, opts = {}) {
+  assertCommunityId(communityId);
   const sinceDay = opts.sinceDay || null;
   if (sinceDay) {
     const row = db
@@ -328,10 +346,10 @@ function totalPosts(guildId, userId, opts = {}) {
         `
     SELECT COALESCE(SUM(count), 0) AS c
     FROM user_channel_message_daily
-    WHERE guild_id=? AND user_id=? AND day >= ?
+    WHERE community_id=? AND user_id=? AND day >= ?
     `
       )
-      .get(guildId, userId, sinceDay);
+      .get(communityId, userId, sinceDay);
     return Number(row?.c) || 0;
   }
   const row = db
@@ -339,54 +357,56 @@ function totalPosts(guildId, userId, opts = {}) {
       `
   SELECT COALESCE(SUM(count), 0) AS c
   FROM user_channel_message_daily
-  WHERE guild_id=? AND user_id=?
+  WHERE community_id=? AND user_id=?
   `
     )
-    .get(guildId, userId);
+    .get(communityId, userId);
   return Number(row?.c) || 0;
 }
 
 /**
  * Earliest day with any counter for this user (tracking footprint).
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} userId
  * @returns {string|null}
  */
-function earliestTrackedDay(guildId, userId) {
+function earliestTrackedDay(communityId, userId) {
+  assertCommunityId(communityId);
   const row = db
     .prepare(
       `
   SELECT MIN(day) AS d
   FROM user_channel_message_daily
-  WHERE guild_id=? AND user_id=?
+  WHERE community_id=? AND user_id=?
   `
     )
-    .get(guildId, userId);
+    .get(communityId, userId);
   return row?.d || null;
 }
 
 /**
  * Approximate row / message stats for status command.
- * @param {string} guildId
+ * @param {string} communityId
  * @returns {{ day_rows: number, message_total: number, ignore_count: number }}
  */
-function guildActivityStats(guildId) {
+function guildActivityStats(communityId) {
+  assertCommunityId(communityId);
   const dayRows =
     db
       .prepare(
-        `SELECT COUNT(*) AS c FROM user_channel_message_daily WHERE guild_id=?`
+        `SELECT COUNT(*) AS c FROM user_channel_message_daily WHERE community_id=?`
       )
-      .get(guildId)?.c ?? 0;
+      .get(communityId)?.c ?? 0;
   const messageTotal =
     db
       .prepare(
-        `SELECT COALESCE(SUM(count), 0) AS c FROM user_channel_message_daily WHERE guild_id=?`
+        `SELECT COALESCE(SUM(count), 0) AS c FROM user_channel_message_daily WHERE community_id=?`
       )
-      .get(guildId)?.c ?? 0;
+      .get(communityId)?.c ?? 0;
   const ignoreCount =
     db
-      .prepare(`SELECT COUNT(*) AS c FROM activity_ignore WHERE guild_id=?`)
-      .get(guildId)?.c ?? 0;
+      .prepare(`SELECT COUNT(*) AS c FROM activity_ignore WHERE community_id=?`)
+      .get(communityId)?.c ?? 0;
   return {
     day_rows: Number(dayRows) || 0,
     message_total: Number(messageTotal) || 0,
@@ -410,16 +430,17 @@ const GUILD_DAILY_TOTALS_MAX_DAYS = 31;
  * This closes the "no bounded last-N-days guild totals helper" gap listed
  * in src/web/data/dashboardData.js (data-source gap #2, 2026-09-08).
  *
- * @param {string} guildId
+ * @param {string} communityId
  * @param {{ sinceDay: string, limitDays?: number }} opts
  *   sinceDay inclusive lower bound (YYYY-MM-DD); limitDays max distinct days
  *   returned (clamped 1..31, default 31).
  * @returns {{ day: string, total: number }[]} ascending by day
  */
-function guildDailyMessageTotals(guildId, { sinceDay, limitDays = GUILD_DAILY_TOTALS_MAX_DAYS } = {}) {
+function guildDailyMessageTotals(communityId, { sinceDay, limitDays = GUILD_DAILY_TOTALS_MAX_DAYS } = {}) {
   if (typeof sinceDay !== "string" || !sinceDay) {
     throw new TypeError("guildDailyMessageTotals: sinceDay (YYYY-MM-DD) is required");
   }
+  assertCommunityId(communityId);
   const cap = Math.min(
     GUILD_DAILY_TOTALS_MAX_DAYS,
     Math.max(1, Math.floor(Number(limitDays)) || GUILD_DAILY_TOTALS_MAX_DAYS)
@@ -429,58 +450,60 @@ function guildDailyMessageTotals(guildId, { sinceDay, limitDays = GUILD_DAILY_TO
       `
   SELECT day, SUM(count) AS total
   FROM user_channel_message_daily
-  WHERE guild_id=? AND day >= ?
+  WHERE community_id=? AND day >= ?
   GROUP BY day
   ORDER BY day DESC
   LIMIT ?
   `
     )
-    .all(guildId, sinceDay, cap);
+    .all(communityId, sinceDay, cap);
   return rows
     .map((r) => ({ day: String(r.day), total: Number(r.total) || 0 }))
     .reverse();
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} userId
  * @returns {object|null}
  */
-function getUserActivityMeta(guildId, userId) {
+function getUserActivityMeta(communityId, userId) {
+  assertCommunityId(communityId);
   return (
     db
       .prepare(
         `
-  SELECT guild_id, user_id, tracking_since_ms, backfill_status,
+  SELECT community_id, user_id, tracking_since_ms, backfill_status,
          backfill_started_at, backfill_finished_at, backfill_error,
          backfill_channels_done, backfill_channels_total
   FROM user_activity_meta
-  WHERE guild_id=? AND user_id=?
+  WHERE community_id=? AND user_id=?
   `
       )
-      .get(guildId, userId) || null
+      .get(communityId, userId) || null
   );
 }
 
 /**
  * Upsert meta fields.
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} userId
  * @param {object} patch
  */
-function upsertUserActivityMeta(guildId, userId, patch = {}) {
-  const existing = getUserActivityMeta(guildId, userId);
+function upsertUserActivityMeta(communityId, userId, patch = {}) {
+  assertCommunityId(communityId);
+  const existing = getUserActivityMeta(communityId, userId);
   if (!existing) {
     db.prepare(
       `
     INSERT INTO user_activity_meta (
-      guild_id, user_id, tracking_since_ms, backfill_status,
+      community_id, user_id, tracking_since_ms, backfill_status,
       backfill_started_at, backfill_finished_at, backfill_error,
       backfill_channels_done, backfill_channels_total
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
     ).run(
-      guildId,
+      communityId,
       userId,
       patch.tracking_since_ms ?? null,
       patch.backfill_status ?? "none",
@@ -490,7 +513,7 @@ function upsertUserActivityMeta(guildId, userId, patch = {}) {
       patch.backfill_channels_done ?? 0,
       patch.backfill_channels_total ?? 0
     );
-    return getUserActivityMeta(guildId, userId);
+    return getUserActivityMeta(communityId, userId);
   }
 
   const next = {
@@ -534,7 +557,7 @@ function upsertUserActivityMeta(guildId, userId, patch = {}) {
     backfill_error=?,
     backfill_channels_done=?,
     backfill_channels_total=?
-  WHERE guild_id=? AND user_id=?
+  WHERE community_id=? AND user_id=?
   `
   ).run(
     next.tracking_since_ms,
@@ -544,40 +567,42 @@ function upsertUserActivityMeta(guildId, userId, patch = {}) {
     next.backfill_error,
     next.backfill_channels_done,
     next.backfill_channels_total,
-    guildId,
+    communityId,
     userId
   );
-  return getUserActivityMeta(guildId, userId);
+  return getUserActivityMeta(communityId, userId);
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} userId
  * @param {string} channelId
  * @returns {{ oldest_message_id: string|null, complete: number }|null}
  */
-function getBackfillCursor(guildId, userId, channelId) {
+function getBackfillCursor(communityId, userId, channelId) {
+  assertCommunityId(communityId);
   return (
     db
       .prepare(
         `
   SELECT oldest_message_id, complete
   FROM user_channel_backfill_cursor
-  WHERE guild_id=? AND user_id=? AND channel_id=?
+  WHERE community_id=? AND user_id=? AND channel_id=?
   `
       )
-      .get(guildId, userId, channelId) || null
+      .get(communityId, userId, channelId) || null
   );
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} userId
  * @param {string} channelId
  * @param {{ oldest_message_id?: string|null, complete?: boolean }} patch
  */
-function upsertBackfillCursor(guildId, userId, channelId, patch = {}) {
-  const existing = getBackfillCursor(guildId, userId, channelId);
+function upsertBackfillCursor(communityId, userId, channelId, patch = {}) {
+  assertCommunityId(communityId);
+  const existing = getBackfillCursor(communityId, userId, channelId);
   const complete = patch.complete === true ? 1 : patch.complete === false ? 0 : existing?.complete ?? 0;
   const oldest =
     patch.oldest_message_id !== undefined
@@ -587,21 +612,22 @@ function upsertBackfillCursor(guildId, userId, channelId, patch = {}) {
   db.prepare(
     `
   INSERT INTO user_channel_backfill_cursor
-    (guild_id, user_id, channel_id, oldest_message_id, complete)
+    (community_id, user_id, channel_id, oldest_message_id, complete)
   VALUES (?, ?, ?, ?, ?)
-  ON CONFLICT(guild_id, user_id, channel_id)
+  ON CONFLICT(community_id, user_id, channel_id)
   DO UPDATE SET oldest_message_id=excluded.oldest_message_id, complete=excluded.complete
   `
-  ).run(guildId, userId, channelId, oldest, complete);
+  ).run(communityId, userId, channelId, oldest, complete);
 }
 
 /**
  * True if any user or guild-wide backfill is running/queued.
- * @param {string} guildId
+ * @param {string} communityId
  * @returns {boolean}
  */
-function guildHasActiveBackfill(guildId) {
-  const settings = getGuildActivitySettings(guildId);
+function guildHasActiveBackfill(communityId) {
+  assertCommunityId(communityId);
+  const settings = getGuildActivitySettings(communityId);
   if (
     settings?.guild_backfill_status === "running" ||
     settings?.guild_backfill_status === "queued"
@@ -612,40 +638,42 @@ function guildHasActiveBackfill(guildId) {
     .prepare(
       `
   SELECT 1 AS ok FROM user_activity_meta
-  WHERE guild_id=? AND backfill_status IN ('queued', 'running')
+  WHERE community_id=? AND backfill_status IN ('queued', 'running')
   LIMIT 1
   `
     )
-    .get(guildId);
+    .get(communityId);
   return !!row;
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} channelId
  * @returns {{ oldest_message_id: string|null, complete: number }|null}
  */
-function getGuildChannelBackfillCursor(guildId, channelId) {
+function getGuildChannelBackfillCursor(communityId, channelId) {
+  assertCommunityId(communityId);
   return (
     db
       .prepare(
         `
   SELECT oldest_message_id, complete
   FROM guild_channel_backfill_cursor
-  WHERE guild_id=? AND channel_id=?
+  WHERE community_id=? AND channel_id=?
   `
       )
-      .get(guildId, channelId) || null
+      .get(communityId, channelId) || null
   );
 }
 
 /**
- * @param {string} guildId
+ * @param {string} communityId
  * @param {string} channelId
  * @param {{ oldest_message_id?: string|null, complete?: boolean }} patch
  */
-function upsertGuildChannelBackfillCursor(guildId, channelId, patch = {}) {
-  const existing = getGuildChannelBackfillCursor(guildId, channelId);
+function upsertGuildChannelBackfillCursor(communityId, channelId, patch = {}) {
+  assertCommunityId(communityId);
+  const existing = getGuildChannelBackfillCursor(communityId, channelId);
   const complete =
     patch.complete === true
       ? 1
@@ -660,32 +688,33 @@ function upsertGuildChannelBackfillCursor(guildId, channelId, patch = {}) {
   db.prepare(
     `
   INSERT INTO guild_channel_backfill_cursor
-    (guild_id, channel_id, oldest_message_id, complete)
+    (community_id, channel_id, oldest_message_id, complete)
   VALUES (?, ?, ?, ?)
-  ON CONFLICT(guild_id, channel_id)
+  ON CONFLICT(community_id, channel_id)
   DO UPDATE SET oldest_message_id=excluded.oldest_message_id, complete=excluded.complete
   `
-  ).run(guildId, channelId, oldest, complete);
+  ).run(communityId, channelId, oldest, complete);
 }
 
 /**
  * Count completed guild-level channel cursors.
- * @param {string} guildId
+ * @param {string} communityId
  * @returns {{ complete: number, total: number }}
  */
-function guildChannelBackfillProgress(guildId) {
+function guildChannelBackfillProgress(communityId) {
+  assertCommunityId(communityId);
   const total =
     db
       .prepare(
-        `SELECT COUNT(*) AS c FROM guild_channel_backfill_cursor WHERE guild_id=?`
+        `SELECT COUNT(*) AS c FROM guild_channel_backfill_cursor WHERE community_id=?`
       )
-      .get(guildId)?.c ?? 0;
+      .get(communityId)?.c ?? 0;
   const complete =
     db
       .prepare(
-        `SELECT COUNT(*) AS c FROM guild_channel_backfill_cursor WHERE guild_id=? AND complete=1`
+        `SELECT COUNT(*) AS c FROM guild_channel_backfill_cursor WHERE community_id=? AND complete=1`
       )
-      .get(guildId)?.c ?? 0;
+      .get(communityId)?.c ?? 0;
   return { complete: Number(complete) || 0, total: Number(total) || 0 };
 }
 

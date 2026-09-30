@@ -3,6 +3,7 @@
 
 const { EmbedBuilder, AuditLogEvent } = require("discord.js");
 const { getGuildSettings } = require("../../db");
+const { discordCommunityId } = require("../../platform/community");
 const { Color } = require("../../core/theme");
 
 // Embed colors (theme tokens)
@@ -31,6 +32,12 @@ function cacheMessage(message) {
   if (!message?.id || !message.guild) return;
   if (message.author?.bot) return;
 
+  // Spec § In-memory maps: keys are `${communityId}:${messageId}` so ids that
+  // collide across platforms (Discord snowflake vs Fluxer channel id) cannot
+  // cross-pollinate cache entries.
+  const communityId = discordCommunityId(message.guild.id);
+  if (communityId == null) return;
+
   const attachments = [];
   if (message.attachments?.size) {
     for (const att of message.attachments.values()) {
@@ -53,7 +60,7 @@ function cacheMessage(message) {
       .join("\n");
   }
 
-  messageCache.set(message.id, {
+  messageCache.set(`${communityId}:${message.id}`, {
     content: message.content || "",
     authorId: message.author?.id || "unknown",
     authorTag: message.author?.tag || message.author?.username || "unknown",
@@ -76,19 +83,29 @@ function cacheMessage(message) {
   }
 }
 
-function getCachedMessage(messageId) {
-  const entry = messageCache.get(messageId);
+function getCachedMessage(message) {
+  const messageId = message?.id ?? message; // tolerate raw ids from internal callers
+  const communityId =
+    message?.guild?.id != null ? discordCommunityId(message.guild.id) : null;
+  const cacheKey =
+    communityId == null ? String(messageId) : `${communityId}:${messageId}`;
+  const entry = messageCache.get(cacheKey);
   if (!entry) return null;
   if (Date.now() - entry.cachedAt > MESSAGE_CACHE_TTL_MS) {
-    messageCache.delete(messageId);
+    messageCache.delete(cacheKey);
     return null;
   }
   return entry;
 }
 
-function takeCachedMessage(messageId) {
-  const entry = getCachedMessage(messageId);
-  if (entry) messageCache.delete(messageId);
+function takeCachedMessage(message) {
+  const messageId = message?.id ?? message;
+  const communityId =
+    message?.guild?.id != null ? discordCommunityId(message.guild.id) : null;
+  const cacheKey =
+    communityId == null ? String(messageId) : `${communityId}:${messageId}`;
+  const entry = getCachedMessage(message);
+  if (entry) messageCache.delete(cacheKey);
   return entry;
 }
 
@@ -131,13 +148,18 @@ function memberLabel(member) {
 
 /**
  * Resolve the Discord channel for a log stream.
- * @param {import('discord.js').Client} client
- * @param {string} guildId
+ * @param {{ fetchChannel: Function, sendChannel: Function }} outbound  OutboundClient
+ * @param {string|number} guildId  Discord guild snowflake (external id; resolved
+ *        to the internal community id for the guild_settings lookup) — or an
+ *        already-resolved community id (number) from new-style call sites.
  * @param {"audit"|"message"|"warn"} kind
- * @returns {Promise<object|null>}
+ * @returns {Promise<{ id: string }|null>}  channel handle for sendToLogChannel
  */
-async function resolveLogChannel(client, guildId, kind) {
-  const settings = getGuildSettings(guildId);
+async function resolveLogChannel(outbound, guildId, kind) {
+  const communityId =
+    typeof guildId === "number" ? guildId : discordCommunityId(guildId);
+  if (communityId == null) return null;
+  const settings = getGuildSettings(communityId);
   let channelId = null;
   if (kind === "message") {
     channelId = settings.message_log_channel_id;
@@ -150,23 +172,28 @@ async function resolveLogChannel(client, guildId, kind) {
   if (!channelId) return null;
 
   try {
-    const channel = await client.channels.fetch(channelId).catch(() => null);
+    const channel = await outbound.fetchChannel(communityId, String(channelId));
     if (!channel) return null;
     if (typeof channel.isTextBased === "function" && !channel.isTextBased())
       return null;
-    if (typeof channel.send !== "function") return null;
     return channel;
   } catch {
     return null;
   }
 }
 
-async function sendToLogChannel(client, guildId, kind, payload) {
-  const channel = await resolveLogChannel(client, guildId, kind);
+async function sendToLogChannel(outbound, guildId, kind, payload) {
+  const channel = await resolveLogChannel(outbound, guildId, kind);
   if (!channel) return false;
 
   try {
-    await channel.send(payload);
+    const res = await outbound.sendChannel(channel.id, payload);
+    if (res && res.ok === false) {
+      console.warn(
+        `[auditLog] Failed to send ${kind} log in guild ${guildId}: ${res.error}`,
+      );
+      return false;
+    }
     return true;
   } catch (err) {
     console.warn(
@@ -177,16 +204,16 @@ async function sendToLogChannel(client, guildId, kind, payload) {
   }
 }
 
-async function sendAuditLog(client, guildId, payload) {
-  return sendToLogChannel(client, guildId, "audit", payload);
+async function sendAuditLog(outbound, guildId, payload) {
+  return sendToLogChannel(outbound, guildId, "audit", payload);
 }
 
-async function sendMessageLog(client, guildId, payload) {
-  return sendToLogChannel(client, guildId, "message", payload);
+async function sendMessageLog(outbound, guildId, payload) {
+  return sendToLogChannel(outbound, guildId, "message", payload);
 }
 
-async function sendWarnLog(client, guildId, payload) {
-  return sendToLogChannel(client, guildId, "warn", payload);
+async function sendWarnLog(outbound, guildId, payload) {
+  return sendToLogChannel(outbound, guildId, "warn", payload);
 }
 
 /**
@@ -627,10 +654,10 @@ function buildLevelRoleChangeEmbed({
 
 // ---------- High-level log helpers ----------
 
-async function logMessageDelete(client, message) {
+async function logMessageDelete(outbound, message) {
   if (!message?.guild) return;
 
-  const cached = takeCachedMessage(message.id) || getCachedMessage(message.id);
+  const cached = takeCachedMessage(message) || getCachedMessage(message);
 
   const authorId = message.author?.id || cached?.authorId || "unknown";
   const authorTag =
@@ -703,10 +730,10 @@ async function logMessageDelete(client, message) {
     executor,
   });
 
-  await sendMessageLog(client, message.guild.id, { embeds: [embed] });
+  await sendMessageLog(outbound, message.guild.id, { embeds: [embed] });
 }
 
-async function logMessageBulkDelete(client, messages, channel) {
+async function logMessageBulkDelete(outbound, messages, channel) {
   const guild =
     channel?.guild || messages?.first?.()?.guild || messages?.at?.(0)?.guild;
   if (!guild) return;
@@ -722,7 +749,7 @@ async function logMessageBulkDelete(client, messages, channel) {
 
   for (const msg of list) {
     if (samples.length >= BULK_SAMPLE_LIMIT) break;
-    const cached = takeCachedMessage(msg.id) || getCachedMessage(msg.id);
+    const cached = takeCachedMessage(msg) || getCachedMessage(msg);
     samples.push({
       authorId: msg.author?.id || cached?.authorId,
       authorTag: msg.author?.tag || msg.author?.username || cached?.authorTag,
@@ -736,10 +763,10 @@ async function logMessageBulkDelete(client, messages, channel) {
   }
 
   const embed = buildMessageBulkDeleteEmbed(channel, samples, count);
-  await sendMessageLog(client, guild.id, { embeds: [embed] });
+  await sendMessageLog(outbound, guild.id, { embeds: [embed] });
 }
 
-async function logBan(client, ban) {
+async function logBan(outbound, ban) {
   const guild = ban.guild;
   if (!guild) return;
 
@@ -762,7 +789,7 @@ async function logBan(client, ban) {
     if (entry.reason) reason = entry.reason;
   }
 
-  if (executor?.id && client.user?.id && executor.id === client.user.id) {
+  if (executor?.id && outbound.user?.id && executor.id === outbound.user.id) {
     viaBot = true;
   }
   if (reason && /honeypot/i.test(reason)) {
@@ -775,28 +802,28 @@ async function logBan(client, ban) {
     reason &&
     /honeypot/i.test(reason) &&
     viaBot &&
-    (!executor || executor.id === client.user?.id)
+    (!executor || executor.id === outbound.user?.id)
   ) {
     return;
   }
 
   const embed = buildBanEmbed({ user, executor, reason, viaBot });
-  await sendAuditLog(client, guild.id, { embeds: [embed] });
+  await sendAuditLog(outbound, guild.id, { embeds: [embed] });
 }
 
 /**
  * Staff audit log for a honeypot enforcement action.
- * @param {import('discord.js').Client} client
+ * @param {import('../../platform/discord/outbound')} OutboundClient outbound
  * @param {import('discord.js').Guild} guild
  * @param {object} opts See buildHoneypotEmbed
  */
-async function logHoneypotTrigger(client, guild, opts) {
-  if (!client || !guild?.id) return;
+async function logHoneypotTrigger(outbound, guild, opts) {
+  if (!outbound || !guild?.id) return;
   const embed = buildHoneypotEmbed(opts || {});
-  await sendAuditLog(client, guild.id, { embeds: [embed] });
+  await sendAuditLog(outbound, guild.id, { embeds: [embed] });
 }
 
-async function logKickIfApplicable(client, member) {
+async function logKickIfApplicable(outbound, member) {
   const guild = member?.guild;
   if (!guild) return;
 
@@ -816,25 +843,31 @@ async function logKickIfApplicable(client, member) {
     executor: entry.executor || null,
     reason: entry.reason || null,
   });
-  await sendAuditLog(client, guild.id, { embeds: [embed] });
+  await sendAuditLog(outbound, guild.id, { embeds: [embed] });
 }
 
-async function logReactionRoleChange(client, opts) {
+async function logReactionRoleChange(outbound, opts) {
   const guildId = opts.member?.guild?.id || opts.guildId;
-  if (!guildId || !client) return;
+  if (!guildId || !outbound) return;
 
   const embed = buildReactionRoleEmbed(opts);
-  await sendAuditLog(client, guildId, { embeds: [embed] });
+  await sendAuditLog(outbound, guildId, { embeds: [embed] });
 }
 
+/**
+ * @param {import('../../platform/discord/outbound')} OutboundClient outbound
+ * @param {number} communityId  internal communities.id (new-style call sites)
+ * @param {{ id: string, username?: string }} member  MemberHandle or GuildMember
+ */
 async function logLevelRoleChanges(
-  client,
+  outbound,
+  communityId,
   member,
   { granted = [], removed = [] },
   level,
   source,
 ) {
-  if (!member?.guild || !client) return;
+  if (communityId == null || !outbound) return;
   if (!granted.length && !removed.length) return;
 
   const embed = buildLevelRoleChangeEmbed({
@@ -844,7 +877,7 @@ async function logLevelRoleChanges(
     level,
     source,
   });
-  await sendAuditLog(client, member.guild.id, { embeds: [embed] });
+  await sendAuditLog(outbound, communityId, { embeds: [embed] });
 }
 
 /**
@@ -932,27 +965,27 @@ function buildConfigChangeEmbed({ title, command, actor, changes, details }) {
 
 /**
  * Post a config-change audit embed.
- * @param {import('discord.js').Client} client
+ * @param {import('../../platform/discord/outbound')} OutboundClient outbound
  * @param {string} guildId
  * @param {object} opts Same as buildConfigChangeEmbed
  */
-async function logConfigChange(client, guildId, opts) {
-  if (!client || !guildId) return;
+async function logConfigChange(outbound, guildId, opts) {
+  if (!outbound || !guildId) return;
   const embed = buildConfigChangeEmbed(opts);
-  await sendAuditLog(client, guildId, { embeds: [embed] });
+  await sendAuditLog(outbound, guildId, { embeds: [embed] });
 }
 
 /**
  * Post a warning issue/void staff embed.
  * Prefers `warn_log_channel_id`; falls back to `audit_log_channel_id`.
- * @param {import('discord.js').Client} client
+ * @param {import('../../platform/discord/outbound')} OutboundClient outbound
  * @param {string} guildId
  * @param {object} opts Same as buildConfigChangeEmbed
  */
-async function logWarnEvent(client, guildId, opts) {
-  if (!client || !guildId) return;
+async function logWarnEvent(outbound, guildId, opts) {
+  if (!outbound || !guildId) return;
   const embed = buildConfigChangeEmbed(opts);
-  await sendWarnLog(client, guildId, { embeds: [embed] });
+  await sendWarnLog(outbound, guildId, { embeds: [embed] });
 }
 
 module.exports = {

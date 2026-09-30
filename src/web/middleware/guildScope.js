@@ -12,8 +12,10 @@
  *    the shell (subtask 11) keeps that oracle green. A live-but-unusable
  *    session (decrypt failure / expired or revoked AT ⇒ resolver 'reauth')
  *    takes the SAME redirect: the user is, panel-speaking, anonymous.
- *  - on success attaches `req.guildAccess = { guildId, tier, degraded }`
- *    (tier ∈ staff|senior|admin) for requireTier and the route handlers.
+ *  - on success attaches `req.guildAccess = { communityId, guildId, tier,
+ *    degraded }` (tier ∈ staff|senior|admin) for requireTier and the route
+ *    handlers. `guildId` is the community's Discord-facing external id
+ *    (REST/display); repositories take `communityId` (integer).
  *
  * Mount (subtask 11): `app.use("/g/:guildId", createGuildScopeMiddleware({ resolver }))`
  * — Express 5 (path-to-regexp v8) matches the single-segment param as a
@@ -25,8 +27,15 @@
  * an attacker learns nothing from an outage, and the visitor retries.
  */
 
-/** Same snowflake gate as login.js GUILD_TARGET_RE / routes/dashboard.js. */
-const { URL_ID_RE: GUILD_ID_RE } = require("../shared/snowflake");
+/**
+ * Snowflake gate (login redirect targets) + PR 2 community-id route gate:
+ * `/g/:id` carries the INTEGER communities.id; snowflake ids no longer route
+ * (parseCommunityIdParam → null → generic 404, §8.6 indistinguishable).
+ */
+const {
+  URL_ID_RE: GUILD_ID_RE,
+  parseCommunityIdParam,
+} = require("../shared/snowflake");
 
 /**
  * Login target for the anonymous/reauth redirect — mirrors the shell's
@@ -84,18 +93,18 @@ function createGuildScopeMiddleware({ resolver, param = "guildId", loginPath = "
 
   return async function guildScope(req, res, next) {
     try {
-      const guildId = req.params ? req.params[param] : undefined;
+      const guildIdParam = req.params ? req.params[param] : undefined;
 
       // Anonymous: same login redirect the standalone shell already serves.
       if (!req.webSession) {
-        respondLoginRedirect(res, loginRedirectTarget(guildId, loginPath));
+        respondLoginRedirect(res, loginRedirectTarget(guildIdParam, loginPath));
         return;
       }
 
       // Missing param = mounted without a :guildId segment. That is a wiring
       // bug, not a security event: 500 (generic body) so it surfaces loudly
       // instead of silently scoping to `undefined`.
-      if (typeof guildId !== "string" || guildId.length === 0) {
+      if (typeof guildIdParam !== "string" || guildIdParam.length === 0) {
         console.error(
           `[web] guildScope mounted without req.params.${param} — refusing to scope`
         );
@@ -104,11 +113,22 @@ function createGuildScopeMiddleware({ resolver, param = "guildId", loginPath = "
         return;
       }
 
-      const access = await resolver.resolve(req.webSession, guildId);
+      // PR 2: the path parameter is the INTEGER community id. Anything else
+      // (17–20-digit snowflakes included) fails the gate → generic 404.
+      const communityId = parseCommunityIdParam(guildIdParam);
+      if (communityId == null) {
+        respondGenericNotFound(res);
+        return;
+      }
+
+      const access = await resolver.resolve(req.webSession, communityId);
 
       if (access.status === "ok") {
         req.guildAccess = {
-          guildId,
+          communityId,
+          // Discord-facing external id for REST/display (may be null if the
+          // community has no external mapping — data layers handle null).
+          guildId: access.guildId ?? null,
           tier: access.tier,
           degraded: !!access.degraded, // §8.3 operator-banner flag (Phase 1 renders it)
         };
@@ -120,7 +140,7 @@ function createGuildScopeMiddleware({ resolver, param = "guildId", loginPath = "
       // decrypt failure / expired / revoked ⇒ re-auth (login rotates the
       // session anyway; we do NOT destroy rows from a GET).
       if (access.status === "reauth" || access.status === "anon") {
-        respondLoginRedirect(res, loginRedirectTarget(guildId, loginPath));
+        respondLoginRedirect(res, loginRedirectTarget(guildIdParam, loginPath));
         return;
       }
 

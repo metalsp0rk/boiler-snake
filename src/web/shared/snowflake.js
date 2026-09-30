@@ -26,4 +26,28 @@ const URL_ID_RE = /^[0-9]{5,20}$/;
 /** Persisted Discord snowflake (write-side): 17–20 digits, real ids only. */
 const STRICT_SNOWFLAKE_RE = /^\d{17,20}$/;
 
-module.exports = { URL_ID_RE, STRICT_SNOWFLAKE_RE };
+/**
+ * `/g/:communityId` route gate (fluxer PR 2): the integer communities.id.
+ * No leading zeros, ≤10 digits (2^31−1 upper bound enforced numerically by
+ * parseCommunityIdParam). A 17–20 digit snowflake CANNOT match — snowflakes
+ * are no longer route identities.
+ */
+const COMMUNITY_ID_RE = /^[1-9][0-9]{0,9}$/;
+
+/**
+ * Parse a `/g/:id` route param into the internal integer community id.
+ * @param {unknown} value
+ * @returns {number|null} null for any non-community string (incl. snowflakes)
+ */
+function parseCommunityIdParam(value) {
+  if (typeof value !== "string" || !COMMUNITY_ID_RE.test(value)) return null;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 1 && n <= 2_147_483_647 ? n : null;
+}
+
+module.exports = {
+  URL_ID_RE,
+  STRICT_SNOWFLAKE_RE,
+  COMMUNITY_ID_RE,
+  parseCommunityIdParam,
+};

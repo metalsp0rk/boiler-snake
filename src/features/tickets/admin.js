@@ -55,6 +55,8 @@ const {
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -117,7 +119,14 @@ const {
 
 async function handleList(interaction) {
   const filterUser = interaction.options.getUser("user");
-  const rows = listOpenTickets(interaction.guildId, {
+  // Discord edge: resolve the external guild snowflake to the integer
+  // community id (spec § Repository boundary).
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const rows = listOpenTickets(communityId, {
     userId: filterUser?.id,
     limit: 25,
   });
@@ -290,7 +299,12 @@ async function handleSummarize(interaction, ctx) {
 
 async function handleSetCategory(interaction, ctx) {
   const category = interaction.options.getChannel("category", true);
-  updateGuildSettings(interaction.guildId, {
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  updateGuildSettings(communityId, {
     ticket_category_id: category.id,
   });
   recordSlashAudit({
@@ -300,7 +314,7 @@ async function handleSetCategory(interaction, ctx) {
     targetId: category.id,
   });
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: "Ticket category set",
@@ -317,7 +331,12 @@ async function handleSetCategory(interaction, ctx) {
 
 async function handleSetArchive(interaction, ctx) {
   const channel = interaction.options.getChannel("channel", true);
-  updateGuildSettings(interaction.guildId, {
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  updateGuildSettings(communityId, {
     ticket_archive_channel_id: channel.id,
   });
   recordSlashAudit({
@@ -327,7 +346,7 @@ async function handleSetArchive(interaction, ctx) {
     targetId: channel.id,
   });
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: "Ticket archive channel set",
@@ -346,7 +365,12 @@ async function handleSetArchive(interaction, ctx) {
 
 async function handleSetRateLimit(interaction, ctx) {
   const minutes = interaction.options.getInteger("minutes", true);
-  updateGuildSettings(interaction.guildId, {
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  updateGuildSettings(communityId, {
     ticket_rate_limit_minutes: minutes,
   });
   recordSlashAudit({
@@ -357,7 +381,7 @@ async function handleSetRateLimit(interaction, ctx) {
     details: { minutes },
   });
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: "Ticket rate limit set",
@@ -382,9 +406,14 @@ async function handleSetRateLimit(interaction, ctx) {
 async function handleSettings(interaction) {
   // Anyone can view settings summary (helps members know rate limits)
   // Config changes still require admin via set* commands
-  const s = getTicketSettings(interaction.guildId);
-  const allStaff = listStaffRoles(interaction.guildId);
-  const senior = listSeniorStaffRoles(interaction.guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const s = getTicketSettings(communityId);
+  const allStaff = listStaffRoles(communityId);
+  const senior = listSeniorStaffRoles(communityId);
   const junior = allStaff.filter(
     (r) => normalizeStaffLevel(r.level) === "junior",
   );

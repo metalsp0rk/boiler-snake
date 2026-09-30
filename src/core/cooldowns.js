@@ -3,12 +3,12 @@
  */
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @returns {string}
  */
-function key(guildId, userId) {
-  return `${guildId}:${userId}`;
+function key(communityId, userId) {
+  return `${communityId}:${userId}`;
 }
 
 /**

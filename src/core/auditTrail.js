@@ -30,6 +30,7 @@
  */
 
 const db = require("../db");
+const { getCommunityByExternal } = require("../platform/community");
 
 /** Details keys that smell like credentials never reach details_json. */
 const REDACT_KEY_PATTERN = /(token|secret|password|cookie)/i;
@@ -86,9 +87,10 @@ function warn(deps, reason, ctx, err) {
  * never throws, so an audit failure can never break a slash command.
  *
  * @param {object} entry
- * @param {object} [entry.interaction]  Discord interaction; guildId + actor
- *        are derived from it when the explicit ids below are absent.
- * @param {string} [entry.guildId]      explicit override (tickers, buttons)
+ * @param {number} [entry.communityId] internal communities.id (asserted by the
+ *        repository). Preferred over the interaction-derived lookup.
+ * @param {object} [entry.interaction]  Discord interaction; the Discord guild
+ *        snowflake is resolved to a community id when communityId is absent.
  * @param {string} [entry.actorUserId]  explicit override; null allowed for
  *        origin 'system' (no human behind the row).
  * @param {string} entry.action       `feature.verb` vocabulary (see header).
@@ -107,11 +109,15 @@ function recordSlashAudit(entry, options = {}) {
       return null;
     }
 
-    const guildId = String(
-      entry.guildId ?? entry.interaction?.guildId ?? ""
-    ).trim();
-    if (!guildId) {
-      warn(deps, "no guildId", `action=${entry.action}`);
+    let communityId = entry.communityId;
+    if (typeof communityId !== "number") {
+      const externalId = String(
+        entry.externalGuildId ?? entry.guildId ?? entry.interaction?.guildId ?? "",
+      ).trim();
+      communityId = externalId ? getCommunityByExternal("discord", "discord", externalId) : null;
+    }
+    if (!Number.isSafeInteger(communityId)) {
+      warn(deps, "no community id", `action=${entry.action}`);
       return null;
     }
 
@@ -139,7 +145,7 @@ function recordSlashAudit(entry, options = {}) {
     }
 
     return deps.insertAdminAudit({
-      guildId,
+      communityId,
       actorUserId: actorUserId || null,
       origin: normalized.origin,
       action,

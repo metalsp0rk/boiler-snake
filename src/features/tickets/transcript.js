@@ -1,59 +1,65 @@
 /**
  * HTML transcript render + filesystem paths for archived tickets.
  *
- * Layout (current):
- *   {DATA_DIR}/ticket-transcripts/{guild_id}/{token}/index.html
- *   {DATA_DIR}/ticket-transcripts/{guild_id}/{token}/assets/*
+ * Layout (current) — the directory segment is the INTEGER community id
+ * (roadmap/fluxer.md § Transcript storage; migration 034 moved the tree from
+ * the old Discord-snowflake dirs):
+ *   {DATA_DIR}/ticket-transcripts/{community_id}/{token}/index.html
+ *   {DATA_DIR}/ticket-transcripts/{community_id}/{token}/assets/*
  *
  * Legacy (still readable):
- *   {DATA_DIR}/ticket-transcripts/{guild_id}/{token}.html
+ *   {DATA_DIR}/ticket-transcripts/{community_id}/{token}.html
  */
 
 const fs = require("fs");
 const { formatTicketRef } = require("../../core/theme");
 const path = require("path");
 const { dataDir } = require("../../db/connection");
+const { assertCommunityId } = require("../../platform/community");
 const { parseAttachmentList, mediaKind } = require("./assets");
 
 /**
- * Absolute directory for a guild's transcripts.
- * @param {string} guildId
+ * Absolute directory for a community's transcripts.
+ * Dir segment is the integer community id (spec § Transcript storage).
+ * @param {number} communityId
  * @returns {string}
  */
-function transcriptDir(guildId) {
-  return path.join(dataDir, "ticket-transcripts", String(guildId));
+function transcriptDir(communityId) {
+  assertCommunityId(communityId);
+  return path.join(dataDir, "ticket-transcripts", String(communityId));
 }
 
 /**
  * Absolute directory for one transcript token (html + assets).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} token
  * @returns {string}
  */
-function absoluteTranscriptBundleDir(guildId, token) {
-  return path.join(transcriptDir(guildId), String(token));
+function absoluteTranscriptBundleDir(communityId, token) {
+  return path.join(transcriptDir(communityId), String(token));
 }
 
 /**
  * Absolute assets directory.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} token
  * @returns {string}
  */
-function absoluteAssetsDir(guildId, token) {
-  return path.join(absoluteTranscriptBundleDir(guildId, token), "assets");
+function absoluteAssetsDir(communityId, token) {
+  return path.join(absoluteTranscriptBundleDir(communityId, token), "assets");
 }
 
 /**
  * Relative path stored in DB (under DATA_DIR) — nested index.html.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} token
  * @returns {string}
  */
-function relativeTranscriptPath(guildId, token) {
+function relativeTranscriptPath(communityId, token) {
+  assertCommunityId(communityId);
   return path.join(
     "ticket-transcripts",
-    String(guildId),
+    String(communityId),
     String(token),
     "index.html",
   );
@@ -61,12 +67,12 @@ function relativeTranscriptPath(guildId, token) {
 
 /**
  * Absolute path for the HTML file (nested layout).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} token
  * @returns {string}
  */
-function absoluteTranscriptPath(guildId, token) {
-  return path.join(absoluteTranscriptBundleDir(guildId, token), "index.html");
+function absoluteTranscriptPath(communityId, token) {
+  return path.join(absoluteTranscriptBundleDir(communityId, token), "index.html");
 }
 
 /**
@@ -149,7 +155,9 @@ function renderAttachmentsHtml(attachments) {
  */
 function renderTranscriptHtml(ticket, messages, meta = {}) {
   const title = `Ticket ${formatTicketRef(ticket.ticket_number)}`;
-  const guildName = meta.guildName || ticket.guild_id;
+  // Row key is the integer community id (fluxer PR 2); the human-readable
+  // guild name is always passed in meta by the archive pipeline.
+  const guildName = meta.guildName || ticket.community_id;
   const requesterLabel = meta.requesterLabel || ticket.creator_user_id || "—";
   const staffOwnerLabel =
     meta.staffOwnerLabel ||
@@ -236,12 +244,12 @@ function renderTranscriptHtml(ticket, messages, meta = {}) {
  * @returns {{ relativePath: string, absolutePath: string }}
  */
 function writeTranscriptFile(ticket, token, messages, meta = {}) {
-  const abs = absoluteTranscriptPath(ticket.guild_id, token);
+  const abs = absoluteTranscriptPath(ticket.community_id, token);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   const html = renderTranscriptHtml(ticket, messages, { ...meta, token });
   fs.writeFileSync(abs, html, "utf8");
   return {
-    relativePath: relativeTranscriptPath(ticket.guild_id, token),
+    relativePath: relativeTranscriptPath(ticket.community_id, token),
     absolutePath: abs,
   };
 }
@@ -256,14 +264,14 @@ function resolveTranscriptAbsolutePath(ticket) {
 
   if (ticket.transcript_token) {
     const nested = absoluteTranscriptPath(
-      ticket.guild_id,
+      ticket.community_id,
       ticket.transcript_token,
     );
     if (fs.existsSync(nested)) return nested;
 
     // Legacy flat file
     const flat = path.join(
-      transcriptDir(ticket.guild_id),
+      transcriptDir(ticket.community_id),
       `${ticket.transcript_token}.html`,
     );
     if (fs.existsSync(flat)) return flat;

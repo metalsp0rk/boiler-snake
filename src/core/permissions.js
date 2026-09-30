@@ -5,6 +5,7 @@ const {
   memberHasSeniorStaffRole,
   getTicketByChannel,
 } = require("../db");
+const { discordCommunityId } = require("../platform/community");
 const { replyDenied, replyOrFollowUpEphemeral } = require("./interaction");
 
 /**
@@ -28,9 +29,10 @@ function isAdminOrMod(interaction) {
  */
 function isStaff(interaction) {
   if (isAdminOrMod(interaction)) return true;
-  const guildId = interaction.guildId;
+  const communityId = discordCommunityId(interaction.guildId);
+  if (communityId == null) return false;
   const memberRoleIds = [...(interaction.member?.roles?.cache?.keys() ?? [])];
-  return memberHasStaffRole(guildId, memberRoleIds);
+  return memberHasStaffRole(communityId, memberRoleIds);
 }
 
 /**
@@ -42,9 +44,10 @@ function isStaff(interaction) {
  */
 function isSeniorStaff(interaction) {
   if (isAdminOrMod(interaction)) return true;
-  const guildId = interaction.guildId;
+  const communityId = discordCommunityId(interaction.guildId);
+  if (communityId == null) return false;
   const memberRoleIds = [...(interaction.member?.roles?.cache?.keys() ?? [])];
-  return memberHasSeniorStaffRole(guildId, memberRoleIds);
+  return memberHasSeniorStaffRole(communityId, memberRoleIds);
 }
 
 /**
@@ -63,13 +66,18 @@ function commandsAllowed(interaction) {
   )
     return true;
   if (interaction.commandName === "ticket" && interaction.channelId) {
-    const ticket = getTicketByChannel(interaction.channelId);
+    const ticketCommunityId = discordCommunityId(interaction.guildId);
     // Open tickets, or soft-closed channels still awaiting /ticket archive
+    const ticket = ticketCommunityId == null
+      ? null
+      : getTicketByChannel(ticketCommunityId, interaction.channelId);
     if (ticket && ticket.channel_id && Number(ticket.archived) !== 1) {
       return true;
     }
   }
-  const rows = listAllowedCommandChannels(interaction.guildId);
+  const communityId = discordCommunityId(interaction.guildId);
+  if (communityId == null) return true; // DM/no community: same as today's unregistered-guild path
+  const rows = listAllowedCommandChannels(communityId);
   if (!rows.length) return true;
   return rows.some((r) => r.channel_id === interaction.channelId);
 }

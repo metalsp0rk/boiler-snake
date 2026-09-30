@@ -1,75 +1,86 @@
 const { db, now } = require("../connection");
 
-function addHoneypotChannel(guildId, channelId) {
+// Lazy require: src/platform/community.js requires the db facade, so a
+// top-level require would be a load-time cycle. See src/db/repositories/users.js.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
+function addHoneypotChannel(communityId, channelId) {
+  assertCommunityId(communityId);
   db.prepare(`
-  INSERT OR IGNORE INTO honeypot_channels (guild_id, channel_id, created_at)
+  INSERT OR IGNORE INTO honeypot_channels (community_id, channel_id, created_at)
   VALUES (?, ?, ?)
-  `).run(guildId, channelId, now());
+  `).run(communityId, channelId, now());
 }
 
-function getHoneypotChannel(guildId, channelId) {
+function getHoneypotChannel(communityId, channelId) {
+  assertCommunityId(communityId);
   return (
     db.prepare(`
   SELECT channel_id, warning_message_id
   FROM honeypot_channels
-  WHERE guild_id=? AND channel_id=?
-  `).get(guildId, channelId) || null
+  WHERE community_id=? AND channel_id=?
+  `).get(communityId, channelId) || null
   );
 }
 
-function setHoneypotWarningMessage(guildId, channelId, messageIdOrNull) {
+function setHoneypotWarningMessage(communityId, channelId, messageIdOrNull) {
+  assertCommunityId(communityId);
   db.prepare(`
   UPDATE honeypot_channels
   SET warning_message_id=?
-  WHERE guild_id=? AND channel_id=?
-  `).run(messageIdOrNull, guildId, channelId);
+  WHERE community_id=? AND channel_id=?
+  `).run(messageIdOrNull, communityId, channelId);
 }
 
-function removeHoneypotChannel(guildId, channelId) {
-  const existing = getHoneypotChannel(guildId, channelId);
+function removeHoneypotChannel(communityId, channelId) {
+  assertCommunityId(communityId);
+  const existing = getHoneypotChannel(communityId, channelId);
   const result = db.prepare(`
   DELETE FROM honeypot_channels
-  WHERE guild_id=? AND channel_id=?
-  `).run(guildId, channelId);
+  WHERE community_id=? AND channel_id=?
+  `).run(communityId, channelId);
   return {
     removed: result.changes > 0,
     warning_message_id: existing?.warning_message_id || null,
   };
 }
 
-function listHoneypotChannels(guildId) {
+function listHoneypotChannels(communityId) {
+  assertCommunityId(communityId);
   return db.prepare(`
   SELECT channel_id, warning_message_id
   FROM honeypot_channels
-  WHERE guild_id=?
+  WHERE community_id=?
   ORDER BY created_at ASC
-  `).all(guildId);
+  `).all(communityId);
 }
 
-function isHoneypotChannel(guildId, channelId) {
+function isHoneypotChannel(communityId, channelId) {
+  assertCommunityId(communityId);
   const row = db.prepare(`
   SELECT 1 AS ok
   FROM honeypot_channels
-  WHERE guild_id=? AND channel_id=?
-  `).get(guildId, channelId);
+  WHERE community_id=? AND channel_id=?
+  `).get(communityId, channelId);
   return !!row;
 }
 
 /** True if this message is the bot-posted honeypot warning notice. */
-function isHoneypotWarningMessage(guildId, messageId) {
-  if (!guildId || !messageId) return false;
+function isHoneypotWarningMessage(communityId, messageId) {
+  assertCommunityId(communityId);
+  if (!messageId) return false;
   const row = db.prepare(`
   SELECT 1 AS ok
   FROM honeypot_channels
-  WHERE guild_id=? AND warning_message_id=?
-  `).get(guildId, messageId);
+  WHERE community_id=? AND warning_message_id=?
+  `).get(communityId, messageId);
   return !!row;
 }
 
 /** All honeypot warning notices (for reaction sweeps). */
 function listAllHoneypotWarnings() {
   return db.prepare(`
-  SELECT guild_id, channel_id, warning_message_id
+  SELECT community_id, channel_id, warning_message_id
   FROM honeypot_channels
   WHERE warning_message_id IS NOT NULL AND warning_message_id != ''
   `).all();
@@ -78,47 +89,52 @@ function listAllHoneypotWarnings() {
 // Exempt-role functions moved to staffRoles.js (migration 008).
 // Aliases are re-exported from the db facade.
 
-function addHoneypotBanRole(guildId, roleId) {
+function addHoneypotBanRole(communityId, roleId) {
+  assertCommunityId(communityId);
   db.prepare(`
-  INSERT OR IGNORE INTO honeypot_ban_roles (guild_id, role_id, created_at)
+  INSERT OR IGNORE INTO honeypot_ban_roles (community_id, role_id, created_at)
   VALUES (?, ?, ?)
-  `).run(guildId, roleId, now());
+  `).run(communityId, roleId, now());
 }
 
-function removeHoneypotBanRole(guildId, roleId) {
+function removeHoneypotBanRole(communityId, roleId) {
+  assertCommunityId(communityId);
   const result = db.prepare(`
   DELETE FROM honeypot_ban_roles
-  WHERE guild_id=? AND role_id=?
-  `).run(guildId, roleId);
+  WHERE community_id=? AND role_id=?
+  `).run(communityId, roleId);
   return result.changes > 0;
 }
 
-function listHoneypotBanRoles(guildId) {
+function listHoneypotBanRoles(communityId) {
+  assertCommunityId(communityId);
   return db.prepare(`
   SELECT role_id
   FROM honeypot_ban_roles
-  WHERE guild_id=?
+  WHERE community_id=?
   ORDER BY created_at ASC
-  `).all(guildId);
+  `).all(communityId);
 }
 
-function isHoneypotBanRole(guildId, roleId) {
+function isHoneypotBanRole(communityId, roleId) {
+  assertCommunityId(communityId);
   const row = db.prepare(`
   SELECT 1 AS ok
   FROM honeypot_ban_roles
-  WHERE guild_id=? AND role_id=?
-  `).get(guildId, roleId);
+  WHERE community_id=? AND role_id=?
+  `).get(communityId, roleId);
   return !!row;
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string[]} roleIds
  * @returns {string[]}
  */
-function findHoneypotBanRolesAmong(guildId, roleIds) {
+function findHoneypotBanRolesAmong(communityId, roleIds) {
+  assertCommunityId(communityId);
   if (!roleIds?.length) return [];
-  const configured = listHoneypotBanRoles(guildId);
+  const configured = listHoneypotBanRoles(communityId);
   if (!configured.length) return [];
   const banSet = new Set(configured.map((r) => r.role_id));
   return roleIds.filter((id) => banSet.has(id));

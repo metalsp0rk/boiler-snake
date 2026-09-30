@@ -1,12 +1,18 @@
 const { db, now } = require("../connection");
 
+// src/platform/community.js requires the db facade (src/db/index.js), so a
+// top-level require here would be a load-time cycle (partial exports). The
+// lazy require resolves after boot; assertCommunityId stays single-source.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @returns {{ event_reminder_channel_id: string|null }}
  */
-function getEventReminderSettings(guildId) {
+function getEventReminderSettings(communityId) {
+  assertCommunityId(communityId);
   const { getGuildSettings } = require("./guildSettings");
-  const s = getGuildSettings(guildId);
+  const s = getGuildSettings(communityId);
   return {
     event_reminder_channel_id: s.event_reminder_channel_id ?? null,
   };
@@ -14,7 +20,7 @@ function getEventReminderSettings(guildId) {
 
 /**
  * @param {object} opts
- * @param {string} opts.guildId
+ * @param {number} opts.communityId
  * @param {string} opts.scheduledEventId
  * @param {string} opts.shortname
  * @param {string} opts.roleId
@@ -26,13 +32,14 @@ function getEventReminderSettings(guildId) {
   * @returns {object} config row with offsets
   */
 function createEventReminderConfig(opts) {
+  assertCommunityId(opts.communityId);
   const t = now();
   const insertConfig = db.prepare(`
      INSERT INTO event_reminder_configs (
-       guild_id, scheduled_event_id, shortname, role_id, channel_id,
+       community_id, scheduled_event_id, shortname, role_id, channel_id,
        message_template, persistent, active, created_at, created_by
      ) VALUES (
-       @guild_id, @scheduled_event_id, @shortname, @role_id, @channel_id,
+       @community_id, @scheduled_event_id, @shortname, @role_id, @channel_id,
        @message_template, @persistent, 1, @created_at, @created_by
      )
    `);
@@ -43,7 +50,7 @@ function createEventReminderConfig(opts) {
 
   const tx = db.transaction(() => {
     const info = insertConfig.run({
-      guild_id: opts.guildId,
+      community_id: opts.communityId,
       scheduled_event_id: opts.scheduledEventId,
       shortname: opts.shortname,
       role_id: opts.roleId,
@@ -77,70 +84,74 @@ function getEventReminderConfigById(configId) {
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} scheduledEventId
  * @returns {object|null}
  */
-function getConfigByScheduledEventId(guildId, scheduledEventId) {
+function getConfigByScheduledEventId(communityId, scheduledEventId) {
+  assertCommunityId(communityId);
   const row = db
     .prepare(
       `SELECT * FROM event_reminder_configs
-       WHERE guild_id=? AND scheduled_event_id=? AND active=1`
+       WHERE community_id=? AND scheduled_event_id=? AND active=1`
     )
-    .get(guildId, scheduledEventId);
+    .get(communityId, scheduledEventId);
   if (!row) return null;
   return attachOffsets(row);
 }
 
 /**
  * Any config for event (active or not) — used for uniqueness checks.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} scheduledEventId
  */
-function getAnyConfigByScheduledEventId(guildId, scheduledEventId) {
+function getAnyConfigByScheduledEventId(communityId, scheduledEventId) {
+  assertCommunityId(communityId);
   const row = db
     .prepare(
       `SELECT * FROM event_reminder_configs
-       WHERE guild_id=? AND scheduled_event_id=?`
+       WHERE community_id=? AND scheduled_event_id=?`
     )
-    .get(guildId, scheduledEventId);
+    .get(communityId, scheduledEventId);
   if (!row) return null;
   return attachOffsets(row);
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} shortname
  * @returns {object|null}
  */
-function getConfigByShortname(guildId, shortname) {
+function getConfigByShortname(communityId, shortname) {
+  assertCommunityId(communityId);
   return (
     db
       .prepare(
-        `SELECT * FROM event_reminder_configs WHERE guild_id=? AND shortname=?`
+        `SELECT * FROM event_reminder_configs WHERE community_id=? AND shortname=?`
       )
-      .get(guildId, shortname) || null
+      .get(communityId, shortname) || null
   );
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {{ activeOnly?: boolean }} [opts]
  * @returns {object[]}
  */
-function listEventReminderConfigs(guildId, opts = {}) {
+function listEventReminderConfigs(communityId, opts = {}) {
+  assertCommunityId(communityId);
   const activeOnly = opts.activeOnly !== false;
   const rows = activeOnly
     ? db
         .prepare(
-          `SELECT * FROM event_reminder_configs WHERE guild_id=? AND active=1 ORDER BY created_at ASC`
+          `SELECT * FROM event_reminder_configs WHERE community_id=? AND active=1 ORDER BY created_at ASC`
         )
-        .all(guildId)
+        .all(communityId)
     : db
         .prepare(
-          `SELECT * FROM event_reminder_configs WHERE guild_id=? ORDER BY created_at ASC`
+          `SELECT * FROM event_reminder_configs WHERE community_id=? ORDER BY created_at ASC`
         )
-        .all(guildId);
+        .all(communityId);
   return rows.map(attachOffsets);
 }
 
@@ -220,23 +231,24 @@ function updateEventReminderConfig(configId, patch) {
 
 /**
  * Delete config (+ offsets via CASCADE). Returns role_id for Discord cleanup.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} scheduledEventId
  * @returns {{ role_id: string, shortname: string, id: number }|null}
  */
-function clearEventReminderConfig(guildId, scheduledEventId) {
+function clearEventReminderConfig(communityId, scheduledEventId) {
+  assertCommunityId(communityId);
   const row = db
     .prepare(
       `SELECT id, role_id, shortname FROM event_reminder_configs
-       WHERE guild_id=? AND scheduled_event_id=?`
+       WHERE community_id=? AND scheduled_event_id=?`
     )
-    .get(guildId, scheduledEventId);
+    .get(communityId, scheduledEventId);
   if (!row) return null;
 
   // SQLite FK CASCADE may be off; delete children explicitly.
   db.prepare(`DELETE FROM event_reminder_offsets WHERE config_id=?`).run(row.id);
   db.prepare(`DELETE FROM event_reminder_configs WHERE id=?`).run(row.id);
-  clearEventReminderMutesForEvent(guildId, scheduledEventId);
+  clearEventReminderMutesForEvent(communityId, scheduledEventId);
   return {
     id: row.id,
     role_id: row.role_id,
@@ -246,24 +258,24 @@ function clearEventReminderConfig(guildId, scheduledEventId) {
 
 /**
  * @param {number} configId
- * @returns {{ role_id: string, shortname: string, guild_id: string, scheduled_event_id: string }|null}
+ * @returns {{ role_id: string, shortname: string, community_id: number, scheduled_event_id: string }|null}
  */
 function clearEventReminderConfigById(configId) {
   const row = db
     .prepare(
-      `SELECT id, role_id, shortname, guild_id, scheduled_event_id
+      `SELECT id, role_id, shortname, community_id, scheduled_event_id
        FROM event_reminder_configs WHERE id=?`
     )
     .get(configId);
   if (!row) return null;
   db.prepare(`DELETE FROM event_reminder_offsets WHERE config_id=?`).run(configId);
   db.prepare(`DELETE FROM event_reminder_configs WHERE id=?`).run(configId);
-  clearEventReminderMutesForEvent(row.guild_id, row.scheduled_event_id);
+  clearEventReminderMutesForEvent(row.community_id, row.scheduled_event_id);
   return {
     id: row.id,
     role_id: row.role_id,
     shortname: row.shortname,
-    guild_id: row.guild_id,
+    community_id: row.community_id,
     scheduled_event_id: row.scheduled_event_id,
   };
 }
@@ -300,7 +312,7 @@ function claimDueReminders(nowMs, limit = 50) {
           o.fire_at,
           o.sent_at,
           o.message_id,
-          c.guild_id,
+          c.community_id,
           c.scheduled_event_id,
           c.shortname,
           c.role_id,
@@ -331,136 +343,146 @@ function markReminderSent(offsetId, messageId) {
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @returns {boolean}
  */
-function isEventReminderOptedOut(guildId, userId) {
+function isEventReminderOptedOut(communityId, userId) {
+  assertCommunityId(communityId);
   const row = db
     .prepare(
-      `SELECT 1 FROM event_reminder_optouts WHERE guild_id=? AND user_id=?`
+      `SELECT 1 FROM event_reminder_optouts WHERE community_id=? AND user_id=?`
     )
-    .get(guildId, userId);
+    .get(communityId, userId);
   return !!row;
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  */
-function setEventReminderOptOut(guildId, userId) {
+function setEventReminderOptOut(communityId, userId) {
+  assertCommunityId(communityId);
   db.prepare(
-    `INSERT INTO event_reminder_optouts (guild_id, user_id, opted_out_at)
+    `INSERT INTO event_reminder_optouts (community_id, user_id, opted_out_at)
      VALUES (?, ?, ?)
-     ON CONFLICT(guild_id, user_id) DO UPDATE SET opted_out_at=excluded.opted_out_at`
-  ).run(guildId, userId, now());
+     ON CONFLICT(community_id, user_id) DO UPDATE SET opted_out_at=excluded.opted_out_at`
+  ).run(communityId, userId, now());
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  */
-function clearEventReminderOptOut(guildId, userId) {
+function clearEventReminderOptOut(communityId, userId) {
+  assertCommunityId(communityId);
   db.prepare(
-    `DELETE FROM event_reminder_optouts WHERE guild_id=? AND user_id=?`
-  ).run(guildId, userId);
+    `DELETE FROM event_reminder_optouts WHERE community_id=? AND user_id=?`
+  ).run(communityId, userId);
 }
 
 /**
- * Per-event mute (independent of guild-wide opt-out).
- * @param {string} guildId
+ * Per-event mute (independent of community-wide opt-out).
+ * @param {number} communityId
  * @param {string} userId
  * @param {string} scheduledEventId
  * @returns {boolean}
  */
-function isEventReminderMuted(guildId, userId, scheduledEventId) {
+function isEventReminderMuted(communityId, userId, scheduledEventId) {
+  assertCommunityId(communityId);
   const row = db
     .prepare(
       `SELECT 1 FROM event_reminder_event_optouts
-       WHERE guild_id=? AND user_id=? AND scheduled_event_id=?`
+       WHERE community_id=? AND user_id=? AND scheduled_event_id=?`
     )
-    .get(guildId, userId, scheduledEventId);
+    .get(communityId, userId, scheduledEventId);
   return !!row;
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @param {string} scheduledEventId
  */
-function setEventReminderMute(guildId, userId, scheduledEventId) {
+function setEventReminderMute(communityId, userId, scheduledEventId) {
+  assertCommunityId(communityId);
   db.prepare(
     `INSERT INTO event_reminder_event_optouts
-       (guild_id, user_id, scheduled_event_id, muted_at)
+       (community_id, user_id, scheduled_event_id, muted_at)
      VALUES (?, ?, ?, ?)
-     ON CONFLICT(guild_id, user_id, scheduled_event_id)
+     ON CONFLICT(community_id, user_id, scheduled_event_id)
      DO UPDATE SET muted_at=excluded.muted_at`
-  ).run(guildId, userId, scheduledEventId, now());
+  ).run(communityId, userId, scheduledEventId, now());
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @param {string} scheduledEventId
  */
-function clearEventReminderMute(guildId, userId, scheduledEventId) {
+function clearEventReminderMute(communityId, userId, scheduledEventId) {
+  assertCommunityId(communityId);
   db.prepare(
     `DELETE FROM event_reminder_event_optouts
-     WHERE guild_id=? AND user_id=? AND scheduled_event_id=?`
-  ).run(guildId, userId, scheduledEventId);
+     WHERE community_id=? AND user_id=? AND scheduled_event_id=?`
+  ).run(communityId, userId, scheduledEventId);
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @returns {{ scheduled_event_id: string, muted_at: number }[]}
  */
-function listEventReminderMutes(guildId, userId) {
+function listEventReminderMutes(communityId, userId) {
+  assertCommunityId(communityId);
   return db
     .prepare(
       `SELECT scheduled_event_id, muted_at FROM event_reminder_event_optouts
-       WHERE guild_id=? AND user_id=?
+       WHERE community_id=? AND user_id=?
        ORDER BY muted_at DESC`
     )
-    .all(guildId, userId);
+    .all(communityId, userId);
 }
 
 /**
  * Drop all mutes for a scheduled event (config cleanup).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} scheduledEventId
  */
-function clearEventReminderMutesForEvent(guildId, scheduledEventId) {
+function clearEventReminderMutesForEvent(communityId, scheduledEventId) {
+  assertCommunityId(communityId);
   db.prepare(
     `DELETE FROM event_reminder_event_optouts
-     WHERE guild_id=? AND scheduled_event_id=?`
-  ).run(guildId, scheduledEventId);
+     WHERE community_id=? AND scheduled_event_id=?`
+  ).run(communityId, scheduledEventId);
 }
 
 /**
- * Guild opt-out OR per-event mute blocks reminder roles for that event.
- * @param {string} guildId
+ * Community opt-out OR per-event mute blocks reminder roles for that event.
+ * @param {number} communityId
  * @param {string} userId
  * @param {string} scheduledEventId
  * @returns {boolean}
  */
-function isUserBlockedFromEventReminders(guildId, userId, scheduledEventId) {
+function isUserBlockedFromEventReminders(communityId, userId, scheduledEventId) {
+  assertCommunityId(communityId);
   return (
-    isEventReminderOptedOut(guildId, userId) ||
-    isEventReminderMuted(guildId, userId, scheduledEventId)
+    isEventReminderOptedOut(communityId, userId) ||
+    isEventReminderMuted(communityId, userId, scheduledEventId)
   );
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @returns {string[]} role ids for active configs
  */
-function listActiveEventReminderRoleIds(guildId) {
+function listActiveEventReminderRoleIds(communityId) {
+  assertCommunityId(communityId);
   return db
     .prepare(
-      `SELECT role_id FROM event_reminder_configs WHERE guild_id=? AND active=1`
+      `SELECT role_id FROM event_reminder_configs WHERE community_id=? AND active=1`
     )
-    .all(guildId)
+    .all(communityId)
     .map((r) => r.role_id);
 }
 
