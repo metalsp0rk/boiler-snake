@@ -5,6 +5,9 @@
  *   name: string
  *   commands: SlashCommandBuilder[]
  *   handlers: { [commandName]: async (interaction, ctx) => void }
+ *   handlerApi: { [commandName]: "context" }  // opt a handler into the
+ *     CommandContext calling convention (spec § Handler migration rule);
+ *     unlisted handlers default to the "interaction" arm.
  *   autocomplete: { [commandName]: async (interaction, ctx) => void }
  *   modalHandlers: { [customIdPrefix]: async (interaction, ctx) => void }
  *   buttonHandlers: { [customIdPrefix]: async (interaction, ctx) => void }
@@ -27,7 +30,9 @@ function applyFeaturesToRegistry(features, registry) {
     }
 
     for (const [name, fn] of Object.entries(feature.handlers || {})) {
-      registry.registerHandler(name, fn);
+      registry.registerHandler(name, fn, {
+        api: feature.handlerApi?.[name] ?? "interaction",
+      });
     }
 
     for (const [name, fn] of Object.entries(feature.autocomplete || {})) {
