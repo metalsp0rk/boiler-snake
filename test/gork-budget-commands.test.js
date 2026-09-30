@@ -8,7 +8,7 @@
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const {
   createChatInputInteraction,
@@ -45,7 +45,7 @@ function makeEnv(guildId) {
   guild.addChannel(auditChannel);
   const client = createClient();
   client.addGuild(guild);
-  api.updateGuildSettings(guildId, { audit_log_channel_id: auditChannel.id });
+  api.updateGuildSettings(communityKey(guildId), { audit_log_channel_id: auditChannel.id });
 
   const staffUser = createUser({ id: `staff-${guildId}` });
   const staffMember = createMember({ guild, user: staffUser, admin: true });
@@ -147,7 +147,7 @@ describe("/gork budget default", () => {
     const interaction = await runBudget(G, { action: "default", limit: 5 }, env);
     assert.ok(lastReplyEphemeral(interaction));
     assert.match(lastReplyContent(interaction), /5\/day/);
-    assert.equal(api.getGuildSettings(G).gork_daily_limit, 5);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_daily_limit, 5);
     assert.match(auditText(env), /Guild-default daily budget: 5\/day/);
   });
 
@@ -155,17 +155,17 @@ describe("/gork budget default", () => {
     const G = "g-bud-cmd-states";
     const env = makeEnv(G);
     await runBudget(G, { action: "default", limit: -1 }, env);
-    assert.equal(api.getGuildSettings(G).gork_daily_limit, -1);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_daily_limit, -1);
     assert.match(auditText(env), /blocked/i);
     await runBudget(G, { action: "default", limit: 0 }, env);
-    assert.equal(api.getGuildSettings(G).gork_daily_limit, 0);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_daily_limit, 0);
   });
 
   it("out-of-range input is clamped by the settings layer (never rejected silently)", async () => {
     const G = "g-bud-cmd-clamp";
     const env = makeEnv(G);
     await runBudget(G, { action: "default", limit: 5000 }, env);
-    assert.equal(api.getGuildSettings(G).gork_daily_limit, 1000);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_daily_limit, 1000);
   });
 
   it("missing limit → actionable hint, no write", async () => {
@@ -189,7 +189,7 @@ describe("/gork budget channel|category", () => {
       env,
     );
     assert.match(lastReplyContent(interaction), /<#111>.*3\/day/);
-    const rows = api.listGorkBudgetRules(G);
+    const rows = api.listGorkBudgetRules(communityKey(G));
     assert.equal(rows.length, 1);
     assert.deepEqual(
       { kind: rows[0].scope_kind, id: rows[0].target_id, limit: rows[0].daily_limit },
@@ -204,7 +204,7 @@ describe("/gork budget channel|category", () => {
     const env = makeEnv(G);
     await runBudget(G, { action: "category", target: fakeCategory("222"), limit: 1 }, env);
     await runBudget(G, { action: "category", target: fakeCategory("222"), limit: 10 }, env);
-    const rows = api.listGorkBudgetRules(G);
+    const rows = api.listGorkBudgetRules(communityKey(G));
     assert.equal(rows.length, 1, "replace must not stack rows");
     assert.equal(rows[0].daily_limit, 10);
   });
@@ -224,7 +224,7 @@ describe("/gork budget channel|category", () => {
       env,
     );
     assert.match(lastReplyContent(interaction), /must be a \*\*category\*\*/);
-    assert.equal(api.listGorkBudgetRules(G).length, 0, "nothing stored");
+    assert.equal(api.listGorkBudgetRules(communityKey(G)).length, 0, "nothing stored");
   });
 
   it("a THREAD target normalizes to its PARENT channel (no dead thread-id rules)", async () => {
@@ -242,7 +242,7 @@ describe("/gork budget channel|category", () => {
       { action: "channel", target: fakeThread, limit: 4 },
       env,
     );
-    const rows = api.listGorkBudgetRules(G);
+    const rows = api.listGorkBudgetRules(communityKey(G));
     assert.equal(rows.length, 1);
     assert.equal(rows[0].target_id, "888", "rule stores the PARENT channel id, not the thread id");
     assert.match(lastReplyContent(interaction), /parent channel/i, "reply discloses the rebinding");
@@ -255,7 +255,7 @@ describe("/gork budget channel|category", () => {
       env,
     );
     assert.doesNotMatch(lastReplyContent(rem), /No `channel` budget rule/);
-    assert.equal(api.listGorkBudgetRules(G).length, 0, "thread-target removal clears the parent rule");
+    assert.equal(api.listGorkBudgetRules(communityKey(G)).length, 0, "thread-target removal clears the parent rule");
   });
 
   it("missing target or limit → actionable hints", async () => {
@@ -274,8 +274,8 @@ describe("/gork budget remove_*", () => {
   it("removes via picker, falls back to the raw id, and reports misses", async () => {
     const G = "g-bud-cmd-rm";
     const env = makeEnv(G);
-    api.upsertGorkBudgetRule(G, "channel", "666", 4, "staff-x");
-    api.upsertGorkBudgetRule(G, "category", "777", 2, "staff-x");
+    api.upsertGorkBudgetRule(communityKey(G), "channel", "666", 4, "staff-x");
+    api.upsertGorkBudgetRule(communityKey(G), "category", "777", 2, "staff-x");
 
     let interaction = await runBudget(
       G,
@@ -287,7 +287,7 @@ describe("/gork budget remove_*", () => {
 
     interaction = await runBudget(G, { action: "remove_category", id: "777" }, env);
     assert.match(lastReplyContent(interaction), /Removed the category budget rule/);
-    assert.equal(api.listGorkBudgetRules(G).length, 0);
+    assert.equal(api.listGorkBudgetRules(communityKey(G)).length, 0);
 
     interaction = await runBudget(G, { action: "remove_channel", id: "999" }, env);
     assert.match(lastReplyContent(interaction), /No `channel` budget rule for `999`/);
@@ -313,9 +313,9 @@ describe("/gork budget list & /gork status Budget line", () => {
   it("list: rules table with provenance", async () => {
     const G = "g-bud-cmd-list";
     const env = makeEnv(G);
-    api.updateGuildSettings(G, { gork_daily_limit: 5 });
-    api.upsertGorkBudgetRule(G, "channel", "888", 2, `staff-${G}`);
-    api.upsertGorkBudgetRule(G, "category", "999", -1, null);
+    api.updateGuildSettings(communityKey(G), { gork_daily_limit: 5 });
+    api.upsertGorkBudgetRule(communityKey(G), "channel", "888", 2, `staff-${G}`);
+    api.upsertGorkBudgetRule(communityKey(G), "category", "999", -1, null);
 
     const interaction = await runBudget(G, { action: "list" }, env);
     const fields = embedFields(interaction);
@@ -332,8 +332,8 @@ describe("/gork budget list & /gork status Budget line", () => {
     let by = Object.fromEntries(fields.map((f) => [f.name, f.value]));
     assert.equal(by.Budget, "default unlimited · 0 rules");
 
-    api.updateGuildSettings(G, { gork_daily_limit: 5 });
-    api.upsertGorkBudgetRule(G, "channel", "888", 2, null);
+    api.updateGuildSettings(communityKey(G), { gork_daily_limit: 5 });
+    api.upsertGorkBudgetRule(communityKey(G), "channel", "888", 2, null);
     fields = embedFields(await runStatus(env));
     by = Object.fromEntries(fields.map((f) => [f.name, f.value]));
     assert.equal(by.Budget, "default 5/day · 1 rule");

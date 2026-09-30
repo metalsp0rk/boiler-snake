@@ -18,12 +18,16 @@ const dbPath = path.join(tmp, "xpbot.sqlite");
 const outDir = path.join(tmp, "out");
 
 let db;
+// Fluxer PR 2: gork_interactions is keyed by the INTEGER communities.id. The
+// CLI's --guild flag names that internal id (the test registers the external
+// "g-export" snowflake as a Discord community to obtain the integer).
+let communityId;
 
 function row(overrides) {
   return {
     uid: overrides.uid || `uid-${Math.random().toString(36).slice(2)}`,
     kind: "qa",
-    guild_id: "g-export",
+    community_id: communityId,
     channel_id: "c1",
     message_id: "m1",
     user_id: "u1",
@@ -53,6 +57,12 @@ function runCli(args) {
 before(async () => {
   process.env.DB_PATH = dbPath;
   db = require("../../src/db"); // fresh temp DB via env (same rules as the bot)
+  const { ensureCommunity } = require("../../src/platform/community");
+  communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: "g-export",
+  });
   const qa = row({ uid: "qa-1" });
   assert.equal(db.insertGorkInteraction(qa).ok, true);
   assert.equal(
@@ -100,7 +110,8 @@ describe("export-gork-log CLI (real subprocess, real temp DB)", () => {
   });
 
   it("--guild exports one file per fixture and exits 0", () => {
-    const r = runCli(["--guild", "g-export", "--kind", "all", "--out", outDir]);
+    // Fluxer PR 2: the flag names the INTEGER community id (argv is string).
+    const r = runCli(["--guild", String(communityId), "--kind", "all", "--out", outDir]);
     assert.equal(r.status, 0, r.stderr);
     const files = fs.readdirSync(outDir).filter((f) => f.endsWith(".json"));
     assert.ok(files.length >= 1, `expected fixtures, got: ${files.join(",")}`);
@@ -167,8 +178,18 @@ describe("export-gork-log CLI (real subprocess, real temp DB)", () => {
   });
 
   it("empty guild is NOT an error: exit 0 + clear message", () => {
-    const r = runCli(["--guild", "g-empty", "--out", path.join(tmp, "out-0")]);
+    // A REGISTERED community with zero rows — the flag carries its integer id.
+    const { ensureCommunity } = require("../../src/platform/community");
+    const emptyId = ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: "g-empty",
+    });
+    const r = runCli(["--guild", String(emptyId), "--out", path.join(tmp, "out-0")]);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /no kind "qa" rows stored for guild g-empty/);
+    assert.match(
+      r.stdout,
+      new RegExp(`no kind "qa" rows stored for guild ${emptyId}`),
+    );
   });
 });

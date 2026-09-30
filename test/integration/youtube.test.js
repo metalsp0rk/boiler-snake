@@ -34,7 +34,7 @@ describe("integration: youtube", () => {
     });
     // may succeed or fail depending on URL parsing — UCtesthannel00001 starts with UC
     assert.ok(interaction.replies.length >= 1);
-    const channels = env.db.getYoutubeChannels(env.guild.id);
+    const channels = env.db.getYoutubeChannels(env.communityId);
     // If add succeeded, row exists
     if (!/invalid/i.test(interaction.replies[0].content || "")) {
       assert.ok(channels.length >= 1);
@@ -43,7 +43,7 @@ describe("integration: youtube", () => {
 
   it("/youtube list works", async () => {
     env.db.addYoutubeChannel(
-      env.guild.id,
+      env.communityId,
       "UClisted000000001",
       "ListedChannel",
       "https://www.youtube.com/channel/UClisted000000001",
@@ -66,17 +66,17 @@ describe("integration: youtube", () => {
     });
     assertReplyContains(interaction, /notifications will be sent/i);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).youtube_notification_channel_id,
+      env.db.getGuildSettings(env.communityId).youtube_notification_channel_id,
       IDS.channelNotify
     );
   });
 
   it("processChannel sends notification for new upload", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       youtube_notification_channel_id: IDS.channelNotify,
     });
     env.db.addYoutubeChannel(
-      env.guild.id,
+      env.communityId,
       "UCproc00000000001",
       "ProcChannel",
       "https://www.youtube.com/channel/UCproc00000000001",
@@ -86,9 +86,9 @@ describe("integration: youtube", () => {
     const lastChecked = Date.now() - 60_000;
     env.db.updateYoutubeChannelLastChecked("UCproc00000000001", lastChecked, null);
 
-    const channelData = env.db.getYoutubeChannelById(env.guild.id, "UCproc00000000001");
+    const channelData = env.db.getYoutubeChannelById(env.communityId, "UCproc00000000001");
     const published = Date.now() - 10_000;
-    await processChannel(env.client, env.guild.id, channelData, {
+    await processChannel(env.client, env.communityId, channelData, {
       fetchYouTubeFeed: async () => ({
         title: "feed",
         items: [
@@ -110,11 +110,11 @@ describe("integration: youtube", () => {
   });
 
   it("processChannel skips already-notified video id", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       youtube_notification_channel_id: IDS.channelNotify,
     });
     env.db.addYoutubeChannel(
-      env.guild.id,
+      env.communityId,
       "UCskip00000000001",
       "SkipChannel",
       "https://www.youtube.com/channel/UCskip00000000001",
@@ -127,8 +127,8 @@ describe("integration: youtube", () => {
     );
     env.channels.notify.sent.length = 0;
 
-    const channelData = env.db.getYoutubeChannelById(env.guild.id, "UCskip00000000001");
-    await processChannel(env.client, env.guild.id, channelData, {
+    const channelData = env.db.getYoutubeChannelById(env.communityId, "UCskip00000000001");
+    await processChannel(env.client, env.communityId, channelData, {
       fetchYouTubeFeed: async () => ({
         title: "feed",
         items: [
@@ -145,19 +145,19 @@ describe("integration: youtube", () => {
   });
 
   it("processChannel no-ops without notification channel", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       youtube_notification_channel_id: null,
     });
     env.db.addYoutubeChannel(
-      env.guild.id,
+      env.communityId,
       "UCnonotify0000001",
       "NoNotify",
       "https://www.youtube.com/channel/UCnonotify0000001",
       ""
     );
     env.channels.notify.sent.length = 0;
-    const channelData = env.db.getYoutubeChannelById(env.guild.id, "UCnonotify0000001");
-    await processChannel(env.client, env.guild.id, channelData, {
+    const channelData = env.db.getYoutubeChannelById(env.communityId, "UCnonotify0000001");
+    await processChannel(env.client, env.communityId, channelData, {
       fetchYouTubeFeed: async () => ({
         items: [
           {

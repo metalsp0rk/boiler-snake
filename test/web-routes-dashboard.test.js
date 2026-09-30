@@ -28,7 +28,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // Clearly-fake placeholder only (AGENTS.md: never realistic secrets).
 const SESSION_SECRET = "test-dash…cret";
@@ -36,6 +36,11 @@ const SESSION_SECRET = "test-dash…cret";
 const GUILD_A = "700000000000000001"; // bot + every test user
 const GUILD_CROSS = "700000000000000002"; // bot guild the users are NOT in
 const GUILD_USER_ONLY = "700000000000000003"; // user guild without the bot
+
+// Fluxer PR 2: integer communities.id for data + /g/<id> route identity
+// (assigned in before() right after loadDb binds the temp DB).
+let CID_A;
+let CID_CROSS;
 const ROLE_JUNIOR = "role-junior-staff";
 const ROLE_SENIOR = "role-senior-staff";
 
@@ -192,9 +197,9 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
   /**
    * Seed helpers (real facade writes).
    */
-  function seedTicket(guildId, creatorUserId, reason) {
+  function seedTicket(communityId, creatorUserId, reason) {
     return api.createTicket({
-      guildId,
+      communityId,
       creatorUserId,
       channelId: `ch-${Math.random().toString(36).slice(2, 12)}`,
       reason,
@@ -216,9 +221,13 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
     sessionPolicy = require("../src/web/auth/sessions");
     tokens = require("../src/web/auth/tokens");
 
+    // Map the Discord fixture ids to their integer community ids (PR 2).
+    CID_A = communityKey(GUILD_A);
+    CID_CROSS = communityKey(GUILD_CROSS);
+
     // REAL staff_roles rows — the same tables memberHasStaffRole reads.
-    api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-    api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+    api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+    api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
 
     cookieOf.admin = `web_session=${mkSession(USER_ADMIN)}`;
     cookieOf.staff = `web_session=${mkSession(USER_STAFF)}`;
@@ -251,24 +260,26 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
   // -------------------------------------------------------------------------
 
   describe("tier matrix", () => {
-    it("anonymous ⇒ 302 to /auth/login?guild=… (byte-identical redirect)", async () => {
-      const { res, body } = await req(`/g/${GUILD_A}`);
+    it("anonymous ⇒ 302 to /auth/login (integer route id ⇒ bare login)", async () => {
+      const { res, body } = await req(`/g/${CID_A}`);
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      // PR 2: integer community ids fail the 5–20-digit snowflake gate in
+      // loginRedirectTarget, so the anon target is the bare login page.
+      assert.equal(res.headers.get("location"), "/auth/login");
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal(res.headers.get("referrer-policy"), "no-referrer");
       assert.equal(body, "");
     });
 
     it("stranger (live member, no staff role) ⇒ generic 404, never 403", async () => {
-      const { res, body } = await req(`/g/${GUILD_A}`, { cookie: cookieOf.plain });
+      const { res, body } = await req(`/g/${CID_A}`, { cookie: cookieOf.plain });
       assert.equal(res.status, 404);
       assert.equal(body, "Not found");
       assert.match(res.headers.get("content-type"), /^text\/plain/);
     });
 
     it("cross-guild probe ⇒ the SAME plain 404 bytes as the stranger row", async () => {
-      const cross = await req(`/g/${GUILD_CROSS}`, { cookie: cookieOf.staff });
+      const cross = await req(`/g/${CID_CROSS}`, { cookie: cookieOf.staff });
       assert.equal(cross.res.status, 404);
       assert.equal(cross.body, "Not found");
     });
@@ -287,7 +298,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
       ["guild owner (admin)", () => cookieOf.admin],
     ]) {
       it(`${label} ⇒ 200 shell dashboard`, async () => {
-        const { res, body } = await req(`/g/${GUILD_A}`, { cookie: cookie() });
+        const { res, body } = await req(`/g/${CID_A}`, { cookie: cookie() });
         assert.equal(res.status, 200);
         assert.match(res.headers.get("content-type"), /^text\/html; charset=utf-8/);
         assert.equal(res.headers.get("cache-control"), "no-store");
@@ -302,7 +313,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
 
     it("read-only Phase 1: no mutation routes on the dashboard path", async () => {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-        const res = await fetch(`${base}/g/${GUILD_A}`, {
+        const res = await fetch(`${base}/g/${CID_A}`, {
           method,
           headers: { cookie: cookieOf.staff },
         });
@@ -319,14 +330,14 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
   describe("open tickets section", () => {
     before(async () => {
       // fresh 30s-cache data instance per suite → no bleed from matrix runs
-      seedTicket(GUILD_A, "900000000000000001", "Refund question");
-      seedTicket(GUILD_A, "900000000000000002", "Report a member");
-      seedTicket(GUILD_A, "900000000000000003", '<svg onload="alert(1)">');
+      seedTicket(CID_A, "900000000000000001", "Refund question");
+      seedTicket(CID_A, "900000000000000002", "Report a member");
+      seedTicket(CID_A, "900000000000000003", '<svg onload="alert(1)">');
       await mountApp({ dashboardData: dashboardDataMod.createDashboardData({}) });
     });
 
     it("renders the open count + newest rows with ESCAPED reasons", async () => {
-      const { body } = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+      const { body } = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
       assert.match(body, /3 open in this guild/, "open count from capped list");
       assert.ok(body.includes("Refund question"));
       assert.ok(body.includes("Report a member"));
@@ -345,7 +356,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
   describe("degraded sources", () => {
     it("no lavalink, no ticker wiring ⇒ 200 with honest unknown text", async () => {
       await mountApp({ dashboardData: dashboardDataMod.createDashboardData({}) });
-      const { res, body } = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("Now-playing status: unknown"));
       assert.ok(
@@ -365,7 +376,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
           },
         }),
       });
-      const { res, body } = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("Now-playing status: unknown"));
       assert.ok(body.includes("No background jobs report in yet"));
@@ -384,7 +395,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
           }),
         }),
       });
-      const { body } = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+      const { body } = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
       assert.ok(body.includes("Test Track"));
       assert.ok(body.includes("Test Band"));
       assert.ok(body.includes("1:05"), "position rendered as m:ss");
@@ -409,13 +420,13 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
           }),
         });
 
-        const first = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+        const first = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
         assert.equal(first.res.status, 200);
         const afterFirst = counter.calls.length;
         assert.ok(afterFirst > 0, "first request reads through the facade");
 
         fakeNow += 10_000; // inside the window
-        const second = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+        const second = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
         assert.equal(second.res.status, 200);
         assert.equal(
           counter.calls.length,
@@ -425,7 +436,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
         assert.ok(second.body.includes("(cached,"), "freshness rendered honestly");
 
         fakeNow += 25_000; // past the 30s window
-        const third = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+        const third = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
         assert.equal(third.res.status, 200);
         assert.ok(
           counter.calls.length > afterFirst,
@@ -444,10 +455,10 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
   describe("query budget on seeded data (600 users, 60 open tickets)", () => {
     before(async () => {
       for (let i = 0; i < 600; i += 1) {
-        api.addXp(GUILD_A, `u-seed-${i}`, 10 + i);
+        api.addXp(CID_A, `u-seed-${i}`, 10 + i);
       }
       for (let i = 0; i < 60; i += 1) {
-        seedTicket(GUILD_A, "920000000000000001", `bulk ticket ${i}`);
+        seedTicket(CID_A, "920000000000000001", `bulk ticket ${i}`);
       }
     });
 
@@ -455,7 +466,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
       const counter = startCallCounter();
       try {
         await mountApp({ dashboardData: dashboardDataMod.createDashboardData({}) });
-        const { res, body } = await req(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+        const { res, body } = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
         assert.equal(res.status, 200);
 
         const listCalls = counter.calls.filter((c) => c.name === "listOpenTickets");

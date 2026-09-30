@@ -11,7 +11,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const SESSION_SECRET = "test-tv1-…cret";
 
@@ -28,6 +28,7 @@ describe("themed transcript view (§8.15 amendment)", () => {
   let api;
   let tmpDir;
   let savedEnv;
+  let CID_A; // integer community id for GUILD_A (web contract)
   /** @type {import("http").Server} */
   let server;
   let base;
@@ -96,14 +97,15 @@ describe("themed transcript view (§8.15 amendment)", () => {
     sessionPolicy = require("../src/web/auth/sessions");
     tokens = require("../src/web/auth/tokens");
 
-    api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
+    CID_A = communityKey(GUILD_A);
+    api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
     cookieOf.staff = `web_session=${mkSession(USER_STAFF)}`;
     cookieOf.creator = `web_session=${mkSession(USER_CREATOR)}`;
 
     const mk = (msgs, summary, num) => {
       const tk = api.generateTranscriptToken();
       const t = api.createTicket({
-        guildId: GUILD_A,
+        communityId: CID_A,
         creatorUserId: USER_CREATOR,
         channelId: `ch-theme-${num}`,
         reason: "themed view subject",
@@ -186,7 +188,7 @@ describe("themed transcript view (§8.15 amendment)", () => {
     assert.equal(res.headers.get("cache-control"), "no-store");
     assert.match(body, /<aside class="shell-nav"/, "staff get the console sidebar");
     assert.ok(body.includes(CREATOR_NAME), "requester resolved from member cache");
-    assert.ok(body.includes(`/g/${GUILD_A}/users/${USER_CREATOR}`), "staff: people are links");
+    assert.ok(body.includes(`/g/${CID_A}/users/${USER_CREATOR}`), "staff: people are links");
     assert.ok(body.includes("line one<br/>line two"), "multi-line content preserved");
     assert.ok(body.includes("themed view subject"), "meta card shows the record");
     assert.match(body, /Summary/, "summary card renders");
@@ -212,7 +214,7 @@ describe("themed transcript view (§8.15 amendment)", () => {
     assert.ok(body.includes("line one<br/>line two"), "content identical");
     assert.ok(body.includes(`/t/${token}/raw`), "their transcript, their raw export");
     assert.ok(!body.includes('<aside class="shell-nav"'), "no console nav for participants");
-    assert.ok(!body.includes(`/g/${GUILD_A}`), "no dead-end console links (§8.6)");
+    assert.ok(!body.includes(`/g/${CID_A}`), "no dead-end console links (§8.6)");
     assert.ok(body.includes(CREATOR_NAME), "names still resolve for their own view");
     assert.ok(!/href="\/g\//.test(body));
   });

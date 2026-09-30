@@ -53,7 +53,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // loadDb FIRST: fresh SQLite + src require-cache reset; every require below
 // binds to that DB (same discipline as web-ticket-gating/web-tier-middleware).
@@ -80,6 +80,10 @@ const GUILD_A = "100000000000000001";
 const GUILD_B = "200000000000000002";
 const GUILD_A_NAME = "GA-VISIBLE";
 const GUILD_B_NAME = "GB-NEVER-ECHO"; // forbidden in every cross-guild response
+
+// Web contract: routes/repositories address communities by INTEGER id.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
 
 const USER_ADMIN = "428190112345678901"; // owner snapshot ⇒ admin fast path
 const USER_SENIOR = "428190112345678902"; // senior staff_roles row (guild A)
@@ -183,10 +187,10 @@ before(async () => {
   fakeNow = Date.now();
 
   // REAL staff_roles rows — the §8.3/§8.1-5 source of truth, uncached.
-  api.addStaffRole(GUILD_A, ROLE_JUNIOR_A, "junior");
-  api.addStaffRole(GUILD_A, ROLE_SENIOR_A, "senior");
-  api.addStaffRole(GUILD_A, ROLE_CACHE_A, "junior");
-  api.addStaffRole(GUILD_B, ROLE_STAFF_B, "junior");
+  api.addStaffRole(CID_A, ROLE_JUNIOR_A, "junior");
+  api.addStaffRole(CID_A, ROLE_SENIOR_A, "senior");
+  api.addStaffRole(CID_A, ROLE_CACHE_A, "junior");
+  api.addStaffRole(CID_B, ROLE_STAFF_B, "junior");
 
   // Role fixtures (Discord side). USER_LEFT intentionally has NO guild-A
   // member entry ⇒ member 404 ⇒ member_left deny + §8.4 participant right.
@@ -251,7 +255,7 @@ before(async () => {
   const seedDeps = { api, writeTranscriptFile, absoluteAssetsDir, fs, path, png: harness.PNG };
 
   const a = harness.seedArchivedTicket(seedDeps, {
-    guildId: GUILD_A,
+    communityId: CID_A,
     creatorUserId: USER_CREATOR,
     channelId: "ch-exit-a",
     reason: "exit matrix A",
@@ -274,7 +278,7 @@ before(async () => {
   ]);
 
   const b = harness.seedArchivedTicket(seedDeps, {
-    guildId: GUILD_B,
+    communityId: CID_B,
     creatorUserId: "u-b-creator",
     channelId: "ch-exit-b",
     reason: "exit matrix B (foreign)",
@@ -287,7 +291,7 @@ before(async () => {
   // Sensitive (a): content WAS archived (file on disk!) then flagged
   // sensitive + un-archived ⇒ the route archive-gate 404s EVERYONE (§8.4).
   const s = harness.seedArchivedTicket(seedDeps, {
-    guildId: GUILD_A,
+    communityId: CID_A,
     creatorUserId: USER_CREATOR, // same creator cookie must still 404
     channelId: "ch-exit-sens",
     reason: "exit sensitive kept-token",
@@ -300,7 +304,7 @@ before(async () => {
   // Sensitive (b): the REAL close flow — closeTicketSensitive CLEARS the
   // transcript token ⇒ the old uuid can never resolve again.
   const sc = api.createTicket({
-    guildId: GUILD_A,
+    communityId: CID_A,
     creatorUserId: USER_CREATOR,
     channelId: "ch-exit-sens-closed",
     reason: "exit sensitive closed",
@@ -335,14 +339,14 @@ after(async () => {
     server.close();
     await once(server, "close");
   }
-  for (const [guildId, roleId] of [
-    [GUILD_A, ROLE_JUNIOR_A],
-    [GUILD_A, ROLE_SENIOR_A],
-    [GUILD_A, ROLE_CACHE_A],
-    [GUILD_B, ROLE_STAFF_B],
+  for (const [communityId, roleId] of [
+    [CID_A, ROLE_JUNIOR_A],
+    [CID_A, ROLE_SENIOR_A],
+    [CID_A, ROLE_CACHE_A],
+    [CID_B, ROLE_STAFF_B],
   ]) {
     try {
-      api.removeStaffRole(guildId, roleId);
+      api.removeStaffRole(communityId, roleId);
     } catch {
       /* db may be gone already */
     }
@@ -467,7 +471,7 @@ const KNOWN_G_PATHS = [
   "/g/:guildId/leaderboard/user/:userId",
 ];
 
-const SUBS_B = { guildId: GUILD_B, userId: USER_PLAIN };
+const SUBS_B = { guildId: CID_B, userId: USER_PLAIN };
 
 describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () => {
   it("B | live router enumeration finds the guild-scoped surface", () => {
@@ -517,11 +521,11 @@ describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () =
     // §8.4 pins IGNORE (not 404) for the legacy ?guild= param on the SHARED
     // index: the scoped default must render with ZERO foreign data. The
     // strictest reading "never guild-B data" is asserted byte-wise here.
-    const res = await harness.request(base, `/t?guild=${GUILD_B}`, { cookieId: cookies.admin });
+    const res = await harness.request(base, `/t?guild=${CID_B}`, { cookieId: cookies.admin });
     assert.equal(res.status, 200, "scoped default — never 403/302 (§8.4/§8.6)");
     assert.ok(res.body.includes(T.normalA.token), "viewer's own scope still renders");
     assert.ok(!res.body.includes(T.crossB.token), "foreign rows NEVER render");
-    assert.ok(!res.body.includes(GUILD_B), "foreign guild id NEVER echoes");
+    assert.ok(!res.body.includes(`/g/${CID_B}`), "no console link for the foreign guild");
     assert.ok(!res.body.includes(GUILD_B_NAME), "foreign guild name NEVER echoes");
     assert.ok(!res.body.includes("Guild filter"), "foreign param must not filter the list");
   });
@@ -530,7 +534,7 @@ describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () =
     // Same shapes the sweep denied — for a session VALID in B they resolve.
     // Proves the 404s above are the cross-guild GATE, and auto-gates any
     // sibling route (19/20) that mounts guild-scoped staff views.
-    const shell = await harness.request(base, `/g/${GUILD_B}`, { cookieId: cookies.staffB });
+    const shell = await harness.request(base, `/g/${CID_B}`, { cookieId: cookies.staffB });
     assert.equal(shell.status, 200, "guild-B staff opens /g/B");
 
     await harness.runOutcome({
@@ -548,7 +552,7 @@ describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () =
       label: "control staffB asset",
     });
 
-    const idx = await harness.request(base, `/t?guild=${GUILD_B}`, { cookieId: cookies.staffB });
+    const idx = await harness.request(base, `/t?guild=${CID_B}`, { cookieId: cookies.staffB });
     assert.equal(idx.status, 200, "?guild= honored for an ACCESSIBLE guild");
     assert.ok(idx.body.includes(T.crossB.token), "own-guild row renders");
     assert.ok(idx.body.includes("Guild filter"), "honored param activates the filter");
@@ -579,7 +583,7 @@ describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () =
     const SENIOR_TIER_VIEWS = new Set(["/g/:guildId/tickets"]);
     for (const route of harness.listGetRoutesUnder(app, "/g/")) {
       if (route.params.length !== 1 || route.params[0] !== "guildId") continue;
-      const url = harness.buildConcretePath(route.path, { guildId: GUILD_B });
+      const url = harness.buildConcretePath(route.path, { guildId: CID_B });
       const r = await harness.request(base, url, { cookieId: cookies.staffB });
       if (ADMIN_TIER_VIEWS.has(route.path) || SENIOR_TIER_VIEWS.has(route.path)) {
         assert.equal(
@@ -625,13 +629,15 @@ describe("C | login-mandatory sweep (§8.1-3)", () => {
     }
   });
 
-  it("C | anonymous EVERY mounted /g GET shape → 302 /auth/login?guild=A", async () => {
+  it("C | anonymous EVERY mounted /g GET shape → 302 /auth/login", async () => {
+    // Integer community ids fail the 5-20-digit snowflake gate, so the login
+    // redirect is bare (no ?guild= echo).
     for (const route of harness.listGetRoutesUnder(app, "/g/")) {
-      const url = harness.buildConcretePath(route.path, { guildId: GUILD_A, userId: USER_PLAIN });
+      const url = harness.buildConcretePath(route.path, { guildId: CID_A, userId: USER_PLAIN });
       await harness.runOutcome({
         base,
         url,
-        expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
+        expect: harness.expectLoginRedirect("/auth/login"),
         label: `anon ${url}`,
       });
     }
@@ -664,17 +670,17 @@ describe("C | login-mandatory sweep (§8.1-3)", () => {
       label: "reauth unknown-uuid precedence",
     });
     for (const url of [
-      `/g/${GUILD_A}`,
-      `/g/${GUILD_A}/users`,
-      `/g/${GUILD_A}/warnings`,
-      `/g/${GUILD_A}/settings`,
-      `/g/${GUILD_A}/leaderboard`,
+      `/g/${CID_A}`,
+      `/g/${CID_A}/users`,
+      `/g/${CID_A}/warnings`,
+      `/g/${CID_A}/settings`,
+      `/g/${CID_A}/leaderboard`,
     ]) {
       await harness.runOutcome({
         base,
         url,
         cookieId: cookies.broken,
-        expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
+        expect: harness.expectLoginRedirect("/auth/login"),
         label: `reauth ${url}`,
       });
     }
@@ -776,7 +782,7 @@ describe("E | 405 semantics intact on the ticket surface (§8.8 0a parity)", () 
       `/t/${T.normalA.token}`,
       `/t/${T.normalA.token}/assets/${ASSET_NAME}`,
       `/t/${T.unknown.token}`,
-      `/g/${GUILD_A}/users`, // methodGate is global — one /g shape proves parity
+      `/g/${CID_A}/users`, // methodGate is global — one /g shape proves parity
     ];
     for (const method of ["POST", "PUT", "DELETE"]) {
       for (const url of urls) {
@@ -815,23 +821,23 @@ describe("F | tier-cache bounds (§8.1-8, fake clock)", () => {
       expect: harness.expectTranscriptOk(T.normalA.marker),
       label: "cacheProbe transcript warm",
     });
-    const g = await harness.request(base, `/g/${GUILD_A}/users`, { cookieId: cookies.cacheProbe });
+    const g = await harness.request(base, `/g/${CID_A}/users`, { cookieId: cookies.cacheProbe });
     assert.equal(g.status, 200, "cacheProbe is staff via ROLE_CACHE_A");
     assert.equal(calls.member, start + 1, "role ids fetched exactly once (then cached)");
 
     // Revoke in the DB ONLY (Discord side unchanged) — §8.3 "none (cheap)":
     // the NEXT request must deny, cache warmth and all.
-    api.removeStaffRole(GUILD_A, ROLE_CACHE_A);
+    api.removeStaffRole(CID_A, ROLE_CACHE_A);
     try {
       const t = await harness.request(base, `/t/${T.normalA.token}`, { cookieId: cookies.cacheProbe });
       assert.equal(t.status, 404, "staff_roles row removed ⇒ next request 404 (§8.1-8)");
       assert.equal(t.body, "Not found");
-      const g2 = await harness.request(base, `/g/${GUILD_A}/users`, { cookieId: cookies.cacheProbe });
+      const g2 = await harness.request(base, `/g/${CID_A}/users`, { cookieId: cookies.cacheProbe });
       assert.equal(g2.status, 404, "same on the /g surface");
       assert.equal(g2.body, "Not found");
       assert.equal(calls.member, start + 1, "denied from the WARM cache: instant, no refetch");
     } finally {
-      api.addStaffRole(GUILD_A, ROLE_CACHE_A, "junior");
+      api.addStaffRole(CID_A, ROLE_CACHE_A, "junior");
     }
     // Restored — access returns immediately (still no refetch needed).
     const back = await harness.request(base, `/t/${T.normalA.token}`, { cookieId: cookies.cacheProbe });
@@ -858,7 +864,7 @@ describe("F | tier-cache bounds (§8.1-8, fake clock)", () => {
       });
       assert.equal(after1.status, 404, "past TTL: fresh role ids ⇒ deny (§8.3 re-check at TTL)");
       assert.equal(after1.body, "Not found");
-      const after2 = await harness.request(base, `/g/${GUILD_A}/users`, {
+      const after2 = await harness.request(base, `/g/${CID_A}/users`, {
         cookieId: cookies.cacheProbe,
       });
       assert.equal(after2.status, 404, "same denial on the /g surface");

@@ -66,7 +66,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // loadDb FIRST: fresh SQLite + src require-cache reset; every require below
 // binds to that DB (phase-2-gate boot discipline).
@@ -95,6 +95,12 @@ const SESSION_SECRET = "test-visync-sentinel-session-secret-NOT-REAL-031";
 
 const GUILD_A = "330000000000000001"; // bot + every test user
 const GUILD_CROSS = "330000000000000002"; // bot guild the users are NOT in
+
+// Integer community ids (fluxer PR 2): routes and converted repo calls take
+// these; Discord-side seams (fake resolver, bot guild list, the REST command
+// path, slash interaction payloads) keep the external snowflakes.
+const CID_A = communityKey(GUILD_A);
+const CID_CROSS = communityKey(GUILD_CROSS);
 
 const USER_ADMIN = "469190112345678901"; // owner snapshot ⇒ tier admin
 const USER_JUNIOR = "469190112345678902"; // junior staff role ⇒ tier staff
@@ -125,7 +131,7 @@ const GUILD_COMMANDS_DEFAULT = [
   { name: "note", id: "930000000000000003" },
 ];
 
-const SYNC_CONCRETE = `/g/${GUILD_A}/commands/sync`;
+const SYNC_CONCRETE = `/g/${CID_A}/commands/sync`;
 
 const ENV_KEYS = [
   "SESSION_SECRET",
@@ -378,8 +384,8 @@ for (const k of ENV_KEYS) {
 process.env.WEB_RATE_LIMIT_MUTATION_MAX = "1000000"; // scripted probes, not humans
 
 // The staff_roles allow-list the sync PUTs (role_count 2).
-api.addStaffRole(GUILD_A, ROLE_JUNIOR_TIER, "junior");
-api.addStaffRole(GUILD_A, ROLE_SENIOR_TIER, "senior");
+api.addStaffRole(CID_A, ROLE_JUNIOR_TIER, "junior");
+api.addStaffRole(CID_A, ROLE_SENIOR_TIER, "senior");
 
 const cookieOf = {};
 const csrfOf = {};
@@ -441,7 +447,7 @@ function envBreakSecret() {
 }
 
 function oauthSeedFresh() {
-  api.upsertCommandPermissionOauth(GUILD_A, {
+  api.upsertCommandPermissionOauth(CID_A, {
     refreshToken: STORED_RT,
     accessToken: STORED_AT,
     accessExpiresAt: Date.now() + 3_600_000,
@@ -450,7 +456,7 @@ function oauthSeedFresh() {
 }
 
 function oauthSeedExpired() {
-  api.upsertCommandPermissionOauth(GUILD_A, {
+  api.upsertCommandPermissionOauth(CID_A, {
     refreshToken: STORED_RT,
     accessToken: STORED_AT,
     accessExpiresAt: Date.now() - 1000, // past → refresh path
@@ -459,7 +465,7 @@ function oauthSeedExpired() {
 }
 
 function oauthClear() {
-  api.deleteCommandPermissionOauth(GUILD_A);
+  api.deleteCommandPermissionOauth(CID_A);
 }
 
 /** Full happy-stage setup: env + stored authorization + quiet Discord log. */
@@ -508,12 +514,12 @@ const syncPost = (fields = {}, userKey = "admin") =>
 // ---------------------------------------------------------------------------
 
 function auditRows(origin) {
-  return api.listAdminAudit(GUILD_A, { origin, limit: 100 }).map((r) => ({
+  return api.listAdminAudit(CID_A, { origin, limit: 100 }).map((r) => ({
     ...r,
     details: r.details_json ? JSON.parse(r.details_json) : null,
   }));
 }
-const webAuditCount = () => api.countAdminAudit(GUILD_A, { origin: "web" });
+const webAuditCount = () => api.countAdminAudit(CID_A, { origin: "web" });
 const syncRows = (origin) =>
   auditRows(origin).filter((r) => r.action === SYNC_AUDIT_ACTION);
 
@@ -600,7 +606,7 @@ describe("B. staff-page trigger form + whitelisted flash", () => {
   after(() => oauthClear());
 
   it("admin on /staff with a stored authorization ⇒ trigger form (csrf + return bound)", async () => {
-    const { res, body } = await get(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+    const { res, body } = await get(`/g/${CID_A}/staff`, { cookie: cookieOf.admin });
     assert.equal(res.status, 200);
     assert.ok(body.includes("Sync command visibility now"), "form renders for admin");
     assert.ok(body.includes(`action="${SYNC_CONCRETE}"`), "POSTs to the sync path");
@@ -610,7 +616,7 @@ describe("B. staff-page trigger form + whitelisted flash", () => {
 
   it("senior AND junior on /staff ⇒ NO trigger form (admin-tier render policy)", async () => {
     for (const key of ["senior", "junior"]) {
-      const { res, body } = await get(`/g/${GUILD_A}/staff`, { cookie: cookieOf[key] });
+      const { res, body } = await get(`/g/${CID_A}/staff`, { cookie: cookieOf[key] });
       assert.equal(res.status, 200, `${key} still views the staff page`);
       assert.ok(
         !body.includes("Sync command visibility now"),
@@ -620,15 +626,15 @@ describe("B. staff-page trigger form + whitelisted flash", () => {
   });
 
   it("anonymous ⇒ 302 login; cross-guild ⇒ generic 404 on /staff (shell doctrine)", async () => {
-    const anon = await get(`/g/${GUILD_A}/staff`);
+    const anon = await get(`/g/${CID_A}/staff`);
     assert.equal(anon.res.status, 302);
-    const cross = await get(`/g/${GUILD_CROSS}/staff`, { cookie: cookieOf.admin });
+    const cross = await get(`/g/${CID_CROSS}/staff`, { cookie: cookieOf.admin });
     assert.equal(cross.res.status, 404);
     assert.equal(cross.body, "Not found");
   });
 
   it("/commands stays FORMS-FREE (Phase-1 pin) even for an authorized admin", async () => {
-    const { res, body } = await get(`/g/${GUILD_A}/commands`, { cookie: cookieOf.admin });
+    const { res, body } = await get(`/g/${CID_A}/commands`, { cookie: cookieOf.admin });
     assert.equal(res.status, 200);
     const main = body.slice(body.indexOf("<main"), body.indexOf("</main>"));
     assert.equal(main.match(/<form/i), null, "no form on /commands — the trigger lives on /staff");
@@ -637,7 +643,7 @@ describe("B. staff-page trigger form + whitelisted flash", () => {
 
   it("unauthorized guild ⇒ admin sees NO form + honest advice (never runs OAuth itself)", async () => {
     oauthClear();
-    const { res, body } = await get(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+    const { res, body } = await get(`/g/${CID_A}/staff`, { cookie: cookieOf.admin });
     assert.equal(res.status, 200);
     assert.ok(!body.includes("Sync command visibility now"), "no form without a stored auth");
     assert.ok(body.includes("never runs OAuth itself"), "honest advice text");
@@ -645,7 +651,7 @@ describe("B. staff-page trigger form + whitelisted flash", () => {
   });
 
   it("PRG flash: whitelisted slugs render; HOSTILE values never echo (§8.7)", async () => {
-    const ok = await get(`/g/${GUILD_A}/commands?done=sync_completed`, {
+    const ok = await get(`/g/${CID_A}/commands?done=sync_completed`, {
       cookie: cookieOf.staff || cookieOf.junior,
     });
     assert.equal(ok.res.status, 200);
@@ -654,28 +660,28 @@ describe("B. staff-page trigger form + whitelisted flash", () => {
     const env = await get(
       // %2B is what the route's PRG Location carries (raw "+" in a query
       // would form-decode to a SPACE and fail the whitelist — never sent).
-      `/g/${GUILD_A}/commands?error=env_not_configured:client_secret%2Bbase_url`,
+      `/g/${CID_A}/commands?error=env_not_configured:client_secret%2Bbase_url`,
       { cookie: cookieOf.junior }
     );
     assert.ok(env.body.includes("CLIENT_SECRET"), "env NAMES (from the frozen table) render");
     assert.ok(env.body.includes("PUBLIC_BASE_URL"), "both named tokens render");
 
     const hostile = await get(
-      `/g/${GUILD_A}/commands?error=%3Cscript%3Exss-probe-91%3C%2Fscript%3E&done=%3Cimg%3E`,
+      `/g/${CID_A}/commands?error=%3Cscript%3Exss-probe-91%3C%2Fscript%3E&done=%3Cimg%3E`,
       { cookie: cookieOf.junior }
     );
     assert.equal(hostile.res.status, 200);
     assert.ok(!hostile.body.includes("xss-probe-91"), "raw hostile query value NEVER echoes");
     assert.ok(!hostile.body.includes("Command visibility synced"), "junk done= renders nothing");
 
-    const forged = await get(`/g/${GUILD_A}/commands?error=env_not_configured:evil_token`, {
+    const forged = await get(`/g/${CID_A}/commands?error=env_not_configured:evil_token`, {
       cookie: cookieOf.junior,
     });
     assert.ok(!forged.body.includes("evil_token"), "unknown env slug token NEVER echoes");
   });
 
   it("staff-page flash renders on the sync panel (PRG may target either surface)", async () => {
-    const { body } = await get(`/g/${GUILD_A}/staff?done=sync_partial`, {
+    const { body } = await get(`/g/${CID_A}/staff?done=sync_partial`, {
       cookie: cookieOf.admin,
     });
     assert.ok(body.includes("Sync finished with failures"), "partial slug renders on /staff");
@@ -692,7 +698,7 @@ describe("C. tier ladder — POST /g/:guildId/commands/sync", () => {
   it("anonymous ⇒ 302 /auth/login?guild=… — guildScope answers before anything runs", async () => {
     const { res, location } = await post(SYNC_CONCRETE, { fields: { _csrf: "irrelevant" } });
     assert.equal(res.status, 302);
-    assert.equal(location, `/auth/login?guild=${GUILD_A}`);
+    assert.equal(location, "/auth/login"); // integer id ⇒ no ?guild= echo
     assert.deepEqual(discord.log, [], "no Discord call for an anon");
   });
 
@@ -707,7 +713,7 @@ describe("C. tier ladder — POST /g/:guildId/commands/sync", () => {
   });
 
   it("cross-guild (VALID csrf) ⇒ the SAME generic 404 (never 403/302)", async () => {
-    const { res, body } = await post(`/g/${GUILD_CROSS}/commands/sync`, {
+    const { res, body } = await post(`/g/${CID_CROSS}/commands/sync`, {
       cookie: cookieOf.admin,
       fields: { _csrf: csrfOf.admin },
     });
@@ -772,7 +778,7 @@ describe("D. CSRF — missing / tampered on the sync mutation", () => {
     oauthSeedFresh();
     resetDiscord();
     const ok = await syncPost({ return: "staff" });
-    assert.equal(ok.location, `/g/${GUILD_A}/staff?done=sync_completed`);
+    assert.equal(ok.location, `/g/${CID_A}/staff?done=sync_completed`);
   });
 });
 
@@ -789,7 +795,7 @@ describe("E. precondition refusals (run BEFORE any Discord call)", () => {
     const before = webAuditCount();
     const { res, location } = await syncPost({});
     assert.equal(res.status, 302);
-    assert.equal(location, `/g/${GUILD_A}/commands?error=env_not_configured:client_secret`);
+    assert.equal(location, `/g/${CID_A}/commands?error=env_not_configured:client_secret`);
     assert.deepEqual(discord.log, [], "env refusal touched Discord ZERO times");
     assert.equal(webAuditCount(), before, "precondition refusal audited nothing");
   });
@@ -801,7 +807,7 @@ describe("E. precondition refusals (run BEFORE any Discord call)", () => {
     const { location } = await syncPost({ return: "staff" });
     assert.equal(
       location,
-      `/g/${GUILD_A}/staff?error=env_not_configured:base_url%2Bredirect_uri`
+      `/g/${CID_A}/staff?error=env_not_configured:base_url%2Bredirect_uri`
     );
     assert.deepEqual(discord.log, []);
   });
@@ -813,7 +819,7 @@ describe("E. precondition refusals (run BEFORE any Discord call)", () => {
     const before = webAuditCount();
     const { res, location } = await syncPost({ return: "staff" });
     assert.equal(res.status, 302);
-    assert.equal(location, `/g/${GUILD_A}/staff?error=not_authorized_run_slash`);
+    assert.equal(location, `/g/${CID_A}/staff?error=not_authorized_run_slash`);
     assert.deepEqual(discord.log, [], "the web NEVER starts an OAuth flow or syncs un-authorized");
     assert.equal(webAuditCount(), before);
   });
@@ -822,7 +828,7 @@ describe("E. precondition refusals (run BEFORE any Discord call)", () => {
     stageReady();
     const { res, location } = await syncPost({ return: "<script>alert(1)</script>" });
     assert.equal(res.status, 302);
-    assert.equal(location, `/g/${GUILD_A}/commands?error=invalid_return`);
+    assert.equal(location, `/g/${CID_A}/commands?error=invalid_return`);
     assert.ok(!location.includes("script"), "submitted value never shapes a Location");
     assert.deepEqual(discord.log, []);
   });
@@ -839,7 +845,7 @@ describe("F. happy path — synced via the SHARED core", () => {
     const before = webAuditCount();
     const { res, body, location } = await syncPost({ return: "staff" });
     assert.equal(res.status, 302, `body was: ${body}`);
-    assert.equal(location, `/g/${GUILD_A}/staff?done=sync_completed`);
+    assert.equal(location, `/g/${CID_A}/staff?done=sync_completed`);
     assert.equal(body, "");
     assert.equal(res.headers.get("cache-control"), "no-store");
     assert.equal(webAuditCount(), before + 1, "exactly ONE audit row");
@@ -886,7 +892,7 @@ describe("F. happy path — synced via the SHARED core", () => {
   });
 
   it("oauth row: last_sync_at stamped, last_sync_error cleared (shared persist path)", () => {
-    const row = api.getCommandPermissionOauth(GUILD_A);
+    const row = api.getCommandPermissionOauth(CID_A);
     assert.ok(row && Number(row.last_sync_at) > 0, "last_sync_at written by sync.js");
     assert.equal(row.last_sync_error, null);
     assert.equal(row.access_token, STORED_AT, "the stored token is untouched (no refresh needed)");
@@ -899,7 +905,7 @@ describe("F. happy path — synced via the SHARED core", () => {
     assert.equal(webAudit.target_id, GUILD_A);
     assert.equal(webAudit.origin, "web");
     assert.equal(webAudit.actor_user_id, USER_ADMIN);
-    assert.equal(webAudit.guild_id, GUILD_A);
+    assert.equal(webAudit.community_id, CID_A);
     assert.deepEqual(webAudit.details, { role_count: 2, commands_updated: 3 });
     assert.deepEqual(mirrorSpy.log, [], "sync mirrors NO channel embed (slash parity)");
   });
@@ -915,7 +921,7 @@ describe("G. partial sync — sync_partial + audit + persisted last_sync_error",
     discord.putFailIds.add("930000000000000002"); // "gork" PUT fails (500)
     const before = webAuditCount();
     const { location } = await syncPost({});
-    assert.equal(location, `/g/${GUILD_A}/commands?done=sync_partial`);
+    assert.equal(location, `/g/${CID_A}/commands?done=sync_partial`);
     assert.equal(webAuditCount(), before + 1, "a RESOLVED partial still audits (slash parity)");
     await tick();
   });
@@ -924,7 +930,7 @@ describe("G. partial sync — sync_partial + audit + persisted last_sync_error",
     assert.equal(puts().length, 3, "no 401-abort: all three PUTs attempted");
     const row = syncRows("web")[0];
     assert.deepEqual(row.details, { role_count: 2, commands_updated: 2 });
-    const oauth = api.getCommandPermissionOauth(GUILD_A);
+    const oauth = api.getCommandPermissionOauth(CID_A);
     assert.ok(String(oauth.last_sync_error).includes("gork"), "failure persisted by sync.js");
   });
 });
@@ -940,7 +946,7 @@ describe("H. expired authorization — refresh refused ⇒ reauth_required", () 
     discord.tokenRefreshOk = false; // refresh refused (400) — Discord revoked
     const before = webAuditCount();
     const { location } = await syncPost({ return: "staff" });
-    assert.equal(location, `/g/${GUILD_A}/staff?error=reauth_required`);
+    assert.equal(location, `/g/${CID_A}/staff?error=reauth_required`);
     assert.equal(webAuditCount(), before, "hard sync failure audits NOTHING (slash parity)");
   });
 
@@ -948,7 +954,7 @@ describe("H. expired authorization — refresh refused ⇒ reauth_required", () 
     assert.equal(discord.log.filter((e) => e.kind === "token-post").length, 1);
     assert.deepEqual(restGets(), [], "aborted before the command list");
     assert.deepEqual(puts(), [], "aborted before any PUT");
-    assert.equal(api.getCommandPermissionOauth(GUILD_A), null, "getValidAccessToken deleted the row");
+    assert.equal(api.getCommandPermissionOauth(CID_A), null, "getValidAccessToken deleted the row");
   });
 
   it("refresh SUCCEEDS after expiry ⇒ sync proceeds with the refreshed token", async () => {
@@ -956,12 +962,12 @@ describe("H. expired authorization — refresh refused ⇒ reauth_required", () 
     oauthSeedExpired();
     discord.tokenRefreshOk = true;
     const { location } = await syncPost({});
-    assert.equal(location, `/g/${GUILD_A}/commands?done=sync_completed`);
+    assert.equal(location, `/g/${CID_A}/commands?done=sync_completed`);
     for (const p of puts()) {
       assert.equal(p.auth, "Bearer refreshed-at-sentinel-NOT-REAL", "refreshed token persisted+used");
     }
     assert.equal(
-      api.getCommandPermissionOauth(GUILD_A).access_token,
+      api.getCommandPermissionOauth(CID_A).access_token,
       "refreshed-at-sentinel-NOT-REAL"
     );
   });
@@ -977,10 +983,10 @@ describe("I. transport outage mid-sync ⇒ sync_failed, nothing claimed", () => 
     discord.restGetThrows = true;
     const before = webAuditCount();
     const { location } = await syncPost({});
-    assert.equal(location, `/g/${GUILD_A}/commands?error=sync_failed`);
+    assert.equal(location, `/g/${CID_A}/commands?error=sync_failed`);
     assert.equal(webAuditCount(), before, "a THROWN sync writes NO audit row (slash parity)");
     assert.equal(
-      api.getCommandPermissionOauth(GUILD_A).access_token,
+      api.getCommandPermissionOauth(CID_A).access_token,
       STORED_AT,
       "a transport outage does NOT burn the stored authorization"
     );
@@ -1090,7 +1096,7 @@ describe("K. parity: real handleSyncPermissions vs the web POST", () => {
     // ---- web side: same stage, same mocks, same database
     stageReady();
     const { location } = await syncPost({});
-    assert.equal(location, `/g/${GUILD_A}/commands?done=sync_completed`);
+    assert.equal(location, `/g/${CID_A}/commands?done=sync_completed`);
     webSeq = captureSeq();
     webAudit = syncRows("web")[0];
   });
@@ -1112,7 +1118,7 @@ describe("K. parity: real handleSyncPermissions vs the web POST", () => {
   it("audit rows identical except origin (action/target/details deep-equal)", () => {
     assert.equal(webAudit.origin, "web");
     assert.equal(slashAudit.origin, "slash");
-    for (const col of ["action", "target_type", "target_id", "guild_id", "actor_user_id"]) {
+    for (const col of ["action", "target_type", "target_id", "community_id", "actor_user_id"]) {
       assert.equal(webAudit[col], slashAudit[col], `column ${col} equal across transports`);
     }
     assert.deepEqual(

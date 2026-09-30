@@ -15,35 +15,35 @@ describe("integration: reaction pipeline", () => {
 
   before(async () => {
     env = await createIntegrationEnv();
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       reaction_xp: 3,
       reaction_cooldown_sec: 0,
     });
   });
 
   it("ignores bot reactors", async () => {
-    const before = env.db.getXp(env.guild.id, IDS.bot);
+    const before = env.db.getXp(env.communityId, IDS.bot);
     await env.emitReactionAdd({ user: env.users.botUser });
-    assertXp(env.db, env.guild.id, IDS.bot, before);
+    assertXp(env.db, env.communityId, IDS.bot, before);
   });
 
   it("awards reaction XP", async () => {
     const uid = IDS.member;
-    const before = env.db.getXp(env.guild.id, uid);
+    const before = env.db.getXp(env.communityId, uid);
     await env.emitReactionAdd({ user: env.users.memberUser });
-    assertXp(env.db, env.guild.id, uid, before + 3);
+    assertXp(env.db, env.communityId, uid, before + 3);
   });
 
   it("strips reactions on honeypot warning messages", async () => {
-    env.db.addHoneypotChannel(env.guild.id, IDS.channelHoneypot);
-    env.db.setHoneypotWarningMessage(env.guild.id, IDS.channelHoneypot, "warn-msg-1");
+    env.db.addHoneypotChannel(env.communityId, IDS.channelHoneypot);
+    env.db.setHoneypotWarningMessage(env.communityId, IDS.channelHoneypot, "warn-msg-1");
     const message = env.makeMessage({
       id: "warn-msg-1",
       channel: env.channels.honeypot,
     });
-    const before = env.db.getXp(env.guild.id, IDS.member);
+    const before = env.db.getXp(env.communityId, IDS.member);
     // handler will try to strip reaction — may throw if incomplete mock; pipeline should not award XP
     await env.emitReactionAdd({ message, user: env.users.memberUser });
-    assertXp(env.db, env.guild.id, IDS.member, before);
+    assertXp(env.db, env.communityId, IDS.member, before);
   });
 });

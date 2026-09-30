@@ -355,7 +355,7 @@ function createLoginSession(deps, userId, opts = {}) {
  * production close flow writes (tickets/transcript.js).
  *
  * @param {object} deps {api, writeTranscriptFile, absoluteAssetsDir, fs, path, png}
- * @param {object} spec {guildId, creatorUserId, channelId, reason, marker, assetName, withAsset}
+ * @param {object} spec {communityId, creatorUserId, channelId, reason, marker, assetName, withAsset}
  * @returns {{token: string, ticket: object, assetName: string}}
  */
 function seedArchivedTicket(deps, spec) {
@@ -363,7 +363,7 @@ function seedArchivedTicket(deps, spec) {
   const assetName = spec.assetName || "001_photo.png";
   const token = api.generateTranscriptToken();
   const ticket = api.createTicket({
-    guildId: spec.guildId,
+    communityId: spec.communityId,
     creatorUserId: spec.creatorUserId,
     channelId: spec.channelId,
     reason: spec.reason,
@@ -389,7 +389,7 @@ function seedArchivedTicket(deps, spec) {
   // themed /t/{uuid} view reads these rows (§8.15 amendment).
   api.saveTicketMessages(ticket.id, msgs);
   if (spec.withAsset) {
-    const dir = absoluteAssetsDir(spec.guildId, token);
+    const dir = absoluteAssetsDir(spec.communityId, token);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, assetName), deps.png || PNG);
   }

@@ -66,7 +66,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // loadDb FIRST: fresh SQLite + src require-cache reset; every require below
 // binds to that DB (0c boot discipline).
@@ -90,6 +90,10 @@ const GUILD_A = "100000000000000001";
 const GUILD_B = "200000000000000002";
 const GUILD_A_NAME = "GA-VISIBLE";
 const GUILD_B_NAME = "GB-NEVER-ECHO"; // forbidden in every A-viewer body
+
+// Web contract: routes/repositories/seeds address communities by INTEGER id.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
 
 const USER_ADMIN = "428190112345678901"; // owner snapshot ⇒ admin fast path
 const USER_SENIOR = "428190112345678902";
@@ -235,8 +239,9 @@ async function measure(url, cookieId) {
 // review-blocking). Pure functions so B/F/G share one implementation.
 // ---------------------------------------------------------------------------
 
-/** Every table that CARRIES guild_id (schema-verified in src/db/migrations)
- *  — a SELECT touching one of these without "guild_id" in its text is a
+/** Every table that CARRIES the community scope column (schema-verified:
+ *  converted tables name it "community_id") — a SELECT touching one of
+ *  these without "community_id" in its text is a
  *  scoping bug (cross-guild read) unless explicitly reviewed below. */
 const GUILD_SCOPED_TABLES = new Set([
   "users",
@@ -298,7 +303,7 @@ function scopeProblems(recs, reviewed = []) {
     for (const table of tables) {
       if (!GUILD_SCOPED_TABLES.has(table)) continue; // global tables (web_sessions,
       // sqlite_master, ticket_* keyed by ticket_id) carry no guild column.
-      if (norm.includes("guild_id")) continue;
+      if (norm.includes("community_id")) continue;
       if (reviewed.some((re) => re.test(norm))) continue;
       problems.push(`unscoped SELECT on "${table}": ${norm.slice(0, 180)}`);
     }
@@ -485,9 +490,9 @@ before(async () => {
   fakeNow = Date.now();
 
   // REAL staff_roles rows (source of truth, uncached — §8.1-5).
-  api.addStaffRole(GUILD_A, ROLE_JUNIOR_A, "junior");
-  api.addStaffRole(GUILD_A, ROLE_SENIOR_A, "senior");
-  api.addStaffRole(GUILD_B, ROLE_STAFF_B, "junior");
+  api.addStaffRole(CID_A, ROLE_JUNIOR_A, "junior");
+  api.addStaffRole(CID_A, ROLE_SENIOR_A, "senior");
+  api.addStaffRole(CID_B, ROLE_STAFF_B, "junior");
 
   memberFixture[`${USER_JUNIOR}:${GUILD_A}`] = [ROLE_JUNIOR_A];
   memberFixture[`${USER_SENIOR}:${GUILD_A}`] = [ROLE_SENIOR_A];
@@ -496,7 +501,8 @@ before(async () => {
 
   // Phase-1 scale fixture FIRST (recorder inactive ⇒ seeds never count).
   seed = seed10k(api, {
-    guildId: GUILD_A,
+    communityId: CID_A,
+    secondaryCommunityId: CID_B,
     trackedUserId: USER_TRACKED,
     staffUserIds: [USER_ADMIN, USER_SENIOR, USER_JUNIOR],
     participantUserIds: [USER_MEMBER, USER_TSTAFF],
@@ -544,7 +550,7 @@ before(async () => {
   // --- rich tickets (REAL transcript files — participant matrix + /t) ------
   const seedDeps = { api, writeTranscriptFile, absoluteAssetsDir, fs, path, png: harness.PNG };
   richA = harness.seedArchivedTicket(seedDeps, {
-    guildId: GUILD_A,
+    communityId: CID_A,
     creatorUserId: USER_CREATOR,
     channelId: "ch-gate1-a",
     reason: "gate1 ticket A",
@@ -553,7 +559,7 @@ before(async () => {
     assetName: "001_photo.png",
   });
   richB = harness.seedArchivedTicket(seedDeps, {
-    guildId: GUILD_B,
+    communityId: CID_B,
     creatorUserId: USER_B_CREATOR,
     channelId: "ch-gate1-b",
     reason: "gate1 ticket B",
@@ -605,12 +611,13 @@ const concrete = (routePath, guildId) =>
 
 /** Budget pass = every /g page (concrete, guild A) + the /t index. */
 const BUDGET_URLS = [
-  ...PAGES.map((p) => ({ label: p.path, url: concrete(p.path, GUILD_A) })),
+  ...PAGES.map((p) => ({ label: p.path, url: concrete(p.path, CID_A) })),
   { label: "/t", url: "/t" },
 ];
 
 function outcomeFor(viewerKey, page) {
-  if (viewerKey === "anon") return harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`);
+  // Integer community ids fail the 5-20-digit snowflake gate ⇒ bare login redirect.
+  if (viewerKey === "anon") return harness.expectLoginRedirect("/auth/login");
   const noTier = new Set(["stranger", "plain", "creator", "member", "tstaff", "author"]);
   if (noTier.has(viewerKey)) {
     return harness.expectGenericNotFound({ forbid: allSecrets });
@@ -714,7 +721,7 @@ describe("B. query budget + statement scope (§8.6)", () => {
 
 describe("C. cache effectiveness", () => {
   it("warm dashboard issues ZERO activity-table statements", async () => {
-    const url = concrete("/g/:guildId", GUILD_A);
+    const url = concrete("/g/:guildId", CID_A);
     await measure(url, cookieOf("admin")); // guarantee a warm cache (no
     const warm = await measure(url, cookieOf("admin")); // timing assumptions)
     assert.equal(warm.res.status, 200);
@@ -748,7 +755,7 @@ describe("D. access matrix at scale", () => {
       for (const page of PAGES) {
         await harness.runOutcome({
           base,
-          url: concrete(page.path, GUILD_A),
+          url: concrete(page.path, CID_A),
           cookieId: cookieOf(viewer),
           expect: outcomeFor(viewer, page),
           label: `[${viewer}]`,
@@ -758,13 +765,13 @@ describe("D. access matrix at scale", () => {
   });
 
   it("bad :userId is the generic 404; unknown-but-valid profile is a shell 404", async () => {
-    const bad = await harness.request(base, `/g/${GUILD_A}/users/not-a-snowflake`, {
+    const bad = await harness.request(base, `/g/${CID_A}/users/not-a-snowflake`, {
       cookieId: cookies.admin,
     });
     assert.equal(bad.status, 404, "malformed :userId must 404");
     assert.equal(bad.body, "Not found", "malformed :userId body is the generic 404");
 
-    const ghost = await harness.request(base, `/g/${GUILD_A}/users/999999999999999999`, {
+    const ghost = await harness.request(base, `/g/${CID_A}/users/999999999999999999`, {
       cookieId: cookies.admin,
     });
     assert.equal(ghost.status, 404, "unknown profile user must 404");
@@ -781,7 +788,7 @@ describe("D. access matrix at scale", () => {
 
 describe("E. cross-guild probes at scale", () => {
   it("guild-A sessions never touch guild-B surfaces", async () => {
-    const bProbes = [...PAGES.map((p) => concrete(p.path, GUILD_B)), `/t/${richB.token}`];
+    const bProbes = [...PAGES.map((p) => concrete(p.path, CID_B)), `/t/${richB.token}`];
     for (const viewer of ["admin", "senior", "plain", "stranger"]) {
       for (const url of bProbes) {
         await harness.runOutcome({
@@ -797,7 +804,7 @@ describe("E. cross-guild probes at scale", () => {
     }
     // control: guild A itself still serves the admin (the 404s above are
     // the cross-guild GATE, not a dead session — 0c pattern).
-    const control = await harness.request(base, `/g/${GUILD_A}`, { cookieId: cookies.admin });
+    const control = await harness.request(base, `/g/${CID_A}`, { cookieId: cookies.admin });
     assert.equal(control.status, 200, "session control: /g/A renders for admin");
   });
 
@@ -810,7 +817,7 @@ describe("E. cross-guild probes at scale", () => {
     for (const page of PAGES.filter((p) => !p.path.includes(":userId"))) {
       await harness.runOutcome({
         base,
-        url: concrete(page.path, GUILD_B),
+        url: concrete(page.path, CID_B),
         cookieId: cookies.staffB,
         expect:
           page.tier !== "staff"
@@ -837,7 +844,7 @@ describe("E. cross-guild probes at scale", () => {
 // ---------------------------------------------------------------------------
 
 describe("F. audit viewer at 2k rows", () => {
-  const auditUrl = (qs) => `/g/${GUILD_A}/audit${qs ? `?${qs}` : ""}`;
+  const auditUrl = (qs) => `/g/${CID_A}/audit${qs ? `?${qs}` : ""}`;
 
   it("renders a 100-row first page in strict (created_at,id) DESC order", async () => {
     const res = await measure(auditUrl("n=100"), cookies.admin);
@@ -856,7 +863,7 @@ describe("F. audit viewer at 2k rows", () => {
 
     // guild-B rows NEVER render on A's viewer (200 foreign rows exist).
     assert.ok(!res.res.body.includes("b-hidden-"), "guild-B audit rows leaked into guild A (§8.6)");
-    assert.ok(!res.res.body.includes(GUILD_B), "guild-B id never echoes");
+    assert.ok(!res.res.body.includes(`/g/${CID_B}`), "no console link for the foreign guild");
   });
 
   it("pagination is gapless and the page cap holds", async () => {
@@ -903,7 +910,7 @@ describe("G. transcript surface at scale", () => {
     const gids = [...res.res.body.matchAll(/class="gid">(\d+)</g)].map((m) => m[1]);
     assert.equal(gids.length, 50, `full 50-row page at this scale (got ${gids.length})`);
     for (const gid of gids) {
-      assert.equal(gid, GUILD_A, "index rows are guild A only (§8.4 guild allow-list)");
+      assert.equal(gid, String(CID_A), "index rows are guild A only (§8.4 guild allow-list)");
     }
     assert.ok(!res.res.body.includes(richB.token), "guild-B token never echoes (§8.6)");
     assert.ok(!res.res.body.includes(GUILD_B_NAME), "guild-B name never echoes");
@@ -921,7 +928,7 @@ describe("G. transcript surface at scale", () => {
     const tailGids = [...tail.body.matchAll(/class="gid">(\d+)</g)].map((m) => m[1]);
     assert.ok(tailGids.length > 0 && tailGids.length < 50, `tail page is partial (${tailGids.length} rows)`);
     for (const gid of tailGids) {
-      assert.equal(gid, GUILD_A, "tail rows stay guild-scoped");
+      assert.equal(gid, String(CID_A), "tail rows stay guild-scoped");
     }
   });
 

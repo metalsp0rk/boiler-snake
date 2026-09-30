@@ -43,7 +43,7 @@ describe("integration: staff notes", () => {
     assertEphemeralReply(add);
     assertReplyContains(add, /N-1|created/i);
 
-    const row = env.db.getStaffNote(env.guild.id, 1);
+    const row = env.db.getStaffNote(env.communityId, 1);
     assert.ok(row);
     assert.equal(row.user_id, IDS.member);
     assert.equal(row.content, "Watch for spam in #general");
@@ -77,7 +77,7 @@ describe("integration: staff notes", () => {
     assertEphemeralReply(edit);
     assertReplyContains(edit, /updated|N-1/i);
     assert.equal(
-      env.db.getStaffNote(env.guild.id, 1).content,
+      env.db.getStaffNote(env.communityId, 1).content,
       "Updated context after review"
     );
 
@@ -90,7 +90,7 @@ describe("integration: staff notes", () => {
     assertEphemeralReply(del);
     assertReplyContains(del, /soft-deleted|N-1/i);
 
-    const after = env.db.getStaffNote(env.guild.id, 1);
+    const after = env.db.getStaffNote(env.communityId, 1);
     assert.ok(after.deleted_at != null);
 
     const listActive = await env.runCommand({
@@ -115,7 +115,7 @@ describe("integration: staff notes", () => {
 
   it("/note list without user shows recent guild notes", async () => {
     env.db.createStaffNote({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member2,
       authorId: IDS.admin,
       content: "Guild-wide feed item",
@@ -184,7 +184,7 @@ describe("integration: staff notes", () => {
     await env.handleInteraction(modalIx, env.ctx);
     assertReplyContains(modalIx, /created|N-/i);
 
-    const notes = env.db.listStaffNotes(env.guild.id, IDS.member2, {
+    const notes = env.db.listStaffNotes(env.communityId, IDS.member2, {
       limit: 5,
     });
     assert.ok(notes.some((n) => n.content === content));
@@ -192,7 +192,7 @@ describe("integration: staff notes", () => {
 
   it("/note edit without content opens prefilled modal", async () => {
     const created = env.db.createStaffNote({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member,
       authorId: IDS.admin,
       content: "Prefill me please",

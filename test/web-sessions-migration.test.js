@@ -5,8 +5,8 @@ const path = require("path");
 const os = require("os");
 
 /**
- * Migration 028_web_sessions + webSessions repository helpers
- * (roadmap/web-admin.md §8.3 / §8.5).
+ * Migration 028_web_sessions (+ 030 token extension, + 034 community identity
+ * columns) and webSessions repository helpers (roadmap/web-admin.md §8.3 / §8.5).
  */
 describe("web sessions (migration 028 + repo helpers)", () => {
   let api;
@@ -46,10 +46,11 @@ describe("web sessions (migration 028 + repo helpers)", () => {
       assert.ok(i025 > i023, "025 extends the table 023 creates");
     });
 
-    it("creates web_sessions with the §8.5 columns + the 030 token extension", () => {
+    it("creates web_sessions with the §8.5 columns + the 030 token extension + 034 identity columns", () => {
       const cols = api.db.prepare(`PRAGMA table_info(web_sessions)`).all();
       // 028 base (roadmap §8.5) + 030_web_session_tokens (Phase 0b: the
-      // encrypted user AT + metadata the login callback attaches).
+      // encrypted user AT + metadata the login callback attaches) + 034
+      // communities identity columns appended by ALTER TABLE ADD COLUMN.
       assert.deepEqual(
         cols.map((c) => c.name),
         [
@@ -63,6 +64,10 @@ describe("web sessions (migration 028 + repo helpers)", () => {
           "token_expires_at",
           "scopes",
           "guild_snapshot",
+          "platform",
+          "instance_key",
+          "refresh_token_enc",
+          "refresh_expires_at",
         ]
       );
       const byName = Object.fromEntries(cols.map((c) => [c.name, c]));
@@ -74,6 +79,12 @@ describe("web sessions (migration 028 + repo helpers)", () => {
       assert.equal(byName.discord_tag.notnull, 0, "discord_tag is nullable display data");
       // 025 columns are NULLable — pre-login / pre-upgrade rows stay valid.
       for (const col of ["access_token_enc", "token_expires_at", "scopes", "guild_snapshot"]) {
+        assert.equal(byName[col].notnull, 0, `${col} is nullable`);
+      }
+      // 034 identity columns: NOT NULL DEFAULT 'discord' backfills every row.
+      assert.equal(byName.platform.notnull, 1, "platform is NOT NULL");
+      assert.equal(byName.instance_key.notnull, 1, "instance_key is NOT NULL");
+      for (const col of ["refresh_token_enc", "refresh_expires_at"]) {
         assert.equal(byName[col].notnull, 0, `${col} is nullable`);
       }
     });

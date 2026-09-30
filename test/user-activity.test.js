@@ -1,6 +1,6 @@
 const { describe, it, before } = require("node:test");
 const assert = require("node:assert/strict");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 describe("userActivity math & ids", () => {
   let weeksSinceJoin;
@@ -180,59 +180,59 @@ describe("userActivity db counters", () => {
     const g = "g-act";
     const u = "u1";
     const ch = "ch1";
-    db.ensureGuildActivitySettings(g);
-    db.incrementDaily(g, u, ch, "2026-01-01", 3);
-    db.incrementDaily(g, u, ch, "2026-01-01", 2);
-    db.incrementDaily(g, u, ch, "2026-02-01", 4);
-    db.incrementDaily(g, u, "ch2", "2026-02-01", 1);
+    db.ensureGuildActivitySettings(communityKey(g));
+    db.incrementDaily(communityKey(g), u, ch, "2026-01-01", 3);
+    db.incrementDaily(communityKey(g), u, ch, "2026-01-01", 2);
+    db.incrementDaily(communityKey(g), u, ch, "2026-02-01", 4);
+    db.incrementDaily(communityKey(g), u, "ch2", "2026-02-01", 1);
 
-    const all = db.sumByChannel(g, u, {});
+    const all = db.sumByChannel(communityKey(g), u, {});
     assert.equal(all.find((r) => r.channel_id === ch).count, 9);
-    assert.equal(db.totalPosts(g, u, {}), 10);
+    assert.equal(db.totalPosts(communityKey(g), u, {}), 10);
 
-    const since = db.sumByChannel(g, u, { sinceDay: "2026-02-01" });
+    const since = db.sumByChannel(communityKey(g), u, { sinceDay: "2026-02-01" });
     assert.equal(
       since.reduce((s, r) => s + r.count, 0),
       5
     );
-    assert.equal(db.earliestTrackedDay(g, u), "2026-01-01");
+    assert.equal(db.earliestTrackedDay(communityKey(g), u), "2026-01-01");
   });
 
   it("ignore list channel and category", () => {
     const g = "g-ign";
-    assert.equal(db.addActivityIgnore(g, "c1", "channel"), true);
-    assert.equal(db.addActivityIgnore(g, "c1", "channel"), false);
-    assert.equal(db.addActivityIgnore(g, "cat1", "category"), true);
-    assert.equal(db.isActivityIgnored(g, "c1"), true);
-    const sets = db.getActivityIgnoreSets(g);
+    assert.equal(db.addActivityIgnore(communityKey(g), "c1", "channel"), true);
+    assert.equal(db.addActivityIgnore(communityKey(g), "c1", "channel"), false);
+    assert.equal(db.addActivityIgnore(communityKey(g), "cat1", "category"), true);
+    assert.equal(db.isActivityIgnored(communityKey(g), "c1"), true);
+    const sets = db.getActivityIgnoreSets(communityKey(g));
     assert.equal(sets.channels.has("c1"), true);
     assert.equal(sets.categories.has("cat1"), true);
-    assert.equal(db.removeActivityIgnore(g, "c1"), true);
-    assert.equal(db.isActivityIgnored(g, "c1"), false);
+    assert.equal(db.removeActivityIgnore(communityKey(g), "c1"), true);
+    assert.equal(db.isActivityIgnored(communityKey(g), "c1"), false);
   });
 
   it("shouldSkipChannel respects ignore and honeypot", () => {
     const g = "g-skip";
-    db.addActivityIgnore(g, "noise", "channel");
-    db.addActivityIgnore(g, "cat-x", "category");
-    db.addHoneypotChannel(g, "hp");
-    assert.equal(shouldSkipChannel(g, "noise", null), true);
-    assert.equal(shouldSkipChannel(g, "ok", "cat-x"), true);
-    assert.equal(shouldSkipChannel(g, "hp", null), true);
-    assert.equal(shouldSkipChannel(g, "ok", "other"), false);
+    db.addActivityIgnore(communityKey(g), "noise", "channel");
+    db.addActivityIgnore(communityKey(g), "cat-x", "category");
+    db.addHoneypotChannel(communityKey(g), "hp");
+    assert.equal(shouldSkipChannel(communityKey(g), "noise", null), true);
+    assert.equal(shouldSkipChannel(communityKey(g), "ok", "cat-x"), true);
+    assert.equal(shouldSkipChannel(communityKey(g), "hp", null), true);
+    assert.equal(shouldSkipChannel(communityKey(g), "ok", "other"), false);
   });
 
   it("buildChannelRanking ranks and applies window-aware weekly rate", () => {
     const g = "g-rank";
     const u = "u-rank";
-    db.ensureGuildActivitySettings(g);
-    db.incrementDaily(g, u, "alpha", "2020-01-01", 100);
-    db.incrementDaily(g, u, "alpha", db.utcDayKey(), 10);
-    db.incrementDaily(g, u, "beta", db.utcDayKey(), 5);
+    db.ensureGuildActivitySettings(communityKey(g));
+    db.incrementDaily(communityKey(g), u, "alpha", "2020-01-01", 100);
+    db.incrementDaily(communityKey(g), u, "alpha", db.utcDayKey(), 10);
+    db.incrementDaily(communityKey(g), u, "beta", db.utcDayKey(), 5);
 
     const joinedMs = Date.now() - 10 * 7 * 86400000; // 10 weeks
     const ranking = buildChannelRanking({
-      guildId: g,
+      communityId: communityKey(g),
       userId: u,
       guild: null,
       window: "a",
@@ -246,7 +246,7 @@ describe("userActivity db counters", () => {
     assert.ok(Math.abs(ranking.ranked[0].weekly - 11) < 0.01); // 110/10
 
     const week = buildChannelRanking({
-      guildId: g,
+      communityId: communityKey(g),
       userId: u,
       guild: null,
       window: "7",
@@ -261,7 +261,7 @@ describe("userActivity db counters", () => {
     assert.ok(Math.abs(week.lifetimeWeekly - 11.5) < 0.01);
 
     const ninety = buildChannelRanking({
-      guildId: g,
+      communityId: communityKey(g),
       userId: u,
       guild: null,
       window: "90",
@@ -275,10 +275,10 @@ describe("userActivity db counters", () => {
   it("buildCategoryRanking rolls up uncategorized without guild cache", () => {
     const g = "g-cat";
     const u = "u-cat";
-    db.incrementDaily(g, u, "x", db.utcDayKey(), 3);
-    db.incrementDaily(g, u, "y", db.utcDayKey(), 1);
+    db.incrementDaily(communityKey(g), u, "x", db.utcDayKey(), 3);
+    db.incrementDaily(communityKey(g), u, "y", db.utcDayKey(), 1);
     const ranking = buildCategoryRanking({
-      guildId: g,
+      communityId: communityKey(g),
       userId: u,
       guild: null,
       window: "a",
@@ -292,9 +292,9 @@ describe("userActivity db counters", () => {
   it("watermark: live collect_from is set on ensure", () => {
     const g = "g-wm";
     const before = Date.now();
-    const s = db.ensureGuildActivitySettings(g);
+    const s = db.ensureGuildActivitySettings(communityKey(g));
     assert.ok(s.collect_from_ms >= before - 1000);
-    const again = db.ensureGuildActivitySettings(g);
+    const again = db.ensureGuildActivitySettings(communityKey(g));
     assert.equal(again.collect_from_ms, s.collect_from_ms);
   });
 });
@@ -321,14 +321,14 @@ describe("guildDailyMessageTotals (bounded guild×day aggregation)", () => {
     const d1 = fixedDay(1);
     const d2 = fixedDay(2);
 
-    db.incrementDaily(g, "u1", "c1", d2, 2);
-    db.incrementDaily(g, "u2", "c1", d2, 3); // same day, other user
-    db.incrementDaily(g, "u1", "c2", d1, 4); // same user, other channel
-    db.incrementDaily(g, "u1", "c1", d0, 5);
-    db.incrementDaily(g, "u1", "c1", "2020-01-01", 999); // outside window
-    db.incrementDaily(other, "u1", "c1", d2, 7); // other guild
+    db.incrementDaily(communityKey(g), "u1", "c1", d2, 2);
+    db.incrementDaily(communityKey(g), "u2", "c1", d2, 3); // same day, other user
+    db.incrementDaily(communityKey(g), "u1", "c2", d1, 4); // same user, other channel
+    db.incrementDaily(communityKey(g), "u1", "c1", d0, 5);
+    db.incrementDaily(communityKey(g), "u1", "c1", "2020-01-01", 999); // outside window
+    db.incrementDaily(communityKey(other), "u1", "c1", d2, 7); // other guild
 
-    const rows = db.guildDailyMessageTotals(g, { sinceDay: d0 });
+    const rows = db.guildDailyMessageTotals(communityKey(g), { sinceDay: d0 });
     assert.deepEqual(rows, [
       { day: d0, total: 5 },
       { day: d1, total: 4 },
@@ -337,7 +337,7 @@ describe("guildDailyMessageTotals (bounded guild×day aggregation)", () => {
     assert.ok(!rows.some((r) => r.day === "2020-01-01"), "sinceDay excludes old days");
     assert.ok(!rows.some((r) => r.total === 7 || r.total === 12), "guild-scoped (§8.2)");
 
-    assert.deepEqual(db.guildDailyMessageTotals("g-gdt-none", { sinceDay: d0 }), [],
+    assert.deepEqual(db.guildDailyMessageTotals(communityKey("g-gdt-none"), { sinceDay: d0 }), [],
       "guild with no rows ⇒ empty, not an error");
   });
 
@@ -347,11 +347,11 @@ describe("guildDailyMessageTotals (bounded guild×day aggregation)", () => {
 
     const g = "g-gdt-cap";
     for (let i = 0; i < 35; i += 1) {
-      db.incrementDaily(g, "u1", "c1", fixedDay(i), 1);
+      db.incrementDaily(communityKey(g), "u1", "c1", fixedDay(i), 1);
     }
     // Greedy caller: sinceDay covers all 35 days, limitDays unclamped →
     // must return the NEWEST 31 days, still ASCENDING.
-    const rows = db.guildDailyMessageTotals(g, { sinceDay: fixedDay(0), limitDays: 999 });
+    const rows = db.guildDailyMessageTotals(communityKey(g), { sinceDay: fixedDay(0), limitDays: 999 });
     assert.equal(rows.length, 31);
     assert.equal(rows[0].day, fixedDay(4), "oldest days drop first (newest kept)");
     assert.equal(rows[rows.length - 1].day, fixedDay(34));
@@ -359,12 +359,12 @@ describe("guildDailyMessageTotals (bounded guild×day aggregation)", () => {
       assert.ok(rows[i - 1].day < rows[i].day, "ascending order");
     }
 
-    const tiny = db.guildDailyMessageTotals(g, { sinceDay: fixedDay(0), limitDays: 3 });
+    const tiny = db.guildDailyMessageTotals(communityKey(g), { sinceDay: fixedDay(0), limitDays: 3 });
     assert.deepEqual(tiny.map((r) => r.day), [fixedDay(32), fixedDay(33), fixedDay(34)]);
   });
 
   it("bad input fails loudly, never silently", () => {
-    assert.throws(() => db.guildDailyMessageTotals("g-gdt", {}), /sinceDay/);
-    assert.throws(() => db.guildDailyMessageTotals("g-gdt", { sinceDay: 20260101 }), /sinceDay/);
+    assert.throws(() => db.guildDailyMessageTotals(communityKey("g-gdt"), {}), /sinceDay/);
+    assert.throws(() => db.guildDailyMessageTotals(communityKey("g-gdt"), { sinceDay: 20260101 }), /sinceDay/);
   });
 });

@@ -11,6 +11,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { communityKey } = require("./helpers/env");
 
 /** Let queued microtasks + one macrotask turn run (mirror dispatch timing). */
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -58,6 +59,7 @@ function stubAuditLog(behavior = {}) {
 describe("web audit middleware (req.audit — DB-first + best-effort mirror)", () => {
   let dbApi;
   let audit;
+  let outboundMod;
 
   before(() => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "boiler-snake-webaudit-"));
@@ -73,6 +75,21 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
     }
     dbApi = require("../src/db");
     audit = require("../src/web/middleware/audit");
+    outboundMod = require("../src/platform/discord/outbound");
+    // Fluxer PR 2: register the fixture guilds so req.audit can resolve
+    // their snowflakes to integer community ids (create-on-sight edge).
+    for (const g of [
+      "g-web-audit-happy", "g-mw", "g-entry", "g-params2", "g-web-audit-anon",
+      "g-web-audit-entry", "g-web-audit-origin", "g-web-audit-dbfail",
+      "g-web-audit-oversize", "g-web-audit-redact", "g-web-audit-redact-str",
+      "g-web-audit-badjson", "g-web-audit-mirror", "g-web-audit-warn",
+      "g-web-audit-noclient", "g-web-audit-mirrorfail", "g-web-audit-buildboom",
+      "g-web-audit-clientboom", "g-web-audit-badmirror", "g-web-audit-bound",
+      "g-web-audit-standalone", "g-web-audit-viewer", "g-web-audit-other",
+      "g-orphans-not-registered",
+    ]) {
+      communityKey(g);
+    }
   });
 
   /** Build middleware + a req with req.audit attached (deps stubbed). */
@@ -116,7 +133,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
       });
 
       assert.ok(Number.isInteger(row.id));
-      assert.equal(row.guild_id, guild);
+      assert.equal(row.community_id, communityKey(guild));
       assert.equal(row.actor_user_id, USER.userId);
       assert.equal(row.origin, "web", "web layer defaults to origin 'web'");
       assert.equal(row.action, "warnings.void");
@@ -126,7 +143,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         reason: "false positive",
         warning_id: 42,
       });
-      assert.equal(dbApi.countAdminAudit(guild), 1, "exactly one row per call");
+      assert.equal(dbApi.countAdminAudit(communityKey(guild)), 1, "exactly one row per call");
     });
 
     it("resolves guild id in order: entry > req.guildAccess.guildId > req.params.guildId", () => {
@@ -137,13 +154,13 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         req: { guildAccess: { guildId: "g-mw" }, params: { guildId: "g-params" } },
       });
       const viaReq = req.audit({ action: "a.viaReq" });
-      assert.equal(viaReq.guild_id, "g-mw");
+      assert.equal(viaReq.community_id, communityKey("g-mw"));
 
       const viaEntry = req.audit({ action: "a.viaEntry", guildId: "g-entry" });
-      assert.equal(viaEntry.guild_id, "g-entry");
+      assert.equal(viaEntry.community_id, communityKey("g-entry"));
 
       const paramsOnly = setup({ req: { params: { guildId: "g-params2" } } });
-      assert.equal(paramsOnly.req.audit({ action: "a.viaParams" }).guild_id, "g-params2");
+      assert.equal(paramsOnly.req.audit({ action: "a.viaParams" }).community_id, communityKey("g-params2"));
     });
 
     it("unresolvable guild → AUDIT_NO_GUILD and no row", () => {
@@ -152,7 +169,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         () => req.audit({ action: "a.orphan" }),
         (err) => err.code === "AUDIT_NO_GUILD"
       );
-      assert.equal(dbApi.listAdminAudit("").length, 0);
+      assert.equal(dbApi.countAdminAudit(communityKey("g-orphans-not-registered")), 0, "no row written");
     });
 
     it("anonymous req.user → AUDIT_ANONYMOUS (null and missing)", () => {
@@ -167,7 +184,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         () => missing.req.audit({ action: "a.anon" }),
         (err) => err.code === "AUDIT_ANONYMOUS"
       );
-      assert.equal(dbApi.countAdminAudit("g-web-audit-anon"), 0);
+      assert.equal(dbApi.countAdminAudit(communityKey("g-web-audit-anon")), 0);
     });
 
     it("rejects non-object entries and missing action before any DB write", () => {
@@ -184,7 +201,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         () => req.audit({ action: "   " }),
         (err) => err.code === "AUDIT_INVALID_ACTION"
       );
-      assert.equal(dbApi.countAdminAudit("g-web-audit-entry"), 0);
+      assert.equal(dbApi.countAdminAudit(communityKey("g-web-audit-entry")), 0);
     });
 
     it("origin: defaults to web, accepts validated overrides, rejects garbage", () => {
@@ -202,7 +219,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         () => req.audit({ action: "a.bad", origin: "cli" }),
         (err) => err.code === "AUDIT_INVALID_ORIGIN"
       );
-      assert.equal(dbApi.countAdminAudit(guild), 2, "invalid origin wrote nothing");
+      assert.equal(dbApi.countAdminAudit(communityKey(guild)), 2, "invalid origin wrote nothing");
     });
   });
 
@@ -236,7 +253,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
           }),
         (err) => err.code === "INVALID_DETAILS"
       );
-      assert.equal(dbApi.countAdminAudit("g-web-audit-oversize"), 0);
+      assert.equal(dbApi.countAdminAudit(communityKey("g-web-audit-oversize")), 0);
     });
   });
 
@@ -281,7 +298,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         () => req.audit({ action: "a.badjson", details: "not json at all" }),
         (err) => err.code === "INVALID_DETAILS"
       );
-      assert.equal(dbApi.countAdminAudit("g-web-audit-badjson"), 0);
+      assert.equal(dbApi.countAdminAudit(communityKey("g-web-audit-badjson")), 0);
     });
 
     it("redactSensitive: pure, arrays kept, Dates kept, cycles collapse to null", () => {
@@ -321,7 +338,9 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
       assert.equal(auditLogStub.calls.length, 1);
       const call = auditLogStub.calls[0];
       assert.equal(call.kind, "audit");
-      assert.equal(call.client, client);
+      // PR 2: sendAuditLog is an OutboundClient API — the middleware wraps
+      // the raw client (cached per client, so identity is assertable).
+      assert.equal(call.client, outboundMod.getDiscordOutbound(client));
       assert.equal(call.guildId, guild);
       assert.deepEqual(call.payload.embeds[0].received.changes, ["• moderator"]);
       assert.deepEqual(call.payload.embeds[0].received.actor, {
@@ -428,7 +447,8 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         });
         req.audit({ action: "a.bound", mirror: { title: "t" } });
         await flushTwice();
-        assert.equal(auditLogStub.calls[0].client, bound);
+        // PR 2: OutboundClient wrapper around the boot-bound raw client.
+        assert.equal(auditLogStub.calls[0].client, outboundMod.getDiscordOutbound(bound));
       } finally {
         audit.bindAuditClient(null);
       }
@@ -439,7 +459,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
     it("attachAudit writes through the real facade without the middleware", () => {
       const req = makeReq({ params: { guildId: "g-web-audit-standalone" } });
       const row = audit.attachAudit(req, {}, { action: "a.standalone", origin: "web" });
-      assert.equal(row.guild_id, "g-web-audit-standalone");
+      assert.equal(row.community_id, communityKey("g-web-audit-standalone"));
       assert.equal(row.actor_user_id, USER.userId);
     });
 
@@ -448,21 +468,21 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
       const { req } = setup({ req: { params: { guildId: guild } } });
       req.audit({ action: "v.one", origin: "web" });
       req.audit({ action: "v.two", origin: "system" });
-      dbApi.insertAdminAudit({ guildId: "g-web-audit-other", origin: "web", action: "v.noise" });
+      dbApi.insertAdminAudit({ communityId: communityKey("g-web-audit-other"), origin: "web", action: "v.noise" });
 
-      const rows = audit.listAudit(guild, { limit: 10 });
+      const rows = audit.listAudit(communityKey(guild), { limit: 10 });
       assert.equal(rows.length, 2, "guild-scoped");
       assert.deepEqual(
         rows.map((r) => r.action),
         ["v.two", "v.one"],
         "newest first"
       );
-      assert.equal(audit.countAudit(guild), 2);
-      assert.equal(audit.countAudit(guild, { origin: "web" }), 1);
-      assert.deepEqual(audit.listAudit(guild, { origin: "web" }).map((r) => r.action), ["v.one"]);
+      assert.equal(audit.countAudit(communityKey(guild)), 2);
+      assert.equal(audit.countAudit(communityKey(guild), { origin: "web" }), 1);
+      assert.deepEqual(audit.listAudit(communityKey(guild), { origin: "web" }).map((r) => r.action), ["v.one"]);
 
       assert.throws(
-        () => audit.listAudit(guild, { origin: "nope" }),
+        () => audit.listAudit(communityKey(guild), { origin: "nope" }),
         (err) => err.code === "INVALID_ORIGIN",
         "repo validation reaches consumers through the passthrough"
       );

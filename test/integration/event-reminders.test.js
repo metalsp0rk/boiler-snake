@@ -57,7 +57,7 @@ describe("integration: event reminders", () => {
     assertEphemeralReply(interaction);
     assertReplyContains(interaction, /default/i);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).event_reminder_channel_id,
+      env.db.getGuildSettings(env.communityId).event_reminder_channel_id,
       IDS.channelNotify
     );
   });
@@ -71,7 +71,7 @@ describe("integration: event reminders", () => {
     });
     assertEphemeralReply(out);
     assert.equal(
-      env.db.isEventReminderOptedOut(env.guild.id, IDS.member),
+      env.db.isEventReminderOptedOut(env.communityId, IDS.member),
       true
     );
 
@@ -85,7 +85,7 @@ describe("integration: event reminders", () => {
   });
 
   it("/eventreminder optin clears opt-out", async () => {
-    env.db.setEventReminderOptOut(env.guild.id, IDS.member);
+    env.db.setEventReminderOptOut(env.communityId, IDS.member);
     const interaction = await env.runCommand({
       commandName: "eventreminder",
       subcommand: "optin",
@@ -93,7 +93,7 @@ describe("integration: event reminders", () => {
       user: env.users.memberUser,
     });
     assert.equal(
-      env.db.isEventReminderOptedOut(env.guild.id, IDS.member),
+      env.db.isEventReminderOptedOut(env.communityId, IDS.member),
       false
     );
     assert.ok(interaction.replies.length >= 1);
@@ -135,7 +135,7 @@ describe("integration: event reminders", () => {
     });
     env.guild.addScheduledEvent(event);
 
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       event_reminder_channel_id: IDS.channelNotify,
     });
 
@@ -159,7 +159,7 @@ describe("integration: event reminders", () => {
     assert.ok(modalIx.deferred || modalIx.replies.length >= 1);
 
     const config = env.db.getConfigByScheduledEventId(
-      env.guild.id,
+      env.communityId,
       "evt-modal-1"
     );
     assert.ok(config);
@@ -201,7 +201,7 @@ describe("integration: event reminders", () => {
       subscriberIds: [],
     });
     env.guild.addScheduledEvent(event);
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       event_reminder_channel_id: IDS.channelNotify,
     });
 
@@ -236,7 +236,7 @@ describe("integration: event reminders", () => {
     await env.handleInteraction(modalIx, env.ctx);
 
     const config = env.db.getConfigByScheduledEventId(
-      env.guild.id,
+      env.communityId,
       "evt-persist-1",
     );
     assert.ok(config);
@@ -262,7 +262,7 @@ describe("integration: event reminders", () => {
     env.guild.addScheduledEvent(event);
     const role = await env.guild.roles.create({ name: "event-recur-toggle" });
     env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-recur-1",
       shortname: "recur-toggle",
       roleId: role.id,
@@ -276,7 +276,7 @@ describe("integration: event reminders", () => {
       admin: true,
     });
     assert.equal(
-      env.db.getConfigByScheduledEventId(env.guild.id, "evt-recur-1")
+      env.db.getConfigByScheduledEventId(env.communityId, "evt-recur-1")
         .persistent,
       1,
     );
@@ -285,7 +285,7 @@ describe("integration: event reminders", () => {
 
     await env.runButton({ customId: "er-recur:evt-recur-1", admin: true });
     assert.equal(
-      env.db.getConfigByScheduledEventId(env.guild.id, "evt-recur-1")
+      env.db.getConfigByScheduledEventId(env.communityId, "evt-recur-1")
         .persistent,
       0,
     );
@@ -302,7 +302,7 @@ describe("integration: event reminders", () => {
     env.guild.addScheduledEvent(event);
     const role = await env.guild.roles.create({ name: "event-edit-persist" });
     env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-edit-persist",
       shortname: "edit-persist",
       roleId: role.id,
@@ -329,7 +329,7 @@ describe("integration: event reminders", () => {
     await env.handleInteraction(modalIx, env.ctx);
 
     assert.equal(
-      env.db.getConfigByScheduledEventId(env.guild.id, "evt-edit-persist")
+      env.db.getConfigByScheduledEventId(env.communityId, "evt-edit-persist")
         .persistent,
       1,
     );
@@ -347,14 +347,14 @@ describe("integration: event reminders", () => {
     });
     env.guild.addScheduledEvent(event);
 
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       event_reminder_channel_id: IDS.channelNotify,
     });
 
     const role = await env.guild.roles.create({ name: "event-tick-test" });
     const fireAt = Date.now() - 1000; // already due
     env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-tick-1",
       shortname: "tick-test",
       roleId: role.id,
@@ -407,7 +407,7 @@ describe("integration: event reminders", () => {
     env.guild.addScheduledEvent(event);
     const role = await env.guild.roles.create({ name: "event-clear-me" });
     env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-clear-1",
       shortname: "clear-me",
       roleId: role.id,
@@ -428,7 +428,7 @@ describe("integration: event reminders", () => {
     });
     assertReplyContains(interaction, /cleared/i);
     assert.equal(
-      env.db.getConfigByScheduledEventId(env.guild.id, "evt-clear-1"),
+      env.db.getConfigByScheduledEventId(env.communityId, "evt-clear-1"),
       null
     );
     assert.equal(env.guild.roles.cache.has(role.id), false);
@@ -438,7 +438,7 @@ describe("integration: event reminders", () => {
     const roleId = "role-claim-1";
     const fireAt = Date.now() - 5000;
     const config = env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-claim-1",
       shortname: "claim-1",
       roleId,
@@ -462,7 +462,7 @@ describe("integration: event reminders", () => {
     } = require("../../src/features/eventReminders/service");
     const roleId = "role-suggest-1";
     env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-suggest-1",
       shortname: "friday-raid",
       roleId,
@@ -472,11 +472,11 @@ describe("integration: event reminders", () => {
       createdBy: IDS.admin,
     });
     assert.equal(
-      suggestShortname(env.guild.id, "Friday Raid!!!"),
+      suggestShortname(env.communityId, "Friday Raid!!!"),
       "friday-raid-2"
     );
     assert.equal(
-      suggestShortname(env.guild.id, "Unique Event Name"),
+      suggestShortname(env.communityId, "Unique Event Name"),
       "unique-event-name"
     );
   });
@@ -495,7 +495,7 @@ describe("integration: event reminders", () => {
 
     const role = await env.guild.roles.create({ name: "event-mute-me" });
     env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-mute-1",
       shortname: "mute-me",
       roleId: role.id,
@@ -516,13 +516,13 @@ describe("integration: event reminders", () => {
     });
     assertEphemeralReply(muteIx);
     assert.equal(
-      env.db.isEventReminderMuted(env.guild.id, IDS.member, "evt-mute-1"),
+      env.db.isEventReminderMuted(env.communityId, IDS.member, "evt-mute-1"),
       true
     );
     assert.equal(env.members.member.roles.cache.has(role.id), false);
     assert.equal(
       env.db.isUserBlockedFromEventReminders(
-        env.guild.id,
+        env.communityId,
         IDS.member,
         "evt-mute-1"
       ),
@@ -545,7 +545,7 @@ describe("integration: event reminders", () => {
       options: { event: "evt-mute-1" },
     });
     assert.equal(
-      env.db.isEventReminderMuted(env.guild.id, IDS.member, "evt-mute-1"),
+      env.db.isEventReminderMuted(env.communityId, IDS.member, "evt-mute-1"),
       false
     );
     assert.ok(env.members.member.roles.cache.has(role.id));
@@ -564,7 +564,7 @@ describe("integration: event reminders", () => {
     env.guild.addScheduledEvent(event);
     const role = await env.guild.roles.create({ name: "event-opt-mute" });
     env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-mute-opt-1",
       shortname: "opt-mute",
       roleId: role.id,
@@ -574,8 +574,8 @@ describe("integration: event reminders", () => {
       createdBy: IDS.admin,
     });
 
-    env.db.setEventReminderMute(env.guild.id, IDS.member2, "evt-mute-opt-1");
-    env.db.setEventReminderOptOut(env.guild.id, IDS.member2);
+    env.db.setEventReminderMute(env.communityId, IDS.member2, "evt-mute-opt-1");
+    env.db.setEventReminderOptOut(env.communityId, IDS.member2);
 
     await env.runCommand({
       commandName: "eventreminder",
@@ -586,11 +586,11 @@ describe("integration: event reminders", () => {
     });
 
     assert.equal(
-      env.db.isEventReminderMuted(env.guild.id, IDS.member2, "evt-mute-opt-1"),
+      env.db.isEventReminderMuted(env.communityId, IDS.member2, "evt-mute-opt-1"),
       false
     );
     assert.equal(
-      env.db.isEventReminderOptedOut(env.guild.id, IDS.member2),
+      env.db.isEventReminderOptedOut(env.communityId, IDS.member2),
       true
     );
     assert.equal(env.members.member2.roles.cache.has(role.id), false);
@@ -599,7 +599,7 @@ describe("integration: event reminders", () => {
   it("clearing config drops mute rows for that event", () => {
     const roleId = "role-mute-clear";
     env.db.createEventReminderConfig({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       scheduledEventId: "evt-mute-clear",
       shortname: "mute-clear",
       roleId,
@@ -608,14 +608,14 @@ describe("integration: event reminders", () => {
       ],
       createdBy: IDS.admin,
     });
-    env.db.setEventReminderMute(env.guild.id, IDS.member, "evt-mute-clear");
+    env.db.setEventReminderMute(env.communityId, IDS.member, "evt-mute-clear");
     assert.equal(
-      env.db.isEventReminderMuted(env.guild.id, IDS.member, "evt-mute-clear"),
+      env.db.isEventReminderMuted(env.communityId, IDS.member, "evt-mute-clear"),
       true
     );
-    env.db.clearEventReminderConfig(env.guild.id, "evt-mute-clear");
+    env.db.clearEventReminderConfig(env.communityId, "evt-mute-clear");
     assert.equal(
-      env.db.isEventReminderMuted(env.guild.id, IDS.member, "evt-mute-clear"),
+      env.db.isEventReminderMuted(env.communityId, IDS.member, "evt-mute-clear"),
       false
     );
   });

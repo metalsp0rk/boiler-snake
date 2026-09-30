@@ -37,7 +37,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // Clearly-fake placeholder only (AGENTS.md: never realistic secrets).
 const SESSION_SECRET = "test-staff…cret";
@@ -46,8 +46,18 @@ const SESSION_SECRET = "test-staff…cret";
 const FAKE_REFRESH = "fake-refre…ERED";
 const FAKE_ACCESS = "fake-acces…ERED";
 
+// DB at module load: loadDb() resets the src/ require cache, so every src
+// module required later (including inside before()) binds to the temp DB.
+const boot = loadDb();
+
 const GUILD_A = "720000000000000001"; // bot + every test user
 const GUILD_CROSS = "720000000000000002"; // bot guild the users are NOT in
+
+// Integer community ids (fluxer PR 2): routes and converted repo calls take
+// these; Discord-side seams (fake resolver, guild cache, bot guild list)
+// keep the external snowflakes.
+const CID_A = communityKey(GUILD_A);
+const CID_CROSS = communityKey(GUILD_CROSS);
 
 const USER_ADMIN = "820000000000000001"; // owner:true ⇒ tier admin
 const USER_STAFF = "820000000000000002"; // junior staff role ⇒ tier staff
@@ -221,9 +231,8 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       acc[k] = process.env[k];
       return acc;
     }, {});
-    const loaded = loadDb();
-    api = loaded.api;
-    tmpDir = loaded.tmpDir;
+    api = boot.api;
+    tmpDir = boot.tmpDir;
     process.env.SESSION_SECRET = SESSION_SECRET;
     // Deterministic "environment not configured" default state.
     for (const k of ENV_KEYS.slice(3)) delete process.env[k];
@@ -236,11 +245,11 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
 
     // Tier-resolution roles (also rendered rows — the page lists the SAME
     // staff_roles table the tier math reads).
-    api.addStaffRole(GUILD_A, "role-junior-staff", "junior");
-    api.addStaffRole(GUILD_A, "role-senior-staff", "senior");
+    api.addStaffRole(CID_A, "role-junior-staff", "junior");
+    api.addStaffRole(CID_A, "role-senior-staff", "senior");
     // Extra seeded rows (exact-render fixtures).
-    api.addStaffRole(GUILD_A, "500000000000000001", "senior");
-    api.addStaffRole(GUILD_A, "500000000000000002", "junior");
+    api.addStaffRole(CID_A, "500000000000000001", "senior");
+    api.addStaffRole(CID_A, "500000000000000002", "junior");
 
     cookieOf.admin = `web_session=${mkSession(USER_ADMIN)}`;
     cookieOf.staff = `web_session=${mkSession(USER_STAFF)}`;
@@ -274,23 +283,24 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
   describe("tier matrix", () => {
     for (const path of PATHS) {
       it(`anonymous ${path} ⇒ 302 to /auth/login?guild=…`, async () => {
-        const { res, body } = await req(`/g/${GUILD_A}${path}`);
+        const { res, body } = await req(`/g/${CID_A}${path}`);
         assert.equal(res.status, 302);
-        assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+        // integer community id ⇒ bare login target (URL_ID_RE rejects short ids)
+        assert.equal(res.headers.get("location"), "/auth/login");
         assert.equal(res.headers.get("cache-control"), "no-store");
         assert.equal(body, "");
       });
 
       it(`stranger (live member, no staff role) ${path} ⇒ generic 404, never 403`, async () => {
-        const { res, body } = await req(`/g/${GUILD_A}${path}`, { cookie: cookieOf.plain });
+        const { res, body } = await req(`/g/${CID_A}${path}`, { cookie: cookieOf.plain });
         assert.equal(res.status, 404);
         assert.equal(body, "Not found");
         assert.match(res.headers.get("content-type"), /^text\/plain/);
       });
 
       it(`cross-guild probe ${path} ⇒ the SAME plain 404 bytes (§8.6)`, async () => {
-        const stranger = await req(`/g/${GUILD_A}${path}`, { cookie: cookieOf.plain });
-        const cross = await req(`/g/${GUILD_CROSS}${path}`, { cookie: cookieOf.staff });
+        const stranger = await req(`/g/${CID_A}${path}`, { cookie: cookieOf.plain });
+        const cross = await req(`/g/${CID_CROSS}${path}`, { cookie: cookieOf.staff });
         assert.equal(cross.res.status, 404);
         assert.equal(cross.body, stranger.body);
       });
@@ -309,7 +319,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
         ["guild owner (admin)", () => cookieOf.admin],
       ]) {
         it(`${label} ⇒ 200 ${path} shell`, async () => {
-          const { res, body } = await req(`/g/${GUILD_A}${path}`, { cookie: cookie() });
+          const { res, body } = await req(`/g/${CID_A}${path}`, { cookie: cookie() });
           assert.equal(res.status, 200);
           assert.match(res.headers.get("content-type"), /^text\/html; charset=utf-8/);
           assert.equal(res.headers.get("cache-control"), "no-store");
@@ -328,9 +338,9 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
   describe("staff_roles table renders seeded rows exactly", () => {
     it("every row: role id, level badge and added_at match the DB", async () => {
       await mountApp();
-      const rows = api.listStaffRoles(GUILD_A);
+      const rows = api.listStaffRoles(CID_A);
       assert.equal(rows.length, 4, "two tier roles + two seeded fixtures");
-      const { res, body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       for (const r of rows) {
         assert.ok(
@@ -355,7 +365,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
     });
 
     it("advisory strip: bot-above-roles gotcha + Manage-Server-only writes (§8.6 write tier)", async () => {
-      const { body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.senior });
+      const { body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.senior });
       assert.ok(body.includes("must sit"), "bot-role-position advisory present");
       assert.ok(body.includes("<strong>above</strong>"), "bot-above-roles wording");
       assert.ok(body.includes("/staff role setlevel"), "mutation slash cross-refs");
@@ -394,7 +404,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
 
     it("cached names decorate ids (escaped); unknown roles stay id-only", async () => {
       await mountApp({ getClient: () => fakeClient });
-      const { res, body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("(Mod&lt;b&gt;&amp;Team&lt;/b&gt;)"), "escaped cached name shown");
       assert.ok(!body.includes("Mod<b>"), "name never live");
@@ -404,7 +414,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
     it("absent / THROWING getClient degrade to ids — never a 500, never a fetch", async () => {
       for (const getClient of [null, () => { throw new Error("client exploded"); }]) {
         await mountApp({ getClient });
-        const { res, body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.staff });
+        const { res, body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.staff });
         assert.equal(res.status, 200);
         assert.ok(body.includes(`500000000000000001`), "id still rendered");
       }
@@ -418,7 +428,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
   describe("sync panel: unconfigured env + no authorization", () => {
     it("renders missing env NAMES only, says not authorized, triggers nothing", async () => {
       await mountApp(); // no seams → real config reader against deleted env
-      const { res, body } = await req(`/g/${GUILD_A}/commands`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/commands`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("not authorized"), "authorization state honest");
       assert.ok(body.includes("environment not configured"), "env state honest");
@@ -458,13 +468,13 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
     const XSS_ERROR = '<img src=x onerror="alert(9)">';
 
     before(() => {
-      api.upsertCommandPermissionOauth(GUILD_A, {
+      api.upsertCommandPermissionOauth(CID_A, {
         refreshToken: FAKE_REFRESH,
         accessToken: FAKE_ACCESS,
         accessExpiresAt: Date.now() + 3_600_000,
         authorizedByUserId: USER_AUTHORIZER,
       });
-      api.setCommandPermissionSyncResult(GUILD_A, {
+      api.setCommandPermissionSyncResult(CID_A, {
         lastSyncAt: LAST_SYNC_AT,
         lastSyncError: XSS_ERROR,
       });
@@ -483,7 +493,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
 
     it("authorized + env-ready: redirect URI, authorizer, exact last_sync_at", async () => {
       await mountApp({ oauthConfig: configuredEnv });
-      const { res, body } = await req(`/g/${GUILD_A}/commands`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/commands`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes(">authorized<"), "authorized badge");
       assert.ok(body.includes("environment ready"), "env-ready badge");
@@ -496,7 +506,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
     });
 
     it("stored last_sync_error renders ESCAPED — XSS probe never live", async () => {
-      const { body } = await req(`/g/${GUILD_A}/commands`, { cookie: cookieOf.senior });
+      const { body } = await req(`/g/${CID_A}/commands`, { cookie: cookieOf.senior });
       assert.ok(
         body.includes("&lt;img src=x onerror=&quot;alert(9)&quot;&gt;"),
         "stored error escaped"
@@ -506,14 +516,14 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
     });
 
     it("token columns NEVER render (§8.1-9): not even on the staff page", async () => {
-      const { body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.staff });
+      const { body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.staff });
       assert.ok(!body.includes(FAKE_REFRESH), "refresh token not rendered");
       assert.ok(!body.includes(FAKE_ACCESS), "access token not rendered");
       assert.ok(!body.includes("FAKE-SECRET-NEVER-RENDERED"), "env secret value not rendered");
     });
 
     it("staff page embeds the same panel (states consistent across views)", async () => {
-      const { body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+      const { body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.admin });
       assert.ok(body.includes("Command visibility sync"), "panel heading");
       assert.ok(body.includes(REDIRECT_URI), "same data as /commands");
     });
@@ -526,7 +536,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
   describe("oauth status projection is secret-free by construction", () => {
     it("projection emits ONLY the whitelisted status fields", () => {
       const projected = staffDataMod.projectOauthView({
-        guild_id: GUILD_A,
+        community_id: CID_A,
         refresh_token: FAKE_REFRESH,
         access_token: FAKE_ACCESS,
         access_expires_at: 1,
@@ -579,7 +589,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
         staffData: staffDataMod.createStaffData({ db: proxy }),
       });
 
-      const staffPage = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.staff });
+      const staffPage = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.staff });
       assert.equal(staffPage.res.status, 200);
       assert.deepEqual(
         calls.map((c) => c.name).sort(),
@@ -588,12 +598,12 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       );
       assert.deepEqual(
         calls.map((c) => c.args[0]),
-        [GUILD_A, GUILD_A, GUILD_A],
+        [CID_A, CID_A, CID_A],
         "every read is guild-scoped to the viewed guild"
       );
 
       calls.length = 0;
-      const cmdPage = await req(`/g/${GUILD_A}/commands`, { cookie: cookieOf.staff });
+      const cmdPage = await req(`/g/${CID_A}/commands`, { cookie: cookieOf.staff });
       assert.equal(cmdPage.res.status, 200);
       assert.deepEqual(
         calls.map((c) => c.name),
@@ -611,14 +621,14 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
   describe("Phase 2 mutation forms", () => {
     it("admin viewer: staff-role + level-role forms with hidden _csrf", async () => {
       await mountApp();
-      const { res, body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+      const { res, body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.admin });
       assert.equal(res.status, 200);
       for (const action of [
-        `/g/${GUILD_A}/staff/role/add`,
-        `/g/${GUILD_A}/staff/role/setlevel`,
-        `/g/${GUILD_A}/staff/role/remove`,
-        `/g/${GUILD_A}/staff/levelrole/set`,
-        `/g/${GUILD_A}/staff/levelrole/remove`,
+        `/g/${CID_A}/staff/role/add`,
+        `/g/${CID_A}/staff/role/setlevel`,
+        `/g/${CID_A}/staff/role/remove`,
+        `/g/${CID_A}/staff/levelrole/set`,
+        `/g/${CID_A}/staff/levelrole/remove`,
       ]) {
         assert.ok(body.includes(`action="${action}"`), `form posts to ${action}`);
       }
@@ -630,7 +640,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
     it("staff/senior viewers: NO admin-tier role forms; level-role forms DO render", async () => {
       await mountApp();
       for (const cookie of [cookieOf.staff, cookieOf.senior]) {
-        const { res, body } = await req(`/g/${GUILD_A}/staff`, { cookie });
+        const { res, body } = await req(`/g/${CID_A}/staff`, { cookie });
         assert.equal(res.status, 200);
         for (const action of ["add", "setlevel", "remove"]) {
           assert.ok(
@@ -649,16 +659,16 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
 
     it("level→role mappings render from the SAME level_roles table slash lists", async () => {
       await mountApp();
-      api.upsertLevelRole(GUILD_A, "500000000000000007", 7, 3);
+      api.upsertLevelRole(CID_A, "500000000000000007", 7, 3);
       try {
-        const { body } = await req(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+        const { body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.admin });
         assert.ok(
           body.includes(`<code class="role-id">500000000000000007</code>`),
           "mapped role id rendered"
         );
         assert.ok(body.includes("Level required"), "mapping table header");
       } finally {
-        api.deleteLevelRole(GUILD_A, "500000000000000007");
+        api.deleteLevelRole(CID_A, "500000000000000007");
       }
     });
   });
@@ -673,7 +683,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
     // (a) The two PAGE paths take no direct POST/PUT/PATCH/DELETE at all.
     for (const path of PATHS) {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-        const res = await fetch(`${base}/g/${GUILD_A}${path}`, {
+        const res = await fetch(`${base}/g/${CID_A}${path}`, {
           method,
           headers: { cookie: cookieOf.staff },
         });
@@ -694,7 +704,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       "/commands/sync",
     ]) {
       for (const method of ["PUT", "PATCH", "DELETE"]) {
-        const res = await fetch(`${base}/g/${GUILD_A}${sub}`, {
+        const res = await fetch(`${base}/g/${CID_A}${sub}`, {
           method,
           headers: { cookie: cookieOf.admin },
         });
@@ -715,7 +725,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       // in under the slash-command-shaped name).
       "/staff/sync-permissions",
     ]) {
-      const res = await fetch(`${base}/g/${GUILD_A}${path}`, {
+      const res = await fetch(`${base}/g/${CID_A}${path}`, {
         method: "POST",
         headers: { cookie: cookieOf.admin },
       });

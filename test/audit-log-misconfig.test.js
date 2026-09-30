@@ -14,7 +14,7 @@
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // CONTRACT (same as test/command-permissions-oauth.test.js): loadDb() must
 // stay above every `src/` require — it points this process at a private temp
@@ -26,6 +26,7 @@ const { cleanup, api: dbApi } = loadDb();
 after(cleanup);
 
 const auditLog = require("../src/features/logs/auditLog");
+const { getDiscordOutbound } = require("../src/platform/discord/outbound");
 const {
   createClient,
   createGuild,
@@ -53,7 +54,7 @@ function addChannel(guild, id) {
 
 /** Configure log-channel ids on the guild_settings row via the real DB. */
 function configure(guildId, ids) {
-  dbApi.updateGuildSettings(guildId, ids);
+  dbApi.updateGuildSettings(communityKey(guildId), ids);
 }
 
 const PAYLOAD = { embeds: [{ data: { title: "pinned-payload" } }] };
@@ -85,7 +86,7 @@ describe("auditLog.sendAuditLog misconfiguration paths", () => {
     const stray = addChannel(guild, "c-stray");
 
     // Act
-    const sent = await auditLog.sendAuditLog(client, "g-audit-unset", PAYLOAD);
+    const sent = await auditLog.sendAuditLog(getDiscordOutbound(client), "g-audit-unset", PAYLOAD);
 
     // Assert — no channel configured → nothing sent anywhere, boolean false.
     assert.equal(sent, false);
@@ -101,7 +102,7 @@ describe("auditLog.sendAuditLog misconfiguration paths", () => {
     configure(gid, { audit_log_channel_id: "c-deleted-channel" });
 
     // Act
-    const sent = await auditLog.sendAuditLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendAuditLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, false);
@@ -119,7 +120,7 @@ describe("auditLog.sendAuditLog misconfiguration paths", () => {
     };
 
     // Act
-    const sent = await auditLog.sendAuditLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendAuditLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, false);
@@ -137,7 +138,7 @@ describe("auditLog.sendAuditLog misconfiguration paths", () => {
     };
 
     // Act / Assert — resolves to false instead of rejecting.
-    const sent = await auditLog.sendAuditLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendAuditLog(getDiscordOutbound(client), gid, PAYLOAD);
     assert.equal(sent, false);
   });
 
@@ -152,7 +153,7 @@ describe("auditLog.sendAuditLog misconfiguration paths", () => {
     configure(gid, { audit_log_channel_id: "c-voice-like" });
 
     // Act
-    const sent = await auditLog.sendAuditLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendAuditLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, false);
@@ -170,7 +171,7 @@ describe("auditLog.sendAuditLog misconfiguration paths", () => {
     configure(gid, { audit_log_channel_id: "c-no-send" });
 
     // Act
-    const sent = await auditLog.sendAuditLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendAuditLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, false);
@@ -191,7 +192,7 @@ describe("auditLog.sendAuditLog misconfiguration paths", () => {
 
     // Act
     const [sent, warnings] = await withWarnCapture(() =>
-      auditLog.sendAuditLog(client, gid, PAYLOAD)
+      auditLog.sendAuditLog(getDiscordOutbound(client), gid, PAYLOAD)
     );
 
     // Assert — false (not thrown), with cause-specific log context.
@@ -212,7 +213,7 @@ describe("auditLog.sendAuditLog misconfiguration paths", () => {
     configure(gid, { audit_log_channel_id: "c-audit-ok" });
 
     // Act
-    const sent = await auditLog.sendAuditLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendAuditLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, true);
@@ -234,7 +235,7 @@ describe("auditLog per-kind log-channel routing", () => {
     configure(gid, { audit_log_channel_id: "c-audit-only" });
 
     // Act
-    const sent = await auditLog.sendMessageLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendMessageLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, false);
@@ -250,7 +251,7 @@ describe("auditLog per-kind log-channel routing", () => {
     configure(gid, { message_log_channel_id: "c-msg-log" });
 
     // Act
-    const sent = await auditLog.sendMessageLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendMessageLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, true);
@@ -271,7 +272,7 @@ describe("auditLog per-kind log-channel routing", () => {
     });
 
     // Act
-    const sent = await auditLog.sendWarnLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendWarnLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, true);
@@ -289,7 +290,7 @@ describe("auditLog per-kind log-channel routing", () => {
     configure(gid, { audit_log_channel_id: "c-audit-fb" });
 
     // Act
-    const sent = await auditLog.sendWarnLog(client, gid, PAYLOAD);
+    const sent = await auditLog.sendWarnLog(getDiscordOutbound(client), gid, PAYLOAD);
 
     // Assert
     assert.equal(sent, true);
@@ -303,7 +304,7 @@ describe("auditLog per-kind log-channel routing", () => {
     const { client } = makeEnv("g-warn-unset");
 
     // Act
-    const sent = await auditLog.sendWarnLog(client, "g-warn-unset", PAYLOAD);
+    const sent = await auditLog.sendWarnLog(getDiscordOutbound(client), "g-warn-unset", PAYLOAD);
 
     // Assert
     assert.equal(sent, false);
@@ -323,7 +324,7 @@ describe("auditLog high-level helpers under misconfiguration", () => {
     const stray = addChannel(guild, "c-stray-cfg");
 
     // Act
-    const result = await auditLog.logConfigChange(client, gid, {
+    const result = await auditLog.logConfigChange(getDiscordOutbound(client), gid, {
       title: "XP settings updated",
       changes: ["msg_xp: 5 → **10**"],
     });
@@ -344,7 +345,7 @@ describe("auditLog high-level helpers under misconfiguration", () => {
     configure(gid, { warn_log_channel_id: "c-warn-route" });
 
     // Act
-    await auditLog.logWarnEvent(client, gid, {
+    await auditLog.logWarnEvent(getDiscordOutbound(client), gid, {
       title: "Warning issued",
       command: "/warn add",
       changes: ["member: u1", "- already-bulleted line"],

@@ -29,7 +29,7 @@ describe("integration: config commands", () => {
       options: { channel: ch },
     });
     assertReplyContains(interaction, "allowed");
-    const rows = env.db.listAllowedCommandChannels(env.guild.id);
+    const rows = env.db.listAllowedCommandChannels(env.communityId);
     assert.ok(rows.some((r) => r.channel_id === ch.id));
 
     interaction = await env.runCommand({
@@ -46,7 +46,7 @@ describe("integration: config commands", () => {
       options: { channel: ch },
     });
     assertReplyContains(interaction, "Removed");
-    assert.equal(env.db.listAllowedCommandChannels(env.guild.id).length, 0);
+    assert.equal(env.db.listAllowedCommandChannels(env.communityId).length, 0);
   });
 
   it("/setdecay updates settings and scales percent", async () => {
@@ -61,7 +61,7 @@ describe("integration: config commands", () => {
       },
     });
     assertReplyContains(interaction, /Updated decay|decay settings/i);
-    const s = env.db.getGuildSettings(env.guild.id);
+    const s = env.db.getGuildSettings(env.communityId);
     assert.equal(s.decay_enabled, 1);
     assert.equal(s.decay_min_messages, 5);
     assert.equal(s.decay_window_days, 7);
@@ -77,7 +77,7 @@ describe("integration: config commands", () => {
       options: { role, level: 3, dropdays: 2 },
     });
     assertReplyContains(interaction, "Mapped");
-    let rows = env.db.listLevelRoles(env.guild.id);
+    let rows = env.db.listLevelRoles(env.communityId);
     assert.ok(rows.some((r) => r.role_id === IDS.roleLevel5 && r.level_required === 3));
 
     interaction = await env.runCommand({
@@ -94,7 +94,7 @@ describe("integration: config commands", () => {
       options: { role },
     });
     assertReplyContains(interaction, "Removed mapping");
-    rows = env.db.listLevelRoles(env.guild.id);
+    rows = env.db.listLevelRoles(env.communityId);
     assert.ok(!rows.some((r) => r.role_id === IDS.roleLevel5));
   });
 
@@ -107,7 +107,7 @@ describe("integration: config commands", () => {
     });
     assertReplyContains(interaction, /audit|log/i);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).audit_log_channel_id,
+      env.db.getGuildSettings(env.communityId).audit_log_channel_id,
       IDS.channelLog
     );
 
@@ -118,7 +118,7 @@ describe("integration: config commands", () => {
       options: { channel: env.channels.log },
     });
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).message_log_channel_id,
+      env.db.getGuildSettings(env.communityId).message_log_channel_id,
       IDS.channelLog
     );
 
@@ -149,7 +149,7 @@ describe("integration: config commands", () => {
   });
 
   it("staff can use setdecay but not setcommandchannel", async () => {
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "junior");
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "junior");
     const staffMember = env.createMember({
       guild: env.guild,
       user: env.users.memberUser,

@@ -144,6 +144,10 @@ const {
   BOT_GUILDS,
 } = FIX;
 
+// Web-side CONTRACT: routes/repos take INTEGER community ids (the ladder's
+// FIX.COMMUNITY_A is computed at helper load; re-derive here for this file).
+const CID_A = require("./helpers/env").communityKey(GUILD_A);
+
 // Clearly-fake sentinels / placeholders ONLY (AGENTS.md: never realistic).
 const SESSION_SECRET = "test-gate2-sentinel-session-secret-NOT-REAL-027";
 const YT_KEY = "YOUR_YOUTUBE_API_KEY-placeholder-not-real";
@@ -309,8 +313,8 @@ process.env.TWITCH_CLIENT_ID = "gate-client-id-not-real";
 process.env.TWITCH_CLIENT_SECRET = "gate-client-secret-not-real";
 
 // Tier-resolution roles ONLY (mutation subjects stay separate rows).
-api.addStaffRole(GUILD_A, ROLE_JUNIOR_TIER, "junior");
-api.addStaffRole(GUILD_A, ROLE_SENIOR_TIER, "senior");
+api.addStaffRole(CID_A, ROLE_JUNIOR_TIER, "junior");
+api.addStaffRole(CID_A, ROLE_SENIOR_TIER, "senior");
 
 const cookieOf = {};
 const csrfOf = {};
@@ -417,12 +421,12 @@ async function post(path, { cookie, fields, headers } = {}) {
 
 /** The newest web-origin audit rows for GUILD_A (details parsed). */
 function webAuditRows() {
-  return api.listAdminAudit(GUILD_A, { origin: "web", limit: 100 }).map((r) => ({
+  return api.listAdminAudit(CID_A, { origin: "web", limit: 100 }).map((r) => ({
     ...r,
     details: r.details_json ? JSON.parse(r.details_json) : null,
   }));
 }
-const webAuditCount = () => api.countAdminAudit(GUILD_A, { origin: "web" });
+const webAuditCount = () => api.countAdminAudit(CID_A, { origin: "web" });
 
 /**
  * Deterministic purge for the AUTOINCREMENT moderation tables (Phase-3 rows).
@@ -692,7 +696,7 @@ describe("D. KNOWN INTENTIONAL DELTAS vs slash (documented rows)", () => {
     for (const sub of ["create", "edit", "clear", "sync"]) {
       await harness.runOutcome({
         base,
-        url: `/g/${GUILD_A}/integrations/event-reminders/${sub}`,
+        url: `/g/${CID_A}/integrations/event-reminders/${sub}`,
         method: "POST",
         cookieId: cookieOf.admin,
         expect: harness.expectMethodNotAllowed(),
@@ -704,19 +708,19 @@ describe("D. KNOWN INTENTIONAL DELTAS vs slash (documented rows)", () => {
   it("DELTA-B: youtube/add REFUSES without YOUTUBE_API_KEY (slash silently stores — web hardening); zero writes, zero audits", async () => {
     // Clean any row the B-suites' fail-injection left behind, so the
     // absence assert below speaks ONLY about this refused request.
-    api.removeYoutubeChannel(GUILD_A, YT_ID);
+    api.removeYoutubeChannel(CID_A, YT_ID);
     const saved = process.env.YOUTUBE_API_KEY;
     delete process.env.YOUTUBE_API_KEY;
     const before = webAuditCount();
     startWindow();
-    const { res, location } = await post("/g/" + GUILD_A + "/integrations/youtube/add", {
+    const { res, location } = await post("/g/" + CID_A + "/integrations/youtube/add", {
       cookie: cookieOf.staff,
       fields: { url: YT_URL, _csrf: csrfOf.staff },
     });
     const calls = stopWindow();
     if (saved !== undefined) process.env.YOUTUBE_API_KEY = saved;
     assert.equal(res.status, 302);
-    assert.equal(location, `/g/${GUILD_A}/integrations?error=youtube_not_configured`);
+    assert.equal(location, `/g/${CID_A}/integrations?error=youtube_not_configured`);
     assert.deepEqual(
       writeCalls(calls),
       [],
@@ -724,7 +728,7 @@ describe("D. KNOWN INTENTIONAL DELTAS vs slash (documented rows)", () => {
     );
     assert.equal(webAuditCount(), before, "the refusal audited NOTHING");
     assert.equal(
-      api.getYoutubeChannels(GUILD_A).find((c) => c.id === YT_ID),
+      api.getYoutubeChannels(CID_A).find((c) => c.id === YT_ID),
       undefined,
       "no silent unresolved store like the slash path"
     );
@@ -762,7 +766,7 @@ describe("D. KNOWN INTENTIONAL DELTAS vs slash (documented rows)", () => {
     purgeAutoincrement("tickets");
     rawDb.prepare("DELETE FROM ticket_messages").run();
     const t = api.createTicket({
-      guildId: GUILD_A,
+      communityId: CID_A,
       creatorUserId: "560000000000000301",
       channelId: null,
       reason: "sensitive gate probe",
@@ -773,7 +777,7 @@ describe("D. KNOWN INTENTIONAL DELTAS vs slash (documented rows)", () => {
     ]);
     const before = webAuditCount();
     startWindow();
-    const { res, body } = await post(`/g/${GUILD_A}/tickets/summarize`, {
+    const { res, body } = await post(`/g/${CID_A}/tickets/summarize`, {
       cookie: cookieOf.senior,
       fields: { ticket_id: String(t.id), _csrf: csrfOf.senior },
     });
@@ -801,7 +805,7 @@ describe("E. cross-cutting 405 parity + legacy-surface registration ban (§8.8 P
     ]) {
       await harness.runOutcome({
         base,
-        url: `/g/${GUILD_A}${p}`,
+        url: `/g/${CID_A}${p}`,
         method: "POST",
         cookieId: cookieOf.admin,
         expect: harness.expectMethodNotAllowed(),
@@ -815,7 +819,7 @@ describe("E. cross-cutting 405 parity + legacy-surface registration ban (§8.8 P
       for (const method of ["PUT", "PATCH", "DELETE"]) {
         await harness.runOutcome({
           base,
-          url: concretePath(row.template, GUILD_A),
+          url: concretePath(row.template, CID_A),
           method,
           cookieId: cookieOf.admin,
           expect: harness.expectMethodNotAllowed(),
@@ -874,11 +878,11 @@ describe("E. cross-cutting 405 parity + legacy-surface registration ban (§8.8 P
 
 describe("F. getClient boot wiring (features/web start → startWebServer({getClient}) → route options)", () => {
   it("threading: createWebApp(options).getClient reaches the settings route (cached fake channel NAME renders on the live page)", async () => {
-    api.updateGuildSettings(GUILD_A, { audit_log_channel_id: CH_AUDIT });
-    api.updateGuildSettings(GUILD_A, { message_log_channel_id: null });
-    settingsData.invalidate?.(GUILD_A); // force a cold read of the seeded id
+    api.updateGuildSettings(CID_A, { audit_log_channel_id: CH_AUDIT });
+    api.updateGuildSettings(CID_A, { message_log_channel_id: null });
+    settingsData.invalidate?.(CID_A); // force a cold read of the seeded id
 
-    const res = await harness.request(base, `/g/${GUILD_A}/settings`, {
+    const res = await harness.request(base, `/g/${CID_A}/settings`, {
       cookieId: sessionIdOf.admin,
     });
     assert.equal(res.status, 200);

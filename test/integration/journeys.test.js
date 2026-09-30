@@ -31,14 +31,14 @@ describe("integration: cross-feature journeys", () => {
       admin: true,
       options: { message: 100, msgcooldown: 0 },
     });
-    env.db.updateGuildSettings(env.guild.id, { level_xp_factor: 100 });
-    env.db.upsertLevelRole(env.guild.id, IDS.roleLevel5, 1, 7);
+    env.db.updateGuildSettings(env.communityId, { level_xp_factor: 100 });
+    env.db.upsertLevelRole(env.communityId, IDS.roleLevel5, 1, 7);
 
     // clear role first
     env.members.member.roles.cache.delete(IDS.roleLevel5);
 
     await env.emitMessage({ author: env.users.memberUser });
-    assertXp(env.db, env.guild.id, IDS.member, 100);
+    assertXp(env.db, env.communityId, IDS.member, 100);
     assertRoleGranted(env.members.member, IDS.roleLevel5);
 
     const xpReply = await env.runCommand({
@@ -91,20 +91,20 @@ describe("integration: cross-feature journeys", () => {
   });
 
   it("journey 3: decay reduces idle XP", async () => {
-    env.db.setXp(env.guild.id, IDS.member2, 500);
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.setXp(env.communityId, IDS.member2, 500);
+    env.db.updateGuildSettings(env.communityId, {
       decay_enabled: 1,
       decay_percent: 0.2,
       decay_min_messages: 99,
       decay_window_days: 7,
     });
-    await runDecayForGuild(env.client, env.guild.id);
-    assertXp(env.db, env.guild.id, IDS.member2, 400);
+    await runDecayForGuild(env.client, env.communityId);
+    assertXp(env.db, env.communityId, IDS.member2, 400);
   });
 
   it("journey 4: honeypot isolates spam from XP path", async () => {
-    env.db.addHoneypotChannel(env.guild.id, IDS.channelHoneypot);
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.addHoneypotChannel(env.communityId, IDS.channelHoneypot);
+    env.db.updateGuildSettings(env.communityId, {
       msg_xp: 5,
       msg_cooldown_sec: 0,
     });
@@ -114,7 +114,7 @@ describe("integration: cross-feature journeys", () => {
     env.guild.addMember(spamMem);
     env.guild._bans.length = 0;
 
-    const beforeSpam = env.db.getXp(env.guild.id, spammer.id);
+    const beforeSpam = env.db.getXp(env.communityId, spammer.id);
     const honeyMsg = await env.emitMessage({
       author: spammer,
       member: spamMem,
@@ -122,14 +122,14 @@ describe("integration: cross-feature journeys", () => {
     });
     assert.equal(honeyMsg.deleted, true);
     assertBanned(env.guild, spammer.id);
-    assertXp(env.db, env.guild.id, spammer.id, beforeSpam);
+    assertXp(env.db, env.communityId, spammer.id, beforeSpam);
 
-    const legitBefore = env.db.getXp(env.guild.id, IDS.admin);
+    const legitBefore = env.db.getXp(env.communityId, IDS.admin);
     await env.emitMessage({
       author: env.users.adminUser,
       member: env.members.adminMember,
       channel: env.channels.general,
     });
-    assertXp(env.db, env.guild.id, IDS.admin, legitBefore + 5);
+    assertXp(env.db, env.communityId, IDS.admin, legitBefore + 5);
   });
 });

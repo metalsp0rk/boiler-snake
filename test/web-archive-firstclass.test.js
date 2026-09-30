@@ -19,6 +19,14 @@ const SESSION_SECRET = "test-arch1-…cret";
 
 const GUILD_A = "730000000000000011"; // the ONLY bot guild
 const GUILD_B = "730000000000000012"; // seeded tickets live here too (unreachable)
+
+// Internal community ids (Fluxer PR 2): integer ids drive every /g/ URL,
+// ?guild= filter and repo call; Discord-side fixtures keep the snowflakes.
+const { communityKey } = require("./helpers/env");
+// Assigned in before() AFTER loadDb — communityKey needs the temp DB.
+let CID_A = null;
+let CID_B = null;
+
 const ROLE_JUNIOR = "arch1-role-junior";
 const ROLE_SENIOR = "arch1-role-senior";
 
@@ -42,9 +50,9 @@ describe("web archive first-class (§8.15)", () => {
   let server;
   let base;
   const cookieOf = {};
-  let tSpoon; // reason "spoon shortage"          (guild A)
-  let tRules; // reason "discord rules question"  (guild A)
-  let tForeign; // reason "spoon orbit"           (guild B — out of scope)
+  let tSpoon; // reason "spoon shortage"          (community A)
+  let tRules; // reason "discord rules question"  (community A)
+  let tForeign; // reason "spoon orbit"           (community B — out of scope)
 
   const fakeDiscord = {
     async getUserGuilds(token) {
@@ -114,10 +122,10 @@ describe("web archive first-class (§8.15)", () => {
     return s.id;
   }
 
-  function seedArchived(guildId, { reason, closeReason, creator, owner }) {
+  function seedArchived(communityId, { reason, closeReason, creator, owner }) {
     const token = api.generateTranscriptToken();
     const t = api.createTicket({
-      guildId,
+      communityId,
       creatorUserId: creator || USER_STAFF,
       channelId: `ch-${token}`,
       reason,
@@ -149,14 +157,18 @@ describe("web archive first-class (§8.15)", () => {
     const loaded = loadDb();
     api = loaded.api;
     tmpDir = loaded.tmpDir;
+    // communityKey maps the EXTERNAL snowflakes to internal integer ids
+    // (requires loadDb to have run — same process, same id sequence).
+    CID_A = communityKey(GUILD_A);
+    CID_B = communityKey(GUILD_B);
     process.env.SESSION_SECRET = SESSION_SECRET;
 
     const appMod = require("../src/web/app");
     sessionPolicy = require("../src/web/auth/sessions");
     tokens = require("../src/web/auth/tokens");
 
-    api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-    api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+    api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+    api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
 
     cookieOf.admin = `web_session=${mkSession(USER_ADMIN)}`;
     cookieOf.staff = `web_session=${mkSession(USER_STAFF)}`;
@@ -164,23 +176,23 @@ describe("web archive first-class (§8.15)", () => {
     cookieOf.nowhere = `web_session=${mkSession(USER_NOWHERE)}`;
     cookieOf.plain = `web_session=${mkSession(USER_PLAIN)}`;
 
-    tSpoon = seedArchived(GUILD_A, {
+    tSpoon = seedArchived(CID_A, {
       reason: "spoon shortage",
       closeReason: "resolved — spork found",
       creator: CREATOR_ID,
       owner: OWNER_ID,
     });
-    tRules = seedArchived(GUILD_A, {
+    tRules = seedArchived(CID_A, {
       reason: "discord rules question",
       closeReason: "answered in DMs",
     });
-    tForeign = seedArchived(GUILD_B, {
+    tForeign = seedArchived(CID_B, {
       reason: "spoon orbit",
       closeReason: "not our guild",
     });
     // Pagination bulk: 49 more matches in A (1-arg reasons, no digits).
     for (let i = 0; i < 51; i++) {
-      seedArchived(GUILD_A, { reason: "matchme alpha", closeReason: "bulk" });
+      seedArchived(CID_A, { reason: "matchme alpha", closeReason: "bulk" });
     }
 
     const { createGuildAccessResolver } = require("../src/web/auth/guildAccess");
@@ -223,33 +235,33 @@ describe("web archive first-class (§8.15)", () => {
   // ---- sidebar / cross links ------------------------------------------------
 
   it("sidebar: staff dashboard shows 'Ticket archive' at the in-shell path", async () => {
-    const { body } = await req(`/g/${GUILD_A}`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}`, cookieOf.staff);
     assert.match(body, /Ticket archive/);
-    assert.ok(body.includes(`/g/${GUILD_A}/t`), "nav + footer use the shell route");
+    assert.ok(body.includes(`/g/${CID_A}/t`), "nav + footer use the shell route");
     // dashboard footer link too
     assert.match(body, /Ticket archive →/);
   });
 
   it("ticket actions page (senior) links to the guild archive", async () => {
-    const { res, body } = await req(`/g/${GUILD_A}/tickets`, cookieOf.senior);
+    const { res, body } = await req(`/g/${CID_A}/tickets`, cookieOf.senior);
     assert.equal(res.status, 200);
     assert.match(body, /Archived tickets →/);
-    assert.ok(body.includes(`/g/${GUILD_A}/t`), "link points at the shell archive");
+    assert.ok(body.includes(`/g/${CID_A}/t`), "link points at the shell archive");
   });
 
   // ---- console links out of the archive -------------------------------------
 
   it("staff on guild-filtered archive gets 'Guild dashboard →' (never a 404 link)", async () => {
-    const { body } = await req(`/t?guild=${GUILD_A}`, cookieOf.staff);
+    const { body } = await req(`/t?guild=${CID_A}`, cookieOf.staff);
     assert.ok(body.includes("Guild dashboard →"));
-    assert.ok(body.includes(`/g/${GUILD_A}"`));
-    assert.ok(!body.includes(`/g/${GUILD_A}/tickets"`), "staff must not get the senior actions link");
+    assert.ok(body.includes(`/g/${CID_A}"`));
+    assert.ok(!body.includes(`/g/${CID_A}/tickets"`), "staff must not get the senior actions link");
   });
 
   it("senior on guild-filtered archive gets 'Open tickets →'", async () => {
-    const { body } = await req(`/t?guild=${GUILD_A}`, cookieOf.senior);
+    const { body } = await req(`/t?guild=${CID_A}`, cookieOf.senior);
     assert.ok(body.includes("Open tickets →"));
-    assert.ok(body.includes(`/g/${GUILD_A}/tickets"`));
+    assert.ok(body.includes(`/g/${CID_A}/tickets"`));
   });
 
   // ---- search ---------------------------------------------------------------
@@ -262,7 +274,7 @@ describe("web archive first-class (§8.15)", () => {
   });
 
   it("numeric q also matches the ticket NUMBER itself", async () => {
-    const { body } = await req(`/t?guild=${GUILD_A}&q=${tRules.ticket_number}`, cookieOf.staff);
+    const { body } = await req(`/t?guild=${CID_A}&q=${tRules.ticket_number}`, cookieOf.staff);
     assert.ok(body.includes(`>#${tRules.ticket_number}<`));
     assert.ok(!body.includes(`>#${tSpoon.ticket_number}<`), "spoon row excluded");
   });
@@ -302,8 +314,8 @@ describe("web archive first-class (§8.15)", () => {
     assert.match(body, /name="q"/);
     assert.ok(!/No archived transcripts match/.test(body), "no search active");
     // guild-filtered form round-trips the guild
-    const filtered = await req(`/t?guild=${GUILD_A}`, cookieOf.staff);
-    assert.ok(filtered.body.includes(`name="guild" value="${GUILD_A}"`));
+    const filtered = await req(`/t?guild=${CID_A}`, cookieOf.staff);
+    assert.ok(filtered.body.includes(`name="guild" value="${CID_A}"`));
   });
 
   // ---- people cells (cache-only names) ---------------------------------------
@@ -324,55 +336,55 @@ describe("web archive first-class (§8.15)", () => {
   // ---- in-shell archive: /g/:guildId/t -----------------------------------------
 
   it("in-shell archive: staff gets 200 WITH sidebar + active nav + rows", async () => {
-    const { res, body } = await req(`/g/${GUILD_A}/t`, cookieOf.staff);
+    const { res, body } = await req(`/g/${CID_A}/t`, cookieOf.staff);
     assert.equal(res.status, 200);
     assert.match(body, /<aside class="shell-nav"/, "sidebar renders (the regression)");
     assert.match(body, /aria-current="page"[^>]*>Ticket archive</, "nav marks archive active");
     assert.ok(body.includes("This guild's archive"));
     assert.match(body, /Page 1 \/ 2/, "the guild's rows paginate");
-    assert.ok(body.includes(`action="/g/${GUILD_A}/t"`), "search posts to the shell route");
+    assert.ok(body.includes(`action="/g/${CID_A}/t"`), "search posts to the shell route");
     assert.ok(!body.includes("Guild filter:"), "no redundant filter chrome in-shell");
   });
 
   it("in-shell search: narrows, escapes, and never crosses guilds", async () => {
-    const { body } = await req(`/g/${GUILD_A}/t?q=spoon`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}/t?q=spoon`, cookieOf.staff);
     assert.ok(body.includes("matching <code>spoon</code>"));
     assert.ok(!body.includes(`>#${tRules.ticket_number}<`), "non-match excluded");
     // ticket numbers are PER GUILD (guild B's first ticket is also #1) —
     // scope must be proven on content, not on the number.
     assert.ok(!body.includes("orbit"), "guild-B row leaked into guild-A archive");
     const inj = await req(
-      `/g/${GUILD_A}/t?q=${encodeURIComponent("' or 1=1 --")}`,
+      `/g/${CID_A}/t?q=${encodeURIComponent("' or 1=1 --")}`,
       cookieOf.staff
     );
     assert.equal(inj.res.status, 200);
     assert.match(inj.body, /No archived transcripts match that search/);
     const xss = await req(
-      `/g/${GUILD_A}/t?q=${encodeURIComponent("<img src=x onerror=1>")}`,
+      `/g/${CID_A}/t?q=${encodeURIComponent("<img src=x onerror=1>")}`,
       cookieOf.staff
     );
     assert.ok(!xss.body.includes("<img"), "escaped, never live markup");
   });
 
   it("in-shell people cells: cached names with ids as hover text", async () => {
-    const { body } = await req(`/g/${GUILD_A}/t?q=spoon`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}/t?q=spoon`, cookieOf.staff);
     assert.ok(body.includes(CREATOR_NAME));
     assert.ok(body.includes(OWNER_NAME));
     assert.ok(body.includes(`title="${CREATOR_ID}"`));
   });
 
   it("in-shell pagination rides q (50/page)", async () => {
-    const { body } = await req(`/g/${GUILD_A}/t?q=matchme`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}/t?q=matchme`, cookieOf.staff);
     assert.ok(body.includes("q=matchme&page=2"));
-    const p2 = await req(`/g/${GUILD_A}/t?q=matchme&page=2`, cookieOf.staff);
+    const p2 = await req(`/g/${CID_A}/t?q=matchme&page=2`, cookieOf.staff);
     assert.match(p2.body, /Page 2 \/ 2/);
   });
 
   it("in-shell gates: plain user 404 (no tier), anon 302 to login", async () => {
-    const anon = await fetch(`${base}/g/${GUILD_A}/t`, { redirect: "manual" });
+    const anon = await fetch(`${base}/g/${CID_A}/t`, { redirect: "manual" });
     assert.equal(anon.status, 302);
     assert.match(anon.headers.get("location") || "", /^\/auth\/login/);
-    const plain = await req(`/g/${GUILD_A}/t`, cookieOf.plain);
+    const plain = await req(`/g/${CID_A}/t`, cookieOf.plain);
     assert.equal(plain.res.status, 404);
     assert.equal(plain.body, "Not found");
   });

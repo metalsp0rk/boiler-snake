@@ -17,7 +17,7 @@ const assert = require("node:assert/strict");
 
 // Bind src modules to a temp SQLite BEFORE requiring anything from src/
 // (same discipline as the integration harness; never touch the repo DB).
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 const unitDb = loadDb().api;
 
 // Required after loadDb so the helper's default deps bind to temp SQLite.
@@ -65,6 +65,7 @@ describe("auditTrail helper contract (unit)", () => {
           seen.push(opts);
           return fakeRow;
         },
+        resolveCommunity: (id) => (id === IDS.guild ? 77 : null),
         logger: makeLogger(),
       }
     );
@@ -72,7 +73,7 @@ describe("auditTrail helper contract (unit)", () => {
     assert.equal(result, fakeRow);
     assert.equal(seen.length, 1);
     assert.equal(seen[0].origin, "slash");
-    assert.equal(seen[0].guildId, IDS.guild);
+    assert.equal(seen[0].communityId, 77);
     assert.equal(seen[0].actorUserId, IDS.admin);
     assert.equal(seen[0].action, "test.action");
     assert.equal(seen[0].targetType, "user");
@@ -91,6 +92,7 @@ describe("auditTrail helper contract (unit)", () => {
         insertAdminAudit: () => {
           throw new Error("SQLITE_BUSY");
         },
+        resolveCommunity: (id) => (id === IDS.guild ? 77 : null),
         logger,
       }
     );
@@ -114,6 +116,7 @@ describe("auditTrail helper contract (unit)", () => {
         normalizeAuditOrigin: () => {
           throw new Error("boom");
         },
+        resolveCommunity: (id) => (id === IDS.guild ? 77 : null),
         logger,
       }
     );
@@ -138,6 +141,7 @@ describe("auditTrail helper contract (unit)", () => {
           inserts += 1;
           return {};
         },
+        resolveCommunity: (id) => (id === IDS.guild ? 77 : null),
         logger,
       }
     );
@@ -154,6 +158,7 @@ describe("auditTrail helper contract (unit)", () => {
         seen.push(o);
         return {};
       },
+      resolveCommunity: (id) => (id === IDS.guild ? 77 : null),
       logger,
     };
 
@@ -181,6 +186,7 @@ describe("auditTrail helper contract (unit)", () => {
         inserts += 1;
         return {};
       },
+      resolveCommunity: (id) => (id === IDS.guild ? 77 : null),
       logger,
     };
 
@@ -223,7 +229,7 @@ describe("auditTrail helper contract (unit)", () => {
 
   it("default deps insert a real row into SQLite (fail-open round-trip)", () => {
     const row = recordSlashAudit({
-      guildId: "guild-unit-audit-roundtrip",
+      communityId: communityKey("guild-unit-audit-roundtrip"),
       actorUserId: IDS.admin,
       action: "test.roundtrip",
       targetType: "user",
@@ -237,7 +243,7 @@ describe("auditTrail helper contract (unit)", () => {
     assert.equal(details.kept, true);
     assert.equal(details.bot_token, undefined);
 
-    const listed = unitDb.listAdminAudit("guild-unit-audit-roundtrip");
+    const listed = unitDb.listAdminAudit(communityKey("guild-unit-audit-roundtrip"));
     assert.equal(listed.length, 1);
     assert.equal(listed[0].actor_user_id, IDS.admin);
   });
@@ -252,7 +258,7 @@ describe("admin_audit rows from slash mutations (integration)", () => {
   });
 
   function auditRows() {
-    return env.db.listAdminAudit(env.guild.id, { limit: 100 });
+    return env.db.listAdminAudit(communityKey(env.guild.id), { limit: 100 });
   }
 
   it("/warn add + void each write one slash-origin row", async () => {
@@ -375,7 +381,7 @@ describe("admin_audit rows from slash mutations (integration)", () => {
       admin: true,
       options: { channel: ch },
     });
-    assert.equal(env.db.listAllowedCommandChannels(env.guild.id).length, 0);
+    assert.equal(env.db.listAllowedCommandChannels(communityKey(env.guild.id)).length, 0);
     assert.ok(findRow(auditRows(), "command_channels.remove"));
   });
 
@@ -401,7 +407,7 @@ describe("admin_audit rows from slash mutations (integration)", () => {
   });
 
   it("/ticket create → claim → close → archive each write slash rows", async () => {
-    env.db.updateGuildSettings(env.guild.id, { ticket_rate_limit_minutes: 0 });
+    env.db.updateGuildSettings(communityKey(env.guild.id), { ticket_rate_limit_minutes: 0 });
 
     const create = await env.runCommand({
       commandName: "ticket",
@@ -412,7 +418,7 @@ describe("admin_audit rows from slash mutations (integration)", () => {
     });
     assertReplyContains(create, /Ticket|opened/i);
 
-    const open = env.db.listOpenTickets(env.guild.id, {
+    const open = env.db.listOpenTickets(communityKey(env.guild.id), {
       userId: IDS.member,
       limit: 5,
     });
@@ -470,12 +476,12 @@ describe("admin_audit rows from slash mutations (integration)", () => {
     assert.equal(archiveRow.actor_user_id, IDS.admin);
     assert.equal(archiveRow.target_id, String(ticket.id));
 
-    env.db.updateGuildSettings(env.guild.id, { ticket_rate_limit_minutes: 60 });
+    env.db.updateGuildSettings(communityKey(env.guild.id), { ticket_rate_limit_minutes: 60 });
   });
 
   it("warn-expiry ticker writes origin 'system' rows without an actor", async () => {
     env.db.createWarning({
-      guildId: env.guild.id,
+      communityId: communityKey(env.guild.id),
       userId: IDS.member2,
       issuerId: IDS.admin,
       reason: "Expires under audit",
@@ -493,7 +499,7 @@ describe("admin_audit rows from slash mutations (integration)", () => {
     assert.equal(row.target_type, "warning");
     assert.equal(detailsOf(row).subject_user_id, IDS.member2);
 
-    const systemRows = env.db.listAdminAudit(env.guild.id, {
+    const systemRows = env.db.listAdminAudit(communityKey(env.guild.id), {
       limit: 50,
       origin: "system",
     });

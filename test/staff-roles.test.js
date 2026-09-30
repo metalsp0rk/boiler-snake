@@ -1,6 +1,6 @@
 const { describe, it, before } = require("node:test");
 const assert = require("node:assert/strict");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 describe("staff roles levels", () => {
   /** @type {ReturnType<typeof loadDb>["api"]} */
@@ -11,50 +11,50 @@ describe("staff roles levels", () => {
   });
 
   it("defaults add to senior and supports junior", () => {
-    db.addStaffRole("g1", "role-a");
-    let row = db.getStaffRole("g1", "role-a");
+    db.addStaffRole(communityKey("g1"), "role-a");
+    let row = db.getStaffRole(communityKey("g1"), "role-a");
     assert.equal(row.level, "senior");
 
-    db.addStaffRole("g1", "role-b", "junior");
-    row = db.getStaffRole("g1", "role-b");
+    db.addStaffRole(communityKey("g1"), "role-b", "junior");
+    row = db.getStaffRole(communityKey("g1"), "role-b");
     assert.equal(row.level, "junior");
 
-    const all = db.listStaffRoles("g1");
+    const all = db.listStaffRoles(communityKey("g1"));
     assert.equal(all.length, 2);
 
-    const seniors = db.listSeniorStaffRoles("g1");
+    const seniors = db.listSeniorStaffRoles(communityKey("g1"));
     assert.equal(seniors.length, 1);
     assert.equal(seniors[0].role_id, "role-a");
 
-    const juniors = db.listStaffRoles("g1", { level: "junior" });
+    const juniors = db.listStaffRoles(communityKey("g1"), { level: "junior" });
     assert.equal(juniors.length, 1);
     assert.equal(juniors[0].role_id, "role-b");
   });
 
   it("memberHasStaffRole is any level; senior check is senior only", () => {
-    db.addStaffRole("g2", "sr", "senior");
-    db.addStaffRole("g2", "jr", "junior");
+    db.addStaffRole(communityKey("g2"), "sr", "senior");
+    db.addStaffRole(communityKey("g2"), "jr", "junior");
 
-    assert.equal(db.memberHasStaffRole("g2", ["jr"]), true);
-    assert.equal(db.memberHasStaffRole("g2", ["sr"]), true);
-    assert.equal(db.memberHasStaffRole("g2", ["other"]), false);
+    assert.equal(db.memberHasStaffRole(communityKey("g2"), ["jr"]), true);
+    assert.equal(db.memberHasStaffRole(communityKey("g2"), ["sr"]), true);
+    assert.equal(db.memberHasStaffRole(communityKey("g2"), ["other"]), false);
 
-    assert.equal(db.memberHasSeniorStaffRole("g2", ["jr"]), false);
-    assert.equal(db.memberHasSeniorStaffRole("g2", ["sr"]), true);
-    assert.equal(db.memberHasSeniorStaffRole("g2", ["jr", "sr"]), true);
+    assert.equal(db.memberHasSeniorStaffRole(communityKey("g2"), ["jr"]), false);
+    assert.equal(db.memberHasSeniorStaffRole(communityKey("g2"), ["sr"]), true);
+    assert.equal(db.memberHasSeniorStaffRole(communityKey("g2"), ["jr", "sr"]), true);
   });
 
   it("setStaffRoleLevel and upsert on add", () => {
-    db.addStaffRole("g3", "r1", "junior");
-    assert.equal(db.getStaffRole("g3", "r1").level, "junior");
+    db.addStaffRole(communityKey("g3"), "r1", "junior");
+    assert.equal(db.getStaffRole(communityKey("g3"), "r1").level, "junior");
 
-    assert.equal(db.setStaffRoleLevel("g3", "r1", "senior"), true);
-    assert.equal(db.getStaffRole("g3", "r1").level, "senior");
+    assert.equal(db.setStaffRoleLevel(communityKey("g3"), "r1", "senior"), true);
+    assert.equal(db.getStaffRole(communityKey("g3"), "r1").level, "senior");
 
-    db.addStaffRole("g3", "r1", "junior"); // upsert
-    assert.equal(db.getStaffRole("g3", "r1").level, "junior");
+    db.addStaffRole(communityKey("g3"), "r1", "junior"); // upsert
+    assert.equal(db.getStaffRole(communityKey("g3"), "r1").level, "junior");
 
-    assert.equal(db.setStaffRoleLevel("g3", "missing", "senior"), false);
+    assert.equal(db.setStaffRoleLevel(communityKey("g3"), "missing", "senior"), false);
   });
 
   it("normalizeStaffLevel", () => {
@@ -66,19 +66,19 @@ describe("staff roles levels", () => {
   });
 
   it("add records added_by; get/list expose it; omitted actor stays NULL", () => {
-    db.addStaffRole("g4", "r-seed", "senior", "admin-4");
-    assert.equal(db.getStaffRole("g4", "r-seed").added_by, "admin-4");
-    const listed = db.listStaffRoles("g4").find((r) => r.role_id === "r-seed");
+    db.addStaffRole(communityKey("g4"), "r-seed", "senior", "admin-4");
+    assert.equal(db.getStaffRole(communityKey("g4"), "r-seed").added_by, "admin-4");
+    const listed = db.listStaffRoles(communityKey("g4")).find((r) => r.role_id === "r-seed");
     assert.equal(listed.added_by, "admin-4");
 
-    db.addStaffRole("g4", "r-anon", "junior");
-    assert.equal(db.getStaffRole("g4", "r-anon").added_by, null);
+    db.addStaffRole(communityKey("g4"), "r-anon", "junior");
+    assert.equal(db.getStaffRole(communityKey("g4"), "r-anon").added_by, null);
 
     // re-add with actor refreshes provenance; actorless re-add preserves it
-    db.addStaffRole("g4", "r-seed", "junior", "admin-5");
-    assert.equal(db.getStaffRole("g4", "r-seed").added_by, "admin-5");
-    db.addStaffRole("g4", "r-seed", "senior");
-    assert.equal(db.getStaffRole("g4", "r-seed").added_by, "admin-5");
+    db.addStaffRole(communityKey("g4"), "r-seed", "junior", "admin-5");
+    assert.equal(db.getStaffRole(communityKey("g4"), "r-seed").added_by, "admin-5");
+    db.addStaffRole(communityKey("g4"), "r-seed", "senior");
+    assert.equal(db.getStaffRole(communityKey("g4"), "r-seed").added_by, "admin-5");
   });
 });
 
@@ -122,7 +122,7 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
     guild.addChannel(auditChannel);
     const client = createClient();
     client.addGuild(guild);
-    envApi.updateGuildSettings(guildId, {
+    envApi.updateGuildSettings(communityKey(guildId), {
       audit_log_channel_id: auditChannel.id,
     });
 
@@ -179,7 +179,7 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
         /Added <@&role-new> as \*\*senior\*\*/,
       );
 
-      const row = envApi.getStaffRole(G, "role-new");
+      const row = envApi.getStaffRole(communityKey(G), "role-new");
       assert.equal(row.added_by, env.adminUser.id, "actor recorded on add");
 
       const embeds = auditEmbeds(env);
@@ -217,7 +217,7 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
         /Level: \*\*junior\*\* → \*\*senior\*\*/,
       );
       assert.equal(
-        envApi.getStaffRole(G, "role-x").added_by,
+        envApi.getStaffRole(communityKey(G), "role-x").added_by,
         env.adminUser.id,
         "re-add keeps recording the acting admin",
       );
@@ -228,13 +228,13 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
     it("posts a 'Staff role removed' embed with command and actor", async () => {
       const G = "g-staff-remove";
       const env = makeStaffEnv(G);
-      envApi.addStaffRole(G, "role-gone", "senior", env.adminUser.id);
+      envApi.addStaffRole(communityKey(G), "role-gone", "senior", env.adminUser.id);
 
       const interaction = await runRoleSub(env, "remove", {
         role: fakeRole("role-gone"),
       });
       assert.match(lastReplyContent(interaction), /Removed <@&role-gone>/);
-      assert.equal(envApi.getStaffRole(G, "role-gone"), null);
+      assert.equal(envApi.getStaffRole(communityKey(G), "role-gone"), null);
 
       const embeds = auditEmbeds(env);
       assert.equal(embeds.length, 1);
@@ -263,7 +263,7 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
     it("posts a 'Staff role level changed' embed showing the level diff", async () => {
       const G = "g-staff-setlevel";
       const env = makeStaffEnv(G);
-      envApi.addStaffRole(G, "role-lvl", "senior", "admin-seed");
+      envApi.addStaffRole(communityKey(G), "role-lvl", "senior", "admin-seed");
 
       const interaction = await runRoleSub(env, "setlevel", {
         role: fakeRole("role-lvl"),
@@ -273,7 +273,7 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
         lastReplyContent(interaction),
         /Set <@&role-lvl> to \*\*junior\*\*/,
       );
-      assert.equal(envApi.getStaffRole(G, "role-lvl").level, "junior");
+      assert.equal(envApi.getStaffRole(communityKey(G), "role-lvl").level, "junior");
 
       const embeds = auditEmbeds(env);
       assert.equal(embeds.length, 1);
@@ -290,8 +290,8 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
     it("shows 'added by' for rows with provenance and omits it for legacy NULLs", async () => {
       const G = "g-staff-list";
       const env = makeStaffEnv(G);
-      envApi.addStaffRole(G, "role-known", "senior", "known-actor");
-      envApi.addStaffRole(G, "role-legacy", "senior"); // NULL added_by (pre-migration row)
+      envApi.addStaffRole(communityKey(G), "role-known", "senior", "known-actor");
+      envApi.addStaffRole(communityKey(G), "role-legacy", "senior"); // NULL added_by (pre-migration row)
 
       const interaction = await runRoleSub(env, "list", {});
       const text = lastReplyContent(interaction);

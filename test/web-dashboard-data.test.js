@@ -43,7 +43,8 @@ const {
   DETAIL_CRON_NO_DERIVED,
 } = require("../src/web/data/schedulerJobHealth");
 
-const GUILD = "700000000000000001";
+// Fluxer PR 2: the data layer keys by the INTEGER communities.id.
+const GUILD = 701;
 
 /**
  * Counting fake db facade: records {name,args} for every read the dashboard
@@ -208,7 +209,7 @@ describe("dashboardData: cache + query budget", () => {
 
     await dash.getDashboard(GUILD);
     const firstGuildCalls = calls.length;
-    await dash.getDashboard("700000000000000002");
+    await dash.getDashboard(702);
     assert.equal(calls.length, firstGuildCalls * 2, "second guild reads fresh");
     await dash.getDashboard(GUILD);
     assert.equal(calls.length, firstGuildCalls * 2, "first guild still cached");
@@ -223,7 +224,7 @@ describe("dashboardData: cache + query budget", () => {
     const { db } = makeFakeDb();
     const dash = createDashboardData({ db, now: () => T0, ttlMs: 60_000, maxEntries: 3 });
     for (let i = 0; i < 10; i += 1) {
-      await dash.getDashboard(`${GUILD}${i}`);
+      await dash.getDashboard(GUILD + i * 1000);
     }
     assert.ok(dash._cacheSizeForTests() <= 3);
   });
@@ -263,7 +264,9 @@ describe("dashboardData: cache + query budget", () => {
     const { db } = makeFakeDb();
     const dash = createDashboardData({ db, now: () => T0 });
     await assert.rejects(() => dash.getDashboard(""), TypeError);
-    await assert.rejects(() => dash.getDashboard(42), TypeError);
+    await assert.rejects(() => dash.getDashboard("42"), TypeError, "string ids are a programmer error (PR 2: integer contract)");
+    await assert.rejects(() => dash.getDashboard(0), TypeError, "zero is not a community id");
+    await assert.rejects(() => dash.getDashboard(1.5), TypeError, "non-integer is a programmer error");
   });
 
   it("providers: throwing/absent degrades; playing payload is normalized + clamped", async () => {
@@ -914,7 +917,7 @@ describe("dashboardData: chart series (cache + zero fill + honesty)", () => {
     const dash = createDashboardData({ db, now: () => T0, ttlMs: 30_000 });
     await dash.getDailyActivitySeries(GUILD, { days: 7 });
     await dash.getDailyActivitySeries(GUILD, { days: 30 });
-    await dash.getDailyActivitySeries("700000000000000099", { days: 7 });
+    await dash.getDailyActivitySeries(799, { days: 7 });
     assert.equal(calls.length, 3, "distinct keys: guild × window size");
     assert.equal(dash._seriesCacheSizeForTests(), 3);
   });

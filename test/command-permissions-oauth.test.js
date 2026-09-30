@@ -1,7 +1,7 @@
 const { describe, it, beforeEach, afterEach, after } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // CONTRACT (same as test/command-visibility.test.js): loadDb() must stay above
 // every `src/` require — it points this process at a private temp DB (fresh
@@ -171,9 +171,9 @@ installModuleStub("../src/features/commandPermissions/oauthTokens", {
   },
 });
 installModuleStub("../src/features/commandPermissions/sync", {
-  applyGuildCommandPermissions: async (guildId, opts) => {
-    syncCalls.push({ guildId, opts });
-    return syncImpl(guildId, opts);
+  applyGuildCommandPermissions: async (communityId, opts) => {
+    syncCalls.push({ communityId, opts });
+    return syncImpl(communityId, opts);
   },
   maybeAutoSyncCommandPermissions: async () => {},
 });
@@ -237,7 +237,7 @@ describe("oauthTokens.exchangeAuthorizationCode", () => {
 
     // Act
     const result = await oauthTokens.exchangeAuthorizationCode({
-      guildId: "g-ex-ok",
+      communityId: communityKey("g-ex-ok"),
       code: "the-code",
       authorizedByUserId: "u-auth",
     });
@@ -270,7 +270,7 @@ describe("oauthTokens.exchangeAuthorizationCode", () => {
 
     // Outcome: access token returned AND persisted for later refresh.
     assert.equal(result.accessToken, "at-ex-1");
-    const row = dbApi.getCommandPermissionOauth("g-ex-ok");
+    const row = dbApi.getCommandPermissionOauth(communityKey("g-ex-ok"));
     assert.ok(row, "exchange must persist the oauth row");
     assert.equal(row.access_token, "at-ex-1");
     assert.equal(row.refresh_token, "rt-ex-1");
@@ -297,7 +297,7 @@ describe("oauthTokens.exchangeAuthorizationCode", () => {
 
     // Act
     const err = await oauthTokens
-      .exchangeAuthorizationCode({ guildId: "g-ex-badcode", code: "stale-code" })
+      .exchangeAuthorizationCode({ communityId: communityKey("g-ex-badcode"), code: "stale-code" })
       .catch((e) => e);
 
     // Assert
@@ -311,7 +311,7 @@ describe("oauthTokens.exchangeAuthorizationCode", () => {
     assert.equal(err.status, 400);
     assert.equal(calls.length, 1);
     assert.equal(
-      dbApi.getCommandPermissionOauth("g-ex-badcode"),
+      dbApi.getCommandPermissionOauth(communityKey("g-ex-badcode")),
       null,
       "failed exchange must not persist tokens"
     );
@@ -325,12 +325,12 @@ describe("oauthTokens.exchangeAuthorizationCode", () => {
 
     // Act
     const err = await oauthTokens
-      .exchangeAuthorizationCode({ guildId: "g-ex-partial", code: "c" })
+      .exchangeAuthorizationCode({ communityId: communityKey("g-ex-partial"), code: "c" })
       .catch((e) => e);
 
     // Assert
     assert.match(err.message, /missing refresh_token or access_token/i);
-    assert.equal(dbApi.getCommandPermissionOauth("g-ex-partial"), null);
+    assert.equal(dbApi.getCommandPermissionOauth(communityKey("g-ex-partial")), null);
   });
 
   // Objective: "Missing config (CLIENT_SECRET etc.) → the documented gate".
@@ -348,7 +348,7 @@ describe("oauthTokens.exchangeAuthorizationCode", () => {
 
     // Act
     const err = await oauthTokens
-      .exchangeAuthorizationCode({ guildId: "g-ex-nocfg", code: "c" })
+      .exchangeAuthorizationCode({ communityId: communityKey("g-ex-nocfg"), code: "c" })
       .catch((e) => e);
 
     // Assert
@@ -364,7 +364,7 @@ describe("oauthTokens.exchangeAuthorizationCode", () => {
 
     // Act
     const err = await oauthTokens
-      .exchangeAuthorizationCode({ guildId: "g-ex-html", code: "c" })
+      .exchangeAuthorizationCode({ communityId: communityKey("g-ex-html"), code: "c" })
       .catch((e) => e);
 
     // Assert
@@ -380,14 +380,14 @@ describe("oauthTokens.getValidAccessToken", () => {
   // network (tripwire fetch stays armed — it throws if called at all).
   it("returns the cached token without any network call while unexpired", async () => {
     // Arrange
-    dbApi.upsertCommandPermissionOauth("g-tok-fresh", {
+    dbApi.upsertCommandPermissionOauth(communityKey("g-tok-fresh"), {
       refreshToken: "rt-fresh",
       accessToken: "at-fresh",
       accessExpiresAt: Date.now() + 600_000,
     });
 
     // Act
-    const token = await oauthTokens.getValidAccessToken("g-tok-fresh");
+    const token = await oauthTokens.getValidAccessToken(communityKey("g-tok-fresh"));
 
     // Assert
     assert.equal(token, "at-fresh");
@@ -397,7 +397,7 @@ describe("oauthTokens.getValidAccessToken", () => {
   // needed), new token persisted, rotated refresh_token stored too.
   it("refreshes an expired token via refresh_token grant and persists rotation", async () => {
     // Arrange
-    dbApi.upsertCommandPermissionOauth("g-tok-expired", {
+    dbApi.upsertCommandPermissionOauth(communityKey("g-tok-expired"), {
       refreshToken: "rt-old",
       accessToken: "at-old",
       accessExpiresAt: Date.now() - 1000,
@@ -411,7 +411,7 @@ describe("oauthTokens.getValidAccessToken", () => {
     );
 
     // Act
-    const token = await oauthTokens.getValidAccessToken("g-tok-expired");
+    const token = await oauthTokens.getValidAccessToken(communityKey("g-tok-expired"));
 
     // Assert
     assert.equal(token, "at-new");
@@ -420,7 +420,7 @@ describe("oauthTokens.getValidAccessToken", () => {
     assert.equal(form.grant_type, "refresh_token");
     assert.equal(form.refresh_token, "rt-old");
     assert.ok(!("redirect_uri" in form), "refresh grant must not send redirect_uri");
-    const row = dbApi.getCommandPermissionOauth("g-tok-expired");
+    const row = dbApi.getCommandPermissionOauth(communityKey("g-tok-expired"));
     assert.equal(row.access_token, "at-new");
     assert.equal(row.refresh_token, "rt-rotated", "rotated refresh token must be stored");
     assert.ok(row.access_expires_at > Date.now());
@@ -431,7 +431,7 @@ describe("oauthTokens.getValidAccessToken", () => {
   it("rejects with not_authorized for a guild that never authorized", async () => {
     // Act
     const err = await oauthTokens
-      .getValidAccessToken("g-tok-none")
+      .getValidAccessToken(communityKey("g-tok-none"))
       .catch((e) => e);
 
     // Assert
@@ -445,7 +445,7 @@ describe("oauthTokens.getValidAccessToken", () => {
   // (c) drop the dead row so the guild is forced through a fresh consent.
   it("drops the stored grant and tags reauth_required when refresh is 400 invalid_grant", async () => {
     // Arrange
-    dbApi.upsertCommandPermissionOauth("g-tok-dead", {
+    dbApi.upsertCommandPermissionOauth(communityKey("g-tok-dead"), {
       refreshToken: "rt-dead",
       accessToken: "at-dead",
       accessExpiresAt: Date.now() - 1000,
@@ -459,7 +459,7 @@ describe("oauthTokens.getValidAccessToken", () => {
 
     // Act
     const err = await oauthTokens
-      .getValidAccessToken("g-tok-dead")
+      .getValidAccessToken(communityKey("g-tok-dead"))
       .catch((e) => e);
 
     // Assert
@@ -471,7 +471,7 @@ describe("oauthTokens.getValidAccessToken", () => {
       "callers must be able to distinguish re-auth from generic failures"
     );
     assert.equal(
-      dbApi.getCommandPermissionOauth("g-tok-dead"),
+      dbApi.getCommandPermissionOauth(communityKey("g-tok-dead")),
       null,
       "dead grant must be deleted so a fresh authorize flow is required"
     );
@@ -481,7 +481,7 @@ describe("oauthTokens.getValidAccessToken", () => {
   // stored grant must SURVIVE so the next attempt can succeed.
   it("keeps the stored grant when refresh fails transiently (500)", async () => {
     // Arrange
-    dbApi.upsertCommandPermissionOauth("g-tok-500", {
+    dbApi.upsertCommandPermissionOauth(communityKey("g-tok-500"), {
       refreshToken: "rt-ok",
       accessToken: "at-stale",
       accessExpiresAt: Date.now() - 1000,
@@ -490,12 +490,12 @@ describe("oauthTokens.getValidAccessToken", () => {
 
     // Act
     const err = await oauthTokens
-      .getValidAccessToken("g-tok-500")
+      .getValidAccessToken(communityKey("g-tok-500"))
       .catch((e) => e);
 
     // Assert
     assert.equal(err.code, "server_error");
-    const row = dbApi.getCommandPermissionOauth("g-tok-500");
+    const row = dbApi.getCommandPermissionOauth(communityKey("g-tok-500"));
     assert.ok(row, "transient failure must not delete a potentially valid grant");
     assert.equal(row.refresh_token, "rt-ok");
   });
@@ -541,6 +541,7 @@ describe("handleCommandPermissionOAuthCallback", () => {
   // trade an attacker-forged callback's code for a token.
   it("rejects tampered, expired, unknown, and replayed states without attempting an exchange", async () => {
     // Arrange
+    communityKey("g-cb"); // PR 2: callback resolves external -> integer
     const goodState = createOAuthState({ guildId: "g-cb", userId: "u-cb" });
     const tamperedState =
       goodState.slice(0, -4) + (goodState.endsWith("xxxx") ? "yyyy" : "xxxx");
@@ -621,6 +622,7 @@ describe("handleCommandPermissionOAuthCallback", () => {
   // permission sync, and the completion page must summarize the result.
   it("completes the flow: state identities drive the exchange, token feeds sync, 200 page", async () => {
     // Arrange
+    communityKey("9001"); // PR 2: callback resolves external -> integer
     const state = createOAuthState({ guildId: "9001", userId: "5001" });
     const res = makeRes();
 
@@ -634,11 +636,11 @@ describe("handleCommandPermissionOAuthCallback", () => {
     // Assert — exchange got guild/user strictly from the verified state
     assert.equal(handled, true);
     assert.deepEqual(exchangeCalls, [
-      { guildId: "9001", code: "cb-code", authorizedByUserId: "5001" },
+      { communityId: communityKey("9001"), code: "cb-code", authorizedByUserId: "5001" },
     ]);
     // sync got the just-exchanged access token (skip-token-load path)
     assert.deepEqual(syncCalls, [
-      { guildId: "9001", opts: { accessToken: "at-from-exchange" } },
+      { communityId: communityKey("9001"), opts: { accessToken: "at-from-exchange" } },
     ]);
     // session completion page
     assert.equal(res.statusCode, 200);
@@ -661,6 +663,7 @@ describe("handleCommandPermissionOAuthCallback", () => {
       err.status = 400;
       throw err;
     };
+    communityKey("g-cb-err"); // PR 2
     const state = createOAuthState({ guildId: "g-cb-err", userId: "u1" });
     const logs = [];
     const origError = console.error;
@@ -713,6 +716,7 @@ describe("handleCommandPermissionOAuthCallback", () => {
       missingCommands: ["gork"],
       roleCount: 1,
     });
+    communityKey("g-cb-part"); // PR 2
     const state = createOAuthState({ guildId: "g-cb-part", userId: "u1" });
     const res = makeRes();
 

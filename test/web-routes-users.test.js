@@ -29,7 +29,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // ---------------------------------------------------------------------------
 // loadDb() FIRST (cache clear + DB_PATH bind), then require src modules.
@@ -52,6 +52,11 @@ const USER_PLAIN = "428190112345678904";
 
 const GUILD_A = "100000000000000001";
 const GUILD_B = "200000000000000002";
+
+// Fluxer PR 2: data layer + route identity key on the INTEGER communities.id;
+// Discord fixtures (resolver snapshots, client caches) keep the snowflake.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
 
 const ROLE_JUNIOR = "500000000000000011";
 const ROLE_SENIOR = "500000000000000012";
@@ -102,23 +107,23 @@ before(async () => {
   delete process.env.WEB_TIER_CACHE_TTL_MS;
 
   // ---- staff roles (guild A) ----------------------------------------------
-  api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-  api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+  api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+  api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
 
   // ---- subject data (guild A) ----------------------------------------------
-  api.addXp(GUILD_A, SUBJECT, 1234); // level = floor(sqrt(1234/100)) = 3
+  api.addXp(CID_A, SUBJECT, 1234); // level = floor(sqrt(1234/100)) = 3
   for (let i = 0; i < 12; i += 1) {
     api.createWarning({
-      guildId: GUILD_A,
+      communityId: CID_A,
       userId: SUBJECT,
       issuerId: USER_ADMIN,
       reason: `spam incident ${i}`,
     });
   }
-  api.voidWarning(GUILD_A, 12, { voidedBy: USER_ADMIN, voidReason: "appeal upheld" });
+  api.voidWarning(CID_A, 12, { voidedBy: USER_ADMIN, voidReason: "appeal upheld" });
   for (let i = 0; i < 3; i += 1) {
     api.createStaffNote({
-      guildId: GUILD_A,
+      communityId: CID_A,
       userId: SUBJECT,
       authorId: USER_SENIOR,
       content: `pattern note ${i}`,
@@ -127,13 +132,13 @@ before(async () => {
 
   // Tickets: #1 created BY the subject, #2 subject added as member.
   api.createTicket({
-    guildId: GUILD_A,
+    communityId: CID_A,
     creatorUserId: SUBJECT,
     channelId: "880000000000000001",
     reason: "broken role",
   });
   const t2 = api.createTicket({
-    guildId: GUILD_A,
+    communityId: CID_A,
     creatorUserId: OTHER_CREATOR,
     channelId: "880000000000000002",
     reason: "report about subject",
@@ -146,26 +151,26 @@ before(async () => {
   const oldDay = api.utcDayKeyDaysAgo(60);
   for (let d = 0; d < 7; d += 1) {
     const day = api.utcDayKeyDaysAgo(d);
-    api.incrementDaily(GUILD_A, SUBJECT, CH_PUB, day, 3);
+    api.incrementDaily(CID_A, SUBJECT, CH_PUB, day, 3);
   }
-  api.incrementDaily(GUILD_A, SUBJECT, CH_PUB, oldDay, 3);
-  api.incrementDaily(GUILD_A, SUBJECT, CH_SEC, recentDay, 2);
-  api.upsertUserActivityMeta(GUILD_A, SUBJECT, {
+  api.incrementDaily(CID_A, SUBJECT, CH_PUB, oldDay, 3);
+  api.incrementDaily(CID_A, SUBJECT, CH_SEC, recentDay, 2);
+  api.upsertUserActivityMeta(CID_A, SUBJECT, {
     tracking_since_ms: Date.now() - 90 * 86400000,
     backfill_status: "done",
   });
 
   // ---- bulk subject (cap probes) -------------------------------------------
-  api.addXp(GUILD_A, BULK, 42); // tracked (searchable) + cap data below
+  api.addXp(CID_A, BULK, 42); // tracked (searchable) + cap data below
   for (let i = 0; i < 105; i += 1) {
     api.createWarning({
-      guildId: GUILD_A,
+      communityId: CID_A,
       userId: BULK,
       issuerId: USER_ADMIN,
       reason: `bulk warning ${i}`,
     });
     api.createStaffNote({
-      guildId: GUILD_A,
+      communityId: CID_A,
       userId: BULK,
       authorId: USER_ADMIN,
       content: `bulk note ${i}`,
@@ -173,11 +178,11 @@ before(async () => {
   }
 
   // ---- guild-B-only user (cross-guild probe) --------------------------------
-  api.addXp(GUILD_B, B_SUBJECT, B_XP);
+  api.addXp(CID_B, B_SUBJECT, B_XP);
 
   // ---- search-cap seed: 60 users sharing a digit prefix in guild A ----------
   for (let i = 0; i < 60; i += 1) {
-    api.addXp(GUILD_A, `9${String(i).padStart(17, "0")}`, i);
+    api.addXp(CID_A, `9${String(i).padStart(17, "0")}`, i);
   }
 
   // ---- fake Discord (resolver) ----------------------------------------------
@@ -303,12 +308,14 @@ async function hit(path, opts = {}) {
 // A. Profile route — access matrix + exact senior boundary
 // ===========================================================================
 describe("GET /g/:guildId/users/:userId — unified profile", () => {
-  const url = `/g/${GUILD_A}/users/${SUBJECT}`;
+  const url = `/g/${CID_A}/users/${SUBJECT}`;
 
   it("anonymous → 302 login redirect (guildScope contract)", async () => {
     const { res } = await hit(url);
     assert.equal(res.status, 302);
-    assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+    // PR 2: integer community ids fail the 5–20-digit snowflake gate in
+    // loginRedirectTarget, so the anon target is the bare login page.
+    assert.equal(res.headers.get("location"), "/auth/login");
   });
 
   it("in-guild member WITHOUT staff role → generic 404 (never 403)", async () => {
@@ -319,7 +326,7 @@ describe("GET /g/:guildId/users/:userId — unified profile", () => {
 
   it("stranger session (unknown guild) → generic 404", async () => {
     // USER_PLAIN's list contains only guild A; probe guild B directly.
-    const { res, body } = await hit(`/g/${GUILD_B}/users/${SUBJECT}`, { key: "staff" });
+    const { res, body } = await hit(`/g/${CID_B}/users/${SUBJECT}`, { key: "staff" });
     assert.equal(res.status, 404);
     assert.equal(body, "Not found");
   });
@@ -382,7 +389,7 @@ describe("GET /g/:guildId/users/:userId — unified profile", () => {
 // B. Activity route — Senior+ only (§8.6 row + slash gate mirror)
 // ===========================================================================
 describe("GET /g/:guildId/users/:userId/activity — Senior-only", () => {
-  const url = `/g/${GUILD_A}/users/${SUBJECT}/activity`;
+  const url = `/g/${CID_A}/users/${SUBJECT}/activity`;
 
   it("anonymous → 302 login", async () => {
     const { res } = await hit(url);
@@ -440,7 +447,7 @@ describe("GET /g/:guildId/users/:userId/activity — Senior-only", () => {
   });
 
   it("member-known-without-DB-data → empty ranking (not 404) — slash resolveUser parity", async () => {
-    const { res, body } = await hit(`/g/${GUILD_A}/users/${KNOWN_MEMBER}/activity`, { key: "senior" });
+    const { res, body } = await hit(`/g/${CID_A}/users/${KNOWN_MEMBER}/activity`, { key: "senior" });
     assert.equal(res.status, 200);
     assert.ok(body.includes("No tracked messages yet"));
   });
@@ -450,7 +457,7 @@ describe("GET /g/:guildId/users/:userId/activity — Senior-only", () => {
 // C. Search page
 // ===========================================================================
 describe("GET /g/:guildId/users?q= — search (staff+)", () => {
-  const base = `/g/${GUILD_A}/users`;
+  const base = `/g/${CID_A}/users`;
 
   it("anon 302 · plain 404 · staff 200", async () => {
     assert.equal((await hit(base)).res.status, 302);
@@ -497,7 +504,7 @@ describe("404 semantics", () => {
   it("garbage/short :userId → byte-generic 404 (never shell, never enumerated)", async () => {
     for (const junk of ["abc", "1234", "55-66", "%35%35"]) {
       for (const key of ["staff", "senior"]) {
-        const { res, body } = await hit(`/g/${GUILD_A}/users/${junk}`, { key });
+        const { res, body } = await hit(`/g/${CID_A}/users/${junk}`, { key });
         assert.equal(res.status, 404, junk);
         assert.equal(body, "Not found", `${junk} via ${key}`);
       }
@@ -505,13 +512,13 @@ describe("404 semantics", () => {
   });
 
   it("garbage :userId on the senior activity route → byte-generic 404 too", async () => {
-    const { res, body } = await hit(`/g/${GUILD_A}/users/oops/activity`, { key: "senior" });
+    const { res, body } = await hit(`/g/${CID_A}/users/oops/activity`, { key: "senior" });
     assert.equal(res.status, 404);
     assert.equal(body, "Not found");
   });
 
   it("valid snowflake with NO footprint → friendly in-shell 404 (staff sees the explanation)", async () => {
-    const { res, body } = await hit(`/g/${GUILD_A}/users/${UNKNOWN_USER}`, { key: "staff" });
+    const { res, body } = await hit(`/g/${CID_A}/users/${UNKNOWN_USER}`, { key: "staff" });
     assert.equal(res.status, 404);
     assert.match(body, /<!DOCTYPE html>/);
     assert.ok(body.includes("No bot data exists"), "friendly message");
@@ -519,14 +526,14 @@ describe("404 semantics", () => {
   });
 
   it("guild-B user via guild A → 404 AND zero guild-B XP leakage (no cross-guild join)", async () => {
-    const { res, body } = await hit(`/g/${GUILD_A}/users/${B_SUBJECT}`, { key: "senior" });
+    const { res, body } = await hit(`/g/${CID_A}/users/${B_SUBJECT}`, { key: "senior" });
     assert.equal(res.status, 404);
     assert.ok(body.includes("No bot data exists"));
     assert.ok(!body.includes(String(B_XP)), "guild-B XP never visible under guild A");
   });
 
   it("member-cache-known user without DB rows → 200 profile marked untracked", async () => {
-    const { res, body } = await hit(`/g/${GUILD_A}/users/${KNOWN_MEMBER}`, { key: "staff" });
+    const { res, body } = await hit(`/g/${CID_A}/users/${KNOWN_MEMBER}`, { key: "staff" });
     assert.equal(res.status, 200);
     assert.ok(body.includes("no XP row yet"), "explicit untracked marker instead of fake zeros");
   });
@@ -537,7 +544,7 @@ describe("404 semantics", () => {
 // ===========================================================================
 describe("bounded rendering under 105-row pressure", () => {
   it("105 warnings + 105 notes render exactly the 10-row caps", async () => {
-    const { res, body } = await hit(`/g/${GUILD_A}/users/${BULK}`, { key: "staff" });
+    const { res, body } = await hit(`/g/${CID_A}/users/${BULK}`, { key: "staff" });
     assert.equal(res.status, 200);
     assert.equal(count(body, '<tr class="row-warn"'), LIST_LIMIT);
     assert.equal(count(body, '<li class="row-note"'), LIST_LIMIT);
@@ -545,12 +552,12 @@ describe("bounded rendering under 105-row pressure", () => {
   });
 
   it("deep offsets clamp and stay bounded", async () => {
-    const { res, body } = await hit(`/g/${GUILD_A}/users/${BULK}?w_off=100`, { key: "staff" });
+    const { res, body } = await hit(`/g/${CID_A}/users/${BULK}?w_off=100`, { key: "staff" });
     assert.equal(res.status, 200);
     assert.equal(count(body, '<tr class="row-warn"'), 5, "tail page 101–105");
     assert.ok(body.includes("showing 101–105 of 105"));
     // Absurd offset clamps to MAX_OFFSET (no crash, still bounded)
-    const absurd = await hit(`/g/${GUILD_A}/users/${BULK}?w_off=999999999`, { key: "staff" });
+    const absurd = await hit(`/g/${CID_A}/users/${BULK}?w_off=999999999`, { key: "staff" });
     assert.equal(absurd.res.status, 200);
     assert.equal(count(absurd.body, '<tr class="row-warn"'), 0);
   });
@@ -561,9 +568,9 @@ describe("bounded rendering under 105-row pressure", () => {
 // ===========================================================================
 describe("read-only: no mutating verbs anywhere", async () => {
   for (const [label, path] of [
-    ["search", `/g/${GUILD_A}/users`],
-    ["profile", `/g/${GUILD_A}/users/${SUBJECT}`],
-    ["activity", `/g/${GUILD_A}/users/${SUBJECT}/activity`],
+    ["search", `/g/${CID_A}/users`],
+    ["profile", `/g/${CID_A}/users/${SUBJECT}`],
+    ["activity", `/g/${CID_A}/users/${SUBJECT}/activity`],
   ]) {
     it(`POST ${label} → 405 Method not allowed (methodGate)`, async () => {
       const { res, body } = await hit(path, { key: "admin", method: "POST" });
@@ -573,7 +580,7 @@ describe("read-only: no mutating verbs anywhere", async () => {
   }
 
   it("HEAD profile → 200 with no body (shell pages are safe for HEAD)", async () => {
-    const res = await fetch(`${suite.base}/g/${GUILD_A}/users/${SUBJECT}`, {
+    const res = await fetch(`${suite.base}/g/${CID_A}/users/${SUBJECT}`, {
       method: "HEAD",
       headers: { cookie: `web_session=${suite.cookies.staff}` },
     });

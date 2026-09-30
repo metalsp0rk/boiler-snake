@@ -36,7 +36,7 @@ describe("integration: honeypot", () => {
       options: { channel: env.channels.honeypot },
     });
     assertReplyContains(interaction, /honeypot/i);
-    assert.ok(env.db.isHoneypotChannel(env.guild.id, IDS.channelHoneypot));
+    assert.ok(env.db.isHoneypotChannel(env.communityId, IDS.channelHoneypot));
 
     const list = await env.runCommand({
       commandName: "honeypot",
@@ -59,7 +59,7 @@ describe("integration: honeypot", () => {
   });
 
   it("/honeypot exempt denies staff without ManageGuild", async () => {
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "senior");
     const staffMember = env.createMember({
       guild: env.guild,
       user: env.users.memberUser,
@@ -80,7 +80,7 @@ describe("integration: honeypot", () => {
   });
 
   it("ban-role grant triggers ban", async () => {
-    env.db.addHoneypotBanRole(env.guild.id, IDS.roleBan);
+    env.db.addHoneypotBanRole(env.communityId, IDS.roleBan);
     const user = env.createUser({ id: "user-banrole-1", username: "raider" });
     const oldMember = env.createMember({ guild: env.guild, user, roleIds: [] });
     const newMember = env.createMember({
@@ -95,8 +95,8 @@ describe("integration: honeypot", () => {
   });
 
   it("ban-role skips exempt members", async () => {
-    env.db.addHoneypotBanRole(env.guild.id, IDS.roleBan);
-    env.db.addHoneypotExemptRole(env.guild.id, IDS.roleExempt);
+    env.db.addHoneypotBanRole(env.communityId, IDS.roleBan);
+    env.db.addHoneypotExemptRole(env.communityId, IDS.roleExempt);
     const user = env.createUser({ id: "user-banrole-exempt", username: "staff2" });
     const oldMember = env.createMember({ guild: env.guild, user, roleIds: [IDS.roleExempt] });
     const newMember = env.createMember({

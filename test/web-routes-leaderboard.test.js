@@ -28,7 +28,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // ---------------------------------------------------------------------------
 // loadDb() FIRST (cache clear + DB_PATH bind), then require src modules.
@@ -58,6 +58,11 @@ const USER_PLAIN = "428190112345678904";
 const GUILD_A = "100000000000000001";
 const GUILD_B = "200000000000000002"; // bot NOT in B — cross-guild probe target
 const GUILD_C = "300000000000000003"; // bot in C, staff in C, NO users (empty state)
+
+// Fluxer PR 2: INTEGER communities.id for data + /g/<id> route identity.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
+const CID_C = communityKey(GUILD_C);
 
 const ROLE_JUNIOR = "500000000000000011";
 const ROLE_SENIOR = "500000000000000012";
@@ -105,27 +110,27 @@ before(async () => {
   delete process.env.WEB_TIER_CACHE_TTL_MS;
 
   // ---- staff roles (guild A) -----------------------------------------------
-  api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-  api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+  api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+  api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
   // Guild C hosts the EMPTY-leaderboard probe: the same junior role id must be
   // registered in C's OWN staff_roles rows for the staff visitor to resolve a
   // tier there (per-guild registration, exactly like production).
-  api.addStaffRole(GUILD_C, ROLE_JUNIOR, "junior");
+  api.addStaffRole(CID_C, ROLE_JUNIOR, "junior");
 
   // ---- XP fixtures (guild A) ------------------------------------------------
-  api.addXp(GUILD_A, LB_RICH, 10000);
-  api.addXp(GUILD_A, LB_MID, 1234);
-  api.addXp(GUILD_A, LB_XSS, 999);
+  api.addXp(CID_A, LB_RICH, 10000);
+  api.addXp(CID_A, LB_MID, 1234);
+  api.addXp(CID_A, LB_XSS, 999);
 
   // ---- bulk seed: >100 users so pagination math bites ------------------------
   for (let i = 1; i <= BULK_COUNT; i += 1) {
-    api.addXp(GUILD_A, bulkId(i), i); // xp=i → rank = 106 - i (105 tracked total)
+    api.addXp(CID_A, bulkId(i), i); // xp=i → rank = 106 - i (105 tracked total)
   }
-  api.addXp(GUILD_A, TIE_A, 55); // ties with bulk #55 → deterministic user_id order
-  api.addXp(GUILD_A, TIE_B, 55);
+  api.addXp(CID_A, TIE_A, 55); // ties with bulk #55 → deterministic user_id order
+  api.addXp(CID_A, TIE_B, 55);
 
   // ---- guild-B-only user (cross-guild probe) ---------------------------------
-  api.addXp(GUILD_B, B_ONLY, B_XP);
+  api.addXp(CID_B, B_ONLY, B_XP);
 
   // ---- fake Discord (resolver) ------------------------------------------------
   const fakeDiscord = {
@@ -252,8 +257,8 @@ async function hit(path, opts = {}) {
   return { res, body };
 }
 
-const BOARD = `/g/${GUILD_A}/leaderboard`;
-const userXp = (id, gid = GUILD_A) => `/g/${gid}/leaderboard/user/${id}`;
+const BOARD = `/g/${CID_A}/leaderboard`;
+const userXp = (id, gid = CID_A) => `/g/${gid}/leaderboard/user/${id}`;
 
 // ===========================================================================
 // A. Access matrix — both routes (§8.6; never 403 for scoped-out visitors)
@@ -266,7 +271,9 @@ describe("access matrix — leaderboard + per-user XP", () => {
     it(`${label}: anonymous → 302 login redirect (guildScope contract)`, async () => {
       const { res, body } = await hit(path);
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      // PR 2: integer community ids fail the 5–20-digit snowflake gate in
+      // loginRedirectTarget, so the anon target is the bare login page.
+      assert.equal(res.headers.get("location"), "/auth/login");
       assert.equal(body, "");
     });
 
@@ -278,7 +285,7 @@ describe("access matrix — leaderboard + per-user XP", () => {
 
     it(`${label}: cross-guild (guild B, bot absent) → generic 404, no data leak`, async () => {
       const { res, body } = await hit(
-        label === "board" ? `/g/${GUILD_B}/leaderboard` : userXp(LB_MID, GUILD_B),
+        label === "board" ? `/g/${CID_B}/leaderboard` : userXp(LB_MID, CID_B),
         { key: "staff" }
       );
       assert.equal(res.status, 404);
@@ -376,7 +383,7 @@ describe("GET /g/:guildId/leaderboard — pagination math", () => {
   });
 
   it("empty guild (bot-present, zero tracked users) → empty state, 200", async () => {
-    const { res, body } = await hit(`/g/${GUILD_C}/leaderboard`, { key: "staff" });
+    const { res, body } = await hit(`/g/${CID_C}/leaderboard`, { key: "staff" });
     assert.equal(res.status, 200);
     assert.ok(body.includes("No XP data yet"));
     assert.ok(body.includes("page 1 of 1"));
@@ -394,10 +401,10 @@ describe("GET /g/:guildId/leaderboard — pagination math", () => {
 // ===========================================================================
 describe("leaderboard XP parity + escaping", () => {
   it("page xp sequence == repository topUsers xp sequence over the same DB (slash's source)", () => {
-    const repo = api.topUsers(GUILD_A, 200); // slash /leaderboard's exact read
+    const repo = api.topUsers(CID_A, 200); // slash /leaderboard's exact read
     const seen = [];
     for (let p = 1; p <= 5; p += 1) {
-      seen.push(...buildLeaderboardPage(GUILD_A, { page: p, size: 25 }).rows.map((r) => r.xp));
+      seen.push(...buildLeaderboardPage(CID_A, { page: p, size: 25 }).rows.map((r) => r.xp));
     }
     assert.equal(seen.length, repo.length);
     assert.deepEqual(seen, repo.map((r) => r.xp), "same order, same data (xp DESC)");
@@ -406,8 +413,8 @@ describe("leaderboard XP parity + escaping", () => {
   });
 
   it("every level label == levelFromXp fixture math (factor 100 default)", () => {
-    const settings = api.getGuildSettings(GUILD_A);
-    const board = buildLeaderboardPage(GUILD_A, { page: 1, size: 100 });
+    const settings = api.getGuildSettings(CID_A);
+    const board = buildLeaderboardPage(CID_A, { page: 1, size: 100 });
     for (const row of board.rows) {
       assert.equal(row.level, levelFromXp(row.xp, settings.level_xp_factor), `level for xp ${row.xp}`);
     }

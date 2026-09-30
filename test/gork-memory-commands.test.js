@@ -18,7 +18,7 @@ const assert = require("node:assert/strict");
 const path = require("path");
 const Module = require("module");
 
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const {
   createChatInputInteraction,
@@ -112,7 +112,7 @@ function makeEnv(guildId) {
   guild.addChannel(auditChannel);
   const client = createClient();
   client.addGuild(guild);
-  api.updateGuildSettings(guildId, { audit_log_channel_id: auditChannel.id });
+  api.updateGuildSettings(communityKey(guildId), { audit_log_channel_id: auditChannel.id });
 
   const staffUser = createUser({ id: `staff-${guildId}` });
   const staffMember = createMember({ guild, user: staffUser, admin: true });
@@ -162,7 +162,7 @@ function seed(guildId, subjectUserId, opts = {}) {
     kind = "profile",
   } = opts;
   return api.gorkMemoryUpsert({
-    guildId,
+    communityId: communityKey(guildId),
     subjectUserId,
     memDate,
     title,
@@ -358,7 +358,7 @@ describe("/gork memory forget", () => {
     assert.ok(lastReplyEphemeral(interaction));
     assert.ok(/forgot memory/i.test(text), text);
     assert.ok(text.includes("quiet typer"), "success echoes the title");
-    assert.equal(api.gorkMemoryGetById(G, row.id), null, "row gone");
+    assert.equal(api.gorkMemoryGetById(communityKey(G), row.id), null, "row gone");
 
     const audit = auditText(env);
     assert.ok(audit.includes("Gork memory forgotten"), audit);
@@ -375,7 +375,7 @@ describe("/gork memory forget", () => {
       lastReplyContent(interaction),
       /no memory #424242 in this guild/i,
     );
-    assert.equal(api.gorkMemoryCountForGuild(G), 1, "nothing deleted");
+    assert.equal(api.gorkMemoryCountForGuild(communityKey(G)), 1, "nothing deleted");
     assert.ok(!auditText(env).includes("forgotten"), "misses are not audited");
   });
 
@@ -389,7 +389,7 @@ describe("/gork memory forget", () => {
       assert.match(lastReplyContent(interaction), /positive whole number/i);
       assert.ok(lastReplyEphemeral(interaction));
     }
-    assert.equal(api.gorkMemoryCountForGuild(G), 1, "rows intact");
+    assert.equal(api.gorkMemoryCountForGuild(communityKey(G)), 1, "rows intact");
   });
 });
 
@@ -413,7 +413,7 @@ describe("/gork memory clear", () => {
     assert.ok(text.includes("**2**"), `count shown: ${text}`);
     assert.ok(text.includes("<@sub-c>"));
     assert.match(text, /confirm: true/, "re-run hint");
-    assert.equal(api.gorkMemoryCountForGuild(G), 3, "preview erases nothing");
+    assert.equal(api.gorkMemoryCountForGuild(communityKey(G)), 3, "preview erases nothing");
   });
 
   it("preview-only without confirm (guild scope) counts the whole guild", async () => {
@@ -427,7 +427,7 @@ describe("/gork memory clear", () => {
     const text = lastReplyContent(interaction);
     assert.match(text, /this will erase/i);
     assert.ok(text.includes("**3**"), `guild count: ${text}`);
-    assert.equal(api.gorkMemoryCountForGuild(G), 3);
+    assert.equal(api.gorkMemoryCountForGuild(communityKey(G)), 3);
   });
 
   it("confirm wipes ONE person only and audits 'Gork memory cleared'", async () => {
@@ -443,8 +443,8 @@ describe("/gork memory clear", () => {
       env,
     );
     assert.match(lastReplyContent(interaction), /erased \*\*2\*\*/i);
-    assert.equal(api.gorkMemoryListForSubject(G, "sub-c").length, 0);
-    assert.equal(api.gorkMemoryListForSubject(G, "sub-keep").length, 1);
+    assert.equal(api.gorkMemoryListForSubject(communityKey(G), "sub-c").length, 0);
+    assert.equal(api.gorkMemoryListForSubject(communityKey(G), "sub-keep").length, 1);
     assert.ok(auditText(env).includes("Gork memory cleared"));
   });
 
@@ -457,7 +457,7 @@ describe("/gork memory clear", () => {
 
     const interaction = await runMemory(G, { action: "clear", confirm: true }, env);
     assert.match(lastReplyContent(interaction), /erased \*\*3\*\*/i);
-    assert.equal(api.gorkMemoryCountForGuild(G), 0);
+    assert.equal(api.gorkMemoryCountForGuild(communityKey(G)), 0);
     assert.ok(auditText(env).includes("Gork memory cleared"));
   });
 
@@ -477,14 +477,14 @@ describe("/gork memory on/off", () => {
     const env = makeEnv(G);
 
     const on = await runMemory(G, { action: "on" }, env);
-    assert.equal(api.getGuildSettings(G).gork_memory_enabled, 1);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_memory_enabled, 1);
     assert.match(lastReplyContent(on), /memory is now \*\*on\*\*/i);
     let audit = auditText(env);
     assert.ok(audit.includes("Gork memory enabled"), audit);
     assert.ok(audit.includes("/gork memory"));
 
     const off = await runMemory(G, { action: "off" }, env);
-    assert.equal(api.getGuildSettings(G).gork_memory_enabled, 0);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_memory_enabled, 0);
     assert.match(lastReplyContent(off), /memory is now \*\*off\*\*/i);
     audit = auditText(env);
     assert.ok(audit.includes("Gork memory disabled"), audit);
@@ -498,7 +498,7 @@ describe("/gork memory budget", () => {
     const G = "g-mem-budget-ok";
     const env = makeEnv(G);
     const interaction = await runMemory(G, { action: "budget", chars: 8000 }, env);
-    assert.equal(api.getGuildSettings(G).gork_memory_chars, 8000);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_memory_chars, 8000);
     assert.match(lastReplyContent(interaction), /\*\*8000\*\* chars/);
     assert.ok(auditText(env).includes("Gork memory budget updated"));
   });
@@ -507,14 +507,14 @@ describe("/gork memory budget", () => {
     const G = "g-mem-budget-clamp";
     const env = makeEnv(G);
     await runMemory(G, { action: "budget", chars: 999999 }, env);
-    assert.equal(api.getGuildSettings(G).gork_memory_chars, 64000);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_memory_chars, 64000);
   });
 
   it("0 is VALID and stores as 0 (unlimited)", async () => {
     const G = "g-mem-budget-zero";
     const env = makeEnv(G);
     const interaction = await runMemory(G, { action: "budget", chars: 0 }, env);
-    assert.equal(api.getGuildSettings(G).gork_memory_chars, 0);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_memory_chars, 0);
     assert.match(lastReplyContent(interaction), /unlimited/);
   });
 
@@ -522,7 +522,7 @@ describe("/gork memory budget", () => {
     const G = "g-mem-budget-garbage";
     const env = makeEnv(G);
     await runMemory(G, { action: "budget", chars: "abc" }, env);
-    assert.equal(api.getGuildSettings(G).gork_memory_chars, DEFAULT_BUDGET);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_memory_chars, DEFAULT_BUDGET);
   });
 
   it("missing chars → ephemeral error, settings untouched", async () => {
@@ -530,7 +530,7 @@ describe("/gork memory budget", () => {
     const env = makeEnv(G);
     const interaction = await runMemory(G, { action: "budget" }, env);
     assert.match(lastReplyContent(interaction), /chars/i);
-    assert.equal(api.getGuildSettings(G).gork_memory_chars, DEFAULT_BUDGET);
+    assert.equal(api.getGuildSettings(communityKey(G)).gork_memory_chars, DEFAULT_BUDGET);
     assert.ok(!auditText(env).includes("budget updated"));
   });
 });

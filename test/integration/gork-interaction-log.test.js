@@ -237,7 +237,7 @@ after(() => {
 function rowsByKind(env) {
   const byKind = {};
   for (const listed of env.db.listGorkInteractions({
-    guildId: env.guild.id,
+    communityId: env.communityId,
     limit: 50,
   })) {
     byKind[listed.kind] = env.db.getGorkInteractionByUid(listed.uid);
@@ -258,7 +258,7 @@ describe("integration: gork interaction log", () => {
     ]);
     try {
       armGork();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
       });
@@ -289,7 +289,7 @@ describe("integration: gork interaction log", () => {
       const { qa } = rowsByKind(env);
       assert.ok(qa, "exactly one qa interaction row expected");
       assert.equal(
-        env.db.listGorkInteractions({ guildId: env.guild.id, limit: 50 }).length,
+        env.db.listGorkInteractions({ communityId: env.communityId, limit: 50 }).length,
         1,
         "one row per call — nothing else",
       );
@@ -297,7 +297,7 @@ describe("integration: gork interaction log", () => {
       // Identity + linkage
       assert.equal(qa.kind, "qa");
       assert.equal(qa.parent_uid, null, "qa rows have no parent");
-      assert.equal(qa.guild_id, env.guild.id);
+      assert.equal(qa.community_id, env.communityId);
       assert.equal(qa.channel_id, ch.id);
       assert.equal(qa.message_id, "t-il-1");
       assert.equal(qa.user_id, IDS.member);
@@ -448,7 +448,7 @@ describe("integration: gork interaction log", () => {
     try {
       armGork();
       process.env.SEARXNG_URL = "https://searxng.test";
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_search_enabled: 1,
@@ -517,7 +517,7 @@ describe("integration: gork interaction log", () => {
     ]);
     try {
       armGork();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
       });
@@ -561,7 +561,7 @@ describe("integration: gork interaction log", () => {
     ]);
     try {
       armGork();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1, // failure must NOT feed the memory write path
@@ -607,7 +607,7 @@ describe("integration: gork interaction log", () => {
     const fetchMock = mockFetch([chatCompletionResponse("Answer doomed to die.")]);
     try {
       armGork();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
       });
@@ -645,7 +645,7 @@ describe("integration: gork interaction log", () => {
     ]);
     try {
       armGork();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         audit_log_channel_id: IDS.channelLog,
@@ -661,7 +661,7 @@ describe("integration: gork interaction log", () => {
 
       // Baseline: default column ON → row lands.
       await triggerOnce("t-il-c1", "gork: first question");
-      assert.equal(env.db.countGorkInteractions(env.guild.id), 1);
+      assert.equal(env.db.countGorkInteractions(env.communityId), 1);
 
       // Toggle OFF → setting persisted, ephemerally confirmed, audit trail.
       const off = await env.runCommand({
@@ -672,7 +672,7 @@ describe("integration: gork interaction log", () => {
       });
       assertEphemeralReply(off);
       assertReplyContains(off, /interaction log is now \*\*off\*\*/);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_interaction_log_enabled, 0);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_interaction_log_enabled, 0);
 
       // /gork status reflects OFF.
       const statusOff = await env.runCommand({
@@ -689,7 +689,7 @@ describe("integration: gork interaction log", () => {
       // While OFF: answers still ship, ZERO new rows.
       const quiet = await triggerOnce("t-il-c2", "gork: second question");
       assert.equal(quiet[0].content, "Quiet while logging is off.");
-      assert.equal(env.db.countGorkInteractions(env.guild.id), 1, "no row while OFF");
+      assert.equal(env.db.countGorkInteractions(env.communityId), 1, "no row while OFF");
 
       // Toggle back ON → rows flow again.
       const on = await env.runCommand({
@@ -700,9 +700,9 @@ describe("integration: gork interaction log", () => {
       });
       assertEphemeralReply(on);
       assertReplyContains(on, /interaction log is now \*\*on\*\*/);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_interaction_log_enabled, 1);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_interaction_log_enabled, 1);
       await triggerOnce("t-il-c3", "gork: third question");
-      assert.equal(env.db.countGorkInteractions(env.guild.id), 2);
+      assert.equal(env.db.countGorkInteractions(env.communityId), 2);
 
       // /gork status now reports ON with the live row count.
       const statusOn = await env.runCommand({
@@ -733,7 +733,7 @@ describe("integration: gork interaction log", () => {
         options: { enabled: false },
       });
       assertEphemeralReply(denied, /permission/i);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_interaction_log_enabled, 1);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_interaction_log_enabled, 1);
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -747,7 +747,7 @@ describe("integration: gork interaction log", () => {
     try {
       armGork();
       process.env.GORK_INTERACTION_LOG = "0";
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         // column stays at its default 1 — the env kill must win over it
@@ -763,7 +763,7 @@ describe("integration: gork interaction log", () => {
 
       assert.equal(replies[0].content, "Still answered fine.");
       assert.equal(fetchMock.calls.length, 1);
-      assert.equal(env.db.countGorkInteractions(env.guild.id), 0, "kill-switch wrote nothing");
+      assert.equal(env.db.countGorkInteractions(env.communityId), 0, "kill-switch wrote nothing");
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -780,7 +780,7 @@ describe("integration: gork interaction log", () => {
     ]);
     try {
       armGork();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
@@ -838,7 +838,7 @@ describe("integration: gork interaction log", () => {
     ]);
     try {
       armGork();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
@@ -906,7 +906,7 @@ describe("integration: gork interaction log", () => {
       armGork();
       process.env.SEARXNG_URL = "https://searxng.test";
       process.env.GORK_LLM_MAX_TOOL_ROUNDS = "1"; // cap after ONE tool round
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_search_enabled: 1,

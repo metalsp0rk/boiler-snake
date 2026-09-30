@@ -87,6 +87,12 @@ const SESSION_SECRET = "test-xpgrant-sentinel-session-secret-NOT-REAL-028";
 const GUILD_A = "320000000000000001"; // bot + every test user
 const GUILD_CROSS = "320000000000000002"; // bot guild the users are NOT in
 
+// Internal community ids (Fluxer PR 2) for the same snowflakes: integer ids
+// drive every web URL and repo call; Discord seams keep the external id.
+const { communityKey } = require("./helpers/env");
+const CID_A = communityKey(GUILD_A);
+const CID_CROSS = communityKey(GUILD_CROSS);
+
 const USER_ADMIN = "458190112345678901"; // owner snapshot ⇒ tier admin
 const USER_JUNIOR = "458190112345678902"; // junior staff role ⇒ tier staff
 const USER_SENIOR = "458190112345678903"; // senior staff role ⇒ tier senior
@@ -117,7 +123,7 @@ const USER_BOT_MEMBER = "458190112345678922"; // proven bot via member cache
 
 const ROLE_LEVEL_SYNC = "500000000000000301"; // level→role mapping subject
 
-const GRANT_PATH = `/g/${GUILD_A}/xp/grant`;
+const GRANT_PATH = `/g/${CID_A}/xp/grant`;
 const GRANT_TEMPLATE = "/g/:guildId/xp/grant";
 
 const ENV_KEYS = [
@@ -339,8 +345,8 @@ for (const k of ENV_KEYS) {
 }
 process.env.WEB_RATE_LIMIT_MUTATION_MAX = "1000000"; // scripted probes, not humans
 
-api.addStaffRole(GUILD_A, ROLE_JUNIOR_TIER, "junior");
-api.addStaffRole(GUILD_A, ROLE_SENIOR_TIER, "senior");
+api.addStaffRole(CID_A, ROLE_JUNIOR_TIER, "junior");
+api.addStaffRole(CID_A, ROLE_SENIOR_TIER, "senior");
 
 const cookieOf = {};
 const csrfOf = {};
@@ -421,19 +427,19 @@ const grantPost = (fields, urlBase = baseUrl) =>
 // ---------------------------------------------------------------------------
 
 function auditRows(origin) {
-  return api.listAdminAudit(GUILD_A, { origin, limit: 100 }).map((r) => ({
+  return api.listAdminAudit(CID_A, { origin, limit: 100 }).map((r) => ({
     ...r,
     details: r.details_json ? JSON.parse(r.details_json) : null,
   }));
 }
-const webAuditCount = () => api.countAdminAudit(GUILD_A, { origin: "web" });
+const webAuditCount = () => api.countAdminAudit(CID_A, { origin: "web" });
 const grantRows = (origin, targetId) =>
   auditRows(origin).filter((r) => r.action === "xp.grant" && r.target_id === targetId);
-const xpOf = (userId) => api.getXp(GUILD_A, userId);
+const xpOf = (userId) => api.getXp(CID_A, userId);
 const activityKinds = (userId) =>
   api.db
-    .prepare("SELECT kind FROM activity_log WHERE guild_id = ? AND user_id = ?")
-    .all(GUILD_A, userId)
+    .prepare("SELECT kind FROM activity_log WHERE community_id = ? AND user_id = ?")
+    .all(CID_A, userId)
     .map((r) => r.kind);
 
 // ---------------------------------------------------------------------------
@@ -512,7 +518,7 @@ describe("B. GET /g/:guildId/xp/grant — admin-only form, whitelist-only flash"
     assert.ok(res.body.includes(harness.SHELL_MARKER), "renders inside the guild shell");
     assert.ok(res.body.includes("<h1>Grant XP"), "the page heading");
     assert.ok(
-      res.body.includes(`action="/g/${GUILD_A}/xp/grant"`),
+      res.body.includes(`action="/g/${CID_A}/xp/grant"`),
       "form posts to the exact mutation path"
     );
     assert.ok(res.body.includes('name="_csrf"'), "hidden CSRF field (double-submit half)");
@@ -538,7 +544,7 @@ describe("B. GET /g/:guildId/xp/grant — admin-only form, whitelist-only flash"
     await harness.runOutcome({
       base: baseUrl,
       url: GRANT_PATH,
-      expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
+      expect: harness.expectLoginRedirect("/auth/login"),
       label: "GET anon",
     });
     for (const key of ["plain", "stranger"]) {
@@ -552,9 +558,9 @@ describe("B. GET /g/:guildId/xp/grant — admin-only form, whitelist-only flash"
     }
     await harness.runOutcome({
       base: baseUrl,
-      url: `/g/${GUILD_CROSS}/xp/grant`,
+      url: `/g/${CID_CROSS}/xp/grant`,
       cookieId: sessionIdOf.admin,
-      expect: harness.expectGenericNotFound({ forbid: [GUILD_CROSS, csrfOf.admin] }),
+      expect: harness.expectGenericNotFound({ forbid: [`/g/${CID_CROSS}`, csrfOf.admin] }),
       label: "GET cross-guild",
     });
   });
@@ -589,7 +595,7 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross 404 · junior
       url: GRANT_PATH,
       method: "POST",
       cookieId: null,
-      expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
+      expect: harness.expectLoginRedirect("/auth/login"),
       label: "anon POST",
     });
     assert.equal(xpOf(USER_T_POS), 0, "anon grant changed nothing");
@@ -605,7 +611,7 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross 404 · junior
       assert.equal(body, "Not found");
       assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
     }
-    const cross = await post(baseUrl, `/g/${GUILD_CROSS}/xp/grant`, {
+    const cross = await post(baseUrl, `/g/${CID_CROSS}/xp/grant`, {
       cookie: cookieOf.admin,
       fields: { user_id: USER_T_POS, amount: "5", _csrf: csrfOf.admin },
     });
@@ -668,7 +674,7 @@ describe("D. CSRF — missing/tampered ⇒ 403 with ZERO XP change and ZERO serv
   });
 
   it("the IDENTICAL body passes with the valid token (replay doctrine)", async () => {
-    api.setXp(GUILD_A, USER_T_REPLAY, 0);
+    api.setXp(CID_A, USER_T_REPLAY, 0);
     const { res, location, body } = await grantPost({
       user_id: USER_T_REPLAY,
       amount: "250",
@@ -687,7 +693,7 @@ describe("D. CSRF — missing/tampered ⇒ 403 with ZERO XP change and ZERO serv
 // ===========================================================================
 describe("E. service parity — write helpers intercepted INSIDE the service", () => {
   it("admin positive: exact XP delta + service helpers + exactly ONE web audit row", async () => {
-    api.setXp(GUILD_A, USER_T_POS, 100);
+    api.setXp(CID_A, USER_T_POS, 100);
     const before = webAuditCount();
     mirrorSpy.log.length = 0;
     startWindow();
@@ -742,7 +748,7 @@ describe("E. service parity — write helpers intercepted INSIDE the service", (
   });
 
   it("service spy: the EXACT slash argument object reaches awardXp (index.js:448–455)", async () => {
-    api.setXp(GUILD_A, USER_T_SPY, 0);
+    api.setXp(CID_A, USER_T_SPY, 0);
     serviceSpies.length = 0;
     const { res, location } = await grantPost(
       { user_id: USER_T_SPY, amount: "250", reason: "spy args" },
@@ -754,23 +760,37 @@ describe("E. service parity — write helpers intercepted INSIDE the service", (
 
     assert.equal(serviceSpies.length, 1, "the grant flows through the service exactly once");
     const [clientArg, opts] = serviceSpies[0];
-    assert.equal(clientArg, FAKE_CLIENT, "the getClient cache seam is threaded to the service");
+    // PR 2: the service takes an OutboundClient built from the injected
+    // getClient() cache seam — tag it as the discord outbound and prove the
+    // member seam is a resolver (cache-only; FAKE_GUILD has NO members.fetch,
+    // so any network path would have crashed the grant above).
+    assert.equal(clientArg?.platform, "discord", "outbound client platform tag");
+    assert.equal(clientArg?.instanceKey, "discord", "outbound client instance tag");
+    assert.equal(typeof clientArg?.fetchMember, "function", "outbound member seam present");
     assert.deepEqual(
       Object.keys(opts).sort(),
-      ["activityKind", "delta", "guild", "levelXpFactor", "source", "userId"],
+      [
+        "activityKind",
+        "communityId",
+        "delta",
+        "externalGuildId",
+        "levelXpFactor",
+        "source",
+        "userId",
+      ],
       "the service options are EXACTLY the slash handler's arg object"
     );
     assert.equal(opts.userId, USER_T_SPY);
     assert.equal(opts.delta, 250);
     assert.equal(opts.activityKind, "admin_grant");
     assert.equal(opts.source, "admin_grant");
+    assert.equal(opts.communityId, CID_A, "internal integer community id");
+    assert.equal(opts.externalGuildId, GUILD_A, "server-derived guild id (never a form field)");
     assert.equal(
       opts.levelXpFactor,
-      api.getGuildSettings(GUILD_A).level_xp_factor,
+      api.getGuildSettings(CID_A).level_xp_factor,
       "levelXpFactor read from guild settings (slash: settings.level_xp_factor)"
     );
-    assert.equal(opts.guild.id, GUILD_A, "server-derived guild id (never a form field)");
-    assert.equal(typeof opts.guild.members.fetch, "function", "cache-only member seam exists");
     assert.ok(
       !("member" in opts),
       "no member injected — the service resolves it itself, like the slash"
@@ -785,8 +805,8 @@ describe("E. service parity — write helpers intercepted INSIDE the service", (
     // the GRANT SUCCEEDS. The web mirrors that decision exactly.
     assert.equal(
       api.db
-        .prepare("SELECT COUNT(*) AS n FROM users WHERE guild_id = ? AND user_id = ?")
-        .get(GUILD_A, USER_T_UNKNOWN).n,
+        .prepare("SELECT COUNT(*) AS n FROM users WHERE community_id = ? AND user_id = ?")
+        .get(CID_A, USER_T_UNKNOWN).n,
       0,
       "precondition: no users row"
     );
@@ -807,10 +827,10 @@ describe("E. service parity — write helpers intercepted INSIDE the service", (
 
   it("level-threshold grant with a level_roles mapping ⇒ the SERVICE syncs the role (cache-only member)", async () => {
     // Default level_xp_factor = 100 ⇒ level 3 needs xp ≥ 3²×100 = 900.
-    api.upsertLevelRole(GUILD_A, ROLE_LEVEL_SYNC, 3, 0);
+    api.upsertLevelRole(CID_A, ROLE_LEVEL_SYNC, 3, 0);
     const member = makeMember(USER_T_SYNC);
     membersCache.set(USER_T_SYNC, member);
-    api.setXp(GUILD_A, USER_T_SYNC, 0);
+    api.setXp(CID_A, USER_T_SYNC, 0);
 
     const { res } = await grantPost({ user_id: USER_T_SYNC, amount: "900" });
     assert.equal(res.status, 302);
@@ -822,7 +842,7 @@ describe("E. service parity — write helpers intercepted INSIDE the service", (
       "member.roles.add was invoked by syncMemberRoles INSIDE awardXp (route synced nothing itself)"
     );
     // The route never touched the level_roles mapping (only the test did):
-    const mappings = api.listLevelRoles(GUILD_A);
+    const mappings = api.listLevelRoles(CID_A);
     assert.equal(mappings.length, 1);
     assert.equal(mappings[0].role_id, ROLE_LEVEL_SYNC);
     assert.equal(mappings[0].level_required, 3);
@@ -927,7 +947,7 @@ describe("G. validation mirrors /grantxp — slugs only, zero writes, zero audit
 // ===========================================================================
 describe("H. audit-fail injection ⇒ generic 500, no claim, no row, no mirror", () => {
   it("insertAdminAudit throwing: 500 'Internal error', zero audit rows, NO mirror", async () => {
-    api.setXp(GUILD_A, USER_T_AUDITFAIL, 0);
+    api.setXp(CID_A, USER_T_AUDITFAIL, 0);
     const before = webAuditCount();
     mirrorSpy.log.length = 0;
     recorder.auditThrow = true;
@@ -955,8 +975,8 @@ describe("H. audit-fail injection ⇒ generic 500, no claim, no row, no mirror",
 describe("K. parity: equal XP totals + same-shaped audit rows (slash = source of truth)", () => {
   it("the SAME grant via the real /grantxp handler and via the web POST is indistinguishable at the DB boundary", async () => {
     // The web side first (real HTTP through the full stack).
-    api.setXp(GUILD_A, USER_T_WEBPARITY, 100);
-    api.setXp(GUILD_A, USER_T_SLASH, 100);
+    api.setXp(CID_A, USER_T_WEBPARITY, 100);
+    api.setXp(CID_A, USER_T_SLASH, 100);
 
     const web = await grantPost({
       user_id: USER_T_WEBPARITY,
@@ -1023,7 +1043,7 @@ describe("K. parity: equal XP totals + same-shaped audit rows (slash = source of
     assert.equal(w.target_type, s.target_type);
     assert.equal(w.target_type, "user");
     assert.equal(w.actor_user_id, s.actor_user_id, "same actor id on both paths");
-    assert.equal(w.guild_id, s.guild_id);
+    assert.equal(w.community_id, s.community_id);
     assert.deepEqual(Object.keys(w).filter((k) => k !== "details"), Object.keys(s).filter((k) => k !== "details"),
       "same row shape — the web audit is not a custom invention");
     assert.deepEqual(

@@ -32,7 +32,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // ---------------------------------------------------------------------------
 // loadDb() FIRST (cache clear + DB_PATH bind), then require src modules.
@@ -54,6 +54,12 @@ const USER_PLAIN = "428190112345678904";
 
 const GUILD_A = "100000000000000001";
 const GUILD_B = "200000000000000002";
+
+// Integer community ids (fluxer PR 2): routes and converted repo calls take
+// these; Discord-side seams (fake resolver, bot guild list, guild snapshots,
+// evidence message URLs) keep the external snowflakes.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
 
 const ROLE_JUNIOR = "500000000000000011";
 const ROLE_SENIOR = "500000000000000012";
@@ -107,22 +113,22 @@ before(async () => {
   delete process.env.WEB_TIER_CACHE_TTL_MS;
 
   // ---- staff roles (guild A) ----------------------------------------------
-  api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-  api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+  api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+  api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
 
   // ---- notes (seeded FIRST: a warning links one) ---------------------------
   const nAlpha = api.createStaffNote({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: NOTE_1,
     authorId: USER_SENIOR,
     content: "pattern note alpha",
   });
-  api.updateStaffNote(GUILD_A, nAlpha.note_number, {
+  api.updateStaffNote(CID_A, nAlpha.note_number, {
     content: "pattern note alpha (edited body)",
     editedBy: USER_SENIOR,
   });
   api.createStaffNote({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: NOTE_1,
     authorId: USER_STAFF,
     content: "deleted note body alpha",
@@ -130,34 +136,34 @@ before(async () => {
   const n1 = nAlpha.note_number; // N-1
   const nDeleted = 2; // N-2 (soft-deleted below)
   api.createStaffNote({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: NOTE_2,
     authorId: USER_ADMIN,
     content: "context note beta",
   });
   api.createStaffNote({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: NOTE_2,
     authorId: USER_ADMIN,
     content: `${XSS_NOTE}${XSS_ATTR}`,
   });
   api.createStaffNote({
-    guildId: GUILD_B,
+    communityId: CID_B,
     userId: B_SUBJECT,
     authorId: USER_ADMIN,
     content: B_NOTE,
   });
   api.createStaffNote({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: NOTE_3,
     authorId: USER_ADMIN,
     content: "freshest guild note",
   });
-  api.softDeleteStaffNote(GUILD_A, nDeleted, USER_SENIOR);
+  api.softDeleteStaffNote(CID_A, nDeleted, USER_SENIOR);
 
   // ---- warnings (guild A) ---------------------------------------------------
   api.createWarning({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: WARN_1,
     issuerId: USER_SENIOR,
     reason: "spam incident evidence probe",
@@ -166,44 +172,44 @@ before(async () => {
     evidenceMessageUrl: `https://discord.com/channels/${GUILD_A}/770000000000000001/770000000000000555`,
   }); // W-1
   api.createWarning({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: WARN_1,
     issuerId: USER_ADMIN,
     reason: "future expiry probe",
     expiresAt: Date.now() + 10 * 86_400_000,
   }); // W-2 active, expiring
   api.createWarning({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: WARN_1,
     issuerId: USER_ADMIN,
     reason: "voided incident",
   }); // W-3 voided below
-  api.voidWarning(GUILD_A, 3, {
+  api.voidWarning(CID_A, 3, {
     voidedBy: USER_SENIOR,
     voidReason: "appeal upheld — void meta probe",
   });
   api.createWarning({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: WARN_1,
     issuerId: USER_ADMIN,
     reason: "expired pending probe",
     expiresAt: Date.now() - 86_400_000,
   }); // W-4 active but expired (auto-void pending)
   api.createWarning({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: WARN_2,
     issuerId: USER_ADMIN,
     reason: "clean record two",
   }); // W-5
   api.createWarning({
-    guildId: GUILD_A,
+    communityId: CID_A,
     userId: WARN_2,
     issuerId: USER_ADMIN,
     reason: `${XSS_WARN_HEAD}${XSS_ATTR}`,
   }); // W-6 XSS reason
   for (let i = 0; i < BULK; i += 1) {
     api.createWarning({
-      guildId: GUILD_A,
+      communityId: CID_A,
       userId: WARN_P,
       issuerId: USER_ADMIN,
       reason: `bulk paginate probe ${i}`,
@@ -211,7 +217,7 @@ before(async () => {
   }
   // ---- warnings (guild B ONLY — cross-guild probe) ---------------------------
   api.createWarning({
-    guildId: GUILD_B,
+    communityId: CID_B,
     userId: B_SUBJECT,
     issuerId: USER_ADMIN,
     reason: B_REASON,
@@ -316,8 +322,8 @@ async function hit(path, opts = {}) {
   return { res, body };
 }
 
-const W = `/g/${GUILD_A}/warnings`;
-const N = `/g/${GUILD_A}/notes`;
+const W = `/g/${CID_A}/warnings`;
+const N = `/g/${CID_A}/notes`;
 
 // ===========================================================================
 // A. Access matrix — both routes (§8.6 tier row + cross-cutting 404)
@@ -330,7 +336,8 @@ describe("access matrix — GET /g/:guildId/warnings and /notes (staff tier)", (
     it(`${label}: anonymous → 302 login redirect (guildScope)`, async () => {
       const { res } = await hit(url);
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      // integer community id ⇒ bare login target (URL_ID_RE rejects short ids)
+      assert.equal(res.headers.get("location"), "/auth/login");
     });
 
     it(`${label}: in-guild member WITHOUT staff role → generic 404 (never 403)`, async () => {
@@ -341,12 +348,12 @@ describe("access matrix — GET /g/:guildId/warnings and /notes (staff tier)", (
 
     it(`${label}: cross-guild probe → generic 404, zero guild-B data`, async () => {
       for (const key of ["staff", "senior", "admin"]) {
-        const { res, body } = await hit(`/g/${GUILD_B}/warnings`, { key });
+        const { res, body } = await hit(`/g/${CID_B}/warnings`, { key });
         assert.equal(res.status, 404, key);
         assert.equal(body, "Not found");
         assert.ok(!body.includes(B_REASON));
       }
-      const notes = await hit(`/g/${GUILD_B}/notes`, { key: "staff" });
+      const notes = await hit(`/g/${CID_B}/notes`, { key: "staff" });
       assert.equal(notes.res.status, 404);
       assert.equal(notes.body, "Not found");
     });

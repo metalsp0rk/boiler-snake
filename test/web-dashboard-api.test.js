@@ -28,7 +28,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // Clearly-fake placeholder only (AGENTS.md: never realistic secrets).
 const SESSION_SECRET = "test-dashapi-sentinel-session-secret-NOT-REAL-042";
@@ -39,6 +39,12 @@ const GUILD_OTHER = "710000000000000003"; // noise: rows that must NEVER leak
 const ROLE_JUNIOR = "role-junior-dashapi";
 const ROLE_SENIOR = "role-senior-dashapi";
 
+// Fluxer PR 2: integer communities.id for data + /g/<id> route identity
+// (assigned in before() right after loadDb binds the temp DB).
+let CID_A;
+let CID_CROSS;
+let CID_OTHER;
+
 const USER_ADMIN = "810000000000000001"; // owner:true ⇒ tier admin
 const USER_STAFF = "810000000000000002"; // junior staff role ⇒ tier staff
 const USER_SENIOR = "810000000000000003"; // senior staff role ⇒ tier senior
@@ -47,8 +53,10 @@ const USER_PLAIN = "810000000000000004"; // member, no staff role ⇒ no tier
 const ENV_KEYS = ["SESSION_SECRET", "DB_PATH", "DATA_DIR"];
 const BOT_GUILDS = [GUILD_A, GUILD_CROSS, GUILD_OTHER];
 
-const ACTIVITY_URL = `/g/${GUILD_A}/api/dashboard/activity.json`;
-const LEADERS_URL = `/g/${GUILD_A}/api/dashboard/xp-leaders.json`;
+// Route ids are the INTEGER community ids, resolved after loadDb — hence
+// functions evaluated at test time (before() has assigned them by then).
+const ACTIVITY_URL = () => `/g/${CID_A}/api/dashboard/activity.json`;
+const LEADERS_URL = () => `/g/${CID_A}/api/dashboard/xp-leaders.json`;
 
 const DAY_MS = 86_400_000;
 
@@ -185,8 +193,13 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
     sessionPolicy = require("../src/web/auth/sessions");
     tokens = require("../src/web/auth/tokens");
 
-    api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-    api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+    // Map the Discord fixture ids to their integer community ids (PR 2).
+    CID_A = communityKey(GUILD_A);
+    CID_CROSS = communityKey(GUILD_CROSS);
+    CID_OTHER = communityKey(GUILD_OTHER);
+
+    api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+    api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
 
     cookieOf.admin = `web_session=${mkSession(USER_ADMIN)}`;
     cookieOf.staff = `web_session=${mkSession(USER_STAFF)}`;
@@ -198,16 +211,16 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
     const today = dayKey(nowMs);
     const twoDaysAgo = dayKey(nowMs - 2 * DAY_MS);
     const fortyDaysAgo = dayKey(nowMs - 40 * DAY_MS); // OUTSIDE the 30-day window
-    api.incrementDaily(GUILD_A, "820000000000000001", "930000000000000001", today, 5);
-    api.incrementDaily(GUILD_A, "820000000000000002", "930000000000000001", today, 3);
-    api.incrementDaily(GUILD_A, "820000000000000001", "930000000000000002", twoDaysAgo, 7);
-    api.incrementDaily(GUILD_A, "820000000000000001", "930000000000000002", fortyDaysAgo, 99);
+    api.incrementDaily(CID_A, "820000000000000001", "930000000000000001", today, 5);
+    api.incrementDaily(CID_A, "820000000000000002", "930000000000000001", today, 3);
+    api.incrementDaily(CID_A, "820000000000000001", "930000000000000002", twoDaysAgo, 7);
+    api.incrementDaily(CID_A, "820000000000000001", "930000000000000002", fortyDaysAgo, 99);
     // other-guild noise with the same users/days — guild-scoping control
-    api.incrementDaily(GUILD_OTHER, "820000000000000001", "930000000000000001", today, 111);
+    api.incrementDaily(CID_OTHER, "820000000000000001", "930000000000000001", today, 111);
 
     // ---- XP seeds: 12 members ⇒ the LIMIT 10 clamp must bite --------------
     for (let i = 0; i < 12; i += 1) {
-      api.addXp(GUILD_A, `8300000000000000${String(i).padStart(2, "0")}`, 100 - i);
+      api.addXp(CID_A, `8300000000000000${String(i).padStart(2, "0")}`, 100 - i);
     }
 
     await mountApp();
@@ -236,20 +249,26 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
   // --------------------------------------------------------------------------
 
   describe("tier ladder + framing", () => {
-    for (const [label, url] of [
-      ["activity", ACTIVITY_URL],
-      ["xp-leaders", LEADERS_URL],
+    for (const [label, pathSuffix] of [
+      ["activity", "api/dashboard/activity.json"],
+      ["xp-leaders", "api/dashboard/xp-leaders.json"],
     ]) {
+      // Route ids resolve to the integer community ids set by before().
+      const url = () => `/g/${CID_A}/${pathSuffix}`;
+      const crossUrl = () => `/g/${CID_CROSS}/${pathSuffix}`;
+
       it(`${label}: anonymous ⇒ login redirect, empty body, no-store`, async () => {
-        const { res, body } = await req(url);
+        const { res, body } = await req(url());
         assert.equal(res.status, 302);
-        assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+        // PR 2: integer community ids fail the 5–20-digit snowflake gate in
+        // loginRedirectTarget, so the anon target is the bare login page.
+        assert.equal(res.headers.get("location"), "/auth/login");
         assert.equal(res.headers.get("cache-control"), "no-store");
         assert.equal(body, "");
       });
 
       it(`${label}: member without a staff role ⇒ generic 404 (never 403)`, async () => {
-        const { res, body } = await req(url, { cookie: cookieOf.plain });
+        const { res, body } = await req(url(), { cookie: cookieOf.plain });
         assert.equal(res.status, 404);
         assert.equal(body, "Not found");
         assert.match(res.headers.get("content-type"), /^text\/plain/);
@@ -257,7 +276,7 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
 
       it(`${label}: cross-guild probe ⇒ the SAME plain 404 bytes`, async () => {
         const cross = await req(
-          url.replace(GUILD_A, GUILD_CROSS),
+          crossUrl(),
           { cookie: cookieOf.staff }
         );
         assert.equal(cross.res.status, 404);
@@ -266,7 +285,7 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
 
       it(`${label}: staff+ tiers ⇒ 200 application/json + no-store + nosniff`, async () => {
         for (const cookie of [cookieOf.staff, cookieOf.senior, cookieOf.admin]) {
-          const { res, body } = await req(url, { cookie });
+          const { res, body } = await req(url(), { cookie });
           assert.equal(res.status, 200);
           assert.match(res.headers.get("content-type"), /^application\/json; charset=utf-8$/);
           assert.equal(res.headers.get("cache-control"), "no-store", "session data never caches (§8.7)");
@@ -277,7 +296,7 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
 
       it(`${label}: GET-only — POST/DELETE are the app-wide 405`, async () => {
         for (const method of ["POST", "DELETE"]) {
-          const res = await fetch(base + url, {
+          const res = await fetch(base + url(), {
             method,
             headers: { cookie: cookieOf.staff },
           });
@@ -288,7 +307,7 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
     }
 
     it("unknown path under /api/dashboard/ is the plain router 404", async () => {
-      const { res, body } = await req(`/g/${GUILD_A}/api/dashboard/nope.json`, {
+      const { res, body } = await req(`/g/${CID_A}/api/dashboard/nope.json`, {
         cookie: cookieOf.staff,
       });
       assert.equal(res.status, 404);
@@ -307,7 +326,7 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
     });
 
     it("30 zero-filled ascending days from REAL counter rows", async () => {
-      const { body } = await req(ACTIVITY_URL, { cookie: cookieOf.staff });
+      const { body } = await req(ACTIVITY_URL(),{ cookie: cookieOf.staff });
       const data = JSON.parse(body);
       assert.equal(data.series, "daily_activity");
       assert.equal(data.days, 30);
@@ -336,12 +355,12 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
       const counter = startCallCounter(["guildDailyMessageTotals"]);
       try {
         fakeNow += 10_000; // still inside the 30 s TTL
-        const second = JSON.parse((await req(ACTIVITY_URL, { cookie: cookieOf.admin })).body);
+        const second = JSON.parse((await req(ACTIVITY_URL(),{ cookie: cookieOf.admin })).body);
         assert.equal(counter.calls.length, 0, "cache hit must not touch the facade (§8.6)");
         assert.equal(second.fromCache, true, "freshness reported honestly");
 
         fakeNow += 31_000; // past the TTL
-        const third = JSON.parse((await req(ACTIVITY_URL, { cookie: cookieOf.admin })).body);
+        const third = JSON.parse((await req(ACTIVITY_URL(),{ cookie: cookieOf.admin })).body);
         assert.equal(counter.calls.length, 1, "expired window re-reads exactly once");
         assert.equal(third.fromCache, false);
         assert.equal(counter.calls[0].args[1].limitDays, 30, "window hard-capped at 30 rows");
@@ -360,7 +379,7 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
     it("top 10 of 12 members, XP descending, name falls back honestly", async () => {
       const counter = startCallCounter(["topUsers"]);
       try {
-        const { body } = await req(LEADERS_URL, { cookie: cookieOf.senior });
+        const { body } = await req(LEADERS_URL(),{ cookie: cookieOf.senior });
         const data = JSON.parse(body);
         assert.equal(data.series, "xp_leaders");
         assert.equal(data.limit, 10);
@@ -378,7 +397,7 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
         assert.match(data.leaders[0].userId, /^\d{15,20}$/);
 
         fakeNow += 5_000;
-        await req(LEADERS_URL, { cookie: cookieOf.senior });
+        await req(LEADERS_URL(),{ cookie: cookieOf.senior });
         assert.equal(counter.calls.length, 1, "cached within the window (§8.6)");
       } finally {
         counter.restore();
@@ -405,7 +424,7 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
       fakeNow = Date.now() + 200 * DAY_MS;
       const cold = dashboardDataMod.createDashboardData({ now: () => fakeNow, ttlMs: 30_000 });
       await mountApp({ dashboardData: cold });
-      const { res, body } = await req(ACTIVITY_URL, { cookie: cookieOf.staff });
+      const { res, body } = await req(ACTIVITY_URL(),{ cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       const data = JSON.parse(body);
       assert.equal(data.points.length, 30);

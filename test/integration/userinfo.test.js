@@ -45,7 +45,7 @@ describe("integration: userinfo", () => {
   });
 
   it("/userinfo shows XP and zero counts for clean member", async () => {
-    env.db.addXp(env.guild.id, IDS.member, 250);
+    env.db.addXp(env.communityId, IDS.member, 250);
 
     const interaction = await env.runCommand({
       commandName: "userinfo",
@@ -63,30 +63,30 @@ describe("integration: userinfo", () => {
 
   it("/userinfo reflects note and warning counts", async () => {
     env.db.createStaffNote({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member2,
       authorId: IDS.admin,
       content: "Context for card",
     });
     env.db.createStaffNote({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member2,
       authorId: IDS.admin,
       content: "Second note",
     });
     env.db.createWarning({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member2,
       issuerId: IDS.admin,
       reason: "Strike one",
     });
     const voided = env.db.createWarning({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member2,
       issuerId: IDS.admin,
       reason: "Later voided",
     });
-    env.db.voidWarning(env.guild.id, voided.warning_number, {
+    env.db.voidWarning(env.communityId, voided.warning_number, {
       voidedBy: IDS.admin,
       voidReason: "Appeal",
     });

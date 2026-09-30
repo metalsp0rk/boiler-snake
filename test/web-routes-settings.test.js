@@ -40,7 +40,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // Clearly-fake placeholder only (AGENTS.md: never realistic secrets).
 const SESSION_SECRET = "test-sett…cret";
@@ -55,6 +55,15 @@ const USER_PLAIN = "810000000000000004"; // member, no staff role ⇒ no tier
 
 const ENV_KEYS = ["SESSION_SECRET", "DB_PATH", "DATA_DIR"];
 const BOT_GUILDS = [GUILD_A, GUILD_CROSS];
+
+// DB + community registry at module load: loadDb() resets the src/ require
+// cache so every src module required later (including inside before()) binds
+// to the temp database, and communityKey() maps each Discord fixture to the
+// INTEGER community id the converted repos take — the same id the web resolver
+// puts on req.guildAccess.communityId and in /g/:guildId URLs (fluxer PR 2).
+const boot = loadDb();
+const CID_A = communityKey(GUILD_A);
+const CID_CROSS = communityKey(GUILD_CROSS);
 
 /** The three facade reads the settings page is allowed to make. */
 const SETTINGS_READS = [
@@ -195,9 +204,8 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       acc[k] = process.env[k];
       return acc;
     }, {});
-    const loaded = loadDb();
-    api = loaded.api;
-    tmpDir = loaded.tmpDir;
+    api = boot.api;
+    tmpDir = boot.tmpDir;
     process.env.SESSION_SECRET = SESSION_SECRET;
 
     appMod = require("../src/web/app");
@@ -206,8 +214,8 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     tokens = require("../src/web/auth/tokens");
     csrfMod = require("../src/web/middleware/csrf");
 
-    api.addStaffRole(GUILD_A, "role-junior-staff", "junior");
-    api.addStaffRole(GUILD_A, "role-senior-staff", "senior");
+    api.addStaffRole(CID_A, "role-junior-staff", "junior");
+    api.addStaffRole(CID_A, "role-senior-staff", "senior");
 
     sessionIdOf.admin = mkSession(USER_ADMIN);
     sessionIdOf.staff = mkSession(USER_STAFF);
@@ -245,23 +253,25 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
   describe("tier matrix", () => {
     it("anonymous ⇒ 302 to /auth/login?guild=…", async () => {
-      const { res, body } = await req(`/g/${GUILD_A}/settings`);
+      const { res, body } = await req(`/g/${CID_A}/settings`);
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      // integer community ids fail the 5–20-digit snowflake gate in
+      // loginRedirectTarget, so the anon redirect target is the bare login page
+      assert.equal(res.headers.get("location"), "/auth/login");
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal(body, "");
     });
 
     it("stranger (live member, no staff role) ⇒ generic 404, never 403", async () => {
-      const { res, body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.plain });
+      const { res, body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.plain });
       assert.equal(res.status, 404);
       assert.equal(body, "Not found");
       assert.match(res.headers.get("content-type"), /^text\/plain/);
     });
 
     it("cross-guild probe ⇒ the SAME plain 404 bytes (§8.6)", async () => {
-      const stranger = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.plain });
-      const cross = await req(`/g/${GUILD_CROSS}/settings`, { cookie: cookieOf.staff });
+      const stranger = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.plain });
+      const cross = await req(`/g/${CID_CROSS}/settings`, { cookie: cookieOf.staff });
       assert.equal(cross.res.status, 404);
       assert.equal(cross.body, stranger.body);
     });
@@ -280,7 +290,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       ["guild owner (admin)", () => cookieOf.admin],
     ]) {
       it(`${label} ⇒ 200 settings shell`, async () => {
-        const { res, body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookie() });
+        const { res, body } = await req(`/g/${CID_A}/settings`, { cookie: cookie() });
         assert.equal(res.status, 200);
         assert.match(res.headers.get("content-type"), /^text\/html; charset=utf-8/);
         assert.equal(res.headers.get("cache-control"), "no-store");
@@ -300,9 +310,9 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
   describe("fresh guild (no config writes yet)", () => {
     it("renders schema defaults + 'commands allowed everywhere' + admin hint", async () => {
-      const row = api.getGuildSettings(GUILD_A);
+      const row = api.getGuildSettings(CID_A);
       await mountApp();
-      const { body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+      const { body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
       // Freshly-ensured row == schema DEFAULTs (drift between this test's
       // expectations and migration 001 fails here first).
       assert.equal(row.msg_cooldown_sec, 20);
@@ -330,14 +340,14 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
   describe("XSS probes via setting-shaped values", () => {
     before(() => {
-      api.addAllowedCommandChannel(GUILD_A, '<svg onload="alert(1)">');
-      api.updateGuildSettings(GUILD_A, { warn_log_channel_id: '<img src=x onerror="alert(2)">' });
-      api.upsertLevelRole(GUILD_A, '<script>alert(3)</script>', 2, 0);
+      api.addAllowedCommandChannel(CID_A, '<svg onload="alert(1)">');
+      api.updateGuildSettings(CID_A, { warn_log_channel_id: '<img src=x onerror="alert(2)">' });
+      api.upsertLevelRole(CID_A, '<script>alert(3)</script>', 2, 0);
     });
 
     it("channel ids / role ids render ESCAPED, never live", async () => {
       await mountApp();
-      const { res, body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("&lt;svg onload=&quot;alert(1)&quot;&gt;"), "channel id escaped");
       assert.ok(body.includes("&lt;img src=x onerror=&quot;alert(2)&quot;&gt;"), "warn log id escaped");
@@ -348,7 +358,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     });
 
     it("empty everywhere note gone once ids exist", async () => {
-      const { body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.senior });
+      const { body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.senior });
       assert.ok(!body.includes("allow-list is empty"));
     });
   });
@@ -361,7 +371,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
   describe("seeded settings render exact values", () => {
     before(() => {
-      api.updateGuildSettings(GUILD_A, {
+      api.updateGuildSettings(CID_A, {
         msg_xp: 7,
         reaction_xp: 11,
         voice_xp_per_min: 3,
@@ -375,13 +385,13 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         audit_log_channel_id: "700000000000000011",
         message_log_channel_id: "700000000000000012",
       });
-      api.upsertLevelRole(GUILD_A, "6001", 5, 3);
+      api.upsertLevelRole(CID_A, "6001", 5, 3);
     });
 
     it("every value on the page equals the row the slash commands read", async () => {
       await mountApp();
-      const row = api.getGuildSettings(GUILD_A); // the slash source of truth
-      const { body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+      const row = api.getGuildSettings(CID_A); // the slash source of truth
+      const { body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
 
       const valueCell = (text) => `<span class="setting-value">${text}</span>`;
       assert.ok(body.includes(valueCell(String(row.msg_xp))), "msg_xp exact");
@@ -405,7 +415,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
     it("decay percent default + everywhere-flag honesty", async () => {
       // custom 25% shown; DEFAULT line remains 10%.
-      const { body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.admin });
+      const { body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.admin });
       assert.ok(body.includes("25%"));
       assert.ok(body.includes("default 10%"));
     });
@@ -418,14 +428,14 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
   describe("no secrets ever rendered", () => {
     before(() => {
       // Free-text columns NOT in the settings view whitelist:
-      api.updateGuildSettings(GUILD_A, {
+      api.updateGuildSettings(CID_A, {
         gork_keyword: "SECRET-GORK-MARKER",
         gork_extra_rules: "SECRET-GORK-RULES-MARKER",
       });
     });
 
     it("guild_settings row shape carries no token/secret-shaped columns", () => {
-      const row = api.getGuildSettings(GUILD_A);
+      const row = api.getGuildSettings(CID_A);
       const offenders = Object.keys(row).filter((k) =>
         settingsDataMod.isSecretColumnName(k)
       );
@@ -452,7 +462,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
     it("non-whitelisted setting values never reach the page", async () => {
       await mountApp();
-      const { body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+      const { body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
       assert.ok(!body.includes("SECRET-GORK-MARKER"), "gork keyword not rendered");
       assert.ok(!body.includes("SECRET-GORK-RULES-MARKER"), "gork prompt rules not rendered");
     });
@@ -474,7 +484,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         }),
       });
 
-      const first = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+      const first = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
       assert.equal(first.res.status, 200);
       const afterFirst = calls.length;
       assert.equal(afterFirst, 3, "exactly 3 facade reads: one per settings cluster");
@@ -484,19 +494,19 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         "one getGuildSettings + one listAllowedCommandChannels + one listLevelRoles"
       );
       assert.deepEqual(
-        calls.map((c) => c.args[0]).filter((a) => a !== GUILD_A),
+        calls.map((c) => c.args[0]).filter((a) => a !== CID_A),
         [],
         "every read is guild-scoped to the viewed guild — no cross-guild leakage"
       );
 
       fakeNow += 10_000; // inside the window
-      const second = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+      const second = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
       assert.equal(second.res.status, 200);
       assert.equal(calls.length, afterFirst, "cache hit must not touch the facade (§8.6)");
       assert.ok(second.body.includes("(cached)"), "freshness rendered honestly");
 
       fakeNow += 25_000; // past 30 s
-      const third = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+      const third = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
       assert.equal(third.res.status, 200);
       assert.ok(calls.length > afterFirst, "expired cache re-reads the facade");
     });
@@ -518,7 +528,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
     it("cached names decorate ids (escaped); unknown channels stay id-only", async () => {
       await mountApp({ getClient: () => fakeClient });
-      const { res, body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("(mod&lt;b&gt;&amp;audit&lt;/b&gt;)"), "escaped cached name shown");
       assert.ok(!body.includes("mod<b>"), "name never live");
@@ -528,7 +538,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     it("absent / THROWING getClient degrade to ids — never a 500, never a fetch", async () => {
       for (const getClient of [null, () => { throw new Error("client exploded"); }]) {
         await mountApp({ getClient });
-        const { res, body } = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+        const { res, body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
         assert.equal(res.status, 200);
         assert.ok(body.includes(`700000000000000011`), "id still rendered");
       }
@@ -544,7 +554,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     // the exact path stays GET-only and every mismatched verb/path is still
     // the byte-identical legacy 405 (methodGate lockstep proof, half 1).
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-      const res = await fetch(`${base}/g/${GUILD_A}/settings`, {
+      const res = await fetch(`${base}/g/${CID_A}/settings`, {
         method,
         headers: { cookie: cookieOf.staff },
       });
@@ -596,8 +606,8 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     }
 
     /** web-origin audit rows for GUILD_A, newest first. */
-    const webAudits = () => api.listAdminAudit(GUILD_A, { origin: "web", limit: 100 });
-    const webAuditCount = () => api.countAdminAudit(GUILD_A, { origin: "web" });
+    const webAudits = () => api.listAdminAudit(CID_A, { origin: "web", limit: 100 });
+    const webAuditCount = () => api.countAdminAudit(CID_A, { origin: "web" });
 
     const decayColumns = (row) => ({
       decay_enabled: row.decay_enabled,
@@ -626,25 +636,27 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
       it("every registered POST template passes the gate (anon ⇒ 302, never 405)", async () => {
         for (const suffix of MUTATION_PATHS) {
-          const { res, body } = await post(`/g/${GUILD_A}${suffix}`, { fields: {} });
+          const { res, body } = await post(`/g/${CID_A}${suffix}`, { fields: {} });
           assert.notEqual(res.status, 405, `${suffix} must not be gated out`);
           assert.equal(res.status, 302, `anon ${suffix} ⇒ login redirect`);
-          assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+          // integer community ids fail the 5–20-digit snowflake gate in
+      // loginRedirectTarget, so the anon redirect target is the bare login page
+      assert.equal(res.headers.get("location"), "/auth/login");
           assert.equal(body, "");
         }
       });
 
       it("mismatched verbs/paths are byte-identical 405 (never reaches CSRF)", async () => {
         const mismatches = [
-          ["PUT", `/g/${GUILD_A}/settings/decay`],
-          ["PATCH", `/g/${GUILD_A}/settings/decay`],
-          ["DELETE", `/g/${GUILD_A}/settings/decay`],
-          ["PUT", `/g/${GUILD_A}/settings/command-channels/add`],
-          ["POST", `/g/${GUILD_A}/settings/decayX`],
-          ["POST", `/g/${GUILD_A}/settings/decay/extra`],
-          ["POST", `/g/${GUILD_A}/settings/command-channels/add/x`],
-          ["POST", `/g/${GUILD_A}/settings/xp/`],
-          ["PUT", `/g/${GUILD_A}/settings/xp`],
+          ["PUT", `/g/${CID_A}/settings/decay`],
+          ["PATCH", `/g/${CID_A}/settings/decay`],
+          ["DELETE", `/g/${CID_A}/settings/decay`],
+          ["PUT", `/g/${CID_A}/settings/command-channels/add`],
+          ["POST", `/g/${CID_A}/settings/decayX`],
+          ["POST", `/g/${CID_A}/settings/decay/extra`],
+          ["POST", `/g/${CID_A}/settings/command-channels/add/x`],
+          ["POST", `/g/${CID_A}/settings/xp/`],
+          ["PUT", `/g/${CID_A}/settings/xp`],
         ];
         for (const [method, path] of mismatches) {
           const res = await fetch(`${base}${path}`, {
@@ -668,29 +680,29 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       });
 
       it("anonymous POST ⇒ 302 login (guildScope before anything mutates)", async () => {
-        const { res, location } = await post(`/g/${GUILD_A}/settings/decay`, {
+        const { res, location } = await post(`/g/${CID_A}/settings/decay`, {
           fields: { percent: "10" },
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/auth/login?guild=${GUILD_A}`);
+        assert.equal(location, "/auth/login");
       });
 
       it("missing _csrf ⇒ 403, nothing written, nothing audited", async () => {
-        const beforeRow = decayColumns(api.getGuildSettings(GUILD_A));
+        const beforeRow = decayColumns(api.getGuildSettings(CID_A));
         const beforeCount = webAuditCount();
-        const { res, body } = await post(`/g/${GUILD_A}/settings/decay`, {
+        const { res, body } = await post(`/g/${CID_A}/settings/decay`, {
           cookie: cookieOf.staff,
           fields: { percent: "50" },
         });
         assert.equal(res.status, 403);
         assert.equal(body, "Forbidden");
-        assert.deepEqual(decayColumns(api.getGuildSettings(GUILD_A)), beforeRow);
+        assert.deepEqual(decayColumns(api.getGuildSettings(CID_A)), beforeRow);
         assert.equal(webAuditCount(), beforeCount, "CSRF denial never audits");
       });
 
       it("wrong token shape/value ⇒ 403", async () => {
         for (const bad of ["", "deadbeef", "0".repeat(64)]) {
-          const { res, body } = await post(`/g/${GUILD_A}/settings/decay`, {
+          const { res, body } = await post(`/g/${CID_A}/settings/decay`, {
             cookie: cookieOf.staff,
             fields: { percent: "50", _csrf: "ignored" },
             token: bad,
@@ -701,17 +713,17 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       });
 
       it("valid X-CSRF-Token header (htmx path) is accepted", async () => {
-        const { res, location } = await post(`/g/${GUILD_A}/settings/decay`, {
+        const { res, location } = await post(`/g/${CID_A}/settings/decay`, {
           cookie: cookieOf.senior,
           fields: { enabled: "on" },
           headerToken: tokenFor("senior"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${GUILD_A}/settings?ok=decay`);
+        assert.equal(location, `/g/${CID_A}/settings?ok=decay`);
       });
 
       it("stranger (in guild, no staff role) with a VALID token ⇒ generic 404", async () => {
-        const { res, body } = await post(`/g/${GUILD_A}/settings/decay`, {
+        const { res, body } = await post(`/g/${CID_A}/settings/decay`, {
           cookie: cookieOf.plain,
           fields: { percent: "10" },
           token: tokenFor("plain"),
@@ -721,7 +733,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       });
 
       it("cross-guild mutation ⇒ the SAME generic 404 bytes (never 403)", async () => {
-        const { res, body } = await post(`/g/${GUILD_CROSS}/settings/xp`, {
+        const { res, body } = await post(`/g/${CID_CROSS}/settings/xp`, {
           cookie: cookieOf.staff,
           fields: { message: "9" },
           token: tokenFor("staff"),
@@ -732,13 +744,13 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
       it("staff-tier mutations answer 302 for staff/senior/admin alike", async () => {
         for (const who of ["staff", "senior", "admin"]) {
-          const { res, location } = await post(`/g/${GUILD_A}/settings/decay`, {
+          const { res, location } = await post(`/g/${CID_A}/settings/decay`, {
             cookie: cookieOf[who],
             fields: { enabled: "on" },
             token: tokenFor(who),
           });
           assert.equal(res.status, 302, `${who} must be allowed (staff tier)`);
-          assert.equal(location, `/g/${GUILD_A}/settings?ok=decay`);
+          assert.equal(location, `/g/${CID_A}/settings?ok=decay`);
         }
       });
 
@@ -747,7 +759,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         for (const who of ["staff", "senior"]) {
           for (const op of ["add", "remove"]) {
             const { res, body } = await post(
-              `/g/${GUILD_A}/settings/command-channels/${op}`,
+              `/g/${CID_A}/settings/command-channels/${op}`,
               {
                 cookie: cookieOf[who],
                 fields: { channel: "700000000000000077" },
@@ -761,7 +773,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         assert.equal(webAuditCount(), beforeCount, "403s write no audit rows");
         assert.equal(
           api
-            .listAllowedCommandChannels(GUILD_A)
+            .listAllowedCommandChannels(CID_A)
             .some((r) => r.channel_id === "700000000000000077"),
           false,
           "denied add wrote no row"
@@ -780,7 +792,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
       it("happy path: row + exactly one xp.settings_update audit row", async () => {
         const beforeCount = webAuditCount();
-        const { res, location } = await post(`/g/${GUILD_A}/settings/xp`, {
+        const { res, location } = await post(`/g/${CID_A}/settings/xp`, {
           cookie: cookieOf.staff,
           fields: {
             message: "8",
@@ -793,9 +805,9 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           token: tokenFor("staff"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${GUILD_A}/settings?ok=xp`);
+        assert.equal(location, `/g/${CID_A}/settings?ok=xp`);
 
-        const row = api.getGuildSettings(GUILD_A); // facade read-back
+        const row = api.getGuildSettings(CID_A); // facade read-back
         assert.equal(row.msg_xp, 8);
         assert.equal(row.reaction_xp, 4);
         assert.equal(row.voice_xp_per_min, 2);
@@ -807,7 +819,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         const entry = webAudits()[0];
         assert.equal(entry.action, "xp.settings_update");
         assert.equal(entry.origin, "web");
-        assert.equal(entry.guild_id, GUILD_A);
+        assert.equal(entry.community_id, CID_A);
         assert.equal(entry.actor_user_id, USER_STAFF);
         assert.equal(entry.target_type, "guild");
         assert.equal(entry.target_id, GUILD_A);
@@ -824,17 +836,17 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       });
 
       it("cooldown 0 is accepted (slash: 0 disables the cooldown)", async () => {
-        const { res } = await post(`/g/${GUILD_A}/settings/xp`, {
+        const { res } = await post(`/g/${CID_A}/settings/xp`, {
           cookie: cookieOf.admin,
           fields: { msgcooldown: "0" },
           token: tokenFor("admin"),
         });
         assert.equal(res.status, 302);
-        assert.equal(api.getGuildSettings(GUILD_A).msg_cooldown_sec, 0);
+        assert.equal(api.getGuildSettings(CID_A).msg_cooldown_sec, 0);
       });
 
       it("validation rejects: negatives, non-numbers, bounds — zero writes, zero audits", async () => {
-        const beforeRow = xpColumns(api.getGuildSettings(GUILD_A));
+        const beforeRow = xpColumns(api.getGuildSettings(CID_A));
         const beforeCount = webAuditCount();
         const bad = [
           { message: "-5" },
@@ -847,20 +859,20 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           {}, // empty patch ("No XP settings provided")
         ];
         for (const fields of bad) {
-          const { res, location } = await post(`/g/${GUILD_A}/settings/xp`, {
+          const { res, location } = await post(`/g/${CID_A}/settings/xp`, {
             cookie: cookieOf.staff,
             fields,
             token: tokenFor("staff"),
           });
           assert.equal(res.status, 302, `bad payload ${JSON.stringify(fields)} ⇒ PRG`);
-          assert.equal(location, `/g/${GUILD_A}/settings?err=xp`);
+          assert.equal(location, `/g/${CID_A}/settings?err=xp`);
         }
-        assert.deepEqual(xpColumns(api.getGuildSettings(GUILD_A)), beforeRow);
+        assert.deepEqual(xpColumns(api.getGuildSettings(CID_A)), beforeRow);
         assert.equal(webAuditCount(), beforeCount, "rejected writes never audit");
       });
 
       it("error flash renders the fixed banner (GET ?err=xp)", async () => {
-        const { res, body } = await req(`/g/${GUILD_A}/settings?err=xp`, {
+        const { res, body } = await req(`/g/${CID_A}/settings?err=xp`, {
           cookie: cookieOf.staff,
         });
         assert.equal(res.status, 200);
@@ -880,15 +892,15 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
       it("percent is stored as a fraction exactly like slash", async () => {
         const beforeCount = webAuditCount();
-        const { res, location } = await post(`/g/${GUILD_A}/settings/decay`, {
+        const { res, location } = await post(`/g/${CID_A}/settings/decay`, {
           cookie: cookieOf.staff,
           fields: { enabled: "on", percent: "30", days: "14", messages: "5" },
           token: tokenFor("staff"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${GUILD_A}/settings?ok=decay`);
+        assert.equal(location, `/g/${CID_A}/settings?ok=decay`);
 
-        const row = api.getGuildSettings(GUILD_A);
+        const row = api.getGuildSettings(CID_A);
         assert.equal(row.decay_enabled, 1);
         assert.equal(row.decay_percent, 0.3); // 30 / 100
         assert.equal(row.decay_window_days, 14);
@@ -911,7 +923,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       });
 
       it("bounds mirror slash: percent>95, days<1, messages<0, empty ⇒ err + nothing", async () => {
-        const beforeRow = decayColumns(api.getGuildSettings(GUILD_A));
+        const beforeRow = decayColumns(api.getGuildSettings(CID_A));
         const beforeCount = webAuditCount();
         for (const fields of [
           { percent: "120" },
@@ -921,29 +933,29 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           { enabled: "maybe" },
           {},
         ]) {
-          const { res, location } = await post(`/g/${GUILD_A}/settings/decay`, {
+          const { res, location } = await post(`/g/${CID_A}/settings/decay`, {
             cookie: cookieOf.staff,
             fields,
             token: tokenFor("staff"),
           });
           assert.equal(res.status, 302);
-          assert.equal(location, `/g/${GUILD_A}/settings?err=decay`, `${JSON.stringify(fields)}`);
+          assert.equal(location, `/g/${CID_A}/settings?err=decay`, `${JSON.stringify(fields)}`);
         }
-        assert.deepEqual(decayColumns(api.getGuildSettings(GUILD_A)), beforeRow);
+        assert.deepEqual(decayColumns(api.getGuildSettings(CID_A)), beforeRow);
         assert.equal(webAuditCount(), beforeCount);
       });
 
       it("boundary values 0 and 95 percent are VALID (slash min/max)", async () => {
         for (const p of ["0", "95"]) {
-          const { res, location } = await post(`/g/${GUILD_A}/settings/decay`, {
+          const { res, location } = await post(`/g/${CID_A}/settings/decay`, {
             cookie: cookieOf.admin,
             fields: { percent: p },
             token: tokenFor("admin"),
           });
           assert.equal(res.status, 302);
-          assert.equal(location, `/g/${GUILD_A}/settings?ok=decay`);
+          assert.equal(location, `/g/${CID_A}/settings?ok=decay`);
         }
-        assert.equal(api.getGuildSettings(GUILD_A).decay_percent, 0.95);
+        assert.equal(api.getGuildSettings(CID_A).decay_percent, 0.95);
       });
     });
 
@@ -954,21 +966,21 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     describe("log channels (POST /settings/logs + /settings/warn-log)", () => {
       before(async () => {
         // Fixture: warn column starts clean so audit details are exact.
-        api.updateGuildSettings(GUILD_A, { warn_log_channel_id: null });
+        api.updateGuildSettings(CID_A, { warn_log_channel_id: null });
         await mountApp();
       });
 
       it("set audit stream ⇒ logs.channel_set (target = channel)", async () => {
-        const prev = api.getGuildSettings(GUILD_A).audit_log_channel_id;
+        const prev = api.getGuildSettings(CID_A).audit_log_channel_id;
         const beforeCount = webAuditCount();
-        const { res, location } = await post(`/g/${GUILD_A}/settings/logs`, {
+        const { res, location } = await post(`/g/${CID_A}/settings/logs`, {
           cookie: cookieOf.staff,
           fields: { stream: "audit", channel: "700000000000000031" },
           token: tokenFor("staff"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${GUILD_A}/settings?ok=logs`);
-        assert.equal(api.getGuildSettings(GUILD_A).audit_log_channel_id, "700000000000000031");
+        assert.equal(location, `/g/${CID_A}/settings?ok=logs`);
+        assert.equal(api.getGuildSettings(CID_A).audit_log_channel_id, "700000000000000031");
 
         assert.equal(webAuditCount(), beforeCount + 1);
         const entry = webAudits()[0];
@@ -984,13 +996,13 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
       it("clear audit stream ⇒ logs.channel_clear (target = guild, column NULL)", async () => {
         const beforeCount = webAuditCount();
-        const { res } = await post(`/g/${GUILD_A}/settings/logs`, {
+        const { res } = await post(`/g/${CID_A}/settings/logs`, {
           cookie: cookieOf.senior,
           fields: { stream: "audit", clear: "1" },
           token: tokenFor("senior"),
         });
         assert.equal(res.status, 302);
-        assert.equal(api.getGuildSettings(GUILD_A).audit_log_channel_id, null);
+        assert.equal(api.getGuildSettings(CID_A).audit_log_channel_id, null);
 
         const entry = webAudits()[0];
         assert.equal(entry.action, "logs.channel_clear");
@@ -1004,38 +1016,38 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       });
 
       it("message stream set + warn-log set/clear mirror their slash actions", async () => {
-        await post(`/g/${GUILD_A}/settings/logs`, {
+        await post(`/g/${CID_A}/settings/logs`, {
           cookie: cookieOf.staff,
           fields: { stream: "message", channel: "700000000000000032" },
           token: tokenFor("staff"),
         });
-        assert.equal(api.getGuildSettings(GUILD_A).message_log_channel_id, "700000000000000032");
+        assert.equal(api.getGuildSettings(CID_A).message_log_channel_id, "700000000000000032");
         assert.equal(webAudits()[0].action, "logs.channel_set");
 
-        await post(`/g/${GUILD_A}/settings/warn-log`, {
+        await post(`/g/${CID_A}/settings/warn-log`, {
           cookie: cookieOf.staff,
           fields: { channel: "700000000000000033" },
           token: tokenFor("staff"),
         });
-        assert.equal(api.getGuildSettings(GUILD_A).warn_log_channel_id, "700000000000000033");
+        assert.equal(api.getGuildSettings(CID_A).warn_log_channel_id, "700000000000000033");
         const warnSet = webAudits()[0];
         assert.equal(warnSet.action, "warnings.log_channel_set");
         assert.equal(warnSet.target_type, "channel");
         assert.equal(warnSet.target_id, "700000000000000033");
 
-        await post(`/g/${GUILD_A}/settings/warn-log`, {
+        await post(`/g/${CID_A}/settings/warn-log`, {
           cookie: cookieOf.staff,
           fields: { clear: "1" },
           token: tokenFor("staff"),
         });
-        assert.equal(api.getGuildSettings(GUILD_A).warn_log_channel_id, null);
+        assert.equal(api.getGuildSettings(CID_A).warn_log_channel_id, null);
         const warnClear = webAudits()[0];
         assert.equal(warnClear.action, "warnings.log_channel_clear");
         assert.equal(warnClear.target_type, "guild");
       });
 
       it("XSS-shaped and junk channel ids are REJECTED (no write, no audit)", async () => {
-        const before = api.getGuildSettings(GUILD_A);
+        const before = api.getGuildSettings(CID_A);
         const beforeMsg = before.message_log_channel_id;
         const beforeWarn = before.warn_log_channel_id;
         const beforeCount = webAuditCount();
@@ -1045,36 +1057,36 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           "1234", // below the 5-digit web snowflake floor
           "x".repeat(21),
         ]) {
-          const { res, location } = await post(`/g/${GUILD_A}/settings/logs`, {
+          const { res, location } = await post(`/g/${CID_A}/settings/logs`, {
             cookie: cookieOf.staff,
             fields: { stream: "message", channel },
             token: tokenFor("staff"),
           });
           assert.equal(res.status, 302);
-          assert.equal(location, `/g/${GUILD_A}/settings?err=logs`, `channel "${channel}"`);
+          assert.equal(location, `/g/${CID_A}/settings?err=logs`, `channel "${channel}"`);
         }
-        assert.equal(api.getGuildSettings(GUILD_A).message_log_channel_id, beforeMsg);
-        assert.equal(api.getGuildSettings(GUILD_A).warn_log_channel_id, beforeWarn);
+        assert.equal(api.getGuildSettings(CID_A).message_log_channel_id, beforeMsg);
+        assert.equal(api.getGuildSettings(CID_A).warn_log_channel_id, beforeWarn);
         assert.equal(webAuditCount(), beforeCount);
       });
 
       it("channel XOR clear + unknown stream ⇒ err, nothing written", async () => {
         const beforeCount = webAuditCount();
-        const before = api.getGuildSettings(GUILD_A).audit_log_channel_id;
+        const before = api.getGuildSettings(CID_A).audit_log_channel_id;
         for (const fields of [
           { stream: "audit" }, // neither channel nor clear
           { stream: "audit", channel: "700000000000000031", clear: "1" }, // both
           { stream: "bonkers", channel: "700000000000000031" }, // unknown stream
         ]) {
-          const { res, location } = await post(`/g/${GUILD_A}/settings/logs`, {
+          const { res, location } = await post(`/g/${CID_A}/settings/logs`, {
             cookie: cookieOf.staff,
             fields,
             token: tokenFor("staff"),
           });
           assert.equal(res.status, 302);
-          assert.equal(location, `/g/${GUILD_A}/settings?err=logs`);
+          assert.equal(location, `/g/${CID_A}/settings?err=logs`);
         }
-        assert.equal(api.getGuildSettings(GUILD_A).audit_log_channel_id, before);
+        assert.equal(api.getGuildSettings(CID_A).audit_log_channel_id, before);
         assert.equal(webAuditCount(), beforeCount);
       });
     });
@@ -1091,37 +1103,37 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       it("admin add/remove write the allow-list rows + command_channels.* audits", async () => {
         const chan = "700000000000000041";
         assert.equal(
-          api.listAllowedCommandChannels(GUILD_A).some((r) => r.channel_id === chan),
+          api.listAllowedCommandChannels(CID_A).some((r) => r.channel_id === chan),
           false
         );
 
-        const { res, location } = await post(`/g/${GUILD_A}/settings/command-channels/add`, {
+        const { res, location } = await post(`/g/${CID_A}/settings/command-channels/add`, {
           cookie: cookieOf.admin,
           fields: { channel: chan },
           token: tokenFor("admin"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${GUILD_A}/settings?ok=channels`);
+        assert.equal(location, `/g/${CID_A}/settings?ok=channels`);
         assert.ok(
-          api.listAllowedCommandChannels(GUILD_A).some((r) => r.channel_id === chan),
+          api.listAllowedCommandChannels(CID_A).some((r) => r.channel_id === chan),
           "allow-list row exists (facade read-back)"
         );
         let entry = webAudits()[0];
         assert.equal(entry.action, "command_channels.add");
         assert.equal(entry.origin, "web");
-        assert.equal(entry.guild_id, GUILD_A);
+        assert.equal(entry.community_id, CID_A);
         assert.equal(entry.actor_user_id, USER_ADMIN);
         assert.equal(entry.target_type, "channel");
         assert.equal(entry.target_id, chan);
 
-        const { res: res2 } = await post(`/g/${GUILD_A}/settings/command-channels/remove`, {
+        const { res: res2 } = await post(`/g/${CID_A}/settings/command-channels/remove`, {
           cookie: cookieOf.admin,
           fields: { channel: chan },
           token: tokenFor("admin"),
         });
         assert.equal(res2.status, 302);
         assert.equal(
-          api.listAllowedCommandChannels(GUILD_A).some((r) => r.channel_id === chan),
+          api.listAllowedCommandChannels(CID_A).some((r) => r.channel_id === chan),
           false,
           "row removed"
         );
@@ -1132,13 +1144,13 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
 
       it("invalid channel id ⇒ err redirect, no row, no audit (even for admin)", async () => {
         const beforeCount = webAuditCount();
-        const { res, location } = await post(`/g/${GUILD_A}/settings/command-channels/add`, {
+        const { res, location } = await post(`/g/${CID_A}/settings/command-channels/add`, {
           cookie: cookieOf.admin,
           fields: { channel: "99; DROP TABLE guild_settings;--" },
           token: tokenFor("admin"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${GUILD_A}/settings?err=channels`);
+        assert.equal(location, `/g/${CID_A}/settings?err=channels`);
         assert.equal(webAuditCount(), beforeCount);
       });
     });
@@ -1150,13 +1162,13 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     describe("flash, service layer + cache invalidation", () => {
       it("ok/err flags render FIXED banners; junk flags render nothing (no reflection)", async () => {
         await mountApp();
-        const ok = await req(`/g/${GUILD_A}/settings?ok=decay`, { cookie: cookieOf.staff });
+        const ok = await req(`/g/${CID_A}/settings?ok=decay`, { cookie: cookieOf.staff });
         assert.equal(ok.res.status, 200);
         assert.ok(ok.body.includes("banner banner-info"));
         assert.ok(ok.body.includes("Decay settings saved."));
 
         const junk = await req(
-          `/g/${GUILD_A}/settings?ok=${encodeURIComponent("<script>alert(9)</script>")}`,
+          `/g/${CID_A}/settings?ok=${encodeURIComponent("<script>alert(9)</script>")}`,
           { cookie: cookieOf.staff }
         );
         assert.equal(junk.res.status, 200);
@@ -1175,15 +1187,15 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           }),
         });
 
-        await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+        await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
         const afterBuild = calls.length;
         assert.equal(afterBuild, 3, "uncached build = 3 reads");
 
         fakeNow += 1_000; // inside the window
-        await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+        await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
         assert.equal(calls.length, afterBuild, "cached GET issues zero reads");
 
-        const { res } = await post(`/g/${GUILD_A}/settings/decay`, {
+        const { res } = await post(`/g/${CID_A}/settings/decay`, {
           cookie: cookieOf.staff,
           fields: { days: "21" },
           token: tokenFor("staff"),
@@ -1191,7 +1203,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         assert.equal(res.status, 302);
 
         fakeNow += 1_000; // STILL inside the 30 s window
-        const fresh = await req(`/g/${GUILD_A}/settings`, { cookie: cookieOf.staff });
+        const fresh = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
         assert.ok(calls.length > afterBuild, "mutation must invalidate the cache");
         assert.ok(fresh.body.includes("21 days"), "view shows the just-written value");
       });
@@ -1216,7 +1228,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         };
         try {
           // REJECTED payload ⇒ the facade is NEVER touched.
-          await post(`/g/${GUILD_A}/settings/decay`, {
+          await post(`/g/${CID_A}/settings/decay`, {
             cookie: cookieOf.staff,
             fields: { percent: "400" },
             token: tokenFor("staff"),
@@ -1224,21 +1236,21 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           assert.deepEqual(calls, [], "validation rejects must not reach the service layer");
 
           // ACCEPTED writes ⇒ EXACTLY one point op each (10k-row safe).
-          await post(`/g/${GUILD_A}/settings/decay`, {
+          await post(`/g/${CID_A}/settings/decay`, {
             cookie: cookieOf.staff,
             fields: { percent: "12" },
             token: tokenFor("staff"),
           });
           assert.equal(calls.filter((c) => c[0] === "updateGuildSettings").length, 1);
 
-          await post(`/g/${GUILD_A}/settings/command-channels/add`, {
+          await post(`/g/${CID_A}/settings/command-channels/add`, {
             cookie: cookieOf.admin,
             fields: { channel: "700000000000000042" },
             token: tokenFor("admin"),
           });
           assert.equal(calls.filter((c) => c[0] === "addAllowedCommandChannel").length, 1);
 
-          await post(`/g/${GUILD_A}/settings/command-channels/remove`, {
+          await post(`/g/${CID_A}/settings/command-channels/remove`, {
             cookie: cookieOf.admin,
             fields: { channel: "700000000000000042" },
             token: tokenFor("admin"),
@@ -1261,13 +1273,17 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     describe("slash↔web parity checklist", () => {
       const PARITY_GUILD_XP = "720000000000000001";
       const PARITY_GUILD_DECAY = "720000000000000002";
+      // Slash-parity control rows are addressed straight through the facade,
+      // which now keys by integer community id (fluxer PR 2).
+      const CID_PARITY_XP = communityKey(PARITY_GUILD_XP);
+      const CID_PARITY_DECAY = communityKey(PARITY_GUILD_DECAY);
 
       before(async () => {
         await mountApp();
       });
 
       it("web /setxp form ≡ slash updateGuildSettings(msg/cooldown/factor patch)", async () => {
-        const { res } = await post(`/g/${GUILD_A}/settings/xp`, {
+        const { res } = await post(`/g/${CID_A}/settings/xp`, {
           cookie: cookieOf.admin,
           fields: {
             message: "13",
@@ -1282,7 +1298,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         assert.equal(res.status, 302);
 
         // The EXACT patch handleSetXp builds for the same slash options:
-        api.updateGuildSettings(PARITY_GUILD_XP, {
+        api.updateGuildSettings(CID_PARITY_XP, {
           msg_xp: 13,
           reaction_xp: 6,
           voice_xp_per_min: 3,
@@ -1291,14 +1307,14 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           level_xp_factor: 222,
         });
         assert.deepEqual(
-          xpColumns(api.getGuildSettings(GUILD_A)),
-          xpColumns(api.getGuildSettings(PARITY_GUILD_XP)),
+          xpColumns(api.getGuildSettings(CID_A)),
+          xpColumns(api.getGuildSettings(CID_PARITY_XP)),
           "identical guild_settings state (slash parity — xp cluster)"
         );
       });
 
       it("web /setdecay form ≡ slash updateGuildSettings(enabled/percent patch)", async () => {
-        const { res } = await post(`/g/${GUILD_A}/settings/decay`, {
+        const { res } = await post(`/g/${CID_A}/settings/decay`, {
           cookie: cookieOf.admin,
           fields: { enabled: "off", percent: "55", messages: "7", days: "28" },
           token: tokenFor("admin"),
@@ -1306,15 +1322,15 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         assert.equal(res.status, 302);
 
         // handleSetDecay: enabled→0, Math.max(0,m), Math.max(1,d), min(.95,max(0,p/100))
-        api.updateGuildSettings(PARITY_GUILD_DECAY, {
+        api.updateGuildSettings(CID_PARITY_DECAY, {
           decay_enabled: 0,
           decay_min_messages: Math.max(0, 7),
           decay_window_days: Math.max(1, 28),
           decay_percent: Math.min(0.95, Math.max(0, 55 / 100)),
         });
         assert.deepEqual(
-          decayColumns(api.getGuildSettings(GUILD_A)),
-          decayColumns(api.getGuildSettings(PARITY_GUILD_DECAY)),
+          decayColumns(api.getGuildSettings(CID_A)),
+          decayColumns(api.getGuildSettings(CID_PARITY_DECAY)),
           "identical guild_settings state (slash parity — decay cluster)"
         );
       });

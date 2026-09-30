@@ -7,7 +7,7 @@
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const {
   clampDailyLimit,
@@ -108,14 +108,14 @@ describe("gorkBudget rules + usage repository (real temp SQLite)", () => {
 
   it("upsert inserts, then replaces limit + provenance in place (one row)", () => {
     const g = "g-bud-crud";
-    assert.equal(api.upsertGorkBudgetRule(g, "channel", "c1", 3, "staff-1"), true);
-    let rows = api.listGorkBudgetRules(g);
+    assert.equal(api.upsertGorkBudgetRule(communityKey(g), "channel", "c1", 3, "staff-1"), true);
+    let rows = api.listGorkBudgetRules(communityKey(g));
     assert.equal(rows.length, 1);
     assert.equal(rows[0].daily_limit, 3);
     assert.equal(rows[0].created_by, "staff-1");
 
-    assert.equal(api.upsertGorkBudgetRule(g, "channel", "c1", -1, "staff-2"), true);
-    rows = api.listGorkBudgetRules(g);
+    assert.equal(api.upsertGorkBudgetRule(communityKey(g), "channel", "c1", -1, "staff-2"), true);
+    rows = api.listGorkBudgetRules(communityKey(g));
     assert.equal(rows.length, 1, "replace must not add a row");
     assert.equal(rows[0].daily_limit, -1);
     assert.equal(rows[0].created_by, "staff-2");
@@ -123,25 +123,25 @@ describe("gorkBudget rules + usage repository (real temp SQLite)", () => {
 
   it("clamp on write: out-of-range rule limits are clamped to -1..1000", () => {
     const g = "g-bud-clamp";
-    api.upsertGorkBudgetRule(g, "category", "cat1", 5000, null);
-    assert.equal(api.listGorkBudgetRules(g)[0].daily_limit, 1000);
+    api.upsertGorkBudgetRule(communityKey(g), "category", "cat1", 5000, null);
+    assert.equal(api.listGorkBudgetRules(communityKey(g))[0].daily_limit, 1000);
   });
 
   it("garbage scope kind / ids are rejected without touching the DB", () => {
     const g = "g-bud-garbage";
-    assert.equal(api.upsertGorkBudgetRule(g, "role", "r1", 5, null), false);
-    assert.equal(api.upsertGorkBudgetRule(g, "channel", "", 5, null), false);
-    assert.equal(api.deleteGorkBudgetRule(g, "", "c1"), false);
-    assert.equal(api.listGorkBudgetRules(g).length, 0);
+    assert.equal(api.upsertGorkBudgetRule(communityKey(g), "role", "r1", 5, null), false);
+    assert.equal(api.upsertGorkBudgetRule(communityKey(g), "channel", "", 5, null), false);
+    assert.equal(api.deleteGorkBudgetRule(communityKey(g), "", "c1"), false);
+    assert.equal(api.listGorkBudgetRules(communityKey(g)).length, 0);
   });
 
   it("delete removes exactly the matching rule (returns existence)", () => {
     const g = "g-bud-del";
-    api.upsertGorkBudgetRule(g, "channel", "c1", 5, null);
-    api.upsertGorkBudgetRule(g, "category", "c1", 2, null); // same id, other kind
-    assert.equal(api.deleteGorkBudgetRule(g, "channel", "c1"), true);
-    assert.equal(api.deleteGorkBudgetRule(g, "channel", "c1"), false);
-    const rows = api.listGorkBudgetRules(g);
+    api.upsertGorkBudgetRule(communityKey(g), "channel", "c1", 5, null);
+    api.upsertGorkBudgetRule(communityKey(g), "category", "c1", 2, null); // same id, other kind
+    assert.equal(api.deleteGorkBudgetRule(communityKey(g), "channel", "c1"), true);
+    assert.equal(api.deleteGorkBudgetRule(communityKey(g), "channel", "c1"), false);
+    const rows = api.listGorkBudgetRules(communityKey(g));
     assert.equal(rows.length, 1, "only the channel-kind row was removed");
     assert.equal(rows[0].scope_kind, "category");
   });
@@ -149,22 +149,22 @@ describe("gorkBudget rules + usage repository (real temp SQLite)", () => {
   it("usage starts at 0; increment counts 1,2,3 and returns the new total", () => {
     const g = "g-bud-use";
     const day = today();
-    assert.equal(api.getGorkUsage(g, "u1", "channel", "c1", day), 0);
-    assert.equal(api.incrementGorkUsage(g, "u1", "channel", "c1", day), 1);
-    assert.equal(api.incrementGorkUsage(g, "u1", "channel", "c1", day), 2);
-    assert.equal(api.incrementGorkUsage(g, "u1", "channel", "c1", day), 3);
-    assert.equal(api.getGorkUsage(g, "u1", "channel", "c1", day), 3);
+    assert.equal(api.getGorkUsage(communityKey(g), "u1", "channel", "c1", day), 0);
+    assert.equal(api.incrementGorkUsage(communityKey(g), "u1", "channel", "c1", day), 1);
+    assert.equal(api.incrementGorkUsage(communityKey(g), "u1", "channel", "c1", day), 2);
+    assert.equal(api.incrementGorkUsage(communityKey(g), "u1", "channel", "c1", day), 3);
+    assert.equal(api.getGorkUsage(communityKey(g), "u1", "channel", "c1", day), 3);
   });
 
   it("counters are isolated per (user, scope, day)", () => {
     const g = "g-bud-iso";
     const day = today();
-    api.incrementGorkUsage(g, "u1", "channel", "c1", day);
-    assert.equal(api.getGorkUsage(g, "u2", "channel", "c1", day), 0, "other user");
-    assert.equal(api.getGorkUsage(g, "u1", "category", "c1", day), 0, "other scope kind");
-    assert.equal(api.getGorkUsage(g, "u1", "guild", "0", day), 0, "guild default row");
-    assert.equal(api.getGorkUsage(g, "u1", "channel", "c2", day), 0, "other channel");
-    assert.equal(api.getGorkUsage(g, "u1", "channel", "c1", "2000-01-01"), 0, "other day");
+    api.incrementGorkUsage(communityKey(g), "u1", "channel", "c1", day);
+    assert.equal(api.getGorkUsage(communityKey(g), "u2", "channel", "c1", day), 0, "other user");
+    assert.equal(api.getGorkUsage(communityKey(g), "u1", "category", "c1", day), 0, "other scope kind");
+    assert.equal(api.getGorkUsage(communityKey(g), "u1", "guild", "0", day), 0, "guild default row");
+    assert.equal(api.getGorkUsage(communityKey(g), "u1", "channel", "c2", day), 0, "other channel");
+    assert.equal(api.getGorkUsage(communityKey(g), "u1", "channel", "c1", "2000-01-01"), 0, "other day");
   });
 
   it("lazy prune on the write path: days older than yesterday go, yesterday stays", () => {
@@ -172,20 +172,20 @@ describe("gorkBudget rules + usage repository (real temp SQLite)", () => {
     const day = today();
     const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const insert = api.db.prepare(`
-      INSERT INTO gork_usage (guild_id, user_id, scope_kind, scope_id, day, count)
+      INSERT INTO gork_usage (community_id, user_id, scope_kind, scope_id, day, count)
       VALUES (?, ?, 'channel', 'c1', ?, 7)
-      ON CONFLICT(guild_id, user_id, scope_kind, scope_id, day)
+      ON CONFLICT(community_id, user_id, scope_kind, scope_id, day)
       DO UPDATE SET count = count + 7
     `);
-    insert.run(g, "u-old", "2020-01-01"); // ancient
-    insert.run(g, "u-yest", yesterday); // yesterday
-    insert.run(g, "u-today", day);
+    insert.run(communityKey(g), "u-old", "2020-01-01"); // ancient
+    insert.run(communityKey(g), "u-yest", yesterday); // yesterday
+    insert.run(communityKey(g), "u-today", day);
 
-    api.incrementGorkUsage(g, "u1", "channel", "c1", day); // triggers the prune
+    api.incrementGorkUsage(communityKey(g), "u1", "channel", "c1", day); // triggers the prune
 
     const days = api.db
-      .prepare(`SELECT day FROM gork_usage WHERE guild_id=?`)
-      .all(g)
+      .prepare(`SELECT day FROM gork_usage WHERE community_id=?`)
+      .all(communityKey(g))
       .map((r) => r.day);
     assert.ok(!days.includes("2020-01-01"), "ancient day must be pruned");
     assert.ok(days.includes(yesterday), "yesterday must survive one more day");

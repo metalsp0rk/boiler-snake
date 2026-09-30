@@ -26,7 +26,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // Clearly-fake placeholders only (never real-looking secrets, AGENTS.md).
 const SESSION_SECRET = "test-sess…-xyz";
@@ -206,6 +206,8 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
 
   /** @type {Awaited<ReturnType<typeof startMockDiscord>>} */
   let mock;
+  /** Integer communities.id registered for GUILD_SHARED (PR 2 route key). */
+  let guildSharedCid;
   /** @type {import("http").Server} */
   let appServer;
   /** @type {string} */
@@ -248,6 +250,10 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
     const loaded = loadDb();
     api = loaded.api;
     tmpDir = loaded.tmpDir;
+    // PR 2: /g/:communityId routes by the INTEGER communities.id. Register the
+    // shared guild so the resolver maps its cid back to the Discord snowflake
+    // stored in the login guild snapshot (external ids stay external there).
+    guildSharedCid = communityKey(GUILD_SHARED);
 
     mock = await startMockDiscord();
 
@@ -576,12 +582,20 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
         0
       );
 
-      // The new cookie authenticates: /g/:guildId placeholder → 200.
-      const gres = await fetch(`${appBase}/g/${GUILD_SHARED}`, {
+      // The new cookie authenticates: /g/:communityId shell → 200 (PR 2: the
+      // route identity is the INTEGER community id, resolved back to the
+      // Discord snowflake in the session's guild snapshot).
+      const gres = await fetch(`${appBase}/g/${guildSharedCid}`, {
         redirect: "manual",
         headers: { cookie: `web_session=${newId}` },
       });
       assert.equal(gres.status, 200);
+      // A raw snowflake is no longer a route identity → generic 404 (§8.6).
+      const legacy = await fetch(`${appBase}/g/${GUILD_SHARED}`, {
+        redirect: "manual",
+        headers: { cookie: `web_session=${newId}` },
+      });
+      assert.equal(legacy.status, 404, "snowflake ids no longer route /g/:communityId");
 
       // Integration with subtask 08: an AUTHENTICATED logout without the
       // double-submit token is denied by middleware/csrf.js (/auth/ scope)

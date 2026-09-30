@@ -28,7 +28,7 @@ const { formatMemoryLabel } = require("../src/features/gork/audit");
 function row(id, subject, title, body, over = {}) {
   return {
     id,
-    guild_id: "g1",
+    community_id: 1,
     subject_user_id: subject,
     mem_date: "2026-09-01",
     title,
@@ -128,7 +128,7 @@ describe("clampMemoryChars (memory)", () => {
 
 const EXTRACT_CTX = {
   allowList: ["42", "43"],
-  guildId: "g1",
+  communityId: 1,
   memDate: "2026-09-09",
   sourceMessageIds: ["m1"],
 };
@@ -196,7 +196,7 @@ describe("validateExtraction (memory)", () => {
 
   it("server-stamps guild, mem_date, source ids, and the normalizeTitle key", () => {
     const e = mem.validateExtraction([validCandidate()], EXTRACT_CTX).entries[0];
-    assert.equal(e.guildId, "g1");
+    assert.equal(e.communityId, 1);
     assert.equal(e.memDate, "2026-09-09");
     assert.deepEqual(e.sourceMessageIds, ["m1"]);
     assert.equal(e.titleKey, "loves rust", "key half via normalizeTitle (decision 26)");
@@ -433,8 +433,8 @@ describe("loadMemoryContext (memory)", () => {
         return [row(7, "42", "Loves Rust", "Codes in Rust daily.")];
       },
     });
-    const out = mem.loadMemoryContext({ guildId: "g1", roster, budgetChars: 12000, botId: "bot1", repo });
-    assert.deepEqual(calls.listForSubjects[0], ["g1", ["42"]], "bot id never queried");
+    const out = mem.loadMemoryContext({ communityId: 1, roster, budgetChars: 12000, botId: "bot1", repo });
+    assert.deepEqual(calls.listForSubjects[0], [1, ["42"]], "bot id never queried");
     assert.equal(out.mode, "bodies");
     assert.equal(out.indexed, 1);
     assert.deepEqual(out.selectedIds, [7]);
@@ -443,7 +443,7 @@ describe("loadMemoryContext (memory)", () => {
   });
 
   it("nobody has memories → empty block, no injection", () => {
-    const out = mem.loadMemoryContext({ guildId: "g1", roster, budgetChars: 5000, botId: null, repo: fakeRepo().repo });
+    const out = mem.loadMemoryContext({ communityId: 1, roster, budgetChars: 5000, botId: null, repo: fakeRepo().repo });
     assert.equal(out.block, "");
     assert.equal(out.mode, "none");
     assert.equal(out.indexed, 0);
@@ -451,7 +451,7 @@ describe("loadMemoryContext (memory)", () => {
 
   it("a throwing repo degrades to the empty context — never throws", () => {
     const out = mem.loadMemoryContext({
-      guildId: "g1",
+      communityId: 1,
       roster,
       budgetChars: 12000,
       botId: null,
@@ -480,18 +480,18 @@ describe("executeRecallMemory (tools/recallMemories)", () => {
       },
     });
     const found = [];
-    const out = await executeRecallMemory({ ids: [1, 2] }, { guildId: "g1", repo, onRecall: (ids) => found.push(...ids) });
+    const out = await executeRecallMemory({ ids: [1, 2] }, { communityId: 1, repo, onRecall: (ids) => found.push(...ids) });
     assert.equal(
       out,
       '#1 — 42 — 2026-09-01 · "Loves Rust": Codes in Rust daily.\n#2 — (no such memory)',
     );
     assert.deepEqual(found, [1], "only FOUND ids are reported (audit + touch)");
-    assert.deepEqual(calls.getById[0], ["g1", 1], "lookups are guild-scoped");
+    assert.deepEqual(calls.getById[0], [1, 1], "lookups are guild-scoped");
   });
 
   it("ids mode caps at 8 ids", async () => {
     const { repo, calls } = fakeRepo();
-    await executeRecallMemory({ ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }, { guildId: "g1", repo });
+    await executeRecallMemory({ ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }, { communityId: 1, repo });
     assert.equal(calls.getById.length, 8);
   });
 
@@ -499,29 +499,29 @@ describe("executeRecallMemory (tools/recallMemories)", () => {
     const rows = Array.from({ length: 20 }, (_, i) => row(300 + i, "42", `Fact ${i}`, "body"));
     const { repo } = fakeRepo({ gorkMemoryListForSubject: () => rows });
     const recalled = [];
-    const out = await executeRecallMemory({ subject_user_id: "42" }, { guildId: "g1", repo, onRecall: (ids) => recalled.push(...ids) });
+    const out = await executeRecallMemory({ subject_user_id: "42" }, { communityId: 1, repo, onRecall: (ids) => recalled.push(...ids) });
     assert.equal(out.split("\n").length, 15);
     assert.equal(recalled.length, 15);
     assert.ok(out.startsWith("#300 — 42 — "), out.slice(0, 60));
   });
 
   it("list mode on an empty person is a graceful message, not an error", async () => {
-    const out = await executeRecallMemory({ subject_user_id: "42" }, { guildId: "g1", repo: fakeRepo().repo });
+    const out = await executeRecallMemory({ subject_user_id: "42" }, { communityId: 1, repo: fakeRepo().repo });
     assert.ok(!out.startsWith("Memory recall unavailable"), out);
   });
 
   it("both-or-neither args → the usage error string", async () => {
     const repo = fakeRepo().repo;
     const usage = "Memory recall unavailable: provide ids or subject_user_id";
-    assert.equal(await executeRecallMemory({ ids: [1], subject_user_id: "42" }, { guildId: "g1", repo }), usage);
-    assert.equal(await executeRecallMemory({}, { guildId: "g1", repo }), usage);
-    assert.equal(await executeRecallMemory(null, { guildId: "g1", repo }), usage);
+    assert.equal(await executeRecallMemory({ ids: [1], subject_user_id: "42" }, { communityId: 1, repo }), usage);
+    assert.equal(await executeRecallMemory({}, { communityId: 1, repo }), usage);
+    assert.equal(await executeRecallMemory(null, { communityId: 1, repo }), usage);
   });
 
   it("a throwing repo comes back as 'Memory recall unavailable: …' — never rejects", async () => {
     const out = await executeRecallMemory(
       { ids: [1] },
-      { guildId: "g1", repo: { gorkMemoryGetById: () => { throw new Error("disk on fire"); } } },
+      { communityId: 1, repo: { gorkMemoryGetById: () => { throw new Error("disk on fire"); } } },
     );
     assert.equal(out, "Memory recall unavailable: disk on fire");
   });
@@ -574,7 +574,7 @@ describe("runMemoryTurn (memory)", () => {
     const fakeAuditPack = audit || fakeAudit();
     return {
       opts: {
-        guildId: "g1",
+        communityId: 1,
         question: "what does alice like?",
         answer: "Rust, obviously.",
         allowList: ["42"],
@@ -623,7 +623,7 @@ describe("runMemoryTurn (memory)", () => {
     assert.equal(res.mode, "extracted");
     const [entry, cap] = t.repoCalls.upsert[0];
     assert.equal(cap, 25, "per-person cap 25 (§7.16.1)");
-    assert.equal(entry.guildId, "g1");
+    assert.equal(entry.communityId, 1);
     assert.equal(entry.memDate, "2026-09-09");
     assert.equal(entry.titleKey, "loves rust");
     assert.equal(entry.kind, "preference");

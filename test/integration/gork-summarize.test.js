@@ -232,8 +232,8 @@ function embedText(embed) {
 }
 
 /** Standard per-guild settings for a summarize run: audit sink + a bounded budget. */
-function setupGuild(env, guildId = env.guild.id, extra = {}) {
-  env.db.updateGuildSettings(guildId, {
+function setupGuild(env, communityId = env.communityId, extra = {}) {
+  env.db.updateGuildSettings(communityId, {
     audit_log_channel_id: IDS.channelLog,
     gork_daily_limit: 3, // success-only counting must be observable
     ...extra,
@@ -316,16 +316,16 @@ function aiBody(fetchMock, i = 0) {
 }
 
 /** The CURRENT env's cooldown gate (require AFTER freshEnv — cache reset). */
-function cooldownRemaining(guildId) {
+function cooldownRemaining(communityId) {
   return require("../../src/features/gork/summarizeCooldown").checkSummarizeGuildCooldown(
-    guildId,
+    communityId,
   );
 }
 
 /** Invoker's guild-scope daily usage for the current UTC day. */
-function usageOf(env, guildId = env.guild.id, userId = IDS.admin) {
+function usageOf(env, communityId = env.communityId, userId = IDS.admin) {
   return env.db.getGorkUsage(
-    guildId,
+    communityId,
     userId,
     "guild",
     "0",
@@ -333,8 +333,8 @@ function usageOf(env, guildId = env.guild.id, userId = IDS.admin) {
   );
 }
 
-function summarizeRows(env, guildId = env.guild.id) {
-  return env.db.listGorkInteractions({ guildId, kind: "summarize" });
+function summarizeRows(env, communityId = env.communityId) {
+  return env.db.listGorkInteractions({ communityId, kind: "summarize" });
 }
 
 /**
@@ -488,7 +488,7 @@ describe("integration: /gork summarize (§7.21)", () => {
 
       // ---- decision 32/57 success bookkeeping: budget ONCE, cooldown armed ----
       assert.equal(usageOf(env), 1, "daily budget counted exactly once");
-      const remain = cooldownRemaining(env.guild.id);
+      const remain = cooldownRemaining(env.communityId);
       assert.ok(
         remain > 0 && remain <= 600000,
         `guild cooldown armed on success (remaining=${remain})`,
@@ -564,7 +564,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       assert.equal(summarizeRows(env).length, 1, "one interaction row");
       assert.equal(summarizeRows(env)[0].status, "shipped");
       assert.equal(usageOf(env), 1, "budget counted once");
-      assert.ok(cooldownRemaining(env.guild.id) > 0, "cooldown armed");
+      assert.ok(cooldownRemaining(env.communityId) > 0, "cooldown armed");
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -613,7 +613,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       assert.equal(meta.resolved.collected, 50);
 
       assert.equal(usageOf(env), 1, "budget counted once");
-      assert.ok(cooldownRemaining(env.guild.id) > 0, "cooldown armed");
+      assert.ok(cooldownRemaining(env.communityId) > 0, "cooldown armed");
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -649,13 +649,21 @@ describe("integration: /gork summarize (§7.21)", () => {
       assert.equal(fetchMock.calls.length, 1, "ZERO additional AI fetches while armed");
       assert.equal(usageOf(env), 1, "rejected run counted NO budget");
       assert.equal(summarizeRows(env).length, 1, "rejected run wrote NO interaction row");
-      assert.ok(cooldownRemaining(env.guild.id) > 0, "still armed");
+      assert.ok(cooldownRemaining(env.communityId) > 0, "still armed");
 
       // 3. A DIFFERENT guild is unaffected by guild A's armed window.
       // (guildB.members.me stays null — the bot-readability probe skips
       // when the guild exposes no bot member, like the harness default.)
       const guildB = createGuild({ id: snowGuild() });
       env.client.addGuild(guildB);
+      // Discord edge: resolve guild B's snowflake to its integer community id
+      // (the same ensure the router does for guild A in the harness).
+      const { ensureCommunity } = require("../../src/platform/community");
+      const guildBCommunity = ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: guildB.id,
+      });
       const bAdmin = env.createMember({ guild: guildB, user: env.users.adminUser, admin: true });
       guildB.addMember(bAdmin);
       const bCh = env.createTextChannel({ id: snowChannel(), guild: guildB, name: "b-summarize" });
@@ -666,7 +674,7 @@ describe("integration: /gork summarize (§7.21)", () => {
         author: { id: env.users.member2User.id, username: "member2", tag: "member2#0000" },
         createdTimestamp: Date.UTC(2026, 8, 21, 12, 0, 0),
       });
-      setupGuild(env, guildB.id);
+      setupGuild(env, guildBCommunity);
 
       const third = await runSummarize(
         env,
@@ -678,8 +686,8 @@ describe("integration: /gork summarize (§7.21)", () => {
         "guild B succeeded while guild A was cooling down",
       );
       assert.equal(fetchMock.calls.length, 2, "guild B got its own one-shot call");
-      assert.equal(usageOf(env, guildB.id), 1, "budget is per-guild too");
-      assert.ok(cooldownRemaining(guildB.id) > 0, "guild B armed its OWN window on success");
+      assert.equal(usageOf(env, guildBCommunity), 1, "budget is per-guild too");
+      assert.ok(cooldownRemaining(guildBCommunity) > 0, "guild B armed its OWN window on success");
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -694,7 +702,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       enableAiKey();
       // 12k-token budget (40k-char transcript) so the char cap bites on top
       // of the message cap — short seeded lines fit the 80k default.
-      setupGuild(env, env.guild.id, { gork_summarize_input_tokens: 12000 });
+      setupGuild(env, env.communityId, { gork_summarize_input_tokens: 12000 });
       const frank = makeSpeaker(env, "frank", "Frank");
       const { ch, ids } = seedChannel(env, {
         name: "flood",
@@ -733,7 +741,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       assert.ok(audit.includes("Disclosed") || audit.includes("msgs"), "audit discloses counts");
 
       assert.equal(usageOf(env), 1);
-      assert.ok(cooldownRemaining(env.guild.id) > 0);
+      assert.ok(cooldownRemaining(env.communityId) > 0);
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -747,7 +755,7 @@ describe("integration: /gork summarize (§7.21)", () => {
     try {
       enableAiKey();
       // Per-guild budget: 8,000 tokens → 8,000×4 − 8,000 = 24,000-char cap.
-      setupGuild(env, env.guild.id, { gork_summarize_input_tokens: 8000 });
+      setupGuild(env, env.communityId, { gork_summarize_input_tokens: 8000 });
       const ginny = makeSpeaker(env, "ginny", "Ginny");
       const { ch, ids } = seedChannel(env, {
         name: "dense",
@@ -776,7 +784,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       const meta = JSON.parse(env.db.getGorkInteractionByUid(summarizeRows(env)[0].uid).context_meta);
       assert.equal(meta.resolved.clamped, true);
       assert.equal(usageOf(env), 1);
-      assert.ok(cooldownRemaining(env.guild.id) > 0);
+      assert.ok(cooldownRemaining(env.communityId) > 0);
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -793,7 +801,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       const hank = makeSpeaker(env, "hank", "Hank");
       const { ch } = seedChannel(env, { name: "ticket-summarize", n: 4, speakers: [hank] });
       env.db.createTicket({
-        guildId: env.guild.id,
+        communityId: env.communityId,
         creatorUserId: IDS.member,
         channelId: ch.id,
         reason: "summarize blackout check",
@@ -811,7 +819,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       assert.ok(text.includes(ch.id), "names the channel");
       assert.equal(reads.calls, 0, "blackout refuses BEFORE any message fetch");
       assert.equal(fetchMock.calls.length, 0, "no AI call");
-      assert.equal(cooldownRemaining(env.guild.id), 0, "failure never arms the cooldown");
+      assert.equal(cooldownRemaining(env.communityId), 0, "failure never arms the cooldown");
       assert.equal(usageOf(env), 0, "failure never counts the budget");
       assert.equal(summarizeRows(env).length, 0, "no recorder was built for a failed read");
 
@@ -847,7 +855,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       );
       assert.equal(reads.calls, 0, "guild isolation fires BEFORE any channel work");
       assert.equal(fetchMock.calls.length, 0);
-      assert.equal(cooldownRemaining(env.guild.id), 0);
+      assert.equal(cooldownRemaining(env.communityId), 0);
       assert.equal(usageOf(env), 0);
       assert.equal(summarizeRows(env).length, 0);
       assert.ok(auditTextAt(env).includes("another server"), "failure audit names the cause");
@@ -891,7 +899,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       assert.ok(!text.includes("CLASSIFIED"), "no content leak through the refusal");
       assert.equal(reads.calls, 0, "parity gate refuses BEFORE reading any message");
       assert.equal(fetchMock.calls.length, 0, "no AI call — nothing can echo the secret");
-      assert.equal(cooldownRemaining(env.guild.id), 0);
+      assert.equal(cooldownRemaining(env.communityId), 0);
       assert.equal(usageOf(env), 0);
       const audit = auditTextAt(env);
       assert.ok(audit.includes("cannot view channel"), "failure audit names the parity cause");
@@ -923,7 +931,7 @@ describe("integration: /gork summarize (§7.21)", () => {
         "reply carries the provider's own words",
       );
       assert.ok(text.includes("no cooldown was armed, and your budget was not counted"), text);
-      assert.equal(cooldownRemaining(env.guild.id), 0, "failed generation did NOT arm the cooldown");
+      assert.equal(cooldownRemaining(env.communityId), 0, "failed generation did NOT arm the cooldown");
       assert.equal(usageOf(env), 0, "failed generation did NOT count the budget");
 
       const failRows = summarizeRows(env);
@@ -942,7 +950,7 @@ describe("integration: /gork summarize (§7.21)", () => {
       );
       assert.equal(fetchMock.calls.length, 2);
       assert.equal(usageOf(env), 1, "only the SUCCESS counted the budget");
-      assert.ok(cooldownRemaining(env.guild.id) > 0, "cooldown armed by the success only");
+      assert.ok(cooldownRemaining(env.communityId) > 0, "cooldown armed by the success only");
       const rows = summarizeRows(env); // newest first
       assert.equal(rows[0].status, "shipped");
       assert.equal(rows.length, 2, "one failure row + one shipped row");
@@ -979,7 +987,7 @@ describe("integration: /gork summarize (§7.21)", () => {
         `specific empty-range error: ${text}`,
       );
       assert.equal(fetchMock.calls.length, 0, "zero AI fetches");
-      assert.equal(cooldownRemaining(env.guild.id), 0);
+      assert.equal(cooldownRemaining(env.communityId), 0);
       assert.equal(usageOf(env), 0);
       assert.equal(summarizeRows(env).length, 0, "no recorder row for a failed read");
       assert.ok(auditTextAt(env).includes("range read failed (empty)"), "failure audit names it");
@@ -1019,7 +1027,7 @@ describe("integration: /gork summarize (§7.21)", () => {
 
       assert.equal(ixn.followUps.length, 0);
       assert.equal(fetchMock.calls.length, 0, "no AI call for any usage error");
-      assert.equal(cooldownRemaining(env.guild.id), 0, "usage errors never arm the cooldown");
+      assert.equal(cooldownRemaining(env.communityId), 0, "usage errors never arm the cooldown");
       assert.equal(usageOf(env), 0, "usage errors never count the budget");
       assert.equal(summarizeRows(env).length, 0, "usage errors write no rows");
 
@@ -1032,7 +1040,7 @@ describe("integration: /gork summarize (§7.21)", () => {
         "anchor errors name the option verbatim",
       );
       assert.equal(fetchMock.calls.length, 0);
-      assert.equal(cooldownRemaining(env.guild.id), 0);
+      assert.equal(cooldownRemaining(env.communityId), 0);
       assert.equal(usageOf(env), 0);
     } finally {
       restoreEnv(saved);
