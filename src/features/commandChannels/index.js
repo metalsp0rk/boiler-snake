@@ -4,14 +4,9 @@ const {
   removeAllowedCommandChannel,
   listAllowedCommandChannels,
 } = require("../../db");
-const { isAdminOrMod } = require("../../core/permissions");
-const { replyEphemeral } = require("../../core/interaction");
+const { isAdminOrModFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
-// Edge pattern (roadmap/fluxer.md § Repository boundary): the Discord snowflake
-// is resolved to the internal community id once, at the handler entry point.
-const { ensureCommunity } = require("../../platform/community");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -49,86 +44,110 @@ const commands = [
     ),
 ];
 
-async function handleSetCommandChannel(interaction, ctx) {
-  const { client } = ctx;
-
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
+ */
+async function handleSetCommandChannel(commandCtx, featureCtx) {
+  void featureCtx;
   // ManageGuild only — prevents staff from locking out admins / each other.
-  if (!isAdminOrMod(interaction)) {
-    await replyEphemeral(
-      interaction,
-      "Only server administrators can configure command channels.",
-    );
+  // Custom denial copy preserved verbatim from the pre-CommandContext handler
+  // (requireAdminFromContext would change the user-visible text).
+  if (!isAdminOrModFromContext(commandCtx)) {
+    await commandCtx.reply({
+      content: "Only server administrators can configure command channels.",
+      sensitive: true,
+    });
     return;
   }
 
-  const guildId = interaction.guildId;
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-  const sub = interaction.options.getSubcommand();
+  // CommandContext carries the resolved internal id (roadmap/fluxer.md
+  // § Repository boundary); externalGuildId is the snowflake for display
+  // and audit text only — never a repository key.
+  const communityId = commandCtx.communityId;
+  const guildId = commandCtx.externalGuildId;
+  const sub = commandCtx.subcommand;
 
   if (sub === "add") {
-    const ch = interaction.options.getChannel("channel", true);
+    const ch = commandCtx.options.getChannel("channel", true);
+    // Validate the invoker-supplied id against the guild (PR 4 bundle
+    // recipe 8): a null channel handle means the bot cannot see / resolve
+    // the channel, and storing it would silently lock commands out.
+    const channelHandle = await commandCtx.outbound.fetchChannel(
+      communityId,
+      ch.id,
+    );
+    if (!channelHandle) {
+      await commandCtx.reply({
+        content:
+          `I couldn't find <#${ch.id}> (\`${ch.id}\`) in this server — ` +
+          "pick a channel from the picker and make sure the bot can view it.",
+        sensitive: true,
+      });
+      return;
+    }
     addAllowedCommandChannel(communityId, ch.id);
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "command_channels.add",
       targetType: "channel",
       targetId: ch.id,
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "Command channel allowed",
       command: "/setcommandchannel add",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
     }).catch(() => {});
-    await replyEphemeral(
-      interaction,
-      `Commands are now allowed in <#${ch.id}>.`,
-    );
+    await commandCtx.reply({
+      content: `Commands are now allowed in <#${ch.id}>.`,
+      sensitive: true,
+    });
     return;
   }
 
   if (sub === "remove") {
-    const ch = interaction.options.getChannel("channel", true);
+    const ch = commandCtx.options.getChannel("channel", true);
+    // No fetchChannel validation here on purpose: remove is the cleanup
+    // path — stale ids must stay removable even when the bot can no longer
+    // see the channel.
     removeAllowedCommandChannel(communityId, ch.id);
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "command_channels.remove",
       targetType: "channel",
       targetId: ch.id,
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "Command channel restriction removed",
       command: "/setcommandchannel remove",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
     }).catch(() => {});
-    await replyEphemeral(
-      interaction,
-      `Removed <#${ch.id}> from allowed command channels.`,
-    );
+    await commandCtx.reply({
+      content: `Removed <#${ch.id}> from allowed command channels.`,
+      sensitive: true,
+    });
     return;
   }
 
   if (sub === "list") {
     const rows = listAllowedCommandChannels(communityId);
     if (!rows.length) {
-      await replyEphemeral(
-        interaction,
-        "No allowed channels configured — commands are allowed in all channels.",
-      );
+      await commandCtx.reply({
+        content:
+          "No allowed channels configured — commands are allowed in all channels.",
+        sensitive: true,
+      });
       return;
     }
     const lines = rows.map((r) => `• <#${r.channel_id}>`);
-    await replyEphemeral(
-      interaction,
-      `**Allowed command channels**\n${lines.join("\n")}`,
-    );
+    await commandCtx.reply({
+      content: `**Allowed command channels**\n${lines.join("\n")}`,
+      sensitive: true,
+    });
   }
 }
 
@@ -137,5 +156,10 @@ module.exports = {
   commands,
   handlers: {
     setcommandchannel: handleSetCommandChannel,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext instead of a raw interaction.
+  handlerApi: {
+    setcommandchannel: "context",
   },
 };

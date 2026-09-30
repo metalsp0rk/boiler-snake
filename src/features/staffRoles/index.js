@@ -9,11 +9,7 @@
  *   - senior: junior + ticket channel overwrites
  */
 
-const {
-  SlashCommandBuilder,
-  PermissionFlagsBits,
-  MessageFlags,
-} = require("discord.js");
+const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const {
   addStaffRole,
   setStaffRoleLevel,
@@ -24,11 +20,11 @@ const {
   hasCommandPermissionOauth,
   getCommandPermissionOauth,
 } = require("../../db");
-const { isAdminOrMod, isStaff } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const {
+  isAdminOrModFromContext,
+  requireStaffFromContext,
+} = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
-const { ensureCommunity } = require("../../platform/community");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   getCommandPermissionOAuthConfig,
@@ -131,25 +127,29 @@ const commands = [
 ];
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
  */
-async function handleStaff(interaction, ctx) {
-  const subGroup = interaction.options.getSubcommandGroup();
-  const sub = interaction.options.getSubcommand();
+async function handleStaff(commandCtx, featureCtx) {
+  // Subcommand routing uses the seam's precomputed values (the router arm
+  // only routes chat-input; roadmap/fluxer.md § CommandContext).
+  const subGroup = commandCtx.subcommandGroup;
+  const sub = commandCtx.subcommand;
 
   if (subGroup === "role") {
-    if (sub === "add") return handleRoleAdd(interaction, ctx);
-    if (sub === "remove") return handleRoleRemove(interaction, ctx);
-    if (sub === "setlevel") return handleRoleSetLevel(interaction, ctx);
-    if (sub === "list") return handleRoleList(interaction);
+    if (sub === "add") return handleRoleAdd(commandCtx, featureCtx);
+    if (sub === "remove") return handleRoleRemove(commandCtx, featureCtx);
+    if (sub === "setlevel") return handleRoleSetLevel(commandCtx, featureCtx);
+    if (sub === "list") return handleRoleList(commandCtx, featureCtx);
   }
 
-  if (sub === "settings") return handleSettings(interaction);
-  if (sub === "syncpermissions") return handleSyncPermissions(interaction);
+  if (sub === "settings") return handleSettings(commandCtx, featureCtx);
+  if (sub === "syncpermissions")
+    return handleSyncPermissions(commandCtx, featureCtx);
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Unknown subcommand: \`/staff ${subGroup || ""} ${sub || ""}\``,
+    sensitive: true,
   });
 }
 
@@ -162,197 +162,191 @@ function levelLabel(level) {
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
  */
-async function handleRoleAdd(interaction, ctx) {
-  if (!isAdminOrMod(interaction)) {
-    await replyEphemeral(interaction, {
+async function handleRoleAdd(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!isAdminOrModFromContext(commandCtx)) {
+    await commandCtx.reply({
       content: "Only server administrators can add staff roles.",
+      sensitive: true,
     });
     return;
   }
 
-  const role = interaction.options.getRole("role", true);
+  // Context-arm role options resolve to { id } — mention text is built
+  // explicitly (the Discord Role object's toString() is no longer there).
+  const role = commandCtx.options.getRole("role", true);
   const level = normalizeStaffLevel(
-    interaction.options.getString("level", true),
+    commandCtx.options.getString("level", true),
   );
-  // Fluxer PR 2: staff_roles + command-permission repos key by integer.
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+  // staff_roles + command-permission repos key by the integer community id;
+  // the seam resolved it from the Discord snowflake at the edge.
+  const communityId = commandCtx.communityId;
 
-  if (role.id === interaction.guildId) {
-    await replyEphemeral(interaction, {
+  if (role.id === commandCtx.externalGuildId) {
+    await commandCtx.reply({
       content: "You cannot use @everyone as a staff role.",
+      sensitive: true,
     });
     return;
   }
 
   const existing = getStaffRole(communityId, role.id);
-  addStaffRole(communityId, role.id, level, interaction.user.id);
+  addStaffRole(communityId, role.id, level, commandCtx.userId);
   recordSlashAudit({
-    interaction,
+    communityId,
+    actorUserId: commandCtx.userId,
     action: "staff.role_add",
     targetType: "role",
     targetId: role.id,
     details: { level, previous_level: existing ? existing.level : null },
   });
 
-  await logConfigChange(
-    getDiscordOutbound(ctx?.client || interaction.client),
-    interaction.guildId,
-    {
-      title: existing ? "Staff role level updated" : "Staff role added",
-      command: "/staff role add",
-      actor: interaction.user,
-      changes: [
-        `Role: ${role} (\`${role.id}\`)`,
-        existing
-          ? `Level: **${levelLabel(existing.level)}** → **${level}**`
-          : `Level: **${level}**`,
-      ],
-    },
-  ).catch(() => {});
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
+    title: existing ? "Staff role level updated" : "Staff role added",
+    command: "/staff role add",
+    actor: commandCtx.user,
+    changes: [
+      `Role: <@&${role.id}> (\`${role.id}\`)`,
+      existing
+        ? `Level: **${levelLabel(existing.level)}** → **${level}**`
+        : `Level: **${level}**`,
+    ],
+  }).catch(() => {});
 
   const ticketNote =
     level === "senior"
       ? "They will also see open ticket channels (role overwrites)."
       : "They will **not** automatically see ticket channels (senior only). Use `/ticket addstaff` per ticket if needed.";
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       (existing
-        ? `Updated ${role} to **${level}** staff.`
-        : `Added ${role} as **${level}** staff.`) +
+        ? `Updated <@&${role.id}> to **${level}** staff.`
+        : `Added <@&${role.id}> as **${level}** staff.`) +
       `\nMembers with this role pass the staff gate and are honeypot-exempt.\n${ticketNote}` +
       (hasCommandPermissionOauth(communityId)
         ? "\n_Refreshing slash-command visibility…_"
         : "\n_Tip: run `/staff syncpermissions` so this role can **see** staff slash commands._"),
+    sensitive: true,
   });
 
   void maybeAutoSyncCommandPermissions(communityId);
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
  */
-async function handleRoleRemove(interaction, ctx) {
-  if (!isAdminOrMod(interaction)) {
-    await replyEphemeral(interaction, {
+async function handleRoleRemove(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!isAdminOrModFromContext(commandCtx)) {
+    await commandCtx.reply({
       content: "Only server administrators can remove staff roles.",
+      sensitive: true,
     });
     return;
   }
 
-  const role = interaction.options.getRole("role", true);
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+  const role = commandCtx.options.getRole("role", true);
+  const communityId = commandCtx.communityId;
   const existing = getStaffRole(communityId, role.id);
   const removed = removeStaffRole(communityId, role.id);
 
   if (removed) {
     recordSlashAudit({
-      interaction,
+      communityId,
+      actorUserId: commandCtx.userId,
       action: "staff.role_remove",
       targetType: "role",
       targetId: role.id,
       details: { previous_level: existing ? existing.level : null },
     });
-    await logConfigChange(
-      getDiscordOutbound(ctx?.client || interaction.client),
-      interaction.guildId,
-      {
-        title: "Staff role removed",
-        command: "/staff role remove",
-        actor: interaction.user,
-        changes: [`Role: ${role} (\`${role.id}\`)`],
-      },
-    ).catch(() => {});
+    await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
+      title: "Staff role removed",
+      command: "/staff role remove",
+      actor: commandCtx.user,
+      changes: [`Role: <@&${role.id}> (\`${role.id}\`)`],
+    }).catch(() => {});
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: removed
-      ? `Removed ${role} from staff roles. Members with this role will no longer pass the admin gate, be honeypot-exempt, or receive ticket overwrites.`
-      : `${role} is not a configured staff role.`,
+      ? `Removed <@&${role.id}> from staff roles. Members with this role will no longer pass the admin gate, be honeypot-exempt, or receive ticket overwrites.`
+      : `<@&${role.id}> is not a configured staff role.`,
+    sensitive: true,
   });
 
   if (removed) void maybeAutoSyncCommandPermissions(communityId);
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
  */
-async function handleRoleSetLevel(interaction, ctx) {
-  if (!isAdminOrMod(interaction)) {
-    await replyEphemeral(interaction, {
+async function handleRoleSetLevel(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!isAdminOrModFromContext(commandCtx)) {
+    await commandCtx.reply({
       content: "Only server administrators can change staff role levels.",
+      sensitive: true,
     });
     return;
   }
 
-  const role = interaction.options.getRole("role", true);
+  const role = commandCtx.options.getRole("role", true);
   const level = normalizeStaffLevel(
-    interaction.options.getString("level", true),
+    commandCtx.options.getString("level", true),
   );
-  // Fluxer PR 2: staff_roles + command-permission repos key by integer.
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+  // staff_roles + command-permission repos key by the integer community id.
+  const communityId = commandCtx.communityId;
   const existing = getStaffRole(communityId, role.id);
 
   if (!existing) {
-    await replyEphemeral(interaction, {
-      content: `${role} is not a staff role. Use \`/staff role add\` first.`,
+    await commandCtx.reply({
+      content: `<@&${role.id}> is not a staff role. Use \`/staff role add\` first.`,
+      sensitive: true,
     });
     return;
   }
 
   if (normalizeStaffLevel(existing.level) === level) {
-    await replyEphemeral(interaction, {
-      content: `${role} is already **${level}** staff.`,
+    await commandCtx.reply({
+      content: `<@&${role.id}> is already **${level}** staff.`,
+      sensitive: true,
     });
     return;
   }
 
   setStaffRoleLevel(communityId, role.id, level);
   recordSlashAudit({
-    interaction,
+    communityId,
+    actorUserId: commandCtx.userId,
     action: "staff.role_setlevel",
     targetType: "role",
     targetId: role.id,
     details: { previous_level: existing.level, level },
   });
 
-  await logConfigChange(
-    getDiscordOutbound(ctx?.client || interaction.client),
-    interaction.guildId,
-    {
-      title: "Staff role level changed",
-      command: "/staff role setlevel",
-      actor: interaction.user,
-      changes: [
-        `Role: ${role} (\`${role.id}\`)`,
-        `Level: **${levelLabel(existing.level)}** → **${level}**`,
-      ],
-    },
-  ).catch(() => {});
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
+    title: "Staff role level changed",
+    command: "/staff role setlevel",
+    actor: commandCtx.user,
+    changes: [
+      `Role: <@&${role.id}> (\`${role.id}\`)`,
+      `Level: **${levelLabel(existing.level)}** → **${level}**`,
+    ],
+  }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
-      `Set ${role} to **${level}** staff.\n` +
+      `Set <@&${role.id}> to **${level}** staff.\n` +
       (level === "senior"
         ? "They will receive ticket channel visibility on **new** overwrite applies (open/claim/sensitive/close). Existing open tickets may need a lifecycle command or recreate to refresh overwrites."
         : "They no longer get automatic ticket visibility. Existing open tickets still need an overwrite refresh (e.g. claim/sensitive/close) to drop the old role allow."),
+    sensitive: true,
   });
 
   // Levels don't change Discord command overwrites (all staff roles get allows),
@@ -361,25 +355,21 @@ async function handleRoleSetLevel(interaction, ctx) {
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
  */
-async function handleRoleList(interaction) {
-  if (!isStaff(interaction)) {
-    await replyDenied(interaction);
-    return;
-  }
+async function handleRoleList(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+  const communityId = commandCtx.communityId;
   const rows = listStaffRoles(communityId);
   if (!rows.length) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         "No staff roles configured. Only Manage Server permission passes the admin gate.\n" +
         "Use `/staff role add` to trust additional roles (`junior` or `senior`).",
+      sensitive: true,
     });
     return;
   }
@@ -400,12 +390,13 @@ async function handleRoleList(interaction) {
           .join("\n")
       : "_none_";
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `**Staff roles**\n` +
       `**Senior** (staff gate + ticket visibility):\n${fmt(seniors)}\n\n` +
       `**Junior** (staff gate only; no ticket channel overwrite):\n${fmt(juniors)}\n\n` +
       `Both levels: staff commands + honeypot exempt.`,
+    sensitive: true,
   });
 }
 
@@ -447,26 +438,29 @@ function authorizeLinkContent(url, redirectUri) {
  * Mint a purpose-tagged (cmd_perms) authorize URL for THIS user+guild.
  * Throws when OAuth state cannot be signed — callers keep their own error
  * reply semantics (visible message vs. silent reauth-link fallback).
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {string} userId
  * @param {string} guildId
  * @returns {string}
  */
-function buildAuthorizeLink(interaction, guildId) {
+function buildAuthorizeLink(userId, guildId) {
   const state = createOAuthState({
     guildId,
-    userId: interaction.user.id,
+    userId,
   });
   return buildAuthorizeUrl(state);
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
  */
-async function handleSyncPermissions(interaction) {
-  if (!isAdminOrMod(interaction)) {
-    await replyEphemeral(interaction, {
+async function handleSyncPermissions(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!isAdminOrModFromContext(commandCtx)) {
+    await commandCtx.reply({
       content:
         "Only server administrators (Manage Server) can sync command visibility.",
+      sensitive: true,
     });
     return;
   }
@@ -477,74 +471,78 @@ async function handleSyncPermissions(interaction) {
   // the web admin trigger (src/web/routes/syncAction.js) calls too. This
   // handler keeps its Discord-transport UX (reply choreography, the
   // authorize-link flow, force_reauth) around the shared call. Replies are
-  // byte-identical to the pre-refactor flow.
+  // byte-identical to the pre-refactor flow. The OAuth internals (state
+  // signing, token storage, public HTTP callback) are NOT part of this
+  // migration (roadmap/fluxer.md: the OAuth sync path stays Discord-only).
   const cfg = getCommandPermissionOAuthConfig();
   if (!cfg.ready) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: envNotConfiguredContent(cfg),
+      sensitive: true,
     });
     return;
   }
 
-  const forceReauth = !!interaction.options.getBoolean("force_reauth");
-  const guildId = interaction.guildId;
-  // Fluxer PR 2: oauth + sync repos key by the integer community id.
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
+  const forceReauth = !!commandCtx.options.getBoolean("force_reauth");
+  // External snowflake for the Discord-facing surfaces: OAuth state signing
+  // and the audit target_id DISPLAY field.
+  const guildId = commandCtx.externalGuildId;
+  // oauth + sync repos key by the integer community id (seam-resolved).
+  const communityId = commandCtx.communityId;
 
   if (forceReauth && hasCommandPermissionOauth(communityId)) {
     // Operator wants a FRESH consent round even though a token is stored —
     // link reply, no sync (identical to the not-authorized branch below).
     let url;
     try {
-      url = buildAuthorizeLink(interaction, guildId);
+      url = buildAuthorizeLink(commandCtx.userId, guildId);
     } catch (err) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `Could not build authorize URL: ${err?.message || err}`,
+        sensitive: true,
       });
       return;
     }
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: authorizeLinkContent(url, cfg.redirectUri),
+      sensitive: true,
     });
     return;
   }
 
-  await runSyncPermissionsViaCore(interaction, communityId, cfg);
+  await runSyncPermissionsViaCore(commandCtx, communityId, cfg);
 }
 
 /**
  * Deferred sync branch: shared core does the work, this handler owns the
  * reply + the fail-safe slash audit (recordSlashAudit NEVER throws — the
  * web twin writes FAIL-CLOSED via req.audit; see core header).
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {number} communityId Fluxer PR 2: internal communities.id (integer)
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {number} communityId internal communities.id (integer, seam-resolved)
  * @param {{ redirectUri: string|null }} cfg
  */
-async function runSyncPermissionsViaCore(interaction, communityId, cfg) {
+async function runSyncPermissionsViaCore(commandCtx, communityId, cfg) {
   // External snowflake for the Discord-facing surfaces: OAuth state signing
   // and the audit target_id DISPLAY field.
-  const guildId = String(interaction.guildId ?? "");
+  const guildId = String(commandCtx.externalGuildId ?? "");
   try {
     const out = await runCommandVisibilitySync(communityId, {
       // defer exactly when the sync is about to run (post-preconditions,
-      // pre-Discord-call) — the pre-refactor choreography.
-      onBeforeSync: () =>
-        interaction.deferReply({ flags: MessageFlags.Ephemeral }),
+      // pre-Discord-call) — the pre-refactor choreography. sensitive:true
+      // mirrors today's ephemeral deferReply.
+      onBeforeSync: () => commandCtx.defer({ sensitive: true }),
     });
 
     if (out.status === "env_not_configured") {
       // Only reachable when env changed between the leading check and the
       // core read — same reply as the leading branch (one template).
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: envNotConfiguredContent({
           missing: out.missing,
           redirectUri: out.redirectUri,
         }),
+        sensitive: true,
       });
       return;
     }
@@ -552,16 +550,18 @@ async function runSyncPermissionsViaCore(interaction, communityId, cfg) {
     if (out.status === "not_authorized") {
       let url;
       try {
-        url = buildAuthorizeLink(interaction, guildId);
+        url = buildAuthorizeLink(commandCtx.userId, guildId);
       } catch (err) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: `Could not build authorize URL: ${err?.message || err}`,
+          sensitive: true,
         });
         return;
       }
 
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: authorizeLinkContent(url, cfg.redirectUri),
+        sensitive: true,
       });
       return;
     }
@@ -569,7 +569,8 @@ async function runSyncPermissionsViaCore(interaction, communityId, cfg) {
     const result = out.result;
     const oauth = getCommandPermissionOauth(communityId);
     recordSlashAudit({
-      interaction,
+      communityId,
+      actorUserId: commandCtx.userId,
       action: SYNC_AUDIT_ACTION,
       targetType: "guild",
       targetId: guildId,
@@ -604,7 +605,7 @@ async function runSyncPermissionsViaCore(interaction, communityId, cfg) {
     if (oauth?.last_sync_at) {
       parts.push(`Last sync: <t:${Math.floor(oauth.last_sync_at / 1000)}:R>`);
     }
-    await interaction.editReply({ content: parts.join("\n") });
+    await commandCtx.editReply({ content: parts.join("\n") });
   } catch (err) {
     const code = err?.code;
     if (code === "reauth_required" || code === "not_authorized") {
@@ -612,13 +613,13 @@ async function runSyncPermissionsViaCore(interaction, communityId, cfg) {
       try {
         const state = createOAuthState({
           guildId,
-          userId: interaction.user.id,
+          userId: commandCtx.userId,
         });
         url = buildAuthorizeUrl(state);
       } catch {
         /* ignore */
       }
-      await interaction.editReply({
+      await commandCtx.editReply({
         content:
           "Authorization missing or expired. " +
           (url
@@ -627,26 +628,21 @@ async function runSyncPermissionsViaCore(interaction, communityId, cfg) {
       });
       return;
     }
-    await interaction.editReply({
+    await commandCtx.editReply({
       content: `Sync failed: ${err?.message || err}`,
     });
   }
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
  */
-async function handleSettings(interaction) {
-  if (!isStaff(interaction)) {
-    await replyDenied(interaction);
-    return;
-  }
+async function handleSettings(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+  const communityId = commandCtx.communityId;
   const rows = listStaffRoles(communityId);
   const seniors = rows.filter((r) => normalizeStaffLevel(r.level) === "senior");
   const juniors = rows.filter((r) => normalizeStaffLevel(r.level) === "junior");
@@ -659,7 +655,7 @@ async function handleSettings(interaction) {
       (oauth.last_sync_error ? ` · ⚠ last error recorded` : "")
     : `Command visibility sync: **not authorized** — admin: \`/staff syncpermissions\``;
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `**Staff roles settings**\n` +
       `Total roles: **${rows.length}** · senior **${seniors.length}** · junior **${juniors.length}**\n` +
@@ -670,6 +666,7 @@ async function handleSettings(interaction) {
       `Only Manage Server can add/remove/setlevel staff roles.\n` +
       `\n**Used by:** admin gate, honeypot exemption, tickets (senior overwrites), notes, warnings\n` +
       `\n**Commands:** \`/staff role add\` · \`setlevel\` · \`remove\` · \`list\` · \`syncpermissions\``,
+    sensitive: true,
   });
 }
 
@@ -678,5 +675,11 @@ module.exports = {
   commands,
   handlers: {
     staff: handleStaff,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler (and its sub-handlers) receive a CommandContext instead of a raw
+  // interaction. The OAuth sync internals stay Discord-only (PR 4 scope).
+  handlerApi: {
+    staff: "context",
   },
 };

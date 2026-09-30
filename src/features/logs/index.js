@@ -4,10 +4,10 @@ const {
   Events,
 } = require("discord.js");
 const { getGuildSettings, updateGuildSettings } = require("../../db");
-const { isStaff } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const {
+  requireStaffFromContext,
+} = require("../../core/permissions");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
-const { ensureCommunity } = require("../../platform/community");
 const {
   cacheMessage,
   logMessageDelete,
@@ -74,25 +74,21 @@ const commands = [
     ),
 ];
 
-async function handleSetlog(interaction, ctx) {
-  const { client } = ctx;
-  const guildId = interaction.guildId;
-  // Edge pattern: slash commands resolve the internal community id here so
-  // converted repos receive the integer key (INSERT-OR-IGNORE, cheap).
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleSetlog(commandCtx, featureCtx) {
+  void featureCtx;
+  const guildId = commandCtx.externalGuildId;
+  // Context seam: commandCtx already carries the internal integer community id
+  // (the old ensureCommunity edge runs in the Discord context builder).
+  const communityId = commandCtx.communityId;
   const settings = getGuildSettings(communityId);
-  const admin = isStaff(interaction);
 
-  if (!admin) {
-    await replyDenied(interaction);
-    return;
-  }
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const sub = interaction.options.getSubcommand();
+  const sub = commandCtx.subcommand;
 
   if (sub === "show") {
     const auditLogCh = settings.audit_log_channel_id
@@ -101,18 +97,19 @@ async function handleSetlog(interaction, ctx) {
     const messageLogCh = settings.message_log_channel_id
       ? `<#${settings.message_log_channel_id}> (\`${settings.message_log_channel_id}\`)`
       : "_Not configured_";
-    await replyEphemeral(
-      interaction,
-      `**Log channels**\n` +
+    await commandCtx.reply({
+      content:
+        `**Log channels**\n` +
         `• **Audit log** (bans, kicks, role changes): ${auditLogCh}\n` +
         `• **Message log** (deleted messages): ${messageLogCh}`,
-    );
+      sensitive: true,
+    });
     return;
   }
 
   if (sub === "audit" || sub === "message") {
-    const clear = interaction.options.getBoolean("clear") === true;
-    const ch = interaction.options.getChannel("channel", false);
+    const clear = commandCtx.options.getBoolean("clear") === true;
+    const ch = commandCtx.options.getChannel("channel", false);
     const field =
       sub === "audit" ? "audit_log_channel_id" : "message_log_channel_id";
     const label = sub === "audit" ? "Audit log" : "Message log";
@@ -121,10 +118,10 @@ async function handleSetlog(interaction, ctx) {
     if (clear) {
       // Log while the audit channel still exists (if clearing audit itself).
       // logConfigChange keeps the Discord snowflake as 2nd arg (resolved internally).
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      await logConfigChange(commandCtx.outbound, guildId, {
         title: `${label} channel cleared`,
         command: `/setlog ${sub}`,
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [
           beforeId
             ? `${label}: <#${beforeId}> → *none*`
@@ -133,48 +130,69 @@ async function handleSetlog(interaction, ctx) {
       }).catch(() => {});
       updateGuildSettings(communityId, { [field]: null });
       recordSlashAudit({
-        interaction,
         communityId,
+        actorUserId: commandCtx.userId,
         action: "logs.channel_clear",
         targetType: "guild",
         targetId: guildId,
         details: { stream: sub, previous_channel_id: beforeId ?? null },
       });
-      await replyEphemeral(
-        interaction,
-        `${label} channel cleared. That log stream is disabled until set again.`,
-      );
+      await commandCtx.reply({
+        content: `${label} channel cleared. That log stream is disabled until set again.`,
+        sensitive: true,
+      });
       return;
     }
 
     if (!ch) {
-      await replyEphemeral(
-        interaction,
-        `Provide a \`channel\`, or set \`clear:true\` to disable the ${label.toLowerCase()}.`,
+      await commandCtx.reply({
+        content: `Provide a \`channel\`, or set \`clear:true\` to disable the ${label.toLowerCase()}.`,
+        sensitive: true,
+      });
+      return;
+    }
+
+    // Context arm carries a bare { id, type } handle — validate the id names a
+    // real channel (on Discord fetchChannel hands back the discord.js channel;
+    // a null handle means the bot cannot resolve it).
+    const channelHandle = await commandCtx.outbound.fetchChannel(
+      communityId,
+      ch.id,
+    );
+    if (!channelHandle) {
+      console.error(
+        `[logs] /setlog ${sub}: channel ${ch.id} unavailable in community ${communityId}`,
       );
+      await commandCtx.reply({
+        content: `I can't find channel <#${ch.id}> in this server. It may have been deleted, or the bot lacks access. Pick a visible text channel, or set \`clear:true\` to disable the ${label.toLowerCase()}.`,
+        sensitive: true,
+      });
       return;
     }
 
     updateGuildSettings(communityId, { [field]: ch.id });
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "logs.channel_set",
       targetType: "channel",
       targetId: ch.id,
       details: { stream: sub, previous_channel_id: beforeId ?? null },
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: `${label} channel set`,
       command: `/setlog ${sub}`,
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         beforeId
           ? `${label}: <#${beforeId}> → <#${ch.id}>`
           : `${label}: *none* → <#${ch.id}>`,
       ],
     }).catch(() => {});
-    await replyEphemeral(interaction, `${label} will be sent to <#${ch.id}>.`);
+    await commandCtx.reply({
+      content: `${label} will be sent to <#${ch.id}>.`,
+      sensitive: true,
+    });
     return;
   }
 }
@@ -232,6 +250,11 @@ module.exports = {
   commands,
   handlers: {
     setlog: handleSetlog,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the /setlog
+  // slash handler receives a CommandContext.
+  handlerApi: {
+    setlog: "context",
   },
   registerEvents,
   start,
