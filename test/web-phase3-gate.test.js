@@ -1676,14 +1676,19 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       const t = seedLiveTicket("gate parity claim");
       resetChannelCapture();
       const before = auditCount("slash");
+      // PR 5 seam: /ticket runs on CommandContext (router-parity wrapping).
+      const { buildDiscordCommandContext } = require("../src/platform/discord/context");
       await ticketsFeature.handlers.ticket(
-        slashInteraction({
-          userId: USER_SENIOR,
-          sub: "claim",
-          channel: FAKE_CHANNELS[CH_TICKET],
-          memberRoleIds: [ROLE_SENIOR_TIER],
-        }),
-        { client: FAKE_CLIENT }
+        buildDiscordCommandContext(
+          slashInteraction({
+            userId: USER_SENIOR,
+            sub: "claim",
+            channel: FAKE_CHANNELS[CH_TICKET],
+            memberRoleIds: [ROLE_SENIOR_TIER],
+          }),
+          { client: FAKE_CLIENT },
+        ),
+        { client: FAKE_CLIENT },
       );
       assert.equal(auditCount("slash"), before + 1);
       bump("slash", "tickets.claim");
@@ -1728,14 +1733,19 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       const t = seedLiveTicket("gate parity junior claim");
       resetChannelCapture();
       const before = { s: auditCount("slash"), w: auditCount("web") };
+      // PR 5 seam: /ticket runs on CommandContext (router-parity wrapping).
+      const { buildDiscordCommandContext } = require("../src/platform/discord/context");
       await ticketsFeature.handlers.ticket(
-        slashInteraction({
-          userId: USER_STAFF,
-          sub: "claim",
-          channel: FAKE_CHANNELS[CH_TICKET],
-          memberRoleIds: [ROLE_JUNIOR_TIER],
-        }),
-        { client: FAKE_CLIENT }
+        buildDiscordCommandContext(
+          slashInteraction({
+            userId: USER_STAFF,
+            sub: "claim",
+            channel: FAKE_CHANNELS[CH_TICKET],
+            memberRoleIds: [ROLE_JUNIOR_TIER],
+          }),
+          { client: FAKE_CLIENT },
+        ),
+        { client: FAKE_CLIENT },
       );
       assert.equal(auditCount("slash"), before.s + 1, "slash: junior staff CLAIMS (vocabulary tickets.claim)");
       bump("slash", "tickets.claim");
@@ -1752,15 +1762,20 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       resetChannelCapture();
       DM_USERS[USER_T_CREATOR].sent.length = 0;
       let before = auditCount("slash");
+      // PR 5 seam: /ticket runs on CommandContext (router-parity wrapping).
+      const { buildDiscordCommandContext } = require("../src/platform/discord/context");
       await ticketsFeature.handlers.ticket(
-        slashInteraction({
-          userId: USER_SENIOR,
-          sub: "close",
-          channel: FAKE_CHANNELS[CH_TICKET],
-          memberRoleIds: [ROLE_SENIOR_TIER],
-          strings: { reason: "gate parity close", staff_note: null },
-        }),
-        { client: FAKE_CLIENT }
+        buildDiscordCommandContext(
+          slashInteraction({
+            userId: USER_SENIOR,
+            sub: "close",
+            channel: FAKE_CHANNELS[CH_TICKET],
+            memberRoleIds: [ROLE_SENIOR_TIER],
+            strings: { reason: "gate parity close", staff_note: null },
+          }),
+          { client: FAKE_CLIENT },
+        ),
+        { client: FAKE_CLIENT },
       );
       assert.equal(auditCount("slash"), before + 1);
       bump("slash", "tickets.close");
@@ -1820,14 +1835,19 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       ]);
       resetChannelCapture();
       let before = auditCount("slash");
+      // PR 5 seam: /ticket runs on CommandContext (router-parity wrapping).
+      const { buildDiscordCommandContext } = require("../src/platform/discord/context");
       await ticketsFeature.handlers.ticket(
-        slashInteraction({
-          userId: USER_SENIOR,
-          sub: "summarize",
-          channel: FAKE_CHANNELS[CH_TICKET],
-          memberRoleIds: [ROLE_SENIOR_TIER],
-        }),
-        { client: FAKE_CLIENT }
+        buildDiscordCommandContext(
+          slashInteraction({
+            userId: USER_SENIOR,
+            sub: "summarize",
+            channel: FAKE_CHANNELS[CH_TICKET],
+            memberRoleIds: [ROLE_SENIOR_TIER],
+          }),
+          { client: FAKE_CLIENT },
+        ),
+        { client: FAKE_CLIENT },
       );
       assert.equal(auditCount("slash"), before + 1);
       bump("slash", "tickets.summarize");
@@ -1884,7 +1904,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         channel: FAKE_CHANNELS[CH_TICKET],
         memberRoleIds: [ROLE_SENIOR_TIER],
       });
-      await ticketsFeature.handlers.ticket(inter, { client: FAKE_CLIENT });
+      // PR 5 seam: /ticket runs on CommandContext (router-parity wrapping).
+      const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+      await ticketsFeature.handlers.ticket(
+        buildDiscordCommandContext(inter, { client: FAKE_CLIENT }),
+        { client: FAKE_CLIENT },
+      );
       assert.equal(auditCount("slash"), before.s + 1, "the slash summarizes sensitive tickets (audited, ephemeral)");
       bump("slash", "tickets.summarize");
       assert.deepEqual(capture().channelSends, {}, "even the slash answer leaves nothing in a channel (ephemeral only)");

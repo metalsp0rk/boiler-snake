@@ -183,8 +183,14 @@ function spyReads(channel) {
   return counter;
 }
 
-const run = (env) =>
-  H.handleSummarize(env.client, env.interaction, env.guildId, env.communityId);
+// PR 5 seam: /gork summarize runs on CommandContext (router-parity wrapping).
+const run = (env) => {
+  const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+  return H.handleSummarize(
+    buildDiscordCommandContext(env.interaction, { client: env.client }),
+    { client: env.client },
+  );
+};
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -524,14 +530,22 @@ describe("/gork — summarize subcommand dispatch", () => {
     cooldown.armSummarizeGuildCooldown(env.communityId); // bounce fast, prove the route
     stubAi();
     const gorkHandler = FEATURE.handlers.gork;
-    await gorkHandler(env.interaction, { client: env.client });
+    // PR 5 seam: /gork runs on CommandContext (router-parity wrapping).
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await gorkHandler(
+      buildDiscordCommandContext(env.interaction, { client: env.client }),
+      { client: env.client },
+    );
     assert.match(D.lastReplyContent(env.interaction), /already posted one/);
     assert.equal(aiCalls.length, 0);
     // Non-staff gets the denial, never the rundown path:
     const nope = makeEnv({ last: 3 });
     nope.interaction.setAdmin(false);
     nope.member.setAdmin(false);
-    await gorkHandler(nope.interaction, { client: nope.client });
+    await gorkHandler(
+      buildDiscordCommandContext(nope.interaction, { client: nope.client }),
+      { client: nope.client },
+    );
     assert.doesNotMatch(D.lastReplyContent(nope.interaction), /already posted one/);
     assert.equal(nope.interaction.deferred, false);
   });
@@ -559,7 +573,12 @@ describe("/gork summarize-budget", () => {
 
   it("stores a valid budget and replies with the stored value", async () => {
     const { env, ixn } = budgetEnv(50000);
-    await H.setSummarizeBudget(env.client, ixn, env.guildId, env.communityId);
+    // PR 5 seam: /gork runs on CommandContext (router-parity wrapping).
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await H.setSummarizeBudget(
+      buildDiscordCommandContext(ixn, { client: env.client }),
+      { client: env.client },
+    );
     assert.equal(D.lastReplyEphemeral(ixn), true, "ephemeral confirmation");
     assert.match(D.lastReplyContent(ixn), /\*\*50000\*\* tokens/, "reply echoes the stored budget");
     assert.equal(api.getGuildSettings(env.communityId).gork_summarize_input_tokens, 50000);
@@ -567,7 +586,12 @@ describe("/gork summarize-budget", () => {
 
   it("out-of-range input gets the specific range reply — settings untouched", async () => {
     const { env, ixn } = budgetEnv(5000);
-    await H.setSummarizeBudget(env.client, ixn, env.guildId, env.communityId);
+    // PR 5 seam: /gork runs on CommandContext (router-parity wrapping).
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await H.setSummarizeBudget(
+      buildDiscordCommandContext(ixn, { client: env.client }),
+      { client: env.client },
+    );
     assert.equal(D.lastReplyEphemeral(ixn), true);
     assert.match(D.lastReplyContent(ixn), /8000-120000 tokens/, "names the allowed range");
     assert.equal(

@@ -56,9 +56,12 @@ describe("buildDefaultRegistry", () => {
 
   it("flags the migrated commands on the context api", () => {
     // load.js passes feature.handlerApi into registerHandler. PR 3 migrated
-    // the xp commands; PR 4 adds the staff text commands. Everything else
-    // (music, ticket, eventreminder, play, gork, honeypot …) stays on the
-    // interaction arm until its feature PR flips the flag.
+    // the xp commands; PR 4 adds the staff text commands; PR 5 adds the
+    // integrations, moderation surface, tickets text, and gork. Everything
+    // left (music, eventreminder, play) stays on the interaction arm until
+    // its feature PR flips the flag. `ticket panel` is Discord-only INSIDE
+    // the migrated /ticket handler (rawInteraction bridge) — the command
+    // itself is context.
     const registry = buildDefaultRegistry();
     const migrated = [
       "xp",
@@ -75,11 +78,22 @@ describe("buildDefaultRegistry", () => {
       "setdecay",
       "leveltorole",
       "setlog",
+      "youtube",
+      "setyoutube",
+      "testnotification",
+      "twitch",
+      "settwitch",
+      "github",
+      "activityconfig",
+      "honeypot",
+      "reactionrole",
+      "ticket",
+      "gork",
     ];
     for (const name of migrated) {
       assert.equal(registry.getHandlerApi(name), "context", name);
     }
-    for (const name of ["music", "ticket", "eventreminder", "gork", "play"]) {
+    for (const name of ["music", "eventreminder", "play"]) {
       assert.equal(registry.getHandlerApi(name), "interaction", name);
     }
   });

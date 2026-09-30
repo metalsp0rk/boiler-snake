@@ -297,6 +297,8 @@ const restoreFacadeRecorder = installFacadeRecorder(dbFacade);
 // feature chain now bind the WRAPPED facade helpers.
 const { createWebApp } = require("../src/web/app");
 const { ticket: handleTicket } = require("../src/features/tickets").handlers;
+// PR 5 seam: /ticket runs on CommandContext (router-parity wrapping).
+const { buildDiscordCommandContext } = require("../src/platform/discord/context");
 
 function startWindow() {
   recorder.log = [];
@@ -1413,7 +1415,10 @@ describe("K. slash ↔ web parity — REAL handlers, same actor, same outcome", 
     const ts = mkTicket({ creator: USER_PLAIN, channelId: "730000000000000001", reason: "slash claim" });
     makeCacheChannel(ts.channel_id);
     const { interaction } = makeTicketInteraction({ sub: "claim", ticket: ts, actorId: USER_SENIOR });
-    await handleTicket(interaction, { client: FAKE_CLIENT });
+    await handleTicket(
+      buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+      { client: FAKE_CLIENT },
+    );
     const slashRow = api.getTicketById(ts.id);
 
     // Web side
@@ -1475,7 +1480,10 @@ describe("K. slash ↔ web parity — REAL handlers, same actor, same outcome", 
       actorId: USER_SENIOR,
       options: { reason: "parity reason" },
     });
-    await handleTicket(interaction, { client: FAKE_CLIENT });
+    await handleTicket(
+      buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+      { client: FAKE_CLIENT },
+    );
 
     const tw = mkTicket({ creator: USER_PLAIN, channelId: "730000000000000004", reason: "web close" });
     api.claimTicket(tw.id, USER_SENIOR);
@@ -1518,7 +1526,10 @@ describe("K. slash ↔ web parity — REAL handlers, same actor, same outcome", 
       { message_id: "561", author_id: USER_SENIOR, author_tag: "sen#0001", content: "two", sent_at: 2 },
     ]);
     const { interaction } = makeTicketInteraction({ sub: "summarize", ticket: ts, actorId: USER_SENIOR });
-    await handleTicket(interaction, { client: FAKE_CLIENT });
+    await handleTicket(
+      buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+      { client: FAKE_CLIENT },
+    );
 
     const tw = mkTicket({ creator: USER_PLAIN, channelId: "730000000000000006", reason: "web sum" });
     api.saveTicketMessages(tw.id, [
