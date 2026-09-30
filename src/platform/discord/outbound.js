@@ -231,12 +231,10 @@ function createDiscordOutbound(client) {
     throw new Error("createDiscordOutbound requires a Discord client");
   }
 
-  // Ready user id snapshot (spec: "Not client.user." — tickets and honeypot
-  // compare against this value, so it is captured once at construction).
-  const botUserId = client.user?.id != null ? String(client.user.id) : "";
-  if (!botUserId) {
-    console.warn("[discord-outbound] client.user is not set yet; botUserId is empty (create the outbound after Ready)");
-  }
+  // Ready user id (spec: "Ready user id. Not client.user."). Read lazily from
+  // client.user so an outbound constructed at boot — before login — picks the
+  // id up once Ready fires (the pipelines wire their outbound at boot).
+  // Tickets/honeypot compare against this value.
 
   /**
    * @param {number} communityId
@@ -263,7 +261,9 @@ function createDiscordOutbound(client) {
   const outbound = {
     platform: "discord",
     instanceKey: "discord",
-    botUserId,
+    get botUserId() {
+      return client.user?.id != null ? String(client.user.id) : "";
+    },
 
     /**
      * @param {number} communityId
