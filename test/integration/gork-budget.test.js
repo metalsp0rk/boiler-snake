@@ -202,7 +202,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 /** Standard gork guild: keyword on, cooldown off (the budget is the gate). */
 function setupGuild(env, over = {}) {
-  env.db.updateGuildSettings(env.guild.id, {
+  env.db.updateGuildSettings(env.communityId, {
     gork_keyword: "gork",
     gork_cooldown_sec: 0,
     audit_log_channel_id: IDS.channelLog,
@@ -226,7 +226,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       enableAiKey();
       setupGuild(env);
       // Channel rule → the locked §7.17.5 wording names the channel.
-      env.db.upsertGorkBudgetRule(env.guild.id, "channel", IDS.channelGeneral, 2, null);
+      env.db.upsertGorkBudgetRule(env.communityId, "channel", IDS.channelGeneral, 2, null);
 
       const m1 = makeGorkMessage(env, { id: "b1", content: "gork: q1" });
       await env.onMessageCreate(m1.message);
@@ -238,12 +238,12 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.equal(m2.replies[0].content, "Answer two.");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "channel", IDS.channelGeneral, today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "channel", IDS.channelGeneral, today()),
         2,
         "both successes counted in the winning (channel) scope",
       );
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
         0,
         "the guild-default counter is untouched when a channel rule wins",
       );
@@ -296,7 +296,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
     try {
       enableAiKey();
       setupGuild(env); // guild default unlimited
-      env.db.upsertGorkBudgetRule(env.guild.id, "channel", IDS.channelGeneral, -1, null);
+      env.db.upsertGorkBudgetRule(env.communityId, "channel", IDS.channelGeneral, -1, null);
 
       const m1 = makeGorkMessage(env, { id: "bx1", content: "gork: blocked?" });
       await env.onMessageCreate(m1.message);
@@ -319,12 +319,12 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       assert.equal(fetchMock.calls.length, 0);
 
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "channel", IDS.channelGeneral, today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "channel", IDS.channelGeneral, today()),
         0,
         "blocked triggers never count",
       );
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.admin, "channel", IDS.channelGeneral, today()),
+        env.db.getGorkUsage(env.communityId, IDS.admin, "channel", IDS.channelGeneral, today()),
         0,
         "blocked staff never count either",
       );
@@ -341,7 +341,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
     try {
       enableAiKey();
       setupGuild(env, { gork_daily_limit: 9 });
-      env.db.upsertGorkBudgetRule(env.guild.id, "category", "cat-support", 1, null);
+      env.db.upsertGorkBudgetRule(env.communityId, "category", "cat-support", 1, null);
       env.channels.general.parent = { id: "cat-support", name: "Support", type: 4 };
 
       const m1 = makeGorkMessage(env, { id: "bc1", content: "gork: first" });
@@ -349,12 +349,12 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.equal(m1.replies[0].content, "Category answer.");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "category", "cat-support", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "category", "cat-support", today()),
         1,
         "counter lives on the winning (category) scope",
       );
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
         0,
         "the guild default counter stayed untouched",
       );
@@ -405,7 +405,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
 
       const { gorkQueue } = require("../../src/features/gork/trigger");
       assert.equal(
-        gorkQueue.waitingCount({ guildId: env.guild.id }),
+        gorkQueue.waitingCount({ communityId: env.communityId }),
         2,
         "B and C parked on their FIFO turns",
       );
@@ -423,7 +423,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       );
       assert.equal(fetchMock.calls.length, 2, "exactly two LLM calls — no overage");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
         2,
         "the bounced request added no count",
       );
@@ -460,7 +460,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.ok(sends >= 2, "chunk 1 sent, chunk 2 attempted");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
         0,
         "chunk-2 failure means NO count even though chunk 1 landed",
       );
@@ -471,7 +471,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.equal(m2.replies[0].content, "Small answer.");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
         1,
         "only the fully-delivered answer counted",
       );
@@ -499,7 +499,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.equal(m1.replies[0].content, LLM_FAILURE_REPLY);
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
         0,
         "canned failure replies never count",
       );
@@ -509,7 +509,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.equal(m2.replies[0].content, "Retry succeeded.");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
         1,
         "the empty-retry success counted ONCE despite two LLM calls",
       );
@@ -536,7 +536,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
 
       // Simulate "already spent before this process started" straight in the
       // DB — the gate reads usage from SQLite, never from process memory.
-      env.db.incrementGorkUsage(env.guild.id, IDS.member, "guild", "0", today());
+      env.db.incrementGorkUsage(env.communityId, IDS.member, "guild", "0", today());
 
       const m1 = makeGorkMessage(env, { id: "br1", content: "gork: refund me?" });
       await env.onMessageCreate(m1.message);
@@ -570,7 +570,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       assert.equal(m1.replies[0].content, "Staff answer.", "staff still get answers (cooldown bypassed)");
       assert.deepEqual(m1.reacts, [], "staff never see the 🕐 cooldown reaction");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.admin, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.admin, "guild", "0", today()),
         1,
         "the staff success COUNTS (no exemption)",
       );
@@ -602,7 +602,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
     try {
       enableAiKey();
       setupGuild(env);
-      env.db.upsertGorkBudgetRule(env.guild.id, "channel", IDS.channelGeneral, 1, null);
+      env.db.upsertGorkBudgetRule(env.communityId, "channel", IDS.channelGeneral, 1, null);
 
       let threadSeq = 0;
       const makeThread = (id) => ({
@@ -627,7 +627,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.equal(m1.replies[0].content, "Thread answer.");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "channel", IDS.channelGeneral, today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "channel", IDS.channelGeneral, today()),
         1,
         "the counter binds the PARENT channel, not the thread id",
       );
@@ -678,8 +678,8 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       );
       assert.equal(fetchMock.calls.length, 0, "no LLM call when the gate cannot read usage");
       const rows = env.db.db
-        .prepare(`SELECT COUNT(*) AS n FROM gork_usage WHERE guild_id=?`)
-        .get(env.guild.id);
+        .prepare(`SELECT COUNT(*) AS n FROM gork_usage WHERE community_id=?`)
+        .get(env.communityId);
       assert.equal(rows.n, 0, "a failed gate never counts");
 
       // Second trigger, same user: throttled like a normal rejection — a
@@ -713,7 +713,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.equal(m1.replies[0].content, "Late-yesterday answer.");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", yesterday),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", yesterday),
         1,
         "counted on the trigger's UTC day (yesterday), not the wall clock",
       );
@@ -724,7 +724,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       await gorkIdle();
       assert.equal(m2.replies[0].content, "Today answer.");
       assert.equal(
-        env.db.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+        env.db.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
         1,
       );
 
@@ -765,7 +765,7 @@ describe("integration: gork daily usage budget (roadmap §7.17)", () => {
       const fresh = require("../../src/db");
       try {
         assert.equal(
-          fresh.getGorkUsage(env.guild.id, IDS.member, "guild", "0", today()),
+          fresh.getGorkUsage(env.communityId, IDS.member, "guild", "0", today()),
           1,
           "the counter survives the process-level restart",
         );

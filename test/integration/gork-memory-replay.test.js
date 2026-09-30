@@ -111,9 +111,9 @@ function chatRequest(body) {
  * Seed facts so the memory read path has real rows: one profile fact per
  * conversation participant (deterministic titles/bodies).
  */
-function seedFacts(env, guildId, day) {
+function seedFacts(env, communityId, day) {
   env.db.gorkMemoryUpsert({
-    guildId,
+    communityId,
     subjectUserId: env.users.memberUser.id,
     memDate: day,
     titleKey: "weather",
@@ -123,7 +123,7 @@ function seedFacts(env, guildId, day) {
     importance: 4,
   });
   env.db.gorkMemoryUpsert({
-    guildId,
+    communityId,
     subjectUserId: env.users.member2User.id,
     memDate: day,
     titleKey: "weather",
@@ -198,14 +198,14 @@ async function recordMemoryFixture(opts = {}) {
   ]);
   try {
     armEnv();
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       gork_keyword: "gork",
       gork_cooldown_sec: 0,
       gork_memory_enabled: 1,
     });
     // memDateFromMessage decodes the trigger's snowflake id, not the wall
     // clock — 100000000000000009 decodes to 2026-09-14 (UTC).
-    seedFacts(env, env.guild.id, "2026-09-14");
+    seedFacts(env, env.communityId, "2026-09-14");
     const ch = env.channels.general;
     ch.sendTyping = async () => {};
     seedHistory(env, ch);
@@ -222,7 +222,7 @@ async function recordMemoryFixture(opts = {}) {
     }));
 
     const rows = env.db
-      .listGorkInteractions({ guildId: env.guild.id, limit: 50 })
+      .listGorkInteractions({ communityId: env.communityId, limit: 50 })
       .map((r) => env.db.getGorkInteractionByUid(r.uid))
       .filter(Boolean);
     const qa1 = rows.filter((r) => r.kind === "qa")[1]; // oldest of the two
@@ -311,13 +311,13 @@ describe("gork memory replay: golden fixture regression", () => {
       // Fresh replay identity: settings fresh (memory ON), module-level
       // conversation logs empty for this guild, facts seeded to match the
       // recording (read path renders the same memory block).
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
         gork_interaction_log_enabled: 1,
       });
-      seedFacts(env, env.guild.id, "2026-09-14");
+      seedFacts(env, env.communityId, "2026-09-14");
       for (const e of fixture.rosterEntries || []) {
         if (e?.id && (e.handle || e.display)) {
           env.guild.addMember(createFixtureMember(e, { guild: env.guild }));
@@ -365,7 +365,7 @@ describe("gork memory replay: golden fixture regression", () => {
       await drive(env, message);
 
       const qa = env.db
-        .listGorkInteractions({ guildId: env.guild.id, limit: 10 })
+        .listGorkInteractions({ communityId: env.communityId, limit: 10 })
         .map((r) => env.db.getGorkInteractionByUid(r.uid))
         .find((r) => r && r.kind === "qa");
       assert.ok(qa, "replay wrote a qa interaction row");
@@ -454,13 +454,13 @@ describe("gork memory replay: golden fixture regression", () => {
     const fetchMock = scriptFetch([...bodiesOf(fx1), ...bodiesOf(fx2)]);
     try {
       armEnv();
-      env2.db.updateGuildSettings(replayGuildId, {
+      env2.db.updateGuildSettings(env2.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
         gork_interaction_log_enabled: 1,
       });
-      seedFacts(env2, replayGuildId, "2026-09-14");
+      seedFacts(env2, env2.communityId, "2026-09-14");
       for (const e of fx2.rosterEntries || []) {
         if (e?.id && (e.handle || e.display)) {
           env2.guild.addMember(createFixtureMember(e, { guild: env2.guild }));
@@ -514,7 +514,7 @@ describe("gork memory replay: golden fixture regression", () => {
       // Replay rows live in the replay guild — the recording (different
       // guild) is untouched; filter to the replay guild by full row.
       const rows = env2.db
-        .listGorkInteractions({ guildId: replayGuildId, limit: 50 })
+        .listGorkInteractions({ communityId: env2.communityId, limit: 50 })
         .map((r) => env2.db.getGorkInteractionByUid(r.uid))
         .filter(Boolean);
       const replayRows = rows;

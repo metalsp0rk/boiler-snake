@@ -42,6 +42,7 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
   let api;
   let cleanup;
   let savedEnv;
+  let CID_A; // internal community id for GUILD_A (assigned in before() after loadDb)
   /** @type {import("http").Server} */
   let server;
   let base;
@@ -149,7 +150,7 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
   function seedArchived({ reason, closeReason, creator, owner, summary = null }) {
     const token = api.generateTranscriptToken();
     const t = api.createTicket({
-      guildId: GUILD_A,
+      communityId: CID_A,
       creatorUserId: creator,
       channelId: `ch-${token}`,
       reason,
@@ -171,20 +172,21 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
     const loaded = loadDb();
     api = loaded.api;
     cleanup = loaded.cleanup;
+    CID_A = require("./helpers/env").communityKey(GUILD_A);
     process.env.SESSION_SECRET = SESSION_SECRET;
 
     const appMod = require("../src/web/app");
     sessionPolicy = require("../src/web/auth/sessions");
     tokens = require("../src/web/auth/tokens");
 
-    api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
+    api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
     cookieOf.admin = mkSession(USER_ADMIN, { owner: true });
     cookieOf.staff = mkSession(USER_STAFF);
     cookieOf.plain = mkSession(USER_PLAIN, { perms: "0" });
 
     // audit rows: one human actor (cached), one system origin (no actor)
     api.insertAdminAudit({
-      guildId: GUILD_A,
+      communityId: CID_A,
       actorUserId: USER_KING,
       origin: "web",
       action: "xp.grant",
@@ -193,12 +195,12 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
       details: { amount: 1 },
     });
     api.insertAdminAudit({
-      guildId: GUILD_A,
+      communityId: CID_A,
       actorUserId: null,
       origin: "system",
       action: "decay.tick",
       targetType: "guild",
-      targetId: GUILD_A,
+      targetId: CID_A,
       details: {},
     });
 
@@ -253,7 +255,7 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
   // ---- card endpoint --------------------------------------------------------
 
   it("card: known member → name, avatar, role chips (@everyone excluded)", async () => {
-    const { res, body } = await req(`/g/${GUILD_A}/users/${USER_KING}/card`, cookieOf.staff);
+    const { res, body } = await req(`/g/${CID_A}/users/${USER_KING}/card`, cookieOf.staff);
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type"), /application\/json/);
     assert.equal(res.headers.get("cache-control"), "no-store");
@@ -266,7 +268,7 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
   });
 
   it("card: unknown member → known:false + default avatar + warm-up queued", async () => {
-    const { res, body } = await req(`/g/${GUILD_A}/users/${USER_UNKNOWN}/card`, cookieOf.staff);
+    const { res, body } = await req(`/g/${CID_A}/users/${USER_UNKNOWN}/card`, cookieOf.staff);
     assert.equal(res.status, 200);
     const card = JSON.parse(body);
     assert.equal(card.known, false);
@@ -286,21 +288,21 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
   });
 
   it("card: gates — malformed 404, anon 302, no-tier 404", async () => {
-    const bad = await req(`/g/${GUILD_A}/users/not-a-snowflake/card`, cookieOf.staff);
+    const bad = await req(`/g/${CID_A}/users/not-a-snowflake/card`, cookieOf.staff);
     assert.equal(bad.res.status, 404);
-    const anon = await req(`/g/${GUILD_A}/users/${USER_KING}/card`);
+    const anon = await req(`/g/${CID_A}/users/${USER_KING}/card`);
     assert.equal(anon.res.status, 302);
-    const plain = await req(`/g/${GUILD_A}/users/${USER_KING}/card`, cookieOf.plain);
+    const plain = await req(`/g/${CID_A}/users/${USER_KING}/card`, cookieOf.plain);
     assert.equal(plain.res.status, 404);
   });
 
   // ---- audit actor names ----------------------------------------------------
 
   it("audit trail names the actor (cache-only) and hooks the hover card", async () => {
-    const { body } = await req(`/g/${GUILD_A}/audit`, cookieOf.admin);
+    const { body } = await req(`/g/${CID_A}/audit`, cookieOf.admin);
     assert.match(body, /King Dead/, "actor id resolved to the cached name");
     assert.ok(
-      body.includes(`data-user-card="/g/${GUILD_A}/users/${USER_KING}/card"`),
+      body.includes(`data-user-card="/g/${CID_A}/users/${USER_KING}/card"`),
       "actor chip carries the lazy card hook"
     );
     assert.match(body, /—/, "system row (no actor) still renders the em dash");
@@ -309,33 +311,33 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
   // ---- archive person search ------------------------------------------------
 
   it("archive q: pure digits match creator AND handling staff", async () => {
-    const byCreator = await req(`/g/${GUILD_A}/t?q=${USER_KING}`, cookieOf.staff);
+    const byCreator = await req(`/g/${CID_A}/t?q=${USER_KING}`, cookieOf.staff);
     assert.match(byCreator.body, /spoon shortage/, "creator id finds their ticket");
 
-    const byOwner = await req(`/g/${GUILD_A}/t?q=${USER_OWNER}`, cookieOf.staff);
+    const byOwner = await req(`/g/${CID_A}/t?q=${USER_OWNER}`, cookieOf.staff);
     assert.match(byOwner.body, /spoon shortage/, "staff-owner id finds the handled ticket");
 
-    const miss = await req(`/g/${GUILD_A}/t?q=${USER_UNKNOWN}`, cookieOf.staff);
+    const miss = await req(`/g/${CID_A}/t?q=${USER_UNKNOWN}`, cookieOf.staff);
     assert.doesNotMatch(miss.body, /spoon shortage/, "unrelated id does NOT match");
 
-    const text = await req(`/g/${GUILD_A}/t?q=unrelated`, cookieOf.staff);
+    const text = await req(`/g/${CID_A}/t?q=unrelated`, cookieOf.staff);
     assert.match(text.body, /unrelated matter/, "text search unchanged");
   });
 
   it("search bar suggestions: shell archive offers mixed users+roles; plain /t does not", async () => {
-    const shell = await req(`/g/${GUILD_A}/t`, cookieOf.staff);
+    const shell = await req(`/g/${CID_A}/t`, cookieOf.staff);
     assert.ok(
-      shell.body.includes(`data-lookup-roles="/g/${GUILD_A}/lookups/roles"`),
+      shell.body.includes(`data-lookup-roles="/g/${CID_A}/lookups/roles"`),
       "in-shell bar gets role suggestions"
     );
     assert.ok(
-      shell.body.includes(`data-lookup-users="/g/${GUILD_A}/lookups/users"`),
+      shell.body.includes(`data-lookup-users="/g/${CID_A}/lookups/users"`),
       "in-shell bar gets people suggestions"
     );
 
-    const filtered = await req(`/t?guild=${GUILD_A}`, cookieOf.admin);
+    const filtered = await req(`/t?guild=${CID_A}`, cookieOf.admin);
     assert.ok(
-      filtered.body.includes(`data-lookup-users="/g/${GUILD_A}/lookups/users"`),
+      filtered.body.includes(`data-lookup-users="/g/${CID_A}/lookups/users"`),
       "guild-filtered canonical /t also suggests"
     );
 
@@ -347,19 +349,19 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
   });
 
   it("archive rows recap the close-time summary (AI badge + narrative)", async () => {
-    const { body } = await req(`/g/${GUILD_A}/t`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}/t`, cookieOf.staff);
     assert.match(body, /row-summary/, "recap line present");
     assert.ok(body.includes("AI says: member lacked spoons"), "narrative snippet renders");
     assert.match(body, /<span class="badge badge-tiny">AI<\/span>/, "AI provenance badge");
     // the summary-less archive ticket stays clean (no empty recap shell)
-    const only = await req(`/g/${GUILD_A}/t?q=unrelated`, cookieOf.staff);
+    const only = await req(`/g/${CID_A}/t?q=unrelated`, cookieOf.staff);
     assert.ok(!only.body.includes("row-summary"), "no recap when no summary stored");
   });
 
   it("every userRef chip now carries the lazy card hook", () => {
     const { userRef } = require("../src/web/views/components");
-    const out = String(userRef(GUILD_A, USER_KING, new Map([[USER_KING, "King Dead"]])));
-    assert.ok(out.includes(`href="/g/${GUILD_A}/users/${USER_KING}"`), "profile link kept");
-    assert.ok(out.includes(`data-user-card="/g/${GUILD_A}/users/${USER_KING}/card"`));
+    const out = String(userRef(CID_A, USER_KING, new Map([[USER_KING, "King Dead"]])));
+    assert.ok(out.includes(`href="/g/${CID_A}/users/${USER_KING}"`), "profile link kept");
+    assert.ok(out.includes(`data-user-card="/g/${CID_A}/users/${USER_KING}/card"`));
   });
 });

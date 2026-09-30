@@ -15,7 +15,7 @@ const assert = require("node:assert/strict");
 // Contract (same as the other repo tests): loadDb() must run before any
 // DB-opening `src/` require in this file. src/core/ai.js opens no DB/env and
 // holds no module state, so requiring it at module scope is safe here.
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 const { chatCompletion, chatWithTools } = require("../src/core/ai");
 // Recorder module: requires only `crypto` at load (the db facade is required
 // lazily at finalize), so a top-level require is safe before loadDb().
@@ -66,7 +66,7 @@ describe("gork interaction log repository", () => {
     uid: nextUid(),
     kind: "qa",
     parent_uid: "int-parent-1",
-    guild_id: "g-log",
+    community_id: communityKey("g-log"),
     channel_id: "c-log-1",
     message_id: "m-log-trigger",
     user_id: "u-asker",
@@ -103,7 +103,7 @@ describe("gork interaction log repository", () => {
   });
 
   const ALL_COLUMNS = [
-    "uid", "kind", "parent_uid", "guild_id", "channel_id", "message_id",
+    "uid", "kind", "parent_uid", "community_id", "channel_id", "message_id",
     "user_id", "status", "started_at", "duration_ms", "model", "params",
     "tools", "settings", "system_prompt", "user_prompt", "trigger_content",
     "reply_to_message_id", "context_meta", "context_messages", "roster_meta",
@@ -156,17 +156,17 @@ describe("gork interaction log repository", () => {
 
   it("guild_settings.gork_interaction_log_enabled: default 1, on/off via updateGuildSettings", () => {
     const g = "g-log-settings";
-    assert.equal(api.getGuildSettings(g).gork_interaction_log_enabled, 1, "default ON");
+    assert.equal(api.getGuildSettings(communityKey(g)).gork_interaction_log_enabled, 1, "default ON");
     assert.equal(
-      api.updateGuildSettings(g, { gork_interaction_log_enabled: "off" }).gork_interaction_log_enabled,
+      api.updateGuildSettings(communityKey(g), { gork_interaction_log_enabled: "off" }).gork_interaction_log_enabled,
       0
     );
     assert.equal(
-      api.updateGuildSettings(g, { gork_interaction_log_enabled: true }).gork_interaction_log_enabled,
+      api.updateGuildSettings(communityKey(g), { gork_interaction_log_enabled: true }).gork_interaction_log_enabled,
       1
     );
     assert.equal(
-      api.updateGuildSettings(g, { gork_interaction_log_enabled: 0 }).gork_interaction_log_enabled,
+      api.updateGuildSettings(communityKey(g), { gork_interaction_log_enabled: 0 }).gork_interaction_log_enabled,
       0
     );
   });
@@ -187,7 +187,7 @@ describe("gork interaction log repository", () => {
   it("insert normalizes defaults: kind 'qa', tool_call_count 0, created_at stamped, absent cols null", () => {
     const row = {
       uid: nextUid(),
-      guild_id: "g-log-min",
+      community_id: communityKey("g-log-min"),
       channel_id: "c-min",
       message_id: "m-min",
       user_id: "u-min",
@@ -236,22 +236,22 @@ describe("gork interaction log repository", () => {
     assert.equal(objUid.ok, false, "un-bindable garbage degrades to {ok:false}, never throws");
 
     // garbage created_at is treated as "omitted" and stamped — insert succeeds
-    const stamp = api.insertGorkInteraction(fullRow({ guild_id: "g-log-stamp", created_at: {} }));
+    const stamp = api.insertGorkInteraction(fullRow({ community_id: communityKey("g-log-stamp"), created_at: {} }));
     assert.equal(stamp.ok, true, "garbage created_at normalizes to the server stamp");
   });
 
   it("listGorkInteractions: summaries only, newest-first, limit, kind, beforeId", () => {
     const g = "g-log-list";
     const other = "g-log-list-other";
-    const rowA = fullRow({ guild_id: g });
-    const rowB = fullRow({ guild_id: g, kind: "memory_turn" });
-    const rowC = fullRow({ guild_id: g });
+    const rowA = fullRow({ community_id: communityKey(g) });
+    const rowB = fullRow({ community_id: communityKey(g), kind: "memory_turn" });
+    const rowC = fullRow({ community_id: communityKey(g) });
     for (const row of [rowA, rowB, rowC]) {
       assert.equal(api.insertGorkInteraction(row, { retentionDays: 0 }).ok, true);
     }
-    api.insertGorkInteraction(fullRow({ guild_id: other }), { retentionDays: 0 });
+    api.insertGorkInteraction(fullRow({ community_id: communityKey(other) }), { retentionDays: 0 });
 
-    const rows = api.listGorkInteractions({ guildId: g });
+    const rows = api.listGorkInteractions({ communityId: communityKey(g) });
     assert.equal(rows.length, 3, "guild-scoped");
     assert.deepEqual(
       Object.keys(rows[0]).sort(),
@@ -266,45 +266,49 @@ describe("gork interaction log repository", () => {
     assert.deepEqual(rows.map((r) => r.uid), [rowC.uid, rowB.uid, rowA.uid], "newest-first");
 
     assert.deepEqual(
-      api.listGorkInteractions({ guildId: g, kind: "memory_turn" }).map((r) => r.uid),
+      api.listGorkInteractions({ communityId: communityKey(g), kind: "memory_turn" }).map((r) => r.uid),
       [rowB.uid]
     );
-    assert.equal(api.listGorkInteractions({ guildId: g, limit: 2 }).length, 2);
+    assert.equal(api.listGorkInteractions({ communityId: communityKey(g), limit: 2 }).length, 2);
     assert.deepEqual(
-      api.listGorkInteractions({ guildId: g, beforeId: rows[0].id }).map((r) => r.uid),
+      api.listGorkInteractions({ communityId: communityKey(g), beforeId: rows[0].id }).map((r) => r.uid),
       [rowB.uid, rowA.uid],
       "beforeId (row id) is exclusive"
     );
-    assert.deepEqual(api.listGorkInteractions({ guildId: "g-log-none" }), [], "empty guild → []");
+    assert.deepEqual(api.listGorkInteractions({ communityId: communityKey("g-log-none") }), [], "empty guild → []");
   });
 
   it("getGorkInteractionByUid returns the full row incl. transcript; missing/garbage → null", () => {
-    const row = fullRow({ guild_id: "g-log-get" });
+    const row = fullRow({ community_id: communityKey("g-log-get") });
     api.insertGorkInteraction(row, { retentionDays: 0 });
     const stored = api.getGorkInteractionByUid(row.uid);
     assert.equal(stored.transcript, row.transcript, "transcript must come back verbatim");
     assert.equal(stored.system_prompt, row.system_prompt);
     assert.equal(stored.roster_entries, row.roster_entries);
-    assert.equal(api.getGorkInteractionByUid("int-nope"), null);
+    assert.equal(api.getGorkInteractionByUid(communityKey("int-nope")), null);
     assert.equal(api.getGorkInteractionByUid(""), null);
     assert.equal(api.getGorkInteractionByUid(), null, "missing uid never throws");
   });
 
   it("countGorkInteractions: total + kind filter, 0 for empty/unknown guild", () => {
     const g = "g-log-count";
-    api.insertGorkInteraction(fullRow({ guild_id: g }), { retentionDays: 0 });
-    api.insertGorkInteraction(fullRow({ guild_id: g, kind: "memory_turn" }), { retentionDays: 0 });
-    assert.equal(api.countGorkInteractions(g), 2);
-    assert.equal(api.countGorkInteractions(g, { kind: "memory_turn" }), 1);
-    assert.equal(api.countGorkInteractions(g, { kind: "qa" }), 1);
-    assert.equal(api.countGorkInteractions("g-log-count-none"), 0);
-    assert.equal(api.countGorkInteractions(""), 0, "garbage guild never throws");
+    api.insertGorkInteraction(fullRow({ community_id: communityKey(g) }), { retentionDays: 0 });
+    api.insertGorkInteraction(fullRow({ community_id: communityKey(g), kind: "memory_turn" }), { retentionDays: 0 });
+    assert.equal(api.countGorkInteractions(communityKey(g)), 2);
+    assert.equal(api.countGorkInteractions(communityKey(g), { kind: "memory_turn" }), 1);
+    assert.equal(api.countGorkInteractions(communityKey(g), { kind: "qa" }), 1);
+    assert.equal(api.countGorkInteractions(communityKey("g-log-count-none")), 0);
+    // PR 2: a non-integer community id is a programmer error and throws.
+    assert.throws(
+      () => api.countGorkInteractions(""),
+      /community id required, got string/
+    );
   });
 
   it("pruneGorkInteractions deletes exactly rows older than the cutoff", () => {
     const g = "g-log-prune";
-    const old = fullRow({ guild_id: g, created_at: Date.now() - 10 * DAY });
-    const fresh = fullRow({ guild_id: g });
+    const old = fullRow({ community_id: communityKey(g), created_at: Date.now() - 10 * DAY });
+    const fresh = fullRow({ community_id: communityKey(g) });
     api.insertGorkInteraction(old, { retentionDays: 0 });
     api.insertGorkInteraction(fresh, { retentionDays: 0 });
 
@@ -312,54 +316,59 @@ describe("gork interaction log repository", () => {
     assert.equal(api.getGorkInteractionByUid(old.uid), null);
     assert.ok(api.getGorkInteractionByUid(fresh.uid), "recent row survives");
     assert.equal(api.pruneGorkInteractions(Date.now() - 5 * DAY), 0, "second prune with the same cutoff is a no-op");
-    assert.equal(api.pruneGorkInteractions("garbage"), 0, "non-finite cutoff is a no-op");
+    assert.equal(api.pruneGorkInteractions(communityKey("garbage")), 0, "non-finite cutoff is a no-op");
     assert.ok(api.getGorkInteractionByUid(fresh.uid), "garbage prune deleted nothing");
   });
 
   it("lazy retention prune on insert: default 30d window", () => {
     const g = "g-log-retention-default";
-    const staleRow = fullRow({ guild_id: g, created_at: Date.now() - 40 * DAY });
+    const staleRow = fullRow({ community_id: communityKey(g), created_at: Date.now() - 40 * DAY });
     api.insertGorkInteraction(staleRow, { retentionDays: 0 });
     assert.ok(api.getGorkInteractionByUid(staleRow.uid), "stale row staged (prune disabled)");
 
-    const freshRow = fullRow({ guild_id: g });
+    const freshRow = fullRow({ community_id: communityKey(g) });
     assert.equal(api.insertGorkInteraction(freshRow).ok, true, "default retentionDays applies");
     assert.equal(api.getGorkInteractionByUid(staleRow.uid), null, "40d-old row pruned by the next insert");
     assert.ok(api.getGorkInteractionByUid(freshRow.uid), "the fresh insert itself survives");
-    assert.equal(api.countGorkInteractions(g), 1);
+    assert.equal(api.countGorkInteractions(communityKey(g)), 1);
   });
 
   it("lazy retention prune: explicit small window prunes, retentionDays 0 keeps forever", () => {
     const g = "g-log-retention-explicit";
-    const d10 = fullRow({ guild_id: g, created_at: Date.now() - 10 * DAY });
-    const d2 = fullRow({ guild_id: g, created_at: Date.now() - 2 * DAY });
+    const d10 = fullRow({ community_id: communityKey(g), created_at: Date.now() - 10 * DAY });
+    const d2 = fullRow({ community_id: communityKey(g), created_at: Date.now() - 2 * DAY });
     api.insertGorkInteraction(d10, { retentionDays: 0 });
-    api.insertGorkInteraction(fullRow({ guild_id: g }), { retentionDays: 3 });
+    api.insertGorkInteraction(fullRow({ community_id: communityKey(g) }), { retentionDays: 3 });
     assert.equal(api.getGorkInteractionByUid(d10.uid), null, "10d-old row pruned by a 3d window");
 
     api.insertGorkInteraction(d2, { retentionDays: 0 });
-    api.insertGorkInteraction(fullRow({ guild_id: g }), { retentionDays: 0 });
+    api.insertGorkInteraction(fullRow({ community_id: communityKey(g) }), { retentionDays: 0 });
     assert.ok(api.getGorkInteractionByUid(d2.uid), "retentionDays 0 prunes nothing");
   });
 
   it("deleteGorkInteractionsForGuild: boolean result, guild-scoped", () => {
     const g = "g-log-del";
     const other = "g-log-del-other";
-    api.insertGorkInteraction(fullRow({ guild_id: g }), { retentionDays: 0 });
-    api.insertGorkInteraction(fullRow({ guild_id: g, kind: "memory_turn" }), { retentionDays: 0 });
-    api.insertGorkInteraction(fullRow({ guild_id: other }), { retentionDays: 0 });
+    api.insertGorkInteraction(fullRow({ community_id: communityKey(g) }), { retentionDays: 0 });
+    api.insertGorkInteraction(fullRow({ community_id: communityKey(g), kind: "memory_turn" }), { retentionDays: 0 });
+    api.insertGorkInteraction(fullRow({ community_id: communityKey(other) }), { retentionDays: 0 });
 
-    assert.equal(api.deleteGorkInteractionsForGuild(g), true);
-    assert.equal(api.countGorkInteractions(g), 0);
-    assert.equal(api.deleteGorkInteractionsForGuild(g), false, "second delete is a no-op");
-    assert.equal(api.countGorkInteractions(other), 1, "other guild untouched");
-    assert.equal(api.deleteGorkInteractionsForGuild(""), false, "garbage guild never throws");
+    assert.equal(api.deleteGorkInteractionsForGuild(communityKey(g)), true);
+    assert.equal(api.countGorkInteractions(communityKey(g)), 0);
+    assert.equal(api.deleteGorkInteractionsForGuild(communityKey(g)), false, "second delete is a no-op");
+    assert.equal(api.countGorkInteractions(communityKey(other)), 1, "other guild untouched");
+    // PR 2: a non-integer community id is a programmer error and throws.
+    assert.throws(
+      () => api.deleteGorkInteractionsForGuild(""),
+      /community id required, got string/
+    );
   });
 
   it("reads never throw on garbage: [] / 0 no matter what", () => {
-    assert.deepEqual(api.listGorkInteractions(), []);
+    // PR 2: missing community id is a programmer error and throws.
+    assert.throws(() => api.listGorkInteractions(), /community id required/);
     assert.ok(
-      api.listGorkInteractions({ guildId: "g-log-list", limit: "abc" }).length <= 20,
+      api.listGorkInteractions({ communityId: communityKey("g-log-list"), limit: "abc" }).length <= 20,
       "garbage limit falls back to the 20 default"
     );
     assert.equal(api.pruneGorkInteractions(NaN), 0);
@@ -671,7 +680,8 @@ function makeRecorder(over = {}) {
   const repo = fakeRepo();
   const recorder = createInteractionRecorder({
     kind: "qa",
-    guildId: "guild-rec",
+    // fake repo: any integer id works (no db in this suite)
+    communityId: 1,
     channelId: "chan-rec",
     messageId: "msg-rec",
     userId: "user-rec",
@@ -910,7 +920,7 @@ describe("interaction log recorder — finalize", () => {
         uid: row.uid,
         kind: row.kind,
         parent_uid: row.parent_uid,
-        guild_id: row.guild_id,
+        community_id: row.community_id,
         channel_id: row.channel_id,
         message_id: row.message_id,
         user_id: row.user_id,
@@ -934,7 +944,7 @@ describe("interaction log recorder — finalize", () => {
         uid: recorder.uid,
         kind: "memory_turn",
         parent_uid: "qa-parent-1",
-        guild_id: "guild-rec",
+        community_id: 1,
         channel_id: "chan-rec",
         message_id: "msg-rec",
         user_id: "user-rec",
@@ -1039,7 +1049,8 @@ describe("interaction log recorder — finalize", () => {
       },
     };
     const recorder = createInteractionRecorder({
-      guildId: "g",
+      // fake repo: any integer id works (no db in this test)
+      communityId: 1,
       channelId: "c",
       messageId: "m",
       userId: "u",

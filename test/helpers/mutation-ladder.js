@@ -33,6 +33,7 @@
  */
 
 const assert = require("node:assert/strict");
+const { communityKey } = require("./env");
 
 // ---------------------------------------------------------------------------
 // Shared fixtures (values identical to the Phase-2 gate — same file loaded
@@ -80,6 +81,11 @@ const FIX = {
 };
 FIX.YT_URL = `https://www.youtube.com/channel/${FIX.YT_ID}`;
 FIX.BOT_GUILDS = [FIX.GUILD_A, FIX.GUILD_CROSS];
+// Web contract: routes/URLs/repos address communities by INTEGER id; the
+// snowflake keys above stay the Discord-side fixtures. Requires loadDb() to
+// have run BEFORE this module is required (gate boot discipline).
+FIX.COMMUNITY_A = communityKey(FIX.GUILD_A);
+FIX.COMMUNITY_CROSS = communityKey(FIX.GUILD_CROSS);
 
 const ENV_KEYS = [
   "SESSION_SECRET",
@@ -546,10 +552,10 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       // Form field name is "message" — buildXpPatch maps it to the msg_xp
       // COLUMN (settingsWrite.js:151), exactly like /setxp message <n>.
       fields: { message: "17" },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { msg_xp: 11 }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { msg_xp: 11 }),
       details: D({ patch: { msg_xp: 17 } }),
-      okLocation: `/g/${F.GUILD_A}/settings?ok=xp`,
-      reject: { status: 302, location: `/g/${F.GUILD_A}/settings?err=xp`, fields: {} },
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=xp`,
+      reject: { status: 302, location: `/g/${F.COMMUNITY_A}/settings?err=xp`, fields: {} },
     },
     {
       no: "S2",
@@ -564,12 +570,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.GUILD_A,
       mirror: true,
       fields: { percent: "25" },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { decay_percent: 0.5 }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { decay_percent: 0.5 }),
       details: D({ patch: { decay_percent: 0.25 } }),
-      okLocation: `/g/${F.GUILD_A}/settings?ok=decay`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=decay`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/settings?err=decay`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=decay`,
         fields: { percent: "900" },
       },
     },
@@ -586,12 +592,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.CH_AUDIT,
       mirror: true,
       fields: { stream: "audit", channel: F.CH_AUDIT },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { audit_log_channel_id: null }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { audit_log_channel_id: null }),
       details: D({ stream: "audit", previous_channel_id: null }),
-      okLocation: `/g/${F.GUILD_A}/settings?ok=logs`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=logs`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/settings?err=logs`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=logs`,
         fields: { stream: "bogus", channel: F.CH_AUDIT },
       },
     },
@@ -608,12 +614,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.CH_WARN,
       mirror: true,
       fields: { channel: F.CH_WARN },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { warn_log_channel_id: null }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { warn_log_channel_id: null }),
       details: D({ previous_channel_id: null, channel_id: F.CH_WARN }),
-      okLocation: `/g/${F.GUILD_A}/settings?ok=warn`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=warn`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/settings?err=warn`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=warn`,
         fields: { channel: "not-a-snowflake" },
       },
     },
@@ -630,12 +636,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.CH_CMD,
       mirror: true,
       fields: { channel: F.CH_CMD },
-      prepare: () => api.removeAllowedCommandChannel(F.GUILD_A, F.CH_CMD),
+      prepare: () => api.removeAllowedCommandChannel(F.COMMUNITY_A, F.CH_CMD),
       details: D({ channel_id: F.CH_CMD }),
-      okLocation: `/g/${F.GUILD_A}/settings?ok=channels`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=channels`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/settings?err=channels`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=channels`,
         fields: { channel: "nope" },
       },
     },
@@ -652,12 +658,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.CH_CMD,
       mirror: true,
       fields: { channel: F.CH_CMD },
-      prepare: () => api.addAllowedCommandChannel(F.GUILD_A, F.CH_CMD),
+      prepare: () => api.addAllowedCommandChannel(F.COMMUNITY_A, F.CH_CMD),
       details: D({ channel_id: F.CH_CMD }),
-      okLocation: `/g/${F.GUILD_A}/settings?ok=channels`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=channels`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/settings?err=channels`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=channels`,
         fields: { channel: "nope" },
       },
     },
@@ -676,9 +682,9 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_STAFF,
       mirror: true,
       fields: { role_id: F.ROLE_STAFF, level: "junior" },
-      prepare: () => api.removeStaffRole(F.GUILD_A, F.ROLE_STAFF),
+      prepare: () => api.removeStaffRole(F.COMMUNITY_A, F.ROLE_STAFF),
       details: D({ level: "junior", previous_level: null }),
-      okLocation: `/g/${F.GUILD_A}/staff`,
+      okLocation: `/g/${F.COMMUNITY_A}/staff`,
       reject: {
         status: 400,
         bodyMatch: /invalid role id/i,
@@ -698,9 +704,9 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_STAFF,
       mirror: true,
       fields: { role_id: F.ROLE_STAFF },
-      prepare: () => api.addStaffRole(F.GUILD_A, F.ROLE_STAFF, "senior"),
+      prepare: () => api.addStaffRole(F.COMMUNITY_A, F.ROLE_STAFF, "senior"),
       details: D({ previous_level: "senior" }),
-      okLocation: `/g/${F.GUILD_A}/staff`,
+      okLocation: `/g/${F.COMMUNITY_A}/staff`,
       reject: { status: 400, bodyMatch: /invalid role id/i, fields: {} },
     },
     {
@@ -717,11 +723,11 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       mirror: true,
       fields: { role_id: F.ROLE_STAFF, level: "senior" },
       prepare: () => {
-        api.removeStaffRole(F.GUILD_A, F.ROLE_STAFF);
-        api.addStaffRole(F.GUILD_A, F.ROLE_STAFF, "junior");
+        api.removeStaffRole(F.COMMUNITY_A, F.ROLE_STAFF);
+        api.addStaffRole(F.COMMUNITY_A, F.ROLE_STAFF, "junior");
       },
       details: D({ previous_level: "junior", level: "senior" }),
-      okLocation: `/g/${F.GUILD_A}/staff`,
+      okLocation: `/g/${F.COMMUNITY_A}/staff`,
       reject: {
         status: 400,
         bodyMatch: /invalid staff level/i,
@@ -741,9 +747,9 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_LEVEL,
       mirror: true,
       fields: { role_id: F.ROLE_LEVEL, level: "5", drop_days: "2" },
-      prepare: () => api.deleteLevelRole(F.GUILD_A, F.ROLE_LEVEL),
+      prepare: () => api.deleteLevelRole(F.COMMUNITY_A, F.ROLE_LEVEL),
       details: D({ level_required: 5, drop_grace_days: 2 }),
-      okLocation: `/g/${F.GUILD_A}/staff`,
+      okLocation: `/g/${F.COMMUNITY_A}/staff`,
       reject: {
         status: 400,
         bodyMatch: /invalid number/i,
@@ -763,9 +769,9 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_LEVEL,
       mirror: true,
       fields: { role_id: F.ROLE_LEVEL },
-      prepare: () => api.upsertLevelRole(F.GUILD_A, F.ROLE_LEVEL, 3, 1),
+      prepare: () => api.upsertLevelRole(F.COMMUNITY_A, F.ROLE_LEVEL, 3, 1),
       details: D(null), // slash /leveltorole remove writes NO details
-      okLocation: `/g/${F.GUILD_A}/staff`,
+      okLocation: `/g/${F.COMMUNITY_A}/staff`,
       reject: { status: 400, bodyMatch: /invalid role id/i, fields: { role_id: "junk" } },
     },
 
@@ -783,12 +789,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.YT_ID,
       mirror: false,
       fields: { url: F.YT_URL },
-      prepare: () => api.removeYoutubeChannel(F.GUILD_A, F.YT_ID),
+      prepare: () => api.removeYoutubeChannel(F.COMMUNITY_A, F.YT_ID),
       details: D({ channel_name: `Channel ID: ${F.YT_ID}`, url: F.YT_URL }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=yt_added`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=yt_added`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=missing_field`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=missing_field`,
         fields: {},
       },
     },
@@ -806,14 +812,14 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       mirror: false,
       fields: { channel_id: F.YT_ID },
       prepare: () => {
-        api.removeYoutubeChannel(F.GUILD_A, F.YT_ID);
-        api.addYoutubeChannel(F.GUILD_A, F.YT_ID, "Gate Tube", "https://youtu.be/seed", "");
+        api.removeYoutubeChannel(F.COMMUNITY_A, F.YT_ID);
+        api.addYoutubeChannel(F.COMMUNITY_A, F.YT_ID, "Gate Tube", "https://youtu.be/seed", "");
       },
       details: D({ channel_name: "Gate Tube" }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=yt_removed`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=yt_removed`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=missing_field`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=missing_field`,
         fields: {},
       },
     },
@@ -830,12 +836,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.CH_AUDIT,
       mirror: false,
       fields: { channel_id: F.CH_AUDIT },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { youtube_notification_channel_id: null }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { youtube_notification_channel_id: null }),
       details: D({ previous_channel_id: null }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=yt_channel_set`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=yt_channel_set`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_channel_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_channel_id`,
         fields: { channel_id: "x" },
       },
     },
@@ -854,12 +860,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       fields: { minutes: "15" },
       // Column is INTEGER NOT NULL DEFAULT 5 — seed the DEFAULT (web never
       // nulls an interval); details prove previous_minutes is the OLD value.
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { youtube_polling_interval_minutes: 5 }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { youtube_polling_interval_minutes: 5 }),
       details: D({ previous_minutes: 5, minutes: 15 }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=yt_interval_set`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=yt_interval_set`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_interval`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_interval`,
         fields: { minutes: "999" },
       },
     },
@@ -876,12 +882,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_UPLOAD,
       mirror: false,
       fields: { role_id: F.ROLE_UPLOAD },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { youtube_upload_role_id: null }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { youtube_upload_role_id: null }),
       details: D({ role_id: F.ROLE_UPLOAD, previous_role_id: null }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=yt_upload_role_set`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=yt_upload_role_set`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_role_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_role_id`,
         fields: { role_id: "x" },
       },
     },
@@ -898,12 +904,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.TW_ID,
       mirror: false,
       fields: { login: F.TW_LOGIN },
-      prepare: () => api.removeTwitchChannel(F.GUILD_A, F.TW_LOGIN),
+      prepare: () => api.removeTwitchChannel(F.COMMUNITY_A, F.TW_LOGIN),
       details: D({ login: F.TW_LOGIN, display_name: "Gate Stream" }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=tw_added`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=tw_added`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=missing_field`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=missing_field`,
         fields: {},
       },
     },
@@ -920,12 +926,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.TW_ID,
       mirror: false,
       fields: { channel: F.TW_LOGIN },
-      prepare: () => api.addTwitchChannel(F.GUILD_A, F.TW_ID, F.TW_LOGIN, "Gate Stream", ""),
+      prepare: () => api.addTwitchChannel(F.COMMUNITY_A, F.TW_ID, F.TW_LOGIN, "Gate Stream", ""),
       details: D({ login: F.TW_LOGIN, display_name: "Gate Stream" }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=tw_removed`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=tw_removed`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=missing_field`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=missing_field`,
         fields: {},
       },
     },
@@ -942,12 +948,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.CH_MESSAGE,
       mirror: false,
       fields: { channel_id: F.CH_MESSAGE },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { twitch_notification_channel_id: null }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { twitch_notification_channel_id: null }),
       details: D({ previous_channel_id: null }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=tw_channel_set`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=tw_channel_set`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_channel_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_channel_id`,
         fields: { channel_id: "x" },
       },
     },
@@ -964,12 +970,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_TW,
       mirror: false,
       fields: { role_id: F.ROLE_TW },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { twitch_notify_role_id: null }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { twitch_notify_role_id: null }),
       details: D({ role_id: F.ROLE_TW, previous_role_id: null }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=tw_role_set`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=tw_role_set`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_role_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_role_id`,
         fields: { role_id: "x" },
       },
     },
@@ -987,12 +993,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       mirror: false,
       fields: { minutes: "20" },
       // Column is INTEGER NOT NULL DEFAULT 2 — seed the DEFAULT.
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { twitch_polling_interval_minutes: 2 }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { twitch_polling_interval_minutes: 2 }),
       details: D({ previous_minutes: 2, minutes: 20 }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=tw_interval_set`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=tw_interval_set`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_interval`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_interval`,
         fields: { minutes: "0" },
       },
     },
@@ -1009,12 +1015,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.PANEL_MSG,
       mirror: false,
       fields: { channel_id: F.CH_MESSAGE, title: "Gate Panel", description: "react to get roles" },
-      prepare: () => api.deleteReactionRolePanel(F.GUILD_A, F.PANEL_MSG),
+      prepare: () => api.deleteReactionRolePanel(F.COMMUNITY_A, F.PANEL_MSG),
       details: D({ channel_id: F.CH_MESSAGE, title: "Gate Panel" }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=rr_panel_created`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=rr_panel_created`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_channel_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_channel_id`,
         fields: { title: "x" },
       },
     },
@@ -1032,14 +1038,14 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       mirror: false,
       fields: { message_id: F.PANEL_MSG },
       prepare: () => {
-        api.deleteReactionRolePanel(F.GUILD_A, F.PANEL_MSG);
-        api.createReactionRolePanel(F.GUILD_A, F.CH_MESSAGE, F.PANEL_MSG, "Gate Panel", "d");
+        api.deleteReactionRolePanel(F.COMMUNITY_A, F.PANEL_MSG);
+        api.createReactionRolePanel(F.COMMUNITY_A, F.CH_MESSAGE, F.PANEL_MSG, "Gate Panel", "d");
       },
       details: D({ channel_id: F.CH_MESSAGE }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=rr_panel_deleted`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=rr_panel_deleted`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_message_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_message_id`,
         fields: { message_id: "x".repeat(21) },
       },
     },
@@ -1057,14 +1063,14 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       mirror: false,
       fields: { message_id: F.PANEL_MSG, role_id: F.ROLE_STAFF, emoji: "👍", level: "0" },
       prepare: () => {
-        api.deleteReactionRolePanel(F.GUILD_A, F.PANEL_MSG);
-        api.createReactionRolePanel(F.GUILD_A, F.CH_MESSAGE, F.PANEL_MSG, "Gate Panel", "d");
+        api.deleteReactionRolePanel(F.COMMUNITY_A, F.PANEL_MSG);
+        api.createReactionRolePanel(F.COMMUNITY_A, F.CH_MESSAGE, F.PANEL_MSG, "Gate Panel", "d");
       },
       details: D({ role_id: F.ROLE_STAFF, emoji: "👍", min_level: 0, removable: 1 }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=rr_option_added`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=rr_option_added`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=rr_emoji_invalid`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=rr_emoji_invalid`,
         fields: { message_id: F.PANEL_MSG, role_id: F.ROLE_STAFF, emoji: "<broken>" },
       },
     },
@@ -1082,15 +1088,15 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       mirror: false,
       fields: { message_id: F.PANEL_MSG, emoji: "👍" },
       prepare: () => {
-        api.deleteReactionRolePanel(F.GUILD_A, F.PANEL_MSG);
-        api.createReactionRolePanel(F.GUILD_A, F.CH_MESSAGE, F.PANEL_MSG, "Gate Panel", "d");
-        api.upsertReactionRoleOption(F.GUILD_A, F.PANEL_MSG, "👍", "👍", F.ROLE_STAFF, 0, true);
+        api.deleteReactionRolePanel(F.COMMUNITY_A, F.PANEL_MSG);
+        api.createReactionRolePanel(F.COMMUNITY_A, F.CH_MESSAGE, F.PANEL_MSG, "Gate Panel", "d");
+        api.upsertReactionRoleOption(F.COMMUNITY_A, F.PANEL_MSG, "👍", "👍", F.ROLE_STAFF, 0, true);
       },
       details: D({ emoji: "👍" }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=rr_option_removed`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=rr_option_removed`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=rr_emoji_invalid`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=rr_emoji_invalid`,
         fields: { message_id: F.PANEL_MSG, emoji: "<broken>" },
       },
     },
@@ -1107,12 +1113,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.GUILD_A,
       mirror: false,
       fields: { channel_id: F.CH_AUDIT },
-      prepare: () => api.updateGuildSettings(F.GUILD_A, { event_reminder_channel_id: null }),
+      prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { event_reminder_channel_id: null }),
       details: D({ channel_id: F.CH_AUDIT }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=er_channel_set`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=er_channel_set`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_channel_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_channel_id`,
         fields: { channel_id: "x" },
       },
     },
@@ -1129,12 +1135,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.CH_HONEY,
       mirror: false,
       fields: { channel_id: F.CH_HONEY },
-      prepare: () => api.removeHoneypotChannel(F.GUILD_A, F.CH_HONEY),
+      prepare: () => api.removeHoneypotChannel(F.COMMUNITY_A, F.CH_HONEY),
       details: D(null),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=hp_channel_added`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=hp_channel_added`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_channel_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_channel_id`,
         fields: { channel_id: "x" },
       },
     },
@@ -1151,12 +1157,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.CH_HONEY,
       mirror: false,
       fields: { channel_id: F.CH_HONEY },
-      prepare: () => api.addHoneypotChannel(F.GUILD_A, F.CH_HONEY),
+      prepare: () => api.addHoneypotChannel(F.COMMUNITY_A, F.CH_HONEY),
       details: D(null),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=hp_channel_removed`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=hp_channel_removed`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_channel_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_channel_id`,
         fields: { channel_id: "x" },
       },
     },
@@ -1173,13 +1179,14 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_BAN,
       mirror: false,
       fields: { role_id: F.ROLE_BAN },
-      prepare: () => api.removeHoneypotBanRole(F.GUILD_A, F.ROLE_BAN),
+      prepare: () => api.removeHoneypotBanRole(F.COMMUNITY_A, F.ROLE_BAN),
       details: D(null),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=hp_banrole_added`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=hp_banrole_added`,
       reject: {
-        // @everyone twin (role id === guild id) — arithmetic refusal, zero writes
+        // @everyone twin (role id === guild id) — arithmetic refusal, zero writes.
+        // The route compares against the EXTERNAL guild id (src guildOf).
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=hp_role_everyone`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=hp_role_everyone`,
         fields: { role_id: F.GUILD_A },
       },
     },
@@ -1196,12 +1203,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_BAN,
       mirror: false,
       fields: { role_id: F.ROLE_BAN },
-      prepare: () => api.addHoneypotBanRole(F.GUILD_A, F.ROLE_BAN),
+      prepare: () => api.addHoneypotBanRole(F.COMMUNITY_A, F.ROLE_BAN),
       details: D(null),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=hp_banrole_removed`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=hp_banrole_removed`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_role_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_role_id`,
         fields: { role_id: "x" },
       },
     },
@@ -1218,12 +1225,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_EXEMPT,
       mirror: false,
       fields: { role_id: F.ROLE_EXEMPT },
-      prepare: () => api.removeStaffRole(F.GUILD_A, F.ROLE_EXEMPT),
+      prepare: () => api.removeStaffRole(F.COMMUNITY_A, F.ROLE_EXEMPT),
       details: D({ via: "honeypot.exempt" }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=hp_exempt_added`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=hp_exempt_added`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_role_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_role_id`,
         fields: { role_id: "x" },
       },
     },
@@ -1240,12 +1247,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetId: F.ROLE_EXEMPT,
       mirror: false,
       fields: { role_id: F.ROLE_EXEMPT },
-      prepare: () => api.addStaffRole(F.GUILD_A, F.ROLE_EXEMPT, "senior"),
+      prepare: () => api.addStaffRole(F.COMMUNITY_A, F.ROLE_EXEMPT, "senior"),
       details: D({ via: "honeypot.exempt" }),
-      okLocation: `/g/${F.GUILD_A}/integrations?done=hp_exempt_removed`,
+      okLocation: `/g/${F.COMMUNITY_A}/integrations?done=hp_exempt_removed`,
       reject: {
         status: 302,
-        location: `/g/${F.GUILD_A}/integrations?error=invalid_role_id`,
+        location: `/g/${F.COMMUNITY_A}/integrations?error=invalid_role_id`,
         fields: { role_id: "x" },
       },
     },
@@ -1267,13 +1274,13 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       mirror: true, // the slash posts logConfigChange "XP granted" (index.js:473)
       fields: { user_id: F.USER_GRANT, amount: "250", reason: "gate parity" },
       // Deterministic baseline: XP 0 → the audit's before/after is static.
-      prepare: () => api.setXp(F.GUILD_A, F.USER_GRANT, 0),
+      prepare: () => api.setXp(F.COMMUNITY_A, F.USER_GRANT, 0),
       details: D({ amount: 250, before_xp: 0, after_xp: 250, reason: "gate parity" }),
-      okLocation: `/g/${F.GUILD_A}/xp/grant?done=xp_granted`,
+      okLocation: `/g/${F.COMMUNITY_A}/xp/grant?done=xp_granted`,
       reject: {
         // amount < 1 — the slash's explicit guard (index.js:439)
         status: 302,
-        location: `/g/${F.GUILD_A}/xp/grant?error=invalid_amount`,
+        location: `/g/${F.COMMUNITY_A}/xp/grant?error=invalid_amount`,
         fields: { user_id: F.USER_GRANT, amount: "0" },
       },
     },
@@ -1299,7 +1306,7 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       // expiry 0 ⇒ expires_at NULL (the omitted-expires_days ≡ slash path).
       prepare: () => {
         purgeAutoincrement("warnings");
-        api.updateGuildSettings(F.GUILD_A, { warn_expiry_days: 0 });
+        api.updateGuildSettings(F.COMMUNITY_A, { warn_expiry_days: 0 });
       },
       details: D({
         warning_id: 1,
@@ -1308,11 +1315,11 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         expires_at: null,
         silent: false,
       }),
-      okLocation: `/g/${F.GUILD_A}/warnings?done=warn_issued`,
+      okLocation: `/g/${F.COMMUNITY_A}/warnings?done=warn_issued`,
       reject: {
         // malformed subject id — the route pre-validates, zero facade writes
         status: 302,
-        location: `/g/${F.GUILD_A}/warnings?error=invalid_user`,
+        location: `/g/${F.COMMUNITY_A}/warnings?error=invalid_user`,
         fields: { user_id: "x", reason: "gate warn reason" },
       },
     },
@@ -1333,7 +1340,7 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       prepare: () => {
         purgeAutoincrement("warnings");
         api.createWarning({
-          guildId: F.GUILD_A,
+          communityId: F.COMMUNITY_A,
           userId: F.USER_WARN_SUBJECT,
           issuerId: F.USER_ADMIN,
           reason: "seeded warning to void",
@@ -1345,11 +1352,11 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         subject_user_id: F.USER_WARN_SUBJECT,
         void_reason: "gate void reason",
       }),
-      okLocation: `/g/${F.GUILD_A}/warnings?done=warn_voided`,
+      okLocation: `/g/${F.COMMUNITY_A}/warnings?done=warn_voided`,
       reject: {
         // warning_number must be a positive integer — pre-validated refusal
         status: 302,
-        location: `/g/${F.GUILD_A}/warnings?error=invalid_warning_number`,
+        location: `/g/${F.COMMUNITY_A}/warnings?error=invalid_warning_number`,
         fields: { warning_number: "x", reason: "gate void reason" },
       },
     },
@@ -1374,11 +1381,11 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         subject_user_id: F.USER_WARN_SUBJECT,
         content: "gate note text",
       }),
-      okLocation: `/g/${F.GUILD_A}/notes?done=note_added`,
+      okLocation: `/g/${F.COMMUNITY_A}/notes?done=note_added`,
       reject: {
         // content > MAX_NOTE_CONTENT (2000) — the slash's maxLength option twin
         status: 302,
-        location: `/g/${F.GUILD_A}/notes?error=content_too_long`,
+        location: `/g/${F.COMMUNITY_A}/notes?error=content_too_long`,
         fields: { user_id: F.USER_WARN_SUBJECT, content: "x".repeat(2001) },
       },
     },
@@ -1408,18 +1415,18 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       prepare: () => {
         purgeAutoincrement("tickets");
         api.createTicket({
-          guildId: F.GUILD_A,
+          communityId: F.COMMUNITY_A,
           creatorUserId: "560000000000000301", // cache-absent requester (fake)
           channelId: null,
           reason: "gate claim seed",
         });
       },
       details: D({ ticket_number: 1, previous_owner: null, staff_owner_id: F.USER_SENIOR }),
-      okLocation: `/g/${F.GUILD_A}/tickets?done=ticket_claimed`,
+      okLocation: `/g/${F.COMMUNITY_A}/tickets?done=ticket_claimed`,
       reject: {
         // ticket_id field shape — refused BEFORE any facade call
         status: 302,
-        location: `/g/${F.GUILD_A}/tickets?error=invalid_ticket_id`,
+        location: `/g/${F.COMMUNITY_A}/tickets?error=invalid_ticket_id`,
         fields: { ticket_id: "x" },
       },
     },
@@ -1445,19 +1452,19 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       prepare: () => {
         purgeAutoincrement("tickets");
         api.createTicket({
-          guildId: F.GUILD_A,
+          communityId: F.COMMUNITY_A,
           creatorUserId: "560000000000000301",
           channelId: null,
           reason: "gate close seed",
         });
       },
       details: D({ ticket_number: 1, close_reason: "gate close reason", status: "closed" }),
-      okLocation: `/g/${F.GUILD_A}/tickets?done=ticket_closed`,
+      okLocation: `/g/${F.COMMUNITY_A}/tickets?done=ticket_closed`,
       reject: {
         // close-reason bound (MAX_TICKET_REASON = 1000) pre-validated — the
         // helper is NEVER invoked
         status: 302,
-        location: `/g/${F.GUILD_A}/tickets?error=close_reason_too_long`,
+        location: `/g/${F.COMMUNITY_A}/tickets?error=close_reason_too_long`,
         fields: { ticket_id: "1", reason: "x".repeat(1001) },
       },
     },
@@ -1482,7 +1489,7 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         purgeAutoincrement("tickets");
         rawDelete("DELETE FROM ticket_messages"); // id 1 re-usable
         api.createTicket({
-          guildId: F.GUILD_A,
+          communityId: F.COMMUNITY_A,
           creatorUserId: "560000000000000301",
           channelId: null,
           reason: "gate regen seed",
@@ -1493,11 +1500,11 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         ]);
       },
       details: D({ ticket_number: 1, source: "fallback", message_count: 2 }),
-      okLocation: `/g/${F.GUILD_A}/tickets?done=summary_fallback`,
+      okLocation: `/g/${F.COMMUNITY_A}/tickets?done=summary_fallback`,
       reject: {
         // leading-zero id shape — parse-level refusal, zero facade calls
         status: 302,
-        location: `/g/${F.GUILD_A}/tickets?error=invalid_ticket_id`,
+        location: `/g/${F.COMMUNITY_A}/tickets?error=invalid_ticket_id`,
         fields: { ticket_id: "01" },
       },
     },
@@ -1526,12 +1533,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       fields: { return: "staff" },
       prepare: () => {},
       details: D({ role_count: 2, commands_updated: 3 }),
-      okLocation: `/g/${F.GUILD_A}/staff?done=sync_completed`,
+      okLocation: `/g/${F.COMMUNITY_A}/staff?done=sync_completed`,
       reject: {
         // `return` field whitelist — refused BEFORE the service runs, and the
         // redirect falls back to the DEFAULT surface (never the submitted value).
         status: 302,
-        location: `/g/${F.GUILD_A}/commands?error=invalid_return`,
+        location: `/g/${F.COMMUNITY_A}/commands?error=invalid_return`,
         fields: { return: "<bogus>" },
       },
     },
@@ -1572,11 +1579,11 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         created_at: SEL_SELF,
         current: false, // never the viewer's login session (Exit C scope rule)
       }),
-      okLocation: `/g/${F.GUILD_A}/sessions?done=session_revoked`,
+      okLocation: `/g/${F.COMMUNITY_A}/sessions?done=session_revoked`,
       reject: {
         // created_at field shape — refused BEFORE any facade call
         status: 302,
-        location: `/g/${F.GUILD_A}/sessions?error=invalid_selection`,
+        location: `/g/${F.COMMUNITY_A}/sessions?error=invalid_selection`,
         fields: { created_at: "x" },
       },
     },
@@ -1606,12 +1613,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         created_at: SEL_TARGET,
         current: false,
       }),
-      okLocation: `/g/${F.GUILD_A}/system/sessions?done=session_revoked`,
+      okLocation: `/g/${F.COMMUNITY_A}/system/sessions?done=session_revoked`,
       reject: {
         // created_at shape on the ADMIN surface too (same parser, shared
         // routes/sessions.js parseRevokeField — the two scopes cannot drift)
         status: 302,
-        location: `/g/${F.GUILD_A}/system/sessions?error=invalid_selection`,
+        location: `/g/${F.COMMUNITY_A}/system/sessions?error=invalid_selection`,
         fields: { target_user_id: F.USER_PLAIN, created_at: "x" },
       },
     },
@@ -1659,8 +1666,8 @@ function buildLadderSteps(row, ctx) {
   } = ctx;
   // `base` is read AT STEP RUN TIME (ctx.base getter) — the gate's server
   // URL only exists after suite A's before() bound the ephemeral port.
-  const path = concretePath(row.template, FIX.GUILD_A);
-  const crossPath = concretePath(row.template, FIX.GUILD_CROSS);
+  const path = concretePath(row.template, FIX.COMMUNITY_A);
+  const crossPath = concretePath(row.template, FIX.COMMUNITY_CROSS);
   // Senior-tier rows (ticket actions, subtask 30) run the positive path
   // AS the senior user; below-staff tiers keep the junior viewer.
   const viewer =
@@ -1680,7 +1687,7 @@ function buildLadderSteps(row, ctx) {
         url: path,
         method: "POST",
         cookieId: null,
-        expect: harness.expectLoginRedirect(`/auth/login?guild=${FIX.GUILD_A}`),
+        expect: harness.expectLoginRedirect("/auth/login"),
       });
       observe(row.template, "anon", 302);
     },
@@ -1885,7 +1892,7 @@ function buildLadderSteps(row, ctx) {
       const mine = rows.find((r) => r.actor_user_id === viewerUser);
       assert.ok(mine, `${row.template}: audit row '${row.action}' by the viewer`);
       assert.equal(mine.origin, "web");
-      assert.equal(mine.guild_id, FIX.GUILD_A);
+      assert.equal(mine.community_id, FIX.COMMUNITY_A);
       assert.equal(mine.actor_user_id, viewerUser);
       assert.equal(mine.target_type, row.targetType);
       assert.deepEqual(

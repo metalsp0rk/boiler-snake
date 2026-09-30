@@ -17,7 +17,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const SESSION_SECRET = "test-rt13-verylongtestsecret";
 const CLIENT_ID = "123456789012345679";
@@ -51,12 +51,14 @@ describe("participant ticket round-trip + own-tickets list (§8.15-15.13)", () =
   let appBase;
   let appMod, sessions, tokens;
   let tokenFor, ticketToken, otherToken, markerReason;
+  let CID_A; // integer community id for GUILD_A (web contract)
 
   before(async () => {
     savedEnv = ENV_KEYS.reduce((acc, k) => ((acc[k] = process.env[k]), acc), {});
     const loaded = loadDb();
     api = loaded.api;
     tmpDir = loaded.tmpDir;
+    CID_A = communityKey(GUILD_A);
 
     // ---- mock Discord OAuth/API --------------------------------------------
     tokenFor = (at) => `rt13tok-${at}`;
@@ -158,7 +160,7 @@ describe("participant ticket round-trip + own-tickets list (§8.15-15.13)", () =
 
   function seedArchived({ creator, reason }) {
     const token = api.generateTranscriptToken();
-    const t = api.createTicket({ guildId: GUILD_A, creatorUserId: creator, channelId: `ch-${token}`, reason });
+    const t = api.createTicket({ communityId: CID_A, creatorUserId: creator, channelId: `ch-${token}`, reason });
     api.markTicketClosed(t.id, { closedBy: MOCK_USER, closeReason: "done" });
     api.closeTicketArchived(t.id, {
       closedBy: MOCK_USER,

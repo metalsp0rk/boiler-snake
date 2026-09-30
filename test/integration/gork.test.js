@@ -308,7 +308,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -418,7 +418,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     const fetchMock = mockFetch([chatCompletionResponse("Fridge. Second shelf.")]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       // Distinct guild display names so the prompt must use them, not raw handles.
       env.members.member.displayName = "Main Guy";
       env.members.member2.displayName = "Two";
@@ -488,7 +488,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     const fetchMock = mockFetch([chatCompletionResponse("This is #general.")] );
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -534,7 +534,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     const fetchMock = mockFetch([chatCompletionResponse("Name only, member.")]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       const ch = env.channels.general; // harness fake: no topic set
       attachTyping(ch);
 
@@ -570,7 +570,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 3600, // explicit long window: 2nd trigger must block
       });
@@ -625,7 +625,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 3600,
       });
@@ -669,7 +669,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     const fetchMock = mockFetch([]); // any call rejects
     try {
       clearAiKey();
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       const typing = attachTyping(env.channels.general);
       const { message, replies } = makeGorkMessage(env, {
         id: "t-nokey-1",
@@ -699,7 +699,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_context_window: 10,
       });
@@ -819,7 +819,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
       });
@@ -862,7 +862,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       // A releases the slot.
       const { gorkQueue } = require("../../src/features/gork/trigger");
       assert.equal(
-        gorkQueue.waitingCount({ guildId: env.guild.id }),
+        gorkQueue.waitingCount({ communityId: env.communityId }),
         1,
         "second trigger must be parked in the FIFO while the first is in flight"
       );
@@ -927,7 +927,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
       });
@@ -976,7 +976,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       // answered yet.
       const { gorkQueue } = require("../../src/features/gork/trigger");
       assert.equal(
-        gorkQueue.waitingCount({ guildId: env.guild.id }),
+        gorkQueue.waitingCount({ communityId: env.communityId }),
         5,
         "requests 2-6 must be parked in the guild FIFO"
       );
@@ -1060,7 +1060,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       enableAiKey();
       // Clearly fake placeholder for the reserved .test TLD — no real host.
       process.env.SEARXNG_URL = "https://searxng.test";
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_search_enabled: 1,
       });
@@ -1155,7 +1155,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     try {
       enableAiKey();
       process.env.SEARXNG_URL = "https://searxng.test";
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -1235,7 +1235,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       assertEphemeralReply(ixn);
       assertReplyContains(ixn, "ask");
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_keyword, "ask");
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_keyword, "ask");
 
       // Reflected in /settings (Gork field).
       let settings = await env.runCommand({
@@ -1257,7 +1257,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
         options: { search: "off" },
       });
       assertEphemeralReply(ixn);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_search_enabled, 0);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_search_enabled, 0);
       settings = await env.runCommand({ commandName: "settings", admin: true });
       text = embedText(settings.replies[settings.replies.length - 1].embeds[0]);
       assert.ok(text.includes("Search **off**"));
@@ -1271,7 +1271,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       assertEphemeralReply(ixn);
       assertReplyContains(ixn, "40000");
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_summarize_input_tokens, 40000);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_summarize_input_tokens, 40000);
       settings = await env.runCommand({ commandName: "settings", admin: true });
       text = embedText(settings.replies[settings.replies.length - 1].embeds[0]);
       assert.ok(
@@ -1288,7 +1288,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       assertEphemeralReply(ixn);
       assertReplyContains(ixn, /disabled/i);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_keyword, null);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_keyword, null);
       settings = await env.runCommand({ commandName: "settings", admin: true });
       text = embedText(settings.replies[settings.replies.length - 1].embeds[0]);
       assert.ok(text.includes("Keyword **disabled**"));
@@ -1302,7 +1302,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
         options: { keyword: "nope" },
       });
       assertEphemeralReply(denied, /permission/i);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_keyword, null);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_keyword, null);
     } finally {
       restoreEnv(saved);
     }
@@ -1314,7 +1314,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     const fetchMock = mockFetch([]); // any call rejects
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
 
       const ch = env.createTextChannel({
         id: "channel-ticket-gork",
@@ -1323,13 +1323,13 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       env.guild.addChannel(ch);
       env.db.createTicket({
-        guildId: env.guild.id,
+        communityId: env.communityId,
         creatorUserId: IDS.member,
         channelId: ch.id,
         reason: "gork skip check",
       });
       assert.ok(
-        env.db.getTicketByChannel(ch.id),
+        env.db.getTicketByChannel(env.communityId, ch.id),
         "ticket row must exist for the channel"
       );
 
@@ -1365,7 +1365,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     const saved = saveEnv();
     clearAiKey(); // config commands do not need the AI key
     try {
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -1379,7 +1379,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       assertEphemeralReply(ixn);
       assertReplyContains(ixn, /banned from gork/i);
-      assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.member), true);
+      assert.equal(env.db.isGorkBlocked(env.communityId, IDS.member), true);
 
       // bans: lists the blocked user
       ixn = await env.runCommand({
@@ -1400,7 +1400,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       assertEphemeralReply(ixn);
       assertReplyContains(ixn, /can use gork again/i);
-      assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.member), false);
+      assert.equal(env.db.isGorkBlocked(env.communityId, IDS.member), false);
 
       // unban again: reports "not banned" (idempotent UX)
       ixn = await env.runCommand({
@@ -1430,7 +1430,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       assertEphemeralReply(ixn);
       assertReplyContains(ixn, /bots can't be banned/i);
-      assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.bot), false);
+      assert.equal(env.db.isGorkBlocked(env.communityId, IDS.bot), false);
 
       // Non-staff is denied and stores nothing.
       const denied = await env.runCommand({
@@ -1441,7 +1441,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
         options: { user: env.users.member2User },
       });
       assertEphemeralReply(denied, /permission/i);
-      assert.equal(env.db.isGorkBlocked(env.guild.id, IDS.member2), false);
+      assert.equal(env.db.isGorkBlocked(env.communityId, IDS.member2), false);
 
       // Audit trail recorded the ban + unban (not the failed attempts).
       // The command handlers await logConfigChange before replying and the
@@ -1469,7 +1469,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     const fetchMock = mockFetch(script);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 45,
       });
@@ -1484,7 +1484,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       assertEphemeralReply(off);
       assertReplyContains(off, /disabled/i);
-      const disabled = env.db.getGuildSettings(env.guild.id);
+      const disabled = env.db.getGuildSettings(env.communityId);
       assert.equal(disabled.gork_enabled, 0);
       assert.equal(disabled.gork_keyword, "gork", "disable preserves the keyword");
       assert.equal(
@@ -1524,7 +1524,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       });
       assertEphemeralReply(on);
       assertReplyContains(on, /enabled/i);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_enabled, 1);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_enabled, 1);
 
       script.push(chatCompletionResponse("Rayleigh scattering, member."));
       const { message: m2, replies: r2 } = makeGorkMessage(env, {
@@ -1549,7 +1549,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     try {
       enableAiKey();
       // Cooldown 0 so repeated triggers from the same user are not masked.
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
       });
@@ -1558,7 +1558,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       const LUNCH = "*gork's brain went to lunch* — try again in a bit.";
 
       // Regular banned user: exactly the vague failure reply, no LLM call.
-      env.db.addGorkBlock(env.guild.id, IDS.member, IDS.admin);
+      env.db.addGorkBlock(env.communityId, IDS.member, IDS.admin);
       const { message: m1, replies: r1 } = makeGorkMessage(env, {
         id: "t-ban-1",
         content: "gork: why is the sky blue?",
@@ -1571,7 +1571,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       assert.equal(typing.calls, 0, "banned trigger must not type");
 
       // Banned staff member: staff status does NOT bypass the ban.
-      env.db.addGorkBlock(env.guild.id, IDS.admin, IDS.admin);
+      env.db.addGorkBlock(env.communityId, IDS.admin, IDS.admin);
       const { message: m2, replies: r2 } = makeGorkMessage(env, {
         id: "t-ban-2",
         content: "gork: admin question",
@@ -1592,7 +1592,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       );
 
       // Unban restores normal answering.
-      env.db.removeGorkBlock(env.guild.id, IDS.member);
+      env.db.removeGorkBlock(env.communityId, IDS.member);
       script.push(chatCompletionResponse("Rayleigh scattering strikes again."));
       const { message: m3, replies: r3 } = makeGorkMessage(env, {
         id: "t-ban-3",
@@ -1628,7 +1628,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
         options: { user: env.users.memberUser, reason: "ai-summary-regression" },
       });
       assertReplyContains(opened, /opened|Ticket/i);
-      const open = env.db.listOpenTickets(env.guild.id, {
+      const open = env.db.listOpenTickets(env.communityId, {
         userId: IDS.member,
         limit: 10,
       });
@@ -1690,7 +1690,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       const ch = env.channels.general;
       ch.addMessage({
         id: "a1",
@@ -1742,7 +1742,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
       });
@@ -1780,11 +1780,11 @@ describe("integration: gork (AI keyword Q&A)", () => {
       // The guild slot was released: the degraded job must not leak it.
       const { gorkQueue } = require("../../src/features/gork/trigger");
       assert.equal(
-        gorkQueue.admit({ guildId: env.guild.id }).queued,
+        gorkQueue.admit({ communityId: env.communityId }).queued,
         false,
         "the guild slot must be free after the degraded job",
       );
-      gorkQueue.release({ guildId: env.guild.id });
+      gorkQueue.release({ communityId: env.communityId });
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -1803,7 +1803,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     const fetchMock = mockFetch([chatCompletionResponse(heavy)]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       attachTyping(env.channels.general);
 
       const { message, replies } = makeGorkMessage(env, {
@@ -1852,7 +1852,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       attachTyping(env.channels.general);
 
       const { message, replies } = makeGorkMessage(env, {
@@ -1882,7 +1882,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -1948,7 +1948,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     try {
       enableAiKey();
       process.env.SEARXNG_URL = "https://searxng.test";
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_search_enabled: 1,
       });
@@ -1986,7 +1986,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       delete process.env.GORK_LLM_MAX_TOOL_ROUNDS;
       delete process.env.GORK_MAX_ANSWER_CHARS;
       process.env.GORK_LLM_THINKING_TOKEN_BUDGET = "4000";
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       attachTyping(env.channels.general);
 
       const { message, replies } = makeGorkMessage(env, {
@@ -2022,7 +2022,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       delete process.env.GORK_LLM_MAX_TOOL_ROUNDS;
       delete process.env.GORK_LLM_THINKING_TOKEN_BUDGET;
       delete process.env.GORK_MAX_ANSWER_CHARS;
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       attachTyping(env.channels.general);
 
       const { message, replies } = makeGorkMessage(env, {
@@ -2057,7 +2057,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       delete process.env.GORK_LLM_MAX_TOOL_ROUNDS;
       delete process.env.GORK_LLM_THINKING_TOKEN_BUDGET;
       delete process.env.GORK_MAX_ANSWER_CHARS;
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -2107,7 +2107,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       delete process.env.GORK_LLM_MAX_TOOL_ROUNDS;
       delete process.env.GORK_LLM_THINKING_TOKEN_BUDGET;
       process.env.GORK_MAX_ANSWER_CHARS = "300";
-      env.db.updateGuildSettings(env.guild.id, { gork_keyword: "gork" });
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
       attachTyping(env.channels.general);
 
       const { message, replies } = makeGorkMessage(env, {
@@ -2161,7 +2161,7 @@ const MEM_TRIGGER_DATE = "2026-09-09";
 function seedMemory(env, opts) {
   const title = opts.title;
   return env.db.gorkMemoryUpsert({
-    guildId: env.guild.id,
+    communityId: env.communityId,
     subjectUserId: opts.subjectUserId,
     memDate: opts.memDate || "2026-09-01",
     title,
@@ -2210,14 +2210,14 @@ describe("integration: gork community memory (§7.16)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         audit_log_channel_id: IDS.channelLog,
         // gork_memory_enabled deliberately UNSET (column default = 0).
       });
       assert.equal(
-        env.db.getGuildSettings(env.guild.id).gork_memory_enabled,
+        env.db.getGuildSettings(env.communityId).gork_memory_enabled,
         0,
         "memory defaults to OFF"
       );
@@ -2307,7 +2307,7 @@ describe("integration: gork community memory (§7.16)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1, // budget stays at the default 12000
@@ -2435,7 +2435,7 @@ describe("integration: gork community memory (§7.16)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
@@ -2443,7 +2443,7 @@ describe("integration: gork community memory (§7.16)", () => {
       });
       attachTyping(env.channels.general);
       assert.equal(
-        env.db.gorkMemoryGetById(env.guild.id, seeded.id).last_used_at,
+        env.db.gorkMemoryGetById(env.communityId, seeded.id).last_used_at,
         null,
         "seeded row starts untouched"
       );
@@ -2488,7 +2488,7 @@ describe("integration: gork community memory (§7.16)", () => {
 
       // gorkMemoryTouch side effect via the facade (decision: recalled rows
       // win the eviction recency tie-break).
-      const row = env.db.gorkMemoryGetById(env.guild.id, seeded.id);
+      const row = env.db.gorkMemoryGetById(env.communityId, seeded.id);
       assert.ok(
         row.last_used_at != null,
         "recall must stamp last_used_at via gorkMemoryTouch"
@@ -2535,7 +2535,7 @@ describe("integration: gork community memory (§7.16)", () => {
     try {
       enableAiKey();
       process.env.AI_SMALL_MODEL = "small-mem-model";
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
@@ -2567,11 +2567,11 @@ describe("integration: gork community memory (§7.16)", () => {
       // free (same admit-probe the §7.15 Fix 3 test uses).
       const { gorkQueue } = require("../../src/features/gork/trigger");
       assert.equal(
-        gorkQueue.admit({ guildId: env.guild.id }).queued,
+        gorkQueue.admit({ communityId: env.communityId }).queued,
         false,
         "the guild slot was already released when the extraction turn fired"
       );
-      gorkQueue.release({ guildId: env.guild.id });
+      gorkQueue.release({ communityId: env.communityId });
 
       // The write-path request itself: small model + strict JSON + allow-list.
       const xBody = extractionBodyOf(fetchMock.calls[1]);
@@ -2602,7 +2602,7 @@ describe("integration: gork community memory (§7.16)", () => {
       );
 
       // Valid entry: stored with server-stamped UTC date + normalized key.
-      const rows = env.db.gorkMemoryListForSubject(env.guild.id, IDS.member);
+      const rows = env.db.gorkMemoryListForSubject(env.communityId, IDS.member);
       assert.equal(rows.length, 1, "exactly the valid entry stored");
       const row = rows[0];
       assert.equal(
@@ -2620,7 +2620,7 @@ describe("integration: gork community memory (§7.16)", () => {
 
       // Bogus subject: never stored (skipped_invalid path), never resolved.
       assert.equal(
-        env.db.gorkMemoryCountForGuild(env.guild.id),
+        env.db.gorkMemoryCountForGuild(env.communityId),
         1,
         "the out-of-roster entry must NOT be stored"
       );
@@ -2656,7 +2656,7 @@ describe("integration: gork community memory (§7.16)", () => {
     const saved = saveEnv();
     clearAiKey(); // config commands do not need the AI key
     try {
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         audit_log_channel_id: IDS.channelLog,
       });
 
@@ -2669,7 +2669,7 @@ describe("integration: gork community memory (§7.16)", () => {
       });
       assertEphemeralReply(ixn);
       assertReplyContains(ixn, /memory is now \*\*on\*\*/i);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_memory_enabled, 1);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_memory_enabled, 1);
 
       // budget 8000: the standalone block budget persists.
       ixn = await env.runCommand({
@@ -2680,7 +2680,7 @@ describe("integration: gork community memory (§7.16)", () => {
       });
       assertEphemeralReply(ixn);
       assertReplyContains(ixn, "8000");
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_memory_chars, 8000);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_memory_chars, 8000);
 
       // Non-staff is denied and the stored settings stay unchanged.
       const denied = await env.runCommand({
@@ -2691,7 +2691,7 @@ describe("integration: gork community memory (§7.16)", () => {
         options: { action: "off" },
       });
       assertEphemeralReply(denied, /permission/i);
-      assert.equal(env.db.getGuildSettings(env.guild.id).gork_memory_enabled, 1);
+      assert.equal(env.db.getGuildSettings(env.communityId).gork_memory_enabled, 1);
 
       // Audit trail: both config changes recorded (not the denial). The
       // /gork memory handlers await logConfigChange before replying (and
@@ -2775,7 +2775,7 @@ describe("integration: gork community memory (§7.16)", () => {
     try {
       enableAiKey();
       delete process.env.SEARXNG_URL; // search OFF — read_discord stands alone
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -2849,7 +2849,7 @@ describe("integration: gork community memory (§7.16)", () => {
     try {
       enableAiKey();
       delete process.env.SEARXNG_URL;
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -2909,7 +2909,7 @@ describe("integration: gork community memory (§7.16)", () => {
     try {
       enableAiKey();
       delete process.env.SEARXNG_URL;
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -2943,7 +2943,7 @@ describe("integration: gork community memory (§7.16)", () => {
       seeds: [{ id: "k1", content: "PRIVATE: billing dispute details" }],
     });
     env.db.createTicket({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       creatorUserId: IDS.member2,
       channelId: target.id,
       reason: "billing dispute",
@@ -2955,7 +2955,7 @@ describe("integration: gork community memory (§7.16)", () => {
     try {
       enableAiKey();
       delete process.env.SEARXNG_URL;
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });
@@ -2999,7 +2999,7 @@ describe("integration: gork community memory (§7.16)", () => {
     try {
       enableAiKey();
       process.env.SEARXNG_URL = "https://searxng.test";
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_search_enabled: 1,
       });
@@ -3058,7 +3058,7 @@ describe("integration: gork STE answer style (§7.20)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_ste_enabled: 1,
         gork_extra_rules: "Prefer short answers.",
@@ -3098,7 +3098,7 @@ describe("integration: gork STE answer style (§7.20)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_extra_rules: "Prefer short answers.",
       });
@@ -3134,7 +3134,7 @@ describe("integration: gork STE answer style (§7.20)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_ste_enabled: 1,
         audit_log_channel_id: IDS.channelLog,
@@ -3174,7 +3174,7 @@ describe("integration: gork STE answer style (§7.20)", () => {
     ]);
     try {
       enableAiKey();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         audit_log_channel_id: IDS.channelLog,
       });

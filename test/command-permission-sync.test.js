@@ -1,6 +1,6 @@
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 const {
   buildStaffRoleAllowPermissions,
 } = require("../src/features/commandPermissions/permissionsPayload");
@@ -26,30 +26,30 @@ describe("command permission OAuth storage + put", () => {
   });
 
   it("stores and reads oauth row", () => {
-    dbApi.upsertCommandPermissionOauth("guild-cp-1", {
+    dbApi.upsertCommandPermissionOauth(communityKey("guild-cp-1"), {
       refreshToken: "rt-1",
       accessToken: "at-1",
       accessExpiresAt: Date.now() + 60_000,
       authorizedByUserId: "user-1",
     });
-    const row = dbApi.getCommandPermissionOauth("guild-cp-1");
+    const row = dbApi.getCommandPermissionOauth(communityKey("guild-cp-1"));
     assert.ok(row);
     assert.equal(row.refresh_token, "rt-1");
     assert.equal(row.access_token, "at-1");
     assert.equal(row.authorized_by_user_id, "user-1");
-    assert.ok(dbApi.hasCommandPermissionOauth("guild-cp-1"));
+    assert.ok(dbApi.hasCommandPermissionOauth(communityKey("guild-cp-1")));
   });
 
   it("records sync result", () => {
-    dbApi.upsertCommandPermissionOauth("guild-cp-2", {
+    dbApi.upsertCommandPermissionOauth(communityKey("guild-cp-2"), {
       refreshToken: "rt-2",
     });
     const at = Date.now();
-    dbApi.setCommandPermissionSyncResult("guild-cp-2", {
+    dbApi.setCommandPermissionSyncResult(communityKey("guild-cp-2"), {
       lastSyncAt: at,
       lastSyncError: null,
     });
-    const row = dbApi.getCommandPermissionOauth("guild-cp-2");
+    const row = dbApi.getCommandPermissionOauth(communityKey("guild-cp-2"));
     assert.equal(row.last_sync_at, at);
     assert.equal(row.last_sync_error, null);
   });
@@ -88,10 +88,10 @@ describe("command permission OAuth storage + put", () => {
   });
 
   it("deletes oauth row", () => {
-    dbApi.upsertCommandPermissionOauth("guild-cp-del", {
+    dbApi.upsertCommandPermissionOauth(communityKey("guild-cp-del"), {
       refreshToken: "x",
     });
-    assert.ok(dbApi.deleteCommandPermissionOauth("guild-cp-del"));
-    assert.equal(dbApi.getCommandPermissionOauth("guild-cp-del"), null);
+    assert.ok(dbApi.deleteCommandPermissionOauth(communityKey("guild-cp-del")));
+    assert.equal(dbApi.getCommandPermissionOauth(communityKey("guild-cp-del")), null);
   });
 });

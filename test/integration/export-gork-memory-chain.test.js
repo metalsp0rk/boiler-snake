@@ -63,13 +63,13 @@ describe("export-gork-log: memory chain assembly", () => {
     ]);
     try {
       armEnv();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
       });
       env.db.gorkMemoryUpsert({
-        guildId: env.guild.id,
+        communityId: env.communityId,
         subjectUserId: env.users.memberUser.id,
         memDate: "2026-09-14",
         titleKey: "weather",
@@ -106,7 +106,7 @@ describe("export-gork-log: memory chain assembly", () => {
       await require("../../src/features/gork/trigger").whenGorkIdleForTests();
 
       const rows = env.db
-        .listGorkInteractions({ guildId: env.guild.id, limit: 20 })
+        .listGorkInteractions({ communityId: env.communityId, limit: 20 })
         .map((r) => env.db.getGorkInteractionByUid(r.uid))
         .filter(Boolean);
       assert.ok(
@@ -157,13 +157,13 @@ describe("export-gork-log: memory chain assembly", () => {
     const fetchMockRecord = scriptFetch(chatResponses);
     try {
       armEnv();
-      rec.db.updateGuildSettings(rec.guild.id, {
+      rec.db.updateGuildSettings(rec.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
       });
       rec.db.gorkMemoryUpsert({
-        guildId: rec.guild.id,
+        communityId: rec.communityId,
         subjectUserId: rec.users.memberUser.id,
         memDate: "2026-09-14",
         titleKey: "weather",
@@ -199,7 +199,7 @@ describe("export-gork-log: memory chain assembly", () => {
       await rec.onMessageCreate(message);
       await require("../../src/features/gork/trigger").whenGorkIdleForTests();
       const rows = rec.db
-        .listGorkInteractions({ guildId: rec.guild.id, limit: 20 })
+        .listGorkInteractions({ communityId: rec.communityId, limit: 20 })
         .map((r) => rec.db.getGorkInteractionByUid(r.uid))
         .filter(Boolean);
       fixture = buildFixturesFromRows(rows).find((f) => f.kind === "qa");
@@ -226,14 +226,14 @@ describe("export-gork-log: memory chain assembly", () => {
     const fetchMock = scriptFetch(recorded);
     try {
       armEnv();
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_cooldown_sec: 0,
         gork_memory_enabled: 1,
         gork_interaction_log_enabled: 1,
       });
       env.db.gorkMemoryUpsert({
-        guildId: env.guild.id,
+        communityId: env.communityId,
         subjectUserId: env.users.memberUser.id,
         memDate: "2026-09-14",
         titleKey: "weather",
@@ -289,7 +289,7 @@ describe("export-gork-log: memory chain assembly", () => {
       await require("../../src/features/gork/trigger").whenGorkIdleForTests();
 
       const qa = env.db
-        .listGorkInteractions({ guildId: env.guild.id, limit: 10 })
+        .listGorkInteractions({ communityId: env.communityId, limit: 10 })
         .map((r) => env.db.getGorkInteractionByUid(r.uid))
         .find((r) => r && r.kind === "qa");
       assert.ok(qa, "chain replay wrote a qa row");

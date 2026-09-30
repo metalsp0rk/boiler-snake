@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const { PermissionFlagsBits } = require("discord.js");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 describe("tickets repository", () => {
   /** @type {ReturnType<typeof loadDb>["api"]} */
@@ -20,7 +20,7 @@ describe("tickets repository", () => {
 
   it("creates sequential tickets and rate-limits self-create", () => {
     const t1 = db.createTicket({
-      guildId: "g1",
+      communityId: communityKey("g1"),
       creatorUserId: "u1",
       channelId: "ch-1",
       reason: "Need help",
@@ -30,26 +30,26 @@ describe("tickets repository", () => {
     assert.equal(t1.is_sensitive, 0);
 
     const t2 = db.createTicket({
-      guildId: "g1",
+      communityId: communityKey("g1"),
       creatorUserId: "u2",
       channelId: "ch-2",
       reason: null,
     });
     assert.equal(t2.ticket_number, 2);
 
-    db.updateGuildSettings("g1", { ticket_rate_limit_minutes: 60 });
-    const blocked = db.canUserCreateTicket("g1", "u1");
+    db.updateGuildSettings(communityKey("g1"), { ticket_rate_limit_minutes: 60 });
+    const blocked = db.canUserCreateTicket(communityKey("g1"), "u1");
     assert.equal(blocked.ok, false);
     assert.ok(blocked.retryAfterMs > 0);
 
     // staff-opened does not count for self-create rate limit
     const staffOpened = db.createTicket({
-      guildId: "g1",
+      communityId: communityKey("g1"),
       creatorUserId: "u3",
       channelId: "ch-3",
       openedByStaffId: "staff-1",
     });
-    const ok = db.canUserCreateTicket("g1", "u3");
+    const ok = db.canUserCreateTicket(communityKey("g1"), "u3");
     assert.equal(ok.ok, true);
 
     // opener is staff owner + named staff exclusively on that ticket
@@ -62,13 +62,13 @@ describe("tickets repository", () => {
   });
 
   it("rate limit disabled when minutes is 0", () => {
-    db.updateGuildSettings("g-rl0", { ticket_rate_limit_minutes: 0 });
+    db.updateGuildSettings(communityKey("g-rl0"), { ticket_rate_limit_minutes: 0 });
     db.createTicket({
-      guildId: "g-rl0",
+      communityId: communityKey("g-rl0"),
       creatorUserId: "u",
       channelId: "ch-rl0-1",
     });
-    const ok = db.canUserCreateTicket("g-rl0", "u");
+    const ok = db.canUserCreateTicket(communityKey("g-rl0"), "u");
     assert.equal(ok.ok, true);
   });
 
@@ -92,7 +92,7 @@ describe("tickets repository", () => {
 
   it("claim / transfer / sensitive / members / staff allow-list", () => {
     const t = db.createTicket({
-      guildId: "g2",
+      communityId: communityKey("g2"),
       creatorUserId: "creator",
       channelId: "ch-claim",
       reason: "privacy",
@@ -153,31 +153,31 @@ describe("tickets repository", () => {
 
   it("lookups: by channel, number, open list filter", () => {
     const t = db.createTicket({
-      guildId: "g-lookup",
+      communityId: communityKey("g-lookup"),
       creatorUserId: "u1",
       channelId: "ch-lookup-1",
       reason: "find me",
     });
-    assert.equal(db.getTicketByChannel("ch-lookup-1")?.id, t.id);
-    assert.equal(db.getTicketByNumber("g-lookup", t.ticket_number)?.id, t.id);
-    assert.equal(db.getTicketByChannel("missing"), null);
-    assert.equal(db.getTicketByNumber("g-lookup", 99999), null);
+    assert.equal(db.getTicketByChannel(communityKey("g-lookup"), "ch-lookup-1")?.id, t.id);
+    assert.equal(db.getTicketByNumber(communityKey("g-lookup"), t.ticket_number)?.id, t.id);
+    assert.equal(db.getTicketByChannel(communityKey("g-lookup"), "missing"), null);
+    assert.equal(db.getTicketByNumber(communityKey("g-lookup"), 99999), null);
 
     db.createTicket({
-      guildId: "g-lookup",
+      communityId: communityKey("g-lookup"),
       creatorUserId: "u2",
       channelId: "ch-lookup-2",
     });
-    const all = db.listOpenTickets("g-lookup");
+    const all = db.listOpenTickets(communityKey("g-lookup"));
     assert.ok(all.length >= 2);
-    const filtered = db.listOpenTickets("g-lookup", { userId: "u1" });
+    const filtered = db.listOpenTickets(communityKey("g-lookup"), { userId: "u1" });
     assert.ok(filtered.every((r) => r.creator_user_id === "u1" || true));
     assert.ok(filtered.some((r) => r.creator_user_id === "u1"));
   });
 
   it("soft close keeps channel; sensitive/archive finalize dispose channel", () => {
     const soft = db.createTicket({
-      guildId: "g3",
+      communityId: communityKey("g3"),
       creatorUserId: "u",
       channelId: "ch-soft",
     });
@@ -191,7 +191,7 @@ describe("tickets repository", () => {
     assert.equal(softClosed.close_reason, "done for now");
 
     const sens = db.createTicket({
-      guildId: "g3",
+      communityId: communityKey("g3"),
       creatorUserId: "u",
       channelId: "ch-sens",
     });
@@ -207,7 +207,7 @@ describe("tickets repository", () => {
     assert.equal(closedSens.is_sensitive, 1);
 
     const arch = db.createTicket({
-      guildId: "g3",
+      communityId: communityKey("g3"),
       creatorUserId: "u",
       channelId: "ch-arch",
       reason: "billing",
@@ -243,7 +243,7 @@ describe("tickets repository", () => {
 
   it("closeTicketArchived without transcript path sets archived=0", () => {
     const t = db.createTicket({
-      guildId: "g-nohtml",
+      communityId: communityKey("g-nohtml"),
       creatorUserId: "u",
       channelId: "ch-nohtml",
     });
@@ -261,11 +261,11 @@ describe("tickets repository", () => {
 
   it("markTicketClosedByChannelDelete closes open tickets only", () => {
     const open = db.createTicket({
-      guildId: "g-del",
+      communityId: communityKey("g-del"),
       creatorUserId: "u",
       channelId: "ch-ext-del",
     });
-    const closed = db.markTicketClosedByChannelDelete("ch-ext-del");
+    const closed = db.markTicketClosedByChannelDelete(communityKey("g-del"), "ch-ext-del");
     assert.ok(closed);
     assert.equal(closed.status, "closed");
     assert.equal(closed.archived, 0);
@@ -273,13 +273,13 @@ describe("tickets repository", () => {
     assert.match(closed.close_reason || "", /deleted outside/i);
 
     // already closed / unknown
-    assert.equal(db.markTicketClosedByChannelDelete("ch-ext-del"), null);
-    assert.equal(db.markTicketClosedByChannelDelete("no-such-channel"), null);
+    assert.equal(db.markTicketClosedByChannelDelete(communityKey("g-del"), "ch-ext-del"), null);
+    assert.equal(db.markTicketClosedByChannelDelete(communityKey("g-del"), "no-such-channel"), null);
     assert.equal(db.getTicketById(open.id).status, "closed");
   });
 
   it("getTicketSettings defaults", () => {
-    const s = db.getTicketSettings("brand-new-guild-settings");
+    const s = db.getTicketSettings(communityKey("brand-new-guild-settings"));
     assert.equal(s.ticket_category_id, null);
     assert.equal(s.ticket_archive_channel_id, null);
     assert.equal(s.ticket_rate_limit_minutes, 60);
@@ -316,19 +316,19 @@ describe("tickets overwrites", () => {
       true
     );
 
-    db.addStaffRole("g-ow", "role-staff-a", "senior");
-    db.addStaffRole("g-ow", "role-staff-b", "senior");
-    db.addStaffRole("g-ow", "role-staff-junior", "junior");
+    db.addStaffRole(communityKey("g-ow"), "role-staff-a", "senior");
+    db.addStaffRole(communityKey("g-ow"), "role-staff-b", "senior");
+    db.addStaffRole(communityKey("g-ow"), "role-staff-junior", "junior");
 
     // Staff-opened: opener gets named staff overwrite even without senior role
     const staffOpenedTicket = db.createTicket({
-      guildId: "g-ow",
+      communityId: communityKey("g-ow"),
       creatorUserId: "member-req",
       channelId: "ch-ow-staff-for",
       openedByStaffId: "junior-opener",
     });
     const forOw = await buildTicketOverwrites({
-      guildId: "g-ow",
+      communityId: communityKey("g-ow"),
       everyoneId: "g-ow",
       botUserId: "bot-1",
       ticket: db.getTicketById(staffOpenedTicket.id),
@@ -344,7 +344,7 @@ describe("tickets overwrites", () => {
     assert.ok(forById("role-staff-a")?.allow, "senior staff roles still apply");
     // legacy row: opened_by_staff_id without ticket_staff / staff_owner still grants access
     const legacyOw = await buildTicketOverwrites({
-      guildId: "g-ow",
+      communityId: communityKey("g-ow"),
       everyoneId: "g-ow",
       botUserId: "bot-1",
       ticket: {
@@ -363,7 +363,7 @@ describe("tickets overwrites", () => {
     );
 
     const ticket = db.createTicket({
-      guildId: "g-ow",
+      communityId: communityKey("g-ow"),
       creatorUserId: "creator",
       channelId: "ch-ow-1",
     });
@@ -372,7 +372,7 @@ describe("tickets overwrites", () => {
     db.addTicketMember(ticket.id, "friend", "owner-mod");
 
     const normal = await buildTicketOverwrites({
-      guildId: "g-ow",
+      communityId: communityKey("g-ow"),
       everyoneId: "g-ow",
       botUserId: "bot-1",
       ticket: db.getTicketById(ticket.id),
@@ -389,7 +389,7 @@ describe("tickets overwrites", () => {
     assert.ok(byId("role-staff-b")?.allow);
     // Junior staff roles must not get ticket overwrites when using DB defaults
     const normalFromDb = await buildTicketOverwrites({
-      guildId: "g-ow",
+      communityId: communityKey("g-ow"),
       everyoneId: "g-ow",
       botUserId: "bot-1",
       ticket: db.getTicketById(ticket.id),
@@ -403,7 +403,7 @@ describe("tickets overwrites", () => {
 
     // Soft-close overwrites deny members, keep staff
     const closedOw = await buildTicketOverwrites({
-      guildId: "g-ow",
+      communityId: communityKey("g-ow"),
       everyoneId: "g-ow",
       botUserId: "bot-1",
       ticket: db.getTicketById(ticket.id),
@@ -420,7 +420,7 @@ describe("tickets overwrites", () => {
     db.setTicketSensitive(ticket.id);
     const sensTicket = db.getTicketById(ticket.id);
     const sensitive = await buildTicketOverwrites({
-      guildId: "g-ow",
+      communityId: communityKey("g-ow"),
       everyoneId: "g-ow",
       botUserId: "bot-1",
       ticket: sensTicket,
@@ -441,9 +441,9 @@ describe("tickets overwrites", () => {
       getManageableStaffRoleIds,
     } = require("../src/features/tickets/overwrites");
 
-    db.addStaffRole("g-hier", "role-low");
-    db.addStaffRole("g-hier", "role-high");
-    db.addStaffRole("g-hier", "role-missing");
+    db.addStaffRole(communityKey("g-hier"), "role-low");
+    db.addStaffRole(communityKey("g-hier"), "role-high");
+    db.addStaffRole(communityKey("g-hier"), "role-missing");
 
     const rolesCache = new Map([
       ["role-low", { id: "role-low", name: "Low", position: 1, managed: false }],
@@ -483,7 +483,7 @@ describe("tickets overwrites", () => {
       getManageableStaffRoleIds,
     } = require("../src/features/tickets/overwrites");
 
-    db.addStaffRole("g-fetch", "role-uncached", "senior");
+    db.addStaffRole(communityKey("g-fetch"), "role-uncached", "senior");
 
     const fetchCalls = [];
     const guild = {
@@ -517,7 +517,7 @@ describe("tickets overwrites", () => {
       getManageableStaffRoleIds,
     } = require("../src/features/tickets/overwrites");
 
-    db.addStaffRole("g-held", "role-staff-held", "senior");
+    db.addStaffRole(communityKey("g-held"), "role-staff-held", "senior");
 
     // Bot's highest role IS the staff role it also holds → overwrite for the
     // bot itself is unnecessary → must NOT be reported as a failure.
@@ -551,7 +551,7 @@ describe("tickets overwrites", () => {
       getManageableStaffRoleIds,
     } = require("../src/features/tickets/overwrites");
 
-    db.addStaffRole("g-held2", "role-staff-both", "senior");
+    db.addStaffRole(communityKey("g-held2"), "role-staff-both", "senior");
 
     const staffRole = { id: "role-staff-both", name: "Staff", position: 3, managed: false };
     const guild = {
@@ -586,7 +586,7 @@ describe("tickets overwrites", () => {
       getManageableStaffRoleIds,
     } = require("../src/features/tickets/overwrites");
 
-    db.addStaffRole("g-mgmt", "role-bot-only", "senior");
+    db.addStaffRole(communityKey("g-mgmt"), "role-bot-only", "senior");
 
     const guild = {
       id: "g-mgmt",
@@ -620,7 +620,7 @@ describe("tickets overwrites", () => {
       getManageableStaffRoleIds,
     } = require("../src/features/tickets/overwrites");
 
-    db.addStaffRole("g-err", "role-api-err", "senior");
+    db.addStaffRole(communityKey("g-err"), "role-api-err", "senior");
 
     const guild = {
       id: "g-err",
@@ -721,7 +721,7 @@ describe("tickets transcript + summary", () => {
       resolveTranscriptAbsolutePath,
     } = require("../src/features/tickets/transcript");
     const ticket = {
-      guild_id: "g-html",
+      community_id: communityKey("g-html"),
       ticket_number: 9,
       creator_user_id: "u1",
       staff_owner_id: "m1",
@@ -777,7 +777,7 @@ describe("tickets transcript + summary", () => {
     assert.match(relativePath, /ticket-transcripts/);
 
     const resolved = resolveTranscriptAbsolutePath({
-      guild_id: "g-html",
+      community_id: communityKey("g-html"),
       transcript_token: token,
       transcript_path: relativePath,
     });
@@ -1070,7 +1070,7 @@ describe("tickets media assets", () => {
             ]),
           },
         ],
-        { guildId: "g-media", token }
+        { communityId: communityKey("g-media"), token }
       );
 
       assert.equal(result.downloaded, 2);
@@ -1084,7 +1084,7 @@ describe("tickets media assets", () => {
       assert.match(embeds[0].image.url, new RegExp(`/t/${token}/assets/`));
 
       const localName = path.basename(att.href);
-      const abs = resolveAssetAbsolutePath("g-media", token, localName);
+      const abs = resolveAssetAbsolutePath(communityKey("g-media"), token, localName);
       assert.ok(abs);
       assert.ok(fs.existsSync(abs));
       assert.ok(fs.readFileSync(abs).length > 0);
@@ -1097,7 +1097,7 @@ describe("tickets media assets", () => {
     const { renderTranscriptHtml } = require("../src/features/tickets/transcript");
     const html = renderTranscriptHtml(
       {
-        guild_id: "g",
+        community_id: communityKey("g"),
         ticket_number: 1,
         creator_user_id: "u",
         created_at: 1,

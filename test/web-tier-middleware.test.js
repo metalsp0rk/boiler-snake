@@ -29,7 +29,7 @@ const http = require("node:http");
 const express = require("express");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // ---------------------------------------------------------------------------
 // loadDb() FIRST: clears the src require cache and binds DB_PATH to a temp
@@ -65,9 +65,15 @@ const USER_SENIOR = "428190112345678902";
 const USER_STAFF = "428190112345678903";
 const USER_PLAIN = "428190112345678904";
 
-const GUILD_A = "100000000000000001"; // the served guild (bot∩user)
+const GUILD_A = "100000000000000001"; // the served guild (bot∩user) — external snowflake (Discord fixtures)
 const GUILD_B = "200000000000000002"; // exists, but never in the viewer's list
 const GUILD_NOBOT = "300000000000000003"; // user's guild, bot NOT in it
+
+// Web-side CONTRACT: routes/repositories take INTEGER community ids; Discord
+// fixtures (guild lists, member fetch keys, snapshots) keep the snowflake.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
+const CID_NOBOT = communityKey(GUILD_NOBOT);
 
 const ROLE_JUNIOR = "500000000000000011";
 const ROLE_SENIOR = "500000000000000012";
@@ -88,8 +94,8 @@ before(() => {
   delete process.env.CLIENT_SECRET;
   delete process.env.PUBLIC_BASE_URL;
   delete process.env.WEB_TIER_CACHE_TTL_MS;
-  api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-  api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+  api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+  api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
 });
 
 after(() => {
@@ -230,7 +236,7 @@ describe("guildAccess ⇔ src/core/permissions.js equivalence", () => {
     };
   }
 
-  function webView(snapshotEntry, roleIds, guildId = GUILD_A) {
+  function webView(snapshotEntry, roleIds, guildId = CID_A) {
     const staffRoleTier = staffRoleTierFor(guildId, roleIds, {
       memberHasStaffRole: api.memberHasStaffRole,
       memberHasSeniorStaffRole: api.memberHasSeniorStaffRole,
@@ -242,13 +248,21 @@ describe("guildAccess ⇔ src/core/permissions.js equivalence", () => {
     });
   }
 
-  function assertEquivalent(label, snapshotEntry, roleIds, guildId = GUILD_A) {
+  // PR 2: the slash transport keys by the EXTERNAL snowflake (it resolves the
+  // community internally via the registry); the web transport keys by the
+  // integer community id. Keep the pair explicit.
+  const EXTERNAL_OF = { [CID_A]: GUILD_A, [CID_B]: GUILD_B };
+  function assertEquivalent(label, snapshotEntry, roleIds, guildId = CID_A) {
     const bitsBigInt =
       typeof snapshotEntry?.permissions === "string" && /^\d+$/.test(snapshotEntry.permissions)
         ? BigInt(snapshotEntry.permissions)
         : 0n;
     const ownerOrAdmin = snapshotEntry?.owner === true || (bitsBigInt & ADMIN) === ADMIN;
-    const slash = slashView(guildId, ownerOrAdmin ? ALL_BITS : bitsBigInt, roleIds);
+    const slash = slashView(
+      EXTERNAL_OF[guildId] ?? String(guildId),
+      ownerOrAdmin ? ALL_BITS : bitsBigInt,
+      roleIds,
+    );
     const tier = webView(snapshotEntry, roleIds, guildId);
     const rank = tier ? TIER_RANK[tier] : 0;
     assert.equal(tier === "admin", slash.admin, `${label}: admin mismatch (tier=${tier})`);
@@ -280,7 +294,7 @@ describe("guildAccess ⇔ src/core/permissions.js equivalence", () => {
   it("staff roles are guild-scoped in both transports (role of guild B is noise in A)", () => {
     assertEquivalent("guild-scoped (in A)", { owner: false, permissions: "0" }, [ROLE_JUNIOR]);
     // The same role id is NOT a staff role of GUILD_B in either transport:
-    assert.equal(webView({ owner: false, permissions: "0" }, [ROLE_JUNIOR], GUILD_B), null);
+    assert.equal(webView({ owner: false, permissions: "0" }, [ROLE_JUNIOR], CID_B), null);
     assert.equal(
       permissions.isStaff({
         guildId: GUILD_B,
@@ -381,7 +395,7 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
 
   it("anonymous sessions short-circuit to 'anon'", async () => {
     const { resolver } = makeHarness();
-    assert.deepEqual(await resolver.resolve(null, GUILD_A), { status: "anon" });
+    assert.deepEqual(await resolver.resolve(null, CID_A), { status: "anon" });
   });
 
   it("bot∩user membership gates the list: stranger and bot-absent guilds deny with ZERO member fetches", async () => {
@@ -392,14 +406,14 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
       ],
       memberRolesByUserGuild: staffMember,
     });
-    const r1 = await h1.resolver.resolve(h1.session, GUILD_NOBOT);
+    const r1 = await h1.resolver.resolve(h1.session, CID_NOBOT);
     assert.equal(r1.status, "deny");
     assert.equal(r1.reason, "not_in_access_list");
     assert.equal(h1.state.memberCalls, 0, "no escalation via member fetch on hidden guilds");
 
     // Guild in nobody's list at all.
     const h2 = makeHarness({ memberRolesByUserGuild: staffMember });
-    const r2 = await h2.resolver.resolve(h2.session, GUILD_B);
+    const r2 = await h2.resolver.resolve(h2.session, CID_B);
     assert.equal(r2.status, "deny");
     assert.equal(r2.reason, "not_in_access_list");
 
@@ -411,7 +425,7 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
 
   it("bot-guild provider failure fails CLOSED (retry deny, not a grant)", async () => {
     const h = makeHarness({ botGuildsThrow: true, memberRolesByUserGuild: staffMember });
-    const res = await h.resolver.resolve(h.session, GUILD_A);
+    const res = await h.resolver.resolve(h.session, CID_A);
     assert.equal(res.status, "deny");
     assert.equal(res.reason, "bot_guilds_unavailable");
     assert.equal(res.retry, true);
@@ -419,7 +433,7 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
 
   it("staff / senior tiers via role ids ∩ staff_roles (real SQLite rows)", async () => {
     const h = makeHarness({ memberRolesByUserGuild: staffMember });
-    const res = await h.resolver.resolve(h.session, GUILD_A);
+    const res = await h.resolver.resolve(h.session, CID_A);
     assert.equal(res.status, "ok");
     assert.equal(res.tier, "staff");
     assert.equal(res.guildId, GUILD_A);
@@ -428,7 +442,7 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
       userId: USER_SENIOR,
       memberRolesByUserGuild: seniorMember,
     });
-    const res2 = await h2.resolver.resolve(h2.session, GUILD_A);
+    const res2 = await h2.resolver.resolve(h2.session, CID_A);
     assert.equal(res2.status, "ok");
     assert.equal(res2.tier, "senior", "senior staff_roles.level wins over junior (§8.3)");
 
@@ -436,7 +450,7 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
     const h3 = makeHarness({ userId: USER_PLAIN, memberRolesByUserGuild: {} });
     // no member fixture ⇒ 404 (member left) below; give them an empty membership:
     h3.state.memberRolesByUserGuild[`${USER_PLAIN}:${GUILD_A}`] = [];
-    const res3 = await h3.resolver.resolve(h3.session, GUILD_A);
+    const res3 = await h3.resolver.resolve(h3.session, CID_A);
     assert.equal(res3.status, "deny");
     assert.equal(res3.reason, "no_tier");
   });
@@ -447,7 +461,7 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
       userGuilds: [{ id: GUILD_A, owner: true, permissions: "104324673" }],
       memberRolesByUserGuild: {}, // member fetch would 404 — never attempted
     });
-    const res = await h.resolver.resolve(h.session, GUILD_A);
+    const res = await h.resolver.resolve(h.session, CID_A);
     assert.equal(res.status, "ok");
     assert.equal(res.tier, "admin");
     assert.equal(h.state.memberCalls, 0, "admin resolves from the snapshot alone");
@@ -455,15 +469,15 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
 
   it("re-auth signals: missing token, expired token, decrypt failure, 401", async () => {
     const noTok = makeHarness({ token: "" });
-    assert.equal((await noTok.resolver.resolve(noTok.session, GUILD_A)).status, "reauth");
+    assert.equal((await noTok.resolver.resolve(noTok.session, CID_A)).status, "reauth");
 
     const expired = makeHarness({ tokenExpiresAt: Date.now() - 1000 });
-    const r2 = await expired.resolver.resolve(expired.session, GUILD_A);
+    const r2 = await expired.resolver.resolve(expired.session, CID_A);
     assert.equal(r2.status, "reauth");
     assert.equal(r2.reason, "token_expired");
 
     const corrupt = makeHarness({ token: "v1.tampered.envelope.bytes" });
-    const r3 = await corrupt.resolver.resolve(corrupt.session, GUILD_A);
+    const r3 = await corrupt.resolver.resolve(corrupt.session, CID_A);
     assert.equal(r3.status, "reauth");
     assert.equal(r3.reason, "token_decrypt_failed");
 
@@ -471,21 +485,21 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
       memberRolesByUserGuild: staffMember,
       guildsFail: Object.assign(new Error("Unauthorized"), { status: 401 }),
     });
-    const r4 = await revoked.resolver.resolve(revoked.session, GUILD_A);
+    const r4 = await revoked.resolver.resolve(revoked.session, CID_A);
     assert.equal(r4.status, "reauth");
     assert.equal(r4.reason, "token_revoked");
   });
 
   it("member left (404): deny NOW + guild list refreshes NEXT resolve (§8.3 row 4)", async () => {
     const h = makeHarness({ memberRolesByUserGuild: {} }); // no member fixture ⇒ 404
-    const r1 = await h.resolver.resolve(h.session, GUILD_A);
+    const r1 = await h.resolver.resolve(h.session, CID_A);
     assert.equal(r1.status, "deny");
     assert.equal(r1.reason, "member_left");
     assert.equal(h.state.guildsCalls, 1);
 
     // The left guild drops out of the refreshed intersection next resolve.
     h.state.userGuilds = [];
-    const r2 = await h.resolver.resolve(h.session, GUILD_A);
+    const r2 = await h.resolver.resolve(h.session, CID_A);
     assert.equal(r2.status, "deny");
     assert.equal(r2.reason, "not_in_access_list");
     assert.equal(h.state.guildsCalls, 2, "list cache was invalidated ⇒ re-checked");
@@ -500,12 +514,12 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
       userGuilds: [{ id: GUILD_A, owner: true, permissions: "0" }],
       memberFail: boom(),
     });
-    const rAdmin = await admin.resolver.resolve(admin.session, GUILD_A);
+    const rAdmin = await admin.resolver.resolve(admin.session, CID_A);
     assert.equal(rAdmin.status, "ok", "admin tier resolves via snapshot during the outage");
     assert.equal(rAdmin.tier, "admin");
 
     const staff = makeHarness({ memberRolesByUserGuild: staffMember, memberFail: boom() });
-    const rStaff = await staff.resolver.resolve(staff.session, GUILD_A);
+    const rStaff = await staff.resolver.resolve(staff.session, CID_A);
     assert.equal(rStaff.status, "deny");
     assert.equal(rStaff.reason, "roles_unavailable");
     assert.equal(rStaff.retry, true);
@@ -513,7 +527,7 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
 
     // Transient ⇒ retried on the next request (no negative caching).
     staff.state.memberFail = null;
-    const rRetry = await staff.resolver.resolve(staff.session, GUILD_A);
+    const rRetry = await staff.resolver.resolve(staff.session, CID_A);
     assert.equal(rRetry.status, "ok");
     assert.equal(rRetry.tier, "staff");
   });
@@ -529,12 +543,12 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
       guildsFail: Object.assign(new Error("discord down"), { status: 503 }),
       snapshot: JSON.stringify(snapshot),
     });
-    const res = await h.resolver.resolve(h.session, GUILD_A);
+    const res = await h.resolver.resolve(h.session, CID_A);
     assert.equal(res.status, "ok");
     assert.equal(res.tier, "admin");
     assert.equal(res.degraded, true, "stored-snapshot fallback is flagged (§8.3 row 3)");
 
-    const r2 = await h.resolver.resolve(h.session, GUILD_NOBOT);
+    const r2 = await h.resolver.resolve(h.session, CID_NOBOT);
     assert.equal(r2.status, "deny", "bot-membership filter applies to the fallback too");
   });
 
@@ -542,42 +556,42 @@ describe("guildAccess resolver (fakes + fake clock)", () => {
     const h = makeHarness({ memberRolesByUserGuild: staffMember, ttlMs: 60_000 });
     const t0 = h.state.clock;
 
-    assert.equal((await h.resolver.resolve(h.session, GUILD_A)).tier, "staff");
+    assert.equal((await h.resolver.resolve(h.session, CID_A)).tier, "staff");
     assert.deepEqual([h.state.guildsCalls, h.state.memberCalls], [1, 1]);
 
     h.state.clock = t0 + 30_000; // < TTL: served from cache
-    assert.equal((await h.resolver.resolve(h.session, GUILD_A)).tier, "staff");
+    assert.equal((await h.resolver.resolve(h.session, CID_A)).tier, "staff");
     assert.deepEqual([h.state.guildsCalls, h.state.memberCalls], [1, 1], "cached within TTL");
 
     h.state.clock = t0 + 60_000; // == TTL: stale ⇒ both re-checked
-    assert.equal((await h.resolver.resolve(h.session, GUILD_A)).tier, "staff");
+    assert.equal((await h.resolver.resolve(h.session, CID_A)).tier, "staff");
     assert.deepEqual([h.state.guildsCalls, h.state.memberCalls], [2, 2], "revocation bounded by TTL");
   });
 
   it("staff_roles stays UNCACHED: role revocation lands immediately (§8.3 'none (cheap)')", async () => {
     const h = makeHarness({ memberRolesByUserGuild: staffMember });
-    assert.equal((await h.resolver.resolve(h.session, GUILD_A)).tier, "staff");
+    assert.equal((await h.resolver.resolve(h.session, CID_A)).tier, "staff");
 
-    api.removeStaffRole(GUILD_A, ROLE_JUNIOR);
+    api.removeStaffRole(CID_A, ROLE_JUNIOR);
     try {
-      const res = await h.resolver.resolve(h.session, GUILD_A);
+      const res = await h.resolver.resolve(h.session, CID_A);
       assert.equal(res.status, "deny");
       assert.equal(res.reason, "no_tier");
       assert.equal(h.state.memberCalls, 1, "role ids came from cache; only the SQLite read re-ran");
     } finally {
-      api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
+      api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
     }
   });
 
   it("invalidateUserGuild / invalidateSession force re-fetch", async () => {
     const h = makeHarness({ memberRolesByUserGuild: staffMember });
-    await h.resolver.resolve(h.session, GUILD_A);
-    h.resolver.invalidateUserGuild(USER_STAFF, GUILD_A);
-    await h.resolver.resolve(h.session, GUILD_A);
+    await h.resolver.resolve(h.session, CID_A);
+    h.resolver.invalidateUserGuild(USER_STAFF, CID_A);
+    await h.resolver.resolve(h.session, CID_A);
     assert.equal(h.state.memberCalls, 2, "role-id cache dropped");
     assert.equal(h.state.guildsCalls, 1, "list cache untouched by user invalidation");
     h.resolver.invalidateSession("sess-1");
-    await h.resolver.resolve(h.session, GUILD_A);
+    await h.resolver.resolve(h.session, CID_A);
     assert.equal(h.state.guildsCalls, 2, "list cache dropped");
   });
 });
@@ -702,15 +716,17 @@ describe("guildScope + requireTier over HTTP", () => {
   }
 
   it("anonymous /g/* redirect is byte-identical to the /g shell placeholder", () => {
-    assert.equal(loginRedirectTarget(GUILD_A), `/auth/login?guild=${GUILD_A}`);
+    // Integer community ids are too short for the 5-20-digit snowflake gate,
+    // so the login redirect carries no ?guild= (same as junk input).
+    assert.equal(loginRedirectTarget(CID_A), "/auth/login");
     assert.equal(loginRedirectTarget("oops"), "/auth/login");
     assert.equal(loginRedirectTarget(`${GUILD_A}/../../x`), "/auth/login");
   });
 
-  it("anonymous → 302 /auth/login (snowflake carries ?guild=; junk never echoes)", async () => {
-    const good = await get(`/g/${GUILD_A}`);
+  it("anonymous → 302 /auth/login (community id never echoes; junk never echoes)", async () => {
+    const good = await get(`/g/${CID_A}`);
     assert.equal(good.res.status, 302);
-    assert.equal(good.res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+    assert.equal(good.res.headers.get("location"), "/auth/login");
     assert.equal(good.res.headers.get("cache-control"), "no-store");
 
     const weird = await get("/g/oops");
@@ -727,11 +743,16 @@ describe("guildScope + requireTier over HTTP", () => {
     ];
     const routeOf = { staff: "/tickets", senior: "/activity", admin: "/system" };
     for (const [key, tier, wants] of matrix) {
-      const shell = await get(`/g/${GUILD_A}`, { id: cookieIds[key] });
+      const shell = await get(`/g/${CID_A}`, { id: cookieIds[key] });
       assert.equal(shell.res.status, 200, `${key} shell`);
-      assert.deepEqual(JSON.parse(shell.body), { guildId: GUILD_A, tier, degraded: false });
+      assert.deepEqual(JSON.parse(shell.body), {
+        communityId: CID_A,
+        guildId: GUILD_A,
+        tier,
+        degraded: false,
+      });
       for (const need of ["staff", "senior", "admin"]) {
-        const r = await get(`/g/${GUILD_A}${routeOf[need]}`, { id: cookieIds[key] });
+        const r = await get(`/g/${CID_A}${routeOf[need]}`, { id: cookieIds[key] });
         if (wants[need]) {
           assert.equal(r.res.status, 200, `${key} on ${need} route must pass`);
         } else {
@@ -744,7 +765,7 @@ describe("guildScope + requireTier over HTTP", () => {
   });
 
   it("in-guild member without staff role → generic 404 (never 403)", async () => {
-    const r = await get(`/g/${GUILD_A}/tickets`, { id: cookieIds.plain });
+    const r = await get(`/g/${CID_A}/tickets`, { id: cookieIds.plain });
     assert.equal(r.res.status, 404);
     assert.equal(r.body, "Not found", "indistinguishable from the catch-all");
   });
@@ -752,11 +773,11 @@ describe("guildScope + requireTier over HTTP", () => {
   it("cross-guild probe: guild-A session hits every guild-B route shape ⇒ 404, never 403/302 (§8.13-10)", async () => {
     for (const key of ["staff", "senior", "admin", "plain"]) {
       const shapes = [
-        `/g/${GUILD_B}`,
-        `/g/${GUILD_B}/tickets`,
-        `/g/${GUILD_B}/activity`,
-        `/g/${GUILD_B}/system`,
-        `/g/${GUILD_B}/deep/nested/shape`,
+        `/g/${CID_B}`,
+        `/g/${CID_B}/tickets`,
+        `/g/${CID_B}/activity`,
+        `/g/${CID_B}/system`,
+        `/g/${CID_B}/deep/nested/shape`,
       ];
       for (const path of shapes) {
         const r = await get(path, { id: cookieIds[key] });
@@ -764,7 +785,7 @@ describe("guildScope + requireTier over HTTP", () => {
         assert.equal(r.body, "Not found", `${key} ${path} body`);
       }
       // User is in GUILD_NOBOT but the bot is not → identical 404 (§8.3 row 1).
-      const nb = await get(`/g/${GUILD_NOBOT}/tickets`, { id: cookieIds[key] });
+      const nb = await get(`/g/${CID_NOBOT}/tickets`, { id: cookieIds[key] });
       assert.equal(nb.res.status, 404);
       // Logged-in + malformed guild id → 404 (echoing nothing).
       const bad = await get("/g/999/tickets", { id: cookieIds[key] });
@@ -774,9 +795,9 @@ describe("guildScope + requireTier over HTTP", () => {
 
   it("unusable sessions redirect to re-auth: corrupt envelope + expired token", async () => {
     for (const key of ["corrupt", "expired"]) {
-      const r = await get(`/g/${GUILD_A}`, { id: cookieIds[key] });
+      const r = await get(`/g/${CID_A}`, { id: cookieIds[key] });
       assert.equal(r.res.status, 302, `${key} ⇒ login redirect, not 403/500`);
-      assert.equal(r.res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      assert.equal(r.res.headers.get("location"), "/auth/login");
     }
   });
 

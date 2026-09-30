@@ -27,7 +27,7 @@ describe("integration: twitch", () => {
 
   it("repo: add/get/remove twitch channel", () => {
     const row = env.db.addTwitchChannel(
-      env.guild.id,
+      env.communityId,
       "111000",
       "tester",
       "Tester",
@@ -37,13 +37,13 @@ describe("integration: twitch", () => {
     assert.equal(row.login, "tester");
     assert.equal(row.is_live, 0);
 
-    const fetched = env.db.getTwitchChannel(env.guild.id, "TESTER");
+    const fetched = env.db.getTwitchChannel(env.communityId, "TESTER");
     assert.ok(fetched);
     assert.equal(fetched.broadcaster_id, "111000");
 
     // upsert by login updates display name
     const updated = env.db.addTwitchChannel(
-      env.guild.id,
+      env.communityId,
       "111000",
       "tester",
       "TesterRenamed",
@@ -55,9 +55,9 @@ describe("integration: twitch", () => {
       "https://static-cdn.jtvnw.net/thumb.png",
     );
 
-    assert.equal(env.db.removeTwitchChannel(env.guild.id, "tester"), true);
-    assert.equal(env.db.removeTwitchChannel(env.guild.id, "tester"), false);
-    assert.equal(env.db.getTwitchChannel(env.guild.id, "tester"), null);
+    assert.equal(env.db.removeTwitchChannel(env.communityId, "tester"), true);
+    assert.equal(env.db.removeTwitchChannel(env.communityId, "tester"), false);
+    assert.equal(env.db.getTwitchChannel(env.communityId, "tester"), null);
   });
 
   it("repo: normalizeTwitchLogin handles urls and @", () => {
@@ -96,7 +96,7 @@ describe("integration: twitch", () => {
     });
     assertReplyContains(interaction, /notifications will be sent/i);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).twitch_notification_channel_id,
+      env.db.getGuildSettings(env.communityId).twitch_notification_channel_id,
       IDS.channelNotify,
     );
   });
@@ -111,7 +111,7 @@ describe("integration: twitch", () => {
     });
     assertReplyContains(interaction, /will mention/i);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).twitch_notify_role_id,
+      env.db.getGuildSettings(env.communityId).twitch_notify_role_id,
       IDS.roleExempt,
     );
 
@@ -123,7 +123,7 @@ describe("integration: twitch", () => {
     });
     assertReplyContains(cleared, /no longer mention/i);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).twitch_notify_role_id,
+      env.db.getGuildSettings(env.communityId).twitch_notify_role_id,
       null,
     );
   });
@@ -137,7 +137,7 @@ describe("integration: twitch", () => {
     });
     assertReplyContains(interaction, /3/);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).twitch_polling_interval_minutes,
+      env.db.getGuildSettings(env.communityId).twitch_polling_interval_minutes,
       3,
     );
   });
@@ -153,7 +153,7 @@ describe("integration: twitch", () => {
 
   it("/twitch list shows subscriptions and status", async () => {
     env.db.addTwitchChannel(
-      env.guild.id,
+      env.communityId,
       "222000",
       "listchan",
       "ListChan",
@@ -168,14 +168,14 @@ describe("integration: twitch", () => {
   });
 
   it("processSubscription sends notification on offline→live transition", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       twitch_notification_channel_id: IDS.channelNotify,
       twitch_notify_role_id: null,
     });
-    env.db.addTwitchChannel(env.guild.id, "333000", "livestreamer", "LiveStreamer", "");
+    env.db.addTwitchChannel(env.communityId, "333000", "livestreamer", "LiveStreamer", "");
     env.channels.notify.sent.length = 0;
 
-    const sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    const sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
     const stream = {
       id: "stream-1",
       user_id: "333000",
@@ -187,7 +187,7 @@ describe("integration: twitch", () => {
       thumbnail_url: "https://static-cdn.jtvnw.net/broadcast/333000.jpg",
     };
 
-    await processSubscription(env.client, env.guild.id, sub, stream);
+    await processSubscription(env.client, env.communityId, sub, stream);
 
     assert.ok(
       env.channels.notify.sent.length >= 1,
@@ -198,14 +198,14 @@ describe("integration: twitch", () => {
     assert.ok(sent.embeds.length === 1);
     assert.equal(sent.embeds[0].data.title, "Rating games");
 
-    const after = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    const after = env.db.getTwitchChannel(env.communityId, "livestreamer");
     assert.equal(after.is_live, 1);
     assert.equal(after.last_stream_id, "stream-1");
   });
 
   it("processSubscription does not re-notify same stream id", async () => {
     env.channels.notify.sent.length = 0;
-    const sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    const sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
     const stream = {
       id: "stream-1",
       user_id: "333000",
@@ -213,15 +213,15 @@ describe("integration: twitch", () => {
       started_at: new Date().toISOString(),
     };
 
-    await processSubscription(env.client, env.guild.id, sub, stream);
+    await processSubscription(env.client, env.communityId, sub, stream);
     assert.equal(env.channels.notify.sent.length, 0);
   });
 
   it("processSubscription notifies on new stream id after offline", async () => {
     // go offline
-    let sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
-    await processSubscription(env.client, env.guild.id, sub, undefined);
-    sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    let sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
+    await processSubscription(env.client, env.communityId, sub, undefined);
+    sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
     assert.equal(sub.is_live, 0);
 
     // new stream
@@ -232,20 +232,20 @@ describe("integration: twitch", () => {
       title: "Second stream",
       started_at: new Date().toISOString(),
     };
-    await processSubscription(env.client, env.guild.id, sub, newStream);
+    await processSubscription(env.client, env.communityId, sub, newStream);
     assert.ok(env.channels.notify.sent.length >= 1);
-    const after = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    const after = env.db.getTwitchChannel(env.communityId, "livestreamer");
     assert.equal(after.last_stream_id, "stream-2");
   });
 
   it("processSubscription mentions configured role on go-live", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       twitch_notify_role_id: IDS.roleExempt,
     });
-    let sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    let sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
     // offline first
-    await processSubscription(env.client, env.guild.id, sub, undefined);
-    sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    await processSubscription(env.client, env.communityId, sub, undefined);
+    sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
 
     env.channels.notify.sent.length = 0;
     const stream = {
@@ -254,7 +254,7 @@ describe("integration: twitch", () => {
       title: "Role ping stream",
       started_at: new Date().toISOString(),
     };
-    await processSubscription(env.client, env.guild.id, sub, stream);
+    await processSubscription(env.client, env.communityId, sub, stream);
 
     assert.ok(env.channels.notify.sent.length >= 1);
     const sent = env.channels.notify.sent[env.channels.notify.sent.length - 1];
@@ -263,12 +263,12 @@ describe("integration: twitch", () => {
   });
 
   it("processSubscription no-ops without notification channel", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       twitch_notification_channel_id: null,
     });
-    let sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
-    await processSubscription(env.client, env.guild.id, sub, undefined);
-    sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    let sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
+    await processSubscription(env.client, env.communityId, sub, undefined);
+    sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
 
     env.channels.notify.sent.length = 0;
     const stream = {
@@ -277,7 +277,7 @@ describe("integration: twitch", () => {
       title: "No channel",
       started_at: new Date().toISOString(),
     };
-    await processSubscription(env.client, env.guild.id, sub, stream);
+    await processSubscription(env.client, env.communityId, sub, stream);
     assert.equal(env.channels.notify.sent.length, 0);
   });
 
@@ -301,11 +301,11 @@ describe("integration: twitch", () => {
     process.env.TWITCH_CLIENT_ID = "test-id";
     process.env.TWITCH_CLIENT_SECRET = "test-secret";
     try {
-      env.db.updateGuildSettings(env.guild.id, {
+      env.db.updateGuildSettings(env.communityId, {
         twitch_notification_channel_id: IDS.channelNotify,
         twitch_polling_interval_minutes: 1,
       });
-      env.db.addTwitchChannel(env.guild.id, "555000", "tickchan", "TickChan", "");
+      env.db.addTwitchChannel(env.communityId, "555000", "tickchan", "TickChan", "");
       // ensure it is eligible (never checked)
       env.channels.notify.sent.length = 0;
 
@@ -330,7 +330,7 @@ describe("integration: twitch", () => {
         env.channels.notify.sent.length >= 1,
         "expected go-live notification from runTwitchTick",
       );
-      const row = env.db.getTwitchChannel(env.guild.id, "tickchan");
+      const row = env.db.getTwitchChannel(env.communityId, "tickchan");
       assert.equal(row.is_live, 1);
       assert.equal(row.last_stream_id, "tick-stream-1");
     } finally {
@@ -348,9 +348,9 @@ describe("integration: twitch", () => {
     process.env.TWITCH_CLIENT_SECRET = "test-secret";
     try {
       // tickchan is live from the previous test; make it eligible again
-      const row = env.db.getTwitchChannel(env.guild.id, "tickchan");
+      const row = env.db.getTwitchChannel(env.communityId, "tickchan");
       assert.equal(row.is_live, 1);
-      env.db.updateTwitchChannelLiveState(env.guild.id, "555000", {
+      env.db.updateTwitchChannelLiveState(env.communityId, "555000", {
         isLive: true,
         lastStreamId: row.last_stream_id,
         lastChecked: Date.now() - 120_000,
@@ -362,7 +362,7 @@ describe("integration: twitch", () => {
         fetchStreams: async () => null, // simulate Helix failure
       });
 
-      const after = env.db.getTwitchChannel(env.guild.id, "tickchan");
+      const after = env.db.getTwitchChannel(env.communityId, "tickchan");
       assert.equal(after.is_live, 1, "live state must survive a failed fetch");
       assert.equal(after.last_stream_id, "tick-stream-1");
       assert.equal(env.channels.notify.sent.length, 0);
@@ -382,14 +382,14 @@ describe("integration: twitch", () => {
     try {
       // Fresh subscription checked right now (within the 1-minute base
       // cadence) must be skipped; a stale one must still be fetched.
-      env.db.addTwitchChannel(env.guild.id, "666000", "skipchan", "SkipChan", "");
-      env.db.updateTwitchChannelLiveState(env.guild.id, "666000", {
+      env.db.addTwitchChannel(env.communityId, "666000", "skipchan", "SkipChan", "");
+      env.db.updateTwitchChannelLiveState(env.communityId, "666000", {
         isLive: false,
         lastStreamId: null,
         lastChecked: Date.now(),
       });
-      env.db.addTwitchChannel(env.guild.id, "777000", "stalechan", "StaleChan", "");
-      env.db.updateTwitchChannelLiveState(env.guild.id, "777000", {
+      env.db.addTwitchChannel(env.communityId, "777000", "stalechan", "StaleChan", "");
+      env.db.updateTwitchChannelLiveState(env.communityId, "777000", {
         isLive: false,
         lastStreamId: null,
         lastChecked: Date.now() - 120_000,
@@ -420,12 +420,12 @@ describe("integration: twitch", () => {
     // Regression: Helix returns thumbnail_url as a `{width}x{height}`
     // template; sending it raw made Discord reject EVERY go-live message
     // with 400 "Invalid Form Body".
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       twitch_notification_channel_id: IDS.channelNotify,
     });
-    let sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
-    await processSubscription(env.client, env.guild.id, sub, undefined); // offline first
-    sub = env.db.getTwitchChannel(env.guild.id, "livestreamer");
+    let sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
+    await processSubscription(env.client, env.communityId, sub, undefined); // offline first
+    sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
     env.channels.notify.sent.length = 0;
 
     const stream = {
@@ -436,7 +436,7 @@ describe("integration: twitch", () => {
       thumbnail_url:
         "https://static-cdn.jtvnw.net/previews-ttv/live_user_livestreamer-{width}x{height}.jpg",
     };
-    await processSubscription(env.client, env.guild.id, sub, stream);
+    await processSubscription(env.client, env.communityId, sub, stream);
 
     assert.ok(env.channels.notify.sent.length >= 1);
     const sent = env.channels.notify.sent[env.channels.notify.sent.length - 1];

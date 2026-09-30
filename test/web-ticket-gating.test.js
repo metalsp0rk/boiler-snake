@@ -38,7 +38,7 @@ const http = require("node:http");
 const fs = require("fs");
 const path = require("path");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // loadDb FIRST: fresh SQLite + reset of the src require cache, then every
 // require below binds to that DB (same pattern as web-tier-middleware.test.js).
@@ -65,6 +65,10 @@ const SESSION_SECRET = "test-gat…l-xyz";
 const GUILD_A = "100000000000000001"; // served by the bot; staff fixtures here
 const GUILD_B = "200000000000000002"; // exists in fixtures, NEVER in A-users' lists
 const ROLE_STAFF_A = "500000000000000011";
+
+// Fluxer PR 2: INTEGER communities.id for data + /g/<id> + ?guild= route ids.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
 
 const USER_ADMIN = "428190112345678901"; // owner snapshot ⇒ admin fast path
 const USER_STAFF = "428190112345678903"; // staff via staff_roles row (guild A)
@@ -131,7 +135,7 @@ before(() => {
   delete process.env.WEB_TIER_CACHE_TTL_MS;
   // REAL staff_roles row: the staff-tier leg of §8.4 resolves through the
   // same memberHasStaffRole predicate the slash gates use (§8.1-5).
-  api.addStaffRole(GUILD_A, ROLE_STAFF_A, "junior");
+  api.addStaffRole(CID_A, ROLE_STAFF_A, "junior");
 });
 
 after(() => {
@@ -140,7 +144,7 @@ after(() => {
     else process.env[key] = savedEnv[key];
   }
   try {
-    api.removeStaffRole(GUILD_A, ROLE_STAFF_A);
+    api.removeStaffRole(CID_A, ROLE_STAFF_A);
   } catch {
     /* db may be gone already */
   }
@@ -185,9 +189,9 @@ function mkSession(userId, { corrupt = false } = {}) {
 }
 
 /** Create + archive a ticket with a real transcript file (and asset). */
-function archiveTicket({ guildId, creatorUserId, channelId, reason, withAsset }) {
+function archiveTicket({ communityId, creatorUserId, channelId, reason, withAsset }) {
   const token = api.generateTranscriptToken();
-  const ticket = api.createTicket({ guildId, creatorUserId, channelId, reason });
+  const ticket = api.createTicket({ communityId, creatorUserId, channelId, reason });
   const written = writeTranscriptFile(
     { ...ticket, close_reason: "done", closed_at: Date.now() },
     token,
@@ -205,7 +209,7 @@ function archiveTicket({ guildId, creatorUserId, channelId, reason, withAsset })
     ]
   );
   if (withAsset) {
-    const dir = absoluteAssetsDir(guildId, token);
+    const dir = absoluteAssetsDir(communityId, token);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "001_photo.png"), PNG);
   }
@@ -442,7 +446,7 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
 
     // --- guild A ticket with every §8.4 participant class -----------------
     const a = archiveTicket({
-      guildId: GUILD_A,
+      communityId: CID_A,
       creatorUserId: USER_CREATOR,
       channelId: "ch-gate-a",
       reason: "participant matrix",
@@ -463,7 +467,7 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
 
     // --- guild B ticket (foreign guild for every fixture session) ---------
     tokenB = archiveTicket({
-      guildId: GUILD_B,
+      communityId: CID_B,
       creatorUserId: "u-b-creator",
       channelId: "ch-gate-b",
       reason: "cross-guild probe",
@@ -474,7 +478,7 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
     // (a) token present but archived=0 (never content-archived — the route
     //     archive gate 404s it BEFORE any access decision, §8.4 unchanged).
     const sens = archiveTicket({
-      guildId: GUILD_A,
+      communityId: CID_A,
       creatorUserId: "u-sens",
       channelId: "ch-gate-sens",
       reason: "sensitive metadata-only",
@@ -488,7 +492,7 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
     // (b) the REAL sensitive close path: transcript token is CLEARED by
     //     closeTicketSensitive ⇒ the token URL cannot resolve at all.
     const sens2 = api.createTicket({
-      guildId: GUILD_A,
+      communityId: CID_A,
       creatorUserId: USER_CREATOR, // creator cookie must STILL get 404
       channelId: "ch-gate-sens2",
       reason: "sensitive closed",
@@ -660,14 +664,14 @@ describe("ticket routes over HTTP (§8.4 matrix)", () => {
     assert.doesNotMatch(body, new RegExp(tokenB), "foreign-guild row NEVER renders");
     assert.doesNotMatch(body, new RegExp(tokenSens), "sensitive row never renders");
 
-    const scoped = await req(`/t?guild=${GUILD_A}`, cookieFor("staff"));
+    const scoped = await req(`/t?guild=${CID_A}`, cookieFor("staff"));
     assert.equal(scoped.res.status, 200);
     assert.match(scoped.body, /Guild filter/);
     assert.match(scoped.body, new RegExp(tokenA));
   });
 
   it("?guild=<foreign> is IGNORED (never filtered to the foreign guild, §8.4)", async () => {
-    const { res, body } = await req(`/t?guild=${GUILD_B}`, cookieFor("admin"));
+    const { res, body } = await req(`/t?guild=${CID_B}`, cookieFor("admin"));
     assert.equal(res.status, 200);
     assert.doesNotMatch(body, /Guild filter/, "foreign param must not filter");
     assert.doesNotMatch(body, new RegExp(tokenB), "never the foreign rows");

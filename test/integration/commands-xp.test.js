@@ -32,7 +32,7 @@ describe("integration: xp commands", () => {
   });
 
   it("/xp shows another user's XP", async () => {
-    env.db.setXp(env.guild.id, IDS.member2, 250);
+    env.db.setXp(env.communityId, IDS.member2, 250);
     const interaction = await env.runCommand({
       commandName: "xp",
       admin: false,
@@ -45,7 +45,7 @@ describe("integration: xp commands", () => {
   it("/leaderboard empty", async () => {
     // Use a fresh guild-like state: topUsers may already have data — clear via unique env would be ideal;
     // for default guild, seed-only users may exist. Filter: if any XP rows exist from other tests in file.
-    const rows = env.db.topUsers(env.guild.id, 10);
+    const rows = env.db.topUsers(env.communityId, 10);
     if (!rows.length) {
       const interaction = await env.runCommand({
         commandName: "leaderboard",
@@ -65,8 +65,8 @@ describe("integration: xp commands", () => {
   });
 
   it("/leaderboard with data returns PNG attachment", async () => {
-    env.db.setXp(env.guild.id, IDS.member, 100);
-    env.db.setXp(env.guild.id, IDS.member2, 200);
+    env.db.setXp(env.communityId, IDS.member, 100);
+    env.db.setXp(env.communityId, IDS.member2, 200);
     const interaction = await env.runCommand({
       commandName: "leaderboard",
       admin: false,
@@ -100,7 +100,7 @@ describe("integration: xp commands", () => {
       },
     });
     assertReplyContains(interaction, "Updated XP settings");
-    const s = env.db.getGuildSettings(env.guild.id);
+    const s = env.db.getGuildSettings(env.communityId);
     assert.equal(s.msg_xp, 7);
     assert.equal(s.reaction_xp, 3);
     assert.equal(s.voice_xp_per_min, 2);
@@ -125,14 +125,14 @@ describe("integration: xp commands", () => {
     });
     assertReplyContains(interaction, "Updated XP settings");
     assertReplyContains(interaction, "level_xp_factor");
-    const s = env.db.getGuildSettings(env.guild.id);
+    const s = env.db.getGuildSettings(env.communityId);
     assert.equal(s.level_xp_factor, 400);
   });
 
   it("/xp reflects new factor (floor(sqrt(xp/factor)))", async () => {
     // Ensure factor is 400 from previous test.
     // xp=1600, factor=400 → floor(sqrt(1600/400)) = floor(sqrt(4)) = 2
-    env.db.setXp(env.guild.id, IDS.member, 1600);
+    env.db.setXp(env.communityId, IDS.member, 1600);
     const interaction = await env.runCommand({
       commandName: "xp",
       admin: false,
@@ -144,7 +144,7 @@ describe("integration: xp commands", () => {
 
   it("/xp level changes when factor changes", async () => {
     // With factor=400, xp=400 → floor(sqrt(400/400)) = 1
-    env.db.setXp(env.guild.id, IDS.member2, 400);
+    env.db.setXp(env.communityId, IDS.member2, 400);
     let interaction = await env.runCommand({
       commandName: "xp",
       admin: false,
@@ -192,7 +192,7 @@ describe("integration: xp commands", () => {
   });
 
   it("/grantxp grants XP for admin", async () => {
-    env.db.setXp(env.guild.id, IDS.member2, 100);
+    env.db.setXp(env.communityId, IDS.member2, 100);
     const interaction = await env.runCommand({
       commandName: "grantxp",
       admin: true,
@@ -205,7 +205,7 @@ describe("integration: xp commands", () => {
     assertReplyContains(interaction, "Granted");
     assertReplyContains(interaction, "50");
     assertReplyContains(interaction, "Contest winner");
-    assertXp(env.db, env.guild.id, IDS.member2, 150);
+    assertXp(env.db, env.communityId, IDS.member2, 150);
   });
 
   it("/grantxp rejects bots", async () => {
@@ -255,7 +255,7 @@ describe("integration: leaderboard pagination", () => {
 
     // 12 users → 2 pages at default limit 10
     for (let i = 1; i <= 12; i++) {
-      env.db.setXp(GUILD_ID, `lb-user-${i}`, 120 - i);
+      env.db.setXp(env.communityId, `lb-user-${i}`, 120 - i);
     }
   });
 

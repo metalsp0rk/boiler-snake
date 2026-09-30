@@ -23,7 +23,7 @@ const assert = require("node:assert/strict");
 // Contract (same as the other repo tests): loadDb() must run before any
 // DB-opening `src/` require — audit.js loads src/features/logs/auditLog,
 // which requires the db facade at module scope.
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 const {
   createClient,
   createGuild,
@@ -50,6 +50,7 @@ after(() => cleanup?.());
 
 /** Guild with a wired audit channel (settings + fake client fetch seam). */
 function makeAuditEnv(guildId) {
+  // PR 2: repos key by integer; the fixture keeps the snowflake id.
   const guild = createGuild({ id: guildId });
   const auditChannel = createTextChannel({
     id: `audit-${guildId}`,
@@ -59,7 +60,7 @@ function makeAuditEnv(guildId) {
   guild.addChannel(auditChannel);
   const client = createClient();
   client.addGuild(guild);
-  api.updateGuildSettings(guildId, { audit_log_channel_id: auditChannel.id });
+  api.updateGuildSettings(communityKey(guildId), { audit_log_channel_id: auditChannel.id });
   return { guild, auditChannel, client };
 }
 
@@ -144,7 +145,7 @@ function fakeRepo() {
  * must stay inside this list — anything new would mean a schema change.
  */
 const MIGRATION_027_COLUMNS = [
-  "uid", "kind", "parent_uid", "guild_id", "channel_id", "message_id",
+  "uid", "kind", "parent_uid", "community_id", "channel_id", "message_id",
   "user_id", "status", "started_at", "duration_ms", "model", "params",
   "tools", "settings", "system_prompt", "user_prompt", "trigger_content",
   "reply_to_message_id", "context_meta", "context_messages", "roster_meta",
@@ -354,7 +355,7 @@ describe("createSummarizeInteractionRecorder — summarize row on the 027 envelo
     const repo = fakeRepo();
     const recorder = audit.createSummarizeInteractionRecorder({
       settings: { gork_interaction_log_enabled: 1 },
-      guildId: "g-sum-log",
+      communityId: communityKey("g-sum-log"),
       channelId: "ix-chan",
       interactionId: "ix-900",
       userId: "u-sum",
@@ -397,7 +398,7 @@ describe("createSummarizeInteractionRecorder — summarize row on the 027 envelo
       assert.equal(row.kind, audit.GORK_SUMMARIZE_INTERACTION_KIND);
       assert.equal(row.uid, "sum-uid-1");
       assert.equal(row.parent_uid, null, "standalone job");
-      assert.equal(row.guild_id, "g-sum-log");
+      assert.equal(row.community_id, communityKey("g-sum-log"));
       assert.equal(row.channel_id, "c-read", "resolved READ channel");
       assert.equal(row.message_id, "ix-900", "slash interaction id anchors the row");
       assert.equal(row.user_id, "u-sum");
@@ -475,7 +476,7 @@ describe("createSummarizeInteractionRecorder — summarize row on the 027 envelo
     const run = () =>
       audit.createSummarizeInteractionRecorder({
         settings: evil,
-        guildId: "g-sum-evil",
+        communityId: communityKey("g-sum-evil"),
         interactionId: "ix-evil",
       });
     const real = console.warn;
@@ -491,7 +492,7 @@ describe("createSummarizeInteractionRecorder — summarize row on the 027 envelo
     assert.ok(
       lines.some(
         (l) =>
-          l.startsWith("[gork] summarize interaction log recorder build failed (guild=g-sum-evil interaction=ix-evil):") &&
+          l.startsWith(`[gork] summarize interaction log recorder build failed (community=${communityKey("g-sum-evil")} interaction=ix-evil):`) &&
           l.includes("evil settings"),
       ),
       "warn with ids + cause: " + JSON.stringify(lines),

@@ -50,7 +50,7 @@ describe("integration: github releases", () => {
   }
 
   it("repo: add/get/update/remove watch with token semantics", () => {
-    const row = env.db.addGithubWatch(env.guild.id, "https://github.com/Acme/Widgets", "Acme/Widgets", {
+    const row = env.db.addGithubWatch(env.communityId, "https://github.com/Acme/Widgets", "Acme/Widgets", {
       channelId: env.channels.notify.id,
       token: "tok-1",
     });
@@ -60,43 +60,43 @@ describe("integration: github releases", () => {
     assert.equal(row.last_release_id, null);
 
     // Re-add without token/channel keeps existing values (COALESCE)
-    const readded = env.db.addGithubWatch(env.guild.id, "acme/widgets", "acme/widgets");
+    const readded = env.db.addGithubWatch(env.communityId, "acme/widgets", "acme/widgets");
     assert.equal(readded.channel_id, env.channels.notify.id);
     assert.equal(readded.has_token, 1);
 
-    const updated = env.db.updateGithubWatch(env.guild.id, "acme/widgets", {
+    const updated = env.db.updateGithubWatch(env.communityId, "acme/widgets", {
       roleId: "role-9",
     });
     assert.equal(updated.role_id, "role-9");
 
-    const cleared = env.db.updateGithubWatch(env.guild.id, "acme/widgets", {
+    const cleared = env.db.updateGithubWatch(env.communityId, "acme/widgets", {
       roleId: null,
       token: null,
     });
     assert.equal(cleared.role_id, null);
     assert.equal(cleared.has_token, 0);
 
-    assert.equal(env.db.removeGithubWatch(env.guild.id, "acme/Widgets"), true);
-    assert.equal(env.db.removeGithubWatch(env.guild.id, "acme/widgets"), false);
-    assert.equal(env.db.getGithubWatch(env.guild.id, "acme/widgets"), null);
+    assert.equal(env.db.removeGithubWatch(env.communityId, "acme/Widgets"), true);
+    assert.equal(env.db.removeGithubWatch(env.communityId, "acme/widgets"), false);
+    assert.equal(env.db.getGithubWatch(env.communityId, "acme/widgets"), null);
   });
 
   it("watch rows never leak the token through list/get", () => {
-    env.db.addGithubWatch(env.guild.id, "sec/ret", "Sec/Ret", {
+    env.db.addGithubWatch(env.communityId, "sec/ret", "Sec/Ret", {
       channelId: env.channels.notify.id,
       token: "super-secret",
     });
-    const list = env.db.getGithubWatches(env.guild.id);
+    const list = env.db.getGithubWatches(env.communityId);
     const row = list.find((w) => w.repo === "sec/ret");
     assert.equal(row.has_token, 1);
     assert.ok(!("token" in row), "display rows must not carry the token");
-    const single = env.db.getGithubWatch(env.guild.id, "sec/ret");
+    const single = env.db.getGithubWatch(env.communityId, "sec/ret");
     assert.ok(!("token" in single));
-    env.db.removeGithubWatch(env.guild.id, "sec/ret");
+    env.db.removeGithubWatch(env.communityId, "sec/ret");
   });
 
   it("baseline: first check posts only the newest release", async () => {
-    env.db.addGithubWatch(env.guild.id, "acme/widgets", "Acme/Widgets", {
+    env.db.addGithubWatch(env.communityId, "acme/widgets", "Acme/Widgets", {
       channelId: env.channels.notify.id,
     });
     const watch = env.db.getAllGithubWatches().find((w) => w.repo === "acme/widgets");
@@ -115,18 +115,18 @@ describe("integration: github releases", () => {
     assert.equal(result.announced, 1);
     assert.equal(sent.length, 1);
 
-    const after = env.db.getGithubWatch(env.guild.id, "acme/widgets");
+    const after = env.db.getGithubWatch(env.communityId, "acme/widgets");
     assert.equal(after.last_release_id, 3);
     assert.equal(after.last_release_published_at, rel(3).publishedAtMs);
     assert.ok(after.last_checked > 0);
-    env.db.removeGithubWatch(env.guild.id, "acme/widgets");
+    env.db.removeGithubWatch(env.communityId, "acme/widgets");
   });
 
   it("multiple releases between ticks send one message each, oldest-first", async () => {
-    env.db.addGithubWatch(env.guild.id, "acme/widgets", "Acme/Widgets", {
+    env.db.addGithubWatch(env.communityId, "acme/widgets", "Acme/Widgets", {
       channelId: env.channels.notify.id,
     });
-    env.db.updateGithubWatchReleaseState(env.guild.id, "acme/widgets", {
+    env.db.updateGithubWatchReleaseState(env.communityId, "acme/widgets", {
       lastReleaseId: 3,
       lastReleasePublishedAt: rel(3).publishedAtMs,
       lastChecked: Date.now(),
@@ -145,16 +145,16 @@ describe("integration: github releases", () => {
     const titles = sent.map((p) => p.embeds[0].toJSON().title);
     assert.deepEqual(titles, ["📦 four", "📦 five"]);
 
-    const after = env.db.getGithubWatch(env.guild.id, "acme/widgets");
+    const after = env.db.getGithubWatch(env.communityId, "acme/widgets");
     assert.equal(after.last_release_id, 5);
-    env.db.removeGithubWatch(env.guild.id, "acme/widgets");
+    env.db.removeGithubWatch(env.communityId, "acme/widgets");
   });
 
   it("failed send keeps the pointer for retry next tick", async () => {
-    env.db.addGithubWatch(env.guild.id, "acme/widgets", "Acme/Widgets", {
+    env.db.addGithubWatch(env.communityId, "acme/widgets", "Acme/Widgets", {
       channelId: env.channels.notify.id,
     });
-    env.db.updateGithubWatchReleaseState(env.guild.id, "acme/widgets", {
+    env.db.updateGithubWatchReleaseState(env.communityId, "acme/widgets", {
       lastReleaseId: 3,
       lastReleasePublishedAt: rel(3).publishedAtMs,
       lastChecked: Date.now(),
@@ -171,17 +171,17 @@ describe("integration: github releases", () => {
     assert.match(result.error, /could not deliver/i);
     assert.equal(sent.length, 0);
 
-    const after = env.db.getGithubWatch(env.guild.id, "acme/widgets");
+    const after = env.db.getGithubWatch(env.communityId, "acme/widgets");
     assert.equal(after.last_release_id, 3, "pointer must not advance");
-    env.db.removeGithubWatch(env.guild.id, "acme/widgets");
+    env.db.removeGithubWatch(env.communityId, "acme/widgets");
   });
 
   it("failed GitHub lookup keeps the pointer and reports the cause", async () => {
-    env.db.addGithubWatch(env.guild.id, "acme/widgets", "Acme/Widgets", {
+    env.db.addGithubWatch(env.communityId, "acme/widgets", "Acme/Widgets", {
       channelId: env.channels.notify.id,
       token: "tok",
     });
-    env.db.updateGithubWatchReleaseState(env.guild.id, "acme/widgets", {
+    env.db.updateGithubWatchReleaseState(env.communityId, "acme/widgets", {
       lastReleaseId: 7,
       lastReleasePublishedAt: rel(7).publishedAtMs,
       lastChecked: Date.now(),
@@ -197,13 +197,13 @@ describe("integration: github releases", () => {
     assert.match(result.error, /rate limit/);
     assert.equal(sent.length, 0);
 
-    const after = env.db.getGithubWatch(env.guild.id, "acme/widgets");
+    const after = env.db.getGithubWatch(env.communityId, "acme/widgets");
     assert.equal(after.last_release_id, 7);
-    env.db.removeGithubWatch(env.guild.id, "acme/widgets");
+    env.db.removeGithubWatch(env.communityId, "acme/widgets");
   });
 
   it("watch without channel is skipped before any API call", async () => {
-    env.db.addGithubWatch(env.guild.id, "no/channel", "No/Channel");
+    env.db.addGithubWatch(env.communityId, "no/channel", "No/Channel");
     const watch = env.db.getAllGithubWatches().find((w) => w.repo === "no/channel");
     let fetched = false;
     const { client } = fakeClient();
@@ -216,7 +216,7 @@ describe("integration: github releases", () => {
     assert.equal(fetched, false);
     assert.equal(result.ok, false);
     assert.match(result.skipped, /no channel configured/);
-    env.db.removeGithubWatch(env.guild.id, "no/channel");
+    env.db.removeGithubWatch(env.communityId, "no/channel");
   });
 
   it("/github watch rejects malformed repo refs", async () => {
@@ -230,7 +230,7 @@ describe("integration: github releases", () => {
   });
 
   it("/github list reports watches and /github remove deletes them", async () => {
-    env.db.addGithubWatch(env.guild.id, "demo/app", "Demo/App", {
+    env.db.addGithubWatch(env.communityId, "demo/app", "Demo/App", {
       channelId: env.channels.notify.id,
     });
 
@@ -242,7 +242,7 @@ describe("integration: github releases", () => {
     });
     assertReplyContains(list, /Demo\/App/);
     assert.ok(
-      env.db.getGithubWatches(env.guild.id).length >= 1,
+      env.db.getGithubWatches(env.communityId).length >= 1,
     );
 
     const removed = await env.runCommand({
@@ -252,7 +252,7 @@ describe("integration: github releases", () => {
       options: { repo: "demo/app" },
     });
     assertReplyContains(removed, /Stopped tracking/i);
-    assert.equal(env.db.getGithubWatch(env.guild.id, "demo/app"), null);
+    assert.equal(env.db.getGithubWatch(env.communityId, "demo/app"), null);
 
     const missing = await env.runCommand({
       commandName: "github",
@@ -264,7 +264,7 @@ describe("integration: github releases", () => {
   });
 
   it("/github channel and /github role configure an existing watch", async () => {
-    env.db.addGithubWatch(env.guild.id, "demo/app", "Demo/App");
+    env.db.addGithubWatch(env.communityId, "demo/app", "Demo/App");
 
     const ch = await env.runCommand({
       commandName: "github",
@@ -274,7 +274,7 @@ describe("integration: github releases", () => {
     });
     assertReplyContains(ch, /sent to/i);
     assert.equal(
-      env.db.getGithubWatch(env.guild.id, "demo/app").channel_id,
+      env.db.getGithubWatch(env.communityId, "demo/app").channel_id,
       env.channels.notify.id,
     );
 
@@ -287,7 +287,7 @@ describe("integration: github releases", () => {
     });
     assertReplyContains(withRole, /will mention/i);
     assert.equal(
-      env.db.getGithubWatch(env.guild.id, "demo/app").role_id,
+      env.db.getGithubWatch(env.communityId, "demo/app").role_id,
       "role-exempt",
     );
 
@@ -299,11 +299,11 @@ describe("integration: github releases", () => {
     });
     assertReplyContains(untracked, /not tracked/i);
 
-    env.db.removeGithubWatch(env.guild.id, "demo/app");
+    env.db.removeGithubWatch(env.communityId, "demo/app");
   });
 
   it("/github check reports config issues without calling GitHub", async () => {
-    env.db.addGithubWatch(env.guild.id, "demo/app", "Demo/App");
+    env.db.addGithubWatch(env.communityId, "demo/app", "Demo/App");
     const interaction = await env.runCommand({
       commandName: "github",
       subcommand: "check",
@@ -312,7 +312,7 @@ describe("integration: github releases", () => {
     });
     assertReplyContains(interaction, /Checked 1 watch/i);
     assertReplyContains(interaction, /no channel configured/i);
-    env.db.removeGithubWatch(env.guild.id, "demo/app");
+    env.db.removeGithubWatch(env.communityId, "demo/app");
   });
 
   it("/github is denied for non-staff", async () => {

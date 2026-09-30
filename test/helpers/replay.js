@@ -289,7 +289,14 @@ async function replayInteraction(env, fixture, opts = {}) {
     // cooldown map — settings force gork_cooldown_sec=0, so repeats of the
     // same recorded guild are still safe in-process.
     const guildId = opts.guildId || String(fixture.trigger.guildId || "replay-g");
-    env.db.updateGuildSettings(guildId, {
+    // Fluxer PR 2: the data layer keys by the INTEGER communities.id; the
+    // replay identity is create-on-sight in the registry (same id every run).
+    const communityId = require("../../src/platform/community").ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: guildId,
+    });
+    env.db.updateGuildSettings(communityId, {
     ...Object.fromEntries(
       Object.entries(settings).filter(([k]) => k !== "gork_cooldown_sec"),
     ),
@@ -446,7 +453,7 @@ async function replayInteraction(env, fixture, opts = {}) {
     await env.onMessageCreate(message);
     await require("../../src/features/gork/trigger").whenGorkIdleForTests();
 
-    const listed = env.db.listGorkInteractions({ guildId, limit: 50 });
+    const listed = env.db.listGorkInteractions({ communityId, limit: 50 });
     const rows = listed
       .map((r) => env.db.getGorkInteractionByUid(r.uid))
       .filter(Boolean);

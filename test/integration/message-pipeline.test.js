@@ -16,45 +16,45 @@ describe("integration: message pipeline", () => {
   before(async () => {
     env = await createIntegrationEnv();
     // predictable XP + no cooldown for isolation
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       msg_xp: 5,
       msg_cooldown_sec: 0,
     });
   });
 
   it("ignores bot authors", async () => {
-    const before = env.db.getXp(env.guild.id, IDS.bot);
+    const before = env.db.getXp(env.communityId, IDS.bot);
     await env.emitMessage({ author: env.users.botUser });
-    assertXp(env.db, env.guild.id, IDS.bot, before);
+    assertXp(env.db, env.communityId, IDS.bot, before);
   });
 
   it("awards message XP", async () => {
     const uid = IDS.member;
-    const before = env.db.getXp(env.guild.id, uid);
+    const before = env.db.getXp(env.communityId, uid);
     await env.emitMessage({ author: env.users.memberUser });
-    assertXp(env.db, env.guild.id, uid, before + 5);
+    assertXp(env.db, env.communityId, uid, before + 5);
   });
 
   it("respects message cooldown", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       msg_xp: 5,
       msg_cooldown_sec: 60,
     });
     // unique user to avoid prior cooldown map noise — use member2
     const uid = IDS.member2;
-    const before = env.db.getXp(env.guild.id, uid);
+    const before = env.db.getXp(env.communityId, uid);
     await env.emitMessage({ author: env.users.member2User });
-    assertXp(env.db, env.guild.id, uid, before + 5);
+    assertXp(env.db, env.communityId, uid, before + 5);
     await env.emitMessage({ author: env.users.member2User });
-    assertXp(env.db, env.guild.id, uid, before + 5);
+    assertXp(env.db, env.communityId, uid, before + 5);
     // restore
-    env.db.updateGuildSettings(env.guild.id, { msg_cooldown_sec: 0 });
+    env.db.updateGuildSettings(env.communityId, { msg_cooldown_sec: 0 });
   });
 
   it("honeypot channel bans and blocks XP", async () => {
-    env.db.addHoneypotChannel(env.guild.id, IDS.channelHoneypot);
+    env.db.addHoneypotChannel(env.communityId, IDS.channelHoneypot);
     const uid = IDS.member;
-    const before = env.db.getXp(env.guild.id, uid);
+    const before = env.db.getXp(env.communityId, uid);
     const message = await env.emitMessage({
       author: env.users.memberUser,
       channel: env.channels.honeypot,
@@ -62,7 +62,7 @@ describe("integration: message pipeline", () => {
     });
     assert.equal(message.deleted, true);
     assertBanned(env.guild, uid);
-    assertXp(env.db, env.guild.id, uid, before);
+    assertXp(env.db, env.communityId, uid, before);
   });
 
   it("honeypot exempt deletes message but does not ban", async () => {
@@ -75,11 +75,11 @@ describe("integration: message pipeline", () => {
       admin: false,
     });
     env.guild.addMember(mem);
-    env.db.addHoneypotChannel(env.guild.id, IDS.channelHoneypot);
-    env.db.addHoneypotExemptRole(env.guild.id, IDS.roleExempt);
+    env.db.addHoneypotChannel(env.communityId, IDS.channelHoneypot);
+    env.db.addHoneypotExemptRole(env.communityId, IDS.roleExempt);
 
     env.guild._bans.length = 0;
-    const before = env.db.getXp(env.guild.id, user.id);
+    const before = env.db.getXp(env.communityId, user.id);
     const message = await env.emitMessage({
       author: user,
       member: mem,
@@ -87,6 +87,6 @@ describe("integration: message pipeline", () => {
     });
     assert.equal(message.deleted, true);
     assertNotBanned(env.guild, user.id);
-    assertXp(env.db, env.guild.id, user.id, before);
+    assertXp(env.db, env.communityId, user.id, before);
   });
 });

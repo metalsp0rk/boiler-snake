@@ -73,7 +73,7 @@ describe("integration: router", () => {
   });
 
   it("blocks commands outside allow-list", async () => {
-    env.db.addAllowedCommandChannel(env.guild.id, IDS.channelCmds);
+    env.db.addAllowedCommandChannel(env.communityId, IDS.channelCmds);
     const blocked = await env.runCommand({
       commandName: "xp",
       channelId: IDS.channelGeneral,
@@ -91,11 +91,11 @@ describe("integration: router", () => {
     assertReplyContains(allowed, "XP");
 
     // cleanup for other tests in file
-    env.db.removeAllowedCommandChannel(env.guild.id, IDS.channelCmds);
+    env.db.removeAllowedCommandChannel(env.communityId, IDS.channelCmds);
   });
 
   it("allows /setcommandchannel for admins even when restricted", async () => {
-    env.db.addAllowedCommandChannel(env.guild.id, IDS.channelCmds);
+    env.db.addAllowedCommandChannel(env.communityId, IDS.channelCmds);
     const interaction = await env.runCommand({
       commandName: "setcommandchannel",
       subcommand: "list",
@@ -103,7 +103,7 @@ describe("integration: router", () => {
       admin: true,
     });
     assertReplyContains(interaction, /Allowed command channels|allowed in all/i);
-    env.db.removeAllowedCommandChannel(env.guild.id, IDS.channelCmds);
+    env.db.removeAllowedCommandChannel(env.communityId, IDS.channelCmds);
   });
 
   it("autocomplete without handler responds empty", async () => {

@@ -18,7 +18,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -839,6 +839,9 @@ describe("web session core (auth/sessions, middleware, config)", () => {
   describe("mounted self-service 'Your sessions' (list / revoke / current-revoke-logout)", () => {
     const GUILD_S = "770000000000000077";
     const GUILD_NO = "770000000000000099"; // bot is NOT here
+    // Fluxer PR 2: INTEGER community ids for data + /g/<id> route identity.
+    let CID_S = null;
+    let CID_NO = null;
     const ROLE_JR_S = "880000000000000088";
     const U_STAFF = "771000000000000001";
     const U_SENIOR = "771000000000000002";
@@ -868,7 +871,9 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       const tokens = require("../src/web/auth/tokens");
       const csrfMod = require("../src/web/middleware/csrf");
 
-      api.addStaffRole(GUILD_S, ROLE_JR_S, "junior");
+      CID_S = communityKey(GUILD_S);
+      CID_NO = communityKey(GUILD_NO);
+      api.addStaffRole(CID_S, ROLE_JR_S, "junior");
 
       const fakeDiscord = {
         async getUserGuilds(token) {
@@ -941,9 +946,9 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       else process.env.PUBLIC_BASE_URL = savedBaseUrl;
     });
 
-    const PAGE = `/g/${GUILD_S}/sessions`;
+    const PAGE = () => `/g/${CID_S}/sessions`; // lazy: CID_S set in before()
 
-    const getPage = async (key, path = PAGE) => {
+    const getPage = async (key, path = PAGE()) => {
       const res = await fetch(baseS + path, {
         redirect: "manual",
         headers: key ? { cookie: cookieOf[key] } : undefined,
@@ -952,7 +957,7 @@ describe("web session core (auth/sessions, middleware, config)", () => {
     };
 
     const postRevoke = async (key, fields) => {
-      const res = await fetch(`${baseS}${PAGE}/revoke`, {
+      const res = await fetch(`${baseS}${PAGE()}/revoke`, {
         method: "POST",
         redirect: "manual",
         headers: key
@@ -965,20 +970,20 @@ describe("web session core (auth/sessions, middleware, config)", () => {
 
     const revokeAuditRows = () =>
       api
-        .listAdminAudit(GUILD_S, { limit: 100 })
+        .listAdminAudit(CID_S, { limit: 100 })
         .filter((r) => r.action === "sessions.revoke");
 
     it("anon ⇒ 302 login; no-tier member ⇒ generic 404 (the shell floor applies)", async () => {
       const anon = await getPage(null);
       assert.equal(anon.res.status, 302);
-      assert.equal(anon.res.headers.get("location"), `/auth/login?guild=${GUILD_S}`);
+      assert.equal(anon.res.headers.get("location"), "/auth/login", "integer route id ⇒ bare login redirect");
       const plain = await getPage("plain");
       assert.equal(plain.res.status, 404);
       assert.equal(plain.text, "Not found");
     });
 
     it("cross-guild probe ⇒ generic 404 (never 403)", async () => {
-      const cross = await getPage("staff", `/g/${GUILD_NO}/sessions`);
+      const cross = await getPage("staff", `/g/${CID_NO}/sessions`);
       assert.equal(cross.res.status, 404);
       assert.equal(cross.text, "Not found");
     });
@@ -1002,7 +1007,7 @@ describe("web session core (auth/sessions, middleware, config)", () => {
         _csrf: csrfOf.staff,
         created_at: String(extra.createdAt),
       });
-      assert.equal(location, `${PAGE}?done=session_revoked`);
+      assert.equal(location, `${PAGE()}?done=session_revoked`);
       assert.equal(rawRow(extra.id), null, "row destroyed immediately");
 
       // The CURRENT cookie survives: same visitor, same page, 200.
@@ -1039,7 +1044,7 @@ describe("web session core (auth/sessions, middleware, config)", () => {
         _csrf: csrfOf.staff,
         created_at: String(seniorSession.createdAt),
       });
-      assert.equal(location, `${PAGE}?error=session_gone`);
+      assert.equal(location, `${PAGE()}?error=session_gone`);
       assert.ok(rawRow(loginIds.senior), "senior's session survived (Exit C isolation)");
       assert.ok(seniorRowBefore, "sanity: it was there");
       assert.equal(revokeAuditRows().length, before, "failed revoke audited NOTHING");
@@ -1048,7 +1053,7 @@ describe("web session core (auth/sessions, middleware, config)", () => {
     it("junk selector ⇒ invalid_selection with zero audit; missing _csrf ⇒ 403", async () => {
       const before = revokeAuditRows().length;
       const bad = await postRevoke("staff", { _csrf: csrfOf.staff, created_at: "x" });
-      assert.equal(bad.location, `${PAGE}?error=invalid_selection`);
+      assert.equal(bad.location, `${PAGE()}?error=invalid_selection`);
       const noCsrf = await postRevoke("staff", { created_at: String(Date.now()) });
       assert.equal(noCsrf.res.status, 403);
       assert.equal(noCsrf.text, "Forbidden");
@@ -1074,7 +1079,7 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       // Next request with the (now dead) cookie redirects to login:
       const next = await getPage("staff");
       assert.equal(next.res.status, 302);
-      assert.equal(next.res.headers.get("location"), `/auth/login?guild=${GUILD_S}`);
+      assert.equal(next.res.headers.get("location"), "/auth/login");
 
       const rows = revokeAuditRows();
       const currentRow = rows.find((r) => JSON.parse(r.details_json).current === true);

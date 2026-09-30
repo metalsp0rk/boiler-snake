@@ -144,6 +144,11 @@ const {
   BOT_GUILDS,
 } = FIX;
 
+// Web contract: routes/repos take INTEGER community ids (the ladder's FIX
+// COMMUNITY ids are computed at helper load; reuse them here).
+const CID_A = FIX.COMMUNITY_A;
+const CID_CROSS = FIX.COMMUNITY_CROSS;
+
 // Clearly-fake sentinels / placeholders ONLY (AGENTS.md: never realistic).
 const SESSION_SECRET = "test-gate3-sentinel-session-secret-NOT-REAL-032";
 const YT_KEY = "YOUR_YOUTUBE_API_KEY-placeholder-not-real";
@@ -299,8 +304,8 @@ process.env.TWITCH_CLIENT_SECRET = "gate3-client-secret-not-real";
 // (AI_API_KEY / OPENAI_API_KEY are deleted above — the REAL summarizer must
 // take its offline fallback path on both transports.)
 
-api.addStaffRole(GUILD_A, ROLE_JUNIOR_TIER, "junior");
-api.addStaffRole(GUILD_A, ROLE_SENIOR_TIER, "senior");
+api.addStaffRole(CID_A, ROLE_JUNIOR_TIER, "junior");
+api.addStaffRole(CID_A, ROLE_SENIOR_TIER, "senior");
 
 const cookieOf = {};
 const csrfOf = {};
@@ -332,13 +337,13 @@ function purgeAutoincrement(table) {
 }
 
 // Mirror/log-channel seeds (both transports resolve the SAME channels).
-api.updateGuildSettings(GUILD_A, { audit_log_channel_id: CH_AUDIT });
-api.updateGuildSettings(GUILD_A, { warn_log_channel_id: CH_WARN });
+api.updateGuildSettings(CID_A, { audit_log_channel_id: CH_AUDIT });
+api.updateGuildSettings(CID_A, { warn_log_channel_id: CH_WARN });
 
 // The leaderboard USER page 404s for users WITHOUT data (unknown-user
 // doctrine, not a tier signal) — the C sweep's :userId subject needs a
 // seeded XP row (phase-1 precedent: the tracked-user fixture).
-api.setXp(GUILD_A, USER_WARN_SUBJECT, 1234);
+api.setXp(CID_A, USER_WARN_SUBJECT, 1234);
 
 const settingsData = createSettingsData();
 const resolver = guildAccessMod.createGuildAccessResolver({
@@ -439,10 +444,10 @@ function post(path, opts) {
 
 function auditRows(origin, limit = 100) {
   return api
-    .listAdminAudit(GUILD_A, { origin, limit })
+    .listAdminAudit(CID_A, { origin, limit })
     .map((r) => ({ ...r, details: r.details_json ? JSON.parse(r.details_json) : null }));
 }
-const auditCount = (origin) => api.countAdminAudit(GUILD_A, { origin });
+const auditCount = (origin) => api.countAdminAudit(CID_A, { origin });
 
 function sqlAuditGroups() {
   return rawDb
@@ -452,7 +457,7 @@ function sqlAuditGroups() {
     .all();
 }
 function sqlAuditGuilds() {
-  return rawDb.prepare("SELECT DISTINCT guild_id FROM admin_audit ORDER BY guild_id").all();
+  return rawDb.prepare("SELECT DISTINCT community_id FROM admin_audit ORDER BY community_id").all();
 }
 
 const ledger = new Map(); // "origin|action" -> expected count
@@ -477,7 +482,7 @@ function lastAudit(origin, filter = {}) {
  *  asserted"). id/created_at are per-insert bookkeeping, never semantic. */
 function auditCmp(r) {
   return {
-    guild_id: r.guild_id,
+    community_id: r.community_id,
     actor_user_id: r.actor_user_id,
     action: r.action,
     target_type: r.target_type,
@@ -827,7 +832,7 @@ describe("B. audit-origin verification — origin is minted by the code, never b
       row.prepare();
       const before = auditCount("web");
       startWindow();
-      const { res, location } = await post(ladder.concretePath(row.template, GUILD_A), {
+      const { res, location } = await post(ladder.concretePath(row.template, CID_A), {
         cookie: cookieOf[viewer],
         fields: {
           ...row.fields,
@@ -838,6 +843,7 @@ describe("B. audit-origin verification — origin is minted by the code, never b
           actor_user_id: USER_STRANGER,
           user_id_fallback: USER_STRANGER,
           guild_id: GUILD_CROSS,
+          community_id: CID_CROSS,
           target_id: "0",
           target_type: "forged",
         },
@@ -850,7 +856,7 @@ describe("B. audit-origin verification — origin is minted by the code, never b
       const mine = lastAudit("web", { action: row.action, actor: viewerUser, targetId: row.targetId });
       assert.ok(mine, `${row.template}: forged probe audit row carries the REAL actor + target`);
       assert.equal(mine.origin, "web", `${row.template}: forged origin ignored`);
-      assert.equal(mine.guild_id, GUILD_A, `${row.template}: forged guild_id ignored`);
+      assert.equal(mine.community_id, CID_A, `${row.template}: forged guild/community id ignored`);
       assert.notEqual(mine.actor_user_id, USER_STRANGER, `${row.template}: forged actor_user_id ignored`);
       assert.notEqual(mine.target_type, "forged", `${row.template}: forged target_type ignored`);
       bump("web", row.action);
@@ -870,7 +876,7 @@ describe("B. audit-origin verification — origin is minted by the code, never b
       console.error = () => {};
       let out;
       try {
-        out = await post(ladder.concretePath(row.template, GUILD_A), {
+        out = await post(ladder.concretePath(row.template, CID_A), {
           cookie: cookieOf[row.tier === "admin" ? "admin" : row.tier === "senior" ? "senior" : "staff"],
           fields: { ...row.fields, _csrf: csrfOf[row.tier === "admin" ? "admin" : row.tier === "senior" ? "senior" : "staff"] },
         });
@@ -890,7 +896,7 @@ describe("B. audit-origin verification — origin is minted by the code, never b
   it("system origin is REAL and distinguishable: the warn-expiry ticker writes origin 'system' (never 'web', never 'slash')", async () => {
     purgeAutoincrement("warnings");
     const warn = api.createWarning({
-      guildId: GUILD_A,
+      communityId: CID_A,
       userId: USER_EXPIRE,
       issuerId: USER_ADMIN,
       reason: "gate expiry probe (must expire)",
@@ -906,12 +912,12 @@ describe("B. audit-origin verification — origin is minted by the code, never b
     const row = lastAudit("system", { action: "warnings.expire" });
     assert.ok(row, "the expiry row exists under origin 'system'");
     assert.equal(row.origin, "system");
-    assert.equal(row.guild_id, GUILD_A);
+    assert.equal(row.community_id, CID_A);
     assert.equal(row.target_type, "warning");
     assert.equal(row.details.subject_user_id, USER_EXPIRE);
     assert.notEqual(row.actor_user_id, USER_ADMIN, "system rows never impersonate a human actor");
     // …and the same action vocabulary family is origin-distinguishable:
-    const asSlash = api.listAdminAudit(GUILD_A, { origin: "slash", limit: 100 }).find(
+    const asSlash = api.listAdminAudit(CID_A, { origin: "slash", limit: 100 }).find(
       (r) => r.action === "warnings.expire"
     );
     assert.equal(asSlash, undefined, "the system tick did NOT land under origin 'slash'");
@@ -972,12 +978,12 @@ describe("C. tier conformance sweep — final GET surface + mutation ladder evid
 
   it("every page answers every viewer class exactly per its tier: anon 302 · stranger/plain/cross 404 · 200 vs fixed 403", async () => {
     for (const page of PAGES) {
-      const url = page.path.replace(":guildId", GUILD_A).replace(":userId", USER_WARN_SUBJECT);
+      const url = page.path.replace(":guildId", CID_A).replace(":userId", USER_WARN_SUBJECT);
       await harness.runOutcome({
         base: baseMain,
         url,
         cookieId: null,
-        expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
+        expect: harness.expectLoginRedirect("/auth/login"),
         label: `anon ${page.path}`,
       });
       await harness.runOutcome({
@@ -994,7 +1000,7 @@ describe("C. tier conformance sweep — final GET surface + mutation ladder evid
         expect: harness.expectGenericNotFound(),
         label: `plain ${page.path}`,
       });
-      const crossUrl = page.path.replace(":guildId", GUILD_CROSS).replace(":userId", USER_WARN_SUBJECT);
+      const crossUrl = page.path.replace(":guildId", CID_CROSS).replace(":userId", USER_WARN_SUBJECT);
       await harness.runOutcome({
         base: baseMain,
         url: crossUrl,
@@ -1112,7 +1118,7 @@ describe("D. registry integrity — mounted routes, legacy ban, byte-parity 405 
     ]) {
       await harness.runOutcome({
         base: baseMain,
-        url: `/g/${GUILD_A}${p}`,
+        url: `/g/${CID_A}${p}`,
         method: "POST",
         cookieId: sessionIdOf.admin,
         expect: harness.expectMethodNotAllowed(),
@@ -1123,7 +1129,7 @@ describe("D. registry integrity — mounted routes, legacy ban, byte-parity 405 
       for (const method of ["PUT", "PATCH", "DELETE"]) {
         await harness.runOutcome({
           base: baseMain,
-          url: ladder.concretePath(row.template, GUILD_A),
+          url: ladder.concretePath(row.template, CID_A),
           method,
           cookieId: sessionIdOf.admin,
           expect: harness.expectMethodNotAllowed(),
@@ -1238,7 +1244,7 @@ describe("E. boot wiring + getClient threading — server options, feature boot,
   });
 
   it("users area seam: an unknown id renders only once the FAKE member cache knows them (resolveDiscordContext threading)", async () => {
-    const url = `/g/${GUILD_A}/users/${USER_UNKNOWN}`;
+    const url = `/g/${CID_A}/users/${USER_UNKNOWN}`;
     const before = await harness.request(baseMain, url, { cookieId: sessionIdOf.staff });
     assert.equal(before.status, 404, "no client member + no data ⇒ 404");
     FAKE_CLIENT.__maps.members.set(USER_UNKNOWN, { joinedTimestamp: Date.now() });
@@ -1252,34 +1258,34 @@ describe("E. boot wiring + getClient threading — server options, feature boot,
   });
 
   it("staff area seam: the role-name resolver switches the /staff page from raw-id fallback to the cached role NAME", async () => {
-    api.addStaffRole(GUILD_A, ROLE_NAME_PROBE, "junior");
+    api.addStaffRole(CID_A, ROLE_NAME_PROBE, "junior");
     try {
-      const fallback = await harness.request(baseMain, `/g/${GUILD_A}/staff`, { cookieId: sessionIdOf.staff });
+      const fallback = await harness.request(baseMain, `/g/${CID_A}/staff`, { cookieId: sessionIdOf.staff });
       assert.equal(fallback.status, 200);
       assert.ok(fallback.body.includes(ROLE_NAME_PROBE), "uncached role id still renders (slash-identical fallback)");
       assert.ok(!fallback.body.includes(GATE_ROLE_NAME), "the name CANNOT appear before the cache knows it");
       FAKE_ROLES[ROLE_NAME_PROBE] = { id: ROLE_NAME_PROBE, name: GATE_ROLE_NAME, position: 10, managed: false };
-      const named = await harness.request(baseMain, `/g/${GUILD_A}/staff`, { cookieId: sessionIdOf.staff });
+      const named = await harness.request(baseMain, `/g/${CID_A}/staff`, { cookieId: sessionIdOf.staff });
       assert.ok(
         named.body.includes(GATE_ROLE_NAME),
         "the FAKE client's cached role name surfaced ⇒ options.getClient threaded into routes/staff"
       );
     } finally {
-      api.removeStaffRole(GUILD_A, ROLE_NAME_PROBE);
+      api.removeStaffRole(CID_A, ROLE_NAME_PROBE);
       delete FAKE_ROLES[ROLE_NAME_PROBE];
     }
   });
 
   it("moderation seam: the warn DM title resolves the GUILD NAME through the live-client seam (name-resolution proof + ledgered audit)", async () => {
     purgeAutoincrement("warnings");
-    api.updateGuildSettings(GUILD_A, { warn_expiry_days: 0 });
+    api.updateGuildSettings(CID_A, { warn_expiry_days: 0 });
     DM_USERS[USER_W_E_probe].sent.length = 0;
-    const { res, location } = await post(`/g/${GUILD_A}/moderation/warnings/issue`, {
+    const { res, location } = await post(`/g/${CID_A}/moderation/warnings/issue`, {
       cookie: cookieOf.staff,
       fields: { user_id: USER_W_E_probe, reason: "gate E moderation probe", _csrf: csrfOf.staff },
     });
     assert.equal(res.status, 302);
-    assert.equal(location, `/g/${GUILD_A}/warnings?done=warn_issued`);
+    assert.equal(location, `/g/${CID_A}/warnings?done=warn_issued`);
     bump("web", "warnings.add");
     await tick();
     assert.equal(DM_USERS[USER_W_E_probe].sent.length, 1, "the member DM went out through the client seam");
@@ -1290,18 +1296,18 @@ describe("E. boot wiring + getClient threading — server options, feature boot,
   it("tickets seam: claim posts its notice to the ticket channel resolved through the live-client cache", async () => {
     purgeAutoincrement("tickets");
     const t = api.createTicket({
-      guildId: GUILD_A,
+      communityId: CID_A,
       creatorUserId: USER_T_CREATOR,
       channelId: CH_TICKET,
       reason: "gate E claim probe",
     });
     FAKE_CHANNELS[CH_TICKET].sent.length = 0;
-    const { res, location } = await post(`/g/${GUILD_A}/tickets/claim`, {
+    const { res, location } = await post(`/g/${CID_A}/tickets/claim`, {
       cookie: cookieOf.senior,
       fields: { ticket_id: String(t.id), _csrf: csrfOf.senior },
     });
     assert.equal(res.status, 302);
-    assert.equal(location, `/g/${GUILD_A}/tickets?done=ticket_claimed`);
+    assert.equal(location, `/g/${CID_A}/tickets?done=ticket_claimed`);
     bump("web", "tickets.claim");
     await tick();
     assert.ok(
@@ -1323,7 +1329,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
   describe("F-X1 /grantxp ⇆ POST xp/grant", () => {
     let xSlash; // captured run
     it("slash run: grant 250 through the REAL awardXp service", async () => {
-      api.setXp(GUILD_A, USER_P_SUB, 0);
+      api.setXp(CID_A, USER_P_SUB, 0);
       resetChannelCapture();
       const before = auditCount("slash");
       const interaction = slashInteraction({
@@ -1339,7 +1345,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       bump("slash", "xp.grant");
       xSlash = {
         audit: lastAudit("slash", { action: "xp.grant", targetId: USER_P_SUB }),
-        xp: api.getXp(GUILD_A, USER_P_SUB),
+        xp: api.getXp(CID_A, USER_P_SUB),
         sends: capture().channelSends,
       };
       assert.equal(xSlash.xp, 250);
@@ -1349,22 +1355,22 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
     });
 
     it("web twin run: identical DB end-state, identical audit (origin aside), identical channel embed (timestamp aside)", async () => {
-      api.setXp(GUILD_A, USER_P_SUB, 0); // same baseline as the slash run
+      api.setXp(CID_A, USER_P_SUB, 0); // same baseline as the slash run
       resetChannelCapture();
       const before = auditCount("web");
-      const { res, location } = await post(`/g/${GUILD_A}/xp/grant`, {
+      const { res, location } = await post(`/g/${CID_A}/xp/grant`, {
         cookie: cookieOf.admin,
         fields: { user_id: USER_P_SUB, amount: "250", reason: "gate parity", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/xp/grant?done=xp_granted`);
+      assert.equal(location, `/g/${CID_A}/xp/grant?done=xp_granted`);
       assert.equal(auditCount("web"), before + 1);
       bump("web", "xp.grant");
       const webAudit = lastAudit("web", { action: "xp.grant", targetId: USER_P_SUB });
       const cap = capture();
 
       // DB end-state parity:
-      assert.equal(api.getXp(GUILD_A, USER_P_SUB), xSlash.xp, "xp total identical");
+      assert.equal(api.getXp(CID_A, USER_P_SUB), xSlash.xp, "xp total identical");
       // Audit parity — EVERY semantic column, origin asserted separately:
       assert.equal(webAudit.origin, "web");
       assert.deepEqual(auditCmp(webAudit), auditCmp(xSlash.audit), "audit rows equal except the (asserted) origin");
@@ -1387,7 +1393,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
     });
 
     it("rejection-class parity: amount < 1 ⇒ slash reply refusal / web invalid_amount slug — zero writes, zero audits on BOTH", async () => {
-      api.setXp(GUILD_A, USER_P_SUB, 0);
+      api.setXp(CID_A, USER_P_SUB, 0);
       const before = { s: auditCount("slash"), w: auditCount("web") };
       const interaction = slashInteraction({
         userId: USER_ADMIN,
@@ -1399,15 +1405,15 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       await xpFeature.handlers.grantxp(interaction, { client: FAKE_CLIENT });
       const refusal = interaction.replies.map((r) => JSON.stringify(r)).join(" ");
       assert.match(refusal, /at least 1/, "slash refusal reply");
-      const { res, location } = await post(`/g/${GUILD_A}/xp/grant`, {
+      const { res, location } = await post(`/g/${CID_A}/xp/grant`, {
         cookie: cookieOf.admin,
         fields: { user_id: USER_P_SUB, amount: "0", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/xp/grant?error=invalid_amount`);
+      assert.equal(location, `/g/${CID_A}/xp/grant?error=invalid_amount`);
       assert.equal(auditCount("slash"), before.s, "rejections audit NOTHING on the slash transport");
       assert.equal(auditCount("web"), before.w, "rejections audit NOTHING on the web transport");
-      assert.equal(api.getXp(GUILD_A, USER_P_SUB), 0, "zero XP writes");
+      assert.equal(api.getXp(CID_A, USER_P_SUB), 0, "zero XP writes");
     });
   });
 
@@ -1419,7 +1425,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
 
     it("slash /warn add on the parity subject: row + audit + warn-log embed + member DM captured", async () => {
       purgeAutoincrement("warnings");
-      api.updateGuildSettings(GUILD_A, { warn_expiry_days: 0, warn_dm_members: 1 });
+      api.updateGuildSettings(CID_A, { warn_expiry_days: 0, warn_dm_members: 1 });
       resetChannelCapture();
       const before = auditCount("slash");
       const target = {
@@ -1457,12 +1463,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       resetChannelCapture();
       DM_USERS[USER_W_SUB].sent.length = 0;
       const before = auditCount("web");
-      const { res, location } = await post(`/g/${GUILD_A}/moderation/warnings/issue`, {
+      const { res, location } = await post(`/g/${CID_A}/moderation/warnings/issue`, {
         cookie: cookieOf.staff,
         fields: { user_id: USER_W_SUB, reason: "gate parity reason", _csrf: csrfOf.staff },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/warnings?done=warn_issued`);
+      assert.equal(location, `/g/${CID_A}/warnings?done=warn_issued`);
       assert.equal(auditCount("web"), before + 1);
       bump("web", "warnings.add");
       const webAudit = lastAudit("web", { action: "warnings.add", targetId: USER_W_SUB });
@@ -1494,7 +1500,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       // slash run
       purgeAutoincrement("warnings");
       const seed1 = api.createWarning({
-        guildId: GUILD_A,
+        communityId: CID_A,
         userId: USER_W_SUB,
         issuerId: USER_ADMIN,
         reason: "seed to void (slash)",
@@ -1517,14 +1523,14 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       bump("slash", "warnings.void");
       wVoidSlash = {
         audit: lastAudit("slash", { action: "warnings.void", targetId: String(seed1.id) }),
-        row: api.getWarning ? api.getWarning(GUILD_A, seed1.warning_number) : null,
+        row: api.getWarning ? api.getWarning(CID_A, seed1.warning_number) : null,
         dm: [...DM_USERS[USER_W_SUB].sent],
         channelSends: capture().channelSends,
       };
       // web run — identical seeded baseline
       purgeAutoincrement("warnings");
       const seed2 = api.createWarning({
-        guildId: GUILD_A,
+        communityId: CID_A,
         userId: USER_W_SUB,
         issuerId: USER_ADMIN,
         reason: "seed to void (slash)",
@@ -1533,12 +1539,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       resetChannelCapture();
       DM_USERS[USER_W_SUB].sent.length = 0;
       before = auditCount("web");
-      const { res, location } = await post(`/g/${GUILD_A}/moderation/warnings/void`, {
+      const { res, location } = await post(`/g/${CID_A}/moderation/warnings/void`, {
         cookie: cookieOf.staff,
         fields: { warning_number: String(seed2.warning_number), reason: "gate parity void", _csrf: csrfOf.staff },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/warnings?done=warn_voided`);
+      assert.equal(location, `/g/${CID_A}/warnings?done=warn_voided`);
       assert.equal(auditCount("web"), before + 1);
       bump("web", "warnings.void");
       await tick();
@@ -1589,12 +1595,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       purgeAutoincrement("staff_notes");
       resetChannelCapture();
       before = auditCount("web");
-      const { res, location } = await post(`/g/${GUILD_A}/moderation/notes`, {
+      const { res, location } = await post(`/g/${CID_A}/moderation/notes`, {
         cookie: cookieOf.staff,
         fields: { user_id: USER_W_SUB, content: "gate parity note", _csrf: csrfOf.staff },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/notes?done=note_added`);
+      assert.equal(location, `/g/${CID_A}/notes?done=note_added`);
       assert.equal(auditCount("web"), before + 1);
       bump("web", "notes.add");
       await tick();
@@ -1613,12 +1619,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
     it("refusal-class row: over-long note content ⇒ web slug refusal with ZERO writes/audits (the slash's maxLength guard is Discord-side — documented)", async () => {
       purgeAutoincrement("staff_notes");
       const before = { w: auditCount("web"), n: rawDb.prepare("SELECT COUNT(*) c FROM staff_notes").get().c };
-      const { res, location } = await post(`/g/${GUILD_A}/moderation/notes`, {
+      const { res, location } = await post(`/g/${CID_A}/moderation/notes`, {
         cookie: cookieOf.staff,
         fields: { user_id: USER_W_SUB, content: "x".repeat(2001), _csrf: csrfOf.staff },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/notes?error=content_too_long`);
+      assert.equal(location, `/g/${CID_A}/notes?error=content_too_long`);
       assert.equal(auditCount("web"), before.w);
       assert.equal(rawDb.prepare("SELECT COUNT(*) c FROM staff_notes").get().c, before.n);
     });
@@ -1634,7 +1640,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       purgeAutoincrement("tickets");
       rawDeleteMessages();
       return api.createTicket({
-        guildId: GUILD_A,
+        communityId: CID_A,
         creatorUserId: USER_T_CREATOR,
         channelId: CH_TICKET, // live cached channel: BOTH transports run
         reason,
@@ -1673,12 +1679,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       const t = seedLiveTicket("gate parity claim");
       resetChannelCapture();
       const before = auditCount("web");
-      const { res, location } = await post(`/g/${GUILD_A}/tickets/claim`, {
+      const { res, location } = await post(`/g/${CID_A}/tickets/claim`, {
         cookie: cookieOf.senior,
         fields: { ticket_id: String(t.id), _csrf: csrfOf.senior },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/tickets?done=ticket_claimed`);
+      assert.equal(location, `/g/${CID_A}/tickets?done=ticket_claimed`);
       assert.equal(auditCount("web"), before + 1);
       bump("web", "tickets.claim");
       await tick();
@@ -1716,7 +1722,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       );
       assert.equal(auditCount("slash"), before.s + 1, "slash: junior staff CLAIMS (vocabulary tickets.claim)");
       bump("slash", "tickets.claim");
-      const web = await post(`/g/${GUILD_A}/tickets/claim`, {
+      const web = await post(`/g/${CID_A}/tickets/claim`, {
         cookie: cookieOf.staff,
         fields: { ticket_id: String(t.id), _csrf: csrfOf.staff },
       });
@@ -1750,12 +1756,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       resetChannelCapture();
       DM_USERS[USER_T_CREATOR].sent.length = 0;
       before = auditCount("web");
-      const { res, location } = await post(`/g/${GUILD_A}/tickets/close`, {
+      const { res, location } = await post(`/g/${CID_A}/tickets/close`, {
         cookie: cookieOf.senior,
         fields: { ticket_id: String(t2.id), reason: "gate parity close", _csrf: csrfOf.senior },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/tickets?done=ticket_closed`);
+      assert.equal(location, `/g/${CID_A}/tickets?done=ticket_closed`);
       assert.equal(auditCount("web"), before + 1);
       bump("web", "tickets.close");
       await tick();
@@ -1820,12 +1826,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       resetChannelCapture();
       before = auditCount("web");
       const rowBefore = { ...api.getTicketById(t2.id) };
-      const { res, location } = await postRaw(baseReal, `/g/${GUILD_A}/tickets/summarize`, {
+      const { res, location } = await postRaw(baseReal, `/g/${CID_A}/tickets/summarize`, {
         cookie: cookieOf.senior,
         fields: { ticket_id: String(t2.id), _csrf: csrfOf.senior },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `/g/${GUILD_A}/tickets?done=summary_fallback`);
+      assert.equal(location, `/g/${CID_A}/tickets?done=summary_fallback`);
       assert.equal(auditCount("web"), before + 1);
       bump("web", "tickets.summarize");
       const webAudit = lastAudit("web", { action: "tickets.summarize", targetId: String(t2.id) });
@@ -1871,7 +1877,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       api.saveTicketMessages(t2.id, [
         { message_id: "9601", author_id: USER_T_CREATOR, content: "private", sent_at: 1 },
       ]);
-      const { res, body } = await post(`/g/${GUILD_A}/tickets/summarize`, {
+      const { res, body } = await post(`/g/${CID_A}/tickets/summarize`, {
         cookie: cookieOf.senior,
         fields: { ticket_id: String(t2.id), _csrf: csrfOf.senior },
       });
@@ -1885,12 +1891,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         { message_id: "9701", author_id: USER_T_CREATOR, content: "hi", sent_at: 1 },
       ]);
       before = { s: auditCount("slash"), w: auditCount("web") };
-      const off = await postRaw(baseNoAi, `/g/${GUILD_A}/tickets/summarize`, {
+      const off = await postRaw(baseNoAi, `/g/${CID_A}/tickets/summarize`, {
         cookie: cookieOf.senior,
         fields: { ticket_id: String(t3.id), _csrf: csrfOf.senior },
       });
       assert.equal(off.res.status, 302);
-      assert.equal(off.location, `/g/${GUILD_A}/tickets?error=ai_not_configured`);
+      assert.equal(off.location, `/g/${CID_A}/tickets?error=ai_not_configured`);
       assert.equal(auditCount("web"), before.w, "the refusal wrote zero audit rows (named-var refusal)");
     });
   });
@@ -1973,7 +1979,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         if (savedSyncEnv[k] === undefined) delete process.env[k];
         else process.env[k] = savedSyncEnv[k];
       }
-      api.deleteCommandPermissionOauth(GUILD_A);
+      api.deleteCommandPermissionOauth(CID_A);
     });
 
     function oauthSeedFresh() {
@@ -1981,7 +1987,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       // (repositories/commandPermissionOauth.js: accessExpiresAt, unix ms —
       // oauthTokens#getValidAccessToken short-circuits refresh only while
       // access_expires_at > now + 60 s skew).
-      api.upsertCommandPermissionOauth(GUILD_A, {
+      api.upsertCommandPermissionOauth(CID_A, {
         accessToken: STORED_AT,
         refreshToken: STORED_RT,
         accessExpiresAt: Date.now() + 3_600_000,
@@ -1991,7 +1997,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
 
     it("slash run: real core ⇒ one GET + 3 PUTs with the STORED token; audit via recordSlashAudit", async () => {
       oauthSeedFresh();
-      rawDb.prepare("UPDATE guild_command_permission_oauth SET last_sync_at = NULL, last_sync_error = NULL WHERE guild_id = ?").run(GUILD_A);
+      rawDb.prepare("UPDATE guild_command_permission_oauth SET last_sync_at = NULL, last_sync_error = NULL WHERE community_id = ?").run(CID_A);
       discord.log.length = 0;
       discord.restGetThrows = false;
       installMocks();
@@ -2004,7 +2010,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         assert.equal(auditCount("slash"), before + 1, "slash synced + audited");
         bump("slash", "staff.sync_permissions");
         global.__gate3SlashSyncLog = discord.log.slice();
-        global.__gate3SlashSyncAudit = lastAudit("slash", { action: "staff.sync_permissions", targetId: GUILD_A });
+        global.__gate3SlashSyncAudit = lastAudit("slash", { action: "staff.sync_permissions", targetId: FIX.GUILD_A });
       } finally {
         restoreMocks();
       }
@@ -2016,21 +2022,21 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
 
     it("web twin run on appReal (NO sync seam — the REAL core): byte-identical outbound sequence + equal audit (origin aside); no session token ever leaves", async () => {
       oauthSeedFresh();
-      rawDb.prepare("UPDATE guild_command_permission_oauth SET last_sync_at = NULL, last_sync_error = NULL WHERE guild_id = ?").run(GUILD_A);
+      rawDb.prepare("UPDATE guild_command_permission_oauth SET last_sync_at = NULL, last_sync_error = NULL WHERE community_id = ?").run(CID_A);
       discord.log.length = 0;
       installMocks();
       let webAudit;
       try {
         const before = auditCount("web");
-        const { res, location } = await postRaw(baseReal, `/g/${GUILD_A}/commands/sync`, {
+        const { res, location } = await postRaw(baseReal, `/g/${CID_A}/commands/sync`, {
           cookie: cookieOf.admin,
           fields: { return: "staff", _csrf: csrfOf.admin },
         });
         assert.equal(res.status, 302, `web sync must complete (loc ${location})`);
-        assert.equal(location, `/g/${GUILD_A}/staff?done=sync_completed`);
+        assert.equal(location, `/g/${CID_A}/staff?done=sync_completed`);
         assert.equal(auditCount("web"), before + 1);
         bump("web", "staff.sync_permissions");
-        webAudit = lastAudit("web", { action: "staff.sync_permissions", targetId: GUILD_A });
+        webAudit = lastAudit("web", { action: "staff.sync_permissions", targetId: FIX.GUILD_A });
         global.__gate3WebSyncLog = discord.log.slice();
       } finally {
         restoreMocks();
@@ -2050,7 +2056,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       assert.equal(webAudit.origin, "web");
       assert.deepEqual(auditCmp(webAudit), auditCmp(global.__gate3SlashSyncAudit), "sync audit rows equal (origin aside) — role_count 2 / commands_updated 3");
       // the shared core stamped its bookkeeping identically:
-      const row = api.getCommandPermissionOauth ? api.getCommandPermissionOauth(GUILD_A) : null;
+      const row = api.getCommandPermissionOauth ? api.getCommandPermissionOauth(CID_A) : null;
       if (row) {
         assert.ok(row.last_sync_at != null, "last_sync_at stamped by the web run");
         assert.equal(row.last_sync_error, null, "clean sync cleared the error");
@@ -2059,7 +2065,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
     });
 
     it("delta D5 rows: no stored authorization ⇒ slash returns the authorize link / web returns its slug — ZERO Discord calls, ZERO audit on both; hard-fail sync ⇒ NO audit on either transport (fail-safe vs fail-closed, both unaudited)", async () => {
-      api.deleteCommandPermissionOauth(GUILD_A);
+      api.deleteCommandPermissionOauth(CID_A);
       discord.log.length = 0;
       installMocks();
       try {
@@ -2071,7 +2077,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         assert.match(replyText, /authorize|oauth/i, "slash answers with its authorize-link UX");
         assert.equal(auditCount("slash"), before.s, "no-audit on the slash precondition refusal");
 
-        const { res, location } = await postRaw(baseReal, `/g/${GUILD_A}/commands/sync`, {
+        const { res, location } = await postRaw(baseReal, `/g/${CID_A}/commands/sync`, {
           cookie: cookieOf.admin,
           fields: { return: "staff", _csrf: csrfOf.admin },
         });
@@ -2090,7 +2096,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         const inter2 = slashInteraction({ userId: USER_ADMIN, sub: "syncpermissions", manageGuild: true, bools: {} });
         await staffRolesFeature.handlers.staff(inter2, { client: FAKE_CLIENT });
         assert.equal(auditCount("slash"), before.s, "hard-failed slash sync audited NOTHING");
-        const fail = await postRaw(baseReal, `/g/${GUILD_A}/commands/sync`, {
+        const fail = await postRaw(baseReal, `/g/${CID_A}/commands/sync`, {
           cookie: cookieOf.admin,
           fields: { return: "staff", _csrf: csrfOf.admin },
         });
@@ -2130,15 +2136,15 @@ describe("G. program invariant — every audit row ever written is accounted for
     );
 
     // origins + guilds: the whole vocabulary is the frozen whitelist and
-    // every row lives in GUILD_A (the forged guild_id never stored anywhere):
+    // every row lives in CID_A (the forged guild/community id never stored anywhere):
     const origins = new Set(dbGroups.map((g) => g.origin));
     for (const o of origins) {
       assert.ok(["web", "slash", "system"].includes(o), `origin ${o} must be whitelisted`);
     }
     assert.ok(origins.has("web") && origins.has("slash") && origins.has("system"), "all three origins genuinely exist in the trail");
     assert.deepEqual(
-      sqlAuditGuilds().map((r) => r.guild_id),
-      [GUILD_A],
+      sqlAuditGuilds().map((r) => r.community_id),
+      [CID_A],
       "no audit row exists for any other guild (cross-guild + forged-guild probes wrote nothing)"
     );
     // the web-origin ledger total equals the web row count (belt):
