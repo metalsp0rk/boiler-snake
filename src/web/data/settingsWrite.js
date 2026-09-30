@@ -1,5 +1,5 @@
 /**
- * Settings WRITE service layer for POST /g/:guildId/settings/* (Phase 2,
+ * Settings WRITE service layer for POST /g/:communityId/settings/* (Phase 2,
  * subtask 24, roadmap/web-admin.md §8.6 "Settings: per-setting tier" +
  * §8.1-6 "web mutations call the service layer, not SQL").
  *
@@ -275,24 +275,24 @@ function parseLogStreamTarget(fields, streamNames = LOG_STREAM_FIELDS) {
 // ---------------------------------------------------------------------------
 
 /**
- * /setxp equivalent: updateGuildSettings(guildId, patch) — the exact call
+ * /setxp equivalent: updateGuildSettings(communityId, patch) — the exact call
  * handleSetXp makes after validation.
  * @param {object} db src/db facade
  */
-function saveXpSettings(db, guildId, fields) {
+function saveXpSettings(db, communityId, fields) {
   const built = buildXpPatch(fields);
   if (!built.ok) return built;
-  const before = db.getGuildSettings(guildId);
-  const after = db.updateGuildSettings(guildId, built.patch);
+  const before = db.getGuildSettings(communityId);
+  const after = db.updateGuildSettings(communityId, built.patch);
   return { ok: true, patch: built.patch, before, after };
 }
 
 /** /setdecay equivalent (same helper + stored shape as handleSetDecay). */
-function saveDecaySettings(db, guildId, fields) {
+function saveDecaySettings(db, communityId, fields) {
   const built = buildDecayPatch(fields);
   if (!built.ok) return built;
-  const before = db.getGuildSettings(guildId);
-  const after = db.updateGuildSettings(guildId, built.patch);
+  const before = db.getGuildSettings(communityId);
+  const after = db.updateGuildSettings(communityId, built.patch);
   return { ok: true, patch: built.patch, before, after };
 }
 
@@ -300,12 +300,12 @@ function saveDecaySettings(db, guildId, fields) {
  * /setlog audit|message equivalent: updateGuildSettings with the stream's
  * column set to the id — or null on clear (slash writes {[field]: null}).
  */
-function saveLogChannel(db, guildId, fields) {
+function saveLogChannel(db, communityId, fields) {
   const target = parseLogStreamTarget(fields);
   if (!target.ok) return target;
-  const before = db.getGuildSettings(guildId);
+  const before = db.getGuildSettings(communityId);
   const previous = before[target.field] ?? null;
-  const after = db.updateGuildSettings(guildId, { [target.field]: target.channelId });
+  const after = db.updateGuildSettings(communityId, { [target.field]: target.channelId });
   return { ok: true, stream: target.stream, field: target.field, channelId: target.channelId, previous, before, after };
 }
 
@@ -313,7 +313,7 @@ function saveLogChannel(db, guildId, fields) {
  * /setwarn log equivalent: warn_log_channel_id set/clear via
  * updateGuildSettings (exactly what the warnings handleSetLog does).
  */
-function saveWarnLogChannel(db, guildId, fields) {
+function saveWarnLogChannel(db, communityId, fields) {
   const clear = (fields.clear ?? "").trim() !== "";
   const channelRaw = (fields.channel ?? "").trim();
   if (clear && channelRaw !== "") {
@@ -328,9 +328,9 @@ function saveWarnLogChannel(db, guildId, fields) {
     if (!parsed.ok) return parsed;
     channelId = parsed.channelId;
   }
-  const before = db.getGuildSettings(guildId);
+  const before = db.getGuildSettings(communityId);
   const previous = before[WARN_LOG_FIELD] ?? null;
-  const after = db.updateGuildSettings(guildId, { [WARN_LOG_FIELD]: channelId });
+  const after = db.updateGuildSettings(communityId, { [WARN_LOG_FIELD]: channelId });
   return { ok: true, field: WARN_LOG_FIELD, channelId, previous, before, after };
 }
 
@@ -339,18 +339,18 @@ function saveWarnLogChannel(db, guildId, fields) {
  * IGNORE — idempotent like slash re-add). Tier gate (ADMIN) lives in the
  * route; this op assumes it passed.
  */
-function addCommandChannel(db, guildId, fields) {
+function addCommandChannel(db, communityId, fields) {
   const parsed = parseChannelId(fields.channel);
   if (!parsed.ok) return parsed;
-  db.addAllowedCommandChannel(guildId, parsed.channelId);
+  db.addAllowedCommandChannel(communityId, parsed.channelId);
   return { ok: true, channelId: parsed.channelId };
 }
 
 /** /setcommandchannel remove equivalent: removeAllowedCommandChannel. */
-function removeCommandChannel(db, guildId, fields) {
+function removeCommandChannel(db, communityId, fields) {
   const parsed = parseChannelId(fields.channel);
   if (!parsed.ok) return parsed;
-  db.removeAllowedCommandChannel(guildId, parsed.channelId);
+  db.removeAllowedCommandChannel(communityId, parsed.channelId);
   return { ok: true, channelId: parsed.channelId };
 }
 

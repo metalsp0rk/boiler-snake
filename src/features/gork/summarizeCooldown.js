@@ -4,12 +4,15 @@
  * `GORK_SUMMARIZE_GUILD_COOLDOWN_MS` (10 minutes, fixed constant — NOT
  * per-guild configurable, constants-first like the rest of gork).
  *
+ * Keys are internal integer community ids (Fluxer PR2); the in-memory Map
+ * treats them as opaque values, so callers pass `communities.id` integers.
+ *
  * Contract:
  * - **Arms on SUCCESS only.** The gate never decides when to arm: the handler
- *   (subtask 08) calls `armSummarizeGuildCooldown(guildId)` at the moment the
- *   rundown embed lands — mirroring decision 32's success-only counting, so
- *   usage errors, empty ranges, and failed generations never lock a guild out
- *   of an immediate retry.
+ *   (subtask 08) calls `armSummarizeGuildCooldown(communityId)` at the moment
+ *   the rundown embed lands — mirroring decision 32's success-only counting,
+ *   so usage errors, empty ranges, and failed generations never lock a guild
+ *   out of an immediate retry.
  * - While armed, the handler replies with the minutes remaining
  *   (`summarizeCooldownMinutesRemaining(remainingMs)` — rounds UP so a
  *   still-blocked guild is never told "0 minutes").
@@ -20,10 +23,10 @@
  *   deleted lazily on read, so the Map self-cleans; its size is naturally
  *   bounded by the number of guilds the bot is in (guild-level keys, unlike
  *   queue.js's per-user keys, so no size sweep is needed).
- * - A missing/invalid `guildId` fails OPEN (check reports "not armed", arm is
- *   a no-op): the cooldown is an abuse limiter, not a security gate, and the
- *   caller's guards (requireStaff, `interaction.guildId`) already own that
- *   identity check.
+ * - A missing/invalid `communityId` fails OPEN (check reports "not armed",
+ *   arm is a no-op): the cooldown is an abuse limiter, not a security gate,
+ *   and the caller's guards (requireStaff, `interaction.guildId` →
+ *   `ensureCommunity`) already own that identity check.
  *
  * The clock is injectable (`createSummarizeCooldownGate({ now })`) so tests
  * fast-forward time deterministically — same seam as queue.js; the
@@ -32,31 +35,31 @@
  * Intended usage (handlers.js, subtask 08):
  *
  * ```js
- * const remainingMs = checkSummarizeGuildCooldown(interaction.guildId);
+ * const remainingMs = checkSummarizeGuildCooldown(communityId);
  * if (remainingMs > 0) {
  *   // reply with summarizeCooldownMinutesRemaining(remainingMs) and stop
  * }
  * // ...generate + post the rundown embed...
- * armSummarizeGuildCooldown(interaction.guildId); // ONLY after the post succeeded
+ * armSummarizeGuildCooldown(communityId); // ONLY after the post succeeded
  * ```
  */
 
 const { GORK_SUMMARIZE_GUILD_COOLDOWN_MS } = require("./constants");
 
 /**
- * Normalize a guild id into a Map key. Accepts the string snowflake from a
- * Discord interaction (plus number/bigint for tolerant callers/tests);
- * anything else (incl. null/undefined/"") is identity-less.
+ * Normalize a community id into a Map key. Accepts the integer community id
+ * (plus string/bigint for tolerant callers/tests); anything else (incl.
+ * null/undefined/"") is identity-less.
  *
- * @param {unknown} guildId
+ * @param {unknown} communityId
  * @returns {string|null} normalized key, or null when there is no identity
  */
-function normalizeGuildId(guildId) {
-  if (typeof guildId === "string") return guildId === "" ? null : guildId;
-  if (typeof guildId === "number" || typeof guildId === "bigint") {
-    // 0 / 0n carry no identity (no snowflake is 0) — same "nothing there"
-    // case as the empty string, not a guild keyed as "0".
-    return guildId ? String(guildId) : null;
+function normalizeCommunityId(communityId) {
+  if (typeof communityId === "string") return communityId === "" ? null : communityId;
+  if (typeof communityId === "number" || typeof communityId === "bigint") {
+    // 0 / 0n carry no identity (no community id is 0) — same "nothing there"
+    // case as the empty string, not a community keyed as "0".
+    return communityId ? String(communityId) : null;
   }
   return null;
 }
@@ -82,26 +85,26 @@ function summarizeCooldownMinutesRemaining(remainingMs) {
  * @param {object} [options]
  * @param {() => number} [options.now=Date.now] clock returning epoch ms
  * @returns {{
- *   checkCooldown: (guildId: unknown) => number,
- *   armCooldown: (guildId: unknown) => void,
+ *   checkCooldown: (communityId: unknown) => number,
+ *   armCooldown: (communityId: unknown) => void,
  *   reset: () => void
  * }}
  */
 function createSummarizeCooldownGate(options = {}) {
   const clock = typeof options.now === "function" ? options.now : Date.now;
 
-  /** guildId key -> armedAtMs (epoch ms). One ts per guild: re-arming refreshes, never stacks. */
+  /** communityId key -> armedAtMs (epoch ms). One ts per guild: re-arming refreshes, never stacks. */
   const armedAt = new Map();
 
   /**
-   * Remaining cooldown for a guild.
+   * Remaining cooldown for a community.
    *
-   * @param {unknown} guildId
+   * @param {unknown} communityId
    * @returns {number} remaining ms (>0 → reply with minutes remaining);
-   *   0 when not armed, expired, or guildId is invalid (fail open).
+   *   0 when not armed, expired, or communityId is invalid (fail open).
    */
-  function checkCooldown(guildId) {
-    const key = normalizeGuildId(guildId);
+  function checkCooldown(communityId) {
+    const key = normalizeCommunityId(communityId);
     if (key === null) return 0;
     const armedMs = armedAt.get(key);
     if (armedMs === undefined) return 0;
@@ -119,14 +122,14 @@ function createSummarizeCooldownGate(options = {}) {
   }
 
   /**
-   * Start (or refresh) the guild's cooldown window. Call ONLY when the
+   * Start (or refresh) the community's cooldown window. Call ONLY when the
    * rundown embed post succeeded — never on usage errors, empty ranges, or
-   * failed generations (§7.21.5). Invalid guildId is a silent no-op.
+   * failed generations (§7.21.5). Invalid communityId is a silent no-op.
    *
-   * @param {unknown} guildId
+   * @param {unknown} communityId
    */
-  function armCooldown(guildId) {
-    const key = normalizeGuildId(guildId);
+  function armCooldown(communityId) {
+    const key = normalizeCommunityId(communityId);
     if (key === null) return;
     armedAt.set(key, clock());
   }
@@ -148,20 +151,20 @@ const defaultGate = createSummarizeCooldownGate();
 /**
  * Singleton wrapper — see the gate's `checkCooldown`.
  *
- * @param {unknown} guildId
+ * @param {unknown} communityId
  * @returns {number} remaining ms, 0 when allowed
  */
-function checkSummarizeGuildCooldown(guildId) {
-  return defaultGate.checkCooldown(guildId);
+function checkSummarizeGuildCooldown(communityId) {
+  return defaultGate.checkCooldown(communityId);
 }
 
 /**
  * Singleton wrapper — see the gate's `armCooldown`. ARM ON SUCCESS ONLY.
  *
- * @param {unknown} guildId
+ * @param {unknown} communityId
  */
-function armSummarizeGuildCooldown(guildId) {
-  defaultGate.armCooldown(guildId);
+function armSummarizeGuildCooldown(communityId) {
+  defaultGate.armCooldown(communityId);
 }
 
 /** TEST SEAM: clear the process-wide gate (fresh windows). */

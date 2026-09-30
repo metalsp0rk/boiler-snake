@@ -55,7 +55,8 @@ function boardPager(board, guildId) {
  * cache-only member read.
  */
 function renderLeaderboardBody(req, { board, names }) {
-  const guildId = req.guildAccess.guildId;
+  // Fluxer PR 2: /g/<id> link prop = integer community id (route identity).
+  const guildId = req.guildAccess.communityId;
   const rows = board.rows.map(
     (entry) => html`
       <tr class="row-lb">
@@ -96,7 +97,8 @@ function barBucketClass(progress) {
  * so slash /xp shows the same data set (parity, not a gap behind slash).
  */
 function renderUserXpBody(req, { summary, name }) {
-  const guildId = req.guildAccess.guildId;
+  // Fluxer PR 2: /g/<id> link prop = integer community id (route identity).
+  const guildId = req.guildAccess.communityId;
   const label = name || `User ${summary.userId}`;
   return html`
     <section class="panel lb-user-xp">

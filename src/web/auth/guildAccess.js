@@ -69,7 +69,19 @@ const {
   memberHasStaffRole,
   memberHasSeniorStaffRole,
 } = require("../../db");
-const { getCommunityById } = require("../../platform/community");
+const {
+  getCommunityById,
+  getCommunityByExternal,
+} = require("../../platform/community");
+
+/**
+ * Read-only external→internal mapping for switcher links (never inserts).
+ * @param {string} externalGuildId
+ * @returns {number|null}
+ */
+function getCommunityByIdSafe(externalGuildId) {
+  return getCommunityByExternal("discord", "discord", String(externalGuildId));
+}
 
 /** Tier ladder: higher rank satisfies every lower requirement (§8.6). */
 const TIER_RANK = Object.freeze({ staff: 1, senior: 2, admin: 3 });
@@ -465,6 +477,15 @@ function createGuildAccessResolver(options = {}) {
       const guilds = [...lists.list.values()]
         .map((g) => ({
           id: g.id,
+          // Fluxer PR 2: the switcher LINKS by integer community id; entries
+          // with no communities row render label-only (never a 404 link).
+          communityId: (() => {
+            try {
+              return getCommunityByIdSafe(g.id);
+            } catch {
+              return null;
+            }
+          })(),
           // Never an empty <option>: ids are the stable fallback label.
           name: typeof g.name === "string" && g.name.trim() ? g.name : g.id,
         }))
@@ -487,11 +508,20 @@ function createGuildAccessResolver(options = {}) {
     if (sessionId) accessLists.delete(sessionId);
   }
 
-  /** Drop cached member role ids (role-change events may call this). */
+  /**
+   * Drop cached member role ids (role-change events may call this).
+   * Accepts the EXTERNAL snowflake (Discord events) or the INTEGER community
+   * id (web callers) — the memberRoles cache keys by the external id, so an
+   * integer is mapped through the registry first (PR 2).
+   */
   function invalidateUserGuild(userId, guildId) {
     if (!userId) return;
-    if (guildId) {
-      memberRoles.delete(`${userId}:${guildId}`);
+    if (guildId != null && guildId !== "") {
+      let external = String(guildId);
+      if (Number.isSafeInteger(guildId) && guildId >= 1) {
+        external = getCommunityById(guildId)?.externalGuildId ?? String(guildId);
+      }
+      memberRoles.delete(`${userId}:${external}`);
       return;
     }
     for (const key of [...memberRoles.keys()]) {

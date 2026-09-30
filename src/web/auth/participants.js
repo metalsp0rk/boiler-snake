@@ -111,7 +111,7 @@ function createTicketAccessResolver({ guildAccess, lookups = DEFAULT_PARTICIPANT
    * participant-lookup blow-up fails closed (no access) — the route layer
    * turns any non-allow into the generic 404 (§8.6, never 403).
    * @param {{id: string, userId: string}|null} session req.webSession
-   * @param {object} ticketRow the tickets row (guild_id decides the staff
+   * @param {object} ticketRow the tickets row (community_id decides the staff
    *   check; id/creator drive the participant check)
    */
   async function resolveTicketAccess(session, ticketRow) {
@@ -123,10 +123,11 @@ function createTicketAccessResolver({ guildAccess, lookups = DEFAULT_PARTICIPANT
     }
 
     // Guild comes from the ROW (§8.4 rule 3) — the route never passes a URL
-    // guild into this decision.
+    // guild into this decision. Fluxer PR 2: the row carries the INTEGER
+    // community id; guildAccess.resolve takes it directly (PR 2 contract).
     let staff = { status: "error" };
     try {
-      staff = await guildAccess.resolve(session, String(ticketRow.guild_id ?? ""));
+      staff = await guildAccess.resolve(session, ticketRow.community_id);
     } catch (err) {
       console.warn(
         "[web] ticketAccess: guild resolution failed closed:",

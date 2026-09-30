@@ -1,12 +1,12 @@
 /**
- * Integrations read-model for GET /g/:guildId/integrations (roadmap/
+ * Integrations read-model for GET /g/:communityId/integrations (roadmap/
  * web-admin.md §8.6 "Integrations: YouTube, Twitch, reaction roles, event
  * reminders, honeypot | Staff | per-command tier (/honeypot exempt = Admin)
  * | 1 view · 2 write" — subtask 20, Phase 1 READ-ONLY).
  *
  * Query-budget contract (§8.6, review-blocking):
  *  - every facade helper is guild-scoped: the FIRST positional argument of
- *    all nine reads is always req.guildAccess.guildId (pinned by
+ *    all nine reads is always req.guildAccess.communityId (pinned by
  *    test/web-routes-integrations.test.js — no cross-guild leakage);
  *  - the snapshot is assembled from EXISTING repository helpers only —
  *    src/db/repositories/* stay untouched (read-only facade use):
@@ -201,7 +201,7 @@ function projectReminderConfig(row) {
  * @param {NodeJS.ProcessEnv} [options.env] env source for the
  *   configured-vs-effective gate (default process.env — presence checked
  *   ONLY, never the values)
- * @returns {{ getIntegrations: (guildId: string) => object, invalidate: (guildId?: string) => void, _cacheSizeForTests: () => number }}
+ * @returns {{ getIntegrations: (communityId: string) => object, invalidate: (communityId?: string) => void, _cacheSizeForTests: () => number }}
  */
 function createIntegrationsData(options = {}) {
   const facade = options.db || require("../../db");
@@ -215,7 +215,7 @@ function createIntegrationsData(options = {}) {
     ? Math.max(1, Math.floor(options.maxEntries))
     : DEFAULT_MAX_ENTRIES;
 
-  /** guildId → { data, cachedAt } (insertion-ordered bound, lazy expiry). */
+  /** communityId → { data, cachedAt } (insertion-ordered bound, lazy expiry). */
   const cache = new Map();
 
   const cacheSet = makeCacheSet(cache, maxEntries);
@@ -223,25 +223,25 @@ function createIntegrationsData(options = {}) {
   /**
    * ONE uncached assembly: 8 fixed guild-scoped facade reads + one indexed
    * option COUNT per displayed panel (≤ PANEL_CAP).
-   * @param {string} guildId
+   * @param {number} communityId
    * @param {number} at clock ms for freshness math
    */
-  function buildSnapshot(guildId, at) {
-    const gsRes = guardRead(() => facade.getGuildSettings(guildId), "guild settings");
-    const ytRes = guardRead(() => facade.getYoutubeChannels(guildId), "youtube channels");
-    const twRes = guardRead(() => facade.getTwitchChannels(guildId), "twitch channels");
+  function buildSnapshot(communityId, at) {
+    const gsRes = guardRead(() => facade.getGuildSettings(communityId), "guild settings");
+    const ytRes = guardRead(() => facade.getYoutubeChannels(communityId), "youtube channels");
+    const twRes = guardRead(() => facade.getTwitchChannels(communityId), "twitch channels");
     const panelsRes = guardRead(
-      () => facade.listReactionRolePanels(guildId),
+      () => facade.listReactionRolePanels(communityId),
       "reaction role panels"
     );
     const remindersRes = guardRead(
-      () => facade.listEventReminderConfigs(guildId, { activeOnly: true }),
+      () => facade.listEventReminderConfigs(communityId, { activeOnly: true }),
       "event reminder configs"
     );
-    const hpChRes = guardRead(() => facade.listHoneypotChannels(guildId), "honeypot channels");
-    const hpBanRes = guardRead(() => facade.listHoneypotBanRoles(guildId), "honeypot ban roles");
+    const hpChRes = guardRead(() => facade.listHoneypotChannels(communityId), "honeypot channels");
+    const hpBanRes = guardRead(() => facade.listHoneypotBanRoles(communityId), "honeypot ban roles");
     const hpExRes = guardRead(
-      () => facade.listHoneypotExemptRoles(guildId),
+      () => facade.listHoneypotExemptRoles(communityId),
       "honeypot exempt (staff) roles"
     );
 
@@ -273,7 +273,7 @@ function createIntegrationsData(options = {}) {
       if (panelsRes.available && panel.messageId) {
         // Count failures degrade THAT panel's count to "—", never the page.
         const res = guardRead(
-          () => facade.countReactionRoleOptions(guildId, panel.messageId),
+          () => facade.countReactionRoleOptions(communityId, panel.messageId),
           `reaction role options (${panel.messageId})`
         );
         optionCount = res.available ? numOrNull(res.value) : null;
@@ -290,7 +290,7 @@ function createIntegrationsData(options = {}) {
     const hpExCap = capRows(hpExRes.value, LIST_CAP);
 
     return {
-      guildId,
+      communityId,
       youtube: {
         available: ytRes.available && gsRes.available,
         ...ytEnv,
@@ -361,11 +361,11 @@ function createIntegrationsData(options = {}) {
 
   /**
    * Current integrations snapshot for one guild (sync; cached ≥30 s).
-   * @param {string} guildId
+   * @param {number} communityId
    */
-  function getIntegrations(guildId) {
+  function getIntegrations(communityId) {
     const at = now();
-    const hit = cache.get(guildId);
+    const hit = cache.get(communityId);
     if (hit && at - hit.cachedAt < ttlMs) {
       return {
         ...hit.data,
@@ -376,15 +376,15 @@ function createIntegrationsData(options = {}) {
         },
       };
     }
-    const data = buildSnapshot(guildId, at);
-    cacheSet(guildId, { data, cachedAt: at });
+    const data = buildSnapshot(communityId, at);
+    cacheSet(communityId, { data, cachedAt: at });
     return data;
   }
 
   /** Drop one guild's (or all) cached snapshots — Phase 2 write hooks call this. */
-  function invalidate(guildId) {
-    if (guildId === undefined) cache.clear();
-    else cache.delete(guildId);
+  function invalidate(communityId) {
+    if (communityId === undefined) cache.clear();
+    else cache.delete(communityId);
   }
 
   return { getIntegrations, invalidate, _cacheSizeForTests: () => cache.size };

@@ -221,7 +221,9 @@ function registerSyncActionRoutes(app, options = {}) {
   // with a whitelisted slug.
   // =========================================================================
   postMutation(SYNC_PATH, async (req, res, next) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.communityId; // data + view link id (PR 2: integer)
+    // Audit target_id is a DISPLAY field and stays the external snowflake.
+    const externalGuildId = req.guildAccess.guildId;
     const target = parseReturnTarget(readFields(req).return);
     if (!target) {
       respondSyncRedirect(res, guildId, DEFAULT_RETURN, "error", "invalid_return");
@@ -271,7 +273,7 @@ function registerSyncActionRoutes(app, options = {}) {
       req.audit({
         action: SYNC_AUDIT_ACTION,
         targetType: "guild",
-        targetId: guildId,
+        targetId: externalGuildId,
         guildId,
         details: buildSyncAuditDetails(result),
         // NO mirror descriptor: /staff syncpermissions posts no

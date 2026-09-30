@@ -10,7 +10,7 @@
  *
  * Two mutually exclusive modes, validated HERE (neither param is
  * schema-required):
- * - `ids`: fetch full bodies by `#id` handles, guild-scoped, cap 8;
+ * - `ids`: fetch full bodies by `#id` handles, community-scoped, cap 8;
  *   misses come back as "#id — (no such memory)".
  * - `subject_user_id`: list one person's stored memories, cap 15.
  *
@@ -96,13 +96,13 @@ function formatRecallLine(row) {
  *
  * @param {unknown} args tool arguments from the model ({ ids?, subject_user_id? })
  * @param {object} [options]
- * @param {string} options.guildId guild scope for every lookup
+ * @param {number} options.communityId community scope for every lookup
  * @param {(ids: number[]) => void} [options.onRecall] called with the FOUND
  *   ids (audit counter + touchMemories hook); never on misses
  * @param {object} [options.repo] db-facade override (tests)
  * @returns {Promise<string>} text block for the model
  */
-async function executeRecallMemory(args, { guildId, onRecall, repo } = {}) {
+async function executeRecallMemory(args, { communityId, onRecall, repo } = {}) {
   try {
     const db = repo || require("../../../db");
     const ids = toIdList(args?.ids);
@@ -116,7 +116,7 @@ async function executeRecallMemory(args, { guildId, onRecall, repo } = {}) {
     const lines = [];
     if (ids.length > 0) {
       for (const id of ids.slice(0, RECALL_IDS_CAP)) {
-        const row = db.gorkMemoryGetById(guildId, id); // guild-scoped: no cross-guild leak
+        const row = db.gorkMemoryGetById(communityId, id); // community-scoped: no cross-community leak
         if (row) {
           found.push(row.id);
           lines.push(formatRecallLine(row));
@@ -125,7 +125,7 @@ async function executeRecallMemory(args, { guildId, onRecall, repo } = {}) {
         }
       }
     } else {
-      const rows = (db.gorkMemoryListForSubject(guildId, subject) || []).slice(
+      const rows = (db.gorkMemoryListForSubject(communityId, subject) || []).slice(
         0,
         RECALL_LIST_CAP,
       );

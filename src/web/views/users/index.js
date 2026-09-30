@@ -240,7 +240,8 @@ function rankingTable(ranking, page) {
  * only (attribute + text positions are both in the escaped set).
  */
 function renderUserSearchPage(req, { guilds, search }) {
-  const base = `/g/${req.guildAccess.guildId}/users`;
+  // Fluxer PR 2: /g/<id> links carry the INTEGER community id (route identity).
+  const base = `/g/${req.guildAccess.communityId}/users`;
   const rows = search.results.map((r) => html`
     <tr class="row-user">
       <td><a href="${base}/${r.user_id}">${r.user_id}</a></td>
@@ -250,7 +251,7 @@ function renderUserSearchPage(req, { guilds, search }) {
   const content = html`
     <form class="search-form" method="get" action="${base}">
       <label for="q">User</label>
-      <input id="q" type="search" name="q" value="${search.query}" placeholder="name or user ID…" maxlength="64" data-lookup="users" data-lookup-url="/g/${req.guildAccess.guildId}/lookups/users"/>
+      <input id="q" type="search" name="q" value="${search.query}" placeholder="name or user ID…" maxlength="64" data-lookup="users" data-lookup-url="/g/${req.guildAccess.communityId}/lookups/users"/>
       <button type="submit" class="btn">Search</button>
     </form>
     <p class="hint">ID search matches tracked users (exact or prefix). Name search matches members currently cached by the bot (it warms as you browse); tracked members are always found by ID. Results are capped at 50.</p>
@@ -267,7 +268,8 @@ function renderUserSearchPage(req, { guilds, search }) {
 
 /** Profile page body (tab: profile). Caller wraps via renderShellPage. */
 function renderUserProfileBody(req, { profile, activity }) {
-  const base = `/g/${req.guildAccess.guildId}/users/${profile.userId}`;
+  // Fluxer PR 2: /g/<id> link prop = integer community id (route identity).
+  const base = `/g/${req.guildAccess.communityId}/users/${profile.userId}`;
   const tabs = activity.visible
     ? html`<a class="tab active" href="${base}">Profile</a>
         <a class="tab" href="${base}/activity">Activity</a>`
@@ -279,12 +281,13 @@ function renderUserProfileBody(req, { profile, activity }) {
     ${warningsSection(profile, base)}
     ${notesSection(profile, base)}
     ${ticketsSection(profile, base)}
-    ${activityArea(profile, { ...activity, guildId: req.guildAccess.guildId })}`;
+    ${activityArea(profile, { ...activity, guildId: req.guildAccess.communityId })}`;
 }
 
 /** Activity tab page body (senior+ only route). */
 function renderUserActivityBody(req, { profile, activity }) {
-  const base = `/g/${req.guildAccess.guildId}/users/${profile.userId}`;
+  // Fluxer PR 2: /g/<id> link prop = integer community id (route identity).
+  const base = `/g/${req.guildAccess.communityId}/users/${profile.userId}`;
   const actBase = `${base}/activity`;
   const { ranking } = activity;
   const rate = ranking.windowWeekly != null ? ranking.windowWeekly : ranking.lifetimeWeekly;

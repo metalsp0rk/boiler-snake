@@ -1,14 +1,14 @@
 /**
- * Settings read-model for GET /g/:guildId/settings (roadmap/web-admin.md
+ * Settings read-model for GET /g/:communityId/settings (roadmap/web-admin.md
  * §8.6 "Settings: guild settings, command channels, logs channels,
  * cooldowns, decay | Staff | per-setting tier | 1 view" — subtask 18,
  * Phase 1 READ-ONLY).
  *
  * Query-budget contract (§8.6, review-blocking):
  *  - EXACTLY ONE bounded facade query per settings cluster:
- *      guild-settings row  → getGuildSettings(guildId)        (1 PK row)
+ *      guild-settings row  → getGuildSettings(communityId)        (1 PK row)
  *      command channels    → listAllowedCommandChannels(gid)  (guild-scoped)
- *      level→role mappings → listLevelRoles(guildId)          (guild-scoped)
+ *      level→role mappings → listLevelRoles(communityId)          (guild-scoped)
  *    No N+1, no full scans, no raw SQL in this file — the existing src/db
  *    facade helpers ONLY (repositories stay untouched/read-only here).
  *  - the assembled snapshot is cached per guild ≥ 30 s (same floor discipline
@@ -124,7 +124,7 @@ function projectSettingsRow(row) {
  * @param {number} [options.ttlMs] cache TTL; default 30 s, hard floor 30 s
  *   (§8.6; tests may inject any value)
  * @param {number} [options.maxEntries] per-guild cache entry cap
- * @returns {{ getSettings: (guildId: string) => object, invalidate: (guildId?: string) => void, _cacheSizeForTests: () => number }}
+ * @returns {{ getSettings: (communityId: number) => object, invalidate: (communityId?: string) => void, _cacheSizeForTests: () => number }}
  */
 function createSettingsData(options = {}) {
   const facade = options.db || require("../../db");
@@ -139,23 +139,23 @@ function createSettingsData(options = {}) {
     ? Math.max(1, Math.floor(options.maxEntries))
     : DEFAULT_MAX_ENTRIES;
 
-  /** guildId → { data, cachedAt } (insertion-ordered bound, lazy expiry). */
+  /** communityId → { data, cachedAt } (insertion-ordered bound, lazy expiry). */
   const cache = new Map();
 
   const cacheSet = makeCacheSet(cache, maxEntries);
 
   /**
    * ONE uncached assembly = exactly 3 bounded facade queries.
-   * @param {string} guildId
+   * @param {number} communityId
    * @param {number} at clock ms for freshness math
    */
-  function buildSnapshot(guildId, at) {
-    const rowRes = guardRead(() => facade.getGuildSettings(guildId), "guild settings");
+  function buildSnapshot(communityId, at) {
+    const rowRes = guardRead(() => facade.getGuildSettings(communityId), "guild settings");
     const chansRes = guardRead(
-      () => facade.listAllowedCommandChannels(guildId),
+      () => facade.listAllowedCommandChannels(communityId),
       "command channels"
     );
-    const rolesRes = guardRead(() => facade.listLevelRoles(guildId), "level roles");
+    const rolesRes = guardRead(() => facade.listLevelRoles(communityId), "level roles");
 
     const channelIds = Array.isArray(chansRes.value)
       ? chansRes.value
@@ -171,7 +171,7 @@ function createSettingsData(options = {}) {
       : [];
 
     return {
-      guildId,
+      communityId,
       guildSettings: rowRes.available
         ? projectSettingsRow(rowRes.value || {})
         : { available: false },
@@ -188,11 +188,11 @@ function createSettingsData(options = {}) {
 
   /**
    * Current settings snapshot for one guild (sync; cached ≥30 s).
-   * @param {string} guildId
+   * @param {number} communityId
    */
-  function getSettings(guildId) {
+  function getSettings(communityId) {
     const at = now();
-    const hit = cache.get(guildId);
+    const hit = cache.get(communityId);
     if (hit && at - hit.cachedAt < ttlMs) {
       return {
         ...hit.data,
@@ -203,15 +203,15 @@ function createSettingsData(options = {}) {
         },
       };
     }
-    const data = buildSnapshot(guildId, at);
-    cacheSet(guildId, { data, cachedAt: at });
+    const data = buildSnapshot(communityId, at);
+    cacheSet(communityId, { data, cachedAt: at });
     return data;
   }
 
   /** Drop one guild's (or all) cached snapshots — Phase 2 write hooks call this. */
-  function invalidate(guildId) {
-    if (guildId === undefined) cache.clear();
-    else cache.delete(guildId);
+  function invalidate(communityId) {
+    if (communityId === undefined) cache.clear();
+    else cache.delete(communityId);
   }
 
   return { getSettings, invalidate, _cacheSizeForTests: () => cache.size };

@@ -19,6 +19,7 @@ const {
   setOffsetFireTimes,
   getGuildSettings,
 } = require("../../db");
+const { discordCommunityId } = require("../../platform/community");
 
 const MAX_OFFSETS = 8;
 const MAX_OFFSET_MINUTES = 30 * 24 * 60; // 30 days
@@ -58,19 +59,19 @@ function slugifyShortname(title) {
 
 /**
  * Prefill shortname from event title; append -2, -3, … if already taken.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} eventName
  * @returns {string}
  */
-function suggestShortname(guildId, eventName) {
+function suggestShortname(communityId, eventName) {
   const base = slugifyShortname(eventName);
-  if (!getConfigByShortname(guildId, base)) return base;
+  if (!getConfigByShortname(communityId, base)) return base;
 
   for (let n = 2; n <= 99; n++) {
     const suffix = `-${n}`;
     const maxBase = Math.max(1, 80 - suffix.length);
     const candidate = `${base.slice(0, maxBase)}${suffix}`;
-    if (!getConfigByShortname(guildId, candidate)) return candidate;
+    if (!getConfigByShortname(communityId, candidate)) return candidate;
   }
   return base;
 }
@@ -410,12 +411,12 @@ function canConfigureEventReminder(member, scheduledEvent) {
 
 /**
  * Resolve notify channel id for a config.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string|null} configChannelId
  */
-function resolveNotifyChannelId(guildId, configChannelId) {
+function resolveNotifyChannelId(communityId, configChannelId) {
   if (configChannelId) return configChannelId;
-  const settings = getGuildSettings(guildId);
+  const settings = getGuildSettings(communityId);
   return settings.event_reminder_channel_id || null;
 }
 
@@ -511,10 +512,18 @@ async function syncEventReminderRole(guild, scheduledEvent, roleId) {
   const eventId = scheduledEvent?.id;
   if (!eventId) return { granted: 0, removed: 0 };
 
+  const communityId = discordCommunityId(guild.id);
+  if (communityId == null) {
+    console.error(
+      `[eventReminders] syncEventReminderRole: no community row for guild ${guild.id} — skipping role sync`,
+    );
+    return { granted: 0, removed: 0 };
+  }
+
   const interested = new Set(await fetchInterestedUserIds(scheduledEvent));
   const shouldHave = new Set();
   for (const userId of interested) {
-    if (isUserBlockedFromEventReminders(guild.id, userId, eventId)) continue;
+    if (isUserBlockedFromEventReminders(communityId, userId, eventId)) continue;
     shouldHave.add(userId);
   }
 
@@ -590,9 +599,17 @@ async function syncEventReminderRole(guild, scheduledEvent, roleId) {
  * @param {string} scheduledEventId
  */
 async function grantRoleIfEligible(guild, userId, roleId, scheduledEventId) {
+  const communityId = discordCommunityId(guild?.id);
+  if (scheduledEventId && communityId == null) {
+    console.error(
+      `[eventReminders] grantRoleIfEligible: no community row for guild ${guild?.id} — skipping`,
+    );
+    return false;
+  }
   if (
     scheduledEventId &&
-    isUserBlockedFromEventReminders(guild.id, userId, scheduledEventId)
+    communityId != null &&
+    isUserBlockedFromEventReminders(communityId, userId, scheduledEventId)
   ) {
     return false;
   }
@@ -640,9 +657,16 @@ async function removeRoleSafe(guild, userId, roleId) {
  * @param {string} userId
  */
 async function stripAllEventReminderRoles(guild, userId) {
-  const roleIds = listEventReminderConfigs(guild.id, { activeOnly: true }).map(
-    (c) => c.role_id,
-  );
+  const communityId = discordCommunityId(guild?.id);
+  if (communityId == null) {
+    console.error(
+      `[eventReminders] stripAllEventReminderRoles: no community row for guild ${guild?.id} — skipping`,
+    );
+    return;
+  }
+  const roleIds = listEventReminderConfigs(communityId, {
+    activeOnly: true,
+  }).map((c) => c.role_id);
   for (const roleId of roleIds) {
     await removeRoleSafe(guild, userId, roleId);
   }
@@ -656,9 +680,16 @@ async function stripAllEventReminderRoles(guild, userId) {
  */
 async function cleanupEventReminder(guild, scheduledEventId, opts = {}) {
   if (!guild || !scheduledEventId) return null;
-  const config = getConfigByScheduledEventId(guild.id, scheduledEventId);
+  const communityId = discordCommunityId(guild.id);
+  if (communityId == null) {
+    console.error(
+      `[eventReminders] cleanupEventReminder: no community row for guild ${guild.id} — skipping cleanup`,
+    );
+    return null;
+  }
+  const config = getConfigByScheduledEventId(communityId, scheduledEventId);
   if (config?.persistent && !opts.force) return null;
-  const cleared = clearEventReminderConfig(guild.id, scheduledEventId);
+  const cleared = clearEventReminderConfig(communityId, scheduledEventId);
   if (!cleared) return null;
   await deleteReminderRole(guild, cleared.role_id);
   return cleared;
@@ -704,12 +735,12 @@ function eventStartMs(event) {
 
 /**
  * Recompute unsent fire times after event reschedule.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} scheduledEventId
  * @param {number} startMs
  */
-function rescheduleUnsentOffsets(guildId, scheduledEventId, startMs) {
-  const config = getConfigByScheduledEventId(guildId, scheduledEventId);
+function rescheduleUnsentOffsets(communityId, scheduledEventId, startMs) {
+  const config = getConfigByScheduledEventId(communityId, scheduledEventId);
   if (!config) return;
   setOffsetFireTimes(config.id, startMs);
 }

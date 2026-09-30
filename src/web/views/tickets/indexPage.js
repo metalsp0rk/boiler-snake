@@ -72,10 +72,11 @@ function snippet(s, max = 80) {
  * @param {number} opts.total
  * @param {number} opts.page
  * @param {number} opts.pageSize
- * @param {string|null} [opts.guildId] honored ?guild= filter (already vetted)
+ * @param {number|string|null} [opts.guildId] honored ?guild= filter — the
+ *   INTEGER community id (fluxer PR 2 route identity; already vetted)
  * @param {string} [opts.q] archive search term (route-trimmed)
- * @param {Map<string, Map<string, string|null>>|null} [opts.namesByGuild]
- *   guildId -> (userId -> display name|null) from the cache-only seam;
+ * @param {Map<number, Map<string, string|null>>|null} [opts.namesByGuild]
+ *   communityId -> (userId -> display name|null) from the cache-only seam;
  *   missing entries render the raw id (never breaks the row)
  * @param {{href: string, label: string}|null} [opts.consoleLink] way back
  *   into the console when guild-filtered (route tier-checked)
@@ -128,7 +129,8 @@ function renderTicketIndexContent({
   };
   const rows = (tickets || []).map((t) => {
     const href = `/t/${encodeURIComponent(t.transcript_token)}`;
-    const names = namesByGuild?.get(t.guild_id) ?? null;
+    // Fluxer PR 2: rows key people cells by the row's INTEGER community id.
+    const names = namesByGuild?.get(t.community_id) ?? null;
     // §8.15-15.13 participant mode: plain text people — a /g/ profile link
     // is a guaranteed 404 for a non-staff viewer (§8.6 zero dead links).
     const plain = (id) => {
@@ -140,16 +142,16 @@ function renderTicketIndexContent({
     const creator =
       viewerMode === "participant"
         ? plain(t.creator_user_id)
-        : userRef(t.guild_id, String(t.creator_user_id), names);
+        : userRef(t.community_id, String(t.creator_user_id), names);
     const owner = !t.staff_owner_id
       ? html`—`
       : viewerMode === "participant"
         ? plain(t.staff_owner_id)
-        : userRef(t.guild_id, String(t.staff_owner_id), names);
+        : userRef(t.community_id, String(t.staff_owner_id), names);
     return html`
       <tr>
         <td><a href="${href}">#${String(t.ticket_number)}</a></td>
-        <td><code class="gid">${t.guild_id}</code></td>
+        <td><code class="gid">${t.community_id}</code></td>
         <td class="people">
           <div class="who">${creator}</div>
           <div class="who sub">owner ${owner}</div>
@@ -271,7 +273,7 @@ function renderTicketIndexContent({
  * @param {number} opts.total
  * @param {number} opts.page
  * @param {number} opts.pageSize
- * @param {string|null} [opts.guildId]
+ * @param {number|string|null} [opts.guildId] honored ?guild= filter (integer community id, route identity)
  * @param {Array<{id: string, name?: string|null}>} [opts.guilds] staffed
  *   guilds — the SAME list the route scoped the rows to (switcher can never
  *   offer a guild the gate would not honor, §8.3)

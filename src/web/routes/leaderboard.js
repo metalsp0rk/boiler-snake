@@ -79,7 +79,10 @@ function registerLeaderboardRoutes(app, options = {}) {
   app.get("/g/:guildId/leaderboard", requireTier("staff"), async (req, res) => {
     const params = rawParams(req.url);
     const guildId = req.guildAccess.guildId;
-    const board = buildLeaderboardPage(guildId, {
+    // Fluxer PR 2: data builders take the integer community id; the member
+    // cache seam (resolveMemberNames) keeps the external snowflake.
+    const communityId = req.guildAccess.communityId;
+    const board = buildLeaderboardPage(communityId, {
       page: params.get("page"),
       size: params.get("size"),
     });
@@ -108,8 +111,11 @@ function registerLeaderboardRoutes(app, options = {}) {
       return;
     }
     const guildId = req.guildAccess.guildId;
+    // Fluxer PR 2: data builder takes the integer community id; the member
+    // cache seam keeps the external snowflake.
+    const communityId = req.guildAccess.communityId;
 
-    const summary = buildUserXpSummary(guildId, userId);
+    const summary = buildUserXpSummary(communityId, userId);
     if (!summary) {
       const document = renderShellError(req, {
         status: 404,
