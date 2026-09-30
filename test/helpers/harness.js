@@ -34,6 +34,8 @@ async function createIntegrationEnv(options = {}) {
     onMessageReactionAdd,
     onMessageReactionRemove,
   } = require("../../src/bot/pipelines");
+  const { normalizeDiscordMessage } = require("../../src/platform/discord/normalize");
+  const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
 
   const registry = buildDefaultRegistry();
 
@@ -258,7 +260,13 @@ async function createIntegrationEnv(options = {}) {
 
   async function emitMessage(overrides = {}) {
     const message = makeMessage(overrides);
-    await onMessageCreate(client, message);
+    // Normalize to the same object (identity contract), so tests asserting on
+    // the returned raw mock (e.g. `message.deleted`) keep working.
+    await onMessageCreate(
+      getDiscordOutbound(client),
+      normalizeDiscordMessage(message),
+      { gorkClient: client }
+    );
     return message;
   }
 
@@ -300,7 +308,10 @@ async function createIntegrationEnv(options = {}) {
     makeMessage,
     emitMessage,
     emitReactionAdd,
-    onMessageCreate: (msg) => onMessageCreate(client, msg),
+    onMessageCreate: (msg) =>
+      onMessageCreate(getDiscordOutbound(client), normalizeDiscordMessage(msg), {
+        gorkClient: client,
+      }),
     onMessageReactionAdd: (reaction, user) =>
       onMessageReactionAdd(client, reaction, user),
     onMessageReactionRemove: (reaction, user) =>
