@@ -207,6 +207,14 @@ function buildDiscordCommandContext(interaction, featureCtx) {
       return Boolean(interaction.replied);
     },
     outbound: getDiscordOutbound(featureCtx.client),
+    // Discord-only escape hatch (documented, PR 4): the REAL interaction, for
+    // the handful of chat-input capabilities CommandContext deliberately does
+    // NOT model — currently only modal display (showModal), which Fluxer has
+    // no equivalent for (roadmap § CommandContext, line 270). Context-arm
+    // handlers must reach it only through the helpers in src/platform/context
+    // (e.g. showModalFromContext), never for identity/options/replies, and
+    // Fluxer contexts never carry it.
+    rawInteraction: interaction,
     reply: (payload) => interaction.reply(toDiscordPayload(payload)),
     editReply: (payload) => interaction.editReply(toDiscordPayload(payload)),
     followUp: (payload) => interaction.followUp(toDiscordPayload(payload)),
