@@ -1016,7 +1016,13 @@ describe("K. parity: equal XP totals + same-shaped audit rows (slash = source of
       },
     };
     const xpFeature = require("../src/features/xp");
-    await xpFeature.handlers.grantxp(interaction, { client: FAKE_CLIENT });
+    // PR 3 seam: grantxp runs on CommandContext — build the Discord context
+    // around this minimal interaction (the router does the same wrapping).
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await xpFeature.handlers.grantxp(
+      buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+      { client: FAKE_CLIENT },
+    );
 
     // EQUAL XP TOTALS:
     assert.equal(xpOf(USER_T_SLASH), 350, "slash: 100 + 250");

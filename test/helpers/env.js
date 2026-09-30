@@ -5,10 +5,17 @@ const os = require("os");
 /**
  * Clear Node require cache for all project `src/` modules so DB_PATH and
  * feature singletons rebind cleanly for integration tests.
+ *
+ * Scoped to THIS project's src dir (prefix match): a substring match on
+ * `${path.sep}src${path.sep}` also purges `node_modules/discord.js/src/...`
+ * internals, which splits discord.js class identity across two cache
+ * generations and breaks `instanceof` checks in tests.
  */
+const PROJECT_SRC_PREFIX = path.join(__dirname, "..", "..", "src") + path.sep;
+
 function resetSrcModules() {
   for (const key of Object.keys(require.cache)) {
-    if (key.includes(`${path.sep}src${path.sep}`)) {
+    if (key.startsWith(PROJECT_SRC_PREFIX)) {
       delete require.cache[key];
     }
   }

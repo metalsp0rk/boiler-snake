@@ -54,6 +54,16 @@ describe("buildDefaultRegistry", () => {
     }
   });
 
+  it("flags the xp feature commands on the context api", () => {
+    // PR 3: load.js passes feature.handlerApi into registerHandler, and only
+    // the xp commands are migrated — everything else stays on the interaction arm.
+    const registry = buildDefaultRegistry();
+    for (const name of ["xp", "leaderboard", "setxp", "grantxp"]) {
+      assert.equal(registry.getHandlerApi(name), "context");
+    }
+    assert.equal(registry.getHandlerApi("settings"), "interaction");
+  });
+
   it("registers youtube autocomplete", () => {
     const registry = buildDefaultRegistry();
     assert.equal(typeof registry.getAutocomplete("youtube"), "function");
@@ -134,6 +144,46 @@ describe("createRegistry", () => {
     const registry = createRegistry();
     assert.throws(() => registry.registerHandler("", () => {}), /name required/);
     assert.throws(() => registry.registerHandler("foo", null), /fn must be a function/);
+  });
+
+  it("defaults the handler api to interaction", () => {
+    const registry = createRegistry();
+    const fn = () => {};
+    registry.registerHandler("xp", fn);
+    assert.equal(registry.getHandlerApi("xp"), "interaction");
+    assert.equal(registry.getHandler("xp"), fn);
+  });
+
+  it("stores the context api when flagged", () => {
+    const registry = createRegistry();
+    const fn = () => {};
+    registry.registerHandler("xp", fn, { api: "context" });
+    assert.equal(registry.getHandlerApi("xp"), "context");
+    assert.equal(registry.getHandler("xp"), fn);
+  });
+
+  it("getHandlerApi is null for unregistered commands", () => {
+    const registry = createRegistry();
+    assert.equal(registry.getHandlerApi("notarealcommand"), null);
+  });
+
+  it("throws on an invalid api value", () => {
+    const registry = createRegistry();
+    assert.throws(
+      () => registry.registerHandler("xp", () => {}, { api: "bogus" }),
+      /api must be/,
+    );
+  });
+
+  it("re-registering without opts replaces fn and resets api to interaction", () => {
+    const registry = createRegistry();
+    const first = () => {};
+    const second = () => {};
+    registry.registerHandler("xp", first, { api: "context" });
+    assert.equal(registry.getHandlerApi("xp"), "context");
+    registry.registerHandler("xp", second);
+    assert.equal(registry.getHandlerApi("xp"), "interaction");
+    assert.equal(registry.getHandler("xp"), second);
   });
 
   it("throws on duplicate command names", () => {

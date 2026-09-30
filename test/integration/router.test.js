@@ -121,15 +121,21 @@ describe("integration: router", () => {
 
   it("safeErrorReply when handler throws", async () => {
     const original = env.registry.getHandler("xp");
-    env.registry.registerHandler("xp", async () => {
-      throw new Error("boom");
-    });
+    // xp is a context-api handler (PR 3): preserve the api flag on replace and
+    // restore so the router keeps routing it through the CommandContext arm.
+    env.registry.registerHandler(
+      "xp",
+      async () => {
+        throw new Error("boom");
+      },
+      { api: "context" },
+    );
     const interaction = await env.runCommand({
       commandName: "xp",
       admin: false,
       user: env.users.memberUser,
     });
     assertEphemeralReply(interaction, /Something went wrong/);
-    env.registry.registerHandler("xp", original);
+    env.registry.registerHandler("xp", original, { api: "context" });
   });
 });

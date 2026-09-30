@@ -309,6 +309,31 @@ describe("integration: leaderboard pagination", () => {
     assert.equal(btns[1].customId, `lb:${env.users.memberUser.id}:5:2`);
   });
 
+  it("page option jumps to the requested page (no buttons needed)", async () => {
+    // 12 seeded users, default limit 10 → page 2 holds ranks 11–12.
+    const interaction = await env.runCommand({
+      commandName: "leaderboard",
+      admin: false,
+      user: env.users.memberUser,
+      options: { page: 2 },
+    });
+    assertReplyContains(interaction, "ranks 11–12");
+    const btns = buttonsOf(interaction.replies[0]);
+    assert.equal(btns[0].disabled, false, "Prev enabled from page 2");
+    assert.equal(btns[1].disabled, true, "Next disabled on the last page");
+  });
+
+  it("page option combines with limit for smaller pages", async () => {
+    // 12 seeded users, limit 5 → page 2 holds ranks 6–10.
+    const interaction = await env.runCommand({
+      commandName: "leaderboard",
+      admin: false,
+      user: env.users.memberUser,
+      options: { limit: 5, page: 2 },
+    });
+    assertReplyContains(interaction, "ranks 6–10");
+  });
+
   it("Next button shows the next page ranks and disables itself on last page", async () => {
     const interaction = await env.runButton({
       customId: `lb:${env.users.memberUser.id}:10:2`,
@@ -353,6 +378,7 @@ describe("integration: leaderboard pagination", () => {
       parseLeaderboardButtonCustomId,
       leaderboardButtonCustomId,
       clampLeaderboardLimit,
+      clampLeaderboardPage,
     } = xpFeature;
     assert.deepEqual(
       parseLeaderboardButtonCustomId(leaderboardButtonCustomId("u1", 10, 2)),
@@ -368,5 +394,61 @@ describe("integration: leaderboard pagination", () => {
     assert.equal(clampLeaderboardLimit(0), 1);
     assert.equal(clampLeaderboardLimit(999), 20);
     assert.equal(clampLeaderboardLimit(7), 7);
+    assert.equal(clampLeaderboardPage(null), 1);
+    assert.equal(clampLeaderboardPage(undefined), 1);
+    assert.equal(clampLeaderboardPage(0), 1);
+    assert.equal(clampLeaderboardPage(999), 20);
+    assert.equal(clampLeaderboardPage(2.7), 2);
+  });
+});
+
+describe("integration: leaderboard page option", () => {
+  const GUILD_ID = "guild-lb-page-option";
+
+  /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
+  let env;
+
+  after(() => {
+    // Close SQLite handles and remove the temp dir created for this env.
+    env?.cleanup();
+  });
+
+  before(async () => {
+    env = await createIntegrationEnv({ guildId: GUILD_ID });
+    // 5 users with deterministic descending XP so rank order is fixed:
+    // page-user-1 (500) > page-user-2 (400) > ... > page-user-5 (100).
+    const seeds = [
+      { id: "page-user-1", xp: 500 },
+      { id: "page-user-2", xp: 400 },
+      { id: "page-user-3", xp: 300 },
+      { id: "page-user-4", xp: 200 },
+      { id: "page-user-5", xp: 100 },
+    ];
+    for (const s of seeds) {
+      env.createUser({ id: s.id, username: s.id });
+      env.db.setXp(env.communityId, s.id, s.xp);
+    }
+  });
+
+  it("page option with limit 1 shows rank 2 only", async () => {
+    const interaction = await env.runCommand({
+      commandName: "leaderboard",
+      admin: false,
+      user: env.users.memberUser,
+      options: { limit: 1, page: 2 },
+    });
+    assertReplyContains(interaction, "ranks 2–2");
+  });
+
+  it("page beyond the seeded data falls back to the empty payload", async () => {
+    // page 99 clamps to 20; at the default limit 10 the fetch window is
+    // 201 rows, far beyond the 5 seeded users → the page has no rows.
+    const interaction = await env.runCommand({
+      commandName: "leaderboard",
+      admin: false,
+      user: env.users.memberUser,
+      options: { page: 99 },
+    });
+    assertEphemeralReply(interaction, /No leaderboard data/);
   });
 });

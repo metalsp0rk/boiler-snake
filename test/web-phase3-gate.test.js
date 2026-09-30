@@ -259,6 +259,7 @@ const restoreFacadeRecorder = ladder.installFacadeRecorder(dbFacade, recorder);
 // slash handlers — loaded ONLY AFTER the recorder exists (see note up top):
 // awardXp/close.js bind their db helpers by destructure at first load.
 const xpFeature = require("../src/features/xp");
+const { buildDiscordCommandContext } = require("../src/platform/discord/context");
 const warningsFeature = require("../src/features/warnings");
 const warningsTicker = require("../src/features/warnings/ticker");
 const staffNotesFeature = require("../src/features/staffNotes");
@@ -1340,7 +1341,12 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         ints: { amount: 250 },
         strings: { reason: "gate parity" },
       });
-      await xpFeature.handlers.grantxp(interaction, { client: FAKE_CLIENT });
+      // PR 3 seam: xp runs on CommandContext — build the Discord context
+      // around the same duck-typed interaction the router would wrap.
+      await xpFeature.handlers.grantxp(
+        buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+        { client: FAKE_CLIENT },
+      );
       assert.equal(auditCount("slash"), before + 1, "exactly one slash-origin row");
       bump("slash", "xp.grant");
       xSlash = {
@@ -1402,7 +1408,11 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         users: { user: { id: USER_P_SUB, bot: false } },
         ints: { amount: 0 },
       });
-      await xpFeature.handlers.grantxp(interaction, { client: FAKE_CLIENT });
+      // PR 3 seam: grantxp runs on CommandContext (see the X1 slash run).
+      await xpFeature.handlers.grantxp(
+        buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+        { client: FAKE_CLIENT },
+      );
       const refusal = interaction.replies.map((r) => JSON.stringify(r)).join(" ");
       assert.match(refusal, /at least 1/, "slash refusal reply");
       const { res, location } = await post(`/g/${CID_A}/xp/grant`, {
