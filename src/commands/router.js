@@ -1,6 +1,7 @@
 const { MessageFlags } = require("discord.js");
 const { commandsAllowed } = require("../core/permissions");
 const { safeErrorReply, replyEphemeral } = require("../core/interaction");
+const { buildDiscordCommandContext } = require("../platform/discord/context");
 
 /**
  * Dispatch a Discord interaction through the command registry.
@@ -80,7 +81,17 @@ async function handleInteraction(interaction, ctx) {
       return;
     }
 
-    await handler(interaction, ctx);
+    // Context-arm handlers receive the platform-neutral CommandContext as
+    // their first argument (spec § Handler migration rule). Everything around
+    // this call — the command-channel gate, logging, safeErrorReply — keeps
+    // operating on the raw interaction.
+    const api = registry.getHandlerApi(interaction.commandName);
+    if (api === "context") {
+      const commandCtx = buildDiscordCommandContext(interaction, ctx);
+      await handler(commandCtx, ctx);
+    } else {
+      await handler(interaction, ctx);
+    }
   } catch (err) {
     console.error("Interaction handler error:", err);
     await safeErrorReply(interaction);

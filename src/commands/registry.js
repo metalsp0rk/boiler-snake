@@ -6,16 +6,17 @@
  * @typedef {object} CommandRegistry
  * @property {object[]} commands REST-ready JSON bodies
  * @property {import("discord.js").SlashCommandBuilder[]} commandBuilders
- * @property {Map<string, Function>} handlers
+ * @property {Map<string, { fn: Function, api: "interaction"|"context" }>} handlers
  * @property {Map<string, Function>} autocomplete
  * @property {Map<string, Function>} modalHandlers customId prefix → handler
  * @property {Map<string, Function>} buttonHandlers customId prefix → handler
  * @property {(builder: object) => void} addCommand
- * @property {(name: string, fn: Function) => void} registerHandler
+ * @property {(name: string, fn: Function, opts?: { api?: "interaction"|"context" }) => void} registerHandler
  * @property {(name: string, fn: Function) => void} registerAutocomplete
  * @property {(prefix: string, fn: Function) => void} registerModalHandler
  * @property {(prefix: string, fn: Function) => void} registerButtonHandler
  * @property {(name: string) => Function|undefined} getHandler
+ * @property {(name: string) => "interaction"|"context"|null} getHandlerApi
  * @property {(name: string) => Function|undefined} getAutocomplete
  * @property {(customId: string) => Function|undefined} getModalHandler
  * @property {(customId: string) => Function|undefined} getButtonHandler
@@ -29,7 +30,7 @@ function createRegistry() {
   const commandBuilders = [];
   /** @type {object[]} */
   let commands = [];
-  /** @type {Map<string, Function>} */
+  /** @type {Map<string, { fn: Function, api: "interaction"|"context" }>} */
   const handlers = new Map();
   /** @type {Map<string, Function>} */
   const autocomplete = new Map();
@@ -73,14 +74,29 @@ function createRegistry() {
       rebuildJson();
     },
 
-    registerHandler(name, fn) {
+    /**
+     * Register a chat-input handler. `opts.api` selects the calling convention
+     * the router uses (spec § Handler migration rule): "interaction" (default)
+     * passes the raw interaction; "context" passes a CommandContext. Re-
+     * registering a name replaces both fn and api.
+     * @param {string} name
+     * @param {Function} fn
+     * @param {{ api?: "interaction"|"context" }} [opts]
+     */
+    registerHandler(name, fn, opts = {}) {
       if (typeof name !== "string" || !name) {
         throw new Error("registerHandler: name required");
       }
       if (typeof fn !== "function") {
         throw new Error(`registerHandler(${name}): fn must be a function`);
       }
-      handlers.set(name, fn);
+      const api = opts?.api ?? "interaction";
+      if (api !== "interaction" && api !== "context") {
+        throw new Error(
+          `registerHandler(${name}): api must be "interaction" or "context", got ${String(api)}`,
+        );
+      }
+      handlers.set(name, { fn, api });
     },
 
     registerAutocomplete(name, fn) {
@@ -118,7 +134,17 @@ function createRegistry() {
     },
 
     getHandler(name) {
-      return handlers.get(name);
+      return handlers.get(name)?.fn;
+    },
+
+    /**
+     * Calling convention registered for a command.
+     * @param {string} name
+     * @returns {"interaction"|"context"|null} null when unregistered
+     */
+    getHandlerApi(name) {
+      const entry = handlers.get(name);
+      return entry ? entry.api : null;
     },
 
     getAutocomplete(name) {
