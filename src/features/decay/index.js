@@ -10,9 +10,8 @@ const {
 // renamed repository function directly. // TODO(fluxer-pr4): facade re-export.
 const { allUsersInCommunity } = require("../../db/repositories/users");
 const { levelFromXp } = require("../../core/xpMath");
-const { isStaff } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
-const { Color, baseEmbed } = require("../../core/theme");
+const { requireStaffFromContext } = require("../../core/permissions");
+const { Color } = require("../../core/theme");
 const { syncMemberRoles } = require("../levelRoles/sync");
 const { syncMemberReactionRoles } = require("../reactionRoles/service");
 const {
@@ -68,24 +67,24 @@ const commands = [
     ),
 ];
 
-async function handleSetDecay(interaction, ctx) {
-  const { client } = ctx;
-  if (!isStaff(interaction)) {
-    await replyDenied(interaction);
-    return;
-  }
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
+ */
+async function handleSetDecay(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const guildId = interaction.guildId;
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
+  // CommandContext carries the resolved internal id (roadmap/fluxer.md
+  // § Repository boundary); externalGuildId is the snowflake for audit text
+  // and the audit-log mirror lookup — never a repository key.
+  const communityId = commandCtx.communityId;
+  const guildId = commandCtx.externalGuildId;
   const settings = getGuildSettings(communityId);
-  const enabled = interaction.options.getBoolean("enabled");
-  const messages = interaction.options.getInteger("messages");
-  const days = interaction.options.getInteger("days");
-  const percent = interaction.options.getNumber("percent");
+  const enabled = commandCtx.options.getBoolean("enabled");
+  const messages = commandCtx.options.getInteger("messages");
+  const days = commandCtx.options.getInteger("days");
+  const percent = commandCtx.options.getNumber("percent");
 
   const patch = {};
   if (enabled !== null) patch.decay_enabled = enabled ? 1 : 0;
@@ -95,15 +94,18 @@ async function handleSetDecay(interaction, ctx) {
     patch.decay_percent = Math.max(0, Math.min(0.95, percent / 100));
 
   if (!Object.keys(patch).length) {
-    await replyEphemeral(interaction, "No decay settings provided to update.");
+    await commandCtx.reply({
+      content: "No decay settings provided to update.",
+      sensitive: true,
+    });
     return;
   }
 
   const before = settings;
   const updated = updateGuildSettings(communityId, patch);
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "decay.settings_update",
     targetType: "guild",
     targetId: guildId,
@@ -126,38 +128,41 @@ async function handleSetDecay(interaction, ctx) {
   });
 
   if (lines.length) {
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "Decay settings updated",
       command: "/setdecay",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: lines,
     }).catch(() => {});
   }
 
   const decayPct = Math.round((Number(updated.decay_percent) || 0) * 100);
-  const embed = baseEmbed({
-    color: Color.config,
+  // Plain-object embed (NormalizedEmbed) — the Discord reply builder re-wraps
+  // it into EmbedBuilder at the adapter edge.
+  const embed = {
     title: "Updated decay settings",
-    footer: "Staff only",
-  }).addFields(
-    {
-      name: "Enabled",
-      value: `**${!!updated.decay_enabled}**`,
-      inline: true,
-    },
-    {
-      name: "Threshold",
-      value: `**${updated.decay_min_messages}** messages / **${updated.decay_window_days}** days`,
-      inline: true,
-    },
-    {
-      name: "Percent",
-      value: `**${decayPct}%**`,
-      inline: true,
-    },
-  );
+    color: Color.config,
+    footer: { text: "Staff only" },
+    fields: [
+      {
+        name: "Enabled",
+        value: `**${!!updated.decay_enabled}**`,
+        inline: true,
+      },
+      {
+        name: "Threshold",
+        value: `**${updated.decay_min_messages}** messages / **${updated.decay_window_days}** days`,
+        inline: true,
+      },
+      {
+        name: "Percent",
+        value: `**${decayPct}%**`,
+        inline: true,
+      },
+    ],
+  };
 
-  await replyEphemeral(interaction, { embeds: [embed] });
+  await commandCtx.reply({ embeds: [embed], sensitive: true });
 }
 
 /**
@@ -275,6 +280,13 @@ module.exports = {
   commands,
   handlers: {
     setdecay: handleSetDecay,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext instead of a raw interaction.
+  // The ticker (startDecayScheduler / runDecayForGuild) is NOT migrated —
+  // it stays on the Discord client (PR 7).
+  handlerApi: {
+    setdecay: "context",
   },
   start,
   startDecayScheduler,

@@ -10,7 +10,6 @@
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
-  EmbedBuilder,
   ActionRowBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -26,12 +25,16 @@ const {
   softDeleteStaffNote,
   MAX_NOTE_CONTENT,
 } = require("../../db");
-const { requireStaff } = require("../../core/permissions");
+const {
+  requireStaff,
+  requireStaffFromContext,
+} = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { ensureCommunity } = require("../../platform/community");
+const { showModalFromContext } = require("../../platform/context");
 const {
   Color,
   formatNoteRef,
@@ -249,39 +252,44 @@ function buildEditNoteModal(noteNumber, existingContent) {
 
 /**
  * Build success embed for a created note.
+ * Plain NormalizedEmbed object (roadmap/fluxer.md § CommandContext): the
+ * Discord adapter wraps it in an EmbedBuilder at the reply boundary; the
+ * modal arm passes it to discord.js, which accepts raw embed data too.
  * @param {object} note
  * @param {string} subjectUserId
- * @returns {EmbedBuilder}
+ * @returns {object}
  */
 function buildCreatedEmbed(note, subjectUserId) {
-  return new EmbedBuilder()
-    .setColor(Color.brand)
-    .setTitle(`Note ${formatNoteRef(note.note_number)} created`)
-    .setDescription(note.content.slice(0, 4000))
-    .addFields(
+  return {
+    title: `Note ${formatNoteRef(note.note_number)} created`,
+    description: note.content.slice(0, 4000),
+    color: Color.brand,
+    fields: [
       { name: "Subject", value: `<@${subjectUserId}>`, inline: true },
       { name: "Author", value: `<@${note.author_id}>`, inline: true },
       { name: "Created", value: fullTs(note.created_at), inline: true },
-    )
-    .setFooter({ text: "Staff only — never shown to the member" });
+    ],
+    footer: { text: "Staff only — never shown to the member" },
+  };
 }
 
 /**
- * Build success embed for an updated note.
+ * Build success embed for an updated note (plain NormalizedEmbed).
  * @param {object} note
- * @returns {EmbedBuilder}
+ * @returns {object}
  */
 function buildUpdatedEmbed(note) {
-  return new EmbedBuilder()
-    .setColor(Color.brand)
-    .setTitle(`Note ${formatNoteRef(note.note_number)} updated`)
-    .setDescription(note.content.slice(0, 4000))
-    .addFields(
+  return {
+    title: `Note ${formatNoteRef(note.note_number)} updated`,
+    description: note.content.slice(0, 4000),
+    color: Color.brand,
+    fields: [
       { name: "Subject", value: `<@${note.user_id}>`, inline: true },
       { name: "Edited by", value: `<@${note.edited_by}>`, inline: true },
       { name: "Edited", value: fullTs(note.edited_at), inline: true },
-    )
-    .setFooter({ text: "Staff only — never shown to the member" });
+    ],
+    footer: { text: "Staff only — never shown to the member" },
+  };
 }
 
 /**
@@ -311,64 +319,82 @@ function persistNewNote(opts) {
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleNote(interaction, ctx) {
-  if (!(await requireStaff(interaction))) return;
+async function handleNote(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const sub = interaction.options.getSubcommand();
-  if (sub === "add") return handleAdd(interaction, ctx);
-  if (sub === "list") return handleList(interaction);
-  if (sub === "edit") return handleEdit(interaction, ctx);
-  if (sub === "delete") return handleDelete(interaction, ctx);
-  if (sub === "info") return handleInfo(interaction);
-  if (sub === "settings") return handleSettings(interaction);
+  const sub = commandCtx.subcommand;
+  if (sub === "add") return handleAdd(commandCtx, featureCtx);
+  if (sub === "list") return handleList(commandCtx, featureCtx);
+  if (sub === "edit") return handleEdit(commandCtx, featureCtx);
+  if (sub === "delete") return handleDelete(commandCtx, featureCtx);
+  if (sub === "info") return handleInfo(commandCtx, featureCtx);
+  if (sub === "settings") return handleSettings(commandCtx, featureCtx);
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Unknown subcommand: \`${sub}\``,
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleAdd(interaction, ctx) {
-  const target = interaction.options.getUser("user", true);
-  const content = interaction.options.getString("content");
+async function handleAdd(commandCtx, featureCtx) {
+  void featureCtx;
+  const target = commandCtx.options.getUser("user", true);
+  const content = commandCtx.options.getString("content");
 
   if (target.bot) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Staff notes are for human members, not bots.",
+      sensitive: true,
     });
     return;
   }
 
   // Omit content → modal for longer text (Discord slash strings are awkward for multi-paragraph).
+  // showModalFromContext is the sanctioned modal path (spec: CommandContext has
+  // no showModal); it returns false on Fluxer, where the overlay makes content
+  // required — so reply with the inline usage line instead.
   if (content == null) {
-    await interaction.showModal(buildAddNoteModal(target.id));
+    const shown = await showModalFromContext(
+      commandCtx,
+      buildAddNoteModal(target.id),
+    );
+    if (!shown) {
+      await commandCtx.reply({
+        content:
+          "Pass the note body with the `content` option — this platform can't open the note modal.",
+        sensitive: true,
+      });
+    }
     return;
   }
 
-  const communityId = resolveCommunityId(interaction);
+  const communityId = commandCtx.communityId;
   const result = persistNewNote({
     communityId,
     userId: target.id,
-    authorId: interaction.user.id,
+    authorId: commandCtx.userId,
     content,
   });
   if (!result.ok) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: result.error,
+      sensitive: true,
     });
     return;
   }
 
   const note = result.note;
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "notes.add",
     targetType: "note",
     targetId: String(note.id),
@@ -378,18 +404,19 @@ async function handleAdd(interaction, ctx) {
       content: snippet(note.content, 500),
     },
   });
-  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Staff note created",
     command: "/note add",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `${formatNoteRef(note.note_number)} on <@${target.id}>`,
       snippet(note.content, 120),
     ],
   }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     embeds: [buildCreatedEmbed(note, target.id)],
+    sensitive: true,
   });
 }
 
@@ -465,14 +492,16 @@ async function handleAddNoteModal(interaction, ctx) {
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleList(interaction) {
-  const target = interaction.options.getUser("user");
-  const page = interaction.options.getInteger("page") || 1;
-  const includeDeleted = !!interaction.options.getBoolean("include_deleted");
+async function handleList(commandCtx, featureCtx) {
+  void featureCtx;
+  const target = commandCtx.options.getUser("user");
+  const page = commandCtx.options.getInteger("page") || 1;
+  const includeDeleted = !!commandCtx.options.getBoolean("include_deleted");
   const offset = (page - 1) * LIST_PAGE_SIZE;
-  const communityId = resolveCommunityId(interaction);
+  const communityId = commandCtx.communityId;
 
   if (target) {
     const total = countStaffNotes(communityId, target.id, {
@@ -486,11 +515,12 @@ async function handleList(interaction) {
     const totalPages = Math.max(1, Math.ceil(total / LIST_PAGE_SIZE));
 
     if (!notes.length) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           total === 0
             ? `No${includeDeleted ? "" : " active"} staff notes for <@${target.id}>.`
             : `No notes on page **${page}** for <@${target.id}> (pages 1–${totalPages}).`,
+        sensitive: true,
       });
       return;
     }
@@ -502,8 +532,9 @@ async function handleList(interaction) {
       ` · ${total} total` +
       (includeDeleted ? " · including deleted" : "");
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `${header}\n\n${lines.join("\n\n")}`.slice(0, 1900),
+      sensitive: true,
     });
     return;
   }
@@ -517,9 +548,10 @@ async function handleList(interaction) {
   });
 
   if (!notes.length) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         "No staff notes in this server yet. Use `/note add user:…` (optionally open the content modal).",
+      sensitive: true,
     });
     return;
   }
@@ -530,43 +562,56 @@ async function handleList(interaction) {
     (includeDeleted ? " · including deleted" : "") +
     `\n_Pass \`user:\` to list notes for one member (paginated)._`;
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `${header}\n\n${lines.join("\n\n")}`.slice(0, 1900),
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleEdit(interaction, ctx) {
-  const noteNumber = interaction.options.getInteger("id", true);
-  const content = interaction.options.getString("content");
+async function handleEdit(commandCtx, featureCtx) {
+  void featureCtx;
+  const noteNumber = commandCtx.options.getInteger("id", true);
+  const content = commandCtx.options.getString("content");
 
-  const communityId = resolveCommunityId(interaction);
+  const communityId = commandCtx.communityId;
   const existing = getStaffNote(communityId, noteNumber);
   if (!existing) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
+      sensitive: true,
     });
     return;
   }
   if (existing.deleted_at != null) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Note **${formatNoteRef(noteNumber)}** is soft-deleted and cannot be edited. Add a new note instead.`,
+      sensitive: true,
     });
     return;
   }
 
-  // Omit content → modal prefilled with current body
+  // Omit content → modal prefilled with current body (sanctioned
+  // showModalFromContext path; Fluxer replies the inline-usage line instead).
   if (content == null) {
-    await interaction.showModal(
+    const shown = await showModalFromContext(
+      commandCtx,
       buildEditNoteModal(noteNumber, existing.content),
     );
+    if (!shown) {
+      await commandCtx.reply({
+        content:
+          "Pass the new note body with the `content` option — this platform can't open the note modal.",
+        sensitive: true,
+      });
+    }
     return;
   }
 
-  await applyNoteEdit(interaction, ctx, noteNumber, content, "/note edit");
+  await applyNoteEditContext(commandCtx, noteNumber, content, "/note edit");
 }
 
 /**
@@ -604,7 +649,80 @@ async function handleEditNoteModal(interaction, ctx) {
 }
 
 /**
- * Shared edit path for slash + modal.
+ * Shared edit core for slash (context arm) + modal (interaction arm).
+ * @param {object} target Resolved call-site bundle
+ * @param {number} target.communityId internal communities.id
+ * @param {string} target.externalGuildId external guild id (audit-log channel lookup)
+ * @param {string} target.actorUserId invoker user id (db + audit actor)
+ * @param {object} target.actor ResolvedUser / User for the audit embed label
+ * @param {object} target.outbound OutboundClient for the audit log
+ * @param {(payload: object) => Promise<void>} target.reply ephemeral-style reply
+ * @param {number} noteNumber
+ * @param {string} content
+ * @param {string} auditCommand
+ */
+async function applyNoteEditCore(target, noteNumber, content, auditCommand) {
+  const { communityId, externalGuildId, actorUserId, actor, outbound, reply } =
+    target;
+  let note;
+  try {
+    note = updateStaffNote(communityId, noteNumber, {
+      content,
+      editedBy: actorUserId,
+    });
+  } catch (err) {
+    if (err?.code === "INVALID_CONTENT") {
+      await reply({ content: err.message });
+      return;
+    }
+    console.error("[staffNotes] edit failed:", err);
+    await reply({
+      content: `Failed to update the note: ${err?.message || "database error"}`,
+    });
+    return;
+  }
+
+  if (!note) {
+    const existing = getStaffNote(communityId, noteNumber);
+    if (existing?.deleted_at != null) {
+      await reply({
+        content: `Note **${formatNoteRef(noteNumber)}** is soft-deleted and cannot be edited. Add a new note instead.`,
+      });
+      return;
+    }
+    await reply({
+      content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
+    });
+    return;
+  }
+
+  recordSlashAudit({
+    communityId,
+    actorUserId,
+    action: "notes.update",
+    targetType: "note",
+    targetId: String(note.id),
+    details: {
+      note_number: note.note_number,
+      subject_user_id: note.user_id,
+      content: snippet(note.content, 500),
+    },
+  });
+  await logConfigChange(outbound, externalGuildId, {
+    title: "Staff note edited",
+    command: auditCommand,
+    actor,
+    changes: [
+      `${formatNoteRef(note.note_number)} on <@${note.user_id}>`,
+      snippet(note.content, 120),
+    ],
+  }).catch(() => {});
+
+  await reply({ embeds: [buildUpdatedEmbed(note)] });
+}
+
+/**
+ * Interaction-arm (modal submit) wrapper for the shared edit core.
  * @param {import("discord.js").Interaction} interaction
  * @param {object} [ctx]
  * @param {number} noteNumber
@@ -618,107 +736,78 @@ async function applyNoteEdit(
   content,
   auditCommand,
 ) {
-  const communityId = resolveCommunityId(interaction);
-  let note;
-  try {
-    note = updateStaffNote(communityId, noteNumber, {
-      content,
-      editedBy: interaction.user.id,
-    });
-  } catch (err) {
-    if (err?.code === "INVALID_CONTENT") {
-      await replyEphemeral(interaction, {
-        content: err.message,
-      });
-      return;
-    }
-    console.error("[staffNotes] edit failed:", err);
-    await replyEphemeral(interaction, {
-      content: `Failed to update the note: ${err?.message || "database error"}`,
-    });
-    return;
-  }
-
-  if (!note) {
-    const existing = getStaffNote(communityId, noteNumber);
-    if (existing?.deleted_at != null) {
-      await replyEphemeral(interaction, {
-        content: `Note **${formatNoteRef(noteNumber)}** is soft-deleted and cannot be edited. Add a new note instead.`,
-      });
-      return;
-    }
-    await replyEphemeral(interaction, {
-      content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
-    });
-    return;
-  }
-
-  recordSlashAudit({
-    interaction,
-    communityId,
-    action: "notes.update",
-    targetType: "note",
-    targetId: String(note.id),
-    details: {
-      note_number: note.note_number,
-      subject_user_id: note.user_id,
-      content: snippet(note.content, 500),
-    },
-  });
-  await logConfigChange(
-    getDiscordOutbound(ctx?.client || interaction.client),
-    interaction.guildId,
+  await applyNoteEditCore(
     {
-      title: "Staff note edited",
-      command: auditCommand,
+      communityId: resolveCommunityId(interaction),
+      externalGuildId: interaction.guildId,
+      actorUserId: interaction.user.id,
       actor: interaction.user,
-      changes: [
-        `${formatNoteRef(note.note_number)} on <@${note.user_id}>`,
-        snippet(note.content, 120),
-      ],
+      outbound: getDiscordOutbound(ctx?.client || interaction.client),
+      reply: (payload) => replyEphemeral(interaction, payload),
     },
-  ).catch(() => {});
-
-  await replyEphemeral(interaction, {
-    embeds: [buildUpdatedEmbed(note)],
-  });
+    noteNumber,
+    content,
+    auditCommand,
+  );
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * Context-arm (slash) wrapper for the shared edit core.
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {number} noteNumber
+ * @param {string} content
+ * @param {string} auditCommand
  */
-async function handleDelete(interaction, ctx) {
-  const noteNumber = interaction.options.getInteger("id", true);
-  const communityId = resolveCommunityId(interaction);
+async function applyNoteEditContext(commandCtx, noteNumber, content, auditCommand) {
+  await applyNoteEditCore(
+    {
+      communityId: commandCtx.communityId,
+      externalGuildId: commandCtx.externalGuildId,
+      actorUserId: commandCtx.userId,
+      actor: commandCtx.user,
+      outbound: commandCtx.outbound,
+      reply: (payload) => commandCtx.reply({ ...payload, sensitive: true }),
+    },
+    noteNumber,
+    content,
+    auditCommand,
+  );
+}
+
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleDelete(commandCtx, featureCtx) {
+  void featureCtx;
+  const noteNumber = commandCtx.options.getInteger("id", true);
+  const communityId = commandCtx.communityId;
   const existing = getStaffNote(communityId, noteNumber);
 
   if (!existing) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
+      sensitive: true,
     });
     return;
   }
 
   if (existing.deleted_at != null) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         `Note **${formatNoteRef(noteNumber)}** is already soft-deleted` +
         (existing.deleted_by ? ` (by <@${existing.deleted_by}>)` : "") +
         `.`,
+      sensitive: true,
     });
     return;
   }
 
-  const note = softDeleteStaffNote(
-    communityId,
-    noteNumber,
-    interaction.user.id,
-  );
+  const note = softDeleteStaffNote(communityId, noteNumber, commandCtx.userId);
 
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "notes.delete",
     targetType: "note",
     targetId: String(note.id),
@@ -727,73 +816,83 @@ async function handleDelete(interaction, ctx) {
       subject_user_id: note.user_id,
     },
   });
-  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Staff note soft-deleted",
     command: "/note delete",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `${formatNoteRef(note.note_number)} on <@${note.user_id}>`,
       snippet(note.content, 120),
     ],
   }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `Soft-deleted **${formatNoteRef(note.note_number)}** about <@${note.user_id}>.` +
       ` The row is kept for audit; use \`/note list include_deleted:true\` to see it.`,
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleInfo(interaction) {
-  const noteNumber = interaction.options.getInteger("id", true);
-  const note = getStaffNote(resolveCommunityId(interaction), noteNumber);
+async function handleInfo(commandCtx, featureCtx) {
+  void featureCtx;
+  const noteNumber = commandCtx.options.getInteger("id", true);
+  const note = getStaffNote(commandCtx.communityId, noteNumber);
 
   if (!note) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
+      sensitive: true,
     });
     return;
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(note.deleted_at != null ? Color.muted : Color.brand)
-    .setTitle(`Note ${formatNoteRef(note.note_number)}`)
-    .setDescription(note.content.slice(0, 4000))
-    .addFields(
-      { name: "Subject", value: `<@${note.user_id}>`, inline: true },
-      { name: "Author", value: `<@${note.author_id}>`, inline: true },
-      { name: "Created", value: fullTs(note.created_at), inline: true },
-    )
-    .setFooter({ text: "Staff only — never shown to the member" });
-
+  // Plain NormalizedEmbed — same visible text as the previous EmbedBuilder.
+  const fields = [
+    { name: "Subject", value: `<@${note.user_id}>`, inline: true },
+    { name: "Author", value: `<@${note.author_id}>`, inline: true },
+    { name: "Created", value: fullTs(note.created_at), inline: true },
+  ];
   if (note.edited_at != null) {
-    embed.addFields({
+    fields.push({
       name: "Last edited",
       value: `${fullTs(note.edited_at)} by <@${note.edited_by}>`,
       inline: false,
     });
   }
   if (note.deleted_at != null) {
-    embed.addFields({
+    fields.push({
       name: "Soft-deleted",
       value: `${fullTs(note.deleted_at)} by <@${note.deleted_by}>`,
       inline: false,
     });
   }
 
-  await replyEphemeral(interaction, {
-    embeds: [embed],
+  await commandCtx.reply({
+    embeds: [
+      {
+        title: `Note ${formatNoteRef(note.note_number)}`,
+        description: note.content.slice(0, 4000),
+        color: note.deleted_at != null ? Color.muted : Color.brand,
+        fields,
+        footer: { text: "Staff only — never shown to the member" },
+      },
+    ],
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleSettings(interaction) {
-  const communityId = resolveCommunityId(interaction);
+async function handleSettings(commandCtx, featureCtx) {
+  void featureCtx;
+  const communityId = commandCtx.communityId;
   const active = countStaffNotes(communityId, null, {
     includeDeleted: false,
   });
@@ -802,7 +901,7 @@ async function handleSettings(interaction) {
   });
   const deleted = all - active;
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `**Staff notes settings**\n` +
       `Active notes: **${active}**` +
@@ -813,6 +912,7 @@ async function handleSettings(interaction) {
       `Omit \`content\` on add/edit to open a **modal** for longer text.\n` +
       `After \`/ticket close\`, use **Add staff note** or the \`staff_note\` option.\n` +
       `Notes are **never** DMed or shown to the subject member. Soft-delete only; no hard delete.`,
+    sensitive: true,
   });
 }
 
@@ -836,6 +936,12 @@ module.exports = {
   commands,
   handlers: {
     note: handleNote,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the /note
+  // slash handler receives a CommandContext; modal submits stay on the
+  // interaction arm.
+  handlerApi: {
+    note: "context",
   },
   modalHandlers: {
     // Longest-prefix match; both prefixes start with "note:" so register both.

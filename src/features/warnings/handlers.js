@@ -1,11 +1,11 @@
 /**
  * /warn and /setwarn subcommand implementations. Dispatchers live in index.js.
+ *
+ * Migrated to the CommandContext seam (roadmap/fluxer.md § CommandContext):
+ * every handler here receives (commandCtx, featureCtx) and uses only the
+ * platform-neutral vocabulary — communityId (integer) for repositories,
+ * externalGuildId for display/audit, outbound for platform I/O.
  */
-const {
-  EmbedBuilder,
-  ChannelType,
-  AttachmentBuilder,
-} = require("discord.js");
 const {
   createWarning,
   listWarnings,
@@ -20,18 +20,14 @@ const {
   getGuildSettings,
   updateGuildSettings,
   MAX_WARN_REASON,
-  MAX_EVIDENCE_TEXT,
   MAX_EXPIRY_DAYS,
   normalizeEvidenceMessageUrl,
   normalizeEvidenceText,
   normalizeExpiryDays,
   resolveExpiryDays,
 } = require("../../db");
-const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logWarnEvent } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
-const { ensureCommunity } = require("../../platform/community");
 const { buildStaffRecordMarkdown, exportFilename } = require("./exportRecord");
 const {
   formatWarnRef,
@@ -50,58 +46,49 @@ const {
   formatListLine,
   warnDmEnabled,
   guildWarnExpiryDays,
-  tryDmUser,
 } = require("./helpers");
 
 /**
- * Edge resolution: translate the interaction's Discord guild snowflake into the
- * internal integer community id (spec § Repository boundary). Every repository
- * call receives the integer; the snowflake stays only for Discord I/O
- * (audit-log channels, evidence URLs, embeds).
- * @param {import("discord.js").GuildInteraction} interaction
- * @returns {number}
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-function resolveCommunityId(interaction) {
-  return ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
-}
-
-/**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
- */
-async function handleAdd(interaction, ctx) {
-  const target = interaction.options.getUser("user", true);
-  const reason = interaction.options.getString("reason", true);
-  const silent = !!interaction.options.getBoolean("silent");
-  const noteNumber = interaction.options.getInteger("note");
-  const messageOpt = interaction.options.getString("message");
-  const evidenceOpt = interaction.options.getString("evidence");
-  const expiresDaysOpt = interaction.options.getInteger("expires_days");
-  const communityId = resolveCommunityId(interaction);
+async function handleAdd(commandCtx, featureCtx) {
+  void featureCtx;
+  const target = commandCtx.options.getUser("user", true);
+  const reason = commandCtx.options.getString("reason", true);
+  const silent = !!commandCtx.options.getBoolean("silent");
+  const noteNumber = commandCtx.options.getInteger("note");
+  const messageOpt = commandCtx.options.getString("message");
+  const evidenceOpt = commandCtx.options.getString("evidence");
+  const expiresDaysOpt = commandCtx.options.getInteger("expires_days");
+  // Repository key: integer community id (resolved by the context builder).
+  const communityId = commandCtx.communityId;
 
   if (target.bot) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Warnings are for human members, not bots.",
+      sensitive: true,
     });
     return;
   }
 
-  const urlCheck = normalizeEvidenceMessageUrl(messageOpt, interaction.guildId);
+  const urlCheck = normalizeEvidenceMessageUrl(
+    messageOpt,
+    commandCtx.externalGuildId,
+  );
   if (!urlCheck.ok) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: urlCheck.error,
+      sensitive: true,
     });
     return;
   }
 
   const evidenceCheck = normalizeEvidenceText(evidenceOpt);
   if (!evidenceCheck.ok) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: evidenceCheck.error,
+      sensitive: true,
     });
     return;
   }
@@ -110,8 +97,9 @@ async function handleAdd(interaction, ctx) {
   if (noteNumber != null) {
     const note = getStaffNote(communityId, noteNumber);
     if (!note) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `No staff note **N-${noteNumber}** in this server. Omit \`note\` or use a valid note number.`,
+        sensitive: true,
       });
       return;
     }
@@ -128,10 +116,11 @@ async function handleAdd(interaction, ctx) {
   try {
     warn = createWarning({
       communityId,
-      // Evidence URLs embed Discord snowflakes — keep the external id here.
-      externalGuildId: interaction.guildId,
+      // Evidence URLs embed the external (Discord) snowflake — keep the
+      // external id here; the repository stores it verbatim.
+      externalGuildId: commandCtx.externalGuildId,
       userId: target.id,
-      issuerId: interaction.user.id,
+      issuerId: commandCtx.userId,
       reason,
       relatedNoteId,
       expiresDays: expiresDaysOpt,
@@ -147,14 +136,16 @@ async function handleAdd(interaction, ctx) {
       err?.code === "INVALID_EVIDENCE_TEXT" ||
       err?.code === "INVALID_EXPIRY"
     ) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: err.message,
+        sensitive: true,
       });
       return;
     }
     console.error("[warnings] create failed:", err);
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Failed to save the warning: ${err?.message || "database error"}`,
+      sensitive: true,
     });
     return;
   }
@@ -163,8 +154,8 @@ async function handleAdd(interaction, ctx) {
   const ref = formatWarnRef(warn.warning_number);
 
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "warnings.add",
     targetType: "user",
     targetId: target.id,
@@ -177,10 +168,10 @@ async function handleAdd(interaction, ctx) {
     },
   });
 
-  await logWarnEvent(getDiscordOutbound(interaction.client), interaction.guildId, {
+  await logWarnEvent(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Warning issued",
     command: "/warn add",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `${ref} on <@${target.id}>`,
       `Active count: **${activeCount}**`,
@@ -193,12 +184,14 @@ async function handleAdd(interaction, ctx) {
 
   let dmNote = "DM skipped (silent).";
   if (!silent && warnDmEnabled(communityId)) {
-    const guildName = interaction.guild?.name || "this server";
+    // Guild display name via outbound (fetchGuild reads the cache first).
+    const guild = await commandCtx.outbound.fetchGuild(communityId);
+    const guildName = guild?.name || "this server";
     const dmFields = [
       { name: "Warning", value: ref, inline: true },
       {
         name: "Issued by",
-        value: interaction.user.username || interaction.user.tag || "staff",
+        value: commandCtx.user.username || "staff",
         inline: true,
       },
       { name: "Active warnings", value: String(activeCount), inline: true },
@@ -214,43 +207,47 @@ async function handleAdd(interaction, ctx) {
     }
     // Evidence stays staff-only — not included in member DM.
 
-    const dmEmbed = new EmbedBuilder()
-      .setColor(COLOR_ISSUE)
-      .setTitle(`Warning issued in ${guildName}`)
-      .addFields(dmFields)
-      .setFooter({ text: "View your history anytime with /warn mine" });
+    // Plain NormalizedEmbed — sendDm payloads accept raw embed data.
+    const dmEmbed = {
+      title: `Warning issued in ${guildName}`,
+      color: COLOR_ISSUE,
+      fields: dmFields,
+      footer: { text: "View your history anytime with /warn mine" },
+    };
 
-    const sent = await tryDmUser(target, { embeds: [dmEmbed] });
-    dmNote = sent
-      ? "Member notified by DM."
-      : "Could not DM the member (DMs closed or blocked).";
+    const sent = await commandCtx.outbound.sendDm(target.id, {
+      embeds: [dmEmbed],
+    });
+    if (sent?.ok) {
+      dmNote = "Member notified by DM.";
+    } else {
+      console.error(
+        `[warnings] DM to ${target.id} failed: ${sent?.error || "unknown"}`,
+      );
+      dmNote = "Could not DM the member (DMs closed or blocked).";
+    }
   } else if (!silent) {
     dmNote = "Member DMs are disabled for this server (`/setwarn dm`).";
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(COLOR_ISSUE)
-    .setTitle(`Warning ${ref} issued`)
-    .setDescription(warn.reason.slice(0, 4000))
-    .addFields(
-      { name: "Subject", value: `<@${target.id}>`, inline: true },
-      { name: "Issuer", value: `<@${warn.issuer_id}>`, inline: true },
-      { name: "Active count", value: String(activeCount), inline: true },
-      { name: "Created", value: fullTs(warn.created_at), inline: true },
-      {
-        name: "Expires",
-        value:
-          warn.expires_at != null
-            ? `${fullTs(warn.expires_at)} (${effectiveDays}d)`
-            : "Never",
-        inline: true,
-      },
-      { name: "Notification", value: dmNote, inline: false },
-    )
-    .setFooter({ text: "Staff only" });
-
+  // Plain NormalizedEmbed — same visible text as the previous EmbedBuilder.
+  const fields = [
+    { name: "Subject", value: `<@${target.id}>`, inline: true },
+    { name: "Issuer", value: `<@${warn.issuer_id}>`, inline: true },
+    { name: "Active count", value: String(activeCount), inline: true },
+    { name: "Created", value: fullTs(warn.created_at), inline: true },
+    {
+      name: "Expires",
+      value:
+        warn.expires_at != null
+          ? `${fullTs(warn.expires_at)} (${effectiveDays}d)`
+          : "Never",
+      inline: true,
+    },
+    { name: "Notification", value: dmNote, inline: false },
+  ];
   if (warn.related_note_id != null) {
-    embed.addFields({
+    fields.push({
       name: "Linked note",
       value:
         noteNumber != null
@@ -260,34 +257,45 @@ async function handleAdd(interaction, ctx) {
     });
   }
   if (warn.evidence_message_url) {
-    embed.addFields({
+    fields.push({
       name: "Evidence message",
       value: warn.evidence_message_url,
       inline: false,
     });
   }
   if (warn.evidence_text) {
-    embed.addFields({
+    fields.push({
       name: "Evidence notes",
       value: warn.evidence_text.slice(0, 1024),
       inline: false,
     });
   }
 
-  await replyEphemeral(interaction, {
-    embeds: [embed],
+  await commandCtx.reply({
+    embeds: [
+      {
+        title: `Warning ${ref} issued`,
+        description: warn.reason.slice(0, 4000),
+        color: COLOR_ISSUE,
+        fields,
+        footer: { text: "Staff only" },
+      },
+    ],
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleList(interaction) {
-  const target = interaction.options.getUser("user", true);
-  const page = interaction.options.getInteger("page") || 1;
-  const includeVoided = !!interaction.options.getBoolean("include_voided");
+async function handleList(commandCtx, featureCtx) {
+  void featureCtx;
+  const target = commandCtx.options.getUser("user", true);
+  const page = commandCtx.options.getInteger("page") || 1;
+  const includeVoided = !!commandCtx.options.getBoolean("include_voided");
   const offset = (page - 1) * LIST_PAGE_SIZE;
-  const communityId = resolveCommunityId(interaction);
+  const communityId = commandCtx.communityId;
 
   const total = countWarnings(communityId, target.id, {
     includeVoided,
@@ -301,11 +309,12 @@ async function handleList(interaction) {
   const active = countActiveWarnings(communityId, target.id);
 
   if (!warnings.length) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         total === 0
           ? `No${includeVoided ? "" : " active"} warnings for <@${target.id}>.`
           : `No warnings on page **${page}** for <@${target.id}> (pages 1–${totalPages}).`,
+      sensitive: true,
     });
     return;
   }
@@ -320,55 +329,56 @@ async function handleList(interaction) {
       : ` · ${total} listed`) +
     (includeVoided ? " · including voided" : "");
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `${header}\n\n${lines.join("\n\n")}`.slice(0, 1900),
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleInfo(interaction) {
-  const warningNumber = interaction.options.getInteger("id", true);
-  const communityId = resolveCommunityId(interaction);
+async function handleInfo(commandCtx, featureCtx) {
+  void featureCtx;
+  const warningNumber = commandCtx.options.getInteger("id", true);
+  const communityId = commandCtx.communityId;
   const warn = getWarning(communityId, warningNumber);
 
   if (!warn) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `No warning **${formatWarnRef(warningNumber)}** in this server.`,
+      sensitive: true,
     });
     return;
   }
 
   const active = countActiveWarnings(communityId, warn.user_id);
-  const embed = new EmbedBuilder()
-    .setColor(warn.voided_at != null ? COLOR_VOID : COLOR_INFO)
-    .setTitle(`Warning ${formatWarnRef(warn.warning_number)}`)
-    .setDescription(warn.reason.slice(0, 4000))
-    .addFields(
-      { name: "Subject", value: `<@${warn.user_id}>`, inline: true },
-      { name: "Issuer", value: `<@${warn.issuer_id}>`, inline: true },
-      {
-        name: "Status",
-        value: warn.voided_at != null ? "Voided" : "Active",
-        inline: true,
-      },
-      { name: "Created", value: fullTs(warn.created_at), inline: true },
-      {
-        name: "Expires",
-        value: warn.expires_at != null ? fullTs(warn.expires_at) : "Never",
-        inline: true,
-      },
-      {
-        name: "Subject active count",
-        value: String(active),
-        inline: true,
-      },
-    );
+  // Plain NormalizedEmbed — same visible text as the previous EmbedBuilder.
+  const fields = [
+    { name: "Subject", value: `<@${warn.user_id}>`, inline: true },
+    { name: "Issuer", value: `<@${warn.issuer_id}>`, inline: true },
+    {
+      name: "Status",
+      value: warn.voided_at != null ? "Voided" : "Active",
+      inline: true,
+    },
+    { name: "Created", value: fullTs(warn.created_at), inline: true },
+    {
+      name: "Expires",
+      value: warn.expires_at != null ? fullTs(warn.expires_at) : "Never",
+      inline: true,
+    },
+    {
+      name: "Subject active count",
+      value: String(active),
+      inline: true,
+    },
+  ];
 
   if (warn.related_note_id != null) {
     const linked = getStaffNoteById(warn.related_note_id);
-    embed.addFields({
+    fields.push({
       name: "Linked note",
       value: linked ? `N-${linked.note_number}` : `id ${warn.related_note_id}`,
       inline: true,
@@ -376,14 +386,14 @@ async function handleInfo(interaction) {
   }
 
   if (warn.evidence_message_url) {
-    embed.addFields({
+    fields.push({
       name: "Evidence message",
       value: warn.evidence_message_url,
       inline: false,
     });
   }
   if (warn.evidence_text) {
-    embed.addFields({
+    fields.push({
       name: "Evidence notes",
       value: String(warn.evidence_text).slice(0, 1024),
       inline: false,
@@ -391,7 +401,7 @@ async function handleInfo(interaction) {
   }
 
   if (warn.voided_at != null) {
-    embed.addFields(
+    fields.push(
       {
         name: "Voided",
         value: `${fullTs(warn.voided_at)} by <@${warn.voided_by}>`,
@@ -405,49 +415,62 @@ async function handleInfo(interaction) {
     );
   }
 
-  await replyEphemeral(interaction, {
-    embeds: [embed],
+  await commandCtx.reply({
+    embeds: [
+      {
+        title: `Warning ${formatWarnRef(warn.warning_number)}`,
+        description: warn.reason.slice(0, 4000),
+        color: warn.voided_at != null ? COLOR_VOID : COLOR_INFO,
+        fields,
+      },
+    ],
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleVoid(interaction, ctx) {
-  const warningNumber = interaction.options.getInteger("id", true);
-  const voidReason = interaction.options.getString("reason", true);
-  const communityId = resolveCommunityId(interaction);
+async function handleVoid(commandCtx, featureCtx) {
+  void featureCtx;
+  const warningNumber = commandCtx.options.getInteger("id", true);
+  const voidReason = commandCtx.options.getString("reason", true);
+  const communityId = commandCtx.communityId;
 
   let warn;
   try {
     warn = voidWarning(communityId, warningNumber, {
-      voidedBy: interaction.user.id,
+      voidedBy: commandCtx.userId,
       voidReason,
     });
   } catch (err) {
     if (err?.code === "INVALID_REASON") {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: err.message,
+        sensitive: true,
       });
       return;
     }
     if (err?.code === "ALREADY_VOIDED") {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: err.message,
+        sensitive: true,
       });
       return;
     }
     console.error("[warnings] void failed:", err);
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Failed to void the warning: ${err?.message || "database error"}`,
+      sensitive: true,
     });
     return;
   }
 
   if (!warn) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `No warning **${formatWarnRef(warningNumber)}** in this server.`,
+      sensitive: true,
     });
     return;
   }
@@ -456,8 +479,8 @@ async function handleVoid(interaction, ctx) {
   const ref = formatWarnRef(warn.warning_number);
 
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "warnings.void",
     targetType: "warning",
     targetId: String(warn.id),
@@ -468,10 +491,10 @@ async function handleVoid(interaction, ctx) {
     },
   });
 
-  await logWarnEvent(getDiscordOutbound(interaction.client), interaction.guildId, {
+  await logWarnEvent(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Warning voided",
     command: "/warn void",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `${ref} on <@${warn.user_id}>`,
       `Remaining active: **${activeCount}**`,
@@ -481,37 +504,24 @@ async function handleVoid(interaction, ctx) {
 
   let dmNote = "DM not sent (guild DMs off).";
   if (warnDmEnabled(communityId)) {
-    const guildName = interaction.guild?.name || "this server";
-    let targetUser = null;
-    try {
-      targetUser =
-        interaction.client?.users?.cache?.get?.(warn.user_id) ||
-        (await interaction.client?.users
-          ?.fetch?.(warn.user_id)
-          .catch(() => null));
-    } catch {
-      targetUser = null;
-    }
-    if (!targetUser && interaction.guild?.members) {
-      try {
-        const mem = await interaction.guild.members
-          .fetch(warn.user_id)
-          .catch(() => null);
-        targetUser = mem?.user || null;
-      } catch {
-        targetUser = null;
-      }
-    }
+    // Guild display name + subject resolution via outbound (null = not found).
+    const guild = await commandCtx.outbound.fetchGuild(communityId);
+    const guildName = guild?.name || "this server";
+    const targetUser = await commandCtx.outbound.fetchUser(
+      communityId,
+      warn.user_id,
+    );
 
     if (targetUser) {
-      const dmEmbed = new EmbedBuilder()
-        .setColor(COLOR_VOID)
-        .setTitle(`Warning voided in ${guildName}`)
-        .addFields(
+      // Plain NormalizedEmbed — sendDm payloads accept raw embed data.
+      const dmEmbed = {
+        title: `Warning voided in ${guildName}`,
+        color: COLOR_VOID,
+        fields: [
           { name: "Warning", value: ref, inline: true },
           {
             name: "Voided by",
-            value: interaction.user.username || "staff",
+            value: commandCtx.user.username || "staff",
             inline: true,
           },
           {
@@ -523,41 +533,60 @@ async function handleVoid(interaction, ctx) {
             name: "Void reason",
             value: (warn.void_reason || "—").slice(0, 1024),
           },
-        )
-        .setFooter({ text: "View your history anytime with /warn mine" });
+        ],
+        footer: { text: "View your history anytime with /warn mine" },
+      };
 
-      const sent = await tryDmUser(targetUser, { embeds: [dmEmbed] });
-      dmNote = sent
-        ? "Member notified by DM."
-        : "Could not DM the member (DMs closed or blocked).";
+      const sent = await commandCtx.outbound.sendDm(warn.user_id, {
+        embeds: [dmEmbed],
+      });
+      if (sent?.ok) {
+        dmNote = "Member notified by DM.";
+      } else {
+        console.error(
+          `[warnings] DM to ${warn.user_id} failed: ${sent?.error || "unknown"}`,
+        );
+        dmNote = "Could not DM the member (DMs closed or blocked).";
+      }
     } else {
       dmNote = "Could not resolve member for DM.";
     }
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(COLOR_VOID)
-    .setTitle(`Warning ${ref} voided`)
-    .addFields(
-      { name: "Subject", value: `<@${warn.user_id}>`, inline: true },
-      { name: "Voided by", value: `<@${warn.voided_by}>`, inline: true },
-      { name: "Active remaining", value: String(activeCount), inline: true },
-      { name: "Void reason", value: (warn.void_reason || "—").slice(0, 1024) },
-      { name: "Notification", value: dmNote, inline: false },
-    )
-    .setFooter({ text: "Staff only" });
-
-  await replyEphemeral(interaction, {
-    embeds: [embed],
+  await commandCtx.reply({
+    embeds: [
+      {
+        title: `Warning ${ref} voided`,
+        color: COLOR_VOID,
+        fields: [
+          { name: "Subject", value: `<@${warn.user_id}>`, inline: true },
+          { name: "Voided by", value: `<@${warn.voided_by}>`, inline: true },
+          {
+            name: "Active remaining",
+            value: String(activeCount),
+            inline: true,
+          },
+          {
+            name: "Void reason",
+            value: (warn.void_reason || "—").slice(0, 1024),
+          },
+          { name: "Notification", value: dmNote, inline: false },
+        ],
+        footer: { text: "Staff only" },
+      },
+    ],
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleCount(interaction) {
-  const target = interaction.options.getUser("user", true);
-  const communityId = resolveCommunityId(interaction);
+async function handleCount(commandCtx, featureCtx) {
+  void featureCtx;
+  const target = commandCtx.options.getUser("user", true);
+  const communityId = commandCtx.communityId;
   const active = countActiveWarnings(communityId, target.id);
   const total = countWarnings(communityId, target.id, {
     includeVoided: true,
@@ -578,22 +607,25 @@ async function handleCount(interaction) {
       recent.map((w) => formatListLine(w)).join("\n\n");
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: body.slice(0, 1900),
+    sensitive: true,
   });
 }
 
 /**
  * Staff handoff export: notes + warnings as an ephemeral markdown attachment.
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleExport(interaction) {
-  const target = interaction.options.getUser("user", true);
+async function handleExport(commandCtx, featureCtx) {
+  void featureCtx;
+  const target = commandCtx.options.getUser("user", true);
   const includeVoided =
-    interaction.options.getBoolean("include_voided") !== false;
+    commandCtx.options.getBoolean("include_voided") !== false;
   const includeDeletedNotes =
-    interaction.options.getBoolean("include_deleted_notes") !== false;
-  const communityId = resolveCommunityId(interaction);
+    commandCtx.options.getBoolean("include_deleted_notes") !== false;
+  const communityId = commandCtx.communityId;
 
   const warnings = listWarnings(communityId, target.id, {
     includeVoided,
@@ -633,13 +665,15 @@ async function handleExport(interaction) {
   }
 
   const exportedAt = Date.now();
+  const guild = await commandCtx.outbound.fetchGuild(communityId);
   const body = buildStaffRecordMarkdown({
-    guildId: interaction.guildId,
-    guildName: interaction.guild?.name,
+    guildId: commandCtx.externalGuildId,
+    guildName: guild?.name,
     userId: target.id,
-    userTag: target.tag || target.username,
-    exportedById: interaction.user.id,
-    exportedByTag: interaction.user.tag || interaction.user.username,
+    // ResolvedUser carries no discriminator tag; username is the label.
+    userTag: target.username,
+    exportedById: commandCtx.userId,
+    exportedByTag: commandCtx.user.username,
     warnings,
     notes,
     activeWarnings,
@@ -651,28 +685,29 @@ async function handleExport(interaction) {
   });
 
   const filename = exportFilename(target.id, exportedAt);
-  const file = new AttachmentBuilder(Buffer.from(body, "utf8"), {
-    name: filename,
-  });
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `Staff record for <@${target.id}>: **${warnings.length}** warning(s), ` +
       `**${notes.length}** note(s) in file.\n` +
       `_Ephemeral — staff handoff only; do not share with the subject._`,
-    files: [file],
+    // Plain { name, data } file entry — the adapter wraps it in AttachmentBuilder.
+    files: [{ name: filename, data: Buffer.from(body, "utf8") }],
+    sensitive: true,
   });
 }
 
 /**
  * Member self-service: own warnings only.
  * Evidence is staff-only and is not shown here.
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleMine(interaction) {
-  const includeVoided = !!interaction.options.getBoolean("include_voided");
-  const userId = interaction.user.id;
-  const communityId = resolveCommunityId(interaction);
+async function handleMine(commandCtx, featureCtx) {
+  void featureCtx;
+  const includeVoided = !!commandCtx.options.getBoolean("include_voided");
+  const userId = commandCtx.userId;
+  const communityId = commandCtx.communityId;
   const active = countActiveWarnings(communityId, userId);
   const total = countWarnings(communityId, userId, { includeVoided });
   const warnings = listWarnings(communityId, userId, {
@@ -682,10 +717,11 @@ async function handleMine(interaction) {
   });
 
   if (!warnings.length) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: includeVoided
         ? "You have no warnings on record in this server."
         : "You have no **active** warnings in this server. Use `include_voided:true` to see full history.",
+      sensitive: true,
     });
     return;
   }
@@ -712,16 +748,19 @@ async function handleMine(interaction) {
       ? `\n_Showing latest ${LIST_PAGE_SIZE}. Ask staff for full history if needed._`
       : "");
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `${header}\n\n${lines.join("\n\n")}`.slice(0, 1900),
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleSettings(interaction) {
-  const communityId = resolveCommunityId(interaction);
+async function handleSettings(commandCtx, featureCtx) {
+  void featureCtx;
+  const communityId = commandCtx.communityId;
   const dmOn = warnDmEnabled(communityId);
   const settings = getGuildSettings(communityId);
   const expiryDays = guildWarnExpiryDays(communityId);
@@ -746,7 +785,7 @@ async function handleSettings(interaction) {
       ? `Default expiry: **${expiryDays}** day(s) for new warnings (\`/setwarn expiry\`; per-warn override: \`expires_days\` on \`/warn add\`)`
       : "Default expiry: **never** (`/setwarn expiry days:N` to opt in; per-warn `expires_days` still works)";
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `**Warning system settings**\n` +
       `Member DMs on issue/void: **${dmOn ? "on" : "off"}** (toggle: \`/setwarn dm\`)\n` +
@@ -757,65 +796,69 @@ async function handleSettings(interaction) {
       `**Members:** \`/warn mine\` to view their own warnings.\n` +
       `\n**Commands:** \`/warn add\` · \`list\` · \`info\` · \`void\` · \`count\` · \`export\` · \`mine\` · \`settings\`\n` +
       `Warnings are **permanent** — void only (never hard-deleted). Pair with \`/note\` for informal context.`,
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleSetDm(interaction, ctx) {
-  const enabled = interaction.options.getBoolean("enabled", true);
-  const communityId = resolveCommunityId(interaction);
+async function handleSetDm(commandCtx, featureCtx) {
+  void featureCtx;
+  const enabled = commandCtx.options.getBoolean("enabled", true);
+  const communityId = commandCtx.communityId;
   const before = warnDmEnabled(communityId);
   updateGuildSettings(communityId, {
     warn_dm_members: enabled ? 1 : 0,
   });
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "warnings.dm_set",
     targetType: "guild",
-    targetId: interaction.guildId,
+    targetId: commandCtx.externalGuildId,
     details: { before: before ? 1 : 0, after: enabled ? 1 : 0 },
   });
 
-  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Warning DM setting changed",
     command: "/setwarn dm",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `Member DMs: **${before ? "on" : "off"}** → **${enabled ? "on" : "off"}**`,
     ],
   }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `Warning member DMs are now **${enabled ? "enabled" : "disabled"}**.\n` +
       (enabled
         ? "Members will be DMed when a warning is issued or voided (unless `silent:true` on issue)."
         : "Members will not be DMed. Staff can still use `/warn list` / audit logs."),
+    sensitive: true,
   });
 }
 
 /**
  * Configure dedicated warning log channel.
  * Issue/void embeds prefer this channel; fall back to audit log when unset.
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleSetLog(interaction, ctx) {
-  const clear = interaction.options.getBoolean("clear") === true;
-  const ch = interaction.options.getChannel("channel", false);
-  const communityId = resolveCommunityId(interaction);
+async function handleSetLog(commandCtx, featureCtx) {
+  void featureCtx;
+  const clear = commandCtx.options.getBoolean("clear") === true;
+  const ch = commandCtx.options.getChannel("channel", false);
+  const communityId = commandCtx.communityId;
   const settings = getGuildSettings(communityId);
   const beforeId = settings.warn_log_channel_id;
 
   if (clear) {
-    await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
+    await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
       title: "Warning log channel cleared",
       command: "/setwarn log",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         beforeId
           ? `Warn log: <#${beforeId}> → *none* (fallback to audit log)`
@@ -824,45 +867,47 @@ async function handleSetLog(interaction, ctx) {
     }).catch(() => {});
     updateGuildSettings(communityId, { warn_log_channel_id: null });
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "warnings.log_channel_clear",
       targetType: "guild",
-      targetId: interaction.guildId,
+      targetId: commandCtx.externalGuildId,
       details: { previous_channel_id: beforeId ?? null },
     });
     const auditFallback = settings.audit_log_channel_id
       ? ` Issue/void will use audit log <#${settings.audit_log_channel_id}>.`
       : " No audit log is set either — issue/void will not post channel embeds until one is configured.";
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Dedicated warning log channel cleared.${auditFallback}`,
+      sensitive: true,
     });
     return;
   }
 
   if (!ch) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         "Provide a `channel` or set `clear:true`.\n" +
         "Example: `/setwarn log channel:#warn-log`",
+      sensitive: true,
     });
     return;
   }
 
   updateGuildSettings(communityId, { warn_log_channel_id: ch.id });
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "warnings.log_channel_set",
     targetType: "channel",
     targetId: ch.id,
     details: { previous_channel_id: beforeId ?? null, channel_id: ch.id },
   });
 
-  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Warning log channel set",
     command: "/setwarn log",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       beforeId
         ? `Warn log: <#${beforeId}> → <#${ch.id}>`
@@ -870,58 +915,62 @@ async function handleSetLog(interaction, ctx) {
     ],
   }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
-      `Warning issue/void embeds will post to ${ch}.\n` +
+      `Warning issue/void embeds will post to <#${ch.id}>.\n` +
       `General audit log (\`/setlog audit\`) is unchanged. Clear with \`/setwarn log clear:true\` to fall back to the audit channel.`,
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleSetExpiry(interaction, ctx) {
-  const daysRaw = interaction.options.getInteger("days", true);
+async function handleSetExpiry(commandCtx, featureCtx) {
+  void featureCtx;
+  const daysRaw = commandCtx.options.getInteger("days", true);
   const parsed = normalizeExpiryDays(daysRaw);
   if (!parsed.ok) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: parsed.error,
+      sensitive: true,
     });
     return;
   }
 
-  const communityId = resolveCommunityId(interaction);
+  const communityId = commandCtx.communityId;
   const before = guildWarnExpiryDays(communityId);
   updateGuildSettings(communityId, {
     warn_expiry_days: parsed.days,
   });
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "warnings.expiry_set",
     targetType: "guild",
-    targetId: interaction.guildId,
+    targetId: commandCtx.externalGuildId,
     details: { previous_days: before, days: parsed.days },
   });
 
-  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Warning default expiry changed",
     command: "/setwarn expiry",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `Default expiry days: **${before}** → **${parsed.days}**` +
         (parsed.days === 0 ? " (never)" : ""),
     ],
   }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       parsed.days === 0
         ? "New warnings will **not** expire by default. Staff can still set `expires_days` on `/warn add`."
         : `New warnings will auto-void after **${parsed.days}** day(s) by default.\n` +
           `Override per issue with \`/warn add … expires_days:N\` (use \`0\` for never on that warning only).\n` +
           `Existing warnings are unchanged.`,
+    sensitive: true,
   });
 }
 

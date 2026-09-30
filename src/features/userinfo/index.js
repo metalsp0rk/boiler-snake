@@ -2,7 +2,7 @@
  * Staff user card — XP snapshot + note/warning counts with drill-down buttons,
  * plus senior-only Activity (channel/category message rankings).
  *
- * Slash: /userinfo user:<member>
+ * Slash: /userinfo user:<member>          (CommandContext arm)
  * Buttons:
  *   ui:o|n|w:<userId>           overview | notes | warnings
  *   ui:a|c:<userId>:<win>       activity channels | categories (win = a|7|30|90)
@@ -14,7 +14,6 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   MessageFlags,
-  EmbedBuilder,
 } = require("discord.js");
 const {
   getXp,
@@ -27,6 +26,10 @@ const {
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
 const { ensureCommunity } = require("../../platform/community");
+// Pre-existing latent bug (present at PR-4 base): the button arm references
+// replyEphemeral without importing it, so the "unknown control" and
+// backfill-failure paths threw ReferenceError. Restored with the seam.
+const { replyEphemeral } = require("../../core/interaction");
 
 /**
  * Fluxer PR 2 Discord edge: external snowflake → internal INTEGER community id
@@ -41,7 +44,11 @@ function resolveCommunityId(guildId) {
     externalGuildId: String(guildId),
   });
 }
-const { requireStaff, requireSeniorStaff } = require("../../core/permissions");
+const {
+  requireStaff,
+  requireStaffFromContext,
+  requireSeniorStaff,
+} = require("../../core/permissions");
 const {
   buildChannelRanking,
   buildCategoryRanking,
@@ -117,16 +124,11 @@ function snippet(content, max = SNIPPET_LEN) {
 }
 
 /**
- * @param {number|null|undefined} ms
- * @returns {string}
- */
-/**
- * @param {string} guildId
+ * @param {number} communityId internal communities.id (integer key; the
+ *   Discord edge resolves snowflakes via resolveCommunityId / commandCtx)
  * @param {string} userId
  */
-function loadCounts(guildId, userId) {
-  // Fluxer PR 2: accepts the external snowflake; repos key by community id.
-  const communityId = resolveCommunityId(guildId);
+function loadCounts(communityId, userId) {
   const notesActive = countStaffNotes(communityId, userId, {
     includeDeleted: false,
   });
@@ -172,24 +174,24 @@ async function resolveUser(interaction, userId) {
 }
 
 /**
- * @param {import("discord.js").Interaction} interaction
+ * Overview card as a plain NormalizedEmbed (roadmap/fluxer.md § CommandContext):
+ * the Discord adapter wraps it in an EmbedBuilder at the reply boundary.
+ * @param {number} communityId internal communities.id
  * @param {object} user
  * @param {object} [member]
- * @returns {EmbedBuilder}
+ * @returns {object}
  */
-function buildOverviewEmbed(interaction, user, member) {
-  const guildId = interaction.guildId;
-  const communityId = resolveCommunityId(guildId);
+function buildOverviewEmbed(communityId, user, member) {
   const settings = getGuildSettings(communityId);
   const xp = getXp(communityId, user.id);
   const level = levelFromXp(xp, settings.level_xp_factor);
-  const counts = loadCounts(guildId, user.id);
+  const counts = loadCounts(communityId, user.id);
 
-  const embed = new EmbedBuilder()
-    .setColor(COLOR_CARD)
-    .setTitle("Staff user card")
-    .setDescription(`<@${user.id}> · \`${user.id}\``)
-    .addFields(
+  const embed = {
+    title: "Staff user card",
+    description: `<@${user.id}> · \`${user.id}\``,
+    color: COLOR_CARD,
+    fields: [
       {
         name: "XP / Level",
         value: `**${xp}** XP · Level **${level}**`,
@@ -211,32 +213,33 @@ function buildOverviewEmbed(interaction, user, member) {
             : `**${counts.warnsActive}** active · **${counts.warnsTotal - counts.warnsActive}** voided`,
         inline: true,
       },
-    )
-    .setFooter({
+    ],
+    footer: {
       text: "Staff only · Activity tab requires senior staff",
-    });
+    },
+  };
 
   if (typeof user.displayAvatarURL === "function") {
     try {
-      embed.setThumbnail(user.displayAvatarURL({ size: 128 }));
+      embed.thumbnail = { url: user.displayAvatarURL({ size: 128 }) };
     } catch {
       // ignore
     }
   }
 
   const username = user.username || user.tag || user.id;
-  embed.addFields({
+  embed.fields.push({
     name: "Username",
     value: username,
     inline: true,
   });
 
   if (user.bot) {
-    embed.addFields({ name: "Bot", value: "Yes", inline: true });
+    embed.fields.push({ name: "Bot", value: "Yes", inline: true });
   }
 
   if (member?.joinedTimestamp) {
-    embed.addFields({
+    embed.fields.push({
       name: "Joined server",
       value: tsRelative(member.joinedTimestamp),
       inline: true,
@@ -244,7 +247,7 @@ function buildOverviewEmbed(interaction, user, member) {
   }
 
   if (user.createdTimestamp) {
-    embed.addFields({
+    embed.fields.push({
       name: "Account created",
       value: tsRelative(user.createdTimestamp),
       inline: true,
@@ -255,28 +258,31 @@ function buildOverviewEmbed(interaction, user, member) {
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId internal communities.id
  * @param {object} user
- * @returns {EmbedBuilder}
+ * @returns {object} plain NormalizedEmbed
  */
-function buildNotesEmbed(guildId, user) {
-  const communityId = resolveCommunityId(guildId);
-  const counts = loadCounts(guildId, user.id);
+function buildNotesEmbed(communityId, user) {
+  const counts = loadCounts(communityId, user.id);
   const notes = listStaffNotes(communityId, user.id, {
     includeDeleted: false,
     limit: LIST_LIMIT,
     offset: 0,
   });
 
-  const embed = new EmbedBuilder()
-    .setColor(COLOR_NOTES)
-    .setTitle(`Staff notes · ${user.username || user.id}`)
-    .setDescription(`Subject: <@${user.id}>`);
+  const embed = {
+    title: `Staff notes · ${user.username || user.id}`,
+    description: `Subject: <@${user.id}>`,
+    color: COLOR_NOTES,
+    fields: [],
+    footer: null,
+  };
 
   if (!notes.length) {
-    embed.addFields({
+    embed.fields.push({
       name: "Active notes",
       value: "None. Use `/note add` to create one.",
+      inline: false,
     });
   } else {
     const lines = notes.map((n) => {
@@ -285,18 +291,19 @@ function buildNotesEmbed(guildId, user) {
         `> ${snippet(n.content)}`
       );
     });
-    embed.addFields({
+    embed.fields.push({
       name: `Active notes (showing ${notes.length} of ${counts.notesActive})`,
       value: lines.join("\n\n").slice(0, 1024),
+      inline: false,
     });
     if (counts.notesActive > LIST_LIMIT) {
-      embed.setFooter({
+      embed.footer = {
         text: `Use /note list user:@… for full pagination · ${counts.notesTotal - counts.notesActive} soft-deleted`,
-      });
+      };
     } else if (counts.notesTotal > counts.notesActive) {
-      embed.setFooter({
+      embed.footer = {
         text: `${counts.notesTotal - counts.notesActive} soft-deleted (see /note list include_deleted:true)`,
-      });
+      };
     }
   }
 
@@ -304,33 +311,35 @@ function buildNotesEmbed(guildId, user) {
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId internal communities.id
  * @param {object} user
- * @returns {EmbedBuilder}
+ * @returns {object} plain NormalizedEmbed
  */
-function buildWarningsEmbed(guildId, user) {
-  const communityId = resolveCommunityId(guildId);
-  const counts = loadCounts(guildId, user.id);
+function buildWarningsEmbed(communityId, user) {
+  const counts = loadCounts(communityId, user.id);
   const warnings = listWarnings(communityId, user.id, {
     includeVoided: true,
     limit: LIST_LIMIT,
     offset: 0,
   });
 
-  const embed = new EmbedBuilder()
-    .setColor(COLOR_WARNS)
-    .setTitle(`Warnings · ${user.username || user.id}`)
-    .setDescription(
+  const embed = {
+    title: `Warnings · ${user.username || user.id}`,
+    description:
       `Subject: <@${user.id}> · **${counts.warnsActive}** active` +
-        (counts.warnsTotal > counts.warnsActive
-          ? ` · **${counts.warnsTotal - counts.warnsActive}** voided`
-          : ""),
-    );
+      (counts.warnsTotal > counts.warnsActive
+        ? ` · **${counts.warnsTotal - counts.warnsActive}** voided`
+        : ""),
+    color: COLOR_WARNS,
+    fields: [],
+    footer: null,
+  };
 
   if (!warnings.length) {
-    embed.addFields({
+    embed.fields.push({
       name: "History",
       value: "No warnings on record. Use `/warn add` to issue one.",
+      inline: false,
     });
   } else {
     const lines = warnings.map((w) => {
@@ -340,14 +349,15 @@ function buildWarningsEmbed(guildId, user) {
         `> ${snippet(w.reason)}`
       );
     });
-    embed.addFields({
+    embed.fields.push({
       name: `History (showing ${warnings.length} of ${counts.warnsTotal})`,
       value: lines.join("\n\n").slice(0, 1024),
+      inline: false,
     });
     if (counts.warnsTotal > LIST_LIMIT) {
-      embed.setFooter({
+      embed.footer = {
         text: "Use /warn list user:@… for full pagination",
-      });
+      };
     }
   }
 
@@ -355,7 +365,7 @@ function buildWarningsEmbed(guildId, user) {
 }
 
 /**
- * Build payload for a given view.
+ * Build payload for a given view (button arm — keeps the raw interaction).
  * @param {import("discord.js").Interaction} interaction
  * @param {object} user
  * @param {object|null} member
@@ -363,7 +373,8 @@ function buildWarningsEmbed(guildId, user) {
  * @param {string} [win]
  */
 function buildViewPayload(interaction, user, member, view, win = "a") {
-  const counts = loadCounts(interaction.guildId, user.id);
+  const communityId = resolveCommunityId(interaction.guildId);
+  const counts = loadCounts(communityId, user.id);
   const w = normalizeWindow(win);
   const joinedMs = member?.joinedTimestamp ?? null;
 
@@ -393,11 +404,11 @@ function buildViewPayload(interaction, user, member, view, win = "a") {
 
   let embed;
   if (view === "n") {
-    embed = buildNotesEmbed(interaction.guildId, user);
+    embed = buildNotesEmbed(communityId, user);
   } else if (view === "w") {
-    embed = buildWarningsEmbed(interaction.guildId, user);
+    embed = buildWarningsEmbed(communityId, user);
   } else {
-    embed = buildOverviewEmbed(interaction, user, member);
+    embed = buildOverviewEmbed(communityId, user, member);
   }
 
   return {
@@ -415,24 +426,65 @@ function buildViewPayload(interaction, user, member, view, win = "a") {
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleUserinfo(interaction, ctx) {
-  if (!(await requireStaff(interaction))) return;
+async function handleUserinfo(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const target = interaction.options.getUser("user", true);
+  const target = commandCtx.options.getUser("user", true);
+  // MemberHandle carries no joinedTimestamp (spec type) — resolve the member
+  // through the outbound, then graft the Discord-only display fields from the
+  // builder's documented rawInteraction escape hatch (avatar, join date,
+  // account creation). Fluxer contexts never carry rawInteraction; the embed
+  // builders render those fields only when present, so Fluxer shows the card
+  // without them (roadmap: userinfo is Fluxer v1 without Discord decorations).
   let member = null;
   try {
-    member =
-      interaction.options.getMember?.("user") ||
-      (await interaction.guild?.members?.fetch?.(target.id).catch(() => null));
+    member = await commandCtx.outbound.fetchMember(
+      commandCtx.communityId,
+      target.id,
+    );
   } catch {
     member = null;
   }
 
-  const payload = buildViewPayload(interaction, target, member, "o");
-  await interaction.reply(payload);
+  const raw = commandCtx.rawInteraction;
+  let user = target;
+  if (raw?.options && typeof raw.options.getUser === "function") {
+    try {
+      const rawUser = raw.options.getUser("user", true);
+      if (rawUser) {
+        user = {
+          ...target,
+          username: rawUser.username ?? target.username,
+          tag: rawUser.tag ?? undefined,
+          displayAvatarURL:
+            typeof rawUser.displayAvatarURL === "function"
+              ? (opts) => rawUser.displayAvatarURL(opts)
+              : undefined,
+          createdTimestamp: rawUser.createdTimestamp ?? null,
+        };
+      }
+    } catch {
+      // decorative fields only — the ResolvedUser fallback stands
+    }
+  }
+  if (member) {
+    const rawMember = raw?.guild?.members?.cache?.get?.(target.id) ?? null;
+    member = { ...member, joinedTimestamp: rawMember?.joinedTimestamp ?? null };
+  }
+
+  const counts = loadCounts(commandCtx.communityId, target.id);
+  const embed = buildOverviewEmbed(commandCtx.communityId, user, member);
+  await commandCtx.reply({
+    embeds: [embed],
+    components: [
+      buildPrimaryButtons(counts, "o", target.id, normalizeWindow("a")),
+    ],
+    sensitive: true,
+  });
 }
 
 /**
@@ -512,6 +564,12 @@ module.exports = {
   commands,
   handlers: {
     userinfo: handleUserinfo,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext; the ui: button arm stays on the
+  // interaction.
+  handlerApi: {
+    userinfo: "context",
   },
   buttonHandlers: {
     [BTN_PREFIX]: handleUserinfoButton,
