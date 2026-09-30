@@ -64,7 +64,12 @@ async function runBudget(guildId, options, env) {
     options,
     client: env.client,
   });
-  await gork.handlers.gork(interaction, { client: env.client });
+  // PR 5 seam: /gork runs on CommandContext (router-parity wrapping).
+  const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+  await gork.handlers.gork(
+    buildDiscordCommandContext(interaction, { client: env.client }),
+    { client: env.client },
+  );
   return interaction;
 }
 
@@ -78,7 +83,12 @@ async function runStatus(env) {
     options: {},
     client: env.client,
   });
-  await gork.handlers.gork(interaction, { client: env.client });
+  // PR 5 seam: /gork runs on CommandContext (router-parity wrapping).
+  const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+  await gork.handlers.gork(
+    buildDiscordCommandContext(interaction, { client: env.client }),
+    { client: env.client },
+  );
   return interaction;
 }
 
