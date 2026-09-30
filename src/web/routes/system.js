@@ -32,7 +32,7 @@
  * Audit viewer query-budget (§8.6, review-blocking):
  *  - rows come ONLY from the subtask-03 facade pair listAdminAudit/
  *    countAdminAudit — guild-scoped by construction (first positional arg
- *    is req.guildAccess.guildId; the URL param is never forwarded), newest
+ *    is req.guildAccess.communityId; the URL param is never forwarded), newest
  *    first, LIMIT hard-clamped ≤ 100 (repo MAX_AUDIT_LIST_LIMIT), offset
  *    clamped to the shared web MAX_OFFSET (1000) — served by
  *    idx_admin_audit_guild_created;
@@ -118,16 +118,16 @@ function readOriginFilter(raw) {
 }
 
 /**
- * One bounded admin_audit page for ONE guild (viewer data half — Phase 3
+ * One bounded admin_audit page for ONE community (viewer data half — Phase 3
  * parity checks read this same builder contract).
  *
- * @param {string} guildId MUST be req.guildAccess.guildId (never req.params)
+ * @param {number} communityId MUST be req.guildAccess.communityId (never req.params)
  * @param {{ origin?: string|null, n?: string|null, o?: string|null }} query RAW query values
  * @param {object} [deps] facade overrides (tests)
  * @returns {{ rows: object[], total: number, offset: number, pageSize: number,
  *            origin: string|null, invalidOrigin: boolean }}
  */
-function buildAuditPage(guildId, query = {}, deps = {}) {
+function buildAuditPage(communityId, query = {}, deps = {}) {
   const list = deps.listAdminAudit || listAdminAudit;
   const count = deps.countAdminAudit || countAdminAudit;
 
@@ -139,8 +139,8 @@ function buildAuditPage(guildId, query = {}, deps = {}) {
   if (origin) opts.origin = origin;
   return {
     // Newest first (created_at DESC, id DESC) — idx_admin_audit_guild_created.
-    rows: list(guildId, opts),
-    total: count(guildId, origin ? { origin } : {}),
+    rows: list(communityId, opts),
+    total: count(communityId, origin ? { origin } : {}),
     offset,
     pageSize,
     origin,
@@ -221,14 +221,14 @@ function readWebSurfaceState() {
  * staffData projection) — the §8.6 query budget for this surface is one
  * indexed point lookup per page build. Sections degrade honestly.
  *
- * @param {string} guildId MUST be req.guildAccess.guildId
+ * @param {number} communityId MUST be req.guildAccess.communityId
  * @param {object} sources
  * @param {() => Promise<Array<object>>} sources.getTickers ticker registry snapshot (never throws in practice)
- * @param {(guildId: string) => { oauth: { available: boolean, status: object|null } }} sources.getOauthStatus staffData read (token-stripped projection)
+ * @param {(communityId: number) => { oauth: { available: boolean, status: object|null } }} sources.getOauthStatus staffData read (token-stripped projection)
  * @param {() => any} sources.oauthConfigFn raw env reader (sanitized by readEnvConfig)
  * @param {number} [now]
  */
-async function buildSystemStatus(guildId, sources = {}, now = Date.now()) {
+async function buildSystemStatus(communityId, sources = {}, now = Date.now()) {
   const uptimeMs = Math.round(
     Math.max(0, Number(process.uptime()) * 1000) || 0
   );
@@ -246,7 +246,7 @@ async function buildSystemStatus(guildId, sources = {}, now = Date.now()) {
 
   let oauth = { available: false, status: null };
   try {
-    const view = sources.getOauthStatus(guildId);
+    const view = sources.getOauthStatus(communityId);
     oauth = view && view.oauth ? view.oauth : oauth;
   } catch {
     /* degrade: the panel renders "unknown", not a 500 */
@@ -316,9 +316,9 @@ function registerSystemRoutes(app, options = {}) {
   const staffData =
     options.staffData ||
     {
-      getOauthStatus: (guildId) => {
+      getOauthStatus: (communityId) => {
         if (!defaultData) defaultData = createStaffData();
-        return defaultData.getOauthStatus(guildId);
+        return defaultData.getOauthStatus(communityId);
       },
     };
 
@@ -328,8 +328,8 @@ function registerSystemRoutes(app, options = {}) {
 
   // ---- admin: system health page (§8.6 System row = Admin) -----------------
   app.get("/g/:guildId/system", requireTier("admin"), async (req, res) => {
-    const guildId = req.guildAccess.guildId; // never req.params (§8.6 scoping)
-    const status = await buildSystemStatus(guildId, {
+    const communityId = req.guildAccess.communityId; // never req.params (§8.6 scoping)
+    const status = await buildSystemStatus(communityId, {
       getTickers,
       getOauthStatus: (id) => staffData.getOauthStatus(id),
       oauthConfigFn,
@@ -347,9 +347,10 @@ function registerSystemRoutes(app, options = {}) {
 
   // ---- admin: admin_audit viewer (§8.6 System row, Phase 1 read-only) ------
   app.get("/g/:guildId/audit", requireTier("admin"), async (req, res) => {
-    const guildId = req.guildAccess.guildId; // guild-scoped ONLY (never from URL body)
+    const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
+    const communityId = req.guildAccess.communityId; // data key (PR 2: integer)
     const params = rawParams(req.url);
-    const page = buildAuditPage(guildId, {
+    const page = buildAuditPage(communityId, {
       origin: params.get("origin"),
       n: params.get("n"),
       o: params.get("o"),
@@ -403,8 +404,8 @@ function registerSystemRoutes(app, options = {}) {
     app.post(template, requireTier("admin"), handler);
   };
 
-  const systemSessionsPageOf = (guildId) =>
-    `/g/${encodeURIComponent(guildId)}/system/sessions`;
+  const systemSessionsPageOf = (communityId) =>
+    `/g/${encodeURIComponent(communityId)}/system/sessions`;
 
   const flashSessions = makeFlashRedirect({
     pageOf: systemSessionsPageOf,
@@ -414,7 +415,8 @@ function registerSystemRoutes(app, options = {}) {
 
   // ---- admin: global live-session list (System area) -----------------------
   app.get("/g/:guildId/system/sessions", requireTier("admin"), async (req, res) => {
-    const guildId = req.guildAccess.guildId; // shell scope (list is system-wide)
+    const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
+    const communityId = req.guildAccess.communityId; // view link id (PR 2: integer)
     const sessions = sessionPolicy.listLiveSessions();
     // §8.15-15.11 names from the member cache ONLY (misses show ids; the
     // sessions are global so many owners are legitimately unknown here).
@@ -428,7 +430,7 @@ function registerSystemRoutes(app, options = {}) {
       subheading:
         "Every live web console session (system-wide — sessions are not per-guild). Revoke kills a lost or stolen device's cookie immediately.",
       content: renderSystemSessionsBody({
-        guildId,
+        guildId: communityId,
         sessions,
         currentId: req.webSession ? req.webSession.id : null,
         csrfToken: req.csrfToken || null,
@@ -442,7 +444,7 @@ function registerSystemRoutes(app, options = {}) {
 
   // ---- POST revoke ANY session (admin global control) ----------------------
   postSystemMutation("/g/:guildId/system/sessions/revoke", async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.communityId; // view link id (PR 2: integer)
     const current = req.webSession || null;
     const fields = readFields(req);
 

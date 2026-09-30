@@ -11,6 +11,8 @@ const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { ensureCommunity, discordCommunityId } = require("../../platform/community");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const {
   startYoutubeTicker,
   createSimpleUploadEmbed,
@@ -125,13 +127,19 @@ const commands = [
 async function handleYoutube(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
   const admin = isStaff(interaction);
 
   if (!admin) {
     await replyDenied(interaction);
     return;
   }
+
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
 
   const sub = interaction.options.getSubcommand();
 
@@ -209,7 +217,7 @@ async function handleYoutube(interaction, ctx) {
 
     try {
       addYoutubeChannel(
-        guildId,
+        communityId,
         channelId,
         normalizedChannelName,
         url,
@@ -218,6 +226,7 @@ async function handleYoutube(interaction, ctx) {
 
       recordSlashAudit({
         interaction,
+        communityId,
         action: "youtube.channel_add",
         targetType: "youtube_channel",
         targetId: channelId,
@@ -230,7 +239,7 @@ async function handleYoutube(interaction, ctx) {
           "\n\nNote: @username detected. I will attempt to resolve the actual channel ID from YouTube.";
       }
 
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "YouTube subscription added",
         command: "/youtube add",
         actor: interaction.user,
@@ -258,11 +267,11 @@ async function handleYoutube(interaction, ctx) {
 
     // Get channel by ID
     let foundChannel = null;
-    const channels = getYoutubeChannels(guildId);
+    const channels = getYoutubeChannels(communityId);
     for (const c of channels) {
       if (
         normalizeYoutubeName(c.id) === normalizeYoutubeName(channelId) &&
-        c.guild_id === guildId
+        c.community_id === communityId
       ) {
         foundChannel = c;
         break;
@@ -276,12 +285,12 @@ async function handleYoutube(interaction, ctx) {
       return;
     }
 
-    const channelsBefore = getYoutubeChannels(guildId).length;
+    const channelsBefore = getYoutubeChannels(communityId).length;
 
     let removed = false;
     let removeErr = null;
     try {
-      removed = removeYoutubeChannel(guildId, channelId);
+      removed = removeYoutubeChannel(communityId, channelId);
       console.log(`[youtube] Remove debug:`, {
         guildId,
         channelId,
@@ -295,7 +304,7 @@ async function handleYoutube(interaction, ctx) {
       console.error("[youtube] Remove error:", err);
     }
 
-    const channelsAfter = getYoutubeChannels(guildId).length;
+    const channelsAfter = getYoutubeChannels(communityId).length;
     if (!removed && channelsAfter < channelsBefore) {
       // Actually removed but function returned false - DB issue?
       removed = true;
@@ -309,7 +318,7 @@ async function handleYoutube(interaction, ctx) {
         targetId: foundChannel.id || channelId,
         details: { channel_name: foundChannel.channel_name },
       });
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "YouTube subscription removed",
         command: "/youtube remove",
         actor: interaction.user,
@@ -333,7 +342,7 @@ async function handleYoutube(interaction, ctx) {
   }
 
   if (sub === "list") {
-    const channels = getYoutubeChannels(guildId);
+    const channels = getYoutubeChannels(communityId);
 
     if (!channels.length) {
       await replyEphemeral(interaction, {
@@ -342,7 +351,7 @@ async function handleYoutube(interaction, ctx) {
       return;
     }
 
-    const guildSettings = getGuildSettings(guildId);
+    const guildSettings = getGuildSettings(communityId);
     const notificationChannel = guildSettings.youtube_notification_channel_id
       ? `<#${guildSettings.youtube_notification_channel_id}>`
       : "_Not configured_";
@@ -373,7 +382,6 @@ async function handleYoutube(interaction, ctx) {
 async function handleSetYoutube(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
   const admin = isStaff(interaction);
 
   if (!admin) {
@@ -381,20 +389,28 @@ async function handleSetYoutube(interaction, ctx) {
     return;
   }
 
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
+
   const sub = interaction.options.getSubcommand();
 
   if (sub === "channel") {
     const ch = interaction.options.getChannel("channel", true);
     const before = settings.youtube_notification_channel_id;
-    updateGuildSettings(guildId, { youtube_notification_channel_id: ch.id });
+    updateGuildSettings(communityId, { youtube_notification_channel_id: ch.id });
     recordSlashAudit({
       interaction,
+      communityId,
       action: "youtube.notify_channel_set",
       targetType: "channel",
       targetId: ch.id,
       details: { previous_channel_id: before ?? null },
     });
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "YouTube notification channel set",
       command: "/setyoutube channel",
       actor: interaction.user,
@@ -420,15 +436,16 @@ async function handleSetYoutube(interaction, ctx) {
       return;
     }
     const before = settings.youtube_polling_interval_minutes;
-    updateGuildSettings(guildId, { youtube_polling_interval_minutes: minutes });
+    updateGuildSettings(communityId, { youtube_polling_interval_minutes: minutes });
     recordSlashAudit({
       interaction,
+      communityId,
       action: "youtube.polling_interval_set",
       targetType: "guild",
       targetId: guildId,
       details: { previous_minutes: before ?? null, minutes },
     });
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "YouTube polling interval set",
       command: "/setyoutube interval",
       actor: interaction.user,
@@ -444,11 +461,12 @@ async function handleSetYoutube(interaction, ctx) {
   if (sub === "uploadrole") {
     const role = interaction.options.getRole("role", false);
     const before = settings.youtube_upload_role_id;
-    updateGuildSettings(guildId, {
+    updateGuildSettings(communityId, {
       youtube_upload_role_id: role ? role.id : null,
     });
     recordSlashAudit({
       interaction,
+      communityId,
       action: "youtube.upload_role_set",
       targetType: "role",
       targetId: role ? role.id : guildId,
@@ -456,7 +474,7 @@ async function handleSetYoutube(interaction, ctx) {
     });
     const afterLabel = role ? `<@&${role.id}>` : "*none*";
     const beforeLabel = before ? `<@&${before}>` : "*none*";
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "YouTube upload mention role set",
       command: "/setyoutube uploadrole",
       actor: interaction.user,
@@ -475,13 +493,19 @@ async function handleSetYoutube(interaction, ctx) {
 async function handleTestNotification(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
   const admin = isStaff(interaction);
 
   if (!admin) {
     await replyDenied(interaction);
     return;
   }
+
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
 
   const url = interaction.options.getString("channel", true);
 
@@ -533,7 +557,7 @@ async function handleTestNotification(interaction, ctx) {
     return;
   }
 
-  const channels = getYoutubeChannels(guildId);
+  const channels = getYoutubeChannels(communityId);
   let existingChannel = null;
   for (const c of channels) {
     if (
@@ -562,14 +586,14 @@ async function handleTestNotification(interaction, ctx) {
       }
     }
     addYoutubeChannel(
-      guildId,
+      communityId,
       channelId,
       normalizeYoutubeName(channelName),
       channelUrl,
       thumbnail,
     );
 
-    existingChannel = getYoutubeChannels(guildId).find(
+    existingChannel = getYoutubeChannels(communityId).find(
       (c) =>
         normalizeYoutubeName(c.channel_name) ===
         normalizeYoutubeName(channelName),
@@ -633,7 +657,7 @@ async function handleTestNotification(interaction, ctx) {
   if (notificationType === "live") {
     embeds = [createLiveEmbed(existingChannel, videoInfo, channelUrl)];
   } else {
-    const settings = getGuildSettings(guildId);
+    const settings = getGuildSettings(communityId);
     const uploadRoleId = settings.youtube_upload_role_id;
 
     if (useSimpleEmbed) {
@@ -669,8 +693,13 @@ async function handleYoutubeAutocomplete(interaction) {
     await interaction.respond([]);
     return;
   }
-  const guildId = interaction.guild.id;
-  const channels = getYoutubeChannels(guildId);
+  const communityId = discordCommunityId(interaction.guild.id);
+  if (communityId == null) {
+    // No community row registered yet — nothing to suggest.
+    await interaction.respond([]);
+    return;
+  }
+  const channels = getYoutubeChannels(communityId);
 
   const focusedValue = interaction.options.getFocused().toLowerCase();
   // Deduplicate by normalized channel name, keeping first occurrence

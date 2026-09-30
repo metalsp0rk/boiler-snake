@@ -6,6 +6,7 @@
  */
 
 const { PermissionFlagsBits } = require("discord.js");
+const { ensureCommunity } = require("../../platform/community");
 const {
   listSeniorStaffRoles,
   listTicketMembers,
@@ -128,7 +129,15 @@ function botHoldsRole(botMember, roleId) {
  * Junior staff pass requireStaff but do not get automatic ticket overwrites.
  */
 async function getManageableStaffRoleIds(guild, botMember) {
-  const rows = listSeniorStaffRoles(guild.id);
+  // Fluxer PR 2: staff_roles keys by the integer community id; resolve the
+  // Discord guild object's external snowflake through the registry (create
+  // on sight — a guild that can open tickets is a real guild).
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(guild.id),
+  });
+  const rows = listSeniorStaffRoles(communityId);
   const botPos = botHighestRolePosition(botMember);
   const roleIds = [];
   const skipped = [];
@@ -290,6 +299,14 @@ function assertBotCanCreateTickets(guild, botMember, categoryId) {
  */
 async function buildTicketOverwrites(opts) {
   const { guildId, everyoneId, botUserId, ticket } = opts;
+  // Fluxer PR 2: staff_roles keys by the integer communities.id. Callers pass
+  // communityId (web) or a guild object (Discord features, which precompute
+  // staffRoleIds); a numeric guildId is accepted as the internal id too.
+  const communityKey = Number.isSafeInteger(opts.communityId)
+    ? opts.communityId
+    : Number.isSafeInteger(guildId)
+      ? guildId
+      : null;
   const sensitive =
     opts.sensitive != null
       ? !!opts.sensitive
@@ -349,8 +366,11 @@ async function buildTicketOverwrites(opts) {
         await getManageableStaffRoleIds(opts.guild, opts.botMember)
       ).roleIds;
     } else {
-      // Senior only — junior staff never get automatic ticket visibility
-      staffRoleIds = listSeniorStaffRoles(guildId).map((r) => r.role_id);
+      // Senior only — junior staff never get automatic ticket visibility.
+      staffRoleIds =
+        communityKey == null
+          ? []
+          : listSeniorStaffRoles(communityKey).map((r) => r.role_id);
     }
   }
 

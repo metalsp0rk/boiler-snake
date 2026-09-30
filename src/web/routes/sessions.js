@@ -145,7 +145,7 @@ function registerSessionsRoutes(app, options = {}) {
 
   // ---- staff (shell floor): YOUR sessions — own live rows only ------------
   app.get(SESSIONS_PAGE, requireTier("staff"), async (req, res) => {
-    const guildId = req.guildAccess.guildId; // never req.params (§8.6 scoping)
+    const guildId = req.guildAccess.communityId; // view link id (PR 2: integer)
     const mine = sessions.listLiveSessionsForUser(req.user.userId);
     const document = renderShellPage(req, {
       title: "Your sessions",
@@ -172,7 +172,7 @@ function registerSessionsRoutes(app, options = {}) {
   // clean logout when the current session itself was the target).
   // =========================================================================
   postMutation(REVOKE_PATH, async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.communityId; // view link id (PR 2: integer)
     const current = req.webSession || null;
 
     const parsed = parseRevokeField(readFields(req));

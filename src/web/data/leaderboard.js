@@ -5,7 +5,7 @@
  *
  * XP HISTORY FINDING (§8.6 row says "leaderboard, history"):
  *  There is NO xp-history table anywhere under src/db/migrations/ — the
- *  `users` table stores only the CURRENT xp snapshot per (guild_id, user_id)
+ *  `users` table stores only the CURRENT xp snapshot per (community_id, user_id)
  *  and `activity_log` rows are per-event award counters with no XP-total
  *  series (no facade read builds an XP-over-time query either). Rather than
  *  fabricate a history, the per-user page shows what the data supports —
@@ -26,19 +26,19 @@
  *    pages; a web pager must not).
  *
  * Query-budget contract (§8.6, review-blocking):
- *  - every read carries the guild id from req.guildAccess.guildId as its
+ *  - every read carries the guild id from req.guildAccess.communityId as its
  *    first filter — NO cross-guild aggregation is possible (first
- *    positional arg of every function is guildId);
+ *    positional arg of every function is communityId);
  *  - the page read is LIMIT-bounded to PAGE_SIZE_MAX = 100 (hard cap,
  *    default 25) with OFFSET bounded by MAX_PAGE × PAGE_SIZE_MAX ≤ 1000
  *    rows scanned per request (the userProfile.js MAX_OFFSET=1000 rule);
- *  - totals are one COUNT(*) on the users PRIMARY KEY guild_id prefix
+ *  - totals are one COUNT(*) on the users PRIMARY KEY community_id prefix
  *    (index-covered for the guild — no table scan), replacing slash's
  *    `limit*page+1` headroom fetch so no request ever asks SQL for more
  *    than PAGE_SIZE_MAX rows;
- *  - reads ride the same (guild_id …) PK index prefix as the shipped
+ *  - reads ride the same (community_id …) PK index prefix as the shipped
  *    topUsers; a strict index-backed ORDER BY xp would need a new
- *    (guild_id, xp) index MIGRATION, which is outside this subtask's file
+ *    (community_id, xp) index MIGRATION, which is outside this subtask's file
  *    ownership — flagged in the completion report instead.
  */
 
@@ -96,15 +96,15 @@ function readPage(raw) {
 
 /**
  * Tracked-user count for ONE guild — COUNT(*) served from the users
- * PRIMARY KEY (guild_id, user_id) prefix: an index-only scan of the
+ * PRIMARY KEY (community_id, user_id) prefix: an index-only scan of the
  * guild's index range, never a full table scan.
- * @param {string} guildId
+ * @param {number} communityId
  * @returns {number}
  */
-function countTrackedUsers(guildId) {
+function countTrackedUsers(communityId) {
   const row = db
-    .prepare(`SELECT COUNT(*) AS total FROM users WHERE guild_id=?`)
-    .get(guildId);
+    .prepare(`SELECT COUNT(*) AS total FROM users WHERE community_id=?`)
+    .get(communityId);
   return Number(row?.total) || 0;
 }
 
@@ -120,20 +120,20 @@ function countTrackedUsers(guildId) {
  * — `(page-1)*limit + idx + 1` — so parity says list position, and the
  * per-user page derives rank from the SAME order definition).
  *
- * @param {string} guildId MUST be req.guildAccess.guildId
+ * @param {number} communityId MUST be req.guildAccess.communityId
  * @param {{ page?: string|number|null, size?: string|number|null }} [query]
  * @returns {{ rows: {rank: number, user_id: string, xp: number, level: number}[], page: number, size: number, total: number, totalPages: number, hasPrev: boolean, hasNext: boolean }}
  */
-function buildLeaderboardPage(guildId, query = {}) {
+function buildLeaderboardPage(communityId, query = {}) {
   const size = readPageSize(query.size);
-  const total = countTrackedUsers(guildId);
+  const total = countTrackedUsers(communityId);
   const totalPages = Math.max(1, Math.ceil(total / size));
 
   // Page-overflow clamp: past-the-end never renders a blank page-9999;
   // it shows the last real page (totalPages already ≥1, so page ≥1).
   const page = Math.min(readPage(query.page), totalPages);
 
-  const settings = getGuildSettings(guildId);
+  const settings = getGuildSettings(communityId);
   const factor = resolveXpFactor(settings);
 
   let rows = [];
@@ -143,12 +143,12 @@ function buildLeaderboardPage(guildId, query = {}) {
         `
       SELECT user_id, xp
       FROM users
-      WHERE guild_id=?
+      WHERE community_id=?
       ORDER BY xp DESC, user_id ASC
       LIMIT ? OFFSET ?
       `
       )
-      .all(guildId, size, (page - 1) * size);
+      .all(communityId, size, (page - 1) * size);
     rows = raw.map((r, idx) => {
       // clampXpTotal mirrors the repository's own read-clamp (topUsers).
       const xp = clampXpTotal(r.xp);
@@ -182,7 +182,7 @@ function buildLeaderboardPage(guildId, query = {}) {
  * One COUNT + one PK point-read + one total COUNT — three bounded reads,
  * no pagination needed.
  *
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId snowflake (route-validated); NO row → null
  * @returns {null | {
  *   userId: string, xp: number, level: number, rank: number, total: number,
@@ -190,11 +190,11 @@ function buildLeaderboardPage(guildId, query = {}) {
  *   xpIntoLevel: number, xpToNext: number, progress: number, progressPct: number
  * }}
  */
-function buildUserXpSummary(guildId, userId) {
-  const row = getUser(guildId, userId); // read-only PK point-read, no seed
+function buildUserXpSummary(communityId, userId) {
+  const row = getUser(communityId, userId); // read-only PK point-read, no seed
   if (!row) return null;
 
-  const settings = getGuildSettings(guildId);
+  const settings = getGuildSettings(communityId);
   const factor = resolveXpFactor(settings);
   const xp = row.xp; // getUser already clamps
   const level = levelFromXp(xp, factor);
@@ -202,9 +202,9 @@ function buildUserXpSummary(guildId, userId) {
   const ahead = db
     .prepare(
       `SELECT COUNT(*) AS ahead FROM users
-       WHERE guild_id=? AND (xp > ? OR (xp = ? AND user_id < ?))`
+       WHERE community_id=? AND (xp > ? OR (xp = ? AND user_id < ?))`
     )
-    .get(guildId, xp, xp, userId);
+    .get(communityId, xp, xp, userId);
 
   // render/leaderboard.js levelProgress, mirrored line-for-line:
   // startXP = L^2 * factor; nextXP = (L+1)^2 * factor.
@@ -218,7 +218,7 @@ function buildUserXpSummary(guildId, userId) {
     xp,
     level,
     rank: (Number(ahead?.ahead) || 0) + 1,
-    total: countTrackedUsers(guildId),
+    total: countTrackedUsers(communityId),
     factor,
     levelStartXp,
     nextLevelXp,

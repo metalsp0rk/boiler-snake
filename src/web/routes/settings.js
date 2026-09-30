@@ -33,10 +33,11 @@
  *    logs.channel_set / logs.channel_clear, warnings.log_channel_set /
  *    warnings.log_channel_clear, command_channels.add / .remove) — DB-first
  *    fail-closed: a throw from req.audit becomes a generic 500;
- *  - cache: settingsData.invalidate(guildId) after every accepted write so
- *    the view (≥30 s cache) goes straight back to the source of truth;
- *  - response: 302 → /g/<guildId>/settings?ok|err=<cluster> — the keys are
- *    fixed constants (no user data ever reflected into the Location).
+ *  - cache: settingsData.invalidate(communityId) after every accepted write
+ *    so the view (≥30 s cache) goes straight back to the source of truth;
+ *  - response: 302 → /g/<communityId>/settings?ok|err=<cluster> — the keys
+ *    are fixed constants (no user data ever reflected into the Location);
+ *    the path carries the INTEGER route identity (PR 2), not the snowflake.
  */
 
 const { createGuildAccessResolver } = require("../auth/guildAccess");
@@ -59,15 +60,15 @@ const FLASH_KEYS = new Set(["xp", "decay", "logs", "warn", "channels"]);
  * flag and the key are code constants — nothing user-supplied is ever
  * reflected into the Location header (§8.7 generic bodies).
  * @param {import("http").ServerResponse} res
- * @param {string} guildId server-derived (guildScope snowflake)
+ * @param {number} communityId server-derived route identity (PR 2: integer)
  * @param {"ok"|"err"} flag
  * @param {string} key one of FLASH_KEYS
  */
-function redirectSettings(res, guildId, flag, key) {
+function redirectSettings(res, communityId, flag, key) {
   if (flag !== "ok" && flag !== "err") flag = "err";
   if (!FLASH_KEYS.has(key)) key = "logs";
   res.writeHead(302, {
-    Location: `/g/${guildId}/settings?${flag}=${key}`,
+    Location: `/g/${communityId}/settings?${flag}=${key}`,
     "Cache-Control": "no-store",
   });
   res.end();
@@ -80,28 +81,30 @@ function redirectSettings(res, guildId, flag, key) {
  * updateGuildSettings — settingsWrite validates before touching the facade).
  *
  * @param {object} spec
- * @param {(db: object, guildId: string, fields: Record<string,string>) => object} spec.op
+ * @param {(db: object, communityId: number, fields: Record<string,string>) => object} spec.op
  * @param {string} spec.key flash key
- * @param {(outcome: object, guildId: string) => object} spec.auditOf entry for req.audit
+ * @param {(outcome: object, guildId: string) => object} spec.auditOf entry for
+ *   req.audit — the second arg is the EXTERNAL snowflake (audit display field)
  * @param {object} deps { db, settingsData }
  */
 function makeMutationHandler(spec, deps) {
   return async function settingsMutation(req, res, next) {
     try {
-      const guildId = req.guildAccess.guildId;
+      const guildId = req.guildAccess.guildId; // external snowflake (audit display)
+      const communityId = req.guildAccess.communityId; // data + view link id
       const fields = settingsWrite.readFormFields(req);
-      const outcome = spec.op(deps.db, guildId, fields);
+      const outcome = spec.op(deps.db, communityId, fields);
       if (!outcome.ok) {
         // Validation rejection: nothing written, NOTHING audited (§8.6).
-        redirectSettings(res, guildId, "err", spec.key);
+        redirectSettings(res, communityId, "err", spec.key);
         return;
       }
       // Accepted write: drop the cached snapshot FIRST so even a fail-closed
       // audit 500 leaves the next GET reading fresh truth (never stale).
-      deps.settingsData.invalidate?.(guildId);
+      deps.settingsData.invalidate?.(communityId);
       // Fail-closed (§8.1-7): a throwing req.audit propagates → generic 500.
       req.audit(spec.auditOf(outcome, guildId));
-      redirectSettings(res, guildId, "ok", spec.key);
+      redirectSettings(res, communityId, "ok", spec.key);
     } catch (err) {
       next(err); // → handleAppError: generic 500, nothing leaked
     }
@@ -343,7 +346,7 @@ function readFlashFlag(req) {
  * @param {{getSettings: Function, invalidate?: Function}} [options.settingsData]
  *   pre-built createSettingsData() instance (tests inject counting/fake
  *   ones; default is a process-wide lazily-built singleton). Mutations call
- *   invalidate(guildId) after every accepted write.
+ *   invalidate(communityId) after every accepted write.
  * @param {object} [options.db] src/db facade override (tests); default is
  *   the shared facade — methods resolve at CALL time so spies still run.
  */
@@ -368,17 +371,17 @@ function registerSettingsRoutes(app, options = {}) {
     return defaultData;
   };
   const settingsData = options.settingsData || {
-    getSettings: (guildId) => getData().getSettings(guildId),
-    invalidate: (guildId) => getData().invalidate(guildId),
+    getSettings: (communityId) => getData().getSettings(communityId),
+    invalidate: (communityId) => getData().invalidate(communityId),
   };
 
   const deps = { db: options.db || require("../../db"), settingsData };
 
   app.get("/g/:guildId/settings", requireTier("staff"), async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const communityId = req.guildAccess.communityId; // data + view link id (PR 2)
     // One cached per-guild snapshot (§8.6 floor 30 s). Facade reads happen
     // inside the data module — never here.
-    const snapshot = settingsData.getSettings(guildId);
+    const snapshot = settingsData.getSettings(communityId);
     const document = renderShellPage(req, {
       title: "Settings",
       heading: "Settings",
@@ -388,7 +391,7 @@ function registerSettingsRoutes(app, options = {}) {
         snapshot,
         resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
         csrfToken: req.csrfToken || null,
-        guildId,
+        guildId: communityId,
         flash: readFlashFlag(req),
       }),
       guilds: await shellGuilds(resolver, req),

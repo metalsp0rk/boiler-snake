@@ -39,21 +39,21 @@ function formatListLine(warn) {
 }
 
 /**
- * Whether guild settings allow member DMs for warnings.
- * @param {string} guildId
+ * Whether community settings allow member DMs for warnings.
+ * @param {number} communityId internal communities.id (resolved at the Discord edge)
  * @returns {boolean}
  */
-function warnDmEnabled(guildId) {
-  const s = getGuildSettings(guildId);
+function warnDmEnabled(communityId) {
+  const s = getGuildSettings(communityId);
   return Number(s.warn_dm_members ?? 1) !== 0;
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId internal communities.id (resolved at the Discord edge)
  * @returns {number}
  */
-function guildWarnExpiryDays(guildId) {
-  const s = getGuildSettings(guildId);
+function guildWarnExpiryDays(communityId) {
+  const s = getGuildSettings(communityId);
   const n = Number(s.warn_expiry_days ?? 0);
   if (!Number.isFinite(n) || n < 0) return 0;
   return Math.min(Math.floor(n), MAX_EXPIRY_DAYS);

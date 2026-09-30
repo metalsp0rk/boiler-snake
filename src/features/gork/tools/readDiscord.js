@@ -382,7 +382,9 @@ async function executeReadDiscord(link, options = {}) {
     // Open-ticket blackout (decision 46): an unarchived `tickets` row
     // makes the channel an unreachable read target for gork, period.
     const repo = opts.repo || require("../../../db");
-    const ticket = repo.getTicketByChannel(String(channel.id));
+    // Fluxer PR 2: tickets repo is community-keyed (integer).
+    const { discordCommunityId } = require("../../../platform/community");
+    const ticket = repo.getTicketByChannel(discordCommunityId(guildId), String(channel.id));
     if (ticket && !ticket.archived) {
       return failWith(parsed, link, "that channel is an open help ticket");
     }

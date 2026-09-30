@@ -13,6 +13,8 @@ const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { ensureCommunity } = require("../../platform/community");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const {
   MAX_OPTIONS_PER_PANEL,
   PENDING_EMOJI_TTL_MS,
@@ -209,13 +211,19 @@ const commands = [
 async function handleReactionrole(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
   const admin = isStaff(interaction);
 
   if (!admin) {
     await replyDenied(interaction);
     return;
   }
+
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
 
   const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand();
@@ -265,15 +273,16 @@ async function handleReactionrole(interaction, ctx) {
         return;
       }
 
-      createReactionRolePanel(guildId, ch.id, msg.id, title, description);
+      createReactionRolePanel(communityId, ch.id, msg.id, title, description);
       recordSlashAudit({
         interaction,
+        communityId,
         action: "reaction_roles.panel_create",
         targetType: "reaction_role_panel",
         targetId: msg.id,
         details: { channel_id: ch.id, title },
       });
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "Reaction-role panel created",
         command: "/reactionrole panel create",
         actor: interaction.user,
@@ -309,7 +318,7 @@ async function handleReactionrole(interaction, ctx) {
         return;
       }
 
-      const panel = getReactionRolePanel(guildId, messageId);
+      const panel = getReactionRolePanel(communityId, messageId);
       if (!panel) {
         await replyEphemeral(interaction, {
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
@@ -317,9 +326,10 @@ async function handleReactionrole(interaction, ctx) {
         return;
       }
 
-      updateReactionRolePanelText(guildId, messageId, title, description);
+      updateReactionRolePanelText(communityId, messageId, title, description);
       recordSlashAudit({
         interaction,
+        communityId,
         action: "reaction_roles.panel_update",
         targetType: "reaction_role_panel",
         targetId: messageId,
@@ -328,8 +338,13 @@ async function handleReactionrole(interaction, ctx) {
           description_updated: description != null,
         },
       });
-      const updated = getReactionRolePanel(guildId, messageId);
-      const result = await refreshPanelMessage(interaction.guild, updated);
+      const updated = getReactionRolePanel(communityId, messageId);
+      // Frozen service surface reads `panel.guild_id` and forwards it to the
+      // community-keyed repo, so the repo row carries the INTEGER community id.
+      const result = await refreshPanelMessage(
+        interaction.guild,
+        updated ? { ...updated, guild_id: communityId } : updated,
+      );
       const changeLines = [];
       if (title != null)
         changeLines.push(`Title: ${panel.title} → **${updated.title}**`);
@@ -338,7 +353,7 @@ async function handleReactionrole(interaction, ctx) {
           `Description updated (${String(panel.description || "").length} → ${String(updated.description || "").length} chars)`,
         );
       }
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "Reaction-role panel edited",
         command: "/reactionrole panel edit",
         actor: interaction.user,
@@ -387,6 +402,7 @@ async function handleReactionrole(interaction, ctx) {
       const n = result.optionCount ?? 0;
       recordSlashAudit({
         interaction,
+        communityId,
         action: "reaction_roles.panel_deploy",
         targetType: "reaction_role_panel",
         targetId: result.message.id,
@@ -404,7 +420,7 @@ async function handleReactionrole(interaction, ctx) {
       if (result.error) {
         content += `\n⚠️ ${result.error}`;
       }
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "Reaction-role panel deployed",
         command: "/reactionrole panel deploy",
         actor: interaction.user,
@@ -425,7 +441,7 @@ async function handleReactionrole(interaction, ctx) {
         .getString("message_id", true)
         .trim();
       const { removed, channel_id } = deleteReactionRolePanel(
-        guildId,
+        communityId,
         messageId,
       );
 
@@ -455,12 +471,13 @@ async function handleReactionrole(interaction, ctx) {
       if (removed) {
         recordSlashAudit({
           interaction,
+          communityId,
           action: "reaction_roles.panel_delete",
           targetType: "reaction_role_panel",
           targetId: messageId,
           details: { channel_id: channel_id ?? null },
         });
-        await logConfigChange(client, guildId, {
+        await logConfigChange(getDiscordOutbound(client), guildId, {
           title: "Reaction-role panel deleted",
           command: "/reactionrole panel delete",
           actor: interaction.user,
@@ -481,7 +498,7 @@ async function handleReactionrole(interaction, ctx) {
     }
 
     if (sub === "list") {
-      const panels = listReactionRolePanels(guildId);
+      const panels = listReactionRolePanels(communityId);
       if (!panels.length) {
         await replyEphemeral(interaction, {
           content:
@@ -491,7 +508,7 @@ async function handleReactionrole(interaction, ctx) {
       }
       const lines = panels.map((p) => {
         const jump = `https://discord.com/channels/${guildId}/${p.channel_id}/${p.message_id}`;
-        const n = countReactionRoleOptions(guildId, p.message_id);
+        const n = countReactionRoleOptions(communityId, p.message_id);
         return `- **${p.title}** in <#${p.channel_id}> — \`${p.message_id}\` (${n} option${n === 1 ? "" : "s"}) — [jump](${jump})`;
       });
       await replyEphemeral(interaction, {
@@ -512,7 +529,7 @@ async function handleReactionrole(interaction, ctx) {
       const removable = interaction.options.getBoolean("removable");
       const removableFlag = removable === null ? true : removable;
 
-      const panel = getReactionRolePanel(guildId, messageId);
+      const panel = getReactionRolePanel(communityId, messageId);
       if (!panel) {
         await replyEphemeral(interaction, {
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
@@ -528,7 +545,7 @@ async function handleReactionrole(interaction, ctx) {
         return;
       }
 
-      const optCount = countReactionRoleOptions(guildId, messageId);
+      const optCount = countReactionRoleOptions(communityId, messageId);
       if (optCount >= MAX_OPTIONS_PER_PANEL) {
         await replyEphemeral(interaction, {
           content: `This panel already has ${MAX_OPTIONS_PER_PANEL} options (Discord reaction limit). Remove one first.`,
@@ -536,7 +553,10 @@ async function handleReactionrole(interaction, ctx) {
         return;
       }
 
-      // Replace any prior wait session for this admin
+      // Replace any prior wait session for this admin.
+      // NOTE: the pending-emoji maps are frozen in-memory service state keyed by
+      // the DISCORD SNOWFLAKE (service.js resolves `message.guild.id` on the
+      // reply), so these stay snowflake-keyed. TODO(fluxer-pr5): convert service.js.
       clearPendingOptionEmoji(guildId, interaction.user.id);
       setPendingOptionAdd(guildId, interaction.user.id, {
         messageId,
@@ -564,7 +584,7 @@ async function handleReactionrole(interaction, ctx) {
         .getString("message_id", true)
         .trim();
 
-      const panel = getReactionRolePanel(guildId, messageId);
+      const panel = getReactionRolePanel(communityId, messageId);
       if (!panel) {
         await replyEphemeral(
           interaction,
@@ -573,7 +593,7 @@ async function handleReactionrole(interaction, ctx) {
         return;
       }
 
-      const optCount = countReactionRoleOptions(guildId, messageId);
+      const optCount = countReactionRoleOptions(communityId, messageId);
       if (optCount === 0) {
         await replyEphemeral(interaction, {
           content: `Panel \`${messageId}\` has no options to remove.`,
@@ -581,6 +601,7 @@ async function handleReactionrole(interaction, ctx) {
         return;
       }
 
+      // Snowflake-keyed frozen in-memory state (see note in "add").
       clearPendingOptionEmoji(guildId, interaction.user.id);
       setPendingOptionRemove(guildId, interaction.user.id, {
         messageId,
@@ -601,7 +622,7 @@ async function handleReactionrole(interaction, ctx) {
       const messageId = interaction.options
         .getString("message_id", true)
         .trim();
-      const panel = getReactionRolePanel(guildId, messageId);
+      const panel = getReactionRolePanel(communityId, messageId);
       if (!panel) {
         await replyEphemeral(interaction, {
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
@@ -609,7 +630,7 @@ async function handleReactionrole(interaction, ctx) {
         return;
       }
 
-      const opts = listReactionRoleOptions(guildId, messageId);
+      const opts = listReactionRoleOptions(communityId, messageId);
       if (!opts.length) {
         await replyEphemeral(interaction, {
           content: `Panel \`${messageId}\` has no options yet.`,
@@ -632,7 +653,7 @@ async function handleReactionrole(interaction, ctx) {
   // /reactionrole sync
   if (!group && sub === "sync") {
     const messageId = interaction.options.getString("message_id", true).trim();
-    const panel = getReactionRolePanel(guildId, messageId);
+    const panel = getReactionRolePanel(communityId, messageId);
     if (!panel) {
       await replyEphemeral(
         interaction,
@@ -641,9 +662,14 @@ async function handleReactionrole(interaction, ctx) {
       return;
     }
 
-    const result = await refreshPanelMessage(interaction.guild, panel);
+    // Frozen service surface reads `panel.guild_id` and forwards it to the
+    // community-keyed repo, so the repo row carries the INTEGER community id.
+    const result = await refreshPanelMessage(interaction.guild, {
+      ...panel,
+      guild_id: communityId,
+    });
     if (result.ok) {
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "Reaction-role panel synced",
         command: "/reactionrole sync",
         actor: interaction.user,

@@ -255,24 +255,24 @@ const defaultDeps = {
 
 /**
  * @param {import("discord.js").Client} client
- * @param {string} guildId
+ * @param {number} communityId internal community id (row's `community_id`)
  * @param {object} channelData
  * @param {YoutubeTickerDeps} [deps]
  */
 async function processChannel(
   client,
-  guildId,
+  communityId,
   channelData,
   deps = defaultDeps,
 ) {
   const fetchFeed = deps.fetchYouTubeFeed || fetchYouTubeFeed;
   const resolveName = deps.lookupChannelByName || lookupChannelByName;
 
-  const settings = getGuildSettings(guildId);
+  const settings = getGuildSettings(communityId);
 
   if (!settings.youtube_notification_channel_id) {
     console.log(
-      `[youtube] No notification channel configured for guild ${guildId}`,
+      `[youtube] No notification channel configured for community ${communityId}`,
     );
     return;
   }
@@ -294,7 +294,7 @@ async function processChannel(
     const resolved = await resolveName(username);
     if (resolved) {
       channelId = resolved.id;
-      addYoutubeChannel(guildId, channelId, resolved.name, resolved.url, "");
+      addYoutubeChannel(communityId, channelId, resolved.name, resolved.url, "");
 
       console.log(
         `[youtube] Resolved @${username} to ${channelId} (${resolved.name})`,
@@ -316,7 +316,7 @@ async function processChannel(
   }
 
   // Get last-checked time
-  const channelWithLastChecked = getYoutubeChannelById(guildId, channelId);
+  const channelWithLastChecked = getYoutubeChannelById(communityId, channelId);
   const lastChecked =
     channelData.last_checked ||
     (channelWithLastChecked ? channelWithLastChecked.last_checked : null);
@@ -415,7 +415,7 @@ async function processChannel(
     const useSimpleEmbed = notificationType === "upload";
     await sendNotification(
       client,
-      guildId,
+      communityId,
       settings.youtube_notification_channel_id,
       channelData,
       info,
@@ -513,7 +513,7 @@ function createUploadEmbed(channelData, videoInfo, channelUrl) {
 
 async function sendNotification(
   client,
-  guildId,
+  communityId,
   channelId,
   channelData,
   videoInfo,
@@ -533,7 +533,7 @@ async function sendNotification(
     let content = "";
     let embeds = [];
 
-    const settings = getGuildSettings(guildId);
+    const settings = getGuildSettings(communityId);
     const uploadRoleId = settings.youtube_upload_role_id;
 
     if (notificationType === "live") {
@@ -566,7 +566,7 @@ async function sendNotification(
     });
 
     console.log(
-      `[youtube] Sent notification for ${videoInfo.title} in guild ${guildId}`,
+      `[youtube] Sent notification for ${videoInfo.title} in community ${communityId}`,
     );
   } catch (err) {
     console.error(
@@ -614,7 +614,7 @@ async function runYoutubeTick(client, deps = defaultDeps) {
 
   for (const channel of channels) {
     try {
-      await processChannel(client, channel.guild_id, channel, deps);
+      await processChannel(client, channel.community_id, channel, deps);
     } catch (err) {
       console.error(
         `[youtube] Error processing channel ${channel.channel_name}:`,

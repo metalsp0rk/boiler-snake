@@ -30,6 +30,8 @@ const {
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logWarnEvent } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 const { buildStaffRecordMarkdown, exportFilename } = require("./exportRecord");
 const {
   formatWarnRef,
@@ -52,6 +54,22 @@ const {
 } = require("./helpers");
 
 /**
+ * Edge resolution: translate the interaction's Discord guild snowflake into the
+ * internal integer community id (spec § Repository boundary). Every repository
+ * call receives the integer; the snowflake stays only for Discord I/O
+ * (audit-log channels, evidence URLs, embeds).
+ * @param {import("discord.js").GuildInteraction} interaction
+ * @returns {number}
+ */
+function resolveCommunityId(interaction) {
+  return ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+}
+
+/**
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  * @param {object} [ctx]
  */
@@ -63,6 +81,7 @@ async function handleAdd(interaction, ctx) {
   const messageOpt = interaction.options.getString("message");
   const evidenceOpt = interaction.options.getString("evidence");
   const expiresDaysOpt = interaction.options.getInteger("expires_days");
+  const communityId = resolveCommunityId(interaction);
 
   if (target.bot) {
     await replyEphemeral(interaction, {
@@ -89,7 +108,7 @@ async function handleAdd(interaction, ctx) {
 
   let relatedNoteId = null;
   if (noteNumber != null) {
-    const note = getStaffNote(interaction.guildId, noteNumber);
+    const note = getStaffNote(communityId, noteNumber);
     if (!note) {
       await replyEphemeral(interaction, {
         content: `No staff note **N-${noteNumber}** in this server. Omit \`note\` or use a valid note number.`,
@@ -99,7 +118,7 @@ async function handleAdd(interaction, ctx) {
     relatedNoteId = note.id;
   }
 
-  const guildDefaultDays = guildWarnExpiryDays(interaction.guildId);
+  const guildDefaultDays = guildWarnExpiryDays(communityId);
   const effectiveDays = resolveExpiryDays({
     expiresDays: expiresDaysOpt,
     guildDefaultDays,
@@ -108,7 +127,9 @@ async function handleAdd(interaction, ctx) {
   let warn;
   try {
     warn = createWarning({
-      guildId: interaction.guildId,
+      communityId,
+      // Evidence URLs embed Discord snowflakes — keep the external id here.
+      externalGuildId: interaction.guildId,
       userId: target.id,
       issuerId: interaction.user.id,
       reason,
@@ -138,11 +159,12 @@ async function handleAdd(interaction, ctx) {
     return;
   }
 
-  const activeCount = countActiveWarnings(interaction.guildId, target.id);
+  const activeCount = countActiveWarnings(communityId, target.id);
   const ref = formatWarnRef(warn.warning_number);
 
   recordSlashAudit({
     interaction,
+    communityId,
     action: "warnings.add",
     targetType: "user",
     targetId: target.id,
@@ -155,7 +177,7 @@ async function handleAdd(interaction, ctx) {
     },
   });
 
-  await logWarnEvent(interaction.client, interaction.guildId, {
+  await logWarnEvent(getDiscordOutbound(interaction.client), interaction.guildId, {
     title: "Warning issued",
     command: "/warn add",
     actor: interaction.user,
@@ -170,7 +192,7 @@ async function handleAdd(interaction, ctx) {
   }).catch(() => {});
 
   let dmNote = "DM skipped (silent).";
-  if (!silent && warnDmEnabled(interaction.guildId)) {
+  if (!silent && warnDmEnabled(communityId)) {
     const guildName = interaction.guild?.name || "this server";
     const dmFields = [
       { name: "Warning", value: ref, inline: true },
@@ -265,17 +287,18 @@ async function handleList(interaction) {
   const page = interaction.options.getInteger("page") || 1;
   const includeVoided = !!interaction.options.getBoolean("include_voided");
   const offset = (page - 1) * LIST_PAGE_SIZE;
+  const communityId = resolveCommunityId(interaction);
 
-  const total = countWarnings(interaction.guildId, target.id, {
+  const total = countWarnings(communityId, target.id, {
     includeVoided,
   });
-  const warnings = listWarnings(interaction.guildId, target.id, {
+  const warnings = listWarnings(communityId, target.id, {
     includeVoided,
     limit: LIST_PAGE_SIZE,
     offset,
   });
   const totalPages = Math.max(1, Math.ceil(total / LIST_PAGE_SIZE));
-  const active = countActiveWarnings(interaction.guildId, target.id);
+  const active = countActiveWarnings(communityId, target.id);
 
   if (!warnings.length) {
     await replyEphemeral(interaction, {
@@ -307,7 +330,8 @@ async function handleList(interaction) {
  */
 async function handleInfo(interaction) {
   const warningNumber = interaction.options.getInteger("id", true);
-  const warn = getWarning(interaction.guildId, warningNumber);
+  const communityId = resolveCommunityId(interaction);
+  const warn = getWarning(communityId, warningNumber);
 
   if (!warn) {
     await replyEphemeral(interaction, {
@@ -316,7 +340,7 @@ async function handleInfo(interaction) {
     return;
   }
 
-  const active = countActiveWarnings(interaction.guildId, warn.user_id);
+  const active = countActiveWarnings(communityId, warn.user_id);
   const embed = new EmbedBuilder()
     .setColor(warn.voided_at != null ? COLOR_VOID : COLOR_INFO)
     .setTitle(`Warning ${formatWarnRef(warn.warning_number)}`)
@@ -393,10 +417,11 @@ async function handleInfo(interaction) {
 async function handleVoid(interaction, ctx) {
   const warningNumber = interaction.options.getInteger("id", true);
   const voidReason = interaction.options.getString("reason", true);
+  const communityId = resolveCommunityId(interaction);
 
   let warn;
   try {
-    warn = voidWarning(interaction.guildId, warningNumber, {
+    warn = voidWarning(communityId, warningNumber, {
       voidedBy: interaction.user.id,
       voidReason,
     });
@@ -427,11 +452,12 @@ async function handleVoid(interaction, ctx) {
     return;
   }
 
-  const activeCount = countActiveWarnings(interaction.guildId, warn.user_id);
+  const activeCount = countActiveWarnings(communityId, warn.user_id);
   const ref = formatWarnRef(warn.warning_number);
 
   recordSlashAudit({
     interaction,
+    communityId,
     action: "warnings.void",
     targetType: "warning",
     targetId: String(warn.id),
@@ -442,7 +468,7 @@ async function handleVoid(interaction, ctx) {
     },
   });
 
-  await logWarnEvent(interaction.client, interaction.guildId, {
+  await logWarnEvent(getDiscordOutbound(interaction.client), interaction.guildId, {
     title: "Warning voided",
     command: "/warn void",
     actor: interaction.user,
@@ -454,7 +480,7 @@ async function handleVoid(interaction, ctx) {
   }).catch(() => {});
 
   let dmNote = "DM not sent (guild DMs off).";
-  if (warnDmEnabled(interaction.guildId)) {
+  if (warnDmEnabled(communityId)) {
     const guildName = interaction.guild?.name || "this server";
     let targetUser = null;
     try {
@@ -531,11 +557,12 @@ async function handleVoid(interaction, ctx) {
  */
 async function handleCount(interaction) {
   const target = interaction.options.getUser("user", true);
-  const active = countActiveWarnings(interaction.guildId, target.id);
-  const total = countWarnings(interaction.guildId, target.id, {
+  const communityId = resolveCommunityId(interaction);
+  const active = countActiveWarnings(communityId, target.id);
+  const total = countWarnings(communityId, target.id, {
     includeVoided: true,
   });
-  const recent = listWarnings(interaction.guildId, target.id, {
+  const recent = listWarnings(communityId, target.id, {
     includeVoided: false,
     limit: 3,
   });
@@ -566,26 +593,27 @@ async function handleExport(interaction) {
     interaction.options.getBoolean("include_voided") !== false;
   const includeDeletedNotes =
     interaction.options.getBoolean("include_deleted_notes") !== false;
+  const communityId = resolveCommunityId(interaction);
 
-  const warnings = listWarnings(interaction.guildId, target.id, {
+  const warnings = listWarnings(communityId, target.id, {
     includeVoided,
     limit: 5000,
     export: true,
   });
-  const notes = listStaffNotes(interaction.guildId, target.id, {
+  const notes = listStaffNotes(communityId, target.id, {
     includeDeleted: includeDeletedNotes,
     limit: 5000,
     export: true,
   });
 
-  const activeWarnings = countActiveWarnings(interaction.guildId, target.id);
-  const totalWarnings = countWarnings(interaction.guildId, target.id, {
+  const activeWarnings = countActiveWarnings(communityId, target.id);
+  const totalWarnings = countWarnings(communityId, target.id, {
     includeVoided: true,
   });
-  const activeNotes = countStaffNotes(interaction.guildId, target.id, {
+  const activeNotes = countStaffNotes(communityId, target.id, {
     includeDeleted: false,
   });
-  const totalNotes = countStaffNotes(interaction.guildId, target.id, {
+  const totalNotes = countStaffNotes(communityId, target.id, {
     includeDeleted: true,
   });
 
@@ -644,9 +672,10 @@ async function handleExport(interaction) {
 async function handleMine(interaction) {
   const includeVoided = !!interaction.options.getBoolean("include_voided");
   const userId = interaction.user.id;
-  const active = countActiveWarnings(interaction.guildId, userId);
-  const total = countWarnings(interaction.guildId, userId, { includeVoided });
-  const warnings = listWarnings(interaction.guildId, userId, {
+  const communityId = resolveCommunityId(interaction);
+  const active = countActiveWarnings(communityId, userId);
+  const total = countWarnings(communityId, userId, { includeVoided });
+  const warnings = listWarnings(communityId, userId, {
     includeVoided,
     limit: LIST_PAGE_SIZE,
     offset: 0,
@@ -692,9 +721,10 @@ async function handleMine(interaction) {
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  */
 async function handleSettings(interaction) {
-  const dmOn = warnDmEnabled(interaction.guildId);
-  const settings = getGuildSettings(interaction.guildId);
-  const expiryDays = guildWarnExpiryDays(interaction.guildId);
+  const communityId = resolveCommunityId(interaction);
+  const dmOn = warnDmEnabled(communityId);
+  const settings = getGuildSettings(communityId);
+  const expiryDays = guildWarnExpiryDays(communityId);
   const dedicated = settings.warn_log_channel_id
     ? `<#${settings.warn_log_channel_id}>`
     : null;
@@ -736,19 +766,21 @@ async function handleSettings(interaction) {
  */
 async function handleSetDm(interaction, ctx) {
   const enabled = interaction.options.getBoolean("enabled", true);
-  const before = warnDmEnabled(interaction.guildId);
-  updateGuildSettings(interaction.guildId, {
+  const communityId = resolveCommunityId(interaction);
+  const before = warnDmEnabled(communityId);
+  updateGuildSettings(communityId, {
     warn_dm_members: enabled ? 1 : 0,
   });
   recordSlashAudit({
     interaction,
+    communityId,
     action: "warnings.dm_set",
     targetType: "guild",
     targetId: interaction.guildId,
     details: { before: before ? 1 : 0, after: enabled ? 1 : 0 },
   });
 
-  await logConfigChange(interaction.client, interaction.guildId, {
+  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
     title: "Warning DM setting changed",
     command: "/setwarn dm",
     actor: interaction.user,
@@ -775,11 +807,12 @@ async function handleSetDm(interaction, ctx) {
 async function handleSetLog(interaction, ctx) {
   const clear = interaction.options.getBoolean("clear") === true;
   const ch = interaction.options.getChannel("channel", false);
-  const settings = getGuildSettings(interaction.guildId);
+  const communityId = resolveCommunityId(interaction);
+  const settings = getGuildSettings(communityId);
   const beforeId = settings.warn_log_channel_id;
 
   if (clear) {
-    await logConfigChange(interaction.client, interaction.guildId, {
+    await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
       title: "Warning log channel cleared",
       command: "/setwarn log",
       actor: interaction.user,
@@ -789,9 +822,10 @@ async function handleSetLog(interaction, ctx) {
           : "Warn log: was already unset",
       ],
     }).catch(() => {});
-    updateGuildSettings(interaction.guildId, { warn_log_channel_id: null });
+    updateGuildSettings(communityId, { warn_log_channel_id: null });
     recordSlashAudit({
       interaction,
+      communityId,
       action: "warnings.log_channel_clear",
       targetType: "guild",
       targetId: interaction.guildId,
@@ -815,16 +849,17 @@ async function handleSetLog(interaction, ctx) {
     return;
   }
 
-  updateGuildSettings(interaction.guildId, { warn_log_channel_id: ch.id });
+  updateGuildSettings(communityId, { warn_log_channel_id: ch.id });
   recordSlashAudit({
     interaction,
+    communityId,
     action: "warnings.log_channel_set",
     targetType: "channel",
     targetId: ch.id,
     details: { previous_channel_id: beforeId ?? null, channel_id: ch.id },
   });
 
-  await logConfigChange(interaction.client, interaction.guildId, {
+  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
     title: "Warning log channel set",
     command: "/setwarn log",
     actor: interaction.user,
@@ -856,19 +891,21 @@ async function handleSetExpiry(interaction, ctx) {
     return;
   }
 
-  const before = guildWarnExpiryDays(interaction.guildId);
-  updateGuildSettings(interaction.guildId, {
+  const communityId = resolveCommunityId(interaction);
+  const before = guildWarnExpiryDays(communityId);
+  updateGuildSettings(communityId, {
     warn_expiry_days: parsed.days,
   });
   recordSlashAudit({
     interaction,
+    communityId,
     action: "warnings.expiry_set",
     targetType: "guild",
     targetId: interaction.guildId,
     details: { previous_days: before, days: parsed.days },
   });
 
-  await logConfigChange(interaction.client, interaction.guildId, {
+  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
     title: "Warning default expiry changed",
     command: "/setwarn expiry",
     actor: interaction.user,

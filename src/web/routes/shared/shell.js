@@ -17,9 +17,15 @@
 async function shellGuilds(resolver, req) {
   const listed = await resolver.listGuilds(req.webSession);
   const guilds = listed.guilds.slice();
-  const currentId = req.guildAccess.guildId;
-  if (!guilds.some((g) => g.id === currentId)) {
-    guilds.unshift({ id: currentId, name: currentId });
+  // PR 2: the viewed guild is identified by its INTEGER community id in
+  // links; force-present so a degraded projection never drops the active tab.
+  const currentId = req.guildAccess.communityId;
+  if (!guilds.some((g) => g.communityId === currentId)) {
+    guilds.unshift({
+      id: req.guildAccess.guildId,
+      communityId: currentId,
+      name: String(currentId),
+    });
   }
   return guilds;
 }

@@ -30,7 +30,7 @@
  */
 
 const db = require("../db");
-const { getCommunityByExternal } = require("../platform/community");
+const { ensureCommunity } = require("../platform/community");
 
 /** Details keys that smell like credentials never reach details_json. */
 const REDACT_KEY_PATTERN = /(token|secret|password|cookie)/i;
@@ -69,6 +69,16 @@ function createAuditTrailDeps(options = {}) {
   return {
     insertAdminAudit: options.insertAdminAudit || db.insertAdminAudit,
     normalizeAuditOrigin: options.normalizeAuditOrigin || db.normalizeAuditOrigin,
+    // Discord snowflake -> communities.id. Default registers the guild on
+    // sight (ensureCommunity); tests may inject a stub for a DB-free unit run.
+    resolveCommunity:
+      options.resolveCommunity ||
+      ((externalId) =>
+        ensureCommunity({
+          platform: "discord",
+          instanceKey: "discord",
+          externalGuildId: externalId,
+        })),
     logger: options.logger || console,
   };
 }
@@ -114,7 +124,10 @@ function recordSlashAudit(entry, options = {}) {
       const externalId = String(
         entry.externalGuildId ?? entry.guildId ?? entry.interaction?.guildId ?? "",
       ).trim();
-      communityId = externalId ? getCommunityByExternal("discord", "discord", externalId) : null;
+      // Create-on-sight (same edge pattern every feature uses): the audit
+      // trail must never silently drop a slash row for a guild whose
+      // registry row has not been written yet.
+      communityId = externalId ? deps.resolveCommunity(externalId) : null;
     }
     if (!Number.isSafeInteger(communityId)) {
       warn(deps, "no community id", `action=${entry.action}`);

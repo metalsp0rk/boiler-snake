@@ -61,6 +61,7 @@
 const { PermissionFlagsBits } = require("discord.js");
 const { sliceSafe } = require("../../core/text");
 const { parseDiscordLink, formatReadLine } = require("./tools/readDiscord");
+const { discordCommunityId } = require("../../platform/community");
 const {
   READ_DISCORD_CHANNEL_WINDOW,
   GORK_SUMMARIZE_RANGE_MAX_MESSAGES,
@@ -299,7 +300,8 @@ async function ensureReadableChannel({ guild, channelId, invokerId, deps }) {
   const repo = deps.repo || require("../../db");
   let ticket = null;
   try {
-    ticket = repo.getTicketByChannel(String(channel.id));
+    // Fluxer PR 2: the tickets repo is community-keyed; resolve the integer.
+    ticket = repo.getTicketByChannel(discordCommunityId(String(guild.id)), String(channel.id));
   } catch (err) {
     return fail("internal", `Could not check the ticket status of channel ${channel.id}: ${err?.message || err}`);
   }

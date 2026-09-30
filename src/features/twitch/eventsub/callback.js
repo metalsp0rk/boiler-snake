@@ -152,10 +152,10 @@ async function dispatchEventsubNotification(client, payload, deps = {}) {
   const subs = db.getTwitchSubsByBroadcaster(broadcasterId);
   for (const sub of subs) {
     try {
-      await processSubscription(client, sub.guild_id, sub, stream);
+      await processSubscription(client, sub.community_id, sub, stream);
     } catch (err) {
       console.error(
-        `[twitch] EventSub ${type} handling failed for guild ${sub.guild_id}/${sub.login}:`,
+        `[twitch] EventSub ${type} handling failed for community ${sub.community_id}/${sub.login}:`,
         err?.message || err,
       );
     }

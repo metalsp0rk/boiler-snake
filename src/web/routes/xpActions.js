@@ -6,10 +6,14 @@
  *
  * SERVICE PARITY (the whole point — src/features/xp/index.js handleGrantXp,
  * lines 421–492, mirrors exactly):
- *  - awardXp(client, { guild, userId, delta, activityKind: "admin_grant",
- *    levelXpFactor: settings.level_xp_factor, source: "admin_grant" }) — the
- *    unified XP award + activity log + level→role sync + channel-audit path
- *    (src/services/awardXp.js). NO re-implementation, NO direct SQL, NO
+ *  - awardXp(outbound, { communityId, externalGuildId, userId, delta,
+ *    activityKind: "admin_grant", levelXpFactor: settings.level_xp_factor,
+ *    source: "admin_grant" }) — the unified XP award + activity log +
+ *    level→role sync + channel-audit path (src/services/awardXp.js). The
+ *    first arg is the Discord OutboundClient (same cached seam the slash
+ *    builds via getDiscordOutbound), with fetchMember swapped for a
+ *    CACHE-ONLY resolver — see makeCacheOnlyOutbound. NO re-implementation,
+ *    NO direct SQL, NO
  *    addXp/setXp/updateGuildSettings call from this route (the XP write is the
  *    service's; the Phase-2 gate proxy proves it).
  *  - Validation mirrors /grantxp: amount is a whole number in 1…MAX_XP_AWARD
@@ -78,6 +82,9 @@ const { makeFlashRedirect } = require("./shared/flash.js");
 const { rawFlashQuery } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
 const { isProvenBot } = require("./shared/discord-cache.js");
+// Fluxer PR 2: the award service takes an OutboundClient (spec § Outbound
+// client) — the same cached seam the slash path builds via getDiscordOutbound.
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 
 /** Grant surface (GET form + POST mutation share the exact template). */
 const GRANT_PATH = "/g/:guildId/xp/grant";
@@ -139,39 +146,98 @@ function parseGrantInput(fields, guildId) {
 
 
 /**
- * Cache-ONLY guild seam handed to awardXp. The service's own member
- * resolution (`guild.members.fetch(userId).catch(() => null)`) runs
- * UNCHANGED, but resolves from `members.cache` or null — a web request never
- * touches the Discord API. A cache miss degrades exactly like slash's
- * member-fetch failure: XP + activity still recorded, role sync skipped,
- * `level`/`changes` null (features/xp/index.js:457 falls back to levelFromXp
- * for display; the web flash is slug-only so nothing needs the fallback).
- * With no client / uncached guild (dark boot) the shim behaves like the same
- * slash member-miss path instead of pretending role work happened.
+ * Cache-ONLY member resolver for the OutboundClient handed to awardXp. The
+ * service's own member resolution (`outbound.fetchMember(communityId, userId)`)
+ * runs UNCHANGED, but resolves from `guild.members.cache` or null — a web
+ * request never touches the Discord API. A cache miss degrades exactly like
+ * slash's member-fetch failure: XP + activity still recorded, role sync
+ * skipped, `level`/`changes` null (features/xp/index.js falls back to
+ * levelFromXp for display; the web flash is slug-only so nothing needs the
+ * fallback). With no client / uncached guild (dark boot) the wrapper behaves
+ * like the same slash member-miss path instead of pretending role work happened.
+ * The rest of the OutboundClient surface (role ops, audit channel send) comes
+ * from the real cached discord.js outbound — the same one the slash builds.
  * @param {any} client resolved client or null
- * @param {string} guildId
+ * @param {string} guildId EXTERNAL Discord snowflake (member-cache key)
+ * @returns {object} OutboundClient-shaped object, cache-only fetchMember
  */
-function makeCacheOnlyGuild(client, guildId) {
-  let live = null;
-  try {
-    live = client?.guilds?.cache?.get?.(guildId) ?? null;
-  } catch {
-    live = null;
+function makeCacheOnlyOutbound(client, guildId) {
+  let base = null;
+  if (client) {
+    try {
+      base = getDiscordOutbound(client);
+    } catch {
+      base = null;
+    }
   }
-  if (!live || typeof live !== "object") {
-    return { id: guildId, members: { fetch: async () => null } };
+  /** Cache-only member lookup — never a REST fetch (§8.6 request-path rule). */
+  function cachedMember(userId) {
+    try {
+      return (
+        client?.guilds?.cache?.get?.(guildId)?.members?.cache?.get?.(String(userId)) ?? null
+      );
+    } catch {
+      return null;
+    }
   }
+  async function fetchMember(communityId, userId) {
+    const member = cachedMember(userId);
+    if (!member) return null;
+    return {
+      id: String(member.id),
+      username: member.user?.username ?? "",
+      bot: Boolean(member.user?.bot),
+      roleIds: [...(member.roles?.cache?.keys?.() ?? [])].map(String),
+    };
+  }
+  // The base outbound's role ops go through members.fetch (network) — on the
+  // web request path they must resolve from the injected cache only, matching
+  // the { ok, error } contract of the real outbound methods.
+  async function addRole(communityId, userId, roleId) {
+    const member = cachedMember(userId);
+    if (!member) {
+      return {
+        ok: false,
+        error: `addRole: member ${userId} not in web cache (community ${communityId})`,
+      };
+    }
+    try {
+      await member.roles.add(String(roleId));
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        error: `addRole: role ${roleId} for user ${userId} in community ${communityId} failed: ${err?.message || String(err)}`,
+      };
+    }
+  }
+  async function removeRole(communityId, userId, roleId) {
+    const member = cachedMember(userId);
+    if (!member) {
+      return {
+        ok: false,
+        error: `removeRole: member ${userId} not in web cache (community ${communityId})`,
+      };
+    }
+    try {
+      await member.roles.remove(String(roleId));
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        error: `removeRole: role ${roleId} for user ${userId} in community ${communityId} failed: ${err?.message || String(err)}`,
+      };
+    }
+  }
+  // Spread copies the bound method closures (outbound methods are closures,
+  // not `this`-dependent), then overrides member resolution with the cache.
   return {
-    id: live.id || guildId,
-    members: {
-      fetch: async (userId) => {
-        try {
-          return live.members?.cache?.get?.(userId) ?? null;
-        } catch {
-          return null;
-        }
-      },
-    },
+    ...base,
+    platform: "discord",
+    instanceKey: "discord",
+    fetchMember,
+    addRole,
+    removeRole,
   };
 }
 
@@ -246,14 +312,15 @@ function registerXpActionsRoutes(app, options = {}) {
   // ---- admin: grant-XP form page (§8.6 XP row — the mutate surface is
   // ADMIN-only end to end, so staff/senior never even see a form that 403s) --
   app.get(GRANT_PATH, requireTier("admin"), async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    // Fluxer PR 2: the view's /g/<id> link prop = integer community id.
+    const communityId = req.guildAccess.communityId;
     const document = renderShellPage(req, {
       title: "Grant XP",
       heading: "Grant XP",
       subheading:
         "Admin-only XP grant — the same award pipeline as slash /grantxp.",
       content: renderGrantForm({
-        guildId,
+        guildId: communityId,
         csrfToken: req.csrfToken || null,
         flash: flashFromQuery(rawFlashQuery(req.url)),
         maxAward: MAX_XP_AWARD,
@@ -270,10 +337,14 @@ function registerXpActionsRoutes(app, options = {}) {
   // → 302 PRG with a whitelisted slug.
   // =========================================================================
   postMutation(GRANT_PATH, async (req, res) => {
+    // Fluxer PR 2: guildId stays the EXTERNAL snowflake (cache seams, the
+    // @everyone-shaped validation, and the audit entry target); communityId
+    // (integer) drives repositories, the service, and the PRG link.
     const guildId = req.guildAccess.guildId;
+    const communityId = req.guildAccess.communityId;
     const parsed = parseGrantInput(readFields(req), guildId);
     if (!parsed.ok) {
-      respondGrantRedirect(res, guildId, "error", parsed.errorSlug);
+      respondGrantRedirect(res, communityId, "error", parsed.errorSlug);
       return;
     }
     const { userId, amount, reason } = parsed;
@@ -288,16 +359,17 @@ function registerXpActionsRoutes(app, options = {}) {
 
     // Slash parity: `if (target.bot)` refusal — refusal only on PROVEN bot.
     if (isProvenBot(client, guildId, userId)) {
-      respondGrantRedirect(res, guildId, "error", "bot_target");
+      respondGrantRedirect(res, communityId, "error", "bot_target");
       return;
     }
 
     // Slash-identical read-then-award (features/xp/index.js:444–455).
-    const settings = facade.getGuildSettings(guildId);
-    const beforeXp = facade.getXp(guildId, userId);
+    const settings = facade.getGuildSettings(communityId);
+    const beforeXp = facade.getXp(communityId, userId);
 
-    const { newXp, level } = await awardXp(client, {
-      guild: makeCacheOnlyGuild(client, guildId),
+    const { newXp, level } = await awardXp(makeCacheOnlyOutbound(client, guildId), {
+      communityId,
+      externalGuildId: guildId,
       userId,
       delta: amount,
       activityKind: "admin_grant",
@@ -330,7 +402,7 @@ function registerXpActionsRoutes(app, options = {}) {
       },
     });
 
-    respondGrantRedirect(res, guildId, "done", "xp_granted");
+    respondGrantRedirect(res, communityId, "done", "xp_granted");
     // fail-closed: an audit throw aborts with the generic 500
   });
 }

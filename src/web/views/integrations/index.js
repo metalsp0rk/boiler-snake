@@ -766,7 +766,9 @@ function renderIntegrationsBody({ snapshot, resolveChannelName, resolveRoleName,
   const ctx = {
     resolveChannelName,
     resolveRoleName,
-    guildId: s.guildId,
+    // Fluxer PR 2: /g/<id> form-action links = integer community id, which
+    // is the key the integrations snapshot now carries.
+    guildId: s.communityId,
     csrfToken: csrfToken || null,
     tier: tier || null,
   };

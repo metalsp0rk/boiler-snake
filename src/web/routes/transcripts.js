@@ -70,6 +70,9 @@ const { renderTicketIndexPage } = require("../views/tickets/indexPage");
 const { writeShellHtml } = require("../views/layout");
 const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { createTicketAccessResolver } = require("../auth/participants");
+// Fluxer PR 2: read-only communities-registry lookups (internal integer id →
+// external Discord snowflake for the member-cache seams). Never inserts.
+const { getCommunityById } = require("../../platform/community");
 
 const PAGE_SIZE = 50;
 
@@ -127,25 +130,33 @@ function ticketLoginNext(pathname) {
  * redirect decision; any unexpected failure fails CLOSED to an empty scope.
  * Entries keep their display names for the shell's guild switcher — the
  * switcher list is EXACTLY this scoped set (never the wider bot∩user list).
+ * Fluxer PR 2: tier resolution and row scoping key by the INTEGER community
+ * id (listGuilds entries carry it); the external snowflake is kept on the
+ * entry for the cache-only name-resolution seams.
  * @param {{resolve: Function, listGuilds: Function}} guildAccess
  * @param {{id: string, userId: string}} session
- * @returns {Promise<{guilds: Array<{id: string, name: string|null}>, guildIds: string[], reauth: boolean, degraded: boolean}>}
+ * @returns {Promise<{guilds: Array<{id: string, communityId: number|null, name: string|null}>, guildIds: string[], communityIds: number[], reauth: boolean, degraded: boolean}>}
  */
 async function listStaffedGuilds(guildAccess, session) {
   try {
     const listed = await guildAccess.listGuilds(session);
     if (listed.reauth) {
-      return { guilds: [], guildIds: [], reauth: true, degraded: false };
+      return { guilds: [], guildIds: [], communityIds: [], reauth: true, degraded: false };
     }
     const guilds = [];
     for (const guild of listed.guilds || []) {
-      const access = await guildAccess.resolve(session, guild.id);
+      // No communities row → nothing to tier against → not staffed (deny).
+      const access =
+        guild.communityId == null
+          ? { status: "deny" }
+          : await guildAccess.resolve(session, guild.communityId);
       if (access.status === "reauth" || access.status === "anon") {
-        return { guilds: [], guildIds: [], reauth: true, degraded: false };
+        return { guilds: [], guildIds: [], communityIds: [], reauth: true, degraded: false };
       }
       if (access.status === "ok") {
         guilds.push({
           id: guild.id,
+          communityId: guild.communityId,
           name: typeof guild.name === "string" && guild.name.trim() ? guild.name : null,
         });
       }
@@ -153,6 +164,7 @@ async function listStaffedGuilds(guildAccess, session) {
     return {
       guilds,
       guildIds: guilds.map((g) => g.id),
+      communityIds: guilds.map((g) => g.communityId),
       reauth: false,
       degraded: !!listed.degraded,
     };
@@ -161,7 +173,7 @@ async function listStaffedGuilds(guildAccess, session) {
       "[web] transcripts: staff-guild scope failed closed:",
       err?.code || err?.message || err
     );
-    return { guilds: [], guildIds: [], reauth: false, degraded: false };
+    return { guilds: [], guildIds: [], communityIds: [], reauth: false, degraded: false };
   }
 }
 
@@ -188,6 +200,23 @@ async function allowTicketView(req, res, ctx, ticket) {
 }
 
 /**
+ * Internal integer community id → EXTERNAL Discord snowflake (read-only
+ * registry lookup; missing row / bad id ⇒ null). Name-resolution seams are
+ * Discord-facing and key by the external id — a null here degrades to the
+ * raw-id render, never a crash.
+ * @param {number|null|undefined} communityId
+ * @returns {string|null}
+ */
+function externalGuildOf(communityId) {
+  if (communityId == null) return null;
+  try {
+    return getCommunityById(communityId)?.externalGuildId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * GET /t for a viewer with NO staffed guild: "your tickets" (§8.15-15.13).
  * Same rows, same transcript links, same search — but the ROW SET is the
  * participant-scoped query and the page never renders /g/ affordances
@@ -207,20 +236,24 @@ async function serveParticipantArchive(req, res, url, ctx) {
     return;
   }
 
-  const guildFilter = url.searchParams.get("guild") || null; // AND-narrowing only
+  // Fluxer PR 2: the ?guild= filter carries the INTEGER community id (the
+  // same identity /g/ links and the view's paging params use).
+  const guildFilter = url.searchParams.get("guild") || null;
+  const communityFilter =
+    guildFilter && /^[1-9][0-9]{0,9}$/.test(guildFilter) ? Number(guildFilter) : null;
   const q = String(url.searchParams.get("q") || "").trim().slice(0, 100);
   let page = Number(url.searchParams.get("page") || 1);
   if (!Number.isFinite(page) || page < 1) page = 1;
 
   const total = countArchivedTicketsForUser(userId, {
-    guildId: guildFilter && /^[0-9]{5,20}$/.test(guildFilter) ? guildFilter : null,
+    communityId: Number.isSafeInteger(communityFilter) ? communityFilter : null,
     q,
   });
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   if (page > totalPages) page = totalPages;
   const offset = (page - 1) * PAGE_SIZE;
   const tickets = listArchivedTicketsForUser(userId, {
-    guildId: guildFilter && /^[0-9]{5,20}$/.test(guildFilter) ? guildFilter : null,
+    communityId: Number.isSafeInteger(communityFilter) ? communityFilter : null,
     q,
     limit: PAGE_SIZE,
     offset,
@@ -229,18 +262,19 @@ async function serveParticipantArchive(req, res, url, ctx) {
   // cache-only display names (plain text in this mode — §8.6 no dead links)
   const namesByGuild = new Map();
   if (typeof ctx.getClient === "function" && tickets.length > 0) {
-    const idsByGuild = new Map();
+    const idsByCommunity = new Map();
     for (const t of tickets) {
-      const ids = idsByGuild.get(t.guild_id) ?? new Set();
+      const ids = idsByCommunity.get(t.community_id) ?? new Set();
       for (const id of [t.creator_user_id, t.staff_owner_id, t.closed_by_user_id]) {
         if (id) ids.add(String(id));
       }
-      idsByGuild.set(t.guild_id, ids);
+      idsByCommunity.set(t.community_id, ids);
     }
-    for (const [g, set] of idsByGuild) {
-      if (set.size > 0) {
-        namesByGuild.set(g, resolveMemberNames(ctx.getClient, g, [...set]));
-      }
+    for (const [cid, set] of idsByCommunity) {
+      if (set.size === 0) continue;
+      const ext = externalGuildOf(cid);
+      if (!ext) continue; // no discord row → raw ids render (degrade honest)
+      namesByGuild.set(cid, resolveMemberNames(ctx.getClient, ext, [...set]));
     }
   }
 
@@ -251,7 +285,7 @@ async function serveParticipantArchive(req, res, url, ctx) {
     total,
     page,
     pageSize: PAGE_SIZE,
-    guildId: guildFilter && /^[0-9]{5,20}$/.test(guildFilter) ? guildFilter : null,
+    guildId: Number.isSafeInteger(communityFilter) ? communityFilter : null,
     q,
     namesByGuild,
     consoleLink: null,
@@ -288,9 +322,15 @@ async function serveArchiveIndex(req, res, url, ctx) {
     return serveParticipantArchive(req, res, url, ctx);
   }
 
+  // Fluxer PR 2: the legacy ?guild= param carries the INTEGER community id
+  // (the same identity the /g/ links and the view's paging params use).
   const requested = url.searchParams.get("guild") || null;
-  const guildId =
-    requested && staffed.guildIds.includes(requested) ? requested : null;
+  const requestedNum =
+    /^\d{1,10}$/.test(String(requested ?? "")) ? Number(requested) : null;
+  const communityId =
+    requestedNum != null && staffed.communityIds.includes(requestedNum)
+      ? requestedNum
+      : null;
 
   let page = Number(url.searchParams.get("page") || 1);
   if (!Number.isFinite(page) || page < 1) page = 1;
@@ -304,40 +344,43 @@ async function serveArchiveIndex(req, res, url, ctx) {
   let total = 0;
   let tickets = [];
   if (scoped) {
-    total = guildId
-      ? countArchivedTickets({ guildId, q })
-      : countArchivedTicketsForGuilds(staffed.guildIds, q);
+    total = communityId != null
+      ? countArchivedTickets({ communityId, q })
+      : countArchivedTicketsForGuilds(staffed.communityIds, q);
 
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
     if (page > totalPages) page = totalPages;
 
     const offset = (page - 1) * PAGE_SIZE;
-    tickets = guildId
-      ? listArchivedTickets({ guildId, limit: PAGE_SIZE, offset, q })
+    tickets = communityId != null
+      ? listArchivedTickets({ communityId, limit: PAGE_SIZE, offset, q })
       : listArchivedTicketsForGuilds({
-          guildIds: staffed.guildIds,
+          communityIds: staffed.communityIds,
           limit: PAGE_SIZE,
           offset,
           q,
         });
   }
 
-  // People cells resolve display names per row's guild via the shared
+  // People cells resolve display names per row's community via the shared
   // cache-only seam (misses enqueue background fetches; §8.6 doctrine).
+  // Rows key the map by their INTEGER community_id (post-cutover row shape);
+  // the Discord member cache is addressed by the row's EXTERNAL guild id.
   const namesByGuild = new Map();
   if (typeof ctx.getClient === "function" && tickets.length > 0) {
-    const idsByGuild = new Map();
+    const idsByCommunity = new Map();
     for (const t of tickets) {
-      const ids = idsByGuild.get(t.guild_id) ?? new Set();
+      const ids = idsByCommunity.get(t.community_id) ?? new Set();
       for (const id of [t.creator_user_id, t.staff_owner_id, t.closed_by_user_id]) {
         if (id) ids.add(String(id));
       }
-      idsByGuild.set(t.guild_id, ids);
+      idsByCommunity.set(t.community_id, ids);
     }
-    for (const [g, set] of idsByGuild) {
-      if (set.size > 0) {
-        namesByGuild.set(g, resolveMemberNames(ctx.getClient, g, [...set]));
-      }
+    for (const [cid, set] of idsByCommunity) {
+      if (set.size === 0) continue;
+      const ext = externalGuildOf(cid);
+      if (!ext) continue; // no discord row → raw ids render (degrade honest)
+      namesByGuild.set(cid, resolveMemberNames(ctx.getClient, ext, [...set]));
     }
   }
 
@@ -345,19 +388,19 @@ async function serveArchiveIndex(req, res, url, ctx) {
   // senior+ sees the open-ticket actions page, staff the guild dashboard
   // (staff has no /tickets actions access — never link a guaranteed 404).
   let consoleLink = null;
-  if (guildId) {
+  if (communityId != null) {
     let tier = null;
     try {
-      const access = await ctx.guildAccess.resolve(req.webSession, guildId);
+      const access = await ctx.guildAccess.resolve(req.webSession, communityId);
       tier = access?.tier ?? null;
     } catch {
       tier = null; // link is a convenience; its absence can't fail the page
     }
     consoleLink =
       tier === "senior" || tier === "admin"
-        ? { href: `/g/${guildId}/tickets`, label: "Open tickets →" }
+        ? { href: `/g/${communityId}/tickets`, label: "Open tickets →" }
         : tier
-          ? { href: `/g/${guildId}`, label: "Guild dashboard →" }
+          ? { href: `/g/${communityId}`, label: "Guild dashboard →" }
           : null;
   }
 
@@ -368,7 +411,7 @@ async function serveArchiveIndex(req, res, url, ctx) {
     total,
     page,
     pageSize: PAGE_SIZE,
-    guildId,
+    guildId: communityId,
     q,
     namesByGuild,
     consoleLink,
@@ -408,7 +451,8 @@ async function serveTranscriptAsset(req, res, tokenRaw, filenameRaw, ctx) {
   // rule, so an asset can never leak where the transcript itself would 404.
   if (!(await allowTicketView(req, res, ctx, ticket))) return;
 
-  const abs = resolveAssetAbsolutePath(ticket.guild_id, token, filename);
+  // Fluxer PR 2: transcript/asset dirs key by the row's INTEGER community id.
+  const abs = resolveAssetAbsolutePath(ticket.community_id, token, filename);
   if (!abs) {
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Asset not found");
@@ -462,7 +506,11 @@ async function serveTranscriptView(req, res, tokenRaw, ctx) {
   }
   const staff = decision.via === "staff";
   const tier = staff ? decision.tier || null : null;
-  const guildId = String(ticket.guild_id ?? "");
+  // Fluxer PR 2: the row carries the INTEGER community id; the member-cache
+  // seam and switcher entries are Discord-facing, so resolve the row's
+  // EXTERNAL guild id through the communities registry (null-safe).
+  const communityId = ticket.community_id ?? null;
+  const guildId = externalGuildOf(communityId) ?? "";
 
   // The record itself. A read failure here is a real outage: let it surface
   // as the app's logged 500 (AGENTS.md) — never a blank "empty" transcript.
@@ -479,11 +527,11 @@ async function serveTranscriptView(req, res, tokenRaw, ctx) {
       const listed = await ctx.guildAccess.listGuilds(req.webSession);
       guilds = (listed && listed.guilds ? listed.guilds : []).slice();
       if (!guilds.some((g) => g.id === guildId)) {
-        guilds.unshift({ id: guildId, name: guildId });
+        guilds.unshift({ id: guildId, communityId, name: guildId });
       }
       degraded = !!(listed && listed.degraded);
     } catch {
-      guilds = [{ id: guildId, name: guildId }];
+      guilds = [{ id: guildId, communityId, name: guildId }];
     }
   }
 

@@ -48,6 +48,8 @@ const auditLog = require("../../features/logs/auditLog");
 // core/auditTrail.js). A fix to one copy must never miss the other — the
 // two hand-rolled copies this replaced had already drifted in comments.
 const { REDACT_KEY_PATTERN, redactSensitive } = require("../../core/auditTrail");
+const { discordCommunityId } = require("../../platform/community");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 
 /** Origin the web layer writes (§8.6); callers may override for slash reuse. */
 const DEFAULT_AUDIT_ORIGIN = "web";
@@ -86,6 +88,8 @@ function redactDetails(details) {
  * Guild resolution order: explicit entry override → req.guildAccess.guildId
  * (guildScope, the ONLY middleware that publishes guild context onto req) →
  * req.params.guildId (routes mounted under /g/:guildId). Empty → null.
+ * Kept for the Discord MIRROR path (embeds post to a Discord channel),
+ * which needs the EXTERNAL snowflake.
  * @param {object} req
  * @param {object} entry
  * @returns {string|null}
@@ -94,6 +98,30 @@ function resolveGuildId(req, entry) {
   const raw = entry.guildId ?? req?.guildAccess?.guildId ?? req?.params?.guildId;
   const text = raw == null ? "" : String(raw).trim();
   return text || null;
+}
+
+/**
+ * Fluxer PR 2: admin_audit rows key by the INTEGER communities.id.
+ * Resolution order: explicit numeric entry.communityId → req.guildAccess
+ * .communityId (guildScope) → numeric value passed as guildId (tolerated
+ * from already-converted callers) → read-only snowflake→community mapping.
+ * @param {object} req
+ * @param {object} entry
+ * @returns {number|null}
+ */
+function resolveCommunityId(req, entry) {
+  const cid = entry.communityId ?? req?.guildAccess?.communityId;
+  if (Number.isSafeInteger(cid) && cid >= 1) return cid;
+  const raw =
+    entry.guildId ?? req?.guildAccess?.guildId ?? req?.params?.guildId;
+  if (raw == null) return null;
+  const n = Number(String(raw).trim());
+  if (Number.isSafeInteger(n) && n >= 1) return n;
+  try {
+    return discordCommunityId(String(raw).trim());
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -154,6 +182,9 @@ function getBoundAuditClient() {
 async function dispatchMirror(mirror, ctx, deps) {
   const client = deps.getClient();
   if (!client) return false; // no client bound (dark boot / tests): nothing to mirror to
+  // sendAuditLog/sendWarnLog are OutboundClient APIs (F2b): wrap the raw
+  // client exactly like the feature-side seams do (cached per client).
+  const outbound = getDiscordOutbound(client);
 
   const poster =
     mirror.kind === "warn" ? deps.auditLog.sendWarnLog : deps.auditLog.sendAuditLog;
@@ -172,7 +203,7 @@ async function dispatchMirror(mirror, ctx, deps) {
           ],
         };
 
-  return poster(client, ctx.guildId, payload);
+  return poster(outbound, ctx.guildId, payload);
 }
 
 /**
@@ -221,10 +252,11 @@ function writeAudit(req, entry, deps) {
   }
 
   const guildId = resolveGuildId(req, entry);
-  if (!guildId) {
+  const communityId = resolveCommunityId(req, entry);
+  if (communityId == null) {
     throw auditError(
       "AUDIT_NO_GUILD",
-      "audit() could not resolve a guild id (pass guildId or mount under /g/:guildId)."
+      "audit() could not resolve a community id (pass communityId/guildId or mount under /g/:guildId)."
     );
   }
 
@@ -236,7 +268,7 @@ function writeAudit(req, entry, deps) {
   // DB-first (§8.1-7): insertAdminAudit failures intentionally PROPAGATE —
   // the mutation is reported as failed rather than silently unaudited.
   const row = deps.insertAdminAudit({
-    guildId,
+    communityId,
     actorUserId,
     origin: normalized.origin,
     action,
@@ -246,7 +278,7 @@ function writeAudit(req, entry, deps) {
   });
 
   if (entry.mirror) {
-    scheduleMirror(entry.mirror, { guildId, actor: mirrorActor(req) }, deps);
+    scheduleMirror(entry.mirror, { guildId, communityId, actor: mirrorActor(req) }, deps);
   }
   return row;
 }

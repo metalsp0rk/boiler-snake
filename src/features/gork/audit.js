@@ -29,6 +29,7 @@
  */
 
 const { sendAuditLog } = require("../logs/auditLog");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { Color, baseEmbed, truncateField } = require("../../core/theme");
 const { GORK_SUMMARIZE_FOCUS_MAX, GORK_SUMMARIZE_LANG_MAX } = require("./constants");
 const {
@@ -267,7 +268,7 @@ async function logGorkQa(client, guildId, opts = {}) {
       embed.addFields({ name: "Jump", value: links.join(" · ") });
     }
 
-    const sent = await sendAuditLog(client, guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
     if (!sent) {
       console.log(
         `[gork] Q&A (no audit channel): ${askedBy} asked: ${truncateField(questionValue, 120)}`,
@@ -308,7 +309,7 @@ async function logGorkFailure(client, guildId, opts = {}) {
       timestamp: true,
     });
 
-    const sent = await sendAuditLog(client, guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
     if (!sent) {
       console.log(`[gork] failure (no audit channel): ${body}`);
     }
@@ -345,7 +346,7 @@ async function logGorkMemory(client, guildId, { indexed, stored, skippedInvalid 
       timestamp: true,
     });
 
-    const sent = await sendAuditLog(client, guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
     if (!sent) {
       console.log(`[gork] memory (no audit channel): ${body}`);
     }
@@ -541,7 +542,7 @@ async function logGorkSummarize(client, guildId, opts = {}) {
       if (link) embed.addFields({ name: "Jump", value: link });
     }
 
-    const sent = await sendAuditLog(client, guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
     if (!sent) {
       console.log(
         `[gork] summarize (no audit channel): ${requestedBy} ${modeLabel} in ${channelValue}`,
@@ -593,7 +594,7 @@ async function logGorkSummarizeFailure(client, guildId, opts = {}) {
       timestamp: true,
     });
 
-    const sent = await sendAuditLog(client, guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
     if (!sent) {
       console.log(`[gork] summarize failure (no audit channel): ${body}`);
     }
@@ -628,7 +629,7 @@ async function logGorkSummarizeFailure(client, guildId, opts = {}) {
  *
  * @param {object} opts
  * @param {object|null} [opts.settings] getGuildSettings() result (drives the gate)
- * @param {string} [opts.guildId]
+ * @param {number} [opts.communityId] internal communities id (row's `community_id`)
  * @param {string} [opts.channelId] invocation channel (fallback read channel)
  * @param {string} [opts.interactionId] slash interaction id → message_id column
  * @param {string} [opts.userId] invoking staff member
@@ -655,7 +656,7 @@ async function logGorkSummarizeFailure(client, guildId, opts = {}) {
 function createSummarizeInteractionRecorder(opts = {}) {
   const {
     settings = null,
-    guildId = null,
+    communityId = null,
     channelId = null,
     interactionId = null,
     userId = null,
@@ -708,7 +709,7 @@ function createSummarizeInteractionRecorder(opts = {}) {
     };
     return createInteractionRecorder({
       kind: GORK_SUMMARIZE_INTERACTION_KIND,
-      guildId,
+      communityId,
       channelId: resolvedChannelId,
       messageId: interactionId,
       userId,
@@ -728,7 +729,7 @@ function createSummarizeInteractionRecorder(opts = {}) {
     });
   } catch (err) {
     console.warn(
-      `[gork] summarize interaction log recorder build failed (guild=${guildId ?? "none"} interaction=${interactionId ?? "none"}):`,
+      `[gork] summarize interaction log recorder build failed (community=${communityId ?? "none"} interaction=${interactionId ?? "none"}):`,
       err?.message || err,
     );
     return null;

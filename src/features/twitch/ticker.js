@@ -70,16 +70,16 @@ function createGoLiveEmbed(sub, stream) {
 /**
  * Send the go-live notification for one subscription.
  * @param {import("discord.js").Client} client
- * @param {string} guildId
+ * @param {number} communityId internal community id (row's `community_id`)
  * @param {object} sub stored twitch_channels row
  * @param {object} stream Helix stream object
  */
-async function sendGoLiveNotification(client, guildId, sub, stream) {
-  const settings = getGuildSettings(guildId);
+async function sendGoLiveNotification(client, communityId, sub, stream) {
+  const settings = getGuildSettings(communityId);
   const notifyChannelId = settings.twitch_notification_channel_id;
   if (!notifyChannelId) {
     console.log(
-      `[twitch] No notification channel configured for guild ${guildId}`,
+      `[twitch] No notification channel configured for community ${communityId}`,
     );
     return;
   }
@@ -108,7 +108,7 @@ async function sendGoLiveNotification(client, guildId, sub, stream) {
         : { parse: [] },
     });
     console.log(
-      `[twitch] Sent go-live notification for ${sub.login} in guild ${guildId}`,
+      `[twitch] Sent go-live notification for ${sub.login} in community ${communityId}`,
     );
   } catch (err) {
     console.error(
@@ -127,22 +127,22 @@ async function sendGoLiveNotification(client, guildId, sub, stream) {
  * also redelivers, at-least-once).
  *
  * @param {import("discord.js").Client} client
- * @param {string} guildId
+ * @param {number} communityId internal community id (row's `community_id`)
  * @param {object} sub stored twitch_channels row
  * @param {object|undefined} stream matching Helix stream (if any)
  */
-async function processSubscription(client, guildId, sub, stream) {
+async function processSubscription(client, communityId, sub, stream) {
   if (stream) {
     const isNewStream = claimTwitchStream(
-      guildId,
+      communityId,
       sub.broadcaster_id,
       stream.id,
     );
     if (isNewStream) {
-      await sendGoLiveNotification(client, guildId, sub, stream);
+      await sendGoLiveNotification(client, communityId, sub, stream);
     }
   } else {
-    const wasLive = claimTwitchOffline(guildId, sub.broadcaster_id);
+    const wasLive = claimTwitchOffline(communityId, sub.broadcaster_id);
     if (wasLive) {
       console.log(`[twitch] ${sub.login} went offline`);
     }
@@ -270,8 +270,8 @@ function createVodEmbed(sub, video) {
  * NO role mention (the ping role is for go-live only) with
  * allowedMentions parse-off. Returns false (logged) when delivery failed.
  */
-async function sendMediaNotification(client, guildId, sub, content, embed) {
-  const settings = getGuildSettings(guildId);
+async function sendMediaNotification(client, communityId, sub, content, embed) {
+  const settings = getGuildSettings(communityId);
   const notifyChannelId = settings.twitch_notification_channel_id;
   if (!notifyChannelId) return false;
 
@@ -315,7 +315,7 @@ async function processNewClips(client, sub, deps = {}) {
   let watermark = sub.last_clip_created_at;
   if (watermark == null) {
     // Opt-in should have seeded this; seed now without announcing.
-    updateTwitchChannelClipState(sub.guild_id, sub.broadcaster_id, {
+    updateTwitchChannelClipState(sub.community_id, sub.broadcaster_id, {
       lastClipId: sub.last_clip_id,
       lastClipCreatedAt: Date.now(),
     });
@@ -345,7 +345,7 @@ async function processNewClips(client, sub, deps = {}) {
   for (const { clip } of toSend) {
     await sendMediaNotification(
       client,
-      sub.guild_id,
+      sub.community_id,
       sub,
       `**${displayName}** posted a new clip`,
       createClipEmbed(sub, clip),
@@ -355,7 +355,7 @@ async function processNewClips(client, sub, deps = {}) {
   // Advance past EVERY fresh clip (even unsent ones) to bound the flood.
   let newest = fresh[fresh.length - 1];
   for (const x of fresh) if (x.ts > newest.ts) newest = x;
-  updateTwitchChannelClipState(sub.guild_id, sub.broadcaster_id, {
+  updateTwitchChannelClipState(sub.community_id, sub.broadcaster_id, {
     lastClipId: newest.clip.id,
     lastClipCreatedAt: newest.ts,
   });
@@ -376,7 +376,7 @@ async function processNewVods(client, sub, deps = {}) {
   const fetch = deps.fetchArchives || fetchArchives;
   let watermark = sub.last_video_created_at;
   if (watermark == null) {
-    updateTwitchChannelVideoState(sub.guild_id, sub.broadcaster_id, {
+    updateTwitchChannelVideoState(sub.community_id, sub.broadcaster_id, {
       lastVideoId: sub.last_video_id,
       lastVideoCreatedAt: Date.now(),
     });
@@ -401,7 +401,7 @@ async function processNewVods(client, sub, deps = {}) {
   for (const { video } of toSend) {
     await sendMediaNotification(
       client,
-      sub.guild_id,
+      sub.community_id,
       sub,
       `**${displayName}** posted a new VOD`,
       createVodEmbed(sub, video),
@@ -410,7 +410,7 @@ async function processNewVods(client, sub, deps = {}) {
 
   let newest = fresh[fresh.length - 1];
   for (const x of fresh) if (x.ts > newest.ts) newest = x;
-  updateTwitchChannelVideoState(sub.guild_id, sub.broadcaster_id, {
+  updateTwitchChannelVideoState(sub.community_id, sub.broadcaster_id, {
     lastVideoId: newest.video.id,
     lastVideoCreatedAt: newest.ts,
   });
@@ -425,7 +425,7 @@ async function processNewVods(client, sub, deps = {}) {
 /**
  * Resolve any subscriptions that still lack a numeric broadcaster id.
  * Also heals rows created before a broadcaster renamed their login
- * (the unique (guild_id, login) constraint would otherwise leave a
+ * (the unique (community_id, login) constraint would otherwise leave a
  * stale duplicate row for the same broadcaster).
  * @param {object} [deps]
  */
@@ -441,14 +441,14 @@ async function resolvePendingSubscriptions(deps = defaultDeps) {
         continue;
       }
       addTwitchChannel(
-        sub.guild_id,
+        sub.community_id,
         user.id,
         user.login,
         user.display_name,
         user.profile_image_url,
       );
       if (sub.login !== user.login) {
-        removeTwitchChannel(sub.guild_id, sub.login);
+        removeTwitchChannel(sub.community_id, sub.login);
       }
     }
   }
@@ -461,7 +461,7 @@ async function resolvePendingSubscriptions(deps = defaultDeps) {
     const existing = seen.get(row.broadcaster_id);
     if (existing && existing.login !== row.login) {
       // Keep the row with the current (most recently written) login.
-      removeTwitchChannel(row.guild_id, existing.login);
+      removeTwitchChannel(row.community_id, existing.login);
       seen.set(row.broadcaster_id, row);
     } else if (!existing) {
       seen.set(row.broadcaster_id, row);
@@ -489,7 +489,7 @@ async function runTwitchTick(client, deps = defaultDeps) {
   const nowMs = Date.now();
   const all = getAllTwitchChannels().filter((s) => {
     if (!/^\d+$/.test(s.broadcaster_id)) return false;
-    const settings = getGuildSettings(s.guild_id);
+    const settings = getGuildSettings(s.community_id);
     const intervalMs =
       (Number(settings.twitch_polling_interval_minutes) || 2) * 60_000;
     // Never re-check a row that was checked less than a minute ago
@@ -532,13 +532,13 @@ async function runTwitchTick(client, deps = defaultDeps) {
       }
       await processSubscription(
         client,
-        sub.guild_id,
+        sub.community_id,
         sub,
         byUserId.get(sub.broadcaster_id),
       );
     } catch (err) {
       console.error(
-        `[twitch] Error processing ${sub.login} (guild ${sub.guild_id}):`,
+        `[twitch] Error processing ${sub.login} (guild ${sub.community_id}):`,
         err?.message || err,
       );
     }
@@ -553,7 +553,7 @@ async function runTwitchTick(client, deps = defaultDeps) {
       if (sub.notify_vods) await processNewVods(client, sub, deps);
     } catch (err) {
       console.error(
-        `[twitch] Media poll failed for ${sub.login} (guild ${sub.guild_id}):`,
+        `[twitch] Media poll failed for ${sub.login} (guild ${sub.community_id}):`,
         err?.message || err,
       );
     }

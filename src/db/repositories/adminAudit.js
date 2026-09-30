@@ -92,8 +92,8 @@ function serializeAuditDetails(details) {
   }
   if (json.length > MAX_AUDIT_DETAILS_JSON) {
     throw auditError(
-      "DETAILS_TOO_LARGE",
-      `Audit details JSON exceeds ${MAX_AUDIT_DETAILS_JSON} characters.`,
+      "INVALID_DETAILS",
+      `Audit details serialize to more than ${MAX_AUDIT_DETAILS_JSON} characters.`,
     );
   }
   return json;
@@ -180,7 +180,8 @@ function getAdminAuditById(id) {
 /**
  * List audit rows for a community, newest first (§8.6 budget: LIMIT ≤ 100).
  * @param {number} communityId
- * @param {{ limit?: number, offset?: number, origin?: string }} [opts]
+ * @param {{ limit?: number, offset?: number, origin?: string, before?: number }} [opts]
+ *   before: epoch ms cursor — only rows with created_at < before.
  * @returns {object[]}
  */
 function listAdminAudit(communityId, opts = {}) {
@@ -188,30 +189,32 @@ function listAdminAudit(communityId, opts = {}) {
   const limit = Math.min(Math.max(1, Number(opts.limit) || 25), MAX_AUDIT_LIST_LIMIT);
   const offset = Math.max(0, Number(opts.offset) || 0);
 
+  const where = ["community_id=?"];
+  const params = [communityId];
+
   if (opts.origin != null && opts.origin !== "") {
     const normalized = normalizeAuditOrigin(opts.origin);
     if (!normalized.ok) throw auditError("INVALID_ORIGIN", normalized.error);
-    return db
-      .prepare(
-        `
-      SELECT * FROM admin_audit
-      WHERE community_id=? AND origin=?
-      ORDER BY created_at DESC, id DESC
-      LIMIT ? OFFSET ?
-    `
-      )
-      .all(communityId, normalized.origin, limit, offset);
+    where.push("origin=?");
+    params.push(normalized.origin);
   }
+
+  if (opts.before != null && Number.isFinite(Number(opts.before))) {
+    where.push("created_at < ?");
+    params.push(Number(opts.before));
+  }
+
+  // id tiebreaker keeps paging stable for rows sharing a created_at ms.
   return db
     .prepare(
       `
     SELECT * FROM admin_audit
-    WHERE community_id=?
+    WHERE ${where.join(" AND ")}
     ORDER BY created_at DESC, id DESC
     LIMIT ? OFFSET ?
   `
     )
-    .all(communityId, limit, offset);
+    .all(...params, limit, offset);
 }
 
 /**

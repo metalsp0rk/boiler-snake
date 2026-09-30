@@ -29,7 +29,21 @@ const { isAdminOrMod, isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logHoneypotTrigger } = require("../logs/auditLog");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
-const { ensureCommunity } = require("../../platform/community");
+const { ensureCommunity, getCommunityById } = require("../../platform/community");
+
+/**
+ * Fluxer PR 2 Discord edge: external snowflake → internal INTEGER community id
+ * (create-on-sight). The honeypot repos are community-keyed.
+ * @param {string} externalGuildId Discord guild id
+ * @returns {number} communities.id
+ */
+function communityIdFor(externalGuildId) {
+  return ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(externalGuildId),
+  });
+}
 const { registerJob } = require("../../core/scheduler");
 const {
   recordSlashAudit,
@@ -394,9 +408,10 @@ async function handleHoneypotWarningReaction(reaction) {
   const message = reaction?.message;
   if (!message) return false;
 
-  const guildId = message.guildId || message.guild?.id;
   const messageId = message.id;
-  if (!isHoneypotWarningMessage(guildId, messageId)) return false;
+  // Fluxer PR 2: repo is community-keyed — resolve the integer at this edge.
+  const communityId = communityIdFor(message.guildId || message.guild?.id);
+  if (!isHoneypotWarningMessage(communityId, messageId)) return false;
 
   await stripHoneypotWarningReaction(reaction);
   return true;
@@ -412,9 +427,12 @@ async function sweepHoneypotWarningReactions(client) {
 
   for (const row of rows) {
     try {
+      // Rows key by community id; the Discord cache needs the external id.
+      const externalGuildId = getCommunityById(row.community_id)?.externalGuildId;
+      if (!externalGuildId) continue;
       const guild =
-        client.guilds.cache.get(row.guild_id) ||
-        (await client.guilds.fetch(row.guild_id).catch(() => null));
+        client.guilds.cache.get(externalGuildId) ||
+        (await client.guilds.fetch(externalGuildId).catch(() => null));
       if (!guild) continue;
 
       const channel = await guild.channels
@@ -445,7 +463,7 @@ async function sweepHoneypotWarningReactions(client) {
       }
     } catch (e) {
       console.warn(
-        `[honeypot] Warning reaction sweep failed for ${row.guild_id}/${row.channel_id}:`,
+        `[honeypot] Warning reaction sweep failed for ${row.community_id}/${row.channel_id}:`,
         e?.message || e,
       );
     }
@@ -458,9 +476,10 @@ async function sweepHoneypotWarningReactions(client) {
  * Returns true when the message was handled as honeypot traffic (caller should not award XP).
  */
 async function handleHoneypotMessage(message) {
-  // TODO(fluxer-pr4): the honeypot repository is not community-keyed yet —
-  // these calls keep the Discord snowflake.
-  if (!isHoneypotChannel(message.guild.id, message.channel.id)) return false;
+  // Fluxer PR 2: the honeypot repository is community-keyed — resolve the
+  // integer community id at this Discord edge.
+  const communityId = communityIdFor(message.guild.id);
+  if (!isHoneypotChannel(communityId, message.channel.id)) return false;
 
   let member = message.member;
   if (!member) {
@@ -472,12 +491,7 @@ async function handleHoneypotMessage(message) {
   // Exempt roles (staff, etc.) — no ban, but still delete the message so the channel stays empty
   if (member) {
     const roleIds = [...member.roles.cache.keys()];
-    // staffRoles repo is community-keyed; resolve the integer at this edge.
-    const communityId = ensureCommunity({
-      platform: "discord",
-      instanceKey: "discord",
-      externalGuildId: message.guild.id,
-    });
+    // staffRoles repo is community-keyed (PR 2): reuse the resolved id.
     if (memberHasStaffRole(communityId, roleIds)) {
       try {
         if (message.deletable) await message.delete();
@@ -523,9 +537,10 @@ async function handleHoneypotBanRole(oldMember, newMember) {
   }
   if (!addedRoleIds.length) return;
 
-  // TODO(fluxer-pr4): the honeypot repository is not community-keyed yet —
-  // this lookup keeps the Discord snowflake.
-  const matched = findHoneypotBanRolesAmong(guildId, addedRoleIds);
+  const matched = findHoneypotBanRolesAmong(
+    communityIdFor(guildId),
+    addedRoleIds,
+  );
   if (!matched.length) return;
 
   // staffRoles repo is community-keyed; resolve the integer at this edge.
@@ -595,14 +610,14 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "add") {
       const ch = interaction.options.getChannel("channel", true);
 
-      if (isHoneypotChannel(guildId, ch.id)) {
+      if (isHoneypotChannel(communityId, ch.id)) {
         await replyEphemeral(interaction, {
           content: `<#${ch.id}> is already set up as a honeypot channel.`,
         });
         return;
       }
 
-      addHoneypotChannel(guildId, ch.id); // TODO(fluxer-pr4): un-converted repo — snowflake key
+      addHoneypotChannel(communityId, ch.id);
       recordSlashAudit({
         interaction,
         communityId,
@@ -634,7 +649,7 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "del") {
       const ch = interaction.options.getChannel("channel", true);
       const { removed, warning_message_id } = removeHoneypotChannel(
-        guildId, // TODO(fluxer-pr4): un-converted repo — snowflake key
+        communityId,
         ch.id,
       );
 
@@ -685,7 +700,7 @@ async function handleHoneypot(interaction, ctx) {
     }
 
     if (sub === "list") {
-      const rows = listHoneypotChannels(guildId); // TODO(fluxer-pr4): un-converted repo — snowflake key
+      const rows = listHoneypotChannels(communityId);
       if (!rows.length) {
         await replyEphemeral(interaction, {
           content: "No honeypot channels configured.",
@@ -718,15 +733,14 @@ async function handleHoneypot(interaction, ctx) {
         });
         return;
       }
-      // TODO(fluxer-pr4): honeypot repo un-converted — keyed by snowflake
-      if (isHoneypotBanRole(guildId, role.id)) {
+      if (isHoneypotBanRole(communityId, role.id)) {
         await replyEphemeral(interaction, {
           content: `${role} is already a honeypot ban role.`,
         });
         return;
       }
 
-      addHoneypotBanRole(guildId, role.id); // TODO(fluxer-pr4): un-converted repo — snowflake key
+      addHoneypotBanRole(communityId, role.id);
       recordSlashAudit({
         interaction,
         communityId,
@@ -753,7 +767,7 @@ async function handleHoneypot(interaction, ctx) {
 
     if (sub === "del") {
       const role = interaction.options.getRole("role", true);
-      const removed = removeHoneypotBanRole(guildId, role.id); // TODO(fluxer-pr4): un-converted repo — snowflake key
+      const removed = removeHoneypotBanRole(communityId, role.id);
       if (removed) {
         recordSlashAudit({
           interaction,
@@ -778,7 +792,7 @@ async function handleHoneypot(interaction, ctx) {
     }
 
     if (sub === "list") {
-      const rows = listHoneypotBanRoles(guildId); // TODO(fluxer-pr4): un-converted repo — snowflake key
+      const rows = listHoneypotBanRoles(communityId);
       if (!rows.length) {
         await replyEphemeral(interaction, {
           content: "No honeypot ban roles configured.",

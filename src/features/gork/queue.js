@@ -26,7 +26,7 @@
  *
  * // Inline, in the onMessageCreate pipeline step (fast checks only):
  * const cd = gorkQueue.checkCooldown({
- *   guildId,
+ *   communityId,
  *   userId,
  *   cooldownSec: settings.gork_cooldown_sec,
  *   staff: isStaff,
@@ -37,7 +37,7 @@
  *   return;
  * }
  *
- * const slot = gorkQueue.admit({ guildId });
+ * const slot = gorkQueue.admit({ communityId });
  * if (slot.dropped) {
  *   // send the locked queue-full canned reply, then return
  *   return;
@@ -53,7 +53,7 @@
  *   } catch (err) {
  *     // ...send the locked LLM-failure canned reply...
  *   } finally {
- *     gorkQueue.release({ guildId }); // exactly once per admitted slot
+ *     gorkQueue.release({ communityId }); // exactly once per admitted slot
  *   }
  * })();
  * ```
@@ -61,6 +61,9 @@
  * `slot.turn` resolves when the request may start (immediately when
  * `queued` is false). `release` hands the in-flight slot to the head of the
  * FIFO (starting the next queued request) or frees it when none are waiting.
+ *
+ * Queue entries and Map keys are keyed by the INTEGER community id (the
+ * internal `communities.id`), not the Discord snowflake.
  */
 
 const DEFAULT_COOLDOWN_SEC = 180;
@@ -106,14 +109,14 @@ function sweepCooldowns(cooldowns, clock) {
  * @param {() => number} [options.now=Date.now] clock returning epoch ms
  * @param {number} [options.maxWaiting=5] max waiting (queued) requests per guild
  * @returns {{
- *   checkCooldown: (args: { guildId: string, userId: string, cooldownSec?: number, staff?: boolean }) =>
+ *   checkCooldown: (args: { communityId: number, userId: string, cooldownSec?: number, staff?: boolean }) =>
  *     ({ allowed: true } | { allowed: false, reason: "cooldown", retryAfterMs: number }),
- *   admit: (args: { guildId: string }) =>
+ *   admit: (args: { communityId: number }) =>
  *     { queued: boolean | null, position: number | null, dropped: boolean, turn: Promise<void> | null },
- *   release: (args: { guildId: string }) => void,
- *   runExclusive: <T>(guildId: string, fn: () => T | Promise<T>) =>
+ *   release: (args: { communityId: number }) => void,
+ *   runExclusive: <T>(communityId: number, fn: () => T | Promise<T>) =>
  *     Promise<{ dropped: boolean, result?: T, error?: unknown }>,
- *   waitingCount: (args: { guildId: string }) => number,
+ *   waitingCount: (args: { communityId: number }) => number,
  *   reset: () => void
  * }}
  */
@@ -121,50 +124,52 @@ function createGorkQueue(options) {
   const { now, maxWaiting } = options || {};
   const clock = typeof now === "function" ? now : Date.now;
   const cap = Number(maxWaiting);
-  const maxWaitingPerGuild =
+  const maxWaitingPerCommunity =
     Number.isFinite(cap) && cap >= 0 ? Math.floor(cap) : DEFAULT_MAX_WAITING;
 
-  /** `${guildId}:${userId}` -> last allowed trigger ts (epoch ms). */
+  /** `${communityId}:${userId}` -> last allowed trigger ts (epoch ms). */
   const cooldowns = new Map();
-  /** guildId -> { running: boolean, waiting: { resolve: () => void }[] } (FIFO). */
-  const guilds = new Map();
+  /** communityId -> { running: boolean, waiting: { resolve: () => void }[] } (FIFO). */
+  const communities = new Map();
 
   /**
-   * Get (or lazily create) the queue state for a guild.
+   * Get (or lazily create) the queue state for a community.
    *
-   * @param {string} guildId
+   * @param {number|string} communityId
    * @returns {{ running: boolean, waiting: { resolve: () => void }[] }}
    */
-  function guildState(guildId) {
-    let st = guilds.get(guildId);
+  function communityState(communityId) {
+    let st = communities.get(communityId);
     if (!st) {
       st = { running: false, waiting: [] };
-      guilds.set(guildId, st);
+      communities.set(communityId, st);
     }
     return st;
   }
 
   /**
-   * Check the per-user per-guild cooldown. The timestamp is recorded when
+   * Check the per-user per-community cooldown. The timestamp is recorded when
    * the trigger is allowed (trigger time anchors the next window); hits do
    * not extend the window.
    *
    * @param {object} args
-   * @param {string} args.guildId
+   * @param {number} args.communityId internal communities id (accepts legacy `guildId` alias)
    * @param {string} args.userId
    * @param {number} [args.cooldownSec] guild setting `gork_cooldown_sec` (0-3600; 0 = disabled). Pass the stored guild value; use DEFAULT_COOLDOWN_SEC (180) as the fallback.
    * @param {boolean} [args.staff] staff bypass the cooldown entirely
    * @returns {{ allowed: true } | { allowed: false, reason: "cooldown", retryAfterMs: number }}
    */
   function checkCooldown(args = {}) {
+    // TODO(fluxer-pr5): drop the guildId alias once all callers pass communityId.
     const { guildId, userId, staff } = args;
-    if (!guildId || !userId) {
+    const communityId = args.communityId ?? guildId;
+    if (!communityId || !userId) {
       // Fail closed: missing identity means the trigger must not run.
       return { allowed: false, reason: "cooldown", retryAfterMs: 0 };
     }
     if (staff) return { allowed: true };
 
-    const mapKey = `${guildId}:${userId}`;
+    const mapKey = `${communityId}:${userId}`;
     const cooldownSec = normalizeCooldownSec(args.cooldownSec);
     sweepCooldowns(cooldowns, clock);
     const nowMs = clock();
@@ -189,28 +194,29 @@ function createGorkQueue(options) {
   }
 
   /**
-   * Admit a gork request for a guild.
+   * Admit a gork request for a community.
    *
    * Returns the FIFO position and a `turn` promise that resolves when the
    * request may start (immediately when `queued` is false). Exactly 1
-   * request is in-flight per guild: while the slot is taken, new admits
+   * request is in-flight per community: while the slot is taken, new admits
    * queue FIFO (up to `maxWaiting` waiting); beyond that they are dropped.
    *
-   * @param {{ guildId: string }} args
+   * @param {{ communityId: number }} args accepts legacy `guildId` alias
    * @returns {{ queued: boolean | null, position: number | null, dropped: boolean, turn: Promise<void> | null }}
    *   - `{ queued: false, position: 0, dropped: false, turn }` - go now
    *   - `{ queued: true, position: 1..N, dropped: false, turn }` - queued FIFO
    *   - `{ queued: null, position: null, dropped: true, turn: null }` - queue full
    */
   function admit(args = {}) {
-    const { guildId } = args;
-    if (!guildId) return { queued: null, position: null, dropped: true, turn: null };
-    const st = guildState(guildId);
+    // TODO(fluxer-pr5): drop the guildId alias once all callers pass communityId.
+    const communityId = args.communityId ?? args.guildId;
+    if (!communityId) return { queued: null, position: null, dropped: true, turn: null };
+    const st = communityState(communityId);
     if (!st.running) {
       st.running = true;
       return { queued: false, position: 0, dropped: false, turn: Promise.resolve() };
     }
-    if (st.waiting.length >= maxWaitingPerGuild) {
+    if (st.waiting.length >= maxWaitingPerCommunity) {
       return { queued: null, position: null, dropped: true, turn: null };
     }
     let resolveTurn;
@@ -222,18 +228,19 @@ function createGorkQueue(options) {
   }
 
   /**
-   * Release the in-flight slot for a guild: hands it to the head of the
+   * Release the in-flight slot for a community: hands it to the head of the
    * FIFO (starting the next queued request) or frees it when none are
    * waiting. Calling release with no in-flight request is a safe no-op.
    *
    * Must be called exactly once per admitted slot (in a `finally` block).
    *
-   * @param {{ guildId: string }} args
+   * @param {{ communityId: number }} args accepts legacy `guildId` alias
    */
   function release(args = {}) {
-    const { guildId } = args;
-    if (!guildId) return;
-    const st = guilds.get(guildId);
+    // TODO(fluxer-pr5): drop the guildId alias once all callers pass communityId.
+    const communityId = args.communityId ?? args.guildId;
+    if (!communityId) return;
+    const st = communities.get(communityId);
     if (!st || !st.running) return;
     const next = st.waiting.shift();
     if (next) {
@@ -253,12 +260,12 @@ function createGorkQueue(options) {
    * released.
    *
    * @template T
-   * @param {string} guildId
+   * @param {number} communityId
    * @param {() => T | Promise<T>} fn
    * @returns {Promise<{ dropped: boolean, result?: T, error?: unknown }>}
    */
-  async function runExclusive(guildId, fn) {
-    const slot = admit({ guildId });
+  async function runExclusive(communityId, fn) {
+    const slot = admit({ communityId });
     if (slot.dropped) {
       return { dropped: true, result: undefined, error: undefined };
     }
@@ -269,20 +276,21 @@ function createGorkQueue(options) {
     } catch (error) {
       return { dropped: false, result: undefined, error };
     } finally {
-      release({ guildId });
+      release({ communityId });
     }
   }
 
   /**
-   * Number of requests currently waiting (queued) in a guild's FIFO.
+   * Number of requests currently waiting (queued) in a community's FIFO.
    *
-   * @param {{ guildId: string }} args
+   * @param {{ communityId: number }} args accepts legacy `guildId` alias
    * @returns {number}
    */
   function waitingCount(args = {}) {
-    const { guildId } = args;
-    if (!guildId) return 0;
-    const st = guilds.get(guildId);
+    // TODO(fluxer-pr5): drop the guildId alias once all callers pass communityId.
+    const communityId = args.communityId ?? args.guildId;
+    if (!communityId) return 0;
+    const st = communities.get(communityId);
     return st ? st.waiting.length : 0;
   }
 
@@ -292,7 +300,7 @@ function createGorkQueue(options) {
    */
   function reset() {
     cooldowns.clear();
-    guilds.clear();
+    communities.clear();
   }
 
   return {

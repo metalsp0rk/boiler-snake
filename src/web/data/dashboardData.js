@@ -22,15 +22,15 @@
  * DATA-SOURCE GAPS (report for the design doc, 2026-09-08):
  *  1. activity_log: no per-guild windowed aggregate helper (24 h / 7 d counts
  *     per kind). idx_activity_recent leads with user_id, so a guild-wide
- *     window scan would need a new (guild_id, created_at, kind) index + a
- *     `activityKindTotals(guildId, sinceMs)` helper. → NOT rendered.
+ *     window scan would need a new (community_id, created_at, kind) index + a
+ *     `activityKindTotals(communityId, sinceMs)` helper. → NOT rendered.
  *  2. user_channel_message_daily: CLOSED (Phase 4): the repo now has the
- *     bounded helper — guildDailyMessageTotals(guildId, { sinceDay,
+ *     bounded helper — guildDailyMessageTotals(communityId, { sinceDay,
  *     limitDays ≤ 31 }) feeds getDailyActivitySeries() for the JSON chart
  *     API. The page snapshot keeps rendering the all-time
  *     guildActivityStats totals (unchanged Phase 1 behavior).
  *  3. voice_sessions: facade has only per-user get (no per-guild list) →
- *     live voice occupancy is NOT rendered; a `listVoiceSessions(guildId)`
+ *     live voice occupancy is NOT rendered; a `listVoiceSessions(communityId)`
  *     helper (table is bounded by connected users) would fix this.
  *  4. tickets: no COUNT helper for open tickets (only countArchivedTickets) →
  *     the open count is derived from the capped list rows and saturates at
@@ -60,19 +60,19 @@ const clampText = textOrNull;
 
 /** Hard caps for every list section (§8.6: LIMIT ≤ 100; all well under). */
 const DASHBOARD_LIMITS = Object.freeze({
-  XP_LEADERS: 10, // topUsers(guildId, 10) — SQL LIMIT
+  XP_LEADERS: 10, // topUsers(communityId, 10) — SQL LIMIT
   OPEN_TICKET_ROWS: 50, // listOpenTickets repo cap is 50 — display saturates
   NEWEST_TICKETS: 5, // rows rendered in the "newest" section
 });
 
 /**
  * Phase 4 CHART SERIES caps (§8.6): the JSON API endpoints under
- * /g/:guildId/api/dashboard/... are fed ONLY through the cached getters
+ * /g/:communityId/api/dashboard/... are fed ONLY through the cached getters
  * below — same per-guild cache discipline (≥30 s TTL) as the page snapshot.
  * Both backing reads are SQL-side aggregated and hard-capped:
  *  - daily activity: guildDailyMessageTotals → GROUP BY day over a bounded
  *    window, LIMIT 31 max (the repo clamps; DAILY_ACTIVITY_DAYS stays ≤31);
- *  - XP leaders: topUsers(guildId, XP_LEADERS) — SQL LIMIT 10, the same
+ *  - XP leaders: topUsers(communityId, XP_LEADERS) — SQL LIMIT 10, the same
  *    bounded read the page snapshot already runs.
  */
 const SERIES_LIMITS = Object.freeze({
@@ -186,18 +186,18 @@ function normalizeNowPlaying(raw) {
 /**
  * Build a read-only now-playing snapshot from the music feature's live
  * player state (features/music/lavalink.js + lavaqueue player). EXPORTED
- * so a future boot wiring can pass `getNowPlaying: (guildId) =>
- * snapshotMusicPlayer(client, guildId)` WITHOUT this module ever importing
+ * so a future boot wiring can pass `getNowPlaying: (communityId) =>
+ * snapshotMusicPlayer(client, communityId)` WITHOUT this module ever importing
  * the bot runtime. Every failure mode degrades; lavalink-down is normal.
  *
  * @param {object|null} client discord.js client (or a test fake with
  *   `_lavalinkManager`)
- * @param {string} guildId
+ * @param {number} communityId
  * @param {{getManager: Function, isNodeReady: Function}} [musicApi]
  *   defaults to src/features/music/lavalink.js (test seam)
  */
-function snapshotMusicPlayer(client, guildId, musicApi = require("../../features/music/lavalink")) {
-  return withMusicPlayer(client, guildId, musicApi, (player, current) => {
+function snapshotMusicPlayer(client, communityId, musicApi = require("../../features/music/lavalink")) {
+  return withMusicPlayer(client, communityId, musicApi, (player, current) => {
     if (!current) return { status: "idle", detail: "queue empty" };
     const info = current.info || {};
     const upcoming = Array.isArray(player.queue?.tracks)
@@ -242,13 +242,13 @@ function normalizeTickerEntry(entry, index) {
  * @param {number} [options.ttlMs] cache TTL; default getDashboardCacheTtlMs()
  *   (env, clamped to the §8.6 30 s floor); tests inject any value
  * @param {number} [options.maxEntries] cache entry cap (insertion-ordered)
- * @param {(guildId: string) => unknown|Promise<unknown>} [options.getNowPlaying]
+ * @param {(communityId: string) => unknown|Promise<unknown>} [options.getNowPlaying]
  *   injected now-playing provider; default: "unknown / not wired"
- * @param {(guildId: string) => unknown[]|Promise<unknown[]>} [options.getTickerHealth]
+ * @param {(communityId: string) => unknown[]|Promise<unknown[]>} [options.getTickerHealth]
  *   default: data/tickerHealth.js registry snapshot
  * @returns {{
- *   getDashboard: (guildId: string) => Promise<object>,
- *   invalidate: (guildId?: string) => void,
+ *   getDashboard: (communityId: string) => Promise<object>,
+ *   invalidate: (communityId?: string) => void,
  *   _cacheSizeForTests: () => number,
  * }}
  */
@@ -267,13 +267,13 @@ function createDashboardData(options = {}) {
   const getNowPlaying = options.getNowPlaying || null;
   const getTickerHealth = options.getTickerHealth || null;
 
-  /** guildId → { data, cachedAt, expiresAt, served } (never mutated after store) */
+  /** communityId → { data, cachedAt, expiresAt, served } (never mutated after store) */
   const cache = new Map();
 
   const cacheSet = makeCacheSet(cache, maxEntries);
 
   /**
-   * SERIES cache (Phase 4 chart endpoints): `guildId|kind[|days]` →
+   * SERIES cache (Phase 4 chart endpoints): `communityId|kind[|days]` →
    * { data, cachedAt, expiresAt }. Shares this instance's TTL (env-clamped
    * to the §8.6 30 s floor) and maxEntries; hits run ZERO DB reads, exactly
    * like the page snapshot cache. A degraded (failed) read is cached too —
@@ -311,17 +311,17 @@ function createDashboardData(options = {}) {
 
   /**
    * Cached daily message totals for the dashboard LINE chart
-   * (GET /g/:guildId/api/dashboard/activity.json). SQL-side GROUP BY day
+   * (GET /g/:communityId/api/dashboard/activity.json). SQL-side GROUP BY day
    * over a bounded day window (≤31 rows, no raw-row JS aggregation); the
    * window days with no rows are zero-filled — a true reading of "no
    * tracked messages that day" (§8.6 honesty: real tables only).
    *
-   * @param {string} guildId
+   * @param {number} communityId
    * @param {{ days?: number }} [opts] window size, clamped 1..31
    */
-  async function getDailyActivitySeries(guildId, opts = {}) {
-    if (typeof guildId !== "string" || !guildId) {
-      throw new TypeError("getDailyActivitySeries: guildId must be a non-empty string");
+  async function getDailyActivitySeries(communityId, opts = {}) {
+    if (!Number.isSafeInteger(communityId) || communityId < 1) {
+      throw new TypeError("getDailyActivitySeries: communityId must be a positive integer");
     }
     // 0 / junk / omitted → the 30-day default; anything else clamps into
     // 1..31 (the repo hard cap GUILD_DAILY_TOTALS_MAX_DAYS; §8.6 budget).
@@ -330,19 +330,19 @@ function createDashboardData(options = {}) {
       max: 31,
       fallback: SERIES_LIMITS.DAILY_ACTIVITY_DAYS,
     });
-    const key = `${guildId}|daily|${days}`;
+    const key = `${communityId}|daily|${days}`;
     return cachedSeries(key, () => {
       const at = now();
       const toMs = at;
       const fromMs = at - (days - 1) * DAY_MS;
       const toDay = utcDayKeyUtc(toMs);
       const fromDay = utcDayKeyUtc(fromMs);
-      const base = { guildId, series: "daily_activity", days, fromDay, toDay };
+      const base = { communityId, series: "daily_activity", days, fromDay, toDay };
       if (!fromDay || !toDay) {
         return { ...base, available: false, points: [] };
       }
       const res = guardRead(
-        () => facade.guildDailyMessageTotals(guildId, { sinceDay: fromDay, limitDays: days }),
+        () => facade.guildDailyMessageTotals(communityId, { sinceDay: fromDay, limitDays: days }),
         "daily activity series"
       );
       if (!res.ok || !Array.isArray(res.value)) {
@@ -363,18 +363,18 @@ function createDashboardData(options = {}) {
 
   /**
    * Cached top-XP leaders for the dashboard BAR chart
-   * (GET /g/:guildId/api/dashboard/xp-leaders.json). Same bounded
+   * (GET /g/:communityId/api/dashboard/xp-leaders.json). Same bounded
    * topUsers(10) read the page snapshot already performs.
-   * @param {string} guildId
+   * @param {number} communityId
    */
-  async function getXpLeadersSeries(guildId) {
-    if (typeof guildId !== "string" || !guildId) {
-      throw new TypeError("getXpLeadersSeries: guildId must be a non-empty string");
+  async function getXpLeadersSeries(communityId) {
+    if (!Number.isSafeInteger(communityId) || communityId < 1) {
+      throw new TypeError("getXpLeadersSeries: communityId must be a positive integer");
     }
-    const key = `${guildId}|xp-leaders`;
+    const key = `${communityId}|xp-leaders`;
     return cachedSeries(key, () => {
       const res = guardRead(
-        () => facade.topUsers(guildId, SERIES_LIMITS.XP_LEADERS),
+        () => facade.topUsers(communityId, SERIES_LIMITS.XP_LEADERS),
         "xp leaders series"
       );
       const leaders = res.ok && Array.isArray(res.value)
@@ -383,7 +383,7 @@ function createDashboardData(options = {}) {
             .map((r) => ({ userId: String(r.user_id ?? ""), xp: Number(r.xp) || 0 }))
         : [];
       return {
-        guildId,
+        communityId,
         series: "xp_leaders",
         available: res.ok,
         limit: SERIES_LIMITS.XP_LEADERS,
@@ -393,7 +393,7 @@ function createDashboardData(options = {}) {
   }
 
   async function readTickers() {
-    const read = getTickerHealth || ((/* guildId */) => snapshotTickerHealth(now()));
+    const read = getTickerHealth || ((/* communityId */) => snapshotTickerHealth(now()));
     try {
       const raw = await read();
       const list = Array.isArray(raw) ? raw : [];
@@ -404,10 +404,10 @@ function createDashboardData(options = {}) {
     }
   }
 
-  async function readNowPlaying(guildId) {
+  async function readNowPlaying(communityId) {
     if (!getNowPlaying) return { status: "unknown", detail: "not wired" };
     try {
-      return normalizeNowPlaying(await getNowPlaying(guildId));
+      return normalizeNowPlaying(await getNowPlaying(communityId));
     } catch (err) {
       warnOnceLine("now-playing", err);
       return { status: "unknown", detail: "source failed" };
@@ -417,22 +417,22 @@ function createDashboardData(options = {}) {
   /**
    * ONE uncached assembly. Each DB section is individually guarded so a
    * single failing read blanks one panel, not the page.
-   * @param {string} guildId
+   * @param {number} communityId
    * @param {number} at
    */
-  async function buildSnapshot(guildId, at) {
+  async function buildSnapshot(communityId, at) {
     // -- Activity: bounded facade reads + the ONE cached all-time aggregate.
-    const stats = guardRead(() => facade.guildActivityStats(guildId), "activity stats");
+    const stats = guardRead(() => facade.guildActivityStats(communityId), "activity stats");
     const settings = guardRead(
-      () => facade.getGuildActivitySettings(guildId),
+      () => facade.getGuildActivitySettings(communityId),
       "activity settings"
     );
     const backfillActive = guardRead(
-      () => facade.guildHasActiveBackfill(guildId),
+      () => facade.guildHasActiveBackfill(communityId),
       "backfill state"
     );
     const leaders = guardRead(
-      () => facade.topUsers(guildId, DASHBOARD_LIMITS.XP_LEADERS),
+      () => facade.topUsers(communityId, DASHBOARD_LIMITS.XP_LEADERS),
       "xp leaders"
     );
 
@@ -460,7 +460,7 @@ function createDashboardData(options = {}) {
 
     // -- Open tickets: repo hard-caps this list at 50 (SQL LIMIT).
     const openRes = guardRead(
-      () => facade.listOpenTickets(guildId, { limit: DASHBOARD_LIMITS.OPEN_TICKET_ROWS }),
+      () => facade.listOpenTickets(communityId, { limit: DASHBOARD_LIMITS.OPEN_TICKET_ROWS }),
       "open tickets"
     );
     const openRows = openRes.ok && Array.isArray(openRes.value) ? openRes.value : [];
@@ -480,11 +480,11 @@ function createDashboardData(options = {}) {
 
     const [tickers, nowPlaying] = await Promise.all([
       readTickers(),
-      readNowPlaying(guildId),
+      readNowPlaying(communityId),
     ]);
 
     return {
-      guildId,
+      communityId,
       generatedAt: at,
       activity: {
         // "unavailable" only when EVERY activity read failed.
@@ -503,15 +503,15 @@ function createDashboardData(options = {}) {
    * Cached dashboard snapshot for one guild. Cache hits run no DB and no
    * provider code at all (§8.6 acceptance: second request within the window
    * issues no new aggregate queries).
-   * @param {string} guildId
+   * @param {number} communityId
    * @returns {Promise<object>} snapshot + `freshness` (fromCache, ageMs)
    */
-  async function getDashboard(guildId) {
-    if (typeof guildId !== "string" || !guildId) {
-      throw new TypeError("getDashboard: guildId must be a non-empty string");
+  async function getDashboard(communityId) {
+    if (!Number.isSafeInteger(communityId) || communityId < 1) {
+      throw new TypeError("getDashboard: communityId must be a positive integer");
     }
     const at = now();
-    const cached = cache.get(guildId);
+    const cached = cache.get(communityId);
     if (cached && cached.expiresAt > at) {
       const { data, cachedAt, expiresAt } = cached;
       return {
@@ -524,8 +524,8 @@ function createDashboardData(options = {}) {
         },
       };
     }
-    const data = await buildSnapshot(guildId, at);
-    cacheSet(guildId, { data, cachedAt: at, expiresAt: at + ttlMs, served: 0 });
+    const data = await buildSnapshot(communityId, at);
+    cacheSet(communityId, { data, cachedAt: at, expiresAt: at + ttlMs, served: 0 });
     return {
       ...data,
       freshness: {
@@ -538,14 +538,14 @@ function createDashboardData(options = {}) {
   }
 
   /** Drop one guild's entry (or all) — page snapshot AND chart series. */
-  function invalidate(guildId) {
-    if (guildId === undefined) {
+  function invalidate(communityId) {
+    if (communityId === undefined) {
       cache.clear();
       seriesCache.clear();
       return;
     }
-    cache.delete(guildId);
-    const prefix = `${guildId}|`;
+    cache.delete(communityId);
+    const prefix = `${communityId}|`;
     for (const key of [...seriesCache.keys()]) {
       if (key.startsWith(prefix)) seriesCache.delete(key);
     }

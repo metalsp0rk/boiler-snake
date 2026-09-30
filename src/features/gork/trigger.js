@@ -32,6 +32,7 @@ const {
   memberHasStaffRole,
 } = require("../../db");
 const { getAiConfig, chatCompletion, chatWithTools } = require("../../core/ai");
+const { ensureCommunity } = require("../../platform/community");
 const { safeCutIndex, sliceSafe } = require("../../core/text");
 const { buildContext, formatContext, hasReference } = require("./context");
 const { buildRoster, formatRosterBlock, formatUserLabel } = require("./roster");
@@ -572,16 +573,35 @@ async function runGorkHook(client, message) {
       return;
     }
 
+    // 2.5. Discord edge: snowflake → internal integer community id (all
+    //      repo lookups below are community-keyed). A community row that
+    //      cannot be created is a hard stop: every lookup would be
+    //      meaningless, so log the specific cause and bail (never silent).
+    let communityId = null;
+    try {
+      communityId = ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: guildId,
+      });
+    } catch (err) {
+      console.error(
+        `[gork] community resolution failed in guild ${guildId}:`,
+        err?.message || err,
+      );
+      return;
+    }
+
     // 3. Guild must have gork enabled: the `/gork enable` master switch
     //    (off = fully silent; keyword + all other settings are preserved)
     //    and a non-blank keyword (null/blank = gork disabled).
-    const settings = getGuildSettings(guildId);
+    const settings = getGuildSettings(communityId);
     if (Number(settings?.gork_enabled ?? 1) !== 1) return;
     const keyword = settings?.gork_keyword;
     if (typeof keyword !== "string" || !keyword.trim()) return;
 
     // 4. Disabled in open ticket channels (decision 19) — silent.
-    const ticket = getTicketByChannel(message.channelId);
+    const ticket = getTicketByChannel(communityId, message.channelId);
     if (ticket && Number(ticket.archived) !== 1) return;
 
     // 5. No AI key -> gork is off (decision 7) — silent.
@@ -609,7 +629,7 @@ async function runGorkHook(client, message) {
     //      broken settings read can't spam) — never a silent drop.
     const budgetDay = memDateFromMessage(message);
     const budgetGate = checkGorkBudget({
-      guildId,
+      communityId,
       userId: message.author.id,
       channel,
       day: budgetDay,
@@ -626,7 +646,7 @@ async function runGorkHook(client, message) {
         );
         if (
           shouldSendBudgetRejection({
-            guildId,
+            communityId,
             userId: message.author.id,
             scope: { scopeKind: "error", scopeId: "0" },
           })
@@ -642,7 +662,7 @@ async function runGorkHook(client, message) {
       );
       if (
         shouldSendBudgetRejection({
-          guildId,
+          communityId,
           userId: message.author.id,
           scope: budgetGate.scope,
         })
@@ -659,7 +679,7 @@ async function runGorkHook(client, message) {
       Boolean(
         message.memberPermissions?.has?.(PermissionFlagsBits.ManageGuild),
       ) ||
-      memberHasStaffRole(guildId, [
+      memberHasStaffRole(communityId, [
         ...(message.member?.roles?.cache?.keys() ?? []),
       ]);
 
@@ -669,7 +689,7 @@ async function runGorkHook(client, message) {
     //    window. The react is best-effort: a missing permission or a deleted
     //    message must never break the handler.
     const cd = gorkQueue.checkCooldown({
-      guildId,
+      communityId,
       userId: message.author.id,
       cooldownSec: settings.gork_cooldown_sec ?? DEFAULT_COOLDOWN_SEC,
       staff,
@@ -685,14 +705,14 @@ async function runGorkHook(client, message) {
     //     cooldown so a banned trigger only gets the clock reaction during
     //     the cooldown window (rate-limits the reply); no LLM call, no QA
     //     audit.
-    if (isGorkBlocked(guildId, message.author.id)) {
+    if (isGorkBlocked(communityId, message.author.id)) {
       await message.reply(LLM_FAILURE_REPLY).catch(() => {});
       return;
     }
 
     // 11. Concurrency: 1 in-flight per guild, FIFO up to 5 waiting; a
     //     full queue drops the trigger with the locked canned reply.
-    const slot = gorkQueue.admit({ guildId });
+    const slot = gorkQueue.admit({ communityId });
     if (slot.dropped) {
       await message.reply(QUEUE_FULL_REPLY).catch(() => {});
       return;
@@ -754,7 +774,7 @@ async function runGorkHook(client, message) {
         // WITHOUT a count. Increment-before-slot-release (decision 32) makes
         // overage impossible: every dequeue reads post-increment counts.
         const dequeueGate = checkGorkBudget({
-          guildId,
+          communityId,
           userId: message.author.id,
           channel,
           day: budgetDay,
@@ -769,7 +789,7 @@ async function runGorkHook(client, message) {
             );
             if (
               shouldSendBudgetRejection({
-                guildId,
+                communityId,
                 userId: message.author.id,
                 scope: { scopeKind: "error", scopeId: "0" },
               })
@@ -785,7 +805,7 @@ async function runGorkHook(client, message) {
           );
           if (
             shouldSendBudgetRejection({
-              guildId,
+              communityId,
               userId: message.author.id,
               scope: dequeueGate.scope,
             })
@@ -830,7 +850,7 @@ async function runGorkHook(client, message) {
         if (memoryOn) {
           try {
             mem = loadMemoryContext({
-              guildId,
+              communityId,
               roster,
               budgetChars: clampMemoryChars(settings.gork_memory_chars),
               botId: auditClient?.user?.id ?? null,
@@ -956,11 +976,11 @@ async function runGorkHook(client, message) {
               // label and stamp last_used_at so recalled rows win the
               // eviction recency tie-break (§7.16.1); touch is best-effort.
               return executeRecallMemory(args, {
-                guildId,
+                communityId,
                 onRecall: (ids) => {
                   recalled += ids.length;
                   try {
-                    gorkMemoryTouch(guildId, ids);
+                    gorkMemoryTouch(communityId, ids);
                   } catch {
                     // touch failure must never break the tool loop
                   }
@@ -977,7 +997,7 @@ async function runGorkHook(client, message) {
           try {
             qaRecorder = createInteractionRecorder({
               kind: "qa",
-              guildId,
+              communityId,
               channelId: message.channelId,
               messageId: message.id,
               userId: message.author.id,
@@ -1131,7 +1151,7 @@ async function runGorkHook(client, message) {
           let budgetLabel;
           try {
             const used = recordGorkBudgetUsage({
-              guildId,
+              communityId,
               userId: message.author.id,
               scope: budgetScope,
               day: budgetDay,
@@ -1222,7 +1242,7 @@ async function runGorkHook(client, message) {
         }
       } finally {
         clearInterval(typingInterval);
-        gorkQueue.release({ guildId });
+        gorkQueue.release({ communityId });
       }
       // §7.16.3 write path (decisions 25/27): detached memory turn AFTER
       // reply + audit + slot release — never adds user-visible latency
@@ -1257,7 +1277,7 @@ async function runGorkHook(client, message) {
           try {
             memRecorder = createInteractionRecorder({
               kind: "memory_turn",
-              guildId,
+              communityId,
               channelId: message.channelId,
               messageId: message.id,
               userId: message.author.id,
@@ -1303,6 +1323,8 @@ async function runGorkHook(client, message) {
         // AND its fetch are observably settled.
         trackGorkWork(
           runMemoryTurn({
+            communityId,
+            // Discord audit embeds stay keyed by the guild snowflake.
             guildId,
             auditClient,
             question,

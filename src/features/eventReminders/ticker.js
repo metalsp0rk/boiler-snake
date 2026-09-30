@@ -17,6 +17,7 @@ const {
   eventStartMs,
 } = require("./service");
 const { recordSystemAudit } = require("../../core/auditTrail");
+const { getCommunityById } = require("../../platform/community");
 
 /** Every minute, wall clock (local timezone of the process). */
 const REMINDER_CRON = "* * * * *";
@@ -24,18 +25,39 @@ const REMINDER_CRON = "* * * * *";
 /**
  * Ticker-side cleanup is an automated state mutation (config + role removal)
  * → one origin-'system' trail row. Slash-origin clears audit themselves.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {number|string} configId
  * @param {string|null} [scheduledEventId]
  */
-function noteCleanup(guildId, configId, scheduledEventId = null) {
+function noteCleanup(communityId, configId, scheduledEventId = null) {
   recordSystemAudit({
-    guildId,
+    communityId,
     action: "event_reminders.cleanup",
     targetType: "event_reminder",
     targetId: String(configId),
     details: { scheduled_event_id: scheduledEventId },
   });
+}
+
+/**
+ * Map an internal community id back to its Discord Guild (cache first, then
+ * fetch). Reminders fire from a ticker, so all we carry is the integer row key.
+ * @param {import("discord.js").Client} client
+ * @param {number} communityId
+ * @returns {Promise<import("discord.js").Guild|null>}
+ */
+async function resolveGuild(client, communityId) {
+  const community = getCommunityById(communityId);
+  if (!community) {
+    console.error(
+      `[eventReminders] no community row id=${communityId} — cannot resolve guild`,
+    );
+    return null;
+  }
+  return (
+    client.guilds.cache.get(community.externalGuildId) ||
+    (await client.guilds.fetch(community.externalGuildId).catch(() => null))
+  );
 }
 
 /**
@@ -66,9 +88,7 @@ async function runEventReminderTick(client, opts = {}) {
  * @param {object} row
  */
 async function deliverOne(client, row) {
-  const guild =
-    client.guilds.cache.get(row.guild_id) ||
-    (await client.guilds.fetch(row.guild_id).catch(() => null));
+  const guild = await resolveGuild(client, row.community_id);
   if (!guild) {
     markReminderSent(row.offset_id, null);
     return;
@@ -85,15 +105,15 @@ async function deliverOne(client, row) {
 
   if (!scheduledEvent || isEventTerminal(scheduledEvent)) {
     await cleanupEventReminderByConfigId(guild, row.config_id);
-    noteCleanup(row.guild_id, row.config_id, row.scheduled_event_id || null);
+    noteCleanup(row.community_id, row.config_id, row.scheduled_event_id || null);
     markReminderSent(row.offset_id, null);
     return;
   }
 
-  const channelId = resolveNotifyChannelId(row.guild_id, row.channel_id);
+  const channelId = resolveNotifyChannelId(row.community_id, row.channel_id);
   if (!channelId) {
     console.warn(
-      `[eventReminders] no notify channel for guild ${row.guild_id} config ${row.config_id}; skipping offset ${row.offset_id}`
+      `[eventReminders] no notify channel for community ${row.community_id} config ${row.config_id}; skipping offset ${row.offset_id}`
     );
     return;
   }
@@ -115,7 +135,7 @@ async function deliverOne(client, row) {
   // Role ping must be in content (embed mentions do not notify).
   const payload = buildReminderDelivery({
     scheduledEvent,
-    guildId: row.guild_id,
+    guildId: guild.id, // Discord snowflake for the event URL
     roleId: row.role_id,
     offsetMinutes: row.offset_minutes,
     template: row.message_template,
@@ -136,9 +156,7 @@ async function safetyCleanup(client, nowMs) {
   const configs = listAllActiveEventReminderConfigs();
   for (const config of configs) {
     try {
-      const guild =
-        client.guilds.cache.get(config.guild_id) ||
-        (await client.guilds.fetch(config.guild_id).catch(() => null));
+      const guild = await resolveGuild(client, config.community_id);
       if (!guild) continue;
 
       let scheduledEvent = null;
@@ -154,7 +172,7 @@ async function safetyCleanup(client, nowMs) {
 
       if (!scheduledEvent || isEventTerminal(scheduledEvent)) {
         await cleanupEventReminderByConfigId(guild, config.id);
-        noteCleanup(config.guild_id, config.id, config.scheduled_event_id);
+        noteCleanup(config.community_id, config.id, config.scheduled_event_id);
         continue;
       }
 
@@ -166,7 +184,7 @@ async function safetyCleanup(client, nowMs) {
         );
         if (allDone) {
           await cleanupEventReminderByConfigId(guild, config.id);
-          noteCleanup(config.guild_id, config.id, config.scheduled_event_id);
+          noteCleanup(config.community_id, config.id, config.scheduled_event_id);
         }
       }
     } catch (err) {

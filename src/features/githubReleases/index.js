@@ -11,6 +11,8 @@ const {
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { ensureCommunity, discordCommunityId } = require("../../platform/community");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { fetchRepo } = require("./github");
 const { processWatch, startGithubReleaseTicker } = require("./ticker");
 
@@ -125,6 +127,12 @@ async function handleGithub(interaction, ctx) {
     return;
   }
 
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+
   const sub = interaction.options.getSubcommand();
 
   if (sub === "watch") {
@@ -141,7 +149,7 @@ async function handleGithub(interaction, ctx) {
 
     await interaction.deferReply({ flags: 64 });
 
-    const existing = getGithubWatch(guildId, repo);
+    const existing = getGithubWatch(communityId, repo);
     const check = await fetchRepo(repo, token || null);
     if (!check.ok) {
       await interaction.editReply(
@@ -150,12 +158,12 @@ async function handleGithub(interaction, ctx) {
       return;
     }
 
-    const row = addGithubWatch(guildId, repo, check.fullName, {
+    const row = addGithubWatch(communityId, repo, check.fullName, {
       channelId: channel ? channel.id : null,
       token: token || null,
     });
 
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: existing
         ? "GitHub watch updated"
         : "GitHub repository watched",
@@ -185,7 +193,7 @@ async function handleGithub(interaction, ctx) {
 
   if (sub === "remove") {
     const raw = interaction.options.getString("repo", true);
-    const found = getGithubWatch(guildId, raw);
+    const found = getGithubWatch(communityId, raw);
     if (!found) {
       await replyEphemeral(interaction, {
         content: `**${raw}** is not tracked in this server.`,
@@ -193,8 +201,8 @@ async function handleGithub(interaction, ctx) {
       return;
     }
 
-    removeGithubWatch(guildId, found.repo);
-    await logConfigChange(client, guildId, {
+    removeGithubWatch(communityId, found.repo);
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "GitHub watch removed",
       command: "/github remove",
       actor: interaction.user,
@@ -208,7 +216,7 @@ async function handleGithub(interaction, ctx) {
   }
 
   if (sub === "list") {
-    const watches = getGithubWatches(guildId);
+    const watches = getGithubWatches(communityId);
     if (!watches.length) {
       await replyEphemeral(interaction, {
         content:
@@ -233,7 +241,7 @@ async function handleGithub(interaction, ctx) {
 
   if (sub === "channel") {
     const raw = interaction.options.getString("repo", true);
-    const found = getGithubWatch(guildId, raw);
+    const found = getGithubWatch(communityId, raw);
     if (!found) {
       await replyEphemeral(interaction, {
         content: `**${raw}** is not tracked here. Add it with \`/github watch\` first.`,
@@ -241,8 +249,8 @@ async function handleGithub(interaction, ctx) {
       return;
     }
     const ch = interaction.options.getChannel("channel", true);
-    updateGithubWatch(guildId, found.repo, { channelId: ch.id });
-    await logConfigChange(client, guildId, {
+    updateGithubWatch(communityId, found.repo, { channelId: ch.id });
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "GitHub watch channel set",
       command: "/github channel",
       actor: interaction.user,
@@ -262,7 +270,7 @@ async function handleGithub(interaction, ctx) {
 
   if (sub === "role") {
     const raw = interaction.options.getString("repo", true);
-    const found = getGithubWatch(guildId, raw);
+    const found = getGithubWatch(communityId, raw);
     if (!found) {
       await replyEphemeral(interaction, {
         content: `**${raw}** is not tracked here. Add it with \`/github watch\` first.`,
@@ -270,12 +278,12 @@ async function handleGithub(interaction, ctx) {
       return;
     }
     const role = interaction.options.getRole("role", false);
-    updateGithubWatch(guildId, found.repo, {
+    updateGithubWatch(communityId, found.repo, {
       roleId: role ? role.id : null,
     });
     const beforeLabel = found.role_id ? `<@&${found.role_id}>` : "*none*";
     const afterLabel = role ? `<@&${role.id}>` : "*none*";
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "GitHub watch ping role set",
       command: "/github role",
       actor: interaction.user,
@@ -297,7 +305,7 @@ async function handleGithub(interaction, ctx) {
     const raw = interaction.options.getString("repo", false);
     let targets;
     if (raw) {
-      const found = getGithubWatch(guildId, raw);
+      const found = getGithubWatch(communityId, raw);
       if (!found) {
         await replyEphemeral(interaction, {
           content: `**${raw}** is not tracked here. Add it with \`/github watch\` first.`,
@@ -306,7 +314,7 @@ async function handleGithub(interaction, ctx) {
       }
       targets = [found];
     } else {
-      targets = getGithubWatches(guildId);
+      targets = getGithubWatches(communityId);
       if (!targets.length) {
         await replyEphemeral(interaction, {
           content: "No GitHub repositories tracked. Add one with `/github watch`.",
@@ -320,7 +328,7 @@ async function handleGithub(interaction, ctx) {
     // Rows from getGithubWatches omit the token; use full rows for the probe.
     const full = new Map(
       getAllGithubWatches()
-        .filter((w) => w.guild_id === guildId)
+        .filter((w) => w.community_id === communityId)
         .map((w) => [w.repo, w]),
     );
 
@@ -354,7 +362,12 @@ async function handleGithubAutocomplete(interaction) {
     await interaction.respond([]);
     return;
   }
-  const watches = getGithubWatches(interaction.guild.id);
+  const communityId = discordCommunityId(interaction.guild.id);
+  if (communityId == null) {
+    await interaction.respond([]);
+    return;
+  }
+  const watches = getGithubWatches(communityId);
   const focused = (interaction.options.getFocused() || "").toLowerCase();
 
   const filtered = watches

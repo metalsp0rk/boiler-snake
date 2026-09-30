@@ -80,7 +80,9 @@ function registerDashboardApiRoutes(app, options = {}) {
   app.get("/g/:guildId/api/dashboard/activity.json", requireTier("staff"), async (req, res) => {
     try {
       const guildId = req.guildAccess.guildId;
-      const series = await dashboard.getDailyActivitySeries(guildId, { days: activityDays });
+      // Fluxer PR 2: data reads key by the integer community id.
+      const communityId = req.guildAccess.communityId;
+      const series = await dashboard.getDailyActivitySeries(communityId, { days: activityDays });
       if (!series.available) {
         // Loud server-side + honest client-side: the chart JS shows
         // "unavailable", never an empty-but-plausible chart.
@@ -111,7 +113,8 @@ function registerDashboardApiRoutes(app, options = {}) {
   app.get("/g/:guildId/api/dashboard/xp-leaders.json", requireTier("staff"), async (req, res) => {
     try {
       const guildId = req.guildAccess.guildId;
-      const series = await dashboard.getXpLeadersSeries(guildId);
+      const communityId = req.guildAccess.communityId;
+      const series = await dashboard.getXpLeadersSeries(communityId);
       if (!series.available) {
         console.error(`[web] dashboardApi.xpLeaders: data unavailable (guild=${guildId})`);
         jsonError(res, 500, "xp_leaders_data_unavailable");

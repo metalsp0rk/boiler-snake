@@ -159,14 +159,14 @@ function scopeLabel(scope, channel) {
  * @param {object} [options]
  * @param {() => number} [options.now=Date.now] clock returning epoch ms
  * @returns {{
- *   shouldSend: (args: { guildId: string, userId: string, scopeKind: string, scopeId: string }) => boolean,
+ *   shouldSend: (args: { communityId: number, userId: string, scopeKind: string, scopeId: string }) => boolean,
  *   reset: () => void,
  *   size: () => number
  * }}
  */
 function createBudgetRejectThrottle(options) {
   const clock = typeof options?.now === "function" ? options.now : Date.now;
-  /** `${guildId}|${userId}|${scopeKind}|${scopeId}` -> last reply ts (ms). */
+  /** `${communityId}|${userId}|${scopeKind}|${scopeId}` -> last reply ts (ms). */
   const lastReplyAt = new Map();
 
   /** Drop entries whose window has fully expired once the map grows large. */
@@ -183,15 +183,15 @@ function createBudgetRejectThrottle(options) {
    * send a rejection reply now, false when a reply already went out within
    * the hour (silent bounce).
    *
-   * @param {{ guildId: string, userId: string, scopeKind: string, scopeId: string }} args
+   * @param {{ communityId: number, userId: string, scopeKind: string, scopeId: string }} args
    * @returns {boolean}
    */
   function shouldSend(args) {
-    const { guildId, userId, scopeKind, scopeId } = args || {};
-    if (!guildId || !userId) return false; // fail closed: no identity, no reply
+    const { communityId, userId, scopeKind, scopeId } = args || {};
+    if (!communityId || !userId) return false; // fail closed: no identity, no reply
     const nowMs = clock();
     sweep(nowMs);
-    const key = `${guildId}|${userId}|${scopeKind}|${scopeId}`;
+    const key = `${communityId}|${userId}|${scopeKind}|${scopeId}`;
     const last = lastReplyAt.get(key);
     if (last != null && nowMs - last < REJECT_DEDUP_MS) return false;
     lastReplyAt.set(key, nowMs);
@@ -215,7 +215,7 @@ const budgetRejectThrottle = createBudgetRejectThrottle();
  * failure rejects the trigger (fail closed — the caller logs it).
  *
  * @param {object} args
- * @param {string} args.guildId
+ * @param {number} args.communityId
  * @param {string} args.userId
  * @param {object} args.channel trigger message channel (duck-typed: id + parent)
  * @param {string} args.day YYYY-MM-DD UTC of the TRIGGER MESSAGE (decision 36) —
@@ -224,22 +224,22 @@ const budgetRejectThrottle = createBudgetRejectThrottle();
  *          | { allowed: false, kind: "blocked" | "over", reply: string, scope: { scopeKind: string, scopeId: string, limit: number } }
  *          | { allowed: false, kind: "error", reply: "", scope: null }}
  */
-function checkGorkBudget({ guildId, userId, channel, day }) {
+function checkGorkBudget({ communityId, userId, channel, day }) {
   // Lazy requires keep this module load-order-free for unit tests that stub
   // only what they need.
   const { getGuildSettings, listGorkBudgetRules, getGorkUsage, resolveGorkBudget } =
     require("../../db");
   let scope;
   try {
-    const settings = getGuildSettings(guildId);
+    const settings = getGuildSettings(communityId);
     scope = resolveGorkBudget(
-      listGorkBudgetRules(guildId),
+      listGorkBudgetRules(communityId),
       channelScopeIdFor(channel),
       categoryIdForChannel(channel),
       settings?.gork_daily_limit ?? 0,
     );
   } catch (err) {
-    console.error(`[gork] budget resolve failed in ${guildId}:`, err?.message || err);
+    console.error(`[gork] budget resolve failed in community ${communityId}:`, err?.message || err);
     return { allowed: false, kind: "error", reply: "", scope: null };
   }
 
@@ -252,9 +252,9 @@ function checkGorkBudget({ guildId, userId, channel, day }) {
 
   let used = 0;
   try {
-    used = getGorkUsage(guildId, userId, scope.scopeKind, scope.scopeId, day);
+    used = getGorkUsage(communityId, userId, scope.scopeKind, scope.scopeId, day);
   } catch (err) {
-    console.error(`[gork] budget usage read failed in ${guildId}:`, err?.message || err);
+    console.error(`[gork] budget usage read failed in community ${communityId}:`, err?.message || err);
     return { allowed: false, kind: "error", reply: "", scope: null };
   }
   // The over-branch construction (scopeLabel + reply template) also runs
@@ -272,7 +272,7 @@ function checkGorkBudget({ guildId, userId, channel, day }) {
       };
     }
   } catch (err) {
-    console.error(`[gork] budget over-reply build failed in ${guildId}:`, err?.message || err);
+    console.error(`[gork] budget over-reply build failed in community ${communityId}:`, err?.message || err);
     return { allowed: false, kind: "error", reply: "", scope: null };
   }
   return { allowed: true, scope };
@@ -282,15 +282,15 @@ function checkGorkBudget({ guildId, userId, channel, day }) {
  * Consume a rejection-reply slot for this user+scope (hourly dedup).
  *
  * @param {object} args
- * @param {string} args.guildId
+ * @param {number} args.communityId
  * @param {string} args.userId
  * @param {{ scopeKind: string, scopeId: string }} args.scope
  * @returns {boolean} true → send `reply` to the trigger; false → bounce silently
  */
-function shouldSendBudgetRejection({ guildId, userId, scope }) {
+function shouldSendBudgetRejection({ communityId, userId, scope }) {
   if (!scope) return false;
   return budgetRejectThrottle.shouldSend({
-    guildId,
+    communityId,
     userId,
     scopeKind: scope.scopeKind,
     scopeId: scope.scopeId,
@@ -305,16 +305,16 @@ function shouldSendBudgetRejection({ guildId, userId, scope }) {
  * keeps the default (all-unlimited) config write-free.
  *
  * @param {object} args
- * @param {string} args.guildId
+ * @param {number} args.communityId
  * @param {string} args.userId
  * @param {{ scopeKind: string, scopeId: string, limit: number }} args.scope winning scope
  * @param {string} args.day YYYY-MM-DD UTC (trigger message's day)
  * @returns {number|null} post-increment count, or null when nothing counted
  */
-function recordGorkBudgetUsage({ guildId, userId, scope, day }) {
+function recordGorkBudgetUsage({ communityId, userId, scope, day }) {
   if (!scope || !(scope.limit >= 1)) return null;
   const { incrementGorkUsage } = require("../../db");
-  return incrementGorkUsage(guildId, userId, scope.scopeKind, scope.scopeId, day);
+  return incrementGorkUsage(communityId, userId, scope.scopeKind, scope.scopeId, day);
 }
 
 /**

@@ -1,5 +1,5 @@
 /**
- * Read-model for GET /g/:guildId/staff + GET /g/:guildId/commands
+ * Read-model for GET /g/:communityId/staff + GET /g/:communityId/commands
  * (roadmap/web-admin.md §8.6 "Staff & roles | Staff (view) | Admin | 1 view"
  * and "Command visibility: sync status | Staff (view) | Admin (sync) | 1
  * view" — subtask 19, Phase 1 READ-ONLY).
@@ -7,11 +7,11 @@
  * Query-budget contract (§8.6, review-blocking):
  *  - ONE /staff page build = EXACTLY THREE bounded facade reads; the
  *    /commands page build = exactly ONE (roles are not shown there):
- *      staff_roles rows        → listStaffRoles(guildId)          (guild-scoped, indexed)
- *      level_roles rows        → listLevelRoles(guildId)          (guild-scoped, indexed —
+ *      staff_roles rows        → listStaffRoles(communityId)          (guild-scoped, indexed)
+ *      level_roles rows        → listLevelRoles(communityId)          (guild-scoped, indexed —
  *                                Phase 2 staff page: the level→role config the
  *                                subtask-25 forms act on)
- *      command-perm OAuth row  → getCommandPermissionOauth(guildId) (PK row)
+ *      command-perm OAuth row  → getCommandPermissionOauth(communityId) (PK row)
  *    No N+1, no full scans, no raw SQL here — existing src/db facade
  *    helpers ONLY (repositories stay untouched/read-only for this task).
  *    All three are config-table reads (a handful of rows per guild);
@@ -82,7 +82,7 @@ function projectOauthView(row) {
  * @param {object} [options]
  * @param {object} [options.db] src/db facade (methods looked up per call;
  *   tests inject a counting proxy)
- * @returns {{ getStaffView: (guildId: string) => object, getOauthStatus: (guildId: string) => object }}
+ * @returns {{ getStaffView: (communityId: number) => object, getOauthStatus: (communityId: string) => object }}
  */
 function createStaffData(options = {}) {
   const facade = options.db || require("../../db");
@@ -91,15 +91,15 @@ function createStaffData(options = {}) {
    * Command-visibility sync status for ONE guild — the /commands page read
    * (ONE bounded PK lookup; staff roles are NOT read here because that
    * page never shows them — §8.6 query budget applies per SURFACE).
-   * @param {string} guildId
+   * @param {number} communityId
    */
-  function getOauthStatus(guildId) {
+  function getOauthStatus(communityId) {
     const oauthRes = guardRead(
-      () => facade.getCommandPermissionOauth(guildId),
+      () => facade.getCommandPermissionOauth(communityId),
       "command-permission oauth"
     );
     return {
-      guildId,
+      communityId,
       oauth: {
         available: oauthRes.available,
         // Whitelisted status projection ONLY — never the token columns.
@@ -115,18 +115,18 @@ function createStaffData(options = {}) {
    * (the exact function the slash /staff pages use) so the web list can
    * never diverge from slash level semantics (junior | senior, default
    * senior).
-   * @param {string} guildId
+   * @param {number} communityId
    */
-  function getStaffView(guildId) {
+  function getStaffView(communityId) {
     const rolesRes = guardRead(
-      () => facade.listStaffRoles(guildId),
+      () => facade.listStaffRoles(communityId),
       "staff roles"
     );
     const levelRolesRes = guardRead(
-      () => facade.listLevelRoles(guildId),
+      () => facade.listLevelRoles(communityId),
       "level roles"
     );
-    const { oauth } = getOauthStatus(guildId);
+    const { oauth } = getOauthStatus(communityId);
 
     const normalize = facade.normalizeStaffLevel;
     const roles = Array.isArray(rolesRes.value)
@@ -146,7 +146,7 @@ function createStaffData(options = {}) {
       : [];
 
     return {
-      guildId,
+      communityId,
       roles: {
         available: rolesRes.available,
         rows: roles,

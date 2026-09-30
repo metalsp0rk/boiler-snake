@@ -30,6 +30,8 @@ const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 const {
   Color,
   formatNoteRef,
@@ -38,6 +40,21 @@ const {
 } = require("../../core/theme");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
+
+/**
+ * Edge resolution: translate the interaction's Discord guild snowflake into the
+ * internal integer community id (spec § Repository boundary). Every repository
+ * call receives the integer; the snowflake stays only for Discord I/O.
+ * @param {import("discord.js").GuildInteraction} interaction
+ * @returns {number}
+ */
+function resolveCommunityId(interaction) {
+  return ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+}
 
 /** Default page size for /note list */
 const LIST_PAGE_SIZE = 10;
@@ -275,7 +292,7 @@ function buildUpdatedEmbed(note) {
 function persistNewNote(opts) {
   try {
     const note = createStaffNote({
-      guildId: opts.guildId,
+      communityId: opts.communityId,
       userId: opts.userId,
       authorId: opts.authorId,
       content: opts.content,
@@ -334,8 +351,9 @@ async function handleAdd(interaction, ctx) {
     return;
   }
 
+  const communityId = resolveCommunityId(interaction);
   const result = persistNewNote({
-    guildId: interaction.guildId,
+    communityId,
     userId: target.id,
     authorId: interaction.user.id,
     content,
@@ -350,6 +368,7 @@ async function handleAdd(interaction, ctx) {
   const note = result.note;
   recordSlashAudit({
     interaction,
+    communityId,
     action: "notes.add",
     targetType: "note",
     targetId: String(note.id),
@@ -359,7 +378,7 @@ async function handleAdd(interaction, ctx) {
       content: snippet(note.content, 500),
     },
   });
-  await logConfigChange(interaction.client, interaction.guildId, {
+  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
     title: "Staff note created",
     command: "/note add",
     actor: interaction.user,
@@ -399,8 +418,9 @@ async function handleAddNoteModal(interaction, ctx) {
     content = "";
   }
 
+  const communityId = resolveCommunityId(interaction);
   const result = persistNewNote({
-    guildId: interaction.guildId,
+    communityId,
     userId,
     authorId: interaction.user.id,
     content,
@@ -415,6 +435,7 @@ async function handleAddNoteModal(interaction, ctx) {
   const note = result.note;
   recordSlashAudit({
     interaction,
+    communityId,
     action: "notes.add",
     targetType: "note",
     targetId: String(note.id),
@@ -425,7 +446,7 @@ async function handleAddNoteModal(interaction, ctx) {
     },
   });
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: "Staff note created",
@@ -451,12 +472,13 @@ async function handleList(interaction) {
   const page = interaction.options.getInteger("page") || 1;
   const includeDeleted = !!interaction.options.getBoolean("include_deleted");
   const offset = (page - 1) * LIST_PAGE_SIZE;
+  const communityId = resolveCommunityId(interaction);
 
   if (target) {
-    const total = countStaffNotes(interaction.guildId, target.id, {
+    const total = countStaffNotes(communityId, target.id, {
       includeDeleted,
     });
-    const notes = listStaffNotes(interaction.guildId, target.id, {
+    const notes = listStaffNotes(communityId, target.id, {
       includeDeleted,
       limit: LIST_PAGE_SIZE,
       offset,
@@ -487,8 +509,8 @@ async function handleList(interaction) {
   }
 
   // Guild-wide recent feed (capped)
-  const total = countStaffNotes(interaction.guildId, null, { includeDeleted });
-  const notes = listRecentStaffNotes(interaction.guildId, {
+  const total = countStaffNotes(communityId, null, { includeDeleted });
+  const notes = listRecentStaffNotes(communityId, {
     includeDeleted,
     limit: RECENT_GUILD_LIMIT,
     offset: 0,
@@ -521,7 +543,8 @@ async function handleEdit(interaction, ctx) {
   const noteNumber = interaction.options.getInteger("id", true);
   const content = interaction.options.getString("content");
 
-  const existing = getStaffNote(interaction.guildId, noteNumber);
+  const communityId = resolveCommunityId(interaction);
+  const existing = getStaffNote(communityId, noteNumber);
   if (!existing) {
     await replyEphemeral(interaction, {
       content: `No note **${formatNoteRef(noteNumber)}** in this server.`,
@@ -595,9 +618,10 @@ async function applyNoteEdit(
   content,
   auditCommand,
 ) {
+  const communityId = resolveCommunityId(interaction);
   let note;
   try {
-    note = updateStaffNote(interaction.guildId, noteNumber, {
+    note = updateStaffNote(communityId, noteNumber, {
       content,
       editedBy: interaction.user.id,
     });
@@ -616,7 +640,7 @@ async function applyNoteEdit(
   }
 
   if (!note) {
-    const existing = getStaffNote(interaction.guildId, noteNumber);
+    const existing = getStaffNote(communityId, noteNumber);
     if (existing?.deleted_at != null) {
       await replyEphemeral(interaction, {
         content: `Note **${formatNoteRef(noteNumber)}** is soft-deleted and cannot be edited. Add a new note instead.`,
@@ -631,6 +655,7 @@ async function applyNoteEdit(
 
   recordSlashAudit({
     interaction,
+    communityId,
     action: "notes.update",
     targetType: "note",
     targetId: String(note.id),
@@ -641,7 +666,7 @@ async function applyNoteEdit(
     },
   });
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: "Staff note edited",
@@ -665,7 +690,8 @@ async function applyNoteEdit(
  */
 async function handleDelete(interaction, ctx) {
   const noteNumber = interaction.options.getInteger("id", true);
-  const existing = getStaffNote(interaction.guildId, noteNumber);
+  const communityId = resolveCommunityId(interaction);
+  const existing = getStaffNote(communityId, noteNumber);
 
   if (!existing) {
     await replyEphemeral(interaction, {
@@ -685,13 +711,14 @@ async function handleDelete(interaction, ctx) {
   }
 
   const note = softDeleteStaffNote(
-    interaction.guildId,
+    communityId,
     noteNumber,
     interaction.user.id,
   );
 
   recordSlashAudit({
     interaction,
+    communityId,
     action: "notes.delete",
     targetType: "note",
     targetId: String(note.id),
@@ -700,7 +727,7 @@ async function handleDelete(interaction, ctx) {
       subject_user_id: note.user_id,
     },
   });
-  await logConfigChange(interaction.client, interaction.guildId, {
+  await logConfigChange(getDiscordOutbound(interaction.client), interaction.guildId, {
     title: "Staff note soft-deleted",
     command: "/note delete",
     actor: interaction.user,
@@ -722,7 +749,7 @@ async function handleDelete(interaction, ctx) {
  */
 async function handleInfo(interaction) {
   const noteNumber = interaction.options.getInteger("id", true);
-  const note = getStaffNote(interaction.guildId, noteNumber);
+  const note = getStaffNote(resolveCommunityId(interaction), noteNumber);
 
   if (!note) {
     await replyEphemeral(interaction, {
@@ -766,10 +793,11 @@ async function handleInfo(interaction) {
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  */
 async function handleSettings(interaction) {
-  const active = countStaffNotes(interaction.guildId, null, {
+  const communityId = resolveCommunityId(interaction);
+  const active = countStaffNotes(communityId, null, {
     includeDeleted: false,
   });
-  const all = countStaffNotes(interaction.guildId, null, {
+  const all = countStaffNotes(communityId, null, {
     includeDeleted: true,
   });
   const deleted = all - active;

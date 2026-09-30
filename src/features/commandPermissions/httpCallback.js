@@ -12,6 +12,7 @@ const {
 } = require("./oauthState");
 const {
   ensureCommunity,
+  discordCommunityId,
 } = require("../../platform/community");
 const { exchangeAuthorizationCode } = require("./oauthTokens");
 const { applyGuildCommandPermissions } = require("./sync");
@@ -102,14 +103,31 @@ async function handleCommandPermissionOAuthCallback(req, res, url) {
     return true;
   }
 
+  // Fluxer PR 2: the OAuth state carries the EXTERNAL snowflake; the token
+  // store and sync key by the integer communities.id. Resolve it now — an
+  // unregistered guild gets the actionable "run /staff syncpermissions"
+  // cause (same page as a bad state) instead of a foreign-key miss.
+  const communityId = discordCommunityId(verified.guildId);
+  if (communityId == null) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(
+      htmlPage(
+        "Invalid or expired link",
+        `<p>Run <code>/staff syncpermissions</code> again in Discord to get a fresh authorize link.</p>`,
+        false
+      )
+    );
+    return true;
+  }
+
   try {
     const { accessToken } = await exchangeAuthorizationCode({
-      guildId: verified.guildId,
+      communityId,
       code,
       authorizedByUserId: verified.userId,
     });
 
-    const result = await applyGuildCommandPermissions(verified.guildId, {
+    const result = await applyGuildCommandPermissions(communityId, {
       accessToken,
     });
 

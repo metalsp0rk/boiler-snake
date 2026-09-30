@@ -145,6 +145,7 @@ function safeStringify(value) {
  *
  * @param {object} opts
  * @param {string} [opts.kind] 'qa' | 'memory_turn'
+ * @param {number|null} [opts.communityId] internal communities id (row's `community_id`)
  * @param {string|null} [opts.parentUid] memory_turn → qa uid link
  * @param {object|null} [opts.params] sampling params as sent (JSON column)
  * @param {object[]|null} [opts.tools] tool schemas as sent (JSON column)
@@ -160,7 +161,7 @@ function safeStringify(value) {
 function createInteractionRecorder(opts = {}) {
   const {
     kind = "qa",
-    guildId = null,
+    communityId = null,
     channelId = null,
     messageId = null,
     userId = null,
@@ -257,7 +258,7 @@ function createInteractionRecorder(opts = {}) {
         uid,
         kind,
         parent_uid: parentUid ?? null,
-        guild_id: guildId ?? null,
+        community_id: communityId ?? null,
         channel_id: channelId ?? null,
         message_id: messageId ?? null,
         user_id: userId ?? null,
@@ -297,7 +298,7 @@ function createInteractionRecorder(opts = {}) {
       console.warn(
         "[gork] interaction log finalize failed:",
         err?.message || err,
-        `(uid=${uid} guild=${guildId ?? "none"} message=${messageId ?? "none"})`,
+        `(uid=${uid} community=${communityId ?? "none"} message=${messageId ?? "none"})`,
       );
       lastResult = { ok: false, error: err?.message || String(err) };
       return lastResult;
