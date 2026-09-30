@@ -1083,7 +1083,13 @@ describe("K. parity: real handleSyncPermissions vs the web POST", () => {
     // ---- slash side: the REAL handler (router-free, like the moderation suite)
     stageReady();
     const mock = makeSyncInteraction();
-    await staffRolesFeature.handlers.staff(mock.interaction, {});
+    // PR 4 seam: /staff runs on CommandContext (the router's context arm
+    // wraps the real interaction the same way).
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await staffRolesFeature.handlers.staff(
+      buildDiscordCommandContext(mock.interaction, { client: FAKE_CLIENT }),
+      { client: FAKE_CLIENT },
+    );
     assert.ok(mock.deferred, "the slash deferred before the sync (choreography intact)");
     assert.match(
       String((mock.replies[0] || {}).content || ""),

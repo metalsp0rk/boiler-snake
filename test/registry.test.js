@@ -54,14 +54,34 @@ describe("buildDefaultRegistry", () => {
     }
   });
 
-  it("flags the xp feature commands on the context api", () => {
-    // PR 3: load.js passes feature.handlerApi into registerHandler, and only
-    // the xp commands are migrated — everything else stays on the interaction arm.
+  it("flags the migrated commands on the context api", () => {
+    // load.js passes feature.handlerApi into registerHandler. PR 3 migrated
+    // the xp commands; PR 4 adds the staff text commands. Everything else
+    // (music, ticket, eventreminder, play, gork, honeypot …) stays on the
+    // interaction arm until its feature PR flips the flag.
     const registry = buildDefaultRegistry();
-    for (const name of ["xp", "leaderboard", "setxp", "grantxp"]) {
-      assert.equal(registry.getHandlerApi(name), "context");
+    const migrated = [
+      "xp",
+      "leaderboard",
+      "setxp",
+      "grantxp",
+      "note",
+      "warn",
+      "setwarn",
+      "userinfo",
+      "staff",
+      "settings",
+      "setcommandchannel",
+      "setdecay",
+      "leveltorole",
+      "setlog",
+    ];
+    for (const name of migrated) {
+      assert.equal(registry.getHandlerApi(name), "context", name);
     }
-    assert.equal(registry.getHandlerApi("settings"), "interaction");
+    for (const name of ["music", "ticket", "eventreminder", "gork", "play"]) {
+      assert.equal(registry.getHandlerApi(name), "interaction", name);
+    }
   });
 
   it("registers youtube autocomplete", () => {

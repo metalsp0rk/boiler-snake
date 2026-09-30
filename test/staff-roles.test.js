@@ -148,7 +148,13 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
       options,
       client: env.client,
     });
-    await staffRoles.handlers.staff(interaction, { client: env.client });
+    // PR 4 seam: /staff runs on CommandContext — wrap the interaction the
+    // same way the router's context arm does.
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await staffRoles.handlers.staff(
+      buildDiscordCommandContext(interaction, { client: env.client }),
+      { client: env.client },
+    );
     return interaction;
   }
 
