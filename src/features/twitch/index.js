@@ -10,12 +10,10 @@ const {
   setTwitchChannelMediaFlags,
   getTwitchEventsubSubs,
 } = require("../../db");
-const { isStaff } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { ensureCommunity, discordCommunityId } = require("../../platform/community");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { discordCommunityId } = require("../../platform/community");
 const { resolveTwitchUser } = require("./helix");
 const { startTwitchTicker } = require("./ticker");
 const {
@@ -153,39 +151,38 @@ const commands = [
     ),
 ];
 
-async function handleTwitch(interaction, ctx) {
-  const { client } = ctx;
-  const guildId = interaction.guildId;
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleTwitch(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  if (!isStaff(interaction)) {
-    await replyDenied(interaction);
-    return;
-  }
+  // Repository key: integer community id (resolved by the context builder).
+  const communityId = commandCtx.communityId;
+  // Display/audit key: the external (Discord) snowflake.
+  const guildId = commandCtx.externalGuildId;
 
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-
-  const sub = interaction.options.getSubcommand();
+  const sub = commandCtx.subcommand;
 
   if (sub === "add") {
-    const raw = interaction.options.getString("login", true);
+    const raw = commandCtx.options.getString("login", true);
 
     if (!process.env.TWITCH_CLIENT_ID || !process.env.TWITCH_CLIENT_SECRET) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           "Twitch is not configured on this bot. Set `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` first.",
+        sensitive: true,
       });
       return;
     }
 
-    await interaction.deferReply({ flags: 64 });
+    await commandCtx.defer({ sensitive: true });
     const login = normalizeTwitchLogin(raw);
     const user = await resolveTwitchUser(login);
     if (!user) {
-      await interaction.editReply(
+      await commandCtx.editReply(
         `Could not find a Twitch channel for \`${login}\`. Check the login and try again.`,
       );
       return;
@@ -193,7 +190,7 @@ async function handleTwitch(interaction, ctx) {
 
     const existing = getTwitchChannel(communityId, user.login);
     if (existing) {
-      await interaction.editReply(
+      await commandCtx.editReply(
         `**${user.display_name}** is already subscribed in this server.`,
       );
       return;
@@ -212,18 +209,18 @@ async function handleTwitch(interaction, ctx) {
     syncBroadcaster(user.id).catch(() => {});
 
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "twitch.channel_add",
       targetType: "twitch_channel",
       targetId: user.id,
       details: { login: user.login, display_name: user.display_name },
     });
 
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "Twitch subscription added",
       command: "/twitch add",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         `Channel: **${user.display_name}**`,
         `Login: \`${user.login}\``,
@@ -237,16 +234,17 @@ async function handleTwitch(interaction, ctx) {
       replyMsg +=
         "\n\nNote: no notification channel set yet — run `/settwitch channel` to pick where go-live posts go.";
     }
-    await interaction.editReply(replyMsg);
+    await commandCtx.editReply(replyMsg);
     return;
   }
 
   if (sub === "remove") {
-    const raw = interaction.options.getString("channel", true);
+    const raw = commandCtx.options.getString("channel", true);
     const found = getTwitchChannel(communityId, raw);
     if (!found) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: "No matching subscription found.",
+        sensitive: true,
       });
       return;
     }
@@ -256,25 +254,26 @@ async function handleTwitch(interaction, ctx) {
     // tracks it (quota hygiene). Fire-and-forget; the sweep also prunes.
     pruneBroadcasterIfUntracked(found.broadcaster_id).catch(() => {});
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "twitch.channel_remove",
       targetType: "twitch_channel",
       targetId: found.broadcaster_id,
       details: { login: found.login, display_name: found.display_name },
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "Twitch subscription removed",
       command: "/twitch remove",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         `Channel: **${found.display_name}**`,
         `Login: \`${found.login}\``,
       ],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Unsubscribed from **${found.display_name}**.`,
+      sensitive: true,
     });
     return;
   }
@@ -290,8 +289,9 @@ async function handleTwitch(interaction, ctx) {
       : "_None_";
 
     if (!channels.length) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: "No Twitch channels subscribed.",
+        sensitive: true,
       });
       return;
     }
@@ -306,24 +306,26 @@ async function handleTwitch(interaction, ctx) {
       return `• **${c.display_name}** (\`${c.login}\`)${live}${flagText}`;
     });
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         `**Twitch subscriptions** (${channels.length})\n` +
         `Notification channel: ${notifyChannel}\n` +
         `Ping role: ${notifyRole}\n\n` +
         lines.join("\n") +
         `\n\n_Toggle clip/VOD alerts with \`/twitch clips\` / \`/twitch vod\`._`,
+      sensitive: true,
     });
     return;
   }
 
   if (sub === "clips" || sub === "vod") {
-    const raw = interaction.options.getString("channel", true);
-    const enabled = interaction.options.getBoolean("enabled", true);
+    const raw = commandCtx.options.getString("channel", true);
+    const enabled = commandCtx.options.getBoolean("enabled", true);
     const found = getTwitchChannel(communityId, raw);
     if (!found) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: "No matching subscription found.",
+        sensitive: true,
       });
       return;
     }
@@ -338,25 +340,26 @@ async function handleTwitch(interaction, ctx) {
       },
     );
     if (!updated) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: "No matching subscription found.",
+        sensitive: true,
       });
       return;
     }
 
     const label = isClips ? "clips" : "VODs";
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: isClips ? "twitch.clips_toggle" : "twitch.vod_toggle",
       targetType: "twitch_channel",
       targetId: found.broadcaster_id,
       details: { login: found.login, enabled },
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: `Twitch ${label} notifications ${enabled ? "enabled" : "disabled"}`,
       command: `/twitch ${sub}`,
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         `Channel: **${found.display_name}**`,
         `${isClips ? "Clips" : "VODs"}: → **${enabled ? "on" : "off"}**`,
@@ -373,45 +376,41 @@ async function handleTwitch(interaction, ctx) {
     } else {
       msg = `Stopped announcing new **${label}** from **${found.display_name}**.`;
     }
-    await replyEphemeral(interaction, { content: msg });
+    await commandCtx.reply({ content: msg, sensitive: true });
     return;
   }
 }
 
-async function handleSetTwitch(interaction, ctx) {
-  const { client } = ctx;
-  const guildId = interaction.guildId;
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleSetTwitch(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  if (!isStaff(interaction)) {
-    await replyDenied(interaction);
-    return;
-  }
-
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
+  const communityId = commandCtx.communityId;
+  const guildId = commandCtx.externalGuildId;
   const settings = getGuildSettings(communityId);
 
-  const sub = interaction.options.getSubcommand();
+  const sub = commandCtx.subcommand;
 
   if (sub === "channel") {
-    const ch = interaction.options.getChannel("channel", true);
+    const ch = commandCtx.options.getChannel("channel", true);
     const before = settings.twitch_notification_channel_id;
     updateGuildSettings(communityId, { twitch_notification_channel_id: ch.id });
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "twitch.notify_channel_set",
       targetType: "channel",
       targetId: ch.id,
       details: { previous_channel_id: before ?? null },
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "Twitch notification channel set",
       command: "/settwitch channel",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         before
           ? `Channel: <#${before}> → <#${ch.id}>`
@@ -419,21 +418,22 @@ async function handleSetTwitch(interaction, ctx) {
       ],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Twitch go-live notifications will be sent to <#${ch.id}>.`,
+      sensitive: true,
     });
     return;
   }
 
   if (sub === "role") {
-    const role = interaction.options.getRole("role", false);
+    const role = commandCtx.options.getRole("role", false);
     const before = settings.twitch_notify_role_id;
     updateGuildSettings(communityId, {
       twitch_notify_role_id: role ? role.id : null,
     });
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "twitch.notify_role_set",
       targetType: "role",
       targetId: role ? role.id : guildId,
@@ -441,42 +441,44 @@ async function handleSetTwitch(interaction, ctx) {
     });
     const beforeLabel = before ? `<@&${before}>` : "*none*";
     const afterLabel = role ? `<@&${role.id}>` : "*none*";
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "Twitch mention role set",
       command: "/settwitch role",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [`Role: ${beforeLabel} → ${afterLabel}`],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: role
         ? `Go-live notifications will mention <@&${role.id}>.`
         : `Go-live notifications will no longer mention a role.`,
+      sensitive: true,
     });
     return;
   }
 
   if (sub === "interval") {
-    const minutes = interaction.options.getInteger("minutes", true);
+    const minutes = commandCtx.options.getInteger("minutes", true);
     const before = settings.twitch_polling_interval_minutes;
     updateGuildSettings(communityId, { twitch_polling_interval_minutes: minutes });
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "twitch.polling_interval_set",
       targetType: "guild",
       targetId: guildId,
       details: { previous_minutes: before ?? null, minutes },
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "Twitch polling interval set",
       command: "/settwitch interval",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [`Interval: ${before} → **${minutes}** minute(s)`],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Twitch polling interval set to **${minutes}** minute(s).`,
+      sensitive: true,
     });
     return;
   }
@@ -502,7 +504,7 @@ async function handleSetTwitch(interaction, ctx) {
       // settings stays renderable even if the config resolver misbehaves
     }
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         `**Twitch notification settings**\n` +
         `Bot credentials: ${configured ? "configured" : "not configured"}\n` +
@@ -511,6 +513,7 @@ async function handleSetTwitch(interaction, ctx) {
         `Ping role: ${notifyRole}\n` +
         `Polling interval: **${settings.twitch_polling_interval_minutes}** minute(s)\n` +
         `Subscriptions: **${getTwitchChannels(communityId).length}**`,
+      sensitive: true,
     });
     return;
   }
@@ -556,6 +559,12 @@ module.exports = {
   handlers: {
     twitch: handleTwitch,
     settwitch: handleSetTwitch,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): these slash
+  // handlers receive a CommandContext. Autocomplete stays on the interaction arm.
+  handlerApi: {
+    twitch: "context",
+    settwitch: "context",
   },
   autocomplete: {
     twitch: handleTwitchAutocomplete,
