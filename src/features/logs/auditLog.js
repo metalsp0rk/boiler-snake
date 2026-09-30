@@ -38,9 +38,19 @@ function cacheMessage(message) {
   const communityId = discordCommunityId(message.guild.id);
   if (communityId == null) return;
 
+  // Accepts both shapes: a discord.js Collection (raw message) and the
+  // normalized [{name, url}] array normalizeDiscordMessage attaches.
   const attachments = [];
-  if (message.attachments?.size) {
-    for (const att of message.attachments.values()) {
+  const rawAttachments = message.attachments;
+  if (Array.isArray(rawAttachments)) {
+    for (const att of rawAttachments) {
+      attachments.push({
+        name: att?.name || "file",
+        url: att?.url || att?.proxyURL || "",
+      });
+    }
+  } else if (rawAttachments?.size) {
+    for (const att of rawAttachments.values()) {
       attachments.push({
         name: att.name || "file",
         url: att.url || att.proxyURL || "",

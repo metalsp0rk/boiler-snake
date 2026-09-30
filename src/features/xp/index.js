@@ -14,15 +14,17 @@ const {
 } = require("../../db");
 const { levelFromXp, validateXpValue, MAX_XP_AWARD } = require("../../core/xpMath");
 const { key, isOnCooldown, sweepCooldownMap } = require("../../core/cooldowns");
-const { isStaff, requireAdmin } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
-const { Color, baseEmbed } = require("../../core/theme");
+const {
+  requireAdminFromContext,
+  requireStaffFromContext,
+} = require("../../core/permissions");
+const { replyEphemeral } = require("../../core/interaction");
+const { Color } = require("../../core/theme");
 const { awardXp } = require("../../services/awardXp");
 const { renderLeaderboardPng } = require("../../render/leaderboard");
 const { logConfigChange, diffConfigLines } = require("../logs/auditLog");
 const { registerJob } = require("../../core/scheduler");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { ensureCommunity } = require("../../platform/community");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -46,6 +48,14 @@ const commands = [
       opt
         .setName("limit")
         .setDescription("Users per page (default 10, max 20)")
+        .setMinValue(1)
+        .setMaxValue(20)
+        .setRequired(false),
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName("page")
+        .setDescription("Page number")
         .setMinValue(1)
         .setMaxValue(20)
         .setRequired(false),
@@ -123,21 +133,21 @@ const commands = [
     ),
 ];
 
-async function handleXp(interaction) {
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
-  const settings = getGuildSettings(communityId);
-  const target = interaction.options.getUser("user") ?? interaction.user;
-  const xp = getXp(communityId, target.id);
+/**
+ * @param {object} commandCtx CommandContext (roadmap/fluxer.md § CommandContext)
+ * @param {object} featureCtx
+ */
+async function handleXp(commandCtx, featureCtx) {
+  void featureCtx;
+  const settings = getGuildSettings(commandCtx.communityId);
+  const target = commandCtx.options.getUser("user") ?? commandCtx.user;
+  const xp = getXp(commandCtx.communityId, target.id);
   const level = levelFromXp(xp, settings.level_xp_factor);
 
-  await replyEphemeral(
-    interaction,
-    `**${target.username}**: **${xp} XP** · Level **${level}**`,
-  );
+  await commandCtx.reply({
+    content: `**${target.username}**: **${xp} XP** · Level **${level}**`,
+    sensitive: true,
+  });
 }
 
 /** customId prefix for leaderboard pagination buttons (lb:<userId>:<limit>:<page>) */
@@ -150,6 +160,17 @@ function clampLeaderboardLimit(value) {
   if (value === null || value === undefined) return LB_PAGE_DEFAULT;
   const n = Math.floor(Number(value));
   if (!Number.isFinite(n)) return LB_PAGE_DEFAULT;
+  return Math.min(LB_PAGE_MAX, Math.max(LB_PAGE_MIN, n));
+}
+
+/**
+ * @param {number|null|undefined} value raw "page" option (1-based)
+ * @returns {number} page clamped to 1..LB_PAGE_MAX
+ */
+function clampLeaderboardPage(value) {
+  if (value === null || value === undefined) return LB_PAGE_MIN;
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return LB_PAGE_MIN;
   return Math.min(LB_PAGE_MAX, Math.max(LB_PAGE_MIN, n));
 }
 
@@ -206,13 +227,16 @@ function buildLeaderboardControls(requesterId, limit, page, { hasPrev, hasMore }
 /**
  * Build the reply/update payload for one leaderboard page.
  * Fetches `limit * page + 1` rows so "has more" is known without a count query.
- * @param {object} interaction
+ * @param {(userIds: string[]) => Promise<Map<string, string>>} resolveNames
+ *   maps user ids to display names; missing ids may be absent from the Map
+ *   (callers keep the fetch platform-shaped: Discord batch fetch on the
+ *   button arm, outbound fetchMember on the context arm).
  * @param {number} communityId  internal communities.id (resolved by the caller)
  * @param {string} requesterId
  * @param {number} limit
  * @param {number} page 1-based
  */
-async function buildLeaderboardPagePayload(interaction, communityId, requesterId, limit, page) {
+async function buildLeaderboardPagePayload(resolveNames, communityId, requesterId, limit, page) {
   const settings = getGuildSettings(communityId);
   const factor = Math.max(1, Number(settings.level_xp_factor) || 100);
 
@@ -234,18 +258,15 @@ async function buildLeaderboardPagePayload(interaction, communityId, requesterId
     };
   }
 
-  let members = null;
+  let names = new Map();
   try {
-    members = await interaction.guild.members.fetch({
-      user: pageRows.map((r) => r.user_id),
-    });
+    names = (await resolveNames(pageRows.map((r) => r.user_id))) ?? new Map();
   } catch {
-    members = null;
+    names = new Map();
   }
 
   const entries = pageRows.map((r, idx) => {
-    const m = members?.get?.(r.user_id);
-    const name = m?.displayName || m?.user?.username || `User ${r.user_id}`;
+    const name = names.get(r.user_id) || `User ${r.user_id}`;
     const level = levelFromXp(r.xp, factor);
     return { rank: (page - 1) * limit + idx + 1, name, xp: r.xp, level };
   });
@@ -274,25 +295,44 @@ async function buildLeaderboardPagePayload(interaction, communityId, requesterId
   };
 }
 
-async function handleLeaderboard(interaction) {
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
-  const limit = clampLeaderboardLimit(interaction.options.getInteger("limit"));
+/**
+ * @param {object} commandCtx CommandContext (roadmap/fluxer.md § CommandContext)
+ * @param {object} featureCtx
+ */
+async function handleLeaderboard(commandCtx, featureCtx) {
+  void featureCtx;
+  const limit = clampLeaderboardLimit(commandCtx.options.getInteger("limit"));
+  const page = clampLeaderboardPage(commandCtx.options.getInteger("page"));
+  const { communityId, outbound } = commandCtx;
+  // Context-arm resolver: one outbound fetchMember per id, best-effort.
+  // fetchMember is {ok}-free (resolves null on failure), so a missing
+  // member just falls back to `User <id>` in the renderer.
+  const resolveNames = async (ids) => {
+    const names = new Map();
+    for (const id of ids) {
+      try {
+        const member = await outbound.fetchMember(communityId, id);
+        if (member?.username) names.set(id, member.username);
+      } catch {
+        // Best-effort: name resolution failures fall back to User <id>.
+      }
+    }
+    return names;
+  };
   const payload = await buildLeaderboardPagePayload(
-    interaction,
+    resolveNames,
     communityId,
-    interaction.user.id,
+    commandCtx.userId,
     limit,
-    1,
+    page,
   );
   if (payload.empty) {
-    await replyEphemeral(interaction, { content: payload.content });
+    await commandCtx.reply({ content: payload.content, sensitive: true });
     return;
   }
-  await interaction.reply(payload);
+  // files entries are AttachmentBuilder instances (the reply builder passes
+  // them through) and components keep the Discord button rows.
+  await commandCtx.reply(payload);
 }
 
 /**
@@ -323,8 +363,23 @@ async function handleLeaderboardButton(interaction, ctx) {
     instanceKey: "discord",
     externalGuildId: interaction.guildId,
   });
+  // Interaction-arm resolver: the current batch member fetch, best-effort
+  // (a failed fetch yields an empty Map → `User <id>` fallbacks).
+  const resolveNames = async (ids) => {
+    const members = await interaction.guild.members
+      .fetch({ user: ids })
+      .catch(() => null);
+    const names = new Map();
+    if (!members) return names;
+    for (const id of ids) {
+      const m = members.get?.(id) ?? null;
+      const name = m?.displayName || m?.user?.username;
+      if (name) names.set(id, name);
+    }
+    return names;
+  };
   const payload = await buildLeaderboardPagePayload(
-    interaction,
+    resolveNames,
     communityId,
     parsed.requesterId,
     parsed.limit,
@@ -345,26 +400,23 @@ async function handleLeaderboardButton(interaction, ctx) {
   }
 }
 
-async function handleSetXp(interaction, ctx) {
-  const { client } = ctx;
-  if (!isStaff(interaction)) {
-    await replyDenied(interaction);
-    return;
-  }
+/**
+ * @param {object} commandCtx CommandContext (roadmap/fluxer.md § CommandContext)
+ * @param {object} featureCtx
+ */
+async function handleSetXp(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const guildId = interaction.guildId;
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
+  const guildId = commandCtx.externalGuildId;
+  const communityId = commandCtx.communityId;
   const settings = getGuildSettings(communityId);
-  const msg = interaction.options.getInteger("message");
-  const reaction = interaction.options.getInteger("reaction");
-  const voice = interaction.options.getInteger("voice");
-  const msgcooldown = interaction.options.getInteger("msgcooldown");
-  const reactioncooldown = interaction.options.getInteger("reactioncooldown");
-  const factor = interaction.options.getInteger("factor");
+  const msg = commandCtx.options.getInteger("message");
+  const reaction = commandCtx.options.getInteger("reaction");
+  const voice = commandCtx.options.getInteger("voice");
+  const msgcooldown = commandCtx.options.getInteger("msgcooldown");
+  const reactioncooldown = commandCtx.options.getInteger("reactioncooldown");
+  const factor = commandCtx.options.getInteger("factor");
 
   const errors = [
     validateXpValue(msg, "Message"),
@@ -373,7 +425,7 @@ async function handleSetXp(interaction, ctx) {
   ].filter(Boolean);
 
   if (errors.length) {
-    await replyEphemeral(interaction, errors.join("\n"));
+    await commandCtx.reply({ content: errors.join("\n"), sensitive: true });
     return;
   }
 
@@ -386,15 +438,18 @@ async function handleSetXp(interaction, ctx) {
   if (factor !== null) patch.level_xp_factor = factor;
 
   if (!Object.keys(patch).length) {
-    await replyEphemeral(interaction, "No XP settings provided to update.");
+    await commandCtx.reply({
+      content: "No XP settings provided to update.",
+      sensitive: true,
+    });
     return;
   }
 
   const before = settings;
   const updated = updateGuildSettings(communityId, patch);
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "xp.settings_update",
     targetType: "guild",
     targetId: guildId,
@@ -402,19 +457,17 @@ async function handleSetXp(interaction, ctx) {
   });
   const lines = diffConfigLines(before, updated, Object.keys(patch));
   if (lines.length) {
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "XP settings updated",
       command: "/setxp",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: lines,
     }).catch(() => {});
   }
 
-  const embed = baseEmbed({
-    color: Color.config,
-    title: "Updated XP settings",
-    footer: "Staff only",
-  }).addFields(
+  // Plain-object embed (NormalizedEmbed): the Discord reply builder maps it
+  // to an EmbedBuilder at the adapter edge.
+  const fields = [
     { name: "Message XP", value: `**${updated.msg_xp}**`, inline: true },
     { name: "Reaction XP", value: `**${updated.reaction_xp}**`, inline: true },
     {
@@ -432,57 +485,69 @@ async function handleSetXp(interaction, ctx) {
       value: `**${updated.reaction_cooldown_sec}s**`,
       inline: true,
     },
-  );
+  ];
 
   if (factor !== null) {
-    embed.addFields({
+    fields.push({
       name: "level_xp_factor",
       value: `**${settings.level_xp_factor}** → **${updated.level_xp_factor}** (Level L starts at L² × factor)`,
       inline: false,
     });
   }
 
-  await replyEphemeral(interaction, { embeds: [embed] });
+  await commandCtx.reply({
+    embeds: [
+      {
+        title: "Updated XP settings",
+        color: Color.config,
+        footer: { text: "Staff only" },
+        fields,
+      },
+    ],
+    sensitive: true,
+  });
 }
 
 /**
  * Admin-only: grant XP to a member. Runs the full award pipeline (roles + audit).
+ * @param {object} commandCtx CommandContext (roadmap/fluxer.md § CommandContext)
+ * @param {object} featureCtx
  */
-async function handleGrantXp(interaction, ctx) {
-  const { client } = ctx;
-  if (!(await requireAdmin(interaction))) return;
+async function handleGrantXp(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireAdminFromContext(commandCtx))) return;
 
-  const target = interaction.options.getUser("user", true);
-  const amount = interaction.options.getInteger("amount", true);
-  const reason = interaction.options.getString("reason");
+  const target = commandCtx.options.getUser("user", true);
+  const amount = commandCtx.options.getInteger("amount", true);
+  const reason = commandCtx.options.getString("reason");
 
   if (target.bot) {
-    await replyEphemeral(interaction, "You can’t grant XP to bots.");
+    await commandCtx.reply({
+      content: "You can’t grant XP to bots.",
+      sensitive: true,
+    });
     return;
   }
 
   const amountError = validateXpValue(amount, "Grant");
   if (amountError) {
-    await replyEphemeral(interaction, amountError);
+    await commandCtx.reply({ content: amountError, sensitive: true });
     return;
   }
   if (amount < 1) {
-    await replyEphemeral(interaction, "Amount must be at least 1.");
+    await commandCtx.reply({
+      content: "Amount must be at least 1.",
+      sensitive: true,
+    });
     return;
   }
 
-  const guildId = interaction.guildId;
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-  const settings = getGuildSettings(communityId);
-  const beforeXp = getXp(communityId, target.id);
+  const settings = getGuildSettings(commandCtx.communityId);
+  const beforeXp = getXp(commandCtx.communityId, target.id);
 
-  const { newXp, level } = await awardXp(getDiscordOutbound(client), {
-    communityId,
-    externalGuildId: guildId,
+  const { newXp, level } = await awardXp(commandCtx.outbound, {
+    communityId: commandCtx.communityId,
+    externalGuildId: commandCtx.externalGuildId,
     userId: target.id,
     delta: amount,
     activityKind: "admin_grant",
@@ -494,8 +559,8 @@ async function handleGrantXp(interaction, ctx) {
   const reasonText = reason?.trim() ? reason.trim() : null;
 
   recordSlashAudit({
-    interaction,
-    communityId,
+    communityId: commandCtx.communityId,
+    actorUserId: commandCtx.userId,
     action: "xp.grant",
     targetType: "user",
     targetId: target.id,
@@ -507,10 +572,10 @@ async function handleGrantXp(interaction, ctx) {
     },
   });
 
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "XP granted",
     command: "/grantxp",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `Target: <@${target.id}> (\`${target.id}\`)`,
       `Amount: **+${amount.toLocaleString()}** XP`,
@@ -520,25 +585,40 @@ async function handleGrantXp(interaction, ctx) {
     ].filter(Boolean),
   }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `Granted **${amount.toLocaleString()}** XP to **${target.username}**.\n` +
       `Now **${newXp.toLocaleString()} XP** (Level **${levelText}**)` +
       (reasonText ? `\nReason: ${reasonText}` : ""),
+    sensitive: true,
   });
 }
 
 /**
  * Award message XP. Returns true if this path consumed the event for XP purposes
  * (callers still run honeypot/cache before this).
+ *
+ * Reads the NormalizedMessage fields (authorBot, externalGuildId, communityId)
+ * plus the preserved Discord duck fields. `options.isPrefixCommand` is the
+ * backstop from roadmap/fluxer.md § Normalized gateway events: a real prefix
+ * command earns no message XP. The pipeline's prefix branch already skips
+ * this call for prefix lines; the flag protects any future caller.
+ *
+ * @param {object} outbound OutboundClient (awardXp delivery seam)
+ * @param {object} message normalized message (normalizeDiscordMessage output)
+ * @param {{ isPrefixCommand?: boolean }} [options]
  */
-async function tryAwardMessageXp(client, message) {
-  if (!message.guild || message.author?.bot) return;
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: message.guild.id,
-  });
+async function tryAwardMessageXp(outbound, message, options = {}) {
+  if (options.isPrefixCommand) return;
+  if (message.authorBot) return;
+  if (!message.guild && !message.externalGuildId) return;
+  const communityId = Number.isSafeInteger(message.communityId)
+    ? message.communityId
+    : ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: message.guild.id,
+      });
   const settings = getGuildSettings(communityId);
   const gain = Number(settings.msg_xp) || 0;
   if (gain <= 0) return;
@@ -546,9 +626,9 @@ async function tryAwardMessageXp(client, message) {
   const k = key(communityId, message.author.id);
   if (isOnCooldown(msgCooldown, k, settings.msg_cooldown_sec)) return;
 
-  await awardXp(getDiscordOutbound(client), {
+  await awardXp(outbound, {
     communityId,
-    externalGuildId: message.guild.id,
+    externalGuildId: message.externalGuildId ?? message.guild.id,
     userId: message.author.id,
     delta: gain,
     activityKind: "message",
@@ -559,8 +639,12 @@ async function tryAwardMessageXp(client, message) {
 /**
  * Award reaction XP when not a reaction-role panel.
  * Caller must resolve partials / honeypot / reaction-role first.
+ *
+ * @param {object} outbound OutboundClient (awardXp delivery seam)
+ * @param {import("discord.js").Guild} guild
+ * @param {import("discord.js").User} user
  */
-async function tryAwardReactionXp(client, guild, user) {
+async function tryAwardReactionXp(outbound, guild, user) {
   if (!guild || user?.bot) return;
   const communityId = ensureCommunity({
     platform: "discord",
@@ -574,7 +658,7 @@ async function tryAwardReactionXp(client, guild, user) {
   const k = key(communityId, user.id);
   if (isOnCooldown(reactionCooldown, k, settings.reaction_cooldown_sec)) return;
 
-  await awardXp(getDiscordOutbound(client), {
+  await awardXp(outbound, {
     communityId,
     externalGuildId: guild.id,
     userId: user.id,
@@ -611,6 +695,14 @@ module.exports = {
     setxp: handleSetXp,
     grantxp: handleGrantXp,
   },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): these four
+  // slash handlers receive a CommandContext instead of a raw interaction.
+  handlerApi: {
+    xp: "context",
+    leaderboard: "context",
+    setxp: "context",
+    grantxp: "context",
+  },
   buttonHandlers: {
     [LB_BTN_PREFIX]: handleLeaderboardButton,
   },
@@ -622,6 +714,7 @@ module.exports = {
   // tests
   LB_BTN_PREFIX,
   clampLeaderboardLimit,
+  clampLeaderboardPage,
   leaderboardButtonCustomId,
   parseLeaderboardButtonCustomId,
   buildLeaderboardControls,
