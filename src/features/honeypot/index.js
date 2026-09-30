@@ -5,7 +5,6 @@ const {
   Events,
 } = require("discord.js");
 const {
-  getGuildSettings,
   isHoneypotChannel,
   isHoneypotWarningMessage,
   listAllHoneypotWarnings,
@@ -25,8 +24,10 @@ const {
   isHoneypotBanRole,
 } = require("../../db");
 const { key } = require("../../core/cooldowns");
-const { isAdminOrMod, isStaff } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const {
+  isAdminOrModFromContext,
+  requireStaffFromContext,
+} = require("../../core/permissions");
 const { logConfigChange, logHoneypotTrigger } = require("../logs/auditLog");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { ensureCommunity, getCommunityById } = require("../../platform/community");
@@ -192,8 +193,17 @@ async function postHoneypotWarning(channel) {
 /**
  * Ensure a honeypot channel has a bot warning message. Reuses existing one if still present.
  * Returns a short status string for the admin reply.
+ *
+ * `guild` is the discord.js Guild used for channel access; `communityId` is
+ * the INTEGER repository key (roadmap § Repository boundary). Legacy callers
+ * that only pass the guild get the id resolved at the edge — a snowflake
+ * string must never reach the community-keyed repos (assertCommunityId
+ * throws on it, which silently broke `/honeypot channel add` before this fix).
  */
-async function ensureHoneypotWarning(guild, channelId) {
+async function ensureHoneypotWarning(guild, channelId, communityId) {
+  const communityKey =
+    communityId ??
+    (guild?.id != null ? communityIdFor(String(guild.id)) : undefined);
   const channel = await guild.channels.fetch(channelId).catch(() => null);
   if (
     !channel ||
@@ -206,7 +216,7 @@ async function ensureHoneypotWarning(guild, channelId) {
     return "Channel cannot receive messages — warning not posted.";
   }
 
-  const existing = getHoneypotChannel(guild.id, channelId);
+  const existing = getHoneypotChannel(communityKey, channelId);
   if (existing?.warning_message_id) {
     const old = await channel.messages
       .fetch(existing.warning_message_id)
@@ -218,7 +228,7 @@ async function ensureHoneypotWarning(guild, channelId) {
 
   try {
     const msg = await postHoneypotWarning(channel);
-    setHoneypotWarningMessage(guild.id, channelId, msg.id);
+    setHoneypotWarningMessage(communityKey, channelId, msg.id);
     return "Warning notice posted and pinned (image only — no plain text).";
   } catch (e) {
     console.error(
@@ -575,79 +585,96 @@ async function handleHoneypotBanRole(oldMember, newMember) {
   );
 }
 
-async function handleHoneypot(interaction, ctx) {
-  const { client, ensureHoneypotWarning } = ctx;
-  const guildId = interaction.guildId;
-  // Edge pattern: slash command resolves the integer community id for the
-  // converted repos (staffRoles, guildSettings). INSERT-OR-IGNORE: an
-  // unregistered guild gets its row created on the hot path, so
-  // getGuildSettings never hits the create-row path with a snowflake.
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-  const settings = getGuildSettings(communityId);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleHoneypot(commandCtx, featureCtx) {
+  void featureCtx;
+  // The context builder resolves the integer community id at the Discord edge
+  // (roadmap/fluxer.md § CommandContext); repositories use it directly.
+  const { communityId, outbound } = commandCtx;
+  // Display/audit key keeps the external (Discord) snowflake.
+  const guildId = commandCtx.externalGuildId;
 
-  const group = interaction.options.getSubcommandGroup(false);
-  const sub = interaction.options.getSubcommand();
+  // Discord-only escape hatch (roadmap § What stays Discord-only): the warning
+  // notice poster and the warning-message cleanup need real discord.js
+  // Guild/Message objects — the service-side cutover to the OutboundClient is
+  // PR 7. Fluxer contexts never carry rawInteraction.
+  const raw = commandCtx.rawInteraction;
+
+  const group = commandCtx.subcommandGroup;
+  const sub = commandCtx.subcommand;
 
   // exempt mutates staff_roles — ManageGuild only (same as /staff role)
   if (group === "exempt") {
-    if (!isAdminOrMod(interaction)) {
-      await replyEphemeral(interaction, {
+    if (!isAdminOrModFromContext(commandCtx)) {
+      await commandCtx.reply({
         content: "Only server administrators can manage honeypot exempt roles.",
+        sensitive: true,
       });
       return;
     }
-  } else if (!isStaff(interaction)) {
-    await replyDenied(interaction);
+  } else if (!(await requireStaffFromContext(commandCtx))) {
     return;
   }
 
   // /honeypot channel [add|list|del]
   if (group === "channel") {
     if (sub === "add") {
-      const ch = interaction.options.getChannel("channel", true);
+      const ch = commandCtx.options.getChannel("channel", true);
+
+      // Channel existence via outbound (roadmap § Outbound client): the
+      // Discord adapter returns the discord.js channel, null when the bot
+      // cannot see it.
+      const channelHandle = await outbound.fetchChannel(communityId, ch.id);
+      if (!channelHandle) {
+        await commandCtx.reply({
+          content: `Could not find <#${ch.id}> in this server — the bot must be able to view a channel to mark it as a honeypot.`,
+          sensitive: true,
+        });
+        return;
+      }
 
       if (isHoneypotChannel(communityId, ch.id)) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: `<#${ch.id}> is already set up as a honeypot channel.`,
+          sensitive: true,
         });
         return;
       }
 
       addHoneypotChannel(communityId, ch.id);
       recordSlashAudit({
-        interaction,
         communityId,
+        actorUserId: commandCtx.userId,
         action: "honeypot.channel_add",
         targetType: "channel",
         targetId: ch.id,
       });
-      const warningStatus = await ensureHoneypotWarning(
-        interaction.guild,
-        ch.id,
-      );
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      // Warning-notice poster needs a discord.js Guild (service cutover PR 7);
+      // the repo key is the INTEGER community id (never the guild snowflake).
+      const warningStatus = await ensureHoneypotWarning(raw?.guild, ch.id, communityId);
+      await logConfigChange(outbound, guildId, {
         title: "Honeypot channel added",
         command: "/honeypot channel add",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
         details: warningStatus,
       }).catch(() => {});
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           `Marked <#${ch.id}> as a **honeypot** channel.\n` +
           `Anyone who posts there will be banned immediately (except members with exempt roles).\n` +
           `${warningStatus}\n` +
           `Tip: use \`/staff role add\` (or \`/honeypot exempt add\`) to configure staff roles so they are not banned by mistake.`,
+        sensitive: true,
       });
       return;
     }
 
     if (sub === "del") {
-      const ch = interaction.options.getChannel("channel", true);
+      const ch = commandCtx.options.getChannel("channel", true);
       const { removed, warning_message_id } = removeHoneypotChannel(
         communityId,
         ch.id,
@@ -655,10 +682,13 @@ async function handleHoneypot(interaction, ctx) {
 
       let warningNote = "";
       if (removed && warning_message_id) {
+        // Deleting the warning notice is Discord-only: OutboundClient has no
+        // message-delete surface yet (service cutover PR 7). The Discord arm
+        // uses the raw interaction's guild.
         try {
-          const channel = await interaction.guild.channels
-            .fetch(ch.id)
-            .catch(() => null);
+          const channel = raw?.guild
+            ? await raw.guild.channels.fetch(ch.id).catch(() => null)
+            : null;
           if (channel?.messages) {
             const msg = await channel.messages
               .fetch(warning_message_id)
@@ -676,25 +706,26 @@ async function handleHoneypot(interaction, ctx) {
 
       if (removed) {
         recordSlashAudit({
-          interaction,
           communityId,
+          actorUserId: commandCtx.userId,
           action: "honeypot.channel_del",
           targetType: "channel",
           targetId: ch.id,
         });
-        await logConfigChange(getDiscordOutbound(client), guildId, {
+        await logConfigChange(outbound, guildId, {
           title: "Honeypot channel removed",
           command: "/honeypot channel del",
-          actor: interaction.user,
+          actor: commandCtx.user,
           changes: [`Channel: <#${ch.id}> (\`${ch.id}\`)`],
           details: warningNote.trim() || undefined,
         }).catch(() => {});
       }
 
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: removed
           ? `Removed <#${ch.id}> from the honeypot list.${warningNote}`
           : `<#${ch.id}> was not a honeypot channel.`,
+        sensitive: true,
       });
       return;
     }
@@ -702,14 +733,16 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "list") {
       const rows = listHoneypotChannels(communityId);
       if (!rows.length) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: "No honeypot channels configured.",
+          sensitive: true,
         });
         return;
       }
       const lines = rows.map((r) => `- <#${r.channel_id}>`);
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `**Honeypot channels:**\n${lines.join("\n")}`,
+        sensitive: true,
       });
       return;
     }
@@ -718,75 +751,85 @@ async function handleHoneypot(interaction, ctx) {
   // /honeypot banrole [add|list|del]
   if (group === "banrole") {
     if (sub === "add") {
-      const role = interaction.options.getRole("role", true);
+      const role = commandCtx.options.getRole("role", true);
 
       if (role.id === guildId) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: "You cannot use @everyone as a honeypot ban role.",
+          sensitive: true,
         });
         return;
       }
-      if (role.managed) {
-        await replyEphemeral(interaction, {
+      // Spec RoleHandle carries no `managed` flag — graft the Discord-side
+      // role object from the documented rawInteraction escape hatch (userinfo
+      // precedent). Fluxer contexts carry no raw, so integration-managed roles
+      // are not detectable there until the Fluxer role surface lands (PR 9).
+      const rawRole = raw?.guild?.roles?.cache?.get?.(role.id) ?? null;
+      if (rawRole?.managed) {
+        await commandCtx.reply({
           content:
             "That role is managed by an integration. Prefer a normal server role for ban-role honeypots.",
+          sensitive: true,
         });
         return;
       }
       if (isHoneypotBanRole(communityId, role.id)) {
-        await replyEphemeral(interaction, {
-          content: `${role} is already a honeypot ban role.`,
+        await commandCtx.reply({
+          content: `<@&${role.id}> is already a honeypot ban role.`,
+          sensitive: true,
         });
         return;
       }
 
       addHoneypotBanRole(communityId, role.id);
       recordSlashAudit({
-        interaction,
         communityId,
+        actorUserId: commandCtx.userId,
         action: "honeypot.ban_role_add",
         targetType: "role",
         targetId: role.id,
       });
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      await logConfigChange(outbound, guildId, {
         title: "Honeypot ban role added",
         command: "/honeypot banrole add",
-        actor: interaction.user,
-        changes: [`Role: ${role} (\`${role.id}\`)`],
+        actor: commandCtx.user,
+        changes: [`Role: <@&${role.id}> (\`${role.id}\`)`],
       }).catch(() => {});
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
-          `Marked ${role} as a **honeypot ban role**.\n` +
+          `Marked <@&${role.id}> as a **honeypot ban role**.\n` +
           `Anyone who is **granted** this role will be banned immediately ` +
           `(except members with honeypot exempt roles).\n` +
           `Tip: configure \`/staff role add\` (or \`/honeypot exempt add\`) for staff first. ` +
           `Members who already have the role are not retroactively banned.`,
+        sensitive: true,
       });
       return;
     }
 
     if (sub === "del") {
-      const role = interaction.options.getRole("role", true);
+      const role = commandCtx.options.getRole("role", true);
       const removed = removeHoneypotBanRole(communityId, role.id);
       if (removed) {
         recordSlashAudit({
-          interaction,
           communityId,
+          actorUserId: commandCtx.userId,
           action: "honeypot.ban_role_del",
           targetType: "role",
           targetId: role.id,
         });
-        await logConfigChange(getDiscordOutbound(client), guildId, {
+        await logConfigChange(outbound, guildId, {
           title: "Honeypot ban role removed",
           command: "/honeypot banrole del",
-          actor: interaction.user,
-          changes: [`Role: ${role} (\`${role.id}\`)`],
+          actor: commandCtx.user,
+          changes: [`Role: <@&${role.id}> (\`${role.id}\`)`],
         }).catch(() => {});
       }
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: removed
-          ? `Removed ${role} from the honeypot ban-role list.`
-          : `${role} was not a honeypot ban role.`,
+          ? `Removed <@&${role.id}> from the honeypot ban-role list.`
+          : `<@&${role.id}> was not a honeypot ban role.`,
+        sensitive: true,
       });
       return;
     }
@@ -794,14 +837,16 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "list") {
       const rows = listHoneypotBanRoles(communityId);
       if (!rows.length) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: "No honeypot ban roles configured.",
+          sensitive: true,
         });
         return;
       }
       const lines = rows.map((r) => `- <@&${r.role_id}>`);
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `**Honeypot ban roles** (granting these bans the member):\n${lines.join("\n")}`,
+        sensitive: true,
       });
       return;
     }
@@ -810,54 +855,56 @@ async function handleHoneypot(interaction, ctx) {
   // /honeypot exempt [add|list|del]
   if (group === "exempt") {
     if (sub === "add") {
-      const role = interaction.options.getRole("role", true);
+      const role = commandCtx.options.getRole("role", true);
       addStaffRole(communityId, role.id);
       // Same underlying table as /staff role add — keep the action vocabulary.
       recordSlashAudit({
-        interaction,
         communityId,
+        actorUserId: commandCtx.userId,
         action: "staff.role_add",
         targetType: "role",
         targetId: role.id,
         details: { via: "honeypot.exempt" },
       });
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      await logConfigChange(outbound, guildId, {
         title: "Honeypot exempt role added",
         command: "/honeypot exempt add",
-        actor: interaction.user,
-        changes: [`Role: ${role} (\`${role.id}\`)`],
+        actor: commandCtx.user,
+        changes: [`Role: <@&${role.id}> (\`${role.id}\`)`],
       }).catch(() => {});
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
-          `Added ${role} as a staff role (also used for honeypot exemption). ` +
+          `Added <@&${role.id}> as a staff role (also used for honeypot exemption). ` +
           `Members with this role will not be banned for posting in honeypot channels or receiving honeypot ban roles.`,
+        sensitive: true,
       });
       return;
     }
 
     if (sub === "del") {
-      const role = interaction.options.getRole("role", true);
+      const role = commandCtx.options.getRole("role", true);
       const removed = removeStaffRole(communityId, role.id);
       if (removed) {
         recordSlashAudit({
-          interaction,
           communityId,
+          actorUserId: commandCtx.userId,
           action: "staff.role_remove",
           targetType: "role",
           targetId: role.id,
           details: { via: "honeypot.exempt" },
         });
-        await logConfigChange(getDiscordOutbound(client), guildId, {
+        await logConfigChange(outbound, guildId, {
           title: "Honeypot exempt role removed",
           command: "/honeypot exempt del",
-          actor: interaction.user,
-          changes: [`Role: ${role} (\`${role.id}\`)`],
+          actor: commandCtx.user,
+          changes: [`Role: <@&${role.id}> (\`${role.id}\`)`],
         }).catch(() => {});
       }
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: removed
-          ? `Removed ${role} from staff roles (also removes honeypot exemption).`
-          : `${role} is not a configured staff role.`,
+          ? `Removed <@&${role.id}> from staff roles (also removes honeypot exemption).`
+          : `<@&${role.id}> is not a configured staff role.`,
+        sensitive: true,
       });
       return;
     }
@@ -865,26 +912,29 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "list") {
       const rows = listStaffRoles(communityId);
       if (!rows.length) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content:
             "No staff roles configured. Staff who hit honeypots will be banned.",
+          sensitive: true,
         });
         return;
       }
       const lines = rows.map((r) => `- <@&${r.role_id}>`);
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `**Staff roles (also used for honeypot exemption):**\n${lines.join("\n")}`,
+        sensitive: true,
       });
       return;
     }
   }
 
   // Always answer /honeypot so we never fall through as "handler missing"
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
-      `Unknown honeypot subcommand: \`/${interaction.commandName}` +
+      `Unknown honeypot subcommand: \`/${commandCtx.commandName}` +
       `${group ? ` ${group}` : ""} ${sub || ""}\`.\n` +
       `Use \`/honeypot channel add|list|del\`, \`/honeypot banrole add|list|del\`, or \`/honeypot exempt add|list|del\`.`,
+    sensitive: true,
   });
   return;
 }
@@ -916,6 +966,12 @@ module.exports = {
   commands,
   handlers: {
     honeypot: handleHoneypot,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext. Pipeline/registration hooks stay on the
+  // raw gateway event (untouched until PR 7).
+  handlerApi: {
+    honeypot: "context",
   },
   registerEvents,
   start,

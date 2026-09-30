@@ -15,8 +15,7 @@ const { markTicketClosedByChannelDelete } = require("../../db");
 // Discord edge: gateway events resolve the event's guild id to the integer
 // community key before touching community-scoped repositories.
 const { ensureCommunity } = require("../../platform/community");
-const { requireStaff } = require("../../core/permissions");
-const { replyEphemeral } = require("../../core/interaction");
+const { requireStaffFromContext } = require("../../core/permissions");
 const { formatTicketRef } = require("../../core/theme");
 const { commands } = require("./commands");
 const {
@@ -73,54 +72,71 @@ const {
 const { MAX_TICKET_REASON } = require("../../db");
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
+ * Standard denial for Fluxer dispatches that reach a Discord-only surface
+ * (roadmap/fluxer.md § What stays Discord-only — ticket panels post
+ * ActionRowBuilder buttons that Fluxer v1 has no equivalent for).
+ */
+const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
+
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
  * @param {object} ctx
  */
-async function handleTicket(interaction, ctx) {
-  const group = interaction.options.getSubcommandGroup(false);
-  const sub = interaction.options.getSubcommand();
+async function handleTicket(commandCtx, ctx) {
+  const group = commandCtx.subcommandGroup;
+  const sub = commandCtx.subcommand;
 
   // Panel subcommand group: /ticket panel [create|list|edit|delete]
   if (group === "panel") {
-    if (!(await requireStaff(interaction))) return;
-    if (sub === "create") return handlePanelCreate(interaction, ctx);
-    if (sub === "list") return handlePanelList(interaction);
-    if (sub === "edit") return handlePanelEdit(interaction, ctx);
-    if (sub === "delete") return handlePanelDelete(interaction, ctx);
+    if (!(await requireStaffFromContext(commandCtx))) return;
+    // Panel arms stay legacy on the real interaction (roadmap § What stays
+    // Discord-only): every panel subcommand posts/edits Discord components
+    // (ActionRowBuilder buttons) that Fluxer v1 cannot render. Guard via the
+    // documented rawInteraction capability; Fluxer contexts never carry it.
+    const raw = commandCtx.rawInteraction;
+    if (!raw) {
+      await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+      return;
+    }
+    if (sub === "create") return handlePanelCreate(raw, ctx);
+    if (sub === "list") return handlePanelList(raw);
+    if (sub === "edit") return handlePanelEdit(raw, ctx);
+    if (sub === "delete") return handlePanelDelete(raw, ctx);
   }
 
   // Public
-  if (sub === "create") return handleCreate(interaction, ctx);
-  if (sub === "settings") return handleSettings(interaction);
+  if (sub === "create") return handleCreate(commandCtx, ctx);
+  if (sub === "settings") return handleSettings(commandCtx);
 
   // Staff config (no subcommand group)
   if (sub === "setcategory" || sub === "setarchive" || sub === "setratelimit") {
-    if (!(await requireStaff(interaction))) return;
-    if (sub === "setcategory") return handleSetCategory(interaction, ctx);
-    if (sub === "setarchive") return handleSetArchive(interaction, ctx);
-    if (sub === "setratelimit") return handleSetRateLimit(interaction, ctx);
+    if (!(await requireStaffFromContext(commandCtx))) return;
+    if (sub === "setcategory") return handleSetCategory(commandCtx, ctx);
+    if (sub === "setarchive") return handleSetArchive(commandCtx, ctx);
+    if (sub === "setratelimit") return handleSetRateLimit(commandCtx, ctx);
   }
 
   // Staff
-  if (!(await requireStaff(interaction))) return;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  if (sub === "for") return handleFor(interaction, ctx);
-  if (sub === "list") return handleList(interaction);
-  if (sub === "close") return handleClose(interaction, ctx);
-  if (sub === "archive") return handleArchive(interaction, ctx);
-  if (sub === "claim") return handleClaim(interaction, ctx);
-  if (sub === "transfer") return handleTransfer(interaction, ctx);
-  if (sub === "adduser") return handleAddUser(interaction, ctx);
-  if (sub === "removeuser") return handleRemoveUser(interaction, ctx);
-  if (sub === "addstaff") return handleAddStaff(interaction, ctx);
-  if (sub === "removestaff") return handleRemoveStaff(interaction, ctx);
-  if (sub === "sensitive") return handleSensitive(interaction, ctx);
-  if (sub === "unsensitive") return handleUnsensitive(interaction, ctx);
-  if (sub === "info") return handleInfo(interaction, ctx);
-  if (sub === "summarize") return handleSummarize(interaction, ctx);
+  if (sub === "for") return handleFor(commandCtx, ctx);
+  if (sub === "list") return handleList(commandCtx);
+  if (sub === "close") return handleClose(commandCtx, ctx);
+  if (sub === "archive") return handleArchive(commandCtx, ctx);
+  if (sub === "claim") return handleClaim(commandCtx, ctx);
+  if (sub === "transfer") return handleTransfer(commandCtx, ctx);
+  if (sub === "adduser") return handleAddUser(commandCtx, ctx);
+  if (sub === "removeuser") return handleRemoveUser(commandCtx, ctx);
+  if (sub === "addstaff") return handleAddStaff(commandCtx, ctx);
+  if (sub === "removestaff") return handleRemoveStaff(commandCtx, ctx);
+  if (sub === "sensitive") return handleSensitive(commandCtx, ctx);
+  if (sub === "unsensitive") return handleUnsensitive(commandCtx, ctx);
+  if (sub === "info") return handleInfo(commandCtx, ctx);
+  if (sub === "summarize") return handleSummarize(commandCtx, ctx);
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Unknown subcommand: \`${sub}\``,
+    sensitive: true,
   });
 }
 
@@ -156,6 +172,13 @@ module.exports = {
   commands,
   handlers: {
     ticket: handleTicket,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext. Button/modal arms (tk:open, tk:sn,
+  // tk:create, tk:snm) stay on the raw interaction — roadmap
+  // § What stays Discord-only.
+  handlerApi: {
+    ticket: "context",
   },
   buttonHandlers: {
     [BTN_OPEN]: handleOpenTicketButton,
