@@ -9,7 +9,6 @@ const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   ChannelType,
-  MessageFlags,
 } = require("discord.js");
 const { tsShort } = require("../../core/theme");
 const {
@@ -21,13 +20,10 @@ const {
   guildActivityStats,
   normalizeIgnoreKind,
 } = require("../../db");
-const { requireStaff } = require("../../core/permissions");
-const { replyEphemeral } = require("../../core/interaction");
+const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { recordUserChannelMessage } = require("./service");
-const { ensureCommunity } = require("../../platform/community");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const {
   startUserBackfill,
   startGuildBackfill,
@@ -132,40 +128,40 @@ const commands = [
 ];
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleActivityConfig(interaction, ctx) {
-  if (!(await requireStaff(interaction))) return;
+async function handleActivityConfig(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const group = interaction.options.getSubcommandGroup(false);
-  const sub = interaction.options.getSubcommand(true);
-  const guildId = interaction.guildId;
-  const client = interaction.client;
-  // Fluxer PR 2: repos key by integer community id; auditLog keys by outbound.
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-  const outbound = getDiscordOutbound(client);
+  const group = commandCtx.subcommandGroup;
+  const sub = commandCtx.subcommand;
+  // Display/audit key: the external (Discord) snowflake; backfill jobs key by it.
+  const guildId = commandCtx.externalGuildId;
+  // Repos key by the integer community id (resolved by the context builder);
+  // auditLog keys by the context's outbound.
+  const communityId = commandCtx.communityId;
+  const outbound = commandCtx.outbound;
 
   if (group === "ignore" && sub === "add") {
     const kind = normalizeIgnoreKind(
-      interaction.options.getString("kind", true),
+      commandCtx.options.getString("kind", true),
     );
-    const target = interaction.options.getChannel("target", true);
+    const target = commandCtx.options.getChannel("target", true);
 
     if (kind === "category" && target.type !== ChannelType.GuildCategory) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: "Pick a **category** channel when kind is `category`.",
+        sensitive: true,
       });
       return;
     }
     if (kind === "channel" && target.type === ChannelType.GuildCategory) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           "That target is a category. Use kind `category`, or pick a text channel.",
+        sensitive: true,
       });
       return;
     }
@@ -173,7 +169,8 @@ async function handleActivityConfig(interaction, ctx) {
     const inserted = addActivityIgnore(communityId, target.id, kind);
     if (inserted) {
       recordSlashAudit({
-        interaction,
+        communityId,
+        actorUserId: commandCtx.userId,
         action: "activity.ignore_add",
         targetType: "channel",
         targetId: target.id,
@@ -182,24 +179,26 @@ async function handleActivityConfig(interaction, ctx) {
       await logConfigChange(outbound, guildId, {
         title: "Activity ignore added",
         command: "/activityconfig ignore add",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [`**${kind}:** <#${target.id}> (\`${target.id}\`)`],
       });
     }
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: inserted
         ? `Now ignoring **${kind}** <#${target.id}> in activity stats.`
         : `Already ignoring <#${target.id}>.`,
+      sensitive: true,
     });
     return;
   }
 
   if (group === "ignore" && sub === "remove") {
-    const target = interaction.options.getChannel("target", true);
+    const target = commandCtx.options.getChannel("target", true);
     const removed = removeActivityIgnore(communityId, target.id);
     if (removed) {
       recordSlashAudit({
-        interaction,
+        communityId,
+        actorUserId: commandCtx.userId,
         action: "activity.ignore_remove",
         targetType: "channel",
         targetId: target.id,
@@ -207,14 +206,15 @@ async function handleActivityConfig(interaction, ctx) {
       await logConfigChange(outbound, guildId, {
         title: "Activity ignore removed",
         command: "/activityconfig ignore remove",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [`**target:** <#${target.id}> (\`${target.id}\`)`],
       });
     }
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: removed
         ? `Removed <#${target.id}> from the activity ignore list.`
         : `<#${target.id}> was not on the ignore list.`,
+      sensitive: true,
     });
     return;
   }
@@ -222,9 +222,10 @@ async function handleActivityConfig(interaction, ctx) {
   if (group === "ignore" && sub === "list") {
     const rows = listActivityIgnore(communityId);
     if (!rows.length) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           "No ignored channels or categories. Honeypot channels are always skipped.",
+        sensitive: true,
       });
       return;
     }
@@ -235,12 +236,13 @@ async function handleActivityConfig(interaction, ctx) {
           : `<#${r.target_id}>`;
       return `• **${r.kind}** ${mention}`;
     });
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         `**Activity ignore list** (${rows.length})\n${lines.join("\n")}`.slice(
           0,
           2000,
         ),
+      sensitive: true,
     });
     return;
   }
@@ -263,7 +265,7 @@ async function handleActivityConfig(interaction, ctx) {
     if (settings?.guild_backfill_error) {
       gLine += `\n• Last error: ${String(settings.guild_backfill_error).slice(0, 200)}`;
     }
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         `**Activity tracking status**\n` +
         `• Live collect from: ${collectFrom}\n` +
@@ -275,6 +277,7 @@ async function handleActivityConfig(interaction, ctx) {
         `• Per-user history: senior staff **Backfill** on \`/userinfo\` → Activity\n` +
         `• All users (preferred): \`/activityconfig backfill all\`\n` +
         `• Cancel: \`/activityconfig backfill cancel\``,
+      sensitive: true,
     });
     return;
   }
@@ -283,7 +286,8 @@ async function handleActivityConfig(interaction, ctx) {
     const result = cancelBackfill(guildId);
     if (result.cancelled) {
       recordSlashAudit({
-        interaction,
+        communityId,
+        actorUserId: commandCtx.userId,
         action: "activity.backfill_cancel",
         targetType: "guild",
         targetId: guildId,
@@ -292,36 +296,48 @@ async function handleActivityConfig(interaction, ctx) {
       await logConfigChange(outbound, guildId, {
         title: "Activity backfill cancel",
         command: "/activityconfig backfill cancel",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [
           result.kind ? `Kind: **${result.kind}**` : "Kind: unknown",
           result.reason || "Cancelled",
         ],
       });
     }
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: result.cancelled
         ? `**Backfill cancel**\n${result.reason || "Cancelled."}`
         : result.reason || "No backfill running.",
+      sensitive: true,
     });
     return;
   }
 
   if (group === "backfill" && sub === "all") {
-    if (!interaction.guild) {
-      await replyEphemeral(interaction, {
-        content: "This command only works in a server.",
+    // Guild backfill runs through the untouched Discord service
+    // (src/features/userActivity/backfill.js needs a discord.js Guild;
+    // roadmap § What stays Discord-only — the service cutover lands in a
+    // later PR). The Guild comes from the documented rawInteraction escape
+    // hatch; Fluxer contexts never carry one, so the Fluxer arm gets the
+    // standard line.
+    const raw = commandCtx.rawInteraction;
+    const guild = raw?.guild ?? null;
+    if (!guild) {
+      await commandCtx.reply({
+        content: raw
+          ? "This command only works in a server."
+          : "That command is not available on Fluxer yet.",
+        sensitive: true,
       });
       return;
     }
 
-    const maxPagesOpt = interaction.options.getInteger("max_pages");
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const result = await startGuildBackfill(interaction.guild, {
+    const maxPagesOpt = commandCtx.options.getInteger("max_pages");
+    await commandCtx.defer({ sensitive: true });
+    const result = await startGuildBackfill(guild, {
       maxPagesPerChannel: maxPagesOpt ?? undefined,
     });
     if (!result.started) {
-      await interaction.editReply({
+      await commandCtx.editReply({
         content: result.reason || "Could not start guild backfill.",
       });
       return;
@@ -330,7 +346,8 @@ async function handleActivityConfig(interaction, ctx) {
     const pages = result.maxPagesPerChannel ?? 50;
     const approxMsgs = pages * 100;
     recordSlashAudit({
-      interaction,
+      communityId,
+      actorUserId: commandCtx.userId,
       action: "activity.backfill_start",
       targetType: "guild",
       targetId: guildId,
@@ -342,7 +359,7 @@ async function handleActivityConfig(interaction, ctx) {
     await logConfigChange(outbound, guildId, {
       title: "Activity guild backfill started",
       command: "/activityconfig backfill all",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         `Channels to scan: **${result.channels ?? "?"}**`,
         `Max pages/channel: **${pages}** (≈${approxMsgs} messages)`,
@@ -350,7 +367,7 @@ async function handleActivityConfig(interaction, ctx) {
       ],
     });
 
-    await interaction.editReply({
+    await commandCtx.editReply({
       content:
         `**Guild backfill started** for **${result.channels ?? "?"}** channels.\n` +
         `Each channel is scanned once; every human author's pre-tracking messages are counted.\n` +
@@ -361,8 +378,9 @@ async function handleActivityConfig(interaction, ctx) {
     return;
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: "Unknown subcommand.",
+    sensitive: true,
   });
 }
 
@@ -371,6 +389,11 @@ module.exports = {
   commands,
   handlers: {
     activityconfig: handleActivityConfig,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext.
+  handlerApi: {
+    activityconfig: "context",
   },
   recordUserChannelMessage,
   startUserBackfill,

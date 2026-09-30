@@ -8,11 +8,9 @@ const {
   updateGithubWatch,
   normalizeGithubRepo,
 } = require("../../db");
-const { isStaff } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
-const { ensureCommunity, discordCommunityId } = require("../../platform/community");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { discordCommunityId } = require("../../platform/community");
 const { fetchRepo } = require("./github");
 const { processWatch, startGithubReleaseTicker } = require("./ticker");
 
@@ -118,41 +116,40 @@ const commands = [
     ),
 ];
 
-async function handleGithub(interaction, ctx) {
-  const { client } = ctx;
-  const guildId = interaction.guildId;
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleGithub(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  if (!isStaff(interaction)) {
-    await replyDenied(interaction);
-    return;
-  }
+  // Repository key: integer community id (resolved by the context builder).
+  const communityId = commandCtx.communityId;
+  // Display/audit key: the external (Discord) snowflake.
+  const guildId = commandCtx.externalGuildId;
 
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-
-  const sub = interaction.options.getSubcommand();
+  const sub = commandCtx.subcommand;
 
   if (sub === "watch") {
-    const raw = interaction.options.getString("repo", true);
+    const raw = commandCtx.options.getString("repo", true);
     const repo = normalizeGithubRepo(raw);
     if (!repo) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `\`${raw}\` is not a repository reference. Use \`owner/name\` or a GitHub URL.`,
+        sensitive: true,
       });
       return;
     }
-    const channel = interaction.options.getChannel("channel", false);
-    const token = interaction.options.getString("token", false);
+    const channel = commandCtx.options.getChannel("channel", false);
+    const token = commandCtx.options.getString("token", false);
 
-    await interaction.deferReply({ flags: 64 });
+    await commandCtx.defer({ sensitive: true });
 
     const existing = getGithubWatch(communityId, repo);
     const check = await fetchRepo(repo, token || null);
     if (!check.ok) {
-      await interaction.editReply(
+      await commandCtx.editReply(
         `Could not track **${repo}**: ${check.error}`,
       );
       return;
@@ -163,12 +160,12 @@ async function handleGithub(interaction, ctx) {
       token: token || null,
     });
 
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: existing
         ? "GitHub watch updated"
         : "GitHub repository watched",
       command: "/github watch",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         `Repository: **${check.fullName}**`,
         channel
@@ -187,30 +184,32 @@ async function handleGithub(interaction, ctx) {
     } else {
       replyMsg += ` Release notes will be posted to <#${row.channel_id}>.`;
     }
-    await interaction.editReply(replyMsg);
+    await commandCtx.editReply(replyMsg);
     return;
   }
 
   if (sub === "remove") {
-    const raw = interaction.options.getString("repo", true);
+    const raw = commandCtx.options.getString("repo", true);
     const found = getGithubWatch(communityId, raw);
     if (!found) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `**${raw}** is not tracked in this server.`,
+        sensitive: true,
       });
       return;
     }
 
     removeGithubWatch(communityId, found.repo);
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "GitHub watch removed",
       command: "/github remove",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [`Repository: **${found.repo_display}**`],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Stopped tracking **${found.repo_display}**.`,
+      sensitive: true,
     });
     return;
   }
@@ -218,9 +217,10 @@ async function handleGithub(interaction, ctx) {
   if (sub === "list") {
     const watches = getGithubWatches(communityId);
     if (!watches.length) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           "No GitHub repositories tracked. Add one with `/github watch`.",
+        sensitive: true,
       });
       return;
     }
@@ -233,27 +233,29 @@ async function handleGithub(interaction, ctx) {
       return `• **${w.repo_display}** → ${ch}${role}${token}${latest}`;
     });
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `**GitHub release watches** (${watches.length})\n${lines.join("\n")}`,
+      sensitive: true,
     });
     return;
   }
 
   if (sub === "channel") {
-    const raw = interaction.options.getString("repo", true);
+    const raw = commandCtx.options.getString("repo", true);
     const found = getGithubWatch(communityId, raw);
     if (!found) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `**${raw}** is not tracked here. Add it with \`/github watch\` first.`,
+        sensitive: true,
       });
       return;
     }
-    const ch = interaction.options.getChannel("channel", true);
+    const ch = commandCtx.options.getChannel("channel", true);
     updateGithubWatch(communityId, found.repo, { channelId: ch.id });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "GitHub watch channel set",
       command: "/github channel",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         `Repository: **${found.repo_display}**`,
         found.channel_id
@@ -262,53 +264,57 @@ async function handleGithub(interaction, ctx) {
       ],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Release notes for **${found.repo_display}** will be sent to <#${ch.id}>.`,
+      sensitive: true,
     });
     return;
   }
 
   if (sub === "role") {
-    const raw = interaction.options.getString("repo", true);
+    const raw = commandCtx.options.getString("repo", true);
     const found = getGithubWatch(communityId, raw);
     if (!found) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `**${raw}** is not tracked here. Add it with \`/github watch\` first.`,
+        sensitive: true,
       });
       return;
     }
-    const role = interaction.options.getRole("role", false);
+    const role = commandCtx.options.getRole("role", false);
     updateGithubWatch(communityId, found.repo, {
       roleId: role ? role.id : null,
     });
     const beforeLabel = found.role_id ? `<@&${found.role_id}>` : "*none*";
     const afterLabel = role ? `<@&${role.id}>` : "*none*";
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "GitHub watch ping role set",
       command: "/github role",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         `Repository: **${found.repo_display}**`,
         `Role: ${beforeLabel} → ${afterLabel}`,
       ],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: role
         ? `Release posts for **${found.repo_display}** will mention <@&${role.id}>.`
         : `Release posts for **${found.repo_display}** will no longer mention a role.`,
+      sensitive: true,
     });
     return;
   }
 
   if (sub === "check") {
-    const raw = interaction.options.getString("repo", false);
+    const repoRaw = commandCtx.options.getString("repo", false);
     let targets;
-    if (raw) {
-      const found = getGithubWatch(communityId, raw);
+    if (repoRaw) {
+      const found = getGithubWatch(communityId, repoRaw);
       if (!found) {
-        await replyEphemeral(interaction, {
-          content: `**${raw}** is not tracked here. Add it with \`/github watch\` first.`,
+        await commandCtx.reply({
+          content: `**${repoRaw}** is not tracked here. Add it with \`/github watch\` first.`,
+          sensitive: true,
         });
         return;
       }
@@ -316,14 +322,30 @@ async function handleGithub(interaction, ctx) {
     } else {
       targets = getGithubWatches(communityId);
       if (!targets.length) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: "No GitHub repositories tracked. Add one with `/github watch`.",
+          sensitive: true,
         });
         return;
       }
     }
 
-    await interaction.deferReply({ flags: 64 });
+    // Discord-only subcommand (roadmap § What stays Discord-only): the probe
+    // runs the untouched ticker service (processWatch posts release embeds to
+    // Discord channels and resolves pings via client.users.fetch). It needs
+    // the real Discord client — the documented rawInteraction escape hatch.
+    // Fluxer contexts never carry it; the Fluxer arm gets the standard line.
+    // The ticker-side cutover happens in a later PR.
+    const client = commandCtx.rawInteraction?.client;
+    if (!client) {
+      await commandCtx.reply({
+        content: "That command is not available on Fluxer yet.",
+        sensitive: true,
+      });
+      return;
+    }
+
+    await commandCtx.defer({ sensitive: true });
 
     // Rows from getGithubWatches omit the token; use full rows for the probe.
     const full = new Map(
@@ -352,7 +374,7 @@ async function handleGithub(interaction, ctx) {
     if (issues.length) {
       msg += `\nIssues:\n${issues.map((e) => `- ${e}`).join("\n")}`;
     }
-    await interaction.editReply(msg);
+    await commandCtx.editReply(msg);
     return;
   }
 }
@@ -395,6 +417,11 @@ module.exports = {
   commands,
   handlers: {
     github: handleGithub,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext. Autocomplete stays on the interaction arm.
+  handlerApi: {
+    github: "context",
   },
   autocomplete: {
     github: handleGithubAutocomplete,

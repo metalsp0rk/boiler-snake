@@ -7,12 +7,10 @@ const {
   addYoutubeChannel,
   removeYoutubeChannel,
 } = require("../../db");
-const { isStaff } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { ensureCommunity, discordCommunityId } = require("../../platform/community");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { discordCommunityId } = require("../../platform/community");
 const {
   startYoutubeTicker,
   createSimpleUploadEmbed,
@@ -124,27 +122,23 @@ const commands = [
     ),
 ];
 
-async function handleYoutube(interaction, ctx) {
-  const { client } = ctx;
-  const guildId = interaction.guildId;
-  const admin = isStaff(interaction);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleYoutube(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  if (!admin) {
-    await replyDenied(interaction);
-    return;
-  }
+  // Repository key: integer community id (resolved by the context builder).
+  const communityId = commandCtx.communityId;
+  // Display/audit key: the external (Discord) snowflake.
+  const guildId = commandCtx.externalGuildId;
 
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-  const settings = getGuildSettings(communityId);
-
-  const sub = interaction.options.getSubcommand();
+  const sub = commandCtx.subcommand;
 
   if (sub === "add") {
-    const url = interaction.options.getString("url", true);
+    const url = commandCtx.options.getString("url", true);
 
     let channelId = "";
     let channelName = "";
@@ -191,9 +185,10 @@ async function handleYoutube(interaction, ctx) {
       channelName = `Channel ID: ${url}`;
       fullUrl = `https://www.youtube.com/channel/${url}`;
     } else {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           "Invalid YouTube URL. Please use:\n- Full channel URL with @username: `https://www.youtube.com/@SomeChannel`\n- Full channel URL with ID: `https://www.youtube.com/channel/UCxxxxxxxxxxxxx`\n- Numeric channel ID: `UCxxxxxxxxxxxxx`",
+        sensitive: true,
       });
       return;
     }
@@ -225,8 +220,8 @@ async function handleYoutube(interaction, ctx) {
       );
 
       recordSlashAudit({
-        interaction,
         communityId,
+        actorUserId: commandCtx.userId,
         action: "youtube.channel_add",
         targetType: "youtube_channel",
         targetId: channelId,
@@ -239,10 +234,10 @@ async function handleYoutube(interaction, ctx) {
           "\n\nNote: @username detected. I will attempt to resolve the actual channel ID from YouTube.";
       }
 
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      await logConfigChange(commandCtx.outbound, guildId, {
         title: "YouTube subscription added",
         command: "/youtube add",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [
           `Channel: **@${normalizedChannelName}**`,
           `ID: \`${channelId}\``,
@@ -250,20 +245,22 @@ async function handleYoutube(interaction, ctx) {
         ],
       }).catch(() => {});
 
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: replyMsg,
+        sensitive: true,
       });
     } catch (err) {
       console.error("[youtube] Add error:", err);
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `Failed to add subscription: ${err?.message || err}`,
+        sensitive: true,
       });
     }
     return;
   }
 
   if (sub === "remove") {
-    const channelId = interaction.options.getString("channel", true);
+    const channelId = commandCtx.options.getString("channel", true);
 
     // Get channel by ID
     let foundChannel = null;
@@ -279,8 +276,9 @@ async function handleYoutube(interaction, ctx) {
     }
 
     if (!foundChannel) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: "No subscription found.",
+        sensitive: true,
       });
       return;
     }
@@ -312,30 +310,33 @@ async function handleYoutube(interaction, ctx) {
 
     if (removed) {
       recordSlashAudit({
-        interaction,
+        communityId,
+        actorUserId: commandCtx.userId,
         action: "youtube.channel_remove",
         targetType: "youtube_channel",
         targetId: foundChannel.id || channelId,
         details: { channel_name: foundChannel.channel_name },
       });
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      await logConfigChange(commandCtx.outbound, guildId, {
         title: "YouTube subscription removed",
         command: "/youtube remove",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [
           `Channel: **${foundChannel.channel_name}**`,
           `ID: \`${foundChannel.id || channelId}\``,
         ],
       }).catch(() => {});
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `Unsubscribed from **${foundChannel.channel_name}**.`,
+        sensitive: true,
       });
     } else {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           `Failed to unsubscribe${
             removeErr ? `: ${removeErr?.message || removeErr}` : ""
           } (subscription still present).`,
+        sensitive: true,
       });
     }
     return;
@@ -345,8 +346,9 @@ async function handleYoutube(interaction, ctx) {
     const channels = getYoutubeChannels(communityId);
 
     if (!channels.length) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: "No YouTube channels subscribed.",
+        sensitive: true,
       });
       return;
     }
@@ -369,51 +371,47 @@ async function handleYoutube(interaction, ctx) {
       return info;
     });
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content:
         `**YouTube subscriptions** (${channels.length})\n` +
         `Notification channel: ${notificationChannel}\n\n` +
         lines.join("\n"),
+      sensitive: true,
     });
     return;
   }
 }
 
-async function handleSetYoutube(interaction, ctx) {
-  const { client } = ctx;
-  const guildId = interaction.guildId;
-  const admin = isStaff(interaction);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleSetYoutube(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  if (!admin) {
-    await replyDenied(interaction);
-    return;
-  }
-
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
+  const communityId = commandCtx.communityId;
+  const guildId = commandCtx.externalGuildId;
   const settings = getGuildSettings(communityId);
 
-  const sub = interaction.options.getSubcommand();
+  const sub = commandCtx.subcommand;
 
   if (sub === "channel") {
-    const ch = interaction.options.getChannel("channel", true);
+    const ch = commandCtx.options.getChannel("channel", true);
     const before = settings.youtube_notification_channel_id;
     updateGuildSettings(communityId, { youtube_notification_channel_id: ch.id });
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "youtube.notify_channel_set",
       targetType: "channel",
       targetId: ch.id,
       details: { previous_channel_id: before ?? null },
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "YouTube notification channel set",
       command: "/setyoutube channel",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [
         before
           ? `Channel: <#${before}> → <#${ch.id}>`
@@ -421,52 +419,55 @@ async function handleSetYoutube(interaction, ctx) {
       ],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `YouTube notifications will be sent to <#${ch.id}>.`,
+      sensitive: true,
     });
     return;
   }
 
   if (sub === "interval") {
-    const minutes = interaction.options.getInteger("minutes", true);
+    const minutes = commandCtx.options.getInteger("minutes", true);
     if (minutes < 1 || minutes > 60) {
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: "Polling interval must be between 1 and 60 minutes.",
+        sensitive: true,
       });
       return;
     }
     const before = settings.youtube_polling_interval_minutes;
     updateGuildSettings(communityId, { youtube_polling_interval_minutes: minutes });
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "youtube.polling_interval_set",
       targetType: "guild",
       targetId: guildId,
       details: { previous_minutes: before ?? null, minutes },
     });
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "YouTube polling interval set",
       command: "/setyoutube interval",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [`Interval: ${before} → **${minutes}** minute(s)`],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `YouTube polling interval set to **${minutes}** minute(s).`,
+      sensitive: true,
     });
     return;
   }
 
   if (sub === "uploadrole") {
-    const role = interaction.options.getRole("role", false);
+    const role = commandCtx.options.getRole("role", false);
     const before = settings.youtube_upload_role_id;
     updateGuildSettings(communityId, {
       youtube_upload_role_id: role ? role.id : null,
     });
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "youtube.upload_role_set",
       targetType: "role",
       targetId: role ? role.id : guildId,
@@ -474,40 +475,34 @@ async function handleSetYoutube(interaction, ctx) {
     });
     const afterLabel = role ? `<@&${role.id}>` : "*none*";
     const beforeLabel = before ? `<@&${before}>` : "*none*";
-    await logConfigChange(getDiscordOutbound(client), guildId, {
+    await logConfigChange(commandCtx.outbound, guildId, {
       title: "YouTube upload mention role set",
       command: "/setyoutube uploadrole",
-      actor: interaction.user,
+      actor: commandCtx.user,
       changes: [`Role: ${beforeLabel} → ${afterLabel}`],
     }).catch(() => {});
 
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: role
         ? `Upload notifications will mention <@&${role.id}>.`
         : `Upload notifications will no longer mention a role.`,
+      sensitive: true,
     });
     return;
   }
 }
 
-async function handleTestNotification(interaction, ctx) {
-  const { client } = ctx;
-  const guildId = interaction.guildId;
-  const admin = isStaff(interaction);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleTestNotification(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  if (!admin) {
-    await replyDenied(interaction);
-    return;
-  }
+  const communityId = commandCtx.communityId;
 
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-  const settings = getGuildSettings(communityId);
-
-  const url = interaction.options.getString("channel", true);
+  const url = commandCtx.options.getString("channel", true);
 
   let channelId = "";
   let channelName = "";
@@ -551,8 +546,9 @@ async function handleTestNotification(interaction, ctx) {
     channelName = `Channel ID: ${url}`;
     channelUrl = `https://www.youtube.com/channel/${url}`;
   } else {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Invalid YouTube URL.",
+      sensitive: true,
     });
     return;
   }
@@ -606,16 +602,18 @@ async function handleTestNotification(interaction, ctx) {
   );
 
   if (!existingChannel || !existingChannel.id) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Could not find or subscribe to the channel.",
+      sensitive: true,
     });
     return;
   }
 
   const feed = await fetchYouTubeFeed(existingChannel.id);
   if (!feed || !feed.items || !feed.items.length) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Could not fetch videos from this channel.",
+      sensitive: true,
     });
     return;
   }
@@ -624,8 +622,9 @@ async function handleTestNotification(interaction, ctx) {
   const videoInfo = extractVideoInfo(entry);
 
   if (!videoInfo || !videoInfo.videoId) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Could not extract video information.",
+      sensitive: true,
     });
     return;
   }
@@ -638,8 +637,9 @@ async function handleTestNotification(interaction, ctx) {
     isLive = false;
     notificationType = "upload";
   } else {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Latest video entry type could not be determined.",
+      sensitive: true,
     });
     return;
   }
@@ -649,7 +649,7 @@ async function handleTestNotification(interaction, ctx) {
     existingChannel.thumbnail_url,
   );
 
-  const useSimpleEmbed = interaction.options.getBoolean("simple") || false;
+  const useSimpleEmbed = commandCtx.options.getBoolean("simple") || false;
 
   let content = `Test ${notificationType} notification for **${channelName}**`;
   let embeds = [];
@@ -681,7 +681,10 @@ async function handleTestNotification(interaction, ctx) {
     }
   }
 
-  await interaction.reply({
+  // Public reply (no `sensitive`): matches the previous non-ephemeral
+  // interaction.reply. Embeds are the ticker's existing EmbedBuilder outputs
+  // (ticker.js stays untouched; the adapter passes toJSON-able embeds through).
+  await commandCtx.reply({
     content: content,
     embeds: embeds,
   });
@@ -737,6 +740,13 @@ module.exports = {
     youtube: handleYoutube,
     setyoutube: handleSetYoutube,
     testnotification: handleTestNotification,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): these slash
+  // handlers receive a CommandContext. Autocomplete stays on the interaction arm.
+  handlerApi: {
+    youtube: "context",
+    setyoutube: "context",
+    testnotification: "context",
   },
   autocomplete: {
     youtube: handleYoutubeAutocomplete,
