@@ -324,6 +324,15 @@ function buildChannelRanking(opts) {
  */
 function buildCategoryRanking(opts) {
   const { guildId, userId, guild, window: win, joinedMs } = opts;
+  // Fluxer PR 2: opts.guildId is the external snowflake; repos key by the
+  // integer community id.
+  const communityId =
+    opts.communityId ??
+    ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: String(guildId),
+    });
   const sinceDay = sinceDayForWindow(win);
   const weeks = weeksForWindow(win, joinedMs);
   const joinWeeks = weeksSinceJoin(joinedMs);

@@ -369,7 +369,8 @@ function renderSyncStatusPanel({ oauth, envConfig, trigger, flash }) {
  * @param {object} input.view getStaffView() result (data/staffData.js)
  * @param {(roleId: string) => string|null} [input.resolveRoleName] cache-only
  * @param {object|null} [input.envConfig] sanitized (see panel docs)
- * @param {string|null} [input.guildId] current guild (form actions); absent ⇒
+ * @param {number|string|null} [input.guildId] current guild ROUTE identity
+ *   (PR 2: integer communities.id) used for form actions; absent ⇒
  *   NO forms render (pure read-only rendering stays possible for callers that
  *   pass no context, e.g. a future preview)
  * @param {string|null} [input.tier] viewer tier (req.guildAccess.tier):

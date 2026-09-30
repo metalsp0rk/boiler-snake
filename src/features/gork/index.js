@@ -25,6 +25,7 @@
 
 const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
+const { ensureCommunity } = require("../../platform/community");
 const { handleGorkMessage, gorkQueue } = require("./trigger");
 const { commands } = require("./commands");
 const {
@@ -57,44 +58,50 @@ async function handleGork(interaction, ctx) {
   if (!(await requireStaff(interaction))) return;
   const { client } = ctx || {};
   const guildId = interaction.guildId;
+  // Discord edge: snowflake → internal integer community id for repo calls.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
   const sub = interaction.options.getSubcommand();
 
   switch (sub) {
     case "keyword":
-      return setKeyword(client, interaction, guildId);
+      return setKeyword(client, interaction, guildId, communityId);
     case "context":
-      return setContext(client, interaction, guildId);
+      return setContext(client, interaction, guildId, communityId);
     case "cooldown":
-      return setCooldown(client, interaction, guildId);
+      return setCooldown(client, interaction, guildId, communityId);
     case "rules":
-      return setRules(client, interaction, guildId);
+      return setRules(client, interaction, guildId, communityId);
     case "search":
-      return setSearch(client, interaction, guildId);
+      return setSearch(client, interaction, guildId, communityId);
     case "ste":
-      return setSte(client, interaction, guildId);
+      return setSte(client, interaction, guildId, communityId);
     case "enable":
-      return setEnable(client, interaction, guildId);
+      return setEnable(client, interaction, guildId, communityId);
     case "ban":
-      return banUser(client, interaction, guildId);
+      return banUser(client, interaction, guildId, communityId);
     case "unban":
-      return unbanUser(client, interaction, guildId);
+      return unbanUser(client, interaction, guildId, communityId);
     case "bans":
-      return showBans(interaction, guildId);
+      return showBans(interaction, guildId, communityId);
     case "memory":
-      return handleMemory(client, interaction, guildId);
+      return handleMemory(client, interaction, guildId, communityId);
     case "budget":
-      return handleBudget(client, interaction, guildId);
+      return handleBudget(client, interaction, guildId, communityId);
     case "log":
-      return setInteractionLog(client, interaction, guildId);
+      return setInteractionLog(client, interaction, guildId, communityId);
     case "summarize":
       // requireStaff above gates the whole /gork family (decision 53: the
       // rundown is staff-only); the handler owns the mode/cooldown/budget
       // gates and the queue + post pipeline.
-      return handleSummarize(client, interaction, guildId);
+      return handleSummarize(client, interaction, guildId, communityId);
     case "summarize-budget":
-      return setSummarizeBudget(client, interaction, guildId);
+      return setSummarizeBudget(client, interaction, guildId, communityId);
     case "status":
-      return showStatus(interaction, guildId);
+      return showStatus(interaction, guildId, communityId);
     default:
       return replyEphemeral(interaction, `Unknown gork subcommand: \`${sub}\`.`);
   }

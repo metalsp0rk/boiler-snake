@@ -26,6 +26,21 @@ const {
   listWarnings,
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
+const { ensureCommunity } = require("../../platform/community");
+
+/**
+ * Fluxer PR 2 Discord edge: external snowflake → internal INTEGER community id
+ * (create-on-sight). The data layer is community-keyed.
+ * @param {string} guildId external Discord guild id
+ * @returns {number} communities.id
+ */
+function resolveCommunityId(guildId) {
+  return ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(guildId),
+  });
+}
 const { requireStaff, requireSeniorStaff } = require("../../core/permissions");
 const {
   buildChannelRanking,
@@ -110,14 +125,16 @@ function snippet(content, max = SNIPPET_LEN) {
  * @param {string} userId
  */
 function loadCounts(guildId, userId) {
-  const notesActive = countStaffNotes(guildId, userId, {
+  // Fluxer PR 2: accepts the external snowflake; repos key by community id.
+  const communityId = resolveCommunityId(guildId);
+  const notesActive = countStaffNotes(communityId, userId, {
     includeDeleted: false,
   });
-  const notesTotal = countStaffNotes(guildId, userId, {
+  const notesTotal = countStaffNotes(communityId, userId, {
     includeDeleted: true,
   });
-  const warnsActive = countActiveWarnings(guildId, userId);
-  const warnsTotal = countWarnings(guildId, userId, { includeVoided: true });
+  const warnsActive = countActiveWarnings(communityId, userId);
+  const warnsTotal = countWarnings(communityId, userId, { includeVoided: true });
   return { notesActive, notesTotal, warnsActive, warnsTotal };
 }
 
@@ -162,8 +179,9 @@ async function resolveUser(interaction, userId) {
  */
 function buildOverviewEmbed(interaction, user, member) {
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
-  const xp = getXp(guildId, user.id);
+  const communityId = resolveCommunityId(guildId);
+  const settings = getGuildSettings(communityId);
+  const xp = getXp(communityId, user.id);
   const level = levelFromXp(xp, settings.level_xp_factor);
   const counts = loadCounts(guildId, user.id);
 
@@ -242,8 +260,9 @@ function buildOverviewEmbed(interaction, user, member) {
  * @returns {EmbedBuilder}
  */
 function buildNotesEmbed(guildId, user) {
+  const communityId = resolveCommunityId(guildId);
   const counts = loadCounts(guildId, user.id);
-  const notes = listStaffNotes(guildId, user.id, {
+  const notes = listStaffNotes(communityId, user.id, {
     includeDeleted: false,
     limit: LIST_LIMIT,
     offset: 0,
@@ -290,8 +309,9 @@ function buildNotesEmbed(guildId, user) {
  * @returns {EmbedBuilder}
  */
 function buildWarningsEmbed(guildId, user) {
+  const communityId = resolveCommunityId(guildId);
   const counts = loadCounts(guildId, user.id);
-  const warnings = listWarnings(guildId, user.id, {
+  const warnings = listWarnings(communityId, user.id, {
     includeVoided: true,
     limit: LIST_LIMIT,
     offset: 0,

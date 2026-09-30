@@ -13,6 +13,8 @@ const {
 const { logWarnEvent } = require("../logs/auditLog");
 const { recordSystemAudit } = require("../../core/auditTrail");
 const { Color } = require("../../core/theme");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { getCommunityById } = require("../../platform/community");
 
 /** Every minute. */
 const EXPIRY_CRON = "* * * * *";
@@ -32,10 +34,25 @@ async function runWarnExpiryTick(client, opts = {}) {
   let errors = 0;
 
   const botId = client?.user?.id || "system:expiry";
+  // OutboundClient for Discord-side logging; null client (tests) keeps the
+  // old no-op behavior — logWarnEvent returns early on a null outbound.
+  const outbound = client ? getDiscordOutbound(client) : null;
 
   for (const row of due) {
     try {
-      const updated = voidWarning(row.guild_id, row.warning_number, {
+      // Ticker rows carry the internal integer (community_id); reverse-resolve
+      // the Discord snowflake for audit-channel / DM lookups (spec § Tickers).
+      const communityId = row.community_id;
+      const community = getCommunityById(communityId);
+      const guildId = community?.externalGuildId ?? null;
+      if (!guildId) {
+        console.error(
+          `[warnings] no communities row for community ${communityId}; ` +
+            `skipping Discord-side logging for W-${row.warning_number}`,
+        );
+      }
+
+      const updated = voidWarning(communityId, row.warning_number, {
         voidedBy: botId,
         voidReason: "Auto-voided: expiry date reached",
       });
@@ -43,7 +60,7 @@ async function runWarnExpiryTick(client, opts = {}) {
       voided += 1;
 
       recordSystemAudit({
-        guildId: row.guild_id,
+        communityId,
         action: "warnings.expire",
         targetType: "warning",
         targetId: String(updated.id),
@@ -53,10 +70,10 @@ async function runWarnExpiryTick(client, opts = {}) {
         },
       });
 
-      const activeCount = countActiveWarnings(row.guild_id, row.user_id);
+      const activeCount = countActiveWarnings(communityId, row.user_id);
       const ref = `W-${updated.warning_number}`;
 
-      await logWarnEvent(client, row.guild_id, {
+      await logWarnEvent(outbound, guildId, {
         title: "Warning auto-voided (expired)",
         command: "warn-expiry-ticker",
         actor: client?.user || { id: botId, username: "Boiler Snake" },
@@ -67,12 +84,14 @@ async function runWarnExpiryTick(client, opts = {}) {
         ],
       }).catch(() => {});
 
-      await maybeDmExpiry(client, updated, activeCount).catch(() => {});
+      await maybeDmExpiry(client, communityId, guildId, updated, activeCount).catch(
+        () => {}
+      );
     } catch (err) {
       if (err?.code === "ALREADY_VOIDED") continue;
       errors += 1;
       console.error(
-        `[warnings] expiry void failed W-${row.warning_number} guild=${row.guild_id}:`,
+        `[warnings] expiry void failed W-${row.warning_number} community=${row.community_id}:`,
         err?.message || err
       );
     }
@@ -82,14 +101,17 @@ async function runWarnExpiryTick(client, opts = {}) {
 }
 
 /**
- * Best-effort DM when guild DMs are on.
+ * Best-effort DM when community DMs are on.
  * @param {import("discord.js").Client} client
+ * @param {number} communityId internal communities.id (settings lookup)
+ * @param {string|null} externalGuildId Discord snowflake for the guild name
+ *        (null when the communities row is missing)
  * @param {object} warn
  * @param {number} activeCount
  */
-async function maybeDmExpiry(client, warn, activeCount) {
+async function maybeDmExpiry(client, communityId, externalGuildId, warn, activeCount) {
   if (!client) return;
-  const settings = getGuildSettings(warn.guild_id);
+  const settings = getGuildSettings(communityId);
   if (Number(settings.warn_dm_members ?? 1) === 0) return;
 
   let user = null;
@@ -103,13 +125,15 @@ async function maybeDmExpiry(client, warn, activeCount) {
   if (!user || typeof user.send !== "function") return;
 
   let guildName = "a server";
-  try {
-    const g =
-      client.guilds?.cache?.get?.(warn.guild_id) ||
-      (await client.guilds?.fetch?.(warn.guild_id).catch(() => null));
-    if (g?.name) guildName = g.name;
-  } catch {
-    /* keep default */
+  if (externalGuildId) {
+    try {
+      const g =
+        client.guilds?.cache?.get?.(externalGuildId) ||
+        (await client.guilds?.fetch?.(externalGuildId).catch(() => null));
+      if (g?.name) guildName = g.name;
+    } catch {
+      /* keep default */
+    }
   }
 
   const { EmbedBuilder } = require("discord.js");

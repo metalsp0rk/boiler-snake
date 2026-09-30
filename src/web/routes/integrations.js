@@ -183,7 +183,7 @@ const redirectIntegrations = makeFlashRedirect({
  * @param {{getIntegrations: Function, invalidate?: Function}} [options.integrationsData]
  *   pre-built createIntegrationsData() instance (tests inject counting/fake
  *   ones; default is a process-wide lazily-built singleton). Successful
- *   mutations call invalidate(guildId) when the instance offers it (the
+ *   mutations call invalidate(communityId) when the instance offers it (the
  *   real factory always does) so the next GET reflects the write.
  * @param {(login: string) => Promise<{id: string, login: string, display_name: string, profile_image_url?: string}|null>} [options.resolveTwitchUser]
  *   Twitch user lookup seam (default: features/twitch/helix.resolveTwitchUser
@@ -217,14 +217,14 @@ function registerIntegrationsRoutes(app, options = {}) {
     return defaultData;
   };
   const integrationsData = options.integrationsData || {
-    getIntegrations: (guildId) => getData().getIntegrations(guildId),
-    invalidate: (guildId) => getData().invalidate(guildId),
+    getIntegrations: (communityId) => getData().getIntegrations(communityId),
+    invalidate: (communityId) => getData().invalidate(communityId),
   };
-  /** Drop the per-guild snapshot after a successful write (§8.6 cache). */
-  const invalidateCache = (guildId) => {
+  /** Drop the per-community snapshot after a successful write (§8.6 cache). */
+  const invalidateCache = (communityId) => {
     try {
       if (typeof integrationsData.invalidate === "function") {
-        integrationsData.invalidate(guildId);
+        integrationsData.invalidate(communityId);
       }
     } catch {
       /* cache hygiene only — the write + audit already succeeded */
@@ -306,14 +306,15 @@ function registerIntegrationsRoutes(app, options = {}) {
     { kind, field, key = "channel_id", auditAction, detailsOf, done, doneCleared }
   ) {
     mountMutation(path, "staff", (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: preflight caches + audit target
+      const communityId = communityOf(req); // integer: settings repo + PRG link
       let value;
       let targetId;
       let targetType;
       if (kind === "interval") {
         value = intInRange(bodyFields(req).minutes, POLL_MIN, POLL_MAX);
         if (value === null) {
-          return redirectIntegrations(res, guildId, "error", "invalid_interval");
+          return redirectIntegrations(res, communityId, "error", "invalid_interval");
         }
         targetId = guildId;
         targetType = "guild";
@@ -321,46 +322,53 @@ function registerIntegrationsRoutes(app, options = {}) {
         const parsed = snowflakeOrEmpty(bodyFields(req)[key]);
         if (kind === "channel") {
           if (!parsed.present || !parsed.ok) {
-            return redirectIntegrations(res, guildId, "error", "invalid_channel_id");
+            return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
           }
           const fail = preflightChannel(guildFromCache(guildId), parsed.value);
-          if (fail) return redirectIntegrations(res, guildId, "error", fail);
+          if (fail) return redirectIntegrations(res, communityId, "error", fail);
           value = parsed.value;
           targetId = parsed.value;
           targetType = "channel";
         } else {
           if (!parsed.ok) {
-            return redirectIntegrations(res, guildId, "error", "invalid_role_id");
+            return redirectIntegrations(res, communityId, "error", "invalid_role_id");
           }
           if (parsed.present) {
             const fail = preflightRole(guildFromCache(guildId), parsed.value);
-            if (fail) return redirectIntegrations(res, guildId, "error", fail);
+            if (fail) return redirectIntegrations(res, communityId, "error", fail);
           }
           value = parsed.value || null;
           targetId = parsed.value || guildId;
           targetType = "role";
         }
       }
-      const before = db.getGuildSettings(guildId)[field] ?? null;
-      db.updateGuildSettings(guildId, { [field]: value });
+      const before = db.getGuildSettings(communityId)[field] ?? null;
+      db.updateGuildSettings(communityId, { [field]: value });
       req.audit({
         action: auditAction,
         targetType,
         targetId,
         details: detailsOf(value, before),
       });
-      invalidateCache(guildId);
+      invalidateCache(communityId);
       redirectIntegrations(
         res,
-        guildId,
+        communityId,
         "done",
         doneCleared !== undefined && value === null ? doneCleared : done
       );
     });
   }
 
-  /** Guild id every handler works against (guildScope validated it). */
+  /**
+   * Guild id every Discord-facing handler works against (guildScope
+   * validated it). Fluxer PR 2 split: guildOf = EXTERNAL Discord snowflake
+   * (client caches, @everyone comparison, audit entry targets);
+   * communityOf = INTEGER communities.id (repositories, the integrations
+   * data builder, the PRG link). One consumer each — never swap them.
+   */
   const guildOf = (req) => req.guildAccess.guildId;
+  const communityOf = (req) => req.guildAccess.communityId;
 
   // ---------------------------------------------------------------------
   // YouTube — staff tier (slash gates: isStaff on /youtube + /setyoutube)
@@ -378,11 +386,11 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/youtube/add",
     "staff",
     async (req, res) => {
-      const guildId = guildOf(req);
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const url = field(bodyFields(req), "url");
-      if (!url) return redirectIntegrations(res, guildId, "error", "missing_field");
+      if (!url) return redirectIntegrations(res, communityId, "error", "missing_field");
       if (!(process.env.YOUTUBE_API_KEY || "").trim()) {
-        return redirectIntegrations(res, guildId, "error", "youtube_not_configured");
+        return redirectIntegrations(res, communityId, "error", "youtube_not_configured");
       }
 
       let channelId = "";
@@ -418,7 +426,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         channelName = `Channel ID: ${url}`;
       }
       if (!channelId || !channelName) {
-        return redirectIntegrations(res, guildId, "error", "invalid_input");
+        return redirectIntegrations(res, communityId, "error", "invalid_input");
       }
 
       const normalizedChannelName = normalizeYoutubeName(channelName);
@@ -430,15 +438,15 @@ function registerIntegrationsRoutes(app, options = {}) {
           `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
       }
 
-      db.addYoutubeChannel(guildId, channelId, normalizedChannelName, url, thumbnail);
+      db.addYoutubeChannel(communityId, channelId, normalizedChannelName, url, thumbnail);
       req.audit({
         action: "youtube.channel_add",
         targetType: "youtube_channel",
         targetId: channelId,
         details: { channel_name: normalizedChannelName, url },
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "yt_added");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "yt_added");
     }
   );
 
@@ -451,25 +459,25 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/youtube/remove",
     "staff",
     (req, res) => {
-      const guildId = guildOf(req);
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const wanted = field(bodyFields(req), "channel_id");
-      if (!wanted) return redirectIntegrations(res, guildId, "error", "missing_field");
+      if (!wanted) return redirectIntegrations(res, communityId, "error", "missing_field");
 
-      const channelsBefore = db.getYoutubeChannels(guildId);
+      const channelsBefore = db.getYoutubeChannels(communityId);
       const found = channelsBefore.find(
         (c) =>
           normalizeYoutubeName(String(c.id)) === normalizeYoutubeName(wanted) &&
-          c.guild_id === guildId
+          c.community_id === communityId
       );
-      if (!found) return redirectIntegrations(res, guildId, "error", "yt_not_found");
+      if (!found) return redirectIntegrations(res, communityId, "error", "yt_not_found");
 
-      db.removeYoutubeChannel(guildId, found.id);
+      db.removeYoutubeChannel(communityId, found.id);
       // Slash's own rescue (features/youtube/index.js): the repo's
       // `SELECT changes()` probe yields a column literally named
       // "changes()", so removeYoutubeChannel can return false even when the
       // DELETE landed — confirm by row count instead of trusting the flag.
-      if (db.getYoutubeChannels(guildId).length >= channelsBefore.length) {
-        return redirectIntegrations(res, guildId, "error", "yt_not_found");
+      if (db.getYoutubeChannels(communityId).length >= channelsBefore.length) {
+        return redirectIntegrations(res, communityId, "error", "yt_not_found");
       }
       req.audit({
         action: "youtube.channel_remove",
@@ -477,8 +485,8 @@ function registerIntegrationsRoutes(app, options = {}) {
         targetId: found.id,
         details: { channel_name: found.channel_name },
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "yt_removed");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "yt_removed");
     }
   );
 
@@ -531,32 +539,32 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/twitch/add",
     "staff",
     async (req, res) => {
-      const guildId = guildOf(req);
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const raw = field(bodyFields(req), "login");
-      if (!raw) return redirectIntegrations(res, guildId, "error", "missing_field");
+      if (!raw) return redirectIntegrations(res, communityId, "error", "missing_field");
 
       if (!process.env.TWITCH_CLIENT_ID || !process.env.TWITCH_CLIENT_SECRET) {
-        return redirectIntegrations(res, guildId, "error", "twitch_not_configured");
+        return redirectIntegrations(res, communityId, "error", "twitch_not_configured");
       }
 
       const login = normalizeTwitchLogin(raw);
       const user = await resolveTwitch(login).catch(() => null);
       if (!user) {
-        return redirectIntegrations(res, guildId, "error", "tw_resolve_failed");
+        return redirectIntegrations(res, communityId, "error", "tw_resolve_failed");
       }
-      if (db.getTwitchChannel(guildId, user.login)) {
-        return redirectIntegrations(res, guildId, "error", "tw_exists");
+      if (db.getTwitchChannel(communityId, user.login)) {
+        return redirectIntegrations(res, communityId, "error", "tw_exists");
       }
 
-      db.addTwitchChannel(guildId, user.id, user.login, user.display_name, user.profile_image_url);
+      db.addTwitchChannel(communityId, user.id, user.login, user.display_name, user.profile_image_url);
       req.audit({
         action: "twitch.channel_add",
         targetType: "twitch_channel",
         targetId: user.id,
         details: { login: user.login, display_name: user.display_name },
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "tw_added");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "tw_added");
     }
   );
 
@@ -565,22 +573,22 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/twitch/remove",
     "staff",
     (req, res) => {
-      const guildId = guildOf(req);
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const raw = field(bodyFields(req), "channel");
-      if (!raw) return redirectIntegrations(res, guildId, "error", "missing_field");
+      if (!raw) return redirectIntegrations(res, communityId, "error", "missing_field");
 
-      const found = db.getTwitchChannel(guildId, raw);
-      if (!found) return redirectIntegrations(res, guildId, "error", "tw_not_found");
+      const found = db.getTwitchChannel(communityId, raw);
+      if (!found) return redirectIntegrations(res, communityId, "error", "tw_not_found");
 
-      db.removeTwitchChannel(guildId, found.login);
+      db.removeTwitchChannel(communityId, found.login);
       req.audit({
         action: "twitch.channel_remove",
         targetType: "twitch_channel",
         targetId: found.broadcaster_id,
         details: { login: found.login, display_name: found.display_name },
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "tw_removed");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "tw_removed");
     }
   );
 
@@ -633,33 +641,35 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/reaction-roles/panel/create",
     "staff",
     async (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: channel cache lookups
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const fields = bodyFields(req);
       const parsed = snowflakeOrEmpty(fields.channel_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_channel_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
       }
       const title = field(fields, "title") || "Reaction Roles";
       const description =
         field(fields, "description") ||
         "React to get a role. Remove your reaction to drop it (if allowed).";
       if (title.length > 256 || description.length > 1000) {
-        return redirectIntegrations(res, guildId, "error", "missing_field");
+        return redirectIntegrations(res, communityId, "error", "missing_field");
       }
 
       const guild = guildFromCache(guildId);
-      if (!guild) return redirectIntegrations(res, guildId, "error", "rr_offline");
+      if (!guild) return redirectIntegrations(res, communityId, "error", "rr_offline");
       const ch = cachedChannel(guild, parsed.value);
-      if (!ch) return redirectIntegrations(res, guildId, "error", "channel_missing");
+      if (!ch) return redirectIntegrations(res, communityId, "error", "channel_missing");
       if (typeof ch.isTextBased === "function" && !ch.isTextBased()) {
-        return redirectIntegrations(res, guildId, "error", "rr_channel_unsendable");
+        return redirectIntegrations(res, communityId, "error", "rr_channel_unsendable");
       }
       if (typeof ch.send !== "function") {
-        return redirectIntegrations(res, guildId, "error", "rr_channel_unsendable");
+        return redirectIntegrations(res, communityId, "error", "rr_channel_unsendable");
       }
 
       const embed = reactionRolesService.buildPanelEmbed(
-        { title, description, guild_id: guildId, channel_id: parsed.value, message_id: "pending" },
+        // Row-shape stub (rows carry the integer community id post-cutover).
+        { title, description, community_id: communityId, channel_id: parsed.value, message_id: "pending" },
         []
       );
       let msg;
@@ -669,18 +679,18 @@ function registerIntegrationsRoutes(app, options = {}) {
           allowedMentions: reactionRolesService.NO_PING_MENTIONS,
         });
       } catch {
-        return redirectIntegrations(res, guildId, "error", "rr_post_failed");
+        return redirectIntegrations(res, communityId, "error", "rr_post_failed");
       }
 
-      db.createReactionRolePanel(guildId, parsed.value, msg.id, title, description);
+      db.createReactionRolePanel(communityId, parsed.value, msg.id, title, description);
       req.audit({
         action: "reaction_roles.panel_create",
         targetType: "reaction_role_panel",
         targetId: msg.id,
         details: { channel_id: parsed.value, title },
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "rr_panel_created");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "rr_panel_created");
     }
   );
 
@@ -695,15 +705,16 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/reaction-roles/panel/delete",
     "staff",
     async (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: message-deletion channel lookup
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const messageId = field(bodyFields(req), "message_id");
       if (!messageId || messageId.length > MESSAGE_ID_MAX) {
-        return redirectIntegrations(res, guildId, "error", "invalid_message_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_message_id");
       }
 
-      const { removed, channel_id: channelId } = db.deleteReactionRolePanel(guildId, messageId);
+      const { removed, channel_id: channelId } = db.deleteReactionRolePanel(communityId, messageId);
       if (!removed) {
-        return redirectIntegrations(res, guildId, "error", "rr_panel_not_found");
+        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found");
       }
       req.audit({
         action: "reaction_roles.panel_delete",
@@ -711,7 +722,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         targetId: messageId,
         details: { channel_id: channelId ?? null },
       });
-      invalidateCache(guildId);
+      invalidateCache(communityId);
 
       const guild = guildFromCache(guildId);
       const channel = channelId ? cachedChannel(guild, channelId) : null;
@@ -723,7 +734,7 @@ function registerIntegrationsRoutes(app, options = {}) {
       } catch {
         /* the DB panel is gone; the orphan message mirrors slash's note path */
       }
-      redirectIntegrations(res, guildId, "done", "rr_panel_deleted");
+      redirectIntegrations(res, communityId, "done", "rr_panel_deleted");
     }
   );
 
@@ -742,48 +753,49 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/reaction-roles/option/add",
     "staff",
     async (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: role + emoji cache preflights
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const fields = bodyFields(req);
       const messageId = field(fields, "message_id");
       if (!messageId || messageId.length > MESSAGE_ID_MAX) {
-        return redirectIntegrations(res, guildId, "error", "invalid_message_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_message_id");
       }
-      if (!db.getReactionRolePanel(guildId, messageId)) {
-        return redirectIntegrations(res, guildId, "error", "rr_panel_not_found");
+      if (!db.getReactionRolePanel(communityId, messageId)) {
+        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found");
       }
       const parsedRole = snowflakeOrEmpty(fields.role_id);
       if (!parsedRole.present || !parsedRole.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
       }
       const level = field(fields, "level") === "" ? 0 : intInRange(fields.level, 0, 999999);
       if (level === null) {
-        return redirectIntegrations(res, guildId, "error", "invalid_level");
+        return redirectIntegrations(res, communityId, "error", "invalid_level");
       }
       const removable = parseBoolFlag(fields.removable, true);
 
       const guild = guildFromCache(guildId);
       if (guild) {
         const role = cachedRole(guild, parsedRole.value);
-        if (!role) return redirectIntegrations(res, guildId, "error", "role_missing");
+        if (!role) return redirectIntegrations(res, communityId, "error", "role_missing");
         if (role.managed) {
-          return redirectIntegrations(res, guildId, "error", "rr_role_managed");
+          return redirectIntegrations(res, communityId, "error", "rr_role_managed");
         }
       }
 
       const parsed = reactionRolesService.parseEmojiInput(fields.emoji);
-      if (!parsed) return redirectIntegrations(res, guildId, "error", "rr_emoji_invalid");
+      if (!parsed) return redirectIntegrations(res, communityId, "error", "rr_emoji_invalid");
       if (guild && reactionRolesService.validateEmojiForGuild(guild, parsed)) {
-        return redirectIntegrations(res, guildId, "error", "rr_emoji_unavailable");
+        return redirectIntegrations(res, communityId, "error", "rr_emoji_unavailable");
       }
 
-      const existing = db.getReactionRoleOption(guildId, messageId, parsed.key);
-      if (!existing && db.countReactionRoleOptions(guildId, messageId) >= reactionRolesService.MAX_OPTIONS_PER_PANEL) {
-        return redirectIntegrations(res, guildId, "error", "rr_option_limit");
+      const existing = db.getReactionRoleOption(communityId, messageId, parsed.key);
+      if (!existing && db.countReactionRoleOptions(communityId, messageId) >= reactionRolesService.MAX_OPTIONS_PER_PANEL) {
+        return redirectIntegrations(res, communityId, "error", "rr_option_limit");
       }
 
       const enriched = enrichEmojiDisplay(guild, parsed);
       db.upsertReactionRoleOption(
-        guildId,
+        communityId,
         messageId,
         enriched.key,
         enriched.display,
@@ -802,7 +814,7 @@ function registerIntegrationsRoutes(app, options = {}) {
           removable: removable ? 1 : 0,
         },
       });
-      invalidateCache(guildId);
+      invalidateCache(communityId);
 
       // Best-effort embed/reaction refresh (slash awaits it inside its
       // ephemeral flow; the console redirects and never blocks on Discord).
@@ -811,12 +823,12 @@ function registerIntegrationsRoutes(app, options = {}) {
           .then(() =>
             reactionRolesService.refreshPanelMessage(
               guild,
-              db.getReactionRolePanel(guildId, messageId)
+              db.getReactionRolePanel(communityId, messageId)
             )
           )
           .catch(() => {});
       }
-      redirectIntegrations(res, guildId, "done", "rr_option_added");
+      redirectIntegrations(res, communityId, "done", "rr_option_added");
     }
   );
 
@@ -831,23 +843,24 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/reaction-roles/option/remove",
     "staff",
     async (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: emoji display cache enrichment
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const fields = bodyFields(req);
       const messageId = field(fields, "message_id");
       if (!messageId || messageId.length > MESSAGE_ID_MAX) {
-        return redirectIntegrations(res, guildId, "error", "invalid_message_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_message_id");
       }
-      if (!db.getReactionRolePanel(guildId, messageId)) {
-        return redirectIntegrations(res, guildId, "error", "rr_panel_not_found");
+      if (!db.getReactionRolePanel(communityId, messageId)) {
+        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found");
       }
       const parsed = reactionRolesService.parseEmojiInput(fields.emoji);
-      if (!parsed) return redirectIntegrations(res, guildId, "error", "rr_emoji_invalid");
+      if (!parsed) return redirectIntegrations(res, communityId, "error", "rr_emoji_invalid");
 
       const guild = guildFromCache(guildId);
       const enriched = enrichEmojiDisplay(guild, parsed);
-      const removed = db.deleteReactionRoleOption(guildId, messageId, enriched.key);
+      const removed = db.deleteReactionRoleOption(communityId, messageId, enriched.key);
       if (!removed) {
-        return redirectIntegrations(res, guildId, "error", "rr_option_not_found");
+        return redirectIntegrations(res, communityId, "error", "rr_option_not_found");
       }
       req.audit({
         action: "reaction_roles.option_remove",
@@ -855,19 +868,19 @@ function registerIntegrationsRoutes(app, options = {}) {
         targetId: messageId,
         details: { emoji: enriched.display },
       });
-      invalidateCache(guildId);
+      invalidateCache(communityId);
 
       if (guild) {
         Promise.resolve()
           .then(() =>
             reactionRolesService.refreshPanelMessage(
               guild,
-              db.getReactionRolePanel(guildId, messageId)
+              db.getReactionRolePanel(communityId, messageId)
             )
           )
           .catch(() => {});
       }
-      redirectIntegrations(res, guildId, "done", "rr_option_removed");
+      redirectIntegrations(res, communityId, "done", "rr_option_removed");
     }
   );
 
@@ -886,36 +899,37 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/event-reminders/channel",
     "staff",
     (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: channel cache preflight + audit target
+      const communityId = communityOf(req); // settings repo + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).channel_id);
       if (!parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_channel_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
       }
       const value = parsed.value || null;
       if (value) {
         const guild = guildFromCache(guildId);
         if (guild) {
           const ch = cachedChannel(guild, value);
-          if (!ch) return redirectIntegrations(res, guildId, "error", "channel_missing");
+          if (!ch) return redirectIntegrations(res, communityId, "error", "channel_missing");
           if (
             typeof ch.type === "number" &&
             ch.type !== CHANNEL_TYPE_GUILD_TEXT &&
             ch.type !== CHANNEL_TYPE_GUILD_ANNOUNCEMENT
           ) {
-            return redirectIntegrations(res, guildId, "error", "er_channel_type");
+            return redirectIntegrations(res, communityId, "error", "er_channel_type");
           }
         }
       }
 
-      db.updateGuildSettings(guildId, { event_reminder_channel_id: value });
+      db.updateGuildSettings(communityId, { event_reminder_channel_id: value });
       req.audit({
         action: "event_reminders.channel_set",
         targetType: "guild",
         targetId: guildId,
         details: { channel_id: value },
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", value ? "er_channel_set" : "er_channel_cleared");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", value ? "er_channel_set" : "er_channel_cleared");
     }
   );
 
@@ -935,24 +949,25 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/honeypot/channel/add",
     "staff",
     async (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: channel preflight + warning post
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).channel_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_channel_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
       }
       const fail = preflightChannel(guildFromCache(guildId), parsed.value);
-      if (fail) return redirectIntegrations(res, guildId, "error", fail);
-      if (db.isHoneypotChannel(guildId, parsed.value)) {
-        return redirectIntegrations(res, guildId, "error", "hp_channel_exists");
+      if (fail) return redirectIntegrations(res, communityId, "error", fail);
+      if (db.isHoneypotChannel(communityId, parsed.value)) {
+        return redirectIntegrations(res, communityId, "error", "hp_channel_exists");
       }
 
-      db.addHoneypotChannel(guildId, parsed.value);
+      db.addHoneypotChannel(communityId, parsed.value);
       req.audit({
         action: "honeypot.channel_add",
         targetType: "channel",
         targetId: parsed.value,
       });
-      invalidateCache(guildId);
+      invalidateCache(communityId);
 
       const guild = guildFromCache(guildId);
       if (guild) {
@@ -962,7 +977,7 @@ function registerIntegrationsRoutes(app, options = {}) {
           /* warning post is best-effort, exactly like the slash's status note */
         }
       }
-      redirectIntegrations(res, guildId, "done", "hp_channel_added");
+      redirectIntegrations(res, communityId, "done", "hp_channel_added");
     }
   );
 
@@ -975,25 +990,26 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/honeypot/channel/del",
     "staff",
     async (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: warning-message channel lookup
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).channel_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_channel_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
       }
 
       const { removed, warning_message_id: warningMessageId } = db.removeHoneypotChannel(
-        guildId,
+        communityId,
         parsed.value
       );
       if (!removed) {
-        return redirectIntegrations(res, guildId, "error", "hp_channel_not_found");
+        return redirectIntegrations(res, communityId, "error", "hp_channel_not_found");
       }
       req.audit({
         action: "honeypot.channel_del",
         targetType: "channel",
         targetId: parsed.value,
       });
-      invalidateCache(guildId);
+      invalidateCache(communityId);
 
       const guild = guildFromCache(guildId);
       const channel = warningMessageId ? cachedChannel(guild, parsed.value) : null;
@@ -1006,7 +1022,7 @@ function registerIntegrationsRoutes(app, options = {}) {
       } catch {
         /* slash removes it manually in that case — same posture here */
       }
-      redirectIntegrations(res, guildId, "done", "hp_channel_removed");
+      redirectIntegrations(res, communityId, "done", "hp_channel_removed");
     }
   );
 
@@ -1020,34 +1036,35 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/honeypot/banrole/add",
     "staff",
     (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: @everyone id comparison + role cache
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
       }
       if (parsed.value === guildId) {
-        return redirectIntegrations(res, guildId, "error", "hp_role_everyone");
+        return redirectIntegrations(res, communityId, "error", "hp_role_everyone");
       }
       const guild = guildFromCache(guildId);
       if (guild) {
         const role = cachedRole(guild, parsed.value);
-        if (!role) return redirectIntegrations(res, guildId, "error", "role_missing");
+        if (!role) return redirectIntegrations(res, communityId, "error", "role_missing");
         if (role.managed) {
-          return redirectIntegrations(res, guildId, "error", "hp_role_managed");
+          return redirectIntegrations(res, communityId, "error", "hp_role_managed");
         }
       }
-      if (db.isHoneypotBanRole(guildId, parsed.value)) {
-        return redirectIntegrations(res, guildId, "error", "hp_banrole_exists");
+      if (db.isHoneypotBanRole(communityId, parsed.value)) {
+        return redirectIntegrations(res, communityId, "error", "hp_banrole_exists");
       }
 
-      db.addHoneypotBanRole(guildId, parsed.value);
+      db.addHoneypotBanRole(communityId, parsed.value);
       req.audit({
         action: "honeypot.ban_role_add",
         targetType: "role",
         targetId: parsed.value,
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "hp_banrole_added");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "hp_banrole_added");
     }
   );
 
@@ -1056,23 +1073,23 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/honeypot/banrole/del",
     "staff",
     (req, res) => {
-      const guildId = guildOf(req);
+      const communityId = communityOf(req); // repos + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
       }
 
-      const removed = db.removeHoneypotBanRole(guildId, parsed.value);
+      const removed = db.removeHoneypotBanRole(communityId, parsed.value);
       if (!removed) {
-        return redirectIntegrations(res, guildId, "error", "hp_banrole_not_found");
+        return redirectIntegrations(res, communityId, "error", "hp_banrole_not_found");
       }
       req.audit({
         action: "honeypot.ban_role_del",
         targetType: "role",
         targetId: parsed.value,
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "hp_banrole_removed");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "hp_banrole_removed");
     }
   );
 
@@ -1087,26 +1104,27 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/honeypot/exempt/add",
     "admin",
     (req, res) => {
-      const guildId = guildOf(req);
+      const guildId = guildOf(req); // external: @everyone id comparison + role cache
+      const communityId = communityOf(req); // staffRoles repo + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
       }
       if (parsed.value === guildId) {
-        return redirectIntegrations(res, guildId, "error", "hp_role_everyone");
+        return redirectIntegrations(res, communityId, "error", "hp_role_everyone");
       }
       const fail = preflightRole(guildFromCache(guildId), parsed.value);
-      if (fail) return redirectIntegrations(res, guildId, "error", fail);
+      if (fail) return redirectIntegrations(res, communityId, "error", fail);
 
-      db.addStaffRole(guildId, parsed.value);
+      db.addStaffRole(communityId, parsed.value);
       req.audit({
         action: "staff.role_add",
         targetType: "role",
         targetId: parsed.value,
         details: { via: "honeypot.exempt" },
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "hp_exempt_added");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "hp_exempt_added");
     }
   );
 
@@ -1118,15 +1136,15 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations/honeypot/exempt/del",
     "admin",
     (req, res) => {
-      const guildId = guildOf(req);
+      const communityId = communityOf(req); // staffRoles repo + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, guildId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
       }
 
-      const removed = db.removeStaffRole(guildId, parsed.value);
+      const removed = db.removeStaffRole(communityId, parsed.value);
       if (!removed) {
-        return redirectIntegrations(res, guildId, "error", "hp_exempt_not_found");
+        return redirectIntegrations(res, communityId, "error", "hp_exempt_not_found");
       }
       req.audit({
         action: "staff.role_remove",
@@ -1134,8 +1152,8 @@ function registerIntegrationsRoutes(app, options = {}) {
         targetId: parsed.value,
         details: { via: "honeypot.exempt" },
       });
-      invalidateCache(guildId);
-      redirectIntegrations(res, guildId, "done", "hp_exempt_removed");
+      invalidateCache(communityId);
+      redirectIntegrations(res, communityId, "done", "hp_exempt_removed");
     }
   );
 
@@ -1147,10 +1165,11 @@ function registerIntegrationsRoutes(app, options = {}) {
     "/g/:guildId/integrations",
     requireTier("staff"),
     async (req, res) => {
-      const guildId = req.guildAccess.guildId;
-      // One cached per-guild snapshot (§8.6 floor 30 s). Facade reads
+      // Fluxer PR 2: the integrations read-model keys by integer community id.
+      const communityId = req.guildAccess.communityId;
+      // One cached per-community snapshot (§8.6 floor 30 s). Facade reads
       // happen inside the data module — never here.
-      const snapshot = integrationsData.getIntegrations(guildId);
+      const snapshot = integrationsData.getIntegrations(communityId);
       const document = renderShellPage(req, {
         title: "Integrations",
         heading: "Integrations",

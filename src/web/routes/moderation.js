@@ -32,7 +32,7 @@
  *    = slash IntegerOption omitted), same bot refusal (proven-by-cache only,
  *    xpActions doctrine), same warn_dm_members-gated member DM (cache-only
  *    user seam, graceful skip, silent checkbox = slash silent option);
- *  - void: voidWarning(guildId, warningNumber, { voidedBy, voidReason }) —
+ *  - void: voidWarning(communityId, warningNumber, { voidedBy, voidReason }) —
  *    the repo's ALREADY_VOIDED / cross-guild-not-found rules answer with
  *    slugs, zero side effects; the void author + reason are the row's;
  *  - note: createStaffNote (sequential N-ref, 2000-char INVALID_CONTENT
@@ -338,8 +338,8 @@ function registerModerationRoutes(app, options = {}) {
     app.post(template, requireTier("staff"), handler);
   };
 
-  const warnPage = (guildId) => `/g/${encodeURIComponent(guildId)}/warnings`;
-  const notesPage = (guildId) => `/g/${encodeURIComponent(guildId)}/notes`;
+  const warnPage = (communityId) => `/g/${encodeURIComponent(communityId)}/warnings`;
+  const notesPage = (communityId) => `/g/${encodeURIComponent(communityId)}/notes`;
   const warnFlash = makeFlashRedirect({
     pageOf: warnPage,
     doneTable: WARN_FLASH_DONE,
@@ -353,9 +353,10 @@ function registerModerationRoutes(app, options = {}) {
 
   // ---- staff: guild-wide warnings list -------------------------------------
   app.get(WARNINGS_PAGE, requireTier("staff"), async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
+    const communityId = req.guildAccess.communityId; // data key (PR 2: integer)
     const params = rawParams(req.url);
-    const page = buildWarningsPage(guildId, {
+    const page = buildWarningsPage(communityId, {
       u: params.get("u"),
       state: params.get("state"),
       n: params.get("n"),
@@ -384,9 +385,10 @@ function registerModerationRoutes(app, options = {}) {
 
   // ---- staff: guild-wide staff-notes list ----------------------------------
   app.get(NOTES_PAGE, requireTier("staff"), async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
+    const communityId = req.guildAccess.communityId; // data key (PR 2: integer)
     const params = rawParams(req.url);
-    const page = buildNotesPage(guildId, {
+    const page = buildNotesPage(communityId, {
       u: params.get("u"),
       state: params.get("state"),
       n: params.get("n"),
@@ -430,9 +432,11 @@ function registerModerationRoutes(app, options = {}) {
    * exact validators handleAdd runs — web mirrors them literally, including
    * the guild-scoped message-link rule and the empty→null normalizations).
    * @param {Record<string, unknown>} fields req.bodyFields
-   * @param {string} guildId server-derived (guildScope snowflake)
+   * @param {string} guildId server-derived EXTERNAL snowflake (@everyone +
+   *   evidence-URL scoping — both compare against Discord ids)
+   * @param {number} communityId integer route identity (repo reads)
    */
-  function parseWarnIssueInput(fields, guildId) {
+  function parseWarnIssueInput(fields, guildId, communityId) {
     // §8.15-15.10: plain snowflake OR pasted mention (normalized to digits).
     const rawUser = normalizeUserId(fields.user_id);
     if (!rawUser || rawUser === String(guildId)) {
@@ -468,7 +472,7 @@ function registerModerationRoutes(app, options = {}) {
       if (!NOTE_NUMBER_RE.test(rawNote)) {
         return { ok: false, errorSlug: "invalid_note" };
       }
-      const note = facade.getStaffNote(guildId, Number(rawNote));
+      const note = facade.getStaffNote(communityId, Number(rawNote));
       if (!note) return { ok: false, errorSlug: "invalid_note" };
       relatedNoteId = note.id;
     }
@@ -498,10 +502,11 @@ function registerModerationRoutes(app, options = {}) {
 
   // ---- POST issue (slash /warn add twin) ------------------------------------
   postMutation(WARN_ISSUE_PATH, async (req, res) => {
-    const guildId = req.guildAccess.guildId;
-    const parsed = parseWarnIssueInput(readFields(req), guildId);
+    const guildId = req.guildAccess.guildId; // external snowflake (Discord seams + audit display)
+    const communityId = req.guildAccess.communityId; // data + view link id (PR 2: integer)
+    const parsed = parseWarnIssueInput(readFields(req), guildId, communityId);
     if (!parsed.ok) {
-      warnFlash(res, guildId, "error", parsed.errorSlug);
+      warnFlash(res, communityId, "error", parsed.errorSlug);
       return;
     }
     const { userId, reason, relatedNoteId, expiresDays, evidenceMessageUrl, evidenceText, silent } = parsed;
@@ -517,7 +522,7 @@ function registerModerationRoutes(app, options = {}) {
     // Slash parity: `if (target.bot)` refusal ("Warnings are for human
     // members, not bots.") — refusal only on PROVEN bot evidence.
     if (isProvenBot(client, guildId, userId)) {
-      warnFlash(res, guildId, "error", "bot_target");
+      warnFlash(res, communityId, "error", "bot_target");
       return;
     }
 
@@ -525,13 +530,16 @@ function registerModerationRoutes(app, options = {}) {
     // pass-through of expiresDays/guildDefaultDays to the repo, which
     // resolves expires_at via resolveExpiryDays + warning_number
     // allocation inside ONE transaction).
-    const settings = facade.getGuildSettings(guildId);
+    const settings = facade.getGuildSettings(communityId);
     const guildDefaultDays = guildWarnExpiryDays(settings, MAX_EXPIRY_DAYS);
 
     let warn;
     try {
       warn = facade.createWarning({
-        guildId,
+        communityId,
+        // Evidence URLs embed the EXTERNAL snowflake — the repo validates
+        // the link against it (URLs never contain community ids).
+        externalGuildId: guildId,
         userId,
         issuerId: req.user.userId,
         reason,
@@ -548,13 +556,13 @@ function registerModerationRoutes(app, options = {}) {
       // the matching fixed slug via WARN_THROW_SLUG (no echo, §8.7).
       const slug = WARN_THROW_SLUG[err?.code];
       if (slug) {
-        warnFlash(res, guildId, "error", slug);
+        warnFlash(res, communityId, "error", slug);
         return;
       }
       throw err; // DB error → generic 500 (slash logs + "database error")
     }
 
-    const activeCount = facade.countActiveWarnings(guildId, userId);
+    const activeCount = facade.countActiveWarnings(communityId, userId);
     const ref = formatWarnRef(warn.warning_number);
 
     // Audit mirror of the slash recordSlashAudit call EXACTLY — action,
@@ -605,7 +613,7 @@ function registerModerationRoutes(app, options = {}) {
       }));
     }
 
-    warnFlash(res, guildId, "done", "warn_issued");
+    warnFlash(res, communityId, "done", "warn_issued");
     // fail-closed: an audit throw aborts with the generic 500
   });
 
@@ -620,7 +628,8 @@ function registerModerationRoutes(app, options = {}) {
 
   // ---- POST void (slash /warn void twin) -------------------------------------
   postMutation(WARN_VOID_PATH, async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.guildId; // external snowflake (Discord seams + audit display)
+    const communityId = req.guildAccess.communityId; // data + view link id (PR 2: integer)
     const fields = readFields(req);
 
     // Warning NUMBER (slash IntegerOption id min:1) on the body — digits,
@@ -629,7 +638,7 @@ function registerModerationRoutes(app, options = {}) {
       fields.warning_number == null ? "" : fields.warning_number
     ).trim();
     if (!WARN_NUMBER_RE.test(rawNumber)) {
-      warnFlash(res, guildId, "error", "invalid_warning_number");
+      warnFlash(res, communityId, "error", "invalid_warning_number");
       return;
     }
     const warningNumber = Number(rawNumber);
@@ -639,11 +648,11 @@ function registerModerationRoutes(app, options = {}) {
     const rawReason = String(fields.reason == null ? "" : fields.reason);
     const voidReason = rawReason.trim();
     if (!voidReason) {
-      warnFlash(res, guildId, "error", "void_reason_missing");
+      warnFlash(res, communityId, "error", "void_reason_missing");
       return;
     }
     if (voidReason.length > MAX_WARN_REASON) {
-      warnFlash(res, guildId, "error", "void_reason_too_long");
+      warnFlash(res, communityId, "error", "void_reason_too_long");
       return;
     }
 
@@ -651,7 +660,7 @@ function registerModerationRoutes(app, options = {}) {
     try {
       // Guild-scoped by construction: a number issued in guild B simply
       // does not resolve under guild A (warn_not_found, zero side effects).
-      warn = facade.voidWarning(guildId, warningNumber, {
+      warn = facade.voidWarning(communityId, warningNumber, {
         voidedBy: req.user.userId,
         voidReason,
       });
@@ -659,22 +668,22 @@ function registerModerationRoutes(app, options = {}) {
       if (err?.code === "ALREADY_VOIDED") {
         // Slash keeps the row and replies; the web throws PRE-update, so
         // this refusal is zero-write by construction.
-        warnFlash(res, guildId, "error", "already_voided");
+        warnFlash(res, communityId, "error", "already_voided");
         return;
       }
       if (err?.code === "INVALID_REASON") {
-        warnFlash(res, guildId, "error", "void_reason_missing");
+        warnFlash(res, communityId, "error", "void_reason_missing");
         return;
       }
       throw err; // DB error → generic 500
     }
 
     if (!warn) {
-      warnFlash(res, guildId, "error", "warn_not_found");
+      warnFlash(res, communityId, "error", "warn_not_found");
       return;
     }
 
-    const activeCount = facade.countActiveWarnings(guildId, warn.user_id);
+    const activeCount = facade.countActiveWarnings(communityId, warn.user_id);
     const ref = formatWarnRef(warn.warning_number);
 
     // Slash-exact vocabulary + detail shape (features/warnings/index.js
@@ -703,7 +712,7 @@ function registerModerationRoutes(app, options = {}) {
 
     // Member DM when the guild has warn DMs ON (slash handleVoid sends the
     // void DM whenever warn_dm_members allows, no silent option on void).
-    const settings = facade.getGuildSettings(guildId);
+    const settings = facade.getGuildSettings(communityId);
     if (warnDmEnabled(settings)) {
       let client = null;
       try {
@@ -721,18 +730,19 @@ function registerModerationRoutes(app, options = {}) {
       }));
     }
 
-    warnFlash(res, guildId, "done", "warn_voided");
+    warnFlash(res, communityId, "done", "warn_voided");
   });
 
   // ---- POST note add (slash /note add twin) ----------------------------------
   postMutation(NOTE_ADD_PATH, async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.guildId; // external snowflake (@everyone check, cache seams, audit display)
+    const communityId = req.guildAccess.communityId; // data + view link id (PR 2: integer)
     const fields = readFields(req);
 
     // §8.15-15.10: plain snowflake OR pasted mention (normalized to digits).
     const rawUser = normalizeUserId(fields.user_id);
     if (!rawUser || rawUser === String(guildId)) {
-      noteFlash(res, guildId, "error", "invalid_user");
+      noteFlash(res, communityId, "error", "invalid_user");
       return;
     }
 
@@ -742,11 +752,11 @@ function registerModerationRoutes(app, options = {}) {
     const rawContent = String(fields.content == null ? "" : fields.content);
     const content = rawContent.trim();
     if (!content) {
-      noteFlash(res, guildId, "error", "content_empty");
+      noteFlash(res, communityId, "error", "content_empty");
       return;
     }
     if (content.length > MAX_NOTE_CONTENT) {
-      noteFlash(res, guildId, "error", "content_too_long");
+      noteFlash(res, communityId, "error", "content_too_long");
       return;
     }
 
@@ -758,7 +768,7 @@ function registerModerationRoutes(app, options = {}) {
     }
     // Slash parity: "Staff notes are for human members, not bots."
     if (isProvenBot(client, guildId, rawUser)) {
-      noteFlash(res, guildId, "error", "bot_target");
+      noteFlash(res, communityId, "error", "bot_target");
       return;
     }
 
@@ -767,14 +777,14 @@ function registerModerationRoutes(app, options = {}) {
       // Sequential note_number + INVALID_CONTENT guard live in the repo —
       // same helper the slash's persistNewNote calls, same args.
       note = facade.createStaffNote({
-        guildId,
+        communityId,
         userId: rawUser,
         authorId: req.user.userId,
         content,
       });
     } catch (err) {
       if (err?.code === "INVALID_CONTENT") {
-        noteFlash(res, guildId, "error", content ? "content_too_long" : "content_empty");
+        noteFlash(res, communityId, "error", content ? "content_too_long" : "content_empty");
         return;
       }
       throw err; // DB error → generic 500
@@ -805,7 +815,7 @@ function registerModerationRoutes(app, options = {}) {
       },
     });
 
-    noteFlash(res, guildId, "done", "note_added");
+    noteFlash(res, communityId, "done", "note_added");
   });
 }
 

@@ -123,6 +123,7 @@ function registerUsersRoutes(app, options = {}) {
     const trimmed = String(q ?? "").trim();
     if (trimmed && !/^[0-9]{1,20}$/.test(trimmed)) {
       const client = typeof options.getClient === "function" ? options.getClient() : null;
+      // Discord seam: member cache keys by the EXTERNAL snowflake.
       const guild = client?.guilds?.cache?.get?.(req.guildAccess.guildId) ?? null;
       nameMatchIds = rankSuggestions(
         memberNameCandidates(guild).filter((c) => c.name),
@@ -131,7 +132,8 @@ function registerUsersRoutes(app, options = {}) {
         .slice(0, 50)
         .map((c) => c.id);
     }
-    const search = searchGuildUsers(req.guildAccess.guildId, q, { nameMatchIds });
+    // Fluxer PR 2: data-layer reads key by the integer community id.
+    const search = searchGuildUsers(req.guildAccess.communityId, q, { nameMatchIds });
     const page = renderUserSearchPage(req, { search });
     const document = renderShellPage(req, {
       title: "Users",
@@ -151,10 +153,13 @@ function registerUsersRoutes(app, options = {}) {
       return;
     }
     const guildId = req.guildAccess.guildId;
+    // Fluxer PR 2: data reads take the integer community id; the Discord
+    // cache seam (resolveDiscordContext) keeps the external snowflake.
+    const communityId = req.guildAccess.communityId;
     const params = rawParams(req.url);
     const { guild, joinedMs, memberKnown } = resolveDiscordContext(options.getClient, guildId, userId);
 
-    const profile = buildUserProfile(guildId, userId, {
+    const profile = buildUserProfile(communityId, userId, {
       warnOffset: readOffset(params.get("w_off")),
       noteOffset: readOffset(params.get("n_off")),
       ticketOffset: readOffset(params.get("t_off")),
@@ -176,7 +181,7 @@ function registerUsersRoutes(app, options = {}) {
     // zero activity data leaves this function for lower tiers.
     const visible = isSeniorTier(req);
     const activity = visible
-      ? { visible: true, ...buildUserActivity(guildId, userId, { guild, joinedMs }) }
+      ? { visible: true, ...buildUserActivity(communityId, userId, { guild, joinedMs }) }
       : { visible: false };
 
     const document = renderShellPage(req, {
@@ -286,9 +291,12 @@ function registerUsersRoutes(app, options = {}) {
       return;
     }
     const guildId = req.guildAccess.guildId;
+    // Fluxer PR 2: data reads take the integer community id; the Discord
+    // cache seam keeps the external snowflake.
+    const communityId = req.guildAccess.communityId;
     const { guild, joinedMs, memberKnown } = resolveDiscordContext(options.getClient, guildId, userId);
 
-    if (!userHasData(guildId, userId) && !memberKnown) {
+    if (!userHasData(communityId, userId) && !memberKnown) {
       const document = renderShellError(req, {
         status: 404,
         title: "User not found",
@@ -302,7 +310,7 @@ function registerUsersRoutes(app, options = {}) {
     const params = rawParams(req.url);
     const activity = {
       visible: true,
-      ...buildUserActivity(guildId, userId, {
+      ...buildUserActivity(communityId, userId, {
         win: params.get("win"),
         page: params.get("page"),
         guild,

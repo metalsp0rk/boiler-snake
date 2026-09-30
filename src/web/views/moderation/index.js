@@ -120,7 +120,7 @@ function csrfField(csrfToken) {
  * here are BROWSER hints only: the route re-validates every field against
  * the same repository validators the slash relies on.
  * @param {object} input
- * @param {string} input.guildId server-derived (guildScope snowflake)
+ * @param {number} input.guildId server-derived route identity (PR 2: integer)
  * @param {string|null} input.csrfToken req.csrfToken
  * @param {number} input.maxReason MAX_WARN_REASON (bound, never data)
  * @param {number} input.maxEvidence MAX_EVIDENCE_TEXT
@@ -336,7 +336,7 @@ function warnMeta(w) {
  *   page = buildWarningsPage() result
  */
 function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds = {}, names = null }) {
-  const guildId = req.guildAccess.guildId;
+  const guildId = req.guildAccess.communityId; // link identity = integer route id (PR 2)
   const base = `/g/${guildId}/warnings`;
   const emptyMessage =
     page.state === "active"
@@ -392,7 +392,7 @@ function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds 
  *   page = buildNotesPage() result
  */
 function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {}, names = null }) {
-  const guildId = req.guildAccess.guildId;
+  const guildId = req.guildAccess.communityId; // link identity = integer route id (PR 2)
   const base = `/g/${guildId}/notes`;
   const emptyMessage =
     page.state === "active"

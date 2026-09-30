@@ -131,9 +131,11 @@ function registerDashboardRoutes(app, options = {}) {
       const capped = listed.guilds.slice(0, MAX_ROOT_GUILDS);
       const rows = [];
       for (const g of capped) {
-        const access = await resolver.resolve(req.webSession, g.id);
+        // Fluxer PR 2: resolve() and the console link key by the INTEGER
+        // community id the list entries carry (snowflakes deny at the gate).
+        const access = await resolver.resolve(req.webSession, g.communityId);
         rows.push({
-          id: g.id,
+          id: g.communityId,
           name: g.name,
           tier: access.status === "ok" ? access.tier : null,
         });
@@ -168,10 +170,12 @@ function registerDashboardRoutes(app, options = {}) {
 
   app.get("/g/:guildId", requireTier("staff"), async (req, res) => {
     const guildId = req.guildAccess.guildId;
+    // Fluxer PR 2: data + view links key by the integer community id.
+    const communityId = req.guildAccess.communityId;
     // One cached per-guild snapshot (30 s floor). Sections degrade
     // individually inside; only a programmer error reaches here as a throw,
     // which the app's terminal error middleware turns into the generic 500.
-    const data = await dashboard.getDashboard(guildId);
+    const data = await dashboard.getDashboard(communityId);
 
     // UX v1.1 (§8.15): resolve member display names for the rows this
     // snapshot shows — cache-only seam, miss ⇒ raw id labels in the view.
@@ -185,8 +189,8 @@ function registerDashboardRoutes(app, options = {}) {
     // degraded read came back empty (shell doctrine: the viewed guild always renders).
     const listed = await resolver.listGuilds(req.webSession);
     const guilds = listed.guilds.slice();
-    if (!guilds.some((g) => g.id === guildId)) {
-      guilds.unshift({ id: guildId, name: guildId });
+    if (!guilds.some((g) => g.communityId === communityId)) {
+      guilds.unshift({ id: guildId, communityId, name: String(communityId) });
     }
 
     const document = renderShellPage(req, {
@@ -195,7 +199,7 @@ function registerDashboardRoutes(app, options = {}) {
       subheading:
         "Live guild overview — open tickets, activity, background jobs, now-playing.",
       content: renderDashboardContent(data, {
-        guildId,
+        guildId: communityId,
         names: resolveMemberNames(options.getClient, guildId, nameIds),
       }),
       guilds,

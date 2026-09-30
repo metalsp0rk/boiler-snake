@@ -82,11 +82,11 @@ function makeCacheSet(cache, maxEntries) {
  * page. detail/status strings are pinned by both page suites — change only
  * with the tests.
  * @param {any} client
- * @param {string} guildId
+ * @param {number} communityId
  * @param {{getManager: Function, isNodeReady: Function}} musicApi
  * @param {(player: any, current: any) => any} onReady
  */
-function withMusicPlayer(client, guildId, musicApi, onReady) {
+function withMusicPlayer(client, communityId, musicApi, onReady) {
   try {
     if (!client) return { status: "unknown", detail: "no client wired" };
     const manager = musicApi.getManager(client);
@@ -94,7 +94,7 @@ function withMusicPlayer(client, guildId, musicApi, onReady) {
     if (!musicApi.isNodeReady(client)) {
       return { status: "unavailable", detail: "no lavalink node connected" };
     }
-    const player = manager.getPlayer?.(guildId) || null;
+    const player = manager.getPlayer?.(communityId) || null;
     if (!player) return { status: "idle", detail: "no active player in this guild" };
     return onReady(player, player.queue?.current || null);
   } catch {

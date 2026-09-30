@@ -272,12 +272,12 @@ function pager(base, page) {
 
 /**
  * Body for GET /g/:guildId/audit — the admin_audit viewer (newest first,
- * guild-scoped rows ONLY — the route scopes by req.guildAccess.guildId).
+ * guild-scoped rows ONLY — the route scopes by req.guildAccess.communityId).
  * @param {object} req
  * @param {{ page: object }} data page = buildAuditPage() result
  */
 function renderAuditBody(req, { page, names = null }) {
-  const guildId = req.guildAccess.guildId;
+  const guildId = req.guildAccess.communityId; // link identity = integer route id (PR 2)
   const base = `/g/${guildId}/audit`;
   const filterOrigin = page.origin || "all";
 

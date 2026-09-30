@@ -4,13 +4,13 @@
  * [Senior], Phase 1 read-only — subtask 15).
  *
  * Query-budget contract (§8.6, review-blocking):
- *  - every query carries the guild id from req.guildAccess.guildId — there is
+ *  - every query carries the guild id from req.guildAccess.communityId — there is
  *    NO cross-guild aggregation here and no way to call these helpers without
- *    one (first positional arg of every function is guildId);
+ *    one (first positional arg of every function is communityId);
  *  - every list is LIMIT-bounded well below 100 (search ≤50; warnings /
  *    notes / tickets ≤10 per page with offset paging);
  *  - counts are point aggregates on the existing
- *    (guild_id, user_id[, created_at]) indexes — no full scans;
+ *    (community_id, user_id[, created_at]) indexes — no full scans;
  *  - the ONE raw-SQL query in this file (recentTicketsForUser) exists because
  *    the tickets repository has no per-user "any status" list helper and
  *    warnings.js / staffNotes.js are read-only for this subtask; it is
@@ -57,12 +57,12 @@ const MAX_OFFSET = 1000;
  * member, or named staff — the §8.4 participant classes minus message
  * authors, which would need a ticket_messages scan and is out of budget).
  * newest-first by ticket_number; LIMIT ≤ LIST_LIMIT.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @param {{ limit?: number, offset?: number }} [opts]
  * @returns {object[]}
  */
-function recentTicketsForUser(guildId, userId, opts = {}) {
+function recentTicketsForUser(communityId, userId, opts = {}) {
   // +1 headroom: callers request LIST_LIMIT+1 to detect "more" — still ≤100.
   const limit = Math.min(Math.max(Number(opts.limit) || LIST_LIMIT, 1), LIST_LIMIT + 1);
   const offset = Math.min(Math.max(Number(opts.offset) || 0, 0), MAX_OFFSET);
@@ -73,7 +73,7 @@ function recentTicketsForUser(guildId, userId, opts = {}) {
            t.archived, t.creator_user_id, t.staff_owner_id,
            (t.creator_user_id = ?) AS is_creator
     FROM tickets t
-    WHERE t.guild_id = ?
+    WHERE t.community_id = ?
       AND (
         t.creator_user_id = ?
         OR EXISTS (SELECT 1 FROM ticket_members tm
@@ -87,7 +87,7 @@ function recentTicketsForUser(guildId, userId, opts = {}) {
     )
     // Placeholder order follows the SQL TEXT: SELECT is_creator ← userId,
     // then WHERE guild, creator, member, staff, then LIMIT/OFFSET.
-    .all(userId, guildId, userId, userId, userId, limit, offset);
+    .all(userId, communityId, userId, userId, userId, limit, offset);
 }
 
 /**
@@ -95,16 +95,16 @@ function recentTicketsForUser(guildId, userId, opts = {}) {
  * bot footprint anywhere has no profile page — the web panel cannot verify
  * Discord membership without the bot's member cache, so "unknown user"
  * renders the friendly not-found instead of an empty profile (§8.6).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @returns {boolean}
  */
-function userHasData(guildId, userId) {
-  if (!!getUser(guildId, userId)) return true;
-  if (countWarnings(guildId, userId, { includeVoided: true }) > 0) return true;
-  if (countStaffNotes(guildId, userId, { includeDeleted: true }) > 0) return true;
-  if (!!getUserActivityMeta(guildId, userId)) return true;
-  return recentTicketsForUser(guildId, userId, { limit: 1 }).length > 0;
+function userHasData(communityId, userId) {
+  if (!!getUser(communityId, userId)) return true;
+  if (countWarnings(communityId, userId, { includeVoided: true }) > 0) return true;
+  if (countStaffNotes(communityId, userId, { includeDeleted: true }) > 0) return true;
+  if (!!getUserActivityMeta(communityId, userId)) return true;
+  return recentTicketsForUser(communityId, userId, { limit: 1 }).length > 0;
 }
 
 /**
@@ -120,29 +120,29 @@ function readOffset(raw) {
  * Full unified profile read-model for the staff-tier page. ONE known flag +
  * XP/level + warning/note/ticket sections, all guild-scoped and bounded.
  *
- * @param {string} guildId MUST be req.guildAccess.guildId
+ * @param {number} communityId MUST be req.guildAccess.communityId
  * @param {string} userId snowflake (validated by the caller)
  * @param {{ warnOffset?: number, noteOffset?: number, ticketOffset?: number }} [page]
  * @returns {{ known: boolean } & object}
  */
-function buildUserProfile(guildId, userId, page = {}) {
+function buildUserProfile(communityId, userId, page = {}) {
   const warnOffset = readOffset(page.warnOffset);
   const noteOffset = readOffset(page.noteOffset);
   const ticketOffset = readOffset(page.ticketOffset);
 
-  const userRow = getUser(guildId, userId);
-  const warnsActive = countActiveWarnings(guildId, userId);
-  const warnsTotal = countWarnings(guildId, userId, { includeVoided: true });
-  const notesActive = countStaffNotes(guildId, userId, { includeDeleted: false });
-  const notesTotal = countStaffNotes(guildId, userId, { includeDeleted: true });
-  const ticketsTotalGuess = recentTicketsForUser(guildId, userId, {
+  const userRow = getUser(communityId, userId);
+  const warnsActive = countActiveWarnings(communityId, userId);
+  const warnsTotal = countWarnings(communityId, userId, { includeVoided: true });
+  const notesActive = countStaffNotes(communityId, userId, { includeDeleted: false });
+  const notesTotal = countStaffNotes(communityId, userId, { includeDeleted: true });
+  const ticketsTotalGuess = recentTicketsForUser(communityId, userId, {
     limit: LIST_LIMIT + 1,
     offset: ticketOffset,
   });
   const ticketsHasMore = ticketsTotalGuess.length > LIST_LIMIT;
   const tickets = ticketsHasMore ? ticketsTotalGuess.slice(0, LIST_LIMIT) : ticketsTotalGuess;
 
-  const settings = getGuildSettings(guildId);
+  const settings = getGuildSettings(communityId);
   const xp = userRow ? userRow.xp : 0;
 
   const known =
@@ -150,7 +150,7 @@ function buildUserProfile(guildId, userId, page = {}) {
     warnsTotal > 0 ||
     notesTotal > 0 ||
     tickets.length > 0 ||
-    !!getUserActivityMeta(guildId, userId);
+    !!getUserActivityMeta(communityId, userId);
 
   return {
     known,
@@ -165,7 +165,7 @@ function buildUserProfile(guildId, userId, page = {}) {
       notesTotal,
     },
     warnings: {
-      rows: listWarnings(guildId, userId, {
+      rows: listWarnings(communityId, userId, {
         includeVoided: true,
         limit: LIST_LIMIT,
         offset: warnOffset,
@@ -174,7 +174,7 @@ function buildUserProfile(guildId, userId, page = {}) {
       total: warnsTotal,
     },
     notes: {
-      rows: listStaffNotes(guildId, userId, {
+      rows: listStaffNotes(communityId, userId, {
         includeDeleted: false,
         limit: LIST_LIMIT,
         offset: noteOffset,
@@ -198,21 +198,21 @@ function buildUserProfile(guildId, userId, page = {}) {
  * unresolvable channels/join dates (#<id> labels, min-1-week rate).
  *
  * Boundedness: sumByChannel is a per-user GROUP BY over that user's rows in
- * ONE guild (indexed PK prefix guild_id+user_id); rendered rows are sliced to
+ * ONE guild (indexed PK prefix community_id+user_id); rendered rows are sliced to
  * the service's own TOP_CHANNELS/TOP_CATEGORIES (15). This is the identical
  * footprint the shipped slash path runs per senior request — no new scan.
  *
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @param {{ win?: string|null, page?: string|null, guild?: object|null, joinedMs?: number|null }} [opts]
  * @returns {{ ranking: object, window: string, page: "channels"|"categories", joinedMs: number|null }}
  */
-function buildUserActivity(guildId, userId, opts = {}) {
+function buildUserActivity(communityId, userId, opts = {}) {
   const win = normalizeWindow(opts.win);
   const wantPage = opts.page === "ca" || opts.page === "c" ? "categories" : "channels";
   const joinedMs = opts.joinedMs ?? null;
   const rankingOpts = {
-    guildId,
+    communityId,
     userId,
     guild: opts.guild ?? null,
     window: win,
@@ -230,14 +230,14 @@ function buildUserActivity(guildId, userId, opts = {}) {
  * repository helper (id exact/prefix only, LIMIT ≤50, no scans) and adds the
  * per-guild level for display.
  *
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string|null|undefined} rawQuery
  * @returns {{ query: string, results: { user_id: string, xp: number, level: number }[], searched: boolean }}
  */
-function searchGuildUsers(guildId, rawQuery, opts = {}) {
+function searchGuildUsers(communityId, rawQuery, opts = {}) {
   const q = String(rawQuery ?? "").trim().slice(0, 64);
   if (!q) return { query: "", results: [], searched: false };
-  const settings = getGuildSettings(guildId);
+  const settings = getGuildSettings(communityId);
   const factor = settings?.level_xp_factor ?? null;
   // §8.15-15.10: numeric queries keep the exact/prefix id search (works
   // offline, DB-only). NAME queries resolve through caller-supplied
@@ -245,10 +245,10 @@ function searchGuildUsers(guildId, rawQuery, opts = {}) {
   // untracked members never appear here, only tracked rows.
   const numeric = /^[0-9]{1,20}$/.test(q);
   const rows = numeric
-    ? searchUsersRepo(guildId, q, { limit: SEARCH_LIMIT })
+    ? searchUsersRepo(communityId, q, { limit: SEARCH_LIMIT })
     : (Array.isArray(opts.nameMatchIds) ? opts.nameMatchIds : [])
         .slice(0, SEARCH_LIMIT)
-        .flatMap((id) => searchUsersRepo(guildId, String(id), { limit: 1 }));
+        .flatMap((id) => searchUsersRepo(communityId, String(id), { limit: 1 }));
   return {
     query: q,
     searched: true,

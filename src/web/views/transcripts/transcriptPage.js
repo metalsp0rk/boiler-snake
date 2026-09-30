@@ -161,7 +161,8 @@ function renderTranscriptPage({
   guilds = [],
   degraded = false,
 }) {
-  const guildId = String(ticket.guild_id ?? "");
+  // Fluxer PR 2: route identity (links, switcher) is the integer community id.
+  const guildId = String(ticket.community_id ?? "");
   const token = String(ticket.transcript_token ?? "");
   const num = String(ticket.ticket_number ?? "?");
   const title = `Ticket #${num} — archived transcript`;

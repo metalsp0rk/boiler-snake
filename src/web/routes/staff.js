@@ -198,9 +198,9 @@ function respondMutationError(res, message) {
 }
 
 /** POST-Redirect-GET back to the staff page (empty body, no-store). */
-function respondMutationRedirect(res, guildId) {
+function respondMutationRedirect(res, communityId) {
   res.writeHead(302, {
-    Location: `/g/${guildId}/staff`,
+    Location: `/g/${communityId}/staff`,
     "Cache-Control": "no-store",
   });
   res.end();
@@ -319,8 +319,8 @@ function registerStaffRoutes(app, options = {}) {
     return defaultData;
   };
   const staffData = options.staffData || {
-    getStaffView: (guildId) => getData().getStaffView(guildId),
-    getOauthStatus: (guildId) => getData().getOauthStatus(guildId),
+    getStaffView: (communityId) => getData().getStaffView(communityId),
+    getOauthStatus: (communityId) => getData().getOauthStatus(communityId),
   };
 
   const oauthConfigFn =
@@ -354,10 +354,14 @@ function registerStaffRoutes(app, options = {}) {
 
   /**
    * Role id + level preamble for the staff-role routes. Returns
-   * { guildId, roleId, level? } or answers the 400 and returns null.
+   * { guildId, communityId, roleId, level? } or answers the 400 and returns
+   * null. guildId is the EXTERNAL snowflake (role-name lookup + @everyone
+   * comparison + Discord cache probes); communityId is the integer route
+   * identity every repository call takes (PR 2).
    */
   const parseStaffRoleInput = (req, res, { level: needLevel }) => {
     const guildId = req.guildAccess.guildId;
+    const communityId = req.guildAccess.communityId;
     const fields = readFields(req);
     const role = parseRoleId(fields.role_id, guildId, options.getClient);
     if (role.error) {
@@ -372,13 +376,14 @@ function registerStaffRoutes(app, options = {}) {
         return null;
       }
     }
-    return { guildId, roleId: role.roleId, level };
+    return { guildId, communityId, roleId: role.roleId, level };
   };
 
   // ---- staff: staff_roles table view (+ sync panel, §8.6 rows) ------------
   app.get("/g/:guildId/staff", requireTier("staff"), async (req, res) => {
-    const guildId = req.guildAccess.guildId;
-    const view = staffData.getStaffView(guildId);
+    const guildId = req.guildAccess.guildId; // external snowflake (role-name cache seam)
+    const communityId = req.guildAccess.communityId; // data + view link id (PR 2: integer)
+    const view = staffData.getStaffView(communityId);
     const document = renderShellPage(req, {
       title: "Staff roles",
       heading: "Staff roles",
@@ -388,7 +393,7 @@ function registerStaffRoutes(app, options = {}) {
         view,
         resolveRoleName: makeRoleNameResolver(options.getClient, guildId),
         envConfig: readEnvConfig(oauthConfigFn),
-        guildId,
+        guildId: communityId,
         tier: req.guildAccess.tier,
         csrfToken: req.csrfToken || null,
         // Phase-3: the panel derives the ADMIN trigger form from this
@@ -404,9 +409,9 @@ function registerStaffRoutes(app, options = {}) {
 
   // ---- staff: command-visibility sync status page (§8.6 row) --------------
   app.get("/g/:guildId/commands", requireTier("staff"), async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const communityId = req.guildAccess.communityId;
     // ONE bounded read — this surface never shows the roles table.
-    const view = staffData.getOauthStatus(guildId);
+    const view = staffData.getOauthStatus(communityId);
     const document = renderShellPage(req, {
       title: "Command visibility",
       heading: "Command visibility",
@@ -437,7 +442,7 @@ function registerStaffRoutes(app, options = {}) {
   postMutation(ROLE_ADD_PATH, "admin", async (req, res) => {
     const parsed = parseStaffRoleInput(req, res, { level: true });
     if (!parsed) return;
-    const { guildId, roleId, level } = parsed;
+    const { guildId, communityId, roleId, level } = parsed;
 
     const probe = probeGuildRole(options.getClient, guildId, roleId);
     if (probe.verifiable && !probe.exists) {
@@ -445,8 +450,8 @@ function registerStaffRoutes(app, options = {}) {
       return;
     }
 
-    const existing = facade.getStaffRole(guildId, roleId);
-    facade.addStaffRole(guildId, roleId, level);
+    const existing = facade.getStaffRole(communityId, roleId);
+    facade.addStaffRole(communityId, roleId, level);
     req.audit({
       action: "staff.role_add",
       targetType: "role",
@@ -464,7 +469,7 @@ function registerStaffRoutes(app, options = {}) {
         ],
       },
     });
-    respondMutationRedirect(res, guildId);
+    respondMutationRedirect(res, communityId);
   });
 
   // ---- POST …/staff/role/remove — ADMIN (slash: audit + mirror ONLY when a
@@ -474,10 +479,10 @@ function registerStaffRoutes(app, options = {}) {
   postMutation(ROLE_REMOVE_PATH, "admin", async (req, res) => {
     const parsed = parseStaffRoleInput(req, res, { level: false });
     if (!parsed) return;
-    const { guildId, roleId } = parsed;
+    const { guildId, communityId, roleId } = parsed;
 
-    const existing = facade.getStaffRole(guildId, roleId);
-    const removed = facade.removeStaffRole(guildId, roleId);
+    const existing = facade.getStaffRole(communityId, roleId);
+    const removed = facade.removeStaffRole(communityId, roleId);
     if (!removed) {
       respondMutationError(res, ERR_NOT_A_CONFIGURED_ROLE);
       return;
@@ -494,7 +499,7 @@ function registerStaffRoutes(app, options = {}) {
         changes: [roleChangeLine(roleId)],
       },
     });
-    respondMutationRedirect(res, guildId);
+    respondMutationRedirect(res, communityId);
   });
 
   // ---- POST …/staff/role/setlevel — ADMIN (slash: unknown role → "not a
@@ -503,7 +508,7 @@ function registerStaffRoutes(app, options = {}) {
   postMutation(ROLE_SETLEVEL_PATH, "admin", async (req, res) => {
     const parsed = parseStaffRoleInput(req, res, { level: true });
     if (!parsed) return;
-    const { guildId, roleId, level } = parsed;
+    const { guildId, communityId, roleId, level } = parsed;
 
     const probe = probeGuildRole(options.getClient, guildId, roleId);
     if (probe.verifiable && !probe.exists) {
@@ -511,7 +516,7 @@ function registerStaffRoutes(app, options = {}) {
       return;
     }
 
-    const existing = facade.getStaffRole(guildId, roleId);
+    const existing = facade.getStaffRole(communityId, roleId);
     if (!existing) {
       respondMutationError(res, ERR_NOT_A_STAFF_ROLE);
       return;
@@ -521,7 +526,7 @@ function registerStaffRoutes(app, options = {}) {
       return;
     }
 
-    facade.setStaffRoleLevel(guildId, roleId, level);
+    facade.setStaffRoleLevel(communityId, roleId, level);
     req.audit({
       action: "staff.role_setlevel",
       targetType: "role",
@@ -537,7 +542,7 @@ function registerStaffRoutes(app, options = {}) {
         ],
       },
     });
-    respondMutationRedirect(res, guildId);
+    respondMutationRedirect(res, communityId);
   });
 
   // ---- POST …/staff/levelrole/set — STAFF (slash /leveltorole set gates on
@@ -547,7 +552,8 @@ function registerStaffRoutes(app, options = {}) {
   // a provably unmanageable mapping is refused with sync.js's own hierarchy
   // warning instead of being silently stored. --------------------------------
   postMutation(LEVELROLE_SET_PATH, "staff", async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.guildId; // external snowflake (role cache seams)
+    const communityId = req.guildAccess.communityId; // data + view link id (PR 2: integer)
     const fields = readFields(req);
     const role = parseRoleId(fields.role_id, guildId, options.getClient);
     if (role.error) {
@@ -572,7 +578,7 @@ function registerStaffRoutes(app, options = {}) {
     }
 
     facade.upsertLevelRole(
-      guildId,
+      communityId,
       role.roleId,
       Math.max(0, level),
       Math.max(0, dropDays)
@@ -593,7 +599,7 @@ function registerStaffRoutes(app, options = {}) {
         ],
       },
     });
-    respondMutationRedirect(res, guildId);
+    respondMutationRedirect(res, communityId);
   });
 
   // ---- POST …/staff/levelrole/remove — STAFF (slash /leveltorole remove
@@ -601,14 +607,15 @@ function registerStaffRoutes(app, options = {}) {
   // unconditionally — the web mirrors that exactly, including removing a
   // mapping for a role Discord has already deleted; no preflight applies.) --
   postMutation(LEVELROLE_REMOVE_PATH, "staff", async (req, res) => {
-    const guildId = req.guildAccess.guildId;
+    const guildId = req.guildAccess.guildId; // external snowflake (role-name resolution)
+    const communityId = req.guildAccess.communityId; // data key (PR 2: integer)
     const role = parseRoleId(readFields(req).role_id, guildId, options.getClient);
     if (role.error) {
       respondMutationError(res, role.error);
       return;
     }
 
-    facade.deleteLevelRole(guildId, role.roleId);
+    facade.deleteLevelRole(communityId, role.roleId);
     req.audit({
       action: "level_roles.remove",
       targetType: "role",
@@ -620,7 +627,7 @@ function registerStaffRoutes(app, options = {}) {
         changes: [roleChangeLine(role.roleId)],
       },
     });
-    respondMutationRedirect(res, guildId);
+    respondMutationRedirect(res, communityId);
   });
 }
 

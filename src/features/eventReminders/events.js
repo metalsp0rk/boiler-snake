@@ -3,6 +3,7 @@
  */
 const { Events } = require("discord.js");
 const { getConfigByScheduledEventId } = require("../../db");
+const { discordCommunityId } = require("../../platform/community");
 const {
   grantRoleIfEligible,
   removeRoleSafe,
@@ -18,7 +19,9 @@ function registerEvents(client) {
       const guild =
         scheduledEvent.guild || client.guilds.cache.get(scheduledEvent.guildId);
       if (!guild || !user?.id) return;
-      const config = getConfigByScheduledEventId(guild.id, scheduledEvent.id);
+      const communityId = discordCommunityId(guild.id);
+      if (communityId == null) return;
+      const config = getConfigByScheduledEventId(communityId, scheduledEvent.id);
       if (!config) return;
       await grantRoleIfEligible(
         guild,
@@ -42,7 +45,9 @@ function registerEvents(client) {
           scheduledEvent.guild ||
           client.guilds.cache.get(scheduledEvent.guildId);
         if (!guild || !user?.id) return;
-        const config = getConfigByScheduledEventId(guild.id, scheduledEvent.id);
+        const communityId = discordCommunityId(guild.id);
+        if (communityId == null) return;
+        const config = getConfigByScheduledEventId(communityId, scheduledEvent.id);
         if (!config) return;
         await removeRoleSafe(guild, user.id, config.role_id);
       } catch (err) {
@@ -68,7 +73,8 @@ function registerEvents(client) {
       const oldStart = eventStartMs(oldEvent);
       const newStart = eventStartMs(event);
       if (oldStart !== newStart && newStart != null) {
-        rescheduleUnsentOffsets(guild.id, event.id, newStart);
+        const communityId = discordCommunityId(guild.id);
+        if (communityId != null) rescheduleUnsentOffsets(communityId, event.id, newStart);
       }
     } catch (err) {
       console.error(

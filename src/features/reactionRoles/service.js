@@ -19,6 +19,20 @@ const { levelFromXp } = require("../../core/xpMath");
 const { Color } = require("../../core/theme");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { ensureCommunity } = require("../../platform/community");
+
+/**
+ * Fluxer PR 2 Discord edge: external snowflake → internal INTEGER community id
+ * (create-on-sight). All repo calls in this module are community-keyed.
+ * @param {string} guildId external Discord guild id
+ * @returns {number} communities.id
+ */
+function communityIdFor(guildId) {
+  return ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(guildId),
+  });
+}
 const {
   logReactionRoleChange,
   logLevelRoleChanges,
@@ -392,7 +406,8 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
   }
 
   const guildId = guild.id;
-  const source = getReactionRolePanel(guildId, sourceMessageId);
+  const communityId = communityIdFor(guildId);
+  const source = getReactionRolePanel(communityId, sourceMessageId);
   if (!source) {
     return {
       ok: false,
@@ -410,7 +425,7 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
     return { ok: false, error: "That channel cannot receive messages." };
   }
 
-  const options = listReactionRoleOptions(guildId, sourceMessageId);
+  const options = listReactionRoleOptions(communityId, sourceMessageId);
   const embed = buildPanelEmbed(source, options);
 
   let msg;
@@ -425,7 +440,7 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
 
   try {
     createReactionRolePanel(
-      guildId,
+      communityId,
       destChannel.id,
       msg.id,
       source.title,
@@ -434,7 +449,7 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
 
     for (const opt of options) {
       upsertReactionRoleOption(
-        guildId,
+        communityId,
         msg.id,
         opt.emoji_key,
         opt.emoji_display,
@@ -456,7 +471,7 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
     };
   }
 
-  const newPanel = getReactionRolePanel(guildId, msg.id);
+  const newPanel = getReactionRolePanel(communityId, msg.id);
   const refresh = await refreshPanelMessage(guild, newPanel);
   if (!refresh.ok) {
     return {
@@ -665,7 +680,9 @@ async function syncMemberReactionRoles(
   { client = null, logSource = null } = {},
 ) {
   const guildId = member.guild.id;
-  const requirements = listReactionRoleLevelRequirements(guildId);
+  const requirements = listReactionRoleLevelRequirements(
+    communityIdFor(guildId),
+  );
   if (!requirements.length) return { removed: [] };
 
   const lvl = Number(level) || 0;
@@ -738,9 +755,10 @@ async function handleReactionRoleAdd(reaction, user) {
   if (!guild || !reaction?.message?.id) return { handled: false };
 
   const guildId = guild.id;
+  const communityId = communityIdFor(guildId);
   const messageId = reaction.message.id;
 
-  if (!isReactionRolePanel(guildId, messageId)) {
+  if (!isReactionRolePanel(communityId, messageId)) {
     return { handled: false };
   }
 
@@ -750,7 +768,7 @@ async function handleReactionRoleAdd(reaction, user) {
     return { handled: true };
   }
 
-  const option = resolveReactionRoleOption(guildId, messageId, emojiKey);
+  const option = resolveReactionRoleOption(communityId, messageId, emojiKey);
   if (!option) {
     // Unconfigured reaction on a managed panel → strip entirely
     await stripExtraneousReaction(reaction, user.id);
@@ -763,8 +781,8 @@ async function handleReactionRoleAdd(reaction, user) {
     return { handled: true };
   }
 
-  const settings = getGuildSettings(guildId);
-  const xp = getXp(guildId, user.id);
+  const settings = getGuildSettings(communityId);
+  const xp = getXp(communityId, user.id);
   const level = levelFromXp(xp, settings.level_xp_factor);
   const minLevel = Number(option.min_level) || 0;
 
@@ -782,7 +800,7 @@ async function handleReactionRoleAdd(reaction, user) {
   if (!member.roles.cache.has(option.role_id)) {
     try {
       await member.roles.add(option.role_id);
-      const panel = getReactionRolePanel(guildId, messageId);
+      const panel = getReactionRolePanel(communityId, messageId);
       await logReactionRoleChange(reaction.client, {
         member,
         user,
@@ -830,16 +848,17 @@ async function handleReactionRoleRemove(reaction, user) {
   if (!guild || !reaction?.message?.id) return { handled: false };
 
   const guildId = guild.id;
+  const communityId = communityIdFor(guildId);
   const messageId = reaction.message.id;
 
-  if (!isReactionRolePanel(guildId, messageId)) {
+  if (!isReactionRolePanel(communityId, messageId)) {
     return { handled: false };
   }
 
   const emojiKey = emojiKeyFromReaction(reaction);
   if (!emojiKey) return { handled: true };
 
-  const option = resolveReactionRoleOption(guildId, messageId, emojiKey);
+  const option = resolveReactionRoleOption(communityId, messageId, emojiKey);
   if (!option) return { handled: true };
 
   // Only strip role when removable is set
@@ -853,7 +872,7 @@ async function handleReactionRoleRemove(reaction, user) {
   if (member.roles.cache.has(option.role_id)) {
     try {
       await member.roles.remove(option.role_id);
-      const panel = getReactionRolePanel(guildId, messageId);
+      const panel = getReactionRolePanel(communityId, messageId);
       await logReactionRoleChange(reaction.client, {
         member,
         user,
@@ -922,7 +941,8 @@ async function applyReactionRoleOption(
   { messageId, parsed, roleId, level, removable },
 ) {
   const guildId = guild.id;
-  const panel = getReactionRolePanel(guildId, messageId);
+  const communityId = communityIdFor(guildId);
+  const panel = getReactionRolePanel(communityId, messageId);
   if (!panel) {
     return {
       ok: false,
@@ -932,7 +952,7 @@ async function applyReactionRoleOption(
 
   enrichParsedEmojiDisplay(guild, parsed);
 
-  const existingOpts = listReactionRoleOptions(guildId, messageId);
+  const existingOpts = listReactionRoleOptions(communityId, messageId);
   const already = existingOpts.some((o) => o.emoji_key === parsed.key);
   if (!already && existingOpts.length >= MAX_OPTIONS_PER_PANEL) {
     return {
@@ -942,7 +962,7 @@ async function applyReactionRoleOption(
   }
 
   upsertReactionRoleOption(
-    guildId,
+    communityId,
     messageId,
     parsed.key,
     parsed.display,
@@ -951,7 +971,7 @@ async function applyReactionRoleOption(
     removable,
   );
 
-  const updated = getReactionRolePanel(guildId, messageId);
+  const updated = getReactionRolePanel(communityId, messageId);
   const result = await refreshPanelMessage(guild, updated);
   if (!result.ok) {
     return {
@@ -969,7 +989,8 @@ async function applyReactionRoleOption(
  */
 async function removeReactionRoleOptionByEmoji(guild, { messageId, parsed }) {
   const guildId = guild.id;
-  const panel = getReactionRolePanel(guildId, messageId);
+  const communityId = communityIdFor(guildId);
+  const panel = getReactionRolePanel(communityId, messageId);
   if (!panel) {
     return {
       ok: false,
@@ -980,7 +1001,7 @@ async function removeReactionRoleOptionByEmoji(guild, { messageId, parsed }) {
 
   enrichParsedEmojiDisplay(guild, parsed);
 
-  const removed = deleteReactionRoleOption(guildId, messageId, parsed.key);
+  const removed = deleteReactionRoleOption(communityId, messageId, parsed.key);
   if (!removed) {
     return {
       ok: false,
@@ -990,7 +1011,7 @@ async function removeReactionRoleOptionByEmoji(guild, { messageId, parsed }) {
     };
   }
 
-  const updated = getReactionRolePanel(guildId, messageId);
+  const updated = getReactionRolePanel(communityId, messageId);
   const result = await refreshPanelMessage(guild, updated);
   if (!result.ok) {
     return {

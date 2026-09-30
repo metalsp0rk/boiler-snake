@@ -11,7 +11,7 @@
  *   the roster ∪ asker allow-list (never resolved against Discord),
  *   title normalizes via normalizeTitle (empty key → drop), body capped
  *   at 400 chars, kind coerced, importance clamped 1–5. The key fields
- *   (guild_id, mem_date, source_message_ids, title_key) are stamped
+ *   (community_id, mem_date, source_message_ids, title_key) are stamped
  *   HERE — the extraction model never emits them (decision 26).
  * - selectMemories: bodies-or-index auto-mode under the one budget with
  *   round-robin ACROSS people, so everyone involved gets seen before any
@@ -141,19 +141,19 @@ function extractCandidates(parsed) {
  * - normalizeTitle(title) empty → drop + skippedInvalid++
  * - body → String().trim() → sliceSafe 400; empty after that → drop + skipped
  * - kind invalid → "profile"; importance → clamp int 1–5 default 3
- * - server-stamps guildId / memDate / sourceMessageIds / titleKey
+ * - server-stamps communityId / memDate / sourceMessageIds / titleKey
  *   (decision 26: the model never emits key fields)
  *
  * @param {unknown} parsed parsed extraction JSON (array | {memories} | "NONE")
  * @param {object} ctx
  * @param {Iterable<unknown>} ctx.allowList allowed subject ids (Set or array)
- * @param {string} ctx.guildId
+ * @param {number} ctx.communityId internal communities.id (repo-asserted)
  * @param {string} ctx.memDate YYYY-MM-DD, UTC day of the trigger message
  * @param {string[]} ctx.sourceMessageIds message ids backing this turn
  * @returns {{ entries: object[], skippedInvalid: number }} entries shaped
  *   for `gorkMemoryUpsert` (camelCase entry fields)
  */
-function validateExtraction(parsed, { allowList, guildId, memDate, sourceMessageIds } = {}) {
+function validateExtraction(parsed, { allowList, communityId, memDate, sourceMessageIds } = {}) {
   const allow = toAllowSet(allowList);
   const sources = Array.isArray(sourceMessageIds)
     ? sourceMessageIds.map(String)
@@ -182,7 +182,7 @@ function validateExtraction(parsed, { allowList, guildId, memDate, sourceMessage
       continue;
     }
     entries.push({
-      guildId: String(guildId ?? ""),
+      communityId,
       subjectUserId: subject,
       memDate: String(memDate ?? ""),
       title: sliceSafe(title, MEMORY_TITLE_MAX_CHARS), // display half
@@ -355,7 +355,7 @@ function parseExtractionJson(content) {
 
 /**
  * Build the extraction turn's chat messages (§7.16.3). The key fields
- * (guild_id, mem_date, source_message_ids, title_key) are server-stamped
+ * (community_id, mem_date, source_message_ids, title_key) are server-stamped
  * later by validateExtraction — they NEVER appear in the model output.
  *
  * @param {object} input
@@ -382,7 +382,7 @@ function buildExtractionMessages({
     "You extract durable memories about Discord users from one Q&A turn of the community bot gork.",
     "Reply with STRICT JSON ONLY: {\"memories\": [{\"subject_user_id\": string, \"title\": string, \"body\": string, \"kind\": string, \"importance\": number}]}" +
       " — or {\"memories\": []} when nothing durable was learned.",
-    "NEVER invent subjects: subject_user_id must be one of the allowed ids provided. Dates, guild ids and message ids are stamped server-side — never emit them.",
+    "NEVER invent subjects: subject_user_id must be one of the allowed ids provided. Dates, community ids and message ids are stamped server-side — never emit them.",
     "Durable means: preferences, ongoing projects, roles, recurring topics, relationships, events. Small talk stores nothing.",
     "Never store secrets, credentials, or personal information about people who are not the subject.",
     "Each body is ONE self-contained fact, at most 400 characters. Title is a short human label (80 chars max).",
@@ -447,7 +447,7 @@ function emptyMemoryContext() {
  * NEVER throws — any failure degrades to the empty context.
  *
  * @param {object} opts
- * @param {string} opts.guildId
+ * @param {number} opts.communityId internal communities.id (repo-asserted)
  * @param {{ entries: Map<string, object> }} opts.roster buildRoster() result
  * @param {number} opts.budgetChars clamped block budget (0 = unlimited)
  * @param {string|null} [opts.botId] the bot's own user id to exclude
@@ -456,7 +456,7 @@ function emptyMemoryContext() {
  *   rows = included rows (block content); allRows = every row loaded
  *   (reused by the extraction turn as existingMemoriesBlock — no re-query)
  */
-function loadMemoryContext({ guildId, roster, budgetChars, botId, repo } = {}) {
+function loadMemoryContext({ communityId, roster, budgetChars, botId, repo } = {}) {
   try {
     const db = repo || require("../../db");
     const entries = roster?.entries;
@@ -464,7 +464,7 @@ function loadMemoryContext({ guildId, roster, budgetChars, botId, repo } = {}) {
       (id) => String(id) !== String(botId ?? ""),
     );
     if (!involved.length) return emptyMemoryContext();
-    const allRows = db.gorkMemoryListForSubjects(guildId, involved) || [];
+    const allRows = db.gorkMemoryListForSubjects(communityId, involved) || [];
     if (!allRows.length) return emptyMemoryContext();
     const byPerson = new Map();
     for (const row of allRows) {
@@ -490,7 +490,7 @@ function loadMemoryContext({ guildId, roster, budgetChars, botId, repo } = {}) {
       allRows,
     };
   } catch (err) {
-    console.log(`[gork] memory read failed in ${guildId}: ${err?.message || err}`);
+    console.log(`[gork] memory read failed in ${communityId}: ${err?.message || err}`);
     return emptyMemoryContext();
   }
 }
@@ -507,7 +507,8 @@ function loadMemoryContext({ guildId, roster, budgetChars, botId, repo } = {}) {
  * are injectable for tests.
  *
  * @param {object} opts
- * @param {string} opts.guildId
+ * @param {number} opts.communityId internal communities.id (repo-asserted)
+ * @param {string} [opts.guildId] Discord snowflake — audit/log label only
  * @param {string} opts.question
  * @param {string} opts.answer shipped (sanitized, capped) answer
  * @param {string} [opts.contextBlock] conversation context text
@@ -527,7 +528,9 @@ async function runMemoryTurn(opts = {}) {
   const zeros = { stored: 0, skippedInvalid: 0, mode: "none" };
   try {
     const {
-      guildId,
+      communityId,
+      // Discord-facing label/audit id (audit embeds are keyed by snowflake).
+      guildId = null,
       question,
       answer,
       contextBlock = "",
@@ -578,7 +581,7 @@ async function runMemoryTurn(opts = {}) {
     }
     const { entries, skippedInvalid } = validateExtraction(parsed, {
       allowList: allow,
-      guildId,
+      communityId,
       memDate,
       sourceMessageIds,
     });

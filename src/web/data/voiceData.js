@@ -6,7 +6,7 @@
  * Query-budget contract (§8.6, review-blocking):
  *  - the DB sections are TWO bounded facade reads per uncached assembly:
  *      current voice sessions → voice_sessions, ONE parameterized
- *                             `WHERE guild_id = ? … LIMIT ≤ SESSIONS_CAP`
+ *                             `WHERE community_id = ? … LIMIT ≤ SESSIONS_CAP`
  *                             PK-prefix read (see readVoiceSessions for why
  *                             the facade `db` handle is used directly), and
  *      voice-XP config row    → getGuildSettings(guildId)  (1 PK row)
@@ -50,6 +50,7 @@
  * Data/integrationsData twin; async getVoice mirrors dashboardData).
  */
 
+const { discordCommunityId } = require("../../platform/community");
 const { isSecretColumnName } = require("./settingsData");
 const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, textOrNull, numOrNull, makeGuardRead, makeCacheSet, withMusicPlayer } = require("./_shared");
 
@@ -79,28 +80,28 @@ function nonNegNumOrNull(value) {
 
 /**
  * ONE bounded, guild-scoped, parameterized session read (see module header,
- * data-source note 1): the voice_sessions PK is (guild_id, user_id), so
- * WHERE guild_id = ? is a PK-prefix scan bounded by the guild's CONNECTED
+ * data-source note 1): the voice_sessions PK is (community_id, user_id), so
+ * WHERE community_id = ? is a PK-prefix scan bounded by the guild's CONNECTED
  * users (rows live only while a user is connected), and the LIMIT keeps the
  * §8.6 cap even for absurd fixtures. Repositories stay untouched.
  * @param {object} facade src/db facade (exports the better-sqlite3 handle)
- * @param {string} guildId
+ * @param {number} communityId internal communities.id (fluxer PR 2)
  * @param {number} cap
  */
-function readVoiceSessions(facade, guildId, cap) {
+function readVoiceSessions(facade, communityId, cap) {
   const handle = facade && facade.db;
   if (!handle || typeof handle.prepare !== "function") {
     throw new TypeError("voice sessions read needs the facade db handle");
   }
   return handle
     .prepare(
-      `SELECT guild_id, user_id, channel_id, joined_at
+      `SELECT community_id, user_id, channel_id, joined_at
        FROM voice_sessions
-       WHERE guild_id = ?
+       WHERE community_id = ?
        ORDER BY joined_at DESC
        LIMIT ?`
     )
-    .all(guildId, cap);
+    .all(communityId, cap);
 }
 
 /**
@@ -433,8 +434,8 @@ function createVoiceData(options = {}) {
   const cacheSet = makeCacheSet(cache, maxEntries);
 
   /** Voice-XP config cluster: 1 PK row, whitelist projection only. */
-  function buildConfig(guildId) {
-    const res = guardRead(() => facade.getGuildSettings(guildId), "guild settings");
+  function buildConfig(communityId) {
+    const res = guardRead(() => facade.getGuildSettings(communityId), "guild settings");
     const row = res.value || {};
     if (res.available) {
       for (const key of Object.keys(row)) {
@@ -451,9 +452,9 @@ function createVoiceData(options = {}) {
   }
 
   /** Sessions cluster: the ONE bounded guild-scoped statement (see header). */
-  function buildSessions(guildId, at) {
+  function buildSessions(communityId, at) {
     const res = guardRead(
-      () => readVoiceSessions(facade, guildId, SESSIONS_CAP),
+      () => readVoiceSessions(facade, communityId, SESSIONS_CAP),
       "voice sessions"
     );
     const rows = res.available && Array.isArray(res.value) ? res.value : [];
@@ -480,13 +481,16 @@ function createVoiceData(options = {}) {
   /**
    * ONE uncached assembly: 2 bounded facade queries + 2 in-memory provider
    * reads (never awaited twice, never on cache hits).
-   * @param {string} guildId
+   * @param {string} guildId external Discord snowflake (providers + display)
    * @param {number} at clock ms for freshness + elapsed-minutes math
    */
   async function buildSnapshot(guildId, at) {
+    // Fluxer PR 2: repos key by the integer community id; providers keep the
+    // external snowflake. Unregistered guilds degrade to available:false.
+    const communityId = discordCommunityId(guildId);
     const [sessions, config, musicRaw, liveRaw] = await Promise.all([
-      Promise.resolve(buildSessions(guildId, at)),
-      Promise.resolve(buildConfig(guildId)),
+      Promise.resolve(buildSessions(communityId, at)),
+      Promise.resolve(buildConfig(communityId)),
       callProvider(getMusicState, guildId, "music state", () => null),
       callProvider(getLiveVoice, guildId, "live voice", () => null),
     ]);

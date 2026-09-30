@@ -27,6 +27,8 @@ const {
 const { isAdminOrMod, isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
+const { ensureCommunity } = require("../../platform/community");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const {
   getCommandPermissionOAuthConfig,
@@ -175,6 +177,12 @@ async function handleRoleAdd(interaction, ctx) {
   const level = normalizeStaffLevel(
     interaction.options.getString("level", true),
   );
+  // Fluxer PR 2: staff_roles + command-permission repos key by integer.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
 
   if (role.id === interaction.guildId) {
     await replyEphemeral(interaction, {
@@ -183,8 +191,8 @@ async function handleRoleAdd(interaction, ctx) {
     return;
   }
 
-  const existing = getStaffRole(interaction.guildId, role.id);
-  addStaffRole(interaction.guildId, role.id, level, interaction.user.id);
+  const existing = getStaffRole(communityId, role.id);
+  addStaffRole(communityId, role.id, level, interaction.user.id);
   recordSlashAudit({
     interaction,
     action: "staff.role_add",
@@ -194,7 +202,7 @@ async function handleRoleAdd(interaction, ctx) {
   });
 
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: existing ? "Staff role level updated" : "Staff role added",
@@ -220,12 +228,12 @@ async function handleRoleAdd(interaction, ctx) {
         ? `Updated ${role} to **${level}** staff.`
         : `Added ${role} as **${level}** staff.`) +
       `\nMembers with this role pass the staff gate and are honeypot-exempt.\n${ticketNote}` +
-      (hasCommandPermissionOauth(interaction.guildId)
+      (hasCommandPermissionOauth(communityId)
         ? "\n_Refreshing slash-command visibility…_"
         : "\n_Tip: run `/staff syncpermissions` so this role can **see** staff slash commands._"),
   });
 
-  void maybeAutoSyncCommandPermissions(interaction.guildId);
+  void maybeAutoSyncCommandPermissions(communityId);
 }
 
 /**
@@ -241,8 +249,13 @@ async function handleRoleRemove(interaction, ctx) {
   }
 
   const role = interaction.options.getRole("role", true);
-  const existing = getStaffRole(interaction.guildId, role.id);
-  const removed = removeStaffRole(interaction.guildId, role.id);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const existing = getStaffRole(communityId, role.id);
+  const removed = removeStaffRole(communityId, role.id);
 
   if (removed) {
     recordSlashAudit({
@@ -253,7 +266,7 @@ async function handleRoleRemove(interaction, ctx) {
       details: { previous_level: existing ? existing.level : null },
     });
     await logConfigChange(
-      ctx?.client || interaction.client,
+      getDiscordOutbound(ctx?.client || interaction.client),
       interaction.guildId,
       {
         title: "Staff role removed",
@@ -270,7 +283,7 @@ async function handleRoleRemove(interaction, ctx) {
       : `${role} is not a configured staff role.`,
   });
 
-  if (removed) void maybeAutoSyncCommandPermissions(interaction.guildId);
+  if (removed) void maybeAutoSyncCommandPermissions(communityId);
 }
 
 /**
@@ -289,7 +302,13 @@ async function handleRoleSetLevel(interaction, ctx) {
   const level = normalizeStaffLevel(
     interaction.options.getString("level", true),
   );
-  const existing = getStaffRole(interaction.guildId, role.id);
+  // Fluxer PR 2: staff_roles + command-permission repos key by integer.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const existing = getStaffRole(communityId, role.id);
 
   if (!existing) {
     await replyEphemeral(interaction, {
@@ -305,7 +324,7 @@ async function handleRoleSetLevel(interaction, ctx) {
     return;
   }
 
-  setStaffRoleLevel(interaction.guildId, role.id, level);
+  setStaffRoleLevel(communityId, role.id, level);
   recordSlashAudit({
     interaction,
     action: "staff.role_setlevel",
@@ -315,7 +334,7 @@ async function handleRoleSetLevel(interaction, ctx) {
   });
 
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: "Staff role level changed",
@@ -338,7 +357,7 @@ async function handleRoleSetLevel(interaction, ctx) {
 
   // Levels don't change Discord command overwrites (all staff roles get allows),
   // but keep auto-sync for consistency if operators expect it.
-  void maybeAutoSyncCommandPermissions(interaction.guildId);
+  void maybeAutoSyncCommandPermissions(communityId);
 }
 
 /**
@@ -350,7 +369,12 @@ async function handleRoleList(interaction) {
     return;
   }
 
-  const rows = listStaffRoles(interaction.guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const rows = listStaffRoles(communityId);
   if (!rows.length) {
     await replyEphemeral(interaction, {
       content:
@@ -464,8 +488,14 @@ async function handleSyncPermissions(interaction) {
 
   const forceReauth = !!interaction.options.getBoolean("force_reauth");
   const guildId = interaction.guildId;
+  // Fluxer PR 2: oauth + sync repos key by the integer community id.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
 
-  if (forceReauth && hasCommandPermissionOauth(guildId)) {
+  if (forceReauth && hasCommandPermissionOauth(communityId)) {
     // Operator wants a FRESH consent round even though a token is stored —
     // link reply, no sync (identical to the not-authorized branch below).
     let url;
@@ -484,7 +514,7 @@ async function handleSyncPermissions(interaction) {
     return;
   }
 
-  await runSyncPermissionsViaCore(interaction, guildId, cfg);
+  await runSyncPermissionsViaCore(interaction, communityId, cfg);
 }
 
 /**
@@ -492,12 +522,15 @@ async function handleSyncPermissions(interaction) {
  * reply + the fail-safe slash audit (recordSlashAudit NEVER throws — the
  * web twin writes FAIL-CLOSED via req.audit; see core header).
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {string} guildId
+ * @param {number} communityId Fluxer PR 2: internal communities.id (integer)
  * @param {{ redirectUri: string|null }} cfg
  */
-async function runSyncPermissionsViaCore(interaction, guildId, cfg) {
+async function runSyncPermissionsViaCore(interaction, communityId, cfg) {
+  // External snowflake for the Discord-facing surfaces: OAuth state signing
+  // and the audit target_id DISPLAY field.
+  const guildId = String(interaction.guildId ?? "");
   try {
-    const out = await runCommandVisibilitySync(guildId, {
+    const out = await runCommandVisibilitySync(communityId, {
       // defer exactly when the sync is about to run (post-preconditions,
       // pre-Discord-call) — the pre-refactor choreography.
       onBeforeSync: () =>
@@ -534,7 +567,7 @@ async function runSyncPermissionsViaCore(interaction, guildId, cfg) {
     }
 
     const result = out.result;
-    const oauth = getCommandPermissionOauth(guildId);
+    const oauth = getCommandPermissionOauth(communityId);
     recordSlashAudit({
       interaction,
       action: SYNC_AUDIT_ACTION,
@@ -609,10 +642,15 @@ async function handleSettings(interaction) {
     return;
   }
 
-  const rows = listStaffRoles(interaction.guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const rows = listStaffRoles(communityId);
   const seniors = rows.filter((r) => normalizeStaffLevel(r.level) === "senior");
   const juniors = rows.filter((r) => normalizeStaffLevel(r.level) === "junior");
-  const oauth = getCommandPermissionOauth(interaction.guildId);
+  const oauth = getCommandPermissionOauth(communityId);
   const syncLine = oauth
     ? `Command visibility sync: **authorized**` +
       (oauth.last_sync_at

@@ -21,6 +21,7 @@ const { renderTicketIndexContent } = require("../views/tickets/indexPage");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const { requireTier } = require("../middleware/requireTier");
 const { resolveMemberNames } = require("./shared/discord-cache");
+const { shellGuilds } = require("./shared/shell.js");
 const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { listArchivedTickets, countArchivedTickets } = require("../../db");
 
@@ -47,7 +48,10 @@ function registerGuildArchiveRoutes(app, options = {}) {
   // Single path (no trailing-slash alias): matches EVERY other /g shell page.
   app.get("/g/:guildId/t", requireTier("staff"), async (req, res) => {
     try {
+      // Fluxer PR 2: repo reads + view link props use the integer community
+      // id; the member-cache seam keeps the external snowflake.
       const guildId = req.guildAccess.guildId;
+      const communityId = req.guildAccess.communityId;
       const url = new URL(req.url || "/", "http://localhost");
       const q = String(url.searchParams.get("q") || "").trim().slice(0, 100);
 
@@ -56,11 +60,11 @@ function registerGuildArchiveRoutes(app, options = {}) {
 
       // Guild comes from the URL PARAM already vetted by guildScope — the
       // query can only ever set q/page, never the guild (§8.6 no-enumeration).
-      const total = countArchivedTickets({ guildId, q });
+      const total = countArchivedTickets({ communityId, q });
       const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
       if (page > totalPages) page = totalPages;
       const tickets = listArchivedTickets({
-        guildId,
+        communityId,
         limit: PAGE_SIZE,
         offset: (page - 1) * PAGE_SIZE,
         q,
@@ -76,18 +80,7 @@ function registerGuildArchiveRoutes(app, options = {}) {
 
       // Switcher: same cached staffed list the shell uses; the viewed guild
       // ALWAYS renders (shell doctrine), even when the read degraded.
-      let guilds = [{ id: guildId, name: guildId }];
-      try {
-        const listed = await resolver.listGuilds(req.webSession);
-        if (listed && Array.isArray(listed.guilds) && listed.guilds.length > 0) {
-          guilds = listed.guilds.slice();
-          if (!guilds.some((g) => g.id === guildId)) {
-            guilds.unshift({ id: guildId, name: guildId });
-          }
-        }
-      } catch {
-        /* switcher is a convenience; the archive body stands without it */
-      }
+      const guilds = await shellGuilds(resolver, req);
 
       const document = renderShellPage(req, {
         title: "Ticket archive",
@@ -97,10 +90,10 @@ function registerGuildArchiveRoutes(app, options = {}) {
           total,
           page,
           pageSize: PAGE_SIZE,
-          guildId,
+          guildId: communityId,
           q,
-          namesByGuild: new Map([[guildId, names]]),
-          baseUrl: `/g/${guildId}/t`,
+          namesByGuild: new Map([[communityId, names]]),
+          baseUrl: `/g/${communityId}/t`,
           inShell: true,
         }),
         guilds,

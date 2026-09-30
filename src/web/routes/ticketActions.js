@@ -320,18 +320,20 @@ function registerTicketActionsRoutes(app, options = {}) {
   });
 
   /**
-   * Load the ticket the body names and prove it belongs to THIS guild.
-   * Unknown id and foreign-guild id are the SAME generic 404 (resource-
+   * Load the ticket the body names and prove it belongs to THIS community.
+   * Unknown id and foreign-community id are the SAME generic 404 (resource-
    * level no-enumeration; guildScope already answered the guild-level rule).
+   * @param {Record<string, unknown>} fields req.bodyFields
+   * @param {number} communityId integer route identity (rows carry community_id)
    * @returns {{ ok: true, ticket: object } | { ok: false, refused: "invalid"|"not_found", errorSlug?: string }}
    */
-  const loadTicket = (fields, guildId) => {
+  const loadTicket = (fields, communityId) => {
     const parsed = parseTicketIdField(fields);
     if (!parsed.ok) {
       return { ok: false, refused: "invalid", errorSlug: parsed.errorSlug };
     }
     const ticket = facade.getTicketById(parsed.ticketId);
-    if (!ticket || String(ticket.guild_id) !== String(guildId)) {
+    if (!ticket || String(ticket.community_id) !== String(communityId)) {
       return { ok: false, refused: "not_found" };
     }
     return { ok: true, ticket };
@@ -344,7 +346,10 @@ function registerTicketActionsRoutes(app, options = {}) {
   // untouched by this module.
   app.get(ACTIONS_PAGE, requireTier("senior"), async (req, res) => {
     const guildId = req.guildAccess.guildId;
-    const tickets = facade.listOpenTickets(guildId, { limit: OPEN_LIST_LIMIT });
+    // Fluxer PR 2: data reads + view link prop use the integer community id;
+    // the member-cache seam keeps the external snowflake.
+    const communityId = req.guildAccess.communityId;
+    const tickets = facade.listOpenTickets(communityId, { limit: OPEN_LIST_LIMIT });
     // UX v1.1 (§8.15): display names for creator + current claimant.
     const nameIds = [
       ...new Set(
@@ -360,7 +365,7 @@ function registerTicketActionsRoutes(app, options = {}) {
       subheading:
         "Senior staff — claim / close / summary regen run the exact slash pipelines (audit origin web). Archive and creation stay slash-only.",
       content: renderTicketActionsBody({
-        guildId,
+        guildId: communityId,
         tickets,
         names,
         csrfToken: req.csrfToken || null,
@@ -383,14 +388,18 @@ function registerTicketActionsRoutes(app, options = {}) {
 
   // ---- POST claim (slash /ticket claim twin) ------------------------------
   postMutation(CLAIM_PATH, async (req, res) => {
+    // Fluxer PR 2: guildId stays the EXTERNAL snowflake (Discord seams +
+    // audit entry target); communityId (integer) drives the ticket repo,
+    // the overwrites helper's staff-role lookup, and the PRG link.
     const guildId = req.guildAccess.guildId;
-    const loaded = loadTicket(readFields(req), guildId);
+    const communityId = req.guildAccess.communityId;
+    const loaded = loadTicket(readFields(req), communityId);
     if (!loaded.ok) {
       if (loaded.refused === "not_found") {
         sendNotFound(res);
         return;
       }
-      flash(res, guildId, "error", loaded.errorSlug);
+      flash(res, communityId, "error", loaded.errorSlug);
       return;
     }
     const { ticket } = loaded;
@@ -398,7 +407,7 @@ function registerTicketActionsRoutes(app, options = {}) {
     // Slash requireOpenTicketChannel (index.js:604): OPEN only. Refusal
     // happens BEFORE claimTicket — zero writes, zero audit.
     if (ticket.status !== "open") {
-      flash(res, guildId, "error", "ticket_not_open");
+      flash(res, communityId, "error", "ticket_not_open");
       return;
     }
 
@@ -433,7 +442,9 @@ function registerTicketActionsRoutes(app, options = {}) {
       const guild = resolveGuildCacheOnly(client, guildId);
       try {
         await applyOverwrites(channel, {
-          guildId,
+          // Feeds the CONVERTED staffRoles repository (senior-role fallback
+          // path) — integer community id; everyoneId stays the Discord id.
+          guildId: communityId,
           everyoneId: guild?.id ?? guildId,
           botUserId: client?.user?.id,
           ticket: updated,
@@ -450,21 +461,24 @@ function registerTicketActionsRoutes(app, options = {}) {
       }
     }
 
-    flash(res, guildId, "done", "ticket_claimed");
+    flash(res, communityId, "done", "ticket_claimed");
     // fail-closed: an audit throw aborts with the generic 500
   });
 
   // ---- POST close (slash /ticket close twin — soft close) -----------------
   postMutation(CLOSE_PATH, async (req, res) => {
+    // Fluxer PR 2: guildId = EXTERNAL snowflake (cache seams + audit target);
+    // communityId (integer) = ticket repo + PRG link.
     const guildId = req.guildAccess.guildId;
+    const communityId = req.guildAccess.communityId;
     const fields = readFields(req);
-    const loaded = loadTicket(fields, guildId);
+    const loaded = loadTicket(fields, communityId);
     if (!loaded.ok) {
       if (loaded.refused === "not_found") {
         sendNotFound(res);
         return;
       }
-      flash(res, guildId, "error", loaded.errorSlug);
+      flash(res, communityId, "error", loaded.errorSlug);
       return;
     }
     const { ticket } = loaded;
@@ -473,7 +487,7 @@ function registerTicketActionsRoutes(app, options = {}) {
     // (archive of a closed ticket stays slash /ticket archive — out of
     // the §8.6 web mutation scope). Zero writes on refusal.
     if (ticket.status !== "open") {
-      flash(res, guildId, "error", "ticket_not_open");
+      flash(res, communityId, "error", "ticket_not_open");
       return;
     }
 
@@ -483,7 +497,7 @@ function registerTicketActionsRoutes(app, options = {}) {
     // shape, repo normalizeTicketReason allowEmpty).
     const rawReason = String(fields.reason == null ? "" : fields.reason).trim();
     if (rawReason.length > MAX_TICKET_REASON) {
-      flash(res, guildId, "error", "close_reason_too_long");
+      flash(res, communityId, "error", "close_reason_too_long");
       return;
     }
     const closeReason = rawReason || null;
@@ -523,19 +537,22 @@ function registerTicketActionsRoutes(app, options = {}) {
       // (only its staff-note add-on does — delta (4) drops the add-on).
     });
 
-    flash(res, guildId, "done", "ticket_closed");
+    flash(res, communityId, "done", "ticket_closed");
   });
 
   // ---- POST summarize (slash /ticket summarize twin — regen) --------------
   postMutation(SUMMARIZE_PATH, async (req, res) => {
+    // Fluxer PR 2: guildId = EXTERNAL snowflake (audit target); communityId
+    // (integer) = ticket scoping + PRG link.
     const guildId = req.guildAccess.guildId;
-    const loaded = loadTicket(readFields(req), guildId);
+    const communityId = req.guildAccess.communityId;
+    const loaded = loadTicket(readFields(req), communityId);
     if (!loaded.ok) {
       if (loaded.refused === "not_found") {
         sendNotFound(res);
         return;
       }
-      flash(res, guildId, "error", loaded.errorSlug);
+      flash(res, communityId, "error", loaded.errorSlug);
       return;
     }
     const { ticket } = loaded;
@@ -552,7 +569,7 @@ function registerTicketActionsRoutes(app, options = {}) {
     // archived tickets are refused. Open AND soft-closed are allowed —
     // exactly what slash status:"any" permits for live channels.
     if (Number(ticket.archived) === 1) {
-      flash(res, guildId, "error", "ticket_archived");
+      flash(res, communityId, "error", "ticket_archived");
       return;
     }
 
@@ -560,7 +577,7 @@ function registerTicketActionsRoutes(app, options = {}) {
     // the slash silently returns a stats fallback here; the web refuses
     // instead of pretending a "regeneration" happened without one.
     if (!aiConfigured()) {
-      flash(res, guildId, "error", "ai_not_configured");
+      flash(res, communityId, "error", "ai_not_configured");
       return;
     }
 
@@ -570,7 +587,7 @@ function registerTicketActionsRoutes(app, options = {}) {
     // conversation…") as a fixed slug; zero writes, zero audit.
     const messages = facade.listTicketMessages(ticket.id);
     if (!messages.length) {
-      flash(res, guildId, "error", "messages_unavailable");
+      flash(res, communityId, "error", "messages_unavailable");
       return;
     }
 
@@ -583,6 +600,8 @@ function registerTicketActionsRoutes(app, options = {}) {
     const summary = await summarizeTicket(ticket, messages, {});
 
     // Slash-exact vocabulary + detail shape (handleSummarize:2145-2155).
+    // Audit entry keeps the EXTERNAL guild snowflake (audit resolves the
+    // community internally from it).
     req.audit({
       action: "tickets.summarize",
       targetType: "ticket",
@@ -596,7 +615,7 @@ function registerTicketActionsRoutes(app, options = {}) {
       // No mirror: the slash summarize posts NO channel embed.
     });
 
-    flash(res, guildId, "done", summary?.source === "ai" ? "summary_ai" : "summary_fallback");
+    flash(res, communityId, "done", summary?.source === "ai" ? "summary_ai" : "summary_fallback");
   });
 }
 

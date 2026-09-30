@@ -153,6 +153,28 @@ function transcriptEvents(row) {
  *   the qa trigger row carries the memory_turn companions).
  * @returns {object} v1 fixture
  */
+/**
+ * Resolve the fixture's Discord-facing trigger guild id (Fluxer PR 2).
+ * DB rows carry `community_id` (int) → registry lookup for the external id.
+ * DI/unit rows may carry `externalGuildId` directly, or the pre-cutover
+ * `guild_id` column — both pass through unchanged (no DB required).
+ * @param {object} row gork_interactions row
+ * @returns {string}
+ */
+function resolveTriggerGuildId(row) {
+  if (row.externalGuildId != null && row.externalGuildId !== "") {
+    return String(row.externalGuildId);
+  }
+  if (Number.isSafeInteger(row.community_id)) {
+    const registry = require("../src/platform/community");
+    return (
+      registry.getCommunityById(row.community_id)?.externalGuildId ??
+      String(row.community_id)
+    );
+  }
+  return String(row.guild_id ?? "");
+}
+
 function buildFixture(row, opts = {}) {
   const { chainRows, chainTurns } = opts;
   const settings = parseJsonColumn(row.settings);
@@ -241,7 +263,9 @@ function buildFixture(row, opts = {}) {
       "secrets. Re-record with scripts/export-gork-log.js after intentional " +
       "prompt-shape changes.",
     trigger: {
-      guildId: String(row.guild_id),
+      // Fluxer PR 2: rows key by the integer community id; the fixture keeps
+      // the Discord-facing external id for replay.
+      guildId: resolveTriggerGuildId(row),
       channelId: String(row.channel_id),
       messageId: String(row.message_id),
       userId: String(row.user_id),
@@ -365,9 +389,12 @@ function buildFixturesFromRows(rows) {
  */
 function findChainTurns(db, row) {
   if (!row || !row.uid) return [];
+  // Post-cutover rows carry the integer community id; synthetic/unit rows
+  // have no chain in any database.
+  if (!Number.isSafeInteger(row.community_id)) return [];
   try {
     const listed = db.listGorkInteractions({
-      guildId: row.guild_id,
+      communityId: row.community_id,
       kind: "memory_turn",
       limit: 200,
     });
@@ -427,8 +454,25 @@ function main(argv) {
     }
 
     const kind = opts.kind === "all" ? undefined : opts.kind;
+    // Fluxer PR 2: --guild accepts the INTEGER community id (as typed on
+    // argv) or a Discord snowflake, which the registry resolves to one.
+    const registry = require("../src/platform/community");
+    const asInt = Number(opts.guild);
+    let communityId = null;
+    if (Number.isSafeInteger(asInt) && asInt >= 1 && registry.getCommunityById(asInt)) {
+      communityId = asInt;
+    } else {
+      communityId = registry.discordCommunityId(String(opts.guild));
+    }
+    if (communityId == null) {
+      console.error(
+        `[export-gork-log] "${opts.guild}" is not a known community id or ` +
+          "registered Discord guild id — nothing to export.",
+      );
+      return 1;
+    }
     const listed = db.listGorkInteractions({
-      guildId: opts.guild,
+      communityId,
       kind,
       limit: opts.limit,
     });

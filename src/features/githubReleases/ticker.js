@@ -107,7 +107,7 @@ async function sendReleaseNotification(client, watch, release) {
     .catch(() => null);
   if (!channel) {
     console.error(
-      `[github] Could not find release channel ${watch.channel_id} for ${watch.repo} (guild ${watch.guild_id})`,
+      `[github] Could not find release channel ${watch.channel_id} for ${watch.repo} (community ${watch.community_id})`,
     );
     return false;
   }
@@ -128,12 +128,12 @@ async function sendReleaseNotification(client, watch, release) {
         : { parse: [] },
     });
     console.log(
-      `[github] Sent release notification for ${watch.repo} ${release.tag} in guild ${watch.guild_id}`,
+      `[github] Sent release notification for ${watch.repo} ${release.tag} in community ${watch.community_id}`,
     );
     return true;
   } catch (err) {
     console.error(
-      `[github] Failed to send release notification for ${watch.repo} ${release.tag} (guild ${watch.guild_id}):`,
+      `[github] Failed to send release notification for ${watch.repo} ${release.tag} (community ${watch.community_id}):`,
       err?.message || err,
     );
     return false;
@@ -151,7 +151,7 @@ async function sendReleaseNotification(client, watch, release) {
 async function processWatch(client, watch, deps = defaultDeps) {
   if (!watch.channel_id) {
     console.log(
-      `[github] Watch ${watch.repo} in guild ${watch.guild_id} has no channel configured; run /github channel`,
+      `[github] Watch ${watch.repo} in community ${watch.community_id} has no channel configured; run /github channel`,
     );
     return { ok: false, skipped: "no channel configured (use /github channel)" };
   }
@@ -160,7 +160,7 @@ async function processWatch(client, watch, deps = defaultDeps) {
   const result = await fetch(watch.repo, watch.token || null);
   if (!result.ok) {
     console.error(
-      `[github] Release lookup failed for ${watch.repo} (guild ${watch.guild_id}): ${result.error}`,
+      `[github] Release lookup failed for ${watch.repo} (community ${watch.community_id}): ${result.error}`,
     );
     return { ok: false, error: result.error };
   }
@@ -179,7 +179,7 @@ async function processWatch(client, watch, deps = defaultDeps) {
     announced += 1;
   }
 
-  updateGithubWatchReleaseState(watch.guild_id, watch.repo, {
+  updateGithubWatchReleaseState(watch.community_id, watch.repo, {
     lastReleaseId: newest ? newest.id : watch.last_release_id,
     lastReleasePublishedAt: newest
       ? newest.publishedAtMs
@@ -208,7 +208,7 @@ async function runGithubReleaseTick(client, deps = defaultDeps) {
       await processWatch(client, watch, deps);
     } catch (err) {
       console.error(
-        `[github] Error processing watch ${watch.repo} (guild ${watch.guild_id}):`,
+        `[github] Error processing watch ${watch.repo} (community ${watch.community_id}):`,
         err?.message || err,
       );
     }

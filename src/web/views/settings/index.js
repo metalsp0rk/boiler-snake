@@ -487,7 +487,8 @@ function formatAge(ms) {
  *   cache-only name lookup (getClient seam in the route); absent ⇒ ids only
  * @param {string|null} [input.csrfToken] req.csrfToken — null/absent ⇒
  *   forms render but the middleware rejects every post (fail-closed anyway)
- * @param {string|null} [input.guildId] scopes the form actions to this guild
+ * @param {number|string|null} [input.guildId] scopes the form actions to this
+ *   guild's ROUTE identity (PR 2: integer communities.id)
  * @param {{kind: "info"|"error", key: string}|null} [input.flash] whitelisted
  *   PRG flag from the route; renders one fixed FLASH_MESSAGES string
  * @returns {import("../escape").SafeString}

@@ -5,13 +5,13 @@
  *
  * Query-budget contract (§8.6, review-blocking):
  *  - every read is guild-scoped by construction: the first positional arg
- *    of both builders is guildId, taken ONLY from req.guildAccess.guildId;
+ *    of both builders is communityId, taken ONLY from req.guildAccess.communityId;
  *  - page size defaults to 25 and is hard-clamped to ≤100 rows (the §8.6
  *    list cap); offsets clamp to MAX_OFFSET (1000, the shared web bound —
  *    a hostile `?o=999999999` never reaches SQLite as-is);
  *  - warnings guild-wide list/count go through the repository pair
  *    listGuildWarnings/countGuildWarnings (ORDER BY warning_number DESC —
- *    served by UNIQUE(guild_id, warning_number), no sort step, no full
+ *    served by UNIQUE(community_id, warning_number), no sort step, no full
  *    scan); notes reuse the EXISTING helpers: listStaffNotes (per-user)
  *    / listRecentStaffNotes (guild-wide, idx_staff_notes_guild_recent) /
  *    countStaffNotes — zero new SQL for the notes surface;
@@ -100,12 +100,12 @@ function readNoteState(raw) {
  * hides voided (default), "all" shows them badged, "voided" is the
  * web-only voided-only view.
  *
- * @param {string} guildId MUST be req.guildAccess.guildId
+ * @param {number} communityId MUST be req.guildAccess.communityId
  * @param {{ u?: string|null, state?: string|null, o?: string|null, n?: string|null }} query RAW query values
  * @returns {{ rows: object[], total: number, offset: number, pageSize: number,
  *            userId: string|null, invalidUser: boolean, state: string }}
  */
-function buildWarningsPage(guildId, query = {}) {
+function buildWarningsPage(communityId, query = {}) {
   const { userId, invalid } = readUserFilter(query.u);
   const state = readWarnState(query.state);
   const pageSize = readPageSize(query.n);
@@ -113,8 +113,8 @@ function buildWarningsPage(guildId, query = {}) {
 
   const filter = { userId, state, limit: pageSize, offset };
   return {
-    rows: listGuildWarnings(guildId, filter),
-    total: countGuildWarnings(guildId, filter),
+    rows: listGuildWarnings(communityId, filter),
+    total: countGuildWarnings(communityId, filter),
     offset,
     pageSize,
     userId,
@@ -128,12 +128,12 @@ function buildWarningsPage(guildId, query = {}) {
  * deleted rows BADGED exactly like slash /note list include_deleted:true;
  * default matches the slash default (hidden).
  *
- * @param {string} guildId MUST be req.guildAccess.guildId
+ * @param {number} communityId MUST be req.guildAccess.communityId
  * @param {{ u?: string|null, state?: string|null, o?: string|null, n?: string|null }} query RAW query values
  * @returns {{ rows: object[], total: number, offset: number, pageSize: number,
  *            userId: string|null, invalidUser: boolean, state: string }}
  */
-function buildNotesPage(guildId, query = {}) {
+function buildNotesPage(communityId, query = {}) {
   const { userId, invalid } = readUserFilter(query.u);
   const state = readNoteState(query.state);
   const pageSize = readPageSize(query.n);
@@ -142,11 +142,11 @@ function buildNotesPage(guildId, query = {}) {
 
   const listOpts = { includeDeleted, limit: pageSize, offset };
   const rows = userId
-    ? listStaffNotes(guildId, userId, listOpts)
-    : listRecentStaffNotes(guildId, listOpts);
+    ? listStaffNotes(communityId, userId, listOpts)
+    : listRecentStaffNotes(communityId, listOpts);
   return {
     rows,
-    total: countStaffNotes(guildId, userId, { includeDeleted }),
+    total: countStaffNotes(communityId, userId, { includeDeleted }),
     offset,
     pageSize,
     userId,

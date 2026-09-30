@@ -157,9 +157,14 @@ function guildLabel(guild) {
  * @param {string|null} currentGuildId
  */
 function renderGuildSwitcher(guilds, currentGuildId) {
+  // Fluxer PR 2: options LINK by integer community id; entries without a
+  // communities row cannot be opened, so they render disabled (label-only).
+  const linkId = (g) => (g.communityId != null ? g.communityId : g.id);
   const options = (Array.isArray(guilds) ? guilds : [])
     .map((g) =>
-      html`<option value="/g/${g.id}"${g.id === currentGuildId ? raw(" selected") : html``}>${guildLabel(g)}</option>\n`
+      html`<option value="/g/${linkId(g)}"${
+        g.communityId == null ? raw(" disabled") : html``
+      }${linkId(g) === currentGuildId ? raw(" selected") : html``}>${guildLabel(g)}</option>\n`
     );
   return html`
       <nav class="guild-switcher" aria-label="Guild switcher">
@@ -280,7 +285,8 @@ function renderShellPage(req, page) {
     subheading: page.subheading,
     content: page.content || "",
     guilds: page.guilds || [],
-    currentGuildId: access.guildId || null,
+    // Fluxer PR 2: /g/ links + sidebar navigate by INTEGER community id.
+    currentGuildId: access.communityId ?? access.guildId ?? null,
     tier: access.tier || null,
     degraded: !!access.degraded,
     user: req.user || null,
