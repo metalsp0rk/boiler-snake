@@ -55,6 +55,8 @@ const {
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -186,7 +188,7 @@ async function handleClose(interaction, ctx) {
             from_ticket: closedTicket.ticket_number,
           },
         });
-        await logConfigChange(client, interaction.guildId, {
+        await logConfigChange(getDiscordOutbound(client), interaction.guildId, {
           title: "Staff note created",
           command: "/ticket close staff_note",
           actor: interaction.user,
@@ -235,7 +237,16 @@ async function handleStaffNoteButton(interaction, ctx) {
   }
 
   const ticket = getTicketById(ticketId);
-  if (!ticket || ticket.guild_id !== interaction.guildId) {
+  // Discord edge: resolve the external guild snowflake to the integer
+  // community id (spec § Repository boundary); rows carry .community_id.
+  const communityId = interaction.guildId
+    ? ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: interaction.guildId,
+      })
+    : null;
+  if (!ticket || !communityId || ticket.community_id !== communityId) {
     await replyEphemeral(interaction, {
       content: "That ticket was not found in this server.",
     });
@@ -266,7 +277,16 @@ async function handleStaffNoteModal(interaction, ctx) {
   }
 
   const ticket = getTicketById(ticketId);
-  if (!ticket || ticket.guild_id !== interaction.guildId) {
+  // Discord edge: resolve the external guild snowflake to the integer
+  // community id (spec § Repository boundary); rows carry .community_id.
+  const communityId = interaction.guildId
+    ? ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: interaction.guildId,
+      })
+    : null;
+  if (!ticket || !communityId || ticket.community_id !== communityId) {
     await replyEphemeral(interaction, {
       content: "That ticket was not found in this server.",
     });
@@ -305,7 +325,7 @@ async function handleStaffNoteModal(interaction, ctx) {
     },
   });
   await logConfigChange(
-    ctx?.client || interaction.client,
+    getDiscordOutbound(ctx?.client || interaction.client),
     interaction.guildId,
     {
       title: "Staff note created",

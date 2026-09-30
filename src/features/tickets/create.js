@@ -55,6 +55,9 @@ const {
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+// Discord edge: (platform, instanceKey, snowflake) → integer community id,
+// resolved once per entry point (roadmap/fluxer.md § Repository boundary).
+const { ensureCommunity } = require("../../platform/community");
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -114,7 +117,14 @@ const {
 } = helpers;
 
 
-async function completeSelfCreate(interaction, ctx, reason) {
+/**
+ * @param {import("discord.js").ChatInputCommandInteraction|import("discord.js").ModalSubmitInteraction} interaction
+ * @param {object} ctx
+ * @param {string|null} reason
+ * @param {number} [communityId] integer community id resolved at the entry point;
+ *   openTicketChannel/audit fall back to the Discord-identity lookup when omitted.
+ */
+async function completeSelfCreate(interaction, ctx, reason, communityId) {
   try {
     const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
       guild: interaction.guild,
@@ -122,10 +132,12 @@ async function completeSelfCreate(interaction, ctx, reason) {
       creatorUserId: interaction.user.id,
       reason,
       openedByStaffId: null,
+      communityId,
     });
 
     recordSlashAudit({
       interaction,
+      communityId,
       action: "tickets.create",
       targetType: "ticket",
       targetId: String(ticket.id),
@@ -156,7 +168,12 @@ async function completeSelfCreate(interaction, ctx, reason) {
 
 async function handleCreate(interaction, ctx) {
   const reason = interaction.options.getString("reason");
-  const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const check = canUserCreateTicket(communityId, interaction.user.id);
   if (!check.ok) {
     await replyEphemeral(interaction, {
       content: formatRateLimitMessage(check),
@@ -165,7 +182,7 @@ async function handleCreate(interaction, ctx) {
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  await completeSelfCreate(interaction, ctx, reason);
+  await completeSelfCreate(interaction, ctx, reason, communityId);
 }
 
 async function handleOpenTicketButton(interaction, _ctx) {
@@ -185,7 +202,12 @@ async function handleOpenTicketButton(interaction, _ctx) {
 
   // Early rate-limit feedback so users don't fill the modal for nothing.
   // Re-checked on modal submit (state can change while modal is open).
-  const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const check = canUserCreateTicket(communityId, interaction.user.id);
   if (!check.ok) {
     await replyEphemeral(interaction, {
       content: formatRateLimitMessage(check),
@@ -225,7 +247,12 @@ async function handleCreateTicketModal(interaction, ctx) {
     reason = null;
   }
 
-  const check = canUserCreateTicket(interaction.guildId, interaction.user.id);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const check = canUserCreateTicket(communityId, interaction.user.id);
   if (!check.ok) {
     await replyEphemeral(interaction, {
       content: formatRateLimitMessage(check),
@@ -234,7 +261,7 @@ async function handleCreateTicketModal(interaction, ctx) {
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  await completeSelfCreate(interaction, ctx, reason);
+  await completeSelfCreate(interaction, ctx, reason, communityId);
 }
 
 async function handleFor(interaction, ctx) {
@@ -251,16 +278,23 @@ async function handleFor(interaction, ctx) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
+    const communityId = ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: interaction.guildId,
+    });
     const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
       guild: interaction.guild,
       client: ctx.client || interaction.client,
       creatorUserId: target.id,
       reason,
       openedByStaffId: interaction.user.id,
+      communityId,
     });
 
     recordSlashAudit({
       interaction,
+      communityId,
       action: "tickets.create",
       targetType: "ticket",
       targetId: String(ticket.id),

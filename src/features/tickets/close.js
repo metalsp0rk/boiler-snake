@@ -260,7 +260,8 @@ async function notifyRequesterArchived(
  * @returns {Promise<string|null>} archive message id
  */
 async function postSensitiveStub(client, ticket, opts) {
-  const settings = getTicketSettings(ticket.guild_id);
+  // Ticket rows are keyed by the integer community id (fluxer PR 2).
+  const settings = getTicketSettings(ticket.community_id);
   const channelId = settings.ticket_archive_channel_id;
   if (!channelId) return null;
 
@@ -321,7 +322,8 @@ async function postSensitiveStub(client, ticket, opts) {
  * @returns {Promise<string|null>}
  */
 async function postArchiveEmbed(client, ticket, summary, transcriptUrl, opts) {
-  const settings = getTicketSettings(ticket.guild_id);
+  // Ticket rows are keyed by the integer community id (fluxer PR 2).
+  const settings = getTicketSettings(ticket.community_id);
   const channelId = settings.ticket_archive_channel_id;
   if (!channelId) return null;
 
@@ -437,7 +439,9 @@ async function softCloseTicket(opts) {
     const { roleIds } = await getManageableStaffRoleIds(guild, botMember);
 
     await applyTicketOverwrites(channel, {
-      guildId: ticket.guild_id,
+      // Discord-side surface: overwrites.js works with the EXTERNAL guild
+      // snowflake (resolved from the channel), not the internal community id.
+      guildId: guild.id,
       everyoneId: guild.id,
       botUserId,
       ticket,
@@ -576,7 +580,8 @@ async function archiveTicketPipeline(opts) {
   // Download attachments / embed media into transcript assets and rewrite URLs
   try {
     const mirrored = await mirrorTicketAssets(messages, {
-      guildId: ticket.guild_id,
+      // Transcript dirs are keyed by the integer community id (spec § Transcript storage).
+      communityId: ticket.community_id,
       token,
     });
     messages = mirrored.messages;

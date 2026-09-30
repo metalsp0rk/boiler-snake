@@ -9,6 +9,8 @@ const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { syncMemberRoles } = require("./sync");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -67,6 +69,11 @@ async function handleLevelToRole(interaction, ctx) {
   }
 
   const guildId = interaction.guildId;
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
   const sub = interaction.options.getSubcommand();
 
   if (sub === "set") {
@@ -75,13 +82,14 @@ async function handleLevelToRole(interaction, ctx) {
     const dropdays = interaction.options.getInteger("dropdays", true);
 
     upsertLevelRole(
-      guildId,
+      communityId,
       role.id,
       Math.max(0, level),
       Math.max(0, dropdays),
     );
     recordSlashAudit({
       interaction,
+      communityId,
       action: "level_roles.set",
       targetType: "role",
       targetId: role.id,
@@ -90,7 +98,7 @@ async function handleLevelToRole(interaction, ctx) {
         drop_grace_days: Math.max(0, dropdays),
       },
     });
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "Level→role mapping set",
       command: "/leveltorole set",
       actor: interaction.user,
@@ -110,14 +118,15 @@ async function handleLevelToRole(interaction, ctx) {
 
   if (sub === "remove") {
     const role = interaction.options.getRole("role", true);
-    deleteLevelRole(guildId, role.id);
+    deleteLevelRole(communityId, role.id);
     recordSlashAudit({
       interaction,
+      communityId,
       action: "level_roles.remove",
       targetType: "role",
       targetId: role.id,
     });
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "Level→role mapping removed",
       command: "/leveltorole remove",
       actor: interaction.user,
@@ -129,7 +138,7 @@ async function handleLevelToRole(interaction, ctx) {
   }
 
   if (sub === "list") {
-    const rows = listLevelRoles(guildId);
+    const rows = listLevelRoles(communityId);
     if (!rows.length) {
       await replyEphemeral(interaction, "No level→role mappings configured.");
       return;

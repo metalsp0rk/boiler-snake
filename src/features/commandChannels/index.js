@@ -8,6 +8,10 @@ const { isAdminOrMod } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+// Edge pattern (roadmap/fluxer.md § Repository boundary): the Discord snowflake
+// is resolved to the internal community id once, at the handler entry point.
+const { ensureCommunity } = require("../../platform/community");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -58,18 +62,24 @@ async function handleSetCommandChannel(interaction, ctx) {
   }
 
   const guildId = interaction.guildId;
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
   const sub = interaction.options.getSubcommand();
 
   if (sub === "add") {
     const ch = interaction.options.getChannel("channel", true);
-    addAllowedCommandChannel(guildId, ch.id);
+    addAllowedCommandChannel(communityId, ch.id);
     recordSlashAudit({
       interaction,
+      communityId,
       action: "command_channels.add",
       targetType: "channel",
       targetId: ch.id,
     });
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "Command channel allowed",
       command: "/setcommandchannel add",
       actor: interaction.user,
@@ -84,14 +94,15 @@ async function handleSetCommandChannel(interaction, ctx) {
 
   if (sub === "remove") {
     const ch = interaction.options.getChannel("channel", true);
-    removeAllowedCommandChannel(guildId, ch.id);
+    removeAllowedCommandChannel(communityId, ch.id);
     recordSlashAudit({
       interaction,
+      communityId,
       action: "command_channels.remove",
       targetType: "channel",
       targetId: ch.id,
     });
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "Command channel restriction removed",
       command: "/setcommandchannel remove",
       actor: interaction.user,
@@ -105,7 +116,7 @@ async function handleSetCommandChannel(interaction, ctx) {
   }
 
   if (sub === "list") {
-    const rows = listAllowedCommandChannels(guildId);
+    const rows = listAllowedCommandChannels(communityId);
     if (!rows.length) {
       await replyEphemeral(
         interaction,

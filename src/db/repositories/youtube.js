@@ -1,42 +1,50 @@
 const { db, now } = require("../connection");
 
+// src/platform/community.js requires the db facade (src/db/index.js), so a
+// top-level require here would be a load-time cycle (partial exports). The
+// lazy require resolves after boot; assertCommunityId stays single-source.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
 /** Normalize YouTube @username to remove leading @ for consistent storage. */
 function normalizeYoutubeName(name) {
   return name.startsWith("@") ? name.substring(1) : name;
 }
 
-function getYoutubeChannels(guildId) {
+function getYoutubeChannels(communityId) {
+  assertCommunityId(communityId);
   return db.prepare(`
-  SELECT id, guild_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
   FROM youtube_channels
-  WHERE guild_id=?
+  WHERE community_id=?
   ORDER BY created_at ASC
-  `).all(guildId);
+  `).all(communityId);
 }
 
 function getAllYoutubeChannels() {
   return db.prepare(`
-  SELECT id, guild_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
   FROM youtube_channels
   ORDER BY created_at ASC
   `).all();
 }
 
-function getYoutubeChannelById(guildId, channelId) {
+function getYoutubeChannelById(communityId, channelId) {
+  assertCommunityId(communityId);
   const normalized = normalizeYoutubeName(channelId);
   return db.prepare(`
-  SELECT id, guild_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
   FROM youtube_channels
-  WHERE guild_id=? AND (id=? OR channel_url LIKE '%/' || ? || '/')
-  `).get(guildId, normalized, normalized);
+  WHERE community_id=? AND (id=? OR channel_url LIKE '%/' || ? || '/')
+  `).get(communityId, normalized, normalized);
 }
 
-function addYoutubeChannel(guildId, channelId, channelName, channelUrl, thumbnailUrl) {
+function addYoutubeChannel(communityId, channelId, channelName, channelUrl, thumbnailUrl) {
+  assertCommunityId(communityId);
   const t = now();
   const normalizedId = normalizeYoutubeName(channelId);
   const normalizedChannelName = normalizeYoutubeName(channelName);
 
-  const existing = getYoutubeChannelById(guildId, normalizedId);
+  const existing = getYoutubeChannelById(communityId, normalizedId);
   if (
     existing &&
     existing.channel_name === normalizedChannelName &&
@@ -46,9 +54,9 @@ function addYoutubeChannel(guildId, channelId, channelName, channelUrl, thumbnai
   }
 
   const stmt = db.prepare(`
-     INSERT INTO youtube_channels (id, guild_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked, created_at, updated_at)
+     INSERT INTO youtube_channels (id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
-     ON CONFLICT(guild_id, channel_name) DO UPDATE SET
+     ON CONFLICT(community_id, channel_name) DO UPDATE SET
        id=excluded.id,
        channel_url=excluded.channel_url,
        thumbnail_url=excluded.thumbnail_url,
@@ -56,17 +64,18 @@ function addYoutubeChannel(guildId, channelId, channelName, channelUrl, thumbnai
    `);
 
   try {
-    stmt.run(normalizedId, guildId, normalizedChannelName, channelUrl, thumbnailUrl || null, null, t, t);
+    stmt.run(normalizedId, communityId, normalizedChannelName, channelUrl, thumbnailUrl || null, null, t, t);
   } catch (err) {
     console.error(`[youtube] DB error:`, err.message);
     throw err;
   }
 
-  return getYoutubeChannelById(guildId, normalizedId);
+  return getYoutubeChannelById(communityId, normalizedId);
 }
 
-function removeYoutubeChannel(guildId, channelId) {
-  db.prepare(`DELETE FROM youtube_channels WHERE guild_id=? AND id=?`).run(guildId, channelId);
+function removeYoutubeChannel(communityId, channelId) {
+  assertCommunityId(communityId);
+  db.prepare(`DELETE FROM youtube_channels WHERE community_id=? AND id=?`).run(communityId, channelId);
   return !!db.prepare(`SELECT changes()`).get().changes;
 }
 
@@ -96,7 +105,7 @@ function cleanupOldNotifications(thresholdDays = 30) {
 function cleanupMalformedYoutubeChannels() {
   const rows = db
     .prepare(
-      "SELECT guild_id, channel_name FROM youtube_channels WHERE NOT id LIKE 'UC%' AND NOT id LIKE 'HC%'"
+      "SELECT community_id, channel_name FROM youtube_channels WHERE NOT id LIKE 'UC%' AND NOT id LIKE 'HC%'"
     )
     .all();
 
@@ -105,8 +114,8 @@ function cleanupMalformedYoutubeChannels() {
   console.log(`[youtube] Cleaning up ${rows.length} malformed channel entries...`);
 
   for (const row of rows) {
-    db.prepare("DELETE FROM youtube_channels WHERE guild_id=? AND channel_name=?").run(
-      row.guild_id,
+    db.prepare("DELETE FROM youtube_channels WHERE community_id=? AND channel_name=?").run(
+      row.community_id,
       row.channel_name
     );
   }

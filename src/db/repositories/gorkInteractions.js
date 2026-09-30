@@ -16,6 +16,10 @@
 
 const { db, now } = require("../connection");
 
+// Lazy require: src/platform/community.js requires the db facade, so a
+// top-level require would be a load-time cycle. See src/db/repositories/users.js.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
 /** Lazy-prune window applied on insert when the caller passes nothing. */
 const DEFAULT_RETENTION_DAYS = 30;
 
@@ -44,7 +48,7 @@ const bindRow = (row) => [
   toNullish(row.uid),
   row.kind === undefined || row.kind === null || row.kind === "" ? "qa" : row.kind,
   toNullish(row.parent_uid),
-  toNullish(row.guild_id),
+  toNullish(row.community_id),
   toNullish(row.channel_id),
   toNullish(row.message_id),
   toNullish(row.user_id),
@@ -79,7 +83,7 @@ const bindRow = (row) => [
 
 const insertStmt = db.prepare(`
 INSERT INTO gork_interactions (
-  uid, kind, parent_uid, guild_id, channel_id, message_id, user_id, status,
+  uid, kind, parent_uid, community_id, channel_id, message_id, user_id, status,
   started_at, duration_ms, model, params, tools, settings, system_prompt,
   user_prompt, trigger_content, reply_to_message_id, context_meta,
   context_messages, roster_meta, roster_block, roster_entries, memory_meta,
@@ -100,7 +104,7 @@ INSERT INTO gork_interactions (
  * caller; `undefined` is normalized to `null`, `created_at` is stamped
  * server-side when the caller omits it. NEVER throws.
  *
- * @param {object} row column-keyed values (uid, kind, parent_uid, guild_id,
+ * @param {object} row column-keyed values (uid, kind, parent_uid, community_id,
  *   channel_id, message_id, user_id, status, started_at, duration_ms, model,
  *   params, tools, settings, system_prompt, user_prompt, trigger_content,
  *   reply_to_message_id, context_meta, context_messages, roster_meta,
@@ -127,28 +131,28 @@ function insertGorkInteraction(row, { retentionDays = DEFAULT_RETENTION_DAYS } =
     console.error(
       "[gork] interaction log insert failed:",
       err?.message || err,
-      `(uid=${row?.uid ?? "none"} guild=${row?.guild_id ?? "none"} message=${row?.message_id ?? "none"})`,
+      `(uid=${row?.uid ?? "none"} community=${row?.community_id ?? "none"} message=${row?.message_id ?? "none"})`,
     );
     return { ok: false, error: err?.message || String(err) };
   }
 }
 
 /**
- * Newest-first summary rows for a guild WITHOUT the heavy blobs
+ * Newest-first summary rows for a community WITHOUT the heavy blobs
  * (prompts/transcript/snapshots stay out; use getGorkInteractionByUid for
- * the full row). Never throws.
+ * the full row). Never throws on read failure.
  *
- * @param {{ guildId: string, kind?: string, limit?: number, beforeId?: number|string }} query
+ * @param {{ communityId: number, kind?: string, limit?: number, beforeId?: number|string }} query
  *   `beforeId` (row id, exclusive) paginates older pages; `limit` defaults to 20
  * @returns {object[]} summary rows ordered by id DESC
  */
-function listGorkInteractions({ guildId, kind, limit = 20, beforeId } = {}) {
-  if (!guildId) return [];
+function listGorkInteractions({ communityId, kind, limit = 20, beforeId } = {}) {
+  assertCommunityId(communityId);
   try {
     const raw = Number(limit);
     const lim = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 20;
-    const clauses = ["guild_id=?"];
-    const params = [String(guildId)];
+    const clauses = ["community_id=?"];
+    const params = [communityId];
     if (kind) {
       clauses.push("kind=?");
       params.push(String(kind));
@@ -194,25 +198,25 @@ function getGorkInteractionByUid(uid) {
 }
 
 /**
- * Stored rows for a guild (staff `/gork status` / `/gork log` lines).
- * Never throws.
+ * Stored rows for a community (staff `/gork status` / `/gork log` lines).
+ * Never throws on read failure.
  *
- * @param {string} guildId
+ * @param {number} communityId
  * @param {{ kind?: string }} [opts] restrict to one kind (qa | memory_turn)
- * @returns {number} 0 for an empty/unknown guild or on read failure
+ * @returns {number} 0 for an empty/unknown community or on read failure
  */
-function countGorkInteractions(guildId, { kind } = {}) {
-  if (!guildId) return 0;
+function countGorkInteractions(communityId, { kind } = {}) {
+  assertCommunityId(communityId);
   try {
     const row = kind
       ? db
           .prepare(
-            `SELECT COUNT(*) AS n FROM gork_interactions WHERE guild_id=? AND kind=?`
+            `SELECT COUNT(*) AS n FROM gork_interactions WHERE community_id=? AND kind=?`
           )
-          .get(String(guildId), String(kind))
+          .get(communityId, String(kind))
       : db
-          .prepare(`SELECT COUNT(*) AS n FROM gork_interactions WHERE guild_id=?`)
-          .get(String(guildId));
+          .prepare(`SELECT COUNT(*) AS n FROM gork_interactions WHERE community_id=?`)
+          .get(communityId);
     return Number(row?.n) || 0;
   } catch (err) {
     console.error("[gork] interaction log count failed:", err?.message || err);
@@ -241,16 +245,16 @@ function pruneGorkInteractions(olderThanMs) {
 }
 
 /**
- * Wipe one guild's whole interaction log. Never throws.
+ * Wipe one community's whole interaction log. Never throws on delete failure.
  *
- * @param {string} guildId
+ * @param {number} communityId
  * @returns {boolean} true when rows actually existed and were removed
  */
-function deleteGorkInteractionsForGuild(guildId) {
-  if (!guildId) return false;
+function deleteGorkInteractionsForGuild(communityId) {
+  assertCommunityId(communityId);
   try {
     return (
-      db.prepare(`DELETE FROM gork_interactions WHERE guild_id=?`).run(String(guildId))
+      db.prepare(`DELETE FROM gork_interactions WHERE community_id=?`).run(communityId)
         .changes > 0
     );
   } catch (err) {

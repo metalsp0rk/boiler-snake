@@ -1,12 +1,14 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const { registerJob } = require("../../core/scheduler");
 const {
-  allUsersInGuild,
   countMessagesInWindow,
   setXp,
   getGuildSettings,
   updateGuildSettings,
 } = require("../../db");
+// src/db/index.js still maps the removed `allUsersInGuild` name, so import the
+// renamed repository function directly. // TODO(fluxer-pr4): facade re-export.
+const { allUsersInCommunity } = require("../../db/repositories/users");
 const { levelFromXp } = require("../../core/xpMath");
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
@@ -22,6 +24,11 @@ const {
   recordSlashAudit,
   recordSystemAudit,
 } = require("../../core/auditTrail");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const {
+  ensureCommunity,
+  getCommunityById,
+} = require("../../platform/community");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 const DECAY_CRON = "0 4 * * *";
@@ -69,7 +76,12 @@ async function handleSetDecay(interaction, ctx) {
   }
 
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
   const enabled = interaction.options.getBoolean("enabled");
   const messages = interaction.options.getInteger("messages");
   const days = interaction.options.getInteger("days");
@@ -88,9 +100,10 @@ async function handleSetDecay(interaction, ctx) {
   }
 
   const before = settings;
-  const updated = updateGuildSettings(guildId, patch);
+  const updated = updateGuildSettings(communityId, patch);
   recordSlashAudit({
     interaction,
+    communityId,
     action: "decay.settings_update",
     targetType: "guild",
     targetId: guildId,
@@ -113,7 +126,7 @@ async function handleSetDecay(interaction, ctx) {
   });
 
   if (lines.length) {
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "Decay settings updated",
       command: "/setdecay",
       actor: interaction.user,
@@ -147,17 +160,38 @@ async function handleSetDecay(interaction, ctx) {
   await replyEphemeral(interaction, { embeds: [embed] });
 }
 
-async function runDecayForGuild(client, guildId) {
-  const settings = getGuildSettings(guildId);
+/**
+ * Run one decay pass for a community.
+ * @param {import("discord.js").Client} client
+ * @param {number} communityId  internal communities.id (tickers pass row ids;
+ *        resolved from the Discord guild snowflake at the scheduler edge)
+ */
+async function runDecayForGuild(client, communityId) {
+  const settings = getGuildSettings(communityId);
   if (!settings.decay_enabled) return;
 
-  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  // Ticker rows carry the community id; reverse-resolve the Discord guild.
+  const community = getCommunityById(communityId);
+  const guildId = community?.externalGuildId ?? null;
+  if (!guildId) {
+    console.error(
+      `[decay] no communities row / external guild id for community ${communityId}; skipping decay`,
+    );
+    return;
+  }
+  const guild = await client.guilds.fetch(guildId).catch((err) => {
+    console.error(
+      `[decay] failed to fetch Discord guild ${guildId} for community ${communityId}: ${err?.message || err}`,
+    );
+    return null;
+  });
   if (!guild) return;
 
-  const users = allUsersInGuild(guildId);
+  const outbound = getDiscordOutbound(client);
+  const users = allUsersInCommunity(communityId);
   for (const u of users) {
     const msgCount = countMessagesInWindow(
-      guildId,
+      communityId,
       u.user_id,
       settings.decay_window_days,
     );
@@ -172,9 +206,9 @@ async function runDecayForGuild(client, guildId) {
     if (newXp === u.xp) continue;
 
     const oldLvl = levelFromXp(u.xp, settings.level_xp_factor);
-    setXp(guildId, u.user_id, newXp);
+    setXp(communityId, u.user_id, newXp);
     recordSystemAudit({
-      guildId,
+      communityId,
       action: "decay.xp_decay",
       targetType: "user",
       targetId: u.user_id,
@@ -189,9 +223,10 @@ async function runDecayForGuild(client, guildId) {
     const member = await guild.members.fetch(u.user_id).catch(() => null);
     if (member) {
       const lvl = levelFromXp(newXp, settings.level_xp_factor);
-      const levelChanges = await syncMemberRoles(member, lvl);
+      const levelChanges = await syncMemberRoles(outbound, communityId, member, lvl);
       await logLevelRoleChanges(
-        client,
+        outbound,
+        communityId,
         member,
         levelChanges,
         lvl,
@@ -218,7 +253,14 @@ function startDecayScheduler(client) {
     cron: DECAY_CRON,
     run: async () => {
       for (const guild of client.guilds.cache.values()) {
-        await runDecayForGuild(client, guild.id);
+        // Edge resolution: ticker entry points translate the Discord snowflake
+        // once, then every repository below receives the integer community id.
+        const communityId = ensureCommunity({
+          platform: "discord",
+          instanceKey: "discord",
+          externalGuildId: guild.id,
+        });
+        await runDecayForGuild(client, communityId);
       }
     },
   });

@@ -79,9 +79,26 @@ function loadDb() {
   return { api, tmpDir, dbPath, dbs, cleanup };
 }
 
+/**
+ * Register (or look up) a Discord guild's community row and return the integer
+ * key every repository now takes (fluxer PR 2). Must be called AFTER loadDb().
+ *
+ * Keeps test fixtures readable: tests keep their descriptive snowflake strings
+ * and map to stable small integers via the communities table.
+ *
+ * @param {string} externalGuildId
+ * @param {string} [platform] @param {string} [instanceKey]
+ * @returns {number}
+ */
+function communityKey(externalGuildId, platform = "discord", instanceKey = "discord") {
+  const { ensureCommunity } = require("../../src/platform/community");
+  return ensureCommunity({ platform, instanceKey, externalGuildId: String(externalGuildId) });
+}
+
 module.exports = {
   resetSrcModules,
   createCleanup,
   createTempDbPath,
   loadDb,
+  communityKey,
 };
