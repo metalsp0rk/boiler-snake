@@ -97,6 +97,31 @@ function missingOptionError(name) {
 }
 
 /**
+ * Discord-only bridge for chat-input commands that show a modal (roadmap
+ * § Prefix grammar, line 445: `/note add` calls showModal when `content`
+ * is null; on Fluxer the overlay makes `content` required, so the modal
+ * branch never runs there).
+ *
+ * CommandContext deliberately has NO showModal method (spec line 270). This
+ * helper is the sanctioned path: it uses the Discord builder's documented
+ * `rawInteraction` escape hatch when present, and reports "no modal surface"
+ * (returns false) for Fluxer contexts — callers must then reply with the
+ * usage copy, never fake an interaction.
+ *
+ * @param {object} commandCtx
+ * @param {object} modal a discord.js ModalBuilder
+ * @returns {Promise<boolean>} true when the modal was shown
+ */
+async function showModalFromContext(commandCtx, modal) {
+  const raw = commandCtx && commandCtx.rawInteraction;
+  if (raw && typeof raw.showModal === "function") {
+    await raw.showModal(modal);
+    return true;
+  }
+  return false;
+}
+
+/**
  * Flatten any user-like object (gateway user, GuildMember#user, MemberHandle)
  * to the ResolvedUser typedef. null/undefined pass through as null.
  *
@@ -236,4 +261,5 @@ module.exports = {
   normalizeEmbed,
   normalizeReplyPayload,
   assertCommandContext,
+  showModalFromContext,
 };

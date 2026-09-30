@@ -84,6 +84,31 @@ function commandsAllowed(interaction) {
 }
 
 /**
+ * Command-channel gate on a CommandContext (spec § Handler migration rule:
+ * gates get *FromContext variants). Same semantics as {@link commandsAllowed}
+ * — the interaction variant stays until every Discord handler has moved.
+ * @param {object} ctx CommandContext
+ * @returns {boolean}
+ */
+function commandsAllowedFromContext(ctx) {
+  if (
+    ctx.commandName === "setcommandchannel" &&
+    isAdminOrModFromContext(ctx)
+  )
+    return true;
+  if (ctx.commandName === "ticket" && ctx.channelId) {
+    // Open tickets, or soft-closed channels still awaiting /ticket archive
+    const ticket = getTicketByChannel(ctx.communityId, ctx.channelId);
+    if (ticket && ticket.channel_id && Number(ticket.archived) !== 1) {
+      return true;
+    }
+  }
+  const rows = listAllowedCommandChannels(ctx.communityId);
+  if (!rows.length) return true;
+  return rows.some((r) => r.channel_id === ctx.channelId);
+}
+
+/**
  * Reply with a standard permission denial if the invoker is not admin/mod.
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  * @returns {Promise<boolean>} true if the caller may proceed (is admin)
@@ -205,6 +230,7 @@ module.exports = {
   isAdminOrModFromContext,
   isStaffFromContext,
   isSeniorStaffFromContext,
+  commandsAllowedFromContext,
   requireAdminFromContext,
   requireStaffFromContext,
   requireSeniorStaffFromContext,
