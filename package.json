@@ -22,6 +22,7 @@
   },
   "//": "test:coverage = Node's built-in runner coverage (no deps) over src/ for BOTH suites in one run; include/exclude keep src/ only in the report. Threshold flags check OVERALL totals (node exits 1 when unmet). They baseline-lock the 2026-09-09 actuals (all files: lines 79.99%, branches 69.57%, funcs 79.72%) at ~3pts below: 77/67/77. Team targets are critical-paths 100% / high 90%+ (standards) — raise thresholds as coverage improves; never lower the gate to accommodate a regression.",
   "dependencies": {
+    "@fluxerjs/core": "3.1.0",
     "@mozilla/readability": "^0.6.0",
     "@napi-rs/canvas": "^0.1.67",
     "better-sqlite3": "^12.11.1",
