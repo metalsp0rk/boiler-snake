@@ -2,12 +2,11 @@
  * Warning system — permanent formal disciplinary records.
  *
  * Slash: /warn add|list|info|void|count|mine|export|settings, /setwarn dm|log|expiry
- * Staff ops: requireStaff. /warn mine: any member (own history).
- * /setwarn: staff gate (requireStaff).
+ * Staff ops: requireStaffFromContext. /warn mine: any member (own history).
+ * /setwarn: staff gate (requireStaffFromContext).
  */
 
-const { requireStaff } = require("../../core/permissions");
-const { replyEphemeral } = require("../../core/interaction");
+const { requireStaffFromContext } = require("../../core/permissions");
 const { formatWarnRef } = require("../../core/theme");
 const { MAX_WARN_REASON, MAX_EVIDENCE_TEXT, MAX_EXPIRY_DAYS } = require("../../db");
 const { startWarnExpiryTicker } = require("./ticker");
@@ -29,45 +28,47 @@ const {
 } = require("./handlers");
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleWarn(interaction, ctx) {
-  const sub = interaction.options.getSubcommand();
+async function handleWarn(commandCtx, featureCtx) {
+  const sub = commandCtx.subcommand;
 
   if (sub === "mine") {
-    return handleMine(interaction);
+    return handleMine(commandCtx, featureCtx);
   }
 
-  if (!(await requireStaff(interaction))) return;
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  if (sub === "add") return handleAdd(interaction, ctx);
-  if (sub === "list") return handleList(interaction);
-  if (sub === "info") return handleInfo(interaction);
-  if (sub === "void") return handleVoid(interaction, ctx);
-  if (sub === "count") return handleCount(interaction);
-  if (sub === "export") return handleExport(interaction);
-  if (sub === "settings") return handleSettings(interaction);
+  if (sub === "add") return handleAdd(commandCtx, featureCtx);
+  if (sub === "list") return handleList(commandCtx, featureCtx);
+  if (sub === "info") return handleInfo(commandCtx, featureCtx);
+  if (sub === "void") return handleVoid(commandCtx, featureCtx);
+  if (sub === "count") return handleCount(commandCtx, featureCtx);
+  if (sub === "export") return handleExport(commandCtx, featureCtx);
+  if (sub === "settings") return handleSettings(commandCtx, featureCtx);
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Unknown subcommand: \`${sub}\``,
+    sensitive: true,
   });
 }
 
 /**
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} [ctx]
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleSetwarn(interaction, ctx) {
-  if (!(await requireStaff(interaction))) return;
+async function handleSetwarn(commandCtx, featureCtx) {
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const sub = interaction.options.getSubcommand();
-  if (sub === "dm") return handleSetDm(interaction, ctx);
-  if (sub === "log") return handleSetLog(interaction, ctx);
-  if (sub === "expiry") return handleSetExpiry(interaction, ctx);
+  const sub = commandCtx.subcommand;
+  if (sub === "dm") return handleSetDm(commandCtx, featureCtx);
+  if (sub === "log") return handleSetLog(commandCtx, featureCtx);
+  if (sub === "expiry") return handleSetExpiry(commandCtx, featureCtx);
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Unknown subcommand: \`${sub}\``,
+    sensitive: true,
   });
 }
 
@@ -84,6 +85,12 @@ module.exports = {
   handlers: {
     warn: handleWarn,
     setwarn: handleSetwarn,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): both slash
+  // handlers receive a CommandContext.
+  handlerApi: {
+    warn: "context",
+    setwarn: "context",
   },
   start,
   formatWarnRef,
