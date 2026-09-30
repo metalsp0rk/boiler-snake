@@ -6,6 +6,11 @@ const { db, now } = require("../connection");
 const { getGuildSettings } = require("./guildSettings");
 const crypto = require("crypto");
 
+// src/platform/community.js requires the db facade (src/db/index.js), so a
+// top-level require here would be a load-time cycle (partial exports). The
+// lazy require resolves after boot; assertCommunityId stays single-source.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
 /** Max reason / close_reason length */
 const MAX_TICKET_REASON = 1000;
 
@@ -33,24 +38,26 @@ function normalizeTicketReason(reason, label = "Reason", opts = {}) {
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @returns {number}
  */
-function nextTicketNumber(guildId) {
+function nextTicketNumber(communityId) {
+  assertCommunityId(communityId);
   const row = db
     .prepare(
-      `SELECT COALESCE(MAX(ticket_number), 0) AS max_n FROM tickets WHERE guild_id=?`
+      `SELECT COALESCE(MAX(ticket_number), 0) AS max_n FROM tickets WHERE community_id=?`
     )
-    .get(guildId);
+    .get(communityId);
   return Number(row?.max_n || 0) + 1;
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @returns {{ ticket_category_id: string|null, ticket_archive_channel_id: string|null, ticket_rate_limit_minutes: number }}
  */
-function getTicketSettings(guildId) {
-  const s = getGuildSettings(guildId);
+function getTicketSettings(communityId) {
+  assertCommunityId(communityId);
+  const s = getGuildSettings(communityId);
   return {
     ticket_category_id: s.ticket_category_id ?? null,
     ticket_archive_channel_id: s.ticket_archive_channel_id ?? null,
@@ -63,39 +70,41 @@ function getTicketSettings(guildId) {
 
 /**
  * Last self-created ticket for rate limiting (opened_by_staff_id IS NULL).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @returns {object|null}
  */
-function getLastSelfCreatedTicket(guildId, userId) {
+function getLastSelfCreatedTicket(communityId, userId) {
+  assertCommunityId(communityId);
   return (
     db
       .prepare(
         `
       SELECT * FROM tickets
-      WHERE guild_id=? AND creator_user_id=? AND opened_by_staff_id IS NULL
+      WHERE community_id=? AND creator_user_id=? AND opened_by_staff_id IS NULL
       ORDER BY created_at DESC
       LIMIT 1
     `
       )
-      .get(guildId, userId) || null
+      .get(communityId, userId) || null
   );
 }
 
 /**
  * Rate-limit check for member self-create.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @returns {{ ok: true } | { ok: false, retryAfterMs: number, minutes: number }}
  */
-function canUserCreateTicket(guildId, userId) {
-  const settings = getTicketSettings(guildId);
+function canUserCreateTicket(communityId, userId) {
+  assertCommunityId(communityId);
+  const settings = getTicketSettings(communityId);
   const minutes = Number(settings.ticket_rate_limit_minutes);
   if (!Number.isFinite(minutes) || minutes <= 0) {
     return { ok: true };
   }
 
-  const last = getLastSelfCreatedTicket(guildId, userId);
+  const last = getLastSelfCreatedTicket(communityId, userId);
   if (!last) return { ok: true };
 
   const windowMs = minutes * 60 * 1000;
@@ -111,7 +120,7 @@ function canUserCreateTicket(guildId, userId) {
 
 /**
  * @param {object} opts
- * @param {string} opts.guildId
+ * @param {number} opts.communityId
  * @param {string} opts.creatorUserId
  * @param {string} opts.channelId
  * @param {string|null} [opts.reason]
@@ -120,6 +129,7 @@ function canUserCreateTicket(guildId, userId) {
  * @returns {object}
  */
 function createTicket(opts) {
+  assertCommunityId(opts.communityId);
   const reasonNorm = normalizeTicketReason(opts.reason, "Reason", {
     allowEmpty: true,
   });
@@ -135,7 +145,7 @@ function createTicket(opts) {
     : null;
   const insert = db.prepare(`
     INSERT INTO tickets (
-      guild_id, ticket_number, channel_id, creator_user_id, status,
+      community_id, ticket_number, channel_id, creator_user_id, status,
       is_sensitive, reason, created_at, opened_by_staff_id, staff_owner_id, archived
     ) VALUES (?, ?, ?, ?, 'open', 0, ?, ?, ?, ?, 0)
   `);
@@ -149,9 +159,9 @@ function createTicket(opts) {
   `);
 
   const tx = db.transaction(() => {
-    const ticketNumber = nextTicketNumber(opts.guildId);
+    const ticketNumber = nextTicketNumber(opts.communityId);
     const info = insert.run(
-      opts.guildId,
+      opts.communityId,
       ticketNumber,
       opts.channelId,
       opts.creatorUserId,
@@ -190,30 +200,37 @@ function getTicketById(id) {
 }
 
 /**
+ * Channel lookups are community-scoped: migration 034 replaced the global
+ * UNIQUE(channel_id) with UNIQUE(community_id, channel_id), so the community
+ * id is required to identify a ticket channel.
+ * @param {number} communityId
  * @param {string} channelId
  * @returns {object|null}
  */
-function getTicketByChannel(channelId) {
+function getTicketByChannel(communityId, channelId) {
+  assertCommunityId(communityId);
   if (!channelId) return null;
   return (
-    db.prepare(`SELECT * FROM tickets WHERE channel_id=?`).get(channelId) ||
-    null
+    db
+      .prepare(`SELECT * FROM tickets WHERE community_id=? AND channel_id=?`)
+      .get(communityId, channelId) || null
   );
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {number} ticketNumber
  * @returns {object|null}
  */
-function getTicketByNumber(guildId, ticketNumber) {
-  if (!guildId || ticketNumber == null) return null;
+function getTicketByNumber(communityId, ticketNumber) {
+  assertCommunityId(communityId);
+  if (ticketNumber == null) return null;
   return (
     db
       .prepare(
-        `SELECT * FROM tickets WHERE guild_id=? AND ticket_number=?`
+        `SELECT * FROM tickets WHERE community_id=? AND ticket_number=?`
       )
-      .get(guildId, Number(ticketNumber)) || null
+      .get(communityId, Number(ticketNumber)) || null
   );
 }
 
@@ -415,13 +432,14 @@ function listTicketStaff(ticketId) {
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {object} [opts]
  * @param {string} [opts.userId] filter by creator or member
  * @param {number} [opts.limit]
  * @returns {object[]}
  */
-function listOpenTickets(guildId, opts = {}) {
+function listOpenTickets(communityId, opts = {}) {
+  assertCommunityId(communityId);
   const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), 50);
   if (opts.userId) {
     return db
@@ -429,24 +447,24 @@ function listOpenTickets(guildId, opts = {}) {
         `
       SELECT DISTINCT t.* FROM tickets t
       LEFT JOIN ticket_members m ON m.ticket_id = t.id
-      WHERE t.guild_id=? AND t.status='open'
+      WHERE t.community_id=? AND t.status='open'
         AND (t.creator_user_id=? OR m.user_id=?)
       ORDER BY t.ticket_number DESC
       LIMIT ?
     `
       )
-      .all(guildId, opts.userId, opts.userId, limit);
+      .all(communityId, opts.userId, opts.userId, limit);
   }
   return db
     .prepare(
       `
     SELECT * FROM tickets
-    WHERE guild_id=? AND status='open'
+    WHERE community_id=? AND status='open'
     ORDER BY ticket_number DESC
     LIMIT ?
   `
     )
-    .all(guildId, limit);
+    .all(communityId, limit);
 }
 
 /**
@@ -541,7 +559,8 @@ function closeTicketSensitive(ticketId, opts) {
  * @param {string} opts.closedBy
  * @param {string|null} [opts.closeReason]
  * @param {string|null} opts.transcriptToken
- * @param {string|null} opts.transcriptPath
+ * @param {string|null} opts.transcriptPath transcript dir segment is the integer
+ *   communityId (spec § Transcript storage — dirs moved to {DATA_DIR}/ticket-transcripts/{communityId}/)
  * @param {string|null} [opts.aiSummaryJson]
  * @param {string|null} [opts.archiveMessageId]
  * @returns {object|null}
@@ -599,11 +618,13 @@ function closeTicketArchived(ticketId, opts) {
 
 /**
  * External channel delete: mark closed/disposed, no content archive.
+ * @param {number} communityId
  * @param {string} channelId
  * @returns {object|null} updated ticket or null
  */
-function markTicketClosedByChannelDelete(channelId) {
-  const ticket = getTicketByChannel(channelId);
+function markTicketClosedByChannelDelete(communityId, channelId) {
+  assertCommunityId(communityId);
+  const ticket = getTicketByChannel(communityId, channelId);
   if (!ticket) return null;
   if (Number(ticket.archived) === 1) return ticket;
   const t = now();
@@ -678,7 +699,7 @@ const ARCHIVE_Q_MAX_CHARS = 100;
  * byte-identical to before). Numeric-looking q also matches the ticket
  * NUMBER; every value is a bound parameter and LIKE wildcards are escaped
  * with a declared ESCAPE char, so user input can never act as SQL or as a
- * pattern. Guild allow-listing stays entirely in the caller's WHERE.
+ * pattern. Community allow-listing stays entirely in the caller's WHERE.
  * @param {unknown} rawQ
  * @returns {{ sql: string, params: (string|number)[] }}
  */
@@ -716,7 +737,7 @@ function archiveSearchClause(rawQ) {
 /**
  * Content-archived tickets (non-sensitive full archive with transcript).
  * @param {object} [opts]
- * @param {string} [opts.guildId] filter to one guild
+ * @param {number} [opts.communityId] filter to one community
  * @param {number} [opts.limit=50]
  * @param {number} [opts.offset=0]
  * @param {string} [opts.q] optional search term (see archiveSearchClause)
@@ -727,17 +748,18 @@ function listArchivedTickets(opts = {}) {
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const search = archiveSearchClause(opts.q);
 
-  if (opts.guildId) {
+  if (opts.communityId) {
+    assertCommunityId(opts.communityId);
     return db
       .prepare(
         `
       SELECT * FROM tickets
-      WHERE guild_id=? AND archived=1 AND transcript_token IS NOT NULL${search.sql}
+      WHERE community_id=? AND archived=1 AND transcript_token IS NOT NULL${search.sql}
       ORDER BY closed_at DESC, ticket_number DESC
       LIMIT ? OFFSET ?
     `
       )
-      .all(opts.guildId, ...search.params, limit, offset);
+      .all(opts.communityId, ...search.params, limit, offset);
   }
 
   return db
@@ -745,7 +767,7 @@ function listArchivedTickets(opts = {}) {
       `
     SELECT * FROM tickets
     WHERE archived=1 AND transcript_token IS NOT NULL${search.sql}
-    ORDER BY closed_at DESC, guild_id ASC, ticket_number DESC
+    ORDER BY closed_at DESC, community_id ASC, ticket_number DESC
     LIMIT ? OFFSET ?
   `
     )
@@ -754,20 +776,21 @@ function listArchivedTickets(opts = {}) {
 
 /**
  * @param {object} [opts]
- * @param {string} [opts.guildId]
+ * @param {number} [opts.communityId]
  * @returns {number}
  */
 function countArchivedTickets(opts = {}) {
   const search = archiveSearchClause(opts.q);
-  if (opts.guildId) {
+  if (opts.communityId) {
+    assertCommunityId(opts.communityId);
     const row = db
       .prepare(
         `
       SELECT COUNT(*) AS n FROM tickets
-      WHERE guild_id=? AND archived=1 AND transcript_token IS NOT NULL${search.sql}
+      WHERE community_id=? AND archived=1 AND transcript_token IS NOT NULL${search.sql}
     `
       )
-      .get(opts.guildId, ...search.params);
+      .get(opts.communityId, ...search.params);
     return Number(row?.n || 0);
   }
   const row = db
@@ -831,38 +854,41 @@ function hasTicketMessageAuthor(ticketId, userId) {
 }
 
 // ---------------------------------------------------------------------------
-// Guild-allow-list archive reads (web /t index guild scoping, §8.4). The
-// caller (route layer) supplies guilds the viewer is ALREADY proven staff+
-// for — these queries never decide access, they only filter within a
+// Community-allow-list archive reads (web /t index community scoping, §8.4).
+// The caller (route layer) supplies communities the viewer is ALREADY proven
+// staff+ for — these queries never decide access, they only filter within a
 // pre-vetted allow-list.
 // ---------------------------------------------------------------------------
 
 /** SQLite host-parameter guard for the IN (...) allow-lists. */
-const MAX_GUILD_IDS_PER_QUERY = 500;
+const MAX_COMMUNITY_IDS_PER_QUERY = 500;
 
 /**
- * Normalize a guild-id allow-list: strings only, de-duplicated, capped.
- * @param {string[]|null|undefined} guildIds
- * @returns {string[]}
+ * Normalize a community-id allow-list: positive integers only, de-duplicated,
+ * capped. Junk entries are dropped silently — the same contract the old
+ * snowflake-string filter had (these lists are pre-vetted upstream).
+ * @param {number[]|null|undefined} communityIds
+ * @returns {number[]}
  */
-function normalizeGuildIdList(guildIds) {
-  if (!Array.isArray(guildIds)) return [];
-  return [...new Set(guildIds.filter((g) => typeof g === "string" && g))].slice(
-    0,
-    MAX_GUILD_IDS_PER_QUERY
-  );
+function normalizeCommunityIdList(communityIds) {
+  if (!Array.isArray(communityIds)) return [];
+  return [
+    ...new Set(
+      communityIds.filter((c) => Number.isInteger(c) && c > 0)
+    ),
+  ].slice(0, MAX_COMMUNITY_IDS_PER_QUERY);
 }
 
 /**
- * Content-archived tickets restricted to a guild allow-list.
+ * Content-archived tickets restricted to a community allow-list.
  * @param {object} opts
- * @param {string[]} opts.guildIds pre-vetted guild allow-list
+ * @param {number[]} opts.communityIds pre-vetted community allow-list
  * @param {number} [opts.limit=50]
  * @param {number} [opts.offset=0]
  * @returns {object[]}
  */
 function listArchivedTicketsForGuilds(opts = {}) {
-  const ids = normalizeGuildIdList(opts.guildIds);
+  const ids = normalizeCommunityIdList(opts.communityIds);
   if (ids.length === 0) return [];
   const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
   const offset = Math.max(Number(opts.offset) || 0, 0);
@@ -873,8 +899,8 @@ function listArchivedTicketsForGuilds(opts = {}) {
       `
     SELECT * FROM tickets
     WHERE archived=1 AND transcript_token IS NOT NULL
-      AND guild_id IN (${placeholders})${search.sql}
-    ORDER BY closed_at DESC, guild_id ASC, ticket_number DESC
+      AND community_id IN (${placeholders})${search.sql}
+    ORDER BY closed_at DESC, community_id ASC, ticket_number DESC
     LIMIT ? OFFSET ?
   `
     )
@@ -882,11 +908,11 @@ function listArchivedTicketsForGuilds(opts = {}) {
 }
 
 /**
- * @param {string[]} guildIds pre-vetted guild allow-list
+ * @param {number[]} communityIds pre-vetted community allow-list
  * @returns {number}
  */
-function countArchivedTicketsForGuilds(guildIds, q) {
-  const ids = normalizeGuildIdList(guildIds);
+function countArchivedTicketsForGuilds(communityIds, q) {
+  const ids = normalizeCommunityIdList(communityIds);
   if (ids.length === 0) return 0;
   const placeholders = ids.map(() => "?").join(",");
   const search = archiveSearchClause(q);
@@ -895,7 +921,7 @@ function countArchivedTicketsForGuilds(guildIds, q) {
       `
     SELECT COUNT(*) AS n FROM tickets
     WHERE archived=1 AND transcript_token IS NOT NULL
-      AND guild_id IN (${placeholders})${search.sql}
+      AND community_id IN (${placeholders})${search.sql}
   `
     )
     .get(...ids, ...search.params);
@@ -927,19 +953,20 @@ function setTicketArchiveMessageId(ticketId, messageId) {
 
 /**
  * Register a posted panel message.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} channelId
  * @param {string} messageId
  * @param {string} [title]
  * @param {string} [description]
  */
-function createTicketPanel(guildId, channelId, messageId, title, description) {
+function createTicketPanel(communityId, channelId, messageId, title, description) {
+  assertCommunityId(communityId);
   const t = now();
   db.prepare(`
-    INSERT INTO ticket_panels (guild_id, channel_id, message_id, title, description, created_at, updated_at)
+    INSERT INTO ticket_panels (community_id, channel_id, message_id, title, description, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
-    guildId,
+    communityId,
     channelId,
     messageId,
     title || "Support Tickets",
@@ -950,54 +977,57 @@ function createTicketPanel(guildId, channelId, messageId, title, description) {
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} messageId
  * @returns {object|null}
  */
-function getTicketPanel(guildId, messageId) {
+function getTicketPanel(communityId, messageId) {
+  assertCommunityId(communityId);
   return (
     db.prepare(`
-      SELECT guild_id, channel_id, message_id, title, description, created_at, updated_at
+      SELECT community_id, channel_id, message_id, title, description, created_at, updated_at
       FROM ticket_panels
-      WHERE guild_id=? AND message_id=?
-    `).get(guildId, messageId) || null
+      WHERE community_id=? AND message_id=?
+    `).get(communityId, messageId) || null
   );
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @returns {object[]}
  */
-function listTicketPanels(guildId) {
+function listTicketPanels(communityId) {
+  assertCommunityId(communityId);
   return db.prepare(`
-    SELECT guild_id, channel_id, message_id, title, description, created_at, updated_at
+    SELECT community_id, channel_id, message_id, title, description, created_at, updated_at
     FROM ticket_panels
-    WHERE guild_id=?
+    WHERE community_id=?
     ORDER BY created_at ASC
-  `).all(guildId);
+  `).all(communityId);
 }
 
 /**
  * Update a panel's title and/or description.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} messageId
  * @param {string|null} [title]
  * @param {string|null} [description]
  * @returns {boolean} true if panel existed and was updated
  */
-function updateTicketPanelText(guildId, messageId, title, description) {
-  const existing = getTicketPanel(guildId, messageId);
+function updateTicketPanelText(communityId, messageId, title, description) {
+  assertCommunityId(communityId);
+  const existing = getTicketPanel(communityId, messageId);
   if (!existing) return false;
   const t = now();
   db.prepare(`
     UPDATE ticket_panels
     SET title=?, description=?, updated_at=?
-    WHERE guild_id=? AND message_id=?
+    WHERE community_id=? AND message_id=?
   `).run(
     title != null ? title : existing.title,
     description != null ? description : existing.description,
     t,
-    guildId,
+    communityId,
     messageId,
   );
   return true;
@@ -1005,19 +1035,20 @@ function updateTicketPanelText(guildId, messageId, title, description) {
 
 /**
  * Remove a panel from the registry.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} messageId
  * @returns {{ removed: boolean, channel_id: string|null }}
  */
-function deleteTicketPanel(guildId, messageId) {
-  const existing = getTicketPanel(guildId, messageId);
+function deleteTicketPanel(communityId, messageId) {
+  assertCommunityId(communityId);
+  const existing = getTicketPanel(communityId, messageId);
   if (!existing) {
     return { removed: false, channel_id: null };
   }
   const result = db.prepare(`
     DELETE FROM ticket_panels
-    WHERE guild_id=? AND message_id=?
-  `).run(guildId, messageId);
+    WHERE community_id=? AND message_id=?
+  `).run(communityId, messageId);
   return {
     removed: result.changes > 0,
     channel_id: existing.channel_id,
@@ -1030,7 +1061,7 @@ function deleteTicketPanel(guildId, messageId) {
 // any staff role. A person is linked to a ticket as creator (requester),
 // handling staff owner, or an added member (ticket_members) — the SAME
 // linkage the transcript gate honors, expressed as SQL. Narrowing only:
-// guild filter and q are AND-ed on top; nothing here can widen scope.
+// community filter and q are AND-ed on top; nothing here can widen scope.
 // ---------------------------------------------------------------------------
 
 const PARTICIPANT_LINK =
@@ -1038,10 +1069,10 @@ const PARTICIPANT_LINK =
   " WHERE tm.ticket_id = tickets.id AND tm.user_id=?))";
 
 /**
- * Archived, transcript-bearing tickets linked to ONE user (any guild).
+ * Archived, transcript-bearing tickets linked to ONE user (any community).
  * @param {string} userId
  * @param {object} [opts]
- * @param {string} [opts.guildId] optional AND narrowing (never widening)
+ * @param {number} [opts.communityId] optional AND narrowing (never widening)
  * @param {string} [opts.q] search term (same clause as the staffed list)
  * @param {number} [opts.limit=50]
  * @param {number} [opts.offset=0]
@@ -1050,43 +1081,45 @@ const PARTICIPANT_LINK =
 function listArchivedTicketsForUser(userId, opts = {}) {
   const user = String(userId ?? "");
   if (!user) return [];
+  if (opts.communityId) assertCommunityId(opts.communityId);
   const limit = Math.min(Math.max(Number(opts.limit) || 50, 1), 200);
   const offset = Math.max(Number(opts.offset) || 0, 0);
   const search = archiveSearchClause(opts.q);
-  const guildFilter = opts.guildId ? " AND guild_id=?" : "";
-  const guildParams = opts.guildId ? [String(opts.guildId)] : [];
+  const communityFilter = opts.communityId ? " AND community_id=?" : "";
+  const communityParams = opts.communityId ? [opts.communityId] : [];
   return db
     .prepare(
       `
     SELECT * FROM tickets
     WHERE archived=1 AND transcript_token IS NOT NULL
-      AND ${PARTICIPANT_LINK}${guildFilter}${search.sql}
-    ORDER BY closed_at DESC, guild_id ASC, ticket_number DESC
+      AND ${PARTICIPANT_LINK}${communityFilter}${search.sql}
+    ORDER BY closed_at DESC, community_id ASC, ticket_number DESC
     LIMIT ? OFFSET ?
   `
     )
-    .all(user, user, user, ...guildParams, ...search.params, limit, offset);
+    .all(user, user, user, ...communityParams, ...search.params, limit, offset);
 }
 
 /**
  * Count for listArchivedTicketsForUser (same filters).
  * @param {string} userId
- * @param {object} [opts] { guildId?, q? }
+ * @param {object} [opts] { communityId?, q? }
  * @returns {number}
  */
 function countArchivedTicketsForUser(userId, opts = {}) {
   const user = String(userId ?? "");
   if (!user) return 0;
+  if (opts.communityId) assertCommunityId(opts.communityId);
   const search = archiveSearchClause(opts.q);
-  const guildFilter = opts.guildId ? " AND guild_id=?" : "";
-  const guildParams = opts.guildId ? [String(opts.guildId)] : [];
+  const communityFilter = opts.communityId ? " AND community_id=?" : "";
+  const communityParams = opts.communityId ? [opts.communityId] : [];
   const row = db
     .prepare(
       `SELECT COUNT(*) AS n FROM tickets
        WHERE archived=1 AND transcript_token IS NOT NULL
-         AND ${PARTICIPANT_LINK}${guildFilter}${search.sql}`
+         AND ${PARTICIPANT_LINK}${communityFilter}${search.sql}`
     )
-    .get(user, user, user, ...guildParams, ...search.params);
+    .get(user, user, user, ...communityParams, ...search.params);
   return Number(row?.n) || 0;
 }
 

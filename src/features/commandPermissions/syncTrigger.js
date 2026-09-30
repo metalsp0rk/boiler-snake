@@ -36,7 +36,7 @@
  *     authorize-link UX, which stays in the slash handler);
  *  3. onBeforeSync() runs LAST PRECONDITION PASSED, immediately before the
  *     first Discord call — the slash uses it for deferReply choreography;
- *  4. applyGuildCommandPermissions(guildId) runs UNCHANGED (token decrypt-
+ *  4. applyGuildCommandPermissions(communityId) runs UNCHANGED (token decrypt-
  *     free read of the stored row + refresh + per-command PUTs + persisting
  *     last_sync_at/last_sync_error). Throws propagate VERBATIM with their
  *     err.code ("not_authorized" | "reauth_required" | …) so each caller
@@ -71,11 +71,13 @@ function buildSyncAuditDetails(result) {
 }
 
 /**
- * Run the full visibility-sync trigger for ONE guild (no audit, no reply —
+ * Run the full visibility-sync trigger for ONE community (no audit, no reply —
  * the caller's transport owns both). Never throws on the precondition
  * branches; throws VERBATIM on sync failure (err.code preserved).
  *
- * @param {string} guildId server-derived by the caller
+ * @param {number} communityId internal communities.id, resolved by the caller
+ *   at its edge (slash: ensureCommunity(interaction.guildId); web: the /g/:id
+ *   route param)
  * @param {object} [opts]
  * @param {() => (void|Promise<void>)} [opts.onBeforeSync] invoked exactly
  *   once, immediately BEFORE applyGuildCommandPermissions (defer choreography)
@@ -85,7 +87,7 @@ function buildSyncAuditDetails(result) {
  *   | { status: "synced", result: object }
  * >}
  */
-async function runCommandVisibilitySync(guildId, opts = {}) {
+async function runCommandVisibilitySync(communityId, opts = {}) {
   const cfg = getCommandPermissionOAuthConfig();
   if (!cfg.ready) {
     return {
@@ -95,7 +97,7 @@ async function runCommandVisibilitySync(guildId, opts = {}) {
     };
   }
 
-  if (!hasCommandPermissionOauth(guildId)) {
+  if (!hasCommandPermissionOauth(communityId)) {
     return { status: "not_authorized" };
   }
 
@@ -103,7 +105,7 @@ async function runCommandVisibilitySync(guildId, opts = {}) {
     await opts.onBeforeSync();
   }
 
-  const result = await applyGuildCommandPermissions(guildId);
+  const result = await applyGuildCommandPermissions(communityId);
   return { status: "synced", result };
 }
 

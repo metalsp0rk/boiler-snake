@@ -28,6 +28,8 @@ const { key } = require("../../core/cooldowns");
 const { isAdminOrMod, isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
 const { logConfigChange, logHoneypotTrigger } = require("../logs/auditLog");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 const { registerJob } = require("../../core/scheduler");
 const {
   recordSlashAudit,
@@ -234,7 +236,15 @@ async function executeHoneypotBan(
   if (!guild || !user?.id) return false;
   if (user.bot) return false;
 
-  const banKey = key(guild.id, user.id);
+  // Enforcement edges resolve the integer community id (spec § In-memory maps:
+  // the banning set is keyed `${communityId}:${userId}`, not by snowflake).
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guild.id,
+  });
+
+  const banKey = key(communityId, user.id);
   if (honeypotBanning.has(banKey)) return true;
   honeypotBanning.add(banKey);
 
@@ -292,7 +302,7 @@ async function executeHoneypotBan(
     }
 
     recordSystemAudit({
-      guildId: guild.id,
+      communityId,
       action: "honeypot.enforce",
       targetType: "user",
       targetId: user.id,
@@ -313,7 +323,7 @@ async function executeHoneypotBan(
     try {
       const client = guild.client;
       if (client) {
-        await logHoneypotTrigger(client, guild, {
+        await logHoneypotTrigger(getDiscordOutbound(client), guild, {
           user,
           trigger,
           channelId:
@@ -448,6 +458,8 @@ async function sweepHoneypotWarningReactions(client) {
  * Returns true when the message was handled as honeypot traffic (caller should not award XP).
  */
 async function handleHoneypotMessage(message) {
+  // TODO(fluxer-pr4): the honeypot repository is not community-keyed yet —
+  // these calls keep the Discord snowflake.
   if (!isHoneypotChannel(message.guild.id, message.channel.id)) return false;
 
   let member = message.member;
@@ -460,7 +472,13 @@ async function handleHoneypotMessage(message) {
   // Exempt roles (staff, etc.) — no ban, but still delete the message so the channel stays empty
   if (member) {
     const roleIds = [...member.roles.cache.keys()];
-    if (memberHasStaffRole(message.guild.id, roleIds)) {
+    // staffRoles repo is community-keyed; resolve the integer at this edge.
+    const communityId = ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: message.guild.id,
+    });
+    if (memberHasStaffRole(communityId, roleIds)) {
       try {
         if (message.deletable) await message.delete();
       } catch (e) {
@@ -505,11 +523,20 @@ async function handleHoneypotBanRole(oldMember, newMember) {
   }
   if (!addedRoleIds.length) return;
 
+  // TODO(fluxer-pr4): the honeypot repository is not community-keyed yet —
+  // this lookup keeps the Discord snowflake.
   const matched = findHoneypotBanRolesAmong(guildId, addedRoleIds);
   if (!matched.length) return;
 
+  // staffRoles repo is community-keyed; resolve the integer at this edge.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+
   const allRoleIds = [...newRoles.keys()];
-  if (memberHasStaffRole(guildId, allRoleIds)) {
+  if (memberHasStaffRole(communityId, allRoleIds)) {
     console.log(
       `[honeypot] Skip ban-role for exempt member ${newMember.id} in ${guildId} ` +
         `(roles: ${matched.join(", ")})`,
@@ -536,7 +563,16 @@ async function handleHoneypotBanRole(oldMember, newMember) {
 async function handleHoneypot(interaction, ctx) {
   const { client, ensureHoneypotWarning } = ctx;
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
+  // Edge pattern: slash command resolves the integer community id for the
+  // converted repos (staffRoles, guildSettings). INSERT-OR-IGNORE: an
+  // unregistered guild gets its row created on the hot path, so
+  // getGuildSettings never hits the create-row path with a snowflake.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
 
   const group = interaction.options.getSubcommandGroup(false);
   const sub = interaction.options.getSubcommand();
@@ -566,9 +602,10 @@ async function handleHoneypot(interaction, ctx) {
         return;
       }
 
-      addHoneypotChannel(guildId, ch.id);
+      addHoneypotChannel(guildId, ch.id); // TODO(fluxer-pr4): un-converted repo — snowflake key
       recordSlashAudit({
         interaction,
+        communityId,
         action: "honeypot.channel_add",
         targetType: "channel",
         targetId: ch.id,
@@ -577,7 +614,7 @@ async function handleHoneypot(interaction, ctx) {
         interaction.guild,
         ch.id,
       );
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "Honeypot channel added",
         command: "/honeypot channel add",
         actor: interaction.user,
@@ -597,7 +634,7 @@ async function handleHoneypot(interaction, ctx) {
     if (sub === "del") {
       const ch = interaction.options.getChannel("channel", true);
       const { removed, warning_message_id } = removeHoneypotChannel(
-        guildId,
+        guildId, // TODO(fluxer-pr4): un-converted repo — snowflake key
         ch.id,
       );
 
@@ -625,11 +662,12 @@ async function handleHoneypot(interaction, ctx) {
       if (removed) {
         recordSlashAudit({
           interaction,
+          communityId,
           action: "honeypot.channel_del",
           targetType: "channel",
           targetId: ch.id,
         });
-        await logConfigChange(client, guildId, {
+        await logConfigChange(getDiscordOutbound(client), guildId, {
           title: "Honeypot channel removed",
           command: "/honeypot channel del",
           actor: interaction.user,
@@ -647,7 +685,7 @@ async function handleHoneypot(interaction, ctx) {
     }
 
     if (sub === "list") {
-      const rows = listHoneypotChannels(guildId);
+      const rows = listHoneypotChannels(guildId); // TODO(fluxer-pr4): un-converted repo — snowflake key
       if (!rows.length) {
         await replyEphemeral(interaction, {
           content: "No honeypot channels configured.",
@@ -680,6 +718,7 @@ async function handleHoneypot(interaction, ctx) {
         });
         return;
       }
+      // TODO(fluxer-pr4): honeypot repo un-converted — keyed by snowflake
       if (isHoneypotBanRole(guildId, role.id)) {
         await replyEphemeral(interaction, {
           content: `${role} is already a honeypot ban role.`,
@@ -687,14 +726,15 @@ async function handleHoneypot(interaction, ctx) {
         return;
       }
 
-      addHoneypotBanRole(guildId, role.id);
+      addHoneypotBanRole(guildId, role.id); // TODO(fluxer-pr4): un-converted repo — snowflake key
       recordSlashAudit({
         interaction,
+        communityId,
         action: "honeypot.ban_role_add",
         targetType: "role",
         targetId: role.id,
       });
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "Honeypot ban role added",
         command: "/honeypot banrole add",
         actor: interaction.user,
@@ -713,15 +753,16 @@ async function handleHoneypot(interaction, ctx) {
 
     if (sub === "del") {
       const role = interaction.options.getRole("role", true);
-      const removed = removeHoneypotBanRole(guildId, role.id);
+      const removed = removeHoneypotBanRole(guildId, role.id); // TODO(fluxer-pr4): un-converted repo — snowflake key
       if (removed) {
         recordSlashAudit({
           interaction,
+          communityId,
           action: "honeypot.ban_role_del",
           targetType: "role",
           targetId: role.id,
         });
-        await logConfigChange(client, guildId, {
+        await logConfigChange(getDiscordOutbound(client), guildId, {
           title: "Honeypot ban role removed",
           command: "/honeypot banrole del",
           actor: interaction.user,
@@ -737,7 +778,7 @@ async function handleHoneypot(interaction, ctx) {
     }
 
     if (sub === "list") {
-      const rows = listHoneypotBanRoles(guildId);
+      const rows = listHoneypotBanRoles(guildId); // TODO(fluxer-pr4): un-converted repo — snowflake key
       if (!rows.length) {
         await replyEphemeral(interaction, {
           content: "No honeypot ban roles configured.",
@@ -756,16 +797,17 @@ async function handleHoneypot(interaction, ctx) {
   if (group === "exempt") {
     if (sub === "add") {
       const role = interaction.options.getRole("role", true);
-      addStaffRole(guildId, role.id);
+      addStaffRole(communityId, role.id);
       // Same underlying table as /staff role add — keep the action vocabulary.
       recordSlashAudit({
         interaction,
+        communityId,
         action: "staff.role_add",
         targetType: "role",
         targetId: role.id,
         details: { via: "honeypot.exempt" },
       });
-      await logConfigChange(client, guildId, {
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: "Honeypot exempt role added",
         command: "/honeypot exempt add",
         actor: interaction.user,
@@ -781,16 +823,17 @@ async function handleHoneypot(interaction, ctx) {
 
     if (sub === "del") {
       const role = interaction.options.getRole("role", true);
-      const removed = removeStaffRole(guildId, role.id);
+      const removed = removeStaffRole(communityId, role.id);
       if (removed) {
         recordSlashAudit({
           interaction,
+          communityId,
           action: "staff.role_remove",
           targetType: "role",
           targetId: role.id,
           details: { via: "honeypot.exempt" },
         });
-        await logConfigChange(client, guildId, {
+        await logConfigChange(getDiscordOutbound(client), guildId, {
           title: "Honeypot exempt role removed",
           command: "/honeypot exempt del",
           actor: interaction.user,
@@ -806,7 +849,7 @@ async function handleHoneypot(interaction, ctx) {
     }
 
     if (sub === "list") {
-      const rows = listStaffRoles(guildId);
+      const rows = listStaffRoles(communityId);
       if (!rows.length) {
         await replyEphemeral(interaction, {
           content:

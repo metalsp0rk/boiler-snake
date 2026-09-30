@@ -6,6 +6,8 @@ const {
 const { getGuildSettings, updateGuildSettings } = require("../../db");
 const { isStaff } = require("../../core/permissions");
 const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 const {
   cacheMessage,
   logMessageDelete,
@@ -75,7 +77,14 @@ const commands = [
 async function handleSetlog(interaction, ctx) {
   const { client } = ctx;
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
+  // Edge pattern: slash commands resolve the internal community id here so
+  // converted repos receive the integer key (INSERT-OR-IGNORE, cheap).
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
   const admin = isStaff(interaction);
 
   if (!admin) {
@@ -110,8 +119,9 @@ async function handleSetlog(interaction, ctx) {
     const beforeId = settings[field];
 
     if (clear) {
-      // Log while the audit channel still exists (if clearing audit itself)
-      await logConfigChange(client, guildId, {
+      // Log while the audit channel still exists (if clearing audit itself).
+      // logConfigChange keeps the Discord snowflake as 2nd arg (resolved internally).
+      await logConfigChange(getDiscordOutbound(client), guildId, {
         title: `${label} channel cleared`,
         command: `/setlog ${sub}`,
         actor: interaction.user,
@@ -121,9 +131,10 @@ async function handleSetlog(interaction, ctx) {
             : `${label}: was already unset`,
         ],
       }).catch(() => {});
-      updateGuildSettings(guildId, { [field]: null });
+      updateGuildSettings(communityId, { [field]: null });
       recordSlashAudit({
         interaction,
+        communityId,
         action: "logs.channel_clear",
         targetType: "guild",
         targetId: guildId,
@@ -144,15 +155,16 @@ async function handleSetlog(interaction, ctx) {
       return;
     }
 
-    updateGuildSettings(guildId, { [field]: ch.id });
+    updateGuildSettings(communityId, { [field]: ch.id });
     recordSlashAudit({
       interaction,
+      communityId,
       action: "logs.channel_set",
       targetType: "channel",
       targetId: ch.id,
       details: { stream: sub, previous_channel_id: beforeId ?? null },
     });
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: `${label} channel set`,
       command: `/setlog ${sub}`,
       actor: interaction.user,
@@ -178,7 +190,8 @@ function registerEvents(client) {
           /* often fails for deletes */
         }
       }
-      await logMessageDelete(client, message);
+      // auditLog helpers take an OutboundClient (cached per client) as 1st arg
+      await logMessageDelete(getDiscordOutbound(client), message);
     } catch (e) {
       console.error("[MessageDelete] error:", e?.message || e);
     }
@@ -186,7 +199,7 @@ function registerEvents(client) {
 
   client.on(Events.MessageBulkDelete, async (messages, channel) => {
     try {
-      await logMessageBulkDelete(client, messages, channel);
+      await logMessageBulkDelete(getDiscordOutbound(client), messages, channel);
     } catch (e) {
       console.error("[MessageBulkDelete] error:", e?.message || e);
     }
@@ -194,7 +207,7 @@ function registerEvents(client) {
 
   client.on(Events.GuildBanAdd, async (ban) => {
     try {
-      await logBan(client, ban);
+      await logBan(getDiscordOutbound(client), ban);
     } catch (e) {
       console.error("[GuildBanAdd] error:", e?.message || e);
     }
@@ -203,7 +216,7 @@ function registerEvents(client) {
   client.on(Events.GuildMemberRemove, async (member) => {
     try {
       if (!member?.guild) return;
-      await logKickIfApplicable(client, member);
+      await logKickIfApplicable(getDiscordOutbound(client), member);
     } catch (e) {
       console.error("[GuildMemberRemove] error:", e?.message || e);
     }

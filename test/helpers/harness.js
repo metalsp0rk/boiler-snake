@@ -45,6 +45,17 @@ async function createIntegrationEnv(options = {}) {
   });
   client.addGuild(guild);
 
+  // Fluxer PR 2: repositories are keyed by the INTEGER communities.id.
+  // The harness registers the Discord guild as a community at env creation
+  // (spec § Repository boundary edge pattern) so every test seeds/reads by
+  // `env.communityId` while Discord fixtures keep the snowflake `guildId`.
+  const { ensureCommunity } = require("../../src/platform/community");
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+
   const adminUser = createUser({ id: IDS.admin, username: "admin" });
   const memberUser = createUser({ id: IDS.member, username: "member" });
   const member2User = createUser({ id: IDS.member2, username: "member2" });
@@ -270,6 +281,8 @@ async function createIntegrationEnv(options = {}) {
     cleanup,
     client,
     guild,
+    guildId,
+    communityId,
     registry,
     ctx,
     users: { adminUser, memberUser, member2User, botUser },

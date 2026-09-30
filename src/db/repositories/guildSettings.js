@@ -1,6 +1,10 @@
 const { db, now } = require("../connection");
 const { MAX_XP_AWARD } = require("../../core/constants");
 
+// Lazy require: src/platform/community.js requires the db facade, so a
+// top-level require would be a load-time cycle. See src/db/repositories/users.js.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
 const GORK_DEFAULT_CONTEXT_WINDOW = 10;
 const GORK_DEFAULT_COOLDOWN_SEC = 180;
 const GORK_RULES_MAX_LEN = 500;
@@ -29,7 +33,7 @@ function truncateGorkRules(value) {
 
 /**
  * Normalize the gork trigger keyword.
- * - null / empty / whitespace-only -> null (gork disabled for the guild)
+ * - null / empty / whitespace-only -> null (gork disabled for the community)
  * - 1-50 chars (trimmed) -> keyword to store
  * - over 50 chars -> undefined (rejected; prior value is kept)
  */
@@ -41,14 +45,14 @@ function normalizeGorkKeyword(value) {
   return keyword;
 }
 
-/** Coerce a gork boolean toggle (search / guild enable switch) to a 0/1 integer. */
+/** Coerce a gork boolean toggle (search / community enable switch) to a 0/1 integer. */
 function normalizeGorkFlag(value) {
   if (value === false || value === 0 || value === "0" || value === "off") return 0;
   return 1;
 }
 
 /**
- * Normalize the guild-default gork daily budget (roadmap §7.17.2, decision
+ * Normalize the community-default gork daily budget (roadmap §7.17.2, decision
  * 31): tri-state integer clamped to -1..1000. -1 = blocked (kill switch),
  * 0 = unlimited (the default — the feature is opt-in), 1..1000 = successful
  * answers per user per UTC day. Non-numeric input degrades to 0 (unlimited,
@@ -74,7 +78,7 @@ function clampGorkMemoryChars(value) {
 }
 
 /**
- * Normalize the per-guild /gork summarize input token budget: integer clamped
+ * Normalize the per-community /gork summarize input token budget: integer clamped
  * to 8,000–120,000. Out-of-range numbers clamp to the nearest bound; null
  * and non-numeric input fall back to the 80,000 default.
  */
@@ -83,25 +87,32 @@ function clampGorkSummarizeInputTokens(value) {
 }
 
 /**
- * Ensure a settings row exists for a guild.
+ * Ensure a settings row exists for a community.
  * This also ensures defaults are present for all columns (including migrated ones).
+ * @param {number} communityId
  */
-function ensureGuildSettings(guildId) {
+function ensureGuildSettings(communityId) {
+  assertCommunityId(communityId);
   const t = now();
   db.prepare(`
-  INSERT INTO guild_settings (guild_id, updated_at)
+  INSERT INTO guild_settings (community_id, updated_at)
   VALUES (?, ?)
-  ON CONFLICT(guild_id) DO UPDATE SET updated_at=excluded.updated_at
-  `).run(guildId, t);
+  ON CONFLICT(community_id) DO UPDATE SET updated_at=excluded.updated_at
+  `).run(communityId, t);
 }
 
-function getGuildSettings(guildId) {
-  ensureGuildSettings(guildId);
-  const row = db.prepare(`SELECT * FROM guild_settings WHERE guild_id=?`).get(guildId);
+/**
+ * @param {number} communityId
+ * @returns {object} the settings row (auto-ensured, fully defaulted)
+ */
+function getGuildSettings(communityId) {
+  assertCommunityId(communityId);
+  ensureGuildSettings(communityId);
+  const row = db.prepare(`SELECT * FROM guild_settings WHERE community_id=?`).get(communityId);
 
   if (!row) {
     return {
-      guild_id: guildId,
+      community_id: communityId,
       msg_xp: 5,
       reaction_xp: 2,
       voice_xp_per_min: 1,
@@ -145,8 +156,14 @@ function getGuildSettings(guildId) {
   return row;
 }
 
-function updateGuildSettings(guildId, patch) {
-  ensureGuildSettings(guildId);
+/**
+ * @param {number} communityId
+ * @param {object} patch
+ * @returns {object} the updated settings row
+ */
+function updateGuildSettings(communityId, patch) {
+  assertCommunityId(communityId);
+  ensureGuildSettings(communityId);
 
   const allowed = new Set([
     "msg_xp",
@@ -184,12 +201,12 @@ function updateGuildSettings(guildId, patch) {
     "gork_memory_chars",
     "gork_daily_limit",
     "gork_interaction_log_enabled",
-    "gork_summarize_input_tokens",
     "gork_ste_enabled",
+    "gork_summarize_input_tokens",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
-  if (!keys.length) return getGuildSettings(guildId);
+  if (!keys.length) return getGuildSettings(communityId);
 
   const clampAward = (v) => {
     const x = Number(v);
@@ -259,20 +276,20 @@ function updateGuildSettings(guildId, patch) {
   // A sanitized value of undefined means "rejected" (over-length keyword) —
   // skip that column so the prior value is kept.
   const finalKeys = keys.filter((k) => safePatch[k] !== undefined);
-  if (!finalKeys.length) return getGuildSettings(guildId);
+  if (!finalKeys.length) return getGuildSettings(communityId);
 
   const sets = finalKeys.map((k) => `${k}=@${k}`).join(", ");
   db.prepare(`
   UPDATE guild_settings
   SET ${sets}, updated_at=@updated_at
-  WHERE guild_id=@guild_id
- `).run({ guild_id: guildId, updated_at: now(), ...safePatch });
+  WHERE community_id=@community_id
+ `).run({ community_id: communityId, updated_at: now(), ...safePatch });
 
   // Side effect retained for parity with pre-split db.js
   const { cleanupMalformedYoutubeChannels } = require("./youtube");
   cleanupMalformedYoutubeChannels();
 
-  return getGuildSettings(guildId);
+  return getGuildSettings(communityId);
 }
 
 module.exports = {

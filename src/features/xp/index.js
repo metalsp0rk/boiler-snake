@@ -22,6 +22,8 @@ const { renderLeaderboardPng } = require("../../render/leaderboard");
 const { logConfigChange, diffConfigLines } = require("../logs/auditLog");
 const { registerJob } = require("../../core/scheduler");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 const adminPerms = PermissionFlagsBits.ManageGuild;
@@ -122,10 +124,14 @@ const commands = [
 ];
 
 async function handleXp(interaction) {
-  const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
+  const settings = getGuildSettings(communityId);
   const target = interaction.options.getUser("user") ?? interaction.user;
-  const xp = getXp(guildId, target.id);
+  const xp = getXp(communityId, target.id);
   const level = levelFromXp(xp, settings.level_xp_factor);
 
   await replyEphemeral(
@@ -201,17 +207,17 @@ function buildLeaderboardControls(requesterId, limit, page, { hasPrev, hasMore }
  * Build the reply/update payload for one leaderboard page.
  * Fetches `limit * page + 1` rows so "has more" is known without a count query.
  * @param {object} interaction
- * @param {string} guildId
+ * @param {number} communityId  internal communities.id (resolved by the caller)
  * @param {string} requesterId
  * @param {number} limit
  * @param {number} page 1-based
  */
-async function buildLeaderboardPagePayload(interaction, guildId, requesterId, limit, page) {
-  const settings = getGuildSettings(guildId);
+async function buildLeaderboardPagePayload(interaction, communityId, requesterId, limit, page) {
+  const settings = getGuildSettings(communityId);
   const factor = Math.max(1, Number(settings.level_xp_factor) || 100);
 
   const fetchCount = limit * page + 1;
-  const rows = topUsers(guildId, fetchCount);
+  const rows = topUsers(communityId, fetchCount);
   const hasMore = rows.length === fetchCount;
   const pageRows = rows.slice((page - 1) * limit, page * limit);
 
@@ -269,11 +275,15 @@ async function buildLeaderboardPagePayload(interaction, guildId, requesterId, li
 }
 
 async function handleLeaderboard(interaction) {
-  const guildId = interaction.guildId;
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
   const limit = clampLeaderboardLimit(interaction.options.getInteger("limit"));
   const payload = await buildLeaderboardPagePayload(
     interaction,
-    guildId,
+    communityId,
     interaction.user.id,
     limit,
     1,
@@ -308,9 +318,14 @@ async function handleLeaderboardButton(interaction, ctx) {
     deferred = true;
   }
 
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: interaction.guildId,
+  });
   const payload = await buildLeaderboardPagePayload(
     interaction,
-    interaction.guildId,
+    communityId,
     parsed.requesterId,
     parsed.limit,
     parsed.page,
@@ -338,7 +353,12 @@ async function handleSetXp(interaction, ctx) {
   }
 
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
   const msg = interaction.options.getInteger("message");
   const reaction = interaction.options.getInteger("reaction");
   const voice = interaction.options.getInteger("voice");
@@ -371,9 +391,10 @@ async function handleSetXp(interaction, ctx) {
   }
 
   const before = settings;
-  const updated = updateGuildSettings(guildId, patch);
+  const updated = updateGuildSettings(communityId, patch);
   recordSlashAudit({
     interaction,
+    communityId,
     action: "xp.settings_update",
     targetType: "guild",
     targetId: guildId,
@@ -381,7 +402,7 @@ async function handleSetXp(interaction, ctx) {
   });
   const lines = diffConfigLines(before, updated, Object.keys(patch));
   if (lines.length) {
-    await logConfigChange(client, guildId, {
+    await logConfigChange(getDiscordOutbound(client), guildId, {
       title: "XP settings updated",
       command: "/setxp",
       actor: interaction.user,
@@ -451,11 +472,17 @@ async function handleGrantXp(interaction, ctx) {
   }
 
   const guildId = interaction.guildId;
-  const settings = getGuildSettings(guildId);
-  const beforeXp = getXp(guildId, target.id);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guildId,
+  });
+  const settings = getGuildSettings(communityId);
+  const beforeXp = getXp(communityId, target.id);
 
-  const { newXp, level } = await awardXp(client, {
-    guild: interaction.guild,
+  const { newXp, level } = await awardXp(getDiscordOutbound(client), {
+    communityId,
+    externalGuildId: guildId,
     userId: target.id,
     delta: amount,
     activityKind: "admin_grant",
@@ -468,6 +495,7 @@ async function handleGrantXp(interaction, ctx) {
 
   recordSlashAudit({
     interaction,
+    communityId,
     action: "xp.grant",
     targetType: "user",
     targetId: target.id,
@@ -479,7 +507,7 @@ async function handleGrantXp(interaction, ctx) {
     },
   });
 
-  await logConfigChange(client, guildId, {
+  await logConfigChange(getDiscordOutbound(client), guildId, {
     title: "XP granted",
     command: "/grantxp",
     actor: interaction.user,
@@ -506,15 +534,21 @@ async function handleGrantXp(interaction, ctx) {
  */
 async function tryAwardMessageXp(client, message) {
   if (!message.guild || message.author?.bot) return;
-  const settings = getGuildSettings(message.guild.id);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: message.guild.id,
+  });
+  const settings = getGuildSettings(communityId);
   const gain = Number(settings.msg_xp) || 0;
   if (gain <= 0) return;
 
-  const k = key(message.guild.id, message.author.id);
+  const k = key(communityId, message.author.id);
   if (isOnCooldown(msgCooldown, k, settings.msg_cooldown_sec)) return;
 
-  await awardXp(client, {
-    guild: message.guild,
+  await awardXp(getDiscordOutbound(client), {
+    communityId,
+    externalGuildId: message.guild.id,
     userId: message.author.id,
     delta: gain,
     activityKind: "message",
@@ -528,15 +562,21 @@ async function tryAwardMessageXp(client, message) {
  */
 async function tryAwardReactionXp(client, guild, user) {
   if (!guild || user?.bot) return;
-  const settings = getGuildSettings(guild.id);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: guild.id,
+  });
+  const settings = getGuildSettings(communityId);
   const gain = Number(settings.reaction_xp) || 0;
   if (gain <= 0) return;
 
-  const k = key(guild.id, user.id);
+  const k = key(communityId, user.id);
   if (isOnCooldown(reactionCooldown, k, settings.reaction_cooldown_sec)) return;
 
-  await awardXp(client, {
-    guild,
+  await awardXp(getDiscordOutbound(client), {
+    communityId,
+    externalGuildId: guild.id,
     userId: user.id,
     delta: gain,
     activityKind: "reaction",

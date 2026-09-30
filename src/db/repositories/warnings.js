@@ -1,5 +1,10 @@
 const { db, now } = require("../connection");
 
+// src/platform/community.js requires the db facade (src/db/index.js), so a
+// top-level require here would be a load-time cycle (partial exports). The
+// lazy require resolves after boot; assertCommunityId stays single-source.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
 /** Max reason / void_reason length (roadmap §6.3). */
 const MAX_WARN_REASON = 1000;
 
@@ -57,10 +62,13 @@ function normalizeEvidenceText(text) {
 /**
  * Validate and normalize a Discord message jump URL.
  * @param {string|null|undefined} url
- * @param {string} [expectedGuildId] when set, path guild must match
+ * @param {string} [expectedExternalGuildId] EXTERNAL Discord snowflake (the URL path
+ *   embeds external guild ids — evidence URLs stay opaque text per spec).
+ *   When set, the URL's guild segment must match. Never pass the internal
+ *   community id here.
  * @returns {{ ok: true, url: string|null } | { ok: false, error: string }}
  */
-function normalizeEvidenceMessageUrl(url, expectedGuildId) {
+function normalizeEvidenceMessageUrl(url, expectedExternalGuildId) {
   if (url == null) return { ok: true, url: null };
   const s = String(url).trim();
   if (!s) return { ok: true, url: null };
@@ -76,7 +84,7 @@ function normalizeEvidenceMessageUrl(url, expectedGuildId) {
   }
 
   const guildId = m[1];
-  if (expectedGuildId && guildId !== String(expectedGuildId)) {
+  if (expectedExternalGuildId && guildId !== String(expectedExternalGuildId)) {
     return {
       ok: false,
       error: "Evidence message link must be from this server.",
@@ -147,22 +155,25 @@ function resolveExpiryDays(opts = {}) {
 }
 
 /**
- * Next sequential warning_number for a guild.
- * @param {string} guildId
+ * Next sequential warning_number for a community. Internal helper — callers
+ * (createWarning) assert the community id before entering.
+ * @param {number} communityId
  * @returns {number}
  */
-function nextWarningNumber(guildId) {
+function nextWarningNumber(communityId) {
   const row = db
     .prepare(
-      `SELECT COALESCE(MAX(warning_number), 0) AS max_n FROM warnings WHERE guild_id=?`
+      `SELECT COALESCE(MAX(warning_number), 0) AS max_n FROM warnings WHERE community_id=?`
     )
-    .get(guildId);
+    .get(communityId);
   return Number(row?.max_n || 0) + 1;
 }
 
 /**
  * @param {object} opts
- * @param {string} opts.guildId
+ * @param {number} opts.communityId
+ * @param {string|null} [opts.externalGuildId] Discord snowflake used to scope
+ *   the evidence message link (URLs embed external ids, not community ids)
  * @param {string} opts.userId
  * @param {string} opts.issuerId
  * @param {string} opts.reason
@@ -175,6 +186,7 @@ function nextWarningNumber(guildId) {
  * @returns {object} created warning row
  */
 function createWarning(opts) {
+  assertCommunityId(opts.communityId);
   const normalized = normalizeWarnReason(opts.reason, "Reason");
   if (!normalized.ok) {
     const err = new Error(normalized.error);
@@ -184,7 +196,7 @@ function createWarning(opts) {
 
   const evidenceUrl = normalizeEvidenceMessageUrl(
     opts.evidenceMessageUrl,
-    opts.guildId
+    opts.externalGuildId
   );
   if (!evidenceUrl.ok) {
     const err = new Error(evidenceUrl.error);
@@ -230,15 +242,15 @@ function createWarning(opts) {
 
   const insert = db.prepare(`
     INSERT INTO warnings (
-      guild_id, warning_number, user_id, issuer_id, reason, created_at,
+      community_id, warning_number, user_id, issuer_id, reason, created_at,
       related_note_id, expires_at, evidence_message_url, evidence_text
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const tx = db.transaction(() => {
-    const warningNumber = nextWarningNumber(opts.guildId);
+    const warningNumber = nextWarningNumber(opts.communityId);
     const info = insert.run(
-      opts.guildId,
+      opts.communityId,
       warningNumber,
       opts.userId,
       opts.issuerId,
@@ -268,25 +280,26 @@ function getWarningById(id) {
 }
 
 /**
- * Lookup by human-friendly per-guild warning number.
- * @param {string} guildId
+ * Lookup by human-friendly per-community warning number.
+ * @param {number} communityId
  * @param {number} warningNumber
  * @returns {object|null}
  */
-function getWarning(guildId, warningNumber) {
-  if (!guildId || warningNumber == null) return null;
+function getWarning(communityId, warningNumber) {
+  assertCommunityId(communityId);
+  if (warningNumber == null) return null;
   return (
     db
       .prepare(
-        `SELECT * FROM warnings WHERE guild_id=? AND warning_number=?`
+        `SELECT * FROM warnings WHERE community_id=? AND warning_number=?`
       )
-      .get(guildId, Number(warningNumber)) || null
+      .get(communityId, Number(warningNumber)) || null
   );
 }
 
 /**
  * List warnings for a subject user (newest first).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @param {object} [opts]
  * @param {boolean} [opts.includeVoided=false]
@@ -294,7 +307,8 @@ function getWarning(guildId, warningNumber) {
  * @param {number} [opts.offset=0]
  * @returns {object[]}
  */
-function listWarnings(guildId, userId, opts = {}) {
+function listWarnings(communityId, userId, opts = {}) {
+  assertCommunityId(communityId);
   const includeVoided = !!opts.includeVoided;
   const maxLimit = opts.export ? 5000 : 100;
   const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), maxLimit);
@@ -305,49 +319,50 @@ function listWarnings(guildId, userId, opts = {}) {
       .prepare(
         `
       SELECT * FROM warnings
-      WHERE guild_id=? AND user_id=?
+      WHERE community_id=? AND user_id=?
       ORDER BY created_at DESC, warning_number DESC
       LIMIT ? OFFSET ?
     `
       )
-      .all(guildId, userId, limit, offset);
+      .all(communityId, userId, limit, offset);
   }
 
   return db
     .prepare(
       `
     SELECT * FROM warnings
-    WHERE guild_id=? AND user_id=? AND voided_at IS NULL
+    WHERE community_id=? AND user_id=? AND voided_at IS NULL
     ORDER BY created_at DESC, warning_number DESC
     LIMIT ? OFFSET ?
   `
     )
-    .all(guildId, userId, limit, offset);
+    .all(communityId, userId, limit, offset);
 }
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} userId
  * @param {object} [opts]
  * @param {boolean} [opts.includeVoided=false]
  * @returns {number}
  */
-function countWarnings(guildId, userId, opts = {}) {
+function countWarnings(communityId, userId, opts = {}) {
+  assertCommunityId(communityId);
   const includeVoided = !!opts.includeVoided;
   if (includeVoided) {
     return (
       db
         .prepare(
-          `SELECT COUNT(*) AS c FROM warnings WHERE guild_id=? AND user_id=?`
+          `SELECT COUNT(*) AS c FROM warnings WHERE community_id=? AND user_id=?`
         )
-        .get(guildId, userId)?.c || 0
+        .get(communityId, userId)?.c || 0
     );
   }
-  return countActiveWarnings(guildId, userId);
+  return countActiveWarnings(communityId, userId);
 }
 
 /**
- * Normalize the guild-wide list state filter (web console moderation
+ * Normalize the community-wide list state filter (web console moderation
  * lists, roadmap/web-admin.md §8.6 — subtask 17). Whitelist-only:
  * "voided" → only voided rows, "all" → no void predicate, anything else
  * → "active" (the slash `/warn list` default of hiding voided).
@@ -361,17 +376,17 @@ function normalizeWarnState(state) {
 }
 
 /**
- * Shared WHERE builder for the guild-wide list/count pair. Declarative
+ * Shared WHERE builder for the community-wide list/count pair. Declarative
  * from whitelisted inputs only (state via normalizeWarnState, userId as
  * a bound parameter) — no SQL ever built from raw strings.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {{ userId?: string|null, state?: unknown }} opts
- * @returns {{ where: string, params: (string)[] }}
+ * @returns {{ where: string, params: (string|number)[] }}
  */
-function guildWarnWhere(guildId, opts = {}) {
+function guildWarnWhere(communityId, opts = {}) {
   const state = normalizeWarnState(opts.state);
-  const clauses = ["guild_id=?"];
-  const params = [guildId];
+  const clauses = ["community_id=?"];
+  const params = [communityId];
   if (opts.userId) {
     clauses.push("user_id=?");
     params.push(String(opts.userId));
@@ -382,16 +397,17 @@ function guildWarnWhere(guildId, opts = {}) {
 }
 
 /**
- * Guild-wide warnings list for the web moderation console — newest first
- * by warning_number DESC (per-guild sequential ⇒ creation order; served
- * by the UNIQUE(guild_id, warning_number) index with no sort step, unlike
- * created_at which has no guild-wide index — see migration 009). The
- * per-user list keeps listWarnings(); this is its guild-scoped sibling.
+ * Community-wide warnings list for the web moderation console — newest first
+ * by warning_number DESC (per-community sequential ⇒ creation order; served
+ * by the UNIQUE(community_id, warning_number) index with no sort step,
+ * unlike created_at which has no community-wide index — see migration 009).
+ * The per-user list keeps listWarnings(); this is its community-scoped
+ * sibling.
  *
  * Phase 2/3 reuse: web warn/void actions re-read the list page through
  * this exact helper (same filters, same bounds).
  *
- * @param {string} guildId
+ * @param {number} communityId
  * @param {object} [opts]
  * @param {string|null} [opts.userId=null] exact subject filter (snowflake)
  * @param {"active"|"voided"|"all"} [opts.state="active"] void-state filter
@@ -399,8 +415,9 @@ function guildWarnWhere(guildId, opts = {}) {
  * @param {number} [opts.offset=0]
  * @returns {object[]}
  */
-function listGuildWarnings(guildId, opts = {}) {
-  const { where, params } = guildWarnWhere(guildId, opts);
+function listGuildWarnings(communityId, opts = {}) {
+  assertCommunityId(communityId);
+  const { where, params } = guildWarnWhere(communityId, opts);
   const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), 100);
   const offset = Math.max(Number(opts.offset) || 0, 0);
   return db
@@ -418,32 +435,34 @@ function listGuildWarnings(guildId, opts = {}) {
 /**
  * Count behind listGuildWarnings — SAME filter semantics so pagers are
  * honest (state default "active", exact userId filter).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {object} [opts]
  * @param {string|null} [opts.userId=null]
  * @param {"active"|"voided"|"all"} [opts.state="active"]
  * @returns {number}
  */
-function countGuildWarnings(guildId, opts = {}) {
-  const { where, params } = guildWarnWhere(guildId, opts);
+function countGuildWarnings(communityId, opts = {}) {
+  assertCommunityId(communityId);
+  const { where, params } = guildWarnWhere(communityId, opts);
   return (
     db.prepare(`SELECT COUNT(*) AS c FROM warnings WHERE ${where}`).get(...params)?.c || 0
   );
 }
 
 /**
- * Active (non-voided) warning count for a user in a guild.
- * @param {string} guildId
+ * Active (non-voided) warning count for a user in a community.
+ * @param {number} communityId
  * @param {string} userId
  * @returns {number}
  */
-function countActiveWarnings(guildId, userId) {
+function countActiveWarnings(communityId, userId) {
+  assertCommunityId(communityId);
   return (
     db
       .prepare(
-        `SELECT COUNT(*) AS c FROM warnings WHERE guild_id=? AND user_id=? AND voided_at IS NULL`
+        `SELECT COUNT(*) AS c FROM warnings WHERE community_id=? AND user_id=? AND voided_at IS NULL`
       )
-      .get(guildId, userId)?.c || 0
+      .get(communityId, userId)?.c || 0
   );
 }
 
@@ -471,7 +490,7 @@ function listExpiredActiveWarnings(nowMs = now(), limit = 50) {
 
 /**
  * Void a warning (permanent row; marks inactive). Cannot un-void.
- * @param {string} guildId
+ * @param {number} communityId
  * @param {number} warningNumber
  * @param {object} opts
  * @param {string} opts.voidedBy
@@ -479,7 +498,8 @@ function listExpiredActiveWarnings(nowMs = now(), limit = 50) {
  * @returns {object|null} updated row, or null if not found
  * @throws {{ code: string }} INVALID_REASON | ALREADY_VOIDED
  */
-function voidWarning(guildId, warningNumber, opts) {
+function voidWarning(communityId, warningNumber, opts) {
+  assertCommunityId(communityId);
   const normalized = normalizeWarnReason(opts.voidReason, "Void reason");
   if (!normalized.ok) {
     const err = new Error(normalized.error);
@@ -487,7 +507,7 @@ function voidWarning(guildId, warningNumber, opts) {
     throw err;
   }
 
-  const existing = getWarning(guildId, warningNumber);
+  const existing = getWarning(communityId, warningNumber);
   if (!existing) return null;
   if (existing.voided_at != null) {
     const err = new Error(
@@ -503,17 +523,17 @@ function voidWarning(guildId, warningNumber, opts) {
     `
     UPDATE warnings
     SET voided_at=?, voided_by=?, void_reason=?
-    WHERE guild_id=? AND warning_number=? AND voided_at IS NULL
+    WHERE community_id=? AND warning_number=? AND voided_at IS NULL
   `
   ).run(
     t,
     opts.voidedBy,
     normalized.reason,
-    guildId,
+    communityId,
     Number(warningNumber)
   );
 
-  return getWarning(guildId, warningNumber);
+  return getWarning(communityId, warningNumber);
 }
 
 module.exports = {

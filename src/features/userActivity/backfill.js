@@ -28,6 +28,7 @@ const {
   isHoneypotChannel,
   db,
 } = require("../../db");
+const { ensureCommunity } = require("../../platform/community");
 const { shouldSkipChannel } = require("./service");
 
 const PAGE_SIZE = 100;
@@ -122,8 +123,15 @@ function isBackfillCancelled(guildId) {
  * @returns {import("discord.js").GuildTextBasedChannel[]}
  */
 function listBackfillChannels(guild, guildId) {
+  // Fluxer PR 2: in-process job map keys by external guildId; activity/honeypot
+  // repos key by the integer community id.
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(guildId),
+  });
   const { channels: ignoredChannels, categories } =
-    getActivityIgnoreSets(guildId);
+    getActivityIgnoreSets(communityId);
   const out = [];
   for (const ch of guild.channels.cache.values()) {
     if (!ch) continue;
@@ -135,11 +143,11 @@ function listBackfillChannels(guild, guildId) {
       type === 5;
     if (!isText) continue;
     if (typeof ch.messages?.fetch !== "function") continue;
-    if (isHoneypotChannel(guildId, ch.id)) continue;
+    if (isHoneypotChannel(communityId, ch.id)) continue;
     if (ignoredChannels.has(ch.id)) continue;
     const catId = ch.parentId || null;
     if (catId && categories.has(catId)) continue;
-    if (shouldSkipChannel(guildId, ch.id, catId)) continue;
+    if (shouldSkipChannel(communityId, ch.id, catId)) continue;
     out.push(ch);
   }
   return out;
@@ -166,6 +174,11 @@ async function backfillChannelHistory(opts) {
   } = opts;
   const maxPages = normalizeMaxPagesPerChannel(opts.maxPagesPerChannel);
   const guildId = channel.guildId || channel.guild?.id;
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(guildId),
+  });
   let counted = 0;
   let pages = 0;
   let before = undefined;
@@ -173,13 +186,13 @@ async function backfillChannelHistory(opts) {
   let partial = false;
 
   // Guild-complete channels are fully ingested for all users — skip both modes
-  const guildCursor = getGuildChannelBackfillCursor(guildId, channel.id);
+  const guildCursor = getGuildChannelBackfillCursor(communityId, channel.id);
   if (guildCursor?.complete) {
     return { counted: 0, complete: true, partial: false };
   }
 
   if (cursorMode === "user" && onlyUserId) {
-    const cursor = getBackfillCursor(guildId, onlyUserId, channel.id);
+    const cursor = getBackfillCursor(communityId, onlyUserId, channel.id);
     if (cursor?.complete) {
       return { counted: 0, complete: true, partial: false };
     }
@@ -238,7 +251,7 @@ async function backfillChannelHistory(opts) {
 
     for (const [key, n] of bucket) {
       const [authorId, day] = key.split("\0");
-      incrementDaily(guildId, authorId, channel.id, day, n);
+      incrementDaily(communityId, authorId, channel.id, day, n);
       counted += n;
     }
 
@@ -246,12 +259,12 @@ async function backfillChannelHistory(opts) {
     before = oldest?.id;
 
     if (cursorMode === "user" && onlyUserId) {
-      upsertBackfillCursor(guildId, onlyUserId, channel.id, {
+      upsertBackfillCursor(communityId, onlyUserId, channel.id, {
         oldest_message_id: before,
         complete: false,
       });
     } else if (cursorMode === "guild") {
-      upsertGuildChannelBackfillCursor(guildId, channel.id, {
+      upsertGuildChannelBackfillCursor(communityId, channel.id, {
         oldest_message_id: before,
         complete: false,
       });
@@ -278,12 +291,12 @@ async function backfillChannelHistory(opts) {
 
   if (complete) {
     if (cursorMode === "user" && onlyUserId) {
-      upsertBackfillCursor(guildId, onlyUserId, channel.id, {
+      upsertBackfillCursor(communityId, onlyUserId, channel.id, {
         oldest_message_id: before || null,
         complete: true,
       });
     } else if (cursorMode === "guild") {
-      upsertGuildChannelBackfillCursor(guildId, channel.id, {
+      upsertGuildChannelBackfillCursor(communityId, channel.id, {
         oldest_message_id: before || null,
         complete: true,
       });
@@ -297,16 +310,16 @@ async function backfillChannelHistory(opts) {
  * @param {string} guildId
  * @returns {string|null} userId if a per-user job is marked running in DB
  */
-function findRunningUserBackfill(guildId) {
+function findRunningUserBackfill(communityId) {
   const row = db
     .prepare(
       `
   SELECT user_id FROM user_activity_meta
-  WHERE guild_id=? AND backfill_status IN ('queued', 'running')
+  WHERE community_id=? AND backfill_status IN ('queued', 'running')
   LIMIT 1
   `
     )
-    .get(guildId);
+    .get(communityId);
   return row?.user_id || null;
 }
 
@@ -318,18 +331,23 @@ function findRunningUserBackfill(guildId) {
  */
 async function startUserBackfill(guild, userId) {
   const guildId = guild.id;
-  ensureGuildActivitySettings(guildId);
-  const settings = getGuildActivitySettings(guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(guildId),
+  });
+  ensureGuildActivitySettings(communityId);
+  const settings = getGuildActivitySettings(communityId);
   const watermarkMs = settings?.collect_from_ms ?? Date.now();
 
-  if (guildHasActiveBackfill(guildId) || guildJobs.has(guildId)) {
+  if (guildHasActiveBackfill(communityId) || guildJobs.has(guildId)) {
     return {
       started: false,
       reason: "A backfill is already running in this server.",
     };
   }
 
-  const meta = getUserActivityMeta(guildId, userId);
+  const meta = getUserActivityMeta(communityId, userId);
   if (
     meta?.backfill_status === "running" ||
     meta?.backfill_status === "queued"
@@ -341,7 +359,7 @@ async function startUserBackfill(guild, userId) {
   }
 
   const channels = listBackfillChannels(guild, guildId);
-  upsertUserActivityMeta(guildId, userId, {
+  upsertUserActivityMeta(communityId, userId, {
     backfill_status: "running",
     backfill_started_at: Date.now(),
     backfill_finished_at: null,
@@ -383,7 +401,7 @@ async function startUserBackfill(guild, userId) {
         }
         done += 1;
         if (result.partial || !result.complete) anyPartial = true;
-        upsertUserActivityMeta(guildId, userId, {
+        upsertUserActivityMeta(communityId, userId, {
           backfill_status: "running",
           backfill_channels_done: done,
           backfill_channels_total: channels.length,
@@ -400,7 +418,7 @@ async function startUserBackfill(guild, userId) {
           : anyPartial
             ? "partial"
             : "done";
-      upsertUserActivityMeta(guildId, userId, {
+      upsertUserActivityMeta(communityId, userId, {
         backfill_status: status,
         backfill_finished_at: Date.now(),
         backfill_error: error,
@@ -430,14 +448,19 @@ async function startUserBackfill(guild, userId) {
  */
 async function startGuildBackfill(guild, opts = {}) {
   const guildId = guild.id;
-  ensureGuildActivitySettings(guildId);
-  const settings = getGuildActivitySettings(guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(guildId),
+  });
+  ensureGuildActivitySettings(communityId);
+  const settings = getGuildActivitySettings(communityId);
   const watermarkMs = settings?.collect_from_ms ?? Date.now();
   const maxPagesPerChannel = normalizeMaxPagesPerChannel(
     opts.maxPagesPerChannel
   );
 
-  if (guildHasActiveBackfill(guildId) || guildJobs.has(guildId)) {
+  if (guildHasActiveBackfill(communityId) || guildJobs.has(guildId)) {
     return {
       started: false,
       reason: "A backfill is already running in this server.",
@@ -445,7 +468,7 @@ async function startGuildBackfill(guild, opts = {}) {
   }
 
   const channels = listBackfillChannels(guild, guildId);
-  patchGuildActivitySettings(guildId, {
+  patchGuildActivitySettings(communityId, {
     guild_backfill_status: "running",
     guild_backfill_started_at: Date.now(),
     guild_backfill_finished_at: null,
@@ -490,7 +513,7 @@ async function startGuildBackfill(guild, opts = {}) {
         done += 1;
         messagesCounted += result.counted || 0;
         if (result.partial || !result.complete) anyPartial = true;
-        patchGuildActivitySettings(guildId, {
+        patchGuildActivitySettings(communityId, {
           guild_backfill_status: "running",
           guild_backfill_channels_done: done,
           guild_backfill_channels_total: channels.length,
@@ -508,7 +531,7 @@ async function startGuildBackfill(guild, opts = {}) {
           : anyPartial
             ? "partial"
             : "done";
-      patchGuildActivitySettings(guildId, {
+      patchGuildActivitySettings(communityId, {
         guild_backfill_status: status,
         guild_backfill_finished_at: Date.now(),
         guild_backfill_error: error,
@@ -554,12 +577,17 @@ function cancelBackfill(guildId) {
   }
 
   // Stale status after process restart: nothing to stop in memory
-  ensureGuildActivitySettings(guildId);
-  const settings = getGuildActivitySettings(guildId);
+  const communityId = ensureCommunity({
+    platform: "discord",
+    instanceKey: "discord",
+    externalGuildId: String(guildId),
+  });
+  ensureGuildActivitySettings(communityId);
+  const settings = getGuildActivitySettings(communityId);
   const guildRunning =
     settings?.guild_backfill_status === "running" ||
     settings?.guild_backfill_status === "queued";
-  const runningUserId = findRunningUserBackfill(guildId);
+  const runningUserId = findRunningUserBackfill(communityId);
 
   if (!guildRunning && !runningUserId) {
     return {
@@ -570,14 +598,14 @@ function cancelBackfill(guildId) {
   }
 
   if (guildRunning) {
-    patchGuildActivitySettings(guildId, {
+    patchGuildActivitySettings(communityId, {
       guild_backfill_status: "cancelled",
       guild_backfill_finished_at: Date.now(),
       guild_backfill_error: "Cancelled (no active worker — process may have restarted).",
     });
   }
   if (runningUserId) {
-    upsertUserActivityMeta(guildId, runningUserId, {
+    upsertUserActivityMeta(communityId, runningUserId, {
       backfill_status: "cancelled",
       backfill_finished_at: Date.now(),
       backfill_error: "Cancelled (no active worker — process may have restarted).",

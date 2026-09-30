@@ -1,19 +1,25 @@
 const { db, now } = require("../connection");
 
-function logActivity(guildId, userId, kind, amount = 1) {
+// Lazy require: src/platform/community.js requires the db facade, so a
+// top-level require would be a load-time cycle. See src/db/repositories/users.js.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
+function logActivity(communityId, userId, kind, amount = 1) {
+  assertCommunityId(communityId);
   db.prepare(`
-  INSERT INTO activity_log (guild_id, user_id, kind, amount, created_at)
+  INSERT INTO activity_log (community_id, user_id, kind, amount, created_at)
   VALUES (?, ?, ?, ?, ?)
-  `).run(guildId, userId, kind, amount, now());
+  `).run(communityId, userId, kind, amount, now());
 }
 
-function countMessagesInWindow(guildId, userId, windowDays) {
+function countMessagesInWindow(communityId, userId, windowDays) {
+  assertCommunityId(communityId);
   const since = now() - windowDays * 24 * 60 * 60 * 1000;
   const row = db.prepare(`
   SELECT COALESCE(SUM(amount), 0) AS c
   FROM activity_log
-  WHERE guild_id=? AND user_id=? AND kind='message' AND created_at >= ?
-  `).get(guildId, userId, since);
+  WHERE community_id=? AND user_id=? AND kind='message' AND created_at >= ?
+  `).get(communityId, userId, since);
   return row?.c ?? 0;
 }
 

@@ -17,6 +17,8 @@ const {
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
 const { Color } = require("../../core/theme");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { ensureCommunity } = require("../../platform/community");
 const {
   logReactionRoleChange,
   logLevelRoleChanges,

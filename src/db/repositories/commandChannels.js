@@ -1,26 +1,33 @@
 const { db, now } = require("../connection");
 
-function addAllowedCommandChannel(guildId, channelId) {
+// Lazy require: src/platform/community.js requires the db facade, so a
+// top-level require would be a load-time cycle. See src/db/repositories/users.js.
+const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
+function addAllowedCommandChannel(communityId, channelId) {
+  assertCommunityId(communityId);
   db.prepare(`
-  INSERT OR IGNORE INTO allowed_command_channels (guild_id, channel_id, created_at)
+  INSERT OR IGNORE INTO allowed_command_channels (community_id, channel_id, created_at)
   VALUES (?, ?, ?)
-  `).run(guildId, channelId, now());
+  `).run(communityId, channelId, now());
 }
 
-function removeAllowedCommandChannel(guildId, channelId) {
+function removeAllowedCommandChannel(communityId, channelId) {
+  assertCommunityId(communityId);
   db.prepare(`
   DELETE FROM allowed_command_channels
-  WHERE guild_id=? AND channel_id=?
-  `).run(guildId, channelId);
+  WHERE community_id=? AND channel_id=?
+  `).run(communityId, channelId);
 }
 
-function listAllowedCommandChannels(guildId) {
+function listAllowedCommandChannels(communityId) {
+  assertCommunityId(communityId);
   return db.prepare(`
   SELECT channel_id
   FROM allowed_command_channels
-  WHERE guild_id=?
+  WHERE community_id=?
   ORDER BY created_at ASC
-  `).all(guildId);
+  `).all(communityId);
 }
 
 module.exports = {

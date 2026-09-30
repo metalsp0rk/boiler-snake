@@ -1,8 +1,9 @@
 /**
  * Download Discord media into transcript asset dirs and rewrite URLs for local serving.
  *
- * Layout:
- *   {DATA_DIR}/ticket-transcripts/{guild_id}/{token}/assets/{nnn_filename}
+ * Layout (the dir segment is the INTEGER community id — roadmap/fluxer.md
+ * § Transcript storage; migration 034 moved the tree off Discord snowflakes):
+ *   {DATA_DIR}/ticket-transcripts/{community_id}/{token}/assets/{nnn_filename}
  * Served as:
  *   GET /t/{token}/assets/{nnn_filename}
  */
@@ -10,17 +11,19 @@
 const fs = require("fs");
 const path = require("path");
 const { dataDir } = require("../../db/connection");
+const { assertCommunityId } = require("../../platform/community");
 
 /**
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} token
  * @returns {string}
  */
-function absoluteAssetsDir(guildId, token) {
+function absoluteAssetsDir(communityId, token) {
+  assertCommunityId(communityId);
   return path.join(
     dataDir,
     "ticket-transcripts",
-    String(guildId),
+    String(communityId),
     String(token),
     "assets"
   );
@@ -217,7 +220,7 @@ async function downloadUrlToFile(url, destPath) {
  *
  * @param {object[]} messages
  * @param {object} opts
- * @param {string} opts.guildId
+ * @param {number} opts.communityId integer community id (transcript dir segment)
  * @param {string} opts.token UUID transcript token
  * @returns {Promise<{
  *   messages: object[],
@@ -228,8 +231,8 @@ async function downloadUrlToFile(url, destPath) {
  * }>}
  */
 async function mirrorTicketAssets(messages, opts) {
-  const { guildId, token } = opts;
-  const assetsDir = absoluteAssetsDir(guildId, token);
+  const { communityId, token } = opts;
+  const assetsDir = absoluteAssetsDir(communityId, token);
   fs.mkdirSync(assetsDir, { recursive: true });
 
   /** @type {Map<string, { href: string, localName: string, contentType: string|null, kind: string }>} */
@@ -370,18 +373,18 @@ async function mirrorTicketAssets(messages, opts) {
 
 /**
  * Resolve an asset file under a transcript token (path traversal safe).
- * @param {string} guildId
+ * @param {number} communityId
  * @param {string} token
  * @param {string} filename
  * @returns {string|null} absolute path if safe and exists
  */
-function resolveAssetAbsolutePath(guildId, token, filename) {
+function resolveAssetAbsolutePath(communityId, token, filename) {
   const safe = path.basename(String(filename || ""));
   if (!safe || safe === "." || safe === "..") return null;
   // Only allow our sanitized pattern
   if (!/^[a-zA-Z0-9._-]+$/.test(safe)) return null;
 
-  const assetsDir = path.resolve(absoluteAssetsDir(guildId, token));
+  const assetsDir = path.resolve(absoluteAssetsDir(communityId, token));
   const abs = path.resolve(path.join(assetsDir, safe));
   if (!abs.startsWith(assetsDir + path.sep) && abs !== assetsDir) return null;
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
