@@ -1,120 +1,27 @@
 /**
  * Self-create, staff-for, panel button, and create modal.
  */
-const {
-  MessageFlags,
-  EmbedBuilder,
-  ChannelType,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-} = require("discord.js");
-const {
-  MAX_TICKET_REASON,
-  getTicketSettings,
-  canUserCreateTicket,
-  createTicket,
-  getTicketByChannel,
-  getTicketById,
-  claimTicket,
-  transferTicket,
-  addTicketStaff,
-  removeTicketStaff,
-  setTicketSensitive,
-  setTicketUnsensitive,
-  addTicketMember,
-  removeTicketMember,
-  listTicketMembers,
-  listTicketStaff,
-  listTicketMessages,
-  listOpenTickets,
-  updateGuildSettings,
-  listStaffRoles,
-  listSeniorStaffRoles,
-  normalizeStaffLevel,
-  createStaffNote,
-  MAX_NOTE_CONTENT,
-  createTicketPanel,
-  getTicketPanel,
-  listTicketPanels,
-  updateTicketPanelText,
-  deleteTicketPanel,
-} = require("../../db");
-const {
-  requireStaff,
-  isStaff,
-  isAdminOrMod,
-} = require("../../core/permissions");
-const {
-  replyDenied,
-  replyEphemeral,
-  editEphemeral,
-} = require("../../core/interaction");
-const { logConfigChange } = require("../logs/auditLog");
+const { MessageFlags } = require("discord.js");
+const { canUserCreateTicket } = require("../../db");
+const { replyEphemeral } = require("../../core/interaction");
 const { recordSlashAudit } = require("../../core/auditTrail");
 // Discord edge: (platform, instanceKey, snowflake) → integer community id,
 // resolved once per entry point (roadmap/fluxer.md § Repository boundary).
 const { ensureCommunity } = require("../../platform/community");
-const {
-  applyTicketOverwrites,
-  getManageableStaffRoleIds,
-  formatStaffRoleAccessNote,
-  describeSkippedStaffRoles,
-  assertBotCanCreateTickets,
-  formatChannelCreateError,
-  MEMBER_ALLOW,
-  MEMBER_DENY,
-  STAFF_ALLOW,
-  BOT_ALLOW,
-} = require("./overwrites");
-const {
-  softCloseTicket,
-  archiveTicketPipeline,
-  fetchAllMessages,
-} = require("./close");
-const {
-  collectTicketUserIds,
-  resolveUsers,
-  enrichMessagesForArchive,
-} = require("./users");
-const { summarizeTicket } = require("./summary");
-const {
-  formatTicketRef,
-  tsFull,
-  baseEmbed,
-} = require("../../core/theme");
-const {
-  COLOR_OPEN,
-  COLOR_INFO,
-  COLOR_SENSITIVE,
-  BTN_OPEN,
-  MODAL_CREATE,
-  MODAL_FIELD_REASON,
-  BTN_STAFF_NOTE_PREFIX,
-  MODAL_STAFF_NOTE_PREFIX,
-  MODAL_FIELD_STAFF_NOTE,
-  DEFAULT_PANEL_TITLE,
-  DEFAULT_PANEL_DESCRIPTION,
-} = require("./constants");
-const helpers = require("./helpers");
-const {
-  formatRateLimitMessage,
-  buildOpenTicketButtonRow,
-  buildCreateTicketModal,
-  buildPanelEmbed,
-  buildTicketStaffNoteContent,
-  attachStaffNoteFromTicket,
-  buildAddStaffNoteButtonRow,
-  buildTicketStaffNoteModal,
-  resolveChannel,
-  requireOpenTicketChannel,
-  requireLiveTicketChannel,
-  resolveBotMember,
-  openTicketChannel,
-} = helpers;
+const { formatTicketRef } = require("../../core/theme");
+const { formatChannelCreateError, formatStaffRoleAccessNote } =
+  require("./overwrites");
+const { formatRateLimitMessage, buildCreateTicketModal, openTicketChannel } =
+  require("./helpers");
+const { MODAL_FIELD_REASON } = require("./constants");
+const { showModalFromContext } = require("../../platform/context");
+
+/**
+ * Standard reply for Fluxer dispatches reaching Discord-only surfaces
+ * (roadmap/fluxer.md § What stays Discord-only): ticket channels are
+ * discord.js guild channels until the OutboundClient cutover in PR 7.
+ */
+const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
 
 
 /**
@@ -166,23 +73,58 @@ async function completeSelfCreate(interaction, ctx, reason, communityId) {
   }
 }
 
-async function handleCreate(interaction, ctx) {
-  const reason = interaction.options.getString("reason");
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
-  const check = canUserCreateTicket(communityId, interaction.user.id);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleCreate(commandCtx, ctx) {
+  const reason = commandCtx.options.getString("reason");
+  // Repository key: integer community id, resolved by the context builder.
+  const communityId = commandCtx.communityId;
+  const check = canUserCreateTicket(communityId, commandCtx.userId);
   if (!check.ok) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: formatRateLimitMessage(check),
+      sensitive: true,
     });
     return;
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  await completeSelfCreate(interaction, ctx, reason, communityId);
+  // No reason provided → open the tk:create modal for the description
+  // (roadmap § Prefix grammar: chat-input flows that show modals keep the
+  // modal on Discord). showModalFromContext is the sanctioned modal path
+  // (CommandContext deliberately has no showModal); it resolves false on
+  // Fluxer, where PR 8's parser overlay makes `reason` required — reply the
+  // inline-usage line there instead.
+  if (reason == null) {
+    const shown = await showModalFromContext(
+      commandCtx,
+      buildCreateTicketModal(),
+    );
+    if (!shown) {
+      await commandCtx.reply({
+        content:
+          "Pass what you need help with with the `reason` option — this platform can't open the ticket modal.",
+        sensitive: true,
+      });
+    }
+    return;
+  }
+
+  // Ticket channels are discord.js guild channels: the openTicketChannel
+  // pipeline (guild.channels.create + permission overwrites) cuts over to the
+  // OutboundClient in PR 7 (roadmap § Outbound client). Fluxer contexts carry
+  // no rawInteraction → the standard not-yet-available line.
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+
+  await commandCtx.defer({ sensitive: true });
+  // Helpers keep their (interaction, ctx) signatures until PR 7 — pass the
+  // raw interaction; completeSelfCreate edits the deferred reply we just made.
+  await completeSelfCreate(raw, ctx, reason, communityId);
 }
 
 async function handleOpenTicketButton(interaction, _ctx) {
@@ -264,37 +206,48 @@ async function handleCreateTicketModal(interaction, ctx) {
   await completeSelfCreate(interaction, ctx, reason, communityId);
 }
 
-async function handleFor(interaction, ctx) {
-  const target = interaction.options.getUser("user", true);
-  const reason = interaction.options.getString("reason");
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleFor(commandCtx, ctx) {
+  const target = commandCtx.options.getUser("user", true);
+  const reason = commandCtx.options.getString("reason");
 
   if (target.bot) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Cannot open a ticket for a bot.",
+      sensitive: true,
     });
     return;
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  // Same Discord-only rationale as handleCreate (roadmap
+  // § What stays Discord-only): opening the ticket needs a discord.js Guild;
+  // the OutboundClient createChannel cutover is PR 7.
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+
+  await commandCtx.defer({ sensitive: true });
 
   try {
-    const communityId = ensureCommunity({
-      platform: "discord",
-      instanceKey: "discord",
-      externalGuildId: interaction.guildId,
-    });
+    const communityId = commandCtx.communityId;
     const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
-      guild: interaction.guild,
-      client: ctx.client || interaction.client,
+      guild: raw.guild,
+      // Helper pipeline takes the raw Discord client (PR 7 cutover).
+      client: ctx?.client || raw.client,
       creatorUserId: target.id,
       reason,
-      openedByStaffId: interaction.user.id,
+      openedByStaffId: commandCtx.userId,
       communityId,
     });
 
     recordSlashAudit({
-      interaction,
       communityId,
+      actorUserId: commandCtx.userId,
       action: "tickets.create",
       targetType: "ticket",
       targetId: String(ticket.id),
@@ -306,29 +259,37 @@ async function handleFor(interaction, ctx) {
       },
     });
 
-    // Best-effort DM
-    try {
-      await target.send({
-        content:
-          `A support ticket was opened for you in **${interaction.guild.name}**: ` +
-          `https://discord.com/channels/${interaction.guildId}/${channel.id}`,
-      });
-    } catch {
-      // DMs closed
+    // Best-effort DM via outbound (check ok; log + surface failures —
+    // AGENTS.md § Error Handling 3/5). Guild display name through
+    // outbound.fetchGuild (cache-first), same label as the old guild.name.
+    const guild = await commandCtx.outbound.fetchGuild(communityId);
+    const guildName = guild?.name || "this server";
+    const dm = await commandCtx.outbound.sendDm(target.id, {
+      content:
+        `A support ticket was opened for you in **${guildName}**: ` +
+        `https://discord.com/channels/${commandCtx.externalGuildId}/${channel.id}`,
+    });
+    let dmNote = "";
+    if (!dm.ok) {
+      console.warn(
+        `[tickets] DM to ${target.id} for ticket ${formatTicketRef(ticket.ticket_number)} failed: ${dm.error}`,
+      );
+      dmNote = `\n_Could not DM the member: ${dm.error}_`;
     }
 
     let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened for <@${target.id}>: ${channel}`;
     if (skippedStaffRoles?.length) {
       msg += formatStaffRoleAccessNote(skippedStaffRoles);
     }
-    await interaction.editReply({ content: msg });
+    await commandCtx.editReply({ content: msg + dmNote });
   } catch (err) {
     console.error("[tickets] for failed:", err);
-    await interaction.editReply({
+    await commandCtx.editReply({
       content:
         err?.code === "BOT_PERMISSIONS" || err?.code === "CHANNEL_CREATE"
           ? err.message
           : `Failed to open ticket: ${formatChannelCreateError(err)}`,
+      sensitive: true,
     });
   }
 }

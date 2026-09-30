@@ -2,140 +2,55 @@
  * List/info/summarize plus guild ticket config.
  */
 const {
-  MessageFlags,
-  EmbedBuilder,
-  ChannelType,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-} = require("discord.js");
-const {
-  MAX_TICKET_REASON,
   getTicketSettings,
-  canUserCreateTicket,
-  createTicket,
-  getTicketByChannel,
-  getTicketById,
-  claimTicket,
-  transferTicket,
-  addTicketStaff,
-  removeTicketStaff,
-  setTicketSensitive,
-  setTicketUnsensitive,
-  addTicketMember,
-  removeTicketMember,
+  listTicketMessages,
   listTicketMembers,
   listTicketStaff,
-  listTicketMessages,
   listOpenTickets,
   updateGuildSettings,
   listStaffRoles,
   listSeniorStaffRoles,
   normalizeStaffLevel,
-  createStaffNote,
-  MAX_NOTE_CONTENT,
-  createTicketPanel,
-  getTicketPanel,
-  listTicketPanels,
-  updateTicketPanelText,
-  deleteTicketPanel,
 } = require("../../db");
-const {
-  requireStaff,
-  isStaff,
-  isAdminOrMod,
-} = require("../../core/permissions");
-const {
-  replyDenied,
-  replyEphemeral,
-  editEphemeral,
-} = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
-const { ensureCommunity } = require("../../platform/community");
-const {
-  applyTicketOverwrites,
-  getManageableStaffRoleIds,
-  formatStaffRoleAccessNote,
-  describeSkippedStaffRoles,
-  assertBotCanCreateTickets,
-  formatChannelCreateError,
-  MEMBER_ALLOW,
-  MEMBER_DENY,
-  STAFF_ALLOW,
-  BOT_ALLOW,
-} = require("./overwrites");
-const {
-  softCloseTicket,
-  archiveTicketPipeline,
-  fetchAllMessages,
-} = require("./close");
 const {
   collectTicketUserIds,
   resolveUsers,
   enrichMessagesForArchive,
 } = require("./users");
 const { summarizeTicket } = require("./summary");
-const {
-  Color,
-  formatTicketRef,
-  tsFull,
-  baseEmbed,
-} = require("../../core/theme");
-const {
-  COLOR_OPEN,
-  COLOR_INFO,
-  COLOR_SENSITIVE,
-  BTN_OPEN,
-  MODAL_CREATE,
-  MODAL_FIELD_REASON,
-  BTN_STAFF_NOTE_PREFIX,
-  MODAL_STAFF_NOTE_PREFIX,
-  MODAL_FIELD_STAFF_NOTE,
-  DEFAULT_PANEL_TITLE,
-  DEFAULT_PANEL_DESCRIPTION,
-} = require("./constants");
-const helpers = require("./helpers");
-const {
-  formatRateLimitMessage,
-  buildOpenTicketButtonRow,
-  buildCreateTicketModal,
-  buildPanelEmbed,
-  buildTicketStaffNoteContent,
-  attachStaffNoteFromTicket,
-  buildAddStaffNoteButtonRow,
-  buildTicketStaffNoteModal,
-  resolveChannel,
-  requireOpenTicketChannel,
-  requireLiveTicketChannel,
-  resolveBotMember,
-  openTicketChannel,
-} = helpers;
+const { Color, formatTicketRef, tsFull } = require("../../core/theme");
+const { COLOR_INFO, COLOR_SENSITIVE } = require("./constants");
+const { requireLiveTicketChannel } = require("./helpers");
 
 
-async function handleList(interaction) {
-  const filterUser = interaction.options.getUser("user");
-  // Discord edge: resolve the external guild snowflake to the integer
-  // community id (spec § Repository boundary).
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+/**
+ * Standard reply for Fluxer dispatches reaching Discord-only surfaces
+ * (roadmap/fluxer.md § What stays Discord-only): ticket channel lifecycle
+ * (open / close / archive / claim overwrites) uses discord.js channel objects
+ * until the OutboundClient cutover in PR 7.
+ */
+const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
+
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function handleList(commandCtx) {
+  const filterUser = commandCtx.options.getUser("user");
+  // Repository key: integer community id, resolved by the context builder.
+  const communityId = commandCtx.communityId;
   const rows = listOpenTickets(communityId, {
     userId: filterUser?.id,
     limit: 25,
   });
 
   if (!rows.length) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: filterUser
         ? `No open tickets for <@${filterUser.id}>.`
         : "No open tickets.",
+      sensitive: true,
     });
     return;
   }
@@ -150,17 +65,31 @@ async function handleList(interaction) {
     );
   });
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `**Open tickets** (${rows.length})\n\n${lines.join("\n")}`.slice(
       0,
       1900,
     ),
+    sensitive: true,
   });
 }
 
-async function handleInfo(interaction, ctx) {
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleInfo(commandCtx, ctx) {
+  // Ticket-channel lifecycle helpers keep (interaction, ctx) signatures until
+  // the OutboundClient cutover (PR 7) — pass the raw Discord interaction.
+  // Roadmap § What stays Discord-only: Fluxer contexts carry no rawInteraction.
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+
   // Allow info on soft-closed channels still present
-  const ctxTicket = await requireLiveTicketChannel(interaction, ctx, {
+  const ctxTicket = await requireLiveTicketChannel(raw, ctx, {
     status: "any",
   });
   if (!ctxTicket) return;
@@ -169,11 +98,13 @@ async function handleInfo(interaction, ctx) {
   const members = listTicketMembers(ticket.id);
   const staff = listTicketStaff(ticket.id);
 
-  const embed = new EmbedBuilder()
-    .setColor(Number(ticket.is_sensitive) ? COLOR_SENSITIVE : COLOR_INFO)
-    .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)}`)
-    .setDescription((ticket.reason || "_No reason_").slice(0, 4000))
-    .addFields(
+  // Plain NormalizedEmbed (roadmap § CommandContext): same visible text as the
+  // previous EmbedBuilder chain.
+  const embed = {
+    title: `Ticket ${formatTicketRef(ticket.ticket_number)}`,
+    description: (ticket.reason || "_No reason_").slice(0, 4000),
+    color: Number(ticket.is_sensitive) ? COLOR_SENSITIVE : COLOR_INFO,
+    fields: [
       {
         name: "Status",
         value: ticket.status,
@@ -214,40 +145,114 @@ async function handleInfo(interaction, ctx) {
             )
             .join(", ") || "—",
       },
-    );
+    ],
+  };
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     embeds: [embed],
+    sensitive: true,
   });
+}
+
+/**
+ * Page channel history through the OutboundClient (spec: history reads go
+ * through outbound.fetchMessages, never an unnamed messages.fetch) and map
+ * NormalizedMessage rows onto the archive row shape summarizeTicket consumes
+ * — same shape close.js's normalizeDiscordMessage produces, so summaries read
+ * identically. Pages walk backwards (100/page, 5000 max) like fetchAllMessages.
+ * @param {object} outbound OutboundClient
+ * @param {string} channelId
+ * @returns {Promise<object[]>} archive-shaped rows, oldest → newest
+ */
+async function fetchHistoryRows(outbound, channelId) {
+  const rows = [];
+  let before;
+  const MAX = 5000;
+  const PAGE = 100;
+
+  while (rows.length < MAX) {
+    const res = await outbound.fetchMessages(channelId, {
+      limit: PAGE,
+      ...(before ? { before } : {}),
+    });
+    if (!res.ok) {
+      const err = new Error(res.error);
+      err.code = "HISTORY_FETCH";
+      throw err;
+    }
+    const page = res.messages || [];
+    for (const m of page) {
+      rows.push({
+        message_id: String(m.id),
+        author_id: String(m.authorId ?? "0"),
+        // Labels are resolved via resolveUsers/enrich below; the raw id is the
+        // fallback summarizeTicket renders when resolution is unavailable.
+        author_tag: null,
+        content: m.content ?? "",
+        sent_at: m.createdAt
+          ? new Date(m.createdAt).getTime()
+          : Date.now(),
+      });
+    }
+    if (page.length < PAGE) break;
+    // Oldest id of the page (discord.js returns newest-first; snowflake compare)
+    const oldest = page.reduce((a, b) => {
+      try {
+        return BigInt(a.id) < BigInt(b.id) ? a : b;
+      } catch {
+        return String(a.id) < String(b.id) ? a : b;
+      }
+    });
+    before = oldest.id;
+  }
+
+  rows.sort((a, b) => {
+    if (a.sent_at !== b.sent_at) return a.sent_at - b.sent_at;
+    return String(a.message_id).localeCompare(String(b.message_id));
+  });
+  return rows;
 }
 
 /**
  * On-demand AI summary of the current ticket conversation.
  * Works while the ticket is open (or soft-closed, pre-archive).
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
  */
-async function handleSummarize(interaction, ctx) {
-  const ctxTicket = await requireLiveTicketChannel(interaction, ctx, {
+async function handleSummarize(commandCtx, ctx) {
+  // Ticket-channel lifecycle helpers keep (interaction, ctx) signatures until
+  // the OutboundClient cutover (PR 7) — pass the raw Discord interaction.
+  // Roadmap § What stays Discord-only: Fluxer contexts carry no rawInteraction.
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+
+  const ctxTicket = await requireLiveTicketChannel(raw, ctx, {
     status: "any",
   });
   if (!ctxTicket) return;
-  const { ticket, channel } = ctxTicket;
+  const { ticket } = ctxTicket;
 
-  const client = ctx?.client || interaction.client;
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  // Helper pipeline takes the raw Discord client (PR 7 cutover).
+  const client = ctx?.client || raw.client;
+  await commandCtx.defer({ sensitive: true });
 
   let messages = listTicketMessages(ticket.id);
   if (!messages.length) {
     try {
-      messages = await fetchAllMessages(channel);
+      // History via outbound.fetchMessages (roadmap § Outbound client).
+      messages = await fetchHistoryRows(commandCtx.outbound, commandCtx.channelId);
       const ids = collectTicketUserIds(ticket, messages);
-      const userMap = await resolveUsers(client, channel.guild, ids);
+      const userMap = await resolveUsers(client, raw.guild, ids);
       messages = enrichMessagesForArchive(messages, userMap);
     } catch (err) {
       console.error("[tickets] summarize fetch failed:", err);
-      await editEphemeral(
-        interaction,
-        "Could not read the ticket conversation to summarize it.",
-      );
+      await commandCtx.editReply({
+        content: `Could not read the ticket conversation to summarize it: ${err?.message || err}`,
+        sensitive: true,
+      });
       return;
     }
   }
@@ -255,7 +260,8 @@ async function handleSummarize(interaction, ctx) {
   const summary = await summarizeTicket(ticket, messages, {});
 
   recordSlashAudit({
-    interaction,
+    communityId: commandCtx.communityId,
+    actorUserId: commandCtx.userId,
     action: "tickets.summarize",
     targetType: "ticket",
     targetId: String(ticket.id),
@@ -270,13 +276,13 @@ async function handleSummarize(interaction, ctx) {
       ? `AI summary (model: ${summary.model})`
       : "Stats-only summary (AI not configured or unavailable)";
 
-  const embed = baseEmbed({
+  // Plain NormalizedEmbed — same visible text as the previous baseEmbed chain.
+  const embed = {
     color: Number(ticket.is_sensitive) ? Color.danger : Color.brand,
     title: `Ticket ${formatTicketRef(ticket.ticket_number)} — ${ticket.status}`,
-    footer: "Staff only",
-  })
-    .setDescription((summary.summary || "").slice(0, 4000) || "—")
-    .addFields(
+    footer: { text: "Staff only" },
+    description: (summary.summary || "").slice(0, 4000) || "—",
+    fields: [
       {
         name: "Resolution",
         value: (summary.resolution || "—").slice(0, 500),
@@ -292,125 +298,130 @@ async function handleSummarize(interaction, ctx) {
         value: sourceNote,
         inline: true,
       },
-    );
+    ],
+  };
 
-  await editEphemeral(interaction, { embeds: [embed] });
+  await commandCtx.editReply({ embeds: [embed], sensitive: true });
 }
 
-async function handleSetCategory(interaction, ctx) {
-  const category = interaction.options.getChannel("category", true);
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function handleSetCategory(commandCtx) {
+  const category = commandCtx.options.getChannel("category", true);
+  // Repository key: integer community id, resolved by the context builder.
+  const communityId = commandCtx.communityId;
   updateGuildSettings(communityId, {
     ticket_category_id: category.id,
   });
   recordSlashAudit({
-    interaction,
+    communityId,
+    actorUserId: commandCtx.userId,
     action: "tickets.category_set",
     targetType: "channel",
     targetId: category.id,
   });
-  await logConfigChange(
-    getDiscordOutbound(ctx?.client || interaction.client),
-    interaction.guildId,
-    {
-      title: "Ticket category set",
-      command: "/ticket setcategory",
-      actor: interaction.user,
-      changes: [`Category: ${category.name || category.id} (${category.id})`],
-    },
-  ).catch(() => {});
+  // Display name via outbound (roadmap § Outbound client): the Discord
+  // adapter's ChannelHandle is the discord.js channel and carries .name;
+  // null → specific "unavailable" note in the audit line.
+  const categoryHandle = await commandCtx.outbound.fetchChannel(
+    communityId,
+    category.id,
+  );
+  const categoryLabel =
+    categoryHandle?.name ||
+    (categoryHandle ? category.id : `channel \`${category.id}\` (unavailable)`);
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
+    title: "Ticket category set",
+    command: "/ticket setcategory",
+    actor: commandCtx.user,
+    changes: [`Category: ${categoryLabel} (${category.id})`],
+  }).catch(() => {});
 
-  await replyEphemeral(interaction, {
-    content: `New tickets will be created under **${category.name || category.id}**.`,
+  await commandCtx.reply({
+    content: `New tickets will be created under **${categoryLabel}**.`,
+    sensitive: true,
   });
 }
 
-async function handleSetArchive(interaction, ctx) {
-  const channel = interaction.options.getChannel("channel", true);
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function handleSetArchive(commandCtx) {
+  const channel = commandCtx.options.getChannel("channel", true);
+  // Repository key: integer community id, resolved by the context builder.
+  const communityId = commandCtx.communityId;
   updateGuildSettings(communityId, {
     ticket_archive_channel_id: channel.id,
   });
   recordSlashAudit({
-    interaction,
+    communityId,
+    actorUserId: commandCtx.userId,
     action: "tickets.archive_channel_set",
     targetType: "channel",
     targetId: channel.id,
   });
-  await logConfigChange(
-    getDiscordOutbound(ctx?.client || interaction.client),
-    interaction.guildId,
-    {
-      title: "Ticket archive channel set",
-      command: "/ticket setarchive",
-      actor: interaction.user,
-      changes: [`Channel: <#${channel.id}>`],
-    },
-  ).catch(() => {});
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
+    title: "Ticket archive channel set",
+    command: "/ticket setarchive",
+    actor: commandCtx.user,
+    changes: [`Channel: <#${channel.id}>`],
+  }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `Close summaries and transcript links will post to <#${channel.id}>. ` +
       `Restrict that channel to staff in Discord permissions.`,
+    sensitive: true,
   });
 }
 
-async function handleSetRateLimit(interaction, ctx) {
-  const minutes = interaction.options.getInteger("minutes", true);
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function handleSetRateLimit(commandCtx) {
+  const minutes = commandCtx.options.getInteger("minutes", true);
+  // Repository key: integer community id, resolved by the context builder.
+  const communityId = commandCtx.communityId;
   updateGuildSettings(communityId, {
     ticket_rate_limit_minutes: minutes,
   });
   recordSlashAudit({
-    interaction,
+    communityId,
+    actorUserId: commandCtx.userId,
     action: "tickets.rate_limit_set",
     targetType: "guild",
-    targetId: interaction.guildId,
+    targetId: commandCtx.externalGuildId,
     details: { minutes },
   });
-  await logConfigChange(
-    getDiscordOutbound(ctx?.client || interaction.client),
-    interaction.guildId,
-    {
-      title: "Ticket rate limit set",
-      command: "/ticket setratelimit",
-      actor: interaction.user,
-      changes: [
-        minutes === 0
-          ? "Rate limit: disabled"
-          : `Rate limit: ${minutes} minute(s) between self-creates`,
-      ],
-    },
-  ).catch(() => {});
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
+    title: "Ticket rate limit set",
+    command: "/ticket setratelimit",
+    actor: commandCtx.user,
+    changes: [
+      minutes === 0
+        ? "Rate limit: disabled"
+        : `Rate limit: ${minutes} minute(s) between self-creates`,
+    ],
+  }).catch(() => {});
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       minutes === 0
         ? "Member self-create rate limit **disabled**."
         : `Members can self-create at most one ticket every **${minutes}** minute(s). Staff \`/ticket for\` is not rate-limited.`,
+    sensitive: true,
   });
 }
 
-async function handleSettings(interaction) {
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function handleSettings(commandCtx) {
   // Anyone can view settings summary (helps members know rate limits)
   // Config changes still require admin via set* commands
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: interaction.guildId,
-  });
+  // Repository key: integer community id, resolved by the context builder.
+  const communityId = commandCtx.communityId;
   const s = getTicketSettings(communityId);
   const allStaff = listStaffRoles(communityId);
   const senior = listSeniorStaffRoles(communityId);
@@ -424,7 +435,7 @@ async function handleSettings(interaction) {
     ? junior.map((r) => `<@&${r.role_id}>`).join(", ")
     : "_none_";
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `**Ticket settings**\n` +
       `Category: ${s.ticket_category_id ? `<#${s.ticket_category_id}>` : "_not set_ (`/ticket setcategory`)"} \n` +
@@ -436,6 +447,7 @@ async function handleSettings(interaction) {
       `**Staff:** \`for\` · \`claim\` · \`close\` · \`archive\` · \`sensitive\` · \`list\` · …\n` +
       `**Admin:** \`panel\` · \`setcategory\` · \`setarchive\` · \`setratelimit\`\n` +
       `\n**Close** removes non-staff from the channel; **archive** saves the transcript and deletes it.`,
+    sensitive: true,
   });
 }
 
