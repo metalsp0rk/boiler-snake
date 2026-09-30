@@ -41,6 +41,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
   let api;
   let tmpDir;
   let savedEnv;
+  let CID_A; // internal community id for GUILD_A (assigned in before() after loadDb)
   /** @type {import("http").Server} */
   let server;
   let base;
@@ -136,14 +137,15 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     const loaded = loadDb();
     api = loaded.api;
     tmpDir = loaded.tmpDir;
+    CID_A = require("./helpers/env").communityKey(GUILD_A);
     process.env.SESSION_SECRET = SESSION_SECRET;
 
     appMod = require("../src/web/app");
     sessionPolicy = require("../src/web/auth/sessions");
     tokens = require("../src/web/auth/tokens");
 
-    api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-    api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+    api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+    api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
 
     cookieOf.admin = `web_session=${mkSession(USER_ADMIN)}`;
     cookieOf.staff = `web_session=${mkSession(USER_STAFF)}`;
@@ -151,7 +153,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     cookieOf.nowhere = `web_session=${mkSession(USER_NOWHERE)}`;
 
     api.createTicket({
-      guildId: GUILD_A,
+      communityId: CID_A,
       creatorUserId: CREATOR_ID,
       channelId: "ch-ux11-1",
       reason: "ux11 seeded ticket",
@@ -193,7 +195,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     assert.equal(res.status, 200);
     assert.match(body, /Your guilds/);
     assert.match(body, /Alpha HQ/);
-    assert.ok(body.includes(`/g/${GUILD_A}`), "console link present");
+    assert.ok(body.includes(`/g/${CID_A}`), "console link present");
     assert.ok(!body.includes("Ticket archive"), "no archive index on /");
   });
 
@@ -214,34 +216,34 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
   // -- sidebar nav ---------------------------------------------------------
 
   it("staff shell nav: common pages only — no system/audit/grant/ticket-actions", async () => {
-    const { body } = await req(`/g/${GUILD_A}`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}`, cookieOf.staff);
     assert.ok(body.includes('class="shell-nav"'), "sidebar rendered");
-    assert.ok(body.includes(`/g/${GUILD_A}/settings`), "settings link");
-    assert.ok(body.includes(`/g/${GUILD_A}/users`), "users link");
-    assert.ok(!body.includes(`/g/${GUILD_A}/system"`), "system hidden for staff");
-    assert.ok(!body.includes(`/g/${GUILD_A}/audit"`), "audit hidden for staff");
-    assert.ok(!body.includes(`/g/${GUILD_A}/xp/grant"`), "grant xp hidden for staff");
-    assert.ok(!body.includes(`/g/${GUILD_A}/tickets"`), "ticket actions hidden for staff");
+    assert.ok(body.includes(`/g/${CID_A}/settings`), "settings link");
+    assert.ok(body.includes(`/g/${CID_A}/users`), "users link");
+    assert.ok(!body.includes(`/g/${CID_A}/system"`), "system hidden for staff");
+    assert.ok(!body.includes(`/g/${CID_A}/audit"`), "audit hidden for staff");
+    assert.ok(!body.includes(`/g/${CID_A}/xp/grant"`), "grant xp hidden for staff");
+    assert.ok(!body.includes(`/g/${CID_A}/tickets"`), "ticket actions hidden for staff");
   });
 
   it("admin shell nav: everything including admin-only items", async () => {
-    const { body } = await req(`/g/${GUILD_A}`, cookieOf.admin);
+    const { body } = await req(`/g/${CID_A}`, cookieOf.admin);
     for (const suffix of ["/system", "/audit", "/xp/grant", "/settings", "/integrations"]) {
-      assert.ok(body.includes(`/g/${GUILD_A}${suffix}"`), `admin sees ${suffix}`);
+      assert.ok(body.includes(`/g/${CID_A}${suffix}"`), `admin sees ${suffix}`);
     }
   });
 
   it("senior shell nav: ticket actions visible, admin items still hidden", async () => {
-    const { body } = await req(`/g/${GUILD_A}`, cookieOf.senior);
-    assert.ok(body.includes(`/g/${GUILD_A}/tickets"`), "senior sees ticket actions");
-    assert.ok(!body.includes(`/g/${GUILD_A}/system"`), "system still admin-only");
+    const { body } = await req(`/g/${CID_A}`, cookieOf.senior);
+    assert.ok(body.includes(`/g/${CID_A}/tickets"`), "senior sees ticket actions");
+    assert.ok(!body.includes(`/g/${CID_A}/system"`), "system still admin-only");
   });
 
   it("active item highlighted by request path", async () => {
-    const { body } = await req(`/g/${GUILD_A}/settings`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}/settings`, cookieOf.staff);
     assert.match(
       body,
-      new RegExp(`href="/g/${GUILD_A}/settings" class="active" aria-current="page"`)
+      new RegExp(`href="/g/${CID_A}/settings" class="active" aria-current="page"`)
     );
   });
 
@@ -254,14 +256,14 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
   // -- member names (cache-only) --------------------------------------------
 
   it("dashboard: cached creator id renders the display name (miss ⇒ raw id)", async () => {
-    const { body } = await req(`/g/${GUILD_A}`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}`, cookieOf.staff);
     assert.ok(body.includes(CREATOR_NAME), "cached member shows display name");
     assert.ok(body.includes(`title="${CREATOR_ID}"`), "id stays discoverable via title");
   });
 
   it("ticket actions page: cached ids render names for creator/claimant", async () => {
-    const { body } = await req(`/g/${GUILD_A}/tickets`, cookieOf.senior);
-    assert.equal((await fetch(`${base}/g/${GUILD_A}/tickets`, { headers: { cookie: cookieOf.senior } })).status, 200);
+    const { body } = await req(`/g/${CID_A}/tickets`, cookieOf.senior);
+    assert.equal((await fetch(`${base}/g/${CID_A}/tickets`, { headers: { cookie: cookieOf.senior } })).status, 200);
     assert.ok(body.includes(CREATOR_NAME), "creator display name on actions page");
   });
 
@@ -283,7 +285,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     await once(dark, "listening");
     try {
       const darkBase = `http://127.0.0.1:${dark.address().port}`;
-      const res = await fetch(`${darkBase}/g/${GUILD_A}`, {
+      const res = await fetch(`${darkBase}/g/${CID_A}`, {
         headers: { cookie: cookieOf.staff },
         redirect: "manual",
       });
@@ -312,11 +314,11 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
   it("mobile nav strip: session pages are reachable for staff + admin", async () => {
     // The collapsed ≤880px strip must carry the NEW Phase-4 destinations —
     // otherwise a phone user cannot reach them at all.
-    const { body: staffBody } = await req(`/g/${GUILD_A}`, cookieOf.staff);
-    assert.ok(staffBody.includes(`/g/${GUILD_A}/sessions"`), "Your sessions link (staff)");
+    const { body: staffBody } = await req(`/g/${CID_A}`, cookieOf.staff);
+    assert.ok(staffBody.includes(`/g/${CID_A}/sessions"`), "Your sessions link (staff)");
     assert.ok(staffBody.includes("Your sessions"), "Your sessions label");
-    const { body: adminBody } = await req(`/g/${GUILD_A}`, cookieOf.admin);
-    assert.ok(adminBody.includes(`/g/${GUILD_A}/system/sessions"`), "Web sessions link (admin)");
+    const { body: adminBody } = await req(`/g/${CID_A}`, cookieOf.admin);
+    assert.ok(adminBody.includes(`/g/${CID_A}/system/sessions"`), "Web sessions link (admin)");
     assert.ok(adminBody.includes("Web sessions"), "Web sessions label");
   });
 
@@ -324,7 +326,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     // Chart.js responsive contract (vendored 4.5.1 docs): container is
     // dedicated to the canvas only — the phone pass relies on this box for
     // width:100% + explicit height re-rendering.
-    const { body } = await req(`/g/${GUILD_A}`, cookieOf.staff);
+    const { body } = await req(`/g/${CID_A}`, cookieOf.staff);
     const boxes = body.match(/<div class="chart-box"/g) || [];
     assert.equal(boxes.length, 2, "both chart containers rendered");
     assert.equal(
@@ -335,7 +337,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
   });
 
   it("mobile: your-sessions page renders its table panel + revoke controls", async () => {
-    const { res, body } = await req(`/g/${GUILD_A}/sessions`, cookieOf.staff);
+    const { res, body } = await req(`/g/${CID_A}/sessions`, cookieOf.staff);
     assert.equal(res.status, 200);
     assert.ok(body.includes("sessions-panel"), "panel wrapper (mobile scroll hook)");
     assert.ok(body.includes("list-table sessions-table"), "wrapping table class");
@@ -344,7 +346,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
   });
 
   it("mobile: admin web-sessions page renders its table panel + revoke controls", async () => {
-    const { res, body } = await req(`/g/${GUILD_A}/system/sessions`, cookieOf.admin);
+    const { res, body } = await req(`/g/${CID_A}/system/sessions`, cookieOf.admin);
     assert.equal(res.status, 200);
     assert.ok(body.includes("system-sessions-panel"), "panel wrapper (mobile scroll hook)");
     assert.ok(body.includes("list-table system-sessions-table"), "wrapping table class");
@@ -352,7 +354,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
   });
 
   it("mobile: in-shell archive wraps the table in the scroll box", async () => {
-    const { res, body } = await req(`/g/${GUILD_A}/t`, cookieOf.staff);
+    const { res, body } = await req(`/g/${CID_A}/t`, cookieOf.staff);
     assert.equal(res.status, 200);
     assert.ok(body.includes('class="table-scroll"'), "archive table inside .table-scroll");
   });

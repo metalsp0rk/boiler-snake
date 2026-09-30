@@ -8,7 +8,7 @@
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const {
   formatDailyLimit,
@@ -140,7 +140,7 @@ describe("createBudgetRejectThrottle (decision 34: 1 reply / user / scope / hour
   it("first send passes, repeats inside the hour bounce silently", () => {
     let nowMs = 1_000_000;
     const throttle = createBudgetRejectThrottle({ now: () => nowMs });
-    const args = { guildId: "g1", userId: "u1", scopeKind: "channel", scopeId: "c1" };
+    const args = { communityId: "g1", userId: "u1", scopeKind: "channel", scopeId: "c1" };
     assert.equal(throttle.shouldSend(args), true);
     assert.equal(throttle.shouldSend(args), false);
     nowMs += 3_599_000;
@@ -151,10 +151,10 @@ describe("createBudgetRejectThrottle (decision 34: 1 reply / user / scope / hour
 
   it("keys are isolated per user, guild, and scope", () => {
     const throttle = createBudgetRejectThrottle({ now: () => 5 });
-    const base = { guildId: "g1", userId: "u1", scopeKind: "channel", scopeId: "c1" };
+    const base = { communityId: "g1", userId: "u1", scopeKind: "channel", scopeId: "c1" };
     assert.equal(throttle.shouldSend(base), true);
     assert.equal(throttle.shouldSend({ ...base, userId: "u2" }), true, "other user");
-    assert.equal(throttle.shouldSend({ ...base, guildId: "g2" }), true, "other guild");
+    assert.equal(throttle.shouldSend({ ...base, communityId: "g2" }), true, "other guild");
     assert.equal(
       throttle.shouldSend({ ...base, scopeKind: "category", scopeId: "cat1" }),
       true,
@@ -166,7 +166,7 @@ describe("createBudgetRejectThrottle (decision 34: 1 reply / user / scope / hour
   it("missing identity fails closed (no reply)", () => {
     const throttle = createBudgetRejectThrottle({ now: () => 5 });
     assert.equal(throttle.shouldSend(undefined), false);
-    assert.equal(throttle.shouldSend({ guildId: "", userId: "u1" }), false);
+    assert.equal(throttle.shouldSend({ communityId: "", userId: "u1" }), false);
   });
 });
 
@@ -187,12 +187,12 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
 
   it("default 0 = unlimited: allowed, and counting is skipped entirely", () => {
     const g = "g-gate-off";
-    const res = checkGorkBudget({ guildId: g, userId: "u1", channel: channel("c1"), day: today() });
+    const res = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: channel("c1"), day: today() });
     assert.equal(res.allowed, true);
     assert.equal(res.scope.limit, 0, "guild default 0 = unlimited");
-    assert.equal(recordGorkBudgetUsage({ guildId: g, userId: "u1", scope: res.scope, day: today() }), null);
+    assert.equal(recordGorkBudgetUsage({ communityId: communityKey(g), userId: "u1", scope: res.scope, day: today() }), null);
     assert.equal(
-      api.db.prepare(`SELECT COUNT(*) AS n FROM gork_usage WHERE guild_id=?`).get(g).n,
+      api.db.prepare(`SELECT COUNT(*) AS n FROM gork_usage WHERE community_id=?`).get(communityKey(g)).n,
       0,
       "unlimited scope must write no usage rows",
     );
@@ -200,16 +200,16 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
 
   it("guild default cap counts down and rejects at the cap", () => {
     const g = "g-gate-cap";
-    api.updateGuildSettings(g, { gork_daily_limit: 1 });
+    api.updateGuildSettings(communityKey(g), { gork_daily_limit: 1 });
     const day = today();
-    const first = checkGorkBudget({ guildId: g, userId: "u1", channel: channel("c1"), day });
+    const first = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: channel("c1"), day });
     assert.equal(first.allowed, true);
     assert.equal(first.scope.scopeKind, "guild");
 
-    const used = recordGorkBudgetUsage({ guildId: g, userId: "u1", scope: first.scope, day });
+    const used = recordGorkBudgetUsage({ communityId: communityKey(g), userId: "u1", scope: first.scope, day });
     assert.equal(used, 1);
 
-    const second = checkGorkBudget({ guildId: g, userId: "u1", channel: channel("c1"), day });
+    const second = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: channel("c1"), day });
     assert.equal(second.allowed, false);
     assert.equal(second.kind, "over");
     assert.match(second.reply, /Daily gork budget reached in this server \(1\/day\)/);
@@ -220,15 +220,15 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
     const g = "g-gate-block";
     const day = today();
 
-    api.upsertGorkBudgetRule(g, "channel", "c1", -1, null);
-    let res = checkGorkBudget({ guildId: g, userId: "u1", channel: channel("c1"), day });
+    api.upsertGorkBudgetRule(communityKey(g), "channel", "c1", -1, null);
+    let res = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: channel("c1"), day });
     assert.equal(res.allowed, false);
     assert.equal(res.kind, "blocked");
     assert.equal(res.reply, "gork isn't available in this channel.");
 
-    api.upsertGorkBudgetRule(g, "category", "cat1", -1, null);
+    api.upsertGorkBudgetRule(communityKey(g), "category", "cat1", -1, null);
     res = checkGorkBudget({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "u1",
       channel: channel("c2", { id: "cat1", type: 4, name: "Support" }),
       day,
@@ -236,8 +236,8 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
     assert.equal(res.allowed, false);
     assert.equal(res.reply, "gork isn't available in this category.");
 
-    api.updateGuildSettings(g, { gork_daily_limit: -1 });
-    res = checkGorkBudget({ guildId: g, userId: "u1", channel: channel("c9"), day });
+    api.updateGuildSettings(communityKey(g), { gork_daily_limit: -1 });
+    res = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: channel("c9"), day });
     assert.equal(res.allowed, false);
     assert.equal(res.reply, "gork isn't available in this server.");
   });
@@ -245,16 +245,16 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
   it("most specific scope wins and owns the counter", () => {
     const g = "g-gate-scope";
     const day = today();
-    api.updateGuildSettings(g, { gork_daily_limit: 9 });
-    api.upsertGorkBudgetRule(g, "category", "cat1", 1, null);
-    api.upsertGorkBudgetRule(g, "channel", "c1", 5, null);
+    api.updateGuildSettings(communityKey(g), { gork_daily_limit: 9 });
+    api.upsertGorkBudgetRule(communityKey(g), "category", "cat1", 1, null);
+    api.upsertGorkBudgetRule(communityKey(g), "channel", "c1", 5, null);
     const ch1 = channel("c1", { id: "cat1", type: 4, name: "Support" });
 
-    const inC1 = checkGorkBudget({ guildId: g, userId: "u1", channel: ch1, day });
+    const inC1 = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: ch1, day });
     assert.equal(inC1.scope.scopeKind, "channel", "channel rule beats category");
 
     const inC2 = checkGorkBudget({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "u1",
       channel: channel("c2", { id: "cat1", type: 4, name: "Support" }),
       day,
@@ -262,14 +262,14 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
     assert.equal(inC2.scope.scopeKind, "category", "category rule beats guild");
 
     // Spend the CHANNEL counter: the category counter stays untouched.
-    recordGorkBudgetUsage({ guildId: g, userId: "u1", scope: inC1.scope, day });
-    assert.equal(api.getGorkUsage(g, "u1", "category", "cat1", day), 0);
-    assert.equal(api.getGorkUsage(g, "u1", "channel", "c1", day), 1);
+    recordGorkBudgetUsage({ communityId: communityKey(g), userId: "u1", scope: inC1.scope, day });
+    assert.equal(api.getGorkUsage(communityKey(g), "u1", "category", "cat1", day), 0);
+    assert.equal(api.getGorkUsage(communityKey(g), "u1", "channel", "c1", day), 1);
 
     // Drain the CATEGORY counter for a member channel: it blocks there…
-    recordGorkBudgetUsage({ guildId: g, userId: "u1", scope: inC2.scope, day });
+    recordGorkBudgetUsage({ communityId: communityKey(g), userId: "u1", scope: inC2.scope, day });
     const blocked = checkGorkBudget({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "u1",
       channel: channel("c2", { id: "cat1", type: 4, name: "Support" }),
       day,
@@ -277,7 +277,7 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
     assert.equal(blocked.allowed, false);
     // …while the channel-rule counter (1/5) still allows its own channel.
     assert.equal(
-      checkGorkBudget({ guildId: g, userId: "u1", channel: ch1, day }).allowed,
+      checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: ch1, day }).allowed,
       true,
     );
   });
@@ -285,8 +285,8 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
   it("thread trigger obeys the PARENT channel's rule and shares its counter", () => {
     const g = "g-gate-thread";
     const day = today();
-    api.updateGuildSettings(g, { gork_daily_limit: 9 });
-    api.upsertGorkBudgetRule(g, "channel", "c1", 1, null);
+    api.updateGuildSettings(communityKey(g), { gork_daily_limit: 9 });
+    api.upsertGorkBudgetRule(communityKey(g), "channel", "c1", 1, null);
     const thread = {
       id: "t1",
       name: "thread",
@@ -294,13 +294,13 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
       parent: { id: "c1", name: "general", parent: { id: "cat1", type: 4 } },
     };
 
-    const first = checkGorkBudget({ guildId: g, userId: "u1", channel: thread, day });
+    const first = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: thread, day });
     assert.equal(first.allowed, true);
     assert.equal(first.scope.scopeKind, "channel");
     assert.equal(first.scope.scopeId, "c1", "counter binds the PARENT channel id");
-    recordGorkBudgetUsage({ guildId: g, userId: "u1", scope: first.scope, day });
+    recordGorkBudgetUsage({ communityId: communityKey(g), userId: "u1", scope: first.scope, day });
 
-    const second = checkGorkBudget({ guildId: g, userId: "u1", channel: thread, day });
+    const second = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: thread, day });
     assert.equal(second.allowed, false);
     assert.match(
       second.reply,
@@ -311,21 +311,21 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
     // Sibling thread shares the same counter — no thread escape hatch.
     const sibling = { ...thread, id: "t2", name: "sibling" };
     assert.equal(
-      checkGorkBudget({ guildId: g, userId: "u1", channel: sibling, day }).allowed,
+      checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: sibling, day }).allowed,
       false,
     );
   });
 
   it("blocked (-1) parent channel also kills its threads", () => {
     const g = "g-gate-thread-block";
-    api.upsertGorkBudgetRule(g, "channel", "c1", -1, null);
+    api.upsertGorkBudgetRule(communityKey(g), "channel", "c1", -1, null);
     const thread = {
       id: "t1",
       name: "thread",
       type: 11,
       parent: { id: "c1", name: "general", parent: { id: "cat1", type: 4 } },
     };
-    const res = checkGorkBudget({ guildId: g, userId: "u1", channel: thread, day: today() });
+    const res = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: thread, day: today() });
     assert.equal(res.allowed, false);
     assert.equal(res.kind, "blocked", "kill switch covers threads under the blocked channel");
   });
@@ -333,10 +333,10 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
   it("over-budget reply construction that throws fails closed (kind=error)", () => {
     const g = "g-gate-throw";
     const day = today();
-    api.upsertGorkBudgetRule(g, "channel", "c1", 1, null);
-    const first = checkGorkBudget({ guildId: g, userId: "u1", channel: channel("c1"), day });
+    api.upsertGorkBudgetRule(communityKey(g), "channel", "c1", 1, null);
+    const first = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: channel("c1"), day });
     assert.equal(first.allowed, true);
-    recordGorkBudgetUsage({ guildId: g, userId: "u1", scope: first.scope, day });
+    recordGorkBudgetUsage({ communityId: communityKey(g), userId: "u1", scope: first.scope, day });
 
     // At the cap AND the duck-typed channel throws while the rejection
     // label is built (scopeLabel reads `name` for the matching channel id):
@@ -351,7 +351,7 @@ describe("checkGorkBudget + recordGorkBudgetUsage (real temp SQLite)", () => {
     };
     let res;
     assert.doesNotThrow(() => {
-      res = checkGorkBudget({ guildId: g, userId: "u1", channel: hostile, day });
+      res = checkGorkBudget({ communityId: communityKey(g), userId: "u1", channel: hostile, day });
     });
     assert.equal(res.allowed, false);
     assert.equal(res.kind, "error");

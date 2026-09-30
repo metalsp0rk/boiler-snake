@@ -22,8 +22,8 @@ describe("integration: tickets", () => {
   before(async () => {
     env = await createIntegrationEnv();
     process.env.DATA_DIR = env.tmpDir;
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "senior");
+    env.db.updateGuildSettings(env.communityId, {
       ticket_archive_channel_id: IDS.channelLog,
       ticket_rate_limit_minutes: 60,
     });
@@ -73,7 +73,7 @@ describe("integration: tickets", () => {
     });
     const text = env.lastReplyContent(res);
     assert.match(text, /opened|Ticket/i);
-    const open = env.db.listOpenTickets(env.guild.id, {
+    const open = env.db.listOpenTickets(env.communityId, {
       userId: user.id,
       limit: 10,
     });
@@ -107,7 +107,7 @@ describe("integration: tickets", () => {
 
   it("/ticket create + claim + info + list + close (soft) + archive", async () => {
     // Ensure member can self-create (reset rate limit window for this user)
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       ticket_rate_limit_minutes: 0,
     });
 
@@ -121,7 +121,7 @@ describe("integration: tickets", () => {
     const createText = env.lastReplyContent(create);
     assert.match(createText, /Ticket\s*#?|#|opened/i);
 
-    const open = env.db.listOpenTickets(env.guild.id, {
+    const open = env.db.listOpenTickets(env.communityId, {
       userId: IDS.member,
       limit: 5,
     });
@@ -211,13 +211,13 @@ describe("integration: tickets", () => {
     assert.ok(env.channels.log.sent.length >= 1);
 
     // restore rate limit for later tests
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       ticket_rate_limit_minutes: 60,
     });
   });
 
   it("/ticket create rate limit after self-create", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       ticket_rate_limit_minutes: 60,
     });
     // member2 may already have a self-create from a previous run — force by creating
@@ -246,7 +246,7 @@ describe("integration: tickets", () => {
   });
 
   it("/ticket for adds staff opener as exclusive named owner + bypasses rate limit", async () => {
-    env.db.updateGuildSettings(env.guild.id, { ticket_rate_limit_minutes: 60 });
+    env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
 
     const ticket = await openViaStaff({
       user: env.users.memberUser,
@@ -755,7 +755,7 @@ describe("integration: tickets", () => {
     assertEphemeralReply(denied, /permission/i);
 
     // Staff role (no ManageGuild) can configure
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "junior");
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "junior");
     const staffMember = env.createMember({
       guild: env.guild,
       user: env.users.memberUser,
@@ -774,7 +774,7 @@ describe("integration: tickets", () => {
     });
     assertEphemeralReply(okStaff);
     assert.equal(
-      env.db.getTicketSettings(env.guild.id).ticket_rate_limit_minutes,
+      env.db.getTicketSettings(env.communityId).ticket_rate_limit_minutes,
       45
     );
 
@@ -786,7 +786,7 @@ describe("integration: tickets", () => {
     });
     assertEphemeralReply(ok);
     assert.equal(
-      env.db.getTicketSettings(env.guild.id).ticket_rate_limit_minutes,
+      env.db.getTicketSettings(env.communityId).ticket_rate_limit_minutes,
       30
     );
 
@@ -806,7 +806,7 @@ describe("integration: tickets", () => {
     });
     assertEphemeralReply(setCat);
     assert.equal(
-      env.db.getTicketSettings(env.guild.id).ticket_category_id,
+      env.db.getTicketSettings(env.communityId).ticket_category_id,
       cat.id
     );
 
@@ -818,12 +818,12 @@ describe("integration: tickets", () => {
     });
     assertEphemeralReply(setArch);
     assert.equal(
-      env.db.getTicketSettings(env.guild.id).ticket_archive_channel_id,
+      env.db.getTicketSettings(env.communityId).ticket_archive_channel_id,
       IDS.channelLog
     );
 
     // restore rate limit used by other tests
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       ticket_rate_limit_minutes: 60,
     });
   });
@@ -833,7 +833,7 @@ describe("integration: tickets", () => {
       reason: "cmd-channel-exception",
     });
 
-    env.db.addAllowedCommandChannel(env.guild.id, IDS.channelCmds);
+    env.db.addAllowedCommandChannel(env.communityId, IDS.channelCmds);
 
     // XP blocked in general
     const xpBlocked = await env.runCommand({
@@ -866,7 +866,7 @@ describe("integration: tickets", () => {
     assertEphemeralReply(createBlocked, /aren't enabled/);
 
     // cleanup allow-list
-    env.db.removeAllowedCommandChannel(env.guild.id, IDS.channelCmds);
+    env.db.removeAllowedCommandChannel(env.communityId, IDS.channelCmds);
   });
 
   it("ChannelDelete marks open ticket closed without archive", async () => {
@@ -928,7 +928,7 @@ describe("integration: tickets", () => {
     const reply = close.replies.find((r) => r.components?.length) || close.replies[0];
     assert.ok(reply?.components?.length >= 1, "expected Add staff note button");
 
-    const notes = env.db.listStaffNotes(env.guild.id, IDS.member, { limit: 20 });
+    const notes = env.db.listStaffNotes(env.communityId, IDS.member, { limit: 20 });
     const match = notes.find(
       (n) =>
         n.content.includes("Member had VPN issues") &&
@@ -973,7 +973,7 @@ describe("integration: tickets", () => {
     await env.handleInteraction(modalIx, env.ctx);
     assertReplyContains(modalIx, /Staff note|N-/i);
 
-    const notes = env.db.listStaffNotes(env.guild.id, IDS.member2, {
+    const notes = env.db.listStaffNotes(env.communityId, IDS.member2, {
       limit: 20,
     });
     assert.ok(notes.some((n) => n.content.includes(body)));
@@ -1023,7 +1023,7 @@ describe("integration: tickets", () => {
   });
 
   it("panel button shows modal; modal submit creates ticket", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       ticket_rate_limit_minutes: 0,
     });
 
@@ -1059,7 +1059,7 @@ describe("integration: tickets", () => {
     const content = env.lastReplyContent(modalIx);
     assert.match(content, /Ticket|opened/i);
 
-    const open = env.db.listOpenTickets(env.guild.id, {
+    const open = env.db.listOpenTickets(env.communityId, {
       userId: IDS.member2,
       limit: 10,
     });
@@ -1069,12 +1069,12 @@ describe("integration: tickets", () => {
   });
 
   it("panel button respects self-create rate limit", async () => {
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       ticket_rate_limit_minutes: 60,
     });
     // Seed a recent self-create for memberUser
     env.db.createTicket({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       creatorUserId: IDS.member,
       channelId: `ch-rl-panel-${Date.now()}`,
       reason: "seed for rate limit",
@@ -1135,7 +1135,7 @@ describe("integration: tickets", () => {
     const ticket = await openViaStaff({
       reason: "no-archive-channel",
     });
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       ticket_archive_channel_id: null,
     });
 
@@ -1167,7 +1167,7 @@ describe("integration: tickets", () => {
     assert.equal(after.channel_id, null);
 
     // restore archive channel
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       ticket_archive_channel_id: IDS.channelLog,
     });
   });
@@ -1189,7 +1189,7 @@ describe("integration: tickets", () => {
 
   it("/ticket panel list shows registered panels after create", async () => {
     // Count existing panels first (prior tests may have left state)
-    let panels = env.db.listTicketPanels(env.guild.id);
+    let panels = env.db.listTicketPanels(env.communityId);
     const beforeCount = panels.length;
 
     // Create a panel
@@ -1217,13 +1217,13 @@ describe("integration: tickets", () => {
     assertReplyContains(list, /Test Panel List/i);
 
     // Verify DB count increased
-    panels = env.db.listTicketPanels(env.guild.id);
+    panels = env.db.listTicketPanels(env.communityId);
     assert.equal(panels.length, beforeCount + 1);
   });
 
   it("/ticket panel edit updates title/description and live message", async () => {
     // Get existing panels to find one with known state
-    let panels = env.db.listTicketPanels(env.guild.id);
+    let panels = env.db.listTicketPanels(env.communityId);
     // Filter for our test panels (created during this suite)
     const editablePanel = panels.find((p) => p.title === "Test Panel List");
 
@@ -1241,7 +1241,7 @@ describe("integration: tickets", () => {
         },
       });
       assertReplyContains(create, /Created ticket panel/i);
-      panels = env.db.listTicketPanels(env.guild.id);
+      panels = env.db.listTicketPanels(env.communityId);
       const newPanels = panels.filter((p) => p.title === "Panel To Edit");
       assert.ok(newPanels.length > 0, "expected created panel in DB");
       editablePanel._panel = newPanels[0];
@@ -1264,7 +1264,7 @@ describe("integration: tickets", () => {
     assertReplyContains(edit, /Updated ticket panel/i);
 
     // Verify DB was updated
-    const updatedPanel = env.db.getTicketPanel(env.guild.id, messageId);
+    const updatedPanel = env.db.getTicketPanel(env.communityId, messageId);
     assert.equal(updatedPanel.title, "Updated Title");
 
     // Edit with missing message_id fails
@@ -1297,7 +1297,7 @@ describe("integration: tickets", () => {
     assertReplyContains(create, /Created ticket panel/i);
 
     // Find in DB by title (more reliable than parsing reply)
-    let panels = env.db.listTicketPanels(env.guild.id);
+    let panels = env.db.listTicketPanels(env.communityId);
     const toDelete = panels.find((p) => p.title === "Panel To Delete");
     assert.ok(toDelete, "expected panel in DB");
     const messageId = toDelete.message_id;
@@ -1318,7 +1318,7 @@ describe("integration: tickets", () => {
     assertReplyContains(delete_, /Deleted ticket panel/i);
 
     // Verify it's gone from DB
-    panels = env.db.listTicketPanels(env.guild.id);
+    panels = env.db.listTicketPanels(env.communityId);
     assert.equal(panels.length, beforeCount - 1);
 
     // Delete nonexistent fails gracefully
@@ -1399,7 +1399,7 @@ describe("integration: tickets", () => {
     });
     const text = env.lastReplyContent(interaction);
     assert.match(text, /opened/i, `expected opened reply, got: ${text}`);
-    const open = env.db.listOpenTickets(env.guild.id, {
+    const open = env.db.listOpenTickets(env.communityId, {
       userId: IDS.member,
       limit: 20,
     });
@@ -1410,7 +1410,7 @@ describe("integration: tickets", () => {
 
   it("no staff-role access note when the bot role is above staff roles", async () => {
     // Prior tests may have flipped this role to junior — force senior.
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "senior");
     const staffRole = env.guild.roles.cache.get(IDS.roleExempt);
     assert.ok(staffRole, "staff role present in role cache");
     // Harness state: staff role position 1 < bot highest position 5.
@@ -1432,7 +1432,7 @@ describe("integration: tickets", () => {
   });
 
   it("staff role missing from cache resolves via roles.fetch with no note", async () => {
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "senior");
     const staffRole = env.guild.roles.cache.get(IDS.roleExempt);
     assert.ok(staffRole);
 
@@ -1467,7 +1467,7 @@ describe("integration: tickets", () => {
   });
 
   it("bot holding the staff role itself produces no access note", async () => {
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "senior");
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "senior");
     const staffRole = env.guild.roles.cache.get(IDS.roleExempt);
     assert.ok(staffRole);
     const botMember = env.guild.members.me;

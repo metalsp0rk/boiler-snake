@@ -41,7 +41,7 @@ const http = require("http");
 const net = require("net");
 const path = require("path");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const HTTP_ENV_KEYS = [
   "PUBLIC_HTTP_PORT",
@@ -130,6 +130,12 @@ describe("web http net (tickets + oauth callback)", () => {
   // Seeded fixtures (created in before)
   const guildHttp = "g-web-http";
   const guildPaged = "g-web-page";
+  // Web contract: routes/repositories address communities by INTEGER id.
+  let CID_HTTP;
+  let CID_PAGED;
+  // Fake-resolver display names, keyed by the string form of the integer id
+  // (that's what the /g middleware hands to resolver.resolve).
+  const GUILD_NAMES_BY_ID = {}; // filled in before() once the cids are known
   /** happy-path archived ticket */
   let tokenA;
   let pngBytes;
@@ -153,15 +159,21 @@ describe("web http net (tickets + oauth callback)", () => {
     return {
       async resolve(session, guildId) {
         if (!session) return { status: "anon" };
-        if (staffGuilds.has(guildId)) {
-          return { status: "ok", tier: "staff", guildId };
+        if (staffGuilds.has(String(guildId))) {
+          return { status: "ok", tier: "staff", guildId: String(guildId) };
         }
         return { status: "deny", reason: "not_in_access_list" };
       },
       async listGuilds(session) {
         if (!session) return { guilds: [], degraded: false, reauth: true };
         return {
-          guilds: [...staffGuilds].map((id) => ({ id, name: id })),
+          // PR 2: list entries carry the INTEGER communityId the product
+          // resolver contract expects (staffGuilds holds cid strings here).
+          guilds: [...staffGuilds].map((id) => ({
+            id,
+            communityId: Number(id),
+            name: GUILD_NAMES_BY_ID[String(id)] || String(id),
+          })),
           degraded: false,
         };
       },
@@ -174,6 +186,11 @@ describe("web http net (tickets + oauth callback)", () => {
     db = loaded.api;
     tmpDir = loaded.tmpDir;
     process.env.DATA_DIR = tmpDir;
+
+    CID_HTTP = communityKey(guildHttp);
+    CID_PAGED = communityKey(guildPaged);
+    GUILD_NAMES_BY_ID[String(CID_HTTP)] = guildHttp;
+    GUILD_NAMES_BY_ID[String(CID_PAGED)] = guildPaged;
 
     // Require AFTER loadDb so this module binds the fresh db + DATA_DIR.
     httpNet = require("../src/features/tickets/httpServer");
@@ -194,7 +211,7 @@ describe("web http net (tickets + oauth callback)", () => {
     // --- fixture: archived ticket with transcript file + asset -----------
     tokenA = db.generateTranscriptToken();
     const ticketA = db.createTicket({
-      guildId: guildHttp,
+      communityId: CID_HTTP,
       creatorUserId: "u-web",
       channelId: "ch-web-http-serve",
       reason: "web http net subject",
@@ -226,7 +243,7 @@ describe("web http net (tickets + oauth callback)", () => {
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
       "base64"
     );
-    const assetsDir = absoluteAssetsDir(guildHttp, tokenA);
+    const assetsDir = absoluteAssetsDir(CID_HTTP, tokenA);
     fs.mkdirSync(assetsDir, { recursive: true });
     fs.writeFileSync(path.join(assetsDir, "001_photo.png"), pngBytes);
 
@@ -245,7 +262,7 @@ describe("web http net (tickets + oauth callback)", () => {
     // --- fixture: closed, token set, but archived=0 (never indexed) ------
     tokenB = db.generateTranscriptToken();
     const ticketB = db.createTicket({
-      guildId: guildHttp,
+      communityId: CID_HTTP,
       creatorUserId: "u-web",
       channelId: "ch-web-http-unarchived",
       reason: "token without archive",
@@ -262,7 +279,7 @@ describe("web http net (tickets + oauth callback)", () => {
     // --- fixture: archived row whose transcript file is missing ----------
     tokenC = db.generateTranscriptToken();
     const ticketC = db.createTicket({
-      guildId: guildHttp,
+      communityId: CID_HTTP,
       creatorUserId: "u-web",
       channelId: "ch-web-http-missing-file",
       reason: "missing transcript file",
@@ -280,7 +297,7 @@ describe("web http net (tickets + oauth callback)", () => {
     for (let i = 1; i <= total; i += 1) {
       const token = db.generateTranscriptToken();
       const ticket = db.createTicket({
-        guildId: guildPaged,
+        communityId: CID_PAGED,
         creatorUserId: "u-pager",
         channelId: `ch-web-page-${i}`,
         reason: `paged ticket ${i}`,
@@ -304,7 +321,7 @@ describe("web http net (tickets + oauth callback)", () => {
     const { createWebApp } = require("../src/web/app");
     const sessionPolicy = require("../src/web/auth/sessions");
     const app = createWebApp({
-      guildAccess: makeFakeGuildAccess(new Set([guildHttp, guildPaged])),
+      guildAccess: makeFakeGuildAccess(new Set([String(CID_HTTP), String(CID_PAGED)])),
     });
     authServer = http.createServer(app);
     authServer.listen(0, "127.0.0.1");
@@ -437,7 +454,7 @@ describe("web http net (tickets + oauth callback)", () => {
   });
 
   it("GET /t?guild= filters by guild; non-staff guild param is IGNORED (scoped default)", async () => {
-    const filtered = await authFetch(`/t?guild=${guildHttp}`);
+    const filtered = await authFetch(`/t?guild=${CID_HTTP}`);
     assert.equal(filtered.status, 200);
     const filteredBody = await filtered.text();
     assert.match(filteredBody, /Guild filter/);
@@ -688,16 +705,16 @@ describe("web http net (tickets + oauth callback)", () => {
   // ------------------------------------------------------------------
 
   it("/t?guild= paginates at PAGE_SIZE: page 1, page 2, clamping", async () => {
-    const p1 = await authFetch(`/t?guild=${guildPaged}`);
+    const p1 = await authFetch(`/t?guild=${CID_PAGED}`);
     assert.equal(p1.status, 200);
     const p1body = await p1.text();
     assert.match(p1body, new RegExp(`Page 1 / 2`));
-    assert.match(p1body, /\?guild=g-web-page&page=2/); // Next link target
+    assert.match(p1body, new RegExp(`\\?guild=${CID_PAGED}&page=2`)); // Next link target
     assert.match(p1body, new RegExp(lastPagedToken)); // newest on page 1
     assert.doesNotMatch(p1body, new RegExp(firstPagedToken));
     assert.equal((p1body.match(/>View<\/a>/g) || []).length, httpNet.PAGE_SIZE);
 
-    const p2 = await authFetch(`/t?guild=${guildPaged}&page=2`);
+    const p2 = await authFetch(`/t?guild=${CID_PAGED}&page=2`);
     assert.equal(p2.status, 200);
     const p2body = await p2.text();
     assert.match(p2body, /Page 2 \/ 2/);
@@ -706,12 +723,12 @@ describe("web http net (tickets + oauth callback)", () => {
     assert.match(p2body, /class="disabled">Next/); // no page 3
 
     // page beyond the end clamps to the last page
-    const clamped = await authFetch(`/t?guild=${guildPaged}&page=999`);
+    const clamped = await authFetch(`/t?guild=${CID_PAGED}&page=999`);
     assert.match(await clamped.text(), /Page 2 \/ 2/);
 
     // nonsense page coerces to 1
     const nonsense = await authFetch(
-      `/t?guild=${guildPaged}&page=abc`
+      `/t?guild=${CID_PAGED}&page=abc`
     );
     assert.match(await nonsense.text(), /Page 1 \/ 2/);
   });

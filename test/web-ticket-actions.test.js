@@ -74,7 +74,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // loadDb FIRST: fresh SQLite + src require-cache reset; every require below
 // binds to that DB (gate boot discipline).
@@ -104,6 +104,10 @@ const SESSION_SECRET = "test-ticket-actions-sentinel-secret-NOT-REAL-030";
 const GUILD_A = "360000000000000001"; // bot + every test user
 const GUILD_B = "360000000000000002"; // bot guild the users are NOT in
 
+// Fluxer PR 2: INTEGER communities.id for data + /g/<id> route identity.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
+
 const USER_ADMIN = "488190112345678901"; // owner snapshot ⇒ tier admin
 const USER_JUNIOR = "488190112345678902"; // junior staff role ⇒ tier staff
 const USER_SENIOR = "488190112345678903"; // senior staff role ⇒ tier senior
@@ -115,10 +119,10 @@ const BOT_ID = "999000000000000001";
 const ROLE_JUNIOR_TIER = "role-junior-staff";
 const ROLE_SENIOR_TIER = "role-senior-staff";
 
-const PAGE_PATH = `/g/${GUILD_A}/tickets`;
-const CLAIM_PATH = `/g/${GUILD_A}/tickets/claim`;
-const CLOSE_PATH = `/g/${GUILD_A}/tickets/close`;
-const SUM_PATH = `/g/${GUILD_A}/tickets/summarize`;
+const PAGE_PATH = `/g/${CID_A}/tickets`;
+const CLAIM_PATH = `/g/${CID_A}/tickets/claim`;
+const CLOSE_PATH = `/g/${CID_A}/tickets/close`;
+const SUM_PATH = `/g/${CID_A}/tickets/summarize`;
 
 const PAGE_TEMPLATE = "/g/:guildId/tickets";
 const CLAIM_TEMPLATE = "/g/:guildId/tickets/claim";
@@ -354,8 +358,8 @@ for (const k of ENV_KEYS) {
 }
 process.env.WEB_RATE_LIMIT_MUTATION_MAX = "1000000"; // scripted probes, not humans
 
-api.addStaffRole(GUILD_A, ROLE_JUNIOR_TIER, "junior");
-api.addStaffRole(GUILD_A, ROLE_SENIOR_TIER, "senior");
+api.addStaffRole(CID_A, ROLE_JUNIOR_TIER, "junior");
+api.addStaffRole(CID_A, ROLE_SENIOR_TIER, "senior");
 
 const cookieOf = {};
 const csrfOf = {};
@@ -446,12 +450,12 @@ const sumPost = (fields, key = "senior") =>
 // ---------------------------------------------------------------------------
 
 function auditRows(origin) {
-  return api.listAdminAudit(GUILD_A, { origin, limit: 200 }).map((r) => ({
+  return api.listAdminAudit(CID_A, { origin, limit: 200 }).map((r) => ({
     ...r,
     details: r.details_json ? JSON.parse(r.details_json) : null,
   }));
 }
-const webAuditCount = () => api.countAdminAudit(GUILD_A, { origin: "web" });
+const webAuditCount = () => api.countAdminAudit(CID_A, { origin: "web" });
 const rowsOf = (origin, action) => auditRows(origin).filter((r) => r.action === action);
 
 /** Deterministic ticket ids: reset the AUTOINCREMENT counter before seeds. */
@@ -463,9 +467,9 @@ function purgeTickets() {
  * Seed an OPEN ticket. channelId null ⇒ the degraded-path shape.
  * @returns {object} the created row.
  */
-function mkTicket({ guildId = GUILD_A, creator, channelId = null, reason = "seed", staffOwner = null } = {}) {
+function mkTicket({ communityId = CID_A, creator, channelId = null, reason = "seed", staffOwner = null } = {}) {
   return api.createTicket({
-    guildId,
+    communityId,
     creatorUserId: creator,
     channelId,
     reason,
@@ -593,7 +597,9 @@ describe("B. GET actions page — senior-only forms + whitelisted-only flash", (
       url: PAGE_PATH,
       method: "GET",
       cookieId: null,
-      expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
+      // PR 2: integer community ids fail the 5–20-digit snowflake gate in
+      // loginRedirectTarget, so the anon target is the bare login page.
+      expect: harness.expectLoginRedirect("/auth/login"),
       label: "anon actions page",
     });
   });
@@ -695,7 +701,8 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross 404 · junior
         url: path,
         method: "POST",
         cookieId: null,
-        expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
+        // PR 2: integer route id ⇒ bare /auth/login (snowflake gate not matched).
+        expect: harness.expectLoginRedirect("/auth/login"),
         label: `anon ${label} POST`,
       });
     });
@@ -712,7 +719,7 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross 404 · junior
         assert.equal(body, "Not found");
         assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
       }
-      const cross = await post(path.replace(GUILD_A, GUILD_B), {
+      const cross = await post(path.replace(`/g/${CID_A}/`, `/g/${CID_B}/`), {
         cookie: cookieOf.admin,
         fields: { ...probeFields(t), _csrf: csrfOf.admin },
       });
@@ -973,7 +980,8 @@ describe("F. validation — every refusal is a whitelisted-slug 302 with zero wr
       "messages_unavailable",
     ]);
     for (const loc of locs.filter(Boolean)) {
-      assert.match(loc, /^\/g\/360000000000000001\/tickets\?(done|error)=[a-z_]+$/, `PRG shape: ${loc}`);
+      // PR 2: the PRG path carries the INTEGER community id (/g/<int>/...).
+      assert.match(loc, /^\/g\/\d+\/tickets\?(done|error)=[a-z_]+$/, `PRG shape: ${loc}`);
       const slug = loc.split("=")[1];
       assert.ok(allowed.has(slug), `slug ${slug} is a frozen constant`);
     }
@@ -989,12 +997,12 @@ describe("F. validation — every refusal is a whitelisted-slug 302 with zero wr
 describe("G. foreign-guild ticket id ⇒ the SAME generic 404 bytes, zero side effects", () => {
   it("a ticket that exists ONLY in guild B is indistinguishable from unknown", async () => {
     const tB = api.createTicket({
-      guildId: GUILD_B,
+      communityId: CID_B,
       creatorUserId: "555000000000000001",
       channelId: "720000000000000001",
       reason: "guild B row",
     });
-    const auditBefore = { web: webAuditCount(), b: api.countAdminAudit(GUILD_B, {}) };
+    const auditBefore = { web: webAuditCount(), b: api.countAdminAudit(CID_B, {}) };
     const snapshot = { ...api.getTicketById(tB.id) };
 
     for (const send of [
@@ -1009,7 +1017,7 @@ describe("G. foreign-guild ticket id ⇒ the SAME generic 404 bytes, zero side e
       assert.equal(body, "Not found");
       assert.deepEqual(writeCalls(log), [], "the guild check runs BEFORE any write helper");
     }
-    assert.equal(api.countAdminAudit(GUILD_B, {}), auditBefore.b, "guild B audited nothing");
+    assert.equal(api.countAdminAudit(CID_B, {}), auditBefore.b, "guild B audited nothing");
     assert.equal(webAuditCount(), auditBefore.web, "guild A audited nothing either");
     assert.deepEqual({ ...api.getTicketById(tB.id) }, snapshot, "guild-B row byte-identical");
   });

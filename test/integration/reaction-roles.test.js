@@ -62,7 +62,7 @@ describe("integration: reaction roles", () => {
     });
     // create may succeed if deploy works with mock channel
     assert.ok(interaction.replies.length >= 1);
-    const panels = env.db.listReactionRolePanels(env.guild.id);
+    const panels = env.db.listReactionRolePanels(env.communityId);
     // If create succeeded via deployPanelToChannel
     if (panels.length) {
       assert.ok(panels[0].message_id);
@@ -73,14 +73,14 @@ describe("integration: reaction roles", () => {
   it("reaction add grants role on configured panel", async () => {
     const messageId = "rr-panel-msg-1";
     env.db.createReactionRolePanel(
-      env.guild.id,
+      env.communityId,
       IDS.channelGeneral,
       messageId,
       "Roles",
       "Pick one"
     );
     env.db.upsertReactionRoleOption(
-      env.guild.id,
+      env.communityId,
       messageId,
       "👍",
       "👍",
@@ -101,31 +101,31 @@ describe("integration: reaction roles", () => {
     };
     reaction.client = env.client;
 
-    const beforeXp = env.db.getXp(env.guild.id, IDS.member);
+    const beforeXp = env.db.getXp(env.communityId, IDS.member);
     const result = await handleReactionRoleAdd(reaction, env.users.memberUser);
     assert.equal(result.handled, true);
     assertRoleGranted(env.members.member, IDS.roleRr);
 
     // pipeline should not award reaction XP when handled
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       reaction_xp: 9,
       reaction_cooldown_sec: 0,
     });
     await env.onMessageReactionAdd(reaction, env.users.memberUser);
-    assertXp(env.db, env.guild.id, IDS.member, beforeXp);
+    assertXp(env.db, env.communityId, IDS.member, beforeXp);
   });
 
   it("reaction remove drops removable role", async () => {
     const messageId = "rr-panel-msg-2";
     env.db.createReactionRolePanel(
-      env.guild.id,
+      env.communityId,
       IDS.channelGeneral,
       messageId,
       "Roles",
       "Pick"
     );
     env.db.upsertReactionRoleOption(
-      env.guild.id,
+      env.communityId,
       messageId,
       "🔥",
       "🔥",

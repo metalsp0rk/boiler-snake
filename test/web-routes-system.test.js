@@ -34,7 +34,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // ---------------------------------------------------------------------------
 // loadDb() FIRST (cache clear + DB_PATH bind), then require src modules.
@@ -70,6 +70,12 @@ const USER_ADMIN2 = "428190112345678905"; // fallback-secret probe
 
 const GUILD_A = "100000000000000001";
 const GUILD_B = "200000000000000002";
+
+// Integer community ids (fluxer PR 2): the /g/:guildId routes and every
+// converted repo/data call take these, while all Discord-side seams (fake
+// resolver, guild snapshots, bot guild list) keep the external snowflakes.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
 
 const ROLE_JUNIOR = "500000000000000011";
 const ROLE_SENIOR = "500000000000000012";
@@ -173,11 +179,11 @@ before(async () => {
   delete process.env.WEB_TIER_CACHE_TTL_MS;
 
   // ---- staff roles (guild A) ---------------------------------------------
-  api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
-  api.addStaffRole(GUILD_A, ROLE_SENIOR, "senior");
+  api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+  api.addStaffRole(CID_A, ROLE_SENIOR, "senior");
 
   // ---- command-permission OAuth row (token sentinels must NEVER render) --
-  api.upsertCommandPermissionOauth(GUILD_A, {
+  api.upsertCommandPermissionOauth(CID_A, {
     refreshToken: FAKE_OAUTH_REFRESH,
     accessToken: FAKE_OAUTH_ACCESS,
     accessExpiresAt: Date.now() + 3_600_000,
@@ -186,7 +192,7 @@ before(async () => {
 
   // ---- admin_audit seeds (explicit createdAt ⇒ deterministic order) ------
   insertAudit({
-    guildId: GUILD_A,
+    communityId: CID_A,
     actorUserId: USER_ADMIN,
     origin: "web",
     action: "settings.command_channel.add",
@@ -196,7 +202,7 @@ before(async () => {
     createdAt: BASE + 1,
   });
   insertAudit({
-    guildId: GUILD_A,
+    communityId: CID_A,
     actorUserId: USER_SENIOR,
     origin: "slash",
     action: "warnings.issue",
@@ -206,7 +212,7 @@ before(async () => {
     createdAt: BASE + 2,
   });
   insertAudit({
-    guildId: GUILD_A,
+    communityId: CID_A,
     actorUserId: null, // system rows carry NO actor
     origin: "system",
     action: "decay.apply",
@@ -214,7 +220,7 @@ before(async () => {
     createdAt: BASE + 3,
   });
   insertAudit({
-    guildId: GUILD_A,
+    communityId: CID_A,
     actorUserId: USER_ADMIN,
     origin: "web",
     action: "audit.unicode_probe",
@@ -225,7 +231,7 @@ before(async () => {
   });
   for (let i = 0; i < BULK; i += 1) {
     insertAudit({
-      guildId: GUILD_A,
+      communityId: CID_A,
       actorUserId: USER_ADMIN,
       origin: "web",
       action: `bulk.probe ${i}`,
@@ -237,7 +243,7 @@ before(async () => {
   }
   // GUILD B ONLY — cross-guild probe; invisible (404) AND never rendered.
   insertAudit({
-    guildId: GUILD_B,
+    communityId: CID_B,
     actorUserId: USER_ADMIN,
     origin: "slash",
     action: "guild.b.canary.action",
@@ -348,8 +354,8 @@ async function hit(path, opts = {}) {
   return { res, body };
 }
 
-const SYS = `/g/${GUILD_A}/system`;
-const AUD = `/g/${GUILD_A}/audit`;
+const SYS = `/g/${CID_A}/system`;
+const AUD = `/g/${CID_A}/audit`;
 
 /** Run fn with an env overlay, restoring the touched keys afterwards. */
 async function withEnv(overlay, fn) {
@@ -398,7 +404,9 @@ describe("access matrix — GET /g/:guildId/system and /audit are Admin-only", (
     it(`${label}: anonymous → 302 login redirect (guildScope)`, async () => {
       const { res } = await hit(url);
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      // Integer community ids fail the 5–20-digit snowflake gate in
+      // loginRedirectTarget, so the anon redirect is the bare login page.
+      assert.equal(res.headers.get("location"), "/auth/login");
     });
 
     it(`${label}: in-guild member WITHOUT staff role → generic 404 (never 403)`, async () => {
@@ -423,11 +431,11 @@ describe("access matrix — GET /g/:guildId/system and /audit are Admin-only", (
 
     it(`${label}: cross-guild probe → generic 404 for EVERY tier, zero guild-B data`, async () => {
       for (const key of ["staff", "senior", "admin"]) {
-        const { res, body } = await hit(`/g/${GUILD_B}/system`, { key });
+        const { res, body } = await hit(`/g/${CID_B}/system`, { key });
         assert.equal(res.status, 404, key);
         assert.equal(body, "Not found");
         assert.ok(!body.includes(B_CANARY));
-        const audit = await hit(`/g/${GUILD_B}/audit`, { key });
+        const audit = await hit(`/g/${CID_B}/audit`, { key });
         assert.equal(audit.res.status, 404, `${key} audit`);
         assert.equal(audit.body, "Not found");
         assert.ok(!audit.body.includes(B_CANARY));
@@ -438,12 +446,12 @@ describe("access matrix — GET /g/:guildId/system and /audit are Admin-only", (
   it("the §8.6 boundary: SAME staff cookie ⇒ 403 in-guild vs 404 cross-guild (both routes)", async () => {
     const inGuild = await hit(SYS, { key: "staff" });
     assert.equal(inGuild.res.status, 403);
-    const crossGuild = await hit(`/g/${GUILD_B}/system`, { key: "staff" });
+    const crossGuild = await hit(`/g/${CID_B}/system`, { key: "staff" });
     assert.equal(crossGuild.res.status, 404);
 
     const inGuildAudit = await hit(AUD, { key: "senior" });
     assert.equal(inGuildAudit.res.status, 403);
-    const crossGuildAudit = await hit(`/g/${GUILD_B}/audit`, { key: "senior" });
+    const crossGuildAudit = await hit(`/g/${CID_B}/audit`, { key: "senior" });
     assert.equal(crossGuildAudit.res.status, 404);
   });
 });
@@ -915,24 +923,24 @@ describe("audit viewer read model — facade contract, clamps, filter normalizat
     assert.deepEqual(systemRoutes.readOriginFilter("DROP TABLE"), { origin: null, invalid: true });
   });
 
-  it("buildAuditPage: guild-scoped first arg, LIMIT/OFFSET forwarded, origin only when valid (dep-instrumented)", () => {
+  it("buildAuditPage: community-scoped first arg, LIMIT/OFFSET forwarded, origin only when valid (dep-instrumented)", () => {
     const seen = { list: [], count: [] };
     const page = systemRoutes.buildAuditPage(
-      GUILD_A,
+      CID_A,
       { origin: "web", n: "1000", o: "40" },
       {
-        listAdminAudit: (guildId, opts) => {
-          seen.list.push([guildId, opts]);
+        listAdminAudit: (communityId, opts) => {
+          seen.list.push([communityId, opts]);
           return [];
         },
-        countAdminAudit: (guildId, opts) => {
-          seen.count.push([guildId, opts]);
+        countAdminAudit: (communityId, opts) => {
+          seen.count.push([communityId, opts]);
           return 0;
         },
       }
     );
-    assert.deepEqual(seen.list, [[GUILD_A, { limit: 100, offset: 40, origin: "web" }]], "limit clamped to the 100 web/§8.6 budget");
-    assert.deepEqual(seen.count, [[GUILD_A, { origin: "web" }]], "count honors the SAME filter (honest totals)");
+    assert.deepEqual(seen.list, [[CID_A, { limit: 100, offset: 40, origin: "web" }]], "limit clamped to the 100 web/§8.6 budget");
+    assert.deepEqual(seen.count, [[CID_A, { origin: "web" }]], "count honors the SAME filter (honest totals)");
     assert.equal(page.pageSize, 100);
     assert.equal(page.offset, 40);
     assert.equal(page.origin, "web");
@@ -941,8 +949,8 @@ describe("audit viewer read model — facade contract, clamps, filter normalizat
     // Junk origin ⇒ NO origin key reaches the repo (a junk value would throw
     // INVALID_ORIGIN there — proving the whitelist runs first).
     const junkSeen = [];
-    systemRoutes.buildAuditPage(GUILD_A, { origin: ";;rm" }, {
-      listAdminAudit: (guildId, opts) => {
+    systemRoutes.buildAuditPage(CID_A, { origin: ";;rm" }, {
+      listAdminAudit: (communityId, opts) => {
         junkSeen.push(opts);
         return [];
       },
@@ -952,12 +960,12 @@ describe("audit viewer read model — facade contract, clamps, filter normalizat
   });
 
   it("real facade path: totals match the seed EXACTLY (guild-scoped count)", () => {
-    const all = systemRoutes.buildAuditPage(GUILD_A, {});
+    const all = systemRoutes.buildAuditPage(CID_A, {});
     assert.equal(all.total, TOTAL_A);
     assert.equal(all.pageSize, PAGE_DEFAULT);
     assert.equal(all.offset, 0);
     assert.equal(all.rows.length, PAGE_DEFAULT);
-    const sys = systemRoutes.buildAuditPage(GUILD_A, { origin: "system" });
+    const sys = systemRoutes.buildAuditPage(CID_A, { origin: "system" });
     assert.equal(sys.total, 1);
     assert.equal(sys.rows[0].action, "decay.apply");
     assert.equal(sys.rows[0].actor_user_id, null);
@@ -974,7 +982,7 @@ describe("audit viewer read model — facade contract, clamps, filter normalizat
 describe("System Web sessions — admin global list + revoke (Phase 4 component C)", () => {
   const SYS_SESS = `${SYS}/sessions`;
   const REVOKE = `${SYS_SESS}/revoke`;
-  const CROSS_SYS_SESS = `/g/${GUILD_B}/system/sessions`;
+  const CROSS_SYS_SESS = `/g/${CID_B}/system/sessions`;
   const CROSS_REVOKE = `${CROSS_SYS_SESS}/revoke`;
 
   /** CSRF tokens are SESSION-scoped (never path-scoped) — derive per key. */
@@ -1004,13 +1012,14 @@ describe("System Web sessions — admin global list + revoke (Phase 4 component 
 
   const revokeRows = () =>
     api
-      .listAdminAudit(GUILD_A, { limit: 100 })
+      .listAdminAudit(CID_A, { limit: 100 })
       .filter((r) => r.action === "sessions.revoke");
 
   it("GET access matrix — anon 302 · plain 404 · staff AND senior FIXED 403 · cross 404 · admin 200", async () => {
     const anon = await fetch(`${suite.base}${SYS_SESS}`, { redirect: "manual" });
     assert.equal(anon.status, 302);
-    assert.equal(anon.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+    // integer community id ⇒ bare login target (URL_ID_RE rejects short ids)
+    assert.equal(anon.headers.get("location"), "/auth/login");
     await anon.text();
 
     const plain = await hit(SYS_SESS, { key: "plain" });
@@ -1065,7 +1074,7 @@ describe("System Web sessions — admin global list + revoke (Phase 4 component 
     const row = rows[0]; // newest first
     assert.equal(row.origin, "web");
     assert.equal(row.actor_user_id, USER_ADMIN);
-    assert.equal(row.guild_id, GUILD_A);
+    assert.equal(row.community_id, CID_A);
     assert.equal(row.target_type, "session");
     assert.equal(row.target_id, String(target.createdAt), "targetId = NON-SECRET selector");
     assert.deepEqual(JSON.parse(row.details_json), {
@@ -1160,7 +1169,7 @@ describe("System Web sessions — admin global list + revoke (Phase 4 component 
       redirect: "manual",
     });
     assert.equal(next.status, 302, "next request with the dead cookie redirects to login");
-    assert.equal(next.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+    assert.equal(next.headers.get("location"), "/auth/login");
     await next.text();
 
     const row = revokeRows().find((r) => JSON.parse(r.details_json).current === true);

@@ -56,7 +56,7 @@ describe("integration: warnings", () => {
     assertEphemeralReply(add);
     assertReplyContains(add, /W-1|issued/i);
 
-    const row = env.db.getWarning(env.guild.id, 1);
+    const row = env.db.getWarning(env.communityId, 1);
     assert.ok(row);
     assert.equal(row.user_id, IDS.member);
     assert.equal(row.reason, "Repeated spam in #general");
@@ -103,7 +103,7 @@ describe("integration: warnings", () => {
     assertEphemeralReply(voided);
     assertReplyContains(voided, /voided|W-1/i);
 
-    const after = env.db.getWarning(env.guild.id, 1);
+    const after = env.db.getWarning(env.communityId, 1);
     assert.ok(after.voided_at != null);
     assert.equal(after.void_reason, "Appeal accepted after review");
     assert.equal(after.reason, "Repeated spam in #general");
@@ -130,7 +130,7 @@ describe("integration: warnings", () => {
 
   it("/warn add DMs member when not silent", async () => {
     env.users.member2User.sends.length = 0;
-    env.db.updateGuildSettings(env.guild.id, { warn_dm_members: 1 });
+    env.db.updateGuildSettings(env.communityId, { warn_dm_members: 1 });
 
     const add = await env.runCommand({
       commandName: "warn",
@@ -148,7 +148,7 @@ describe("integration: warnings", () => {
   });
 
   it("/warn add respects guild DM off and silent", async () => {
-    env.db.updateGuildSettings(env.guild.id, { warn_dm_members: 0 });
+    env.db.updateGuildSettings(env.communityId, { warn_dm_members: 0 });
     const before = env.users.memberUser.sends.length;
 
     const add = await env.runCommand({
@@ -163,12 +163,12 @@ describe("integration: warnings", () => {
     assertEphemeralReply(add);
     assert.equal(env.users.memberUser.sends.length, before);
 
-    env.db.updateGuildSettings(env.guild.id, { warn_dm_members: 1 });
+    env.db.updateGuildSettings(env.communityId, { warn_dm_members: 1 });
   });
 
   it("/warn mine shows own warnings after issue", async () => {
     env.db.createWarning({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member,
       issuerId: IDS.admin,
       reason: "Mine-visible warning",
@@ -195,7 +195,7 @@ describe("integration: warnings", () => {
     assertEphemeralReply(denied, /permission/i);
 
     // Staff role (no ManageGuild) can configure
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "junior");
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "junior");
     const staffMember = env.createMember({
       guild: env.guild,
       user: env.users.memberUser,
@@ -214,7 +214,7 @@ describe("integration: warnings", () => {
     });
     assertEphemeralReply(okStaff);
     assertReplyContains(okStaff, /disabled|off/i);
-    assert.equal(Number(env.db.getGuildSettings(env.guild.id).warn_dm_members), 0);
+    assert.equal(Number(env.db.getGuildSettings(env.communityId).warn_dm_members), 0);
 
     await env.runCommand({
       commandName: "setwarn",
@@ -231,7 +231,7 @@ describe("integration: warnings", () => {
     auditCh.sent.length = 0;
 
     // Prefer dedicated warn log over general audit
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       audit_log_channel_id: auditCh.id,
       warn_log_channel_id: null,
     });
@@ -254,7 +254,7 @@ describe("integration: warnings", () => {
     assertEphemeralReply(set);
     assertReplyContains(set, /Warning issue|warn/i);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).warn_log_channel_id,
+      env.db.getGuildSettings(env.communityId).warn_log_channel_id,
       warnCh.id
     );
 
@@ -291,7 +291,7 @@ describe("integration: warnings", () => {
     });
     assertEphemeralReply(clear);
     assert.equal(
-      env.db.getGuildSettings(env.guild.id).warn_log_channel_id,
+      env.db.getGuildSettings(env.communityId).warn_log_channel_id,
       null
     );
 
@@ -351,7 +351,7 @@ describe("integration: warnings", () => {
 
   it("/warn add can link a staff note", async () => {
     const note = env.db.createStaffNote({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member2,
       authorId: IDS.admin,
       content: "Prior context for formal action",
@@ -371,7 +371,7 @@ describe("integration: warnings", () => {
     assertEphemeralReply(add);
 
     // Find the newest warning for member2
-    const list = env.db.listWarnings(env.guild.id, IDS.member2, {
+    const list = env.db.listWarnings(env.communityId, IDS.member2, {
       includeVoided: true,
       limit: 5,
     });
@@ -398,7 +398,7 @@ describe("integration: warnings", () => {
     assertEphemeralReply(add);
     assertReplyContains(add, /Evidence|Expires|W-/i);
 
-    const list = env.db.listWarnings(env.guild.id, IDS.member, {
+    const list = env.db.listWarnings(env.communityId, IDS.member, {
       includeVoided: true,
       limit: 20,
     });
@@ -434,7 +434,7 @@ describe("integration: warnings", () => {
     });
     assertEphemeralReply(set);
     assert.equal(
-      Number(env.db.getGuildSettings(env.guild.id).warn_expiry_days),
+      Number(env.db.getGuildSettings(env.communityId).warn_expiry_days),
       14
     );
 
@@ -450,7 +450,7 @@ describe("integration: warnings", () => {
     });
     assertEphemeralReply(add);
 
-    const list = env.db.listWarnings(env.guild.id, IDS.member2, {
+    const list = env.db.listWarnings(env.communityId, IDS.member2, {
       includeVoided: true,
       limit: 20,
     });
@@ -471,13 +471,13 @@ describe("integration: warnings", () => {
 
   it("/warn export attaches staff handoff markdown", async () => {
     env.db.createStaffNote({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member,
       authorId: IDS.admin,
       content: "Export note body",
     });
     env.db.createWarning({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member,
       issuerId: IDS.admin,
       reason: "Export warning body",
@@ -511,7 +511,7 @@ describe("integration: warnings", () => {
   it("expiry ticker auto-voids past-due warnings", async () => {
     const past = Date.now() - 5_000;
     const warn = env.db.createWarning({
-      guildId: env.guild.id,
+      communityId: env.communityId,
       userId: IDS.member,
       issuerId: IDS.admin,
       reason: "Will expire via ticker",
@@ -523,7 +523,7 @@ describe("integration: warnings", () => {
     const result = await runWarnExpiryTick(env.client, { now: Date.now() });
     assert.ok(result.voided >= 1);
 
-    const after = env.db.getWarning(env.guild.id, warn.warning_number);
+    const after = env.db.getWarning(env.communityId, warn.warning_number);
     assert.ok(after.voided_at != null);
     assert.match(after.void_reason, /expiry|Auto-voided/i);
   });

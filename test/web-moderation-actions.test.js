@@ -52,7 +52,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // loadDb FIRST: fresh SQLite + src require-cache reset; every require below
 // binds to that DB (Phase-2 gate boot discipline).
@@ -76,6 +76,10 @@ const SESSION_SECRET = "test-moderation-actions-sentinel-secret-NOT-REAL-029";
 
 const GUILD_A = "330000000000000001"; // bot + every test user
 const GUILD_B = "330000000000000002"; // bot guild the users are NOT in
+
+// Fluxer PR 2: INTEGER communities.id for data + /g/<id> route identity.
+const CID_A = communityKey(GUILD_A);
+const CID_B = communityKey(GUILD_B);
 
 const USER_ADMIN = "468190112345678901"; // owner snapshot ⇒ tier admin
 const USER_JUNIOR = "468190112345678902"; // junior staff role ⇒ tier staff
@@ -104,11 +108,11 @@ const T_FAILOPEN = "468190112345678922"; // fail-closed injection target
 const T_EVIDENCE = "468190112345678923"; // evidence / expiry bound probes
 const B_SUBJECT = "468190112345678924"; // guild-B subject (cross-guild probe)
 
-const ISSUE_PATH = `/g/${GUILD_A}/moderation/warnings/issue`;
-const VOID_PATH = `/g/${GUILD_A}/moderation/warnings/void`;
-const NOTE_PATH = `/g/${GUILD_A}/moderation/notes`;
-const WARNINGS_PAGE = `/g/${GUILD_A}/warnings`;
-const NOTES_PAGE = `/g/${GUILD_A}/notes`;
+const ISSUE_PATH = `/g/${CID_A}/moderation/warnings/issue`;
+const VOID_PATH = `/g/${CID_A}/moderation/warnings/void`;
+const NOTE_PATH = `/g/${CID_A}/moderation/notes`;
+const WARNINGS_PAGE = `/g/${CID_A}/warnings`;
+const NOTES_PAGE = `/g/${CID_A}/notes`;
 
 const ISSUE_TEMPLATE = "/g/:guildId/moderation/warnings/issue";
 const VOID_TEMPLATE = "/g/:guildId/moderation/warnings/void";
@@ -314,8 +318,8 @@ for (const k of ENV_KEYS) {
 }
 process.env.WEB_RATE_LIMIT_MUTATION_MAX = "1000000"; // scripted probes, not humans
 
-api.addStaffRole(GUILD_A, ROLE_JUNIOR_TIER, "junior");
-api.addStaffRole(GUILD_A, ROLE_SENIOR_TIER, "senior");
+api.addStaffRole(CID_A, ROLE_JUNIOR_TIER, "junior");
+api.addStaffRole(CID_A, ROLE_SENIOR_TIER, "senior");
 
 const cookieOf = {};
 const csrfOf = {};
@@ -385,26 +389,26 @@ const notePost = (fields, key = "junior") =>
 // ---------------------------------------------------------------------------
 
 function auditRows(origin) {
-  return api.listAdminAudit(GUILD_A, { origin, limit: 100 }).map((r) => ({
+  return api.listAdminAudit(CID_A, { origin, limit: 100 }).map((r) => ({
     ...r,
     details: r.details_json ? JSON.parse(r.details_json) : null,
   }));
 }
-const webAuditCount = () => api.countAdminAudit(GUILD_A, { origin: "web" });
+const webAuditCount = () => api.countAdminAudit(CID_A, { origin: "web" });
 const rowsOf = (origin, action) => auditRows(origin).filter((r) => r.action === action);
 
-const lastWarn = (guildId = GUILD_A) =>
+const lastWarn = (communityId = CID_A) =>
   api.db
-    .prepare("SELECT * FROM warnings WHERE guild_id = ? ORDER BY id DESC LIMIT 1")
-    .get(guildId);
+    .prepare("SELECT * FROM warnings WHERE community_id = ? ORDER BY id DESC LIMIT 1")
+    .get(communityId);
 const warnCount = () => api.db.prepare("SELECT COUNT(*) AS n FROM warnings").get().n;
 const lastNote = () =>
   api.db
-    .prepare("SELECT * FROM staff_notes WHERE guild_id = ? ORDER BY id DESC LIMIT 1")
-    .get(GUILD_A);
+    .prepare("SELECT * FROM staff_notes WHERE community_id = ? ORDER BY id DESC LIMIT 1")
+    .get(CID_A);
 const noteCount = () =>
   api.db.prepare("SELECT COUNT(*) AS n FROM staff_notes").get().n;
-const warnByNumber = (n, guildId = GUILD_A) => api.getWarning(guildId, n);
+const warnByNumber = (n, communityId = CID_A) => api.getWarning(communityId, n);
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -572,7 +576,9 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross generic 404",
         url: path,
         method: "POST",
         cookieId: null,
-        expect: harness.expectLoginRedirect(`/auth/login?guild=${GUILD_A}`),
+        // PR 2: integer community ids fail the 5–20-digit snowflake gate in
+        // loginRedirectTarget, so the anon target is the bare login page.
+        expect: harness.expectLoginRedirect("/auth/login"),
         label: `anon ${label} POST`,
       });
     });
@@ -588,7 +594,7 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross generic 404",
         assert.equal(body, "Not found");
         assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
       }
-      const cross = await post(path.replace(GUILD_A, GUILD_B), {
+      const cross = await post(path.replace(`/g/${CID_A}/`, `/g/${CID_B}/`), {
         cookie: cookieOf.admin,
         fields: { user_id: T_ISSUE, reason: "probe", warning_number: "1", content: "probe", _csrf: csrfOf.admin },
       });
@@ -644,7 +650,7 @@ describe("D. CSRF — missing/tampered ⇒ 403 with ZERO facade calls and ZERO r
 describe("E. warn issue — service parity through the facade recorder", () => {
   it("staff-tier issue ⇒ W-row + one web audit row (slash detail shape) + warn-log mirror", async () => {
     usersCache.set(T_ISSUE, makeCacheUser(T_ISSUE));
-    api.updateGuildSettings(GUILD_A, { warn_dm_members: 1, warn_expiry_days: 0 });
+    api.updateGuildSettings(CID_A, { warn_dm_members: 1, warn_expiry_days: 0 });
     const before = webAuditCount();
     const dmBefore = dmLog.length;
     mirrorSpy.log.length = 0;
@@ -663,7 +669,7 @@ describe("E. warn issue — service parity through the facade recorder", () => {
     // ROW: the createWarning SERVICE's own work (sequential number, trim).
     const w = lastWarn();
     assert.ok(w, "warning row created");
-    assert.equal(w.guild_id, GUILD_A);
+    assert.equal(w.community_id, CID_A, "warning row carries the integer community id");
     assert.equal(w.user_id, T_ISSUE);
     assert.equal(w.issuer_id, USER_JUNIOR, "issuer is the session actor");
     assert.equal(w.reason, "spam incident", "stored reason trimmed (repo parity)");
@@ -683,7 +689,7 @@ describe("E. warn issue — service parity through the facade recorder", () => {
     // SERVICE ARGS: slash handleAdd's exact createWarning contract (the web
     // omits ONLY what slash Discord enforces — everything else identical).
     const [issueArgs] = lastArgs.createWarning;
-    assert.equal(issueArgs.guildId, GUILD_A);
+    assert.equal(issueArgs.communityId, CID_A, "createWarning keyed by the integer community id");
     assert.equal(issueArgs.userId, T_ISSUE);
     assert.equal(issueArgs.issuerId, USER_JUNIOR);
     assert.equal(issueArgs.reason, "spam incident");
@@ -732,12 +738,12 @@ describe("E. warn issue — service parity through the facade recorder", () => {
   });
 
   it("warn_dm_members=0 skips the DM for everyone", async () => {
-    api.updateGuildSettings(GUILD_A, { warn_dm_members: 0 });
+    api.updateGuildSettings(CID_A, { warn_dm_members: 0 });
     const dmBefore = dmLog.length;
     const { location } = await issuePost({ user_id: T_ISSUE, reason: "dm off probe" });
     assert.equal(location, `${WARNINGS_PAGE}?done=warn_issued`);
     assert.equal(dmLog.length, dmBefore, "guild DM toggle off ⇒ no DM (warnDmEnabled parity)");
-    api.updateGuildSettings(GUILD_A, { warn_dm_members: 1 });
+    api.updateGuildSettings(CID_A, { warn_dm_members: 1 });
   });
 
   it("DM resolves via the MEMBER cache too; uncached members degrade like slash's member-miss (skipped, mutation still lands)", async () => {
@@ -756,7 +762,7 @@ describe("E. warn issue — service parity through the facade recorder", () => {
   });
 
   it("guild default expiry applies; the override wins; 0 = never", async () => {
-    api.updateGuildSettings(GUILD_A, { warn_expiry_days: 10 });
+    api.updateGuildSettings(CID_A, { warn_expiry_days: 10 });
     await issuePost({ user_id: T_EVIDENCE, reason: "default expiry probe" });
     const def = lastWarn();
     assert.equal(
@@ -774,12 +780,12 @@ describe("E. warn issue — service parity through the facade recorder", () => {
 
     await issuePost({ user_id: T_EVIDENCE, reason: "max expiry probe", expires_days: "3650" });
     assert.equal(lastWarn().expires_at - lastWarn().created_at, 3650 * DAY_MS, "slash max:3650 edge");
-    api.updateGuildSettings(GUILD_A, { warn_expiry_days: 0 });
+    api.updateGuildSettings(CID_A, { warn_expiry_days: 0 });
   });
 
   it("evidence + linked note are stored exactly like /warn add", async () => {
     const note = api.createStaffNote({
-      guildId: GUILD_A,
+      communityId: CID_A,
       userId: T_NOTE,
       authorId: USER_SENIOR,
       content: "link me probe",
@@ -955,9 +961,9 @@ describe("G. warn void — slash /warn void twin", () => {
     });
 
     // juniorVoidArgs = the facade call's ARGUMENT LIST (not a calls array):
-    // [guildId, warningNumber, { voidedBy, voidReason }] — guild-scoped call.
+    // [communityId, warningNumber, { voidedBy, voidReason }] — guild-scoped call.
     const voidArgs = juniorVoidArgs;
-    assert.equal(voidArgs[0], GUILD_A, "guild-scoped by construction");
+    assert.equal(voidArgs[0], CID_A, "guild-scoped by construction (integer community id)");
     assert.equal(voidArgs[1], voidTarget.warning_number);
     assert.equal(voidArgs[2].voidedBy, USER_JUNIOR);
     assert.deepEqual(voidArgs[2].voidReason, "appeal upheld by junior");
@@ -981,12 +987,12 @@ describe("G. warn void — slash /warn void twin", () => {
     // Seed guild B with one MORE warning than guild A has numbers, so the
     // freshest B number does not exist in guild A at all.
     const maxA = api.db
-      .prepare("SELECT COALESCE(MAX(warning_number), 0) AS n FROM warnings WHERE guild_id = ?")
-      .get(GUILD_A).n;
+      .prepare("SELECT COALESCE(MAX(warning_number), 0) AS n FROM warnings WHERE community_id = ?")
+      .get(CID_A).n;
     let bWarn = null;
     for (let n = 0; n <= maxA; n += 1) {
       bWarn = api.createWarning({
-        guildId: GUILD_B,
+        communityId: CID_B,
         userId: B_SUBJECT,
         issuerId: USER_ADMIN,
         reason: `guild B row ${n}`,
@@ -998,7 +1004,7 @@ describe("G. warn void — slash /warn void twin", () => {
       reason: "cross-guild probe",
     });
     assert.equal(location, `${WARNINGS_PAGE}?error=warn_not_found`);
-    const bAfter = api.getWarning(GUILD_B, bWarn.warning_number);
+    const bAfter = api.getWarning(CID_B, bWarn.warning_number);
     assert.equal(bAfter.voided_at, null, "guild B's warning was NEVER touched (§8.6 scoping)");
     assert.equal(webAuditCount(), auditBefore, "not-found audited NOTHING");
   });
@@ -1055,7 +1061,7 @@ describe("H. note add — slash /note add twin", () => {
 // ===========================================================================
 describe("I. audit-fail injection ⇒ generic 500, no claim, no audit row, no mirror", () => {
   it("insertAdminAudit throwing on issue: 500 'Internal error', no Location, NO mirror", async () => {
-    api.updateGuildSettings(GUILD_A, { warn_dm_members: 0 });
+    api.updateGuildSettings(CID_A, { warn_dm_members: 0 });
     const auditBefore = webAuditCount();
     mirrorSpy.log.length = 0;
     recorder.auditThrow = true;
@@ -1125,7 +1131,7 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
   }
 
   it("issue parity: web POST vs real handleWarn(add) — equal row outcome, audit differs ONLY by origin", async () => {
-    api.updateGuildSettings(GUILD_A, { warn_dm_members: 0, warn_expiry_days: 0 });
+    api.updateGuildSettings(CID_A, { warn_dm_members: 0, warn_expiry_days: 0 });
     usersCache.set(T_SLASH, makeCacheUser(T_SLASH));
 
     // ---- web side (real HTTP through the full stack) ----
@@ -1172,7 +1178,7 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
     assert.equal(wWeb.user_id, T_WEBP, "web row targets the web subject");
     assert.equal(wSlash.user_id, T_SLASH, "slash row targets the slash subject");
     for (const col of [
-      "guild_id", "issuer_id", "reason", "voided_at", "voided_by",
+      "community_id", "issuer_id", "reason", "voided_at", "voided_by",
       "void_reason", "related_note_id", "evidence_message_url", "evidence_text",
     ]) {
       assert.deepEqual(wWeb[col], wSlash[col], `column ${col} equal across transports`);
@@ -1222,7 +1228,7 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
       },
     });
     await warnHandlers.warn(interaction, {});
-    const sStamped = api.getWarning(GUILD_A, wSlash.warning_number);
+    const sStamped = api.getWarning(CID_A, wSlash.warning_number);
     assert.ok(sStamped.voided_at != null, "slash voided its row");
 
     // ---- web void (the web-issued parity warning) ----
@@ -1234,7 +1240,7 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
       reason: "appeal upheld — parity",
     });
     assert.equal(v.location, `${WARNINGS_PAGE}?done=warn_voided`);
-    const wStamped = api.getWarning(GUILD_A, wWeb.warning_number);
+    const wStamped = api.getWarning(CID_A, wWeb.warning_number);
 
     for (const col of ["voided_by", "void_reason"]) {
       assert.deepEqual(wStamped[col], sStamped[col], `void stamp ${col} equal across transports`);
@@ -1258,7 +1264,7 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
   });
 
   it("note parity: web POST vs real handleNote(add) — equal note + audit deep-equal", async () => {
-    api.updateGuildSettings(GUILD_A, { warn_dm_members: 0 });
+    api.updateGuildSettings(CID_A, { warn_dm_members: 0 });
     const { handlers: noteHandlers } = require("../src/features/staffNotes");
 
     const web = await notePost({ user_id: T_WEB_N, content: "parity note body" });
@@ -1283,7 +1289,7 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
 
     // Equal outcome on every transport-independent column; the SUBJECTS
     // differ by design (two different members were noted).
-    for (const col of ["guild_id", "author_id", "deleted_at"]) {
+    for (const col of ["community_id", "author_id", "deleted_at"]) {
       assert.deepEqual(nWeb[col], nSlash[col], `column ${col} equal across transports`);
     }
     assert.equal(nWeb.user_id, T_WEB_N, "web row targets the web subject");
@@ -1311,8 +1317,8 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
 /** Locate the WEB-issued parity warning (suite J ordering helper). */
 function lastWarnBeforeSlashIssue() {
   return api.db
-    .prepare("SELECT * FROM warnings WHERE guild_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1")
-    .get(GUILD_A, T_WEBP);
+    .prepare("SELECT * FROM warnings WHERE community_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1")
+    .get(CID_A, T_WEBP);
 }
 
 // ===========================================================================

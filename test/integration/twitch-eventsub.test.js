@@ -71,7 +71,7 @@ describe("integration: twitch-eventsub", () => {
 
   before(async () => {
     env = await createIntegrationEnv();
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       twitch_notification_channel_id: IDS.channelNotify,
     });
 
@@ -138,9 +138,9 @@ describe("integration: twitch-eventsub", () => {
   });
 
   it("repo: media flags toggle with watermark seed-once semantics", () => {
-    env.db.addTwitchChannel(env.guild.id, "701000", "mediaflag", "MediaFlag", null);
+    env.db.addTwitchChannel(env.communityId, "701000", "mediaflag", "MediaFlag", null);
 
-    let row = env.db.setTwitchChannelMediaFlags(env.guild.id, "701000", {
+    let row = env.db.setTwitchChannelMediaFlags(env.communityId, "701000", {
       notifyClips: true,
       notifyVods: false,
     });
@@ -150,14 +150,14 @@ describe("integration: twitch-eventsub", () => {
     const seeded = row.last_clip_created_at;
 
     // Re-enable must NOT reset the watermark (no history wipe).
-    row = env.db.setTwitchChannelMediaFlags(env.guild.id, "701000", {
+    row = env.db.setTwitchChannelMediaFlags(env.communityId, "701000", {
       notifyClips: true,
       notifyVods: false,
     });
     assert.equal(row.last_clip_created_at, seeded);
 
     // Disable keeps the watermark for the next opt-in.
-    row = env.db.setTwitchChannelMediaFlags(env.guild.id, "701000", {
+    row = env.db.setTwitchChannelMediaFlags(env.communityId, "701000", {
       notifyClips: false,
       notifyVods: false,
     });
@@ -165,7 +165,7 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(row.last_clip_created_at, seeded);
 
     assert.equal(
-      env.db.setTwitchChannelMediaFlags(env.guild.id, "404040", { notifyClips: true }),
+      env.db.setTwitchChannelMediaFlags(env.communityId, "404040", { notifyClips: true }),
       null,
     );
   });
@@ -281,7 +281,7 @@ describe("integration: twitch-eventsub", () => {
   });
 
   it("E2E: stream.online notification announces once, dedups redelivery + poller", async () => {
-    env.db.addTwitchChannel(env.guild.id, "7770001", "fastguy", "FastGuy", null);
+    env.db.addTwitchChannel(env.communityId, "7770001", "fastguy", "FastGuy", null);
     env.channels.notify.sent.length = 0;
 
     const stream = {
@@ -315,7 +315,7 @@ describe("integration: twitch-eventsub", () => {
     const sent = env.channels.notify.sent[0];
     assert.match(sent.content, /FastGuy/);
     assert.equal(sent.embeds[0].data.title, "Speedrunning");
-    let row = env.db.getTwitchChannel(env.guild.id, "fastguy");
+    let row = env.db.getTwitchChannel(env.communityId, "fastguy");
     assert.equal(row.is_live, 1);
     assert.equal(row.last_stream_id, "stream-abc");
 
@@ -329,7 +329,7 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(env.channels.notify.sent.length, 1, "redelivery deduped by claim");
 
     // The polling ticker must also stay silent for the claimed stream id.
-    await ticker.processSubscription(env.client, env.guild.id, row, stream);
+    await ticker.processSubscription(env.client, env.communityId, row, stream);
     assert.equal(env.channels.notify.sent.length, 1, "poller deduped by claim");
 
     // Offline notification flips state back (204 first, then state).
@@ -343,7 +343,7 @@ describe("integration: twitch-eventsub", () => {
     });
     assert.equal(res3.statusCode, 204);
     await waitFor(
-      () => env.db.getTwitchChannel(env.guild.id, "fastguy").is_live === 0,
+      () => env.db.getTwitchChannel(env.communityId, "fastguy").is_live === 0,
       "offline state",
     );
   });
@@ -437,7 +437,7 @@ describe("integration: twitch-eventsub", () => {
     };
 
     // 1) Fresh broadcaster → both types created + locally tracked.
-    env.db.addTwitchChannel(env.guild.id, "8880001", "recguy", "RecGuy", null);
+    env.db.addTwitchChannel(env.communityId, "8880001", "recguy", "RecGuy", null);
     const r1 = await subs.ensureBroadcasterSubs("8880001", cfg, deps);
     assert.deepEqual([r1.created, r1.failed], [2, 0]);
     assert.equal(createdReqs.length, 2);
@@ -462,7 +462,7 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(env.db.getTwitchEventsubSub("stream.offline", "9990001"), null);
 
     // 4) Cap: only the first maxChannels broadcasters get subs.
-    env.db.addTwitchChannel(env.guild.id, "8880002", "overcap", "OverCap", null);
+    env.db.addTwitchChannel(env.communityId, "8880002", "overcap", "OverCap", null);
     createdReqs.length = 0;
     const capped = await subs.reconcileEventsubSubscriptions({
       ...deps,
@@ -477,7 +477,7 @@ describe("integration: twitch-eventsub", () => {
     // 5) pruneBroadcasterIfUntracked respects still-tracked rows.
     const skip = await subs.pruneBroadcasterIfUntracked("8880001", deps);
     assert.equal(skip.skipped, "still-tracked");
-    env.db.removeTwitchChannel(env.guild.id, "recguy");
+    env.db.removeTwitchChannel(env.communityId, "recguy");
     const pruned = await subs.pruneBroadcasterIfUntracked("8880001", deps);
     assert.equal(pruned.pruned, true);
     assert.equal(env.db.getTwitchEventsubSub("stream.online", "8880001"), null);
@@ -512,25 +512,25 @@ describe("integration: twitch-eventsub", () => {
 
   it("clips poller: seeds silently, announces once, caps flood", async () => {
     const { processNewClips } = ticker;
-    env.db.addTwitchChannel(env.guild.id, "703000", "clipper", "Clipper", null);
-    env.db.setTwitchChannelMediaFlags(env.guild.id, "703000", {
+    env.db.addTwitchChannel(env.communityId, "703000", "clipper", "Clipper", null);
+    env.db.setTwitchChannelMediaFlags(env.communityId, "703000", {
       notifyClips: true,
       notifyVods: false,
     });
 
     // Null watermark (direct update bypassed seeding) → seed only, no send.
-    env.db.updateTwitchChannelClipState(env.guild.id, "703000", {
+    env.db.updateTwitchChannelClipState(env.communityId, "703000", {
       lastClipId: null,
       lastClipCreatedAt: null,
     });
     env.channels.notify.sent.length = 0;
-    let sub = env.db.getTwitchChannel(env.guild.id, "clipper");
+    let sub = env.db.getTwitchChannel(env.communityId, "clipper");
     await processNewClips(env.client, sub, {
       fetchClips: async () => {
         throw new Error("must not fetch when watermark is null");
       },
     });
-    sub = env.db.getTwitchChannel(env.guild.id, "clipper");
+    sub = env.db.getTwitchChannel(env.communityId, "clipper");
     assert.ok(sub.last_clip_created_at > 0);
     assert.equal(env.channels.notify.sent.length, 0);
 
@@ -545,7 +545,7 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(env.channels.notify.sent.length, 2);
     assert.match(env.channels.notify.sent[0].content, /Clipper/);
     assert.equal(env.channels.notify.sent[0].embeds[0].data.title, "First fresh");
-    sub = env.db.getTwitchChannel(env.guild.id, "clipper");
+    sub = env.db.getTwitchChannel(env.communityId, "clipper");
     assert.equal(sub.last_clip_id, "c2");
     assert.equal(sub.last_clip_created_at, wm + 2000);
 
@@ -563,25 +563,25 @@ describe("integration: twitch-eventsub", () => {
     env.channels.notify.sent.length = 0;
     await processNewClips(env.client, sub, { fetchClips: async () => many });
     assert.equal(env.channels.notify.sent.length, 5);
-    sub = env.db.getTwitchChannel(env.guild.id, "clipper");
+    sub = env.db.getTwitchChannel(env.communityId, "clipper");
     assert.equal(sub.last_clip_id, "bulk-6");
 
     // Unknown fetch state (null) → no crash, no state change.
     const before = sub.last_clip_created_at;
     await processNewClips(env.client, sub, { fetchClips: async () => null });
-    assert.equal(env.db.getTwitchChannel(env.guild.id, "clipper").last_clip_created_at, before);
+    assert.equal(env.db.getTwitchChannel(env.communityId, "clipper").last_clip_created_at, before);
     assert.equal(env.channels.notify.sent.length, 5);
   });
 
   it("vods poller: archives-only announce with created_at watermark", async () => {
     const { processNewVods } = ticker;
-    env.db.addTwitchChannel(env.guild.id, "704000", "vodder", "Vodder", null);
-    env.db.setTwitchChannelMediaFlags(env.guild.id, "704000", {
+    env.db.addTwitchChannel(env.communityId, "704000", "vodder", "Vodder", null);
+    env.db.setTwitchChannelMediaFlags(env.communityId, "704000", {
       notifyClips: false,
       notifyVods: true,
     });
     env.channels.notify.sent.length = 0;
-    let sub = env.db.getTwitchChannel(env.guild.id, "vodder");
+    let sub = env.db.getTwitchChannel(env.communityId, "vodder");
     assert.ok(sub.last_video_created_at > 0, "seeded on enable");
 
     const wm = sub.last_video_created_at;
@@ -598,7 +598,7 @@ describe("integration: twitch-eventsub", () => {
       embed.fields.some((f) => f.name === "Length" && f.value === "2h 15m"),
       "ISO duration formatted",
     );
-    sub = env.db.getTwitchChannel(env.guild.id, "vodder");
+    sub = env.db.getTwitchChannel(env.communityId, "vodder");
     assert.equal(sub.last_video_id, "vnew");
 
     // Same videos again → silent.
@@ -606,17 +606,17 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(env.channels.notify.sent.length, 1);
 
     // Media notifications never ping the notify role.
-    env.db.updateGuildSettings(env.guild.id, { twitch_notify_role_id: IDS.roleExempt });
+    env.db.updateGuildSettings(env.communityId, { twitch_notify_role_id: IDS.roleExempt });
     await processNewVods(env.client, sub, {
       fetchArchives: async () => [{ id: "v2", title: "Newest", created_at: iso(wm + 99999) }],
     });
     const last = env.channels.notify.sent[env.channels.notify.sent.length - 1];
     assert.deepEqual(last.allowedMentions, { parse: [] });
-    env.db.updateGuildSettings(env.guild.id, { twitch_notify_role_id: null });
+    env.db.updateGuildSettings(env.communityId, { twitch_notify_role_id: null });
   });
 
   it("runTwitchTick: media pollers only run for opted-in subscriptions", async () => {
-    env.db.addTwitchChannel(env.guild.id, "705000", "plainsub", "PlainSub", null);
+    env.db.addTwitchChannel(env.communityId, "705000", "plainsub", "PlainSub", null);
     const polledClips = [];
     const polledVods = [];
     await ticker.runTwitchTick(env.client, {
@@ -638,7 +638,7 @@ describe("integration: twitch-eventsub", () => {
   });
 
   it("/twitch clips + /twitch vod toggle flags, list shows them, member denied", async () => {
-    env.db.addTwitchChannel(env.guild.id, "706000", "flagman", "FlagMan", null);
+    env.db.addTwitchChannel(env.communityId, "706000", "flagman", "FlagMan", null);
 
     const denied = await env.runCommand({
       commandName: "twitch",
@@ -655,7 +655,7 @@ describe("integration: twitch-eventsub", () => {
       options: { channel: "flagman", enabled: true },
     });
     assertReplyContains(on, /announce new \*\*clips\*\*/);
-    let row = env.db.getTwitchChannel(env.guild.id, "flagman");
+    let row = env.db.getTwitchChannel(env.communityId, "flagman");
     assert.equal(row.notify_clips, 1);
     assert.ok(row.last_clip_created_at > 0);
 
@@ -666,7 +666,7 @@ describe("integration: twitch-eventsub", () => {
       options: { channel: "FLAGMAN", enabled: true },
     });
     assertReplyContains(vod, /announce new \*\*VODs\*\*/);
-    row = env.db.getTwitchChannel(env.guild.id, "flagman");
+    row = env.db.getTwitchChannel(env.communityId, "flagman");
     assert.equal(row.notify_vods, 1);
 
     const list = await env.runCommand({ commandName: "twitch", subcommand: "list", admin: true });
@@ -679,7 +679,7 @@ describe("integration: twitch-eventsub", () => {
       options: { channel: "flagman", enabled: false },
     });
     assertReplyContains(off, /Stopped announcing/);
-    assert.equal(env.db.getTwitchChannel(env.guild.id, "flagman").notify_clips, 0);
+    assert.equal(env.db.getTwitchChannel(env.communityId, "flagman").notify_clips, 0);
 
     const missing = await env.runCommand({
       commandName: "twitch",

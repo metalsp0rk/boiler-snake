@@ -116,7 +116,7 @@ async function recordGoldenFixture() {
   ]);
   try {
     armEnv();
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       gork_keyword: "gork",
       gork_cooldown_sec: 0,
     });
@@ -156,7 +156,7 @@ async function recordGoldenFixture() {
     await require("../../src/features/gork/trigger").whenGorkIdleForTests();
 
     const qa = env.db
-      .listGorkInteractions({ guildId: env.guild.id, limit: 10 })
+      .listGorkInteractions({ communityId: env.communityId, limit: 10 })
       .map((r) => env.db.getGorkInteractionByUid(r.uid))
       .find((r) => r && r.kind === "qa");
     assert.ok(qa, "recording wrote a qa interaction row");

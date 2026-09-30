@@ -19,12 +19,15 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 const SESSION_SECRET = "test-lkp-10-averylongtestsecret";
 
 const GUILD_A = "940000000000000001"; // the only bot guild
 const GUILD_CROSS = "940000000000000002";
+// Fluxer PR 2: INTEGER community ids (data layer + /g/<id> routes).
+let CID_A = null;
+let CID_CROSS = null;
 
 const USER_ADMIN = "940000000000000011";
 const USER_STAFF = "940000000000000012";
@@ -217,6 +220,8 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
     api = loaded.api;
     tmpDir = loaded.tmpDir;
     cleanup = loaded.cleanup;
+    CID_A = communityKey(GUILD_A);
+    CID_CROSS = communityKey(GUILD_CROSS);
     process.env.SESSION_SECRET = SESSION_SECRET;
 
     const appMod = require("../src/web/app");
@@ -224,11 +229,11 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
     tokens = require("../src/web/auth/tokens");
     csrfMod = require("../src/web/middleware/csrf");
 
-    api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
+    api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
 
     // tracked members: King + sporky have XP rows; Ghosty does NOT.
-    api.addXp(GUILD_A, USER_KING, 100);
-    api.addXp(GUILD_A, USER_SPORE, 50);
+    api.addXp(CID_A, USER_KING, 100);
+    api.addXp(CID_A, USER_SPORE, 50);
 
     cookieOf.admin = mkSession(USER_ADMIN, { owner: true });
     cookieOf.staff = mkSession(USER_STAFF);
@@ -273,51 +278,51 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
   // ---- lookups: data shape --------------------------------------------------
 
   it("roles lookup: substring, case-insensitive, ranked, @everyone excluded", async () => {
-    const { res, json } = await getJson(`/g/${GUILD_A}/lookups/roles?q=mod`, cookieOf.staff);
+    const { res, json } = await getJson(`/g/${CID_A}/lookups/roles?q=mod`, cookieOf.staff);
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type"), /application\/json/);
     assert.equal(res.headers.get("cache-control"), "no-store");
     assert.deepEqual(json.roles, [{ id: ROLE_SARAH, name: "Mod Sarah" }]);
 
-    const dup = await getJson(`/g/${GUILD_A}/lookups/roles?q=duplicate`, cookieOf.staff);
+    const dup = await getJson(`/g/${CID_A}/lookups/roles?q=duplicate`, cookieOf.staff);
     assert.deepEqual(dup.json.roles.map((r) => r.id), [ROLE_DUP1, ROLE_DUP2]);
 
-    const every = await getJson(`/g/${GUILD_A}/lookups/roles?q=everyone`, cookieOf.staff);
+    const every = await getJson(`/g/${CID_A}/lookups/roles?q=everyone`, cookieOf.staff);
     assert.deepEqual(every.json.roles, []); // @everyone never suggested
   });
 
   it("users lookup: name from cache; exact id/mention answers even cold", async () => {
-    const byName = await getJson(`/g/${GUILD_A}/lookups/users?q=king`, cookieOf.staff);
+    const byName = await getJson(`/g/${CID_A}/lookups/users?q=king`, cookieOf.staff);
     assert.equal(byName.res.status, 200);
     assert.deepEqual(byName.json.users, [{ id: USER_KING, name: "King Dead" }]);
 
     const mention = encodeURIComponent(`<@${USER_UNTRACKED}>`);
-    const cold = await getJson(`/g/${GUILD_A}/lookups/users?q=${mention}`, cookieOf.staff);
+    const cold = await getJson(`/g/${CID_A}/lookups/users?q=${mention}`, cookieOf.staff);
     assert.equal(cold.json.exact, true);
     assert.deepEqual(cold.json.users, [{ id: USER_UNTRACKED, name: "Ghosty" }]);
 
-    const unknown = await getJson(`/g/${GUILD_A}/lookups/users?q=zzznope`, cookieOf.staff);
+    const unknown = await getJson(`/g/${CID_A}/lookups/users?q=zzznope`, cookieOf.staff);
     assert.deepEqual(unknown.json.users, []);
-    const empty = await getJson(`/g/${GUILD_A}/lookups/users`, cookieOf.staff);
+    const empty = await getJson(`/g/${CID_A}/lookups/users`, cookieOf.staff);
     assert.deepEqual(empty.json.users, []);
   });
 
   it("lookups gates like every other /g surface: anon 302, plain 404, cross-guild 404", async () => {
-    const anon = await req(`/g/${GUILD_A}/lookups/roles?q=mod`);
+    const anon = await req(`/g/${CID_A}/lookups/roles?q=mod`);
     assert.equal(anon.res.status, 302);
     assert.match(anon.res.headers.get("location") || "", /\/login/);
 
-    const plain = await req(`/g/${GUILD_A}/lookups/roles?q=mod`, cookieOf.plain);
+    const plain = await req(`/g/${CID_A}/lookups/roles?q=mod`, cookieOf.plain);
     assert.equal(plain.res.status, 404);
 
-    const cross = await req(`/g/${GUILD_CROSS}/lookups/roles?q=mod`, cookieOf.staff);
+    const cross = await req(`/g/${CID_CROSS}/lookups/roles?q=mod`, cookieOf.staff);
     assert.equal(cross.res.status, 404);
   });
 
   // ---- tolerant writes ------------------------------------------------------
 
   it("grant accepts a pasted <@…> mention — digits reach awardXp", async () => {
-    const { location } = await post(`/g/${GUILD_A}/xp/grant`, {
+    const { location } = await post(`/g/${CID_A}/xp/grant`, {
       cookie: cookieOf.admin,
       csrf: csrfOf[USER_ADMIN],
       fields: { user_id: `<@${USER_KING}>`, amount: "25", reason: "typed a mention" },
@@ -328,7 +333,7 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
   });
 
   it("grant still refuses junk the same way (no mention laundering)", async () => {
-    const { location } = await post(`/g/${GUILD_A}/xp/grant`, {
+    const { location } = await post(`/g/${CID_A}/xp/grant`, {
       cookie: cookieOf.admin,
       csrf: csrfOf[USER_ADMIN],
       fields: { user_id: "<@not-a-snowflake>", amount: "25" },
@@ -339,30 +344,30 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
 
   const staffRoleRow = (roleId) =>
     api.db
-      .prepare("SELECT * FROM staff_roles WHERE guild_id = ? AND role_id = ?")
-      .get(GUILD_A, roleId);
+      .prepare("SELECT * FROM staff_roles WHERE community_id = ? AND role_id = ?")
+      .get(CID_A, roleId);
 
   it("staff role add by unique NAME resolves via cache (case-insensitive)", async () => {
-    const { location } = await post(`/g/${GUILD_A}/staff/role/add`, {
+    const { location } = await post(`/g/${CID_A}/staff/role/add`, {
       cookie: cookieOf.admin,
       csrf: csrfOf[USER_ADMIN],
       fields: { role_id: "mod sarah", level: "junior" },
     });
-    assert.equal(location, `/g/${GUILD_A}/staff`);
+    assert.equal(location, `/g/${CID_A}/staff`);
     const row = staffRoleRow(ROLE_SARAH);
     assert.ok(row, "row stored under the RESOLVED id");
     assert.equal(row.level, "junior");
   });
 
   it("staff role add by <@&mention> + refusal cases (ambiguous name, everyone)", async () => {
-    await post(`/g/${GUILD_A}/staff/role/add`, {
+    await post(`/g/${CID_A}/staff/role/add`, {
       cookie: cookieOf.admin,
       csrf: csrfOf[USER_ADMIN],
       fields: { role_id: `<@&${ROLE_DUP1}>`, level: "senior" },
     });
     assert.ok(staffRoleRow(ROLE_DUP1), "mention path stored exact id");
 
-    const dup = await post(`/g/${GUILD_A}/staff/role/add`, {
+    const dup = await post(`/g/${CID_A}/staff/role/add`, {
       cookie: cookieOf.admin,
       csrf: csrfOf[USER_ADMIN],
       fields: { role_id: "duplicate", level: "junior" },
@@ -370,7 +375,7 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
     assert.equal(dup.res.status, 400);
     assert.ok(!staffRoleRow(ROLE_DUP2), "ambiguous name NEVER guesses");
 
-    const everyone = await post(`/g/${GUILD_A}/staff/role/add`, {
+    const everyone = await post(`/g/${CID_A}/staff/role/add`, {
       cookie: cookieOf.admin,
       csrf: csrfOf[USER_ADMIN],
       fields: { role_id: `<@&${GUILD_A}>`, level: "junior" },
@@ -382,15 +387,15 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
   // ---- /users name search ---------------------------------------------------
 
   it("/users?q=name finds TRACKED members via cache; untracked stay hidden", async () => {
-    const hit = await req(`/g/${GUILD_A}/users?q=sporky`, cookieOf.staff);
+    const hit = await req(`/g/${CID_A}/users?q=sporky`, cookieOf.staff);
     assert.equal(hit.res.status, 200);
     assert.match(hit.body, new RegExp(USER_SPORE));
 
-    const ghost = await req(`/g/${GUILD_A}/users?q=ghosty`, cookieOf.staff);
+    const ghost = await req(`/g/${CID_A}/users?q=ghosty`, cookieOf.staff);
     assert.equal(ghost.res.status, 200);
     assert.doesNotMatch(ghost.body, new RegExp(USER_UNTRACKED)); // not tracked → not listed
 
-    const keep = await req(`/g/${GUILD_A}/users?q=${USER_KING}`, cookieOf.staff);
+    const keep = await req(`/g/${CID_A}/users?q=${USER_KING}`, cookieOf.staff);
     assert.match(keep.body, new RegExp(USER_KING)); // numeric path untouched
   });
 

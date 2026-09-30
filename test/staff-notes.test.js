@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { communityKey } = require("./helpers/env");
 
 describe("staff notes repository", () => {
   let api;
@@ -26,19 +27,19 @@ describe("staff notes repository", () => {
 
   it("creates notes with sequential per-guild note_number", () => {
     const a = api.createStaffNote({
-      guildId: "g1",
+      communityId: communityKey("g1"),
       userId: "u1",
       authorId: "staff1",
       content: "First note",
     });
     const b = api.createStaffNote({
-      guildId: "g1",
+      communityId: communityKey("g1"),
       userId: "u2",
       authorId: "staff1",
       content: "Second note",
     });
     const otherGuild = api.createStaffNote({
-      guildId: "g2",
+      communityId: communityKey("g2"),
       userId: "u1",
       authorId: "staff1",
       content: "Other guild",
@@ -56,7 +57,7 @@ describe("staff notes repository", () => {
     assert.throws(
       () =>
         api.createStaffNote({
-          guildId: "g1",
+          communityId: communityKey("g1"),
           userId: "u1",
           authorId: "staff1",
           content: "   ",
@@ -68,7 +69,7 @@ describe("staff notes repository", () => {
     assert.throws(
       () =>
         api.createStaffNote({
-          guildId: "g1",
+          communityId: communityKey("g1"),
           userId: "u1",
           authorId: "staff1",
           content: tooLong,
@@ -80,45 +81,45 @@ describe("staff notes repository", () => {
   it("lists by user, newest first; get by note_number", () => {
     const g = "g-list";
     api.createStaffNote({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "u1",
       authorId: "s",
       content: "older",
     });
     // tiny delay not needed — note_number order is enough with same created_at
     const n2 = api.createStaffNote({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "u1",
       authorId: "s",
       content: "newer",
     });
     api.createStaffNote({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "u2",
       authorId: "s",
       content: "other user",
     });
 
-    const list = api.listStaffNotes(g, "u1");
+    const list = api.listStaffNotes(communityKey(g), "u1");
     assert.equal(list.length, 2);
     assert.equal(list[0].content, "newer");
     assert.equal(list[1].content, "older");
 
-    const got = api.getStaffNote(g, n2.note_number);
+    const got = api.getStaffNote(communityKey(g), n2.note_number);
     assert.equal(got.content, "newer");
-    assert.equal(api.countStaffNotes(g, "u1"), 2);
+    assert.equal(api.countStaffNotes(communityKey(g), "u1"), 2);
   });
 
   it("updates content and soft-deletes", () => {
     const g = "g-edit";
     const note = api.createStaffNote({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "u1",
       authorId: "s1",
       content: "original",
     });
 
-    const updated = api.updateStaffNote(g, note.note_number, {
+    const updated = api.updateStaffNote(communityKey(g), note.note_number, {
       content: "revised",
       editedBy: "s2",
     });
@@ -126,20 +127,20 @@ describe("staff notes repository", () => {
     assert.equal(updated.edited_by, "s2");
     assert.ok(updated.edited_at != null);
 
-    const deleted = api.softDeleteStaffNote(g, note.note_number, "s3");
+    const deleted = api.softDeleteStaffNote(communityKey(g), note.note_number, "s3");
     assert.ok(deleted.deleted_at != null);
     assert.equal(deleted.deleted_by, "s3");
 
     // Active list hides soft-deleted
-    assert.equal(api.listStaffNotes(g, "u1").length, 0);
+    assert.equal(api.listStaffNotes(communityKey(g), "u1").length, 0);
     assert.equal(
-      api.listStaffNotes(g, "u1", { includeDeleted: true }).length,
+      api.listStaffNotes(communityKey(g), "u1", { includeDeleted: true }).length,
       1
     );
 
     // Cannot edit deleted
     assert.equal(
-      api.updateStaffNote(g, note.note_number, {
+      api.updateStaffNote(communityKey(g), note.note_number, {
         content: "nope",
         editedBy: "s1",
       }),
@@ -147,26 +148,26 @@ describe("staff notes repository", () => {
     );
 
     // Idempotent soft-delete
-    const again = api.softDeleteStaffNote(g, note.note_number, "s4");
+    const again = api.softDeleteStaffNote(communityKey(g), note.note_number, "s4");
     assert.equal(again.deleted_by, "s3");
   });
 
   it("lists recent guild-wide notes", () => {
     const g = "g-recent";
     api.createStaffNote({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "a",
       authorId: "s",
       content: "one",
     });
     api.createStaffNote({
-      guildId: g,
+      communityId: communityKey(g),
       userId: "b",
       authorId: "s",
       content: "two",
     });
-    const recent = api.listRecentStaffNotes(g, { limit: 10 });
+    const recent = api.listRecentStaffNotes(communityKey(g), { limit: 10 });
     assert.equal(recent.length, 2);
-    assert.equal(api.countStaffNotes(g), 2);
+    assert.equal(api.countStaffNotes(communityKey(g)), 2);
   });
 });

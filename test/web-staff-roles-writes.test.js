@@ -46,13 +46,23 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // Clearly-fake placeholder only (AGENTS.md: never realistic secrets).
 const SESSION_SECRET = "test-staffwrites-sentinel-secret-NOT-REAL-025";
 
+// DB at module load: loadDb() resets the src/ require cache, so every src
+// module required later (including inside before()) binds to the temp DB.
+const boot = loadDb();
+
 const GUILD_A = "720000000000000001"; // bot + every test user
 const GUILD_CROSS = "720000000000000002"; // bot guild the users are NOT in
+
+// Integer community ids (fluxer PR 2): routes and converted repo calls take
+// these; Discord-side seams (fake resolver, bot guild list, @everyone role-id
+// probes, guild caches) keep the external snowflakes.
+const CID_A = communityKey(GUILD_A);
+const CID_CROSS = communityKey(GUILD_CROSS);
 
 const USER_ADMIN = "820000000000000001"; // owner:true ⇒ tier admin
 const USER_STAFF = "820000000000000002"; // junior staff role ⇒ tier staff
@@ -207,22 +217,21 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
 
   /** The newest web-origin audit rows for GUILD_A (details parsed). */
   function webAuditRows() {
-    return api.listAdminAudit(GUILD_A, { origin: "web", limit: 100 }).map((r) => ({
+    return api.listAdminAudit(CID_A, { origin: "web", limit: 100 }).map((r) => ({
       ...r,
       details: r.details_json ? JSON.parse(r.details_json) : null,
     }));
   }
   const findRow = (action) => webAuditRows().find((r) => r.action === action) || null;
-  const webAuditCount = () => api.countAdminAudit(GUILD_A, { origin: "web" });
+  const webAuditCount = () => api.countAdminAudit(CID_A, { origin: "web" });
 
   before(async () => {
     savedEnv = ENV_KEYS.reduce((acc, k) => {
       acc[k] = process.env[k];
       return acc;
     }, {});
-    const loaded = loadDb();
-    api = loaded.api;
-    tmpDir = loaded.tmpDir;
+    api = boot.api;
+    tmpDir = boot.tmpDir;
     process.env.SESSION_SECRET = SESSION_SECRET;
     for (const k of ENV_KEYS.slice(3)) delete process.env[k];
 
@@ -232,8 +241,8 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
     csrfMod = require("../src/web/middleware/csrf");
 
     // Tier-resolution roles ONLY (kept out of every mutation subject below).
-    api.addStaffRole(GUILD_A, ROLE_JUNIOR_TIER, "junior");
-    api.addStaffRole(GUILD_A, ROLE_SENIOR_TIER, "senior");
+    api.addStaffRole(CID_A, ROLE_JUNIOR_TIER, "junior");
+    api.addStaffRole(CID_A, ROLE_SENIOR_TIER, "senior");
 
     mkSession("admin", USER_ADMIN);
     mkSession("staff", USER_STAFF);
@@ -299,7 +308,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         "/staff/levelrole/remove",
       ]) {
         for (const method of ["PUT", "PATCH", "DELETE"]) {
-          const res = await fetch(`${base}/g/${GUILD_A}${sub}`, {
+          const res = await fetch(`${base}/g/${CID_A}${sub}`, {
             method,
             headers: { cookie: cookieOf.admin },
           });
@@ -317,7 +326,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         // /staff/ path.
         "/staff/sync-permissions",
       ]) {
-        const res = await fetch(`${base}/g/${GUILD_A}${path}`, {
+        const res = await fetch(`${base}/g/${CID_A}${path}`, {
           method: "POST",
           headers: { cookie: cookieOf.admin },
         });
@@ -331,7 +340,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
   // 2. Tier matrix (§8.6) — cross-guild 404 before tier 403, anon 302
   // -------------------------------------------------------------------------
 
-  const ROLE_ADD = "/g/" + GUILD_A + "/staff/role/add";
+  const ROLE_ADD = "/g/" + CID_A + "/staff/role/add";
 
   describe("tier matrix — POST role add (ADMIN tier)", () => {
     it("anonymous ⇒ 302 to /auth/login?guild=…, empty body", async () => {
@@ -339,7 +348,8 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_NEW, level: "junior" }, // no _csrf: anon passes CSRF, guildScope answers
       });
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      // integer community id ⇒ bare login target (URL_ID_RE rejects short ids)
+      assert.equal(res.headers.get("location"), "/auth/login");
       assert.equal(body, "");
     });
 
@@ -353,7 +363,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
     });
 
     it("cross-guild probe (valid CSRF) ⇒ the SAME plain 404 bytes", async () => {
-      const cross = await post(`/g/${GUILD_CROSS}/staff/role/add`, {
+      const cross = await post(`/g/${CID_CROSS}/staff/role/add`, {
         cookie: cookieOf.staff,
         fields: { role_id: ROLE_NEW, level: "junior", _csrf: csrfOf.staff },
       });
@@ -378,21 +388,21 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
       });
       assert.equal(res.status, 403);
       assert.equal(body, "Forbidden");
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW), null, "no db write");
+      assert.equal(api.getStaffRole(CID_A, ROLE_NEW), null, "no db write");
       assert.equal(webAuditCount(), before, "no audit row");
     });
 
     it("senior staff ⇒ 403 on all three role routes (add/remove/setlevel)", async () => {
       const before = webAuditCount();
       for (const sub of ["add", "remove", "setlevel"]) {
-        const { res, body } = await post(`/g/${GUILD_A}/staff/role/${sub}`, {
+        const { res, body } = await post(`/g/${CID_A}/staff/role/${sub}`, {
           cookie: cookieOf.senior,
           fields: { role_id: ROLE_NEW, level: "senior", _csrf: csrfOf.senior },
         });
         assert.equal(res.status, 403, `senior POST role/${sub}`);
         assert.equal(body, "Forbidden");
       }
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW), null);
+      assert.equal(api.getStaffRole(CID_A, ROLE_NEW), null);
       assert.equal(webAuditCount(), before);
     });
 
@@ -414,21 +424,21 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
     // security source of truth" — AGENTS.md §4). The web therefore mounts
     // requireTier("staff"): junior staff MUST be allowed.
     it("junior staff ⇒ 302 (isStaff parity — staff tier, not admin)", async () => {
-      const { res } = await post(`/g/${GUILD_A}/staff/levelrole/set`, {
+      const { res } = await post(`/g/${CID_A}/staff/levelrole/set`, {
         cookie: cookieOf.staff,
         fields: { role_id: ROLE_MAPPED, level: "4", drop_days: "1", _csrf: csrfOf.staff },
       });
       assert.equal(res.status, 302);
-      const rows = api.listLevelRoles(GUILD_A);
+      const rows = api.listLevelRoles(CID_A);
       assert.ok(
         rows.some((r) => r.role_id === ROLE_MAPPED && r.level_required === 4),
         "staff-tier write landed"
       );
-      api.deleteLevelRole(GUILD_A, ROLE_MAPPED); // cleanup
+      api.deleteLevelRole(CID_A, ROLE_MAPPED); // cleanup
     });
 
     it("senior staff ⇒ 302 (staff tier ladder covers senior)", async () => {
-      const { res } = await post(`/g/${GUILD_A}/staff/levelrole/remove`, {
+      const { res } = await post(`/g/${CID_A}/staff/levelrole/remove`, {
         cookie: cookieOf.senior,
         fields: { role_id: ROLE_MAPPED, _csrf: csrfOf.senior },
       });
@@ -436,20 +446,20 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
     });
 
     it("plain member ⇒ 404 and anon ⇒ 302 (cross-cutting guildScope rules)", async () => {
-      const plain = await post(`/g/${GUILD_A}/staff/levelrole/set`, {
+      const plain = await post(`/g/${CID_A}/staff/levelrole/set`, {
         cookie: cookieOf.plain,
         fields: { role_id: ROLE_MAPPED, level: "1", drop_days: "0", _csrf: csrfOf.plain },
       });
       assert.equal(plain.res.status, 404);
-      const anon = await post(`/g/${GUILD_A}/staff/levelrole/set`, {
+      const anon = await post(`/g/${CID_A}/staff/levelrole/set`, {
         fields: { role_id: ROLE_MAPPED, level: "1", drop_days: "0" },
       });
       assert.equal(anon.res.status, 302);
-      assert.equal(anon.res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      assert.equal(anon.res.headers.get("location"), "/auth/login");
     });
 
     it("cross-guild ⇒ 404 for the staff cookie too", async () => {
-      const { res } = await post(`/g/${GUILD_CROSS}/staff/levelrole/remove`, {
+      const { res } = await post(`/g/${CID_CROSS}/staff/levelrole/remove`, {
         cookie: cookieOf.staff,
         fields: { role_id: ROLE_MAPPED, _csrf: csrfOf.staff },
       });
@@ -473,7 +483,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
       });
       assert.equal(res.status, 403);
       assert.equal(body, "Forbidden");
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW).level, "junior", "untouched");
+      assert.equal(api.getStaffRole(CID_A, ROLE_NEW).level, "junior", "untouched");
       assert.equal(webAuditCount(), before);
     });
 
@@ -484,7 +494,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_NEW, level: "senior", _csrf: "f".repeat(64) },
       });
       assert.equal(bad.res.status, 403);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW).level, "junior", "untouched");
+      assert.equal(api.getStaffRole(CID_A, ROLE_NEW).level, "junior", "untouched");
       assert.equal(webAuditCount(), before);
 
       const good = await post(ROLE_ADD, {
@@ -492,17 +502,17 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_NEW, level: "senior", _csrf: csrfOf.admin },
       });
       assert.equal(good.res.status, 302);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW).level, "senior", "then applied");
+      assert.equal(api.getStaffRole(CID_A, ROLE_NEW).level, "senior", "then applied");
     });
 
     it("X-CSRF-Token header instead of the form field works (htmx path)", async () => {
-      const { res } = await post(`/g/${GUILD_A}/staff/role/remove`, {
+      const { res } = await post(`/g/${CID_A}/staff/role/remove`, {
         cookie: cookieOf.admin,
         headers: { "X-CSRF-Token": csrfOf.admin },
         fields: { role_id: ROLE_NEW },
       });
       assert.equal(res.status, 302);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW), null, "row removed");
+      assert.equal(api.getStaffRole(CID_A, ROLE_NEW), null, "row removed");
     });
   });
 
@@ -517,11 +527,11 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_NEW, level: "junior", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/g/${GUILD_A}/staff`);
+      assert.equal(res.headers.get("location"), `/g/${CID_A}/staff`);
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal(body, "");
 
-      const row = api.getStaffRole(GUILD_A, ROLE_NEW);
+      const row = api.getStaffRole(CID_A, ROLE_NEW);
       assert.ok(row, "staff_roles row written via the slash helper");
       assert.equal(row.level, "junior");
 
@@ -529,14 +539,14 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
       assert.ok(audit, "audit row written");
       assert.equal(audit.origin, "web");
       assert.equal(audit.actor_user_id, USER_ADMIN);
-      assert.equal(audit.guild_id, GUILD_A);
+      assert.equal(audit.community_id, CID_A);
       assert.equal(audit.target_type, "role");
       assert.equal(audit.target_id, ROLE_NEW);
       assert.deepEqual(audit.details, { level: "junior", previous_level: null });
     });
 
     it("GET read-back: the new row renders on the staff page", async () => {
-      const { body } = await get(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+      const { body } = await get(`/g/${CID_A}/staff`, { cookie: cookieOf.admin });
       assert.ok(body.includes(`<code class="role-id">${ROLE_NEW}</code>`));
       assert.ok(body.includes("staff-level-junior"));
     });
@@ -547,7 +557,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_NEW, level: "senior", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW).level, "senior");
+      assert.equal(api.getStaffRole(CID_A, ROLE_NEW).level, "senior");
       const audits = webAuditRows().filter((r) => r.action === "staff.role_add");
       assert.equal(audits[0].details.previous_level, "junior", "before/after honest");
       assert.equal(audits[0].details.level, "senior");
@@ -556,24 +566,24 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
 
   describe("POST role setlevel — slash rejection parity", () => {
     before(() => {
-      api.addStaffRole(GUILD_A, ROLE_UPSERT, "junior");
+      api.addStaffRole(CID_A, ROLE_UPSERT, "junior");
     });
 
     it("unknown role ⇒ 400, no write, no audit (slash: 'not a staff role')", async () => {
       const before = webAuditCount();
-      const { res, body } = await post(`/g/${GUILD_A}/staff/role/setlevel`, {
+      const { res, body } = await post(`/g/${CID_A}/staff/role/setlevel`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_UNCONFIGURED, level: "senior", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 400);
       assert.match(body, /not a staff role/i);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_UNCONFIGURED), null);
+      assert.equal(api.getStaffRole(CID_A, ROLE_UNCONFIGURED), null);
       assert.equal(webAuditCount(), before);
     });
 
     it("same level ⇒ 400 (no silent no-op), no write, no audit", async () => {
       const before = webAuditCount();
-      const { res, body } = await post(`/g/${GUILD_A}/staff/role/setlevel`, {
+      const { res, body } = await post(`/g/${CID_A}/staff/role/setlevel`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_UPSERT, level: "junior", _csrf: csrfOf.admin },
       });
@@ -583,13 +593,13 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
     });
 
     it("happy: junior→senior writes the row + staff.role_setlevel audit", async () => {
-      const { res } = await post(`/g/${GUILD_A}/staff/role/setlevel`, {
+      const { res } = await post(`/g/${CID_A}/staff/role/setlevel`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_UPSERT, level: "senior", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/g/${GUILD_A}/staff`);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_UPSERT).level, "senior");
+      assert.equal(res.headers.get("location"), `/g/${CID_A}/staff`);
+      assert.equal(api.getStaffRole(CID_A, ROLE_UPSERT).level, "senior");
       const audit = findRow("staff.role_setlevel");
       assert.ok(audit);
       assert.deepEqual(audit.details, { previous_level: "junior", level: "senior" });
@@ -601,7 +611,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
   describe("POST role remove — audit ONLY when a row was deleted (slash parity)", () => {
     it("unconfigured role ⇒ 400, no audit", async () => {
       const before = webAuditCount();
-      const { res, body } = await post(`/g/${GUILD_A}/staff/role/remove`, {
+      const { res, body } = await post(`/g/${CID_A}/staff/role/remove`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_UNCONFIGURED, _csrf: csrfOf.admin },
       });
@@ -611,12 +621,12 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
     });
 
     it("happy: row gone + staff.role_remove audit with previous_level", async () => {
-      const { res } = await post(`/g/${GUILD_A}/staff/role/remove`, {
+      const { res } = await post(`/g/${CID_A}/staff/role/remove`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_UPSERT, _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_UPSERT), null);
+      assert.equal(api.getStaffRole(CID_A, ROLE_UPSERT), null);
       const audit = findRow("staff.role_remove");
       assert.ok(audit);
       assert.deepEqual(audit.details, { previous_level: "senior" });
@@ -633,7 +643,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
       // Isolation: drop whatever earlier suites left on ROLE_NEW so every
       // rejection below can pin "row STILL absent" (direct helper — writes
       // no audit row of its own).
-      api.removeStaffRole(GUILD_A, ROLE_NEW);
+      api.removeStaffRole(CID_A, ROLE_NEW);
     });
 
     const rejects = [
@@ -658,7 +668,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         assert.equal(res.status, 400, label);
         assert.match(body, pattern);
         assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
-        assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW), null);
+        assert.equal(api.getStaffRole(CID_A, ROLE_NEW), null);
         assert.equal(webAuditCount(), before);
       });
     }
@@ -669,8 +679,8 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_NEW, level: "jr", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_NEW).level, "junior");
-      api.removeStaffRole(GUILD_A, ROLE_NEW); // cleanup (its own test owns no audit)
+      assert.equal(api.getStaffRole(CID_A, ROLE_NEW).level, "junior");
+      api.removeStaffRole(CID_A, ROLE_NEW); // cleanup (its own test owns no audit)
     });
 
     it("levelrole set: fractional / negative / missing numbers ⇒ 400, no row", async () => {
@@ -682,7 +692,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         { role_id: ROLE_MAPPED, level: "5" }, // drop_days missing (slash: required)
         { role_id: GUILD_A, level: "5", drop_days: "1" }, // @everyone
       ]) {
-        const { res, body } = await post(`/g/${GUILD_A}/staff/levelrole/set`, {
+        const { res, body } = await post(`/g/${CID_A}/staff/levelrole/set`, {
           cookie: cookieOf.admin,
           fields: { ...fields, _csrf: csrfOf.admin },
         });
@@ -695,7 +705,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         );
         assert.ok(!body.includes(ROLE_MAPPED), "role id never echoed");
       }
-      assert.equal(api.listLevelRoles(GUILD_A).find((r) => r.role_id === ROLE_MAPPED), undefined);
+      assert.equal(api.listLevelRoles(CID_A).find((r) => r.role_id === ROLE_MAPPED), undefined);
       assert.equal(webAuditCount(), before);
     });
   });
@@ -736,7 +746,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
       });
       assert.equal(res.status, 400);
       assert.match(body, /does not exist in this guild/i);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_OUT_OF_CACHE), null);
+      assert.equal(api.getStaffRole(CID_A, ROLE_OUT_OF_CACHE), null);
       assert.equal(webAuditCount(), before);
     });
 
@@ -749,7 +759,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_IN_CACHE, level: "junior", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_IN_CACHE).level, "junior");
+      assert.equal(api.getStaffRole(CID_A, ROLE_IN_CACHE).level, "junior");
     });
 
     it("no client / guild not cached ⇒ check SKIPPED (slash parity, never blocks)", async () => {
@@ -759,7 +769,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_OUT_OF_CACHE, level: "senior", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(api.getStaffRole(GUILD_A, ROLE_OUT_OF_CACHE).level, "senior");
+      assert.equal(api.getStaffRole(CID_A, ROLE_OUT_OF_CACHE).level, "senior");
     });
 
     it("level-role set: bot BELOW the target role ⇒ 400 with the hierarchy warning", async () => {
@@ -771,13 +781,13 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
           }),
       });
       const before = webAuditCount();
-      const { res, body } = await post(`/g/${GUILD_A}/staff/levelrole/set`, {
+      const { res, body } = await post(`/g/${CID_A}/staff/levelrole/set`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_IN_CACHE, level: "5", drop_days: "2", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 400);
       assert.match(body, /bot's highest role is below/i, "sync.js warning surfaced, not silent");
-      assert.equal(api.listLevelRoles(GUILD_A).find((r) => r.role_id === ROLE_IN_CACHE), undefined);
+      assert.equal(api.listLevelRoles(CID_A).find((r) => r.role_id === ROLE_IN_CACHE), undefined);
       assert.equal(webAuditCount(), before);
     });
 
@@ -789,15 +799,15 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
             botHighestPosition: 12,
           }),
       });
-      const { res } = await post(`/g/${GUILD_A}/staff/levelrole/set`, {
+      const { res } = await post(`/g/${CID_A}/staff/levelrole/set`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_IN_CACHE, level: "5", drop_days: "2", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
       assert.ok(
-        api.listLevelRoles(GUILD_A).some((r) => r.role_id === ROLE_IN_CACHE)
+        api.listLevelRoles(CID_A).some((r) => r.role_id === ROLE_IN_CACHE)
       );
-      api.deleteLevelRole(GUILD_A, ROLE_IN_CACHE); // cleanup
+      api.deleteLevelRole(CID_A, ROLE_IN_CACHE); // cleanup
     });
 
     it("staff-role ADD ignores the hierarchy (staff rows are never role-assigned)", async () => {
@@ -825,13 +835,13 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
   describe("level-role mapping lifecycle", () => {
     it("set ⇒ row + level_roles.set audit with exact detail shape", async () => {
       await mountApp();
-      const { res } = await post(`/g/${GUILD_A}/staff/levelrole/set`, {
+      const { res } = await post(`/g/${CID_A}/staff/levelrole/set`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_MAPPED, level: "7", drop_days: "3", _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/g/${GUILD_A}/staff`);
-      const row = api.listLevelRoles(GUILD_A).find((r) => r.role_id === ROLE_MAPPED);
+      assert.equal(res.headers.get("location"), `/g/${CID_A}/staff`);
+      const row = api.listLevelRoles(CID_A).find((r) => r.role_id === ROLE_MAPPED);
       assert.deepEqual(
         { level: row.level_required, drop: row.drop_grace_days },
         { level: 7, drop: 3 }
@@ -846,19 +856,19 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
     });
 
     it("GET read-back: the mapping renders on the staff page", async () => {
-      const { body } = await get(`/g/${GUILD_A}/staff`, { cookie: cookieOf.admin });
+      const { body } = await get(`/g/${CID_A}/staff`, { cookie: cookieOf.admin });
       assert.ok(body.includes(`<code class="role-id">${ROLE_MAPPED}</code>`));
       assert.ok(body.includes("Level required"));
     });
 
     it("remove ⇒ row gone + level_roles.remove audit (NO details — slash parity)", async () => {
-      const { res } = await post(`/g/${GUILD_A}/staff/levelrole/remove`, {
+      const { res } = await post(`/g/${CID_A}/staff/levelrole/remove`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_MAPPED, _csrf: csrfOf.admin },
       });
       assert.equal(res.status, 302);
       assert.equal(
-        api.listLevelRoles(GUILD_A).find((r) => r.role_id === ROLE_MAPPED),
+        api.listLevelRoles(CID_A).find((r) => r.role_id === ROLE_MAPPED),
         undefined
       );
       const audit = webAuditRows().find(
@@ -869,7 +879,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
     });
 
     it("remove of an UNMAPPED role still deletes + audits (unconditional slash parity)", async () => {
-      const { res } = await post(`/g/${GUILD_A}/staff/levelrole/remove`, {
+      const { res } = await post(`/g/${CID_A}/staff/levelrole/remove`, {
         cookie: cookieOf.admin,
         fields: { role_id: ROLE_UNCONFIGURED, _csrf: csrfOf.admin },
       });
@@ -890,7 +900,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
   describe("slash↔web audit vocabulary", () => {
     it("every web mutation reuses the EXACT slash action strings", () => {
       const actions = new Set(
-        api.listAdminAudit(GUILD_A, { origin: "web", limit: 100 }).map((r) => r.action)
+        api.listAdminAudit(CID_A, { origin: "web", limit: 100 }).map((r) => r.action)
       );
       for (const action of [
         "staff.role_add", // src/features/staffRoles/index.js handleRoleAdd
@@ -911,7 +921,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         "level_roles.set",
         "level_roles.remove",
       ]);
-      for (const row of api.listAdminAudit(GUILD_A, { origin: "web", limit: 100 })) {
+      for (const row of api.listAdminAudit(CID_A, { origin: "web", limit: 100 })) {
         assert.ok(KNOWN.has(row.action), `unexpected web action: ${row.action}`);
       }
     });

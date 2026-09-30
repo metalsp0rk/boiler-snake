@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { communityKey } = require("./helpers/env");
 
 describe("admin_audit (migration 024 + repo helpers)", () => {
   let api;
@@ -43,7 +44,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
           "actor_user_id",
           "created_at",
           "details_json",
-          "guild_id",
+          "community_id",
           "id",
           "origin",
           "target_id",
@@ -52,7 +53,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
       );
     });
 
-    it("creates idx_admin_audit_guild_created on (guild_id, created_at)", () => {
+    it("creates idx_admin_audit_guild_created on (community_id, created_at)", () => {
       const idx = api.db
         .prepare(
           `SELECT name FROM sqlite_master WHERE type='index' AND name='idx_admin_audit_guild_created'`
@@ -63,7 +64,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
         .prepare(`PRAGMA index_info('idx_admin_audit_guild_created')`)
         .all()
         .map((c) => c.name);
-      assert.deepEqual(cols, ["guild_id", "created_at"]);
+      assert.deepEqual(cols, ["community_id", "created_at"]);
     });
 
     it("re-running all migrations (incl. 024) on an existing DB stays safe", () => {
@@ -75,7 +76,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
   describe("insert + round-trip", () => {
     it("insertAdminAudit round-trips all fields incl. details_json", () => {
       const row = api.insertAdminAudit({
-        guildId: "g-audit-rt",
+        communityId: communityKey("g-audit-rt"),
         actorUserId: "u-actor",
         origin: "Web", // normalized to lowercase
         action: "settings.command_channel.add",
@@ -85,7 +86,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
         createdAt: 1700000000000,
       });
       assert.ok(Number.isInteger(row.id));
-      assert.equal(row.guild_id, "g-audit-rt");
+      assert.equal(row.community_id, communityKey("g-audit-rt"));
       assert.equal(row.actor_user_id, "u-actor");
       assert.equal(row.origin, "web");
       assert.equal(row.action, "settings.command_channel.add");
@@ -101,7 +102,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
 
     it("details default to NULL; already-JSON strings are stored as-is", () => {
       const bare = api.insertAdminAudit({
-        guildId: "g-audit-d",
+        communityId: communityKey("g-audit-d"),
         origin: "system",
         action: "sessions.prune",
       });
@@ -109,7 +110,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
       assert.equal(bare.actor_user_id, null, "system rows may omit the actor");
 
       const asText = api.insertAdminAudit({
-        guildId: "g-audit-d",
+        communityId: communityKey("g-audit-d"),
         origin: "system",
         action: "x",
         details: '{"ok":true}',
@@ -120,7 +121,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
     it("inserted rows get created_at from the clock when not supplied", () => {
       const before = Date.now();
       const row = api.insertAdminAudit({
-        guildId: "g-audit-now",
+        communityId: communityKey("g-audit-now"),
         origin: "slash",
         actorUserId: "u1",
         action: "warn.issue",
@@ -143,22 +144,23 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
       assert.throws(
         () =>
           api.insertAdminAudit({
-            guildId: "g-audit-bad-origin",
+            communityId: communityKey("g-audit-bad-origin"),
             origin: "cli",
             action: "a.b",
           }),
         (err) => err.code === "INVALID_ORIGIN"
       );
-      assert.equal(api.countAdminAudit("g-audit-bad-origin"), 0);
+      assert.equal(api.countAdminAudit(communityKey("g-audit-bad-origin")), 0);
     });
 
     it("insert rejects missing guild / action", () => {
+      // PR 2: a missing community id is a programmer error — assertCommunityId.
       assert.throws(
         () => api.insertAdminAudit({ origin: "web", action: "a.b" }),
-        (err) => err.code === "INVALID_GUILD"
+        /community id required, got undefined/
       );
       assert.throws(
-        () => api.insertAdminAudit({ guildId: "g-audit-x", origin: "web" }),
+        () => api.insertAdminAudit({ communityId: communityKey("g-audit-x"), origin: "web" }),
         (err) => err.code === "INVALID_ACTION"
       );
     });
@@ -169,7 +171,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
       assert.throws(
         () =>
           api.insertAdminAudit({
-            guildId: "g-audit-det",
+            communityId: communityKey("g-audit-det"),
             origin: "web",
             actorUserId: "u1",
             action: "a.b",
@@ -180,7 +182,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
       assert.throws(
         () =>
           api.insertAdminAudit({
-            guildId: "g-audit-det",
+            communityId: communityKey("g-audit-det"),
             origin: "web",
             actorUserId: "u1",
             action: "a.b",
@@ -191,7 +193,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
       assert.throws(
         () =>
           api.insertAdminAudit({
-            guildId: "g-audit-det",
+            communityId: communityKey("g-audit-det"),
             origin: "web",
             actorUserId: "u1",
             action: "a.b",
@@ -199,7 +201,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
           }),
         (err) => err.code === "INVALID_DETAILS"
       );
-      assert.equal(api.countAdminAudit("g-audit-det"), 0);
+      assert.equal(api.countAdminAudit(communityKey("g-audit-det")), 0);
     });
 
     it("schema CHECK constraint also rejects bad origins at the DB level", () => {
@@ -222,7 +224,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
       // 105 rows in A, 3 rows in B (explicit distinct created_at).
       for (let i = 1; i <= 105; i++) {
         api.insertAdminAudit({
-          guildId: GUILD_A,
+          communityId: communityKey(GUILD_A),
           actorUserId: "u-a",
           origin: i % 2 === 0 ? "web" : "slash",
           action: `act.${i}`,
@@ -232,7 +234,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
       }
       for (let i = 1; i <= 3; i++) {
         api.insertAdminAudit({
-          guildId: GUILD_B,
+          communityId: communityKey(GUILD_B),
           origin: "system",
           action: `sys.${i}`,
           createdAt: 2_000_000 + i,
@@ -241,35 +243,36 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
     });
 
     it("list is guild-scoped — no cross-guild leakage", () => {
-      const a = api.listAdminAudit(GUILD_A, { limit: 100 });
+      const a = api.listAdminAudit(communityKey(GUILD_A), { limit: 100 });
       assert.ok(a.length > 0);
-      assert.ok(a.every((r) => r.guild_id === GUILD_A));
+      assert.ok(a.every((r) => r.community_id === communityKey(GUILD_A)));
 
-      const b = api.listAdminAudit(GUILD_B);
+      const b = api.listAdminAudit(communityKey(GUILD_B));
       assert.equal(b.length, 3);
-      assert.ok(b.every((r) => r.guild_id === GUILD_B));
+      assert.ok(b.every((r) => r.community_id === communityKey(GUILD_B)));
 
-      assert.equal(api.countAdminAudit(GUILD_A), 105);
-      assert.equal(api.countAdminAudit(GUILD_B), 3);
+      assert.equal(api.countAdminAudit(communityKey(GUILD_A)), 105);
+      assert.equal(api.countAdminAudit(communityKey(GUILD_B)), 3);
     });
 
-    it("list with missing/blank guild returns empty (never unscoped)", () => {
-      assert.deepEqual(api.listAdminAudit(null), []);
-      assert.deepEqual(api.listAdminAudit("  "), []);
-      assert.equal(api.countAdminAudit(""), 0);
+    it("list rejects missing/blank community ids (never unscoped)", () => {
+      // PR 2: a non-integer community id is a programmer error and throws.
+      assert.throws(() => api.listAdminAudit(null), /community id required/);
+      assert.throws(() => api.listAdminAudit("  "), /community id required/);
+      assert.throws(() => api.countAdminAudit(""), /community id required/);
     });
 
     it("hard-caps LIMIT at 100 even when asked for more (§8.6)", () => {
       assert.equal(api.MAX_AUDIT_LIST_LIMIT, 100);
-      const over = api.listAdminAudit(GUILD_A, { limit: 5000 });
+      const over = api.listAdminAudit(communityKey(GUILD_A), { limit: 5000 });
       assert.equal(over.length, 100);
-      const defaultPage = api.listAdminAudit(GUILD_A);
+      const defaultPage = api.listAdminAudit(communityKey(GUILD_A));
       assert.equal(defaultPage.length, 25);
     });
 
     it("offset paging is newest-first and non-overlapping", () => {
-      const page1 = api.listAdminAudit(GUILD_A, { limit: 100, offset: 0 });
-      const page2 = api.listAdminAudit(GUILD_A, { limit: 100, offset: 100 });
+      const page1 = api.listAdminAudit(communityKey(GUILD_A), { limit: 100, offset: 0 });
+      const page2 = api.listAdminAudit(communityKey(GUILD_A), { limit: 100, offset: 100 });
       assert.equal(page1.length, 100);
       assert.equal(page2.length, 5);
       const ids = new Set([...page1, ...page2].map((r) => r.id));
@@ -285,23 +288,23 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
     });
 
     it("origin filter narrows the page and count", () => {
-      const webOnly = api.listAdminAudit(GUILD_A, { limit: 100, origin: "web" });
+      const webOnly = api.listAdminAudit(communityKey(GUILD_A), { limit: 100, origin: "web" });
       assert.ok(webOnly.length > 0 && webOnly.length <= 53);
       assert.ok(webOnly.every((r) => r.origin === "web"));
       assert.equal(
         webOnly.length,
-        api.countAdminAudit(GUILD_A, { origin: "web" })
+        api.countAdminAudit(communityKey(GUILD_A), { origin: "web" })
       );
       assert.throws(
-        () => api.listAdminAudit(GUILD_A, { origin: "nope" }),
+        () => api.listAdminAudit(communityKey(GUILD_A), { origin: "nope" }),
         (err) => err.code === "INVALID_ORIGIN"
       );
     });
 
     it("before-cursor paging keeps pages bounded and ordered", () => {
-      const first = api.listAdminAudit(GUILD_A, { limit: 10 });
+      const first = api.listAdminAudit(communityKey(GUILD_A), { limit: 10 });
       assert.equal(first.length, 10);
-      const next = api.listAdminAudit(GUILD_A, {
+      const next = api.listAdminAudit(communityKey(GUILD_A), {
         limit: 10,
         before: first[first.length - 1].created_at,
       });
@@ -312,7 +315,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
     });
 
     it("negative/absurd offset or limit clamp safely", () => {
-      const rows = api.listAdminAudit(GUILD_A, { limit: -5, offset: -10 });
+      const rows = api.listAdminAudit(communityKey(GUILD_A), { limit: -5, offset: -10 });
       assert.equal(rows.length, 1, "limit clamps up to 1, offset clamps to 0");
     });
   });

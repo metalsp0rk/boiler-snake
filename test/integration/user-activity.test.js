@@ -19,7 +19,7 @@ describe("integration: user activity", () => {
 
   before(async () => {
     env = await createIntegrationEnv();
-    env.db.updateGuildSettings(env.guild.id, {
+    env.db.updateGuildSettings(env.communityId, {
       msg_xp: 5,
       msg_cooldown_sec: 60,
     });
@@ -38,27 +38,27 @@ describe("integration: user activity", () => {
       channel: env.channels.general,
     });
 
-    const rows = env.db.sumByChannel(env.guild.id, uid, {});
+    const rows = env.db.sumByChannel(env.communityId, uid, {});
     const general = rows.find((r) => r.channel_id === IDS.channelGeneral);
     assert.ok(general);
     assert.ok(general.count >= 2);
 
     // XP only once due to cooldown
-    assert.equal(env.db.getXp(env.guild.id, uid), 5);
+    assert.equal(env.db.getXp(env.communityId, uid), 5);
   });
 
   it("does not count bots or honeypot channels", async () => {
-    env.db.addHoneypotChannel(env.guild.id, IDS.channelHoneypot);
-    const before = env.db.totalPosts(env.guild.id, IDS.bot, {});
+    env.db.addHoneypotChannel(env.communityId, IDS.channelHoneypot);
+    const before = env.db.totalPosts(env.communityId, IDS.bot, {});
 
     await env.emitMessage({
       author: env.users.botUser,
       channel: env.channels.general,
     });
-    assert.equal(env.db.totalPosts(env.guild.id, IDS.bot, {}), before);
+    assert.equal(env.db.totalPosts(env.communityId, IDS.bot, {}), before);
 
     // honeypot path bans/deletes — still should not leave activity for member on hp
-    const memBefore = env.db.totalPosts(env.guild.id, IDS.member2, {});
+    const memBefore = env.db.totalPosts(env.communityId, IDS.member2, {});
     await env.emitMessage({
       author: env.users.member2User,
       channel: env.channels.honeypot,
@@ -66,11 +66,11 @@ describe("integration: user activity", () => {
     });
     // may or may not record before honeypot handler depending on order — pipeline
     // records AFTER honeypot return, so honeypot messages are not counted
-    assert.equal(env.db.totalPosts(env.guild.id, IDS.member2, {}), memBefore);
+    assert.equal(env.db.totalPosts(env.communityId, IDS.member2, {}), memBefore);
   });
 
   it("ignored channel is not counted", async () => {
-    env.db.addActivityIgnore(env.guild.id, IDS.channelCmds, "channel");
+    env.db.addActivityIgnore(env.communityId, IDS.channelCmds, "channel");
     const uid = "user-act-ignore";
     const user = env.createUser({ id: uid, username: "ig" });
     const mem = env.createMember({
@@ -85,14 +85,14 @@ describe("integration: user activity", () => {
       channel: env.channels.cmds,
       member: mem,
     });
-    assert.equal(env.db.totalPosts(env.guild.id, uid, {}), 0);
+    assert.equal(env.db.totalPosts(env.communityId, uid, {}), 0);
 
     await env.emitMessage({
       author: user,
       channel: env.channels.general,
       member: mem,
     });
-    assert.ok(env.db.totalPosts(env.guild.id, uid, {}) >= 1);
+    assert.ok(env.db.totalPosts(env.communityId, uid, {}) >= 1);
   });
 
   it("/activityconfig ignore list and status (admin)", async () => {
@@ -169,7 +169,7 @@ describe("integration: user activity", () => {
     // pipeline's (createIntegrationEnv resets the src require cache).
     const { whenBackfillSettledForTests } = require("../../src/features/userActivity/backfill");
     await whenBackfillSettledForTests(env.guild.id);
-    const settings = env.db.getGuildActivitySettings(env.guild.id);
+    const settings = env.db.getGuildActivitySettings(env.communityId);
     assert.ok(settings);
     assert.ok(
       ["running", "done", "partial", "failed", "none", "cancelled"].includes(
@@ -198,9 +198,9 @@ describe("integration: user activity", () => {
 
     // Prior tests may have marked channels guild-complete (empty history) — clear
     env.db.db
-      .prepare(`DELETE FROM guild_channel_backfill_cursor WHERE guild_id=?`)
-      .run(env.guild.id);
-    env.db.patchGuildActivitySettings(env.guild.id, {
+      .prepare(`DELETE FROM guild_channel_backfill_cursor WHERE community_id=?`)
+      .run(env.communityId);
+    env.db.patchGuildActivitySettings(env.communityId, {
       guild_backfill_status: "none",
       guild_backfill_error: null,
     });
@@ -262,7 +262,7 @@ describe("integration: user activity", () => {
       // the old 2500ms "current page + ~1.1s delay" sleep.
       releaseFirstFetch();
       await whenBackfillSettledForTests(env.guild.id);
-      const settings = env.db.getGuildActivitySettings(env.guild.id);
+      const settings = env.db.getGuildActivitySettings(env.communityId);
       assert.equal(settings?.guild_backfill_status, "cancelled");
     } finally {
       releaseFirstFetch(); // never leave a gated fake hanging
@@ -272,9 +272,9 @@ describe("integration: user activity", () => {
 
   it("Activity button requires senior staff; admin can open", async () => {
     // seed some counts
-    env.db.ensureGuildActivitySettings(env.guild.id);
+    env.db.ensureGuildActivitySettings(env.communityId);
     env.db.incrementDaily(
-      env.guild.id,
+      env.communityId,
       IDS.member,
       IDS.channelGeneral,
       env.db.utcDayKey(),
@@ -282,7 +282,7 @@ describe("integration: user activity", () => {
     );
 
     // junior staff role only
-    env.db.addStaffRole(env.guild.id, IDS.roleExempt, "junior");
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "junior");
     const juniorUser = env.createUser({
       id: "user-junior-act",
       username: "junior",

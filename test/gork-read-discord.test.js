@@ -108,7 +108,8 @@ function makeGuild({ id = GUILD, channels = [], members = [], me = { id: BOT } }
 
 const repoStub = (ticket = null) => ({
   calls: [],
-  getTicketByChannel(channelId) {
+  // Fluxer PR 2: repo is community-keyed — (communityId, channelId).
+  getTicketByChannel(communityId, channelId) {
     this.calls.push(channelId);
     return ticket;
   },

@@ -37,13 +37,18 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
 const { once } = require("node:events");
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 // Clearly-fake placeholders only (AGENTS.md: never realistic secrets).
 const SESSION_SECRET = "test-voice…cret";
 
 const GUILD_A = "730000000000000001"; // bot + every test user
 const GUILD_CROSS = "730000000000000002"; // bot guild the users are NOT in
+
+// Fluxer PR 2: integer communities.id for the data layer + /g/<id> route
+// identity (assigned in before() right after loadDb binds the temp DB).
+let CID_A;
+let CID_CROSS;
 
 const USER_ADMIN = "830000000000000001"; // owner:true ⇒ tier admin
 const USER_STAFF = "830000000000000002"; // junior staff role ⇒ tier staff
@@ -193,13 +198,17 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
     tmpDir = loaded.tmpDir;
     process.env.SESSION_SECRET = SESSION_SECRET;
 
+    // Map the Discord fixture ids to their integer community ids (PR 2).
+    CID_A = communityKey(GUILD_A);
+    CID_CROSS = communityKey(GUILD_CROSS);
+
     appMod = require("../src/web/app");
     voiceDataMod = require("../src/web/data/voiceData");
     sessionPolicy = require("../src/web/auth/sessions");
     tokens = require("../src/web/auth/tokens");
 
-    api.addStaffRole(GUILD_A, "role-junior-staff", "junior");
-    api.addStaffRole(GUILD_A, "role-senior-staff", "senior");
+    api.addStaffRole(CID_A, "role-junior-staff", "junior");
+    api.addStaffRole(CID_A, "role-senior-staff", "senior");
 
     cookieOf.admin = `web_session=${mkSession(USER_ADMIN)}`;
     cookieOf.staff = `web_session=${mkSession(USER_STAFF)}`;
@@ -207,14 +216,14 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
     cookieOf.plain = `web_session=${mkSession(USER_PLAIN)}`;
 
     // Voice-XP config override (slash parity: /setxp voice).
-    api.updateGuildSettings(GUILD_A, { voice_xp_per_min: 3 });
+    api.updateGuildSettings(CID_A, { voice_xp_per_min: 3 });
 
     // Seed CURRENT voice sessions (voice_sessions = upsert-on-join,
     // delete-on-leave): two users in GUILD_A, one marker row in GUILD_CROSS
     // that must NEVER surface on the GUILD_A page.
-    api.upsertVoiceSession(GUILD_A, VOICE_USER_1, VOICE_CHANNEL_1, JOINED_1);
-    api.upsertVoiceSession(GUILD_A, VOICE_USER_2, VOICE_CHANNEL_2, JOINED_2);
-    api.upsertVoiceSession(GUILD_CROSS, CROSS_MARKER, VOICE_CHANNEL_1, JOINED_1);
+    api.upsertVoiceSession(CID_A, VOICE_USER_1, VOICE_CHANNEL_1, JOINED_1);
+    api.upsertVoiceSession(CID_A, VOICE_USER_2, VOICE_CHANNEL_2, JOINED_2);
+    api.upsertVoiceSession(CID_CROSS, CROSS_MARKER, VOICE_CHANNEL_1, JOINED_1);
 
     await mountApp();
   });
@@ -242,24 +251,26 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
   // -------------------------------------------------------------------------
 
   describe("tier matrix", () => {
-    it("anonymous ⇒ 302 to /auth/login?guild=…", async () => {
-      const { res, body } = await req(`/g/${GUILD_A}/voice`);
+    it("anonymous ⇒ 302 to /auth/login", async () => {
+      const { res, body } = await req(`/g/${CID_A}/voice`);
       assert.equal(res.status, 302);
-      assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+      // PR 2: integer community ids fail the 5–20-digit snowflake gate in
+      // loginRedirectTarget, so the anon target is the bare login page.
+      assert.equal(res.headers.get("location"), "/auth/login");
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal(body, "");
     });
 
     it("stranger (live member, no staff role) ⇒ generic 404, never 403", async () => {
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.plain });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.plain });
       assert.equal(res.status, 404);
       assert.equal(body, "Not found");
       assert.match(res.headers.get("content-type"), /^text\/plain/);
     });
 
     it("cross-guild probe ⇒ the SAME plain 404 bytes (§8.6)", async () => {
-      const stranger = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.plain });
-      const cross = await req(`/g/${GUILD_CROSS}/voice`, { cookie: cookieOf.staff });
+      const stranger = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.plain });
+      const cross = await req(`/g/${CID_CROSS}/voice`, { cookie: cookieOf.staff });
       assert.equal(cross.res.status, 404);
       assert.equal(cross.body, stranger.body);
     });
@@ -278,7 +289,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       ["guild owner (admin)", () => cookieOf.admin],
     ]) {
       it(`${label} ⇒ 200 with all four sections`, async () => {
-        const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookie() });
+        const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookie() });
         assert.equal(res.status, 200);
         assert.match(res.headers.get("content-type"), /^text\/html; charset=utf-8/);
         assert.equal(res.headers.get("cache-control"), "no-store");
@@ -303,7 +314,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
 
     it("session rows render user/channel/joined UTC + whole minutes", async () => {
       await mountApp({ voiceData: frozenClockData() });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes(`<code class="user-id">${VOICE_USER_1}</code>`), "user 1 id");
       assert.ok(body.includes(`<code class="user-id">${VOICE_USER_2}</code>`), "user 2 id");
@@ -326,15 +337,15 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
 
     it("other guild's session rows NEVER surface (guild-scoped read)", async () => {
       await mountApp({ voiceData: frozenClockData() });
-      const { body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.ok(body.includes(VOICE_USER_1), "own rows present");
       assert.ok(!body.includes(CROSS_MARKER), "cross-guild marker never rendered");
     });
 
     it("voice-XP config renders the stored value with the /setxp govern badge", async () => {
       await mountApp({ voiceData: frozenClockData() });
-      const { body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.senior });
-      const row = api.getGuildSettings(GUILD_A);
+      const { body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.senior });
+      const row = api.getGuildSettings(CID_A);
       assert.equal(row.voice_xp_per_min, 3);
       assert.ok(
         body.includes(
@@ -346,7 +357,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       assert.ok(body.includes("/setxp voice"), "govern badge names the slash command");
       assert.ok(body.includes('badge-tier-staff">staff'), "staff write-tier badge");
       assert.ok(body.includes("ignores AFK"), "AFK-ignoring rule noted");
-      assert.ok(body.includes(`href="/g/${GUILD_A}/settings"`), "settings cross-link");
+      assert.ok(body.includes(`href="/g/${CID_A}/settings"`), "settings cross-link");
     });
   });
 
@@ -357,7 +368,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
   describe("music state (never a throw, never a connection)", () => {
     it("no client seam at all ⇒ honest unwired render + live state unavailable, 200", async () => {
       await mountApp(); // no getClient, no providers → default data, unwired
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200, "unwired seams never 500");
       // dashboardData's exact unwired ladder step (never a fabricated state):
       assert.ok(body.includes("Player state <strong>unknown</strong>"), "unknown status");
@@ -367,7 +378,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
 
     it("injected data module with NO providers ⇒ 'unavailable — not wired'", async () => {
       await mountApp({ voiceData: voiceDataMod.createVoiceData({ now: () => FIXED_NOW }) });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("Player state is <strong>unavailable</strong>"), "unavailable");
       assert.ok(body.includes("not wired"), "honest not-wired detail");
@@ -375,7 +386,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
 
     it("client without a lavalink manager ⇒ 'lavalink not configured' (env-gate string)", async () => {
       await mountApp({ getClient: () => ({}) }); // no _lavalinkManager
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("lavalink not configured"), "matches the feature's gate");
     });
@@ -384,7 +395,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       await mountApp({
         getClient: () => ({ _lavalinkManager: { useable: false, getPlayer: () => null } }),
       });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("no lavalink node connected"), "node-down ladder step");
     });
@@ -398,7 +409,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
           },
         }),
       });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.admin });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.admin });
       assert.equal(res.status, 200);
       assert.ok(body.includes("Nothing is playing — no active player in this guild."), "idle ladder step");
     });
@@ -450,7 +461,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
         },
       };
       await mountApp({ getClient: () => fakeClient });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       // now-playing rendered + ESCAPED (§8.7)
       assert.ok(body.includes("&lt;script&gt;alert(&quot;np&quot;)&lt;/script&gt;"), "np title escaped");
@@ -475,7 +486,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
           throw new Error("client exploded boom-secret");
         },
       });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200, "throwing seam must degrade");
       assert.ok(body.includes("Player state <strong>unknown</strong>"), "music degraded");
       assert.ok(body.includes("player read failed"), "fixed detail");
@@ -491,7 +502,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
           getLiveVoice: () => ({ available: true, channels: "nope" }),
         }),
       });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("Player state <strong>unknown</strong>"), "bad status → unknown");
       assert.ok(body.includes("<h2>Live voice</h2>"), "live section still renders");
@@ -506,7 +517,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
           },
         },
       });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 500);
       assert.equal(body, "Internal error");
     });
@@ -598,7 +609,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
         channels: { cache: { get: (id) => (id === "733000000000000401" ? { name: "Lounge <b>&</b>" } : undefined) } },
       };
       await mountApp({ getClient: () => fakeClient });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("<code class=\"channel-id\">733000000000000401</code>"), "channel row");
       assert.ok(body.includes("(Lounge &lt;b&gt;&amp;&lt;/b&gt;)"), "cache-only name escaped");
@@ -613,12 +624,12 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
 
   describe("XSS probes via session-shaped values", () => {
     before(() => {
-      api.upsertVoiceSession(GUILD_A, "835000000000009999", '<script>alert("ch")</script>', 1759100000000);
+      api.upsertVoiceSession(CID_A, "835000000000009999", '<script>alert("ch")</script>', 1759100000000);
     });
 
     it("hostile channel id renders ESCAPED, never live", async () => {
       await mountApp({ voiceData: voiceDataMod.createVoiceData({ now: () => FIXED_NOW }) });
-      const { res, body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(res.status, 200);
       assert.ok(body.includes("&lt;script&gt;alert(&quot;ch&quot;)&lt;/script&gt;"), "channel id escaped");
       assert.ok(!body.includes('<script>alert("ch")'), "no live script");
@@ -633,7 +644,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
   describe("no music control paths exist (§8.9)", () => {
     it("POST/PUT/PATCH/DELETE on the voice path hit the app-wide 405 gate", async () => {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-        const res = await fetch(`${base}/g/${GUILD_A}/voice`, {
+        const res = await fetch(`${base}/g/${CID_A}/voice`, {
           method,
           headers: { cookie: cookieOf.staff },
         });
@@ -644,11 +655,11 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
 
     it("no control sub-path resolves — skip/pause/stop are 404 for every verb", async () => {
       for (const sub of ["skip", "pause", "stop", "seek", "volume", "queue/remove"]) {
-        const get = await fetch(`${base}/g/${GUILD_A}/voice/${sub}`, {
+        const get = await fetch(`${base}/g/${CID_A}/voice/${sub}`, {
           headers: { cookie: cookieOf.staff },
         });
         assert.equal(get.status, 404, `GET voice/${sub} must 404 (no route registered)`);
-        const post = await fetch(`${base}/g/${GUILD_A}/voice/${sub}`, {
+        const post = await fetch(`${base}/g/${CID_A}/voice/${sub}`, {
           method: "POST",
           headers: { cookie: cookieOf.staff },
         });
@@ -657,7 +668,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
     });
 
     it("the rendered page contains no <form> and no <button> inside <main>", async () => {
-      const { body } = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const { body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       const main = body.slice(body.indexOf("<main"), body.indexOf("</main>"));
       assert.ok(main.length > 0, "main content present");
       assert.ok(!main.includes("<form"), "no forms in page body");
@@ -712,7 +723,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
         }),
       });
 
-      const first = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const first = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(first.res.status, 200);
       assert.deepEqual(
         calls.slice().sort(),
@@ -722,15 +733,15 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       assert.equal(musicCalls, 1, "player provider ran once");
       assert.equal(liveCalls, 1, "live provider ran once");
 
-      const sessionCall = sqlArgs.find((args) => args[0] === GUILD_A);
+      const sessionCall = sqlArgs.find((args) => args[0] === CID_A);
       assert.ok(sessionCall, "session statement is guild-scoped (bound ?)");
       assert.ok(
-        sqlArgs.every((args) => args[0] === GUILD_A),
+        sqlArgs.every((args) => args[0] === CID_A),
         "no cross-guild parameter ever passed"
       );
 
       fakeNow += 10_000; // inside the (≥5 s subtask floor, 30 s actual) window
-      const second = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const second = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(second.res.status, 200);
       assert.equal(calls.length, 2, "cache hit must not touch the facade (§8.6)");
       assert.equal(musicCalls, 1, "cache hit must not re-read the player (§8.6)");
@@ -738,7 +749,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       assert.ok(second.body.includes("(cached)"), "freshness rendered honestly");
 
       fakeNow += 25_000; // past the 30 s window
-      const third = await req(`/g/${GUILD_A}/voice`, { cookie: cookieOf.staff });
+      const third = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(third.res.status, 200);
       assert.ok(calls.length > 2, "expired cache re-reads the facade");
       assert.equal(musicCalls, 2, "expiry re-runs the provider exactly once");
@@ -746,7 +757,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
 
     it("junk ?query params cannot move anything or leak", async () => {
       const junk = await req(
-        `/g/${GUILD_A}/voice?page=999&guild=${GUILD_CROSS}&x=<script>`,
+        `/g/${CID_A}/voice?page=999&guild=${GUILD_CROSS}&x=<script>`,
         { cookie: cookieOf.staff }
       );
       assert.equal(junk.res.status, 200, "junk params never 500/404 the page");

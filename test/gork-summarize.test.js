@@ -16,7 +16,7 @@ const assert = require("node:assert/strict");
 
 // Contract (same as the other repo tests): loadDb() must run before any
 // src/ db access — fresh temp SQLite, src require-cache reset, cleanup.
-const { loadDb } = require("./helpers/env");
+const { loadDb, communityKey } = require("./helpers/env");
 
 let api;
 let cleanup;
@@ -126,6 +126,7 @@ let seq = 0;
 function makeEnv(options = {}, { seed = true } = {}) {
   seq += 1;
   const guildId = `gs-${seq}`;
+  const communityId = communityKey(guildId);
   const guild = D.createGuild({ id: guildId });
   const channel = D.createTextChannel({
     id: `ch-${seq}`,
@@ -168,7 +169,7 @@ function makeEnv(options = {}, { seed = true } = {}) {
       author: { id: "3333", username: "eve" },
     });
   }
-  return { guildId, guild, channel, client, user, member, interaction };
+  return { guildId, communityId, guild, channel, client, user, member, interaction };
 }
 
 /** Count channel.messages.fetch calls (proves "no read" branches). */
@@ -183,7 +184,7 @@ function spyReads(channel) {
 }
 
 const run = (env) =>
-  H.handleSummarize(env.client, env.interaction, env.guildId);
+  H.handleSummarize(env.client, env.interaction, env.guildId, env.communityId);
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -197,13 +198,13 @@ function embedField(embed, name) {
   return (embed.fields || []).find((f) => f.name === name)?.value;
 }
 
-const usageRows = (guildId) =>
-  api.db.prepare("SELECT COUNT(*) AS n FROM gork_usage WHERE guild_id = ?").get(guildId).n;
+const usageRows = (communityId) =>
+  api.db.prepare("SELECT COUNT(*) AS n FROM gork_usage WHERE community_id = ?").get(communityId).n;
 
-const interactionRow = (guildId) =>
+const interactionRow = (communityId) =>
   api.db
-    .prepare("SELECT kind, status, context_meta FROM gork_interactions WHERE guild_id = ?")
-    .get(guildId);
+    .prepare("SELECT kind, status, context_meta FROM gork_interactions WHERE community_id = ?")
+    .get(communityId);
 
 // ---------- mode usage errors (decision 53) ----------
 
@@ -223,7 +224,7 @@ describe("/gork summarize — mode-exclusivity usage errors", () => {
       assert.match(D.lastReplyContent(env.interaction), /Give exactly one range/);
       assert.match(D.lastReplyContent(env.interaction), /from:\+to:.*from: alone.*last:<N>/s);
       assert.equal(aiCalls.length, 0, "no LLM call for a usage error");
-      assert.equal(cooldown.checkSummarizeGuildCooldown(env.guildId), 0, "never arms");
+      assert.equal(cooldown.checkSummarizeGuildCooldown(env.communityId), 0, "never arms");
     });
   }
 });
@@ -239,7 +240,7 @@ describe("/gork summarize — happy paths (post + arm + count)", () => {
   for (const { label, options, mode } of modes) {
     it(`${label}: posts the embed, arms the cooldown, counts the budget once`, async () => {
       const env = makeEnv(options);
-      api.updateGuildSettings(env.guildId, { gork_daily_limit: 5 });
+      api.updateGuildSettings(env.communityId, { gork_daily_limit: 5 });
       stubAi();
       await run(env);
 
@@ -257,12 +258,12 @@ describe("/gork summarize — happy paths (post + arm + count)", () => {
       assert.equal(env.interaction.followUps.length, 0, "no continuation embed needed");
 
       assert.ok(
-        cooldown.checkSummarizeGuildCooldown(env.guildId) > 0,
+        cooldown.checkSummarizeGuildCooldown(env.communityId) > 0,
         "guild cooldown armed on success",
       );
-      assert.equal(usageRows(env.guildId), 1, "budget counted exactly once");
+      assert.equal(usageRows(env.communityId), 1, "budget counted exactly once");
 
-      const row = interactionRow(env.guildId);
+      const row = interactionRow(env.communityId);
       assert.equal(row.kind, "summarize", "interaction-log row recorded");
       assert.equal(row.status, "shipped");
       assert.equal(JSON.parse(row.context_meta).surface, "summarize");
@@ -273,11 +274,11 @@ describe("/gork summarize — happy paths (post + arm + count)", () => {
     const env = makeEnv({ last: 2 });
     const auditCh = D.createTextChannel({ id: `audit-${seq}`, guild: env.guild, name: "audit" });
     env.guild.addChannel(auditCh);
-    api.updateGuildSettings(env.guildId, { audit_log_channel_id: auditCh.id });
+    api.updateGuildSettings(env.communityId, { audit_log_channel_id: auditCh.id });
     stubAi();
     await run(env);
 
-    const row = interactionRow(env.guildId);
+    const row = interactionRow(env.communityId);
     assert.equal(JSON.parse(row.context_meta).last_count, 2);
 
     const audits = auditCh.sent
@@ -296,7 +297,7 @@ describe("/gork summarize — happy paths (post + arm + count)", () => {
     const env = makeEnv({ last: 3, focus: "decisions only", lang: "spanish" });
     stubAi();
     await run(env);
-    const meta = JSON.parse(interactionRow(env.guildId).context_meta);
+    const meta = JSON.parse(interactionRow(env.communityId).context_meta);
     assert.equal(meta.focus, "decisions only");
     assert.equal(meta.lang, "spanish");
   });
@@ -308,7 +309,7 @@ describe("/gork summarize — per-guild cooldown", () => {
   it("armed guild replies minutes remaining WITHOUT reading or generating", async () => {
     const env = makeEnv({ last: 3 });
     const reads = spyReads(env.channel);
-    cooldown.armSummarizeGuildCooldown(env.guildId);
+    cooldown.armSummarizeGuildCooldown(env.communityId);
     stubAi();
     await run(env);
 
@@ -318,7 +319,7 @@ describe("/gork summarize — per-guild cooldown", () => {
     assert.match(D.lastReplyContent(env.interaction), /Nothing was read or generated/);
     assert.equal(reads.reads, 0, "the range reader was NOT touched");
     assert.equal(aiCalls.length, 0, "no LLM call while armed");
-    assert.equal(usageRows(env.guildId), 0, "no budget counted");
+    assert.equal(usageRows(env.communityId), 0, "no budget counted");
   });
 });
 
@@ -327,8 +328,8 @@ describe("/gork summarize — per-guild cooldown", () => {
 describe("/gork summarize — daily budget gate", () => {
   it("over budget: replies with the locked rejection and never runs", async () => {
     const env = makeEnv({ last: 3 });
-    api.updateGuildSettings(env.guildId, { gork_daily_limit: 1 });
-    api.incrementGorkUsage(env.guildId, env.user.id, "guild", "0", today());
+    api.updateGuildSettings(env.communityId, { gork_daily_limit: 1 });
+    api.incrementGorkUsage(env.communityId, env.user.id, "guild", "0", today());
     const reads = spyReads(env.channel);
     stubAi();
     await run(env);
@@ -339,14 +340,14 @@ describe("/gork summarize — daily budget gate", () => {
     assert.equal(reads.reads, 0, "never queued, never read");
     assert.equal(aiCalls.length, 0);
     assert.equal(env.interaction.deferred, false, "bounced before deferring");
-    assert.ok(usageRows(env.guildId) <= 1, "no extra count on the bounce");
+    assert.ok(usageRows(env.communityId) <= 1, "no extra count on the bounce");
   });
 
   it("blocked scope (-1) gets its own surface", async () => {
     const env = makeEnv({ last: 3 });
     // Guild-wide kill switch: settings default limit -1 (decision 34) — the
     // shape resolveGorkBudget actually resolves (mirrors gork-budget-gate).
-    api.updateGuildSettings(env.guildId, { gork_daily_limit: -1 });
+    api.updateGuildSettings(env.communityId, { gork_daily_limit: -1 });
     stubAi();
     await run(env);
     assert.match(D.lastReplyContent(env.interaction), /gork isn't available in this server/);
@@ -368,7 +369,7 @@ describe("/gork summarize — range read failures", () => {
     assert.match(text, /another server/);
     assert.equal(reads.reads, 0, "guild isolation runs BEFORE any fetch");
     assert.equal(aiCalls.length, 0);
-    assert.equal(cooldown.checkSummarizeGuildCooldown(env.guildId), 0);
+    assert.equal(cooldown.checkSummarizeGuildCooldown(env.communityId), 0);
   });
 
   it("deleted/unknown anchor gets the specific notfound cause", async () => {
@@ -377,7 +378,7 @@ describe("/gork summarize — range read failures", () => {
     await run(env);
     assert.match(D.lastReplyContent(env.interaction), /deleted or unknown id/);
     assert.equal(aiCalls.length, 0);
-    assert.equal(cooldown.checkSummarizeGuildCooldown(env.guildId), 0);
+    assert.equal(cooldown.checkSummarizeGuildCooldown(env.communityId), 0);
   });
 
   it("empty range replies zero-readable, no rundown", async () => {
@@ -386,7 +387,7 @@ describe("/gork summarize — range read failures", () => {
     await run(env);
     assert.match(D.lastReplyContent(env.interaction), /No readable messages/);
     assert.equal(aiCalls.length, 0);
-    assert.equal(cooldown.checkSummarizeGuildCooldown(env.guildId), 0);
+    assert.equal(cooldown.checkSummarizeGuildCooldown(env.communityId), 0);
   });
 
   it("mid-range fetch failure reports the partial window and produces nothing", async () => {
@@ -409,8 +410,8 @@ describe("/gork summarize — range read failures", () => {
     // Progress counts everything read before the throw: anchor + page 1.
     assert.match(text, /Partial window actually read: \*\*3\*\* message\(s\) \(1000000000000000101 → 1000000000000000103\)/);
     assert.equal(aiCalls.length, 0, "no generation from a partial read");
-    assert.equal(cooldown.checkSummarizeGuildCooldown(env.guildId), 0, "no arm");
-    assert.equal(usageRows(env.guildId), 0, "no count");
+    assert.equal(cooldown.checkSummarizeGuildCooldown(env.communityId), 0, "no arm");
+    assert.equal(usageRows(env.communityId), 0, "no count");
   });
 });
 
@@ -419,7 +420,7 @@ describe("/gork summarize — range read failures", () => {
 describe("/gork summarize — generation & post failures", () => {
   it("generation failure: specific reply, no arm, no count, failure row", async () => {
     const env = makeEnv({ last: 3 });
-    api.updateGuildSettings(env.guildId, { gork_daily_limit: 5 });
+    api.updateGuildSettings(env.communityId, { gork_daily_limit: 5 });
     stubAi({ ok: false, status: 500 });
     await run(env);
 
@@ -427,14 +428,14 @@ describe("/gork summarize — generation & post failures", () => {
     assert.match(text, /rundown generation failed/);
     assert.match(text, /HTTP 500/, "carries the provider cause");
     assert.match(text, /budget was not counted/);
-    assert.equal(cooldown.checkSummarizeGuildCooldown(env.guildId), 0, "no arm on generation failure");
-    assert.equal(usageRows(env.guildId), 0, "no count on generation failure");
-    assert.equal(interactionRow(env.guildId).status, "failure");
+    assert.equal(cooldown.checkSummarizeGuildCooldown(env.communityId), 0, "no arm on generation failure");
+    assert.equal(usageRows(env.communityId), 0, "no count on generation failure");
+    assert.equal(interactionRow(env.communityId).status, "failure");
   });
 
   it("embed post failure: no arm, no count, posted count + cause reported", async () => {
     const env = makeEnv({ last: 3 });
-    api.updateGuildSettings(env.guildId, { gork_daily_limit: 5 });
+    api.updateGuildSettings(env.communityId, { gork_daily_limit: 5 });
     stubAi();
     env.interaction.editReply = async () => {
       throw new Error("discord 500");
@@ -447,9 +448,9 @@ describe("/gork summarize — generation & post failures", () => {
     assert.match(note, /discord 500/, "carries the cause");
     assert.match(note, /\*\*0\*\* of 1 embed landed/, "posted count reported");
     assert.deepEqual(env.interaction.followUps[0].allowedMentions, { parse: [] });
-    assert.equal(cooldown.checkSummarizeGuildCooldown(env.guildId), 0, "post failure never arms");
-    assert.equal(usageRows(env.guildId), 0, "post failure never counts");
-    assert.equal(interactionRow(env.guildId).status, "error");
+    assert.equal(cooldown.checkSummarizeGuildCooldown(env.communityId), 0, "post failure never arms");
+    assert.equal(usageRows(env.communityId), 0, "post failure never counts");
+    assert.equal(interactionRow(env.communityId).status, "error");
   });
 
   it("postRundownPayloads posts in order and reports the mid-sequence count", async () => {
@@ -489,14 +490,14 @@ describe("/gork summarize — shared per-guild queue", () => {
     const env = makeEnv({ last: 3 });
     stubAi();
     // Occupy the in-flight slot + the whole waiting room (5).
-    const slot = gorkQueue.admit({ guildId: env.guildId });
+    const slot = gorkQueue.admit({ communityId: env.communityId });
     assert.equal(slot.dropped, false);
     const waiters = [
-      gorkQueue.admit({ guildId: env.guildId }),
-      gorkQueue.admit({ guildId: env.guildId }),
-      gorkQueue.admit({ guildId: env.guildId }),
-      gorkQueue.admit({ guildId: env.guildId }),
-      gorkQueue.admit({ guildId: env.guildId }),
+      gorkQueue.admit({ communityId: env.communityId }),
+      gorkQueue.admit({ communityId: env.communityId }),
+      gorkQueue.admit({ communityId: env.communityId }),
+      gorkQueue.admit({ communityId: env.communityId }),
+      gorkQueue.admit({ communityId: env.communityId }),
     ];
     assert.ok(waiters.every((w) => !w.dropped));
 
@@ -509,8 +510,8 @@ describe("/gork summarize — shared per-guild queue", () => {
     assert.match(text, /Nothing was read or generated/);
     assert.equal(reads.reads, 0, "a dropped job never reads");
     assert.equal(aiCalls.length, 0);
-    assert.equal(cooldown.checkSummarizeGuildCooldown(env.guildId), 0);
-    assert.equal(usageRows(env.guildId), 0, "a dropped job never counts");
+    assert.equal(cooldown.checkSummarizeGuildCooldown(env.communityId), 0);
+    assert.equal(usageRows(env.communityId), 0, "a dropped job never counts");
     gorkQueue.release({ guildId: env.guildId }); // (beforeEach reset() also clears state)
   });
 });
@@ -520,7 +521,7 @@ describe("/gork summarize — shared per-guild queue", () => {
 describe("/gork — summarize subcommand dispatch", () => {
   it("handleGork routes `summarize` to the handler (staff gate kept)", async () => {
     const env = makeEnv({ last: 3 });
-    cooldown.armSummarizeGuildCooldown(env.guildId); // bounce fast, prove the route
+    cooldown.armSummarizeGuildCooldown(env.communityId); // bounce fast, prove the route
     stubAi();
     const gorkHandler = FEATURE.handlers.gork;
     await gorkHandler(env.interaction, { client: env.client });
@@ -558,19 +559,19 @@ describe("/gork summarize-budget", () => {
 
   it("stores a valid budget and replies with the stored value", async () => {
     const { env, ixn } = budgetEnv(50000);
-    await H.setSummarizeBudget(env.client, ixn, env.guildId);
+    await H.setSummarizeBudget(env.client, ixn, env.guildId, env.communityId);
     assert.equal(D.lastReplyEphemeral(ixn), true, "ephemeral confirmation");
     assert.match(D.lastReplyContent(ixn), /\*\*50000\*\* tokens/, "reply echoes the stored budget");
-    assert.equal(api.getGuildSettings(env.guildId).gork_summarize_input_tokens, 50000);
+    assert.equal(api.getGuildSettings(env.communityId).gork_summarize_input_tokens, 50000);
   });
 
   it("out-of-range input gets the specific range reply — settings untouched", async () => {
     const { env, ixn } = budgetEnv(5000);
-    await H.setSummarizeBudget(env.client, ixn, env.guildId);
+    await H.setSummarizeBudget(env.client, ixn, env.guildId, env.communityId);
     assert.equal(D.lastReplyEphemeral(ixn), true);
     assert.match(D.lastReplyContent(ixn), /8000-120000 tokens/, "names the allowed range");
     assert.equal(
-      api.getGuildSettings(env.guildId).gork_summarize_input_tokens,
+      api.getGuildSettings(env.communityId).gork_summarize_input_tokens,
       80000,
       "prior value kept — nothing written",
     );
@@ -579,7 +580,7 @@ describe("/gork summarize-budget", () => {
   it("the guild's gork_summarize_input_tokens clamps the rundown transcript", async () => {
     const env = makeEnv({ last: 103 });
     // 8,000 tokens → 8,000 × 4 − 8,000 = 24,000-char transcript budget.
-    api.updateGuildSettings(env.guildId, { gork_summarize_input_tokens: 8000 });
+    api.updateGuildSettings(env.communityId, { gork_summarize_input_tokens: 8000 });
     // 100 fat messages on top of the seeded 3 (≈460-char lines → ~46k chars).
     for (let i = 0; i < 100; i += 1) {
       env.channel.addMessage({

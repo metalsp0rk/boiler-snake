@@ -62,6 +62,16 @@ const GUILD_USER_ONLY = "300000000000000033"; // user's, bot NOT in it
 const GUILD_BOT_ONLY = "500000000000000055"; // bot's, user NOT in it
 const GUILD_NONAME = "600000000000000066"; // bot + admin, name missing
 
+// Internal community ids (Fluxer PR 2): integer ids drive every /g/ URL and
+// repo call; Discord-side fixtures keep the external snowflakes.
+const { communityKey } = require("./helpers/env");
+const CID_A = communityKey(GUILD_A);
+const CID_XSS = communityKey(GUILD_XSS);
+const CID_B = communityKey(GUILD_B);
+const CID_USER_ONLY = communityKey(GUILD_USER_ONLY);
+const CID_BOT_ONLY = communityKey(GUILD_BOT_ONLY);
+const CID_NONAME = communityKey(GUILD_NONAME);
+
 const ROLE_JUNIOR = "700000000000000077";
 
 const XSS_TAG = `<script>alert('tag')</script>`;
@@ -97,7 +107,7 @@ before(() => {
   process.env.WEB_RATE_LIMIT_AUTH_MAX = "100000";
   process.env.WEB_RATE_LIMIT_AUTH_USER_MAX = "100000";
   process.env.WEB_RATE_LIMIT_MUTATION_MAX = "100000";
-  api.addStaffRole(GUILD_A, ROLE_JUNIOR, "junior");
+  api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
 });
 
 after(() => {
@@ -175,7 +185,7 @@ describe("escape.js (escaped-by-default helper)", () => {
 function fakeReq(overrides = {}) {
   return {
     user: { userId: USER_ADMIN, discordTag: "Nice#User" },
-    guildAccess: { guildId: GUILD_A, tier: "admin", degraded: false },
+    guildAccess: { communityId: CID_A, guildId: GUILD_A, tier: "admin", degraded: false },
     csrfToken: "a".repeat(64),
     res: { locals: { cspNonce: "TESTNONCE123" } },
     ...overrides,
@@ -183,8 +193,8 @@ function fakeReq(overrides = {}) {
 }
 
 const SHELL_GUILDS = [
-  { id: GUILD_A, name: `Alpha HQ ${ATTRProbe}` },
-  { id: GUILD_XSS, name: XSS_NAME },
+  { id: GUILD_A, communityId: CID_A, name: `Alpha HQ ${ATTRProbe}` },
+  { id: GUILD_XSS, communityId: CID_XSS, name: XSS_NAME },
 ];
 
 describe("layout (shell chrome)", () => {
@@ -228,9 +238,9 @@ describe("layout (shell chrome)", () => {
     const doc = String(
       renderShellPage(fakeReq(), { title: "Console", guilds: SHELL_GUILDS })
     );
-    assert.ok(doc.includes(`value="/g/${GUILD_A}" selected`));
-    assert.ok(doc.includes(`value="/g/${GUILD_XSS}"`));
-    assert.ok(!doc.includes(`/g/${GUILD_B}`), "nothing outside the passed list");
+    assert.ok(doc.includes(`value="/g/${CID_A}" selected`));
+    assert.ok(doc.includes(`value="/g/${CID_XSS}"`));
+    assert.ok(!doc.includes(`/g/${CID_B}`), "nothing outside the passed list");
     assert.ok(doc.includes("Alpha HQ"), "plain part of the name survives");
   });
 
@@ -267,7 +277,7 @@ describe("layout (shell chrome)", () => {
   it("degraded flag surfaces the §8.3 operator banner", () => {
     const doc = String(
       renderShellPage(
-        fakeReq({ guildAccess: { guildId: GUILD_A, tier: "admin", degraded: true } }),
+        fakeReq({ guildAccess: { communityId: CID_A, guildId: GUILD_A, tier: "admin", degraded: true } }),
         { title: "Console" }
       )
     );
@@ -291,10 +301,10 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   const cookieOf = {}; // role -> cookie header value
 
   const GUILD_ROWS = {
-    [GUILD_A]: { id: GUILD_A, name: "Alpha HQ", icon: null },
-    [GUILD_XSS]: { id: GUILD_XSS, name: XSS_NAME, icon: null },
-    [GUILD_NONAME]: { id: GUILD_NONAME, name: null, icon: null },
-    [GUILD_USER_ONLY]: { id: GUILD_USER_ONLY, name: "UserOnly NoBot", icon: null },
+    [GUILD_A]: { id: GUILD_A, communityId: CID_A, name: "Alpha HQ", icon: null },
+    [GUILD_XSS]: { id: GUILD_XSS, communityId: CID_XSS, name: XSS_NAME, icon: null },
+    [GUILD_NONAME]: { id: GUILD_NONAME, communityId: CID_NONAME, name: null, icon: null },
+    [GUILD_USER_ONLY]: { id: GUILD_USER_ONLY, communityId: CID_USER_ONLY, name: "UserOnly NoBot", icon: null },
   };
   // The bot serves exactly these (GUILD_BOT_ONLY is bot-only noise):
   const BOT_GUILDS = [GUILD_A, GUILD_XSS, GUILD_NONAME, GUILD_BOT_ONLY];
@@ -399,16 +409,18 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   // --- routing / access ------------------------------------------------
 
   it("anonymous /g/* keeps the byte-identical login redirect (oracle parity)", async () => {
-    const { res, body } = await get(`/g/${GUILD_A}`);
+    const { res, body } = await get(`/g/${CID_A}`);
     assert.equal(res.status, 302);
-    assert.equal(res.headers.get("location"), `/auth/login?guild=${GUILD_A}`);
+    // Integer community id fails the 5–20-digit snowflake gate in the login
+    // redirect target builder → the bare /auth/login (converted contract).
+    assert.equal(res.headers.get("location"), "/auth/login");
     assert.equal(res.headers.get("cache-control"), "no-store");
     assert.equal(res.headers.get("referrer-policy"), "no-referrer");
     assert.equal(body, "");
   });
 
   it("Console page renders in the shell (200, html, no-store, nosniff)", async () => {
-    const { res, body } = await get(`/g/${GUILD_A}`, { cookie: cookieOf.admin });
+    const { res, body } = await get(`/g/${CID_A}`, { cookie: cookieOf.admin });
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type"), /^text\/html; charset=utf-8/);
     assert.equal(res.headers.get("cache-control"), "no-store");
@@ -421,18 +433,18 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   });
 
   it("switcher = bot∩user EXACTLY: no bot-only, no user-only guilds", async () => {
-    const { body } = await get(`/g/${GUILD_A}`, { cookie: cookieOf.admin });
-    assert.ok(body.includes(`value="/g/${GUILD_A}"`), "current guild");
-    assert.ok(body.includes(`value="/g/${GUILD_XSS}"`), "bot∩user guild");
-    assert.ok(body.includes(`value="/g/${GUILD_NONAME}"`), "nameless guild present");
-    assert.ok(!body.includes(GUILD_BOT_ONLY), "bot-only guild hidden");
+    const { body } = await get(`/g/${CID_A}`, { cookie: cookieOf.admin });
+    assert.ok(body.includes(`value="/g/${CID_A}"`), "current guild");
+    assert.ok(body.includes(`value="/g/${CID_XSS}"`), "bot∩user guild");
+    assert.ok(body.includes(`value="/g/${CID_NONAME}"`), "nameless guild present");
+    assert.ok(!body.includes(`/g/${CID_BOT_ONLY}`), "bot-only guild hidden");
     assert.ok(!body.includes("BotOnlyGhost"), "bot-only guild name hidden");
-    assert.ok(!body.includes(GUILD_USER_ONLY), "user-only (no bot) guild hidden");
+    assert.ok(!body.includes(`/g/${CID_USER_ONLY}`), "user-only (no bot) guild hidden");
     assert.ok(!body.includes("UserOnly NoBot"), "user-only guild name hidden");
   });
 
   it("XSS guild name + XSS user tag render ENCODED in the live page", async () => {
-    const { body } = await get(`/g/${GUILD_A}`, { cookie: cookieOf.admin });
+    const { body } = await get(`/g/${CID_A}`, { cookie: cookieOf.admin });
     assert.ok(
       body.includes(`&lt;img src=x onerror=&quot;alert(1)&quot;&gt;`),
       "guild name encoded in switcher"
@@ -447,7 +459,7 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   });
 
   it("staff tier via REAL staff_roles row; logout form carries the session's _csrf", async () => {
-    const { res, body } = await get(`/g/${GUILD_A}`, { cookie: cookieOf.staff });
+    const { res, body } = await get(`/g/${CID_A}`, { cookie: cookieOf.staff });
     assert.equal(res.status, 200);
     assert.ok(body.includes("badge-tier-staff"));
     const sessionId = cookieOf.staff.replace("web_session=", "");
@@ -460,14 +472,14 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   it("ALL misses stay the plain generic 404 — inside /g/* too (zero divergence)", async () => {
     const cases = [
       ["/g/oops", cookieOf.admin], // malformed id, live session
-      [`/g/${GUILD_B}`, cookieOf.admin], // cross-guild probe
-      [`/g/${GUILD_NONAME}`, cookieOf.staff], // not in this viewer's list
+      [`/g/${CID_B}`, cookieOf.admin], // cross-guild probe
+      [`/g/${CID_NONAME}`, cookieOf.staff], // not in this viewer's list
       // Phase 3 (subtask 30) took /g/:guildId/tickets over (senior GET page
       // + POST mutations) — the unmatched-route probe moves one level
       // deeper: GET on a POST-only mutation path is still a plain 404.
-      [`/g/${GUILD_A}/tickets/summarize`, cookieOf.staff], // GET ≠ POST ⇒ miss
-      [`/g/${GUILD_A}/tickets-legacy`, cookieOf.staff], // unmatched, valid guild
-      [`/g/${GUILD_A}`, cookieOf.plain], // member without any tier
+      [`/g/${CID_A}/tickets/summarize`, cookieOf.staff], // GET ≠ POST ⇒ miss
+      [`/g/${CID_A}/tickets-legacy`, cookieOf.staff], // unmatched, valid guild
+      [`/g/${CID_A}`, cookieOf.plain], // member without any tier
     ];
     for (const [p, cookie] of cases) {
       const { res, body } = await get(p, { cookie });
@@ -477,7 +489,7 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
     }
     // The now-mounted ticket page answers the TIER GATE (fixed 403) for the
     // staff viewer instead of the router miss — above-staff tier, right guild.
-    const tiered = await get(`/g/${GUILD_A}/tickets`, { cookie: cookieOf.staff });
+    const tiered = await get(`/g/${CID_A}/tickets`, { cookie: cookieOf.staff });
     assert.equal(tiered.res.status, 403, "senior-only page: staff tier ⇒ fixed 403");
     assert.equal(tiered.body, "Forbidden");
   });
@@ -485,7 +497,7 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   // --- CSP (§8.7) -------------------------------------------------------
 
   it("CSP header matrix on the shell page + per-response nonce match", async () => {
-    const first = await get(`/g/${GUILD_A}`, { cookie: cookieOf.admin });
+    const first = await get(`/g/${CID_A}`, { cookie: cookieOf.admin });
     assert.match(first.csp, /default-src 'self'/);
     assert.match(first.csp, /script-src 'self' 'nonce-[A-Za-z0-9_-]{16,}'/);
     assert.match(first.csp, /style-src 'self' 'unsafe-inline'/); // documented concession
@@ -500,7 +512,7 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
       assert.ok(tag.includes(`nonce="${nonce}"`), `nonce on every script: ${tag}`);
     }
 
-    const second = await get(`/g/${GUILD_A}`, { cookie: cookieOf.admin });
+    const second = await get(`/g/${CID_A}`, { cookie: cookieOf.admin });
     const nonce2 = /nonce-([^;']+)/.exec(second.csp)[1].trim();
     assert.notEqual(nonce, nonce2, "fresh nonce per response");
   });
@@ -602,15 +614,15 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   //     (documented decision above).
 
   it("dashboard SSR ships the chart hooks + accessible canvases (JS-off fallback intact)", async () => {
-    const { body } = await get(`/g/${GUILD_A}`, { cookie: cookieOf.admin });
+    const { body } = await get(`/g/${CID_A}`, { cookie: cookieOf.admin });
     assert.ok(body.includes('data-chart="line"'), "line chart hook rendered SSR");
     assert.ok(body.includes('data-chart="bar"'), "bar chart hook rendered SSR");
     assert.ok(
-      body.includes(`data-chart-src="/g/${GUILD_A}/api/dashboard/activity.json"`),
+      body.includes(`data-chart-src="/g/${CID_A}/api/dashboard/activity.json"`),
       "line chart fed by the JSON API endpoint"
     );
     assert.ok(
-      body.includes(`data-chart-src="/g/${GUILD_A}/api/dashboard/xp-leaders.json"`),
+      body.includes(`data-chart-src="/g/${CID_A}/api/dashboard/xp-leaders.json"`),
       "bar chart fed by the JSON API endpoint"
     );
     assert.equal(
@@ -677,9 +689,10 @@ describe("guildAccess.listGuilds", () => {
     const { guilds, degraded, reauth } = await h.resolver.listGuilds(h.session);
     assert.ok(!reauth);
     assert.equal(degraded, false);
+    // PR 2: list entries carry the integer communityId alongside the external id.
     assert.deepEqual(guilds, [
-      { id: "400000000000000044", name: "400000000000000044" }, // name → id fallback
-      { id: "100000000000000011", name: "zeta" },
+      { id: "400000000000000044", communityId: CID_XSS, name: "400000000000000044" }, // name → id fallback
+      { id: "100000000000000011", communityId: CID_A, name: "zeta" },
     ]);
   });
 
@@ -693,7 +706,7 @@ describe("guildAccess.listGuilds", () => {
     });
     const { guilds, degraded } = await h.resolver.listGuilds(h.session);
     assert.equal(degraded, true);
-    assert.deepEqual(guilds, [{ id: "100000000000000011", name: "Snapshot One" }]);
+    assert.deepEqual(guilds, [{ id: "100000000000000011", communityId: CID_A, name: "Snapshot One" }]);
   });
 
   it("anonymous / unusable sessions get an empty switcher (never throws)", async () => {
