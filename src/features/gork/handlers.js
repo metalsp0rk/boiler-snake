@@ -1,7 +1,15 @@
 /**
  * /gork subcommand handlers (staff). Dispatcher lives in index.js.
+ *
+ * Migrated to the CommandContext seam (roadmap/fluxer.md § CommandContext):
+ * every exported handler receives a CommandContext and speaks only the
+ * platform-neutral vocabulary — `communityId` (integer) for repositories,
+ * `externalGuildId` for display/audit, `options.getX` for options, `reply`
+ * with `sensitive: true` for ephemerals, and `outbound` for platform I/O.
+ * The one Discord-only capability the seam cannot model (/gork summarize's
+ * deep guild/client plumbing) uses the documented `rawInteraction` escape
+ * hatch, guarded for Fluxer.
  */
-const { ChannelType } = require("discord.js");
 const {
   getGuildSettings,
   updateGuildSettings,
@@ -21,11 +29,9 @@ const {
   listGorkBudgetRules,
   clampGorkDailyLimit,
 } = require("../../db");
-const { replyEphemeral, editEphemeral } = require("../../core/interaction");
-const { Color, baseEmbed } = require("../../core/theme");
+const { Color } = require("../../core/theme");
 const { sliceSafe } = require("../../core/text");
 const { getAiConfig } = require("../../core/ai");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const {
@@ -80,193 +86,221 @@ const {
 } = require("./constants");
 
 /**
- * /gork keyword: set the trigger keyword, or `clear` to disable gork.
+ * ChannelType.GuildCategory as a plain number (roadmap § Outbound client:
+ * ChannelHandle.type is a numeric channel type — same duck-typed idiom as
+ * budget.js CATEGORY_TYPE, keeping discord.js out of this module).
  */
-async function setKeyword(client, interaction, guildId, communityId) {
-  const raw = (interaction.options.getString("keyword") || "").trim();
+const CATEGORY_TYPE = 4;
+
+/**
+ * Standard reply for Fluxer dispatches reaching Discord-only surfaces
+ * (roadmap/fluxer.md § What stays Discord-only): /gork summarize's range
+ * reader, generator, and audit poster take real discord.js Guild/Client
+ * objects until the OutboundClient cutover in PR 7.
+ */
+const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
+
+/**
+ * /gork keyword: set the trigger keyword, or `clear` to disable gork.
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function setKeyword(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = (commandCtx.options.getString("keyword") || "").trim();
   const clearing = raw === "clear";
   if (!clearing && (!raw || raw.length > KEYWORD_MAX)) {
-    return replyEphemeral(
-      interaction,
-      `The keyword must be 1-${KEYWORD_MAX} characters (or \`clear\` to disable gork).`,
-    );
+    return commandCtx.reply({
+      content: `The keyword must be 1-${KEYWORD_MAX} characters (or \`clear\` to disable gork).`,
+      sensitive: true,
+    });
   }
   const settings = updateGuildSettings(communityId, {
     gork_keyword: clearing ? null : raw,
   });
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.keyword_set",
     targetType: "guild",
-    targetId: guildId,
+    targetId: commandCtx.externalGuildId,
     details: { keyword: settings.gork_keyword ?? null, cleared: clearing },
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: clearing ? "Gork disabled" : "Gork keyword updated",
     command: "/gork keyword",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       clearing
         ? "Keyword: cleared (gork disabled)"
         : `Keyword: \`${settings.gork_keyword}\``,
     ],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    clearing
+  await commandCtx.reply({
+    content: clearing
       ? "Gork is now **disabled** for this server — triggers are ignored."
       : `Gork keyword set to \`${settings.gork_keyword}\`. Trigger it with \`${settings.gork_keyword} <question>\`, or \`${settings.gork_keyword}\` replying to a message.`,
-  );
+    sensitive: true,
+  });
 }
 
 /**
  * /gork context: set the context window size (1-50).
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setContext(client, interaction, guildId, communityId) {
-  const raw = interaction.options.getInteger("context");
+async function setContext(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = commandCtx.options.getInteger("context");
   if (!Number.isFinite(raw) || raw < CONTEXT_MIN || raw > CONTEXT_MAX) {
-    return replyEphemeral(
-      interaction,
-      `The context window must be ${CONTEXT_MIN}-${CONTEXT_MAX} messages.`,
-    );
+    return commandCtx.reply({
+      content: `The context window must be ${CONTEXT_MIN}-${CONTEXT_MAX} messages.`,
+      sensitive: true,
+    });
   }
   const settings = updateGuildSettings(communityId, {
     gork_context_window: raw,
   });
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.context_set",
     targetType: "guild",
-    targetId: guildId,
+    targetId: commandCtx.externalGuildId,
     details: { context_window: settings.gork_context_window },
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Gork context window updated",
     command: "/gork context",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Context window: ${settings.gork_context_window} messages`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    `Gork context window set to **${settings.gork_context_window}** prior messages.`,
-  );
+  await commandCtx.reply({
+    content: `Gork context window set to **${settings.gork_context_window}** prior messages.`,
+    sensitive: true,
+  });
 }
 
 /**
  * /gork cooldown: set the per-user cooldown in seconds (0-3600).
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setCooldown(client, interaction, guildId, communityId) {
-  const raw = interaction.options.getInteger("cooldown");
+async function setCooldown(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = commandCtx.options.getInteger("cooldown");
   if (!Number.isFinite(raw) || raw < COOLDOWN_MIN || raw > COOLDOWN_MAX) {
-    return replyEphemeral(
-      interaction,
-      `The cooldown must be ${COOLDOWN_MIN}-${COOLDOWN_MAX} seconds (0 = disabled).`,
-    );
+    return commandCtx.reply({
+      content: `The cooldown must be ${COOLDOWN_MIN}-${COOLDOWN_MAX} seconds (0 = disabled).`,
+      sensitive: true,
+    });
   }
   const settings = updateGuildSettings(communityId, {
     gork_cooldown_sec: raw,
   });
   const stored = settings.gork_cooldown_sec;
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.cooldown_set",
     targetType: "guild",
-    targetId: guildId,
+    targetId: commandCtx.externalGuildId,
     details: { cooldown_sec: stored },
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Gork cooldown updated",
     command: "/gork cooldown",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Cooldown: ${stored}s (staff always bypass)`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    stored === 0
+  await commandCtx.reply({
+    content: stored === 0
       ? "Gork cooldown is now **disabled** (0s). Staff always bypass."
       : `Gork cooldown set to **${stored}s** per user per server. Staff always bypass.`,
-  );
+    sensitive: true,
+  });
 }
 
 /**
  * /gork rules: set the staff prompt rules, or `clear` to remove them.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setRules(client, interaction, guildId, communityId) {
-  const raw = (interaction.options.getString("rules") || "").trim();
+async function setRules(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = (commandCtx.options.getString("rules") || "").trim();
   const clearing = raw === "clear";
   if (!clearing && !raw) {
-    return replyEphemeral(
-      interaction,
-      "Rules cannot be empty — use `clear` to remove them.",
-    );
+    return commandCtx.reply({
+      content: "Rules cannot be empty — use `clear` to remove them.",
+      sensitive: true,
+    });
   }
   if (raw.length > RULES_MAX) {
-    return replyEphemeral(
-      interaction,
-      `Rules must be at most ${RULES_MAX} characters.`,
-    );
+    return commandCtx.reply({
+      content: `Rules must be at most ${RULES_MAX} characters.`,
+      sensitive: true,
+    });
   }
   const settings = updateGuildSettings(communityId, {
     gork_extra_rules: clearing ? "" : raw,
   });
   const stored = (settings.gork_extra_rules || "").trim();
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.rules_set",
     targetType: "guild",
-    targetId: guildId,
+    targetId: commandCtx.externalGuildId,
     details: { rules: stored, cleared: clearing },
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: stored ? "Gork staff rules updated" : "Gork staff rules removed",
     command: "/gork rules",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [stored ? `Rules: \`${stored}\`` : "Rules: removed"],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    stored
+  await commandCtx.reply({
+    content: stored
       ? `Gork staff rules set to:\n\`${stored}\`\n\nThey are appended to the system prompt; the SFW / questions-only guardrails always apply.`
       : "Gork staff rules removed.",
-  );
+    sensitive: true,
+  });
 }
 
 /**
  * /gork search: toggle the SearXNG web_search tool for the guild.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setSearch(client, interaction, guildId, communityId) {
-  const raw = (interaction.options.getString("search") || "").toLowerCase();
+async function setSearch(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = (commandCtx.options.getString("search") || "").toLowerCase();
   if (raw !== "on" && raw !== "off") {
-    return replyEphemeral(interaction, "Search must be `on` or `off`.");
+    return commandCtx.reply({
+      content: "Search must be `on` or `off`.",
+      sensitive: true,
+    });
   }
   const settings = updateGuildSettings(communityId, {
     gork_search_enabled: raw === "on" ? 1 : 0,
   });
   const on = Number(settings.gork_search_enabled) === 1;
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.search_set",
     targetType: "guild",
-    targetId: guildId,
+    targetId: commandCtx.externalGuildId,
     details: { enabled: on ? 1 : 0 },
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: `Gork web search ${on ? "enabled" : "disabled"}`,
     command: "/gork search",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Web search: ${on ? "on" : "off"}`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    on
+  await commandCtx.reply({
+    content: on
       ? "Gork web search is now **on** (runs against the bot's SearXNG instance — see `/gork status` for the URL state)."
       : "Gork web search is now **off** — answers come from conversation context only.",
-  );
+    sensitive: true,
+  });
 }
 
 /**
@@ -274,163 +308,184 @@ async function setSearch(client, interaction, guildId, communityId) {
  * On = the byte-locked anti-slop card rides between the base prompt and
  * staff rules for every Q&A job in this guild. Off (default) = answers
  * are generated with exactly the pre-7.20 prompt. Re-read per job.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setSte(client, interaction, guildId, communityId) {
-  const raw = (interaction.options.getString("ste") || "").toLowerCase();
+async function setSte(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = (commandCtx.options.getString("ste") || "").toLowerCase();
   if (raw !== "on" && raw !== "off") {
-    return replyEphemeral(interaction, "STE must be `on` or `off`.");
+    return commandCtx.reply({
+      content: "STE must be `on` or `off`.",
+      sensitive: true,
+    });
   }
   const settings = updateGuildSettings(communityId, {
     gork_ste_enabled: raw === "on" ? 1 : 0,
   });
   const on = Number(settings.gork_ste_enabled) === 1;
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.ste_set",
     targetType: "guild",
-    targetId: guildId,
+    targetId: commandCtx.externalGuildId,
     details: { enabled: on ? 1 : 0 },
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: `Gork STE answer style ${on ? "enabled" : "disabled"}`,
     command: "/gork ste",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`STE answer style: ${on ? "on" : "off"}`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    on
+  await commandCtx.reply({
+    content: on
       ? "Gork STE answer style is now **on** — answers follow the anti-slop writing rules (short active sentences, answer first, no padding). The sarcasm stays."
       : "Gork STE answer style is now **off** — answers are written with the standard prompt again.",
-  );
+    sensitive: true,
+  });
 }
 
 /**
  * /gork enable: master on/off switch for the whole gork feature in this
  * guild. Off makes triggers fully silent; every other gork setting
  * (keyword, rules, cooldown, bans, ...) is preserved for re-enable.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setEnable(client, interaction, guildId, communityId) {
-  const raw = (interaction.options.getString("enable") || "").toLowerCase();
+async function setEnable(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = (commandCtx.options.getString("enable") || "").toLowerCase();
   if (raw !== "on" && raw !== "off") {
-    return replyEphemeral(interaction, "Enable must be `on` or `off`.");
+    return commandCtx.reply({
+      content: "Enable must be `on` or `off`.",
+      sensitive: true,
+    });
   }
   const settings = updateGuildSettings(communityId, {
     gork_enabled: raw === "on" ? 1 : 0,
   });
   const on = Number(settings.gork_enabled ?? 1) === 1;
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.enabled_set",
     targetType: "guild",
-    targetId: guildId,
+    targetId: commandCtx.externalGuildId,
     details: { enabled: on ? 1 : 0 },
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: `Gork ${on ? "enabled" : "disabled"} for the server`,
     command: "/gork enable",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Gork: ${on ? "enabled" : "disabled"}`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    on
+  await commandCtx.reply({
+    content: on
       ? "Gork is now **enabled** for this server — keyword triggers are active again."
       : "Gork is now **disabled** for this server — all triggers are ignored. Every other gork setting is kept; re-enable with `/gork enable on`.",
-  );
+    sensitive: true,
+  });
 }
 
 /**
  * /gork ban: block a user from gork in this guild. The banned user keeps
  * getting the locked generic replies (never told about the ban), and
  * staff roles do NOT bypass the ban.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function banUser(client, interaction, guildId, communityId) {
-  const user = interaction.options.getUser("user");
+async function banUser(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const user = commandCtx.options.getUser("user");
   if (!user) {
-    return replyEphemeral(interaction, "Pick a user to ban from gork.");
+    return commandCtx.reply({
+      content: "Pick a user to ban from gork.",
+      sensitive: true,
+    });
   }
   if (user.bot) {
-    return replyEphemeral(
-      interaction,
-      "Bots can't be banned from gork (they never trigger it anyway).",
-    );
+    return commandCtx.reply({
+      content: "Bots can't be banned from gork (they never trigger it anyway).",
+      sensitive: true,
+    });
   }
-  addGorkBlock(communityId, user.id, interaction.user.id);
+  addGorkBlock(communityId, user.id, commandCtx.userId);
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.ban",
     targetType: "user",
     targetId: user.id,
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Gork user banned",
     command: "/gork ban",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Banned from gork: <@${user.id}> (\`${user.id}\`)`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    `<@${user.id}> is now **banned from gork** in this server — triggers get the generic "brain went to lunch" reply (they are not told it's a ban). Lift it with \`/gork unban\`.`,
-  );
+  await commandCtx.reply({
+    content: `<@${user.id}> is now **banned from gork** in this server — triggers get the generic "brain went to lunch" reply (they are not told it's a ban). Lift it with \`/gork unban\`.`,
+    sensitive: true,
+  });
 }
 
 /**
  * /gork unban: lift a user's gork ban in this guild.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function unbanUser(client, interaction, guildId, communityId) {
-  const user = interaction.options.getUser("user");
+async function unbanUser(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const user = commandCtx.options.getUser("user");
   if (!user) {
-    return replyEphemeral(interaction, "Pick a user to unban from gork.");
+    return commandCtx.reply({
+      content: "Pick a user to unban from gork.",
+      sensitive: true,
+    });
   }
   const removed = removeGorkBlock(communityId, user.id);
   if (!removed) {
-    return replyEphemeral(
-      interaction,
-      `<@${user.id}> is not banned from gork in this server.`,
-    );
+    return commandCtx.reply({
+      content: `<@${user.id}> is not banned from gork in this server.`,
+      sensitive: true,
+    });
   }
   recordSlashAudit({
-    interaction,
     communityId,
+    actorUserId: commandCtx.userId,
     action: "gork.unban",
     targetType: "user",
     targetId: user.id,
   });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Gork user unbanned",
     command: "/gork unban",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Unbanned from gork: <@${user.id}> (\`${user.id}\`)`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    `<@${user.id}> can use gork again in this server.`,
-  );
+  await commandCtx.reply({
+    content: `<@${user.id}> can use gork again in this server.`,
+    sensitive: true,
+  });
 }
 
 /**
  * /gork bans: ephemeral list of users banned from gork in this guild.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function showBans(interaction, guildId, communityId) {
-  const blocks = listGorkBlocks(communityId);
+async function showBans(commandCtx) {
+  const blocks = listGorkBlocks(commandCtx.communityId);
   if (!blocks.length) {
-    return replyEphemeral(
-      interaction,
-      "No users are banned from gork in this server.",
-    );
+    return commandCtx.reply({
+      content: "No users are banned from gork in this server.",
+      sensitive: true,
+    });
   }
   const shown = blocks.slice(0, BANS_LIST_MAX).map((b) => `- <@${b.user_id}>`);
   if (blocks.length > BANS_LIST_MAX) {
     shown.push(`…and ${blocks.length - BANS_LIST_MAX} more`);
   }
-  await replyEphemeral(
-    interaction,
-    `**Gork bans (${blocks.length}):**\n${shown.join("\n")}`,
-  );
+  await commandCtx.reply({
+    content: `**Gork bans (${blocks.length}):**\n${shown.join("\n")}`,
+    sensitive: true,
+  });
 }
 
 /**
@@ -467,19 +522,21 @@ function capMemoryLines(lines, totalMax) {
 /**
  * /gork memory show [user]: ephemeral listing with `#id` handles — one
  * person's memories when `user` is given, otherwise the newest guild rows.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function showMemory(interaction, guildId, communityId) {
-  const target = interaction.options.getUser("user");
+async function showMemory(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const target = commandCtx.options.getUser("user");
   const rows = target
     ? gorkMemoryListForSubject(communityId, target.id)
     : gorkMemoryListForGuild(communityId, MEMORIES_LIST_MAX);
   if (!rows.length) {
-    return replyEphemeral(
-      interaction,
-      target
+    return commandCtx.reply({
+      content: target
         ? `No memories stored for <@${target.id}> in this server.`
         : "No memories stored in this server yet.",
-    );
+      sensitive: true,
+    });
   }
   const heading = target
     ? `**Gork memories for <@${target.id}> (${rows.length}):**`
@@ -490,48 +547,58 @@ async function showMemory(interaction, guildId, communityId) {
   );
   const lines = [...shown];
   if (hidden > 0) lines.push(`…and ${hidden} more`);
-  await replyEphemeral(interaction, `${heading}\n${lines.join("\n")}`);
+  await commandCtx.reply({
+    content: `${heading}\n${lines.join("\n")}`,
+    sensitive: true,
+  });
 }
 
 /**
  * /gork memory forget <id>: delete one memory by its `#id` handle.
  * Guild-scoped — a miss never hints whether the id exists elsewhere.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function forgetMemory(client, interaction, guildId, communityId) {
-  const rawId = interaction.options.getInteger("id");
+async function forgetMemory(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const rawId = commandCtx.options.getInteger("id");
   if (!Number.isInteger(rawId) || rawId <= 0) {
-    return replyEphemeral(
-      interaction,
-      "`id` must be a positive whole number — the `#id` handle from `/gork memory show`.",
-    );
+    return commandCtx.reply({
+      content: "`id` must be a positive whole number — the `#id` handle from `/gork memory show`.",
+      sensitive: true,
+    });
   }
   const row = gorkMemoryGetById(communityId, rawId);
   if (!row) {
-    return replyEphemeral(interaction, `No memory #${rawId} in this guild.`);
+    return commandCtx.reply({
+      content: `No memory #${rawId} in this guild.`,
+      sensitive: true,
+    });
   }
   gorkMemoryDeleteById(communityId, rawId);
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Gork memory forgotten",
     command: "/gork memory",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `Forgot memory #${row.id}: \`${row.title}\` (about <@${row.subject_user_id}>)`,
     ],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    `Forgot memory **#${row.id}** — \`${row.title}\` (about <@${row.subject_user_id}>).`,
-  );
+  await commandCtx.reply({
+    content: `Forgot memory **#${row.id}** — \`${row.title}\` (about <@${row.subject_user_id}>).`,
+    sensitive: true,
+  });
 }
 
 /**
  * /gork memory clear [user]: wipe one person's (with `user`) or the whole
  * guild's memories. Confirm-once: without `confirm: true` this only shows
  * the damage preview.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function clearMemory(client, interaction, guildId, communityId) {
-  const target = interaction.options.getUser("user");
-  const confirmed = interaction.options.getBoolean("confirm") === true;
+async function clearMemory(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const target = commandCtx.options.getUser("user");
+  const confirmed = commandCtx.options.getBoolean("confirm") === true;
   const scope = target
     ? {
         count: gorkMemoryListForSubject(communityId, target.id).length,
@@ -547,58 +614,60 @@ async function clearMemory(client, interaction, guildId, communityId) {
       };
 
   if (scope.count === 0) {
-    return replyEphemeral(
-      interaction,
-      target
+    return commandCtx.reply({
+      content: target
         ? `No memories stored for <@${target.id}> — nothing to erase.`
         : "No memories stored in this server — nothing to erase.",
-    );
+      sensitive: true,
+    });
   }
   if (!confirmed) {
-    return replyEphemeral(
-      interaction,
-      `This will erase **${scope.count}** ${scope.noun}. Re-run with \`confirm: true\` to actually erase.`,
-    );
+    return commandCtx.reply({
+      content: `This will erase **${scope.count}** ${scope.noun}. Re-run with \`confirm: true\` to actually erase.`,
+      sensitive: true,
+    });
   }
 
   const deleted = scope.run();
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Gork memory cleared",
     command: "/gork memory",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       target
         ? `Erased ${deleted} memories for <@${target.id}> (\`${target.id}\`)`
         : `Erased ${deleted} memories (whole guild)`,
     ],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    `Erased **${deleted}** ${scope.noun}.`,
-  );
+  await commandCtx.reply({
+    content: `Erased **${deleted}** ${scope.noun}.`,
+    sensitive: true,
+  });
 }
 
 /**
  * /gork memory on|off: master switch for community memory (default off —
  * every answered question costs an extra extraction LLM call).
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {string} action "on" | "off" from the dispatcher
  */
-async function setMemoryEnabled(client, interaction, guildId, communityId, action) {
-  const settings = updateGuildSettings(communityId, {
+async function setMemoryEnabled(commandCtx, action) {
+  const settings = updateGuildSettings(commandCtx.communityId, {
     gork_memory_enabled: action === "on" ? 1 : 0,
   });
   const on = Number(settings.gork_memory_enabled) === 1;
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: `Gork memory ${on ? "enabled" : "disabled"}`,
     command: "/gork memory",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Memory: ${on ? "on" : "off"}`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    on
+  await commandCtx.reply({
+    content: on
       ? "Gork memory is now **on** — gork extracts durable facts about people after each answer and remembers them. Turn it off again with `/gork memory off`."
       : "Gork memory is now **off** — nothing new is stored and no memory block is injected. Stored memories stay until staff erase them (`/gork memory show` / `forget` / `clear`).",
-  );
+    sensitive: true,
+  });
 }
 
 /**
@@ -606,9 +675,11 @@ async function setMemoryEnabled(client, interaction, guildId, communityId, actio
  * capture). ON stores one gork_interactions row per agent call (exact
  * prompts, transcript, outcome) for replay/debug; rows age out on the
  * env-configured retention window. Mirrors the memory toggle's shape.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setInteractionLog(client, interaction, guildId, communityId) {
-  const enabled = interaction.options.getBoolean("enabled") === true;
+async function setInteractionLog(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const enabled = commandCtx.options.getBoolean("enabled") === true;
   let settings;
   try {
     settings = updateGuildSettings(communityId, {
@@ -616,38 +687,40 @@ async function setInteractionLog(client, interaction, guildId, communityId) {
     });
   } catch (err) {
     // Surface the specific cause (AGENTS.md): never a bare generic failure.
-    return replyEphemeral(
-      interaction,
-      `Could not update the interaction log setting: ${err?.message || err}`,
-    );
+    return commandCtx.reply({
+      content: `Could not update the interaction log setting: ${err?.message || err}`,
+      sensitive: true,
+    });
   }
   const on = Number(settings.gork_interaction_log_enabled ?? 1) === 1;
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: `Gork interaction log ${on ? "enabled" : "disabled"}`,
     command: "/gork log",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Interaction log: ${on ? "on" : "off"}`],
   }).catch(() => {});
   const rows = countGorkInteractions(communityId);
-  await replyEphemeral(
-    interaction,
-    on
+  await commandCtx.reply({
+    content: on
       ? `Gork interaction log is now **on** — every gork agent call in this server is recorded (\`${rows}\` row${rows === 1 ? "" : "s"} stored so far).`
       : `Gork interaction log is now **off** — agent calls are no longer recorded (\`${rows}\` row${rows === 1 ? "" : "s"} remain; they age out with retention).`,
-  );
+    sensitive: true,
+  });
 }
 
 /**
  * /gork memory budget <chars>: cap for the injected memory block
  * (0–64,000; 0 = unlimited; garbage → default 12,000).
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setMemoryBudget(client, interaction, guildId, communityId) {
-  const raw = interaction.options.getInteger("chars");
+async function setMemoryBudget(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = commandCtx.options.getInteger("chars");
   if (raw === null) {
-    return replyEphemeral(
-      interaction,
-      "Provide `chars` — the memory-block budget in characters (0–64000; 0 = unlimited).",
-    );
+    return commandCtx.reply({
+      content: "Provide `chars` — the memory-block budget in characters (0–64000; 0 = unlimited).",
+      sensitive: true,
+    });
   }
   // Lazy require: the memory module owns the clamp, and the command surface
   // must load fine without it (same pattern as the trigger's memory hooks).
@@ -657,42 +730,43 @@ async function setMemoryBudget(client, interaction, guildId, communityId) {
     gork_memory_chars: value,
   });
   const stored = Number(settings.gork_memory_chars);
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Gork memory budget updated",
     command: "/gork memory",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Memory budget: ${stored} chars${stored === 0 ? " (unlimited)" : ""}`],
   }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    stored === 0
+  await commandCtx.reply({
+    content: stored === 0
       ? "Gork memory budget set to **0** — the memory block is **unlimited** (0 = unlimited)."
       : `Gork memory budget set to **${stored}** chars. \`0\` = unlimited.`,
-  );
+    sensitive: true,
+  });
 }
 
 /**
  * /gork memory dispatcher (action option → verb).
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function handleMemory(client, interaction, guildId, communityId) {
-  const action = (interaction.options.getString("action") || "").toLowerCase();
+async function handleMemory(commandCtx) {
+  const action = (commandCtx.options.getString("action") || "").toLowerCase();
   switch (action) {
     case "show":
-      return showMemory(interaction, guildId, communityId);
+      return showMemory(commandCtx);
     case "forget":
-      return forgetMemory(client, interaction, guildId, communityId);
+      return forgetMemory(commandCtx);
     case "clear":
-      return clearMemory(client, interaction, guildId, communityId);
+      return clearMemory(commandCtx);
     case "on":
     case "off":
-      return setMemoryEnabled(client, interaction, guildId, communityId, action);
+      return setMemoryEnabled(commandCtx, action);
     case "budget":
-      return setMemoryBudget(client, interaction, guildId, communityId);
+      return setMemoryBudget(commandCtx);
     default:
-      return replyEphemeral(
-        interaction,
-        `Unknown memory action: \`${action}\`.`,
-      );
+      return commandCtx.reply({
+        content: `Unknown memory action: \`${action}\`.`,
+        sensitive: true,
+      });
   }
 }
 
@@ -700,64 +774,87 @@ async function handleMemory(client, interaction, guildId, communityId) {
  * `/gork budget default <limit>`: guild-default tri-state limit
  * (-1 blocked, 0 unlimited, 1–1000 successful answers per user per UTC
  * day; clamped by the settings layer — roadmap §7.17.2).
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function setBudgetDefault(client, interaction, guildId, communityId) {
-  const limit = interaction.options.getInteger("limit");
+async function setBudgetDefault(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const limit = commandCtx.options.getInteger("limit");
   if (limit === null) {
-    return replyEphemeral(
-      interaction,
-      `Provide \`limit\`: \`-1\` blocked · \`0\` unlimited · \`1–${BUDGET_MAX}\` successful answers per user per UTC day.`,
-    );
+    return commandCtx.reply({
+      content: `Provide \`limit\`: \`-1\` blocked · \`0\` unlimited · \`1–${BUDGET_MAX}\` successful answers per user per UTC day.`,
+      sensitive: true,
+    });
   }
   const settings = updateGuildSettings(communityId, { gork_daily_limit: limit });
   const stored = settings.gork_daily_limit;
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: "Gork budget default updated",
     command: "/gork budget",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Guild-default daily budget: ${formatDailyLimit(stored)} (\`${stored}\`)`],
   }).catch(() => {});
-  return replyEphemeral(
-    interaction,
-    `Guild-default daily budget set to **${formatDailyLimit(stored)}** (\`${stored}\`).`,
-  );
+  return commandCtx.reply({
+    content: `Guild-default daily budget set to **${formatDailyLimit(stored)}** (\`${stored}\`).`,
+    sensitive: true,
+  });
 }
 
 /**
  * `/gork budget channel|category <target> <limit>`: add/replace a per-scope
  * rule. The most specific scope wins (channel → category → guild default);
  * a category rule pools every channel inside it (decision 30).
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {"channel"|"category"} scopeKind
  */
-async function setBudgetScope(client, interaction, guildId, communityId, scopeKind) {
-  const limit = interaction.options.getInteger("limit");
+async function setBudgetScope(commandCtx, scopeKind) {
+  const communityId = commandCtx.communityId;
+  const limit = commandCtx.options.getInteger("limit");
   if (limit === null) {
-    return replyEphemeral(
-      interaction,
-      `Provide \`limit\`: \`-1\` blocked · \`0\` unlimited · \`1–${BUDGET_MAX}\` successful answers per user per UTC day.`,
-    );
+    return commandCtx.reply({
+      content: `Provide \`limit\`: \`-1\` blocked · \`0\` unlimited · \`1–${BUDGET_MAX}\` successful answers per user per UTC day.`,
+      sensitive: true,
+    });
   }
-  const target = interaction.options.getChannel("target");
-  if (!target?.id) {
-    return replyEphemeral(
-      interaction,
-      `Pick the ${scopeKind} in \`target\` (or use \`/gork budget default\` for the guild-wide limit).`,
-    );
+  const picked = commandCtx.options.getChannel("target");
+  if (!picked?.id) {
+    return commandCtx.reply({
+      content: `Pick the ${scopeKind} in \`target\` (or use \`/gork budget default\` for the guild-wide limit).`,
+      sensitive: true,
+    });
+  }
+  // Channel resolution prefers the RESOLVED picker object from the transport
+  // (discord.js supplies the full channel; the pre-seam code read exactly
+  // this). OutboundClient.fetchChannel is the fallback for transports that
+  // only expose the seam's { id, type } handle — validating kind + binding a
+  // thread to its parent needs more than the handle carries (roadmap
+  // § Outbound client; ticker-side cutover is PR 7).
+  const raw = commandCtx.rawInteraction;
+  const target =
+    (typeof raw?.options?.getChannel === "function"
+      ? raw.options.getChannel("target")
+      : null) ??
+    (await commandCtx.outbound.fetchChannel(communityId, String(picked.id)));
+  if (!target) {
+    return commandCtx.reply({
+      content: `Could not find <#${picked.id}> in this server — the bot must be able to see the ${scopeKind} to set a rule on it.`,
+      sensitive: true,
+    });
   }
   // Guard the picker against kind mismatches: a category rule on a text
   // channel id (or vice versa) could never match a trigger — reject rather
   // than store a dead rule.
-  const isCategory = Number(target.type) === ChannelType.GuildCategory;
+  const isCategory = Number(target.type) === CATEGORY_TYPE;
   if (scopeKind === "category" && !isCategory) {
-    return replyEphemeral(
-      interaction,
-      "`target` must be a **category** for `category` rules (a rule on a text channel belongs to `channel`).",
-    );
+    return commandCtx.reply({
+      content: "`target` must be a **category** for `category` rules (a rule on a text channel belongs to `channel`).",
+      sensitive: true,
+    });
   }
   if (scopeKind === "channel" && isCategory) {
-    return replyEphemeral(
-      interaction,
-      "`target` must be a **channel/thread** for `channel` rules (use `category` for categories).",
-    );
+    return commandCtx.reply({
+      content: "`target` must be a **channel/thread** for `channel` rules (use `category` for categories).",
+      sensitive: true,
+    });
   }
   // Threads bind their PARENT channel (mirrors the trigger-side resolution
   // in budget.js `channelScopeIdFor`): a rule stored on a thread id could
@@ -768,25 +865,25 @@ async function setBudgetScope(client, interaction, guildId, communityId, scopeKi
   let boundToThreadParent = false;
   if (scopeKind === "channel" && isThread) {
     if (!target.parent?.id) {
-      return replyEphemeral(
-        interaction,
-        "Could not resolve that thread's parent channel — pick the parent channel directly instead.",
-      );
+      return commandCtx.reply({
+        content: "Could not resolve that thread's parent channel — pick the parent channel directly instead.",
+        sensitive: true,
+      });
     }
     targetId = String(target.parent.id);
     boundToThreadParent = true;
   }
   const stored = clampGorkDailyLimit(limit);
-  if (!upsertGorkBudgetRule(communityId, scopeKind, targetId, stored, interaction.user.id)) {
-    return replyEphemeral(
-      interaction,
-      `Could not store the ${scopeKind} rule for \`${targetId}\` — invalid target.`,
-    );
+  if (!upsertGorkBudgetRule(communityId, scopeKind, targetId, stored, commandCtx.userId)) {
+    return commandCtx.reply({
+      content: `Could not store the ${scopeKind} rule for \`${targetId}\` — invalid target.`,
+      sensitive: true,
+    });
   }
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: `Gork budget ${scopeKind} rule updated`,
     command: "/gork budget",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [
       `${scopeKind} ${target.name || targetId} (\`${targetId}\`): ${formatDailyLimit(stored)} (\`${stored}\`)${
         boundToThreadParent ? " — bound from thread target to its parent channel" : ""
@@ -799,67 +896,83 @@ async function setBudgetScope(client, interaction, guildId, communityId, scopeKi
   const threadNote = boundToThreadParent
     ? " — thread target bound to its **parent channel** (threads share their parent's rule)"
     : "";
-  return replyEphemeral(
-    interaction,
-    `Daily gork budget for ${scopeKind} ${ref} is now **${formatDailyLimit(stored)}** (\`${stored}\`)${threadNote}.`,
-  );
+  return commandCtx.reply({
+    content: `Daily gork budget for ${scopeKind} ${ref} is now **${formatDailyLimit(stored)}** (\`${stored}\`)${threadNote}.`,
+    sensitive: true,
+  });
 }
 
 /**
  * `/gork budget remove_channel|remove_category <id>`: drop a rule so the
  * scope falls back to category → guild default. Accepts the picker or a raw
  * id (deleted channels the picker cannot offer).
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {"channel"|"category"} scopeKind
  */
-async function removeBudgetScope(client, interaction, guildId, communityId, scopeKind) {
-  const target = interaction.options.getChannel("target");
-  const rawId = (interaction.options.getString("id") || "").trim();
-  let targetId = target?.id ? String(target.id) : rawId;
+async function removeBudgetScope(commandCtx, scopeKind) {
+  const communityId = commandCtx.communityId;
+  const picked = commandCtx.options.getChannel("target");
+  const rawId = (commandCtx.options.getString("id") || "").trim();
+  let targetId = picked?.id ? String(picked.id) : rawId;
   if (!targetId) {
-    return replyEphemeral(
-      interaction,
-      `Pick \`target\` or type the raw \`id\` of the ${scopeKind} rule to remove.`,
-    );
+    return commandCtx.reply({
+      content: `Pick \`target\` or type the raw \`id\` of the ${scopeKind} rule to remove.`,
+      sensitive: true,
+    });
   }
   // Mirror the set-side normalization: thread targets address the PARENT
   // channel's rule (thread-id rules are never stored, so deleting by thread
-  // id would falsely report "no rule").
-  if (scopeKind === "channel" && target) {
-    if (isThreadLike(target)) {
+  // id would falsely report "no rule"). The full channel is taken from the
+  // transport's RESOLVED picker object (discord.js/mocks supply the full
+  // shape, pre-seam behavior); OutboundClient.fetchChannel is the fallback
+  // for transports exposing only the { id, type } handle. A null resolution
+  // (deleted / invisible channel) keeps the picked id, which is exactly
+  // what the remove-by-id path targets.
+  if (scopeKind === "channel" && picked?.id) {
+    const raw = commandCtx.rawInteraction;
+    const target =
+      (typeof raw?.options?.getChannel === "function"
+        ? raw.options.getChannel("target")
+        : null) ??
+      (await commandCtx.outbound.fetchChannel(communityId, String(picked.id)));
+    if (target && isThreadLike(target)) {
       if (!target.parent?.id) {
-        return replyEphemeral(
-          interaction,
-          "Could not resolve that thread's parent channel — remove the rule by the parent channel or its raw `id`.",
-        );
+        return commandCtx.reply({
+          content: "Could not resolve that thread's parent channel — remove the rule by the parent channel or its raw `id`.",
+          sensitive: true,
+        });
       }
       targetId = String(target.parent.id);
     }
   }
   const removed = deleteGorkBudgetRule(communityId, scopeKind, targetId);
   if (!removed) {
-    return replyEphemeral(
-      interaction,
-      `No \`${scopeKind}\` budget rule for \`${targetId}\` in this server.`,
-    );
+    return commandCtx.reply({
+      content: `No \`${scopeKind}\` budget rule for \`${targetId}\` in this server.`,
+      sensitive: true,
+    });
   }
-  await logConfigChange(getDiscordOutbound(client), guildId, {
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
     title: `Gork budget ${scopeKind} rule removed`,
     command: "/gork budget",
-    actor: interaction.user,
+    actor: commandCtx.user,
     changes: [`Removed ${scopeKind} budget rule \`${targetId}\``],
   }).catch(() => {});
   const ref = scopeKind === "channel" ? `<#${targetId}>` : `\`${targetId}\``;
   const fallback = scopeKind === "channel" ? "its category → the guild default" : "the guild default";
-  return replyEphemeral(
-    interaction,
-    `Removed the ${scopeKind} budget rule for ${ref} — it falls back to ${fallback}.`,
-  );
+  return commandCtx.reply({
+    content: `Removed the ${scopeKind} budget rule for ${ref} — it falls back to ${fallback}.`,
+    sensitive: true,
+  });
 }
 
 /**
  * `/gork budget list`: guild default + every rule with `created_by`
  * provenance (decision 37).
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function listBudget(interaction, guildId, communityId) {
+async function listBudget(commandCtx) {
+  const communityId = commandCtx.communityId;
   const settings = getGuildSettings(communityId);
   const rules = listGorkBudgetRules(communityId);
   const lines = rules.slice(0, BUDGET_RULES_LIST_MAX).map((r) => {
@@ -870,57 +983,61 @@ async function listBudget(interaction, guildId, communityId) {
   if (rules.length > lines.length) {
     lines.push(`…and ${rules.length - lines.length} more`);
   }
-  const embed = baseEmbed({
-    color: Color.brand,
+  // Plain NormalizedEmbed — same visible text as the previous baseEmbed.
+  const embed = {
     title: "Gork daily budgets",
-    timestamp: true,
-  });
-  embed.addFields(
-    {
-      name: "Guild default",
-      value: formatDailyLimit(settings.gork_daily_limit ?? 0),
-      inline: true,
-    },
-    {
-      name: "Rules",
-      value: lines.length
-        ? lines.join("\n")
-        : "none — the guild default applies everywhere",
-      inline: false,
-    },
-  );
-  await replyEphemeral(interaction, { embeds: [embed] });
+    color: Color.brand,
+    fields: [
+      {
+        name: "Guild default",
+        value: formatDailyLimit(settings.gork_daily_limit ?? 0),
+        inline: true,
+      },
+      {
+        name: "Rules",
+        value: lines.length
+          ? lines.join("\n")
+          : "none — the guild default applies everywhere",
+        inline: false,
+      },
+    ],
+    timestamp: new Date(),
+  };
+  await commandCtx.reply({ embeds: [embed], sensitive: true });
 }
 
 /**
  * /gork budget dispatcher (action option → verb).
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function handleBudget(client, interaction, guildId, communityId) {
-  const action = (interaction.options.getString("action") || "").toLowerCase();
+async function handleBudget(commandCtx) {
+  const action = (commandCtx.options.getString("action") || "").toLowerCase();
   switch (action) {
     case "default":
-      return setBudgetDefault(client, interaction, guildId, communityId);
+      return setBudgetDefault(commandCtx);
     case "channel":
     case "category":
-      return setBudgetScope(client, interaction, guildId, communityId, action);
+      return setBudgetScope(commandCtx, action);
     case "remove_channel":
-      return removeBudgetScope(client, interaction, guildId, communityId, "channel");
+      return removeBudgetScope(commandCtx, "channel");
     case "remove_category":
-      return removeBudgetScope(client, interaction, guildId, communityId, "category");
+      return removeBudgetScope(commandCtx, "category");
     case "list":
-      return listBudget(interaction, guildId, communityId);
+      return listBudget(commandCtx);
     default:
-      return replyEphemeral(
-        interaction,
-        `Unknown budget action: \`${action}\`.`,
-      );
+      return commandCtx.reply({
+        content: `Unknown budget action: \`${action}\`.`,
+        sensitive: true,
+      });
   }
 }
 
 /**
  * /gork status: ephemeral embed of the current configuration.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function showStatus(interaction, guildId, communityId) {
+async function showStatus(commandCtx) {
+  const communityId = commandCtx.communityId;
   const settings = getGuildSettings(communityId);
   const enabled = Number(settings.gork_enabled ?? 1) === 1;
   const keyword = (settings.gork_keyword || "").trim();
@@ -939,60 +1056,65 @@ async function showStatus(interaction, guildId, communityId) {
     typeof process.env.SEARXNG_URL === "string" && process.env.SEARXNG_URL.trim(),
   );
 
-  const embed = baseEmbed({ color: Color.brand, title: "Gork status", timestamp: true });
-  embed.addFields(
-    { name: "Enabled", value: enabled ? "on" : "**off** (server disabled)", inline: true },
-    { name: "Keyword", value: keyword ? `\`${keyword}\`` : "disabled", inline: true },
-    { name: "Context window", value: `${settings.gork_context_window} messages`, inline: true },
-    {
-      name: "Cooldown",
-      value: `${cooldownSec}s per user (staff bypass)`,
-      inline: true,
-    },
-    { name: "Rules", value: rules || "none", inline: true },
-    { name: "Search (SearXNG)", value: searchOn ? "on" : "off", inline: true },
-    {
-      // §7.20: STE anti-slop answer style (decision 50 surface).
-      name: "STE answer style",
-      value: Number(settings.gork_ste_enabled ?? 0) === 1 ? "on" : "off",
-      inline: true,
-    },
-    {
-      name: "AI provider",
-      value: ai.apiKey ? "configured" : "**not configured**",
-      inline: true,
-    },
-    { name: "SearXNG URL", value: searxngSet ? "set" : "not set", inline: true },
-    { name: "Banned users", value: String(banCount), inline: true },
-    {
-      name: "Memory",
-      value: memoryOn
-        ? `on · ${Number(settings.gork_memory_chars ?? 12000)} chars · ${memoryCount} stored`
-        : "off",
-      inline: true,
-    },
-    {
-      // E2E capture switch; the count is every row stored for this guild.
-      name: "Interaction Log",
-      value: interactionLogOn ? `On (${interactionLogRows} rows)` : "Off",
-      inline: true,
-    },
-    {
-      // §7.17.7: `default 5 · 3 rules` (tri-state rendered via formatDailyLimit).
-      name: "Budget",
-      value: `default ${formatDailyLimit(settings.gork_daily_limit ?? 0)} · ${budgetRules.length} rule${
-        budgetRules.length === 1 ? "" : "s"
-      }`,
-      inline: true,
-    },
-    {
-      // Per-guild /gork summarize INPUT token budget (8k–120k, default 80k).
-      name: "Summarize budget",
-      value: `${clampSummarizeInputTokens(settings.gork_summarize_input_tokens)} input tokens`,
-      inline: true,
-    },
-  );
-  await replyEphemeral(interaction, { embeds: [embed] });
+  // Plain NormalizedEmbed — same visible text as the previous baseEmbed.
+  const embed = {
+    title: "Gork status",
+    color: Color.brand,
+    timestamp: new Date(),
+    fields: [
+      { name: "Enabled", value: enabled ? "on" : "**off** (server disabled)", inline: true },
+      { name: "Keyword", value: keyword ? `\`${keyword}\`` : "disabled", inline: true },
+      { name: "Context window", value: `${settings.gork_context_window} messages`, inline: true },
+      {
+        name: "Cooldown",
+        value: `${cooldownSec}s per user (staff bypass)`,
+        inline: true,
+      },
+      { name: "Rules", value: rules || "none", inline: true },
+      { name: "Search (SearXNG)", value: searchOn ? "on" : "off", inline: true },
+      {
+        // §7.20: STE anti-slop answer style (decision 50 surface).
+        name: "STE answer style",
+        value: Number(settings.gork_ste_enabled ?? 0) === 1 ? "on" : "off",
+        inline: true,
+      },
+      {
+        name: "AI provider",
+        value: ai.apiKey ? "configured" : "**not configured**",
+        inline: true,
+      },
+      { name: "SearXNG URL", value: searxngSet ? "set" : "not set", inline: true },
+      { name: "Banned users", value: String(banCount), inline: true },
+      {
+        name: "Memory",
+        value: memoryOn
+          ? `on · ${Number(settings.gork_memory_chars ?? 12000)} chars · ${memoryCount} stored`
+          : "off",
+        inline: true,
+      },
+      {
+        // E2E capture switch; the count is every row stored for this guild.
+        name: "Interaction Log",
+        value: interactionLogOn ? `On (${interactionLogRows} rows)` : "Off",
+        inline: true,
+      },
+      {
+        // §7.17.7: `default 5 · 3 rules` (tri-state rendered via formatDailyLimit).
+        name: "Budget",
+        value: `default ${formatDailyLimit(settings.gork_daily_limit ?? 0)} · ${budgetRules.length} rule${
+          budgetRules.length === 1 ? "" : "s"
+        }`,
+        inline: true,
+      },
+      {
+        // §7.21: per-guild /gork summarize INPUT token budget (8k–120k, default 80k).
+        name: "Summarize budget",
+        value: `${clampSummarizeInputTokens(settings.gork_summarize_input_tokens)} input tokens`,
+        inline: true,
+      },
+    ],
+  };
+  await commandCtx.reply({ embeds: [embed], sensitive: true });
 }
 
 /* ---------------------- /gork summarize (§7.21) ---------------------- */
@@ -1011,9 +1133,10 @@ function summarizeBudgetDay() {
 /**
  * The `channel:` option is a channel PICKER (object) on the slash surface;
  * the range reader wants its id string (bare ids parse fine — decision 54).
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-function summarizeChannelArg(interaction) {
-  const raw = interaction.options.getChannel("channel");
+function summarizeChannelArg(commandCtx) {
+  const raw = commandCtx.options.getChannel("channel");
   if (raw == null) return null;
   const id =
     typeof raw === "string"
@@ -1030,19 +1153,23 @@ function summarizeChannelArg(interaction) {
  * All-chunks-land semantics (decision 32): the caller bookkeeps success ONLY
  * when `ok:true`; a mid-sequence failure reports exactly how many landed and
  * the cause (repo partial-results rule — the poster arms nothing, counts
- * nothing). The first payload resolves the deferred interaction (editReply),
+ * nothing). The first payload resolves the deferred reply (editReply),
  * continuations follow as channel messages (followUp).
  *
+ * @param {{ editReply: Function, followUp: Function }} poster
+ *   anything exposing the reply trio (a CommandContext — and the test seam's
+ *   interaction-shaped fake — both satisfy this)
+ * @param {object[]} payloads
  * @returns {Promise<{ ok: boolean, posted: object[], error?: string }>}
  */
-async function postRundownPayloads(interaction, payloads) {
+async function postRundownPayloads(poster, payloads) {
   const posted = [];
   try {
     for (let i = 0; i < payloads.length; i += 1) {
       const msg =
         i === 0
-          ? await interaction.editReply(payloads[i])
-          : await interaction.followUp(payloads[i]);
+          ? await poster.editReply(payloads[i])
+          : await poster.followUp(payloads[i]);
       posted.push(msg ?? {});
     }
     return { ok: true, posted };
@@ -1072,10 +1199,28 @@ async function summarizeFailureAudit(client, guildId, base, reason) {
  * bookkeeping. Runs INSIDE the shared per-guild gork queue slot; every
  * branch replies with its specific cause (AGENTS.md) and bookkeeps success
  * (cooldown arm + budget count) ONLY when every embed landed. Never throws.
+ *
+ * Discord-only body: `raw`/`client` supply the real discord.js guild/channel/
+ * interaction-id plumbing the range reader, generator, and audit poster need
+ * until the OutboundClient cutover (PR 7). Fluxer never reaches this function
+ * — summarizeMain guards it with the standard Discord-only line.
+ *
+ * @param {object} job
+ * @param {import("../../platform/context").CommandContext} job.commandCtx
+ * @param {object} job.raw the Discord rawInteraction (guaranteed by summarizeMain)
+ * @param {object} job.client the discord.js client (raw.client)
+ * @param {string} job.guildId external (Discord) guild id for display/audit
+ * @param {number} job.communityId integer repository key
+ * @param {string|null} job.userId invoker id
+ * @param {string} job.day UTC day key
+ * @param {object} job.opts reader options (from/to/last/channel/focus/lang)
+ * @param {object} job.mode validated summarize mode from validateSummarizeMode
+ * @param {object} job.settings guild settings snapshot
  */
 async function runSummarizeJob({
+  commandCtx,
+  raw,
   client,
-  interaction,
   guildId,
   communityId,
   userId,
@@ -1084,25 +1229,25 @@ async function runSummarizeJob({
   mode,
   settings,
 }) {
-  const guild = interaction.guild;
+  const guild = raw.guild;
   const startedAt = Date.now();
   const channelBase = {
-    user: interaction.user,
-    channelId: interaction.channelId,
-    channelLabel: formatChannelLabel(interaction.channel),
+    user: commandCtx.user,
+    channelId: commandCtx.channelId,
+    channelLabel: formatChannelLabel(raw.channel),
   };
 
   // §7.17.4 dequeue re-check (mirrors trigger.js): queued work can arrive
   // after the budget spent itself — bounce WITHOUT the LLM call, WITHOUT a
   // count, and WITHOUT arming the guild cooldown.
-  const budgetChannel = interaction.channel ?? { id: interaction.channelId };
+  const budgetChannel = raw.channel ?? { id: commandCtx.channelId };
   const gate = checkGorkBudget({ communityId, userId, channel: budgetChannel, day });
   if (!gate.allowed) {
     if (gate.kind === "error") {
       console.error(
         `[gork] summarize budget gate error at dequeue in ${guildId}: user=${userId} day=${day} — failing closed`,
       );
-      return interaction.editReply(
+      return commandCtx.editReply(
         "Could not re-check your gork daily budget when the rundown job started (database error, logged) — nothing was generated or counted.",
       );
     }
@@ -1111,7 +1256,7 @@ async function runSummarizeJob({
         gate.scope ? `${gate.scope.scopeKind}/${gate.scope.scopeId}` : "?"
       } day=${day} — bounced, no LLM call`,
     );
-    return interaction.editReply(gate.reply);
+    return commandCtx.editReply(gate.reply);
   }
 
   // Range read (§7.21.2). A bare anchor / `last:` defaults to the channel
@@ -1124,13 +1269,13 @@ async function runSummarizeJob({
       guildId,
       guild,
       invokerId: userId,
-      fallbackChannelId: interaction.channelId,
+      fallbackChannelId: commandCtx.channelId,
       tokenBudget,
     },
   );
   if (!read.ok) {
     console.error(
-      `[gork] summarize read failed in ${guildId}: user=${userId} channel=${interaction.channelId} mode=${mode.mode} cmd=/gork summarize code=${read.code} — ${read.error}`,
+      `[gork] summarize read failed in ${guildId}: user=${userId} channel=${commandCtx.channelId} mode=${mode.mode} cmd=/gork summarize code=${read.code} — ${read.error}`,
     );
     await summarizeFailureAudit(client, guildId, channelBase, `range read failed (${read.code}): ${read.error}`);
     let text = read.error;
@@ -1139,7 +1284,7 @@ async function runSummarizeJob({
       // read and why no rundown came out of it.
       text += `\nPartial window actually read: **${read.partial.count}** message(s) (${read.partial.firstId} → ${read.partial.lastId}) — discarded; the rundown needs the complete range, so nothing was produced or counted.`;
     }
-    return interaction.editReply(text);
+    return commandCtx.editReply(text);
   }
 
   // Interaction log (migration 027, §7.21.5): one summarize row per agent
@@ -1152,8 +1297,8 @@ async function runSummarizeJob({
     recorder = createSummarizeInteractionRecorder({
       settings,
       communityId,
-      channelId: interaction.channelId,
-      interactionId: interaction.id ?? null,
+      channelId: commandCtx.channelId,
+      interactionId: raw.id ?? null,
       userId,
       mode: read.mode,
       lastCount: read.requestedLast,
@@ -1202,7 +1347,7 @@ async function runSummarizeJob({
       durationMs: Date.now() - startedAt,
     });
     await summarizeFailureAudit(client, guildId, channelBase, `generation failed (${gen.code}): ${gen.error}`);
-    return interaction.editReply(
+    return commandCtx.editReply(
       `${gen.error}\nNothing was posted, no cooldown was armed, and your budget was not counted — you can retry.`,
     );
   }
@@ -1217,7 +1362,7 @@ async function runSummarizeJob({
       lastId: read.lastId,
       channelId: read.channelId,
     },
-    invoker: interaction.user,
+    invoker: commandCtx.user,
     // Reader's clamp wording verbatim — decision 54's disclosed window.
     ...(read.clampNote ? { disclosure: read.clampNote } : {}),
     timestamp: true,
@@ -1232,7 +1377,7 @@ async function runSummarizeJob({
     // only inside the embed's "Disclosed window" field.
     i === 0 && read.clampNote ? { ...payload, content: read.clampNote } : payload,
   );
-  const post = await postRundownPayloads(interaction, payloads);
+  const post = await postRundownPayloads(commandCtx, payloads);
   if (!post.ok) {
     console.error(
       `[gork] summarize embed post failed in ${guildId}: user=${userId} mode=${read.mode} cmd=/gork summarize — posted ${post.posted.length}/${payloads.length}: ${post.error}`,
@@ -1252,14 +1397,22 @@ async function runSummarizeJob({
     // Report posted count + cause; arm nothing, count nothing (decision 32).
     const note = `⚠️ Could not finish posting the rundown: ${post.error} — **${post.posted.length}** of ${payloads.length} embed${payloads.length === 1 ? "" : "s"} landed. No cooldown was armed and your budget was not counted; you can retry.`;
     try {
-      await interaction.followUp({ content: note, allowedMentions: NO_PING_MENTIONS });
+      await commandCtx.followUp({
+        content: note,
+        allowedMentions: NO_PING_MENTIONS,
+      });
     } catch (reportErr) {
       console.error(
         `[gork] summarize post-failure followUp failed in ${guildId}:`,
         reportErr?.message || reportErr,
       );
-      await interaction.channel
-        ?.send({ content: note, allowedMentions: NO_PING_MENTIONS })
+      // Channel post goes through the OutboundClient (spec: features never
+      // call channel.send directly).
+      await commandCtx.outbound
+        .sendChannel(commandCtx.channelId, {
+          content: note,
+          allowedMentions: NO_PING_MENTIONS,
+        })
         .catch(() => {});
     }
     return undefined;
@@ -1295,7 +1448,7 @@ async function runSummarizeJob({
 
   const readChannel = guild?.channels?.cache?.get(read.channelId) ?? null;
   await logGorkSummarize(client, guildId, {
-    user: interaction.user,
+    user: commandCtx.user,
     mode: read.mode,
     lastCount: read.requestedLast,
     channelLabel: formatChannelLabel(readChannel) || undefined,
@@ -1326,16 +1479,30 @@ async function runSummarizeJob({
  * /gork summarize body — gate order per §7.21.5 / subtask 08:
  * mode gate → guild cooldown → budget (enqueue) → defer → shared queue slot
  * → (dequeue re-check) → read → generate → post → success bookkeeping.
+ * @param {import("../../platform/context").CommandContext} commandCtx
  */
-async function summarizeMain(client, interaction, guildId, communityId) {
-  const userId = interaction.user?.id ?? null;
+async function summarizeMain(commandCtx) {
+  // Deep rundown plumbing (readSummarizeRange / generateSummarize / the audit
+  // posters) consumes real discord.js Guild/Client objects the CommandContext
+  // cannot supply. Roadmap § CommandContext documents `rawInteraction` as the
+  // escape hatch for exactly this; the OutboundClient cutover for these call
+  // targets is PR 7. Fluxer contexts never carry rawInteraction.
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return undefined;
+  }
+  const client = raw.client;
+  const guildId = commandCtx.externalGuildId;
+  const communityId = commandCtx.communityId;
+  const userId = commandCtx.userId ?? null;
   const opts = {
-    from: (interaction.options.getString("from") || "").trim() || null,
-    to: (interaction.options.getString("to") || "").trim() || null,
-    last: interaction.options.getInteger("last"),
-    channel: summarizeChannelArg(interaction),
-    focus: (interaction.options.getString("focus") || "").trim() || null,
-    lang: (interaction.options.getString("lang") || "").trim() || null,
+    from: (commandCtx.options.getString("from") || "").trim() || null,
+    to: (commandCtx.options.getString("to") || "").trim() || null,
+    last: commandCtx.options.getInteger("last"),
+    channel: summarizeChannelArg(commandCtx),
+    focus: (commandCtx.options.getString("focus") || "").trim() || null,
+    lang: (commandCtx.options.getString("lang") || "").trim() || null,
   };
 
   // 1. Mode exclusivity (decision 53) BEFORE deferring: invalid combos get
@@ -1350,7 +1517,7 @@ async function summarizeMain(client, interaction, guildId, communityId) {
     console.log(
       `[gork] summarize usage error in ${guildId}: user=${userId} cmd=/gork summarize — ${mode.error}`,
     );
-    return replyEphemeral(interaction, mode.error);
+    return commandCtx.reply({ content: mode.error, sensitive: true });
   }
 
   // 2. Per-guild summarize cooldown (§7.21.5, decision 57): while armed,
@@ -1361,17 +1528,17 @@ async function summarizeMain(client, interaction, guildId, communityId) {
     console.log(
       `[gork] summarize guild cooldown hit in ${guildId}: user=${userId} mode=${mode.mode} cmd=/gork summarize remainingMin=${mins} — rejected without read or LLM call`,
     );
-    return replyEphemeral(
-      interaction,
-      `One rundown per server per ${SUMMARIZE_WINDOW_MINUTES} minutes — this server already posted one. Try again in **${mins} minute${mins === 1 ? "" : "s"}**. Nothing was read or generated.`,
-    );
+    return commandCtx.reply({
+      content: `One rundown per server per ${SUMMARIZE_WINDOW_MINUTES} minutes — this server already posted one. Try again in **${mins} minute${mins === 1 ? "" : "s"}**. Nothing was read or generated.`,
+      sensitive: true,
+    });
   }
 
   // 3. Daily budget at enqueue (§7.17, decisions 33/35): same gate, same
   //    locked reply, same 1×/user/scope/hour throttle as the Q&A trigger —
   //    staff are NOT exempt. One UTC day key for the whole invocation.
   const day = summarizeBudgetDay();
-  const budgetChannel = interaction.channel ?? { id: interaction.channelId };
+  const budgetChannel = raw.channel ?? { id: commandCtx.channelId };
   const budgetGate = checkGorkBudget({ communityId, userId, channel: budgetChannel, day });
   if (!budgetGate.allowed) {
     if (budgetGate.kind === "error") {
@@ -1382,10 +1549,10 @@ async function summarizeMain(client, interaction, guildId, communityId) {
       console.error(
         `[gork] summarize budget gate error in ${guildId}: user=${userId} day=${day} cmd=/gork summarize — failing closed`,
       );
-      return replyEphemeral(
-        interaction,
-        "Could not check your gork daily budget — the server's daily-limit settings lookup failed (logged). Nothing was read or generated; try again in a moment.",
-      );
+      return commandCtx.reply({
+        content: "Could not check your gork daily budget — the server's daily-limit settings lookup failed (logged). Nothing was read or generated; try again in a moment.",
+        sensitive: true,
+      });
     }
     console.log(
       `[gork] summarize budget ${budgetGate.kind} in ${guildId}: user=${userId} scope=${
@@ -1393,22 +1560,22 @@ async function summarizeMain(client, interaction, guildId, communityId) {
       } day=${day}`,
     );
     if (shouldSendBudgetRejection({ communityId, userId, scope: budgetGate.scope })) {
-      return replyEphemeral(interaction, budgetGate.reply);
+      return commandCtx.reply({ content: budgetGate.reply, sensitive: true });
     }
     // Throttled (decision 34): the full rejection already went out this
     // hour — resolve the command with a terse echo; never leave the
     // invoker staring at nothing.
-    return replyEphemeral(
-      interaction,
-      budgetGate.kind === "blocked"
+    return commandCtx.reply({
+      content: budgetGate.kind === "blocked"
         ? "gork is blocked for this channel/category/server scope (see the full notice you already received) — the rundown did not run."
         : "You are still over your daily gork budget (full notice above from the last attempt) — it resets 00:00 UTC.",
-    );
+      sensitive: true,
+    });
   }
 
   // 4. Deferred BEFORE any range read or generation (reads paginate up to
   //    1,000 messages; generation runs to a 60s deadline).
-  await interaction.deferReply();
+  await commandCtx.defer();
 
   const settings = getGuildSettings(communityId);
 
@@ -1419,8 +1586,9 @@ async function summarizeMain(client, interaction, guildId, communityId) {
   //    survive.
   const slot = await gorkQueue.runExclusive(communityId, () =>
     runSummarizeJob({
+      commandCtx,
+      raw,
       client,
-      interaction,
       guildId,
       communityId,
       userId,
@@ -1436,7 +1604,7 @@ async function summarizeMain(client, interaction, guildId, communityId) {
     console.log(
       `[gork] summarize queue full in ${guildId}: user=${userId} mode=${mode.mode} cmd=/gork summarize — dropped, nothing was read or generated`,
     );
-    return interaction.editReply(
+    return commandCtx.editReply(
       `${QUEUE_FULL_REPLY} Nothing was read or generated for this rundown.`,
     );
   }
@@ -1447,53 +1615,11 @@ async function summarizeMain(client, interaction, guildId, communityId) {
       `[gork] summarize queue job threw in ${guildId}: user=${userId} mode=${mode.mode} cmd=/gork summarize:`,
       slot.error?.message || slot.error,
     );
-    return interaction.editReply(
+    return commandCtx.editReply(
       `The rundown job crashed: ${slot.error?.message || slot.error} — no cooldown was armed and no budget was counted.`,
     );
   }
   return undefined;
-}
-
-/**
- * /gork summarize-budget: set the per-guild INPUT token budget for
- * /gork summarize (8,000–120,000; default 80,000). The range reader
- * converts it to a transcript char cap (4 chars/token minus the prompt-zone
- * reserve), so the LLM input stays inside the configured budget.
- */
-async function setSummarizeBudget(client, interaction, guildId, communityId) {
-  const raw = interaction.options.getInteger("tokens");
-  if (
-    !Number.isFinite(raw) ||
-    raw < GORK_SUMMARIZE_INPUT_TOKENS_MIN ||
-    raw > GORK_SUMMARIZE_INPUT_TOKENS_MAX
-  ) {
-    return replyEphemeral(
-      interaction,
-      `The summarize input token budget must be ${GORK_SUMMARIZE_INPUT_TOKENS_MIN}-${GORK_SUMMARIZE_INPUT_TOKENS_MAX} tokens.`,
-    );
-  }
-  const settings = updateGuildSettings(communityId, {
-    gork_summarize_input_tokens: raw,
-  });
-  const stored = clampSummarizeInputTokens(settings.gork_summarize_input_tokens);
-  recordSlashAudit({
-    interaction,
-    communityId,
-    action: "gork.summarize_budget_set",
-    targetType: "guild",
-    targetId: guildId,
-    details: { summarize_input_tokens: stored },
-  });
-  await logConfigChange(getDiscordOutbound(client), guildId, {
-    title: "Gork summarize budget updated",
-    command: "/gork summarize-budget",
-    actor: interaction.user,
-    changes: [`Summarize input token budget: ${stored} tokens`],
-  }).catch(() => {});
-  await replyEphemeral(
-    interaction,
-    `Gork summarize input budget set to **${stored}** tokens (default ${GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT}).`,
-  );
 }
 
 /**
@@ -1503,23 +1629,73 @@ async function setSummarizeBudget(client, interaction, guildId, communityId) {
  * cooldown/budget bounces, and every failure branch reply with the specific
  * cause. Success bookkeeping (guild cooldown arm + one budget unit + audit +
  * interaction-log row) happens ONLY when every embed landed.
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleSummarize(client, interaction, guildId, communityId) {
+async function handleSummarize(commandCtx, featureCtx) {
+  void featureCtx;
   try {
-    return await summarizeMain(client, interaction, guildId, communityId);
+    return await summarizeMain(commandCtx);
   } catch (err) {
     // Last-resort net for a bug in the paths above: logged with ids and
     // surfaced verbatim — never a silent deferred spinner (AGENTS.md).
     console.error(
-      `[gork] summarize crashed in ${guildId}: user=${interaction.user?.id ?? "?"} cmd=/gork summarize id=${interaction.id ?? "-"}`,
+      `[gork] summarize crashed in ${commandCtx.externalGuildId}: user=${commandCtx.userId ?? "?"} cmd=/gork summarize id=${commandCtx.rawInteraction?.id ?? "-"}`,
       err?.message || err,
     );
     const text = `Could not run /gork summarize: ${err?.message || err}`;
-    if (interaction.deferred || interaction.replied) {
-      return editEphemeral(interaction, text).catch(() => {});
+    if (commandCtx.deferred || commandCtx.replied) {
+      // Mirror editEphemeral's semantics: an EDIT on a deferred (public)
+      // reply stays in the channel — no sensitive flag here (the original
+      // defer was not ephemeral).
+      return commandCtx.editReply(text).catch(() => {});
     }
-    return replyEphemeral(interaction, text).catch(() => {});
+    return commandCtx.reply({ content: text, sensitive: true }).catch(() => {});
   }
+}
+
+/**
+ * /gork summarize-budget: set the per-guild INPUT token budget for
+ * /gork summarize (8,000–120,000; default 80,000). The range reader
+ * converts it to a transcript char cap (4 chars/token minus the prompt-zone
+ * reserve), so the LLM input stays inside the configured budget.
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function setSummarizeBudget(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = commandCtx.options.getInteger("tokens");
+  if (
+    !Number.isFinite(raw) ||
+    raw < GORK_SUMMARIZE_INPUT_TOKENS_MIN ||
+    raw > GORK_SUMMARIZE_INPUT_TOKENS_MAX
+  ) {
+    return commandCtx.reply({
+      content: `The summarize input token budget must be ${GORK_SUMMARIZE_INPUT_TOKENS_MIN}-${GORK_SUMMARIZE_INPUT_TOKENS_MAX} tokens.`,
+      sensitive: true,
+    });
+  }
+  const settings = updateGuildSettings(communityId, {
+    gork_summarize_input_tokens: raw,
+  });
+  const stored = clampSummarizeInputTokens(settings.gork_summarize_input_tokens);
+  recordSlashAudit({
+    communityId,
+    actorUserId: commandCtx.userId,
+    action: "gork.summarize_budget_set",
+    targetType: "guild",
+    targetId: commandCtx.externalGuildId,
+    details: { summarize_input_tokens: stored },
+  });
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
+    title: "Gork summarize budget updated",
+    command: "/gork summarize-budget",
+    actor: commandCtx.user,
+    changes: [`Summarize input token budget: ${stored} tokens`],
+  }).catch(() => {});
+  await commandCtx.reply({
+    content: `Gork summarize input budget set to **${stored}** tokens (default ${GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT}).`,
+    sensitive: true,
+  });
 }
 
 module.exports = {

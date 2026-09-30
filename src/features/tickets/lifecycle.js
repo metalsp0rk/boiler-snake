@@ -2,22 +2,6 @@
  * Close, archive, claim, transfer, sensitive, and post-close staff notes.
  */
 const {
-  MessageFlags,
-  EmbedBuilder,
-  ChannelType,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-} = require("discord.js");
-const {
-  MAX_TICKET_REASON,
-  getTicketSettings,
-  canUserCreateTicket,
-  createTicket,
-  getTicketByChannel,
   getTicketById,
   claimTicket,
   transferTicket,
@@ -27,121 +11,83 @@ const {
   setTicketUnsensitive,
   addTicketMember,
   removeTicketMember,
-  listTicketMembers,
-  listTicketStaff,
-  listTicketMessages,
-  listOpenTickets,
-  updateGuildSettings,
-  listStaffRoles,
-  listSeniorStaffRoles,
-  normalizeStaffLevel,
-  createStaffNote,
-  MAX_NOTE_CONTENT,
-  createTicketPanel,
-  getTicketPanel,
-  listTicketPanels,
-  updateTicketPanelText,
-  deleteTicketPanel,
 } = require("../../db");
 const {
   requireStaff,
-  isStaff,
-  isAdminOrMod,
+  isAdminOrModFromContext,
+  isStaffFromContext,
 } = require("../../core/permissions");
-const {
-  replyDenied,
-  replyEphemeral,
-  editEphemeral,
-} = require("../../core/interaction");
+const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { ensureCommunity } = require("../../platform/community");
+const { applyTicketOverwrites } = require("./overwrites");
+const { softCloseTicket, archiveTicketPipeline } = require("./close");
+const { formatTicketRef, MSG_DENIED } = require("../../core/theme");
 const {
-  applyTicketOverwrites,
-  getManageableStaffRoleIds,
-  formatStaffRoleAccessNote,
-  describeSkippedStaffRoles,
-  assertBotCanCreateTickets,
-  formatChannelCreateError,
-  MEMBER_ALLOW,
-  MEMBER_DENY,
-  STAFF_ALLOW,
-  BOT_ALLOW,
-} = require("./overwrites");
-const {
-  softCloseTicket,
-  archiveTicketPipeline,
-  fetchAllMessages,
-} = require("./close");
-const {
-  collectTicketUserIds,
-  resolveUsers,
-  enrichMessagesForArchive,
-} = require("./users");
-const { summarizeTicket } = require("./summary");
-const {
-  formatTicketRef,
-  tsFull,
-  baseEmbed,
-} = require("../../core/theme");
-const {
-  COLOR_OPEN,
-  COLOR_INFO,
   COLOR_SENSITIVE,
-  BTN_OPEN,
-  MODAL_CREATE,
-  MODAL_FIELD_REASON,
   BTN_STAFF_NOTE_PREFIX,
   MODAL_STAFF_NOTE_PREFIX,
   MODAL_FIELD_STAFF_NOTE,
-  DEFAULT_PANEL_TITLE,
-  DEFAULT_PANEL_DESCRIPTION,
 } = require("./constants");
-const helpers = require("./helpers");
 const {
-  formatRateLimitMessage,
-  buildOpenTicketButtonRow,
-  buildCreateTicketModal,
-  buildPanelEmbed,
-  buildTicketStaffNoteContent,
   attachStaffNoteFromTicket,
   buildAddStaffNoteButtonRow,
   buildTicketStaffNoteModal,
-  resolveChannel,
   requireOpenTicketChannel,
   requireLiveTicketChannel,
   resolveBotMember,
-  openTicketChannel,
-} = helpers;
+} = require("./helpers");
+
+/**
+ * Standard reply for Fluxer dispatches reaching Discord-only surfaces
+ * (roadmap/fluxer.md § What stays Discord-only): ticket channel lifecycle
+ * (close/archive/claim overwrites, staff-note buttons and modals) uses
+ * discord.js channel objects and component builders until the OutboundClient
+ * cutover in PR 7.
+ */
+const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
 
 
-async function handleClose(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleClose(commandCtx, ctx) {
+  // Ticket channel lifecycle needs discord.js channel objects (close.js
+  // pipeline: overwrites, member removal, pins). PR 7 cuts this over to the
+  // OutboundClient; Fluxer contexts carry no rawInteraction.
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
-  const closeReason = interaction.options.getString("reason");
-  const staffNoteBody = interaction.options.getString("staff_note");
+  const closeReason = commandCtx.options.getString("reason");
+  const staffNoteBody = commandCtx.options.getString("staff_note");
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await commandCtx.defer({ sensitive: true });
 
   try {
-    const client = ctx.client || interaction.client;
+    const client = ctx?.client || raw.client;
     const botMember =
-      interaction.guild?.members?.me ||
-      (await resolveBotMember(interaction.guild, client));
+      raw.guild?.members?.me || (await resolveBotMember(raw.guild, client));
 
     const result = await softCloseTicket({
       client,
       channel,
       ticket,
-      closedBy: interaction.user.id,
+      closedBy: commandCtx.userId,
       closeReason,
       botMember,
     });
 
     recordSlashAudit({
-      interaction,
+      communityId: commandCtx.communityId,
+      actorUserId: commandCtx.userId,
       action: "tickets.close",
       targetType: "ticket",
       targetId: String(ticket.id),
@@ -169,7 +115,7 @@ async function handleClose(interaction, ctx) {
     if (staffNoteBody != null && String(staffNoteBody).trim() !== "") {
       const noteResult = attachStaffNoteFromTicket({
         ticket: closedTicket,
-        authorId: interaction.user.id,
+        authorId: commandCtx.userId,
         closeReason,
         body: staffNoteBody,
       });
@@ -178,7 +124,8 @@ async function handleClose(interaction, ctx) {
           `\n\nStaff note **N-${noteResult.note.note_number}** saved on ` +
           `<@${closedTicket.creator_user_id}> (private).`;
         recordSlashAudit({
-          interaction,
+          communityId: commandCtx.communityId,
+          actorUserId: commandCtx.userId,
           action: "notes.add",
           targetType: "note",
           targetId: String(noteResult.note.id),
@@ -188,15 +135,19 @@ async function handleClose(interaction, ctx) {
             from_ticket: closedTicket.ticket_number,
           },
         });
-        await logConfigChange(getDiscordOutbound(client), interaction.guildId, {
-          title: "Staff note created",
-          command: "/ticket close staff_note",
-          actor: interaction.user,
-          changes: [
-            `N-${noteResult.note.note_number} on <@${closedTicket.creator_user_id}>`,
-            `From ticket ${formatTicketRef(closedTicket.ticket_number)}`,
-          ],
-        }).catch(() => {});
+        await logConfigChange(
+          commandCtx.outbound,
+          commandCtx.externalGuildId,
+          {
+            title: "Staff note created",
+            command: "/ticket close staff_note",
+            actor: commandCtx.user,
+            changes: [
+              `N-${noteResult.note.note_number} on <@${closedTicket.creator_user_id}>`,
+              `From ticket ${formatTicketRef(closedTicket.ticket_number)}`,
+            ],
+          },
+        ).catch(() => {});
       } else {
         msg += `\n\n_Could not save staff note: ${noteResult.error}_`;
       }
@@ -206,13 +157,15 @@ async function handleClose(interaction, ctx) {
         `<@${closedTicket.creator_user_id}>.`;
     }
 
-    await interaction.editReply({
+    // The Add-staff-note button is a discord.js ActionRow: Discord-only arm
+    // (components are out of scope until the PR 7 component builder).
+    await commandCtx.editReply({
       content: msg,
       components: [buildAddStaffNoteButtonRow(closedTicket.id)],
     });
   } catch (err) {
     console.error("[tickets] close failed:", err);
-    await interaction.editReply({
+    await commandCtx.editReply({
       content: `Failed to close ticket: ${err?.message || "unknown error"}`,
     });
   }
@@ -346,26 +299,38 @@ async function handleStaffNoteModal(interaction, ctx) {
   });
 }
 
-async function handleArchive(interaction, ctx) {
-  const ctxTicket = await requireLiveTicketChannel(interaction, ctx, {
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleArchive(commandCtx, ctx) {
+  // Archive needs the live discord.js channel for transcript fetch + delete
+  // (PR 7 cutover); Fluxer contexts carry no rawInteraction.
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireLiveTicketChannel(raw, ctx, {
     status: "closed",
   });
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await commandCtx.defer({ sensitive: true });
 
   try {
     const result = await archiveTicketPipeline({
-      client: ctx.client || interaction.client,
+      client: ctx?.client || raw.client,
       channel,
       ticket,
-      archivedBy: interaction.user.id,
-      guildName: interaction.guild?.name,
+      archivedBy: commandCtx.userId,
+      guildName: raw.guild?.name,
     });
 
     recordSlashAudit({
-      interaction,
+      communityId: commandCtx.communityId,
+      actorUserId: commandCtx.userId,
       action: "tickets.archive",
       targetType: "ticket",
       targetId: String(ticket.id),
@@ -384,38 +349,51 @@ async function handleArchive(interaction, ctx) {
     if (result.warnings?.length) {
       msg += `\n\n_Warnings:_\n- ${result.warnings.join("\n- ")}`;
     }
-    await interaction.editReply({ content: msg });
+    await commandCtx.editReply({ content: msg, sensitive: true });
   } catch (err) {
     console.error("[tickets] archive failed:", err);
-    await interaction.editReply({
+    await commandCtx.editReply({
       content: `Failed to archive ticket: ${err?.message || "unknown error"}`,
+      sensitive: true,
     });
   }
 }
 
-async function handleClaim(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleClaim(commandCtx, ctx) {
+  // Claim rewrites channel permissions: needs the discord.js channel object
+  // (PR 7 cutover).
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
 
-  const updated = claimTicket(ticket.id, interaction.user.id);
+  const updated = claimTicket(ticket.id, commandCtx.userId);
   recordSlashAudit({
-    interaction,
+    communityId: commandCtx.communityId,
+    actorUserId: commandCtx.userId,
     action: "tickets.claim",
     targetType: "ticket",
     targetId: String(ticket.id),
     details: {
       ticket_number: ticket.ticket_number,
       previous_owner: ticket.staff_owner_id ?? null,
-      staff_owner_id: updated?.staff_owner_id ?? interaction.user.id,
+      staff_owner_id: updated?.staff_owner_id ?? commandCtx.userId,
     },
   });
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
-        guildId: interaction.guildId,
-        everyoneId: interaction.guild.id,
-        botUserId: (ctx.client || interaction.client).user.id,
+        guildId: commandCtx.externalGuildId,
+        everyoneId: raw.guild.id,
+        botUserId: commandCtx.outbound.botUserId,
         ticket: updated,
       });
     }
@@ -423,32 +401,50 @@ async function handleClaim(interaction, ctx) {
     console.warn("[tickets] claim overwrites:", err?.message || err);
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `You claimed ticket **${formatTicketRef(ticket.ticket_number)}**.`,
+    sensitive: true,
   });
-  try {
-    await channel?.send?.(`<@${interaction.user.id}> claimed this ticket.`);
-  } catch {
-    // ignore
+  // In-channel notice via outbound (spec § Outbound client): failures are
+  // logged, never silent. PLAIN STRING payload — byte-identical to the
+  // pre-seam channel.send and to the web transport's notice (parity pinned
+  // by test/web-phase3-gate.test.js §8.11).
+  const notice = await commandCtx.outbound.sendChannel(
+    commandCtx.channelId,
+    `<@${commandCtx.userId}> claimed this ticket.`,
+  );
+  if (!notice.ok) {
+    console.warn("[tickets] claim notice:", notice.error);
   }
 }
 
-async function handleTransfer(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleTransfer(commandCtx, ctx) {
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
-  const staff = interaction.options.getUser("staff", true);
+  const staff = commandCtx.options.getUser("staff", true);
 
   if (staff.bot) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Cannot transfer to a bot.",
+      sensitive: true,
     });
     return;
   }
 
-  const updated = transferTicket(ticket.id, staff.id, interaction.user.id);
+  const updated = transferTicket(ticket.id, staff.id, commandCtx.userId);
   recordSlashAudit({
-    interaction,
+    communityId: commandCtx.communityId,
+    actorUserId: commandCtx.userId,
     action: "tickets.transfer",
     targetType: "ticket",
     targetId: String(ticket.id),
@@ -461,9 +457,9 @@ async function handleTransfer(interaction, ctx) {
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
-        guildId: interaction.guildId,
-        everyoneId: interaction.guild.id,
-        botUserId: (ctx.client || interaction.client).user.id,
+        guildId: commandCtx.externalGuildId,
+        everyoneId: raw.guild.id,
+        botUserId: commandCtx.outbound.botUserId,
         ticket: updated,
       });
     }
@@ -471,35 +467,49 @@ async function handleTransfer(interaction, ctx) {
     console.warn("[tickets] transfer overwrites:", err?.message || err);
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Transferred ticket **${formatTicketRef(ticket.ticket_number)}** to <@${staff.id}>.`,
+    sensitive: true,
   });
-  try {
-    await channel?.send?.(
-      `Staff ownership transferred to <@${staff.id}> by <@${interaction.user.id}>.`,
-    );
-  } catch {
-    // ignore
+  // Plain-string notice — byte-identical to the pre-seam channel.send and
+  // to the web transport (test/web-phase3-gate.test.js §8.11 parity).
+  const notice = await commandCtx.outbound.sendChannel(
+    commandCtx.channelId,
+    `Staff ownership transferred to <@${staff.id}> by <@${commandCtx.userId}>.`,
+  );
+  if (!notice.ok) {
+    console.warn("[tickets] transfer notice:", notice.error);
   }
 }
 
-async function handleAddUser(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleAddUser(commandCtx, ctx) {
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
-  const user = interaction.options.getUser("user", true);
+  const user = commandCtx.options.getUser("user", true);
 
   if (user.bot) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Cannot add a bot as a ticket member.",
+      sensitive: true,
     });
     return;
   }
 
-  const added = addTicketMember(ticket.id, user.id, interaction.user.id);
+  const added = addTicketMember(ticket.id, user.id, commandCtx.userId);
   if (added) {
     recordSlashAudit({
-      interaction,
+      communityId: commandCtx.communityId,
+      actorUserId: commandCtx.userId,
       action: "tickets.member_add",
       targetType: "ticket",
       targetId: String(ticket.id),
@@ -510,9 +520,9 @@ async function handleAddUser(interaction, ctx) {
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
-        guildId: interaction.guildId,
-        everyoneId: interaction.guild.id,
-        botUserId: (ctx.client || interaction.client).user.id,
+        guildId: commandCtx.externalGuildId,
+        everyoneId: raw.guild.id,
+        botUserId: commandCtx.outbound.botUserId,
         ticket: updated,
       });
     }
@@ -520,23 +530,34 @@ async function handleAddUser(interaction, ctx) {
     console.warn("[tickets] adduser overwrites:", err?.message || err);
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: added
       ? `Added <@${user.id}> to ticket **${formatTicketRef(ticket.ticket_number)}**.`
       : `<@${user.id}> is already a member of this ticket.`,
+    sensitive: true,
   });
 }
 
-async function handleRemoveUser(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleRemoveUser(commandCtx, ctx) {
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
-  const user = interaction.options.getUser("user", true);
+  const user = commandCtx.options.getUser("user", true);
 
   const result = removeTicketMember(ticket.id, user.id);
   if (result.ok) {
     recordSlashAudit({
-      interaction,
+      communityId: commandCtx.communityId,
+      actorUserId: commandCtx.userId,
       action: "tickets.member_remove",
       targetType: "ticket",
       targetId: String(ticket.id),
@@ -544,8 +565,9 @@ async function handleRemoveUser(interaction, ctx) {
     });
   }
   if (!result.ok) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: result.error,
+      sensitive: true,
     });
     return;
   }
@@ -554,9 +576,9 @@ async function handleRemoveUser(interaction, ctx) {
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
-        guildId: interaction.guildId,
-        everyoneId: interaction.guild.id,
-        botUserId: (ctx.client || interaction.client).user.id,
+        guildId: commandCtx.externalGuildId,
+        everyoneId: raw.guild.id,
+        botUserId: commandCtx.outbound.botUserId,
         ticket: updated,
       });
     }
@@ -564,28 +586,40 @@ async function handleRemoveUser(interaction, ctx) {
     console.warn("[tickets] removeuser overwrites:", err?.message || err);
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Removed <@${user.id}> from ticket **${formatTicketRef(ticket.ticket_number)}**.`,
+    sensitive: true,
   });
 }
 
-async function handleAddStaff(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleAddStaff(commandCtx, ctx) {
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
-  const user = interaction.options.getUser("user", true);
+  const user = commandCtx.options.getUser("user", true);
 
   if (user.bot) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: "Cannot add a bot as ticket staff.",
+      sensitive: true,
     });
     return;
   }
 
-  const added = addTicketStaff(ticket.id, user.id, interaction.user.id);
+  const added = addTicketStaff(ticket.id, user.id, commandCtx.userId);
   if (added) {
     recordSlashAudit({
-      interaction,
+      communityId: commandCtx.communityId,
+      actorUserId: commandCtx.userId,
       action: "tickets.staff_add",
       targetType: "ticket",
       targetId: String(ticket.id),
@@ -596,9 +630,9 @@ async function handleAddStaff(interaction, ctx) {
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
-        guildId: interaction.guildId,
-        everyoneId: interaction.guild.id,
-        botUserId: (ctx.client || interaction.client).user.id,
+        guildId: commandCtx.externalGuildId,
+        everyoneId: raw.guild.id,
+        botUserId: commandCtx.outbound.botUserId,
         ticket: updated,
       });
     }
@@ -606,23 +640,34 @@ async function handleAddStaff(interaction, ctx) {
     console.warn("[tickets] addstaff overwrites:", err?.message || err);
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: added
       ? `Added <@${user.id}> to the staff allow-list for **${formatTicketRef(ticket.ticket_number)}**.`
       : `<@${user.id}> is already on the staff allow-list.`,
+    sensitive: true,
   });
 }
 
-async function handleRemoveStaff(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleRemoveStaff(commandCtx, ctx) {
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
-  const user = interaction.options.getUser("user", true);
+  const user = commandCtx.options.getUser("user", true);
 
   const result = removeTicketStaff(ticket.id, user.id);
   if (result.ok) {
     recordSlashAudit({
-      interaction,
+      communityId: commandCtx.communityId,
+      actorUserId: commandCtx.userId,
       action: "tickets.staff_remove",
       targetType: "ticket",
       targetId: String(ticket.id),
@@ -630,8 +675,9 @@ async function handleRemoveStaff(interaction, ctx) {
     });
   }
   if (!result.ok) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: result.error,
+      sensitive: true,
     });
     return;
   }
@@ -640,9 +686,9 @@ async function handleRemoveStaff(interaction, ctx) {
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
-        guildId: interaction.guildId,
-        everyoneId: interaction.guild.id,
-        botUserId: (ctx.client || interaction.client).user.id,
+        guildId: commandCtx.externalGuildId,
+        everyoneId: raw.guild.id,
+        botUserId: commandCtx.outbound.botUserId,
         ticket: updated,
       });
     }
@@ -650,32 +696,44 @@ async function handleRemoveStaff(interaction, ctx) {
     console.warn("[tickets] removestaff overwrites:", err?.message || err);
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Removed <@${user.id}> from the staff allow-list.`,
+    sensitive: true,
   });
 }
 
-async function handleSensitive(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleSensitive(commandCtx, ctx) {
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
 
   // If owner exists and invoker is not owner, only ManageGuild may flip
   if (
     ticket.staff_owner_id &&
-    ticket.staff_owner_id !== interaction.user.id &&
-    !isAdminOrMod(interaction)
+    ticket.staff_owner_id !== commandCtx.userId &&
+    !isAdminOrModFromContext(commandCtx)
   ) {
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: `Only the staff owner (<@${ticket.staff_owner_id}>) or a server admin can mark this ticket sensitive.`,
+      sensitive: true,
     });
     return;
   }
 
-  const ownerId = ticket.staff_owner_id || interaction.user.id; // auto-claim
+  const ownerId = ticket.staff_owner_id || commandCtx.userId; // auto-claim
   const updated = setTicketSensitive(ticket.id, ownerId);
   recordSlashAudit({
-    interaction,
+    communityId: commandCtx.communityId,
+    actorUserId: commandCtx.userId,
     action: "tickets.sensitive_set",
     targetType: "ticket",
     targetId: String(ticket.id),
@@ -689,9 +747,9 @@ async function handleSensitive(interaction, ctx) {
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
-        guildId: interaction.guildId,
-        everyoneId: interaction.guild.id,
-        botUserId: (ctx.client || interaction.client).user.id,
+        guildId: commandCtx.externalGuildId,
+        everyoneId: raw.guild.id,
+        botUserId: commandCtx.outbound.botUserId,
         ticket: updated,
         sensitive: true,
       });
@@ -700,42 +758,53 @@ async function handleSensitive(interaction, ctx) {
     console.warn("[tickets] sensitive overwrites:", err?.message || err);
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
       `Ticket **${formatTicketRef(ticket.ticket_number)}** is now **sensitive**. ` +
       `Only the owner, named staff, and members can see it. Close will **not** archive content.`,
+    sensitive: true,
   });
-  try {
-    await channel?.send?.({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(COLOR_SENSITIVE)
-          .setTitle("Ticket marked sensitive")
-          .setDescription(
-            `Visibility locked. Staff owner: <@${updated.staff_owner_id}>.`,
-          ),
-      ],
-    });
-  } catch {
-    // ignore
+  // In-channel notice via outbound with a plain NormalizedEmbed (same visible
+  // text/color as the previous EmbedBuilder chain).
+  const notice = await commandCtx.outbound.sendChannel(commandCtx.channelId, {
+    embeds: [
+      {
+        color: COLOR_SENSITIVE,
+        title: "Ticket marked sensitive",
+        description: `Visibility locked. Staff owner: <@${updated.staff_owner_id}>.`,
+      },
+    ],
+  });
+  if (!notice.ok) {
+    console.warn("[tickets] sensitive notice:", notice.error);
   }
 }
 
-async function handleUnsensitive(interaction, ctx) {
-  const ctxTicket = await requireOpenTicketChannel(interaction, ctx);
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [ctx]
+ */
+async function handleUnsensitive(commandCtx, ctx) {
+  const raw = commandCtx.rawInteraction;
+  if (!raw) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+  const ctxTicket = await requireOpenTicketChannel(raw, ctx);
   if (!ctxTicket) return;
   const { ticket, channel } = ctxTicket;
 
-  // Staff owner OR staff gate (already required staff)
-  const isOwner = ticket.staff_owner_id === interaction.user.id;
-  if (!isOwner && !isStaff(interaction)) {
-    await replyDenied(interaction);
+  // Staff owner OR staff gate (already required staff at the dispatcher)
+  const isOwner = ticket.staff_owner_id === commandCtx.userId;
+  if (!isOwner && !isStaffFromContext(commandCtx)) {
+    await commandCtx.reply({ content: MSG_DENIED, sensitive: true });
     return;
   }
 
   const updated = setTicketUnsensitive(ticket.id);
   recordSlashAudit({
-    interaction,
+    communityId: commandCtx.communityId,
+    actorUserId: commandCtx.userId,
     action: "tickets.sensitive_clear",
     targetType: "ticket",
     targetId: String(ticket.id),
@@ -747,9 +816,9 @@ async function handleUnsensitive(interaction, ctx) {
   try {
     if (channel) {
       await applyTicketOverwrites(channel, {
-        guildId: interaction.guildId,
-        everyoneId: interaction.guild.id,
-        botUserId: (ctx.client || interaction.client).user.id,
+        guildId: commandCtx.externalGuildId,
+        everyoneId: raw.guild.id,
+        botUserId: commandCtx.outbound.botUserId,
         ticket: updated,
         sensitive: false,
       });
@@ -758,8 +827,9 @@ async function handleUnsensitive(interaction, ctx) {
     console.warn("[tickets] unsensitive overwrites:", err?.message || err);
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content: `Ticket **${formatTicketRef(ticket.ticket_number)}** is no longer sensitive. Staff roles can see it again.`,
+    sensitive: true,
   });
 }
 

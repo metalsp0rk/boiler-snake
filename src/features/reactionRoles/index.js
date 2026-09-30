@@ -1,6 +1,5 @@
 const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const {
-  getGuildSettings,
   createReactionRolePanel,
   getReactionRolePanel,
   listReactionRolePanels,
@@ -9,12 +8,10 @@ const {
   listReactionRoleOptions,
   countReactionRoleOptions,
 } = require("../../db");
-const { isStaff } = require("../../core/permissions");
-const { replyDenied, replyEphemeral } = require("../../core/interaction");
+const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
-const { ensureCommunity } = require("../../platform/community");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { Color } = require("../../core/theme");
 const {
   MAX_OPTIONS_PER_PANEL,
   PENDING_EMOJI_TTL_MS,
@@ -208,128 +205,156 @@ const commands = [
     ),
 ];
 
-async function handleReactionrole(interaction, ctx) {
-  const { client } = ctx;
-  const guildId = interaction.guildId;
-  const admin = isStaff(interaction);
+/**
+ * Standard reply for Fluxer dispatches reaching Discord-only surfaces
+ * (roadmap/fluxer.md § Handler migration rule; panel posts/reactions stay on
+ * the raw interaction until the service cutover in PR 7).
+ */
+const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
 
-  if (!admin) {
-    await replyDenied(interaction);
-    return;
-  }
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleReactionrole(commandCtx, featureCtx) {
+  void featureCtx;
+  const { communityId, outbound } = commandCtx;
+  // Display / pending-session key: the external guild id (the frozen in-memory
+  // service maps are keyed by the DISCORD SNOWFLAKE — see service.js).
+  const guildId = commandCtx.externalGuildId;
 
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-  const settings = getGuildSettings(communityId);
+  if (!(await requireStaffFromContext(commandCtx))) return;
 
-  const group = interaction.options.getSubcommandGroup(false);
-  const sub = interaction.options.getSubcommand();
+  // Discord-only escape hatch (roadmap § What stays Discord-only): the panel
+  // service posts real Discord messages and emoji reactions; its cutover to
+  // the OutboundClient is PR 7. Fluxer contexts never carry rawInteraction.
+  const raw = commandCtx.rawInteraction;
+
+  const group = commandCtx.subcommandGroup;
+  const sub = commandCtx.subcommand;
 
   // /reactionrole panel [create|edit|deploy|delete|list]
   if (group === "panel") {
     if (sub === "create") {
-      const ch = interaction.options.getChannel("channel", true);
-      const title = interaction.options.getString("title") || "Reaction Roles";
+      const ch = commandCtx.options.getChannel("channel", true);
+      const title = commandCtx.options.getString("title") || "Reaction Roles";
       const description =
-        interaction.options.getString("description") ||
+        commandCtx.options.getString("description") ||
         "React to get a role. Remove your reaction to drop it (if allowed).";
 
-      if (typeof ch.isTextBased !== "function" || !ch.isTextBased()) {
-        await replyEphemeral(interaction, {
+      // Channel resolution via outbound (roadmap § Outbound client): the
+      // Discord adapter returns the discord.js channel; null / non-text
+      // channels get the same "cannot receive messages" answer as today.
+      const channelHandle = await outbound.fetchChannel(communityId, ch.id);
+      if (
+        !channelHandle ||
+        (typeof channelHandle.isTextBased === "function" &&
+          !channelHandle.isTextBased())
+      ) {
+        await commandCtx.reply({
           content: "That channel cannot receive messages.",
-        });
-        return;
-      }
-      if (typeof ch.send !== "function") {
-        await replyEphemeral(interaction, {
-          content: "That channel cannot receive messages.",
+          sensitive: true,
         });
         return;
       }
 
-      const panelStub = {
+      // Plain NormalizedEmbed replicating service buildPanelEmbed(panelStub, [])
+      // — same visible text (title, intro, no-options note, footer, color).
+      const embed = {
         title,
-        description,
-        guild_id: guildId,
-        channel_id: ch.id,
-        message_id: "pending",
+        description: [
+          description,
+          "",
+          "_No roles configured yet. An admin can add options with `/reactionrole option add`._",
+        ]
+          .join("\n")
+          .slice(0, 4096),
+        footer: {
+          text: "React to claim · remove reaction to drop (where allowed)",
+        },
+        color: Color.brand,
       };
-      const embed = buildPanelEmbed(panelStub, []);
 
-      let msg;
+      let sent;
       try {
-        // Role names may appear later in the embed as mentions — never ping
-        msg = await ch.send({
+        // Features post through outbound.sendChannel — never channel.send
+        // (roadmap § Outbound client).
+        sent = await outbound.sendChannel(ch.id, {
           embeds: [embed],
+          // Role names may appear later in the embed as mentions — never ping
           allowedMentions: NO_PING_MENTIONS,
         });
       } catch (e) {
-        await replyEphemeral(interaction, {
-          content: `Could not post panel: ${e?.message || e}`,
+        sent = { ok: false, error: e?.message || String(e) };
+      }
+      if (!sent.ok) {
+        await commandCtx.reply({
+          content: `Could not post panel: ${sent.error}`,
+          sensitive: true,
         });
         return;
       }
 
-      createReactionRolePanel(communityId, ch.id, msg.id, title, description);
+      createReactionRolePanel(communityId, ch.id, sent.id, title, description);
       recordSlashAudit({
-        interaction,
         communityId,
+        actorUserId: commandCtx.userId,
         action: "reaction_roles.panel_create",
         targetType: "reaction_role_panel",
-        targetId: msg.id,
+        targetId: sent.id,
         details: { channel_id: ch.id, title },
       });
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      // Message#url equivalent (guild-channel message URL — Discord display).
+      const jump = `https://discord.com/channels/${guildId}/${ch.id}/${sent.id}`;
+      await logConfigChange(outbound, guildId, {
         title: "Reaction-role panel created",
         command: "/reactionrole panel create",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [
           `Channel: <#${ch.id}>`,
-          `Message ID: \`${msg.id}\``,
+          `Message ID: \`${sent.id}\``,
           `Title: ${title}`,
         ],
-        details: msg.url,
+        details: jump,
       }).catch(() => {});
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           `Created reaction-role panel in <#${ch.id}>.\n` +
-          `Message ID: \`${msg.id}\`\n` +
-          `Jump: ${msg.url}\n` +
-          `Add options with \`/reactionrole option add message_id:${msg.id}\`.`,
+          `Message ID: \`${sent.id}\`\n` +
+          `Jump: ${jump}\n` +
+          `Add options with \`/reactionrole option add message_id:${sent.id}\`.`,
+        sensitive: true,
       });
       return;
     }
 
     if (sub === "edit") {
-      const messageId = interaction.options
-        .getString("message_id", true)
-        .trim();
-      const title = interaction.options.getString("title");
-      const description = interaction.options.getString("description");
+      const messageId = commandCtx.options.getString("message_id", true).trim();
+      const title = commandCtx.options.getString("title");
+      const description = commandCtx.options.getString("description");
 
       if (title == null && description == null) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content:
             "Provide at least one of `title` or `description` to update.",
+          sensitive: true,
         });
         return;
       }
 
       const panel = getReactionRolePanel(communityId, messageId);
       if (!panel) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
+          sensitive: true,
         });
         return;
       }
 
       updateReactionRolePanelText(communityId, messageId, title, description);
       recordSlashAudit({
-        interaction,
         communityId,
+        actorUserId: commandCtx.userId,
         action: "reaction_roles.panel_update",
         targetType: "reaction_role_panel",
         targetId: messageId,
@@ -341,8 +366,12 @@ async function handleReactionrole(interaction, ctx) {
       const updated = getReactionRolePanel(communityId, messageId);
       // Frozen service surface reads `panel.guild_id` and forwards it to the
       // community-keyed repo, so the repo row carries the INTEGER community id.
+      // refreshPanelMessage edits the real Discord message — the service-internal
+      // cutover is PR 7 (roadmap § Outbound client). Fluxer has no rawInteraction;
+      // the service then reports "Panel message is missing" as a refresh failure
+      // on the "Saved text" reply (graceful, never throws).
       const result = await refreshPanelMessage(
-        interaction.guild,
+        raw?.guild,
         updated ? { ...updated, guild_id: communityId } : updated,
       );
       const changeLines = [];
@@ -353,56 +382,67 @@ async function handleReactionrole(interaction, ctx) {
           `Description updated (${String(panel.description || "").length} → ${String(updated.description || "").length} chars)`,
         );
       }
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      await logConfigChange(outbound, guildId, {
         title: "Reaction-role panel edited",
         command: "/reactionrole panel edit",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [`Panel: \`${messageId}\``, ...changeLines],
       }).catch(() => {});
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: result.ok
           ? `Updated panel \`${messageId}\`.`
           : `Saved text, but refresh failed: ${result.error}`,
+        sensitive: true,
       });
       return;
     }
 
     if (sub === "deploy") {
-      const messageId = interaction.options
-        .getString("message_id", true)
-        .trim();
-      const ch = interaction.options.getChannel("channel", true);
+      const messageId = commandCtx.options.getString("message_id", true).trim();
+      const ch = commandCtx.options.getChannel("channel", true);
 
-      if (typeof ch.isTextBased === "function" && !ch.isTextBased()) {
-        await replyEphemeral(interaction, {
+      // Channel resolution via outbound (same gates as `panel create`).
+      const channelHandle = await outbound.fetchChannel(communityId, ch.id);
+      if (
+        !channelHandle ||
+        (typeof channelHandle.isTextBased === "function" &&
+          !channelHandle.isTextBased())
+      ) {
+        await commandCtx.reply({
           content: "That channel cannot receive messages.",
+          sensitive: true,
         });
         return;
       }
-      if (typeof ch.send !== "function") {
-        await replyEphemeral(interaction, {
-          content: "That channel cannot receive messages.",
-        });
+
+      // deployPanelToChannel posts a real Discord message and adds emoji
+      // reactions via the service; the OutboundClient reaction surface is not
+      // wired into service.js until PR 7. Recipe 11 (roadmap
+      // § What stays Discord-only): Discord arm uses the raw interaction's
+      // guild, Fluxer gets the standard not-yet-available line.
+      if (!raw) {
+        await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
         return;
       }
 
-      // May post + react several times
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      // May post + react several times (defer({sensitive:true}) ≙ the old
+      // deferReply with the ephemeral flag).
+      await commandCtx.defer({ sensitive: true });
 
       const result = await deployPanelToChannel(
-        interaction.guild,
+        raw.guild,
         messageId,
-        ch,
+        channelHandle,
       );
       if (!result.ok) {
-        await interaction.editReply({ content: result.error });
+        await commandCtx.editReply({ content: result.error });
         return;
       }
 
       const n = result.optionCount ?? 0;
       recordSlashAudit({
-        interaction,
         communityId,
+        actorUserId: commandCtx.userId,
         action: "reaction_roles.panel_deploy",
         targetType: "reaction_role_panel",
         targetId: result.message.id,
@@ -420,10 +460,10 @@ async function handleReactionrole(interaction, ctx) {
       if (result.error) {
         content += `\n⚠️ ${result.error}`;
       }
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      await logConfigChange(outbound, guildId, {
         title: "Reaction-role panel deployed",
         command: "/reactionrole panel deploy",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [
           `Source panel: \`${messageId}\``,
           `New channel: <#${ch.id}>`,
@@ -432,14 +472,12 @@ async function handleReactionrole(interaction, ctx) {
         ],
         details: result.message.url,
       }).catch(() => {});
-      await interaction.editReply({ content });
+      await commandCtx.editReply({ content });
       return;
     }
 
     if (sub === "delete") {
-      const messageId = interaction.options
-        .getString("message_id", true)
-        .trim();
+      const messageId = commandCtx.options.getString("message_id", true).trim();
       const { removed, channel_id } = deleteReactionRolePanel(
         communityId,
         messageId,
@@ -447,10 +485,12 @@ async function handleReactionrole(interaction, ctx) {
 
       let note = "";
       if (removed && channel_id) {
+        // Deleting the panel message is Discord-only: OutboundClient has no
+        // message-delete surface yet (service cutover PR 7).
         try {
-          const channel = await interaction.guild.channels
-            .fetch(channel_id)
-            .catch(() => null);
+          const channel = raw?.guild
+            ? await raw.guild.channels.fetch(channel_id).catch(() => null)
+            : null;
           if (channel?.messages) {
             const msg = await channel.messages
               .fetch(messageId)
@@ -470,17 +510,17 @@ async function handleReactionrole(interaction, ctx) {
 
       if (removed) {
         recordSlashAudit({
-          interaction,
           communityId,
+          actorUserId: commandCtx.userId,
           action: "reaction_roles.panel_delete",
           targetType: "reaction_role_panel",
           targetId: messageId,
           details: { channel_id: channel_id ?? null },
         });
-        await logConfigChange(getDiscordOutbound(client), guildId, {
+        await logConfigChange(outbound, guildId, {
           title: "Reaction-role panel deleted",
           command: "/reactionrole panel delete",
-          actor: interaction.user,
+          actor: commandCtx.user,
           changes: [
             `Message ID: \`${messageId}\``,
             channel_id ? `Channel: <#${channel_id}>` : null,
@@ -489,10 +529,11 @@ async function handleReactionrole(interaction, ctx) {
         }).catch(() => {});
       }
 
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: removed
           ? `Deleted reaction-role panel \`${messageId}\`.${note}`
           : `No reaction-role panel with message ID \`${messageId}\`.`,
+        sensitive: true,
       });
       return;
     }
@@ -500,9 +541,10 @@ async function handleReactionrole(interaction, ctx) {
     if (sub === "list") {
       const panels = listReactionRolePanels(communityId);
       if (!panels.length) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content:
             "No reaction-role panels configured. Use `/reactionrole panel create`.",
+          sensitive: true,
         });
         return;
       }
@@ -511,8 +553,9 @@ async function handleReactionrole(interaction, ctx) {
         const n = countReactionRoleOptions(communityId, p.message_id);
         return `- **${p.title}** in <#${p.channel_id}> — \`${p.message_id}\` (${n} option${n === 1 ? "" : "s"}) — [jump](${jump})`;
       });
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `**Reaction-role panels:**\n${lines.join("\n")}`,
+        sensitive: true,
       });
       return;
     }
@@ -521,34 +564,39 @@ async function handleReactionrole(interaction, ctx) {
   // /reactionrole option [add|remove|list]
   if (group === "option") {
     if (sub === "add") {
-      const messageId = interaction.options
-        .getString("message_id", true)
-        .trim();
-      const role = interaction.options.getRole("role", true);
-      const level = interaction.options.getInteger("level") ?? 0;
-      const removable = interaction.options.getBoolean("removable");
+      const messageId = commandCtx.options.getString("message_id", true).trim();
+      const role = commandCtx.options.getRole("role", true);
+      const level = commandCtx.options.getInteger("level") ?? 0;
+      const removable = commandCtx.options.getBoolean("removable");
       const removableFlag = removable === null ? true : removable;
 
       const panel = getReactionRolePanel(communityId, messageId);
       if (!panel) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
+          sensitive: true,
         });
         return;
       }
 
-      if (role.managed) {
-        await replyEphemeral(interaction, {
+      // Spec RoleHandle carries no `managed` flag — graft the Discord-side
+      // role from the rawInteraction escape hatch (userinfo precedent). Fluxer
+      // contexts carry no raw; PR 9 wires the Fluxer role surface.
+      const rawRole = raw?.guild?.roles?.cache?.get?.(role.id) ?? null;
+      if (rawRole?.managed) {
+        await commandCtx.reply({
           content:
             "That role is managed by an integration and cannot be assigned by the bot.",
+          sensitive: true,
         });
         return;
       }
 
       const optCount = countReactionRoleOptions(communityId, messageId);
       if (optCount >= MAX_OPTIONS_PER_PANEL) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: `This panel already has ${MAX_OPTIONS_PER_PANEL} options (Discord reaction limit). Remove one first.`,
+          sensitive: true,
         });
         return;
       }
@@ -556,84 +604,86 @@ async function handleReactionrole(interaction, ctx) {
       // Replace any prior wait session for this admin.
       // NOTE: the pending-emoji maps are frozen in-memory service state keyed by
       // the DISCORD SNOWFLAKE (service.js resolves `message.guild.id` on the
-      // reply), so these stay snowflake-keyed. TODO(fluxer-pr5): convert service.js.
-      clearPendingOptionEmoji(guildId, interaction.user.id);
-      setPendingOptionAdd(guildId, interaction.user.id, {
+      // reply), so these stay snowflake-keyed (externalGuildId ≡ guild.id on
+      // Discord). TODO(fluxer-pr5): convert service.js.
+      clearPendingOptionEmoji(guildId, commandCtx.userId);
+      setPendingOptionAdd(guildId, commandCtx.userId, {
         messageId,
         roleId: role.id,
         level,
         removable: removableFlag,
-        channelId: interaction.channelId,
+        channelId: commandCtx.channelId,
       });
 
       const mins = Math.round(PENDING_EMOJI_TTL_MS / 60000);
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           `**Send the emoji** as your next message in this server (message should be only the emoji).\n` +
-          `I'll map it to ${role} on panel \`${messageId}\` (Level ${level}+, ${
+          `I'll map it to <@&${role.id}> on panel \`${messageId}\` (Level ${level}+, ${
             removableFlag ? "removable" : "permanent"
           }).\n` +
           `Type **\`stop\`** to cancel. Expires in ${mins} minutes.`,
         allowedMentions: NO_PING_MENTIONS,
+        sensitive: true,
       });
       return;
     }
 
     if (sub === "remove") {
-      const messageId = interaction.options
-        .getString("message_id", true)
-        .trim();
+      const messageId = commandCtx.options.getString("message_id", true).trim();
 
       const panel = getReactionRolePanel(communityId, messageId);
       if (!panel) {
-        await replyEphemeral(
-          interaction,
-          `No reaction-role panel with message ID \`${messageId}\`.`,
-        );
+        await commandCtx.reply({
+          content: `No reaction-role panel with message ID \`${messageId}\`.`,
+          sensitive: true,
+        });
         return;
       }
 
       const optCount = countReactionRoleOptions(communityId, messageId);
       if (optCount === 0) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: `Panel \`${messageId}\` has no options to remove.`,
+          sensitive: true,
         });
         return;
       }
 
       // Snowflake-keyed frozen in-memory state (see note in "add").
-      clearPendingOptionEmoji(guildId, interaction.user.id);
-      setPendingOptionRemove(guildId, interaction.user.id, {
+      clearPendingOptionEmoji(guildId, commandCtx.userId);
+      setPendingOptionRemove(guildId, commandCtx.userId, {
         messageId,
-        channelId: interaction.channelId,
+        channelId: commandCtx.channelId,
       });
 
       const mins = Math.round(PENDING_EMOJI_TTL_MS / 60000);
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content:
           `**Send the emoji** to remove as your next message (message should be only the emoji).\n` +
           `I'll remove that option from panel \`${messageId}\`.\n` +
           `Type **\`stop\`** to cancel. Expires in ${mins} minutes.`,
+        sensitive: true,
       });
       return;
     }
 
     if (sub === "list") {
-      const messageId = interaction.options
-        .getString("message_id", true)
-        .trim();
+      const messageId = commandCtx.options.getString("message_id", true).trim();
       const panel = getReactionRolePanel(communityId, messageId);
       if (!panel) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: `No reaction-role panel with message ID \`${messageId}\`.`,
+          sensitive: true,
         });
         return;
       }
 
       const opts = listReactionRoleOptions(communityId, messageId);
       if (!opts.length) {
-        await replyEphemeral(interaction, {
+        await commandCtx.reply({
           content: `Panel \`${messageId}\` has no options yet.`,
+          sensitive: true,
         });
         return;
       }
@@ -642,9 +692,10 @@ async function handleReactionrole(interaction, ctx) {
         const rem = Number(o.removable) !== 0 ? "removable" : "permanent";
         return `- ${o.emoji_display} → <@&${o.role_id}> — Level ${o.min_level}+ · ${rem}`;
       });
-      await replyEphemeral(interaction, {
+      await commandCtx.reply({
         content: `**Options for panel \`${messageId}\`:**\n${lines.join("\n")}`,
         allowedMentions: NO_PING_MENTIONS,
+        sensitive: true,
       });
       return;
     }
@@ -652,43 +703,48 @@ async function handleReactionrole(interaction, ctx) {
 
   // /reactionrole sync
   if (!group && sub === "sync") {
-    const messageId = interaction.options.getString("message_id", true).trim();
+    const messageId = commandCtx.options.getString("message_id", true).trim();
     const panel = getReactionRolePanel(communityId, messageId);
     if (!panel) {
-      await replyEphemeral(
-        interaction,
-        `No reaction-role panel with message ID \`${messageId}\`.`,
-      );
+      await commandCtx.reply({
+        content: `No reaction-role panel with message ID \`${messageId}\`.`,
+        sensitive: true,
+      });
       return;
     }
 
     // Frozen service surface reads `panel.guild_id` and forwards it to the
     // community-keyed repo, so the repo row carries the INTEGER community id.
-    const result = await refreshPanelMessage(interaction.guild, {
+    // The refresh edits real Discord messages (service cutover PR 7); Fluxer
+    // has no rawInteraction, so the service reports the missing message as a
+    // sync failure (graceful, never throws).
+    const result = await refreshPanelMessage(raw?.guild, {
       ...panel,
       guild_id: communityId,
     });
     if (result.ok) {
-      await logConfigChange(getDiscordOutbound(client), guildId, {
+      await logConfigChange(outbound, guildId, {
         title: "Reaction-role panel synced",
         command: "/reactionrole sync",
-        actor: interaction.user,
+        actor: commandCtx.user,
         changes: [`Panel: \`${messageId}\``],
       }).catch(() => {});
     }
-    await replyEphemeral(interaction, {
+    await commandCtx.reply({
       content: result.ok
         ? `Synced panel \`${messageId}\` (embed + bot reactions).`
         : `Sync failed: ${result.error}`,
+      sensitive: true,
     });
     return;
   }
 
-  await replyEphemeral(interaction, {
+  await commandCtx.reply({
     content:
-      `Unknown reactionrole subcommand: \`/${interaction.commandName}` +
+      `Unknown reactionrole subcommand: \`/${commandCtx.commandName}` +
       `${group ? ` ${group}` : ""} ${sub || ""}\`.\n` +
       `Use \`/reactionrole panel create|edit|deploy|delete|list\`, \`/reactionrole option add|remove|list\`, or \`/reactionrole sync\`.`,
+    sensitive: true,
   });
   return;
 }
@@ -698,6 +754,12 @@ module.exports = {
   commands,
   handlers: {
     reactionrole: handleReactionrole,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext. Modal-submit / reaction / message arms
+  // stay on the raw interaction (roadmap § What stays Discord-only).
+  handlerApi: {
+    reactionrole: "context",
   },
   handleReactionRoleAdd,
   handleReactionRoleRemove,

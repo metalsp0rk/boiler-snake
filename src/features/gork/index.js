@@ -23,9 +23,7 @@
  * failure; unlike the cooldown, staff status does NOT bypass a ban.
  */
 
-const { requireStaff } = require("../../core/permissions");
-const { replyEphemeral } = require("../../core/interaction");
-const { ensureCommunity } = require("../../platform/community");
+const { requireStaffFromContext } = require("../../core/permissions");
 const { handleGorkMessage, gorkQueue } = require("./trigger");
 const { commands } = require("./commands");
 const {
@@ -48,62 +46,69 @@ const {
 } = require("./handlers");
 
 /**
- * /gork handler (staff-gated via requireStaff).
+ * /gork handler (staff-gated via requireStaffFromContext).
  *
- * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} ctx
- * @param {import("discord.js").Client} ctx.client
+ * Migrated to the CommandContext seam (roadmap/fluxer.md § CommandContext):
+ * the dispatcher reads the subcommand off the context and hands `commandCtx`
+ * (which carries communityId/externalGuildId/outbound) to every sub-handler —
+ * the spec is explicit that contextual handlers never destructure `client`
+ * from the feature context (that path lives on until the PR 7 cutover, for
+ * unmigrated readers only).
+ *
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
  */
-async function handleGork(interaction, ctx) {
-  if (!(await requireStaff(interaction))) return;
-  const { client } = ctx || {};
-  const guildId = interaction.guildId;
-  // Discord edge: snowflake → internal integer community id for repo calls.
-  const communityId = ensureCommunity({
-    platform: "discord",
-    instanceKey: "discord",
-    externalGuildId: guildId,
-  });
-  const sub = interaction.options.getSubcommand();
+async function handleGork(commandCtx, featureCtx) {
+  // The context arm is fully served by commandCtx + the documented
+  // rawInteraction escape hatch inside handlers.js — featureCtx.client is
+  // deliberately NOT consumed here (spec PR 5).
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
+  // Repository key (integer) and display/audit key (external snowflake) ride
+  // on the context; handlers read them from commandCtx.
+  const sub = commandCtx.subcommand;
 
   switch (sub) {
     case "keyword":
-      return setKeyword(client, interaction, guildId, communityId);
+      return setKeyword(commandCtx);
     case "context":
-      return setContext(client, interaction, guildId, communityId);
+      return setContext(commandCtx);
     case "cooldown":
-      return setCooldown(client, interaction, guildId, communityId);
+      return setCooldown(commandCtx);
     case "rules":
-      return setRules(client, interaction, guildId, communityId);
+      return setRules(commandCtx);
     case "search":
-      return setSearch(client, interaction, guildId, communityId);
+      return setSearch(commandCtx);
     case "ste":
-      return setSte(client, interaction, guildId, communityId);
+      return setSte(commandCtx);
     case "enable":
-      return setEnable(client, interaction, guildId, communityId);
+      return setEnable(commandCtx);
     case "ban":
-      return banUser(client, interaction, guildId, communityId);
+      return banUser(commandCtx);
     case "unban":
-      return unbanUser(client, interaction, guildId, communityId);
+      return unbanUser(commandCtx);
     case "bans":
-      return showBans(interaction, guildId, communityId);
+      return showBans(commandCtx);
     case "memory":
-      return handleMemory(client, interaction, guildId, communityId);
+      return handleMemory(commandCtx);
     case "budget":
-      return handleBudget(client, interaction, guildId, communityId);
+      return handleBudget(commandCtx);
     case "log":
-      return setInteractionLog(client, interaction, guildId, communityId);
+      return setInteractionLog(commandCtx);
     case "summarize":
-      // requireStaff above gates the whole /gork family (decision 53: the
-      // rundown is staff-only); the handler owns the mode/cooldown/budget
-      // gates and the queue + post pipeline.
-      return handleSummarize(client, interaction, guildId, communityId);
+      // requireStaffFromContext above gates the whole /gork family (decision
+      // 53: the rundown is staff-only); the handler owns the mode/cooldown/
+      // budget gates and the queue + post pipeline.
+      return handleSummarize(commandCtx, featureCtx);
     case "summarize-budget":
-      return setSummarizeBudget(client, interaction, guildId, communityId);
+      return setSummarizeBudget(commandCtx);
     case "status":
-      return showStatus(interaction, guildId, communityId);
+      return showStatus(commandCtx);
     default:
-      return replyEphemeral(interaction, `Unknown gork subcommand: \`${sub}\`.`);
+      return commandCtx.reply({
+        content: `Unknown gork subcommand: \`${sub}\`.`,
+        sensitive: true,
+      });
   }
 }
 
@@ -112,6 +117,12 @@ module.exports = {
   commands,
   handlers: {
     gork: handleGork,
+  },
+  // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
+  // handler receives a CommandContext. The pipeline hook (handleGorkMessage)
+  // is not a slash handler and keeps its signature.
+  handlerApi: {
+    gork: "context",
   },
   handleGorkMessage,
   gorkQueue,

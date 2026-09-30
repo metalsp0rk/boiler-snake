@@ -184,8 +184,12 @@ function buildDiscordCommandContext(interaction, featureCtx) {
       externalGuildId,
     }),
     externalGuildId,
-    channelId: String(interaction.channelId),
-    userId: String(interaction.user.id),
+    // Defensive stringification: real ChatInputCommandInteractions always
+    // carry user/channelId; minimal duck-typed mocks used by gate-denial
+    // tests exercise the reply path only, where "" is inert (audit rows
+    // from migrated handlers pass explicit actor ids — see recipe 9).
+    channelId: interaction.channelId != null ? String(interaction.channelId) : "",
+    userId: interaction.user?.id != null ? String(interaction.user.id) : "",
     user: normalizeResolvedUser(interaction.user),
     commandName: interaction.commandName,
     subcommand,
