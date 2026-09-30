@@ -1163,7 +1163,12 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
         getInteger: (name) => (name === "expires_days" ? 5 : null),
       },
     });
-    await warnHandlers.warn(interaction, {});
+    // PR 4 seam: /warn runs on CommandContext (router-parity wrapping).
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await warnHandlers.warn(
+      buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+      { client: FAKE_CLIENT },
+    );
     assert.match(
       JSON.stringify(replies[0] || {}),
       /parity incident/,
@@ -1227,7 +1232,12 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
         },
       },
     });
-    await warnHandlers.warn(interaction, {});
+    // PR 4 seam: /warn runs on CommandContext (router-parity wrapping).
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await warnHandlers.warn(
+      buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+      { client: FAKE_CLIENT },
+    );
     const sStamped = api.getWarning(CID_A, wSlash.warning_number);
     assert.ok(sStamped.voided_at != null, "slash voided its row");
 
@@ -1284,7 +1294,12 @@ describe("J. parity: equal table outcomes + same-shaped audit rows (slash = sour
         },
       },
     });
-    await noteHandlers.note(interaction, {});
+    // PR 4 seam: /note runs on CommandContext (router-parity wrapping).
+    const { buildDiscordCommandContext } = require("../src/platform/discord/context");
+    await noteHandlers.note(
+      buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+      { client: FAKE_CLIENT },
+    );
     const nSlash = lastNote();
 
     // Equal outcome on every transport-independent column; the SUBJECTS

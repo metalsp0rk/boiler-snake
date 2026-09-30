@@ -396,6 +396,7 @@ function createClient(opts = {}) {
   const emitter = new EventEmitter();
   const guilds = new Map();
   const channels = new Map();
+  const users = new Map();
 
   const client = {
     user: opts.user || { id: IDS.bot, username: "BoilerSnake", bot: true, tag: "BoilerSnake#0000" },
@@ -413,6 +414,28 @@ function createClient(opts = {}) {
         for (const g of guilds.values()) {
           const ch = await g.channels.fetch(channelId);
           if (ch) return ch;
+        }
+        return null;
+      },
+    },
+    // discord.js UsersManager shape (OutboundClient.fetchUser/sendDm use it).
+    // Explicit registrations win; otherwise resolve through guild members so
+    // harness users (created via createUser, attached with guild.addMember)
+    // resolve to the SAME object tests assert sends on.
+    users: {
+      cache: users,
+      addUser(user) {
+        users.set(user.id, user);
+        return user;
+      },
+      fetch: async (id) => {
+        if (users.has(id)) return users.get(id);
+        if (client.user && String(client.user.id) === String(id)) {
+          return client.user;
+        }
+        for (const g of guilds.values()) {
+          const m = g.members?.cache?.get?.(id);
+          if (m?.user) return m.user;
         }
         return null;
       },
