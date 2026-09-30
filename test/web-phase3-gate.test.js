@@ -1438,15 +1438,10 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       api.updateGuildSettings(CID_A, { warn_expiry_days: 0, warn_dm_members: 1 });
       resetChannelCapture();
       const before = auditCount("slash");
-      const target = {
-        id: USER_W_SUB,
-        bot: false,
-        sent: [],
-        async send(p) {
-          this.sent.push(p);
-          return { id: "dm-w" };
-        },
-      };
+      // PR 4 seam: warn DMs go through outbound.sendDm → FAKE_CLIENT.users,
+      // so capture at the seam (the same DM_USERS entry the web twin writes to).
+      const target = DM_USERS[USER_W_SUB];
+      target.sent.length = 0;
       const interaction = slashInteraction({
         userId: USER_STAFF,
         sub: "add",
@@ -1454,7 +1449,11 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         users: { user: target },
         strings: { reason: "gate parity reason" },
       });
-      await warningsFeature.handlers.warn(interaction, { client: FAKE_CLIENT });
+      // PR 4 seam: /warn runs on CommandContext (router-parity wrapping).
+      await warningsFeature.handlers.warn(
+        buildDiscordCommandContext(interaction, { client: FAKE_CLIENT }),
+        { client: FAKE_CLIENT },
+      );
       assert.equal(auditCount("slash"), before + 1);
       bump("slash", "warnings.add");
       wIssueSlash = {
@@ -1519,15 +1518,19 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       resetChannelCapture();
       DM_USERS[USER_W_SUB].sent.length = 0;
       let before = auditCount("slash");
+      // PR 4 seam: /warn runs on CommandContext (router-parity wrapping).
       await warningsFeature.handlers.warn(
-        slashInteraction({
-          userId: USER_STAFF,
-          sub: "void",
-          memberRoleIds: [ROLE_JUNIOR_TIER],
-          ints: { id: seed1.warning_number },
-          strings: { reason: "gate parity void" },
-        }),
-        { client: FAKE_CLIENT }
+        buildDiscordCommandContext(
+          slashInteraction({
+            userId: USER_STAFF,
+            sub: "void",
+            memberRoleIds: [ROLE_JUNIOR_TIER],
+            ints: { id: seed1.warning_number },
+            strings: { reason: "gate parity void" },
+          }),
+          { client: FAKE_CLIENT },
+        ),
+        { client: FAKE_CLIENT },
       );
       assert.equal(auditCount("slash"), before + 1);
       bump("slash", "warnings.void");
@@ -1586,15 +1589,19 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       purgeAutoincrement("staff_notes");
       resetChannelCapture();
       let before = auditCount("slash");
+      // PR 4 seam: /note runs on CommandContext (router-parity wrapping).
       await staffNotesFeature.handlers.note(
-        slashInteraction({
-          userId: USER_STAFF,
-          sub: "add",
-          memberRoleIds: [ROLE_JUNIOR_TIER],
-          users: { user: { id: USER_W_SUB, bot: false } },
-          strings: { content: "gate parity note" },
-        }),
-        { client: FAKE_CLIENT }
+        buildDiscordCommandContext(
+          slashInteraction({
+            userId: USER_STAFF,
+            sub: "add",
+            memberRoleIds: [ROLE_JUNIOR_TIER],
+            users: { user: { id: USER_W_SUB, bot: false } },
+            strings: { content: "gate parity note" },
+          }),
+          { client: FAKE_CLIENT },
+        ),
+        { client: FAKE_CLIENT },
       );
       assert.equal(auditCount("slash"), before + 1);
       bump("slash", "notes.add");
@@ -2013,9 +2020,13 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       installMocks();
       try {
         const before = auditCount("slash");
+        // PR 4 seam: /staff runs on CommandContext (router-parity wrapping).
         await staffRolesFeature.handlers.staff(
-          slashInteraction({ userId: USER_ADMIN, sub: "syncpermissions", manageGuild: true, bools: { force_reauth: false } }),
-          { client: FAKE_CLIENT }
+          buildDiscordCommandContext(
+            slashInteraction({ userId: USER_ADMIN, sub: "syncpermissions", manageGuild: true, bools: { force_reauth: false } }),
+            { client: FAKE_CLIENT },
+          ),
+          { client: FAKE_CLIENT },
         );
         assert.equal(auditCount("slash"), before + 1, "slash synced + audited");
         bump("slash", "staff.sync_permissions");
@@ -2081,7 +2092,11 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
       try {
         let before = { s: auditCount("slash"), w: auditCount("web") };
         const inter = slashInteraction({ userId: USER_ADMIN, sub: "syncpermissions", manageGuild: true, bools: {} });
-        await staffRolesFeature.handlers.staff(inter, { client: FAKE_CLIENT });
+        // PR 4 seam: /staff runs on CommandContext (router-parity wrapping).
+        await staffRolesFeature.handlers.staff(
+          buildDiscordCommandContext(inter, { client: FAKE_CLIENT }),
+          { client: FAKE_CLIENT },
+        );
         assert.deepEqual(discord.log, [], "slash made ZERO Discord calls without authorization");
         const replyText = inter.replies.map((r) => JSON.stringify(r)).join(" ");
         assert.match(replyText, /authorize|oauth/i, "slash answers with its authorize-link UX");
@@ -2104,7 +2119,11 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
         discord.restGetThrows = true;
         before = { s: auditCount("slash"), w: auditCount("web") };
         const inter2 = slashInteraction({ userId: USER_ADMIN, sub: "syncpermissions", manageGuild: true, bools: {} });
-        await staffRolesFeature.handlers.staff(inter2, { client: FAKE_CLIENT });
+        // PR 4 seam: /staff runs on CommandContext (router-parity wrapping).
+        await staffRolesFeature.handlers.staff(
+          buildDiscordCommandContext(inter2, { client: FAKE_CLIENT }),
+          { client: FAKE_CLIENT },
+        );
         assert.equal(auditCount("slash"), before.s, "hard-failed slash sync audited NOTHING");
         const fail = await postRaw(baseReal, `/g/${CID_A}/commands/sync`, {
           cookie: cookieOf.admin,

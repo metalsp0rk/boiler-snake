@@ -497,7 +497,12 @@ function buildFakeCacheClient(spec) {
       // as a cold-cache miss, never a network call).
       fetch: async (id) => channelMap[id] ?? null,
     },
-    users: { cache: { get: (id) => users.get(id) } },
+    users: {
+      cache: { get: (id) => users.get(id) },
+      // OutboundClient.fetchUser/sendDm resolve through users.fetch — the
+      // cache-only answer, mirroring the members/channels fetch style.
+      fetch: async (id) => users.get(id) ?? null,
+    },
     __maps: { members, users },
     __guild: fakeGuild,
   };
