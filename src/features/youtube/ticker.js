@@ -10,6 +10,55 @@ const {
   updateYoutubeChannelLastChecked,
   updateGuildSettings,
 } = require("../../db");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+
+/**
+ * Resolve the OutboundClient that posts for one community row
+ * (roadmap/fluxer.md § Scheduler jobs: "Row's communityId → client").
+ *
+ * Accepts the PR 7 supervisor `{ discord, fluxer, clientForCommunity }`, a
+ * pre-resolved OutboundClient, or a legacy raw discord.js client (transitional
+ * shim so pre-cutover call sites — e.g. the EventSub dispatcher — keep working).
+ * Returns null when no ready client exists; callers log and skip the row.
+ *
+ * @param {object|null} supervisor
+ * @param {number} communityId
+ * @returns {object|null} OutboundClient
+ */
+function resolveOutbound(supervisor, communityId) {
+  if (!supervisor) return null;
+  if (typeof supervisor.clientForCommunity === "function") {
+    try {
+      return supervisor.clientForCommunity(communityId) ?? null;
+    } catch (err) {
+      console.error(
+        `[youtube] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
+      );
+      return null;
+    }
+  }
+  if (typeof supervisor.sendChannel === "function") return supervisor;
+  if (supervisor.guilds || supervisor.channels || supervisor.users) {
+    // Legacy raw discord.js client (pre-PR 7 call site).
+    try {
+      return getDiscordOutbound(supervisor);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and
+ * attachments): EmbedBuilder instances are flattened with toJSON() so the
+ * payload is platform-agnostic; visible content is unchanged.
+ * @param {object} embed EmbedBuilder-like or plain object
+ * @returns {object}
+ */
+function toPlainEmbed(embed) {
+  return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
+}
 
 async function lookupChannelByName(username) {
   if (!process.env.YOUTUBE_API_KEY) {
@@ -254,19 +303,28 @@ const defaultDeps = {
 };
 
 /**
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor (raw client accepted)
  * @param {number} communityId internal community id (row's `community_id`)
  * @param {object} channelData
  * @param {YoutubeTickerDeps} [deps]
  */
 async function processChannel(
-  client,
+  supervisor,
   communityId,
   channelData,
   deps = defaultDeps,
 ) {
   const fetchFeed = deps.fetchYouTubeFeed || fetchYouTubeFeed;
   const resolveName = deps.lookupChannelByName || lookupChannelByName;
+
+  // Per-row routing (spec 576): missing client → log and skip the row.
+  const outbound = resolveOutbound(supervisor, communityId);
+  if (!outbound) {
+    console.warn(
+      `[youtube] no ready client for community ${communityId} — skipping`,
+    );
+    return;
+  }
 
   const settings = getGuildSettings(communityId);
 
@@ -414,7 +472,7 @@ async function processChannel(
 
     const useSimpleEmbed = notificationType === "upload";
     await sendNotification(
-      client,
+      outbound,
       communityId,
       settings.youtube_notification_channel_id,
       channelData,
@@ -511,8 +569,13 @@ function createUploadEmbed(channelData, videoInfo, channelUrl) {
   return embed;
 }
 
+/**
+ * Post one notification through the OutboundClient (spec § Scheduler jobs:
+ * sendChannel on the row's client — no channel pre-fetch).
+ * @param {object} outbound OutboundClient for the row's community
+ */
 async function sendNotification(
-  client,
+  outbound,
   communityId,
   channelId,
   channelData,
@@ -522,14 +585,6 @@ async function sendNotification(
   useSimpleEmbed = true,
 ) {
   try {
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel) {
-      console.error(
-        `[youtube] Could not find notification channel ${channelId}`,
-      );
-      return;
-    }
-
     let content = "";
     let embeds = [];
 
@@ -559,11 +614,22 @@ async function sendNotification(
       }
     }
 
-    const message = await channel.send({
+    // OutboundClient.sendChannel replaces client.channels.fetch + channel.send.
+    // Embeds are flattened to plain NormalizedEmbed JSON at this boundary.
+    const result = await outbound.sendChannel(channelId, {
       content: content,
       allowedMentions: { parse: [] },
-      embeds: embeds,
+      embeds: embeds.map(toPlainEmbed),
     });
+
+    if (!result || result.ok !== true) {
+      console.error(
+        `[youtube] Failed to send notification for ${videoInfo?.title}: ${
+          result?.error || "no ready client"
+        }`,
+      );
+      return;
+    }
 
     console.log(
       `[youtube] Sent notification for ${videoInfo.title} in community ${communityId}`,
@@ -577,10 +643,11 @@ async function sendNotification(
 }
 
 /**
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity});
+ *        a raw discord.js client is accepted (legacy shim)
  * @param {YoutubeTickerDeps & { skipApiKeyCheck?: boolean }} [deps]
  */
-async function runYoutubeTick(client, deps = defaultDeps) {
+async function runYoutubeTick(supervisor, deps = defaultDeps) {
   console.log(`[youtube] Running tick`);
   // Check for API key before doing any work (tests may pass skipApiKeyCheck + stubs)
   if (!deps.skipApiKeyCheck && !process.env.YOUTUBE_API_KEY) {
@@ -614,7 +681,9 @@ async function runYoutubeTick(client, deps = defaultDeps) {
 
   for (const channel of channels) {
     try {
-      await processChannel(client, channel.community_id, channel, deps);
+      // processChannel resolves supervisor.clientForCommunity(row.community_id)
+      // per row and logs-and-skips rows whose client is not ready (spec 576).
+      await processChannel(supervisor, channel.community_id, channel, deps);
     } catch (err) {
       console.error(
         `[youtube] Error processing channel ${channel.channel_name}:`,
@@ -624,7 +693,12 @@ async function runYoutubeTick(client, deps = defaultDeps) {
   }
 }
 
-function startYoutubeTicker(client) {
+/**
+ * Arm the youtube job. The scheduler job receives the PR 7 supervisor;
+ * every tick resolves the client per community row.
+ * @param {object|null} supervisor
+ */
+function startYoutubeTicker(supervisor) {
   if (!process.env.YOUTUBE_API_KEY) {
     console.log(
       "[youtube] Skipping ticker startup - YOUTUBE_API_KEY not configured",
@@ -637,7 +711,7 @@ function startYoutubeTicker(client) {
     intervalMs: 5 * 60_000,
     align: true,
     runImmediately: true,
-    run: () => runYoutubeTick(client),
+    run: () => runYoutubeTick(supervisor),
   });
 }
 

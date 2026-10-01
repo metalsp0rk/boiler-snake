@@ -548,8 +548,16 @@ async function handleTwitchAutocomplete(interaction) {
   );
 }
 
-function start(client) {
-  startTwitchTicker(client);
+/**
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
+ * @param {object} [featureCtx]
+ */
+function start(supervisor, featureCtx) {
+  void featureCtx;
+  // The EventSub fast path resolves its Discord client through its own
+  // getClient accessor (web wiring); the poller routes per community via
+  // supervisor.clientForCommunity (roadmap/fluxer.md § Scheduler jobs).
+  startTwitchTicker(supervisor);
   startEventsub();
 }
 

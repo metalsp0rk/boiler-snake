@@ -7,8 +7,11 @@ const {
   updateGuildSettings,
 } = require("../../db");
 // src/db/index.js still maps the removed `allUsersInGuild` name, so import the
-// renamed repository function directly. // TODO(fluxer-pr4): facade re-export.
-const { allUsersInCommunity } = require("../../db/repositories/users");
+// renamed repository functions directly. // TODO(fluxer-pr4): facade re-export.
+const {
+  allUsersInCommunity,
+  listCommunityIdsWithUsers,
+} = require("../../db/repositories/users");
 const { levelFromXp } = require("../../core/xpMath");
 const { requireStaffFromContext } = require("../../core/permissions");
 const { Color } = require("../../core/theme");
@@ -24,10 +27,7 @@ const {
   recordSystemAudit,
 } = require("../../core/auditTrail");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
-const {
-  ensureCommunity,
-  getCommunityById,
-} = require("../../platform/community");
+const { getCommunityById } = require("../../platform/community");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 const DECAY_CRON = "0 4 * * *";
@@ -166,16 +166,62 @@ async function handleSetDecay(commandCtx, featureCtx) {
 }
 
 /**
- * Run one decay pass for a community.
- * @param {import("discord.js").Client} client
- * @param {number} communityId  internal communities.id (tickers pass row ids;
- *        resolved from the Discord guild snowflake at the scheduler edge)
+ * Resolve the raw Discord client behind the supervisor (null when Discord is
+ * unconfigured). A legacy raw client passed directly is honored (tests and
+ * pre-cutover callers).
+ * @param {object|null} supervisor
+ * @returns {object|null}
  */
-async function runDecayForGuild(client, communityId) {
+function resolveDiscordClient(supervisor) {
+  if (!supervisor) return null;
+  if (typeof supervisor.clientForCommunity === "function") {
+    return supervisor.discord ?? null;
+  }
+  if (supervisor.guilds) return supervisor; // legacy raw discord.js client
+  return null;
+}
+
+/**
+ * Resolve the OutboundClient for one community (roadmap/fluxer.md § Scheduler
+ * jobs: "clientForCommunity for each community row that has users").
+ * @param {object|null} supervisor
+ * @param {number} communityId
+ * @returns {object|null}
+ */
+function resolveOutbound(supervisor, communityId) {
+  if (!supervisor) return null;
+  if (typeof supervisor.clientForCommunity === "function") {
+    try {
+      return supervisor.clientForCommunity(communityId) ?? null;
+    } catch (err) {
+      console.error(
+        `[decay] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
+      );
+      return null;
+    }
+  }
+  if (typeof supervisor.sendChannel === "function") return supervisor;
+  const client = resolveDiscordClient(supervisor);
+  if (client) {
+    try {
+      return getDiscordOutbound(client);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Run one decay pass for a community.
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
+ * @param {number} communityId  internal communities.id
+ */
+async function runDecayForGuild(supervisor, communityId) {
   const settings = getGuildSettings(communityId);
   if (!settings.decay_enabled) return;
 
-  // Ticker rows carry the community id; reverse-resolve the Discord guild.
+  // Communities row carries the platform + capability flags (PR 6 camelCase).
   const community = getCommunityById(communityId);
   const guildId = community?.externalGuildId ?? null;
   if (!guildId) {
@@ -184,15 +230,41 @@ async function runDecayForGuild(client, communityId) {
     );
     return;
   }
-  const guild = await client.guilds.fetch(guildId).catch((err) => {
-    console.error(
-      `[decay] failed to fetch Discord guild ${guildId} for community ${communityId}: ${err?.message || err}`,
-    );
-    return null;
-  });
-  if (!guild) return;
+  const isDiscordRow = community.platform === "discord";
 
-  const outbound = getDiscordOutbound(client);
+  // Per-row client (spec 575): clientForCommunity for this community.
+  const outbound = resolveOutbound(supervisor, communityId);
+  const client = resolveDiscordClient(supervisor);
+
+  let guild = null;
+  if (isDiscordRow) {
+    // The Discord arm keeps the discord.js Guild path (member objects feed
+    // syncMemberRoles / syncMemberReactionRoles / the audit mirror).
+    if (!client) {
+      console.error(
+        `[decay] no Discord client configured for community ${communityId}; skipping decay`,
+      );
+      return;
+    }
+    guild = await client.guilds.fetch(guildId).catch((err) => {
+      console.error(
+        `[decay] failed to fetch Discord guild ${guildId} for community ${communityId}: ${err?.message || err}`,
+      );
+      return null;
+    });
+    if (!guild) return;
+  }
+
+  if (!outbound) {
+    console.warn(
+      `[decay] no ready client for community ${communityId} — skipping`,
+    );
+    return;
+  }
+
+  // K8: Fluxer role mutations are elevated-gated; Discord rows always re-sync.
+  const fluxerCanResync = !isDiscordRow && Number(community.elevatedPermissions) === 1;
+
   const users = allUsersInCommunity(communityId);
   for (const u of users) {
     const msgCount = countMessagesInWindow(
@@ -225,54 +297,85 @@ async function runDecayForGuild(client, communityId) {
       },
     });
 
-    const member = await guild.members.fetch(u.user_id).catch(() => null);
-    if (member) {
-      const lvl = levelFromXp(newXp, settings.level_xp_factor);
-      const levelChanges = await syncMemberRoles(outbound, communityId, member, lvl);
-      await logLevelRoleChanges(
-        outbound,
-        communityId,
-        member,
-        levelChanges,
-        lvl,
-        "decay",
-      ).catch(() => {});
+    const lvl = levelFromXp(newXp, settings.level_xp_factor);
 
-      await syncMemberReactionRoles(member, lvl, {
-        client,
-        logSource: "decay_reaction_role",
-      });
+    if (isDiscordRow) {
+      const member = await guild.members.fetch(u.user_id).catch(() => null);
+      if (member) {
+        const levelChanges = await syncMemberRoles(outbound, communityId, member, lvl);
+        await logLevelRoleChanges(
+          outbound,
+          communityId,
+          member,
+          levelChanges,
+          lvl,
+          "decay",
+        ).catch(() => {});
 
-      if (lvl < oldLvl) {
-        console.log(
-          `[decay] ${guildId}/${u.user_id}: XP ${u.xp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`,
-        );
+        await syncMemberReactionRoles(member, lvl, {
+          client,
+          logSource: "decay_reaction_role",
+        });
+
+        if (lvl < oldLvl) {
+          console.log(
+            `[decay] ${guildId}/${u.user_id}: XP ${u.xp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`,
+          );
+        }
+      }
+    } else if (fluxerCanResync) {
+      // Fluxer elevated path (spec 575): re-sync roles through the OutboundClient
+      // MemberHandle surface; K8 self-gates the actual REST calls. Reaction-role
+      // sync needs discord.js member objects and stays Discord-only (PR 6 limit).
+      const member = await outbound.fetchMember(communityId, u.user_id);
+      if (member) {
+        const levelChanges = await syncMemberRoles(outbound, communityId, member, lvl);
+        await logLevelRoleChanges(
+          outbound,
+          communityId,
+          member,
+          levelChanges,
+          lvl,
+          "decay",
+        ).catch(() => {});
+
+        if (lvl < oldLvl) {
+          console.log(
+            `[decay] ${guildId}/${u.user_id}: XP ${u.xp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`,
+          );
+        }
       }
     }
   }
 }
 
-function startDecayScheduler(client) {
+function startDecayScheduler(supervisor) {
   registerJob({
     name: "decay",
     cron: DECAY_CRON,
     run: async () => {
-      for (const guild of client.guilds.cache.values()) {
-        // Edge resolution: ticker entry points translate the Discord snowflake
-        // once, then every repository below receives the integer community id.
-        const communityId = ensureCommunity({
-          platform: "discord",
-          instanceKey: "discord",
-          externalGuildId: guild.id,
-        });
-        await runDecayForGuild(client, communityId);
+      // Spec 575: iterate the communities that have tracked users; every
+      // repository below receives the integer community id.
+      for (const communityId of listCommunityIdsWithUsers()) {
+        try {
+          await runDecayForGuild(supervisor, communityId);
+        } catch (err) {
+          console.error(
+            `[decay] decay run failed for community ${communityId}: ${err?.message || err}`,
+          );
+        }
       }
     },
   });
 }
 
-function start(client) {
-  startDecayScheduler(client);
+/**
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
+ * @param {object} [featureCtx]
+ */
+function start(supervisor, featureCtx) {
+  void featureCtx;
+  startDecayScheduler(supervisor);
 }
 
 module.exports = {
@@ -283,8 +386,8 @@ module.exports = {
   },
   // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
   // handler receives a CommandContext instead of a raw interaction.
-  // The ticker (startDecayScheduler / runDecayForGuild) is NOT migrated —
-  // it stays on the Discord client (PR 7).
+  // PR 7: the ticker (startDecayScheduler / runDecayForGuild) takes the
+  // supervisor and routes each tick by community.
   handlerApi: {
     setdecay: "context",
   },
