@@ -620,24 +620,31 @@ async function tryAwardMessageXp(outbound, message, options = {}) {
   if (options.isPrefixCommand) return;
   if (message.authorBot) return;
   if (!message.guild && !message.externalGuildId) return;
+  // Dual-shape: Discord duck fields (author.id / guild.id) with Fluxer
+  // normalized fields (authorId / externalGuildId). Prod 2026-10-01: the
+  // author/guild duck reads crashed EVERY Fluxer message at this step, so
+  // no Fluxer message ever earned XP (pipeline catch logged "reading 'id'").
+  const authorId = message.authorId ?? message.author?.id;
+  const externalGuildId = message.externalGuildId ?? message.guild?.id;
+  if (authorId == null || externalGuildId == null) return;
   const communityId = Number.isSafeInteger(message.communityId)
     ? message.communityId
     : ensureCommunity({
         platform: "discord",
         instanceKey: "discord",
-        externalGuildId: message.guild.id,
+        externalGuildId,
       });
   const settings = getGuildSettings(communityId);
   const gain = Number(settings.msg_xp) || 0;
   if (gain <= 0) return;
 
-  const k = key(communityId, message.author.id);
+  const k = key(communityId, authorId);
   if (isOnCooldown(msgCooldown, k, settings.msg_cooldown_sec)) return;
 
   await awardXp(outbound, {
     communityId,
-    externalGuildId: message.externalGuildId ?? message.guild.id,
-    userId: message.author.id,
+    externalGuildId,
+    userId: authorId,
     delta: gain,
     activityKind: "message",
     levelXpFactor: settings.level_xp_factor,

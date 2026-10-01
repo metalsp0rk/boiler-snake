@@ -140,15 +140,22 @@ function normalizeSendFile(file, index, method) {
       error: `${method}: files[${index}] needs a non-empty string name (files entries are { name, data, contentType? })`,
     };
   }
+  // Data sources: { name, data } plain payloads (string tolerated) AND
+  // discord.js AttachmentBuilder instances, which handlers pass through
+  // (handleLeaderboard's PNG file). AttachmentBuilder stores bytes on
+  // `.attachment` (Buffer from canvas.toBuffer; typed arrays tolerated).
   let data = null;
-  if (Buffer.isBuffer(file.data)) data = file.data;
-  else if (typeof file.data === "string") data = Buffer.from(file.data, "utf8");
+  const raw = file?.data ?? file?.attachment;
+  if (Buffer.isBuffer(raw)) data = raw;
+  else if (typeof raw === "string") data = Buffer.from(raw, "utf8");
+  else if (raw instanceof ArrayBuffer) data = Buffer.from(new Uint8Array(raw));
+  else if (ArrayBuffer.isView(raw)) data = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
   if (data == null) {
     return {
       ok: false,
       error:
         `${method}: files[${index}] ("${name}") needs Buffer data, got ` +
-        `${file?.data == null ? String(file?.data) : typeof file?.data}`,
+        `${raw == null ? String(raw) : typeof raw}`,
     };
   }
   const contentType =

@@ -638,3 +638,43 @@ describe("fluxer/outbound — identity + edit", () => {
     assert.deepEqual(rest.calls[0].body, { content: "plain text reply" });
   });
 });
+
+describe("fluxer/outbound — AttachmentBuilder-shaped file entries", () => {
+  it("sendChannel accepts { name, attachment } (discord.js AttachmentBuilder shape)", async () => {
+    // Regression (prod 2026-10-01): handleLeaderboard renders a PNG via
+    // @napi-rs/canvas into a discord.js AttachmentBuilder, which stores bytes
+    // on `.attachment`, not `.data`. sendChannel rejected the entry
+    // ("needs Buffer data, got undefined") and EVERY data-carrying
+    // !leaderboard reply was silently dropped. The renderer passes the
+    // builder through the reply payload untouched.
+    const rest = makeFakeRest({
+      routes: { "POST /v1/channels/444/messages": { id: "m-lb" } },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const png = Buffer.from("fake-png-bytes");
+
+    const res = await outbound.sendChannel("444", {
+      content: "**Leaderboard — ranks 1–2**",
+      files: [{ name: "boiler-snake-leaderboard.png", attachment: png }],
+    });
+
+    assert.equal(res.ok, true, res.error);
+    const post = rest.calls.find((c) => c.method === "POST" && c.path === "/v1/channels/444/messages");
+    assert.ok(post, "expected the multipart message POST");
+    // No presigned flag on the fake handle → multipart (Phase 0 flow).
+    assert.ok(post.body instanceof globalThis.FormData, "expected a FormData multipart body");
+    const payload = JSON.parse(post.body.get("payload_json"));
+    assert.equal(payload.content, "**Leaderboard — ranks 1–2**");
+  });
+
+  it("string attachment payloads still normalize (warning exports)", async () => {
+    const rest = makeFakeRest({
+      routes: { "POST /v1/channels/444/messages": { id: "m2" } },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const res = await outbound.sendChannel("444", {
+      files: [{ name: "notes.md", attachment: "# export" }],
+    });
+    assert.equal(res.ok, true, res.error);
+  });
+});
