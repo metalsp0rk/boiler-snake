@@ -23,6 +23,7 @@ const {
   missingOptionError,
   normalizeReplyPayload,
 } = require("../context");
+const { ALL_PERMISSIONS } = require("./permissions");
 
 /**
  * Build the Fluxer CommandContext for one parsed prefix command.
@@ -35,9 +36,19 @@ const {
  * @param {Map<string, *>} [deps.resolved] option name → resolved value
  *   (user ResolvedUser / {id,type} / number / boolean / string). Falls back to
  *   string values from `parsed.options` for options dispatch did not transform.
+ * @param {{ channelPermissions: bigint, memberRoleIds: string[], user?: {id:string,username:string|null,bot:boolean} }|null} [deps.permissions]
+ *   mask bundle from dispatch step 2.5 (bundle contract 3). Absent → 0n /
+ *   message role ids (PR 6 defaults — unit tests keep passing).
+ * @param {{ id: string, username?: string|null, bot?: boolean }|null} [deps.authorOverride]
+ *   resolved author from the permission resolve (fetchMember path); overrides
+ *   the gateway authorRaw fields.
  * @returns {object} CommandContext
  */
-function buildFluxerCommandContext(parsed, message, { outbound, resolved = null } = {}) {
+function buildFluxerCommandContext(
+  parsed,
+  message,
+  { outbound, resolved = null, permissions = null, authorOverride = null } = {},
+) {
   if (!parsed || typeof parsed.commandName !== "string") {
     throw new Error("buildFluxerCommandContext: parsed.commandName required");
   }
@@ -51,12 +62,35 @@ function buildFluxerCommandContext(parsed, message, { outbound, resolved = null 
   }
 
   const authorRaw = message.authorRaw ?? null;
+  // Contract 2/3: dispatch passes the author resolved by the permission step
+  // (fetchMember carries the username the gateway payload may lack).
   /** @type {ResolvedUser|null} */
-  const user = {
-    id: String(message.authorId),
-    username: authorRaw?.username ?? null,
-    bot: Boolean(message.authorBot),
-  };
+  const user = authorOverride
+    ? {
+        id: String(authorOverride.id),
+        username: authorOverride.username ?? authorRaw?.username ?? null,
+        bot: Boolean(authorOverride.bot),
+      }
+    : {
+        id: String(message.authorId),
+        username: authorRaw?.username ?? null,
+        bot: Boolean(message.authorBot),
+      };
+
+  // PR 8 mask bundle (bundle contract 3). channelPermissions is a bigint;
+  // memberPermissions MIRRORS it: Discord sends the channel bitset expanded on
+  // both fields, and the FromContext gates read channelPermissions only — set
+  // both to the computed mask (contract 2). Absent → PR 6 zeros.
+  const channelPermissions =
+    permissions && typeof permissions.channelPermissions === "bigint"
+      ? permissions.channelPermissions
+      : 0n;
+  const memberRoleIds =
+    permissions && Array.isArray(permissions.memberRoleIds)
+      ? permissions.memberRoleIds.map((id) => String(id))
+      : Array.isArray(message.memberRoleIds)
+        ? message.memberRoleIds
+        : [];
 
   // Option values by name. Types that need structure (user/channel) come from
   // dispatch's resolved map; scalars keep the parser's string form and are
@@ -185,10 +219,19 @@ function buildFluxerCommandContext(parsed, message, { outbound, resolved = null 
     subcommandGroup: parsed.subcommandGroup ?? null,
     subcommand: parsed.subcommand ?? null,
     options,
-    // Mask algorithm is PR 8 (spec § Permissions); PR 6 ships zeros.
-    channelPermissions: 0n,
-    memberRoleIds: Array.isArray(message.memberRoleIds) ? message.memberRoleIds : [],
-    guildOwner: false,
+    // PR 8 (spec § Permissions): the mask dispatch computed, bigint. PR 6
+    // shipped zeros; the FromContext gates (src/core/permissions.js) read
+    // channelPermissions — the admin test is hasBit(mask, MANAGE_GUILD), and
+    // owner + administrator both arrive pre-expanded as ALL.
+    channelPermissions,
+    // Contract 2: Discord sends the channel bitset expanded on both fields;
+    // mirror it so gork's memberPermissions.has(ManageGuild) duck and any
+    // future memberPermissions reader see the same mask.
+    memberPermissions: channelPermissions,
+    memberRoleIds,
+    // Owner and ADMINISTRATOR both collapse to ALL inside the pure algorithm
+    // (spec 548: no second sentinel) — ALL is the strongest claim we can make.
+    guildOwner: channelPermissions === ALL_PERMISSIONS,
     // State getters mirror the Discord builder's live view of the interaction.
     get deferred() {
       return state.deferred;
