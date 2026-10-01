@@ -73,10 +73,12 @@ async function handleSetwarn(commandCtx, featureCtx) {
 }
 
 /**
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
+ * @param {object} [featureCtx]
  */
-function start(client) {
-  startWarnExpiryTicker(client);
+function start(supervisor, featureCtx) {
+  void featureCtx;
+  startWarnExpiryTicker(supervisor);
 }
 
 module.exports = {

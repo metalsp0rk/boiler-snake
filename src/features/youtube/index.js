@@ -729,8 +729,13 @@ async function handleYoutubeAutocomplete(interaction) {
   return;
 }
 
-function start(client) {
-  startYoutubeTicker(client);
+/**
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
+ * @param {object} [featureCtx]
+ */
+function start(supervisor, featureCtx) {
+  void featureCtx;
+  startYoutubeTicker(supervisor);
 }
 
 module.exports = {

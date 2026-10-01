@@ -408,8 +408,13 @@ async function handleGithubAutocomplete(interaction) {
   );
 }
 
-function start(client) {
-  startGithubReleaseTicker(client);
+/**
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
+ * @param {object} [featureCtx]
+ */
+function start(supervisor, featureCtx) {
+  void featureCtx;
+  startGithubReleaseTicker(supervisor);
 }
 
 module.exports = {

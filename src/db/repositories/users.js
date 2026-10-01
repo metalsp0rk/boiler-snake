@@ -209,6 +209,21 @@ function allUsersInCommunity(communityId) {
   return rows.map((r) => ({ user_id: r.user_id, xp: clampXpTotal(r.xp) }));
 }
 
+/**
+ * Distinct community ids that have at least one tracked user row. Ticker
+ * plumbing (decay / voice / eventReminders sweeps iterate communities that
+ * can actually receive XP; communities with no users have nothing to do).
+ * @returns {number[]} community ids (communities.id)
+ */
+function listCommunityIdsWithUsers() {
+  const rows = db.prepare(`
+  SELECT DISTINCT community_id
+  FROM users
+  ORDER BY community_id ASC
+  `).all();
+  return rows.map((r) => r.community_id);
+}
+
 module.exports = {
   ensureUser,
   addXp,
@@ -219,4 +234,5 @@ module.exports = {
   SEARCH_LIMIT,
   topUsers,
   allUsersInCommunity,
+  listCommunityIdsWithUsers,
 };

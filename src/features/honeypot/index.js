@@ -988,7 +988,23 @@ async function handleHoneypot(commandCtx, featureCtx) {
   return;
 }
 
-function registerEvents(client) {
+/**
+ * PR 7: the first argument is the supervisor. Gateway binds attach to
+ * supervisor.discord only (Fluxer gateway events are wired in the
+ * elevated-permissions PR; spec § Scheduler jobs).
+ * @param {object|null} supervisor
+ * @param {object} [featureCtx]
+ */
+function registerEvents(supervisor, featureCtx) {
+  void featureCtx;
+  const client =
+    supervisor && typeof supervisor.clientForCommunity === "function"
+      ? supervisor.discord ?? null
+      : supervisor && supervisor.on
+        ? supervisor // legacy raw discord.js client
+        : null;
+  if (!client) return; // Discord unconfigured → no-op binds
+
   client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     try {
       await handleHoneypotBanRole(oldMember, newMember);
@@ -1001,12 +1017,36 @@ function registerEvents(client) {
   });
 }
 
-function start(client) {
+/**
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
+ * @param {object} [featureCtx]
+ */
+function start(supervisor, featureCtx) {
+  void featureCtx;
+  // The sweep walks Discord guilds from the client cache (spec 581: per client
+  // that has the guild in cache). Fluxer rows in the warnings table resolve to
+  // no Discord guild and are skipped inside the sweep loop.
+  const client =
+    supervisor && typeof supervisor.clientForCommunity === "function"
+      ? supervisor.discord ?? null
+      : supervisor && supervisor.guilds
+        ? supervisor // legacy raw discord.js client
+        : null;
+
   registerJob({
     name: "honeypotSweep",
     intervalMs: 10 * 60 * 1000,
     runImmediately: true,
-    run: () => sweepHoneypotWarningReactions(client),
+    run: () => {
+      if (!client) {
+        // Discord unconfigured → the sweep has no guild cache to walk.
+        console.log(
+          "[honeypot] Discord client not configured — warning-reaction sweep skipped",
+        );
+        return;
+      }
+      return sweepHoneypotWarningReactions(client);
+    },
   });
 }
 

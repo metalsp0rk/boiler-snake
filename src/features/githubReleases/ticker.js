@@ -6,9 +6,54 @@ const {
   updateGithubWatchReleaseState,
 } = require("../../db");
 const { fetchReleases } = require("./github");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 
 /** @type {{ fetchReleases: Function }} */
 const defaultDeps = { fetchReleases };
+
+/**
+ * Resolve the OutboundClient for one watch row (roadmap/fluxer.md § Scheduler
+ * jobs: watch row's clientForCommunity). Accepts the PR 7 supervisor, a raw
+ * OutboundClient, or a legacy raw discord.js client. Null = no ready client.
+ *
+ * @param {object|null} supervisor
+ * @param {number} communityId
+ * @returns {object|null} OutboundClient
+ */
+function resolveOutbound(supervisor, communityId) {
+  if (!supervisor) return null;
+  if (typeof supervisor.clientForCommunity === "function") {
+    try {
+      return supervisor.clientForCommunity(communityId) ?? null;
+    } catch (err) {
+      console.error(
+        `[github] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
+      );
+      return null;
+    }
+  }
+  if (typeof supervisor.sendChannel === "function") return supervisor;
+  if (supervisor.guilds || supervisor.channels || supervisor.users) {
+    // Legacy raw discord.js client (pre-PR 7 call site).
+    try {
+      return getDiscordOutbound(supervisor);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and
+ * attachments). EmbedBuilder instances flatten via toJSON(); visible content
+ * is byte-identical.
+ * @param {object} embed
+ * @returns {object}
+ */
+function toPlainEmbed(embed) {
+  return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
+}
 
 const EMBED_DESCRIPTION_LIMIT = 4096;
 const DESCRIPTION_BUDGET = 3800;
@@ -97,21 +142,11 @@ function createReleaseEmbed(watch, release) {
 /**
  * Send one release announcement. Returns false when the message could not
  * be delivered (the release pointer is only advanced on delivery success).
- * @param {import("discord.js").Client} client
+ * @param {object} outbound OutboundClient for the watch's community (spec 578)
  * @param {object} watch stored github_watches row
  * @param {object} release normalized release
  */
-async function sendReleaseNotification(client, watch, release) {
-  const channel = await client.channels
-    .fetch(watch.channel_id)
-    .catch(() => null);
-  if (!channel) {
-    console.error(
-      `[github] Could not find release channel ${watch.channel_id} for ${watch.repo} (community ${watch.community_id})`,
-    );
-    return false;
-  }
-
+async function sendReleaseNotification(outbound, watch, release) {
   const roleId = watch.role_id;
   const label = watch.repo_display || watch.repo;
   const content = roleId
@@ -119,14 +154,23 @@ async function sendReleaseNotification(client, watch, release) {
     : null;
 
   try {
-    await channel.send({
+    // OutboundClient.sendChannel replaces client.channels.fetch + channel.send.
+    const result = await outbound.sendChannel(watch.channel_id, {
       content,
-      embeds: [createReleaseEmbed(watch, release)],
+      embeds: [toPlainEmbed(createReleaseEmbed(watch, release))],
       // Only allow the configured role to be pinged (never @everyone/@here).
       allowedMentions: roleId
         ? { parse: ["roles"], roles: [roleId] }
         : { parse: [] },
     });
+    if (!result || result.ok !== true) {
+      console.error(
+        `[github] Failed to send release notification for ${watch.repo} ${release.tag} (community ${watch.community_id}): ${
+          result?.error || "no ready client"
+        }`,
+      );
+      return false;
+    }
     console.log(
       `[github] Sent release notification for ${watch.repo} ${release.tag} in community ${watch.community_id}`,
     );
@@ -143,17 +187,29 @@ async function sendReleaseNotification(client, watch, release) {
 /**
  * Process one watch: probe GitHub, announce anything newer than the stored
  * pointer (oldest-first), advance the pointer only past delivered releases.
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor (raw client accepted)
  * @param {object} watch stored github_watches row
  * @param {object} [deps]
  * @returns {Promise<{ok:boolean, announced?:number, skipped?:string, error?:string}>}
  */
-async function processWatch(client, watch, deps = defaultDeps) {
+async function processWatch(supervisor, watch, deps = defaultDeps) {
   if (!watch.channel_id) {
     console.log(
       `[github] Watch ${watch.repo} in community ${watch.community_id} has no channel configured; run /github channel`,
     );
     return { ok: false, skipped: "no channel configured (use /github channel)" };
+  }
+
+  // Per-row routing (spec 578): missing client → log and skip the row.
+  const outbound = resolveOutbound(supervisor, watch.community_id);
+  if (!outbound) {
+    console.warn(
+      `[github] no ready client for community ${watch.community_id} — skipping ${watch.repo}`,
+    );
+    return {
+      ok: false,
+      skipped: `no ready client for community ${watch.community_id}`,
+    };
   }
 
   const fetch = deps.fetchReleases || fetchReleases;
@@ -170,7 +226,7 @@ async function processWatch(client, watch, deps = defaultDeps) {
   let announced = 0;
   let sendFailed = false;
   for (const release of pending) {
-    const sent = await sendReleaseNotification(client, watch, release);
+    const sent = await sendReleaseNotification(outbound, watch, release);
     if (!sent) {
       sendFailed = true;
       break; // keep the pointer; retry the rest next hour
@@ -198,14 +254,16 @@ async function processWatch(client, watch, deps = defaultDeps) {
 
 /**
  * One polling pass across all guilds/watches.
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
  * @param {object} [deps]
  */
-async function runGithubReleaseTick(client, deps = defaultDeps) {
+async function runGithubReleaseTick(supervisor, deps = defaultDeps) {
   const watches = getAllGithubWatches();
   for (const watch of watches) {
     try {
-      await processWatch(client, watch, deps);
+      // processWatch resolves supervisor.clientForCommunity(watch.community_id)
+      // per row and logs-and-skips rows whose client is not ready (spec 578).
+      await processWatch(supervisor, watch, deps);
     } catch (err) {
       console.error(
         `[github] Error processing watch ${watch.repo} (community ${watch.community_id}):`,
@@ -217,15 +275,15 @@ async function runGithubReleaseTick(client, deps = defaultDeps) {
 
 /**
  * Start the hourly GitHub release ticker (aligned to hour boundaries).
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor
  */
-function startGithubReleaseTicker(client) {
+function startGithubReleaseTicker(supervisor) {
   registerJob({
     name: "githubReleases",
     intervalMs: 3_600_000,
     align: true,
     runImmediately: true,
-    run: () => runGithubReleaseTick(client),
+    run: () => runGithubReleaseTick(supervisor),
   });
 }
 
