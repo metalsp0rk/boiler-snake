@@ -9,12 +9,15 @@ const {
   handleHoneypotMessage,
   handleHoneypotWarningReaction,
   handleHoneypotFluxerMessage,
+  handleHoneypotFluxerWarningReaction,
 } = require("../features/honeypot");
 const { handleGorkMessage } = require("../features/gork");
 const {
   handleReactionRoleAdd,
   handleReactionRoleRemove,
   handlePendingOptionEmojiMessage,
+  handleReactionRoleAddFluxer,
+  handleReactionRoleRemoveFluxer,
 } = require("../features/reactionRoles");
 const { recordUserChannelMessage } = require("../features/userActivity");
 const { getDiscordOutbound } = require("../platform/discord/outbound");
@@ -229,15 +232,16 @@ async function onMessageReactionRemove(client, reaction, user) {
 }
 
 /**
- * Fluxer MessageReactionAdd pipeline (PR 6). Fluxer sends ONE object per
- * reaction (Phase 0 record); client.js normalizes it via normalizeFluxerReaction
- * and hands the NormalizedReaction straight here — no partials, no
- * discord.js reaction objects.
+ * Fluxer MessageReactionAdd pipeline (PR 6 detection, PR 9 panel handling).
+ * Fluxer sends ONE object per reaction (Phase 0 record); client.js normalizes
+ * it via normalizeFluxerReaction and hands the NormalizedReaction straight
+ * here — no partials, no discord.js reaction objects.
  *
- * Order (spec § Normalized gateway events, reaction row): bots skip; the
- * community resolves via the reaction's guild (null external → skip); reaction
- * XP awards through the Fluxer outbound. Reaction-role PANELS are PR 9 —
- * outbound mutation methods land there.
+ * Order mirrors the Discord pipeline exactly (spec § Normalized gateway events):
+ * honeypot-warning strip (runs for bots too) → bot gate → community resolve →
+ * reaction-role panels (handled ⇒ no XP) → reaction XP. Reaction-role panels
+ * are the PR 9 fluxer service entry (spec § Outbound client: panels are Fluxer
+ * v1 — reactions are not elevated, the role leg self-gates on K8).
  *
  * @param {object} outbound OutboundClient (Fluxer)
  * @param {object} normalizedReaction normalizeFluxerReaction output
@@ -245,6 +249,13 @@ async function onMessageReactionRemove(client, reaction, user) {
 async function onFluxerReactionAdd(outbound, normalizedReaction) {
   try {
     if (!normalizedReaction) return;
+
+    // Honeypot warning notices stay reaction-free — Discord runs the strip
+    // before the bot gate, so we mirror that ordering.
+    if (await handleHoneypotFluxerWarningReaction(outbound, normalizedReaction)) {
+      return;
+    }
+
     if (normalizedReaction.userBot) return;
 
     let communityId = normalizedReaction.communityId;
@@ -263,6 +274,11 @@ async function onFluxerReactionAdd(outbound, normalizedReaction) {
       normalizedReaction.communityId = communityId;
     }
 
+    // Reaction-role panels first: handled ⇒ the reaction is panel traffic,
+    // never reaction XP (Discord parity).
+    const rr = await handleReactionRoleAddFluxer(outbound, normalizedReaction);
+    if (rr?.handled) return;
+
     await tryAwardReactionXpFluxer(outbound, normalizedReaction);
   } catch (e) {
     console.error("[fluxer] ReactionAdd error:", e?.message || e);
@@ -270,19 +286,36 @@ async function onFluxerReactionAdd(outbound, normalizedReaction) {
 }
 
 /**
- * Fluxer MessageReactionRemove pipeline (PR 6): log only. Panel bookkeeping
- * needs removeUserReaction / removeEmojiReaction, which land in PR 9 — no
- * mutation methods are invented here.
+ * Fluxer MessageReactionRemove pipeline (PR 9): un-react strips the role for
+ * removable options through the fluxer service entry (removeRole self-gates on
+ * K8 flag 0; the reaction cleanup itself is never elevated). Replaces the PR 6
+ * log stub — the wire surface shipped in PR 6 is now wired.
  *
  * @param {object} outbound OutboundClient (Fluxer)
  * @param {object} normalizedReaction normalizeFluxerReaction output
  */
-async function onFluxerReactionRemove(_outbound, normalizedReaction) {
+async function onFluxerReactionRemove(outbound, normalizedReaction) {
   try {
     if (!normalizedReaction) return;
-    console.log(
-      `[fluxer] reaction remove (panel handling lands in PR 9): message ${normalizedReaction.messageId} emoji ${normalizedReaction.emojiKey} user ${normalizedReaction.userId}`,
-    );
+    if (normalizedReaction.userBot) return;
+
+    let communityId = normalizedReaction.communityId;
+    if (!Number.isSafeInteger(communityId)) {
+      if (!normalizedReaction.externalGuildId) {
+        console.error(
+          `[fluxer] reaction remove has no guild (message ${normalizedReaction.messageId}) — no panel handling`,
+        );
+        return;
+      }
+      communityId = ensureCommunity({
+        platform: "fluxer",
+        instanceKey: normalizedReaction.instanceKey ?? "fluxer",
+        externalGuildId: String(normalizedReaction.externalGuildId),
+      });
+      normalizedReaction.communityId = communityId;
+    }
+
+    await handleReactionRoleRemoveFluxer(outbound, normalizedReaction);
   } catch (e) {
     console.error("[fluxer] ReactionRemove error:", e?.message || e);
   }
