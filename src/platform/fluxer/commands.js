@@ -350,7 +350,7 @@ let _defaultTree = null;
  */
 function defaultTree() {
   if (!_defaultTree) {
-    const { buildDefaultRegistry } = require("../commands/registry");
+    const { buildDefaultRegistry } = require("../../commands/registry");
     _defaultTree = buildFluxerCommandTree(buildDefaultRegistry().commands);
   }
   return _defaultTree;
