@@ -157,6 +157,83 @@ async function buildRoster(client, guild, triggerMessage, messages, question = "
 }
 
 /**
+ * Resolve one user id to a roster entry through the Fluxer OutboundClient
+ * (roadmap/fluxer.md § Gork mentions and history: "The roster is built
+ * through `outbound.fetchUser` / the member handle, not `client.users.fetch`").
+ * Names only: Fluxer MemberHandle carries `username` (no Discord nickname /
+ * display-name split), so handle and display are the same string.
+ * Best-effort like the Discord path: every failure degrades to an id-only
+ * entry (formatRosterLine renders `id | (unresolved)`).
+ *
+ * @param {object} outbound Fluxer OutboundClient
+ * @param {number} communityId
+ * @param {string} id
+ * @returns {Promise<{ id: string, handle: string|null, display: string|null, nickname: null }>}
+ */
+async function resolveEntryFluxer(outbound, communityId, id) {
+  const entry = { id, handle: null, display: null, nickname: null };
+  let name = null;
+  try {
+    const user = await outbound.fetchUser(communityId, id);
+    if (user && user.username) name = String(user.username);
+  } catch {
+    name = null;
+  }
+  if (!name) {
+    // Guild-scoped fallback (the member handle is the other name source
+    // Phase 0 records; fetchMember never rejects, the catch is a guard).
+    try {
+      const member = await outbound.fetchMember(communityId, id);
+      if (member && member.username) name = String(member.username);
+    } catch {
+      name = null;
+    }
+  }
+  if (!name) return entry;
+  entry.handle = name;
+  entry.display = name;
+  return entry;
+}
+
+/**
+ * Build the roster for a Fluxer gork exchange (sibling of {@link buildRoster}).
+ *
+ * Bounded like the Discord roster (≤ MAX_ROSTER_USERS lines, per-line and
+ * total char caps via formatRosterLine/formatRosterBlock) AND bounded in
+ * lookups: every Discord resolution rides a cache, every Fluxer resolution
+ * is a REST call, so only the first MAX_ROSTER_USERS participant ids are
+ * fetched. Participants past the cap stay unresolved (the answer sanitizer
+ * renders their mentions as `@someone`) — a deliberate REST-fan-out bound.
+ *
+ * @param {object} outbound Fluxer OutboundClient
+ * @param {number} communityId
+ * @param {object} triggerMessage normalized/duck-typed trigger (author.id present)
+ * @param {Array<object>} messages collected context messages (oldest → newest)
+ * @param {string} [question] trigger question text
+ * @returns {Promise<{ entries: Map<string, { id: string, handle: string|null, display: string|null, nickname: null }>, lines: string[], truncated: number }>}
+ */
+async function buildRosterFluxer(
+  outbound,
+  communityId,
+  triggerMessage,
+  messages,
+  question = "",
+) {
+  const ids = collectParticipantIds(triggerMessage, messages, question);
+  const bounded = ids.slice(0, MAX_ROSTER_USERS);
+  const entries = new Map();
+  for (const id of bounded) {
+    entries.set(id, await resolveEntryFluxer(outbound, communityId, id));
+  }
+  const lines = bounded.map((id) => formatRosterLine(entries.get(id)));
+  return {
+    entries,
+    lines,
+    truncated: Math.max(0, ids.length - bounded.length),
+  };
+}
+
+/**
  * Format one resolved identity as a single-line label for prompt
  * attribution (Fix 7): `Display (@handle)`, or `@handle` when the two
  * match / display is missing. Falls back to the raw user object
@@ -217,9 +294,11 @@ function formatRosterBlock(roster, opts = {}) {
 module.exports = {
   collectParticipantIds,
   resolveEntry,
+  resolveEntryFluxer,
   formatRosterLine,
   formatUserLabel,
   buildRoster,
+  buildRosterFluxer,
   formatRosterBlock,
   MAX_ROSTER_USERS,
   MAX_ROSTER_LINE_CHARS,

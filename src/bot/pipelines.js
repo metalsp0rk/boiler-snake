@@ -56,7 +56,10 @@ const { ensureCommunity } = require("../platform/community");
  *   hook, which still takes a discord.js client (migrates to outbound in PR 5).
  *   `opts.registry` (+ `opts.supervisor`) enable the Fluxer prefix-command
  *   dispatch (PR 6); omitted on Discord-only wiring, where no message ever
- *   produces a prefix command.
+ *   produces a prefix command. `opts.supervisor` also feeds gork for
+ *   `platform === "fluxer"` messages (PR 8): `handleGorkMessage` detects the
+ *   platform and runs the Fluxer path, which resolves the community's
+ *   OutboundClient through `supervisor.clientForCommunity`.
  */
 async function onMessageCreate(outbound, message, opts = {}) {
   try {
@@ -115,6 +118,14 @@ async function onMessageCreate(outbound, message, opts = {}) {
     // a triggering message still earns XP below.
     if (opts.gorkClient) {
       handleGorkMessage(opts.gorkClient, message).catch((e) =>
+        console.error("[MessageCreate] gork error:", e?.message || e)
+      );
+    } else if (message.platform === "fluxer" && opts.supervisor) {
+      // Fluxer (PR 8): Fluxer boots have no raw discord.js client, so the
+      // gork hook receives the supervisor and `message.platform` selects the
+      // Fluxer path inside handleGorkMessage (roadmap/fluxer.md PR 8). The
+      // Discord arm above is untouched.
+      handleGorkMessage(opts.supervisor, message).catch((e) =>
         console.error("[MessageCreate] gork error:", e?.message || e)
       );
     }
