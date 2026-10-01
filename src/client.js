@@ -3,13 +3,14 @@ const {
   GatewayIntentBits,
   Partials,
 } = require("discord.js");
+const { installGatewayPayloadGuard } = require("./core/gatewayPayloadGuard");
 
 /**
  * Discord.js client with intents/partials required by all features.
  * @returns {import("discord.js").Client}
  */
 function createClient() {
-  return new Client({
+  const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
@@ -28,6 +29,10 @@ function createClient() {
       Partials.GuildMember,
     ],
   });
+  // Gateway payloads are untrusted input: keep a malformed MESSAGE_CREATE /
+  // MESSAGE_UPDATE (e.g. string-shaped mentions) from killing the process.
+  installGatewayPayloadGuard(client);
+  return client;
 }
 
 module.exports = { createClient };
