@@ -27,6 +27,16 @@
  *     let this throw reject, and router/lib/layer.js routes the rejection to
  *     the error middleware. Never await or return the mirror — req.audit
  *     itself never returns a Promise.
+ *   - FLUXER PR 10 (audit subject): the actor is read from `req.user` AT
+ *     CALL TIME (writeAudit below — never snapshotted at mount). The session
+ *     middleware attaches req.user from the Discord session; guildScope
+ *     re-points req.user (and req.webSession) at the session MATCHING the
+ *     community for /g/:cid requests. A mutation on a Fluxer community is
+ *     therefore audited as the Fluxer subject (the user id from the Fluxer
+ *     session), never as the Discord user riding along in the other cookie.
+ *     Routes that are NOT community-scoped (/, login) keep the Discord
+ *     subject; nothing under a Fluxer community can audit as the Discord
+ *     user because guildScope nulls req.user for a non-matching session.
  *
  * MIRROR (§8.1-7 best-effort): `mirror` =
  *   { kind?: "audit"|"warn", title?, command?, changes?, details?, payload? }

@@ -508,12 +508,15 @@ describe("A. mutation registry integrity + PARITY checklist coverage (§8.8/§8.
       for (const p of paths) mountedPost.push(p);
     }
     // Public POST carve-outs riding the methodGate exception without a
-    // registry entry (app.js PUBLIC_POST_PATHS): /auth/logout + the
-    // HMAC-authenticated /hooks/twitch EventSub webhook. Everything else
-    // must match the registry exactly, in both directions.
+    // registry entry (app.js PUBLIC_POST_PATHS): /auth/logout,
+    // /auth/fluxer/logout (Fluxer web PR 10) + the HMAC-authenticated
+    // /hooks/twitch EventSub webhook. Everything else must match the
+    // registry exactly, in both directions.
     const registry = app.locals.webMutations.map((m) => m.path).sort();
     const mounted = mountedPost
-      .filter((p) => p !== "/auth/logout" && p !== "/hooks/twitch")
+      .filter(
+        (p) => p !== "/auth/logout" && p !== "/auth/fluxer/logout" && p !== "/hooks/twitch"
+      )
       .sort();
     assert.deepEqual(mounted, registry, "mounted POST templates == registry templates");
     for (const m of app.locals.webMutations) {
