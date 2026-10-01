@@ -13,18 +13,187 @@
  */
 
 const { queueMissingMembers } = require("../../services/memberFetchQueue");
+const { getCommunityById } = require("../../../platform/community");
+
+/**
+ * Fluxer PR 10 (spec §Boot Supervisor, roadmap L750-762): a process-wide
+ * provider mapping INTEGER community ids to the platform's OutboundClient.
+ * features/web boot wires `supervisor.clientForCommunity`; tests inject a
+ * fake. Unwired → Fluxer name lookups answer id-only (null), exactly the
+ * existing dark-boot doctrine, and NEVER read the Discord cache.
+ * @type {null | ((communityId: number) => object|null)}
+ */
+let communityClientProvider = null;
+let warnedUnwiredFluxer = false;
+
+/**
+ * Wire (or unwire with null) the per-community OutboundClient provider.
+ * @param {((communityId: number) => object|null)|null} fn
+ */
+function setCommunityClientProvider(fn) {
+  communityClientProvider = typeof fn === "function" ? fn : null;
+  if (communityClientProvider) warnedUnwiredFluxer = false;
+}
+
+/**
+ * OutboundClient for an INTEGER community id, or null (never throws — a
+ * broken provider degrades to id-only rendering like a cold cache).
+ * @param {number} cid
+ * @returns {object|null}
+ */
+function communityClient(cid) {
+  if (!communityClientProvider) return null;
+  try {
+    return communityClientProvider(cid) ?? null;
+  } catch (err) {
+    console.error(
+      `[web] community client lookup failed for ${cid}:`,
+      err?.message || err
+    );
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fluxer display-name cache (sync read at render time; async warm OFF-path)
+// ---------------------------------------------------------------------------
+
+/**
+ * `${cid}:${userId}` → { name, bot, at }. A Fluxer member fetch is async, so
+ * the request path renders from THIS bounded map (mirrors the discord.js
+ * member-cache doctrine: cache-only at render, misses warm in the background
+ * and show up on the NEXT render). Entries self-expire on the TTL; the map is
+ * entry-capped like guildAccess's caches.
+ */
+const fluxerNames = new Map();
+const FLUXER_NAME_TTL_MS = 6 * 60 * 60 * 1000;
+const FLUXER_NAME_MAX = 2000;
+
+function fluxerNameGet(cid, userId) {
+  const hit = fluxerNames.get(`${cid}:${userId}`);
+  if (!hit) return null;
+  if (Date.now() - hit.at > FLUXER_NAME_TTL_MS) {
+    fluxerNames.delete(`${cid}:${userId}`);
+    return null;
+  }
+  return hit;
+}
+
+function fluxerNameSet(cid, userId, entry) {
+  const key = `${cid}:${userId}`;
+  fluxerNames.set(key, entry);
+  while (fluxerNames.size > FLUXER_NAME_MAX) {
+    const oldest = fluxerNames.keys().next().value;
+    if (oldest === undefined) break;
+    fluxerNames.delete(oldest);
+  }
+}
+
+/**
+ * Interpret a route's `guildId` argument. Post-PR-2 web routes pass the
+ * INTEGER communities.id; legacy callers pass the external snowflake string
+ * (kept working byte-identically). Returns the integer cid when the argument
+ * IS a community id, else null.
+ * @param {unknown} guildId
+ * @returns {number|null}
+ */
+function toCommunityId(guildId) {
+  if (typeof guildId === "number") {
+    return Number.isSafeInteger(guildId) && guildId >= 1 && guildId <= 2_147_483_647
+      ? guildId
+      : null;
+  }
+  if (typeof guildId === "string" && /^[1-9][0-9]{0,9}$/.test(guildId.trim())) {
+    const n = Number(guildId.trim());
+    return Number.isSafeInteger(n) && n <= 2_147_483_647 ? n : null;
+  }
+  return null;
+}
+
+/**
+ * Community row for a route argument, tolerating missing rows and store
+ * failures (both keep the legacy Discord-cache path).
+ * @param {number} cid
+ * @returns {{platform: string, instanceKey: string, externalGuildId: string}|null}
+ */
+function communityRowSafe(cid) {
+  try {
+    return getCommunityById(cid) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fire-and-forget Fluxer name warm. ONE in-flight fetch per (cid,user);
+ * failures are logged with ids by OutboundClient itself.
+ * @param {number} cid
+ * @param {string} userId
+ */
+function warmFluxerName(cid, userId) {
+  const key = `${cid}:${userId}`;
+  if (fluxerNames.has(`w:${key}`)) return; // one in-flight attempt per key
+  const outbound = communityClient(cid);
+  if (!outbound || typeof outbound.fetchUser !== "function") {
+    if (!warnedUnwiredFluxer) {
+      warnedUnwiredFluxer = true;
+      console.warn(
+        "[web] fluxer name resolution: no community client wired (features/web boot) — ids stay raw."
+      );
+    }
+    return;
+  }
+  fluxerNames.set(`w:${key}`, { at: Date.now() });
+  Promise.resolve()
+    .then(() => outbound.fetchUser(cid, userId))
+    .then((user) => {
+      if (user && typeof user.id === "string") {
+        // isProvenBot compares the bot flag AND outbound.botUserId (spec
+        // L760): the bot's own id resolves through the same fetch.
+        const bot = Boolean(user.bot) || String(user.id) === String(outbound.botUserId);
+        const name = typeof user.username === "string" ? user.username.trim().slice(0, 100) : "";
+        fluxerNameSet(cid, userId, { name: name || null, bot, at: Date.now() });
+      }
+    })
+    .catch((err) => {
+      // OutboundClient logs the REST failure itself; this catch only keeps
+      // the fire-and-forget promise from becoming an unhandled rejection.
+      void err;
+    })
+    .finally(() => {
+      fluxerNames.delete(`w:${key}`);
+    });
+}
 
 /**
  * True only when the cache can PROVE the user is a bot (member.user.bot /
  * member.bot / cached global user). A broken/absent cache object can never
  * prove it ⇒ false (fail-open for the human case, matching slash guards
  * which act on the same cache evidence).
+ *
+ * Fluxer PR 10: an INTEGER community id whose row is a FLUXER community
+ * proves bot-ness from the Fluxer name cache (fetchUser `bot` flag /
+ * outbound.botUserId) — NEVER from the Discord cache (spec L760: "does not
+ * read the other platform's cache").
  * @param {any} client
- * @param {string} guildId
+ * @param {string|number} guildId
  * @param {string} userId
  * @returns {boolean}
  */
 function isProvenBot(client, guildId, userId) {
+  const cid = toCommunityId(guildId);
+  if (cid != null) {
+    const community = communityRowSafe(cid);
+    if (community?.platform === "fluxer") {
+      try {
+        const hit = fluxerNameGet(cid, userId);
+        return hit?.bot === true;
+      } catch {
+        return false;
+      }
+    }
+    if (community) guildId = community.externalGuildId ?? guildId;
+  }
   try {
     const guild = client?.guilds?.cache?.get?.(guildId) ?? null;
     const member = guild?.members?.cache?.get?.(userId) ?? null;
@@ -95,12 +264,48 @@ function makeGuildRoleNameResolver(getClient, guildId) {
  * discord.js's rate-limited rest manager has fetched the member. Fake/absent
  * clients (no `members.fetch`) never enqueue, so tests and dark boot are
  * unaffected.
+ *
+ * Fluxer PR 10: a route argument that is an INTEGER community id whose row
+ * is a FLUXER community resolves from the Fluxer display-name cache and
+ * warms misses through `outbound.fetchUser` (fire-and-forget, logged) —
+ * never the Discord cache (spec L760). Legacy string-snowflake arguments
+ * keep the Discord path byte-identically.
  * @param {(() => any)|null|undefined} getClient
- * @param {string} guildId
+ * @param {string|number} guildId
  * @param {string[]} userIds
  * @returns {Map<string, string|null>}
  */
 function resolveMemberNames(getClient, guildId, userIds) {
+  const ids = Array.isArray(userIds) ? userIds : userIds ? [...userIds] : [];
+  const cid = toCommunityId(guildId);
+  const community = cid != null ? communityRowSafe(cid) : null;
+  if (community?.platform === "fluxer") {
+    // Fluxer surface: the Discord client is not consulted at all.
+    const names = new Map();
+    for (const userId of ids) {
+      const cached = typeof userId === "string" && userId
+        ? fluxerNameGet(cid, userId)
+        : null;
+      names.set(userId, cached?.name ?? null);
+      if (cached === null && typeof userId === "string" && userId) {
+        try {
+          warmFluxerName(cid, userId);
+        } catch (err) {
+          // Warming is best-effort: a broken provider can't degrade a render.
+          console.error(
+            `[web] fluxer name warm failed community=${cid}:`,
+            err?.message || err
+          );
+        }
+      }
+    }
+    return names;
+  }
+  const guildKey =
+    community && typeof community.externalGuildId === "string"
+      ? community.externalGuildId
+      : guildId;
+
   const names = new Map();
   let client = null;
   try {
@@ -108,10 +313,10 @@ function resolveMemberNames(getClient, guildId, userIds) {
   } catch {
     client = null;
   }
-  const guild = client?.guilds?.cache?.get?.(guildId) ?? null;
+  const guild = client?.guilds?.cache?.get?.(guildKey) ?? null;
   const members = guild?.members?.cache ?? null;
   const missing = [];
-  for (const userId of userIds) {
+  for (const userId of ids) {
     let name = null;
     try {
       const m = members?.get?.(userId) ?? null;
@@ -122,15 +327,20 @@ function resolveMemberNames(getClient, guildId, userIds) {
     names.set(userId, name);
     if (name === null && typeof userId === "string" && userId) missing.push(userId);
   }
-  if (missing.length > 0 && typeof guild?.members?.fetch === "function") {
-    try {
-      queueMissingMembers(getClient, guildId, missing);
-    } catch (err) {
-      // Queueing is best-effort: a broken queue can't degrade a render.
-      console.error(
-        `[web] member-fetch enqueue failed guild=${guildId}:`,
-        err?.message || err
-      );
+  if (missing.length > 0) {
+    const queueKey = cid != null ? cid : guildKey;
+    const hasLiveFetcher =
+      (cid != null) || typeof guild?.members?.fetch === "function";
+    if (hasLiveFetcher) {
+      try {
+        queueMissingMembers(getClient, queueKey, missing);
+      } catch (err) {
+        // Queueing is best-effort: a broken queue can't degrade a render.
+        console.error(
+          `[web] member-fetch enqueue failed guild=${guildKey}:`,
+          err?.message || err
+        );
+      }
     }
   }
   return names;
@@ -168,4 +378,6 @@ module.exports = {
   makeCacheNameResolver,
   makeGuildRoleNameResolver,
   resolveMemberNames,
+  setCommunityClientProvider,
+  communityClient,
 };

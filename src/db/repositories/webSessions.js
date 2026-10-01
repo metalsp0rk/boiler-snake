@@ -16,8 +16,11 @@ const { db, now } = require("../connection");
 /**
  * @typedef {object} WebSessionRow
  * @property {string} id opaque session id (cookie value)
- * @property {string} user_id Discord user id
+ * @property {string} user_id user id (Discord snowflake / Fluxer sub)
  * @property {string|null} discord_tag display snapshot (not authoritative)
+ * @property {string} platform "discord" | "fluxer" (migration 034)
+ * @property {string} instance_key "discord" | normalized Fluxer origin (034)
+ * @property {number|null} refresh_expires_at unix ms refresh horizon (034)
  * @property {number} created_at unix ms (absolute-cap anchor)
  * @property {number} last_seen_at unix ms
  * @property {number} expires_at unix ms (sliding expiry)
@@ -27,14 +30,30 @@ const { db, now } = require("../connection");
  * Insert a new session row (called after a successful OAuth callback, with a
  * freshly generated id — ids are never reused or rotated in place).
  *
+ * Fluxer PR 10 (migration 034): rows carry `platform` + `instance_key` so one
+ * table serves both providers; `refresh_expires_at` anchors the Fluxer session
+ * horizon (the 30-day refresh-token window). Defaults keep every existing
+ * Discord caller byte-identical.
+ *
  * @param {object} session
  * @param {string} session.id opaque session id
- * @param {string} session.userId Discord user id
+ * @param {string} session.userId user id (Discord snowflake / Fluxer sub)
  * @param {string|null} [session.discordTag] display snapshot
  * @param {number} session.expiresAt unix ms, computed by the caller
+ * @param {string} [session.platform] "discord" (default) | "fluxer"
+ * @param {string} [session.instanceKey] "discord" (default) | Fluxer origin
+ * @param {number|null} [session.refreshExpiresAt] unix ms (fluxer rows)
  * @returns {WebSessionRow} the created row
  */
-function createWebSession({ id, userId, discordTag = null, expiresAt }) {
+function createWebSession({
+  id,
+  userId,
+  discordTag = null,
+  expiresAt,
+  platform = "discord",
+  instanceKey = "discord",
+  refreshExpiresAt = null,
+}) {
   if (!id || typeof id !== "string") {
     throw new TypeError("createWebSession: id is required");
   }
@@ -44,13 +63,22 @@ function createWebSession({ id, userId, discordTag = null, expiresAt }) {
   if (!Number.isInteger(expiresAt)) {
     throw new TypeError("createWebSession: expiresAt must be an integer unix-ms timestamp");
   }
+  if (typeof platform !== "string" || !platform) {
+    throw new TypeError("createWebSession: platform must be a non-empty string");
+  }
+  if (typeof instanceKey !== "string" || !instanceKey) {
+    throw new TypeError("createWebSession: instanceKey must be a non-empty string");
+  }
+  if (refreshExpiresAt != null && !Number.isInteger(refreshExpiresAt)) {
+    throw new TypeError("createWebSession: refreshExpiresAt must be an integer unix-ms timestamp or null");
+  }
   const t = now();
   db.prepare(
     `
-    INSERT INTO web_sessions (id, user_id, discord_tag, created_at, last_seen_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO web_sessions (id, user_id, discord_tag, created_at, last_seen_at, expires_at, platform, instance_key, refresh_expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
-  ).run(id, userId, discordTag, t, t, expiresAt);
+  ).run(id, userId, discordTag, t, t, expiresAt, platform, instanceKey, refreshExpiresAt);
   return getWebSession(id);
 }
 
@@ -68,7 +96,7 @@ function createWebSession({ id, userId, discordTag = null, expiresAt }) {
  * @returns {WebSessionRow|null}
  */
 const SESSION_COLUMNS =
-  "id, user_id, discord_tag, created_at, last_seen_at, expires_at";
+  "id, user_id, discord_tag, created_at, last_seen_at, expires_at, platform, instance_key, refresh_expires_at";
 function getWebSession(id) {
   if (!id) return null;
   return (
@@ -224,6 +252,8 @@ function deleteWebSessionById(id) {
  * @property {number|null} token_expires_at unix ms AT ceiling
  * @property {string|null} scopes granted scope string
  * @property {string|null} guild_snapshot JSON bot∩user guild snapshot
+ * @property {string|null} refresh_token_enc Fluxer refresh-token envelope (034)
+ * @property {number|null} refresh_expires_at unix ms refresh horizon (034)
  */
 
 /**
@@ -232,15 +262,33 @@ function deleteWebSessionById(id) {
  * is policy owned by `src/web/auth/tokens.js` / `login.js`. Rows carry the
  * envelope, never a plaintext token (§8.7, §8.1-9).
  *
+ * Fluxer PR 10: the refresh rotation writes the NEW pair through the SAME
+ * call (persist-before-use, spec §Token exchange and refresh) — guildSnapshot
+ * is passed through by the caller so a rotation never blanks the login list.
+ * Defaults keep Discord UPDATEs byte-identical (the new columns get NULL,
+ * which is their schema default).
+ *
  * @param {string} id session id
  * @param {object} auth
  * @param {string} auth.accessTokenEnc token envelope (required, non-empty)
  * @param {number|null} [auth.tokenExpiresAt] unix ms
  * @param {string|null} [auth.scopes]
  * @param {string|null} [auth.guildSnapshot] serialized JSON string
+ * @param {string|null} [auth.refreshTokenEnc] Fluxer refresh envelope (034)
+ * @param {number|null} [auth.refreshExpiresAt] unix ms (034)
  * @returns {boolean} true when the session row existed and was updated
  */
-function setWebSessionAuth(id, { accessTokenEnc, tokenExpiresAt = null, scopes = null, guildSnapshot = null }) {
+function setWebSessionAuth(
+  id,
+  {
+    accessTokenEnc,
+    tokenExpiresAt = null,
+    scopes = null,
+    guildSnapshot = null,
+    refreshTokenEnc = null,
+    refreshExpiresAt = null,
+  }
+) {
   if (!id || typeof id !== "string") {
     throw new TypeError("setWebSessionAuth: id is required");
   }
@@ -250,15 +298,19 @@ function setWebSessionAuth(id, { accessTokenEnc, tokenExpiresAt = null, scopes =
   if (tokenExpiresAt != null && !Number.isInteger(tokenExpiresAt)) {
     throw new TypeError("setWebSessionAuth: tokenExpiresAt must be an integer unix-ms timestamp or null");
   }
+  if (refreshExpiresAt != null && !Number.isInteger(refreshExpiresAt)) {
+    throw new TypeError("setWebSessionAuth: refreshExpiresAt must be an integer unix-ms timestamp or null");
+  }
   const result = db
     .prepare(
       `
       UPDATE web_sessions
-      SET access_token_enc=?, token_expires_at=?, scopes=?, guild_snapshot=?
+      SET access_token_enc=?, token_expires_at=?, scopes=?, guild_snapshot=?,
+          refresh_token_enc=?, refresh_expires_at=?
       WHERE id=?
     `
     )
-    .run(accessTokenEnc, tokenExpiresAt, scopes, guildSnapshot, id);
+    .run(accessTokenEnc, tokenExpiresAt, scopes, guildSnapshot, refreshTokenEnc, refreshExpiresAt, id);
   return result.changes > 0;
 }
 
@@ -276,7 +328,8 @@ function getWebSessionAuth(id) {
   return (
     db
       .prepare(
-        `SELECT id, access_token_enc, token_expires_at, scopes, guild_snapshot
+        `SELECT id, access_token_enc, token_expires_at, scopes, guild_snapshot,
+                refresh_token_enc, refresh_expires_at
          FROM web_sessions WHERE id=?`
       )
       .get(id) || null

@@ -5,9 +5,12 @@
  * (§8.3), because it is a pure function of the session id.
  *
  * Double-submit semantics (session-synchronized variant):
- *  - the COOKIE side is the httpOnly `web_session` cookie itself — a
+ *  - the COOKIE side is the httpOnly session cookie itself — a
  *    cross-site attacker can have the browser SEND it but can never READ
- *    it, so it can never compute the matching token;
+ *    it, so it can never compute the matching token. Fluxer PR 10 (K11):
+ *    there are two cookies (`web_session`, `web_session_fx`) and the token
+ *    derives from the session that MATCHES the community the request targets
+ *    (see communityMatchedSessionId) — never "whichever cookie parsed first";
  *  - the SUBMITTED side is read from the `X-CSRF-Token` header (htmx) or the
  *    `_csrf` form field and must equal the derived token;
  *  - equality is compared with crypto.timingSafeEqual over fixed-length hex
@@ -32,6 +35,8 @@
 
 const crypto = require("crypto");
 const { getSessionSecret, getRateLimitConfig } = require("../config");
+const { parseCommunityIdParam } = require("../shared/snowflake");
+const { getCommunityById } = require("../../platform/community");
 
 /** Header the htmx front end sends (§8.7: "form + X-CSRF-Token for htmx"). */
 const CSRF_HEADER = "x-csrf-token";
@@ -223,6 +228,89 @@ function denyPayloadTooLarge(res) {
 }
 
 /**
+ * First path segment of `/g/<segment>...` (raw, never percent-decoded —
+ * matches the raw-URL doctrine of this module).
+ * @param {string} pathname
+ * @returns {string|null}
+ */
+function guildSegment(pathname) {
+  if (!pathname.startsWith("/g/")) return null;
+  const rest = pathname.slice("/g/".length);
+  if (!rest) return null;
+  const slash = rest.indexOf("/");
+  return slash === -1 ? rest : rest.slice(0, slash);
+}
+
+/**
+ * Default session source for token derivation.
+ *
+ * Fluxer PR 10 (spec §Session columns and cookies): on a community-scoped
+ * request (`/g/<cid>/...`) the token derives from the session whose PLATFORM
+ * matches the community — a Discord cookie presented to a Fluxer community
+ * must NOT mint a token that the mutation accepts, and vice versa. Platform
+ * match is REQUIRED and the Fluxer instanceKey must equal the community's;
+ * anything else (instance mismatch, unknown platform) fails closed to NO
+ * token. `/auth/fluxer/*` mutations use the Fluxer session. Every other
+ * path keeps today's `req.webSession` semantics byte-identically.
+ *
+ * A community lookup that THROWS (store unavailable) keeps the legacy
+ * `req.webSession` source — a DB outage is not a token decision.
+ *
+ * TRI-STATE return: a string (token source session) or `null` (in-scope,
+ * NO token — the request stays anonymous) means "scoped, decided"; returning
+ * `undefined` means "not a community-scoped path" and lets the caller fall
+ * back to the legacy `req.webSession` source. Collapsing null/undefined would
+ * mint a Discord-derived token on a Fluxer community's mutation routes.
+ *
+ * @param {any} req
+ * @returns {string|null|undefined}
+ */
+function communityMatchedSessionId(req) {
+  const path = requestPath(req);
+  if (path === "/auth/fluxer" || path.startsWith("/auth/fluxer/")) {
+    return req.fluxerSession ? req.fluxerSession.id : null;
+  }
+  const seg = guildSegment(path);
+  if (seg === null) return undefined; // not /g/ — legacy source
+  const cid = parseCommunityIdParam(seg);
+  if (cid == null) return undefined; // legacy snowflake-shaped /g paths
+  let community = null;
+  try {
+    community = getCommunityById(cid);
+  } catch {
+    return undefined; // lookup broke → fall back to the pre-PR-10 source
+  }
+  // No registry row: the id is not a community on any platform (legacy
+  // integer-shaped guild ids included) → OUT OF SCOPE, fall back to the
+  // pre-PR-10 source (req.webSession). Guild-scoped routes 404 at the
+  // resolver anyway; the token is moot. Failing "closed" to null here would
+  // change Discord-path behavior (pinned byte-identical by the §8.7 suites).
+  if (!community) return undefined;
+  if (community.platform === "fluxer") {
+    const fx = req.fluxerSession;
+    // Instance-scoped (K11): a session for ANOTHER Fluxer instance is no
+    // identity here — same fail-closed rule as platform mismatch.
+    return fx && fx.instanceKey === community.instanceKey ? fx.id : null;
+  }
+  if (community.platform === "discord") {
+    return req.discordSession ? req.discordSession.id : null;
+  }
+  return null;
+}
+
+/**
+ * Default token source: community-matched session where one applies (PR 10),
+ * otherwise the Discord session the session middleware attaches.
+ * @param {any} req
+ * @returns {string|null}
+ */
+function defaultGetSessionId(req) {
+  const scoped = communityMatchedSessionId(req);
+  if (scoped !== undefined) return scoped;
+  return req.webSession ? req.webSession.id : null;
+}
+
+/**
  * Core guard middleware: verify-or-deny for a request that HAS a session.
  * Anonymous requests pass through (route-level gates own them, see header).
  * Shared by the app-level middleware and the per-route wiring helpers so the
@@ -282,8 +370,7 @@ function createCsrfGuard({ getSecret, getSessionId, maxBodyBytes }) {
  */
 function createCsrfMiddleware(options = {}) {
   const getSecret = options.getSecret || (() => getSessionSecret());
-  const getSessionId =
-    options.getSessionId || ((req) => (req.webSession ? req.webSession.id : null));
+  const getSessionId = options.getSessionId || defaultGetSessionId;
   const isProtectedPath =
     options.isProtectedPath || defaultIsProtectedPath;
   const maxBodyBytes =

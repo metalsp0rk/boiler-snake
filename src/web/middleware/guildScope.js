@@ -16,6 +16,13 @@
  *    degraded }` (tier ∈ staff|senior|admin) for requireTier and the route
  *    handlers. `guildId` is the community's Discord-facing external id
  *    (REST/display); repositories take `communityId` (integer).
+ *  - Fluxer PR 10 (§Session columns and cookies): the middleware loads the
+ *    community row and re-points `req.webSession`/`req.user` at the session
+ *    whose platform AND instanceKey match that community — audit and route
+ *    handlers can never act as the wrong provider's user. The resolver is
+ *    handed the session the browser PRESENTED (see presentedSessionFor) so
+ *    a cross-platform cookie lands on its generic 404, never a login
+ *    redirect. Requests with no session at all keep today's 302.
  *
  * Mount (subtask 11): `app.use("/g/:guildId", createGuildScopeMiddleware({ resolver }))`
  * — Express 5 (path-to-regexp v8) matches the single-segment param as a
@@ -36,6 +43,7 @@ const {
   URL_ID_RE: GUILD_ID_RE,
   parseCommunityIdParam,
 } = require("../shared/snowflake");
+const { getCommunityById } = require("../../platform/community");
 
 /**
  * Login target for the anonymous/reauth redirect — mirrors the shell's
@@ -77,6 +85,47 @@ function respondGenericNotFound(res) {
 }
 
 /**
+ * The session the client PRESENTED for a community (PR 10): the slot of the
+ * community's platform first, falling back to the other slot so the resolver
+ * can see a CROSS-PLATFORM session and answer with its generic 404 (spec
+ * §Session columns and cookies: "a Discord cookie presented to a Fluxer
+ * community is anonymous for that route (req.user null, generic 404 from
+ * the resolver)" — a login redirect would leak the platform split).
+ * A legacy caller with no platform fields on its sessions (hand-built test
+ * rows) keeps today's behavior: `req.webSession` IS the discord session.
+ * @param {any} req
+ * @param {{platform: string}|null} community
+ * @returns {object|null}
+ */
+function presentedSessionFor(req, community) {
+  if (!community) return req.webSession ?? null;
+  if (community.platform === "fluxer") {
+    return req.fluxerSession ?? req.discordSession ?? req.webSession ?? null;
+  }
+  return req.discordSession ?? req.fluxerSession ?? req.webSession ?? null;
+}
+
+/**
+ * The session fully MATCHING a community row (platform AND instanceKey —
+ * K11: a session for another Fluxer instance is not identity here). Only a
+ * full match may own req.user / req.webSession (audit subject, CSRF, route
+ * handlers); a platform/instance mismatch leaves the request anonymous.
+ * @param {any} req
+ * @param {{platform: string, instanceKey: string}|null} community
+ * @returns {object|null}
+ */
+function matchedSessionFor(req, community) {
+  const session = presentedSessionFor(req, community);
+  if (!session) return null;
+  if (!community) return session; // unknown row → keep legacy req.webSession flow
+  const platform = session.platform ?? "discord";
+  const instanceKey = session.instanceKey ?? "discord";
+  return platform === community.platform && instanceKey === community.instanceKey
+    ? session
+    : null;
+}
+
+/**
  * guildScope middleware factory (pure: resolver injected).
  *
  * @param {object} options
@@ -96,7 +145,9 @@ function createGuildScopeMiddleware({ resolver, param = "guildId", loginPath = "
       const guildIdParam = req.params ? req.params[param] : undefined;
 
       // Anonymous: same login redirect the standalone shell already serves.
-      if (!req.webSession) {
+      // PR 10: EITHER cookie slot can carry identity for the community this
+      // route targets, so "anonymous" means NEITHER slot resolved a session.
+      if (!req.webSession && !req.fluxerSession) {
         respondLoginRedirect(res, loginRedirectTarget(guildIdParam, loginPath));
         return;
       }
@@ -121,7 +172,39 @@ function createGuildScopeMiddleware({ resolver, param = "guildId", loginPath = "
         return;
       }
 
-      const access = await resolver.resolve(req.webSession, communityId);
+      // Fluxer PR 10 (§Session columns and cookies): load the community row
+      // FIRST and bind req.webSession/req.user to the session that MATCHES
+      // it (platform + instanceKey). A Discord cookie on a Fluxer community
+      // (and vice versa) leaves the request anonymous for the route + audit
+      // layers; the resolver still sees the PRESENTED session so a platform
+      // mismatch is its generic 404 (deny not_in_access_list), not a login
+      // redirect that hints at the platform split. A community lookup that
+      // THROWS keeps the legacy flow — the resolver's own lookup then fails
+      // closed to the same 404 it already renders (store_unavailable).
+      let community = null;
+      let communityLookupFailed = false;
+      try {
+        community = getCommunityById(communityId);
+      } catch (err) {
+        communityLookupFailed = true;
+        console.warn(
+          "[web] guildScope: community lookup failed:",
+          err?.code || err?.message || err
+        );
+      }
+
+      const presented = communityLookupFailed
+        ? req.webSession ?? null
+        : presentedSessionFor(req, community);
+      if (!communityLookupFailed) {
+        const matched = matchedSessionFor(req, community);
+        req.webSession = matched;
+        req.user = matched
+          ? { userId: matched.userId, discordTag: matched.discordTag ?? null }
+          : null;
+      }
+
+      const access = await resolver.resolve(presented, communityId);
 
       if (access.status === "ok") {
         req.guildAccess = {
