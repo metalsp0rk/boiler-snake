@@ -530,6 +530,55 @@ async function handleHoneypotMessage(message) {
 }
 
 /**
+ * Fluxer honeypot check for a NormalizedMessage (PR 6 scope, spec
+ * § Normalized gateway events: "a prefix line in a honeypot channel is a
+ * honeypot hit"). Resolves the configured channel by the message's INTEGER
+ * community id (the pipeline resolves it before calling this).
+ *
+ * PR 6 limits: OutboundClient has NO message-delete method and the ban path is
+ * elevated (community flag 0 → banMember refuses with code elevated_disabled),
+ * so a hit CONSUMES the message (no XP, no gork, no dispatch) and logs both
+ * suppressions instead of inventing methods. Staff-exempt authors keep their
+ * message (no delete surface) and are never banned.
+ *
+ * @param {object} outbound OutboundClient (Fluxer adapter)
+ * @param {object} message NormalizedMessage (communityId resolved)
+ * @returns {Promise<boolean>} true when the message is honeypot traffic
+ */
+async function handleHoneypotFluxerMessage(outbound, message) {
+  const communityId = message.communityId;
+  if (!Number.isSafeInteger(communityId)) return false;
+  if (!isHoneypotChannel(communityId, message.channelId)) return false;
+
+  // Honeypot hit: the line is consumed as a hit, never as a command/XP.
+  let roleIds = Array.isArray(message.memberRoleIds) ? message.memberRoleIds : [];
+  try {
+    const member = await outbound.fetchMember(communityId, message.authorId);
+    if (member && Array.isArray(member.roleIds)) roleIds = member.roleIds;
+  } catch (e) {
+    console.warn(
+      `[fluxer] honeypot member fetch failed for ${message.authorId} in community ${communityId}:`,
+      e?.message || e,
+    );
+  }
+
+  if (memberHasStaffRole(communityId, roleIds)) {
+    console.log(
+      `[fluxer] honeypot hit by exempt member ${message.authorId} in community ${communityId} channel ${message.channelId}: message stands (no delete surface in PR 6), no ban`,
+    );
+    return true;
+  }
+
+  console.log(
+    `[fluxer] honeypot ban suppressed: elevated_permissions=0 (community ${communityId}, user ${message.authorId})`,
+  );
+  console.log(
+    `[fluxer] honeypot message delete suppressed: no OutboundClient.deleteMessage before PR 9 (message ${message.id})`,
+  );
+  return true;
+}
+
+/**
  * If the member was granted a honeypot ban role, ban them (unless exempt).
  */
 async function handleHoneypotBanRole(oldMember, newMember) {
@@ -977,6 +1026,7 @@ module.exports = {
   start,
   ensureHoneypotWarning,
   handleHoneypotMessage,
+  handleHoneypotFluxerMessage,
   handleHoneypotWarningReaction,
   handleHoneypotBanRole,
   postHoneypotWarning,

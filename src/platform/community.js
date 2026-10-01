@@ -64,9 +64,11 @@ const selectByExternal = db.prepare(
 const selectById = db.prepare(
   `SELECT id,
           platform,
-          instance_key      AS instanceKey,
-          external_guild_id AS externalGuildId,
-          created_at        AS createdAt
+          instance_key           AS instanceKey,
+          external_guild_id      AS externalGuildId,
+          elevated_permissions   AS elevatedPermissions,
+          voice_states_complete  AS voiceStatesComplete,
+          created_at             AS createdAt
    FROM communities
    WHERE id = ?`,
 );
