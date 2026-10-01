@@ -21,6 +21,10 @@ const {
   deployPanelToChannel,
   handleReactionRoleAdd,
   handleReactionRoleRemove,
+  deployPanelFluxer,
+  refreshPanelMessageFluxer,
+  handleReactionRoleAddFluxer,
+  handleReactionRoleRemoveFluxer,
   setPendingOptionAdd,
   setPendingOptionRemove,
   clearPendingOptionEmoji,
@@ -749,6 +753,38 @@ async function handleReactionrole(commandCtx, featureCtx) {
   return;
 }
 
+/**
+ * Fluxer MESSAGE_REACTION_ADD entry point (PR 9, roadmap § Outbound client):
+ * mirrors the Discord reaction-add flow (guard bots, resolve the community,
+ * call the service handler) over a NormalizedReaction. The pipeline has
+ * already resolved communityId; the service resolves it defensively when called
+ * directly. The Discord handlers below stay on the raw gateway event.
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {object} normalizedReaction normalizeFluxerReaction output
+ * @returns {Promise<{ handled: boolean, ok?: boolean, code?: string, error?: string }>}
+ */
+async function onFluxerReactionAdd(outbound, normalizedReaction) {
+  if (!normalizedReaction) return { handled: false };
+  if (normalizedReaction.userBot) return { handled: false };
+  return handleReactionRoleAddFluxer(outbound, normalizedReaction);
+}
+
+/**
+ * Fluxer MESSAGE_REACTION_REMOVE entry point (PR 9). Mirrors the Discord
+ * reaction-remove flow: bots skip, then the service strips the role for
+ * removable options.
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {object} normalizedReaction normalizeFluxerReaction output
+ * @returns {Promise<{ handled: boolean, ok?: boolean, code?: string, error?: string }>}
+ */
+async function onFluxerReactionRemove(outbound, normalizedReaction) {
+  if (!normalizedReaction) return { handled: false };
+  if (normalizedReaction.userBot) return { handled: false };
+  return handleReactionRoleRemoveFluxer(outbound, normalizedReaction);
+}
+
 module.exports = {
   name: "reactionRoles",
   commands,
@@ -765,6 +801,13 @@ module.exports = {
   handleReactionRoleRemove,
   handlePendingOptionEmojiMessage,
   syncMemberReactionRoles,
+  // Fluxer (PR 9): OutboundClient-shaped reaction entry points + service twins.
+  onFluxerReactionAdd,
+  onFluxerReactionRemove,
+  handleReactionRoleAddFluxer,
+  handleReactionRoleRemoveFluxer,
+  deployPanelFluxer,
+  refreshPanelMessageFluxer,
   MAX_OPTIONS_PER_PANEL,
   PENDING_EMOJI_TTL_MS,
   NO_PING_MENTIONS,
