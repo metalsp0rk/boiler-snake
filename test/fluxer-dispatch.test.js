@@ -445,3 +445,38 @@ describe("fluxer/dispatch — !help rendering", () => {
     assert.match(lastPostBody(rest).content, /^music — Discord only/);
   });
 });
+
+describe("fluxer/dispatch — !leaderboard is a public channel command", () => {
+  it("empty leaderboard answers IN CHANNEL (no DM), unlike K2 /xp", async () => {
+    // Regression (prod 2026-10-01): the empty-data reply rode sensitive:true
+    // → DM-first on Fluxer, so `!leaderboard` produced no visible in-channel
+    // answer and looked like a dead bot. The data-carrying reply was always
+    // channel-public; the empty case must match.
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/users/@me/channels": { id: "dm-99", type: 1 },
+        "POST /v1/channels/dm-99/messages": { id: "r-dm" },
+        [`POST /v1/channels/${CHANNEL}/messages`]: { id: "r-ch" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const message = fluxerMessage({ content: "!leaderboard" });
+    const parsed = parsePrefix("!leaderboard", P);
+    assert.ok(parsed && !parsed.usageError);
+
+    await dispatchPrefixCommand(outbound, message, parsed, { registry, supervisor: null });
+
+    const paths = rest.calls.map((c) => c.path);
+    const channelPost = rest.calls.find((c) => c.path === `/v1/channels/${CHANNEL}/messages`);
+    assert.ok(
+      channelPost,
+      `expected a channel POST; calls: ${paths.join(", ")}`,
+    );
+    assert.match(channelPost.body.content, /No leaderboard data/);
+    // NOT DM-first: opening a DM channel at all is the old broken behavior.
+    assert.ok(
+      !paths.includes("/v1/users/@me/channels"),
+      "empty !leaderboard must not open a DM",
+    );
+  });
+});
