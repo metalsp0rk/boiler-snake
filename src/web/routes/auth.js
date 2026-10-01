@@ -19,7 +19,7 @@
  * requireTier, subtask 07) — never here.
  */
 
-const { createLoginHandlers } = require("../auth/login");
+const { createLoginHandlers, createFluxerLoginHandlers } = require("../auth/login");
 
 /**
  * @param {import("express").Express} app
@@ -45,6 +45,44 @@ function registerAuthRoutes(app, options = {}) {
   app.post("/auth/logout", logout);
 }
 
+/**
+ * Fluxer login routes (roadmap/fluxer.md § Authorize URL, PR 10): one
+ * login/callback/logout triple keyed by the instance's 16-hex slug, mounted
+ * PUBLIC like the Discord trio (login/callback must resolve without a
+ * session; logout must work when the session is already dead).
+ *
+ * GET  /auth/fluxer/:slug/login        — PKCE + signed-state authorize redirect
+ * GET  /auth/fluxer/:slug/callback[/]  — verify, consume, exchange, session
+ * POST /auth/fluxer/logout             — clears the FLUXER cookie only (K11)
+ *
+ * `/auth/fluxer/*` inherits the per-IP/per-user login limiter from app.js's
+ * `app.use("/auth", createAuthRateLimit())` prefix mount — no new limiter.
+ * Handlers own their error surfaces (entry-point try/catch in auth/login.js),
+ * matching registerAuthRoutes' shape: the callback returns its promise so
+ * Express 5 forwards any unexpected rejection to the terminal error handler.
+ *
+ * @param {import("express").Express} app
+ * @param {object} [options] dependency overrides forwarded to
+ *   createFluxerLoginHandlers ({ fluxerInstances, getCommunityClient,
+ *   fetchImpl, ... }) — production threads the getters from features/web;
+ *   tests fake a Fluxer instance offline.
+ */
+function registerFluxerAuthRoutes(app, options = {}) {
+  const { startFluxerLogin, handleFluxerLoginCallback, fluxerLogout } =
+    createFluxerLoginHandlers(options);
+
+  app.get("/auth/fluxer/:slug/login", startFluxerLogin);
+  // Trailing-slash alias registered explicitly (Discord callback precedent):
+  // the redirect URI is registered without it, but the router must not 404
+  // on a hand-typed slash.
+  app.get(
+    ["/auth/fluxer/:slug/callback", "/auth/fluxer/:slug/callback/"],
+    (req, res) => handleFluxerLoginCallback(req, res)
+  );
+  app.post("/auth/fluxer/logout", fluxerLogout);
+}
+
 module.exports = {
   registerAuthRoutes,
+  registerFluxerAuthRoutes,
 };

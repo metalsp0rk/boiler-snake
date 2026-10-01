@@ -22,6 +22,10 @@ const STATE_TTL_MS = 15 * 60 * 1000;
 const PURPOSES = Object.freeze({
   CMD_PERMS: "cmd_perms",
   WEB_LOGIN: "web_login",
+  // roadmap/fluxer.md § PKCE and state (PR 10): Fluxer web login. NOT
+  // interchangeable with web_login (Discord); its single-use guarantee comes
+  // from the fluxer_oauth_transactions table, not the in-memory nonce map.
+  WEB_LOGIN_FLUXER: "web_login_fluxer",
 });
 
 const VALID_PURPOSES = new Set(Object.values(PURPOSES));
@@ -46,6 +50,10 @@ function sweepNonces(now = Date.now()) {
  * @param {string} [payload.userId] required for cmd_perms; absent for web_login
  * @param {number} [payload.exp]
  * @param {string} [payload.purpose] one of PURPOSES; untagged ⇒ cmd_perms
+ * @param {string} [payload.nonce] caller-supplied 32-hex nonce (roadmap/fluxer.md
+ *   § PKCE and state: the Fluxer web login keys its SQLite verifier row by the
+ *   nonce INSIDE the signed state). Must match /^[0-9a-f]{32}$/; anything else
+ *   throws. Default remains randomBytes(16).hex — existing callers are unchanged.
  * @returns {string} opaque state string
  */
 function createOAuthState(payload) {
@@ -58,7 +66,15 @@ function createOAuthState(payload) {
     throw new Error(`Unknown OAuth state purpose: ${purpose}`);
   }
 
-  const nonce = crypto.randomBytes(16).toString("hex");
+  let nonce;
+  if (payload.nonce != null) {
+    nonce = String(payload.nonce);
+    if (!/^[0-9a-f]{32}$/.test(nonce)) {
+      throw new Error("createOAuthState: nonce must be a 32-char lowercase hex string");
+    }
+  } else {
+    nonce = crypto.randomBytes(16).toString("hex");
+  }
   const exp = payload.exp || Date.now() + STATE_TTL_MS;
   // Undefined/null fields are dropped rather than serialized as null so the
   // minted body stays byte-identical to the pre-purpose format whenever a
@@ -80,9 +96,13 @@ function createOAuthState(payload) {
 
 /**
  * @param {string} state
- * @returns {{ guildId: string|null, userId: string|null, exp: number, purpose: string }|null}
+ * @returns {{ guildId: string|null, userId: string|null, next: string|null,
+ *   nonce: string|null, exp: number, purpose: string }|null}
  *   `purpose` is the resolved tag (untagged legacy states ⇒ `cmd_perms`);
  *   each callback MUST reject states whose purpose is not its own.
+ *   `nonce` (additive, roadmap/fluxer.md § PKCE and state) keys the
+ *   `fluxer_oauth_transactions` verifier row for the Fluxer web login;
+ *   Discord consumers simply ignore it.
  */
 function verifyOAuthState(state) {
   const secret = getOAuthStateSecret();
@@ -115,14 +135,23 @@ function verifyOAuthState(state) {
   const now = Date.now();
   if (Number(body.e) < now) return null;
 
-  sweepNonces(now);
-  if (usedNonces.has(body.n)) return null;
-  usedNonces.set(body.n, Number(body.e));
+  // In-memory single-use nonce map (§8.3). EXEMPT: web_login_fluxer — its
+  // single use is the fluxer_oauth_transactions table (roadmap/fluxer.md
+  // § PKCE and state): marking here would make the Fluxer callback look like
+  // a replay, and the map dies on process restart while the signed state
+  // survives. Discord purposes (cmd_perms, web_login, legacy) keep byte-
+  // identical marking behavior.
+  if (purpose !== PURPOSES.WEB_LOGIN_FLUXER) {
+    sweepNonces(now);
+    if (usedNonces.has(body.n)) return null;
+    usedNonces.set(body.n, Number(body.e));
+  }
 
   return {
     guildId: body.g ? String(body.g) : null,
     next: body.nx ? String(body.nx) : null,
     userId: body.u ? String(body.u) : null,
+    nonce: String(body.n),
     exp: Number(body.e),
     purpose,
   };

@@ -491,6 +491,71 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
       assert.doesNotMatch(body, new RegExp(GUILD_SHARED));
     });
 
+    it("renders one Fluxer button per configured instance (labels escaped); none without config", () => {
+      // PR 10 (roadmap/fluxer.md § Authorize URL): the landing shows one
+      // "Continue with Fluxer" button per instance that has OAuth
+      // credentials. Driven through the handler directly — landing rendering
+      // needs no server, and createWebApp threads getFluxerWebInstances per
+      // C12 (wired in app.js by the same PR).
+      const instances = [
+        {
+          instanceKey: "https://flx.example.com",
+          slug: "0123456789abcdef",
+          label: "Example Fluxer",
+          clientId: "fx-client",
+          clientSecret: "fx-secret",
+          apiBase: "https://flx.example.com/v1",
+        },
+        {
+          instanceKey: "nocreds.example",
+          label: "No Creds Instance",
+          clientId: null,
+          clientSecret: null,
+        },
+        {
+          instanceKey: "xss.example",
+          slug: "aaaaaaaaaaaaaaaa",
+          label: 'E<b>x</b>&"',
+          clientId: "fx-c2",
+          clientSecret: "fx-s2",
+        },
+      ];
+      const capture = () => {
+        const out = { statusCode: null, body: "" };
+        const res = {
+          writeHead(status, headers) {
+            out.statusCode = status;
+            out.headers = headers || {};
+          },
+          end(body) {
+            out.body = body == null ? "" : String(body);
+          },
+        };
+        return { res, out };
+      };
+
+      const withFx = capture();
+      loginMod
+        .createLoginHandlers({ getFluxerWebInstances: () => instances })
+        .startLogin({ url: "/auth/login" }, withFx.res);
+      assert.equal(withFx.out.statusCode, 200);
+      assert.match(withFx.out.body, /Continue with Fluxer — Example Fluxer/);
+      assert.match(
+        withFx.out.body,
+        /href="\/auth\/fluxer\/0123456789abcdef\/login\?continue=1"/,
+        "button carries the page's own continue target"
+      );
+      assert.doesNotMatch(withFx.out.body, /No Creds Instance/, "credential-less instance gets no button");
+      // Escaped-by-default views: the label can never inject markup.
+      assert.match(withFx.out.body, /E&lt;b&gt;x&lt;\/b&gt;&amp;&quot;/);
+      assert.doesNotMatch(withFx.out.body, /<b>x<\/b>/);
+
+      const plain = capture();
+      loginMod.createLoginHandlers().startLogin({ url: "/auth/login" }, plain.res);
+      assert.equal(plain.out.statusCode, 200);
+      assert.doesNotMatch(plain.out.body, /Fluxer/, "no instances → Discord-only landing (today)");
+    });
+
     it("continue=1 still starts the OAuth redirect exactly as before (state minted, 302)", async () => {
       const { res, authorizeUrl } = await loginStart();
       assert.equal(res.status, 302);
