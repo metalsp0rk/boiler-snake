@@ -185,7 +185,7 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     `[fluxer] ${instanceKey} api=${safeLogUrl(inst.api_public)} gateway=${safeLogUrl(inst.gateway)}`,
   );
 
-  const rest = buildRestFaçade(client, instanceKey);
+  const rest = buildRestFacade(client, instanceKey);
 
   /**
    * REST guild fetch — the Phase 0 record is law: bot-facing GUILD_CREATE
