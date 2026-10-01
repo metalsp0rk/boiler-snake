@@ -52,6 +52,38 @@ function isSeniorStaff(interaction) {
 }
 
 /**
+ * Command-channel gate on raw primitives (the shape the Fluxer dispatcher has:
+ * no interaction, no Discord member object). Single source of truth for the
+ * {@link commandsAllowed} / {@link commandsAllowedFromContext} variants.
+ *
+ * - No rows in `allowed_command_channels` for the community → allow.
+ * - Else the channel must be listed.
+ * - EXCEPTION: setcommandchannel is allowed in any channel when `isAdmin`
+ *   (Manage Guild bit or guild owner) — the lockout escape hatch.
+ * - EXCEPTION: ticket inside an open (not archived) ticket channel.
+ *
+ * @param {string} commandName
+ * @param {number|null} communityId null = no community row (DM / unregistered guild)
+ * @param {string|null} channelId
+ * @param {boolean} isAdmin
+ * @returns {boolean}
+ */
+function commandsAllowedFromIds(commandName, communityId, channelId, isAdmin) {
+  if (commandName === "setcommandchannel" && isAdmin) return true;
+  if (commandName === "ticket" && channelId && communityId != null) {
+    // Open tickets, or soft-closed channels still awaiting /ticket archive
+    const ticket = getTicketByChannel(communityId, channelId);
+    if (ticket && ticket.channel_id && Number(ticket.archived) !== 1) {
+      return true;
+    }
+  }
+  if (communityId == null) return true; // DM/no community: same as the unregistered-guild path
+  const rows = listAllowedCommandChannels(communityId);
+  if (!rows.length) return true;
+  return rows.some((r) => r.channel_id === channelId);
+}
+
+/**
  * Command channel restriction:
  * - If no allowed channels configured => allowed everywhere
  * - If configured => only allowed in those channels
@@ -61,26 +93,12 @@ function isSeniorStaff(interaction) {
  * @returns {boolean}
  */
 function commandsAllowed(interaction) {
-  if (
-    interaction.commandName === "setcommandchannel" &&
-    isAdminOrMod(interaction)
-  )
-    return true;
-  if (interaction.commandName === "ticket" && interaction.channelId) {
-    const ticketCommunityId = discordCommunityId(interaction.guildId);
-    // Open tickets, or soft-closed channels still awaiting /ticket archive
-    const ticket = ticketCommunityId == null
-      ? null
-      : getTicketByChannel(ticketCommunityId, interaction.channelId);
-    if (ticket && ticket.channel_id && Number(ticket.archived) !== 1) {
-      return true;
-    }
-  }
-  const communityId = discordCommunityId(interaction.guildId);
-  if (communityId == null) return true; // DM/no community: same as today's unregistered-guild path
-  const rows = listAllowedCommandChannels(communityId);
-  if (!rows.length) return true;
-  return rows.some((r) => r.channel_id === interaction.channelId);
+  return commandsAllowedFromIds(
+    interaction.commandName,
+    discordCommunityId(interaction.guildId),
+    interaction.channelId,
+    Boolean(isAdminOrMod(interaction)),
+  );
 }
 
 /**
@@ -91,21 +109,12 @@ function commandsAllowed(interaction) {
  * @returns {boolean}
  */
 function commandsAllowedFromContext(ctx) {
-  if (
-    ctx.commandName === "setcommandchannel" &&
-    isAdminOrModFromContext(ctx)
-  )
-    return true;
-  if (ctx.commandName === "ticket" && ctx.channelId) {
-    // Open tickets, or soft-closed channels still awaiting /ticket archive
-    const ticket = getTicketByChannel(ctx.communityId, ctx.channelId);
-    if (ticket && ticket.channel_id && Number(ticket.archived) !== 1) {
-      return true;
-    }
-  }
-  const rows = listAllowedCommandChannels(ctx.communityId);
-  if (!rows.length) return true;
-  return rows.some((r) => r.channel_id === ctx.channelId);
+  return commandsAllowedFromIds(
+    ctx.commandName,
+    ctx.communityId,
+    ctx.channelId,
+    isAdminOrModFromContext(ctx),
+  );
 }
 
 /**
@@ -224,6 +233,7 @@ module.exports = {
   isStaff,
   isSeniorStaff,
   commandsAllowed,
+  commandsAllowedFromIds,
   requireAdmin,
   requireStaff,
   requireSeniorStaff,

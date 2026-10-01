@@ -668,6 +668,58 @@ async function tryAwardReactionXp(outbound, guild, user) {
   });
 }
 
+/**
+ * Award reaction XP for a Fluxer NormalizedReaction (roadmap/fluxer.md
+ * § Normalized gateway events: Fluxer reaction payloads are ONE object; the
+ * adapter hands features this normalized shape, never a discord.js reaction).
+ *
+ * Mirrors {@link tryAwardReactionXp}'s cooldown math exactly (the same
+ * community-scoped `reactionCooldown` map keyed `communityId:userId`). Role
+ * sync auto-skips inside awardXp: `platform === "fluxer"` with the community's
+ * elevated_permissions 0 (spec § Outbound client, lines 423–429).
+ *
+ * @param {object} outbound OutboundClient (Fluxer adapter)
+ * @param {object} normalizedReaction normalizeFluxerReaction output
+ * @returns {Promise<void>}
+ */
+async function tryAwardReactionXpFluxer(outbound, normalizedReaction) {
+  if (!normalizedReaction) return;
+  if (normalizedReaction.userBot) return;
+
+  const communityId = Number.isSafeInteger(normalizedReaction.communityId)
+    ? normalizedReaction.communityId
+    : normalizedReaction.externalGuildId == null
+      ? null
+      : ensureCommunity({
+          platform: "fluxer",
+          instanceKey: normalizedReaction.instanceKey ?? "fluxer",
+          externalGuildId: String(normalizedReaction.externalGuildId),
+        });
+  if (!Number.isSafeInteger(communityId)) {
+    console.error(
+      `[fluxer] reaction XP skipped: no community for instance ${normalizedReaction.instanceKey ?? "?"} guild ${normalizedReaction.externalGuildId ?? "null"} (message ${normalizedReaction.messageId ?? "?"})`,
+    );
+    return;
+  }
+
+  const settings = getGuildSettings(communityId);
+  const gain = Number(settings.reaction_xp) || 0;
+  if (gain <= 0) return;
+
+  const k = key(communityId, normalizedReaction.userId);
+  if (isOnCooldown(reactionCooldown, k, settings.reaction_cooldown_sec)) return;
+
+  await awardXp(outbound, {
+    communityId,
+    externalGuildId: normalizedReaction.externalGuildId ?? null,
+    userId: String(normalizedReaction.userId),
+    delta: gain,
+    activityKind: "reaction",
+    member: null,
+    levelXpFactor: settings.level_xp_factor,
+  });
+}
+
 function registerEvents(client, ctx) {
   // Message / reaction XP are composed in index.js (or a later events coordinator)
   // so honeypot + reaction-roles can run first. Export helpers for that composition.
@@ -711,6 +763,8 @@ module.exports = {
   // used by index event composition until full event ownership moves here
   tryAwardMessageXp,
   tryAwardReactionXp,
+  // Fluxer pipeline (PR 6): normalized reaction XP, same cooldown math
+  tryAwardReactionXpFluxer,
   // tests
   LB_BTN_PREFIX,
   clampLeaderboardLimit,
