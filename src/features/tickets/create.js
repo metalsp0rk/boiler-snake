@@ -35,7 +35,9 @@ async function completeSelfCreate(interaction, ctx, reason, communityId) {
   try {
     const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
       guild: interaction.guild,
-      client: ctx.client || interaction.client,
+      // PR 7: the raw Discord client from the supervisor (raw interactions
+      // always carry .client; the fallback keeps that path identical).
+      client: ctx?.supervisor?.discord || interaction.client,
       creatorUserId: interaction.user.id,
       reason,
       openedByStaffId: null,
@@ -237,8 +239,9 @@ async function handleFor(commandCtx, ctx) {
     const communityId = commandCtx.communityId;
     const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
       guild: raw.guild,
-      // Helper pipeline takes the raw Discord client (PR 7 cutover).
-      client: ctx?.client || raw.client,
+      // Helper pipeline takes the raw Discord client (PR 7 cutover: from the
+      // supervisor; raw interactions always carry .client as fallback).
+      client: ctx?.supervisor?.discord || raw.client,
       creatorUserId: target.id,
       reason,
       openedByStaffId: commandCtx.userId,

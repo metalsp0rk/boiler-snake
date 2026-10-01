@@ -17,9 +17,13 @@ const { bindAuditClient } = require("../../web/middleware/audit");
 module.exports = {
   name: "web",
   /**
-   * @param {import("discord.js").Client} client
+   * @param {import("../../platform/boot").Supervisor} supervisor
+   * @param {object} [ctx]
    */
-  start(client) {
+  start(supervisor, ctx) {
+    // PR 7 (spec § Supervisor + § Boot): the Discord client comes from the
+    // supervisor; null (no DISCORD_TOKEN) keeps the empty-cache fallback below.
+    const client = supervisor?.discord ?? null;
     // Production bot-guild provider (login guild intersection, §8.3): the
     // discord.js v14 guild cache, READ LIVE at every login. It is only
     // complete after READY — a login racing cold boot may briefly see a

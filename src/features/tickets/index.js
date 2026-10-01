@@ -141,9 +141,14 @@ async function handleTicket(commandCtx, ctx) {
 }
 
 /**
- * @param {import("discord.js").Client} client
+ * @param {import("../../platform/boot").Supervisor} supervisor
+ * @param {object} [ctx]
  */
-function registerEvents(client) {
+function registerEvents(supervisor, ctx) {
+  // PR 7 (spec § Scheduler line 608): gateway events bind to the Discord
+  // client only; no Discord client (null) → no-op binds.
+  const client = supervisor?.discord ?? null;
+  if (!client) return;
   client.on(Events.ChannelDelete, (channel) => {
     try {
       if (!channel?.id) return;

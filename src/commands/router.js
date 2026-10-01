@@ -8,7 +8,8 @@ const { buildDiscordCommandContext } = require("../platform/discord/context");
  *
  * @param {import("discord.js").Interaction} interaction
  * @param {object} ctx
- * @param {import("discord.js").Client} ctx.client
+ * @param {object} ctx.supervisor platform supervisor ({ discord, fluxer,
+ *   clientForCommunity }) — PR 7 replaced the old ctx.client first slot.
  * @param {import("./registry").CommandRegistry} ctx.registry
  * @param {Function} [ctx.ensureHoneypotWarning]
  */
