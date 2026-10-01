@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.30.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.29.0...v1.30.0) (2026-10-01)
+
+
+### Features
+
+* CommandContext seam with Discord context/normalize adapters ([1bf83d8](https://github.com/metalsp0rk/boiler-snake/commit/1bf83d8691b92363d12d259bad854e7af10076d1))
+* context gate variants, commandsAllowedFromContext, showModal bridge ([1752f4a](https://github.com/metalsp0rk/boiler-snake/commit/1752f4a503237a3eb1bc0ca8e7bc56585d07b4b5))
+* file sends through the Fluxer outbound adapter ([57919f5](https://github.com/metalsp0rk/boiler-snake/commit/57919f598df5de46cb05c1d995fd631e906170f3))
+* Fluxer channel permission masks on dispatch ([97c0e51](https://github.com/metalsp0rk/boiler-snake/commit/97c0e512de8ab29809cf2371da6164d4c64fe2c6))
+* Fluxer discovery, prefix config, SDK client, boot supervisor ([fa7d0ba](https://github.com/metalsp0rk/boiler-snake/commit/fa7d0ba44e5b988a06debe78df8b817cd54a4d21))
+* Fluxer OAuth login handlers for the web admin ([9ca335f](https://github.com/metalsp0rk/boiler-snake/commit/9ca335f10425c2955448ca94d127803c2419f3b6))
+* Fluxer prefix parser, normalizer, outbound, dispatcher ([3d83405](https://github.com/metalsp0rk/boiler-snake/commit/3d8340583dbe6e79665d57a79ca440093ccb11d7))
+* Fluxer reaction-role panels and honeypot bans on the outbound ([58c91a0](https://github.com/metalsp0rk/boiler-snake/commit/58c91a017c02caf20d41e51453024b0a95a9a4c8))
+* Fluxer staff text commands and gork read_history ([d9343e1](https://github.com/metalsp0rk/boiler-snake/commit/d9343e1883908fb498e512607bff11101cd60b98))
+* Fluxer ticket create through the OutboundClient ([4288e7c](https://github.com/metalsp0rk/boiler-snake/commit/4288e7c9d0eaeab5d273ea03bf1b27016bf329ca))
+* Fluxer web session split — dual cookies, community-matched auth, tier resolution ([02bb7e2](https://github.com/metalsp0rk/boiler-snake/commit/02bb7e23cafbc114d5103aa391c5927f523603f9))
+* **gork:** STE anti-slop answer style (roadmap §7.20, decisions 49-52) ([f4c609e](https://github.com/metalsp0rk/boiler-snake/commit/f4c609ee52046a5e6880f44cc0fcdfdbbfa3d29e))
+* migration 034 — communities table + guild-scoped rebuild (fluxer PR 2, subtask 01) ([0980d47](https://github.com/metalsp0rk/boiler-snake/commit/0980d475dd5d955f351d25195a946fc9c52e9aba))
+* **roadmap:** Fluxer Phase 0 spike script (PR 1 prep) ([5ae4a90](https://github.com/metalsp0rk/boiler-snake/commit/5ae4a90db83296cb3421d0199a990472c8b84000))
+* route notification tickers by community ([8d3202b](https://github.com/metalsp0rk/boiler-snake/commit/8d3202b86d5cbd8ff74b5c39c2587aba39ef0318))
+
+
+### Bug Fixes
+
+* **platform:** resolve integer community ids at feature, web, and CLI edges ([5cc94c4](https://github.com/metalsp0rk/boiler-snake/commit/5cc94c4f4b973b071a94e03634779b7d998b168e))
+
 ## [1.29.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.28.0...v1.29.0) (2026-09-29)
 
 
