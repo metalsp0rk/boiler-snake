@@ -34,7 +34,7 @@ describe("integration: github releases", () => {
     };
   }
 
-  function fakeClient({ failSend = false } = {}) {
+  function fakeSupervisor({ failSend = false } = {}) {
     const sent = [];
     const channel = {
       send: async (payload) => {
@@ -43,9 +43,18 @@ describe("integration: github releases", () => {
         return { id: `m${sent.length}` };
       },
     };
+    const client = { channels: { fetch: async () => channel } };
+    // PR 7 fake supervisor: processWatch resolves the watch row's OutboundClient
+    // via clientForCommunity (roadmap/fluxer.md § Scheduler jobs).
+    const { createDiscordOutbound } = require("../../src/platform/discord/outbound");
+    const outbound = createDiscordOutbound(client);
     return {
       sent,
-      client: { channels: { fetch: async () => channel } },
+      supervisor: {
+        discord: client,
+        fluxer: new Map(),
+        clientForCommunity: () => outbound,
+      },
     };
   }
 
@@ -100,7 +109,7 @@ describe("integration: github releases", () => {
       channelId: env.channels.notify.id,
     });
     const watch = env.db.getAllGithubWatches().find((w) => w.repo === "acme/widgets");
-    const { client, sent } = fakeClient();
+    const { supervisor, sent } = fakeSupervisor();
     const calls = [];
     const deps = {
       fetchReleases: async (repo, token) => {
@@ -109,7 +118,7 @@ describe("integration: github releases", () => {
       },
     };
 
-    const result = await processWatch(client, watch, deps);
+    const result = await processWatch(supervisor, watch, deps);
     assert.deepEqual(calls, [{ repo: "acme/widgets", token: null }]);
     assert.equal(result.ok, true);
     assert.equal(result.announced, 1);
@@ -132,7 +141,7 @@ describe("integration: github releases", () => {
       lastChecked: Date.now(),
     });
     const watch = env.db.getAllGithubWatches().find((w) => w.repo === "acme/widgets");
-    const { client, sent } = fakeClient();
+    const { supervisor, sent } = fakeSupervisor();
     const deps = {
       fetchReleases: async () => ({
         ok: true,
@@ -140,9 +149,10 @@ describe("integration: github releases", () => {
       }),
     };
 
-    const result = await processWatch(client, watch, deps);
+    const result = await processWatch(supervisor, watch, deps);
     assert.equal(result.announced, 2);
-    const titles = sent.map((p) => p.embeds[0].toJSON().title);
+    // PR 7: tickers post plain NormalizedEmbed JSON (no EmbedBuilder wrapper).
+    const titles = sent.map((p) => p.embeds[0].title);
     assert.deepEqual(titles, ["📦 four", "📦 five"]);
 
     const after = env.db.getGithubWatch(env.communityId, "acme/widgets");
@@ -160,12 +170,12 @@ describe("integration: github releases", () => {
       lastChecked: Date.now(),
     });
     const watch = env.db.getAllGithubWatches().find((w) => w.repo === "acme/widgets");
-    const { client, sent } = fakeClient({ failSend: true });
+    const { supervisor, sent } = fakeSupervisor({ failSend: true });
     const deps = {
       fetchReleases: async () => ({ ok: true, releases: [rel(4), rel(3)] }),
     };
 
-    const result = await processWatch(client, watch, deps);
+    const result = await processWatch(supervisor, watch, deps);
     assert.equal(result.ok, false);
     assert.equal(result.announced, 0);
     assert.match(result.error, /could not deliver/i);
@@ -187,12 +197,12 @@ describe("integration: github releases", () => {
       lastChecked: Date.now(),
     });
     const watch = env.db.getAllGithubWatches().find((w) => w.repo === "acme/widgets");
-    const { client, sent } = fakeClient();
+    const { supervisor, sent } = fakeSupervisor();
     const deps = {
       fetchReleases: async () => ({ ok: false, error: "GitHub rate limit reached" }),
     };
 
-    const result = await processWatch(client, watch, deps);
+    const result = await processWatch(supervisor, watch, deps);
     assert.equal(result.ok, false);
     assert.match(result.error, /rate limit/);
     assert.equal(sent.length, 0);
@@ -206,8 +216,8 @@ describe("integration: github releases", () => {
     env.db.addGithubWatch(env.communityId, "no/channel", "No/Channel");
     const watch = env.db.getAllGithubWatches().find((w) => w.repo === "no/channel");
     let fetched = false;
-    const { client } = fakeClient();
-    const result = await processWatch(client, watch, {
+    const { supervisor } = fakeSupervisor();
+    const result = await processWatch(supervisor, watch, {
       fetchReleases: async () => {
         fetched = true;
         return { ok: true, releases: [] };

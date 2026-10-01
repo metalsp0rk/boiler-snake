@@ -4,6 +4,20 @@ const { createIntegrationEnv } = require("../helpers/harness");
 const { assertXp } = require("../helpers/assert");
 const { IDS } = require("../helpers/fixtures");
 
+/**
+ * PR 7 fake supervisor: ticker entry points take a supervisor and resolve the
+ * OutboundClient per community via clientForCommunity (roadmap/fluxer.md §
+ * Scheduler jobs). Discord-only in tests — fluxer rows resolve to null.
+ */
+function fakeSupervisor(client) {
+  const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+  return {
+    discord: client,
+    fluxer: new Map(),
+    clientForCommunity: () => getDiscordOutbound(client),
+  };
+}
+
 describe("integration: voice tick", () => {
   /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
   let env;
@@ -42,7 +56,7 @@ describe("integration: voice tick", () => {
     putInVoice(env.members.member2);
     const b1 = env.db.getXp(env.communityId, IDS.member);
     const b2 = env.db.getXp(env.communityId, IDS.member2);
-    await runVoiceTick(env.client);
+    await runVoiceTick(fakeSupervisor(env.client));
     assertXp(env.db, env.communityId, IDS.member, b1 + 4);
     assertXp(env.db, env.communityId, IDS.member2, b2 + 4);
   });
@@ -51,7 +65,7 @@ describe("integration: voice tick", () => {
     clearVoice();
     putInVoice(env.members.member);
     const before = env.db.getXp(env.communityId, IDS.member);
-    await runVoiceTick(env.client);
+    await runVoiceTick(fakeSupervisor(env.client));
     assertXp(env.db, env.communityId, IDS.member, before);
   });
 
@@ -62,7 +76,7 @@ describe("integration: voice tick", () => {
     // only one eligible
     const b1 = env.db.getXp(env.communityId, IDS.member);
     const b2 = env.db.getXp(env.communityId, IDS.member2);
-    await runVoiceTick(env.client);
+    await runVoiceTick(fakeSupervisor(env.client));
     assertXp(env.db, env.communityId, IDS.member, b1);
     assertXp(env.db, env.communityId, IDS.member2, b2);
   });
@@ -72,7 +86,7 @@ describe("integration: voice tick", () => {
     putInVoice(env.members.member, { channelId: IDS.channelAfk });
     putInVoice(env.members.member2, { channelId: IDS.channelAfk });
     const b1 = env.db.getXp(env.communityId, IDS.member);
-    await runVoiceTick(env.client);
+    await runVoiceTick(fakeSupervisor(env.client));
     assertXp(env.db, env.communityId, IDS.member, b1);
   });
 
@@ -86,7 +100,7 @@ describe("integration: voice tick", () => {
     putInVoice(env.members.member);
     putInVoice(botMember);
     const before = env.db.getXp(env.communityId, IDS.member);
-    await runVoiceTick(env.client);
+    await runVoiceTick(fakeSupervisor(env.client));
     assertXp(env.db, env.communityId, IDS.member, before);
   });
 
@@ -96,7 +110,7 @@ describe("integration: voice tick", () => {
     putInVoice(env.members.member);
     putInVoice(env.members.member2);
     const before = env.db.getXp(env.communityId, IDS.member);
-    await runVoiceTick(env.client);
+    await runVoiceTick(fakeSupervisor(env.client));
     assertXp(env.db, env.communityId, IDS.member, before);
     env.db.updateGuildSettings(env.communityId, { voice_xp_per_min: 4 });
   });

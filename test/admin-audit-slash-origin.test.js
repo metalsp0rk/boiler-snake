@@ -28,6 +28,20 @@ const {
 } = require("../src/core/auditTrail");
 
 const { createIntegrationEnv } = require("./helpers/harness");
+
+/**
+ * PR 7 fake supervisor: ticker entry points take a supervisor and resolve the
+ * OutboundClient per community via clientForCommunity (roadmap/fluxer.md §
+ * Scheduler jobs). Discord-only in tests — fluxer rows resolve to null.
+ */
+function fakeSupervisor(client) {
+  const { getDiscordOutbound } = require("../src/platform/discord/outbound");
+  return {
+    discord: client,
+    fluxer: new Map(),
+    clientForCommunity: () => getDiscordOutbound(client),
+  };
+}
 const { IDS } = require("./helpers/fixtures");
 const { assertReplyContains } = require("./helpers/assert");
 
@@ -489,7 +503,7 @@ describe("admin_audit rows from slash mutations (integration)", () => {
     });
 
     const { runWarnExpiryTick } = require("../src/features/warnings/ticker");
-    const result = await runWarnExpiryTick(env.client, { now: Date.now() });
+    const result = await runWarnExpiryTick(fakeSupervisor(env.client), { now: Date.now() });
     assert.ok(result.voided >= 1);
 
     const row = findRow(auditRows(), "warnings.expire");

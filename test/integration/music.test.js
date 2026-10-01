@@ -19,7 +19,8 @@ describe("integration: music", () => {
     music = require("../../src/features/music");
     fake = createFakeLavalinkManager();
     music.setManagerForTests(fake);
-    music.start(env.client);
+    // PR 7: start() takes the supervisor; env.supervisor.discord is env.client.
+    music.start(env.supervisor);
   });
 
   after(() => {

@@ -7,6 +7,20 @@ const {
 } = require("../helpers/assert");
 const { IDS } = require("../helpers/fixtures");
 
+/**
+ * PR 7 fake supervisor: ticker entry points take a supervisor and resolve the
+ * OutboundClient per community via clientForCommunity (roadmap/fluxer.md §
+ * Scheduler jobs). Discord-only in tests — fluxer rows resolve to null.
+ */
+function fakeSupervisor(client) {
+  const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+  return {
+    discord: client,
+    fluxer: new Map(),
+    clientForCommunity: () => getDiscordOutbound(client),
+  };
+}
+
 describe("integration: warnings", () => {
   /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
   let env;
@@ -520,7 +534,7 @@ describe("integration: warnings", () => {
     assert.equal(warn.voided_at, null);
 
     const { runWarnExpiryTick } = require("../../src/features/warnings/ticker");
-    const result = await runWarnExpiryTick(env.client, { now: Date.now() });
+    const result = await runWarnExpiryTick(fakeSupervisor(env.client), { now: Date.now() });
     assert.ok(result.voided >= 1);
 
     const after = env.db.getWarning(env.communityId, warn.warning_number);
