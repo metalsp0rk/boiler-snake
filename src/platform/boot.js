@@ -8,11 +8,11 @@
  * itself only reports that via `{ ok: false, exitCode: 1 }`; the entry
  * point (src/index.js) decides to exit, so tests can exercise boot() safely.
  *
- * Through PR 6 the feature hooks keep the Discord client as their FIRST
- * argument (`supervisor.discord`, null when Discord is not configured) —
- * PR 7 performs the supervisor-argument cutover together with every hook
- * body (spec § Supervisor). `featureCtx.client` mirrors that via a getter
- * so late Discord construction stays visible to features.
+ * PR 7 (spec § Supervisor) is the cutover: feature hooks receive the
+ * SUPERVISOR as their FIRST argument (`start(supervisor, ctx)` /
+ * `registerEvents(supervisor, ctx)`), and features read the Discord client
+ * from `supervisor.discord` (null when Discord is not configured).
+ * `featureCtx` no longer carries a `client` property.
  */
 
 const { Events } = require("discord.js");
@@ -105,12 +105,8 @@ async function boot({ registry } = {}) {
   }
 
   const featureCtx = {
-    // Mirrors the legacy contract: features read ctx.client === the Discord
-    // client. Getter so the value is correct even if Discord is constructed
-    // after features captured this object.
-    get client() {
-      return supervisor.discord;
-    },
+    // PR 7 cutover (spec § Supervisor): features read the Discord client from
+    // ctx.supervisor.discord — featureCtx no longer carries `client`.
     supervisor,
     registry: commandRegistry,
     ensureHoneypotWarning,
@@ -126,8 +122,9 @@ async function boot({ registry } = {}) {
     // starts features after the first successful Fluxer handle.
     if (supervisor.discord && !discordReady) return;
     featuresStarted = true;
-    // First argument stays the Discord client through PR 6 (spec § Supervisor).
-    startAllFeatures(supervisor.discord, features, featureCtx);
+    // PR 7 cutover (spec § Supervisor): the FIRST argument is the supervisor;
+    // features read the Discord client from supervisor.discord themselves.
+    startAllFeatures(supervisor, features, featureCtx);
   }
 
   /** One boolean promise per configured endpoint: true = that endpoint came up. */
@@ -139,7 +136,7 @@ async function boot({ registry } = {}) {
     try {
       const client = createClient();
       supervisor.discord = client;
-      registerAllFeatureEvents(client, features, featureCtx);
+      registerAllFeatureEvents(supervisor, features, featureCtx);
       registerOrderedPipelines(client);
       client.once(Events.ClientReady, () => {
         // Console parity with the pre-Fluxer entry point (PR 6 bundle).

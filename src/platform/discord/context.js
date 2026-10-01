@@ -116,14 +116,17 @@ function resolveChannelPermissions(interaction) {
  * Build the CommandContext for one chat-input interaction.
  *
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
- * @param {object} featureCtx the feature context (ctx.client stays the Discord
- *   client until PR 7; this builder only needs it for the outbound adapter)
+ * @param {object} featureCtx the feature context. PR 7: the Discord client
+ *   comes from featureCtx.supervisor.discord (featureCtx.client is no longer
+ *   built by boot.js; the fallback keeps hand-built test contexts working).
+ *   This builder only needs the client for the outbound adapter.
  * @returns {import("../context").CommandContext}
  */
 function buildDiscordCommandContext(interaction, featureCtx) {
-  if (!featureCtx?.client) {
+  const discordClient = featureCtx?.supervisor?.discord ?? featureCtx?.client ?? null;
+  if (!discordClient) {
     throw new Error(
-      `buildDiscordCommandContext: featureCtx.client required for command "/${interaction?.commandName}"`,
+      `buildDiscordCommandContext: supervisor.discord (Discord client) required for command "/${interaction?.commandName}"`,
     );
   }
 
@@ -210,7 +213,7 @@ function buildDiscordCommandContext(interaction, featureCtx) {
     get replied() {
       return Boolean(interaction.replied);
     },
-    outbound: getDiscordOutbound(featureCtx.client),
+    outbound: getDiscordOutbound(discordClient),
     // Discord-only escape hatch (documented, PR 4): the REAL interaction, for
     // the handful of chat-input capabilities CommandContext deliberately does
     // NOT model — currently only modal display (showModal), which Fluxer has

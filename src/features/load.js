@@ -11,8 +11,12 @@
  *   autocomplete: { [commandName]: async (interaction, ctx) => void }
  *   modalHandlers: { [customIdPrefix]: async (interaction, ctx) => void }
  *   buttonHandlers: { [customIdPrefix]: async (interaction, ctx) => void }
- *   registerEvents(client, ctx): void
- *   start(client, ctx): void   // ClientReady tickers/schedulers
+ *   registerEvents(supervisor, ctx): void
+ *   start(supervisor, ctx): void   // ClientReady tickers/schedulers
+ *
+ * PR 7 cutover (roadmap/fluxer.md § Supervisor): the first argument is the
+ * platform Supervisor ({ discord, fluxer, clientForCommunity }), not the
+ * Discord client. Features read supervisor.discord where they used the client.
  */
 
 /**
@@ -53,14 +57,18 @@ function applyFeaturesToRegistry(features, registry) {
  * Run one lifecycle hook across all features, isolating failures: a throwing
  * feature is logged (with feature + hook context) and skipped instead of
  * killing the boot loop / login. See AGENTS.md → Error Handling.
+ * @param {import("../platform/boot").Supervisor} supervisor
+ * @param {object[]} features
+ * @param {object} ctx
+ * @param {string} hookName
  * @returns {string[]} descriptors of failed hooks (empty on success)
  */
-function runFeatureHook(client, features, ctx, hookName) {
+function runFeatureHook(supervisor, features, ctx, hookName) {
   const failed = [];
   for (const feature of features) {
     if (typeof feature?.[hookName] !== "function") continue;
     try {
-      feature[hookName](client, ctx);
+      feature[hookName](supervisor, ctx);
     } catch (err) {
       console.error(
         `[features] ${feature.name || "unknown"}.${hookName} failed:`,
@@ -78,23 +86,23 @@ function runFeatureHook(client, features, ctx, hookName) {
 }
 
 /**
- * @param {import("discord.js").Client} client
+ * @param {import("../platform/boot").Supervisor} supervisor
  * @param {object[]} features
  * @param {object} ctx
  * @returns {string[]} failed hook descriptors
  */
-function registerAllFeatureEvents(client, features, ctx) {
-  return runFeatureHook(client, features, ctx, "registerEvents");
+function registerAllFeatureEvents(supervisor, features, ctx) {
+  return runFeatureHook(supervisor, features, ctx, "registerEvents");
 }
 
 /**
- * @param {import("discord.js").Client} client
+ * @param {import("../platform/boot").Supervisor} supervisor
  * @param {object[]} features
  * @param {object} ctx
  * @returns {string[]} failed hook descriptors
  */
-function startAllFeatures(client, features, ctx) {
-  return runFeatureHook(client, features, ctx, "start");
+function startAllFeatures(supervisor, features, ctx) {
+  return runFeatureHook(supervisor, features, ctx, "start");
 }
 
 module.exports = {
