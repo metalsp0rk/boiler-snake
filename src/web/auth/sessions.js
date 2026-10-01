@@ -5,9 +5,10 @@
  *
  * Owns here:
  *  - opaque 32-byte session ids (crypto-random lowercase hex);
- *  - sliding expiry `min(now + WEB_SESSION_TTL_HOURS, created_at + 7 d)` —
- *    the absolute cap anchors on the row's created_at so a touch can never
- *    extend total lifetime past 7 days;
+ *  - sliding expiry `min(now + WEB_SESSION_TTL_HOURS, created_at + cap)` —
+ *    the cap is the Discord 7-day window and, for Fluxer rows (PR 10), the
+ *    refresh-token horizon (30d default); it anchors on the row's created_at
+ *    so a touch can never extend total lifetime past the platform's cap;
  *  - id rotation on login (new id, old id destroyed — never rotated in
  *    place, so a stolen cookie cannot outlive a login);
  *  - destroy on logout; boot sweep + periodic prune job;
@@ -35,13 +36,24 @@ const dbFacade = require("../../db");
 const { getSessionTtlMs, isSecureBaseUrl } = require("../config");
 
 const SESSION_COOKIE_NAME = "web_session";
+/**
+ * Fluxer PR 10 (K11): exactly ONE Fluxer cookie, shared table, separate
+ * cookie name. Discord paths never read/write it and vice versa.
+ */
+const FLUXER_SESSION_COOKIE_NAME = "web_session_fx";
 const SESSION_ID_BYTES = 32;
 /** Generated ids are lowercase hex of SESSION_ID_BYTES (64 chars). */
 const SESSION_ID_RE = /^[0-9a-f]{64}$/;
 /** Cookie values longer than this are rejected before any DB work (§8.7). */
 const MAX_SESSION_COOKIE_VALUE_LENGTH = 512;
-/** §8.3 absolute cap: a session never lives past created_at + 7 days. */
+/** §8.3 absolute cap: a (Discord) session never lives past created_at + 7 days. */
 const ABSOLUTE_CAP_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Fluxer PR 10 (spec §Token exchange and refresh): a Fluxer row's absolute
+ * horizon is the 30-day REFRESH-token horizon from creation — used only when
+ * the row carries no explicit refresh_expires_at.
+ */
+const FLUXER_REFRESH_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
 /** Sliding-bump throttle: middleware writes at most once per this window. */
 const TOUCH_MIN_INTERVAL_MS = 60_000;
 /** Periodic prune cadence beside the boot sweep. */
@@ -50,8 +62,11 @@ const DEFAULT_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 /**
  * @typedef {object} WebSession
  * @property {string} id opaque id (cookie value)
- * @property {string} userId Discord user id
+ * @property {string} userId user id (Discord snowflake, or Fluxer userinfo `sub`)
  * @property {string|null} discordTag display snapshot (not authoritative)
+ * @property {string} platform "discord" | "fluxer" (row default: discord)
+ * @property {string} instanceKey "discord" | normalized Fluxer origin
+ * @property {number|null} refreshExpiresAt unix ms refresh-token horizon (fluxer rows)
  * @property {number} createdAt unix ms — absolute-cap anchor
  * @property {number} lastSeenAt unix ms
  * @property {number} expiresAt unix ms (sliding expiry)
@@ -85,6 +100,10 @@ function toSession(row) {
     id: row.id,
     userId: row.user_id,
     discordTag: row.discord_tag ?? null,
+    // Migration 034 columns are additive; rows predating them read as Discord.
+    platform: row.platform ?? "discord",
+    instanceKey: row.instance_key ?? "discord",
+    refreshExpiresAt: row.refresh_expires_at ?? null,
     createdAt: row.created_at,
     lastSeenAt: row.last_seen_at,
     expiresAt: row.expires_at,
@@ -92,30 +111,60 @@ function toSession(row) {
 }
 
 /**
- * Sliding expiry clamped by the absolute cap: min(now + TTL, created + 7d).
+ * Sliding expiry clamped by the platform's absolute cap.
+ *
+ * Discord (spec-locked formula, unchanged): min(now + TTL, created + 7d).
+ * Fluxer (PR 10): the 7-day Discord clamp is REPLACED by the refresh-token
+ * horizon — `min(now + TTL, refreshExpiresAt ?? created + 30d)`.
+ * The 3rd parameter defaults to null so every existing two-argument call
+ * (Discord policy tests, login) keeps the 7-day behavior byte-identically.
+ *
  * @param {number} createdAt row creation time (unix ms)
  * @param {number} now current time (unix ms)
+ * @param {{platform?: string, refreshExpiresAt?: number|null}|null} [session]
+ *   the live row (platform/refreshExpiresAt decide the Fluxer branch)
  * @returns {number} new expires_at (unix ms)
  */
-function computeExpiry(createdAt, now) {
-  return Math.min(now + getSessionTtlMs(), createdAt + ABSOLUTE_CAP_MS);
+function computeExpiry(createdAt, now, session = null) {
+  const idle = now + getSessionTtlMs();
+  if (session && session.platform === "fluxer") {
+    const horizon =
+      session.refreshExpiresAt ?? createdAt + FLUXER_REFRESH_HORIZON_MS;
+    return Math.min(idle, horizon);
+  }
+  return Math.min(idle, createdAt + ABSOLUTE_CAP_MS);
 }
 
 /**
  * Create a live session for a user (login calls this via rotateSession).
+ *
  * @param {object} user
- * @param {string} user.userId Discord user id
+ * @param {string} user.userId user id (Discord snowflake / Fluxer sub)
  * @param {string|null} [user.discordTag] display snapshot
+ * @param {string} [user.platform] "discord" (default) | "fluxer" (PR 10)
+ * @param {string} [user.instanceKey] "discord" (default) | Fluxer origin
+ * @param {number|null} [user.refreshExpiresAt] unix ms (fluxer 30d horizon)
  * @param {number} [now]
  * @returns {WebSession}
  */
-function createSession({ userId, discordTag = null }, now = Date.now()) {
+function createSession(
+  { userId, discordTag = null, platform = "discord", instanceKey = "discord", refreshExpiresAt = null },
+  now = Date.now()
+) {
   // Repo validates userId/expiresAt; created_at ≈ now anchors the cap.
+  // The platform + refreshExpiresAt ride along so computeExpiry sees the
+  // row's true shape at creation time (Fluxer rows cap at the refresh horizon).
   const row = createWebSession({
     id: newSessionId(),
     userId,
     discordTag,
-    expiresAt: computeExpiry(now, now),
+    expiresAt: computeExpiry(now, now, {
+      platform,
+      refreshExpiresAt: refreshExpiresAt ?? null,
+    }),
+    platform,
+    instanceKey,
+    refreshExpiresAt,
   });
   return toSession(row);
 }
@@ -149,16 +198,18 @@ function shouldTouch(session, now = Date.now(), minIntervalMs = TOUCH_MIN_INTERV
 
 /**
  * Sliding touch with the cap applied: extends expiry to
- * min(now + TTL, createdAt + 7d) and stamps last_seen_at. Returns the new
- * session snapshot (never mutates the argument), or null when the row is
- * gone/expired — the repo refuses to revive expired rows.
+ * min(now + TTL, created + platform-cap) and stamps last_seen_at. The ROW
+ * itself is passed to computeExpiry so Fluxer rows track their refresh-token
+ * horizon (30d) and Discord rows keep the 7-day cap. Returns the new session
+ * snapshot (never mutates the argument), or null when the row is gone/expired
+ * — the repo refuses to revive expired rows.
  * @param {WebSession} session
  * @param {number} [now]
  * @returns {WebSession|null}
  */
 function touchSession(session, now = Date.now()) {
   if (!session) return null;
-  const expiresAt = computeExpiry(session.createdAt, now);
+  const expiresAt = computeExpiry(session.createdAt, now, session);
   const bumped = touchWebSession(session.id, expiresAt, now);
   if (!bumped) return null;
   return { ...session, lastSeenAt: now, expiresAt };
@@ -179,7 +230,8 @@ function destroySession(id) {
  * browser sent no (valid) old session; passing an old id that is already
  * gone is fine.
  * @param {WebSession|string|null} [oldSessionOrId]
- * @param {{ userId: string, discordTag?: string|null }} user
+ * @param {{ userId: string, discordTag?: string|null, platform?: string,
+ *   instanceKey?: string, refreshExpiresAt?: number|null }} user
  * @param {number} [now]
  * @returns {WebSession} the new live session
  */
@@ -327,15 +379,18 @@ function sessionCookieMaxAgeSec() {
 /**
  * Serialize the Set-Cookie value. Attribute order is fixed; the value is
  * always the opaque id (or empty when clearing) — NEVER user data (§8.7).
+ * The name defaults to the Discord cookie (byte-identical callers); Fluxer
+ * passes FLUXER_SESSION_COOKIE_NAME (K11: one cookie per platform, never
+ * the other's name).
  * @param {string} id session id ("" to clear)
- * @param {{ secure: boolean, maxAgeSec: number }} attrs
+ * @param {{ secure: boolean, maxAgeSec: number, name?: string }} attrs
  * @returns {string}
  */
-function serializeSessionCookie(id, { secure, maxAgeSec }) {
+function serializeSessionCookie(id, { secure, maxAgeSec, name = SESSION_COOKIE_NAME }) {
   const attrs = ["Path=/", "HttpOnly", "SameSite=Lax"];
   if (secure) attrs.push("Secure");
   attrs.push(`Max-Age=${maxAgeSec}`);
-  return `${SESSION_COOKIE_NAME}=${id}; ${attrs.join("; ")}`;
+  return `${name}=${id}; ${attrs.join("; ")}`;
 }
 
 /**
@@ -367,8 +422,42 @@ function buildClearSessionCookie() {
   });
 }
 
+/**
+ * Set-Cookie value for a live FLUXER session (PR 10, K11): identical policy
+ * to buildSessionCookie (opaque id, HttpOnly, SameSite=Lax, Secure-iff-https,
+ * Max-Age = sliding TTL) under the `web_session_fx` name. Fluxer login/logout
+ * writes ONLY this cookie.
+ * @param {string} id
+ * @returns {string}
+ */
+function buildFluxerSessionCookie(id) {
+  if (!isSessionId(id)) {
+    throw new TypeError("buildFluxerSessionCookie: invalid session id");
+  }
+  return serializeSessionCookie(id, {
+    secure: isSecureBaseUrl(),
+    maxAgeSec: sessionCookieMaxAgeSec(),
+    name: FLUXER_SESSION_COOKIE_NAME,
+  });
+}
+
+/**
+ * Set-Cookie value that clears the browser's FLUXER cookie on Fluxer logout
+ * (empty value, Max-Age=0; mirrors buildFluxerSessionCookie's attributes so
+ * the browser replaces the original cookie). Never touches `web_session`.
+ * @returns {string}
+ */
+function buildClearFluxerSessionCookie() {
+  return serializeSessionCookie("", {
+    secure: isSecureBaseUrl(),
+    maxAgeSec: 0,
+    name: FLUXER_SESSION_COOKIE_NAME,
+  });
+}
+
 module.exports = {
   SESSION_COOKIE_NAME,
+  FLUXER_SESSION_COOKIE_NAME,
   SESSION_ID_BYTES,
   MAX_SESSION_COOKIE_VALUE_LENGTH,
   ABSOLUTE_CAP_MS,
@@ -395,4 +484,6 @@ module.exports = {
   sessionCookieMaxAgeSec,
   buildSessionCookie,
   buildClearSessionCookie,
+  buildFluxerSessionCookie,
+  buildClearFluxerSessionCookie,
 };

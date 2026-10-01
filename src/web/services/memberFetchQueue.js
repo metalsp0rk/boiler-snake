@@ -40,11 +40,14 @@ const MAX_PENDING_PER_GUILD = 1000;
 /** Discord REST error code for "Unknown Member". */
 const UNKNOWN_MEMBER = 10007;
 
-/** guildId -> Map<userId, queuedAtMs> (insertion-ordered = drain order). */
+/** guildId -> Map<userId, queuedAtMs> (insertion-ordered = drain order).
+ *  Keys are String(communityId) for the canonical numeric queue (Fluxer PR 10,
+ *  spec L762: "Change the key to String(communityId)") and legacy external
+ *  snowflake strings for Discord callers that pass snowflakes directly. */
 const pending = new Map();
 /** guildId -> Map<userId, lastAttemptAtMs> — cooldown ledger. */
 const attempted = new Map();
-/** getClient thunk captured at first enqueue per guild (used at flush). */
+/** guildId -> getClient thunk captured at first enqueue (Discord drains). */
 const clients = new Map();
 /** guildId -> "next guild to drain" round-robin cursor. */
 let cursor = 0;
@@ -73,38 +76,102 @@ function attemptBlockedUntil(guildId, userId) {
 }
 
 /**
- * Queue cache misses for background resolution. Fire-and-forget: returns the
- * number of ids newly queued. Never throws; invalid input is ignored.
+ * Canonical queue key for a community id (Fluxer PR 10, spec L762: the
+ * function "takes a number"). Returns the integer for a safe integer in the
+ * communities.id range; anything else (strings — including legacy snowflakes,
+ * floats, ranges) yields null so the caller fails LOUD.
+ * @param {unknown} communityId
+ * @returns {number|null}
+ */
+function toQueueCommunityId(communityId) {
+  if (typeof communityId !== "number") return null;
+  return Number.isSafeInteger(communityId) &&
+    communityId >= 1 &&
+    communityId <= 2_147_483_647
+    ? communityId
+    : null;
+}
+
+/**
+ * Queue cache misses for background resolution by INTEGER community id
+ * (Fluxer PR 10, spec §Boot): keys are String(communityId), and the drain
+ * resolves the platform's client through the community registry BEFORE any
+ * cache read. The canonical argument is a NUMBER; ids that are neither a
+ * safe-integer number nor a non-empty string log and return 0 so a missed
+ * call site is loud. Non-empty STRING ids keep the pre-PR-10 Discord
+ * contract: they are drained as EXTERNAL snowflakes through the discord.js
+ * client (the contract pinned by test/web-member-fetch-queue.test.js).
  *
- * @param {() => any} getClient client thunk (same one routes already pass to
- *   resolveMemberNames)
- * @param {string} guildId
+ * @param {() => any} getClient client thunk (Discord drains use it; Fluxer
+ *   drains resolve the OutboundClient from the community registry)
+ * @param {number|string} communityId INTEGER communities.id (canonical) or
+ *   a legacy external snowflake string
  * @param {Iterable<string>} userIds the ids missing from the member cache
  * @returns {number} newly-queued id count
  */
-function queueMissingMembers(getClient, guildId, userIds) {
-  if (typeof guildId !== "string" || !guildId) return 0;
+function queueMissingMembers(getClient, communityId, userIds) {
+  const cid = toQueueCommunityId(communityId);
+  if (cid != null) return enqueue(String(cid), getClient, userIds);
+  if (typeof communityId === "string" && communityId) {
+    // Legacy external-snowflake caller (the pre-PR-10 Discord contract,
+    // pinned by test/web-member-fetch-queue.test.js — a hard-0 here would
+    // turn the §8.15 suite red). Route to the external queue.
+    return queueMissingMembersExternal(getClient, communityId, userIds);
+  }
+  // Spec L762: "returns 0 ... after logging, so a missed call site is loud."
+  console.warn(
+    `[web] member-fetch queue: communityId=${JSON.stringify(
+      communityId
+    )} is not a number/string id — ids dropped (pass the INTEGER communities.id)`
+  );
+  return 0;
+}
+
+/**
+ * Legacy external-snowflake queue (pre-PR-10 Discord contract, byte-identical
+ * semantics): keyed by the snowflake string, drained through the discord.js
+ * client's guild.members cache. Used by routes that pass external guild ids to
+ * the cache seam (see routes/shared/discord-cache.resolveMemberNames).
+ *
+ * @param {() => any} getClient client thunk
+ * @param {string} externalGuildId Discord snowflake
+ * @param {Iterable<string>} userIds
+ * @returns {number} newly-queued id count
+ */
+function queueMissingMembersExternal(getClient, externalGuildId, userIds) {
+  if (typeof externalGuildId !== "string" || !externalGuildId) return 0;
   if (typeof getClient !== "function") return 0;
+  return enqueue(externalGuildId, getClient, userIds);
+}
+
+/** Shared enqueue: dedupe + cooldown + bounded per-key pending. */
+function enqueue(key, getClient, userIds) {
   let queued = 0;
-  const guildPending = pending.get(guildId) ?? new Map();
+  const guildPending = pending.get(key) ?? new Map();
   for (const userId of userIds ?? []) {
     if (typeof userId !== "string" || !userId) continue;
     if (guildPending.size >= MAX_PENDING_PER_GUILD) break; // bounded: drop the rest
     if (guildPending.has(userId)) continue; // already queued = dedupe
-    if (attemptBlockedUntil(guildId, userId) > now()) continue; // cooling down
+    if (attemptBlockedUntil(key, userId) > now()) continue; // cooling down
     guildPending.set(userId, now());
     queued += 1;
   }
   if (guildPending.size > 0) {
-    pending.set(guildId, guildPending);
-    clients.set(guildId, getClient);
+    pending.set(key, guildPending);
+    clients.set(key, getClient);
     startTicker();
   }
   return queued;
 }
 
 /**
- * Process ONE guild's queue (up to FETCH_BUDGET_PER_FLUSH ids), sequentially.
+ * Process ONE guild/community's queue (up to FETCH_BUDGET_PER_FLUSH ids),
+ * sequentially. Resolves the target BEFORE any cache read (spec L762):
+ *  - numeric key  → communities row: a FLUXER row warms names through
+ *    `outbound.fetchUser` (never the Discord cache); a DISCORD row fetches
+ *    through the discord.js client at the row's EXTERNAL guild id;
+ *  - string key   → legacy external snowflake, discord.js member fetch.
+ * A queue whose community row vanished (deleted) is dropped with a warning.
  * Returns ids actually attempted. Exported for tests; the ticker calls it.
  * @returns {Promise<number>}
  */
@@ -123,20 +190,63 @@ async function flushMemberFetchQueue() {
     return 0;
   }
 
-  const getClient = clients.get(guildId);
-  let client = null;
-  try {
-    client = getClient?.() ?? null;
-  } catch (err) {
-    client = null;
-  }
-  const members = client?.guilds?.cache?.get?.(guildId)?.members ?? null;
-  if (typeof members?.fetch !== "function") {
-    // No live fetcher (dark boot / test fake): discard this guild's queue —
-    // re-rendered pages re-enqueue when a real client exists.
+  const dropQueue = () => {
     pending.delete(guildId);
     clients.delete(guildId);
-    return 0;
+  };
+
+  // Resolve platform + external id BEFORE touching any cache (spec L762).
+  let cid = null;
+  let platform = "discord";
+  let externalId = guildId;
+  let outbound = null;
+  if (/^[1-9][0-9]{0,9}$/.test(guildId)) {
+    cid = Number(guildId);
+    let row = null;
+    try {
+      row = require("../../platform/community").getCommunityById(cid);
+    } catch {
+      row = null;
+    }
+    if (!row) {
+      console.warn(
+        `[web] member fetch: community ${guildId} has no registry row — dropping queued ids`
+      );
+      dropQueue();
+      return 0;
+    }
+    platform = row.platform ?? "discord";
+    externalId = row.externalGuildId;
+    if (platform === "fluxer") {
+      const cacheSeam = require("../routes/shared/discord-cache");
+      outbound = cacheSeam.communityClient(cid);
+      if (!outbound || typeof outbound.fetchUser !== "function") {
+        // Spec §Supervisor: missing client = logged skip, not a silent drop.
+        console.warn(
+          `[web] member fetch: no fluxer client for community ${guildId} — dropping queued ids`
+        );
+        dropQueue();
+        return 0;
+      }
+    }
+  }
+
+  let members = null;
+  if (platform !== "fluxer") {
+    const getClient = clients.get(guildId);
+    let client = null;
+    try {
+      client = getClient?.() ?? null;
+    } catch {
+      client = null;
+    }
+    members = client?.guilds?.cache?.get?.(externalId)?.members ?? null;
+    if (typeof members?.fetch !== "function") {
+      // No live fetcher (dark boot / test fake): discard this guild's queue —
+      // re-rendered pages re-enqueue when a real client exists.
+      dropQueue();
+      return 0;
+    }
   }
 
   const cutoff = now();
@@ -147,10 +257,25 @@ async function flushMemberFetchQueue() {
     if (attemptBlockedUntil(guildId, userId) > cutoff) continue;
     attemptedCount += 1;
     try {
-      // discord.js routes this through its rate-limit-aware rest manager and
-      // writes the result into the member cache on success.
-      await members.fetch({ user: userId });
-      markAttempt(guildId, userId, RETRY_COOLDOWN_MS);
+      if (outbound) {
+        // Fluxer: the user-facing display name comes from fetchUser; the
+        // OutboundClient logs REST failures itself and returns null — treat
+        // null as a transient miss (retry on the next cooldown).
+        const user = await outbound.fetchUser(cid, userId);
+        if (user) {
+          markAttempt(guildId, userId, RETRY_COOLDOWN_MS);
+        } else {
+          markAttempt(guildId, userId, RETRY_COOLDOWN_MS);
+          console.warn(
+            `[web] fluxer member fetch: user ${userId} community ${guildId} unresolvable — retry later`
+          );
+        }
+      } else {
+        // discord.js routes this through its rate-limit-aware rest manager and
+        // writes the result into the member cache on success.
+        await members.fetch({ user: userId });
+        markAttempt(guildId, userId, RETRY_COOLDOWN_MS);
+      }
     } catch (err) {
       if (err?.code === UNKNOWN_MEMBER) {
         markAttempt(guildId, userId, MISSING_MEMBER_COOLDOWN_MS);
@@ -169,8 +294,7 @@ async function flushMemberFetchQueue() {
   }
 
   if (guildPending.size === 0) {
-    pending.delete(guildId);
-    clients.delete(guildId);
+    dropQueue();
   }
   pruneLedgers();
   return attemptedCount;
@@ -219,6 +343,7 @@ function queueStats() {
 
 module.exports = {
   queueMissingMembers,
+  queueMissingMembersExternal,
   flushMemberFetchQueue,
   stopMemberFetchQueue,
   queueStats,

@@ -1068,10 +1068,13 @@ describe("D. registry integrity — mounted routes, legacy ban, byte-parity 405 
         const paths = Array.isArray(route.path) ? route.path : [route.path];
         for (const p of paths) out.push(p);
       }
-      // Public POST carve-outs (app.js PUBLIC_POST_PATHS): logout (§8.3)
-      // + the HMAC-authenticated Twitch EventSub webhook.
+      // Public POST carve-outs (app.js PUBLIC_POST_PATHS): both logouts
+      // (§8.3; /auth/fluxer/logout ships with the Fluxer web PR 10) + the
+      // Twitch EventSub webhook.
       return out
-        .filter((p) => p !== "/auth/logout" && p !== "/hooks/twitch")
+        .filter(
+          (p) => p !== "/auth/logout" && p !== "/auth/fluxer/logout" && p !== "/hooks/twitch"
+        )
         .sort();
     };
     for (const app of [appMain, appReal, appNoAi]) {

@@ -29,7 +29,7 @@ const {
   registerTwitchEventsubRoutes,
   EVENTSUB_PATH,
 } = require("./routes/twitchEventsub");
-const { registerAuthRoutes } = require("./routes/auth");
+const { registerAuthRoutes, registerFluxerAuthRoutes } = require("./routes/auth");
 const { registerUsersRoutes } = require("./routes/users");
 const { registerModerationRoutes } = require("./routes/moderation");
 const { registerSettingsRoutes } = require("./routes/settings");
@@ -47,6 +47,8 @@ const { registerLookupRoutes } = require("./routes/lookups");
 const { registerDashboardApiRoutes } = require("./routes/dashboardApi");
 const { registerSyncActionRoutes } = require("./routes/syncAction");
 const { createSessionMiddleware } = require("./middleware/session");
+const { setCommunityClientProvider } = require("./routes/shared/discord-cache");
+const { createGuildAccessResolver } = require("./auth/guildAccess");
 const {
   createAuthRateLimit,
   createMutationRateLimit,
@@ -68,12 +70,19 @@ const { createAuditMiddleware } = require("./middleware/audit");
 const LOGOUT_POST_PATH = "/auth/logout";
 
 /**
- * Public POST carve-outs that are NOT /g/:guildId mutations: logout (§8.3)
- * and the Twitch EventSub webhook (HMAC-authenticated, cannot be CSRF/
- * login-gated — Twitch posts here). Exact raw-path match; anything else
- * non-GET still 405s byte-identically.
+ * Fluxer web logout (PR 10, K11): the sibling of LOGOUT_POST_PATH on the
+ * `web_session_fx` cookie. Same §8.3 public-POST carve-out — an anonymous
+ * request must be able to POST it (the handler no-ops without a session).
  */
-const PUBLIC_POST_PATHS = new Set([LOGOUT_POST_PATH, EVENTSUB_PATH]);
+const FLUXER_LOGOUT_POST_PATH = "/auth/fluxer/logout";
+
+/**
+ * Public POST carve-outs that are NOT /g/:guildId mutations: both logouts
+ * (§8.3) and the Twitch EventSub webhook (HMAC-authenticated, cannot be
+ * CSRF/login-gated — Twitch posts here). Exact raw-path match; anything
+ * else non-GET still 405s byte-identically.
+ */
+const PUBLIC_POST_PATHS = new Set([LOGOUT_POST_PATH, FLUXER_LOGOUT_POST_PATH, EVENTSUB_PATH]);
 
 /**
  * Segment-wise match of a raw path against a mounted mutation template
@@ -211,6 +220,14 @@ function handleAppError(err, req, res, next) {
  *   pre-built createGuildAccessResolver() instance for the /g shell AND the
  *   §8.4 ticket gate (tests inject fakes; default builds one from
  *   apiBase/fetchImpl/botGuilds).
+ * @param {() => Array<object>} [options.getFluxerWebInstances]
+ *   Fluxer login-instance provider (Fluxer PR 10; features/web boot wires it
+ *   to FLUXER_INSTANCES + discovery; tests inject). Default: none.
+ * @param {(communityId: number) => object|null} [options.getCommunityClient]
+ *   OutboundClient accessor per community (Fluxer PR 10; wired to
+ *   supervisor.clientForCommunity). Feeds the Fluxer auth routes, the tier
+ *   resolver's bot-member fetch, AND the cache-only display seams
+ *   (discord-cache / memberFetchQueue fluxer routing). Default: none.
  * @returns {import("express").Express}
  */
 function createWebApp(options = {}) {
@@ -270,11 +287,42 @@ function createWebApp(options = {}) {
   app.get("/health", handleHealth);
   // Login/logout first: they must resolve without (and while rotating) any
   // session, and they are the only writers of the session cookie.
+  // Fluxer PR 10 (K11): module-scoped display seams need the OutboundClient
+  // accessor before any /g render — wire it once per app build (same
+  // pattern as features/web boot wiring setBotGuildsProvider).
+  setCommunityClientProvider(
+    typeof options.getCommunityClient === "function" ? options.getCommunityClient : null
+  );
+  // When Fluxer options are present (and no pre-built resolver was injected),
+  // build the SHARED resolver here so every /g registrar below (which
+  // re-reads options.guildAccess, see routes/dashboard.js) resolves Discord
+  // AND Fluxer tiers with one cache budget. Without the options, dashboard
+  // builds the plain Discord resolver exactly as before (byte-identical).
+  if (
+    !options.guildAccess &&
+    (options.getFluxerWebInstances || options.getCommunityClient)
+  ) {
+    options.guildAccess = createGuildAccessResolver({
+      apiBase: options.apiBase,
+      fetchImpl: options.fetchImpl,
+      botGuilds: options.botGuilds,
+      getFluxerWebInstances: options.getFluxerWebInstances,
+      getCommunityClient: options.getCommunityClient,
+    });
+  }
   registerAuthRoutes(app, {
     apiBase: options.apiBase,
     oauthBase: options.oauthBase,
     fetchImpl: options.fetchImpl,
     botGuilds: options.botGuilds,
+  });
+  // Fluxer login surface (PR 10): GET /auth/fluxer/:slug/login(+callback),
+  // POST /auth/fluxer/logout. Mounted inside the same /auth rate-limit prefix
+  // as the Discord routes — no second limiter (spec C13).
+  registerFluxerAuthRoutes(app, {
+    fluxerInstances: options.getFluxerWebInstances ?? (() => []),
+    getCommunityClient: options.getCommunityClient ?? (() => null),
+    fetchImpl: options.fetchImpl,
   });
   registerOauthRoutes(app);
   // Twitch EventSub webhook (HMAC-authenticated public POST carve-out —
