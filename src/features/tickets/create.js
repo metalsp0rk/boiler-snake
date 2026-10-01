@@ -18,8 +18,9 @@ const { showModalFromContext } = require("../../platform/context");
 
 /**
  * Standard reply for Fluxer dispatches reaching Discord-only surfaces
- * (roadmap/fluxer.md § What stays Discord-only): ticket channels are
- * discord.js guild channels until the OutboundClient cutover in PR 7.
+ * (roadmap/fluxer.md § What stays Discord-only). PR 9 moved `ticket create`
+ * onto the OutboundClient (roadmap § Outbound client); the `for` arm (and the
+ * panel group) still need discord.js structures.
  */
 const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
 
@@ -113,20 +114,77 @@ async function handleCreate(commandCtx, ctx) {
     return;
   }
 
-  // Ticket channels are discord.js guild channels: the openTicketChannel
-  // pipeline (guild.channels.create + permission overwrites) cuts over to the
-  // OutboundClient in PR 7 (roadmap § Outbound client). Fluxer contexts carry
-  // no rawInteraction → the standard not-yet-available line.
+  // Discord contexts carry the raw interaction and run the discord.js pipeline.
   const raw = commandCtx.rawInteraction;
-  if (!raw) {
-    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+  if (raw) {
+    await commandCtx.defer({ sensitive: true });
+    // Helpers keep their (interaction, ctx) signatures until PR 7 — pass the
+    // raw interaction; completeSelfCreate edits the deferred reply we just made.
+    await completeSelfCreate(raw, ctx, reason, communityId);
     return;
   }
 
+  // Fluxer arm (PR 9, roadmap § Outbound client / PR 9): ticket channels are
+  // OutboundClient channels now — resolve the live connection through the
+  // supervisor. No connection is a specific cause the user can act on
+  // (AGENTS.md rule 3), never the generic not-available line.
+  let outbound = null;
+  try {
+    outbound = ctx?.supervisor?.clientForCommunity?.(communityId) ?? null;
+  } catch (err) {
+    console.error(
+      `[tickets] clientForCommunity(${communityId}) failed: ${err?.message || err}`,
+    );
+  }
+  if (!outbound) {
+    await commandCtx.reply({
+      content:
+        "This Fluxer community has no live bot connection — the command cannot run.",
+      sensitive: false,
+    });
+    return;
+  }
+
+  // Sensitive create → K2 DM (mirrors the Discord ephemeral reply).
   await commandCtx.defer({ sensitive: true });
-  // Helpers keep their (interaction, ctx) signatures until PR 7 — pass the
-  // raw interaction; completeSelfCreate edits the deferred reply we just made.
-  await completeSelfCreate(raw, ctx, reason, communityId);
+  try {
+    const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
+      outbound,
+      communityId,
+      creatorUserId: commandCtx.userId,
+      reason,
+      // Public self-create (spec's text path: !ticket create reason "text").
+      // Mirrors the Discord completeSelfCreate arm, which passes null — the
+      // creator gets MEMBER access, not staff access, and the open notice is
+      // "…staff will be with you shortly." (PR 9 review: the bundle's
+      // ctx.userId pin was wrong; Agent A flagged it.)
+      openedByStaffId: null,
+    });
+
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "tickets.create",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        channel_id: channel?.id ?? null,
+        reason: reason ?? null,
+      },
+    });
+
+    let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened: <#${channel.id}>`;
+    if (skippedStaffRoles?.length) {
+      msg += formatStaffRoleAccessNote(skippedStaffRoles);
+    }
+    await commandCtx.reply({ content: msg });
+  } catch (err) {
+    // The cause IS the reply (elevated_disabled carries the K8 gate's own
+    // reason verbatim — AGENTS.md rule 3, no generic strings).
+    console.error("[tickets] fluxer create failed:", err?.message || err);
+    await commandCtx.reply({ content: err?.message || String(err) });
+  }
 }
 
 async function handleOpenTicketButton(interaction, _ctx) {
@@ -224,9 +282,10 @@ async function handleFor(commandCtx, ctx) {
     return;
   }
 
-  // Same Discord-only rationale as handleCreate (roadmap
-  // § What stays Discord-only): opening the ticket needs a discord.js Guild;
-  // the OutboundClient createChannel cutover is PR 7.
+  // Staff-for stays legacy on the real interaction (roadmap § What stays
+  // Discord-only): opening a ticket FOR a member needs discord.js option
+  // resolution (getUser) and a Discord transcript link in the DM. The public
+  // `create` arm runs on Fluxer via the OutboundClient (PR 9).
   const raw = commandCtx.rawInteraction;
   if (!raw) {
     await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
