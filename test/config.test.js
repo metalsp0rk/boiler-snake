@@ -9,9 +9,13 @@
  * - `requireEnv` reads `process.env[name]` at CALL time (not snapshot at
  *   require time) and uses a `!v` check: unset AND empty string both throw;
  *   any non-empty string (including "0" and "   ") passes, UNTRIMMED.
- * - `assertRuntimeEnv()` enforces ONLY DISCORD_TOKEN. The doc header lists
- *   CLIENT_ID as "required", but the shipped code does not check it here —
- *   CLIENT_ID is consumed directly by src/commands/register.js.
+ * - `assertRuntimeEnv()` enforces the platform-credential gate (Fluxer PR 6,
+ *   spec § Boot): no `DISCORD_TOKEN` and zero valid Fluxer instances →
+ *   `Missing a platform credential: set DISCORD_TOKEN or FLUXER_INSTANCES`;
+ *   a malformed Fluxer block throws even when `DISCORD_TOKEN` is set.
+ *   The doc header lists CLIENT_ID as "required", but the shipped code does
+ *   not check it here — CLIENT_ID is consumed directly by
+ *   src/commands/register.js.
  * - Optional vars (DEV_GUILD_ID, DATA_DIR, DB_PATH, CLIENT_SECRET, ...) are
  *   only DOCUMENTED in this module; defaults and the DB_PATH-wins-over-
  *   DATA_DIR precedence (AGENTS.md) live in src/db/connection.js (covered by
@@ -77,9 +81,15 @@ describe("src/config.js module contract", () => {
   // Positive: requiring the module with NOTHING set must succeed — boot
   // gating happens at the assertRuntimeEnv() CALL (src/index.js), not at
   // import time, and the module performs no I/O (no SQLite, no Discord).
-  it("exports exactly { requireEnv, assertRuntimeEnv } and loads with zero env", () => {
+  it("exports the env-gate + Fluxer parsing surface and loads with zero env", () => {
     const config = loadFreshConfig();
-    assert.deepEqual(Object.keys(config).sort(), ["assertRuntimeEnv", "requireEnv"]);
+    assert.deepEqual(Object.keys(config).sort(), [
+      "assertRuntimeEnv",
+      "getFluxerCommandPrefix",
+      "normalizeOriginForKey",
+      "parseFluxerInstances",
+      "requireEnv",
+    ]);
     // Optional-var defaults/precedence are NOT this module's job: it exposes
     // no config object, so nothing here parses DATA_DIR/DB_PATH.
     assert.equal(typeof config.requireEnv, "function");
@@ -90,7 +100,7 @@ describe("src/config.js module contract", () => {
   // seen (module never snapshots process.env at require time).
   it("reads process.env at call time, not at require time", () => {
     const config = loadFreshConfig(); // no env set yet
-    assert.throws(() => config.assertRuntimeEnv(), /Missing required environment variable: DISCORD_TOKEN/);
+    assert.throws(() => config.assertRuntimeEnv(), /Missing a platform credential: set DISCORD_TOKEN or FLUXER_INSTANCES/);
     process.env.DISCORD_TOKEN = FAKE.DISCORD_TOKEN;
     assert.doesNotThrow(() => config.assertRuntimeEnv()); // same instance now passes
   });
@@ -101,7 +111,7 @@ describe("src/config.js module contract", () => {
     const config = loadFreshConfig();
     assert.throws(
       () => config.assertRuntimeEnv(),
-      { message: "Missing required environment variable: DISCORD_TOKEN" }
+      { message: "Missing a platform credential: set DISCORD_TOKEN or FLUXER_INSTANCES" }
     );
   });
 });
@@ -240,7 +250,7 @@ describe("assertRuntimeEnv — boot gate", () => {
   it("throws with the token name when DISCORD_TOKEN is missing", () => {
     assert.throws(
       () => config.assertRuntimeEnv(),
-      { message: "Missing required environment variable: DISCORD_TOKEN" }
+      { message: "Missing a platform credential: set DISCORD_TOKEN or FLUXER_INSTANCES" }
     );
   });
 
@@ -249,7 +259,7 @@ describe("assertRuntimeEnv — boot gate", () => {
     process.env.DISCORD_TOKEN = "";
     assert.throws(
       () => config.assertRuntimeEnv(),
-      { message: "Missing required environment variable: DISCORD_TOKEN" }
+      { message: "Missing a platform credential: set DISCORD_TOKEN or FLUXER_INSTANCES" }
     );
   });
 
