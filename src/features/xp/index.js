@@ -327,7 +327,15 @@ async function handleLeaderboard(commandCtx, featureCtx) {
     page,
   );
   if (payload.empty) {
-    await commandCtx.reply({ content: payload.content, sensitive: true });
+    // The empty-leaderboard reply is DM-first (sensitive) on Discord, where it
+    // renders as an ephemeral the caller sees in-channel. On Fluxer there are
+    // no ephemerals: DM-first made an empty leaderboard look like a dead bot
+    // (operator report, 2026-10-01), and the data-carrying reply is already
+    // public on every platform — so Fluxer answers in-channel.
+    await commandCtx.reply({
+      content: payload.content,
+      sensitive: commandCtx.platform !== "fluxer",
+    });
     return;
   }
   // files entries are AttachmentBuilder instances (the reply builder passes
