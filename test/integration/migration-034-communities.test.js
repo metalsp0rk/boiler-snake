@@ -496,3 +496,73 @@ describe("migration 034_communities (spec § Data Model Changes cutover)", () =>
     }
   });
 });
+
+describe("migration 034_communities: quoted legacy DDL (2026-10-01 prod regression)", () => {
+  let fixture;
+  let db;
+  let migration;
+
+  before(() => {
+    fixture = createPre034Fixture();
+    db = fixture.db;
+    migration = require("../../src/db/migrations/034_communities");
+  });
+
+  after(() => {
+    fixture?.cleanup();
+  });
+
+  it("rebuilds youtube_channels when migration 003 left a quoted table name", () => {
+    // Legacy installs (pre-001 composite PK) had youtube_channels keyed on
+    // `id` alone; migration 003 rebuilt it with a composite PK, and SQLite's
+    // ALTER TABLE ... RENAME rewrote the stored DDL with a QUOTED identifier:
+    // `CREATE TABLE IF NOT EXISTS "youtube_channels"`. 034's rename transform
+    // must match that spelling — prod boot-crashed when it only accepted the
+    // bare name (the rebuilt CREATE hit the ORIGINAL name: "already exists").
+    const LEGACY_GUILD = "1699000000000000999";
+    db.exec("DROP TABLE youtube_channels");
+    db.exec(`
+      CREATE TABLE youtube_channels (
+        guild_id TEXT NOT NULL,
+        id TEXT PRIMARY KEY,
+        channel_name TEXT NOT NULL,
+        channel_url TEXT NOT NULL,
+        thumbnail_url TEXT,
+        last_video_id TEXT,
+        last_checked INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+    db.prepare(
+      "INSERT INTO youtube_channels (guild_id, id, channel_name, channel_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(LEGACY_GUILD, "UClegacy", "Legacy Name", "https://yt.example/legacy", 1700000000000, 1700000000000);
+
+    // Replay 003 over the legacy shape to produce the exact prod DDL artifact.
+    require("../../src/db/migrations/003_youtube_composite_pk").up(db, fixture.helpers);
+    const ddl = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='youtube_channels'")
+      .get().sql;
+    assert.match(
+      ddl,
+      /CREATE TABLE (?:IF NOT EXISTS )?"youtube_channels"/i,
+      "003's RENAME must yield the quoted DDL shape the prod incident hit",
+    );
+
+    const result = migration.up(db, fixture.helpers);
+    assert.equal(result.migrated, true, "034 must run the cutover, not throw");
+
+    const cols = new Set(db.prepare("PRAGMA table_info(youtube_channels)").all().map((c) => c.name));
+    assert.ok(cols.has("community_id"), "youtube_channels rebuilt with community_id");
+    assert.ok(!cols.has("guild_id"), "guild_id column must be gone after the cutover");
+
+    const row = db.prepare("SELECT community_id, channel_name FROM youtube_channels WHERE id = ?").get("UClegacy");
+    assert.ok(row, "legacy row survives the rebuild");
+    assert.equal(row.channel_name, "Legacy Name");
+    const cid = db
+      .prepare("SELECT id FROM communities WHERE platform='discord' AND instance_key='discord' AND external_guild_id = ?")
+      .get(LEGACY_GUILD);
+    assert.ok(cid, "legacy guild backfilled into communities");
+    assert.equal(row.community_id, cid.id, "row is re-keyed to its community id");
+  });
+});

@@ -142,9 +142,20 @@ const quoteIdent = (name) => `"${name}"`;
  * @returns {string} DDL for the rebuilt table
  */
 function transformCreateTableSql(sql, table, newName) {
+  // Legacy DBs store some CREATE statements with a QUOTED table name: SQLite's
+  // ALTER TABLE ... RENAME rewrites sqlite_master.sql with the target name as
+  // a quoted identifier (migration 003's youtube_channels rebuild produces
+  // `CREATE TABLE IF NOT EXISTS "youtube_channels"`, which crashed prod on
+  // 2026-10-01 because the bare-name regex missed it and the CREATE then hit
+  // the ORIGINAL name — "table already exists"). Match every accepted spelling.
+  const ident = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const createRe = new RegExp(
+    `CREATE TABLE (?:IF NOT EXISTS )?(?:${ident}\\b|"${ident}"|'${ident}'|\`${ident}\`|\\[${ident}\\])`,
+    "i",
+  );
   let out = sql
     .replace(
-      new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${table}\\b`, "i"),
+      createRe,
       (match) =>
         `${match.replace(table, newName).replace(/ IF NOT EXISTS/i, "")}`,
     )
