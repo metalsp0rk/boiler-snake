@@ -23,6 +23,7 @@
 const pipelines = require("../../bot/pipelines");
 const { normalizeFluxerMessage, normalizeFluxerReaction } = require("./normalize");
 const { createFluxerOutbound } = require("./outbound");
+const { discoverInstance } = require("./discovery");
 const { getCommunityById } = require("../community");
 const { normalizeOriginForKey } = require("../../config");
 
@@ -246,6 +247,28 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     }
   }
 
+  // Spec § Embeds and attachments (PR 8): the presigned attachment flow is
+  // selected by the instance's OWN discovery document ("a presigned upload
+  // when discovery features.presigned_attachment_uploads is true"). The SDK's
+  // parseInstanceDiscovery drops unknown keys (features included), so we read
+  // the document through our own discovery — cached per origin for the process
+  // lifetime, so this is a cache hit after the boot validation call. A failure
+  // here is logged and degrades to multipart file sends (flag off).
+  let features = {};
+  try {
+    const discovered = await discoverInstance(origin);
+    const rawFeatures = discovered?.document?.features;
+    if (rawFeatures && typeof rawFeatures === "object") {
+      features = {
+        presignedAttachmentUploads: rawFeatures.presigned_attachment_uploads === true,
+      };
+    }
+  } catch (err) {
+    console.warn(
+      `[fluxer] ${instanceKey} discovery features lookup failed (file sends default to multipart): ${err?.message || err}`,
+    );
+  }
+
   const handle = {
     instanceKey,
     label: (typeof entry?.label === "string" && entry.label.trim()) || origin,
@@ -255,6 +278,7 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     fetchGuild,
     guildFetch,
     destroy,
+    features,
     outbound: null,
   };
   // Contract 5: the OutboundClient is built over this handle. Outbound's
