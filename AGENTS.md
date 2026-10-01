@@ -21,6 +21,7 @@ docker compose run --rm bot node src/commands/register.js
 - **Discord Intents**: Enable "Message Content Intent" in Developer Portal for reliable message tracking.
 - **Releases**: Conventional Commits + release-please on `main` → GitHub Release + GHCR image (`ghcr.io/metalsp0rk/boiler-snake`).
 - **PR workflow**: Always create a feature branch from `main`, push it, and open a PR with `gh pr create`. **Never push directly to `main`**. Merge with **rebase merge only** (`gh pr merge --rebase --delete-branch`). Do **not** use merge commits (`--merge`) or squash unless the user explicitly asks. Prefer linear history on `main`.
+- **Subagents**: Use subagents **frequently** for large jobs to keep the main session's context manageable (exploration, research, review, parallel work units). The limit is on **concurrency**: never run more than **2 subagents simultaneously**. For larger workloads, process in sequential batches of ≤2 — launch the next batch only when the current one finishes.
 
 ## Key Commands
 
