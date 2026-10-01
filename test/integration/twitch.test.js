@@ -7,6 +7,20 @@ const {
 } = require("../helpers/assert");
 const { IDS } = require("../helpers/fixtures");
 
+/**
+ * PR 7 fake supervisor: ticker entry points take a supervisor and resolve the
+ * OutboundClient per community via clientForCommunity (roadmap/fluxer.md §
+ * Scheduler jobs). Discord-only in tests — fluxer rows resolve to null.
+ */
+function fakeSupervisor(client) {
+  const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+  return {
+    discord: client,
+    fluxer: new Map(),
+    clientForCommunity: () => getDiscordOutbound(client),
+  };
+}
+
 describe("integration: twitch", () => {
   /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
   let env;
@@ -187,7 +201,7 @@ describe("integration: twitch", () => {
       thumbnail_url: "https://static-cdn.jtvnw.net/broadcast/333000.jpg",
     };
 
-    await processSubscription(env.client, env.communityId, sub, stream);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
 
     assert.ok(
       env.channels.notify.sent.length >= 1,
@@ -196,7 +210,8 @@ describe("integration: twitch", () => {
     const sent = env.channels.notify.sent[env.channels.notify.sent.length - 1];
     assert.match(sent.content, /LiveStreamer/);
     assert.ok(sent.embeds.length === 1);
-    assert.equal(sent.embeds[0].data.title, "Rating games");
+    // PR 7: tickers post plain NormalizedEmbed JSON (no EmbedBuilder wrapper).
+    assert.equal(sent.embeds[0].title, "Rating games");
 
     const after = env.db.getTwitchChannel(env.communityId, "livestreamer");
     assert.equal(after.is_live, 1);
@@ -213,14 +228,14 @@ describe("integration: twitch", () => {
       started_at: new Date().toISOString(),
     };
 
-    await processSubscription(env.client, env.communityId, sub, stream);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
     assert.equal(env.channels.notify.sent.length, 0);
   });
 
   it("processSubscription notifies on new stream id after offline", async () => {
     // go offline
     let sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
-    await processSubscription(env.client, env.communityId, sub, undefined);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, undefined);
     sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
     assert.equal(sub.is_live, 0);
 
@@ -232,7 +247,7 @@ describe("integration: twitch", () => {
       title: "Second stream",
       started_at: new Date().toISOString(),
     };
-    await processSubscription(env.client, env.communityId, sub, newStream);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, newStream);
     assert.ok(env.channels.notify.sent.length >= 1);
     const after = env.db.getTwitchChannel(env.communityId, "livestreamer");
     assert.equal(after.last_stream_id, "stream-2");
@@ -244,7 +259,7 @@ describe("integration: twitch", () => {
     });
     let sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
     // offline first
-    await processSubscription(env.client, env.communityId, sub, undefined);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, undefined);
     sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
 
     env.channels.notify.sent.length = 0;
@@ -254,7 +269,7 @@ describe("integration: twitch", () => {
       title: "Role ping stream",
       started_at: new Date().toISOString(),
     };
-    await processSubscription(env.client, env.communityId, sub, stream);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
 
     assert.ok(env.channels.notify.sent.length >= 1);
     const sent = env.channels.notify.sent[env.channels.notify.sent.length - 1];
@@ -267,7 +282,7 @@ describe("integration: twitch", () => {
       twitch_notification_channel_id: null,
     });
     let sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
-    await processSubscription(env.client, env.communityId, sub, undefined);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, undefined);
     sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
 
     env.channels.notify.sent.length = 0;
@@ -277,7 +292,7 @@ describe("integration: twitch", () => {
       title: "No channel",
       started_at: new Date().toISOString(),
     };
-    await processSubscription(env.client, env.communityId, sub, stream);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
     assert.equal(env.channels.notify.sent.length, 0);
   });
 
@@ -287,7 +302,7 @@ describe("integration: twitch", () => {
     delete process.env.TWITCH_CLIENT_ID;
     delete process.env.TWITCH_CLIENT_SECRET;
     try {
-      await runTwitchTick(env.client);
+      await runTwitchTick(fakeSupervisor(env.client));
       assert.ok(true);
     } finally {
       if (prevId != null) process.env.TWITCH_CLIENT_ID = prevId;
@@ -309,7 +324,7 @@ describe("integration: twitch", () => {
       // ensure it is eligible (never checked)
       env.channels.notify.sent.length = 0;
 
-      await runTwitchTick(env.client, {
+      await runTwitchTick(fakeSupervisor(env.client), {
         resolveUser: async () => null,
         fetchStreams: async (ids) => {
           assert.ok(ids.includes("555000"), `expected 555000 in batch, got ${ids}`);
@@ -357,7 +372,7 @@ describe("integration: twitch", () => {
       });
       env.channels.notify.sent.length = 0;
 
-      await runTwitchTick(env.client, {
+      await runTwitchTick(fakeSupervisor(env.client), {
         resolveUser: async () => null,
         fetchStreams: async () => null, // simulate Helix failure
       });
@@ -396,7 +411,7 @@ describe("integration: twitch", () => {
       });
 
       let fetched = [];
-      await runTwitchTick(env.client, {
+      await runTwitchTick(fakeSupervisor(env.client), {
         resolveUser: async () => null,
         fetchStreams: async (ids) => {
           fetched = ids;
@@ -424,7 +439,7 @@ describe("integration: twitch", () => {
       twitch_notification_channel_id: IDS.channelNotify,
     });
     let sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
-    await processSubscription(env.client, env.communityId, sub, undefined); // offline first
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, undefined); // offline first
     sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
     env.channels.notify.sent.length = 0;
 
@@ -436,11 +451,11 @@ describe("integration: twitch", () => {
       thumbnail_url:
         "https://static-cdn.jtvnw.net/previews-ttv/live_user_livestreamer-{width}x{height}.jpg",
     };
-    await processSubscription(env.client, env.communityId, sub, stream);
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
 
     assert.ok(env.channels.notify.sent.length >= 1);
     const sent = env.channels.notify.sent[env.channels.notify.sent.length - 1];
-    const thumb = sent.embeds[0].data.thumbnail?.url;
+    const thumb = sent.embeds[0].thumbnail?.url;
     assert.ok(thumb, "embed should carry a thumbnail");
     assert.ok(
       !thumb.includes("{") && !thumb.includes("}"),

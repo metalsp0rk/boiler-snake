@@ -1231,7 +1231,7 @@ describe("E. boot wiring + getClient threading — server options, feature boot,
     try {
       delete require.cache[featurePath];
       const webFeature = require(featurePath);
-      webFeature.start(bootClient);
+      webFeature.start({ discord: bootClient });
     } finally {
       if (prevServer) require.cache[serverPath] = prevServer;
       else delete require.cache[serverPath];

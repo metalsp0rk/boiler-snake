@@ -30,7 +30,7 @@ describe("integration: tickets", () => {
 
     // Wire ticket ChannelDelete handler
     const ticketsFeature = require("../../src/features/tickets");
-    ticketsFeature.registerEvents(env.client, env.ctx);
+    ticketsFeature.registerEvents(env.supervisor, env.ctx);
     clientWithEvents = env.client;
 
     // Requester DMs (close + archive transcript link) resolve users through
