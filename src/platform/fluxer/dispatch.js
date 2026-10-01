@@ -7,6 +7,10 @@
  *
  *  1. `!help` (parsed.help)  → render help, send in channel (public).
  *  2. parsed.usageError        → reason line + help block for the matched scope.
+ *  2.5 Permission mask         → resolveFluxerPermissions (PR 8, spec §
+ *     Permissions): the caller's channel bigint mask, computed BEFORE the
+ *     command-channel gate. Resolution failure aborts with the specific
+ *     fail-closed copy and the handler is NOT called.
  *  3. Option resolution        → user/role/channel refs resolve through the
  *     structured mentions arrays (K10); bare ids resolve through fetchUser /
  *     fetchChannel ONCE; unresolvable → the specific "Could not resolve …"
@@ -24,6 +28,11 @@
  */
 
 const { buildFluxerCommandContext } = require("./context");
+const {
+  resolveFluxerPermissions,
+  hasBit,
+  MANAGE_GUILD,
+} = require("./permissions");
 const {
   OPTION_TYPE,
   K10_USER_COPY,
@@ -270,6 +279,44 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
       return;
     }
 
+    // Step 2.5 (PR 8, spec § Permissions): compute the caller's channel
+    // permission mask BEFORE the command-channel gate. The gateway member
+    // payload IS the instance cache (spec "Cache misses, fail closed" rule 1:
+    // fetchMember is the FALLBACK for a member the message did not carry).
+    // A resolve failure is the specific fail-closed copy in the channel and
+    // the handler is never reached — never a silent zero-mask fallback.
+    let permissions = null;
+    let authorOverride = null;
+    if (Number.isInteger(message.communityId)) {
+      const resolvedPerms = await resolveFluxerPermissions({
+        outbound,
+        communityId: message.communityId,
+        userId: message.authorId,
+        channelId: message.channelId,
+        instanceKey: message.instanceKey ?? outbound.instanceKey ?? "fluxer",
+        member: Array.isArray(message.memberRoleIds)
+          ? {
+              roleIds: message.memberRoleIds,
+              bot: Boolean(message.authorBot),
+              username: message.authorRaw?.username ?? null,
+            }
+          : null,
+      });
+      if (!resolvedPerms.ok) {
+        await outbound.sendChannel(message.channelId, {
+          content: resolvedPerms.error,
+          allowedMentions: { parse: [] },
+        });
+        return;
+      }
+      permissions = {
+        channelPermissions: resolvedPerms.channelPermissions,
+        memberRoleIds: resolvedPerms.memberRoleIds,
+        user: resolvedPerms.author,
+      };
+      authorOverride = resolvedPerms.author ?? null;
+    }
+
     // Step 3: resolve option references against the payload (K10) with the
     // one-shot fetch fallbacks (spec § Prefix grammar step 7).
     const { resolved, reply } = await resolveOptions(parsed, message, outbound);
@@ -282,13 +329,18 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
     }
 
     // Step 4: command-channel allow-list (spec § Command-channel allow-list).
-    // PR 6 ships no permission mask (channelPermissions is 0n), so admins are
-    // not exempted on Fluxer until the mask algorithm (PR 8) lands.
+    // PR 8: the computed mask is real now, so admins (MANAGE_GUILD bit, owner
+    // and administrator included — both arrive as ALL) keep the Discord-parity
+    // exemption: setcommandchannel runs from any channel for them.
+    const isAdmin = hasBit(
+      permissions ? permissions.channelPermissions : 0n,
+      MANAGE_GUILD,
+    );
     const allowed = commandsAllowedFromIds(
       parsed.commandName,
       message.communityId,
       message.channelId,
-      false,
+      isAdmin,
     );
     if (!allowed) {
       await outbound.sendChannel(message.channelId, {
@@ -308,8 +360,15 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
       return;
     }
 
-    // Step 6: build the context and run the handler.
-    const commandCtx = buildFluxerCommandContext(parsed, message, { outbound, resolved });
+    // Step 6: build the context and run the handler. The mask bundle from
+    // step 2.5 rides along (contract 3); when permissions is null (message
+    // without a resolved communityId) the builder keeps its PR 6 defaults.
+    const commandCtx = buildFluxerCommandContext(parsed, message, {
+      outbound,
+      resolved,
+      permissions,
+      authorOverride,
+    });
     const handler = registry.getHandler(parsed.commandName);
     const featureCtx = {
       client: supervisor?.discord ?? null,
