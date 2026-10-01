@@ -428,6 +428,67 @@ async function handleHoneypotWarningReaction(reaction) {
 }
 
 /**
+ * Fluxer twin of handleHoneypotWarningReaction for NormalizedReaction events
+ * (PR 9). The warning-notice store is the honeypot_channels warning_message_id
+ * column — isHoneypotWarningMessage(communityId, messageId) resolves from the
+ * normalized ids alone, so the lookup works off the gateway payload with NO
+ * Discord message state. The strip uses removeEmojiReaction (full wipe of the
+ * emoji — the OutboundClient twin of reaction.remove()). Runs for any user,
+ * including bots, so the notice stays reaction-free (Discord parity).
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {object} normalizedReaction normalizeFluxerReaction output
+ * @returns {Promise<boolean>} true when the reaction sat on a warning notice
+ */
+async function handleHoneypotFluxerWarningReaction(outbound, normalizedReaction) {
+  if (!normalizedReaction) return false;
+  const messageId = normalizedReaction.messageId;
+  const channelId = normalizedReaction.channelId;
+  const emojiKey = normalizedReaction.emojiKey;
+  if (!messageId || !channelId || !emojiKey) return false;
+
+  // Defensive resolve (the pipeline resolves first; direct callers may not).
+  let communityId = normalizedReaction.communityId;
+  if (!Number.isSafeInteger(communityId)) {
+    if (normalizedReaction.externalGuildId == null) return false;
+    try {
+      communityId = ensureCommunity({
+        platform: "fluxer",
+        instanceKey: normalizedReaction.instanceKey ?? "fluxer",
+        externalGuildId: String(normalizedReaction.externalGuildId),
+      });
+      normalizedReaction.communityId = communityId;
+    } catch (e) {
+      console.warn(
+        `[fluxer] honeypot warning reaction community resolve failed (message ${messageId}):`,
+        e?.message || e,
+      );
+      return false;
+    }
+  }
+
+  if (!isHoneypotWarningMessage(communityId, messageId)) return false;
+
+  // Full wipe; the OutboundClient resolves on HTTP outcomes (never throws for
+  // platform failures), so a non-ok result is a logged warning, not a throw.
+  try {
+    const res = await outbound.removeEmojiReaction(channelId, messageId, emojiKey);
+    if (res && res.ok === false) {
+      console.warn(
+        `[fluxer] honeypot Could not strip reaction on warning notice: ${res.error} ` +
+          `(message ${messageId}, emoji ${emojiKey})`,
+      );
+    }
+  } catch (e) {
+    console.warn(
+      "[fluxer] honeypot Could not strip reaction on warning notice:",
+      e?.message || e,
+    );
+  }
+  return true;
+}
+
+/**
  * Sweep all honeypot warning notices and clear any leftover reactions
  * (e.g. added while the bot was offline, or missed by the live handler).
  */
@@ -535,11 +596,13 @@ async function handleHoneypotMessage(message) {
  * honeypot hit"). Resolves the configured channel by the message's INTEGER
  * community id (the pipeline resolves it before calling this).
  *
- * PR 6 limits: OutboundClient has NO message-delete method and the ban path is
- * elevated (community flag 0 → banMember refuses with code elevated_disabled),
- * so a hit CONSUMES the message (no XP, no gork, no dispatch) and logs both
- * suppressions instead of inventing methods. Staff-exempt authors keep their
- * message (no delete surface) and are never banned.
+ * PR 9: the ban leg calls `outbound.banMember` UNCONDITIONALLY — the K8
+ * self-gate answers flag 0 with code "elevated_disabled" and a specific
+ * reason (no network; logged), flag 1 performs the real ban. A hit CONSUMES
+ * the message (no XP, no gork, no dispatch). Message deletion stays out of
+ * scope (no OutboundClient.deleteMessage — the suppression line remains).
+ * Staff-exempt authors keep their message (no delete surface) and are never
+ * banned.
  *
  * @param {object} outbound OutboundClient (Fluxer adapter)
  * @param {object} message NormalizedMessage (communityId resolved)
@@ -569,9 +632,75 @@ async function handleHoneypotFluxerMessage(outbound, message) {
     return true;
   }
 
-  console.log(
-    `[fluxer] honeypot ban suppressed: elevated_permissions=0 (community ${communityId}, user ${message.authorId})`,
-  );
+  // Ban through the outbound (PR 9). K8 self-gates: flag 0 → elevated_disabled
+  // with the specific reason and NO network; flag 1 issues the real PUT. The
+  // in-flight dedupe mirrors executeHoneypotBan (rapid message storms ban once).
+  const banKey = key(communityId, String(message.authorId));
+  if (honeypotBanning.has(banKey)) {
+    console.log(
+      `[fluxer] honeypot ban already in flight for user ${message.authorId} in community ${communityId} — skipping duplicate`,
+    );
+    console.log(
+      `[fluxer] honeypot message delete suppressed: no OutboundClient.deleteMessage before PR 9 (message ${message.id})`,
+    );
+    return true;
+  }
+  honeypotBanning.add(banKey);
+
+  const shortReason = "Posted in a honeypot channel";
+  let banned = false;
+  let banError = null;
+  try {
+    let res;
+    try {
+      res = await outbound.banMember(
+        communityId,
+        String(message.authorId),
+        `Honeypot: ${shortReason}`,
+      );
+    } catch (e) {
+      res = { ok: false, error: String(e?.message || e) };
+    }
+
+    if (res.ok) {
+      banned = true;
+      console.log(
+        `[fluxer] honeypot Banned user ${message.authorId} in community ${communityId}: ${shortReason}`,
+      );
+    } else if (res.code === "elevated_disabled") {
+      banError = res.error;
+      // The gate's own text names elevated_permissions — the specific cause
+      // lands in the log (AGENTS.md rule 3), never a generic string. The
+      // message stays consumed as a hit.
+      console.log(
+        `[fluxer] honeypot ban suppressed: ${res.error} (user ${message.authorId})`,
+      );
+    } else {
+      banError = res.error;
+      console.error(
+        `[fluxer] honeypot ban failed for user ${message.authorId} in community ${communityId}: ${res.error}`,
+      );
+    }
+
+    recordSystemAudit({
+      communityId,
+      action: "honeypot.enforce",
+      targetType: "user",
+      targetId: String(message.authorId),
+      details: {
+        trigger: "channel",
+        channel_id: message.channelId ?? null,
+        role_ids: null,
+        banned: banned ? 1 : 0,
+        error: banError,
+      },
+    });
+  } finally {
+    setTimeout(() => honeypotBanning.delete(banKey), 10_000);
+  }
+
+  // Message deletion stays out of scope (no deleteMethod in PR 9) — the
+  // PR 6 suppression line remains.
   console.log(
     `[fluxer] honeypot message delete suppressed: no OutboundClient.deleteMessage before PR 9 (message ${message.id})`,
   );
@@ -1068,6 +1197,7 @@ module.exports = {
   handleHoneypotMessage,
   handleHoneypotFluxerMessage,
   handleHoneypotWarningReaction,
+  handleHoneypotFluxerWarningReaction,
   handleHoneypotBanRole,
   postHoneypotWarning,
   executeHoneypotBan,

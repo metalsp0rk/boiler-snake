@@ -896,6 +896,585 @@ async function handleReactionRoleRemove(reaction, user) {
   return { handled: true };
 }
 
+// ---------------------------------------------------------------------------
+// Fluxer (PR 9): OutboundClient-shaped entries (roadmap/fluxer.md § Outbound
+// client). These mirror the Discord handlers above against a NormalizedReaction
+// (normalizeFluxerReaction output) and the Fluxer wire. The Discord functions
+// are untouched. Services return {ok:false, error}; they never reply to the
+// platform and never invent REST surfaces (reactions: addReaction /
+// removeUserReaction / removeEmojiReaction — spec 406; the elevated role legs
+// go through addRole/removeRole and self-gate on K8 `elevated_permissions=0`).
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve (create-on-sight) the integer community id for a Fluxer
+ * NormalizedReaction. The pipeline resolves it first; direct callers may not.
+ * @param {object} normalizedReaction
+ * @returns {number|null}
+ */
+function resolveFluxerReactionCommunity(normalizedReaction) {
+  if (Number.isSafeInteger(normalizedReaction?.communityId)) {
+    return normalizedReaction.communityId;
+  }
+  if (normalizedReaction?.externalGuildId == null) return null;
+  try {
+    const id = ensureCommunity({
+      platform: "fluxer",
+      instanceKey: normalizedReaction.instanceKey ?? "fluxer",
+      externalGuildId: String(normalizedReaction.externalGuildId),
+    });
+    normalizedReaction.communityId = id;
+    return id;
+  } catch (err) {
+    console.error(
+      `[reactionRoles] Fluxer community resolve failed (message ${
+        normalizedReaction?.messageId ?? "?"
+      }): ${err?.message || err}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Strip one user's reaction from a panel (Fluxer twin of stripExtraneousReaction
+ * → removeUserReaction per the PR 9 bundle: user-scoped, reactions are never
+ * elevated). Mirrors the Discord warning shape on failure.
+ * @returns {Promise<boolean>} true when the DELETE was accepted
+ */
+async function stripExtraneousReactionFluxer(
+  outbound,
+  { channelId, messageId, emojiKey, userId },
+) {
+  if (!outbound || !messageId || !emojiKey) return false;
+  try {
+    const res = await outbound.removeUserReaction(
+      channelId,
+      messageId,
+      emojiKey,
+      userId,
+    );
+    if (!res.ok) {
+      console.warn(
+        `[reactionRoles] Could not remove reaction ${emojiKey} for ${userId} on ${messageId}:`,
+        res.error,
+        "(bot needs Manage Messages on the panel channel)",
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn(
+      `[reactionRoles] Could not remove reaction ${emojiKey} for ${userId} on ${messageId}:`,
+      err?.message || err,
+      "(bot needs Manage Messages on the panel channel)",
+    );
+    return false;
+  }
+}
+
+/**
+ * Role label for Fluxer DM copy (Fluxer twin of roleNameForDm — role mentions
+ * do not resolve in DMs, so the plain name goes into the text).
+ * @returns {Promise<string>}
+ */
+async function roleNameForDmFluxer(outbound, communityId, roleId) {
+  if (!roleId) return "that role";
+  try {
+    const roles = await outbound.fetchRoles(communityId);
+    const role = roles.find((r) => String(r.id) === String(roleId));
+    if (role?.name) return `**${role.name}**`;
+  } catch {
+    // fall through to the id form (fetchRoles already logged the cause)
+  }
+  return `role \`${roleId}\``;
+}
+
+/** Best-effort Fluxer DM (mirrors tryDmUser: DMs closed/blocked are ignored). */
+async function tryDmFluxer(outbound, userId, content) {
+  try {
+    await outbound.sendDm(userId, { content });
+  } catch {
+    // DMs closed / blocked — ignore (same policy as the Discord twin)
+  }
+}
+
+/**
+ * Plain JSON embed for a Fluxer send site (no EmbedBuilder on the wire —
+ * strip the class at the send site with toJSON(), PR 9 bundle).
+ * @param {object} embed EmbedBuilder instance or plain NormalizedEmbed
+ * @returns {object}
+ */
+function toPlainEmbed(embed) {
+  return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
+}
+
+/**
+ * Deploy a panel to a Fluxer channel: post the embed through sendChannel,
+ * persist panel + options, then seed each option reaction with addReaction
+ * (spec 406: panels use addReaction instead of message.react — NOT elevated,
+ * so this ships at flag 0). Partial success is reported, not swallowed:
+ * `failed` collects one entry per option whose reaction PUT failed.
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {number} communityId INTEGER communities.id
+ * @param {string} channelId
+ * @param {{ embedPayload: object, options: Array<{ emoji_key: string, emoji_display?: string, role_id: string, min_level?: number, removable?: number|boolean }> }} args
+ * @returns {Promise<{ ok: boolean, messageId?: string, failed?: Array<{ emojiKey: string|null, error: string }>, error?: string }>}
+ */
+async function deployPanelFluxer(
+  outbound,
+  communityId,
+  channelId,
+  { embedPayload, options } = {},
+) {
+  if (!outbound) {
+    return { ok: false, error: "deployPanelFluxer: outbound OutboundClient required." };
+  }
+  if (channelId == null || String(channelId) === "") {
+    return { ok: false, error: "deployPanelFluxer: a channel id is required." };
+  }
+  if (!embedPayload) {
+    return {
+      ok: false,
+      error: "deployPanelFluxer: an embedPayload is required (build it with buildPanelEmbed(...).toJSON()).",
+    };
+  }
+
+  const ch = String(channelId);
+  const optList = Array.isArray(options) ? options : [];
+
+  let sent;
+  try {
+    // Same no-ping policy as the Discord deploy (role names render as mentions
+    // in the embed text — never ping).
+    sent = await outbound.sendChannel(ch, {
+      embeds: [toPlainEmbed(embedPayload)],
+      allowedMentions: NO_PING_MENTIONS,
+    });
+  } catch (err) {
+    sent = { ok: false, error: String(err?.message || err) };
+  }
+  if (!sent.ok) {
+    return { ok: false, error: `Could not post panel: ${sent.error}` };
+  }
+  const messageId = sent.id;
+
+  // Persist panel + options (repos are community-keyed; mirrors the Discord
+  // deployPanelToChannel write set).
+  try {
+    createReactionRolePanel(
+      communityId,
+      ch,
+      messageId,
+      embedPayload.title || "Reaction Roles",
+      embedPayload.description ?? null,
+    );
+    for (const opt of optList) {
+      upsertReactionRoleOption(
+        communityId,
+        messageId,
+        opt.emoji_key,
+        opt.emoji_display ?? opt.emoji_key,
+        opt.role_id,
+        opt.min_level ?? 0,
+        Number(opt.removable ?? 1) !== 0,
+      );
+    }
+  } catch (err) {
+    // No deleteMessage on OutboundClient (PR 9 scope): name the orphan.
+    console.error(
+      `[reactionRoles] Posted panel message ${messageId} in community ${communityId} ` +
+        `but failed to save config: ${err?.message || err} ` +
+        `(message left in place — OutboundClient has no deleteMessage)`,
+    );
+    return {
+      ok: false,
+      error: `Posted message but failed to save config: ${err?.message || err}`,
+    };
+  }
+
+  // Seed the option reactions. Reactions are not elevated (spec 406), so this
+  // runs at flag 0 too. Per-option failures are collected (warnings pattern),
+  // never a silent drop.
+  const failed = [];
+  for (const opt of optList) {
+    const key = opt.emoji_key;
+    if (!key) {
+      failed.push({ emojiKey: null, error: "option has no emoji_key" });
+      continue;
+    }
+    let res;
+    try {
+      res = await outbound.addReaction(ch, messageId, key);
+    } catch (err) {
+      res = { ok: false, error: String(err?.message || err) };
+    }
+    if (!res.ok) {
+      console.error(
+        `[reactionRoles] Failed to react with ${opt.emoji_display || key} on ${messageId}:`,
+        res.error,
+      );
+      failed.push({ emojiKey: key, error: res.error });
+    }
+  }
+
+  return { ok: true, messageId, failed };
+}
+
+/**
+ * Fluxer twin of refreshPanelMessage: rewrite the embed text (editMessage) and
+ * re-issue every configured option reaction (addReaction is idempotent, so
+ * "ensure present" needs no reaction-list diff — there is no reaction-list
+ * surface on OutboundClient, spec 375–397).
+ *
+ * Where the Discord flow needs a single-message fetch (panel presence, reaction
+ * enumeration) OutboundClient exposes only fetchMessages (history pages) — no
+ * fetchMessage. Those legs are DEGRADED with named log lines; the presence
+ * probe scans one history page with fetchMessages and never treats a scan miss
+ * as "deleted" (the panel may simply predate the page).
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {number} communityId INTEGER communities.id
+ * @param {object} panel panel row (message_id + channel_id required)
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+async function refreshPanelMessageFluxer(outbound, communityId, panel) {
+  if (!panel) return { ok: false, error: "Panel not found." };
+  const messageId = panel.message_id;
+  const channelId = panel.channel_id;
+  if (!messageId || !channelId) {
+    return { ok: false, error: "Panel row is missing its channel/message id." };
+  }
+
+  const options = listReactionRoleOptions(communityId, messageId);
+
+  // Presence: one history page (the only sanctioned surface). Inconclusive is
+  // logged, never fatal — there is no single-message fetch to confirm.
+  try {
+    const page = await outbound.fetchMessages(String(channelId), { limit: 100 });
+    if (!page.ok) {
+      console.warn(
+        `[reactionRoles] Panel ${messageId} presence check inconclusive: ${page.error}`,
+      );
+    } else if (!page.messages.some((m) => String(m.id) === String(messageId))) {
+      console.log(
+        `[reactionRoles] Panel ${messageId} presence check skipped: not in the first history page ` +
+          `(OutboundClient has no single-message fetch — message may predate the page)`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[reactionRoles] Panel ${messageId} presence check failed:`,
+      err?.message || err,
+    );
+  }
+
+  const warnings = [];
+
+  // Embed text (Discord twin: message.edit → Fluxer: editMessage).
+  const embed = toPlainEmbed(buildPanelEmbed(panel, options));
+  let editRes;
+  try {
+    editRes = await outbound.editMessage(
+      { communityId, channelId: String(channelId), messageId: String(messageId) },
+      { embeds: [embed], allowedMentions: NO_PING_MENTIONS },
+    );
+  } catch (err) {
+    editRes = { ok: false, error: String(err?.message || err) };
+  }
+  if (!editRes.ok) {
+    warnings.push(`Could not edit panel message: ${editRes.error}`);
+  }
+
+  // Ensure configured reactions (idempotent PUT per option).
+  for (const opt of options) {
+    const parsed =
+      parseEmojiInput(opt.emoji_display) || parseEmojiInput(opt.emoji_key);
+    const reactIdent = parsed?.reactIdent || opt.emoji_key;
+    let res;
+    try {
+      res = await outbound.addReaction(String(channelId), String(messageId), reactIdent);
+    } catch (err) {
+      res = { ok: false, error: String(err?.message || err) };
+    }
+    if (!res.ok) {
+      console.error(
+        `[reactionRoles] Failed to react with ${opt.emoji_display} on ${messageId}:`,
+        res.error,
+      );
+      warnings.push(`Failed to react with ${opt.emoji_display}: ${res.error}`);
+    }
+  }
+
+  // Stale-reaction cleanup would need to enumerate current reactions; no
+  // reaction-list surface exists (spec lists per-emoji removes only).
+  console.log(
+    `[reactionRoles] Stale reaction cleanup skipped: OutboundClient has no ` +
+      `reaction-list surface (community ${communityId}, message ${messageId})`,
+  );
+
+  return warnings.length
+    ? { ok: false, error: warnings.join("; ") }
+    : { ok: true };
+}
+
+/**
+ * Handle a Fluxer MESSAGE_REACTION_ADD (NormalizedReaction) for reaction-role
+ * panels. Mirrors handleReactionRoleAdd exactly: panel gate, option resolve,
+ * unconfigured reactions stripped, min-level check against the member's XP,
+ * role grant through outbound.addRole. On the configured-option path the panel's
+ * option reaction is (re-)issued with addReaction first — reactions are NOT
+ * elevated (spec 406) so they ship at flag 0; only the role leg gates.
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {object} normalizedReaction normalizeFluxerReaction output
+ * @returns {Promise<{ handled: boolean, ok?: boolean, code?: string, error?: string }>}
+ *   handled=true means the caller must skip reaction XP.
+ */
+async function handleReactionRoleAddFluxer(outbound, normalizedReaction) {
+  if (!normalizedReaction) return { handled: false };
+  if (normalizedReaction.userBot) return { handled: false };
+
+  const communityId = resolveFluxerReactionCommunity(normalizedReaction);
+  const messageId = normalizedReaction.messageId;
+  if (communityId == null || !messageId) return { handled: false };
+
+  if (!isReactionRolePanel(communityId, messageId)) {
+    return { handled: false };
+  }
+
+  const channelId = normalizedReaction.channelId;
+  const userId = normalizedReaction.userId;
+  const emojiKey = normalizedReaction.emojiKey;
+  if (!emojiKey) {
+    // The normalizer drops payloads without an emoji; a reaction we cannot
+    // name cannot be stripped — name the skip, keep the event consumed.
+    console.warn(
+      `[reactionRoles] Fluxer reaction on panel ${messageId} carries no emojiKey — cannot strip (message ${messageId})`,
+    );
+    return { handled: true };
+  }
+
+  const option = resolveReactionRoleOption(communityId, messageId, emojiKey);
+  if (!option) {
+    // Unconfigured reaction on a managed panel → strip the user's reaction.
+    await stripExtraneousReactionFluxer(outbound, {
+      channelId,
+      messageId,
+      emojiKey,
+      userId,
+    });
+    return { handled: true };
+  }
+
+  // Panel option reaction (not elevated — spec 406). A failure is logged with
+  // the specific cause and never aborts the role leg.
+  let reactRes;
+  try {
+    reactRes = await outbound.addReaction(channelId, messageId, emojiKey);
+  } catch (err) {
+    reactRes = { ok: false, error: String(err?.message || err) };
+  }
+  if (!reactRes.ok) {
+    console.error(
+      `[reactionRoles] Failed to react with ${option.emoji_display || emojiKey} on ${messageId}:`,
+      reactRes.error,
+    );
+  }
+
+  const member = await outbound.fetchMember(communityId, userId);
+  if (!member) {
+    await stripExtraneousReactionFluxer(outbound, {
+      channelId,
+      messageId,
+      emojiKey,
+      userId,
+    });
+    return { handled: true };
+  }
+
+  const settings = getGuildSettings(communityId);
+  const xp = getXp(communityId, userId);
+  const level = levelFromXp(xp, settings.level_xp_factor);
+  const minLevel = Number(option.min_level) || 0;
+
+  if (level < minLevel) {
+    await stripExtraneousReactionFluxer(outbound, {
+      channelId,
+      messageId,
+      emojiKey,
+      userId,
+    });
+    let guildName = `community ${communityId}`;
+    try {
+      const guild = await outbound.fetchGuild(communityId);
+      if (guild?.name) guildName = guild.name;
+    } catch {
+      // keep the community-id label
+    }
+    const roleLabel = await roleNameForDmFluxer(outbound, communityId, option.role_id);
+    await tryDmFluxer(
+      outbound,
+      userId,
+      `You need **Level ${minLevel}** to claim ${roleLabel} in **${guildName}**. ` +
+        `(You are currently Level ${level}.)`,
+    );
+    return { handled: true };
+  }
+
+  const hasRole =
+    Array.isArray(member.roleIds) &&
+    member.roleIds.map(String).includes(String(option.role_id));
+
+  if (!hasRole) {
+    let res;
+    try {
+      res = await outbound.addRole(communityId, userId, option.role_id);
+    } catch (err) {
+      res = { ok: false, error: String(err?.message || err) };
+    }
+
+    if (res.ok) {
+      // Fluxer console audit (audit embeds are Discord-client-side).
+      console.log(
+        `[reactionRoles] Granted role ${option.role_id} to ${userId} in community ${communityId} ` +
+          `(panel ${messageId}, emoji ${option.emoji_display || emojiKey}, min level ${minLevel}, ` +
+          `removable ${Number(option.removable) ? "yes" : "no"})`,
+      );
+      return { handled: true, ok: true };
+    }
+
+    if (res.code === "elevated_disabled") {
+      // K8 gate: ONE informative line; the user's reaction STAYS (flag 0 keeps
+      // the panel claim, the grant resumes when elevated_permissions flips to 1).
+      console.log(
+        `[reactionRoles] role grant deferred: elevated_permissions=0 ` +
+          `(community ${communityId}, user ${userId})`,
+      );
+      return { handled: true, ok: false, code: "elevated_disabled", error: res.error };
+    }
+
+    // HTTP/permission failure — mirror the Discord catch exactly: log the
+    // specific cause, strip the user's reaction, DM the cause.
+    logRoleError("add", res, {
+      guildId: normalizedReaction.externalGuildId ?? communityId,
+      userId,
+      roleId: option.role_id,
+    });
+    await stripExtraneousReactionFluxer(outbound, {
+      channelId,
+      messageId,
+      emojiKey,
+      userId,
+    });
+    let guildName = `community ${communityId}`;
+    try {
+      const guild = await outbound.fetchGuild(communityId);
+      if (guild?.name) guildName = guild.name;
+    } catch {
+      // keep the community-id label
+    }
+    await tryDmFluxer(
+      outbound,
+      userId,
+      `I couldn't assign that role in **${guildName}**. Staff may need to fix the bot's role permissions.`,
+    );
+    return { handled: true, ok: false, error: res.error };
+  }
+
+  return { handled: true, ok: true };
+}
+
+/**
+ * Handle a Fluxer MESSAGE_REACTION_REMOVE (un-react) for reaction-role panels.
+ * Mirrors handleReactionRoleRemove: panel gate, option resolve, role dropped
+ * only when the option is removable, then the user's reaction is stripped from
+ * the panel (reactions are never elevated — the K8 gate skips ONLY the role leg).
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {object} normalizedReaction normalizeFluxerReaction output
+ * @returns {Promise<{ handled: boolean, ok?: boolean, code?: string, error?: string }>}
+ */
+async function handleReactionRoleRemoveFluxer(outbound, normalizedReaction) {
+  if (!normalizedReaction) return { handled: false };
+  if (normalizedReaction.userBot) return { handled: false };
+
+  const communityId = resolveFluxerReactionCommunity(normalizedReaction);
+  const messageId = normalizedReaction.messageId;
+  if (communityId == null || !messageId) return { handled: false };
+
+  if (!isReactionRolePanel(communityId, messageId)) {
+    return { handled: false };
+  }
+
+  const channelId = normalizedReaction.channelId;
+  const userId = normalizedReaction.userId;
+  const emojiKey = normalizedReaction.emojiKey;
+  if (!emojiKey) return { handled: true };
+
+  const option = resolveReactionRoleOption(communityId, messageId, emojiKey);
+  if (!option) return { handled: true };
+
+  // Only strip the role when removable is set (Discord parity).
+  if (Number(option.removable) === 0) {
+    return { handled: true };
+  }
+
+  const member = await outbound.fetchMember(communityId, userId);
+  if (!member) return { handled: true };
+
+  const hasRole =
+    Array.isArray(member.roleIds) &&
+    member.roleIds.map(String).includes(String(option.role_id));
+
+  let roleRes = { ok: true };
+  if (hasRole) {
+    try {
+      roleRes = await outbound.removeRole(communityId, userId, option.role_id);
+    } catch (err) {
+      roleRes = { ok: false, error: String(err?.message || err) };
+    }
+
+    if (roleRes.ok) {
+      // Fluxer console audit (audit embeds are Discord-client-side).
+      console.log(
+        `[reactionRoles] Removed role ${option.role_id} from ${userId} in community ${communityId} ` +
+          `(panel ${messageId}, emoji ${option.emoji_display || emojiKey})`,
+      );
+    } else if (roleRes.code === "elevated_disabled") {
+      console.log(
+        `[reactionRoles] role removal deferred: elevated_permissions=0 ` +
+          `(community ${communityId}, user ${userId})`,
+      );
+    } else {
+      logRoleError("remove", roleRes, {
+        guildId: normalizedReaction.externalGuildId ?? communityId,
+        userId,
+        roleId: option.role_id,
+      });
+    }
+  }
+
+  // Un-react cleanup: the user's reaction comes off the panel. Reactions are
+  // not elevated, so this runs at flag 0 too.
+  await stripExtraneousReactionFluxer(outbound, {
+    channelId,
+    messageId,
+    emojiKey,
+    userId,
+  });
+
+  if (!roleRes.ok) {
+    return {
+      handled: true,
+      ok: false,
+      ...(roleRes.code != null ? { code: roleRes.code } : {}),
+      error: roleRes.error,
+    };
+  }
+  return { handled: true, ok: true };
+}
+
 /**
  * Validate that an emoji is usable by the bot in this guild.
  * Returns an error string, or null if OK.
@@ -1239,6 +1818,11 @@ module.exports = {
   refreshPanelMessage,
   handleReactionRoleAdd,
   handleReactionRoleRemove,
+  deployPanelFluxer,
+  refreshPanelMessageFluxer,
+  handleReactionRoleAddFluxer,
+  handleReactionRoleRemoveFluxer,
+  stripExtraneousReactionFluxer,
   syncMemberReactionRoles,
   stripExtraneousReaction,
   validateEmojiForGuild,
