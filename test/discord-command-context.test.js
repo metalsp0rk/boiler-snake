@@ -281,7 +281,10 @@ describe("platform/discord/context — buildDiscordCommandContext", () => {
     assert.equal(commandCtx.deferred, true);
   });
 
-  it("throws a specific error when featureCtx.client is missing", () => {
+  it("throws a specific error when no Discord client is available", () => {
+    // PR 7: the builder resolves featureCtx.supervisor.discord with a
+    // featureCtx.client fallback (hand-built test contexts). Neither →
+    // specific throw naming the command.
     const guild = createGuild({ id: IDS.guild });
     const user = createUser({ id: IDS.member });
     const interaction = createChatInputInteraction({
@@ -291,11 +294,11 @@ describe("platform/discord/context — buildDiscordCommandContext", () => {
     });
     assert.throws(
       () => buildDiscordCommandContext(interaction, { registry: null }),
-      /featureCtx\.client required for command "\/grantxp"/,
+      /supervisor\.discord \(Discord client\) required for command "\/grantxp"/,
     );
     assert.throws(
       () => buildDiscordCommandContext(interaction, undefined),
-      /featureCtx\.client required for command "\/grantxp"/,
+      /supervisor\.discord \(Discord client\) required for command "\/grantxp"/,
     );
   });
 

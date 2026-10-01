@@ -10,6 +10,20 @@ const {
 } = require("../helpers/assert");
 const { IDS } = require("../helpers/fixtures");
 
+/**
+ * PR 7 fake supervisor: ticker entry points take a supervisor and resolve the
+ * OutboundClient per community via clientForCommunity (roadmap/fluxer.md §
+ * Scheduler jobs). Discord-only in tests — fluxer rows resolve to null.
+ */
+function fakeSupervisor(client) {
+  const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+  return {
+    discord: client,
+    fluxer: new Map(),
+    clientForCommunity: () => getDiscordOutbound(client),
+  };
+}
+
 describe("integration: cross-feature journeys", () => {
   /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
   let env;
@@ -98,7 +112,7 @@ describe("integration: cross-feature journeys", () => {
       decay_min_messages: 99,
       decay_window_days: 7,
     });
-    await runDecayForGuild(env.client, env.communityId);
+    await runDecayForGuild(fakeSupervisor(env.client), env.communityId);
     assertXp(env.db, env.communityId, IDS.member2, 400);
   });
 

@@ -4,6 +4,20 @@ const { createIntegrationEnv } = require("../helpers/harness");
 const { assertXp } = require("../helpers/assert");
 const { IDS } = require("../helpers/fixtures");
 
+/**
+ * PR 7 fake supervisor: ticker entry points take a supervisor and resolve the
+ * OutboundClient per community via clientForCommunity (roadmap/fluxer.md §
+ * Scheduler jobs). Discord-only in tests — fluxer rows resolve to null.
+ */
+function fakeSupervisor(client) {
+  const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+  return {
+    discord: client,
+    fluxer: new Map(),
+    clientForCommunity: () => getDiscordOutbound(client),
+  };
+}
+
 describe("integration: decay", () => {
   /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
   let env;
@@ -27,7 +41,7 @@ describe("integration: decay", () => {
       decay_window_days: 7,
     });
     env.db.setXp(env.communityId, IDS.member, 1000);
-    await runDecayForGuild(env.client, env.communityId);
+    await runDecayForGuild(fakeSupervisor(env.client), env.communityId);
     assertXp(env.db, env.communityId, IDS.member, 1000);
   });
 
@@ -40,7 +54,7 @@ describe("integration: decay", () => {
     });
     env.db.setXp(env.communityId, IDS.member, 1000);
     // no activity rows → count 0 < 5
-    await runDecayForGuild(env.client, env.communityId);
+    await runDecayForGuild(fakeSupervisor(env.client), env.communityId);
     assertXp(env.db, env.communityId, IDS.member, 900);
   });
 
@@ -55,7 +69,7 @@ describe("integration: decay", () => {
     for (let i = 0; i < 3; i++) {
       env.db.logActivity(env.communityId, IDS.member2, "message", 1);
     }
-    await runDecayForGuild(env.client, env.communityId);
+    await runDecayForGuild(fakeSupervisor(env.client), env.communityId);
     assertXp(env.db, env.communityId, IDS.member2, 800);
   });
 });

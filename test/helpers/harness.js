@@ -35,7 +35,10 @@ async function createIntegrationEnv(options = {}) {
     onMessageReactionRemove,
   } = require("../../src/bot/pipelines");
   const { normalizeDiscordMessage } = require("../../src/platform/discord/normalize");
-  const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+  const {
+    getDiscordOutbound,
+    createDiscordOutbound,
+  } = require("../../src/platform/discord/outbound");
 
   const registry = buildDefaultRegistry();
 
@@ -51,7 +54,7 @@ async function createIntegrationEnv(options = {}) {
   // The harness registers the Discord guild as a community at env creation
   // (spec § Repository boundary edge pattern) so every test seeds/reads by
   // `env.communityId` while Discord fixtures keep the snowflake `guildId`.
-  const { ensureCommunity } = require("../../src/platform/community");
+  const { ensureCommunity, getCommunityById } = require("../../src/platform/community");
   const communityId = ensureCommunity({
     platform: "discord",
     instanceKey: "discord",
@@ -150,8 +153,39 @@ async function createIntegrationEnv(options = {}) {
     options.ensureHoneypotWarning ||
     (async () => "Warning notice mocked for tests.");
 
+  // Fluxer PR 7 (spec § Supervisor): the integration env gains a supervisor
+  // mirror of the mock Discord client. clientForCommunity reads the communities
+  // row: platform "discord" → ONE shared Discord OutboundClient over the mock
+  // client (cached); "fluxer" → null (tests run no live fluxer instances).
+  // Mirrors boot.js clientForCommunity's never-throw contract.
+  let discordOutbound = null;
+  function clientForCommunity(communityId) {
+    let row = null;
+    try {
+      row = getCommunityById(communityId);
+    } catch (err) {
+      console.error(
+        `[harness] clientForCommunity(${communityId}) failed: ${err?.message || err}`
+      );
+      return null;
+    }
+    if (!row) return null;
+    if (row.platform === "discord") {
+      if (!discordOutbound) discordOutbound = createDiscordOutbound(client);
+      return discordOutbound;
+    }
+    return null; // fluxer rows: no live instances in tests
+  }
+
+  const supervisor = {
+    discord: client,
+    fluxer: new Map(),
+    clientForCommunity,
+  };
+
   const ctx = {
     client,
+    supervisor,
     registry,
     ensureHoneypotWarning: ensureWarning,
   };
@@ -288,6 +322,7 @@ async function createIntegrationEnv(options = {}) {
     dbPath,
     cleanup,
     client,
+    supervisor,
     guild,
     guildId,
     communityId,

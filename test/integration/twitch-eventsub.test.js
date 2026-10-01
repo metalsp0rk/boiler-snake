@@ -10,6 +10,20 @@ const { IDS } = require("../helpers/fixtures");
 
 const SECRET = "eventsub-integration-secret-0123456789";
 
+/**
+ * PR 7 fake supervisor: ticker entry points take a supervisor and resolve the
+ * OutboundClient per community via clientForCommunity (roadmap/fluxer.md §
+ * Scheduler jobs). Discord-only in tests — fluxer rows resolve to null.
+ */
+function fakeSupervisor(client) {
+  const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+  return {
+    discord: client,
+    fluxer: new Map(),
+    clientForCommunity: () => getDiscordOutbound(client),
+  };
+}
+
 /** Minimal IncomingMessage stand-in (headers + drained rawBody bytes). */
 function makeReq(messageType, payloadObj, { secret = SECRET, messageId = "msg-1", timestamp, signature } = {}) {
   const body = JSON.stringify(payloadObj);
@@ -314,7 +328,8 @@ describe("integration: twitch-eventsub", () => {
     await waitFor(() => env.channels.notify.sent.length >= 1, "go-live announce");
     const sent = env.channels.notify.sent[0];
     assert.match(sent.content, /FastGuy/);
-    assert.equal(sent.embeds[0].data.title, "Speedrunning");
+    // PR 7: tickers post plain NormalizedEmbed JSON (no EmbedBuilder wrapper).
+    assert.equal(sent.embeds[0].title, "Speedrunning");
     let row = env.db.getTwitchChannel(env.communityId, "fastguy");
     assert.equal(row.is_live, 1);
     assert.equal(row.last_stream_id, "stream-abc");
@@ -329,7 +344,7 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(env.channels.notify.sent.length, 1, "redelivery deduped by claim");
 
     // The polling ticker must also stay silent for the claimed stream id.
-    await ticker.processSubscription(env.client, env.communityId, row, stream);
+    await ticker.processSubscription(fakeSupervisor(env.client), env.communityId, row, stream);
     assert.equal(env.channels.notify.sent.length, 1, "poller deduped by claim");
 
     // Offline notification flips state back (204 first, then state).
@@ -525,7 +540,7 @@ describe("integration: twitch-eventsub", () => {
     });
     env.channels.notify.sent.length = 0;
     let sub = env.db.getTwitchChannel(env.communityId, "clipper");
-    await processNewClips(env.client, sub, {
+    await processNewClips(fakeSupervisor(env.client), sub, {
       fetchClips: async () => {
         throw new Error("must not fetch when watermark is null");
       },
@@ -541,16 +556,17 @@ describe("integration: twitch-eventsub", () => {
       { id: "c1", url: "https://twitch.tv/c/c1", title: "First fresh", created_at: iso(wm + 1000), duration: 30 },
       { id: "c2", url: "https://twitch.tv/c/c2", title: "Second fresh", created_at: iso(wm + 2000) },
     ];
-    await processNewClips(env.client, sub, { fetchClips: async () => clips });
+    await processNewClips(fakeSupervisor(env.client), sub, { fetchClips: async () => clips });
     assert.equal(env.channels.notify.sent.length, 2);
     assert.match(env.channels.notify.sent[0].content, /Clipper/);
-    assert.equal(env.channels.notify.sent[0].embeds[0].data.title, "First fresh");
+    // PR 7: plain NormalizedEmbed JSON at the send boundary.
+    assert.equal(env.channels.notify.sent[0].embeds[0].title, "First fresh");
     sub = env.db.getTwitchChannel(env.communityId, "clipper");
     assert.equal(sub.last_clip_id, "c2");
     assert.equal(sub.last_clip_created_at, wm + 2000);
 
     // Redelivered same clips → nothing new (view-ordered response is fine).
-    await processNewClips(env.client, sub, { fetchClips: async () => [...clips].reverse() });
+    await processNewClips(fakeSupervisor(env.client), sub, { fetchClips: async () => [...clips].reverse() });
     assert.equal(env.channels.notify.sent.length, 2);
 
     // Flood cap: 7 fresh → 5 announced, watermark jumps past all 7.
@@ -561,14 +577,14 @@ describe("integration: twitch-eventsub", () => {
       created_at: iso(sub.last_clip_created_at + (i + 1) * 1000),
     }));
     env.channels.notify.sent.length = 0;
-    await processNewClips(env.client, sub, { fetchClips: async () => many });
+    await processNewClips(fakeSupervisor(env.client), sub, { fetchClips: async () => many });
     assert.equal(env.channels.notify.sent.length, 5);
     sub = env.db.getTwitchChannel(env.communityId, "clipper");
     assert.equal(sub.last_clip_id, "bulk-6");
 
     // Unknown fetch state (null) → no crash, no state change.
     const before = sub.last_clip_created_at;
-    await processNewClips(env.client, sub, { fetchClips: async () => null });
+    await processNewClips(fakeSupervisor(env.client), sub, { fetchClips: async () => null });
     assert.equal(env.db.getTwitchChannel(env.communityId, "clipper").last_clip_created_at, before);
     assert.equal(env.channels.notify.sent.length, 5);
   });
@@ -590,9 +606,10 @@ describe("integration: twitch-eventsub", () => {
       { id: "vnew", title: "Marathon", created_at: iso(wm + 5000), duration: "PT2H15M", view_count: 7 },
       { id: "vold", title: "Ancient", created_at: iso(wm - 5000) },
     ];
-    await processNewVods(env.client, sub, { fetchArchives: async () => videos });
+    await processNewVods(fakeSupervisor(env.client), sub, { fetchArchives: async () => videos });
     assert.equal(env.channels.notify.sent.length, 1);
-    const embed = env.channels.notify.sent[0].embeds[0].data;
+    // PR 7: plain NormalizedEmbed JSON at the send boundary.
+    const embed = env.channels.notify.sent[0].embeds[0];
     assert.equal(embed.title, "Marathon");
     assert.ok(
       embed.fields.some((f) => f.name === "Length" && f.value === "2h 15m"),
@@ -602,12 +619,12 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(sub.last_video_id, "vnew");
 
     // Same videos again → silent.
-    await processNewVods(env.client, sub, { fetchArchives: async () => videos });
+    await processNewVods(fakeSupervisor(env.client), sub, { fetchArchives: async () => videos });
     assert.equal(env.channels.notify.sent.length, 1);
 
     // Media notifications never ping the notify role.
     env.db.updateGuildSettings(env.communityId, { twitch_notify_role_id: IDS.roleExempt });
-    await processNewVods(env.client, sub, {
+    await processNewVods(fakeSupervisor(env.client), sub, {
       fetchArchives: async () => [{ id: "v2", title: "Newest", created_at: iso(wm + 99999) }],
     });
     const last = env.channels.notify.sent[env.channels.notify.sent.length - 1];
@@ -619,7 +636,7 @@ describe("integration: twitch-eventsub", () => {
     env.db.addTwitchChannel(env.communityId, "705000", "plainsub", "PlainSub", null);
     const polledClips = [];
     const polledVods = [];
-    await ticker.runTwitchTick(env.client, {
+    await ticker.runTwitchTick(fakeSupervisor(env.client), {
       fetchStreams: async () => [],
       fetchClips: async (broadcasterId) => {
         polledClips.push(broadcasterId);
