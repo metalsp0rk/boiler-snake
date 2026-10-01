@@ -37,6 +37,7 @@ const gorkBudget = require("./repositories/gorkBudget");
 const gorkInteractions = require("./repositories/gorkInteractions");
 const webSessions = require("./repositories/webSessions");
 const adminAudit = require("./repositories/adminAudit");
+const fluxerOAuthTransactions = require("./repositories/fluxerOAuthTransactions");
 
 module.exports = {
   db,
@@ -377,4 +378,8 @@ module.exports = {
   listTicketPanels: tickets.listTicketPanels,
   updateTicketPanelText: tickets.updateTicketPanelText,
   deleteTicketPanel: tickets.deleteTicketPanel,
+
+  // Fluxer web-login OAuth transactions (roadmap/fluxer.md § PKCE and state)
+  createOAuthTransaction: fluxerOAuthTransactions.createOAuthTransaction,
+  consumeOAuthTransaction: fluxerOAuthTransactions.consumeOAuthTransaction,
 };

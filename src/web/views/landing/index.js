@@ -66,6 +66,22 @@ function contextLine(context) {
   return html``;
 }
 
+/**
+ * Fluxer button href: the instance's login start carrying the page's OWN
+ * continue target (the whitelisted `?continue=1&guild=…&next=…` query of
+ * continueHref, re-attached verbatim — the login handler re-validates every
+ * value, so the round-trip can never widen what the callback honors).
+ * Pure + exported, mirroring {@link buildContinueHref}.
+ *
+ * @param {string} slug validated 16-hex instance slug
+ * @param {string} continueHref href from {@link buildContinueHref}
+ * @returns {string}
+ */
+function buildFluxerLoginHref(slug, continueHref) {
+  const qs = String(continueHref == null ? "" : continueHref).replace(/^[^?]*/, "");
+  return `/auth/fluxer/${slug}/login${qs || "?continue=1"}`;
+}
+
 /** Notice banner (signed-out confirmation). */
 function noticeLine(notice) {
   if (notice === "signedout") {
@@ -82,9 +98,30 @@ function noticeLine(notice) {
  *   (validated enum, not raw input)
  * @param {string|null} [input.context] "guild" | "ticket" | null (validated)
  * @param {string} input.continueHref href from {@link buildContinueHref}
+ * @param {Array<{ slug: string, label?: string }>} [input.fluxerLoginLinks]
+ *   one entry per configured Fluxer instance (roadmap/fluxer.md § Authorize
+ *   URL); entries whose slug is not 16-hex are dropped — the page renders
+ *   ZERO identity data, and junk slugs never reach a route link.
  * @returns {import("../escape").SafeString}
  */
-function renderSignInPage({ notice = null, context = null, continueHref }) {
+function renderSignInPage({
+  notice = null,
+  context = null,
+  continueHref,
+  fluxerLoginLinks = [],
+}) {
+  // One button per configured Fluxer instance, right under the Discord one,
+  // each carrying the page's own validated continue target (labels are
+  // operator-supplied strings → escaped by the html tag like everything else).
+  const fluxerSlugRe = /^[0-9a-f]{16}$/;
+  const fluxerButtons = (fluxerLoginLinks || [])
+    .filter((link) => link && typeof link.slug === "string" && fluxerSlugRe.test(link.slug))
+    .map(
+      (link) => html`<p><a class="btn btn-signin" href="${buildFluxerLoginHref(
+        link.slug,
+        continueHref
+      )}">Continue with Fluxer — ${link.label || link.slug}</a></p>`
+    );
   return html`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -116,8 +153,9 @@ function renderSignInPage({ notice = null, context = null, continueHref }) {
   </section>
   ${contextLine(CONTEXTS.includes(context) ? context : null)}
   <p><a class="btn btn-signin" href="${continueHref}">Continue with Discord</a></p>
-  <p class="signin-footnote">Nothing happens until you press the button above
-    and approve on Discord.</p>
+  ${fluxerButtons}
+  <p class="signin-footnote">Nothing happens until you press a button above
+    and approve on the sign-in provider's own screen.</p>
 </main>
 </body>
 </html>`;
@@ -126,6 +164,7 @@ function renderSignInPage({ notice = null, context = null, continueHref }) {
 module.exports = {
   renderSignInPage,
   buildContinueHref,
+  buildFluxerLoginHref,
   CONTEXTS,
   NOTICES,
 };
