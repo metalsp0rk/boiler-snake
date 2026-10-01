@@ -78,17 +78,222 @@ describe("fluxer/outbound — send shapes", () => {
     assert.deepEqual(rest.calls[0].body.allowed_mentions, { roles: ["555"] });
   });
 
-  it("files are refused with the dated PR 9 cause (no multipart in PR 6)", async () => {
-    const rest = makeFakeRest({ routes: {} });
+  it("files send as multipart: payload_json + files[i] parts (Phase 0 PASS shape)", async () => {
+    const rest = makeFakeRest({
+      routes: { "POST /v1/channels/444/messages": { id: "m-1" } },
+    });
     const { outbound } = makeFakeHandle({ rest });
+
     const res = await outbound.sendChannel("444", {
       content: "see attached",
-      files: [{ name: "board.png", data: Buffer.from("x") }],
+      files: [{ name: "board.png", data: Buffer.from("PNGBYTES") }],
     });
+
+    assert.deepEqual(res, { ok: true, id: "m-1" });
+    assert.equal(rest.calls.length, 1);
+    const body = rest.calls[0].body;
+    assert.ok(body instanceof FormData, "the file path posts a FormData multipart body");
+    const payload = JSON.parse(body.get("payload_json"));
+    assert.equal(payload.content, "see attached", "payload_json carries the content part");
+    const blob = body.get("files[0]");
+    assert.ok(blob instanceof Blob, "file data travels as a Blob (Node 18+ global)");
+    assert.equal(await blob.text(), "PNGBYTES", "the bytes ride the file part");
+    assert.equal(blob.type, "application/octet-stream", "contentType defaults to octet-stream");
+  });
+
+  it("files entries accept contentType and string data (React-style { name, data, contentType? })", async () => {
+    const rest = makeFakeRest({
+      routes: { "POST /v1/channels/444/messages": { id: "m-1" } },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.sendChannel("444", {
+      files: [{ name: "record.md", data: "# staff record", contentType: "text/markdown" }],
+    });
+
+    assert.equal(res.ok, true);
+    const body = rest.calls[0].body;
+    assert.deepEqual(JSON.parse(body.get("payload_json")), {}, "a files-only payload sends no empty content key");
+    const blob = body.get("files[0]");
+    assert.equal(await blob.text(), "# staff record", "string data is utf8-encoded");
+    assert.equal(blob.type, "text/markdown", "contentType passes through to the part");
+  });
+
+  it("a bad files entry is refused by index BEFORE any network call", async () => {
+    const rest = makeFakeRest({ routes: {} });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const noName = await outbound.sendChannel("444", { content: "x", files: [{ name: "", data: Buffer.from("1") }] });
+    assert.equal(noName.ok, false);
+    assert.match(noName.error, /files\[0\] needs a non-empty string name/);
+
+    const noData = await outbound.sendChannel("444", {
+      files: [{ name: "a.bin", data: Buffer.from("ok") }, { name: "b.bin", data: 42 }],
+    });
+    assert.equal(noData.ok, false);
+    assert.match(noData.error, /files\[1\] \("b\.bin"\) needs Buffer data, got number/);
+
+    assert.equal(rest.calls.length, 0, "descriptor validation never reaches the wire");
+  });
+
+  it("sendDm delivers files to the DM channel (the /warn export path, matrix 687)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/users/@me/channels": { id: "dm-9", type: 1 },
+        "POST /v1/channels/dm-9/messages": { id: "m-2" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.sendDm("1234567890123", {
+      content: "staff record attached",
+      files: [{ name: "staff-record-123.md", data: Buffer.from("# record") }],
+    });
+
+    assert.deepEqual(res, { ok: true, id: "m-2" });
+    assert.equal(rest.calls[0].path, "/v1/users/@me/channels");
+    const dmPost = rest.calls[1];
+    assert.equal(dmPost.path, "/v1/channels/dm-9/messages");
+    assert.ok(dmPost.body instanceof FormData, "the DM file send is multipart too");
+    assert.equal(JSON.parse(dmPost.body.get("payload_json")).content, "staff record attached");
+    assert.equal(await dmPost.body.get("files[0]").text(), "# record");
+  });
+
+  it("edits refuse files with the named cause (files are a send-path concept)", async () => {
+    const rest = makeFakeRest({ routes: {} });
+    const { outbound } = makeFakeHandle({ rest });
+    const res = await outbound.editMessage(
+      { communityId: COMMUNITY_ID, channelId: "444", messageId: "m-1" },
+      { content: "edited", files: [{ name: "sneaky.png", data: Buffer.from("x") }] },
+    );
     assert.equal(res.ok, false);
-    assert.match(res.error, /PR 9/);
-    assert.match(res.error, /multipart/);
-    assert.equal(rest.calls.length, 0, "the refusal must not hit the network");
+    assert.match(res.error, /not PATCH/);
+    assert.equal(rest.calls.length, 0, "the refusal does not hit the network");
+  });
+
+  it("413 on the message POST surfaces the status and the API code (spec 630)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/444/messages": async () => {
+          const err = new Error("413 FILE_TOO_BIG: attachment exceeds the instance limit");
+          err.status = 413;
+          err.code = "FILE_TOO_BIG";
+          throw err;
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.sendChannel("444", { files: [{ name: "big.png", data: Buffer.from("x") }] });
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /413/, "the response status rides in the message");
+    assert.match(res.error, /FILE_TOO_BIG/, "the API error code rides in the message");
+    assert.equal(res.code, "FILE_TOO_BIG", "the structured code is preserved");
+  });
+
+  it("presigned flow (feature flag): plan → PUT bytes with no auth → claim by upload_filename", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/7/attachments": {
+          upload_mode: "singlepart",
+          uploads: [{ upload_url: "https://media.test/u/1?grant=SIGNED", upload_filename: "f-1.png" }],
+        },
+        "POST /v1/channels/7/messages": { id: "m-9" },
+      },
+    });
+    const uploads = [];
+    const fetchStub = async (url, init) => {
+      uploads.push({ url, init });
+      return { ok: true };
+    };
+    const outbound = createFluxerOutbound(
+      { instanceKey: INSTANCE, userId: "bot-1", rest, features: { presignedAttachmentUploads: true } },
+      { fetch: fetchStub },
+    );
+
+    const res = await outbound.sendChannel("7", {
+      content: "png",
+      files: [{ name: "a.png", data: Buffer.from("AB"), contentType: "image/png" }],
+    });
+
+    assert.deepEqual(res, { ok: true, id: "m-9" });
+    // 1. The plan request describes the file for the instance.
+    assert.deepEqual(rest.calls[0].body, {
+      files: [{ filename: "a.png", content_type: "image/png", file_size: 2 }],
+    });
+    // 2. PUT the bytes to the signed URL, NO auth header (Phase 0: no auth).
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].url, "https://media.test/u/1?grant=SIGNED");
+    assert.equal(uploads[0].init.method, "PUT");
+    assert.equal(uploads[0].init.headers["content-type"], "image/png");
+    assert.equal(uploads[0].init.headers.authorization, undefined, "the PUT carries no auth header");
+    assert.equal(Buffer.from(uploads[0].init.body).toString(), "AB", "raw bytes are PUT");
+    // 3. Claim by position with the PLAN-provided filename.
+    assert.deepEqual(rest.calls[1].body.attachments, [{ id: 0, upload_filename: "f-1.png" }]);
+    assert.equal(rest.calls[1].body.content, "png");
+  });
+
+  it("presigned PUT failure (413) fails the send without claiming, naming status (no token in the text)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/7/attachments": {
+          upload_mode: "singlepart",
+          uploads: [{ upload_url: "https://media.test/u/1?grant=SIGNED", upload_filename: "f-1.png" }],
+        },
+        "POST /v1/channels/7/messages": { id: "never" },
+      },
+    });
+    const outbound = createFluxerOutbound(
+      { instanceKey: INSTANCE, userId: "bot-1", rest, features: { presignedAttachmentUploads: true } },
+      { fetch: async () => ({ ok: false, status: 413 }) },
+    );
+
+    const res = await outbound.sendChannel("7", { files: [{ name: "a.png", data: Buffer.from("x") }] });
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /presigned upload 0/);
+    assert.match(res.error, /HTTP 413/);
+    assert.ok(!res.error.includes("SIGNED"), "the signed grant never reaches the error text");
+    assert.equal(
+      rest.calls.some((c) => c.method === "POST" && c.path === "/v1/channels/7/messages"),
+      false,
+      "a failed upload never claims the attachment",
+    );
+  });
+
+  it("a chunked presigned plan is refused by name (Phase 0 open item 5)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/7/attachments": { upload_mode: "multipart", uploads: [] },
+      },
+    });
+    const outbound = createFluxerOutbound(
+      { instanceKey: INSTANCE, userId: "bot-1", rest, features: { presignedAttachmentUploads: true } },
+      { fetch: async () => ({ ok: true }) },
+    );
+
+    const res = await outbound.sendChannel("7", { files: [{ name: "a.png", data: Buffer.from("x") }] });
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /upload_mode "multipart"/);
+  });
+
+  it("a plan whose upload count mismatches the files is refused (no partial claim)", async () => {
+    const rest = makeFakeRest({
+      routes: { "POST /v1/channels/7/attachments": { upload_mode: "singlepart", uploads: [] } },
+    });
+    const outbound = createFluxerOutbound(
+      { instanceKey: INSTANCE, userId: "bot-1", rest, features: { presignedAttachmentUploads: true } },
+      { fetch: async () => ({ ok: true }) },
+    );
+
+    const res = await outbound.sendChannel("7", {
+      files: [{ name: "a.png", data: Buffer.from("x") }, { name: "b.png", data: Buffer.from("y") }],
+    });
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /refusing to claim a partial attachment set/);
   });
 
   it("sendDm opens the DM channel FIRST, then posts to it", async () => {

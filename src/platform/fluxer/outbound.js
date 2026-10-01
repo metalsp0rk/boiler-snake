@@ -4,8 +4,9 @@
  * { body?, query? })` → data, SDK-Rest-compatible).
  *
  * Wire facts are the Phase 0 record (law): send = POST /v1/channels/{id}/messages
- * (JSON; embeds-only JSON accepted; multipart/presigned file sends land in
- * PR 9), DM channel = POST /v1/users/@me/channels {recipient_id} (200,
+ * (JSON; embeds-only JSON accepted; PR 8 adds the file paths — multipart via
+ * FormData/Blob and the presigned attachment flow, per spec § Embeds and
+ * attachments), DM channel = POST /v1/users/@me/channels {recipient_id} (200,
  * idempotent), member = GET /v1/guilds/{g}/members/{u}, roles =
  * GET /v1/guilds/{g}/roles (permissions = decimal string), history =
  * GET /v1/channels/{c}/messages?before/after/limit (max 100), reactions =
@@ -107,24 +108,84 @@ function buildMessageBody(payload, method) {
     body.message_reference = { message_id: String(payload.messageReference.messageId) };
   }
   if (payload.files != null && payload.files.length > 0) {
-    // PR 9 owns multipart/presigned uploads (spec 630). PR 6 replies with the
-    // named, dated cause so handlers can tell users (AGENTS.md rule 3).
+    // Files ride the SEND path only (spec § Embeds and attachments pins the
+    // send typedef; PATCH has no recorded file shape). Name the cause.
     return {
       ok: false,
       error:
-        `${method}: file attachments are not sent on Fluxer yet — Fluxer file sends land in PR 9 (multipart).`,
+        `${method}: file attachments send via POST /channels/{id}/messages, not PATCH — ` +
+        `edits carry content/embeds only.`,
     };
   }
   return { ok: true, body };
 }
 
 /**
+ * Normalize one ReplyPayload `files` entry to { name, data, contentType } —
+ * the shape src/platform/discord/outbound.js accepts (plain
+ * { name, data: Buffer|string, contentType? } descriptors; the Discord adapter
+ * wraps the same entries in AttachmentBuilder, Fluxer has no builder class).
+ *
+ * @param {unknown} file raw entry
+ * @param {number} index position in the files array (named in rejections)
+ * @param {string} method caller name for specific failures
+ * @returns {{ ok: true, file: { name: string, data: Buffer, contentType: string } }
+ *   | { ok: false, error: string }}
+ */
+function normalizeSendFile(file, index, method) {
+  const name = typeof file?.name === "string" && file.name !== "" ? file.name : null;
+  if (name == null) {
+    return {
+      ok: false,
+      error: `${method}: files[${index}] needs a non-empty string name (files entries are { name, data, contentType? })`,
+    };
+  }
+  let data = null;
+  if (Buffer.isBuffer(file.data)) data = file.data;
+  else if (typeof file.data === "string") data = Buffer.from(file.data, "utf8");
+  if (data == null) {
+    return {
+      ok: false,
+      error:
+        `${method}: files[${index}] ("${name}") needs Buffer data, got ` +
+        `${file?.data == null ? String(file?.data) : typeof file?.data}`,
+    };
+  }
+  const contentType =
+    typeof file.contentType === "string" && file.contentType !== ""
+      ? file.contentType
+      : "application/octet-stream";
+  return { ok: true, file: { name, data, contentType } };
+}
+
+/**
+ * Map a URL to origin+pathname for LOGGING. A presigned upload_url carries its
+ * grant in the query string — credentials never reach a log line (AGENTS.md).
+ * @param {unknown} url
+ * @returns {string}
+ */
+function urlForLog(url) {
+  try {
+    const u = new URL(String(url));
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return "(unusable URL)";
+  }
+}
+
+/**
  * Build the Fluxer OutboundClient for one instance handle.
  *
- * @param {object} handle `{ instanceKey, rest, userId, fetchGuild(externalId), guildFetch(communityId, guildId) }`
+ * @param {object} handle `{ instanceKey, rest, userId, fetchGuild(externalId), guildFetch(communityId, guildId), features? }`
+ *   `features` is the discovery feature map; `presignedAttachmentUploads`
+ *   selects the presigned file-send flow (spec 630: "a presigned upload when
+ *   discovery features.presigned_attachment_uploads is true").
+ * @param {{ fetch?: (url: string, init?: object) => Promise<any> }} [options]
+ *   `fetch` overrides the transport used for presigned media PUTs (tests inject
+ *   a fake; production reads globalThis.fetch at call time).
  * @returns {object} OutboundClient (spec § Outbound client typedef)
  */
-function createFluxerOutbound(handle) {
+function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
   if (!handle || !handle.rest || typeof handle.rest.request !== "function") {
     throw new Error("createFluxerOutbound: handle.rest.request required");
   }
@@ -132,7 +193,8 @@ function createFluxerOutbound(handle) {
   const instanceKey = String(handle.instanceKey ?? "fluxer");
 
   /**
-   * POST a message to a channel id. Shared by sendChannel/sendDm.
+   * POST a message to a channel id with a JSON body. Shared by the JSON send
+   * path (sendFluxerMessage) — the file paths post their own bodies.
    * @param {string} channelId
    * @param {object} body
    * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
@@ -148,6 +210,224 @@ function createFluxerOutbound(handle) {
         ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
       };
     }
+  }
+
+  /**
+   * The single send adapter (spec § Embeds and attachments, 610–634):
+   * `sendChannel` / `sendDm` and the Fluxer command reply path all route here.
+   * The implementation owns the wire format; handlers pass ReplyPayload only.
+   *
+   * - No files → JSON POST /v1/channels/{id}/messages (Phase 0: content and
+   *   embeds accepted as JSON).
+   * - Files + instance feature `presignedAttachmentUploads` → Phase 0 presigned
+   *   flow: POST /v1/channels/{id}/attachments → PUT each `upload_url` (NO
+   *   auth: "PUT bytes with no auth") → claim via message
+   *   `attachments: [{ id, upload_filename }]`. Only the recorded
+   *   `upload_mode: "singlepart"` runs (chunked is Phase 0 open item 5) —
+   *   other modes return { ok:false } naming the mode.
+   * - Files otherwise → multipart POST (Phase 0 PASS: `payload_json` +
+   *   `files[i]` entries via the Node 18+ FormData/Blob globals).
+   *
+   * Every failure resolves { ok:false, error } naming method, target, and
+   * cause — 413/400 responses carry the response status and the API error
+   * code into the message (spec 630), never the token.
+   *
+   * @param {object} args
+   * @param {string} [args.channelId] target channel (mutually exclusive with dmUserId)
+   * @param {string} [args.dmUserId] recipient user for the K2 DM path
+   * @param {string} [args.content]
+   * @param {Array<object>} [args.embeds] plain embed objects (never builder classes)
+   * @param {Array<{ name: string, data: Buffer|string, contentType?: string }>} [args.files]
+   * @param {object} [args.allowedMentions]
+   * @param {{ message_id?: string }|{ messageId?: string }} [args.message_reference]
+   * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
+   */
+  async function sendFluxerMessage(args) {
+    const method = args.dmUserId != null ? "sendDm" : "sendChannel";
+    if (args.dmUserId == null && (args.channelId == null || String(args.channelId) === "")) {
+      return {
+        ok: false,
+        error: "sendChannel: args need a channelId (or dmUserId for the K2 DM path)",
+      };
+    }
+    const body = {};
+    if (args.content != null) body.content = String(args.content);
+    if (args.embeds != null) body.embeds = args.embeds;
+    const allowed = toWireAllowedMentions(args.allowedMentions);
+    if (allowed) body.allowed_mentions = allowed;
+    if (args.message_reference && args.message_reference.message_id != null) {
+      body.message_reference = { message_id: String(args.message_reference.message_id) };
+    } else if (args.messageReference?.messageId != null) {
+      body.message_reference = { message_id: String(args.messageReference.messageId) };
+    }
+
+    // Files normalize BEFORE the first network call: a bad descriptor must
+    // fail with its index named, not half-send a reply.
+    const filesIn = Array.isArray(args.files) ? args.files : [];
+    const files = [];
+    if (filesIn.length > 0) {
+      for (let i = 0; i < filesIn.length; i += 1) {
+        const norm = normalizeSendFile(filesIn[i], i, method);
+        if (!norm.ok) return { ok: false, error: norm.error };
+        files.push(norm.file);
+      }
+    }
+
+    // Resolve the target channel. DM (K2): open the DM channel first —
+    // Phase 0: POST /v1/users/@me/channels is 200-idempotent, and success is
+    // NOT recipient validation (open item 7); send-time codes are what surface.
+    let channelId = args.channelId != null ? String(args.channelId) : "";
+    if (args.dmUserId != null) {
+      let dm;
+      try {
+        dm = await rest.request("POST", "/v1/users/@me/channels", {
+          body: { recipient_id: String(args.dmUserId) },
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          error: failureText(method, `DM channel open for user ${args.dmUserId}`, err),
+          ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+        };
+      }
+      channelId = dm?.id != null ? String(dm.id) : "";
+      if (!channelId) {
+        return {
+          ok: false,
+          error: `${method}: opening a DM channel with user ${args.dmUserId} returned no channel id`,
+        };
+      }
+    }
+    const target = args.dmUserId != null ? `DM channel ${channelId}` : `channel ${channelId}`;
+
+    // --- files + presigned feature flag: the Phase 0 presigned flow.
+    if (files.length > 0 && handle.features?.presignedAttachmentUploads === true) {
+      const fetchImpl =
+        typeof fetchOverride === "function"
+          ? fetchOverride
+          : (url, init) => globalThis.fetch(url, init);
+      let plan;
+      try {
+        plan = await rest.request("POST", `/v1/channels/${channelId}/attachments`, {
+          body: {
+            files: files.map((f) => ({
+              filename: f.name,
+              content_type: f.contentType,
+              file_size: f.data.length,
+            })),
+          },
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          error: failureText(method, `attachment plan for ${target}`, err),
+          ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+        };
+      }
+      if (plan?.upload_mode != null && plan.upload_mode !== "singlepart") {
+        return {
+          ok: false,
+          error:
+            `${method}: attachment plan for ${target} uses upload_mode "${plan.upload_mode}", ` +
+            `which is not supported (Phase 0 recorded "singlepart"; chunked is open item 5).`,
+        };
+      }
+      const uploads = Array.isArray(plan?.uploads) ? plan.uploads : [];
+      if (uploads.length !== files.length) {
+        return {
+          ok: false,
+          error:
+            `${method}: attachment plan for ${target} returned ${uploads.length} upload(s) ` +
+            `for ${files.length} file(s) — refusing to claim a partial attachment set.`,
+        };
+      }
+      for (let i = 0; i < files.length; i += 1) {
+        const upload = uploads[i] ?? {};
+        if (typeof upload.upload_url !== "string" || upload.upload_url.trim() === "") {
+          return {
+            ok: false,
+            error:
+              `${method}: attachment plan for ${target} has no upload_url for files[${i}] ` +
+              `("${files[i].name}") — nothing was uploaded.`,
+          };
+        }
+        try {
+          // PUT the bytes with NO auth (Phase 0 law — the grant lives in the
+          // signed URL, so it never enters a header, a log, or an error text).
+          const put = await fetchImpl(upload.upload_url, {
+            method: "PUT",
+            body: new Uint8Array(files[i].data),
+            headers: { "content-type": files[i].contentType },
+          });
+          if (put && put.ok === false) {
+            return {
+              ok: false,
+              error:
+                `${method}: presigned upload ${i} for ${target} failed: HTTP ${put.status} ` +
+                `(PUT ${urlForLog(upload.upload_url)})`,
+            };
+          }
+        } catch (err) {
+          return {
+            ok: false,
+            error: `${method}: presigned upload ${i} for ${target} failed: ${causeOf(err)} (PUT ${urlForLog(upload.upload_url)})`,
+          };
+        }
+      }
+      try {
+        const data = await rest.request("POST", `/v1/channels/${channelId}/messages`, {
+          body: {
+            ...body,
+            // Claim the uploads by position: { id: <index>, upload_filename }
+            // — the exact shape Phase 0 ran end to end.
+            attachments: files.map((f, i) => ({
+              id: i,
+              upload_filename: uploads[i].upload_filename,
+            })),
+          },
+        });
+        return { ok: true, id: data?.id != null ? String(data.id) : "" };
+      } catch (err) {
+        return {
+          ok: false,
+          error: failureText(method, `send to ${target}`, err),
+          ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+        };
+      }
+    }
+
+    // --- files, no presigned flag: multipart POST (Phase 0 PASS: a
+    // payload_json part plus files[i] parts, FormData/Blob Node 18+ globals).
+    if (files.length > 0) {
+      let form;
+      try {
+        form = new FormData();
+        form.append("payload_json", JSON.stringify(body));
+        files.forEach((f, i) => {
+          form.append(`files[${i}]`, new Blob([new Uint8Array(f.data)], { type: f.contentType }), f.name);
+        });
+      } catch (err) {
+        return {
+          ok: false,
+          error: `${method}: multipart send to ${target} failed: ${causeOf(err)}`,
+        };
+      }
+      try {
+        const data = await rest.request("POST", `/v1/channels/${channelId}/messages`, {
+          body: form,
+        });
+        return { ok: true, id: data?.id != null ? String(data.id) : "" };
+      } catch (err) {
+        return {
+          ok: false,
+          error: failureText(method, `send to ${target}`, err),
+          ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+        };
+      }
+    }
+
+    // --- JSON path (no files): the Phase 0-confirmed JSON send.
+    return postMessage(channelId, body);
   }
 
   /**
@@ -205,6 +485,9 @@ function createFluxerOutbound(handle) {
   const outbound = {
     platform: "fluxer",
     instanceKey,
+    // The single send adapter (spec § Embeds and attachments): exposed for
+    // the send-path consumers (sendChannel/sendDm delegate to it).
+    sendFluxerMessage,
     get botUserId() {
       return handle.userId != null ? String(handle.userId) : "";
     },
@@ -341,57 +624,49 @@ function createFluxerOutbound(handle) {
 
     /**
      * @param {string} channelId
-     * @param {object|string} payload ReplyPayload
+     * @param {object|string} payload ReplyPayload (files: [{ name, data, contentType? }])
      * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
      */
     async sendChannel(channelId, payload) {
-      const built = buildMessageBody(
-        typeof payload === "string" ? { content: payload } : (payload ?? {}),
-        "sendChannel",
-      );
-      if (!built.ok) return { ok: false, error: built.error };
-      return postMessage(String(channelId), built.body);
+      const p = typeof payload === "string" ? { content: payload } : (payload ?? {});
+      return sendFluxerMessage({
+        channelId: String(channelId),
+        content: p.content,
+        embeds: p.embeds,
+        files: p.files,
+        allowedMentions: p.allowedMentions,
+        message_reference: p.message_reference ?? p.messageReference,
+      });
     },
 
     /**
      * K2 DM: open the DM channel (Phase 0: POST /v1/users/@me/channels is
-     * 200-idempotent), then post there. Channel-create success is NOT recipient
-     * validation (Phase 0 open item 7) — send-time codes are what surface.
+     * 200-idempotent), then post there — files included (the /warn export
+     * markdown rides the same adapter, matrix 687). Channel-create success is
+     * NOT recipient validation (Phase 0 open item 7) — send-time codes are
+     * what surface.
      *
      * @param {string} userId
      * @param {object|string} payload ReplyPayload
      * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
      */
     async sendDm(userId, payload) {
-      const built = buildMessageBody(
-        typeof payload === "string" ? { content: payload } : (payload ?? {}),
-        "sendDm",
-      );
-      if (!built.ok) return { ok: false, error: built.error };
-      let dm;
-      try {
-        dm = await rest.request("POST", "/v1/users/@me/channels", {
-          body: { recipient_id: String(userId) },
-        });
-      } catch (err) {
-        return {
-          ok: false,
-          error: failureText("sendDm", `DM channel open for user ${userId}`, err),
-          ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
-        };
-      }
-      const dmChannelId = dm?.id != null ? String(dm.id) : null;
-      if (!dmChannelId) {
-        return {
-          ok: false,
-          error: `sendDm: opening a DM channel with user ${userId} returned no channel id`,
-        };
-      }
-      const sent = await postMessage(dmChannelId, built.body);
+      const p = typeof payload === "string" ? { content: payload } : (payload ?? {});
+      const sent = await sendFluxerMessage({
+        dmUserId: String(userId),
+        content: p.content,
+        embeds: p.embeds,
+        files: p.files,
+        allowedMentions: p.allowedMentions,
+        message_reference: p.message_reference ?? p.messageReference,
+      });
       if (!sent.ok) {
+        // Keep the PR 6 error identity: a failing DM post names sendDm, not
+        // the generic send label (context.js's K2 fallback surfaces this
+        // string verbatim to the channel, AGENTS.md rule 3).
         return {
           ok: false,
-          error: sent.error.replace("sendChannel:", `sendDm (channel ${dmChannelId}):`),
+          error: sent.error.replace("sendChannel:", "sendDm:"),
           ...(sent.code != null ? { code: sent.code } : {}),
         };
       }
