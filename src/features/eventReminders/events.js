@@ -13,7 +13,23 @@ const {
   rescheduleUnsentOffsets,
 } = require("./service");
 
-function registerEvents(client) {
+/**
+ * Bind the scheduled-event gateway hooks. PR 7: the first argument is the
+ * supervisor — the binds attach to supervisor.discord only (Fluxer gateway
+ * events land in the elevated-permissions PR; spec § Scheduler jobs).
+ * @param {object|null} supervisor
+ * @param {object} [featureCtx]
+ */
+function registerEvents(supervisor, featureCtx) {
+  void featureCtx;
+  const client =
+    supervisor && typeof supervisor.clientForCommunity === "function"
+      ? supervisor.discord ?? null
+      : supervisor && supervisor.on
+        ? supervisor // legacy raw discord.js client
+        : null;
+  if (!client) return; // Discord unconfigured → no-op binds
+
   client.on(Events.GuildScheduledEventUserAdd, async (scheduledEvent, user) => {
     try {
       const guild =

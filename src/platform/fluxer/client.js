@@ -284,13 +284,13 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     });
   });
 
-  onEvent(eventName("MessageReactionAdd", "reactionAdd"), "reactionAdd", async (payload) => {
+  onEvent(eventName("MessageReactionAdd", "messageReactionAdd"), "messageReactionAdd", async (payload) => {
     const normalized = normalizeFluxerReaction(payload, { instanceKey });
     if (!normalized) return;
     await pipelines.onFluxerReactionAdd(handle.outbound, normalized);
   });
 
-  onEvent(eventName("MessageReactionRemove", "reactionRemove"), "reactionRemove", async (payload) => {
+  onEvent(eventName("MessageReactionRemove", "messageReactionRemove"), "messageReactionRemove", async (payload) => {
     const normalized = normalizeFluxerReaction(payload, { instanceKey });
     if (!normalized) return;
     await pipelines.onFluxerReactionRemove(handle.outbound, normalized);

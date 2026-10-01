@@ -22,26 +22,74 @@ const EXPIRY_CRON = "* * * * *";
 const COLOR_VOID = Color.muted;
 
 /**
+ * Resolve the OutboundClient for one warning row (roadmap/fluxer.md § Scheduler
+ * jobs: clientForCommunity(warn.community_id) for the DM and the log channel).
+ * Accepts the PR 7 supervisor, a raw OutboundClient, or a legacy raw discord.js
+ * client (pre-cutover tests). Null = no ready client for the row.
+ *
+ * @param {object|null} supervisor
+ * @param {number} communityId
+ * @returns {object|null} OutboundClient
+ */
+function resolveOutbound(supervisor, communityId) {
+  if (!supervisor) return null;
+  if (typeof supervisor.clientForCommunity === "function") {
+    try {
+      return supervisor.clientForCommunity(communityId) ?? null;
+    } catch (err) {
+      console.error(
+        `[warnings] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
+      );
+      return null;
+    }
+  }
+  if (typeof supervisor.sendChannel === "function") return supervisor;
+  if (supervisor.guilds || supervisor.channels || supervisor.users) {
+    // Legacy raw discord.js client (pre-PR 7 call site).
+    try {
+      return getDiscordOutbound(supervisor);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The raw Discord client behind the supervisor (null when Discord is
+ * unconfigured). A legacy raw client passed directly is honored.
+ * @param {object|null} supervisor
+ * @returns {object|null}
+ */
+function resolveDiscordClient(supervisor) {
+  if (!supervisor) return null;
+  if (typeof supervisor.clientForCommunity === "function") {
+    return supervisor.discord ?? null;
+  }
+  if (supervisor.guilds) return supervisor; // legacy raw discord.js client
+  return null;
+}
+
+/**
  * Process due expirations.
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity});
+ *        a raw discord.js client is accepted (legacy shim), null tolerable
  * @param {{ now?: number, limit?: number }} [opts]
  * @returns {Promise<{ processed: number, voided: number, errors: number }>}
  */
-async function runWarnExpiryTick(client, opts = {}) {
+async function runWarnExpiryTick(supervisor, opts = {}) {
   const nowMs = opts.now ?? Date.now();
   const due = listExpiredActiveWarnings(nowMs, opts.limit ?? 50);
   let voided = 0;
   let errors = 0;
 
+  const client = resolveDiscordClient(supervisor);
   const botId = client?.user?.id || "system:expiry";
-  // OutboundClient for Discord-side logging; null client (tests) keeps the
-  // old no-op behavior — logWarnEvent returns early on a null outbound.
-  const outbound = client ? getDiscordOutbound(client) : null;
 
   for (const row of due) {
     try {
       // Ticker rows carry the internal integer (community_id); reverse-resolve
-      // the Discord snowflake for audit-channel / DM lookups (spec § Tickers).
+      // the external guild id for audit-channel lookups (spec § Tickers).
       const communityId = row.community_id;
       const community = getCommunityById(communityId);
       const guildId = community?.externalGuildId ?? null;
@@ -51,6 +99,10 @@ async function runWarnExpiryTick(client, opts = {}) {
             `skipping Discord-side logging for W-${row.warning_number}`,
         );
       }
+
+      // Per-row OutboundClient (spec 579: the DM and the log channel both go
+      // through clientForCommunity). null → logging/DM steps no-op below.
+      const outbound = resolveOutbound(supervisor, communityId);
 
       const updated = voidWarning(communityId, row.warning_number, {
         voidedBy: botId,
@@ -84,7 +136,7 @@ async function runWarnExpiryTick(client, opts = {}) {
         ],
       }).catch(() => {});
 
-      await maybeDmExpiry(client, communityId, guildId, updated, activeCount).catch(
+      await maybeDmExpiry(outbound, communityId, updated, activeCount).catch(
         () => {}
       );
     } catch (err) {
@@ -101,47 +153,35 @@ async function runWarnExpiryTick(client, opts = {}) {
 }
 
 /**
- * Best-effort DM when community DMs are on.
- * @param {import("discord.js").Client} client
+ * Best-effort DM when community DMs are on, via OutboundClient.sendDm.
+ * K2 (roadmap/fluxer.md Key Decisions): a DM failure is logged with the
+ * instance key and NEVER posted to the channel.
+ * @param {object|null} outbound OutboundClient for the row's community
  * @param {number} communityId internal communities.id (settings lookup)
- * @param {string|null} externalGuildId Discord snowflake for the guild name
- *        (null when the communities row is missing)
- * @param {object} warn
+ * @param {object} warn the voided warning row
  * @param {number} activeCount
  */
-async function maybeDmExpiry(client, communityId, externalGuildId, warn, activeCount) {
-  if (!client) return;
+async function maybeDmExpiry(outbound, communityId, warn, activeCount) {
+  if (!outbound) return; // no ready client for this row (spec 579: log-and-skip)
   const settings = getGuildSettings(communityId);
   if (Number(settings.warn_dm_members ?? 1) === 0) return;
 
-  let user = null;
-  try {
-    user =
-      client.users?.cache?.get?.(warn.user_id) ||
-      (await client.users?.fetch?.(warn.user_id).catch(() => null));
-  } catch {
-    user = null;
-  }
-  if (!user || typeof user.send !== "function") return;
+  // instanceKey for the K2 log line; fetchGuild supplies the display name on
+  // both platforms (the Discord adapter resolves the communities row itself).
+  const community = getCommunityById(communityId);
+  const instanceKey = community?.instanceKey ?? "discord";
 
   let guildName = "a server";
-  if (externalGuildId) {
-    try {
-      const g =
-        client.guilds?.cache?.get?.(externalGuildId) ||
-        (await client.guilds?.fetch?.(externalGuildId).catch(() => null));
-      if (g?.name) guildName = g.name;
-    } catch {
-      /* keep default */
-    }
-  }
+  const guildHandle = await outbound.fetchGuild(communityId);
+  if (guildHandle?.name) guildName = guildHandle.name;
 
-  const { EmbedBuilder } = require("discord.js");
   const ref = `W-${warn.warning_number}`;
-  const embed = new EmbedBuilder()
-    .setColor(COLOR_VOID)
-    .setTitle(`Warning expired in ${guildName}`)
-    .addFields(
+  // Plain NormalizedEmbed payload (spec § Embeds and attachments) — the
+  // visible copy is byte-identical to the previous EmbedBuilder output.
+  const embed = {
+    color: COLOR_VOID,
+    title: `Warning expired in ${guildName}`,
+    fields: [
       { name: "Warning", value: ref, inline: true },
       {
         name: "Active warnings remaining",
@@ -153,25 +193,31 @@ async function maybeDmExpiry(client, communityId, externalGuildId, warn, activeC
         value:
           "This warning reached its expiry date and was automatically voided. " +
           "It remains in your history as voided.",
-      }
-    )
-    .setFooter({ text: "View your history anytime with /warn mine" });
+      },
+    ],
+    footer: { text: "View your history anytime with /warn mine" },
+  };
 
-  try {
-    await user.send({ embeds: [embed] });
-  } catch {
-    /* DMs closed */
+  const result = await outbound.sendDm(warn.user_id, { embeds: [embed] });
+  if (!result || result.ok !== true) {
+    // K2: log the specific cause with the instance key; never echo the
+    // warning body into a channel.
+    console.warn(
+      `[warnings] expiry DM failed for community ${communityId} (instance ${instanceKey}): ${
+        result?.error || "sendDm returned no result"
+      }`,
+    );
   }
 }
 
 /**
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor
  */
-function startWarnExpiryTicker(client) {
+function startWarnExpiryTicker(supervisor) {
   registerJob({
     name: "warningsExpiry",
     cron: EXPIRY_CRON,
-    run: () => runWarnExpiryTick(client),
+    run: () => runWarnExpiryTick(supervisor),
   });
   console.log("[warnings] Expiry ticker started (every minute)");
 }

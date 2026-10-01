@@ -19,9 +19,56 @@ const {
   expandThumbnailUrl,
   parseTwitchTimestamp,
 } = require("./helix");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 
 /** @type {{ resolveUser: Function, fetchStreams: Function }} */
 const defaultDeps = { resolveUser: resolveTwitchUser, fetchStreams };
+
+/**
+ * Resolve the OutboundClient that posts for one community row
+ * (roadmap/fluxer.md § Scheduler jobs: "Same, twitch_notification_channel_id"
+ * with the row's clientForCommunity). Accepts the PR 7 supervisor, a raw
+ * OutboundClient, or a legacy raw discord.js client (EventSub dispatcher and
+ * existing tests pass raw clients). Returns null when no client is ready.
+ *
+ * @param {object|null} supervisor
+ * @param {number} communityId
+ * @returns {object|null} OutboundClient
+ */
+function resolveOutbound(supervisor, communityId) {
+  if (!supervisor) return null;
+  if (typeof supervisor.clientForCommunity === "function") {
+    try {
+      return supervisor.clientForCommunity(communityId) ?? null;
+    } catch (err) {
+      console.error(
+        `[twitch] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
+      );
+      return null;
+    }
+  }
+  if (typeof supervisor.sendChannel === "function") return supervisor;
+  if (supervisor.guilds || supervisor.channels || supervisor.users) {
+    // Legacy raw discord.js client (pre-PR 7 call site).
+    try {
+      return getDiscordOutbound(supervisor);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and
+ * attachments). EmbedBuilder instances flatten via toJSON(); visible content
+ * is byte-identical.
+ * @param {object} embed
+ * @returns {object}
+ */
+function toPlainEmbed(embed) {
+  return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
+}
 
 /**
  * Build the go-live embed for a Twitch stream.
@@ -69,25 +116,17 @@ function createGoLiveEmbed(sub, stream) {
 
 /**
  * Send the go-live notification for one subscription.
- * @param {import("discord.js").Client} client
+ * @param {object} outbound OutboundClient for the sub's community (spec 577)
  * @param {number} communityId internal community id (row's `community_id`)
  * @param {object} sub stored twitch_channels row
  * @param {object} stream Helix stream object
  */
-async function sendGoLiveNotification(client, communityId, sub, stream) {
+async function sendGoLiveNotification(outbound, communityId, sub, stream) {
   const settings = getGuildSettings(communityId);
   const notifyChannelId = settings.twitch_notification_channel_id;
   if (!notifyChannelId) {
     console.log(
       `[twitch] No notification channel configured for community ${communityId}`,
-    );
-    return;
-  }
-
-  const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
-  if (!channel) {
-    console.error(
-      `[twitch] Could not find notification channel ${notifyChannelId}`,
     );
     return;
   }
@@ -99,14 +138,23 @@ async function sendGoLiveNotification(client, communityId, sub, stream) {
     : `**${roleName}** is live!`;
 
   try {
-    await channel.send({
+    // OutboundClient.sendChannel replaces client.channels.fetch + channel.send.
+    const result = await outbound.sendChannel(notifyChannelId, {
       content,
-      embeds: [createGoLiveEmbed(sub, stream)],
+      embeds: [toPlainEmbed(createGoLiveEmbed(sub, stream))],
       // Only allow the configured role to be pinged (never @everyone/@here).
       allowedMentions: roleId
         ? { parse: ["roles"], roles: [roleId] }
         : { parse: [] },
     });
+    if (!result || result.ok !== true) {
+      console.error(
+        `[twitch] Failed to send go-live notification for ${sub.login}: ${
+          result?.error || "no ready client"
+        }`,
+      );
+      return;
+    }
     console.log(
       `[twitch] Sent go-live notification for ${sub.login} in community ${communityId}`,
     );
@@ -126,12 +174,20 @@ async function sendGoLiveNotification(client, communityId, sub, stream) {
  * EventSub fast path can never both announce the same stream id (Twitch
  * also redelivers, at-least-once).
  *
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor (raw client accepted)
  * @param {number} communityId internal community id (row's `community_id`)
  * @param {object} sub stored twitch_channels row
  * @param {object|undefined} stream matching Helix stream (if any)
  */
-async function processSubscription(client, communityId, sub, stream) {
+async function processSubscription(supervisor, communityId, sub, stream) {
+  // Per-row routing (spec 577): missing client → log and skip the row.
+  const outbound = resolveOutbound(supervisor, communityId);
+  if (!outbound) {
+    console.warn(
+      `[twitch] no ready client for community ${communityId} — skipping`,
+    );
+    return;
+  }
   if (stream) {
     const isNewStream = claimTwitchStream(
       communityId,
@@ -139,7 +195,7 @@ async function processSubscription(client, communityId, sub, stream) {
       stream.id,
     );
     if (isNewStream) {
-      await sendGoLiveNotification(client, communityId, sub, stream);
+      await sendGoLiveNotification(outbound, communityId, sub, stream);
     }
   } else {
     const wasLive = claimTwitchOffline(communityId, sub.broadcaster_id);
@@ -269,26 +325,27 @@ function createVodEmbed(sub, video) {
  * Send a clips/VODs message to the guild's Twitch notify channel.
  * NO role mention (the ping role is for go-live only) with
  * allowedMentions parse-off. Returns false (logged) when delivery failed.
+ * @param {object} outbound OutboundClient for the sub's community
  */
-async function sendMediaNotification(client, communityId, sub, content, embed) {
+async function sendMediaNotification(outbound, communityId, sub, content, embed) {
   const settings = getGuildSettings(communityId);
   const notifyChannelId = settings.twitch_notification_channel_id;
   if (!notifyChannelId) return false;
 
-  const channel = await client.channels.fetch(notifyChannelId).catch(() => null);
-  if (!channel) {
-    console.error(
-      `[twitch] Could not find notification channel ${notifyChannelId}`,
-    );
-    return false;
-  }
-
   try {
-    await channel.send({
+    const result = await outbound.sendChannel(notifyChannelId, {
       content,
-      embeds: [embed],
+      embeds: [toPlainEmbed(embed)],
       allowedMentions: { parse: [] },
     });
+    if (!result || result.ok !== true) {
+      console.error(
+        `[twitch] Failed to send ${content} for ${sub.login}: ${
+          result?.error || "no ready client"
+        }`,
+      );
+      return false;
+    }
     return true;
   } catch (err) {
     console.error(
@@ -310,8 +367,16 @@ async function sendMediaNotification(client, communityId, sub, content, embed) {
  * Discord forever — the drop is logged), and treats a failed lookup as
  * "unknown" (watermark frozen, retried next tick).
  */
-async function processNewClips(client, sub, deps = {}) {
+async function processNewClips(supervisor, sub, deps = {}) {
   const fetch = deps.fetchClips || fetchClips;
+  // Per-row routing (spec 577): resolve the sub's community client up-front.
+  const outbound = resolveOutbound(supervisor, sub.community_id);
+  if (!outbound) {
+    console.warn(
+      `[twitch] no ready client for community ${sub.community_id} — skipping clips for ${sub.login}`,
+    );
+    return;
+  }
   let watermark = sub.last_clip_created_at;
   if (watermark == null) {
     // Opt-in should have seeded this; seed now without announcing.
@@ -344,7 +409,7 @@ async function processNewClips(client, sub, deps = {}) {
   const toSend = fresh.slice(0, MAX_MEDIA_PER_TICK);
   for (const { clip } of toSend) {
     await sendMediaNotification(
-      client,
+      outbound,
       sub.community_id,
       sub,
       `**${displayName}** posted a new clip`,
@@ -372,8 +437,16 @@ async function processNewClips(client, sub, deps = {}) {
  * Watermark = newest video created_at (ms) — created_at is immutable, so
  * processing VODs whose published_at lags can never slip through.
  */
-async function processNewVods(client, sub, deps = {}) {
+async function processNewVods(supervisor, sub, deps = {}) {
   const fetch = deps.fetchArchives || fetchArchives;
+  // Per-row routing (spec 577): resolve the sub's community client up-front.
+  const outbound = resolveOutbound(supervisor, sub.community_id);
+  if (!outbound) {
+    console.warn(
+      `[twitch] no ready client for community ${sub.community_id} — skipping VODs for ${sub.login}`,
+    );
+    return;
+  }
   let watermark = sub.last_video_created_at;
   if (watermark == null) {
     updateTwitchChannelVideoState(sub.community_id, sub.broadcaster_id, {
@@ -400,7 +473,7 @@ async function processNewVods(client, sub, deps = {}) {
   const toSend = fresh.slice(0, MAX_MEDIA_PER_TICK);
   for (const { video } of toSend) {
     await sendMediaNotification(
-      client,
+      outbound,
       sub.community_id,
       sub,
       `**${displayName}** posted a new VOD`,
@@ -471,10 +544,10 @@ async function resolvePendingSubscriptions(deps = defaultDeps) {
 
 /**
  * One polling pass across all guilds/subscriptions.
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
  * @param {object} [deps]
  */
-async function runTwitchTick(client, deps = defaultDeps) {
+async function runTwitchTick(supervisor, deps = defaultDeps) {
   const resolveUser = deps.resolveUser || resolveTwitchUser;
   const fetch = deps.fetchStreams || fetchStreams;
 
@@ -531,7 +604,7 @@ async function runTwitchTick(client, deps = defaultDeps) {
         continue;
       }
       await processSubscription(
-        client,
+        supervisor,
         sub.community_id,
         sub,
         byUserId.get(sub.broadcaster_id),
@@ -549,8 +622,8 @@ async function runTwitchTick(client, deps = defaultDeps) {
   const mediaSubs = all.filter((s) => s.notify_clips || s.notify_vods);
   for (const sub of mediaSubs) {
     try {
-      if (sub.notify_clips) await processNewClips(client, sub, deps);
-      if (sub.notify_vods) await processNewVods(client, sub, deps);
+      if (sub.notify_clips) await processNewClips(supervisor, sub, deps);
+      if (sub.notify_vods) await processNewVods(supervisor, sub, deps);
     } catch (err) {
       console.error(
         `[twitch] Media poll failed for ${sub.login} (guild ${sub.community_id}):`,
@@ -562,9 +635,9 @@ async function runTwitchTick(client, deps = defaultDeps) {
 
 /**
  * Start the Twitch polling ticker (aligned to minute boundaries).
- * @param {import("discord.js").Client} client
+ * @param {object|null} supervisor PR 7 supervisor
  */
-function startTwitchTicker(client) {
+function startTwitchTicker(supervisor) {
   if (!process.env.TWITCH_CLIENT_ID || !process.env.TWITCH_CLIENT_SECRET) {
     console.log(
       "[twitch] Skipping ticker startup - TWITCH_CLIENT_ID/TWITCH_CLIENT_SECRET not configured",
@@ -577,7 +650,7 @@ function startTwitchTicker(client) {
     intervalMs: 60_000,
     align: true,
     runImmediately: true,
-    run: () => runTwitchTick(client),
+    run: () => runTwitchTick(supervisor),
   });
 }
 
