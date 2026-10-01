@@ -21,6 +21,16 @@
  *   (guild-banned users get this same text so a ban is indistinguishable
  *   from a normal failure)
  * - keyword alone with no reply reference: no reply at all (no LLM call).
+ *
+ * Fluxer (roadmap/fluxer.md § Gork mentions and history; PR 8): messages
+ * with `platform: "fluxer"` enter the SAME pipeline through
+ * `runGorkHookFluxer` — normalized-shape fast checks, the shared
+ * `runGorkJob` answer pipeline over a duck adapter (outbound-backed),
+ * the roster via `buildRosterFluxer` (outbound fetchUser/fetchMember),
+ * `read_history` INSTEAD of `read_discord`, replies through
+ * `outbound.sendChannel` with `allowedMentions: { parse: [] }`, and no
+ * thread budget scopes (Fluxer channel types are never threads). The
+ * Discord path is byte-identical.
  */
 
 const { PermissionFlagsBits } = require("discord.js");
@@ -36,7 +46,12 @@ const { ensureCommunity } = require("../../platform/community");
 const { snowflakeTimeMs } = require("../../platform/snowflake");
 const { safeCutIndex, sliceSafe } = require("../../core/text");
 const { buildContext, formatContext, hasReference } = require("./context");
-const { buildRoster, formatRosterBlock, formatUserLabel } = require("./roster");
+const {
+  buildRoster,
+  buildRosterFluxer,
+  formatRosterBlock,
+  formatUserLabel,
+} = require("./roster");
 const { formatChannelBlock, formatChannelLabel } = require("./channel");
 const { NO_PING_MENTIONS, sanitizeAnswer } = require("./sanitize");
 const { buildSystemPrompt } = require("./prompt");
@@ -51,6 +66,12 @@ const {
   READ_DISCORD_TOOL,
   executeReadDiscord,
 } = require("./tools/readDiscord");
+// Fluxer PR 8 (roadmap/fluxer.md § Gork mentions and history): read_history
+// is the Fluxer twin of read_discord; the tool array is picked by platform.
+const {
+  READ_HISTORY_TOOL,
+  executeReadHistory,
+} = require("./tools/readHistory");
 const {
   RECALL_MEMORIES_TOOL,
   executeRecallMemory,
@@ -730,7 +751,96 @@ async function runGorkHook(client, message) {
     //     (registered with the test settle seam; see pendingGorkWork).
     const auditClient = client || message.guild.client || null;
     trackGorkWork(
-      (async () => {
+      runGorkJob({
+        slot,
+        auditClient,
+        guildId,
+        communityId,
+        settings,
+        cfg,
+        message,
+        channel,
+        question,
+        budgetDay,
+        budgetScope: budgetGate.scope,
+        typingInterval,
+      }),
+    );
+  } catch (err) {
+    // 14. The pipeline must never see a rejection.
+    console.error("[gork] pipeline hook error:", err?.message || err);
+  }
+}
+
+/**
+ * The detached gork LLM job (roadmap/gork.md §7.6 — the body of the old
+ * inline IIFE in runGorkHook, lifted unchanged so the Fluxer fast path
+ * (runGorkHookFluxer) reuses the SAME answer pipeline).
+ *
+ * Platform-agnostic by duck typing: `message`/`channel` are any objects with
+ * the discord.js surface this job reads (author, content, channelId,
+ * channel.messages.fetch, reply, send, …) — a real discord.js Message on
+ * Discord, a fluxerGorkAdapter view on Fluxer. The two platform-varying
+ * seams are injected:
+ * - `buildRosterFn(message, messages, question)` — roster resolution
+ *   (discord.js client/guild cache vs. Fluxer outbound handles);
+ * - `readTool = { name, tool, run(args) }` — the linked-reader tool handed to the
+ *   model: `read_discord` on Discord, `read_history` on Fluxer (spec:
+ *   "On a Fluxer community the model is given read_history instead").
+ *   `tool` is the OpenAI tool JSON advertised in the request payload.
+ *
+ * Every input below is exactly what runGorkHook's closure used to capture;
+ * `initialBudgetScope` is the enqueue-time winning scope (decision 30) and
+ * `typingInterval` is the Discord typing timer the finally-block clears
+ * (null on Fluxer v1, where typing is not supported — clearInterval(null)
+ * is a no-op). Never rejects: every failure path replies with the locked
+ * canned text and logs (the caller fire-and-forgets via trackGorkWork).
+ *
+ * @param {object} deps
+ * @param {{ queued: boolean, turn: Promise<void>|null, dropped: boolean }} deps.slot
+ * @param {object|null} deps.auditClient discord.js client for audit embeds (null → no audit)
+ * @param {string} deps.guildId external guild id for logs/audit keys
+ * @param {number} deps.communityId internal integer community id (all repo calls)
+ * @param {object} deps.settings guild settings row (re-read knobs ride through)
+ * @param {{ apiKey: string, baseUrl: string, model: string }} deps.cfg AI config
+ * @param {object} deps.message duck-typed trigger message
+ * @param {object} deps.channel duck-typed trigger channel
+ * @param {string} deps.question parsed trigger question ("" = keyword alone)
+ * @param {string} deps.budgetDay UTC day key for budget accounting
+ * @param {{ scopeKind: string, scopeId: string, limit: number }|null} deps.budgetScope enqueue-time winning scope
+ * @param {ReturnType<typeof setInterval>|null} [deps.typingInterval]
+ * @param {(message: object, messages: object[], question: string) => Promise<object>} [deps.buildRosterFn]
+ * @param {{ name: string, run: (args: object) => Promise<string>|string }} [deps.readTool]
+ * @returns {Promise<void>}
+ */
+async function runGorkJob(deps) {
+  const {
+    slot,
+    auditClient,
+    guildId,
+    communityId,
+    settings,
+    cfg,
+    message,
+    channel,
+    question,
+    budgetDay,
+    budgetScope: initialBudgetScope,
+    typingInterval = null,
+    buildRosterFn = (msg, msgs, q) =>
+      buildRoster(auditClient, msg.guild, msg, msgs, q),
+    readTool = {
+      name: "read_discord",
+      tool: READ_DISCORD_TOOL,
+      run: (args) =>
+        executeReadDiscord(args?.link, {
+          guildId,
+          guild: message.guild,
+          askerId: message.author.id,
+        }),
+    },
+  } = deps;
+  {
       let replied = false;
       // §7.16 write-path state: the shipped sanitized answer (null = no
       // real answer went out → never extract from a canned reply) plus a
@@ -765,7 +875,7 @@ async function runGorkHook(client, message) {
       let mem = { block: "", mode: "none", indexed: 0, selectedIds: [], rows: [], allRows: [] };
       // Winning scope for the success increment (decision 30); refreshed by
       // the dequeue re-check below in case rules changed while queued.
-      let budgetScope = budgetGate.scope;
+      let budgetScope = initialBudgetScope;
       try {
         if (slot.queued) await slot.turn; // wait for our FIFO slot
 
@@ -833,13 +943,10 @@ async function runGorkHook(client, message) {
         // authors, mentioned users) so the model can map names ↔ ids.
         let roster = { entries: new Map(), lines: [], truncated: 0 };
         try {
-          roster = await buildRoster(
-            auditClient,
-            message.guild,
-            message,
-            ctx.messages || [],
-            question,
-          );
+          // Roster resolution is platform-injected: discord.js client/guild
+          // cache (Discord default) vs. outbound fetchUser/fetchMember
+          // handles (Fluxer buildRosterFluxer).
+          roster = await buildRosterFn(message, ctx.messages || [], question);
         } catch {
           // Roster is best-effort: answering must not depend on it.
         }
@@ -914,11 +1021,13 @@ async function runGorkHook(client, message) {
         let recalls = 0;
         let recalled = 0;
         // §7.16 (decision 27) + §7.19 (decision 44): shared tool array —
-        // read_discord is ALWAYS on (no setting, no toggle); the search
-        // pair and/or recall_memories join when their features are on.
+        // the linked reader is ALWAYS on (no setting, no toggle); it is the
+        // platform's tool JSON (read_discord on Discord, read_history on
+        // Fluxer — the job's readTool carries it). The search pair and/or
+        // recall_memories join when their features are on.
         // (The array is never empty now, so the "empty stays undefined"
         // payload note is moot for the tool array itself.)
-        const tools = [READ_DISCORD_TOOL];
+        const tools = [readTool.tool || READ_DISCORD_TOOL];
         if (searchOn) tools.push(WEB_SEARCH_TOOL, READ_PAGE_TOOL);
         if (memoryOn) tools.push(RECALL_MEMORIES_TOOL);
         // Fix 2: the roster block is computed ONCE here (previously inline
@@ -960,16 +1069,14 @@ async function runGorkHook(client, message) {
               // the raw args through (never throws).
               return executeReadPage(args);
             }
-            if (name === "read_discord") {
+            if (name === readTool.name) {
               linkReads += 1;
-              // Never throws (§7.19.4): parses the link itself, gates on
-              // guild isolation + asker parity + open-ticket blackout,
-              // and resolves a graceful failure string on any denial.
-              return executeReadDiscord(args?.link, {
-                guildId,
-                guild: message.guild,
-                askerId: message.author.id,
-              });
+              // Never throws (§7.19.4 / Fluxer § Gork mentions and history):
+              // the platform tool parses its own target, gates on isolation
+              // + open-ticket blackout, and resolves a graceful failure
+              // string on any denial. The tool is chosen by platform:
+              // read_discord on Discord, read_history on Fluxer.
+              return readTool.run(args);
             }
             if (name === "recall_memories") {
               recalls += 1;
@@ -1382,26 +1489,423 @@ async function runGorkHook(client, message) {
             }),
         );
       }
-    })(),
-    );
-  } catch (err) {
-    // 14. The pipeline must never see a rejection.
-    console.error("[gork] pipeline hook error:", err?.message || err);
   }
 }
 
 /**
- * Pipeline-visible hook: the tracked wrapper around runGorkHook so the
- * settle-tracking seam (`whenGorkIdleForTests`) also covers hook-only
- * paths (cooldown clock reaction, banned/queue-full canned replies).
+ * Duck adapter (roadmap/fluxer.md § Gork mentions and history; PR 8 duck-field
+ * inventory): exposes the exact discord.js-shaped surface runGorkJob reads —
+ * author, channel (isTextBased/send/sendTyping/messages.fetch), channelId,
+ * content, createdTimestamp, guild.id, id, member, memberPermissions, react,
+ * reference, reply — backed by the Fluxer OutboundClient and a NormalizedMessage.
+ *
+ * Contract notes:
+ * - `channel.type` is 0 (Fluxer text): budget.js THREAD_TYPES (10/11/12) can
+ *   never resolve a thread scope for a Fluxer trigger (spec: a Fluxer
+ *   channel is never a thread).
+ * - `channel.messages.fetch({limit, before, after})` maps to
+ *   `outbound.fetchMessages` and returns rows shaped like the context
+ *   builder's GorkMessage (author.username is not on the wire — the roster
+ *   resolves ids to labels, and formatContext's Fix 7 re-render supplies
+ *   names; unresolved ids render as `[unknown]`).
+ * - `reply`/`send` force `allowedMentions: { parse: [] }` (spec 642: the
+ *   Fluxer gork reply sends with ALL mention parsing off) and THROW on an
+ *   `{ok:false}` send so the job's catch logs the specific cause and falls
+ *   back to the canned reply — same control flow as a discord.js send
+ *   rejection.
+ * - `memberPermissions.has(bit)` is BigInt-mask correct (`(mask & bit) ===
+ *   bit`), never Number; normalized messages carry no mask, so the default
+ *   0n answers "no permissions" and staff detection rides the staff_roles
+ *   table (memberRoleIds) in the Fluxer fast path.
+ * - `react` is a logged no-op: Fluxer v1 has no reaction support (outbound
+ *   reaction methods are PR 9).
+ * - `createdAt`/`createdTimestamp` come from the gateway timestamp
+ *   (memDateFromMessage needs one of them; spec calls this out explicitly).
+ *
+ * @param {object} outbound Fluxer OutboundClient
+ * @param {object} message NormalizedMessage (platform "fluxer")
+ * @returns {object} duck-typed message for runGorkJob
+ */
+function fluxerGorkAdapter(outbound, message) {
+  const channelId = String(message.channelId);
+  const authorId = message.authorId == null ? "" : String(message.authorId);
+  const createdMs =
+    message.createdAt instanceof Date && Number.isFinite(message.createdAt.getTime())
+      ? message.createdAt.getTime()
+      : Date.now();
+
+  /** OutboundClient row → the {id, content, author, channelId} shape context.js reads. */
+  const toDuckMessage = (row) => ({
+    id: row?.id ?? "",
+    content: row?.content ?? "",
+    channelId,
+    createdAt: row?.createdAt ?? null,
+    author: {
+      id: row?.authorId ?? null,
+      username: null,
+      bot: Boolean(row?.authorBot),
+    },
+  });
+
+  async function fluxerSend(payload, replyToMessageId) {
+    const body =
+      typeof payload === "string" ? { content: payload } : { ...(payload || {}) };
+    // Locked (spec 642): Fluxer gork sends carry NO mention parsing —
+    // nothing in an answer can ping anyone, matching NO_PING_MENTIONS on
+    // Discord. Forced even for chunk continuations (channel.send).
+    body.allowedMentions = { parse: [] };
+    if (replyToMessageId != null) {
+      body.message_reference = { message_id: String(replyToMessageId) };
+    }
+    const res = await outbound.sendChannel(channelId, body);
+    if (!res || res.ok !== true) {
+      throw new Error(
+        `fluxer send to channel ${channelId} failed: ${res?.error || "no result from the platform"}`,
+      );
+    }
+    return { id: res.id ?? null, channelId };
+  }
+
+  const channel = {
+    id: channelId,
+    // Fluxer channel types: 0 = text. Threads do not exist on Fluxer v1.
+    type: 0,
+    isTextBased: () => true,
+    async send(payload) {
+      return fluxerSend(payload, null);
+    },
+    async sendTyping() {
+      // Fluxer v1: no typing endpoint recorded (Phase 0) — inert no-op.
+      return { ok: true };
+    },
+    messages: {
+      async fetch(opts = {}) {
+        const query = {};
+        const limit = Number(opts?.limit);
+        query.limit = Number.isSafeInteger(limit) && limit > 0 ? limit : 100;
+        if (opts?.before != null) query.before = String(opts.before);
+        if (opts?.after != null) query.after = String(opts.after);
+        const res = await outbound.fetchMessages(channelId, query);
+        if (!res || res.ok !== true) {
+          throw new Error(
+            `history fetch for channel ${channelId} failed: ${res?.error || "no result from the platform"}`,
+          );
+        }
+        // Response order is REST-newest-first — the contract context.js's
+        // collectMessages documents (discord.js preserves the same order).
+        return (res.messages || []).map(toDuckMessage);
+      },
+    },
+  };
+
+  // BigInt permission mask (bundle's recommended shape). Normalized
+  // messages carry none, so 0n; a caller MAY attach a resolved mask as
+  // `permissionsMask` (bigint) later without touching this wrapper.
+  const mask =
+    typeof message.permissionsMask === "bigint" ? message.permissionsMask : 0n;
+
+  return {
+    platform: "fluxer",
+    id: String(message.id),
+    channelId,
+    author: { id: authorId, username: null, bot: Boolean(message.authorBot) },
+    content: message.content ?? "",
+    channel,
+    guild: { id: String(message.externalGuildId ?? "") },
+    createdTimestamp: createdMs,
+    createdAt: message.createdAt instanceof Date ? message.createdAt : null,
+    member: null,
+    memberPermissions: {
+      // BigInt-only: a non-bigint flag can never match (spec: masks are
+      // BigInt end-to-end; never Number()).
+      has: (bit) => typeof bit === "bigint" && (mask & bit) === bit,
+    },
+    memberRoleIds: Array.isArray(message.memberRoleIds) ? message.memberRoleIds : [],
+    // Fluxer v1 normalized messages carry no reply reference (Phase 0
+    // MESSAGE_CREATE has no message_reference handling): keyword-alone
+    // triggers stay silent, mirroring Discord decision 3.
+    reference: null,
+    async reply(payload) {
+      return fluxerSend(payload, message.id);
+    },
+    async react() {
+      // Fluxer v1 has no reaction support (PR 9 owns outbound reactions).
+      return { ok: false, skipped: "reactions land in PR 9" };
+    },
+  };
+}
+
+/**
+ * Resolve the OutboundClient a Fluxer gork trigger needs. Prefers the
+ * supervisor's community lookup (spec § Supervisor); accepts a Fluxer
+ * OutboundClient passed directly (tests / direct callers), mirroring the
+ * duck checks decay's client resolver uses.
+ *
+ * @param {object|null} supervisor PR 7 supervisor ({ discord, fluxer, clientForCommunity })
+ * @param {number} communityId
+ * @returns {object|null}
+ */
+function resolveFluxerGorkOutbound(supervisor, communityId) {
+  if (!supervisor) return null;
+  if (typeof supervisor.clientForCommunity === "function") {
+    try {
+      return supervisor.clientForCommunity(communityId) ?? null;
+    } catch (err) {
+      console.error(
+        `[gork] clientForCommunity(${communityId}) failed: ${err?.message || err}`,
+      );
+      return null;
+    }
+  }
+  if (
+    typeof supervisor.sendChannel === "function" &&
+    typeof supervisor.fetchMessages === "function"
+  ) {
+    return supervisor;
+  }
+  return null;
+}
+
+/**
+ * onMessageCreate pipeline hook for a FLUXER message (roadmap/fluxer.md
+ * § Gork mentions and history; PR 8). Mirrors runGorkHook's fast-check order
+ * on the normalized shape: community gate (pipelines resolve `communityId`),
+ * non-bot author, guild text channel, guild enable switch + keyword,
+ * open-ticket blackout, AI key, keyword match, keyword-alone rule, budget
+ * (§7.17), cooldown (staff bypass via the staff_roles table — Fluxer
+ * normalized messages carry no Discord memberPermissions), guild ban list,
+ * queue admission — then the SAME detached answer job via runGorkJob with
+ * the Fluxer roster builder and the `read_history` tool.
+ *
+ * Fluxer v1 deltas (spec: "Fluxer v1 means a prefix command" era — gateway
+ * surfaces the adapter records): typing indicators and cooldown reactions are
+ * not supported (the adapter's no-ops log their absence; the cooldown signal
+ * is this console line). Never throws, never rejects.
+ *
+ * @param {object} outbound Fluxer OutboundClient
+ * @param {object} message NormalizedMessage (platform "fluxer")
+ * @returns {Promise<void>}
+ */
+async function runGorkHookFluxer(outbound, message) {
+  try {
+    // 1. Community + author gates. Fluxer DMs never reach the pipeline
+    //    (normalizeFluxerMessage drops guild-less payloads); `communityId`
+    //    is resolved at the pipeline edge — missing means unroutable.
+    const communityId = message?.communityId;
+    if (!Number.isSafeInteger(communityId)) return;
+    const authorId = message?.authorId == null ? "" : String(message.authorId);
+    if (!authorId || message.authorBot) return;
+    const channelId = message?.channelId == null ? "" : String(message.channelId);
+    if (!channelId) return;
+    const guildId = String(message.externalGuildId ?? communityId);
+
+    if (!outbound || typeof outbound.sendChannel !== "function") {
+      console.error(
+        `[gork] fluxer hook in ${guildId}: no outbound client for community ${communityId} — skipped`,
+      );
+      return;
+    }
+
+    // 3. Community must have gork enabled (mirror of Discord steps 1–5;
+    //    Fluxer has no ensureCommunity to run — the pipeline owns it).
+    const settings = getGuildSettings(communityId);
+    if (Number(settings?.gork_enabled ?? 1) !== 1) return;
+    const keyword = settings?.gork_keyword;
+    if (typeof keyword !== "string" || !keyword.trim()) return;
+
+    // 4. Disabled in open ticket channels (decision 19) — silent.
+    const ticket = getTicketByChannel(communityId, channelId);
+    if (ticket && Number(ticket.archived) !== 1) return;
+
+    // 5. No AI key -> gork is off (decision 7) — silent.
+    const cfg = getAiConfig();
+    if (!cfg.apiKey) return;
+
+    // 6. Keyword must be a prefix of the trimmed content (decision 1).
+    const { triggered, question } = matchKeyword(message.content, keyword);
+    if (!triggered) return;
+
+    // Duck adapter is built only once the message is a real trigger
+    // candidate (every slow path below speaks through it).
+    const msg = fluxerGorkAdapter(outbound, message);
+
+    // 7. Keyword alone: Fluxer normalized messages carry no reply reference
+    //    (adapter reference is null), so this stays silent — the mirror of
+    //    Discord decision 3.
+    if (!question && !hasReference(msg)) return;
+
+    // 7.5. Daily usage budget (§7.17): identical calls, community-keyed.
+    //      msg.channel.type is 0 (Fluxer text), so a Fluxer trigger can
+    //      never resolve a thread budget scope (spec: thread scopes do not
+    //      apply on Fluxer).
+    const budgetDay = memDateFromMessage(msg);
+    const budgetGate = checkGorkBudget({
+      communityId,
+      userId: authorId,
+      channel: msg.channel,
+      day: budgetDay,
+    });
+    if (!budgetGate.allowed) {
+      if (budgetGate.kind === "error") {
+        // Fail closed with the canned reply (same contract as Discord):
+        // no LLM call, no count, never silence.
+        console.error(
+          `[gork] fluxer budget gate error in ${guildId}: user=${authorId} day=${budgetDay} — failing closed`,
+        );
+        if (
+          shouldSendBudgetRejection({
+            communityId,
+            userId: authorId,
+            scope: { scopeKind: "error", scopeId: "0" },
+          })
+        ) {
+          await msg.reply(LLM_FAILURE_REPLY).catch(() => {});
+        }
+        return;
+      }
+      console.log(
+        `[gork] fluxer budget ${budgetGate.kind} in ${guildId}: user=${authorId} scope=${
+          budgetGate.scope ? `${budgetGate.scope.scopeKind}/${budgetGate.scope.scopeId}` : "?"
+        } day=${budgetDay}`,
+      );
+      if (
+        shouldSendBudgetRejection({
+          communityId,
+          userId: authorId,
+          scope: budgetGate.scope,
+        })
+      ) {
+        await msg
+          .reply({ content: budgetGate.reply, allowedMentions: NO_PING_MENTIONS })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // 8. Staff bypass. Fluxer has no discord.js memberPermissions bitset on
+    //    the normalized message (the adapter's BigInt-mask .has answers
+    //    false with no mask): the staff_roles table, consulted from the
+    //    trigger's gateway role ids, is the gate (spec § Permissions: staff
+    //    logic is staff_roles-table logic, unchanged by platform).
+    const staff =
+      Boolean(
+        msg.memberPermissions?.has?.(PermissionFlagsBits.ManageGuild),
+      ) || memberHasStaffRole(communityId, msg.memberRoleIds);
+
+    // 9. Per-user cooldown (guild-overridable; 0 = disabled). Fluxer v1 has
+    //    no reaction support — the visible clock-emoji signal degrades to
+    //    this one log line (the adapter's react() is a logged no-op kept
+    //    for shape parity; skipping the call keeps v1 sends clean).
+    const cd = gorkQueue.checkCooldown({
+      communityId,
+      userId: authorId,
+      cooldownSec: settings.gork_cooldown_sec ?? DEFAULT_COOLDOWN_SEC,
+      staff,
+    });
+    if (!cd.allowed) {
+      console.log(
+        `[gork] fluxer cooldown hit in ${guildId}: user=${authorId} retryAfterMs=${cd.retryAfterMs} (clock-emoji reaction not supported on Fluxer v1)`,
+      );
+      return;
+    }
+
+    // 10. Guild ban list: banned users get the locked LLM-failure canned
+    //     reply (ban indistinguishable from a failure; no staff bypass).
+    if (isGorkBlocked(communityId, authorId)) {
+      await msg.reply(LLM_FAILURE_REPLY).catch(() => {});
+      return;
+    }
+
+    // 11. Concurrency: 1 in-flight per community, FIFO; full queue drops
+    //     with the locked canned reply.
+    const slot = gorkQueue.admit({ communityId });
+    if (slot.dropped) {
+      await msg.reply(QUEUE_FULL_REPLY).catch(() => {});
+      return;
+    }
+
+    // 12. Typing: Fluxer v1 has no typing endpoint — skipped (logged here
+    //     once per trigger; the adapter's sendTyping is an inert no-op).
+    // 13. Detached LLM job (audit embeds are Discord-client-keyed: Fluxer
+    //     v1 has no audit channel, so auditClient is null — the audit
+    //     helpers degrade to their console one-liners).
+    trackGorkWork(
+      runGorkJob({
+        slot,
+        auditClient: null,
+        guildId,
+        communityId,
+        settings,
+        cfg,
+        message: msg,
+        channel: msg.channel,
+        question,
+        budgetDay,
+        budgetScope: budgetGate.scope,
+        typingInterval: null,
+        buildRosterFn: (m, msgs, q) => buildRosterFluxer(outbound, communityId, m, msgs, q),
+        readTool: {
+          name: "read_history",
+          tool: READ_HISTORY_TOOL,
+          run: (args) =>
+            executeReadHistory(args?.link, {
+              communityId,
+              outbound,
+              currentChannelId: channelId,
+              askerId: authorId,
+            }),
+        },
+      }),
+    );
+  } catch (err) {
+    // 14. The pipeline must never see a rejection.
+    console.error("[gork] fluxer pipeline hook error:", err?.message || err);
+  }
+}
+
+/**
+ * Pipeline-visible hook: the tracked wrapper around the platform-specific
+ * gork hook. The first argument is the raw discord.js client on the Discord
+ * path (unchanged); on Fluxer the pipeline passes the SUPERVISOR (Fluxer
+ * boots have no discord.js client) and `message.platform` routes the flow
+ * (roadmap/fluxer.md PR 8: the same hook serves both platforms). The
+ * tracked wrapper (trackGorkWork) is what the settle seam
+ * (`whenGorkIdleForTests`) drains, so it also covers hook-only paths
+ * (cooldown log, banned/queue-full canned replies).
  * Same contract as runGorkHook: never throws, never rejects.
  *
- * @param {import("discord.js").Client} client
- * @param {import("discord.js").Message} message
+ * @param {import("discord.js").Client|object} client discord.js client (Discord) / supervisor (Fluxer)
+ * @param {object} message discord.js Message (Discord) / NormalizedMessage (Fluxer)
  * @returns {Promise<void>}
  */
 function handleGorkMessage(client, message) {
+  if (message?.platform === "fluxer") {
+    return trackGorkWork(runGorkFluxerEntry(client, message));
+  }
   return trackGorkWork(runGorkHook(client, message));
+}
+
+/**
+ * Supervisor → OutboundClient resolution + the Fluxer hook, wrapped so a
+ * resolution failure is logged with context and never rejects the pipeline.
+ *
+ * @param {object|null} supervisor
+ * @param {object} message NormalizedMessage
+ * @returns {Promise<void>}
+ */
+async function runGorkFluxerEntry(supervisor, message) {
+  try {
+    const outbound = resolveFluxerGorkOutbound(supervisor, message?.communityId);
+    if (!outbound) {
+      console.error(
+        `[gork] fluxer hook: no outbound client for community ${message?.communityId} (message ${message?.id}) — skipped`,
+      );
+      return;
+    }
+    await runGorkHookFluxer(outbound, message);
+  } catch (err) {
+    console.error("[gork] fluxer pipeline hook error:", err?.message || err);
+  }
 }
 
 module.exports = {
@@ -1411,6 +1915,10 @@ module.exports = {
   buildUserContent,
   memDateFromMessage,
   handleGorkMessage,
+  // Fluxer PR 8 surface (exported for tests; pipelines go through
+  // handleGorkMessage, which routes by message.platform).
+  runGorkHookFluxer,
+  fluxerGorkAdapter,
   gorkQueue,
   QUEUE_FULL_REPLY,
   LLM_FAILURE_REPLY,

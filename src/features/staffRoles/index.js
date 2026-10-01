@@ -456,6 +456,22 @@ function buildAuthorizeLink(userId, guildId) {
  */
 async function handleSyncPermissions(commandCtx, featureCtx) {
   void featureCtx;
+  // Fluxer (PR 8, roadmap/fluxer.md § Permissions line 566 + § Component-only
+  // table): the OAuth slash-visibility sync is Discord-transport plumbing —
+  // it mints a Discord OAuth consent round and edits Discord application
+  // command permissions. On Fluxer there is no slash picker to sync: the bot
+  // role granted at install time IS the permission grant. Answer with that
+  // fact as the FIRST thing the subcommand does, before any OAuth/ManageGuild
+  // work (locked reply copy — the spec records it verbatim).
+  if (commandCtx.platform === "fluxer") {
+    await commandCtx.reply({
+      content:
+        "Slash-command visibility sync is Discord-only. On Fluxer the bot role from the install is the permission grant.",
+      sensitive: true,
+    });
+    return;
+  }
+
   if (!isAdminOrModFromContext(commandCtx)) {
     await commandCtx.reply({
       content:
