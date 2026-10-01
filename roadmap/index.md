@@ -8,9 +8,9 @@
 
 ## Project Overview
 
-Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, Twitch stream notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, and music playback. This roadmap documents **planned** features and their implementation stages; completed features are archived in [index-completed.md](index-completed.md).
+Boiler Snake is a Discord bot for XP tracking, voice activities, YouTube notifications, Twitch stream notifications, role management, honeypots, scheduled-event reminders, staff notes, guild staff roles, user warnings, help tickets, and music playback — with multi-platform reach to self-hosted Fluxer instances (text-command surface, see [fluxer.md](fluxer.md)). This roadmap documents **planned** features and their implementation stages; completed features are archived in [index-completed.md](index-completed.md).
 
-**Shipped (user docs in `docs/`; completed-feature records in [index-completed.md](index-completed.md) §7; rows for features with open work below):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP + EventSub fast path + clips/VOD alerts), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, user activity tracking (`/userinfo` Activity + `/activityconfig`), help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog).
+**Shipped (user docs in `docs/`; completed-feature records in [index-completed.md](index-completed.md) §7; rows for features with open work below):** XP/leveling, voice XP, decay, level roles, reaction roles, YouTube notifications, Twitch stream notifications (go-live MVP + EventSub fast path + clips/VOD alerts), command-channel restrictions, audit/message logs, honeypot channels & ban roles, scheduled event reminders, guild staff roles (`staff_roles` / `requireStaff`), staff notes, warnings, user activity tracking (`/userinfo` Activity + `/activityconfig`), help tickets (MVP), music player (`/play` via Lavalink + Spotify catalog), Fluxer multi-platform endpoints (text-command surface: prefix commands, XP, reactions, notification tickers, web-admin login — voice XP and elevated actions stay flag-gated, see [fluxer.md](fluxer.md)).
 
 ## Feature Index
 
@@ -22,8 +22,8 @@ Each feature has its own file with the full design, status, and locked decisions
 | 3 | Twitch Stream Notifications | [twitch-notifications.md](twitch-notifications.md) | Shipped (MVP + EventSub + clips/VODs) | Per-channel overrides; templates; go-offline messages |
 | 4 | Guild Staff Roles (Admin Gate) | [staff-roles.md](staff-roles.md) | Shipped | Capability flags beyond junior/senior |
 | 7 | Gork (AI Keyword Q&A) | [gork.md](gork.md) | Shipped | Open fixes in [gork.md §7.15](gork.md): reply/`@user`-message crash repro triage; input policy (pass-through) + no-tables rule **closed & shipped** ([decisions 42–43](gork.md)); per-scope daily usage budget **shipped** (migration `026`; [gork.md §7.17](gork.md)); `read_discord` linked message/channel reader **shipped** ([gork.md §7.19](gork.md)); STE anti-slop answer style **shipped 2026-09-28** ([gork.md §7.20](gork.md)); `/gork summarize` conversation rundown **shipped — decisions 53–57 locked 2026-09-27** ([gork.md §7.21](gork.md)) |
-| 9 | Fluxer (Discord + Fluxer endpoints) | [fluxer.md](fluxer.md) | **Spec — Phase 0 RUN & recorded 2026-09-29** | 11-PR plan in [fluxer.md](fluxer.md); live open items: voice-state capture, ban 204 on a non-owner, MFA capture, 429 bodies, presigned chunked flow, live OAuth exchange |
-| 10 | Channel bridge (Discord ↔ Fluxer) | [bridge.md](bridge.md) | **Draft** (reviewed, no code) | Depends on Fluxer Phases 2–3; spikes in [bridge.md](bridge.md) (Open Questions) |
+| 9 | Fluxer (Discord + Fluxer endpoints) | [fluxer.md](fluxer.md) | **Shipped (v1.30.0 / v1.30.1, 2026-09-30 → 10-01)** | Live-verification items in [fluxer.md § Phase 0 open items](fluxer.md): voice-state capture, ban 204 on a non-owner, MFA capture, 429 bodies, presigned chunked flow, live OAuth exchange (voice XP + elevated actions stay flag-gated off until recorded) |
+| 10 | Channel bridge (Discord ↔ Fluxer) | [bridge.md](bridge.md) | **Draft v2** (reworked 2026-10-01, no code) | Bridge Phase 0 spikes in [bridge.md § 10.14](bridge.md) gate the activation PR; direction modes, edit/delete relay, and at-least-once delivery are locked in that file |
 
 Completed features (**2** Scheduled Event Reminders, **5** Staff Notes, **6** Warnings, **8** Web Admin Console) live in [index-completed.md](index-completed.md) — original numbers are kept for cross-reference.
 
@@ -131,8 +131,8 @@ Event reminders, staff notes, warnings, and web admin console migration tables: 
 
 ### Fluxer (multi-platform endpoints)
 
-- [ ] **Spec, no code.** Reviewed implementation spec: [fluxer.md](fluxer.md). Eleven PRs, starting with a live Phase 0 spike. Do not squat migration `031` (gork STE); the communities migration takes the next free id (`034`+ on today's tree — `032` shipped for twitch EventSub/clips, `033` for gork summarize input tokens).
+- [x] **Shipped 2026-09-29 → 10-01 (v1.30.0 / v1.30.1).** All eleven PRs from [fluxer.md](fluxer.md) landed: `src/platform/` (shared `CommandContext`/community/snowflake core, `discord/` + `fluxer/` adapters), migration `034_communities`, `@fluxerjs/core@3.1.0`, web-admin Fluxer login (dual-cookie session split), operator page `docs/fluxer.md`. The migration-id plan held: `031` stayed with gork STE; communities shipped as `034`. Remaining live-verification items (voice, MFA/elevated, ban-204, 429 bodies, presigned uploads, OAuth exchange) stay open in [fluxer.md § Phase 0 open items](fluxer.md).
 
 ### Channel bridge (Discord ↔ Fluxer)
 
-- [ ] **Draft only.** Specified in [bridge.md](bridge.md). Not part of the Fluxer adapter (`src/platform/`). Do not squat migration `031`.
+- [ ] **Draft v2 (2026-10-01 rework).** Specified in [bridge.md](bridge.md), written against the shipped adapter (v1.30.x): strict 1:1 with per-bridge direction modes, edits/deletes relayed in v1 (forward-only), at-least-once delivery with an on-disk spool, general normalized DM ingestion for credential delivery, and Bridge Phase 0 spikes gating the activation PR. Not part of the Fluxer adapter (`src/platform/`); bridge-owned adapter deltas are enumerated in that file. Do not squat migration `031` — the bridge uses `035`.
