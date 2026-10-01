@@ -52,7 +52,10 @@ Not in v1 by design: gork administration, music queue control, public (non-staff
 ## Pages
 
 Every `/g/{guildId}` page carries a **sidebar** (Overview / Moderation / Configuration) to the
-different areas — items you don't have tier for are hidden. Pages:
+different areas — items you don't have tier for are hidden. The path id is the bot's internal
+**community id** (a small integer — Discord servers and Fluxer communities share the namespace),
+not a Discord snowflake; bookmarks from before the communities migration (`/g/<snowflake>`)
+return 404. Pages:
 - **`/`** — guild list: your staff guilds with tier badges, links into each console (transcripts live at `/t`)
 - **`/g/{guildId}`** — dashboard (bot status, XP/voice/ticket/gork summary cards, **activity & XP charts**, background jobs)
 - **`/g/{guildId}/users`, `/leaderboard`** — member search, XP detail, leaderboard (same data as `/xp` / `/leaderboard`)

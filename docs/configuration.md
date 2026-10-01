@@ -86,6 +86,21 @@ DEV_GUILD_ID=YOUR_TEST_GUILD_ID
 
 Using this registers commands instantly to one guild instead of globally (which can take 1 hour).
 
+#### Fluxer instances (optional)
+
+Run the bot against [Fluxer](https://fluxer.app) chat instances in addition to (or instead of) Discord — one process, one database, env-only. Full operator guide: [Fluxer Instances](fluxer.md).
+
+```env
+# JSON array, one object per instance. Unset = Discord-only (today's behavior).
+FLUXER_INSTANCES=
+# Text-command prefix on Fluxer (default "!", 1-8 chars, no whitespace):
+FLUXER_COMMAND_PREFIX=!
+# Allow non-loopback http: origins (dev only):
+# FLUXER_ALLOW_INSECURE=1
+```
+
+`CLIENT_ID` / `CLIENT_SECRET` stay the **Discord** app's credentials. Each Fluxer instance carries its own OAuth `clientId`/`clientSecret` inside `FLUXER_INSTANCES` (used for the web-admin login button). A malformed `FLUXER_INSTANCES` value stops the bot at boot with the specific reason.
+
 #### Ticket transcripts (optional)
 
 | Variable | Purpose |
