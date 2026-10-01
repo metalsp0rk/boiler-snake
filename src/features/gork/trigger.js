@@ -33,6 +33,7 @@ const {
 } = require("../../db");
 const { getAiConfig, chatCompletion, chatWithTools } = require("../../core/ai");
 const { ensureCommunity } = require("../../platform/community");
+const { snowflakeTimeMs } = require("../../platform/snowflake");
 const { safeCutIndex, sliceSafe } = require("../../core/text");
 const { buildContext, formatContext, hasReference } = require("./context");
 const { buildRoster, formatRosterBlock, formatUserLabel } = require("./roster");
@@ -512,7 +513,7 @@ function memDateFromMessage(message) {
       ? created.getTime()
       : null;
   if (ms === null && /^\d{15,20}$/.test(String(message?.id ?? ""))) {
-    ms = Number((BigInt(message.id) >> 22n) + 1420070400000n);
+    ms = snowflakeTimeMs(message.id, "discord");
   }
   if (ms === null && Number.isFinite(message?.createdTimestamp)) {
     ms = message.createdTimestamp;
