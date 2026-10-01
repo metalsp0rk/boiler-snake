@@ -67,6 +67,10 @@ CLIENT_ID=YOUR_APP_CLIENT_ID
 YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY
 DEV_GUILD_ID=YOUR_TEST_GUILD_ID  # For development
 
+# Fluxer chat instances (JSON array, one object per instance) — see fluxer.md
+# FLUXER_INSTANCES=
+# FLUXER_COMMAND_PREFIX=!
+
 # SQLite location (default: project root). Docker compose sets DATA_DIR=/data
 # DATA_DIR=/data
 # DB_PATH=/data/xpbot.sqlite
@@ -147,6 +151,8 @@ docker compose run --rm bot node src/commands/register.js
 ```
 
 SQLite is stored on the `bot-data` volume at `/data/xpbot.sqlite`. Published images: `ghcr.io/metalsp0rk/boiler-snake`.
+
+Adding [Fluxer](fluxer.md) chat instances to a Discord bot is an env-only change to the same `.env` (`FLUXER_INSTANCES`) — Compose gains no service. Never mount one `bot-data` volume into two deployments; see [Fluxer Instances](fluxer.md#running-two-deployments-warning).
 
 ## Step 6: Configure Bot Role Position
 
