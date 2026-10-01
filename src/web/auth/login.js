@@ -35,9 +35,10 @@
 const {
   createOAuthState,
   verifyOAuthState,
+  STATE_TTL_MS,
   PURPOSES,
 } = require("../../features/commandPermissions/oauthState");
-const { getWebLoginConfig } = require("../config");
+const { getWebLoginConfig, getHttpConfig } = require("../config");
 const {
   renderSignInPage,
   buildContinueHref,
@@ -47,6 +48,17 @@ const { getBotGuildIds } = require("./botGuilds");
 const { encryptAccessToken } = require("./tokens");
 const sessionPolicy = require("./sessions");
 const { setWebSessionAuth } = require("../../db");
+// Fluxer web login (roadmap/fluxer.md § PKCE and state / PR 10) — additive:
+// every Discord function below is untouched. The transactions repo opens the
+// DB facade (src/db), which runs migrations on load; requiring it AFTER
+// ../../db above keeps the migration-first ordering for standalone consumers.
+const {
+  createOAuthTransaction,
+  consumeOAuthTransaction,
+} = require("../../db/repositories/fluxerOAuthTransactions");
+const { createFluxerApi, fluxerInstanceSlug } = require("./fluxerApi");
+const { getCommunityByExternal } = require("../../platform/community");
+const crypto = require("crypto");
 
 /** Snowflake-shaped guild ids only; anything else is dropped (never echoed). */
 const { URL_ID_RE: GUILD_TARGET_RE } = require("../shared/snowflake");
@@ -238,6 +250,11 @@ function buildGuildSnapshot(userGuilds, botGuildIds) {
  * @param {object} [options.sessionApi] session policy overrides (tests)
  * @param {object} [options.tokenApi] { encryptAccessToken } override
  * @param {{ setWebSessionAuth: Function }} [options.store]
+ * @param {() => Array<{ instanceKey: string, slug?: string, label?: string,
+ *   clientId: string|null, clientSecret: string|null }>} [options.getFluxerWebInstances]
+ *   Fluxer instance list for the landing page's per-instance buttons
+ *   (roadmap/fluxer.md § Authorize URL: one button per instance with OAuth
+ *   credentials); absent/empty → Discord-only landing (today's behavior).
  * @returns {{
  *   startLogin: Function,
  *   handleLoginCallback: Function,
@@ -261,6 +278,7 @@ function createLoginHandlers(options = {}) {
   const sessions = options.sessionApi || sessionPolicy;
   const tokenApi = options.tokenApi || { encryptAccessToken };
   const store = options.store || { setWebSessionAuth };
+  const getFluxerWebInstances = options.getFluxerWebInstances || null;
 
   /**
    * GET /auth/login — public sign-in landing; GET /auth/login?continue=1 —
@@ -298,6 +316,32 @@ function createLoginHandlers(options = {}) {
     const nextTarget = readNextTarget(url);
 
     if (url.searchParams.get("continue") !== "1") {
+      // One landing button per Fluxer instance with OAuth credentials
+      // (roadmap/fluxer.md § Authorize URL: "For each configured instance
+      // that has clientId and clientSecret, the home page shows one button").
+      // A broken provider must never take the public landing down — a
+      // credential-less Fluxer block degrades to the Discord-only page.
+      let fluxerLoginLinks = [];
+      if (getFluxerWebInstances) {
+        try {
+          fluxerLoginLinks = (getFluxerWebInstances() || [])
+            .filter(
+              (inst) => inst && inst.instanceKey && inst.clientId && inst.clientSecret
+            )
+            .map((inst) => ({
+              slug:
+                typeof inst.slug === "string" && inst.slug
+                  ? inst.slug
+                  : fluxerInstanceSlug(inst.instanceKey),
+              label: inst.label || inst.instanceKey,
+            }));
+        } catch (err) {
+          console.warn(
+            "[web] /auth/login: Fluxer instance list failed:",
+            err?.message || err
+          );
+        }
+      }
       respondHtml(
         res,
         200,
@@ -309,6 +353,7 @@ function createLoginHandlers(options = {}) {
               guild: guildTarget,
               next: nextTarget,
             }),
+            fluxerLoginLinks,
           })
         )
       );
@@ -488,6 +533,501 @@ function createLoginHandlers(options = {}) {
   return { startLogin, handleLoginCallback, logout };
 }
 
+// ---------------------------------------------------------------------------
+// Fluxer web login (roadmap/fluxer.md § Authorize URL, § PKCE and state,
+// PR 10). ADDITIVE: every Discord function above is byte-identical, uses the
+// `web_session` cookie, and never enters this section; the Fluxer flow reads
+// and writes ONLY `web_session_fx` (K11).
+// ---------------------------------------------------------------------------
+
+/** Route-slug shape: the 16-hex SHA-256 prefix of a normalized instanceKey. */
+const FLUXER_SLUG_RE = /^[0-9a-f]{16}$/;
+/**
+ * Fluxer OAuth scopes (spec § Authorize URL): `identify` + `guilds` ONLY.
+ * Never `guilds.members.read` (not in the registry — fails the grant), never
+ * email/connections/bot.
+ */
+const FLUXER_SCOPES = Object.freeze(["identify", "guilds"]);
+/** Transaction ceiling independent of state expiry: min(state exp, +10 min). */
+const FLUXER_TX_LIFETIME_MS = 10 * 60 * 1000;
+/** Cap for the OAuth error code echoed on the failure page (defense in depth). */
+const MAX_ERROR_CODE_LEN = 64;
+
+/**
+ * Redirect URI for one Fluxer instance, derived from the SAME public base URL
+ * the Discord flow uses (`getHttpConfig().publicBaseUrl`), so authorize and
+ * exchange can rebuild it byte-identically (docs rule, getLoginRedirectUri
+ * precedent — this is the fluxer-specific twin).
+ * @param {string} slug 16-hex instance slug
+ * @param {string} publicBaseUrl
+ * @returns {string}
+ */
+function buildFluxerRedirectUri(slug, publicBaseUrl) {
+  return `${String(publicBaseUrl).replace(/\/+$/, "")}/auth/fluxer/${slug}/callback`;
+}
+
+/**
+ * Safe single-token identifier for failure pages: machine error CODES only
+ * (`invalid_grant`, `fluxer_token_shape`, …). Never `error_description`,
+ * tokens, state, codes, or verifier material (§8.7; spec: "render the page
+ * showing ONLY the error code").
+ * @param {unknown} err
+ * @returns {string|null}
+ */
+function fluxerErrorToken(err) {
+  const raw = typeof err?.oauthError === "string" ? err.oauthError
+    : typeof err?.code === "string" ? err.code
+      : null;
+  if (!raw) return null;
+  return raw.slice(0, MAX_ERROR_CODE_LEN);
+}
+
+/**
+ * Build the three Fluxer login-route handlers with injected dependencies.
+ * Mirrors {@link createLoginHandlers}' injection pattern so tests fake a
+ * Fluxer instance entirely offline; production wires the getters from
+ * features/web (C12).
+ *
+ * @param {object} [options]
+ * @param {() => Array<{ instanceKey: string, slug?: string, label?: string,
+ *   clientId: string|null, clientSecret: string|null, apiBase?: string|null }>} [options.fluxerInstances]
+ *   configured instances; slug is computed here when the provider omits it
+ * @param {(communityId: number) => { fetchGuild: Function }|null} [options.getCommunityClient]
+ *   outbound client for a community (visibility confirmation of guild rows);
+ *   default: no clients (id-only snapshot rows — the sanctioned fallback)
+ * @param {typeof fetch} [options.fetchImpl]
+ * @param {(apiBase: string) => object} [options.apiFactory]
+ * @param {object} [options.stateApi] { createOAuthState, verifyOAuthState, PURPOSES }
+ * @param {object} [options.sessionApi] session policy (tests) — must expose
+ *   rotateSession/destroySession/buildFluxerSessionCookie/buildClearFluxerSessionCookie
+ * @param {object} [options.tokenApi] { encryptAccessToken } override
+ * @param {{ setWebSessionAuth: Function, createOAuthTransaction: Function,
+ *   consumeOAuthTransaction: Function }} [options.store]
+ * @returns {{
+ *   startFluxerLogin: Function,
+ *   handleFluxerLoginCallback: Function,
+ *   fluxerLogout: Function,
+ * }}
+ */
+function createFluxerLoginHandlers(options = {}) {
+  const fluxerInstances = options.fluxerInstances || (() => []);
+  const getCommunityClient = options.getCommunityClient || (() => null);
+  const apiFactory =
+    options.apiFactory
+    || ((apiBase) =>
+      createFluxerApi({ apiBase, fetchImpl: options.fetchImpl, timeoutMs: options.timeoutMs }));
+  const stateApi = options.stateApi || {
+    createOAuthState,
+    verifyOAuthState,
+    PURPOSES,
+  };
+  const sessions = options.sessionApi || sessionPolicy;
+  const tokenApi = options.tokenApi || { encryptAccessToken };
+  const store = options.store || {
+    setWebSessionAuth,
+    createOAuthTransaction,
+    consumeOAuthTransaction,
+  };
+
+  /**
+   * Resolve a login URL slug to its configured instance. Prefers a provider
+   * slug (features/web precomputes them), falls back to deriving it — so the
+   * route works with the plain parseFluxerInstances shape too.
+   * @param {string} slug
+   * @returns {object|null}
+   */
+  function findFluxerInstance(slug) {
+    let instances;
+    try {
+      instances = fluxerInstances() || [];
+    } catch (err) {
+      console.warn(
+        "[web] fluxer login: instance list failed:",
+        err?.message || err
+      );
+      return null;
+    }
+    for (const inst of instances) {
+      if (!inst || !inst.instanceKey) continue;
+      const instSlug =
+        typeof inst.slug === "string" && inst.slug
+          ? inst.slug
+          : fluxerInstanceSlug(inst.instanceKey);
+      if (instSlug === slug) return inst;
+    }
+    return null;
+  }
+
+  /**
+   * GET /auth/fluxer/:slug/login — mint the PKCE pair + signed state, write
+   * the SQLite verifier row BEFORE the 302 (spec: the row lands first), and
+   * redirect to this instance's authorize URL. `?guild=` / `?next=` ride the
+   * state exactly like the Discord flow (same whitelists).
+   * @param {import("http").IncomingMessage & { params?: { slug?: string } }} req
+   * @param {import("http").ServerResponse} res
+   */
+  function startFluxerLogin(req, res) {
+    // RATE LIMIT: same /auth/* limiter as the Discord routes (prefix mount in
+    // app.js) — handlers stay limiter-agnostic.
+    try {
+      const slug =
+        typeof req.params?.slug === "string" ? req.params.slug : "";
+      const instance = FLUXER_SLUG_RE.test(slug) ? findFluxerInstance(slug) : null;
+      if (!instance) {
+        // Unknown slug: the link was never minted by this deployment. 404 —
+        // there is nothing to "log in" to.
+        respondHtml(
+          res,
+          404,
+          authPage("Unknown login", "<p>This login link is not configured.</p>", false)
+        );
+        return;
+      }
+
+      const publicBaseUrl = getHttpConfig().publicBaseUrl;
+      const missing = [];
+      if (!instance.clientId) missing.push("clientId");
+      if (!instance.clientSecret) missing.push("clientSecret");
+      if (!instance.apiBase) missing.push("apiBase (discovery)");
+      if (!publicBaseUrl) missing.push("PUBLIC_BASE_URL");
+      if (missing.length > 0) {
+        // Names only — never values (§8.7, startLogin's 503 pattern).
+        console.warn(
+          `[web] fluxer login: instance ${instance.instanceKey} not configured (missing ${missing.join(", ")})`
+        );
+        respondHtml(
+          res,
+          503,
+          authPage(
+            "Login unavailable",
+            `<p>Fluxer login for <code>${escapeHtml(String(instance.instanceKey))}</code>
+             is not configured on this bot (missing: ${escapeHtml(missing.join(", "))}).</p>`,
+            false
+          )
+        );
+        return;
+      }
+
+      const url = new URL(req.url || "/", "http://web.local");
+      const guildTarget = readGuildTarget(url);
+      const nextTarget = readNextTarget(url);
+
+      // PKCE (spec § PKCE and state): 32 random bytes base64url ⇒ exactly 43
+      // URL-safe chars, no padding; S256 is the only method. The verifier is
+      // NEVER put in the URL, the state, a log, or `usedNonces`.
+      const codeVerifier = crypto.randomBytes(32).toString("base64url");
+      const codeChallenge = crypto
+        .createHash("sha256")
+        .update(codeVerifier)
+        .digest("base64url");
+      // The nonce keys the verifier row INSIDE the signed state (C1).
+      const nonce = crypto.randomBytes(16).toString("hex");
+      const state = stateApi.createOAuthState({
+        purpose: stateApi.PURPOSES.WEB_LOGIN_FLUXER,
+        nonce,
+        guildId: guildTarget || undefined,
+        next: nextTarget || undefined,
+      });
+      // Our own mint sets the expiry: createOAuthState defaults to now+TTL.
+      const stateExp = Date.now() + STATE_TTL_MS;
+
+      // Write the transaction row BEFORE the 302 (spec § PKCE and state).
+      store.createOAuthTransaction({
+        nonce,
+        codeVerifier,
+        instanceKey: instance.instanceKey,
+        expiresAt: Math.min(stateExp, Date.now() + FLUXER_TX_LIFETIME_MS),
+      });
+
+      const api = apiFactory(instance.apiBase);
+      respondRedirect(
+        res,
+        api.buildAuthorizeUrl({
+          clientId: instance.clientId,
+          redirectUri: buildFluxerRedirectUri(slug, publicBaseUrl),
+          scopes: FLUXER_SCOPES,
+          state,
+          prompt: "consent",
+          codeChallenge,
+        })
+      );
+    } catch (err) {
+      // Log the CODE/message only — codes, state, and tokens never (spec).
+      console.error(
+        "[web] fluxer login failed:",
+        err?.code || err?.message || "unknown_error"
+      );
+      respondHtml(
+        res,
+        500,
+        authPage(
+          "Login failed",
+          "<p>Fluxer login could not be started. <a href=\"/auth/login\">Try again</a>.</p>",
+          false
+        )
+      );
+    }
+  }
+
+  /**
+   * GET /auth/fluxer/:slug/callback — verify state (purpose
+   * `web_login_fluxer`), CONSUME the transaction row (DELETE…RETURNING —
+   * single use), exchange the code with the stored verifier, read identity +
+   * guilds, ROTATE the Fluxer session, store the encrypted token pair +
+   * snapshot, Set-Cookie `web_session_fx`, redirect.
+   * @param {import("http").IncomingMessage & { params?: { slug?: string }, fluxerSession?: object|null }} req
+   * @param {import("http").ServerResponse} res
+   * @returns {Promise<void>}
+   */
+  async function handleFluxerLoginCallback(req, res) {
+    try {
+      const slug =
+        typeof req.params?.slug === "string" ? req.params.slug : "";
+      if (!FLUXER_SLUG_RE.test(slug)) {
+        respondHtml(res, 400, INVALID_LINK_HTML);
+        return;
+      }
+
+      const url = new URL(req.url || "/", "http://web.local");
+      // Same shape guards as the Discord callback: missing pieces are 400,
+      // never echoed.
+      const errorParam = url.searchParams.get("error");
+      if (errorParam) {
+        // User denied (or the instance errored the redirect) — no session
+        // changes. The OAuth error code is a safe token to echo.
+        const shown = fluxerErrorToken({ oauthError: errorParam });
+        respondHtml(
+          res,
+          400,
+          authPage(
+            "Login cancelled",
+            `<p>Fluxer reported <code>${escapeHtml(shown || "an error")}</code>.
+             <a href="/auth/login">Try again</a>.</p>`,
+            false
+          )
+        );
+        return;
+      }
+      const code = url.searchParams.get("code");
+      const state = url.searchParams.get("state");
+      if (!code || !state) {
+        respondHtml(res, 400, INVALID_LINK_HTML);
+        return;
+      }
+
+      const verified = stateApi.verifyOAuthState(state);
+      if (!verified || verified.purpose !== stateApi.PURPOSES.WEB_LOGIN_FLUXER) {
+        // Wrong-purpose replay (a Discord web_login or cmd_perms state pointed
+        // here) is rejected — the purposes are not interchangeable (spec).
+        console.warn(
+          "[web] fluxer login callback: state rejected (invalid, expired, reused, or wrong purpose)"
+        );
+        respondHtml(res, 400, INVALID_LINK_HTML);
+        return;
+      }
+
+      const instance = findFluxerInstance(slug);
+      if (!instance || !instance.clientId || !instance.clientSecret || !instance.apiBase) {
+        // The link was minted when the instance WAS configured; config
+        // vanishing mid-flight fails closed (no exchange is possible).
+        console.warn("[web] fluxer login callback: instance not configured at exchange time");
+        respondHtml(res, 400, INVALID_LINK_HTML);
+        return;
+      }
+
+      const publicBaseUrl = getHttpConfig().publicBaseUrl;
+      if (!publicBaseUrl) {
+        // Config vanished mid-flight (env reload) — exchange cannot be
+        // byte-identical; fail closed like the Discord callback's 500.
+        console.warn("[web] fluxer login callback: PUBLIC_BASE_URL unset at exchange time");
+        respondHtml(
+          res,
+          500,
+          authPage("Login failed", "<p>The bot could not complete the login. Try again.</p>", false)
+        );
+        return;
+      }
+
+      // CONSUME: single use enforced by the DELETE…RETURNING (runs on success
+      // AND on every later failure — a failed exchange can never be retried
+      // with the same code, and a replayed state finds zero rows).
+      const tx = store.consumeOAuthTransaction(verified.nonce, Date.now());
+      if (!tx) {
+        console.warn("[web] fluxer login callback: login link expired or already used");
+        respondHtml(res, 400, INVALID_LINK_HTML);
+        return;
+      }
+      if (tx.instanceKey !== instance.instanceKey) {
+        // A state minted for instance A cannot complete on instance B's URL.
+        console.warn("[web] fluxer login callback: transaction instance mismatch");
+        respondHtml(res, 400, INVALID_LINK_HTML);
+        return;
+      }
+
+      const api = apiFactory(instance.apiBase);
+      const tok = await api.exchangeCode({
+        code,
+        // Rebuilt from the same rule the authorize used — byte-identical.
+        redirectUri: buildFluxerRedirectUri(slug, publicBaseUrl),
+        clientId: instance.clientId,
+        clientSecret: instance.clientSecret,
+        codeVerifier: tx.codeVerifier,
+      });
+
+      const user = await api.getUserInfo(tok.accessToken);
+      // Same id-shape guard as the Discord callback: `sub` must look like a
+      // platform id (GUILD_TARGET_RE's digit class) before it becomes a key.
+      const userId =
+        user && typeof user.sub === "string" && GUILD_TARGET_RE.test(user.sub)
+          ? user.sub
+          : null;
+      if (!userId) {
+        const err = new Error("fluxer /oauth2/userinfo returned no usable user id");
+        err.code = "fluxer_user_shape";
+        throw err;
+      }
+      // Contract with middleware/rateLimit.js userKey(): publish the id now
+      // that the exchange revealed it (per-user login bucket, §8.7).
+      req.rateLimitUserHint = userId;
+
+      // Guild snapshot (spec § Guild intersection): keep ONLY rows that map
+      // to a communities row for THIS instance, then confirm bot visibility
+      // via the outbound client (null drop; throw → keep + warn; no client →
+      // keep id-only). Cap 200 via buildGuildSnapshot.
+      const userGuilds = await api.listCurrentUserGuilds(tok.accessToken);
+      const kept = [];
+      for (const guildRow of userGuilds) {
+        const gid =
+          guildRow && typeof guildRow.id === "string" && guildRow.id
+            ? guildRow.id
+            : null;
+        if (!gid) continue;
+        let cid = null;
+        try {
+          cid = getCommunityByExternal("fluxer", instance.instanceKey, gid);
+        } catch (err) {
+          // Malformed external id (e.g. empty string past the guard) — the
+          // row cannot key a community; drop it.
+          console.warn(
+            `[web] fluxer login: community lookup failed for guild ${escapeHtml(String(gid).slice(0, 32))}: ${err?.message || err}`
+          );
+          continue;
+        }
+        if (cid == null) continue; // not a community this bot serves on this instance
+        let outbound = null;
+        try {
+          outbound = getCommunityClient(cid) || null;
+        } catch (err) {
+          console.warn(
+            `[web] fluxer login: outbound client lookup failed for community ${cid}: ${err?.message || err}`
+          );
+        }
+        if (outbound && typeof outbound.fetchGuild === "function") {
+          try {
+            const visible = await outbound.fetchGuild(gid);
+            if (!visible) continue; // bot no longer sees the guild
+          } catch (err) {
+            // Fetch hiccup keeps the row (same fail-open-on-read stance as
+            // the Discord degraded path); tier math re-checks live later.
+            console.warn(
+              `[web] fluxer guild visibility check failed: ${err?.message || err}`
+            );
+          }
+        }
+        kept.push(guildRow);
+        if (kept.length >= MAX_SNAPSHOT_GUILDS) break;
+      }
+      // Identity set = the kept rows themselves (the communities table is the
+      // bot's guild list for this instance).
+      const snapshot = buildGuildSnapshot(
+        kept,
+        new Set(kept.map((g) => String(g.id)))
+      );
+
+      // §8.3 (shared with Fluxer, spec § Session columns): login ALWAYS
+      // rotates the Fluxer session — a pre-login fluxer cookie is destroyed.
+      // The Discord `web_session` row is NEVER touched (K11).
+      const session = sessions.rotateSession(req.fluxerSession || null, {
+        userId,
+        discordTag: null,
+        platform: "fluxer",
+        instanceKey: instance.instanceKey,
+        refreshExpiresAt: tok.refreshExpiresAt,
+      });
+
+      store.setWebSessionAuth(session.id, {
+        accessTokenEnc: tokenApi.encryptAccessToken(tok.accessToken),
+        tokenExpiresAt: tok.expiresAt,
+        scopes: tok.scopes,
+        guildSnapshot: JSON.stringify(snapshot),
+        // Refresh pair rides along (spec § Token exchange and refresh); the
+        // envelope is the same AES-256-GCM scheme — plaintext is never written.
+        refreshTokenEnc: tok.refreshToken
+          ? tokenApi.encryptAccessToken(tok.refreshToken)
+          : null,
+        refreshExpiresAt: tok.refreshExpiresAt,
+      });
+
+      // Destination priority mirrors the Discord callback exactly (§8.15):
+      // signed ticket next (re-whitelisted), then the signed guild target,
+      // then home. `logged-in=1` acknowledges the sign-in exactly once.
+      const nextPath =
+        verified.next && TICKET_NEXT_RE.test(verified.next)
+          ? verified.next
+          : null;
+      const location = nextPath
+        ? `${nextPath}${nextPath.includes("?") ? "&" : "?"}logged-in=1`
+        : verified.guildId
+          ? `/g/${encodeURIComponent(verified.guildId)}?logged-in=1`
+          : "/";
+      respondRedirect(res, location, sessions.buildFluxerSessionCookie(session.id));
+    } catch (err) {
+      // Static log line + page: CODES only — never codes, tokens, verifier,
+      // state, or envelope material (§8.7; spec: show ONLY the error code).
+      console.error(
+        "[web] fluxer login failed:",
+        err?.code || err?.message || "unknown_error"
+      );
+      const shown = fluxerErrorToken(err);
+      respondHtml(
+        res,
+        500,
+        authPage(
+          "Login failed",
+          `<p>Fluxer login could not be completed.
+           ${shown ? `<p>Fluxer reported <code>${escapeHtml(shown)}</code>.</p>` : ""}
+           <a href="/auth/login">Try again</a></p>`,
+          false
+        )
+      );
+    }
+  }
+
+  /**
+   * POST /auth/fluxer/logout — destroy the FLUXER session row + clear
+   * `web_session_fx`. Never reads, writes, or clears `web_session` (K11).
+   * @param {import("http").IncomingMessage & { fluxerSession?: object|null }} req
+   * @param {import("http").ServerResponse} res
+   */
+  function fluxerLogout(req, res) {
+    // CSRF: enforced UPSTREAM by middleware/csrf.js (/auth scope), same as
+    // the Discord logout; anonymous logouts are idempotent no-ops.
+    if (req.fluxerSession) {
+      try {
+        sessions.destroySession(req.fluxerSession.id);
+      } catch (err) {
+        console.warn(
+          "[web] fluxer logout: session destroy failed:",
+          err?.message || err
+        );
+      }
+    }
+    respondRedirect(res, SIGNED_OUT_TARGET, sessions.buildClearFluxerSessionCookie());
+  }
+
+  return { startFluxerLogin, handleFluxerLoginCallback, fluxerLogout };
+}
+
 module.exports = {
   createLoginHandlers,
   // exported for unit tests / subtask 07 guildAccess input contract:
@@ -497,4 +1037,9 @@ module.exports = {
   MAX_SNAPSHOT_GUILDS,
   // clean-logout destination (sessions.js / system.js parity + tests):
   SIGNED_OUT_TARGET,
+  // Fluxer web login (roadmap/fluxer.md PR 10; routes/auth.js + tests):
+  createFluxerLoginHandlers,
+  buildFluxerRedirectUri,
+  FLUXER_SLUG_RE,
+  FLUXER_SCOPES,
 };
