@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.30.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.30.0...v1.30.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* 034 migration crashes on legacy DBs with quoted table DDL ([c4acb90](https://github.com/metalsp0rk/boiler-snake/commit/c4acb90c9049c46e74b48d598b699957449d91fd))
+* ReferenceError in Fluxer connect path (buildRestFaçade typo) ([c751eb3](https://github.com/metalsp0rk/boiler-snake/commit/c751eb3920aaf297fcd27dd9efb415bb447e6acc))
+
 ## [1.30.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.29.0...v1.30.0) (2026-10-01)
 
 
