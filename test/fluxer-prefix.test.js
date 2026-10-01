@@ -449,3 +449,16 @@ describe("fluxer/commands — prefix source (K1)", () => {
     assert.equal(p.commandName, "xp");
   });
 });
+
+describe("fluxer/commands — default tree (prod dispatch path)", () => {
+  it("parsePrefix with NO opts resolves the built-in registry tree", () => {
+    // Regression (prod 2026-10-01): defaultTree() required the registry via a
+    // broken relative path, so EVERY prod prefix command threw
+    // "Cannot find module" inside the pipeline — invisible to every existing
+    // test because they all pass registryCommands explicitly.
+    const p = parsePrefix("!xp");
+    assert.ok(p, "default-tree parse must succeed, not throw");
+    assert.equal(p.commandName, "xp");
+    assert.deepEqual(p.options, []);
+  });
+});
