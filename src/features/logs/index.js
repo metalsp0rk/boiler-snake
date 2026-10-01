@@ -197,7 +197,15 @@ async function handleSetlog(commandCtx, featureCtx) {
   }
 }
 
-function registerEvents(client) {
+/**
+ * PR 7 (spec § Scheduler line 608): bans/kicks/message-delete gateway events
+ * bind to the Discord client only — supervisor.discord, null → no-op binds.
+ * @param {import("../../platform/boot").Supervisor} supervisor
+ * @param {object} [ctx]
+ */
+function registerEvents(supervisor, ctx) {
+  const client = supervisor?.discord ?? null;
+  if (!client) return;
   client.on(Events.MessageDelete, async (message) => {
     try {
       if (!message.guild) return;

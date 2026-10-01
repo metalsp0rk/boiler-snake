@@ -125,7 +125,11 @@ function withPlayer(interaction, client, { mustHaveCurrent = false } = {}) {
 
 async function handlePlay(interaction, ctx) {
   const query = interaction.options.getString("query", true);
-  const gate = requireReady(ctx.client);
+  // PR 7 (spec § Supervisor): the Lavalink-owning Discord client comes from
+  // the supervisor; interaction.client stays the first choice so Discord
+  // dispatch (and integration mocks that attach .client) keeps working.
+  const client = interaction.client ?? ctx?.supervisor?.discord ?? null;
+  const gate = requireReady(client);
   if (!gate.ok) {
     await replyEphemeral(interaction, errorMessage(gate.error));
     return;
@@ -138,7 +142,7 @@ async function handlePlay(interaction, ctx) {
   }
 
   await interaction.deferReply();
-  const result = await playQuery(ctx.client, interaction, query);
+  const result = await playQuery(client, interaction, query);
   if (!result.ok) {
     await replyPublic(interaction, { content: errorMessage(result.error) });
     return;
@@ -157,7 +161,9 @@ async function handlePlay(interaction, ctx) {
 
 async function handleMusic(interaction, ctx) {
   const sub = interaction.options.getSubcommand();
-  const client = ctx.client;
+  // PR 7: Discord client from the supervisor (interaction.client first — the
+  // router hands real interactions here, mocks attach .client).
+  const client = interaction.client ?? ctx?.supervisor?.discord ?? null;
 
   if (sub === "skip") {
     const g = withPlayer(interaction, client, { mustHaveCurrent: true });
@@ -259,7 +265,8 @@ async function handleMusic(interaction, ctx) {
 }
 
 async function handleMusicButton(interaction, ctx) {
-  const g = withPlayer(interaction, ctx.client);
+  // PR 7: Discord client from the supervisor (interaction.client first).
+  const g = withPlayer(interaction, interaction.client ?? ctx?.supervisor?.discord ?? null);
   if (!g.ok) {
     await replyEphemeral(interaction, errorMessage(g.error));
     return;
@@ -332,7 +339,15 @@ function wirePlayerEvents(client, manager) {
   });
 }
 
-function registerEvents(client) {
+/**
+ * Gateway bindings (spec § Scheduler line 608): the raw/voiceState streams
+ * exist on the Discord client only — bind to supervisor.discord, null → no-op.
+ * @param {import("../../platform/boot").Supervisor} supervisor
+ * @param {object} [ctx]
+ */
+function registerEvents(supervisor, ctx) {
+  const client = supervisor?.discord ?? null;
+  if (!client) return;
   client.on("raw", (d) => {
     const manager = getManager(client);
     if (manager && typeof manager.sendRawData === "function") {
@@ -344,8 +359,17 @@ function registerEvents(client) {
   });
 }
 
-function start(client) {
-  const manager = tryCreateManager(client);
+/**
+ * Music is Discord-only (spec § Scheduler line 584): the Lavalink manager
+ * streams voice on Discord guilds, so it is built from supervisor.discord and
+ * NEVER for a Fluxer community. No Discord client → the existing
+ * "not configured" line and no player construction.
+ * @param {import("../../platform/boot").Supervisor} supervisor
+ * @param {object} [ctx]
+ */
+function start(supervisor, ctx) {
+  const client = supervisor?.discord ?? null;
+  const manager = client ? tryCreateManager(client) : null;
   if (!manager) {
     console.log(
       "[music] Lavalink not configured (set LAVALINK_HOST). /play will report that until a node is connected."
