@@ -54,9 +54,33 @@ async function loadFluxerSdk(instanceKey) {
 }
 
 /**
+ * HTTP verb → @fluxerjs/rest REST facade method. The real SDK REST surface
+ * (@fluxerjs/rest@3.x, verified in prod 2026-10-01) exposes get/post/patch/
+ * put/delete — NO `.request()`. RequestManager routes are resolved as
+ * `{api}/v{version}{route}`, i.e. the version prefix is ALWAYS prepended, so
+ * Phase 0 "law" paths (`/v1/...`, correct for raw REST against api_public)
+ * must have their leading `/v1` stripped here to avoid `/api/v1/v1/...` 404s.
+ * RequestManager also ignores an `options.query` object, so query params are
+ * serialized into the route string here.
+ */
+const REST_VERBS = {
+  GET: "get",
+  POST: "post",
+  PATCH: "patch",
+  PUT: "put",
+  DELETE: "delete",
+};
+const VERSION_PREFIX_RE = /^\/v1(?=\/|$)/;
+
+/**
  * Rest façade over the SDK client. Contract 5: `request(method, path,
  * { body?, query? } = {}) => Promise<any>` — SDK Rest-compatible, and the
  * fake in test/helpers/fluxer.js implements the same shape.
+ *
+ * Dispatch order: verb methods (real SDK) → `.request()` (test fake / any
+ * SDK surface exposing it) → surface-mismatch error. Paths keep the Phase 0
+ * `/v1/...` form from callers; the version prefix is stripped for the SDK
+ * verb path only (the fallback path passes the law path through verbatim).
  *
  * @param {any} client SDK client (post-construction; may lack .rest on odd builds)
  * @param {string} instanceKey
@@ -65,12 +89,28 @@ function buildRestFacade(client, instanceKey) {
   return {
     async request(method, path, options = {}) {
       const rest = client && client.rest;
-      if (!rest || typeof rest.request !== "function") {
-        throw new Error(
-          `[fluxer] ${instanceKey} SDK client exposes no rest.request() — SDK surface mismatch`,
-        );
+      const verb = REST_VERBS[String(method).toUpperCase()];
+      const fn = verb && rest && typeof rest[verb] === "function" ? rest[verb] : null;
+      if (fn) {
+        const route = String(path).replace(VERSION_PREFIX_RE, "");
+        const opts = { ...options };
+        let qs = "";
+        if (options.query && typeof options.query === "object") {
+          const params = new URLSearchParams();
+          for (const [key, value] of Object.entries(options.query)) {
+            if (value != null) params.set(key, String(value));
+          }
+          qs = params.toString();
+          delete opts.query;
+        }
+        return fn.call(rest, qs ? `${route}?${qs}` : route, opts);
       }
-      return rest.request(method, path, options);
+      if (rest && typeof rest.request === "function") {
+        return rest.request(method, path, options);
+      }
+      throw new Error(
+        `[fluxer] ${instanceKey} SDK client exposes no REST surface (get/post/patch/put/delete) — SDK surface mismatch`,
+      );
     },
   };
 }
@@ -346,4 +386,5 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
 
 module.exports = {
   createFluxerHandle,
+  buildRestFacade,
 };

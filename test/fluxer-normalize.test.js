@@ -258,3 +258,125 @@ describe("platform/fluxer/normalize — normalizeFluxerReaction", () => {
     }
   });
 });
+
+// The real Fluxer SDK (core package 3.1.0, verified against prod 2026-10-01)
+// emits HYDRATED camelCase model instances, not raw wire payloads: Message
+// uses channelId/guildId/createdAt/mentionRoles with attachments as a
+// Collection (Map subclass); reactions arrive as
+// {messageId, channelId, userId, emoji, user, member, reaction{guildId}}.
+// Prod shipped dropping every message because these shapes were unhandled.
+describe("platform/fluxer/normalize — SDK model payloads (camelCase)", () => {
+  /** Mimics the SDK core package's Collection (Map subclass). */
+  class FakeCollection extends Map {}
+
+  /** Message-shape payload as client.on("messageCreate") delivers it. */
+  function sdkMessage(overrides = {}) {
+    const attachments = new FakeCollection([
+      ["att-1", { id: "att-1", filename: "shot.png", url: "https://cdn.test/shot.png" }],
+    ]);
+    return {
+      // SDK class instance markers: camelCase fields, .client back-reference.
+      partial: false,
+      client: {},
+      id: "1555314179143892992",
+      channelId: "1526398982081740803",
+      guildId: "1526398982081740800",
+      author: { id: "1554590243921854464", username: "sparky", bot: false },
+      content: "!xp",
+      createdAt: new Date(TS_ISO),
+      editedAt: null,
+      pinned: false,
+      attachments,
+      type: 0,
+      flags: 0,
+      mentionEveryone: false,
+      tts: false,
+      embeds: [],
+      stickers: [],
+      reactions: {},
+      messageReference: null,
+      messageSnapshots: [],
+      call: null,
+      referencedMessage: null,
+      webhookId: null,
+      mentions: [{ id: "1554600000000000009", username: "targetbot", bot: true }],
+      mentionRoles: ["1554600000000000010"],
+      nonce: null,
+      nsfwEmojis: [],
+      ...overrides,
+    };
+  }
+
+  it("normalizes an SDK Message model (camelCase + Collection attachments + Date createdAt)", () => {
+    const out = normalizeFluxerMessage(sdkMessage(), { instanceKey: "chat.test" });
+
+    assert.ok(out, "SDK model payload must normalize, not drop");
+    assert.equal(out.platform, "fluxer");
+    assert.equal(out.externalGuildId, "1526398982081740800");
+    assert.equal(out.id, "1555314179143892992");
+    assert.equal(out.channelId, "1526398982081740803");
+    assert.equal(out.authorId, "1554590243921854464");
+    assert.equal(out.authorBot, false);
+    assert.equal(out.content, "!xp");
+    assert.deepEqual(
+      out.attachments,
+      [{ name: "shot.png", url: "https://cdn.test/shot.png" }],
+      "Map-based Collection entries must unwrap to values",
+    );
+    assert.equal(out.createdAt.toISOString(), TS_ISO);
+    assert.deepEqual(out.mentions.users, ["1554600000000000009"]);
+    assert.deepEqual(out.mentions.roles, ["1554600000000000010"]);
+    assert.equal(out.mentionBots.get("1554600000000000009"), true);
+    // SDK Message carries NO member → member fields empty, never a throw.
+    assert.deepEqual(out.memberRoleIds, []);
+    assert.equal(out.memberRaw, null);
+  });
+
+  it("drops SDK-shaped DM messages (guildId null) via the guild gate", () => {
+    assert.equal(normalizeFluxerMessage(sdkMessage({ guildId: null })), null);
+  });
+
+  it("normalizes an SDK reaction payload (flat camelCase ids, guild via reaction model)", () => {
+    const out = normalizeFluxerReaction(
+      {
+        reaction: { guildId: "1526398982081740800", messageId: "m1" },
+        user: { id: "u1", bot: false },
+        message: { id: "m1", guildId: "1526398982081740800" },
+        channel: { id: "c1" },
+        member: null,
+        messageId: "m1",
+        channelId: "c1",
+        emoji: { name: "👍" },
+        userId: "u1",
+      },
+      { instanceKey: "chat.test" },
+    );
+
+    assert.ok(out, "SDK reaction payload must normalize, not drop");
+    assert.equal(out.messageId, "m1");
+    assert.equal(out.channelId, "c1");
+    assert.equal(out.userId, "u1");
+    assert.equal(out.externalGuildId, "1526398982081740800");
+    assert.equal(out.emojiKey, "👍");
+    assert.equal(out.userBot, false);
+  });
+
+  it("normalizes SDK reaction bot flag from the user model (no member present)", () => {
+    const out = normalizeFluxerReaction(
+      {
+        reaction: { guildId: null },
+        user: { id: "b1", bot: true },
+        messageId: "m1",
+        channelId: "c1",
+        emoji: { id: "9", name: "kek" },
+        userId: "b1",
+      },
+      { instanceKey: "chat.test" },
+    );
+
+    assert.ok(out);
+    assert.equal(out.userBot, true);
+    assert.equal(out.emojiKey, "9");
+    assert.equal(out.externalGuildId, null);
+  });
+});

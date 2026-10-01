@@ -11,6 +11,14 @@
  *   MESSAGE_REACTION_ADD/REMOVE is ONE object:
  *   {user_id, channel_id, message_id, emoji{name, id?, animated?}, guild_id?, member?}
  *
+ * The real Fluxer SDK (core package 3.1.0, verified in prod 2026-10-01) emits
+ * HYDRATED camelCase model instances for these events (Message: channelId,
+ * guildId, createdAt, mentionRoles, attachments as a Collection; reaction
+ * payloads: {messageId, channelId, userId, emoji, user, member, reaction}).
+ * Every field read below accepts BOTH spellings — camelCase first where the
+ * SDK model is the source of truth, snake_case kept for raw-wire payloads,
+ * the Phase 0 law, and test fixtures.
+ *
  * SDK-free, discord.js-free, sync. Community resolution is ASYNC and belongs
  * to the pipeline/dispatch layer (contract 4) — this module only sets
  * `communityId: null` for the pipeline to fill.
@@ -18,6 +26,13 @@
 
 /** Phase 0 pre-K10 fallback order for user ids (spec § Mentions, line 475). */
 const USER_ID_KEYS = ["mentions", "mention_users"];
+
+/** SDK model Collection (Map subclass) of attachments → plain array. */
+function iterAttachments(value) {
+  if (Array.isArray(value)) return value;
+  if (value instanceof Map) return Array.from(value.values());
+  return [];
+}
 
 /**
  * Best-effort Date from a gateway timestamp (ISO-8601 string or ms epoch).
@@ -93,9 +108,16 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
   const d = raw && typeof raw === "object" && "d" in raw ? raw.d : raw;
   if (!d || typeof d !== "object") return null;
 
+  // Dual-shape field reads: camelCase = SDK model instance (prod gateway),
+  // snake_case = raw wire payload (Phase 0 record, fixtures).
+  const guildId = d.guild_id ?? d.guildId;
+  const channelId = d.channel_id ?? d.channelId;
+  const timestamp = d.timestamp ?? d.createdAt;
+  const member = d.member ?? null;
+
   // Guild gate: DMs are not feature traffic in v1.
-  if (d.guild_id == null || d.guild_id === "") return null;
-  if (d.id == null || d.channel_id == null) return null;
+  if (guildId == null || guildId === "") return null;
+  if (d.id == null || channelId == null) return null;
   if (!d.author || typeof d.author !== "object" || d.author.id == null) return null;
 
   // Mentions.users: Phase 0 field is `mentions`; the spec's fallback order
@@ -113,7 +135,9 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
   // mentions.channels, numeric types to channelTypes for § Prefix grammar 6.
   const channelIds = [];
   const channelTypes = new Map();
-  const rawChannels = Array.isArray(d.mention_channels) ? d.mention_channels : [];
+  const rawChannels = Array.isArray(d.mention_channels ?? d.mentionChannels)
+    ? (d.mention_channels ?? d.mentionChannels)
+    : [];
   for (const entry of rawChannels) {
     if (typeof entry === "string" || typeof entry === "number") {
       channelIds.push(String(entry));
@@ -126,7 +150,7 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     }
   }
 
-  const attachments = (Array.isArray(d.attachments) ? d.attachments : [])
+  const attachments = iterAttachments(d.attachments)
     .filter((a) => a && typeof a === "object")
     .map((a) => ({ name: a.filename ?? "file", url: a.url ?? "" }));
 
@@ -135,26 +159,26 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     instanceKey,
     // Filled ASYNC by the pipeline via ensureCommunity (contract 4).
     communityId: null,
-    externalGuildId: String(d.guild_id),
+    externalGuildId: String(guildId),
     id: String(d.id),
-    channelId: String(d.channel_id),
+    channelId: String(channelId),
     authorId: String(d.author.id),
     authorBot: Boolean(d.author.bot),
     content: typeof d.content === "string" ? d.content : (d.content ?? ""),
     mentions: {
       users: userIds,
-      roles: mapIdArray(d.mention_roles),
+      roles: mapIdArray(d.mention_roles ?? d.mentionRoles),
       channels: channelIds,
     },
     // Raw author object kept for the context builder's ResolvedUser
     // (username lives only on the gateway payload — contract 6).
     authorRaw: d.author,
     attachments,
-    createdAt: toDate(d.timestamp),
+    createdAt: toDate(timestamp),
     // Pipeline-added fields (contract 1):
-    memberRoleIds: mapIdArray(d.member?.roles),
+    memberRoleIds: mapIdArray(member?.roles),
     channelTypes,
-    memberRaw: d.member ?? null,
+    memberRaw: member,
     // id→bot flags for resolved mentions (dispatch step 3 — never default false).
     mentionBots,
     // Raw mention user objects (id, username, bot) kept for the same reason as
@@ -196,18 +220,26 @@ function normalizeFluxerReaction(raw, { instanceKey = "fluxer" } = {}) {
   const d = raw && typeof raw === "object" && "d" in raw ? raw.d : raw;
   if (!d || typeof d !== "object") return null;
 
-  for (const field of ["message_id", "channel_id", "user_id"]) {
-    if (d[field] == null || d[field] === "") {
+  // Dual-shape reads (SDK payload: flat camelCase ids + reaction model).
+  const messageId = d.message_id ?? d.messageId;
+  const channelId = d.channel_id ?? d.channelId;
+  const userId = d.user_id ?? d.userId;
+  const emoji = d.emoji ?? d.reaction?.emoji ?? null;
+  const guildId = d.guild_id ?? d.guildId ?? d.reaction?.guildId ?? null;
+
+  const fields = { message_id: messageId, channel_id: channelId, user_id: userId };
+  for (const [field, value] of Object.entries(fields)) {
+    if (value == null || value === "") {
       console.error(
-        `[fluxer] reaction payload missing required field "${field}" (instance ${instanceKey}, message ${d.message_id ?? "?"}) — skipped`,
+        `[fluxer] reaction payload missing required field "${field}" (instance ${instanceKey}, message ${messageId ?? "?"}) — skipped`,
       );
       return null;
     }
   }
-  const emojiKey = emojiKeyOf(d.emoji);
+  const emojiKey = emojiKeyOf(emoji);
   if (emojiKey == null) {
     console.error(
-      `[fluxer] reaction payload missing required field "emoji" (instance ${instanceKey}, message ${d.message_id}) — skipped`,
+      `[fluxer] reaction payload missing required field "emoji" (instance ${instanceKey}, message ${messageId}) — skipped`,
     );
     return null;
   }
@@ -217,11 +249,11 @@ function normalizeFluxerReaction(raw, { instanceKey = "fluxer" } = {}) {
     instanceKey,
     // Filled by the pipeline (contract 4 / reaction pipeline order).
     communityId: null,
-    externalGuildId: d.guild_id != null && d.guild_id !== "" ? String(d.guild_id) : null,
-    messageId: String(d.message_id),
-    channelId: String(d.channel_id),
-    userId: String(d.user_id),
-    userBot: Boolean(d.member?.user?.bot),
+    externalGuildId: guildId != null && guildId !== "" ? String(guildId) : null,
+    messageId: String(messageId),
+    channelId: String(channelId),
+    userId: String(userId),
+    userBot: Boolean(d.user?.bot ?? d.member?.user?.bot),
     emojiKey,
   };
 }
