@@ -28,6 +28,7 @@ export default defineConfig({
           { text: 'Tickets', link: '/tickets' },
           { text: 'Web admin console', link: '/web-admin' },
           { text: 'Fluxer instances', link: '/fluxer' },
+          { text: 'Channel bridges', link: '/bridge' },
           { text: 'Warnings', link: '/warnings' },
           { text: 'Event reminders', link: '/event-reminders' },
           { text: 'Gork', link: '/gork' },
@@ -86,6 +87,7 @@ export default defineConfig({
           { text: 'Event reminders', link: '/event-reminders' },
           { text: 'Command restrictions', link: '/command-restrictions' },
           { text: 'Fluxer instances', link: '/fluxer' },
+          { text: 'Channel bridges', link: '/bridge' },
         ],
       },
       {
