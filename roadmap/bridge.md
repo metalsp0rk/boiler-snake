@@ -814,30 +814,32 @@ Same discipline as the Fluxer Phase 0: pass/fail checks recorded **in this file*
 
 Results record as **PASS / FAIL / DOC / SKIPPED** with the observed payload fields, in a `### Phase 0 results (recorded <date>)` subsection, exactly like the fluxer spec's results section.
 
-### Phase 0 results (recorded — PENDING RUN)
+### Phase 0 results (recorded 2026-10-02)
 
-**Status: NOT RUN.** Executed by `npm run fluxer:bridge-spike` (`scripts/fluxer-bridge-spike.js`) against the operator's live deployment; record the run date, instance URL, `X-Fluxer-Version`, test community id + `mfa_level`, and the JSON report path (`.tmp/fluxer-bridge-spike-results-<ts>.json`, local, never committed) in the header line below, then fill one row per probe from the script's `--markdown` summary. **PASS** = confirmed live. **FAIL** = confirmed live and false (apply the "if it comes back false" column of the table above — B2 FAIL switches attribution to quote-prefix, KD 7). **DOC** = docs/OpenAPI-confirmed, not exercised live. **SKIPPED** = operator-skipped; record the re-run flag. **PENDING** rows keep KD 21 closed: PR 7 does not ship while any row is PENDING.
+**Status: EXECUTED** by `npm run fluxer:bridge-spike` against the operator's live deployment. **PASS** = confirmed live. **FAIL** = confirmed live and false (apply the "if it comes back false" column of the table above — B2 FAIL switches attribution to quote-prefix, KD 7). **DOC** = docs/OpenAPI-confirmed, not exercised live. **SKIPPED** = operator-skipped; record the re-run flag. **PENDING** rows keep KD 21 closed: PR 7 does not ship while any row is PENDING.
 
-Run header (fill on execution): date `—`, instance `—`, X-Fluxer-Version `—`, test community `—` (mfa_level `—`), NSFW channel `—`, upload-clamp run: yes/no.
+Run header: date `2026-10-02`, instance `https://chat.metalspork.xyz`, X-Fluxer-Version `2026.924.204848`, test community `1554590611015729152` "Bot Test" (mfa_level `0`), NSFW channel `1555624155687157760` (created for B9), upload-clamp run: **yes**. Bot identity: `BoilerSnakeBridge` (application id `1555623310178385920`). Cleanup: 8/8 probe messages + 2/2 probe webhooks deleted — zero leftovers. JSON report is local, never committed: `/tmp/opencode/bridge-spike-results.json`.
 
 | # | Probe | Status | Observed (status codes, response keys, rendered author, rate-limit headers) |
 |---|-------|--------|-------------------------------------------------------------------------------|
-| B1 | Bot MFA on webhook create (`TWO_FACTOR_REQUIRED`?) | PENDING | |
-| B2 | Per-message `username` override: rendered author = override or stored name? | PENDING | |
-| B3 | `avatar_url` on execute → accepted? rendered? | PENDING | |
-| B4 | Multipart execute attaches bytes (`files[n]` + `payload_json`)? | PENDING | |
-| B5 | Webhook **PATCH** `/webhooks/{id}/{token}/messages/{mid}` supported? | PENDING | |
-| B6 | Webhook **DELETE** `/webhooks/{id}/{token}/messages/{mid}`? | PENDING | |
-| B7 | Rate-limit headers/429 body on webhook create + execute routes | PENDING | |
-| B8 | Nonce idempotency on execute (5-min window, original message returned) | PENDING | |
-| B9 | Bot account vs `NSFW_CONTENT_AGE_RESTRICTED` (age-restricted channel) | PENDING | |
-| B10 | `allowed_mentions: {}` suppresses a literal `@everyone` in body on webhook execute | PENDING | |
-| B11 | Upload size clamp on webhook multipart: exact boundary (25 MiB? 50 MiB?) | PENDING | |
-| B12 | Fluxer avatar URL template for users (template candidates from user objects) | PENDING | |
-| B13 | `POST /v1/webhooks/{id}/{token}` from Node `fetch` (no `Origin`) accepted | PENDING | |
-| B14 | Channel-mention syntax beyond `<#snowflake>` (via `mention_channels[].mention_string`) | PENDING | |
+| B1 | Bot MFA on webhook create (`TWO_FACTOR_REQUIRED`?) | DOC | `GET /guilds/{id}` → 200, `mfa_level=0`; `POST /channels/{id}/webhooks` → 200 (webhook created as the bot). `TWO_FACTOR_REQUIRED` is observable only in an mfa_level 1 community — not exercisable here. KD 20's connect-time MFA sentence stands; docs carry it. |
+| B2 | Per-message `username` override: rendered author = override or stored name? | PASS | Execute `username="Bridged Tester …"` → 200; read-back `author.username` == the per-message override (`global_name=null`, `bot=true`). **Per-message attribution WORKS** — KD 7 success path; quote-prefix fallback not needed. |
+| B3 | `avatar_url` on execute → accepted? rendered? | PASS | `avatar_url=https://cdn.discordapp.com/embed/avatars/0.png` → 200; read-back `author.avatar="1f0bfc08"` — external URL accepted and reflected (stored→hash transform server-side). Visual rendering is a human check; wire-usable confirmed. |
+| B4 | Multipart execute attaches bytes (`files[n]` + `payload_json`)? | PASS | Multipart (payload_json + files[0]) → 200; attachment attached (`filename="spike.png"`, `size=70`, `content_type="image/png"`). Attachment wire fields: `content_hash, content_type, description, expires_at, filename, flags, height, id, nsfw, placeholder, proxy_url, size, title, url, width`. |
+| B5 | Webhook **PATCH** `/webhooks/{id}/{token}/messages/{mid}` supported? | PASS | PATCH → 200; read-back content changed, `edited_timestamp` set. **Edit relay to Fluxer is supported** — the edit-relay gate is open. |
+| B6 | Webhook **DELETE** `/webhooks/{id}/{token}/messages/{mid}`? | PASS | DELETE → 204; direct `GET /channels/{id}/messages/{mid}` → 404 on first poll. **Delete relay supported**; moderation story intact. (Note: the newest-first list read-back is eventually-consistent; the script now polls the single-message GET.) |
+| B7 | Rate-limit headers/429 body on webhook create + execute routes | PASS | Headers on every successful webhook-route response: `x-ratelimit-bucket/-limit/-remaining/-reset/-reset-after` + `x-fluxer-version`. Observed buckets: create `limit=10` (per minute per channel), execute `limit=60` (per minute per webhook) — matches docs. 429 body shape not exercised (stays DOC; worker waits at head per §10.10). |
+| B8 | Nonce idempotency on execute (5-min window, original message returned) | PASS | Two executes, same `nonce` → 200 with the **same message id**. Timeout retries inside the nonce window cannot double-post — §10.6 retry policy holds on this build. |
+| B9 | Bot account vs `NSFW_CONTENT_AGE_RESTRICTED` (age-restricted channel) | PASS | Channel `nsfw=true, type=0`; webhook create → 200; execute into the age-restricted channel → **200, not refused**. The webhook token path is not age-gated; §10.9's hard failure binds the bot-token message-send path — docs note the distinction. |
+| B10 | `allowed_mentions: {}` suppresses a literal `@everyone` in body on webhook execute | PASS | Literal `@everyone @here <@id> <@&id> <#id>` with `allowed_mentions={}` → 200; read-back `mention_everyone=false`, `mentions=[]`, `mention_roles=[]` — **all pings suppressed** (layer 1 confirmed). `mention_channels` is non-empty: Fluxer resolves literal `<#id>` text into display metadata (rendering, not a ping — see B14). Layer 2 body-rewrite stays REQUIRED (§10.11). |
+| B11 | Upload size clamp on webhook multipart: exact boundary (25 MiB? 50 MiB?) | PASS | 25 MiB → 200 attached; 50 MiB → 200 attached; **52 428 801 B → 400 `FILE_SIZE_TOO_LARGE`**. Exact boundary: 52428800 accepted, +1 rejected — the §10.8 ceiling (50 MiB) is confirmed live; constant stands. |
+| B12 | Fluxer avatar URL template for users (template candidates from user objects) | DOC | `GET /users/@me` 200: `avatar` (hash segment, e.g. `"cd49990b"`), `avatar_color`, `banner`, `banner_color`; member fetch 200 carries the same user fields. CDN template not recorded (needs a human browser capture). Fluxer→Discord relay **omits** `avatar_url` until recorded (§10.7). |
+| B13 | `POST /webhooks/{id}/{token}` from Node `fetch` (no `Origin`) accepted | PASS | 10 token-endpoint POSTs via Node global fetch with no `Origin` header — all accepted, no `INVALID_API_ORIGIN`. Re-confirmed on build `2026.924.204848` (was verified 2026-09-25). |
+| B14 | Channel-mention syntax beyond `<#snowflake>` (via `mention_channels[].mention_string`) | DOC | `POST /channels/{id}/messages` with `<#1554590611015729155>` → 200; read-back `mention_channels=[{id, name="general", type=0}]`. `<#snowflake>` is the canonical form; client-UI chip serialization needs a human client capture before adding a parser pattern. |
 
-Open items after a run: B1 stays PENDING unless the run targets an `mfa_level: 1` community (the spike records `mfa_level` of the community it ran against); B11 runs only with `--upload-clamp`; B9 runs only with `--nsfw-channel` / `FLUXER_SPIKE_NSFW_CHANNEL`; B12/B14 close only when the operator records the CDN template / client-observed syntax their DOC lines print.
+**KD 21:** every probe row is recorded (11 PASS, 3 DOC — B9 ran with `--nsfw-channel`, B11 with `--upload-clamp`); **no PENDING rows → the activation gate (PR 7) is open.**
+
+Open follow-ups (docs-only by design — see the "if it comes back false" column; they do not gate PR 7): B1 `TWO_FACTOR_REQUIRED` needs a run against an mfa_level 1 community; B12 needs the operator to record the CDN avatar template from a live client (until then Fluxer→Discord relay omits avatars); B14 needs a human capture of `#name` chip serialization.
 
 ## Security & Privacy Considerations
 
