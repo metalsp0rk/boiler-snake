@@ -207,7 +207,10 @@ describe("bridge service (PR 4)", () => {
       deps,
     });
     assert.equal(res.ok, true, res.error);
-    assert.match(res.publicId, /^b_[0123456789acdefghjklmnpqrstuvwxyz]{8}$/);
+    // Must be the generator's alphabet (CROCKFORD_LOWER, bridges.js:59): the
+    // old class excluded 'b' (valid Crockford → ~1-in-4 flake) and accepted
+    // 'l' (invalid Crockford → false pass). Mirrors CROCKFORD_UPPER_RE lowercased.
+    assert.match(res.publicId, /^b_[0-9a-hj-km-np-tv-z]{8}$/);
     assert.match(res.code, /^BRG-/);
     assert.equal(res.expiresAt, T0 + repo.BRIDGE_CODE_LIFETIME_MS);
     assert.equal(res.direction, "a_to_b"); // to-fluxer from Discord = a_to_b (KD 19)
