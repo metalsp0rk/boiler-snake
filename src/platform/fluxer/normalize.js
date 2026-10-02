@@ -94,10 +94,152 @@ function mapIdArray(value) {
 }
 
 /**
+ * Numeric coercion for relay fields (`size`, `flags`): finite numbers and
+ * bigint-backed BitFields (discord.js parity) become numbers; anything else —
+ * strings, null, NaN, Infinity — becomes null, never a lossy 0.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function toNumberOrNull(value) {
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw =
+    value && typeof value === "object" && typeof value.valueOf === "function"
+      ? value.valueOf()
+      : null;
+  if (typeof raw === "bigint") return Number(raw);
+  return null;
+}
+
+/**
+ * id → string at the boundary; absent/null becomes null (never the string "null").
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function toIdOrNull(value) {
+  return value != null ? String(value) : null;
+}
+
+/**
+ * mapUserMentions + mapIdArray + mapChannelMentions for one raw payload:
+ * the shared mentions block of NormalizedMessage / NormalizedDmMessage.
+ *
+ * mention_channels entries carry {id, name, type, ...} (Phase 0): ids go to
+ * mentions.channels, numeric types to channelTypes for § Prefix grammar 6.
+ *
+ * @param {object} d raw MESSAGE_CREATE `d` (wire or SDK shape)
+ * @returns {{ users: string[], roles: string[], channels: string[], channelTypes: Map<string, number>, bots: Map<string, boolean>, usersRaw: object[] }}
+ */
+function mapMentions(d) {
+  // Mentions.users: Phase 0 field is `mentions`; the spec's fallback order
+  // (line 475) reads the first of mentions / mention_users that is an array.
+  let usersSource = undefined;
+  for (const key of USER_ID_KEYS) {
+    if (Array.isArray(d[key])) {
+      usersSource = d[key];
+      break;
+    }
+  }
+  const { ids: userIds, bots } = mapUserMentions(usersSource);
+
+  const channels = [];
+  const channelTypes = new Map();
+  const rawChannels = Array.isArray(d.mention_channels ?? d.mentionChannels)
+    ? (d.mention_channels ?? d.mentionChannels)
+    : [];
+  for (const entry of rawChannels) {
+    if (typeof entry === "string" || typeof entry === "number") {
+      channels.push(String(entry));
+      continue;
+    }
+    if (entry && typeof entry === "object" && entry.id != null) {
+      const id = String(entry.id);
+      channels.push(id);
+      if (typeof entry.type === "number") channelTypes.set(id, entry.type);
+    }
+  }
+
+  return {
+    users: userIds,
+    roles: mapIdArray(d.mention_roles ?? d.mentionRoles),
+    channels,
+    channelTypes,
+    bots,
+    // Raw mention user objects (id, username, bot) kept for the same reason as
+    // authorRaw: usernames exist only on the gateway payload. Dispatch reads
+    // them when resolving a user option from mentions.
+    usersRaw: Array.isArray(usersSource)
+      ? usersSource.filter((u) => u && typeof u === "object" && u.id != null)
+      : [],
+  };
+}
+
+/**
+ * Relay-required attachment shape (§10.3 item 4): the shipped {name, url} pair
+ * PLUS {id, size, contentType, flags}. Additive — existing consumers keep
+ * reading name/url untouched.
+ * @param {unknown} value attachments array or SDK Collection
+ * @returns {Array<{ name: string, url: string, id: string|null, size: number|null, contentType: string|null, flags: number|null }>}
+ */
+function mapAttachments(value) {
+  return iterAttachments(value)
+    .filter((a) => a && typeof a === "object")
+    .map((a) => ({
+      name: a.filename ?? "file",
+      url: a.url ?? "",
+      id: toIdOrNull(a.id),
+      size: toNumberOrNull(a.size),
+      contentType: a.content_type ?? a.contentType ?? null,
+      flags: toNumberOrNull(a.flags),
+    }));
+}
+
+/**
+ * Stickers array (raw) / Collection (SDK) → [{ id, name }].
+ * @param {unknown} value
+ * @returns {Array<{ id: string, name: string|null }>}
+ */
+function mapStickers(value) {
+  const list = Array.isArray(value) ? value : value instanceof Map ? [...value.values()] : [];
+  return list
+    .filter((s) => s && typeof s === "object" && s.id != null)
+    .map((s) => ({ id: String(s.id), name: s.name ?? null }));
+}
+
+/**
+ * message_snapshots (wire) / messageSnapshots (SDK) → plain array. Forwards
+ * ride the relay (§10.5); the normalizer only lifts the raw entries.
+ * @param {unknown} value
+ * @returns {object[]}
+ */
+function mapSnapshots(value) {
+  return Array.isArray(value) ? [...value] : [];
+}
+
+/**
+ * Author display name, dual-shape (wire snake_case, SDK camelCase). Falls back
+ * to the username, then "" — a display name is cosmetic, never required.
+ * @param {object} author raw author object
+ * @returns {string}
+ */
+function authorDisplayNameOf(author) {
+  return (
+    author.display_name ??
+    author.displayName ??
+    author.global_name ??
+    author.globalName ??
+    author.username ??
+    ""
+  );
+}
+
+/**
  * Normalize one Fluxer MESSAGE_CREATE gateway event into a NormalizedMessage.
  *
- * DMs (no `d.guild_id`) are dropped: v1 features are guild-scoped (spec
- * contract 4 — `null` when `d` has no guild_id).
+ * DMs (no `d.guild_id`) return null here: v1 features are guild-scoped (spec
+ * contract 4 — `null` when `d` has no guild_id). The DM path is the separate
+ * normalizeFluxerDmMessage (§10.3 delta 1, KD 24), wired by client.js's
+ * opt-in `onDmMessage` hook — this function's drop behavior is unchanged.
  *
  * @param {{t?: string, d?: object}|object} raw gateway event `{t, d}` (a bare
  *   `d` payload is accepted too)
@@ -120,39 +262,9 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
   if (d.id == null || channelId == null) return null;
   if (!d.author || typeof d.author !== "object" || d.author.id == null) return null;
 
-  // Mentions.users: Phase 0 field is `mentions`; the spec's fallback order
-  // (line 475) reads the first of mentions / mention_users that is an array.
-  let usersSource = undefined;
-  for (const key of USER_ID_KEYS) {
-    if (Array.isArray(d[key])) {
-      usersSource = d[key];
-      break;
-    }
-  }
-  const { ids: userIds, bots: mentionBots } = mapUserMentions(usersSource);
+  const mentionMap = mapMentions(d);
 
-  // mention_channels entries carry {id, name, type, ...} (Phase 0): ids go to
-  // mentions.channels, numeric types to channelTypes for § Prefix grammar 6.
-  const channelIds = [];
-  const channelTypes = new Map();
-  const rawChannels = Array.isArray(d.mention_channels ?? d.mentionChannels)
-    ? (d.mention_channels ?? d.mentionChannels)
-    : [];
-  for (const entry of rawChannels) {
-    if (typeof entry === "string" || typeof entry === "number") {
-      channelIds.push(String(entry));
-      continue;
-    }
-    if (entry && typeof entry === "object" && entry.id != null) {
-      const id = String(entry.id);
-      channelIds.push(id);
-      if (typeof entry.type === "number") channelTypes.set(id, entry.type);
-    }
-  }
-
-  const attachments = iterAttachments(d.attachments)
-    .filter((a) => a && typeof a === "object")
-    .map((a) => ({ name: a.filename ?? "file", url: a.url ?? "" }));
+  const attachments = mapAttachments(d.attachments);
 
   return {
     platform: "fluxer",
@@ -164,11 +276,13 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     channelId: String(channelId),
     authorId: String(d.author.id),
     authorBot: Boolean(d.author.bot),
+    // Relay-required display name (§10.3 item 4); "" when the payload carries none.
+    authorDisplayName: authorDisplayNameOf(d.author),
     content: typeof d.content === "string" ? d.content : (d.content ?? ""),
     mentions: {
-      users: userIds,
-      roles: mapIdArray(d.mention_roles ?? d.mentionRoles),
-      channels: channelIds,
+      users: mentionMap.users,
+      roles: mentionMap.roles,
+      channels: mentionMap.channels,
     },
     // Raw author object kept for the context builder's ResolvedUser
     // (username lives only on the gateway payload — contract 6).
@@ -177,17 +291,95 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     createdAt: toDate(timestamp),
     // Pipeline-added fields (contract 1):
     memberRoleIds: mapIdArray(member?.roles),
-    channelTypes,
+    channelTypes: mentionMap.channelTypes,
     memberRaw: member,
     // id→bot flags for resolved mentions (dispatch step 3 — never default false).
-    mentionBots,
+    mentionBots: mentionMap.bots,
     // Raw mention user objects (id, username, bot) kept for the same reason as
     // authorRaw: usernames exist only on the gateway payload. Dispatch reads
     // them when resolving a user option from mentions.
-    mentionUsersRaw: Array.isArray(usersSource)
-      ? usersSource.filter((u) => u && typeof u === "object" && u.id != null)
-      : [],
+    mentionUsersRaw: mentionMap.usersRaw,
+    // Relay-required fields (§10.3 item 4). Additive: existing consumers keep
+    // working unchanged. webhookId is the RAW truth of the payload; Fluxer
+    // webhook authors additionally carry the webhook id in author.id (the
+    // authorId above), and BOTH are exposed — the gate needs both.
+    webhookId: toIdOrNull(d.webhook_id ?? d.webhookId),
+    type: typeof d.type === "number" ? d.type : null,
+    messageSnapshots: mapSnapshots(d.message_snapshots ?? d.messageSnapshots),
+    stickers: mapStickers(d.stickers),
     parsePrefix: null,
+  };
+}
+
+/**
+ * @typedef {object} NormalizedDmMessage
+ * @property {"discord"|"fluxer"} platform
+ * @property {string} instanceKey
+ * @property {string} channelId        // DM channel id (type 1); NOT a guild channel
+ * @property {string} id
+ * @property {string} authorId         // the user on the other end
+ * @property {string} content
+ * @property {{ users: string[], roles: string[], channels: string[] }} mentions
+ * @property {{ name: string, url: string }[]} attachments
+ * @property {Date|null} createdAt
+ * // No communityId: a DM has no community. Consumers key by
+ * // (platform, instanceKey, authorId).
+ */
+
+/**
+ * Normalize one Fluxer MESSAGE_CREATE gateway event into a NormalizedDmMessage.
+ *
+ * The mirror of normalizeFluxerMessage's guild gate (roadmap/bridge.md §10.3
+ * delta 1, KD 24): payloads WITHOUT a guild id are the DM path. A payload that
+ * carries a guild id is guild-scoped traffic and returns null here — the guild
+ * pipeline keeps owning it.
+ *
+ * SDK-free, sync, policy-free: NO community lookup happens on this path (a DM
+ * has no community), and nothing here knows the bridge exists — routing is the
+ * client's opt-in hook (client.js `onDmMessage`).
+ *
+ * @param {{t?: string, d?: object}|object} raw gateway event `{t, d}` (a bare
+ *   `d` payload is accepted too)
+ * @param {{instanceKey?: string}} [opts]
+ * @returns {NormalizedDmMessage|null} NormalizedDmMessage, or null for guild
+ *   payloads / payloads missing id, channel, or author
+ */
+function normalizeFluxerDmMessage(raw, { instanceKey = "fluxer" } = {}) {
+  const d = raw && typeof raw === "object" && "d" in raw ? raw.d : raw;
+  if (!d || typeof d !== "object") return null;
+
+  // Dual-shape field reads, same contract as the guild path.
+  const guildId = d.guild_id ?? d.guildId;
+  const channelId = d.channel_id ?? d.channelId;
+  const timestamp = d.timestamp ?? d.createdAt;
+
+  // DM gate: a payload WITH a guild id is guild traffic — never a DM.
+  if (guildId != null && guildId !== "") return null;
+  if (d.id == null || channelId == null) return null;
+  if (!d.author || typeof d.author !== "object" || d.author.id == null) return null;
+
+  const mentionMap = mapMentions(d);
+
+  // The typedef pins attachments to { name, url } — the DM shape stays minimal
+  // (the relay's full attachment detail rides fetchMessage, not this hook).
+  const attachments = iterAttachments(d.attachments)
+    .filter((a) => a && typeof a === "object")
+    .map((a) => ({ name: a.filename ?? "file", url: a.url ?? "" }));
+
+  return {
+    platform: "fluxer",
+    instanceKey,
+    channelId: String(channelId),
+    id: String(d.id),
+    authorId: String(d.author.id),
+    content: typeof d.content === "string" ? d.content : (d.content ?? ""),
+    mentions: {
+      users: mentionMap.users,
+      roles: mentionMap.roles,
+      channels: mentionMap.channels,
+    },
+    attachments,
+    createdAt: toDate(timestamp),
   };
 }
 
@@ -260,5 +452,6 @@ function normalizeFluxerReaction(raw, { instanceKey = "fluxer" } = {}) {
 
 module.exports = {
   normalizeFluxerMessage,
+  normalizeFluxerDmMessage,
   normalizeFluxerReaction,
 };

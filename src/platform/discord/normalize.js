@@ -36,6 +36,37 @@ function collectIds(collection) {
 }
 
 /**
+ * Numeric relay fields (`size`, `flags`): finite numbers and bigint BitFields
+ * → number; anything else → null (never a lossy 0). Idempotent: a second pass
+ * sees the normalized number and keeps it.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function toNumberOrNull(value) {
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw =
+    value && typeof value === "object" && typeof value.valueOf === "function"
+      ? value.valueOf()
+      : null;
+  if (typeof raw === "bigint") return Number(raw);
+  return null;
+}
+
+/**
+ * Stickers Collection/array → [{ id, name }]. Idempotent on its own output.
+ * @param {unknown} value
+ * @returns {Array<{ id: string, name: string|null }>}
+ */
+function mapStickerList(value) {
+  const list =
+    Array.isArray(value) ? value : typeof value?.values === "function" ? [...value.values()] : [];
+  return list
+    .filter((s) => s && typeof s === "object" && s.id != null)
+    .map((s) => ({ id: String(s.id), name: s.name ?? null }));
+}
+
+/**
  * Overlay the NormalizedMessage fields on a Discord message, in place.
  *
  * Field mapping (spec table, roadmap lines 213–267):
@@ -49,6 +80,11 @@ function collectIds(collection) {
  *
  * Idempotent: running it twice on the same object produces the same field
  * values (plain assignment + the idempotent ensureCommunity).
+ *
+ * PR 3 (§10.3 item 4) adds the relay-required fields — webhookId,
+ * authorDisplayName, type, attachment {id, size, contentType, flags},
+ * messageSnapshots, stickers — same field set the Fluxer normalizer fills.
+ * Additive: every shipped consumer keeps reading the fields it knows.
  *
  * @param {object} message raw discord.js Message (or a test mock exposing the
  *   same duck fields: id, content, guild, guildId, channel, channelId, author,
@@ -94,9 +130,15 @@ function normalizeDiscordMessage(message) {
       : Array.isArray(attachmentsSource)
         ? attachmentsSource
         : [];
+  // Relay-required attachment detail (§10.3 item 4) rides alongside the
+  // shipped {name, url} pair — additive, existing consumers unaffected.
   message.attachments = attachmentList.map((a) => ({
     name: a?.name ?? "",
     url: a?.url ?? "",
+    id: a?.id != null ? String(a?.id) : null,
+    size: toNumberOrNull(a?.size),
+    contentType: a?.contentType ?? null,
+    flags: toNumberOrNull(a?.flags),
   }));
 
   message.createdAt =
@@ -105,6 +147,28 @@ function normalizeDiscordMessage(message) {
       : message.createdTimestamp != null
         ? new Date(Number(message.createdTimestamp))
         : null;
+
+  // Relay-required fields (§10.3 item 4). All idempotent: every mapping below
+  // reproduces its own normalized output on a second pass.
+  //   webhookId: raw truth of the payload (null when absent).
+  //   authorDisplayName: guild nickname/Global Display Name, falling back to
+  //     the username ("" only when the author object carries neither).
+  //   type: numeric message type (null when the payload carries none).
+  //   stickers / messageSnapshots: relay reads these for copy composition.
+  message.webhookId = message.webhookId != null ? String(message.webhookId) : null;
+  message.authorDisplayName =
+    message.member?.displayName ??
+    message.author?.displayName ??
+    message.author?.globalName ??
+    message.author?.username ??
+    "";
+  message.type = typeof message.type === "number" ? message.type : null;
+  message.messageSnapshots = Array.isArray(message.messageSnapshots)
+    ? [...message.messageSnapshots]
+    : typeof message.messageSnapshots?.values === "function"
+      ? [...message.messageSnapshots.values()]
+      : [];
+  message.stickers = mapStickerList(message.stickers);
 
   // Spec line 215: Discord messages NEVER enter the prefix branch.
   message.parsePrefix = null;

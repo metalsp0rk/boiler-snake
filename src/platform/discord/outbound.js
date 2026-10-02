@@ -122,6 +122,107 @@ function normalizeMessage(msg) {
   };
 }
 
+/** Numeric relay fields: finite numbers / bigint BitFields → number; else null. */
+function toNumberOrNull(value) {
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw =
+    value && typeof value === "object" && typeof value.valueOf === "function"
+      ? value.valueOf()
+      : null;
+  if (typeof raw === "bigint") return Number(raw);
+  return null;
+}
+
+/** id → string at the boundary; absent/null → null. */
+function toIdOrNull(value) {
+  return value != null ? String(value) : null;
+}
+
+/** Date / epoch ms / ISO string → ISO string; unparseable → null. */
+function toIsoString(value) {
+  if (value == null) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? new Date(value).toISOString() : null;
+  }
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/** Collection/array of stickers → [{ id, name }]. */
+function mapStickerList(value) {
+  const list =
+    Array.isArray(value) ? value : typeof value?.values === "function" ? [...value.values()] : [];
+  return list
+    .filter((s) => s && typeof s === "object" && s.id != null)
+    .map((s) => ({ id: String(s.id), name: s.name ?? null }));
+}
+
+/**
+ * discord.js Message → the §10.3 fetch shape (same field set the Fluxer
+ * adapter returns; guild-scoped). Attachment descriptors carry
+ * { id, filename, size, contentType, flags, url, proxyUrl } — the exact
+ * descriptors media relay (media refresh, spool recovery) reads back.
+ *
+ * @param {object} msg discord.js Message (or duck-typed mock)
+ * @param {{ communityId: number, externalGuildId: string|null }} ctx
+ * @returns {object}
+ */
+function normalizeFetchedMessage(msg, { communityId, externalGuildId }) {
+  const author = msg.author && typeof msg.author === "object" ? msg.author : null;
+  const attachments =
+    typeof msg.attachments?.values === "function"
+      ? [...msg.attachments.values()]
+      : Array.isArray(msg.attachments)
+        ? msg.attachments
+        : [];
+  const snapshots = Array.isArray(msg.messageSnapshots)
+    ? [...msg.messageSnapshots]
+    : typeof msg.messageSnapshots?.values === "function"
+      ? [...msg.messageSnapshots.values()]
+      : [];
+  return {
+    platform: "discord",
+    instanceKey: "discord",
+    communityId,
+    externalGuildId,
+    id: String(msg.id),
+    channelId: toIdOrNull(msg.channelId ?? msg.channel?.id ?? null),
+    authorId: toIdOrNull(author?.id),
+    authorBot: Boolean(author?.bot),
+    author: author
+      ? {
+          id: toIdOrNull(author.id),
+          username: author.username ?? "",
+          displayName:
+            msg.member?.displayName ?? author.displayName ?? author.globalName ?? author.username ?? "",
+          bot: Boolean(author.bot),
+        }
+      : null,
+    content: msg.content ?? "",
+    type: typeof msg.type === "number" ? msg.type : null,
+    flags: toNumberOrNull(msg.flags),
+    webhookId: toIdOrNull(msg.webhookId),
+    attachments: attachments
+      .filter((a) => a && typeof a === "object")
+      .map((a) => ({
+        id: toIdOrNull(a.id),
+        filename: a.name ?? "",
+        size: toNumberOrNull(a.size),
+        contentType: a.contentType ?? null,
+        flags: toNumberOrNull(a.flags),
+        url: a.url ?? "",
+        proxyUrl: a.proxyURL ?? a.proxyUrl ?? null,
+      })),
+    messageSnapshots: snapshots,
+    stickers: mapStickerList(msg.stickers),
+    editedTimestamp: toNumberOrNull(msg.editedTimestamp),
+    deleted: Boolean(msg.deleted),
+    createdAt: toIsoString(msg.createdTimestamp ?? msg.createdAt),
+  };
+}
+
 /**
  * Resolve communityId → Discord Guild. The communities lookup is a programmer
  * error (throw, via getCommunityById); a missing guild (bot kicked, intents
@@ -696,6 +797,74 @@ function createDiscordOutbound(client) {
         return {
           ok: false,
           error: `fetchMessages: history for channel ${channelId} failed: ${causeOf(err)}`,
+        };
+      }
+    },
+
+    /**
+     * Fetch ONE message by id (§10.3 delta 2): the community's guild resolves
+     * the channel (guild-scoped — a channel outside the community's guild is
+     * "not found"), then `channel.messages.fetch(id)` REST-reads the message.
+     * Cache is deliberately NOT consulted: this is the re-read path (media
+     * refresh, edit relay payloads, spool-loss recovery) and must see current
+     * state, not the gateway snapshot.
+     *
+     * @param {number} communityId
+     * @param {string} channelId
+     * @param {string} messageId
+     * @returns {Promise<{ ok: true, message: object }|{ ok: false, error: string, code?: string }>}
+     */
+    async fetchMessage(communityId, channelId, messageId) {
+      assertCommunityId(communityId);
+      if (messageId == null || String(messageId) === "") {
+        return { ok: false, error: "fetchMessage: a messageId is required" };
+      }
+      try {
+        const found = await lookupGuild(client, communityId, "fetchMessage");
+        if (found.error) return { ok: false, error: found.error };
+        let channel = null;
+        try {
+          channel = (await found.guild.channels.fetch(String(channelId))) ?? null;
+        } catch (err) {
+          return {
+            ok: false,
+            error: `fetchMessage: channel ${channelId} in community ${communityId} fetch failed: ${causeOf(err)}`,
+            ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+          };
+        }
+        if (!channel) {
+          return {
+            ok: false,
+            error: `fetchMessage: channel ${channelId} not found in community ${communityId}`,
+          };
+        }
+        let message = null;
+        try {
+          message = (await channel.messages?.fetch?.(String(messageId))) ?? null;
+        } catch (err) {
+          return {
+            ok: false,
+            error: `fetchMessage: message ${messageId} in channel ${channelId} fetch failed: ${causeOf(err)}`,
+            ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+          };
+        }
+        if (!message) {
+          return {
+            ok: false,
+            error: `fetchMessage: message ${messageId} in channel ${channelId} not found`,
+          };
+        }
+        return {
+          ok: true,
+          message: normalizeFetchedMessage(message, {
+            communityId,
+            externalGuildId: found.externalGuildId,
+          }),
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: `fetchMessage: message ${messageId} in channel ${channelId} failed: ${causeOf(err)}`,
         };
       }
     },
