@@ -814,6 +814,31 @@ Same discipline as the Fluxer Phase 0: pass/fail checks recorded **in this file*
 
 Results record as **PASS / FAIL / DOC / SKIPPED** with the observed payload fields, in a `### Phase 0 results (recorded <date>)` subsection, exactly like the fluxer spec's results section.
 
+### Phase 0 results (recorded — PENDING RUN)
+
+**Status: NOT RUN.** Executed by `npm run fluxer:bridge-spike` (`scripts/fluxer-bridge-spike.js`) against the operator's live deployment; record the run date, instance URL, `X-Fluxer-Version`, test community id + `mfa_level`, and the JSON report path (`.tmp/fluxer-bridge-spike-results-<ts>.json`, local, never committed) in the header line below, then fill one row per probe from the script's `--markdown` summary. **PASS** = confirmed live. **FAIL** = confirmed live and false (apply the "if it comes back false" column of the table above — B2 FAIL switches attribution to quote-prefix, KD 7). **DOC** = docs/OpenAPI-confirmed, not exercised live. **SKIPPED** = operator-skipped; record the re-run flag. **PENDING** rows keep KD 21 closed: PR 7 does not ship while any row is PENDING.
+
+Run header (fill on execution): date `—`, instance `—`, X-Fluxer-Version `—`, test community `—` (mfa_level `—`), NSFW channel `—`, upload-clamp run: yes/no.
+
+| # | Probe | Status | Observed (status codes, response keys, rendered author, rate-limit headers) |
+|---|-------|--------|-------------------------------------------------------------------------------|
+| B1 | Bot MFA on webhook create (`TWO_FACTOR_REQUIRED`?) | PENDING | |
+| B2 | Per-message `username` override: rendered author = override or stored name? | PENDING | |
+| B3 | `avatar_url` on execute → accepted? rendered? | PENDING | |
+| B4 | Multipart execute attaches bytes (`files[n]` + `payload_json`)? | PENDING | |
+| B5 | Webhook **PATCH** `/webhooks/{id}/{token}/messages/{mid}` supported? | PENDING | |
+| B6 | Webhook **DELETE** `/webhooks/{id}/{token}/messages/{mid}`? | PENDING | |
+| B7 | Rate-limit headers/429 body on webhook create + execute routes | PENDING | |
+| B8 | Nonce idempotency on execute (5-min window, original message returned) | PENDING | |
+| B9 | Bot account vs `NSFW_CONTENT_AGE_RESTRICTED` (age-restricted channel) | PENDING | |
+| B10 | `allowed_mentions: {}` suppresses a literal `@everyone` in body on webhook execute | PENDING | |
+| B11 | Upload size clamp on webhook multipart: exact boundary (25 MiB? 50 MiB?) | PENDING | |
+| B12 | Fluxer avatar URL template for users (template candidates from user objects) | PENDING | |
+| B13 | `POST /v1/webhooks/{id}/{token}` from Node `fetch` (no `Origin`) accepted | PENDING | |
+| B14 | Channel-mention syntax beyond `<#snowflake>` (via `mention_channels[].mention_string`) | PENDING | |
+
+Open items after a run: B1 stays PENDING unless the run targets an `mfa_level: 1` community (the spike records `mfa_level` of the community it ran against); B11 runs only with `--upload-clamp`; B9 runs only with `--nsfw-channel` / `FLUXER_SPIKE_NSFW_CHANNEL`; B12/B14 close only when the operator records the CDN template / client-observed syntax their DOC lines print.
+
 ## Security & Privacy Considerations
 
 The pairing code is a capability: whoever holds it and is staff + View Channel somewhere on the other platform can attach that channel. The same human need not administer both guilds. Mitigations: short life, single use, hash at rest, ephemeral/DM delivery, staff check on the destination, 30-minute expiry enforced by connect itself.
