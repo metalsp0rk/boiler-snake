@@ -525,6 +525,114 @@ describe("fluxer/outbound — fetch mappers", () => {
       console.error = orig;
     }
   });
+
+  it("fetchMessage GETs /v1/channels/{c}/messages/{m} and returns the §10.3 fetch shape", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/444/messages/50": {
+          id: "50",
+          channel_id: "444",
+          guild_id: "99",
+          author: { id: "5", username: "sparky", global_name: "Spark 🐍", bot: false },
+          content: "edited source text",
+          timestamp: "2026-09-29T12:00:00.000Z",
+          edited_timestamp: "2026-09-29T13:00:00.000Z",
+          type: 0,
+          flags: 4096,
+          webhook_id: "555",
+          attachments: [
+            {
+              id: "att-1",
+              filename: "shot.png",
+              size: 2048,
+              content_type: "image/png",
+              flags: 1,
+              url: "https://cdn.test/shot.png",
+              proxy_url: "https://proxy.test/shot.png",
+            },
+          ],
+          message_snapshots: [{ message: { content: "forwarded" } }],
+          stickers: [{ id: "st-1", name: "gork" }],
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.fetchMessage(COMMUNITY_ID, "444", "50");
+
+    assert.equal(rest.calls.length, 1);
+    assert.equal(rest.calls[0].method, "GET");
+    assert.equal(rest.calls[0].path, "/v1/channels/444/messages/50");
+    assert.equal(res.ok, true);
+    const m = res.message;
+    assert.equal(m.platform, "fluxer");
+    assert.equal(m.instanceKey, INSTANCE);
+    assert.equal(m.communityId, COMMUNITY_ID, "the fetch shape is guild-scoped: community id rides along");
+    assert.equal(m.externalGuildId, "99");
+    assert.equal(m.id, "50");
+    assert.equal(m.channelId, "444");
+    assert.equal(m.authorId, "5");
+    assert.deepEqual(m.author, {
+      id: "5",
+      username: "sparky",
+      displayName: "Spark 🐍",
+      bot: false,
+    });
+    assert.equal(m.content, "edited source text");
+    assert.equal(m.type, 0);
+    assert.equal(m.flags, 4096);
+    assert.equal(m.webhookId, "555");
+    assert.deepEqual(m.attachments, [
+      {
+        id: "att-1",
+        filename: "shot.png",
+        size: 2048,
+        contentType: "image/png",
+        flags: 1,
+        url: "https://cdn.test/shot.png",
+        proxyUrl: "https://proxy.test/shot.png",
+      },
+    ]);
+    assert.deepEqual(m.messageSnapshots, [{ message: { content: "forwarded" } }]);
+    assert.deepEqual(m.stickers, [{ id: "st-1", name: "gork" }]);
+    assert.equal(m.editedTimestamp, Date.parse("2026-09-29T13:00:00.000Z"));
+    assert.equal(m.createdAt, "2026-09-29T12:00:00.000Z");
+    assert.equal(m.deleted, false, "fetch-by-id of a deleted message 404s; success means present");
+  });
+
+  it("fetchMessage surfaces transport failures as {ok:false, error, code} and validates inputs", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/444/messages/gone": () => {
+          const err = new Error("404 UNKNOWN_MESSAGE: no such message");
+          err.status = 404;
+          err.code = "UNKNOWN_MESSAGE";
+          throw err;
+        },
+        // A 200 with a body that carries no id is not a message:
+        "GET /v1/channels/444/messages/hollow": { content: "authorless partial" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const missing = await outbound.fetchMessage(COMMUNITY_ID, "444", "gone");
+    assert.equal(missing.ok, false);
+    assert.match(missing.error, /fetchMessage: message gone in channel 444 failed/);
+    assert.equal(missing.code, "UNKNOWN_MESSAGE");
+
+    const hollow = await outbound.fetchMessage(COMMUNITY_ID, "444", "hollow");
+    assert.equal(hollow.ok, false);
+    assert.match(hollow.error, /returned no message body/);
+
+    const noId = await outbound.fetchMessage(COMMUNITY_ID, "444", "");
+    assert.equal(noId.ok, false);
+    assert.match(noId.error, /a messageId is required/);
+
+    // Snowflake community id is a programmer error — rejects, never swallows.
+    await assert.rejects(() => outbound.fetchMessage("1554590611015729152", "444", "50"), {
+      message: /community id required/,
+    });
+  });
 });
 
 describe("fluxer/outbound — elevated gate (K8)", () => {
