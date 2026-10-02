@@ -38,6 +38,7 @@ const gorkInteractions = require("./repositories/gorkInteractions");
 const webSessions = require("./repositories/webSessions");
 const adminAudit = require("./repositories/adminAudit");
 const fluxerOAuthTransactions = require("./repositories/fluxerOAuthTransactions");
+const bridges = require("./repositories/bridges");
 
 module.exports = {
   db,
@@ -382,4 +383,47 @@ module.exports = {
   // Fluxer web-login OAuth transactions (roadmap/fluxer.md § PKCE and state)
   createOAuthTransaction: fluxerOAuthTransactions.createOAuthTransaction,
   consumeOAuthTransaction: fluxerOAuthTransactions.consumeOAuthTransaction,
+
+  // channel bridge (roadmap/bridge.md PR 2: schema + repo + credential helpers;
+  // the service/relay/commands land in PRs 4-7)
+  BRIDGE_STATES: bridges.BRIDGE_STATES,
+  BRIDGE_DIRECTIONS: bridges.BRIDGE_DIRECTIONS,
+  BRIDGE_RELAY_DIRECTIONS: bridges.BRIDGE_RELAY_DIRECTIONS,
+  BRIDGE_OUTBOX_STATES: bridges.BRIDGE_OUTBOX_STATES,
+  BRIDGE_CODE_LIFETIME_MS: bridges.BRIDGE_CODE_LIFETIME_MS,
+  BRIDGE_CONNECT_MISS_LIMIT: bridges.BRIDGE_CONNECT_MISS_LIMIT,
+  BRIDGE_CONNECT_WINDOW_MS: bridges.BRIDGE_CONNECT_WINDOW_MS,
+  BRIDGE_OUTBOX_MAX_ATTEMPTS: bridges.BRIDGE_OUTBOX_MAX_ATTEMPTS,
+  generateBridgeCode: bridges.generateConnectCode,
+  generateBridgeHandle: bridges.generatePublicId,
+  createBridge: bridges.createBridge,
+  getBridgeById: bridges.getBridgeById,
+  getBridgeByPublicId: bridges.getBridgeByPublicId,
+  getBridgeByCodeHash: bridges.getBridgeByCodeHash,
+  getBridgeForChannel: bridges.getBridgeForChannel,
+  listBridgesForCommunity: bridges.listBridgesForCommunity,
+  listBridgeEnds: bridges.listBridgeEnds,
+  getBridgeEndForChannel: bridges.getBridgeEndForChannel,
+  addBridgeEnd: bridges.addBridgeEnd,
+  setBridgeEndWebhook: bridges.setBridgeEndWebhook,
+  setBridgeEndFlags: bridges.setBridgeEndFlags,
+  enqueueBridgeOutbox: bridges.enqueueBridgeOutbox,
+  getBridgeOutboxById: bridges.getBridgeOutboxById,
+  claimNextOutboxRow: bridges.claimNextOutboxRow,
+  markOutboxDone: bridges.markOutboxDone,
+  recordOutboxFailure: bridges.recordOutboxFailure,
+  requeueStaleOutbox: bridges.requeueStaleOutbox,
+  countOutboxDepth: bridges.countOutboxDepth,
+  addBridgeMessageLink: bridges.addBridgeMessageLink,
+  listBridgeMessageLinks: bridges.listBridgeMessageLinks,
+  getBridgeLinkByDestination: bridges.getBridgeLinkByDestination,
+  upsertBridgeSrcSnapshot: bridges.upsertBridgeSrcSnapshot,
+  getBridgeSrcSnapshot: bridges.getBridgeSrcSnapshot,
+  recordBridgeConnectMiss: bridges.recordBridgeConnectMiss,
+  getBridgeConnectState: bridges.getBridgeConnectState,
+  clearBridgeConnectAttempts: bridges.clearBridgeConnectAttempts,
+  markBridgeBroken: bridges.markBridgeBroken,
+  setBridgeLastError: bridges.setBridgeLastError,
+  findExpiredPendingBridges: bridges.findExpiredPendingBridges,
+  deleteBridgeCascade: bridges.deleteBridgeCascade,
 };
