@@ -7,10 +7,12 @@
  * seams fully faked (resolveChannel / webhook APIs / keyGetter / audit /
  * sendMessage), so no Discord, no Fluxer, no sockets, no real webhooks.
  *
- * PR 4 posture (KD 22): with NO `activateBridge` injected, `connectBridge`
- * refuses with the relay-not-wired sentence BEFORE any webhook create. Every
- * test that exercises the success path injects the real §10.7 step-8 CAS via
- * `service.activateBridgeTx` — the seam the activation PR will wire for real.
+ * Service-level guard (PR 7 lifts KD 22; production handlers inject the real
+ * activator, the guard REMAINS as service-side fail-closed defense-in-depth):
+ * with NO `activateBridge` injected, `connectBridge` refuses with the
+ * relay-not-wired sentence BEFORE any webhook create. Every test that
+ * exercises the success path injects the real §10.7 step-8 CAS via
+ * `service.activateBridgeTx` — the seam PR 7 wires in handlers.js.
  *
  * All §10.2 sentences are asserted as LITERALS (not through BRIDGE_MESSAGES)
  * so a copy edit that drifts from the spec fails here.
@@ -598,7 +600,7 @@ describe("bridge service (PR 4)", () => {
     assert.ok(stored.code_hash);
   });
 
-  it("connect refuses with the relay-not-wired sentence (PR 4) before any webhook create", async () => {
+  it("connect refuses with the relay-not-wired sentence when no activator is injected (service defense-in-depth)", async () => {
     const pair = mintPending("A-10");
     const apiA = fakeWebhookApi("D3");
     const apiB = fakeWebhookApi("F3");
@@ -613,7 +615,7 @@ describe("bridge service (PR 4)", () => {
       via: "slash",
       clock: () => T0,
       staff: STAFF,
-      deps: baseDeps(), // NO activateBridge → PR 4 production posture
+      deps: baseDeps(), // NO activateBridge → the service's own fail-closed guard
     });
     assert.equal(
       res.error,
