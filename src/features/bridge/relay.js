@@ -14,10 +14,14 @@
  * (PATCH via the outbound port) and kind-`delete` (DELETE, 404 = success)
  * branches — roadmap/bridge.md §10.4, §10.7, §10.10.
  *
- * NOTHING here is wired to boot (KD 22): startBridgeLoops is EXPORTED with
- * the start(supervisor, ctx) shape for the activation PR (PR 7) to register,
- * and no production path calls it in this build. The outbox keeps growing;
- * nothing sends.
+ * PR 7 ACTIVATION (KD 22 lifted): startBridgeLoops is wired to production
+ * boot as the bridge feature's `start` hook (src/features/bridge/index.js),
+ * so the worker sends for real. This build also enforces BRIDGE_ENABLED at
+ * the three spec-mandated points — command time (handlers.js), at enqueue
+ * (the enqueue functions below return null when disabled; outbox rows are
+ * never destroyed), and at the top of every worker tick (a disabled worker
+ * claims nothing and posts the latched `paused` notice once per direction
+ * per incident; rows already in the outbox send on re-enable, §10.10).
  *
  * State model (spec §10.4 "Loops", §10.10 "Restart"):
  *   - relay-webhook ids and echo ids are per-DEPLOYMENT slices keyed
@@ -38,6 +42,7 @@ const { snowflakeTimeMs } = require("../../platform/snowflake");
 const { neutralizeContent, NO_PING } = require("./mentions");
 const { sliceSafe } = require("../../core/text");
 const media = require("./media");
+const { isBridgeEnabled, buildPausedNotice, createPauseLatch } = require("./config");
 const { createFluxerBridgeOutbound } = require("./fluxerOutbound");
 const { createDiscordBridgeOutbound } = require("./discordOutbound");
 const { getCommunityById } = require("../../platform/community");
@@ -662,6 +667,10 @@ async function enqueueBridgeEdit(message, deps = {}) {
   let ctx = null;
   try {
     if (!message || typeof message !== "object") return null;
+    // BRIDGE_ENABLED=0 (spec Rollout): enqueue stops INSERTING new rows —
+    // defense-in-depth behind the handler-level command rejection. Rows the
+    // outbox already holds stay intact and send on re-enable (§10.10).
+    if (!isBridgeEnabled()) return null;
     const repo = deps.repo ?? require("../../db/repositories/bridges");
 
     // Human authors only: a bot/webhook author on the source side is the
@@ -830,6 +839,8 @@ async function enqueueBridgeEdit(message, deps = {}) {
 function enqueueBridgeDelete(message, deps = {}) {
   try {
     if (!message || typeof message !== "object") return null;
+    // BRIDGE_ENABLED=0: no new rows while paused (see enqueueBridgeMessage).
+    if (!isBridgeEnabled()) return null;
     const repo = deps.repo ?? require("../../db/repositories/bridges");
     const db = deps.db ?? require("../../db/connection").db;
 
@@ -905,6 +916,8 @@ function enqueueBridgeDelete(message, deps = {}) {
 function enqueueBridgeBulkDelete(communityId, channelId, messageIds, opts = {}) {
   let enqueued = 0;
   try {
+    // BRIDGE_ENABLED=0: the bulk intake stops too (same rule as enqueueBridgeDelete).
+    if (!isBridgeEnabled()) return { enqueued };
     const list = Array.isArray(messageIds) ? messageIds : [];
     for (const id of list) {
       if (id == null || String(id).trim() === "") continue;
@@ -953,6 +966,10 @@ async function enqueueBridgeMessage(message, deps = {}) {
   let ctx = null;
   try {
     if (!message || typeof message !== "object") return null;
+    // BRIDGE_ENABLED=0 (spec Rollout): "Enqueue stops inserting new rows
+    // (a re-enable must not burst the pause window)." Existing outbox rows
+    // are untouched and send on re-enable (§10.10).
+    if (!isBridgeEnabled()) return null;
     const repo = deps.repo ?? require("../../db/repositories/bridges");
 
     const messageId = message.id != null ? String(message.id) : null;
@@ -1382,6 +1399,63 @@ function createRelayWorker(deps = {}) {
     downloadTimeoutMs: deps.downloadTimeoutMs,
   };
 
+  // BRIDGE_ENABLED seam (spec Rollout: "at the top of each worker iteration").
+  // Tests inject a getter; production reads process.env at every tick via the
+  // bridge config module (never cached).
+  const enabledGetter =
+    typeof deps.isBridgeEnabled === "function" ? deps.isBridgeEnabled : isBridgeEnabled;
+  /** Per-incident paused-notice latch (spec "Observability"). */
+  const pauseLatch = createPauseLatch();
+
+  /**
+   * Emit the `paused` notice for every direction with pending rows, latched
+   * once per direction per incident (§10.10). Source-channel addressing: the
+   * source end of the affected direction (the side whose messages are stalled).
+   * Never throws: the tick must survive a notice failure like every other send.
+   */
+  async function emitPausedNotices() {
+    const pairs = queuedPairs();
+    if (pairs.length === 0) return;
+    /** @type {Map<number, {publicId: string, ends: object}|null>} */
+    const bridgeCache = new Map();
+    for (const pair of pairs) {
+      if (!pauseLatch.shouldNote(pair.bridge_id, pair.direction)) continue;
+      let entry = bridgeCache.get(pair.bridge_id);
+      if (entry === undefined) {
+        let bridge = null;
+        try {
+          bridge = repo.getBridgeById(pair.bridge_id) ?? null;
+        } catch (err) {
+          console.error("[bridge] worker: paused notice bridge lookup failed:", err?.message || err);
+        }
+        if (bridge && bridge.public_id != null) {
+          let ends = { ok: false, error: "lookup failed" };
+          try {
+            ends = resolveDirectionEnds(repo, bridge, pair.direction);
+          } catch (err) {
+            console.error(
+              `[bridge] worker: paused notice end lookup for ${bridge.public_id} failed: ${err?.message || err}`,
+            );
+          }
+          entry = { publicId: bridge.public_id, ends };
+        } else {
+          entry = null;
+        }
+        bridgeCache.set(pair.bridge_id, entry);
+      }
+      if (!entry || !entry.ends || entry.ends.ok !== true) continue;
+      const srcEnd = entry.ends.srcEnd;
+      const srcCommunity = entry.ends.srcCommunity;
+      if (!srcEnd || !srcCommunity) continue; // a direction with no source end has no channel
+      await sendNoticeSafe(
+        srcCommunity.id,
+        String(srcEnd.channel_id),
+        buildPausedNotice(entry.publicId),
+        "paused",
+      );
+    }
+  }
+
   const outboundCache = new Map();
   /** @type {Map<string, Promise<void>>} directionKey → in-flight execution */
   const inFlight = new Map();
@@ -1447,7 +1521,6 @@ function createRelayWorker(deps = {}) {
     }
     let attachmentList = attachmentsOverride;
     if (!Array.isArray(attachmentList)) {
-    console.trace("SPOOL-REFETCH");
       const fetched = await sourcePort.fetchSourceMessage(
         payload.srcCommunityId,
         payload.srcChannelId,
@@ -1639,7 +1712,6 @@ function createRelayWorker(deps = {}) {
     }
 
     // Re-read the source (spec §10.7: "re-read the source (fetchMessage)").
-    console.trace("EDIT-REFETCH runEditRow");
     const fetched = await opCtx.sourcePort.fetchSourceMessage(
       payload.srcCommunityId,
       payload.srcChannelId,
@@ -2162,9 +2234,31 @@ function createRelayWorker(deps = {}) {
    * One worker pass: claim one head row per direction (respecting the 4-wide
    * process cap) and launch it. drain: await every launched execution
    * (tests drive deterministically; the scheduler job does not drain).
+   *
+   * BRIDGE_ENABLED is read at the TOP of every tick (spec Rollout): while the
+   * relay is disabled the worker claims nothing and posts the latched `paused`
+   * notice; re-enabling ends the incident so pending rows send again.
    */
   async function tick(opts = {}) {
     const drain = opts.drain !== false;
+    let enabledNow = true;
+    try {
+      enabledNow = enabledGetter() !== false;
+    } catch (err) {
+      // A throwing env probe must not silence the relay: treat as enabled
+      // (same fail-open posture as the loop gate — §10.6 defense in depth).
+      console.error("[bridge] worker: BRIDGE_ENABLED check failed (treating as enabled):", err?.message || err);
+    }
+    if (!enabledNow) {
+      pauseLatch.beginIncident();
+      try {
+        await emitPausedNotices();
+      } catch (err) {
+        console.error("[bridge] worker: paused notice pass failed:", err?.message || err);
+      }
+      return { started: 0 };
+    }
+    pauseLatch.endIncident();
     let started = 0;
     for (const pair of queuedPairs()) {
       if (inFlight.size >= MAX_CONCURRENT_SENDS) break;
@@ -2212,18 +2306,20 @@ function createRelayWorker(deps = {}) {
 }
 
 /**
- * Start-shape hook the ACTIVATION PR wires into boot (KD 22: nothing calls
- * this in the current build; src/features/bridge/index.js exports it as
- * `startBridgeLoops`, never as the `start` key load.js consumes).
+ * The start-shape hook wired to production boot (PR 7: exported from the
+ * bridge feature as `start`, which is the ONE registration site load.js boots —
+ * KD 22 is lifted, the relay is live in this build).
  *
  * Order (spec §10.10 Restart + §10.8): rebuild spool accounting from disk,
  * return abandoned 'sending' rows to 'pending', reload the relay/echo maps,
  * run the start-time orphan-spool pass, then register the worker tick and
  * the 60-second expiry sweeper with the scheduler. Guarded against
- * double-start (the spec's "guarded against double-start").
+ * double-start (the spec's "guarded against double-start"). The tick works
+ * with ZERO clients ready: a Fluxer-only deployment boots the same way, and
+ * per-direction sends resolve their transport lazily per row.
  *
- * @param {object} [supervisor] platform supervisor (activation PR; the seam
- *   functions below take precedence when provided)
+ * @param {object} [supervisor] platform supervisor { discord, fluxer, clientForCommunity }
+ *   (the seams below take precedence when provided)
  * @param {object} [opts] worker seams (repo, db, getWebhookApi, getOutbound,
  *   keyGetter, sendMessage, sleep, fetchImpl, resolveHost, scheduler, ...)
  * @returns {{ stop: () => void, worker: object }|null} loop handle
@@ -2403,7 +2499,7 @@ module.exports = {
   enqueueBridgeEdit,
   enqueueBridgeDelete,
   enqueueBridgeBulkDelete,
-  // PR 5: worker + start-shape hook (NOT wired to boot — KD 22)
+  // PR 5 worker + start-shape hook (PR 7: wired to boot via the feature `start`)
   resolveDirectionEnds,
   attributionName,
   relayNonce,

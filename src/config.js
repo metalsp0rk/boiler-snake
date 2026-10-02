@@ -37,6 +37,17 @@
  *   # origin requires it.
  *   # FLUXER_ALLOW_INSECURE=1
  *
+ * Bridge (roadmap/bridge.md § Environment + Rollout):
+ *
+ *   # Kill switch. Read at command time, at enqueue, and at the top of
+ *   # every relay tick. UNSET means ON; only an explicit "0" (or "false"
+ *   # / "off", case-insensitive) pauses bridging process-wide. Messages
+ *   # queued while paused are delivered when it is turned back on.
+ *   # BRIDGE_ENABLED=0
+ *
+ *   # 32-byte hex key for connect-credential hashing (bridge.service).
+ *   BRIDGE_TOKEN_KEY=
+ *
  * Placeholders only. No real token shapes in docs, tests, or this file.
  *
  * `token` is required and non-empty per entry; it is sent only as
