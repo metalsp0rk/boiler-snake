@@ -437,9 +437,15 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
           : (url, init) => globalThis.fetch(url, init);
       let plan;
       try {
+        // Live contract (verified 2026-10-02 against chat.metalspork.xyz,
+        // OpenAPI PresignedAttachmentUploadRequest): the request key is
+        // `attachments`, and every item needs the client-side `id` echoed
+        // back on later steps. (The Phase 0 spike recorded `files`; the
+        // public API has since evolved — the live schema is authoritative.)
         plan = await rest.request("POST", `/v1/channels/${channelId}/attachments`, {
           body: {
-            files: files.map((f) => ({
+            attachments: files.map((f, i) => ({
+              id: i,
               filename: f.name,
               content_type: f.contentType,
               file_size: f.data.length,
@@ -453,22 +459,35 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
           ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
         };
       }
-      if (plan?.upload_mode != null && plan.upload_mode !== "singlepart") {
-        return {
-          ok: false,
-          error:
-            `${method}: attachment plan for ${target} uses upload_mode "${plan.upload_mode}", ` +
-            `which is not supported (Phase 0 recorded "singlepart"; chunked is open item 5).`,
-        };
+      // The live response shape is `{ attachments: [...] }` with a PER-ITEM
+      // `upload_mode` (OpenAPI PresignedAttachmentUploadResponse: no top-level
+      // mode). Items are matched to files by the echoed client-side `id`.
+      const planItems = Array.isArray(plan?.attachments) ? plan.attachments : [];
+      const byId = new Map();
+      for (const item of planItems) {
+        if (item && item.id != null && !byId.has(item.id)) byId.set(item.id, item);
       }
-      const uploads = Array.isArray(plan?.uploads) ? plan.uploads : [];
-      if (uploads.length !== files.length) {
-        return {
-          ok: false,
-          error:
-            `${method}: attachment plan for ${target} returned ${uploads.length} upload(s) ` +
-            `for ${files.length} file(s) — refusing to claim a partial attachment set.`,
-        };
+      const uploads = [];
+      for (let i = 0; i < files.length; i += 1) {
+        const item = byId.get(i);
+        if (item == null) {
+          return {
+            ok: false,
+            error:
+              `${method}: attachment plan for ${target} returned ${planItems.length} attachment item(s) ` +
+              `for ${files.length} file(s) — refusing to claim a partial attachment set.`,
+          };
+        }
+        if (item.upload_mode != null && item.upload_mode !== "singlepart") {
+          return {
+            ok: false,
+            error:
+              `${method}: attachment plan for ${target} uses upload_mode "${item.upload_mode}" for ` +
+              `"${files[i].name}", which is not supported (only "singlepart" is implemented; ` +
+              `chunked is open item 5).`,
+          };
+        }
+        uploads.push(item);
       }
       for (let i = 0; i < files.length; i += 1) {
         const upload = uploads[i] ?? {};
@@ -507,10 +526,14 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
         const data = await rest.request("POST", `/v1/channels/${channelId}/messages`, {
           body: {
             ...body,
-            // Claim the uploads by position: { id: <index>, upload_filename }
-            // — the exact shape Phase 0 ran end to end.
+            // Claim each upload: ClientUploadedAttachmentRequest (live schema,
+            // verified 2026-10-02) REQUIRES id, filename, content_type,
+            // file_size and upload_filename — a partial object is rejected.
             attachments: files.map((f, i) => ({
               id: i,
+              filename: f.name,
+              content_type: f.contentType,
+              file_size: f.data.length,
               upload_filename: uploads[i].upload_filename,
             })),
           },
