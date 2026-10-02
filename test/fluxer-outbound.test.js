@@ -910,3 +910,97 @@ describe("fluxer/outbound — AttachmentBuilder-shaped file entries", () => {
     assert.equal(res.ok, true, res.error);
   });
 });
+
+describe("fluxer/context — defer()/editReply() Discord idiom parity", () => {
+  function makeCtx(rest) {
+    const { outbound } = makeFakeHandle({ rest });
+    return buildFluxerCommandContext(
+      {
+        commandName: "github",
+        subcommandGroup: null,
+        subcommand: "watch",
+        options: [],
+        help: null,
+        usageError: null,
+      },
+      {
+        platform: "fluxer",
+        instanceKey: INSTANCE,
+        communityId: COMMUNITY_ID,
+        externalGuildId: GUILD,
+        channelId: "444",
+        authorId: "1234567890123",
+        authorBot: false,
+        authorRaw: { id: "1234567890123", username: "sparky", bot: false },
+        memberRoleIds: [],
+      },
+      { outbound },
+    );
+  }
+
+  // Regression (live E2E 2026-10-02): /github watch and /twitch add (and every
+  // feature using the discord.js defer()→editReply() idiom) crashed with
+  // "has no sent message to edit (reply first)" — Fluxer prefix invocations
+  // have no deferred response, so the shim must let the first editReply BE the
+  // reply. The DB write landed first, so users got "Something went wrong"
+  // after the config was already saved.
+  it("first editReply() after defer() sends the reply instead of throwing", async () => {
+    const rest = makeFakeRest({
+      routes: { "POST /v1/channels/444/messages": { id: "m-50" } },
+    });
+    const ctx = makeCtx(rest);
+    await ctx.defer({ sensitive: false });
+    await ctx.editReply("Now tracking releases for **metalsp0rk/boiler-snake**.");
+    const post = rest.calls.find(
+      (c) => c.method === "POST" && c.path === "/v1/channels/444/messages",
+    );
+    assert.ok(post, "expected one channel message POST for the first editReply");
+    assert.deepEqual(post.body, {
+      content: "Now tracking releases for **metalsp0rk/boiler-snake**.",
+    });
+  });
+
+  it("defer({sensitive:true}) carries the private tone: first editReply DMs (K2)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/users/@me/channels": { id: "dm-99" },
+        "POST /v1/channels/dm-99/messages": { id: "m-99" },
+      },
+    });
+    const ctx = makeCtx(rest);
+    await ctx.defer({ sensitive: true });
+    await ctx.editReply("private result");
+    assert.equal(rest.calls[0].path, "/v1/users/@me/channels");
+    assert.equal(rest.calls[1].path, "/v1/channels/dm-99/messages");
+    assert.deepEqual(rest.calls[1].body, { content: "private result" });
+  });
+
+  it("second editReply() PATCHes the message the first one sent", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/444/messages": { id: "m-7" },
+        "PATCH /v1/channels/444/messages/m-7": { id: "m-7", edited_timestamp: "now" },
+      },
+    });
+    const ctx = makeCtx(rest);
+    await ctx.defer();
+    await ctx.editReply("placeholder");
+    await ctx.editReply("final answer");
+    const patch = rest.calls.find((c) => c.method === "PATCH");
+    assert.ok(patch, "expected the second editReply to PATCH the first send");
+    assert.deepEqual(patch.body, { content: "final answer" });
+  });
+
+  it("editReply() with no prior reply posts the reply (discord.js parity)", async () => {
+    const rest = makeFakeRest({
+      routes: { "POST /v1/channels/444/messages": { id: "m-8" } },
+    });
+    const ctx = makeCtx(rest);
+    await ctx.editReply("standalone");
+    const post = rest.calls.find(
+      (c) => c.method === "POST" && c.path === "/v1/channels/444/messages",
+    );
+    assert.ok(post, "expected a channel message POST");
+    assert.deepEqual(post.body, { content: "standalone" });
+  });
+});
