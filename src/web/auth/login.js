@@ -934,9 +934,10 @@ function createFluxerLoginHandlers(options = {}) {
           cid = getCommunityByExternal("fluxer", instance.instanceKey, gid);
         } catch (err) {
           // Malformed external id (e.g. empty string past the guard) — the
-          // row cannot key a community; drop it.
+          // row cannot key a community; drop it. Log-safe id rendering (whitespace
+          // stripped): log-injection is the vector, not markup (AGENTS.md §2).
           console.warn(
-            `[web] fluxer login: community lookup failed for guild ${escapeHtml(String(gid).slice(0, 32))}: ${err?.message || err}`
+            `[web] fluxer login: community lookup failed for guild ${String(gid).slice(0, 32).replace(/\s+/g, " ")}: ${err?.message || err}`
           );
           continue;
         }
@@ -963,7 +964,7 @@ function createFluxerLoginHandlers(options = {}) {
             // Fetch hiccup keeps the row (same fail-open-on-read stance as
             // the Discord degraded path); tier math re-checks live later.
             console.warn(
-              `[web] fluxer guild visibility check failed: ${err?.message || err}`
+              `[web] fluxer login: visibility check failed for community ${cid} guild ${gid}: ${err?.message || err}`
             );
           }
         }
@@ -1027,9 +1028,7 @@ function createFluxerLoginHandlers(options = {}) {
         500,
         authPage(
           "Login failed",
-          `<p>Fluxer login could not be completed.
-           ${shown ? `<p>Fluxer reported <code>${escapeHtml(shown)}</code>.</p>` : ""}
-           <a href="/auth/login">Try again</a></p>`,
+          `<p>Fluxer login could not be completed. ${shown ? `Fluxer reported <code>${escapeHtml(shown)}</code>.` : ""} <a href="/auth/login">Try again</a></p>`,
           false
         )
       );
