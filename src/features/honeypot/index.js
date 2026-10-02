@@ -213,8 +213,11 @@ async function ensureHoneypotWarning(guild, channelId, communityId, outbound) {
     // OutboundClient. Pinning is not part of the outbound surface; the
     // warning-notice reaction strip has a Fluxer twin
     // (handleHoneypotFluxerWarningReaction), so the flow stays complete.
-    if (!outbound || communityKey == null) {
-      return "Warning notice skipped (no channel access from this platform).";
+    if (communityKey == null) {
+      return "Warning notice skipped (no community id for this invocation).";
+    }
+    if (!outbound) {
+      return "Warning notice skipped (no OutboundClient on this command context).";
     }
     try {
       const png = renderHoneypotWarningPng();
@@ -225,7 +228,15 @@ async function ensureHoneypotWarning(guild, channelId, communityId, outbound) {
       if (!res?.ok) {
         return `Could not post warning notice: ${res?.error || "unknown sendChannel failure"}`;
       }
-      if (res.id) setHoneypotWarningMessage(communityKey, channelId, res.id);
+      if (res.id) {
+        setHoneypotWarningMessage(communityKey, channelId, res.id);
+      } else {
+        // The notice is live but the reaction strip (handleHoneypotFluxerWarningReaction)
+        // matches on the stored message id — name the silent gap in the log.
+        console.warn(
+          `[honeypot] Warning notice posted to channel ${channelId} (community ${communityKey}) with no message id in the API response — reaction strip will not recognize it.`,
+        );
+      }
       return "Warning notice posted (pinning is Discord-only).";
     } catch (e) {
       console.error(

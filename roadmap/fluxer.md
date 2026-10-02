@@ -344,7 +344,7 @@ Inventory of `interaction.*` and `ctx.client` across feature handlers. Not a fil
 | Embeds | `EmbedBuilder` / `baseEmbed` on settings, warns, userinfo, audit | `embeds: NormalizedEmbed[]`. |
 | Mentions | `allowedMentions: { parse: [] }` (gork, reaction-role panels) or a role id on YouTube/Twitch/GitHub pings | Same object. The adapter applies it. |
 | Permissions | `memberPermissions.has(ManageGuild)`, then `memberHasStaffRole(guildId, roleIds)` | `channelPermissions` bigint plus `memberRoleIds`. Gates in `src/core/permissions.js` gain `*FromContext` variants. The interaction variants stay until every Discord handler has moved. |
-| Deferred edit | `deferReply` then `editReply` (github check, twitch add, ticket create, staff sync) | `defer` posts a placeholder the adapter can edit. Fluxer placeholder is `Working…` in the same destination as the final reply (DM if `sensitive`, otherwise the channel). |
+| Deferred edit | `deferReply` then `editReply` (github check, twitch add, ticket create, staff sync) | `defer` records intent only (no placeholder message — Fluxer has no deferred ephemeral surface, and a `Working…` message was never shipped). The first `editReply` **is** the reply, sent to the destination the `sensitive` tone selects (DM if sensitive, otherwise the channel); later `editReply` calls PATCH that sent message. Shipped 2026-10-02 via PR #166. |
 
 #### What stays Discord-only
 
