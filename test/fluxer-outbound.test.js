@@ -196,8 +196,17 @@ describe("fluxer/outbound — send shapes", () => {
     const rest = makeFakeRest({
       routes: {
         "POST /v1/channels/7/attachments": {
-          upload_mode: "singlepart",
-          uploads: [{ upload_url: "https://media.test/u/1?grant=SIGNED", upload_filename: "f-1.png" }],
+          attachments: [
+            {
+              id: 0,
+              filename: "a.png",
+              file_size: 2,
+              content_type: "image/png",
+              upload_mode: "singlepart",
+              upload_url: "https://media.test/u/1?grant=SIGNED",
+              upload_filename: "f-1.png",
+            },
+          ],
         },
         "POST /v1/channels/7/messages": { id: "m-9" },
       },
@@ -218,9 +227,10 @@ describe("fluxer/outbound — send shapes", () => {
     });
 
     assert.deepEqual(res, { ok: true, id: "m-9" });
-    // 1. The plan request describes the file for the instance.
+    // 1. The plan request describes the files under `attachments`, each with
+    // the client-side id (live OpenAPI PresignedAttachmentUploadRequest).
     assert.deepEqual(rest.calls[0].body, {
-      files: [{ filename: "a.png", content_type: "image/png", file_size: 2 }],
+      attachments: [{ id: 0, filename: "a.png", content_type: "image/png", file_size: 2 }],
     });
     // 2. PUT the bytes to the signed URL, NO auth header (Phase 0: no auth).
     assert.equal(uploads.length, 1);
@@ -229,8 +239,12 @@ describe("fluxer/outbound — send shapes", () => {
     assert.equal(uploads[0].init.headers["content-type"], "image/png");
     assert.equal(uploads[0].init.headers.authorization, undefined, "the PUT carries no auth header");
     assert.equal(Buffer.from(uploads[0].init.body).toString(), "AB", "raw bytes are PUT");
-    // 3. Claim by position with the PLAN-provided filename.
-    assert.deepEqual(rest.calls[1].body.attachments, [{ id: 0, upload_filename: "f-1.png" }]);
+    // 3. Claim by client-side id with the FULL required field set
+    // (ClientUploadedAttachmentRequest: id, filename, content_type, file_size,
+    // upload_filename — a partial claim is rejected by the live API).
+    assert.deepEqual(rest.calls[1].body.attachments, [
+      { id: 0, filename: "a.png", content_type: "image/png", file_size: 2, upload_filename: "f-1.png" },
+    ]);
     assert.equal(rest.calls[1].body.content, "png");
   });
 
@@ -238,8 +252,17 @@ describe("fluxer/outbound — send shapes", () => {
     const rest = makeFakeRest({
       routes: {
         "POST /v1/channels/7/attachments": {
-          upload_mode: "singlepart",
-          uploads: [{ upload_url: "https://media.test/u/1?grant=SIGNED", upload_filename: "f-1.png" }],
+          attachments: [
+            {
+              id: 0,
+              filename: "a.png",
+              file_size: 1,
+              content_type: "application/octet-stream",
+              upload_mode: "singlepart",
+              upload_url: "https://media.test/u/1?grant=SIGNED",
+              upload_filename: "f-1.png",
+            },
+          ],
         },
         "POST /v1/channels/7/messages": { id: "never" },
       },
@@ -265,7 +288,20 @@ describe("fluxer/outbound — send shapes", () => {
   it("a chunked presigned plan is refused by name (Phase 0 open item 5)", async () => {
     const rest = makeFakeRest({
       routes: {
-        "POST /v1/channels/7/attachments": { upload_mode: "multipart", uploads: [] },
+        "POST /v1/channels/7/attachments": {
+          attachments: [
+            {
+              id: 0,
+              filename: "a.png",
+              file_size: 1,
+              content_type: "application/octet-stream",
+              upload_mode: "multipart",
+              upload_id: "up-1",
+              part_size: 5242880,
+              parts: [{ part_number: 1, upload_url: "https://media.test/p/1" }],
+            },
+          ],
+        },
       },
     });
     const outbound = createFluxerOutbound(
@@ -281,7 +317,7 @@ describe("fluxer/outbound — send shapes", () => {
 
   it("a plan whose upload count mismatches the files is refused (no partial claim)", async () => {
     const rest = makeFakeRest({
-      routes: { "POST /v1/channels/7/attachments": { upload_mode: "singlepart", uploads: [] } },
+      routes: { "POST /v1/channels/7/attachments": { attachments: [] } },
     });
     const outbound = createFluxerOutbound(
       { instanceKey: INSTANCE, userId: "bot-1", rest, features: { presignedAttachmentUploads: true } },
@@ -294,6 +330,57 @@ describe("fluxer/outbound — send shapes", () => {
 
     assert.equal(res.ok, false);
     assert.match(res.error, /refusing to claim a partial attachment set/);
+  });
+
+  it("plan items are matched by the echoed client-side id, not response order", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/7/attachments": {
+          attachments: [
+            {
+              id: 1,
+              filename: "b.png",
+              file_size: 1,
+              content_type: "image/png",
+              upload_mode: "singlepart",
+              upload_url: "https://media.test/u/b",
+              upload_filename: "fb.png",
+            },
+            {
+              id: 0,
+              filename: "a.png",
+              file_size: 1,
+              content_type: "image/png",
+              upload_mode: "singlepart",
+              upload_url: "https://media.test/u/a",
+              upload_filename: "fa.png",
+            },
+          ],
+        },
+        "POST /v1/channels/7/messages": { id: "m-11" },
+      },
+    });
+    const uploads = [];
+    const outbound = createFluxerOutbound(
+      { instanceKey: INSTANCE, userId: "bot-1", rest, features: { presignedAttachmentUploads: true } },
+      { fetch: async (url, init) => { uploads.push(url); return { ok: true }; } },
+    );
+
+    const res = await outbound.sendChannel("7", {
+      files: [
+        { name: "a.png", data: Buffer.from("x"), contentType: "image/png" },
+        { name: "b.png", data: Buffer.from("y"), contentType: "image/png" },
+      ],
+    });
+
+    assert.deepEqual(res, { ok: true, id: "m-11" });
+    // Each file's bytes go to ITS OWN signed URL even when the plan answers
+    // out of order, and each claim row carries the matching upload_filename.
+    assert.deepEqual(uploads, ["https://media.test/u/a", "https://media.test/u/b"]);
+    assert.deepEqual(rest.calls[1].body.attachments, [
+      { id: 0, filename: "a.png", content_type: "image/png", file_size: 1, upload_filename: "fa.png" },
+      { id: 1, filename: "b.png", content_type: "image/png", file_size: 1, upload_filename: "fb.png" },
+    ]);
   });
 
   it("sendDm opens the DM channel FIRST, then posts to it", async () => {
