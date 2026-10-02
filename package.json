@@ -12,6 +12,7 @@
     "register": "node src/commands/register.js",
     "ensure-role": "node scripts/ensure-role.js",
     "fluxer:spike": "node scripts/fluxer-spike.js",
+    "fluxer:bridge-spike": "node scripts/fluxer-bridge-spike.js",
     "test": "node --test test/*.test.js test/integration/*.test.js",
     "test:unit": "node --test test/*.test.js",
     "test:integration": "node --test test/integration/*.test.js",
