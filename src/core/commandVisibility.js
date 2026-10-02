@@ -56,6 +56,7 @@ const COMMAND_VISIBILITY = Object.freeze({
   setwarn: TIERS.staff,
   activityconfig: TIERS.staff,
   gork: TIERS.staff,
+  bridge: TIERS.staff,
 });
 
 /**
