@@ -40,7 +40,9 @@ function createPre034Fixture() {
   const { migrations } = require("../../src/db/migrate");
   const db = connection.db;
 
-  // 1. Apply migrations 001-033 only (skip 034 — the subject under test).
+  // 1. Apply migrations 001-033 only (skip 034+ — the subject under test,
+  //    plus any later feature migrations, e.g. 035_bridges, which guard on
+  //    034's communities table and must not run against a pre-034 DB).
   const helpers = {
     now: connection.now,
     tableExists: connection.tableExists,
@@ -50,7 +52,7 @@ function createPre034Fixture() {
   };
   for (const migration of migrations) {
     const id = String(migration.id ?? "");
-    if (id.startsWith("034")) continue;
+    if (id >= "034") continue;
     migration.up(db, helpers);
   }
 
