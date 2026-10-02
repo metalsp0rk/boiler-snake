@@ -348,12 +348,14 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
    *
    * - No files → JSON POST /v1/channels/{id}/messages (Phase 0: content and
    *   embeds accepted as JSON).
-   * - Files + instance feature `presignedAttachmentUploads` → Phase 0 presigned
-   *   flow: POST /v1/channels/{id}/attachments → PUT each `upload_url` (NO
-   *   auth: "PUT bytes with no auth") → claim via message
-   *   `attachments: [{ id, upload_filename }]`. Only the recorded
-   *   `upload_mode: "singlepart"` runs (chunked is Phase 0 open item 5) —
-   *   other modes return { ok:false } naming the mode.
+   * - Files + instance feature `presignedAttachmentUploads` → presigned flow
+   *   (live OpenAPI, verified 2026-10-02): POST /v1/channels/{id}/attachments
+   *   { attachments: [{ id, filename, content_type, file_size }] } → PUT each
+   *   item's `upload_url` (NO auth: "PUT bytes with no auth") → claim via
+   *   message `attachments: [{ id, filename, content_type, file_size,
+   *   upload_filename }]`. Only per-item `upload_mode: "singlepart"` runs
+   *   (chunked is Phase 0 open item 5) — other modes return { ok:false }
+   *   naming the mode.
    * - Files otherwise → multipart POST (Phase 0 PASS: `payload_json` +
    *   `files[i]` entries via the Node 18+ FormData/Blob globals).
    *
@@ -474,8 +476,8 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
           return {
             ok: false,
             error:
-              `${method}: attachment plan for ${target} returned ${planItems.length} attachment item(s) ` +
-              `for ${files.length} file(s) — refusing to claim a partial attachment set.`,
+              `${method}: attachment plan for ${target} has no item for attachment id ${i} ` +
+              `("${files[i].name}") of ${files.length} — refusing to claim a partial attachment set.`,
           };
         }
         if (item.upload_mode != null && item.upload_mode !== "singlepart") {

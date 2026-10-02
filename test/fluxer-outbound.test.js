@@ -285,6 +285,43 @@ describe("fluxer/outbound — send shapes", () => {
     );
   });
 
+  it("a plan item without an upload_url is refused and nothing is uploaded", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/7/attachments": {
+          attachments: [
+            {
+              id: 0,
+              filename: "a.png",
+              file_size: 1,
+              content_type: "application/octet-stream",
+              upload_mode: "singlepart",
+              // upload_url omitted — a server-side gap must fail the send.
+              upload_filename: "f-1.png",
+            },
+          ],
+        },
+        "POST /v1/channels/7/messages": { id: "never" },
+      },
+    });
+    let putCount = 0;
+    const outbound = createFluxerOutbound(
+      { instanceKey: INSTANCE, userId: "bot-1", rest, features: { presignedAttachmentUploads: true } },
+      { fetch: async () => { putCount += 1; return { ok: true }; } },
+    );
+
+    const res = await outbound.sendChannel("7", { files: [{ name: "a.png", data: Buffer.from("x") }] });
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /no upload_url for files\[0\] \("a\.png"\) — nothing was uploaded/);
+    assert.equal(putCount, 0, "no bytes are PUT without an upload_url");
+    assert.equal(
+      rest.calls.some((c) => c.method === "POST" && c.path === "/v1/channels/7/messages"),
+      false,
+      "a plan with no upload_url never claims the attachment",
+    );
+  });
+
   it("a chunked presigned plan is refused by name (Phase 0 open item 5)", async () => {
     const rest = makeFakeRest({
       routes: {
