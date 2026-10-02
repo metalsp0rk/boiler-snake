@@ -269,3 +269,140 @@ describe("fluxer pipelines — honeypot warning-reaction strip (PR 9 fluxer bran
     );
   });
 });
+
+/**
+ * Regression (live E2E 2026-10-02): `/honeypot channel add` crashed with
+ * "Cannot read properties of undefined (reading 'channels')" — ensureHoneypotWarning
+ * dereferenced raw?.guild unconditionally, and Fluxer contexts never carry a
+ * rawInteraction (Contract 6). The honeypot row was ALREADY written before the
+ * crash, so users saw "Something went wrong" on a config that had succeeded.
+ */
+describe("honeypot channel add — Fluxer arm (no raw guild, PR 7 shape)", () => {
+  const ADD_CHANNEL = "78";
+
+  function channelAddCtx(outbound, replies) {
+    return {
+      platform: "fluxer",
+      communityId: COMMUNITY_ID,
+      externalGuildId: GUILD,
+      userId: "mod-1",
+      user: { id: "mod-1", username: "mod" },
+      commandName: "honeypot",
+      subcommandGroup: "channel",
+      subcommand: "add",
+      options: {
+        getString: () => null,
+        getRole: () => null,
+        getChannel: (name) =>
+          name === "channel" ? { id: ADD_CHANNEL } : null,
+      },
+      // ManageGuild bit set → requireStaffFromContext passes.
+      channelPermissions: BigInt(0x20),
+      memberRoleIds: [],
+      outbound,
+      // Contract 6: no rawInteraction on Fluxer contexts — the exact shape
+      // that used to crash the handler.
+      reply: async (p) => {
+        replies.push(p);
+      },
+    };
+  }
+
+  function cleanRow() {
+    dbApi.db
+      .prepare(
+        "DELETE FROM honeypot_channels WHERE community_id=? AND channel_id=?",
+      )
+      .run(COMMUNITY_ID, ADD_CHANNEL);
+  }
+
+  function rowWarningMessageId() {
+    const row = dbApi.db
+      .prepare(
+        "SELECT warning_message_id FROM honeypot_channels WHERE community_id=? AND channel_id=?",
+      )
+      .get(COMMUNITY_ID, ADD_CHANNEL);
+    return row?.warning_message_id ?? null;
+  }
+
+  it("completes and posts the warning PNG via outbound (no raw guild)", async () => {
+    cleanRow();
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/channels/${ADD_CHANNEL}`]: {
+          id: ADD_CHANNEL,
+          guild_id: GUILD,
+          name: "trap",
+          type: 0,
+        },
+        [`POST /v1/channels/${ADD_CHANNEL}/messages`]: { id: "warn-1" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const replies = [];
+    await honeypot.handlers.honeypot(channelAddCtx(outbound, replies), {});
+
+    assert.equal(replies.length, 1, "handler must complete with one reply");
+    assert.match(
+      replies[0].content,
+      /Marked <#78> as a \*\*honeypot\*\* channel/,
+    );
+    assert.match(
+      replies[0].content,
+      /Warning notice posted \(pinning is Discord-only\)/,
+    );
+    assert.equal(replies[0].sensitive, true);
+
+    const post = rest.calls.find(
+      (c) => c.method === "POST" && c.path === `/v1/channels/${ADD_CHANNEL}/messages`,
+    );
+    assert.ok(post, "warning PNG must be posted to the honeypot channel");
+    assert.ok(
+      post.body instanceof globalThis.FormData,
+      "warning PNG posts multipart (AttachmentBuilder flow)",
+    );
+    assert.equal(rowWarningMessageId(), "warn-1");
+    cleanRow();
+  });
+
+  it("a failed warning post degrades to a SPECIFIC message, not a crash", async () => {
+    cleanRow();
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/channels/${ADD_CHANNEL}`]: {
+          id: ADD_CHANNEL,
+          guild_id: GUILD,
+          name: "trap",
+          type: 0,
+        },
+        [`POST /v1/channels/${ADD_CHANNEL}/messages`]: () => {
+          throw new Error("500 INTERNAL_SERVER_ERROR: boom");
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const replies = [];
+    await honeypot.handlers.honeypot(channelAddCtx(outbound, replies), {});
+
+    assert.equal(replies.length, 1);
+    assert.match(replies[0].content, /Marked <#78> as a \*\*honeypot\*\* channel/);
+    // Error-handling law: specific cause, never "check bot logs".
+    assert.match(
+      replies[0].content,
+      /Could not post warning notice:.*500 INTERNAL_SERVER_ERROR/,
+    );
+    // The config itself still lands — the warning is best-effort.
+    assert.equal(rowWarningMessageId(), null);
+    cleanRow();
+  });
+
+  it("ensureHoneypotWarning without guild AND outbound skips cleanly", async () => {
+    const status = await honeypot.ensureHoneypotWarning(
+      null,
+      ADD_CHANNEL,
+      COMMUNITY_ID,
+      undefined,
+    );
+    assert.equal(status, "Warning notice skipped (no channel access from this platform).");
+  });
+});

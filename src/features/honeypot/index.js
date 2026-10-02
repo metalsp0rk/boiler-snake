@@ -199,11 +199,43 @@ async function postHoneypotWarning(channel) {
  * that only pass the guild get the id resolved at the edge — a snowflake
  * string must never reach the community-keyed repos (assertCommunityId
  * throws on it, which silently broke `/honeypot channel add` before this fix).
+ * When `guild` is null (Fluxer command contexts never carry one), the warning
+ * PNG is posted via `outbound` (the OutboundClient on the command context).
  */
-async function ensureHoneypotWarning(guild, channelId, communityId) {
+async function ensureHoneypotWarning(guild, channelId, communityId, outbound) {
   const communityKey =
     communityId ??
     (guild?.id != null ? communityIdFor(String(guild.id)) : undefined);
+
+  if (!guild) {
+    // Fluxer arm of the PR 7 service cutover: Fluxer contexts never carry a
+    // discord.js Guild (Contract 6), so the warning image goes through the
+    // OutboundClient. Pinning is not part of the outbound surface; the
+    // warning-notice reaction strip has a Fluxer twin
+    // (handleHoneypotFluxerWarningReaction), so the flow stays complete.
+    if (!outbound || communityKey == null) {
+      return "Warning notice skipped (no channel access from this platform).";
+    }
+    try {
+      const png = renderHoneypotWarningPng();
+      const file = new AttachmentBuilder(png, {
+        name: "honeypot-warning.png",
+      });
+      const res = await outbound.sendChannel(channelId, { files: [file] });
+      if (!res?.ok) {
+        return `Could not post warning notice: ${res?.error || "unknown sendChannel failure"}`;
+      }
+      if (res.id) setHoneypotWarningMessage(communityKey, channelId, res.id);
+      return "Warning notice posted (pinning is Discord-only).";
+    } catch (e) {
+      console.error(
+        `[honeypot] Failed to post warning in ${communityKey}/${channelId}:`,
+        e?.message || e,
+      );
+      return `Could not post warning notice: ${e?.message || e}`;
+    }
+  }
+
   const channel = await guild.channels.fetch(channelId).catch(() => null);
   if (
     !channel ||
@@ -830,9 +862,16 @@ async function handleHoneypot(commandCtx, featureCtx) {
         targetType: "channel",
         targetId: ch.id,
       });
-      // Warning-notice poster needs a discord.js Guild (service cutover PR 7);
-      // the repo key is the INTEGER community id (never the guild snowflake).
-      const warningStatus = await ensureHoneypotWarning(raw?.guild, ch.id, communityId);
+      // Warning-notice poster: Discord uses the raw interaction's guild; the
+      // Fluxer arm posts the same PNG via the OutboundClient (see
+      // ensureHoneypotWarning). The repo key is the INTEGER community id
+      // (never the guild snowflake).
+      const warningStatus = await ensureHoneypotWarning(
+        raw?.guild,
+        ch.id,
+        communityId,
+        commandCtx.outbound,
+      );
       await logConfigChange(outbound, guildId, {
         title: "Honeypot channel added",
         command: "/honeypot channel add",

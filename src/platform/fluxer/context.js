@@ -258,14 +258,21 @@ function buildFluxerCommandContext(
     },
 
     /**
-     * Edit the first sent reply (spec: after a successful send).
+     * Edit the first sent reply; when none was sent, post it as the reply
+     * (discord.js parity for the defer()/editReply() idiom — see inline note).
      * @param {object|string} payload
      */
     editReply: async (payload) => {
       if (state.messageId == null) {
-        throw new Error(
-          `editReply: /${parsed.commandName} has no sent message to edit (reply first)`,
-        );
+        // No send has happened yet. Discord lets editReply answer a deferred
+        // interaction (defer → loading → editReply is THE long-running-handler
+        // idiom, used by /github watch, /twitch add, reminders, …). Fluxer
+        // prefix invocations have no deferred ephemeral to edit, so mirror the
+        // observable behavior: the first editReply becomes the reply — the
+        // private (DM) tone set by defer({sensitive:true}) carries over, and
+        // sendPayload records the id so later editReply calls edit it.
+        await sendPayload(payload, state.deferred && state.deferSensitive);
+        return;
       }
       const normalized = normalizeReplyPayload(payload);
       delete normalized.sensitive;
