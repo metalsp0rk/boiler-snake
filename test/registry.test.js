@@ -19,12 +19,13 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 28 slash commands with unique names", () => {
+  it("exports 29 slash commands with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 28);
+    assert.equal(commands.length, 29);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
+    assert.ok(names.includes("bridge"));
     assert.ok(names.includes("note"));
     assert.ok(names.includes("staff"));
     assert.ok(names.includes("warn"));
@@ -138,10 +139,11 @@ describe("buildDefaultRegistry", () => {
       "gork",
       "githubReleases",
       "web",
+      "bridge",
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 23);
+    assert.equal(features.length, 24);
   });
 
   it("registers userinfo button handler", () => {

@@ -28,10 +28,16 @@ const { normalizeDiscordMessage } = require("../platform/discord/normalize");
 const { parsePrefix } = require("../platform/fluxer/commands");
 const { dispatchPrefixCommand } = require("../platform/fluxer/dispatch");
 const { ensureCommunity } = require("../platform/community");
+// Bridge (PR 4): loop + echo gates and the outbox enqueue. relay.js imports
+// neither discord.js nor the Fluxer SDK, so a top-level require is safe.
+const bridgeRelay = require("../features/bridge/relay");
 
 /**
  * MessageCreate pipeline (exported for integration tests), spec order from
- * roadmap/fluxer.md § Normalized gateway events:
+ * roadmap/fluxer.md § Normalized gateway events (+ bridge gates, roadmap/bridge.md §10.4):
+ * 0. bridge loop gate (relay copies, bot traffic, echoes) + bridge command
+ *    line branch (Fluxer guild, human author): dispatched exactly once via
+ *    the shipped dispatcher; no cache, gork, enqueue, activity, or XP
  * 1. guild gate (normalized: externalGuildId mirrors the Discord guild)
  * 2. bot author gate (normalized: authorBot)
  * 2b. Fluxer community resolution (Fluxer only: externalGuildId → communities.id)
@@ -43,6 +49,7 @@ const { ensureCommunity } = require("../platform/community");
  * 7. prefix command: record channel activity, dispatch, then stop —
  *    no gork, no message XP (dispatch swallows handler throws itself)
  * 8. gork AI keyword Q&A (detached; never blocks, never early-returns)
+ * 8b. bridge enqueue (after honeypot, before activity/XP; never throws)
  * 9. user channel activity counters (all human messages)
  * 10. message XP (with the isPrefixCommand backstop)
  *
@@ -66,6 +73,48 @@ const { ensureCommunity } = require("../platform/community");
  */
 async function onMessageCreate(outbound, message, opts = {}) {
   try {
+    // Bridge loop gate (KD 10, spec §10.4): FIRST line — relay copies, bot
+    // traffic, and destination echoes never reach the cache, gork, activity
+    // counters, XP, or the enqueue below.
+    if (bridgeRelay.createLoopGate(message)) return;
+
+    // Bridge command lines (Fluxer guild, human author): command traffic, not
+    // chat (spec §10.4, KD 17). Dispatched EXACTLY ONCE through the shipped
+    // dispatcher — the registry handler is the single entry — while the cache,
+    // reaction-role capture, gork, enqueue, activity counters, and XP are all
+    // skipped. Honeypot enforcement stays in force. Bot-authored bridge lines
+    // died at the gate above.
+    if (bridgeRelay.isBridgeCommandLine(message)) {
+      // The dispatcher's permission step (and honeypot) read the INTEGER
+      // community id — resolve it here exactly as step 2b does for chat.
+      if (message.platform === "fluxer" && message.externalGuildId && !Number.isSafeInteger(message.communityId)) {
+        try {
+          message.communityId = ensureCommunity({
+            platform: "fluxer",
+            instanceKey: message.instanceKey,
+            externalGuildId: message.externalGuildId,
+          });
+        } catch (e) {
+          console.error("[fluxer] community resolve failed:", e?.message || e);
+        }
+      }
+      const hpHit =
+        message.platform === "fluxer"
+          ? await handleHoneypotFluxerMessage(outbound, message)
+          : false;
+      if (hpHit) return;
+      const bridgeCmd =
+        message.parsePrefix ??
+        (message.platform === "fluxer" ? parsePrefix(message.content ?? "") : null);
+      if (bridgeCmd && opts.registry) {
+        await dispatchPrefixCommand(outbound, message, bridgeCmd, {
+          registry: opts.registry,
+          supervisor: opts.supervisor,
+        });
+      }
+      return;
+    }
+
     if (!message.guild && !message.externalGuildId) return;
     if (message.authorBot) return;
 
@@ -132,6 +181,12 @@ async function onMessageCreate(outbound, message, opts = {}) {
         console.error("[MessageCreate] gork error:", e?.message || e)
       );
     }
+
+    // Bridge enqueue (spec §10.4): runs after honeypot and before activity/XP,
+    // is synchronous, does no network, and NEVER returns early — a bridge fault
+    // is caught inside enqueueBridgeMessage and can never skip XP. PR 4 writes
+    // the outbox row only (kind "create"); the worker that sends it is PR 5.
+    bridgeRelay.enqueueBridgeMessage(message);
 
     // Count real message volume by channel (not XP-cooldown gated)
     recordUserChannelMessage(message);
@@ -322,6 +377,51 @@ async function onFluxerReactionRemove(outbound, normalizedReaction) {
 }
 
 /**
+ * MessageUpdate pipeline (PR 4: the echo gate; PR 6 owns source-side edit
+ * intake). A MESSAGE_UPDATE whose id is a relayed destination copy of this
+ * process (bridge_message_links.dst_message_id, partitioned by deployment)
+ * is the echo of our own copy — dropped BEFORE any feature sees it (KD 10),
+ * so a destination-side moderation edit never re-enters as a source edit.
+ *
+ * @param {object} outbound OutboundClient (unused in PR 4; PR 6 intake uses it)
+ * @param {object} message NormalizedMessage (new state preferred)
+ */
+async function onMessageUpdate(outbound, message) {
+  try {
+    if (!message) return;
+    void outbound;
+    if (bridgeRelay.isRelayedEcho(message.platform, message.instanceKey, message.id)) {
+      return;
+    }
+    // PR 6 (roadmap/bridge.md §10.10): source-side kind-`edit` intake with
+    // bridge_src_snapshots hash coalescing lands with the edit/delete PR.
+  } catch (e) {
+    console.error("[MessageUpdate] error:", e?.message || e);
+  }
+}
+
+/**
+ * MessageDelete pipeline (PR 4: the echo gate; PR 6 owns source-side delete
+ * intake). Same echo rule as onMessageUpdate, applied before any feature.
+ *
+ * @param {object} outbound OutboundClient (unused in PR 4; PR 6 intake uses it)
+ * @param {object} message NormalizedMessage (partial allowed)
+ */
+async function onMessageDelete(outbound, message) {
+  try {
+    if (!message) return;
+    void outbound;
+    if (bridgeRelay.isRelayedEcho(message.platform, message.instanceKey, message.id)) {
+      return;
+    }
+    // PR 6: source-side kind-`delete` intake (and BULK, one row per linked
+    // id) lands with the edit/delete PR.
+  } catch (e) {
+    console.error("[MessageDelete] error:", e?.message || e);
+  }
+}
+
+/**
  * Ordered gateway pipelines that span multiple features.
  * (Independent events — delete/ban/kick, etc. — register via feature.registerEvents.)
  *
@@ -340,11 +440,21 @@ function registerOrderedPipelines(client) {
   client.on(Events.MessageReactionRemove, (reaction, user) =>
     onMessageReactionRemove(client, reaction, user)
   );
+  // Bridge echo gates (KD 10): the update pair carries (old, new); prefer the
+  // new state — it is the live content — and fall back to the old one.
+  client.on(Events.MessageUpdate, (oldMessage, newMessage) =>
+    onMessageUpdate(outbound, normalizeDiscordMessage(newMessage ?? oldMessage))
+  );
+  client.on(Events.MessageDelete, (message) =>
+    onMessageDelete(outbound, normalizeDiscordMessage(message))
+  );
 }
 
 module.exports = {
   registerOrderedPipelines,
   onMessageCreate,
+  onMessageUpdate,
+  onMessageDelete,
   onMessageReactionAdd,
   onMessageReactionRemove,
   onFluxerReactionAdd,

@@ -25,4 +25,5 @@ module.exports = [
   require("./tickets"),
   require("./web"),
   require("./gork"),
+  require("./bridge"),
 ];
