@@ -106,6 +106,11 @@ function buildFluxerCommandContext(
     replied: false,
     // Message id of the first successful send — editReply edits that one.
     messageId: null,
+    // The channel the first send landed in (the guild channel for a normal
+    // reply, the DM channel for a sensitive/deferred-sensitive reply). editReply
+    // must PATCH that same channel — a DM message id PATCHed into the guild
+    // channel 404s. Recorded from the send result's channelId.
+    messageChannelId: null,
   };
 
   /**
@@ -189,6 +194,8 @@ function buildFluxerCommandContext(
         return;
       }
       if (state.messageId == null && result.id != null) state.messageId = String(result.id);
+      if (state.messageChannelId == null && result.channelId != null)
+        state.messageChannelId = String(result.channelId);
       return;
     }
 
@@ -205,6 +212,8 @@ function buildFluxerCommandContext(
       return;
     }
     if (state.messageId == null && result.id != null) state.messageId = String(result.id);
+    if (state.messageChannelId == null && result.channelId != null)
+      state.messageChannelId = String(result.channelId);
   }
 
   const ctx = {
@@ -279,7 +288,9 @@ function buildFluxerCommandContext(
       const result = await outbound.editMessage(
         {
           communityId: message.communityId,
-          channelId: message.channelId,
+          // The channel the first send landed in — the DM channel for
+          // sensitive/deferred-sensitive replies, the guild channel otherwise.
+          channelId: state.messageChannelId ?? message.channelId,
           messageId: state.messageId,
         },
         normalized,

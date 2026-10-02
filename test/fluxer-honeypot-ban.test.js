@@ -392,6 +392,12 @@ describe("honeypot channel add — Fluxer arm (no raw guild, PR 7 shape)", () =>
       /Could not post warning notice:.*500 INTERNAL_SERVER_ERROR/,
     );
     // The config itself still lands — the warning is best-effort.
+    const row = dbApi.db
+      .prepare(
+        "SELECT 1 AS present FROM honeypot_channels WHERE community_id=? AND channel_id=?",
+      )
+      .get(COMMUNITY_ID, ADD_CHANNEL);
+    assert.ok(row, "the honeypot config row must land even when the warning post fails");
     assert.equal(rowWarningMessageId(), null);
     cleanRow();
   });
@@ -403,6 +409,6 @@ describe("honeypot channel add — Fluxer arm (no raw guild, PR 7 shape)", () =>
       COMMUNITY_ID,
       undefined,
     );
-    assert.equal(status, "Warning notice skipped (no channel access from this platform).");
+    assert.equal(status, "Warning notice skipped (no OutboundClient on this command context).");
   });
 });

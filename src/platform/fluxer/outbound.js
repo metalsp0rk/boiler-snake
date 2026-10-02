@@ -326,12 +326,12 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
    * path (sendFluxerMessage) — the file paths post their own bodies.
    * @param {string} channelId
    * @param {object} body
-   * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
+   * @returns {Promise<{ ok: true, id: string, channelId: string }|{ ok: false, error: string, code?: string }>}
    */
   async function postMessage(channelId, body) {
     try {
       const data = await rest.request("POST", `/v1/channels/${channelId}/messages`, { body });
-      return { ok: true, id: data?.id != null ? String(data.id) : "" };
+      return { ok: true, id: data?.id != null ? String(data.id) : "", channelId: String(channelId) };
     } catch (err) {
       return {
         ok: false,
@@ -371,7 +371,7 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
    * @param {Array<{ name: string, data: Buffer|string, contentType?: string }>} [args.files]
    * @param {object} [args.allowedMentions]
    * @param {{ message_id?: string }|{ messageId?: string }} [args.message_reference]
-   * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
+   * @returns {Promise<{ ok: true, id: string, channelId: string }|{ ok: false, error: string, code?: string }>}
    */
   async function sendFluxerMessage(args) {
     const method = args.dmUserId != null ? "sendDm" : "sendChannel";
@@ -540,7 +540,7 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
             })),
           },
         });
-        return { ok: true, id: data?.id != null ? String(data.id) : "" };
+        return { ok: true, id: data?.id != null ? String(data.id) : "", channelId };
       } catch (err) {
         return {
           ok: false,
@@ -570,7 +570,7 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
         const data = await rest.request("POST", `/v1/channels/${channelId}/messages`, {
           body: form,
         });
-        return { ok: true, id: data?.id != null ? String(data.id) : "" };
+        return { ok: true, id: data?.id != null ? String(data.id) : "", channelId };
       } catch (err) {
         return {
           ok: false,
@@ -779,7 +779,7 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
     /**
      * @param {string} channelId
      * @param {object|string} payload ReplyPayload (files: [{ name, data, contentType? }])
-     * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
+     * @returns {Promise<{ ok: true, id: string, channelId: string }|{ ok: false, error: string, code?: string }>}
      */
     async sendChannel(channelId, payload) {
       const p = typeof payload === "string" ? { content: payload } : (payload ?? {});
@@ -802,7 +802,7 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
      *
      * @param {string} userId
      * @param {object|string} payload ReplyPayload
-     * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
+     * @returns {Promise<{ ok: true, id: string, channelId: string }|{ ok: false, error: string, code?: string }>}
      */
     async sendDm(userId, payload) {
       const p = typeof payload === "string" ? { content: payload } : (payload ?? {});
@@ -1008,7 +1008,7 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
 
     /**
      * @param {{ communityId: number, name: string, parentId: string|null, type: number, overwrites: object[] }} args CreateChannelArgs
-     * @returns {Promise<{ ok: true, id: string }|{ ok: false, error: string, code?: string }>}
+     * @returns {Promise<{ ok: true, id: string, channelId: string }|{ ok: false, error: string, code?: string }>}
      */
     async createChannel(args) {
       const communityId = args?.communityId;
