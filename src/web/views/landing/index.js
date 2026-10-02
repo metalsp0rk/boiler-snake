@@ -74,7 +74,8 @@ function contextLine(context) {
  * Pure + exported, mirroring {@link buildContinueHref}.
  *
  * @param {string} slug validated 16-hex instance slug
- * @param {string} continueHref href from {@link buildContinueHref}
+ * @param {string|null} continueHref href from {@link buildContinueHref}
+ *   (null → a plain start href with ?continue=1)
  * @returns {string}
  */
 function buildFluxerLoginHref(slug, continueHref) {
@@ -97,7 +98,8 @@ function noticeLine(notice) {
  * @param {string|null} [input.notice] "signedout" | null
  *   (validated enum, not raw input)
  * @param {string|null} [input.context] "guild" | "ticket" | null (validated)
- * @param {string} input.continueHref href from {@link buildContinueHref}
+ * @param {string|null} input.continueHref href from {@link buildContinueHref};
+ *   null hides the Discord button (Fluxer-only deployment without Discord config)
  * @param {Array<{ slug: string, label?: string }>} [input.fluxerLoginLinks]
  *   one entry per configured Fluxer instance (roadmap/fluxer.md § Authorize
  *   URL); entries whose slug is not 16-hex are dropped — the page renders

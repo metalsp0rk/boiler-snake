@@ -6,9 +6,10 @@
  * harness of web-auth-login.test.js.
  *
  * The three handlers come from createFluxerLoginHandlers directly behind a
- * tiny HTTP router matching the C13 route table (createWebApp threads the
- * fluxer options per C12; until that wiring lands this is the sanctioned
- * harness — same spirit as the Discord suite driving createWebApp).
+ * tiny HTTP router matching the C13 route table. createWebApp threads the
+ * fluxer options per C12 (the landing registrar too since the 2026-10-02
+ * E2E fix — app-level wiring is locked by web-auth-login.test.js); driving
+ * the handlers directly remains the sanctioned harness for this suite.
  *
  * Covers:
  *  - GET /auth/fluxer/:slug/login → 302 authorize URL: scopes `identify%20guilds`,
@@ -537,6 +538,10 @@ describe("fluxer web login (mocked instance, PKCE + SQLite transactions)", () =>
           `fetchGuild must receive the numeric community id, got ${typeof id} ${JSON.stringify(id)}`
         );
       }
+      // Exactly the visible-guild check: the vanished guild short-circuits
+      // via its null-returning stub, FETCH_FAIL throws before recording,
+      // and NO_CLIENT never reaches fetchGuild.
+      assert.deepEqual(visibilityCalls, [cidShared]);
 
       // --- token exchange call shape (live-docs rules + PKCE verifier) ------
       assert.equal(mock.state.tokenCalls.length, tokenCallsBefore + 1);

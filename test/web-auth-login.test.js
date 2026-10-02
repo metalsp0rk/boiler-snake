@@ -495,8 +495,9 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
       // PR 10 (roadmap/fluxer.md § Authorize URL): the landing shows one
       // "Continue with Fluxer" button per instance that has OAuth
       // credentials. Driven through the handler directly — landing rendering
-      // needs no server, and createWebApp threads getFluxerWebInstances per
-      // C12 (wired in app.js by the same PR).
+      // needs no server. createWebApp threads getFluxerWebInstances to the
+      // Fluxer routes AND (since the 2026-10-02 E2E fix) the landing
+      // registrar; the app-wiring lock lives in this suite below.
       const instances = [
         {
           instanceKey: "https://flx.example.com",
@@ -626,6 +627,48 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
           if (value === undefined) delete process.env[key];
           else process.env[key] = value;
         }
+      }
+    });
+
+    it("app wiring: GET /auth/login serves Fluxer buttons with no Discord config", async () => {
+      // E2E regression (2026-10-02, review B1): createWebApp must thread
+      // getFluxerWebInstances into the LANDING handler (registerAuthRoutes),
+      // not only the Fluxer start/callback routes — direct-driven handler
+      // tests cannot see this seam, which is how the half-wired PR 10 shipped.
+      const instances = [
+        {
+          instanceKey: "https://flx.example.com",
+          slug: "0123456789abcdef",
+          label: "Example Fluxer",
+          clientId: "fx-client",
+          clientSecret: "fx-secret",
+          apiBase: "https://flx.example.com/v1",
+        },
+      ];
+      const app = appMod.createWebApp({ getFluxerWebInstances: () => instances });
+      const server = http.createServer(app);
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const base = `http://127.0.0.1:${server.address().port}`;
+      const savedEnv = {
+        CLIENT_ID: process.env.CLIENT_ID,
+        CLIENT_SECRET: process.env.CLIENT_SECRET,
+      };
+      try {
+        delete process.env.CLIENT_ID;
+        delete process.env.CLIENT_SECRET;
+        const res = await fetch(`${base}/auth/login`);
+        const body = await res.text();
+        assert.equal(res.status, 200, "Fluxer-only landing is served through the app");
+        assert.match(body, /Continue with Fluxer — Example Fluxer/);
+        assert.doesNotMatch(body, /Continue with Discord/);
+      } finally {
+        for (const [key, value] of Object.entries(savedEnv)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        server.close();
+        await once(server, "close");
       }
     });
 
