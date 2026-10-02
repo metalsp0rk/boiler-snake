@@ -315,6 +315,11 @@ function createWebApp(options = {}) {
     oauthBase: options.oauthBase,
     fetchImpl: options.fetchImpl,
     botGuilds: options.botGuilds,
+    // Landing Fluxer sign-in buttons (E2E fix 2026-10-02): the same option
+    // the Fluxer routes and the guild-access resolver receive — without it
+    // GET /auth/login renders Discord-only even with Fluxer instances
+    // configured, i.e. the 503 gate is unreachable in production wiring.
+    getFluxerWebInstances: options.getFluxerWebInstances,
   });
   // Fluxer login surface (PR 10): GET /auth/fluxer/:slug/login(+callback),
   // POST /auth/fluxer/logout. Mounted inside the same /auth rate-limit prefix
