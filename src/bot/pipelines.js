@@ -393,8 +393,16 @@ async function onMessageUpdate(outbound, message) {
     if (bridgeRelay.isRelayedEcho(message.platform, message.instanceKey, message.id)) {
       return;
     }
-    // PR 6 (roadmap/bridge.md §10.10): source-side kind-`edit` intake with
-    // bridge_src_snapshots hash coalescing lands with the edit/delete PR.
+    // PR 6 (roadmap/bridge.md §10.4/§10.10): source-side kind-`edit` intake.
+    // ALL eligibility lives inside enqueueBridgeEdit — relayed-source check,
+    // human author, connected_at window, direction gate, and the
+    // bridge_src_snapshots hash coalescing (a pin/flag update whose content
+    // hash is unchanged enqueues nothing). A non-bridge channel is a no-op.
+    // The enqueue never rejects: its spool tail is media-only and self-caught
+    // (AGENTS.md rule 1 for detached async work).
+    bridgeRelay.enqueueBridgeEdit(message).catch((e) =>
+      console.error("[bridge] edit intake failed:", e?.message || e),
+    );
   } catch (e) {
     console.error("[MessageUpdate] error:", e?.message || e);
   }
@@ -414,8 +422,13 @@ async function onMessageDelete(outbound, message) {
     if (bridgeRelay.isRelayedEcho(message.platform, message.instanceKey, message.id)) {
       return;
     }
-    // PR 6: source-side kind-`delete` intake (and BULK, one row per linked
-    // id) lands with the edit/delete PR.
+    // PR 6 (roadmap/bridge.md §10.4/§10.10): source-side kind-`delete`
+    // intake — synchronous, never throws, enqueues ONLY for relayed source
+    // messages (a links row must exist). MESSAGE_DELETE_BULK arrives through
+    // relay.enqueueBridgeBulkDelete (one kind-`delete` row per LINKED id;
+    // the Discord bulk event wiring is the adapter follow-up). MESSAGE_CLEAR
+    // / channel purge is deliberately NEVER relayed (spec §10.5).
+    bridgeRelay.enqueueBridgeDelete(message);
   } catch (e) {
     console.error("[MessageDelete] error:", e?.message || e);
   }

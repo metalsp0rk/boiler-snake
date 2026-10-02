@@ -41,6 +41,7 @@ const { db } = require("../../db/connection");
 const { getCommunityById, assertCommunityId } = require("../../platform/community");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const codes = require("./codes");
+const media = require("./media");
 const tokenCrypto = require("./tokenCrypto");
 const relay = require("./relay");
 
@@ -1205,6 +1206,18 @@ async function disconnectBridge({
 // statusBridge / listBridges (sync — spec §"Service")
 // ---------------------------------------------------------------------------
 
+/**
+ * The staff-visible status row shape (spec § Observability: state, direction,
+ * last_error, outbox depth per direction, spool bytes, and the ends'
+ * platform/instance/channel ids). PR 6 keeps lastError in the shape (the
+ * worker records it on every poison park — edits AND deletes — and the
+ * handlers render it) and reports the REAL spool bytes from media's
+ * accounting (statusBridge/list share this one builder, so list rows show
+ * the same state as status).
+ * @param {object} bridge bridges row
+ * @param {object[]} ends bridge_ends rows
+ * @returns {object}
+ */
 function describeBridge(bridge, ends) {
   const items = {
     publicId: bridge.public_id,
@@ -1214,8 +1227,8 @@ function describeBridge(bridge, ends) {
     connectedAt: bridge.connected_at ?? null,
     expiresAt: bridge.expires_at ?? null,
     outboxDepth: { a_to_b: 0, b_to_a: 0 },
-    // Spool bytes are the media PR's (PR 5); the field exists for status
-    // shape stability and reports 0 until then.
+    // Spool bytes on disk for this bridge (spec § Observability; media's
+    // in-process accounting, refreshed from disk at start).
     spoolBytes: 0,
     ends: ends.map((end) => {
       const endCommunity = getCommunityById(end.community_id);
@@ -1233,6 +1246,9 @@ function describeBridge(bridge, ends) {
   } catch (err) {
     console.error(`[bridge] outbox depth for ${bridge.public_id} failed:`, causeOf(err));
   }
+  // Spool bytes: media's process accounting (pure read — the bridge public
+  // id is the accounting key, spec §10.8 caps are per bridge).
+  items.spoolBytes = media.spoolUsageSnapshot(bridge.public_id).bridgeBytes ?? 0;
   const pa = items.ends.find((e) => e.position === "a")?.platform;
   const pb = items.ends.find((e) => e.position === "b")?.platform;
   items.directionLabel = directionLabel(bridge.direction, pa, pb);

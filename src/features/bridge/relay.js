@@ -8,6 +8,11 @@
  * at the head, backoff 1/2/4/8/16 s, poison park at 5 attempts with the
  * source-channel notice, Fluxer nonce + wait=true, id-synchronous commit on
  * Discord, ack-then-delete, and the start-time orphan-spool pass.
+ * PR 6 adds the source-side edit/delete intake (enqueueBridgeEdit,
+ * enqueueBridgeDelete, enqueueBridgeBulkDelete) with bridge_src_snapshots
+ * hash coalescing and delete supersession, plus the worker's kind-`edit`
+ * (PATCH via the outbound port) and kind-`delete` (DELETE, 404 = success)
+ * branches — roadmap/bridge.md §10.4, §10.7, §10.10.
  *
  * NOTHING here is wired to boot (KD 22): startBridgeLoops is EXPORTED with
  * the start(supervisor, ctx) shape for the activation PR (PR 7) to register,
@@ -527,6 +532,401 @@ function httpsAvatarUrl(message) {
 }
 
 /**
+ * The CONTENT part of a relay payload, in canonical form — the value the
+ * §10.10 edit-coalescing hash is computed over: neutralized text, reply
+ * header, voice caption, sticker names, embed fields, and attachment
+ * descriptors, in a STABLE key order (spec §10.10: "SHA-256 of the canonical
+ * relay payload"). Volatile fields (spoolIndex, skipReason, bytes-on-disk,
+ * author, ids) never enter the hash: a pin/flag/pin-noise MESSAGE_UPDATE
+ * reproduces the identical canonical form and therefore the identical hash,
+ * which is what kills the coalescing-noise enqueue (§10.10).
+ * @param {object} payload payload_json shape (buildRelayPayload output)
+ * @returns {object} canonical content object (determinkey order)
+ */
+function canonicalRelayContent(payload) {
+  const list = (v) => (Array.isArray(v) ? v : []);
+  return {
+    text: String(payload?.text ?? ""),
+    replyHeader: payload?.replyHeader != null ? String(payload.replyHeader) : null,
+    voiceCaption: payload?.voiceCaption != null ? String(payload.voiceCaption) : null,
+    stickers: list(payload?.stickers).map((s) => String(s?.name ?? "")),
+    embeds: list(payload?.embeds).map((e) => ({
+      title: e?.title ?? null,
+      description: e?.description ?? null,
+      url: e?.url ?? null,
+      color: typeof e?.color === "number" ? e.color : null,
+      fields: list(e?.fields).map((f) => ({
+        name: String(f?.name ?? ""),
+        value: String(f?.value ?? ""),
+        inline: Boolean(f?.inline),
+      })),
+    })),
+    // Filenames pass the SAME sanitizer the media spool applies at enqueue,
+    // so a create payload (sanitized) and an update payload (raw) hash
+    // identically for an unchanged file set.
+    attachments: list(payload?.attachments).map((a) => ({
+      sourceAttachmentId: a?.sourceAttachmentId != null ? String(a.sourceAttachmentId) : null,
+      filename: media.sanitizeRemoteFilename(a?.filename ?? a?.name ?? ""),
+      contentType: a?.contentType ?? null,
+      spoiler: Boolean(a?.spoiler),
+      declaredBytes: Number.isFinite(Number(a?.declaredBytes)) ? Number(a.declaredBytes) : null,
+    })),
+  };
+}
+
+/**
+ * SHA-256 of the canonical relay payload (§10.10, Data Model:
+ * bridge_src_snapshots.content_hash). Deterministic, hex.
+ * @param {object} payload
+ * @returns {string} 64-hex digest
+ */
+function relayPayloadHash(payload) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(canonicalRelayContent(payload)), "utf8")
+    .digest("hex");
+}
+
+/**
+ * The eligibility every source-side intake shares (spec §10.4 "Source-side
+ * update/delete intake" + §10.5 direction table): the channel is an end of
+ * an ACTIVE bridge, the end's direction relays, and the caller gave a
+ * message id + channel id + community. No network, no throws beyond the
+ * repo's own (callers wrap).
+ * @param {object} message
+ * @param {object} repo
+ * @returns {{ messageId: string, channelId: string, communityId: number,
+ *              bridge: object, direction: "a_to_b"|"b_to_a" }|null}
+ */
+function resolveSourceContext(message, repo) {
+  const messageId = message.id != null ? String(message.id) : null;
+  const channelId = message.channelId ?? message.channel?.id ?? null;
+  if (!messageId || !channelId) return null;
+  const communityId = message.communityId;
+  if (communityId == null) return null;
+  const end = repo.getBridgeEndForChannel(communityId, String(channelId));
+  if (!end) return null;
+  const bridge = repo.getBridgeById(end.bridge_id);
+  if (!bridge || bridge.state !== "active") return null;
+  const direction = relayDirectionForEnd(end.position, bridge.direction);
+  if (!direction) return null;
+  return { messageId, channelId: String(channelId), communityId, bridge, direction };
+}
+
+/**
+ * The §10.5 connected_at window (shared by create and edit intake): a
+ * message created before connected_at − 2000 ms is never relayed. A
+ * non-decodable id (not a snowflake) logs and fails the window.
+ * @returns {boolean} true when the message may be relayed
+ */
+function withinConnectedWindow(messageId, platform, bridge) {
+  const connectedAt = Number(bridge.connected_at);
+  if (bridge.connected_at == null || !Number.isFinite(connectedAt)) return true;
+  let ts = null;
+  try {
+    ts = snowflakeTimeMs(messageId, platform);
+  } catch (err) {
+    console.error(
+      `[bridge] enqueue skipped: message ${messageId} has no decodable snowflake: ${err?.message || err}`,
+    );
+    return false;
+  }
+  if (!Number.isFinite(ts)) return false;
+  return ts >= connectedAt - CONNECT_GRACE_MS;
+}
+
+/**
+ * Enqueue one source MESSAGE_UPDATE for relay (spec §10.4 "Source-side
+ * update/delete intake", §10.7 "Edit relay", §10.10 coalescing). Two phases,
+ * same shape as enqueueBridgeMessage: a SYNCHRONOUS eligibility + hash +
+ * outbox phase (no network; the row lands before the first await), then the
+ * async media-only spool for NEW attachment ids.
+ *
+ * Eligibility (§10.4, binding): the channel is a source end of an ACTIVE
+ * bridge (direction-gated per §10.5), a bridge_message_links row exists for
+ * the source message (it was relayed — un-relayed messages have no copy to
+ * edit), the source author is human (bot/webhook authors are the echo case
+ * and never enqueue), the connected_at window is respected, and the computed
+ * content hash CHANGED vs bridge_src_snapshots (kills pin/flag/pin-noise
+ * edits). The snapshot is updated BEFORE the enqueue so a rapid edit chain
+ * coalesces (§10.10). An edit for a source id with a pending delete row is
+ * dropped — the delete supersedes (KD: delete supersedes).
+ *
+ * Never rejects; every fault logs `[bridge] enqueue failed:` with ids.
+ *
+ * @param {object} message NormalizedMessage (post-update state)
+ * @param {object} [deps] { repo, db, mentionLookup, media } seams (tests)
+ * @returns {Promise<{ enqueued: true, outboxId: number }|null>}
+ */
+async function enqueueBridgeEdit(message, deps = {}) {
+  let ctx = null;
+  try {
+    if (!message || typeof message !== "object") return null;
+    const repo = deps.repo ?? require("../../db/repositories/bridges");
+
+    // Human authors only: a bot/webhook author on the source side is the
+    // echo case (§10.4) — defense in depth behind the pipeline echo gate.
+    const authorId = message.authorId ?? message.author?.id ?? null;
+    if (authorId == null || authorId === "") return null;
+    if (message.authorBot === true || message.author?.bot === true) return null;
+
+    const resolved = resolveSourceContext(message, repo);
+    if (!resolved) return null;
+    const { messageId, channelId, communityId, bridge, direction } = resolved;
+
+    // The message must have been RELAYED: its destination copies are what an
+    // edit would patch. No links, nothing to edit.
+    const links = repo.listBridgeMessageLinks(bridge.id, messageId);
+    if (links.length === 0) return null;
+
+    // connected_at window (spec §10.5) — a resume burst of updates to
+    // pre-connect messages is never a backfill.
+    if (!withinConnectedWindow(messageId, message.platform, bridge)) return null;
+
+    const lookup = deps.mentionLookup ?? mentionLookupFromMessage(message);
+    const payload = buildRelayPayload(message, {
+      bridge,
+      direction,
+      srcCommunityId: communityId,
+      lookup,
+    });
+    payload.srcChannelId = channelId;
+
+    // The create row's payload (any state) defines the attachment ids the
+    // destination already has; an edit only spools/sends NEW ids (§10.7).
+    const db = deps.db ?? require("../../db/connection").db;
+    const createRow = db
+      .prepare(
+        `SELECT payload_json FROM bridge_outbox
+         WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'create'
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(bridge.id, direction, messageId);
+    let createPayload = null;
+    if (createRow) {
+      try {
+        createPayload = JSON.parse(createRow.payload_json);
+      } catch {
+        console.error(
+          `[bridge] enqueue: create payload for message ${messageId} is not parseable — treating all attachments as new`,
+        );
+      }
+    }
+
+    // Hash coalescing (§10.10): an update whose canonical content matches
+    // the snapshot enqueues NOTHING (pin/unpin/flag noise, repeat-edit storms).
+    const hash = relayPayloadHash(payload);
+    const snapshot = repo.getBridgeSrcSnapshot(bridge.id, messageId);
+    if (snapshot && snapshot.content_hash === hash) return null;
+
+    // Delete supersedes (§10.10): a pending/in-flight delete for this source
+    // id means the copy is being taken down — the edit is moot, drop it.
+    const pendingDelete = db
+      .prepare(
+        `SELECT id FROM bridge_outbox
+         WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'delete'
+           AND state IN ('pending', 'sending')
+         LIMIT 1`,
+      )
+      .get(bridge.id, direction, messageId);
+    if (pendingDelete) return null;
+
+    // Snapshot updated BEFORE the enqueue (spec §10.7/§10.10): the second of
+    // two rapid edits hashes against the first edit's hash, so a content-
+    // identical follow-up coalesces into the SAME pending row.
+    repo.upsertBridgeSrcSnapshot(bridge.id, messageId, hash);
+
+    // New attachment ids only (§10.7: "new attachment ids get new part files").
+    const existingIds = new Set(
+      (Array.isArray(createPayload?.attachments) ? createPayload.attachments : [])
+        .filter((a) => a && typeof a === "object")
+        .map((a) => String(a.sourceAttachmentId)),
+    );
+    const newRawAttachments = (Array.isArray(message.attachments) ? message.attachments : []).filter(
+      (a) => a && !existingIds.has(String(a?.id)),
+    );
+    payload.attachments = (Array.isArray(payload.attachments) ? payload.attachments : []).filter(
+      (a) => !existingIds.has(String(a?.sourceAttachmentId)),
+    );
+    payload.enqueuedAt = Date.now();
+
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction,
+      kind: "edit",
+      srcMessageId: messageId,
+      payload,
+    });
+    ctx = { repo, db, bridge, messageId, payload, row, newRawAttachments, direction };
+  } catch (err) {
+    if (err?.code === "bridge_outbox_duplicate") return null; // one-pending-edit / done-row replay
+    console.error("[bridge] enqueue failed:", err?.message || err);
+    return null;
+  }
+
+  // Phase 2 — spool bytes for the NEW attachment ids (spec §10.8 rules,
+  // media only, no bot credential). Mirrors enqueueBridgeMessage.
+  const { repo, db, bridge, messageId, payload, row, newRawAttachments, direction } = ctx;
+  try {
+    if (newRawAttachments.length > 0) {
+      const seams = deps.media ?? {};
+      const ends = resolveDirectionEnds(repo, bridge, direction);
+      if (!ends.ok) {
+        console.error(`[bridge] spool: ${ends.error}`);
+      } else {
+        const { descriptors, notices } = await media.spoolAttachments({
+          publicId: bridge.public_id,
+          srcMessageId: messageId,
+          attachments: newRawAttachments,
+          destinationPlatform: ends.dstCommunity.platform,
+          direction,
+          opts: {
+            fetchImpl: seams.fetchImpl,
+            resolveHost: seams.resolveHost,
+            downloadTimeoutMs: seams.downloadTimeoutMs,
+            bridgeSpoolCapBytes: seams.bridgeSpoolCapBytes,
+            processSpoolCapBytes: seams.processSpoolCapBytes,
+          },
+        });
+        payload.attachments = descriptors;
+        if (notices.length > 0) payload.spoolNotices = notices;
+        const updated = db
+          .prepare("UPDATE bridge_outbox SET payload_json = ? WHERE id = ? AND state = 'pending'")
+          .run(JSON.stringify(payload), row.id);
+        if (!updated || updated.changes === 0) {
+          // The row left 'pending' mid-spool: that execution owns the payload;
+          // the freshly written bytes are unowned → delete the spool dir.
+          media.deleteSpoolDir(bridge.public_id, messageId);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[bridge] media spool failed for message ${messageId}: ${err?.message || err}`,
+    );
+  }
+  return { enqueued: true, outboxId: Number(row.id) };
+}
+
+/**
+ * Enqueue one source MESSAGE_DELETE for relay (spec §10.4 intake, §10.7
+ * "Delete relay", §10.10 supersession). Fully SYNCHRONOUS — a delete needs
+ * no spool and no re-read. Eligibility: source end of an ACTIVE bridge
+ * (direction-gated) and a links row for the source message (only RELAYED
+ * messages have copies to remove; MESSAGE_CLEAR/purge channels never reach
+ * this path through the pipeline).
+ *
+ * Supersession (§10.10): the repo's enqueue deletes the pending create/edit
+ * rows for the same source message; this function then deletes THEIR spool
+ * bytes (a takedown supersedes copies in flight). A delete whose previous
+ * delete row is terminal (done/failed) re-queues — deletes are idempotent
+ * by destination id (404 = success, §10.7).
+ *
+ * Never throws.
+ *
+ * @param {object} message NormalizedMessage (partial allowed: id + channel)
+ * @param {object} [deps] { repo, db } seams (tests)
+ * @returns {{ enqueued: true, outboxId: number }|null}
+ */
+function enqueueBridgeDelete(message, deps = {}) {
+  try {
+    if (!message || typeof message !== "object") return null;
+    const repo = deps.repo ?? require("../../db/repositories/bridges");
+    const db = deps.db ?? require("../../db/connection").db;
+
+    const resolved = resolveSourceContext(message, repo);
+    if (!resolved) return null;
+    const { messageId, channelId, communityId, bridge, direction } = resolved;
+
+    // Only relayed messages have destination copies to remove.
+    const links = repo.listBridgeMessageLinks(bridge.id, messageId);
+    if (links.length === 0) return null;
+
+    // Capture the superseded pending create/edit payloads BEFORE the enqueue:
+    // the repo transaction deletes their rows; the spool dirs are the
+    // filesystem half of the supersession (§10.10, Data Model).
+    const superseded = db
+      .prepare(
+        `SELECT id FROM bridge_outbox
+         WHERE bridge_id = ? AND direction = ? AND src_message_id = ?
+           AND kind IN ('create', 'edit') AND state = 'pending'`,
+      )
+      .all(bridge.id, direction, messageId);
+
+    // A terminal (done/failed) delete row for this source id is replaced by
+    // the re-queue — the second takedown enqueues cleanly (idempotent 404=ok).
+    db.prepare(
+      `DELETE FROM bridge_outbox
+       WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'delete'
+         AND state IN ('done', 'failed')`,
+    ).run(bridge.id, direction, messageId);
+
+    const payload = {
+      schemaVersion: 1,
+      publicId: bridge.public_id,
+      direction,
+      srcCommunityId: communityId,
+      srcChannelId: channelId,
+      srcMessageId: messageId,
+      enqueuedAt: Date.now(),
+    };
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction,
+      kind: "delete",
+      srcMessageId: messageId,
+      payload,
+    });
+
+    // Filesystem half of supersession: drop the spool bytes of the rows the
+    // transaction just deleted (a missing dir is not an error).
+    if (superseded.length > 0) {
+      media.deleteSpoolDir(bridge.public_id, messageId);
+    }
+    return { enqueued: true, outboxId: Number(row.id) };
+  } catch (err) {
+    if (err?.code === "bridge_outbox_duplicate") return null;
+    console.error("[bridge] enqueue failed:", err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * The MESSAGE_DELETE_BULK intake (spec §10.4: "BULK: one kind-`delete` row
+ * per id with a link"). Discord's bulk event wiring arrives with the
+ * platform adapter follow-up; this is the unit-tested entry the pipeline
+ * calls with the normalized id list. Unlinked ids are skipped (never relayed
+ * → nothing to remove). Never throws.
+ *
+ * @param {number} communityId the source community
+ * @param {string} channelId the channel the ids were purged from
+ * @param {string[]} messageIds the deleted source message ids
+ * @param {object} [opts] { platform, instanceKey, repo, db } seams
+ * @returns {{ enqueued: number }} rows created (one per LINKED id)
+ */
+function enqueueBridgeBulkDelete(communityId, channelId, messageIds, opts = {}) {
+  let enqueued = 0;
+  try {
+    const list = Array.isArray(messageIds) ? messageIds : [];
+    for (const id of list) {
+      if (id == null || String(id).trim() === "") continue;
+      const res = enqueueBridgeDelete(
+        {
+          id: String(id),
+          channelId: String(channelId),
+          communityId,
+          platform: opts.platform ?? "discord",
+          instanceKey: opts.instanceKey ?? "discord",
+        },
+        opts,
+      );
+      if (res && res.enqueued) enqueued += 1;
+    }
+  } catch (err) {
+    console.error("[bridge] enqueue failed:", err?.message || err);
+  }
+  return { enqueued };
+}
+
+/**
  * Enqueue one source message for relay (spec §10.4 "Enqueue" + §10.8 spool-
  * at-enqueue). Two phases:
  *   1. SYNCHRONOUS — every gate (author, type, end, direction, connected_at
@@ -786,11 +1186,45 @@ function isUnknownWebhookResult(res) {
   return String(res?.code ?? "").toUpperCase() === "UNKNOWN_WEBHOOK";
 }
 
+/**
+ * True when a failed DELETE means the DESTINATION MESSAGE is simply gone
+ * (404 / UNKNOWN_MESSAGE). Spec §10.7: "A 404 on a part is success
+ * (already gone)" — the desired end state is reached, so the worker treats
+ * it as a delivered delete (the PR 3 adapters already map 404 → ok; this is
+ * the worker-side defense for transports that surface the raw 404).
+ */
+function isMissingMessageResult(res) {
+  const code = String(res?.code ?? "").toUpperCase();
+  if (code === "UNKNOWN_MESSAGE" || code === "10008" || code === "UNKNOWN_CHANNEL") return true;
+  return /\bHTTP 404\b|\bstatus 404\b/i.test(String(res?.error ?? ""));
+}
+
 function isAvatarSuspect(res) {
   const text = String(res?.error ?? "");
   return (
     /HTTP 400|status 400|50035|Invalid Form Body/i.test(text) && /avatar/i.test(text)
   );
+}
+
+/**
+ * §10.7 "PATCH every linked destination part whose CONTENT changed": a part
+ * changed when its chunk text differs from the create-time chunk, or its
+ * file set (names + content types) differs — a file add/remove/replace
+ * re-uploads on the carrying part's PATCH. Deterministic: the SAME
+ * buildSendParts runs over the old (create) and new (edit) canonical
+ * payloads, so identical content yields identical chunks and no PATCH.
+ * @param {object} part new part (from the rebuilt payload)
+ * @param {object|undefined} oldPart create-time part at the same index
+ * @returns {boolean} true when this part needs a PATCH (or a fresh POST)
+ */
+function editPartChanged(part, oldPart) {
+  if (!oldPart) return true;
+  if (String(part?.content ?? "") !== String(oldPart?.content ?? "")) return true;
+  const sig = (list) =>
+    (Array.isArray(list) ? list : [])
+      .map((f) => `${f?.name ?? ""}:${f?.contentType ?? ""}`)
+      .join("|");
+  return sig(part?.files) !== sig(oldPart?.files);
 }
 
 /**
@@ -999,8 +1433,11 @@ function createRelayWorker(deps = {}) {
    * Resolve spool bytes for one descriptor; a spool MISS refetches the
    * source message for fresh signed URLs (spec §10.10 Restart: "Missing
    * spool → fetchMessage fallback", best-effort — the source may be gone).
+   * `attachmentsOverride` supplies the attachment list (with fresh urls)
+   * from an ALREADY-fetched message — the PR 6 edit path fetches once and
+   * reuses the payload.
    */
-  async function resolveSpooledBytes(descriptor, payload, sourcePort) {
+  async function resolveSpooledBytes(descriptor, payload, sourcePort, attachmentsOverride) {
     const spoolIndex = Number.isInteger(descriptor.spoolIndex)
       ? descriptor.spoolIndex
       : Number.parseInt(String(descriptor.spoolIndex ?? ""), 10);
@@ -1008,13 +1445,18 @@ function createRelayWorker(deps = {}) {
       const bytes = media.readSpooledFile(payload.publicId, payload.srcMessageId, spoolIndex);
       if (bytes) return { bytes };
     }
-    const fetched = await sourcePort.fetchSourceMessage(
-      payload.srcCommunityId,
-      payload.srcChannelId,
-      payload.srcMessageId,
-    );
-    if (!fetched.ok) return { error: `spool missing and source refetch failed: ${fetched.error}` };
-    const source = (Array.isArray(fetched.message?.attachments) ? fetched.message.attachments : [])
+    let attachmentList = attachmentsOverride;
+    if (!Array.isArray(attachmentList)) {
+    console.trace("SPOOL-REFETCH");
+      const fetched = await sourcePort.fetchSourceMessage(
+        payload.srcCommunityId,
+        payload.srcChannelId,
+        payload.srcMessageId,
+      );
+      if (!fetched.ok) return { error: `spool missing and source refetch failed: ${fetched.error}` };
+      attachmentList = Array.isArray(fetched.message?.attachments) ? fetched.message.attachments : [];
+    }
+    const source = attachmentList
       .find((a) => a && String(a.id) === String(descriptor.sourceAttachmentId));
     if (!source || !source.url) {
       return { error: "spool missing and the source attachment no longer carries a url" };
@@ -1024,7 +1466,17 @@ function createRelayWorker(deps = {}) {
     return { bytes: dl.bytes };
   }
 
-  /** One part send with the §10.10 ladder. Returns { ok } or { parked } / { degraded }. */
+  /**
+   * One part send with the §10.10 ladder. `op` selects the transport call:
+   *   'execute' — POST webhook execute (create, and PR 6 parts with no link)
+   *   'patch'   — PATCH the linked destination copy (kind-`edit` relay)
+   *   'delete'  — DELETE the linked destination copy (kind-`delete` relay)
+   * PATCH/DELETE target an existing destination id and get NO degraded
+   * re-post (spec §10.7: "For kind-edit/delete there is no degraded
+   * fallback — a missing webhook means skip the op, log, set last_error"),
+   * so callers pass allowDegraded: false. Returns { ok } (execute adds
+   * messageId), { parked }, { degraded }, or { skipped }.
+   */
   async function sendPartWithLadder({
     port,
     webhookRef,
@@ -1037,6 +1489,9 @@ function createRelayWorker(deps = {}) {
     avatarUrl,
     maxAttempts,
     onWebhookRecreated,
+    op = "execute",
+    dstMessageId = null,
+    allowDegraded = true,
   }) {
     let attempts = 0;
     let rateLimitWaits = 0;
@@ -1047,7 +1502,10 @@ function createRelayWorker(deps = {}) {
         content: part.content == null ? undefined : part.content,
         username,
         allowedMentions: destPlatform === "discord" ? NO_PING : {},
-        nonce: relayNonce(payload.publicId, payload.srcMessageId, row.kind, part.partIndex),
+        // §10.6: the nonce formula keeps kind in the hash — edit/delete ops
+        // carry it wherever the destination accepts it (forward-compat on
+        // both adapters; delete is destructive and retried by id, no nonce).
+        nonce: op === "delete" ? undefined : relayNonce(payload.publicId, payload.srcMessageId, row.kind, part.partIndex),
         files: part.files,
         wait: true,
       };
@@ -1056,7 +1514,12 @@ function createRelayWorker(deps = {}) {
 
       let res;
       try {
-        res = await port.executeRelay(webhookRef.current, opts);
+        res =
+          op === "patch"
+            ? await port.patchRelayMessage(webhookRef.current, dstMessageId, opts)
+            : op === "delete"
+              ? await port.deleteRelayMessage(webhookRef.current, dstMessageId)
+              : await port.executeRelay(webhookRef.current, opts);
       } catch (err) {
         // A throwing transport is a generic failure (AGENTS.md rule 6: the
         // worker keeps the cause, the ladder keeps the cadence).
@@ -1064,6 +1527,9 @@ function createRelayWorker(deps = {}) {
       }
 
       if (res.ok === true) {
+        // PATCH/DELETE successes carry no message id to commit — the target
+        // id is already durable in bridge_message_links.
+        if (op !== "execute") return { ok: true };
         if (res.messageId != null) return { ok: true, messageId: res.messageId };
         if (destPlatform !== "discord") return { ok: true, messageId: null };
         // Discord id-synchronous rule (§10.6): a send that produced NO id may
@@ -1093,6 +1559,10 @@ function createRelayWorker(deps = {}) {
         continue;
       }
 
+      // §10.7 delete relay: a 404 on a part is SUCCESS (already gone) —
+      // the desired end state is reached, no attempt is burned.
+      if (op === "delete" && isMissingMessageResult(res)) return { ok: true };
+
       // §10.7 avatar rule: a 400 whose only suspect is avatar_url — retry
       // once with no avatar (no attempt burn).
       if (avatarUrl != null && !avatarDropped && isAvatarSuspect(res)) {
@@ -1112,6 +1582,16 @@ function createRelayWorker(deps = {}) {
           webhookRef.current = recreated.webhook;
           onWebhookRecreated(recreated);
           continue;
+        }
+        // §10.7 "Degraded fallback" is create-only. For edits/deletes there
+        // is NO degraded re-post: skip the op, record last_error (the caller
+        // drains the row) — re-posting an edit as a new message is how loops
+        // look from the outside.
+        if (!allowDegraded) {
+          return {
+            skipped: true,
+            reason: `${reason} | webhook recreate failed: ${recreated?.error ?? "unknown"}`,
+          };
         }
         // Degraded fallback: bot-authored, quote prefix first line (spec
         // §10.7). One message; last_error records the failure.
@@ -1135,6 +1615,273 @@ function createRelayWorker(deps = {}) {
       if (updated.state === "failed") return { parked: true, reason };
       await sleep(BACKOFF_MS[Math.min(attempts - 1, BACKOFF_MS.length - 1)]);
     }
+  }
+
+  /**
+   * The kind-`edit` branch (spec §10.7 "Edit relay"). The source is RE-READ
+   * via the source port (fetchSourceMessage) and the neutralized text /
+   * sticker / embed renderings are rebuilt from the FETCHED message — the
+   * outbox payload carries the new attachment descriptors (bytes spooled at
+   * enqueue). Every linked destination part whose content changed gets ONE
+   * PATCH; parts beyond the original chunking (longer text / an overflow
+   * file batch) are POSTed and receive their own links row. A parked PATCH
+   * keeps the copy's OLD content (§10.7) and posts the §10.10 poison notice
+   * in the SOURCE channel; a deleted webhook SKIPS the op (no degraded
+   * re-post for edits — spec §10.7 "Degraded fallback").
+   */
+  async function runEditRow(row, bridge, payload, opCtx) {
+    const links = repo.listBridgeMessageLinks(bridge.id, payload.srcMessageId);
+    if (links.length === 0) {
+      // Nothing was ever copied for this source message (a disconnect raced
+      // the queue): there is no destination content to edit — drain the row.
+      repo.markOutboxDone(row.id);
+      return;
+    }
+
+    // Re-read the source (spec §10.7: "re-read the source (fetchMessage)").
+    console.trace("EDIT-REFETCH runEditRow");
+    const fetched = await opCtx.sourcePort.fetchSourceMessage(
+      payload.srcCommunityId,
+      payload.srcChannelId,
+      payload.srcMessageId,
+    );
+    if (!fetched.ok) {
+      // The source message is gone; the delete relay owns removal. Terminal
+      // named failure — a ladder cannot fix a vanished source.
+      const reason = `source re-read failed: ${fetched.error}`;
+      repo.recordOutboxFailure(row.id, reason, { maxAttempts: 1 });
+      repo.setBridgeLastError(bridge.id, reason);
+      return;
+    }
+    const src = fetched.message ?? {};
+
+    // Rebuild the neutralized renderings from the fetched message (§10.7).
+    // The fetched payload carries no source mention lists, so every raw
+    // token collapses to the §10.11 safe labels — no raw <@/<#/ping token
+    // can reach a PATCH body.
+    const text = neutralizeContent(src.content, src.mentions, mentionLookupFromMessage(src));
+    const stickers = (Array.isArray(src.stickers) ? src.stickers : [])
+      .filter((s) => s && s.name != null)
+      .map((s) => ({ id: String(s.id), name: String(s.name) }));
+    const embeds = Array.isArray(src.embeds)
+      ? src.embeds
+      : Array.isArray(payload.embeds)
+        ? payload.embeds
+        : [];
+
+    // The original create payload defines the destination's CURRENT part
+    // layout: the "content changed" filter compares new chunks against the
+    // chunks the create actually sent.
+    const createRow = db
+      .prepare(
+        `SELECT payload_json FROM bridge_outbox
+         WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'create'
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(bridge.id, payload.direction, payload.srcMessageId);
+    let createPayload = null;
+    if (createRow) {
+      try {
+        createPayload = JSON.parse(createRow.payload_json);
+      } catch {
+        console.error(
+          `[bridge] worker: create payload for edit row ${row.id} is not parseable — treating every part as changed`,
+        );
+      }
+    }
+
+    // Merge the new/changed attachment descriptors over the create set and
+    // resolve their bytes: spool first (enqueue spooled the new ids), then
+    // the freshly fetched attachment URLs — the edit path already holds the
+    // source attachments, so no second fetch (resolveSpooledBytes override).
+    const resolveErrors = [];
+    const attached = new Map();
+    for (const d of Array.isArray(createPayload?.attachments) ? createPayload.attachments : []) {
+      if (d && typeof d === "object") attached.set(String(d.sourceAttachmentId), { ...d });
+    }
+    const srcAttachments = Array.isArray(src.attachments) ? src.attachments : [];
+    for (const d of Array.isArray(payload.attachments) ? payload.attachments : []) {
+      if (!d || typeof d !== "object") continue;
+      const merged = attached.get(String(d.sourceAttachmentId)) ?? { ...d };
+      if (Number.isFinite(Number(d.bytes))) merged.bytes = Number(d.bytes);
+      if (typeof d.filename === "string") merged.filename = d.filename;
+      if (d.contentType !== undefined) merged.contentType = d.contentType;
+      if (d.spoiler !== undefined) merged.spoiler = Boolean(d.spoiler);
+      if (d.explicitMedia !== undefined) merged.explicitMedia = Boolean(d.explicitMedia);
+      if (Number.isInteger(d.spoolIndex)) merged.spoolIndex = d.spoolIndex;
+      if (d.skipReason != null) {
+        // Named skip from enqueue (over-cap / spool-full / fetch-failed):
+        // the descriptor carries the skip, the body names it (§10.8 parity).
+        merged.skipReason = d.skipReason;
+      } else {
+        const resolved = await resolveSpooledBytes(d, payload, opCtx.sourcePort, srcAttachments);
+        if (resolved.bytes != null) {
+          merged.data = resolved.bytes;
+          merged.bytes = resolved.bytes.length;
+          merged.skipReason = null;
+        } else {
+          merged.skipReason = `fetch-failed: ${resolved.error}`;
+          resolveErrors.push(resolved.error);
+        }
+      }
+      attached.set(String(d.sourceAttachmentId), merged);
+    }
+
+    const { parts: newParts } = buildSendParts(
+      { ...payload, text, stickers, embeds, attachments: [...attached.values()] },
+      opCtx.destPlatform,
+      (d) => d.data ?? null,
+    );
+    const oldParts = createPayload
+      ? buildSendParts({ ...createPayload }, opCtx.destPlatform, () => null).parts
+      : [];
+
+    // Attribution parity with create (§10.7): the PATCH carries the same
+    // username override. §10.7 avatars: Fluxer destinations only; a PATCH
+    // sends NO avatar (the copy already carries its attribution).
+    const username = attributionName(payload.author);
+    const anyExplicitMedia =
+      payload.explicitMedia === true ||
+      (Array.isArray(payload.attachments) &&
+        payload.attachments.some((a) => a && a.explicitMedia === true));
+    const flags =
+      opCtx.destPlatform === "fluxer"
+        ? FLAG_SUPPRESS_NOTIFICATIONS | (anyExplicitMedia ? FLAG_CONTAINS_EXPLICIT_MEDIA : 0)
+        : undefined;
+
+    const sendCtx = {
+      ...payload,
+      dstCommunityId: opCtx.ends.dstEnd.community_id,
+      dstChannelId: opCtx.ends.dstEnd.channel_id,
+      srcPlatform: opCtx.srcPlatform,
+    };
+
+    const createdLinks = [];
+    for (const part of newParts) {
+      const link = links.find((l) => Number(l.part_index) === part.partIndex) || null;
+      const old = oldParts[part.partIndex];
+      // "One PATCH per changed part" (§10.7): unchanged chunks stay untouched.
+      if (link && !editPartChanged(part, old)) continue;
+      const result = await sendPartWithLadder({
+        port: opCtx.port,
+        webhookRef: opCtx.webhookRef,
+        payload: sendCtx,
+        part,
+        row,
+        destPlatform: opCtx.destPlatform,
+        username,
+        flags,
+        avatarUrl: null,
+        maxAttempts: repo.BRIDGE_OUTBOX_MAX_ATTEMPTS,
+        onWebhookRecreated: opCtx.onWebhookRecreated,
+        op: link ? "patch" : "execute",
+        dstMessageId: link ? String(link.dst_message_id) : null,
+        allowDegraded: false,
+      });
+      if (result.parked) {
+        // §10.7: the copy KEEPS its old content; last_error records the
+        // platform code; the SOURCE gets the poison notice (5-attempt text).
+        repo.setBridgeLastError(bridge.id, result.reason);
+        await sendNoticeSafe(
+          payload.srcCommunityId,
+          payload.srcChannelId,
+          `Bridge ${bridge.public_id} could not copy message ${payload.srcMessageId} after 5 attempts: ${result.reason}. Later messages are still being copied.`,
+          "edit park",
+        );
+        return;
+      }
+      if (result.skipped) {
+        // §10.10 "Webhook deleted by a moderator": edits SKIP when the
+        // recreate failed — record last_error and drain the row.
+        repo.setBridgeLastError(bridge.id, result.reason);
+        repo.markOutboxDone(row.id);
+        return;
+      }
+      if (!link && result.ok && result.messageId != null) {
+        // A NEW part beyond the original chunking: POST + its own links row
+        // (a file set change adds files on the destination in order).
+        createdLinks.push({ partIndex: part.partIndex, messageId: result.messageId });
+      }
+    }
+
+    // Ack-then-delete (spec §10.10): links first, done, spool dir last.
+    for (const l of createdLinks) {
+      repo.addBridgeMessageLink({
+        bridgeId: bridge.id,
+        srcCommunityId: payload.srcCommunityId,
+        srcMessageId: payload.srcMessageId,
+        partIndex: l.partIndex,
+        dstMessageId: l.messageId,
+      });
+      opCtx.noteRelayedDestination(l.messageId);
+    }
+    if (resolveErrors.length > 0) {
+      // Partial media failure names itself on the row (partial-failure rule).
+      db.prepare("UPDATE bridge_outbox SET last_error = ? WHERE id = ?").run(
+        sliceSafe(`partial: ${resolveErrors.join("; ")}`, 480),
+        row.id,
+      );
+    }
+    const done = repo.markOutboxDone(row.id);
+    if (done && resolveErrors.length === 0) repo.setBridgeLastError(bridge.id, null);
+    if (done) media.deleteSpoolDir(payload.publicId, payload.srcMessageId);
+  }
+
+  /**
+   * The kind-`delete` branch (spec §10.7 "Delete relay"): DELETE every
+   * bridge_message_links part through the outbound port. A 404 on a part is
+   * SUCCESS (already gone — the adapters map it, the ladder adds the
+   * defensive match). Five attempts, then park + the VERBATIM source notice
+   * (the delete sentence stands alone — no "Later messages" tail). No
+   * content is re-sent; no spool is involved.
+   */
+  async function runDeleteRow(row, bridge, payload, opCtx) {
+    const links = repo.listBridgeMessageLinks(bridge.id, payload.srcMessageId);
+    if (links.length === 0) {
+      // Nothing was ever copied (or a race already cleaned the links): the
+      // delete has no destination work — drain the row.
+      repo.markOutboxDone(row.id);
+      return;
+    }
+    for (const link of links) {
+      const result = await sendPartWithLadder({
+        port: opCtx.port,
+        webhookRef: opCtx.webhookRef,
+        payload,
+        part: { content: null, files: [], partIndex: Number(link.part_index) },
+        row,
+        destPlatform: opCtx.destPlatform,
+        username: "",
+        flags: undefined,
+        avatarUrl: null,
+        maxAttempts: repo.BRIDGE_OUTBOX_MAX_ATTEMPTS,
+        onWebhookRecreated: opCtx.onWebhookRecreated,
+        op: "delete",
+        dstMessageId: String(link.dst_message_id),
+        allowDegraded: false,
+      });
+      if (result.parked) {
+        repo.setBridgeLastError(bridge.id, result.reason);
+        // VERBATIM §10.7 park notice.
+        await sendNoticeSafe(
+          payload.srcCommunityId,
+          payload.srcChannelId,
+          `Bridge ${bridge.public_id} could not remove the copy of message ${payload.srcMessageId} after 5 attempts: ${result.reason}.`,
+          "delete park",
+        );
+        return;
+      }
+      if (result.skipped) {
+        // §10.10: a missing webhook means SKIP deletions — webhook removal
+        // destroys its own messages on both platforms, so the copies are
+        // already gone. Record last_error and drain the row.
+        repo.setBridgeLastError(bridge.id, result.reason);
+        repo.markOutboxDone(row.id);
+        return;
+      }
+    }
+    const done = repo.markOutboxDone(row.id);
+    if (done) repo.setBridgeLastError(bridge.id, null);
   }
 
   /**
@@ -1168,10 +1915,11 @@ function createRelayWorker(deps = {}) {
         return;
       }
 
-      if (row.kind !== "create") {
-        // PR 5 ships create relay; edit/delete execution lands with PR 6.
-        // Park with a named reason so the ladder never spins on them.
-        repo.recordOutboxFailure(row.id, "edit/delete relay executes with the edit/delete PR", {
+      if (row.kind !== "create" && row.kind !== "edit" && row.kind !== "delete") {
+        // Defensive: the bridge_outbox CHECK constraint admits only the
+        // three kinds; anything else is corrupt data and never reaches a
+        // transport.
+        repo.recordOutboxFailure(row.id, `unknown outbox kind ${String(row.kind)}`, {
           maxAttempts: 1,
         });
         return;
@@ -1204,6 +1952,51 @@ function createRelayWorker(deps = {}) {
         return;
       }
       const webhookRef = { current: wh.webhook };
+
+      // Recreate persistence shared by all three kinds (§10.10: one recreate
+      // attempt; the new webhook replaces the stored end credential).
+      const onWebhookRecreated = (recreated) => {
+        try {
+          repo.setBridgeEndWebhook(bridge.id, ends.dstEnd.position, {
+            webhookId: recreated.webhook.id,
+            tokenEnc: recreated.tokenEnc,
+            uploadLimitBytes: ends.dstEnd.upload_limit_bytes ?? null,
+          });
+          registerRelayWebhookId(
+            dstCommunity.platform,
+            dstCommunity.instanceKey,
+            recreated.webhook.id,
+          );
+        } catch (err) {
+          console.error(
+            `[bridge] worker: webhook recreate persist failed for ${publicId}: ${err?.message || err}`,
+          );
+        }
+      };
+
+      // PR 6: the edit/delete branches share the destination port (PATCH /
+      // DELETE copies), the source port (the edit's re-read), and the ladder.
+      const opCtx = {
+        ends,
+        port,
+        sourcePort,
+        destPlatform,
+        webhookRef,
+        mediaOpts,
+        srcPlatform: srcCommunity?.platform ?? null,
+        onWebhookRecreated,
+        noteRelayedDestination: (messageId) =>
+          noteRelayedDestination(dstCommunity.platform, dstCommunity.instanceKey, messageId),
+        sendNoticeSafe,
+      };
+      if (row.kind === "edit") {
+        await runEditRow(row, bridge, payload, opCtx);
+        return;
+      }
+      if (row.kind === "delete") {
+        await runDeleteRow(row, bridge, payload, opCtx);
+        return;
+      }
 
       // Resolve every file's bytes BEFORE sending (partial-failure rule):
       // a late resolve failure is named in the body, same sentence as create.
@@ -1259,24 +2052,7 @@ function createRelayWorker(deps = {}) {
           flags,
           avatarUrl,
           maxAttempts: repo.BRIDGE_OUTBOX_MAX_ATTEMPTS,
-          onWebhookRecreated: (recreated) => {
-            try {
-              repo.setBridgeEndWebhook(bridge.id, ends.dstEnd.position, {
-                webhookId: recreated.webhook.id,
-                tokenEnc: recreated.tokenEnc,
-                uploadLimitBytes: ends.dstEnd.upload_limit_bytes ?? null,
-              });
-              registerRelayWebhookId(
-                dstCommunity.platform,
-                dstCommunity.instanceKey,
-                recreated.webhook.id,
-              );
-            } catch (err) {
-              console.error(
-                `[bridge] worker: webhook recreate persist failed for ${publicId}: ${err?.message || err}`,
-              );
-            }
-          },
+          onWebhookRecreated,
         });
 
         if (result.parked) {
@@ -1331,6 +2107,19 @@ function createRelayWorker(deps = {}) {
       }
       const done = repo.markOutboxDone(row.id);
       if (done && resolveErrors.length === 0) repo.setBridgeLastError(bridge.id, null);
+
+      // §10.10: create SUCCESS records the canonical content hash in
+      // bridge_src_snapshots — the baseline every later source edit is
+      // coalesced against (the edit intake updates it on each accepted edit).
+      if (done) {
+        try {
+          repo.upsertBridgeSrcSnapshot(bridge.id, payload.srcMessageId, relayPayloadHash(payload));
+        } catch (err) {
+          console.error(
+            `[bridge] worker: snapshot write failed for message ${payload.srcMessageId}: ${err?.message || err}`,
+          );
+        }
+      }
 
       // Latched spool notices ride the payload (enqueue armed the latch;
       // the worker sends once, spec §10.8).
@@ -1607,13 +2396,20 @@ module.exports = {
   buildReplyHeader,
   buildRelayPayload,
   httpsAvatarUrl,
+  // PR 6: canonical payload hash + source-side edit/delete intake
   enqueueBridgeMessage,
+  relayPayloadHash,
+  canonicalRelayContent,
+  enqueueBridgeEdit,
+  enqueueBridgeDelete,
+  enqueueBridgeBulkDelete,
   // PR 5: worker + start-shape hook (NOT wired to boot — KD 22)
   resolveDirectionEnds,
   attributionName,
   relayNonce,
   chunkBodyForSend,
   buildSendParts,
+  editPartChanged,
   createRelayWorker,
   startBridgeLoops,
 };
