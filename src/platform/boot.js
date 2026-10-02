@@ -34,6 +34,9 @@ const { createFluxerHandle } = require("./fluxer/client");
  * @property {import("discord.js").Client|null} discord
  * @property {Map<string, object>} fluxer  // instanceKey → handle; not ClientCluster (K6)
  * @property {(communityId: number) => object|null} clientForCommunity
+ * @property {(listener: (handle: object) => void) => void} [onFluxerReady]
+ *   subscribe to Fluxer handles that finish connecting AFTER feature
+ *   registration (the bridge DM consumer wires late-arriving handles).
  */
 
 /**
@@ -55,10 +58,22 @@ function readFluxerEntries() {
   }
 }
 
+// Feature event hooks are registered at most once per supervisor (guarded):
+// the bridge's DM wiring needs registration to run on Fluxer-only boots too,
+// where the Discord client never logs in (spec §10.10 — the DM connect path
+// is live with or without a Discord client in the process).
+const eventsRegistered = new WeakSet();
+
+function registerFeatureEventsOnce(supervisor, featureList, ctx) {
+  if (eventsRegistered.has(supervisor)) return;
+  eventsRegistered.add(supervisor);
+  registerAllFeatureEvents(supervisor, featureList, ctx);
+}
+
 /**
  * Start every configured platform endpoint and build the supervisor.
  *
- * Feature lifecycle (spec § Boot line 177): features start once at least
+ * Feature lifecycle (spec § Boot line 177): features start when at least
  * ONE endpoint is ready — Discord fires this on ClientReady (identical to
  * today's src/index.js); a Fluxer-only boot fires it after the first
  * successful handle. `startAllFeatures` is called exactly once per process.
@@ -77,6 +92,13 @@ async function boot({ registry } = {}) {
     discord: null,
     fluxer: new Map(),
     clientForCommunity,
+  };
+
+  // Listeners fired with each Fluxer handle that finishes connecting (the
+  // bridge DM consumer attaches to late-arriving handles this way).
+  const fluxerReadyListeners = [];
+  supervisor.onFluxerReady = function onFluxerReady(listener) {
+    if (typeof listener === "function") fluxerReadyListeners.push(listener);
   };
 
   /**
@@ -122,6 +144,9 @@ async function boot({ registry } = {}) {
     // starts features after the first successful Fluxer handle.
     if (supervisor.discord && !discordReady) return;
     featuresStarted = true;
+    // A Fluxer-only boot registers feature events HERE (no Discord branch ran):
+    // the bridge DM consumer must exist even when Discord never logs in.
+    registerFeatureEventsOnce(supervisor, features, featureCtx);
     // PR 7 cutover (spec § Supervisor): the FIRST argument is the supervisor;
     // features read the Discord client from supervisor.discord themselves.
     startAllFeatures(supervisor, features, featureCtx);
@@ -136,7 +161,7 @@ async function boot({ registry } = {}) {
     try {
       const client = createClient();
       supervisor.discord = client;
-      registerAllFeatureEvents(supervisor, features, featureCtx);
+      registerFeatureEventsOnce(supervisor, features, featureCtx);
       registerOrderedPipelines(client);
       client.once(Events.ClientReady, () => {
         // Console parity with the pre-Fluxer entry point (PR 6 bundle).
@@ -176,6 +201,18 @@ async function boot({ registry } = {}) {
         .then((handle) => {
           if (!handle) return false;
           supervisor.fluxer.set(handle.instanceKey, handle);
+          // Fire Fluxer-ready subscribers (bridge DM wiring for handles that
+          // connect after feature registration — spec §10.10 consumer attach).
+          for (const listener of fluxerReadyListeners) {
+            try {
+              listener(handle);
+            } catch (err) {
+              console.error(
+                `[boot] onFluxerReady listener failed for ${handle.instanceKey}:`,
+                err?.message || err,
+              );
+            }
+          }
           // Fluxer-only boot reaches "at least one endpoint ready" here.
           startFeaturesOnce();
           return true;
