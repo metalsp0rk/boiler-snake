@@ -71,6 +71,8 @@ Fluxer has no ephemeral messages, so anything the bot answers **privately** on D
 
 With the console enabled ([Web Admin Console](web-admin.md)), the sign-in page shows one **Continue with Fluxer** button per configured instance that has `clientId` + `clientSecret`. Operator-relevant behavior:
 
+- **Fluxer-only deployments** (no Discord `CLIENT_ID`/`CLIENT_SECRET`): set `SESSION_SECRET` **and** `OAUTH_STATE_SECRET` explicitly. Both default to Discord's `CLIENT_SECRET`, so without them the web login fails closed (`OAuth state secret not configured`) and the sign-in page stays unavailable.
+
 - Fluxer login is a **second provider**: it sets its own cookie (`web_session_fx`) and never touches the Discord `web_session`. A Fluxer session sees only that instance's communities.
 - Scopes are `identify` + `guilds` only; the flow uses PKCE (S256).
 - **One Fluxer session per browser**: signing into a second Fluxer instance rotates the Fluxer session — it does not add a cookie.
