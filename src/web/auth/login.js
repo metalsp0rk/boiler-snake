@@ -295,7 +295,39 @@ function createLoginHandlers(options = {}) {
     // app.use("/auth", createAuthRateLimit()) — per-IP + per-user buckets
     // over every /auth/* request (§8.7). Handlers stay limiter-agnostic.
     const cfg = getWebLoginConfig();
-    if (!cfg.ready) {
+
+    // E2E fix (2026-10-02): the Fluxer sign-in links must be computed BEFORE
+    // the Discord-config gate. A Fluxer-only deployment (no CLIENT_ID/
+    // CLIENT_SECRET) is a supported topology; the landing page 503'd there,
+    // stranding the only working sign-in provider behind a dead page.
+    // One landing button per Fluxer instance with OAuth credentials
+    // (roadmap/fluxer.md § Authorize URL: "For each configured instance
+    // that has clientId and clientSecret, the home page shows one button").
+    // A broken provider must never take the public landing down — a
+    // credential-less Fluxer block degrades to the Discord-only page.
+    let fluxerLoginLinks = [];
+    if (getFluxerWebInstances) {
+      try {
+        fluxerLoginLinks = (getFluxerWebInstances() || [])
+          .filter(
+            (inst) => inst && inst.instanceKey && inst.clientId && inst.clientSecret
+          )
+          .map((inst) => ({
+            slug:
+              typeof inst.slug === "string" && inst.slug
+                ? inst.slug
+                : fluxerInstanceSlug(inst.instanceKey),
+            label: inst.label || inst.instanceKey,
+          }));
+      } catch (err) {
+        console.warn(
+          "[web] /auth/login: Fluxer instance list failed:",
+          err?.message || err
+        );
+      }
+    }
+
+    if (!cfg.ready && fluxerLoginLinks.length === 0) {
       console.warn(
         `[web] /auth/login: OAuth not configured (missing ${cfg.missing.join(", ")})`
       );
@@ -316,32 +348,8 @@ function createLoginHandlers(options = {}) {
     const nextTarget = readNextTarget(url);
 
     if (url.searchParams.get("continue") !== "1") {
-      // One landing button per Fluxer instance with OAuth credentials
-      // (roadmap/fluxer.md § Authorize URL: "For each configured instance
-      // that has clientId and clientSecret, the home page shows one button").
-      // A broken provider must never take the public landing down — a
-      // credential-less Fluxer block degrades to the Discord-only page.
-      let fluxerLoginLinks = [];
-      if (getFluxerWebInstances) {
-        try {
-          fluxerLoginLinks = (getFluxerWebInstances() || [])
-            .filter(
-              (inst) => inst && inst.instanceKey && inst.clientId && inst.clientSecret
-            )
-            .map((inst) => ({
-              slug:
-                typeof inst.slug === "string" && inst.slug
-                  ? inst.slug
-                  : fluxerInstanceSlug(inst.instanceKey),
-              label: inst.label || inst.instanceKey,
-            }));
-        } catch (err) {
-          console.warn(
-            "[web] /auth/login: Fluxer instance list failed:",
-            err?.message || err
-          );
-        }
-      }
+      // The Discord button (and its continue href) only render when Discord
+      // OAuth is configured; a Fluxer-only landing shows the Fluxer buttons.
       respondHtml(
         res,
         200,
@@ -349,12 +357,31 @@ function createLoginHandlers(options = {}) {
           renderSignInPage({
             notice: url.searchParams.get("signedout") === "1" ? "signedout" : null,
             context: nextTarget ? "ticket" : guildTarget ? "guild" : null,
-            continueHref: buildContinueHref({
-              guild: guildTarget,
-              next: nextTarget,
-            }),
+            continueHref: cfg.ready
+              ? buildContinueHref({
+                  guild: guildTarget,
+                  next: nextTarget,
+                })
+              : null,
             fluxerLoginLinks,
           })
+        )
+      );
+      return;
+    }
+
+    // ?continue=1 is the Discord authorize redirect — it needs Discord config.
+    if (!cfg.ready) {
+      console.warn(
+        `[web] /auth/login?continue=1: Discord OAuth not configured (missing ${cfg.missing.join(", ")})`
+      );
+      respondHtml(
+        res,
+        503,
+        authPage(
+          "Login unavailable",
+          '<p>Discord login is not configured on this bot. Return to the <a href="/auth/login">sign-in page</a> for the sign-in options that are configured.</p>',
+          false
         )
       );
       return;
@@ -924,7 +951,13 @@ function createFluxerLoginHandlers(options = {}) {
         }
         if (outbound && typeof outbound.fetchGuild === "function") {
           try {
-            const visible = await outbound.fetchGuild(gid);
+            // OutboundClient.fetchGuild takes the INTEGER community id (it
+            // resolves the external snowflake itself, outbound.js:653). E2E
+            // fix (2026-10-02): this passed the external gid, so the guard
+            // threw "community id required, got string" on every login and
+            // the bot-visibility filter silently never ran (fail-open kept
+            // every guild, including ones the bot has left).
+            const visible = await outbound.fetchGuild(cid);
             if (!visible) continue; // bot no longer sees the guild
           } catch (err) {
             // Fetch hiccup keeps the row (same fail-open-on-read stance as

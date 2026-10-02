@@ -199,6 +199,8 @@ describe("fluxer web login (mocked instance, PKCE + SQLite transactions)", () =>
   let cidVanished;
   let cidFetchFail;
   let cidNoClient;
+  /** Arg history of the fake OutboundClient.fetchGuild (see before()). */
+  let visibilityCalls;
 
   /** Minimal router for the C13 route table (see file header). */
   function buildMiniApp(handlers) {
@@ -292,6 +294,14 @@ describe("fluxer web login (mocked instance, PKCE + SQLite transactions)", () =>
     SLUG = require("../src/web/auth/fluxerApi").fluxerInstanceSlug(INSTANCE_KEY);
     assert.match(SLUG, /^[0-9a-f]{16}$/);
 
+    // Recorded args of every OutboundClient.fetchGuild() the callback makes.
+    // E2E regression lock (2026-10-02): the pre-fix code passed the EXTERNAL
+    // guild id (string), so the real OutboundClient guard threw on every
+    // login and the bot-visibility filter silently never ran. A throw-based
+    // assert would pass (throw → keep row), so the callback round-trip test
+    // asserts these ids are NUMBERS — the integer community id contract.
+    visibilityCalls = [];
+
     const handlers = loginMod.createFluxerLoginHandlers({
       fluxerInstances: () => [instance],
       // Visibility stubs (spec § Guild intersection): null → drop, throw →
@@ -306,7 +316,12 @@ describe("fluxer web login (mocked instance, PKCE + SQLite transactions)", () =>
           };
         }
         if (cid === cidNoClient) return null;
-        return { fetchGuild: async (id) => ({ id, name: "ok" }) };
+        return {
+          fetchGuild: async (id) => {
+            visibilityCalls.push(id);
+            return { id, name: "ok" };
+          },
+        };
       },
     });
     // Expose the handlers for the direct-drive logout test below.
@@ -509,6 +524,19 @@ describe("fluxer web login (mocked instance, PKCE + SQLite transactions)", () =>
       assert.equal(snapshot[0].owner, true);
       assert.equal(snapshot[0].permissions, "36953089", "decimal string preserved");
       assert.equal(snapshot[2].permissions, "0", "null permissions → \"0\", never Number()");
+
+      // --- visibility checks are addressed by COMMUNITY ID, not snowflake ---
+      // (E2E regression, 2026-10-02: the callback passed the external string
+      // id to OutboundClient.fetchGuild, which takes the integer community id;
+      // the guard threw on every login and the filter silently no-op'd.)
+      assert.ok(visibilityCalls.length > 0, "visibility checks ran");
+      for (const id of visibilityCalls) {
+        assert.equal(
+          typeof id,
+          "number",
+          `fetchGuild must receive the numeric community id, got ${typeof id} ${JSON.stringify(id)}`
+        );
+      }
 
       // --- token exchange call shape (live-docs rules + PKCE verifier) ------
       assert.equal(mock.state.tokenCalls.length, tokenCallsBefore + 1);

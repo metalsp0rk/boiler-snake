@@ -152,7 +152,9 @@ function renderSignInPage({
       to this page at any time.</p>
   </section>
   ${contextLine(CONTEXTS.includes(context) ? context : null)}
-  <p><a class="btn btn-signin" href="${continueHref}">Continue with Discord</a></p>
+  ${continueHref != null
+    ? html`<p><a class="btn btn-signin" href="${continueHref}">Continue with Discord</a></p>`
+    : html`` /* Fluxer-only deployment: no Discord config, no dead button. */}
   ${fluxerButtons}
   <p class="signin-footnote">Nothing happens until you press a button above
     and approve on the sign-in provider's own screen.</p>

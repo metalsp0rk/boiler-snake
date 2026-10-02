@@ -556,6 +556,79 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
       assert.doesNotMatch(plain.out.body, /Fluxer/, "no instances → Discord-only landing (today)");
     });
 
+    it("Fluxer-only config: landing renders with Fluxer buttons; Discord continue explains", () => {
+      // E2E regression (2026-10-02): a Fluxer-only deployment (no Discord
+      // CLIENT_ID/CLIENT_SECRET — a supported topology) 503'd the landing
+      // and stranded the only working sign-in provider behind a dead page.
+      const captureLanding = () => {
+        const out = { statusCode: null, body: "" };
+        const res = {
+          writeHead(status, headers) {
+            out.statusCode = status;
+            out.headers = headers || {};
+          },
+          end(body) {
+            out.body = body == null ? "" : String(body);
+          },
+        };
+        return { res, out };
+      };
+      const savedEnv = {
+        CLIENT_ID: process.env.CLIENT_ID,
+        CLIENT_SECRET: process.env.CLIENT_SECRET,
+      };
+      try {
+        delete process.env.CLIENT_ID;
+        delete process.env.CLIENT_SECRET;
+        const instances = [
+          {
+            instanceKey: "https://flx.example.com",
+            slug: "0123456789abcdef",
+            label: "Example Fluxer",
+            clientId: "fx-client",
+            clientSecret: "fx-secret",
+            apiBase: "https://flx.example.com/v1",
+          },
+        ];
+
+        const fx = captureLanding();
+        loginMod
+          .createLoginHandlers({ getFluxerWebInstances: () => instances })
+          .startLogin({ url: "/auth/login" }, fx.res);
+        assert.equal(fx.out.statusCode, 200, "Fluxer-only landing must not 503");
+        assert.match(fx.out.body, /Continue with Fluxer — Example Fluxer/);
+        assert.match(
+          fx.out.body,
+          /href="\/auth\/fluxer\/0123456789abcdef\/login/,
+          "Fluxer button links to its own start route"
+        );
+        assert.doesNotMatch(
+          fx.out.body,
+          /Continue with Discord/,
+          "no dead Discord button when Discord OAuth is unconfigured"
+        );
+
+        const cont = captureLanding();
+        loginMod
+          .createLoginHandlers({ getFluxerWebInstances: () => instances })
+          .startLogin({ url: "/auth/login?continue=1" }, cont.res);
+        assert.equal(cont.out.statusCode, 503, "continue=1 needs Discord and says so");
+        assert.match(cont.out.body, /Discord login is not configured/);
+
+        const none = captureLanding();
+        loginMod
+          .createLoginHandlers({ getFluxerWebInstances: () => [] })
+          .startLogin({ url: "/auth/login" }, none.res);
+        assert.equal(none.out.statusCode, 503, "no provider at all → the original 503");
+        assert.match(none.out.body, /not configured/i);
+      } finally {
+        for (const [key, value] of Object.entries(savedEnv)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    });
+
     it("continue=1 still starts the OAuth redirect exactly as before (state minted, 302)", async () => {
       const { res, authorizeUrl } = await loginStart();
       assert.equal(res.status, 302);
