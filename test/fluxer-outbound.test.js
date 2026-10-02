@@ -59,7 +59,7 @@ describe("fluxer/outbound — send shapes", () => {
       allowedMentions: { parse: [] },
     });
 
-    assert.deepEqual(res, { ok: true, id: "m-1" });
+    assert.deepEqual(res, { ok: true, id: "m-1", channelId: "444" });
     assert.equal(rest.calls.length, 1);
     const call = rest.calls[0];
     assert.equal(call.method, "POST");
@@ -89,7 +89,7 @@ describe("fluxer/outbound — send shapes", () => {
       files: [{ name: "board.png", data: Buffer.from("PNGBYTES") }],
     });
 
-    assert.deepEqual(res, { ok: true, id: "m-1" });
+    assert.deepEqual(res, { ok: true, id: "m-1", channelId: "444" });
     assert.equal(rest.calls.length, 1);
     const body = rest.calls[0].body;
     assert.ok(body instanceof FormData, "the file path posts a FormData multipart body");
@@ -150,7 +150,7 @@ describe("fluxer/outbound — send shapes", () => {
       files: [{ name: "staff-record-123.md", data: Buffer.from("# record") }],
     });
 
-    assert.deepEqual(res, { ok: true, id: "m-2" });
+    assert.deepEqual(res, { ok: true, id: "m-2", channelId: "dm-9" });
     assert.equal(rest.calls[0].path, "/v1/users/@me/channels");
     const dmPost = rest.calls[1];
     assert.equal(dmPost.path, "/v1/channels/dm-9/messages");
@@ -226,7 +226,7 @@ describe("fluxer/outbound — send shapes", () => {
       files: [{ name: "a.png", data: Buffer.from("AB"), contentType: "image/png" }],
     });
 
-    assert.deepEqual(res, { ok: true, id: "m-9" });
+    assert.deepEqual(res, { ok: true, id: "m-9", channelId: "7" });
     // 1. The plan request describes the files under `attachments`, each with
     // the client-side id (live OpenAPI PresignedAttachmentUploadRequest).
     assert.deepEqual(rest.calls[0].body, {
@@ -410,7 +410,7 @@ describe("fluxer/outbound — send shapes", () => {
       ],
     });
 
-    assert.deepEqual(res, { ok: true, id: "m-11" });
+    assert.deepEqual(res, { ok: true, id: "m-11", channelId: "7" });
     // Each file's bytes go to ITS OWN signed URL even when the plan answers
     // out of order, and each claim row carries the matching upload_filename.
     assert.deepEqual(uploads, ["https://media.test/u/a", "https://media.test/u/b"]);
@@ -431,7 +431,7 @@ describe("fluxer/outbound — send shapes", () => {
 
     const res = await outbound.sendDm("1234567890123", { content: "psst" });
 
-    assert.deepEqual(res, { ok: true, id: "m-2" });
+    assert.deepEqual(res, { ok: true, id: "m-2", channelId: "dm-9" });
     assert.equal(rest.calls.length, 2);
     assert.equal(rest.calls[0].method, "POST");
     assert.equal(rest.calls[0].path, "/v1/users/@me/channels");
@@ -1002,5 +1002,26 @@ describe("fluxer/context — defer()/editReply() Discord idiom parity", () => {
     );
     assert.ok(post, "expected a channel message POST");
     assert.deepEqual(post.body, { content: "standalone" });
+  });
+
+  it("second editReply after a DM-anchored send PATCHes the DM channel (not the guild channel)", async () => {
+    // Review follow-up on PR #166: the shim records the channel of the FIRST
+    // send. A sensitive/deferred flow that sends to a DM then edits must PATCH
+    // the DM channel — a DM message id PATCHed into the guild channel 404s.
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/users/@me/channels": { id: "dm-99" },
+        "POST /v1/channels/dm-99/messages": { id: "m-99" },
+        "PATCH /v1/channels/dm-99/messages/m-99": { id: "m-99", edited_timestamp: "now" },
+      },
+    });
+    const ctx = makeCtx(rest);
+    await ctx.defer({ sensitive: true });
+    await ctx.editReply("draft");
+    await ctx.editReply("final");
+    const patch = rest.calls.find((c) => c.method === "PATCH");
+    assert.ok(patch, "expected the second editReply to PATCH");
+    assert.equal(patch.path, "/v1/channels/dm-99/messages/m-99");
+    assert.deepEqual(patch.body, { content: "final" });
   });
 });
