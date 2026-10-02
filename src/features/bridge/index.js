@@ -2,10 +2,13 @@
  * Bridge feature (roadmap/bridge.md § Architecture).
  *
  * PR 4 surface: `/bridge` (Discord slash, context API) + the pipeline gates
- * in relay.js. NO registerEvents/start hooks: the relay worker, the sweeper,
- * the Fluxer DM hook, and `BRIDGE_ENABLED` arrive with the activation PR
- * (KD 22 — nothing sends before it). The feature is inert until staff create
- * a bridge, and even then the service refuses activation (relay not wired).
+ * in relay.js. PR 5 adds the media spool, the outbound ports, and the
+ * at-least-once relay WORKER: `startBridgeLoops` is exported with the
+ * start(supervisor, ctx) shape, and — deliberately — NOT under the `start`
+ * key. load.js boots `feature.start(supervisor, ctx)` when present, so
+ * naming it `start` here would wire the worker into production boot, which
+ * KD 22 forbids until the activation PR (PR 7). The worker code is fully
+ * present and unit-tested; nothing in this build calls it.
  *
  * `handlerApi: { bridge: "context" }` also opts the Fluxer prefix path in:
  * the shipped dispatcher (src/platform/fluxer/dispatch.js) routes
@@ -15,6 +18,7 @@
 
 const { commands } = require("./commands");
 const { handleBridge } = require("./handlers");
+const { startBridgeLoops } = require("./relay");
 
 module.exports = {
   name: "bridge",
@@ -25,4 +29,6 @@ module.exports = {
   handlerApi: {
     bridge: "context",
   },
+  // PR 7 wires this as the feature `start` hook (KD 22: not in this build).
+  startBridgeLoops,
 };
