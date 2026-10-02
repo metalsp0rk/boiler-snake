@@ -42,6 +42,7 @@ const migrations = [
   require("./migrations/032_twitch_eventsub_media"),
   require("./migrations/033_gork_summarize_input_tokens"),
   require("./migrations/034_communities"),
+  require("./migrations/035_bridges"),
 ];
 
 const helpers = {
