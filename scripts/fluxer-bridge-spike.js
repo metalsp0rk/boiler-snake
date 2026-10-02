@@ -291,10 +291,10 @@ async function apiCall(method, pathname, body, opts2 = {}) {
  */
 async function tokenCall(method, id, secret, suffix, body, contentType) {
   registerSecret(secret);
-  const safeLabel = `${method} /v1/webhooks/{id}/[REDACTED]${suffix.split('?')[0].replace(/\/[0-9]+(?=\/|$)/g, '/{id}')}`;
+  const safeLabel = `${method} /webhooks/{id}/[REDACTED]${suffix.split('?')[0].replace(/\/[0-9]+(?=\/|$)/g, '/{id}')}`;
   const headers = {};
   if (contentType) headers['Content-Type'] = contentType;
-  const url = `${apiBase}/v1/webhooks/${encodeURIComponent(String(id))}/${encodeURIComponent(String(secret))}${suffix}`;
+  const url = `${apiBase}/webhooks/${encodeURIComponent(String(id))}/${encodeURIComponent(String(secret))}${suffix}`;
   const t0 = Date.now();
   const init = { method, headers };
   if (body !== undefined) init.body = body;
@@ -345,6 +345,21 @@ async function readBack(channelId, messageId) {
   return { ok: msg !== null, message: msg, listStatus: r.status };
 }
 
+/**
+ * Delete-verification read-back (B6): a 204 on DELETE is not proof, and the
+ * newest-first list page is eventually-consistent — polling the single-message
+ * GET (404 = gone) is the race-safe read. Returns { present, attempts }.
+ */
+async function readBackGone(channelId, messageId) {
+  const path = `/channels/${encodeURIComponent(String(channelId))}/messages/${encodeURIComponent(String(messageId))}`;
+  for (let i = 0; i < 4; i += 1) {
+    const r = await apiCall('GET', path);
+    if (r.status === 404) return { present: false, attempts: i + 1 };
+    if (i < 3) await new Promise((res) => setTimeout(res, 300));
+  }
+  return { present: true, attempts: 4 };
+}
+
 // ---------------------------------------------------------------------------
 // Cleanup — every webhook/message the script creates is deleted here (finally)
 // ---------------------------------------------------------------------------
@@ -357,8 +372,19 @@ async function cleanup() {
   let msgOk = 0;
   for (const m of msgs) {
     try {
-      const r = await apiCall('DELETE', `/channels/${encodeURIComponent(String(m.channelId))}/messages/${encodeURIComponent(String(m.id))}`);
-      if (isOk(r.status)) msgOk += 1;
+      let r = await apiCall('DELETE', `/channels/${encodeURIComponent(String(m.channelId))}/messages/${encodeURIComponent(String(m.id))}`);
+      if (!isOk(r.status)) {
+        // The channel route is a MODERATION route: a bot without the guild
+        // Manage Messages permission gets 403 MISSING_PERMISSIONS there.
+        // The webhook token route deletes messages created by that webhook,
+        // so fall back to it for webhook-authored probe messages.
+        const wh = String(m.channelId) === String(nsfwChannelWanted) ? probeWebhook.nsfw : probeWebhook.main;
+        if (wh) {
+          const via = await tokenCall('DELETE', wh.id, wh.token, `/messages/${encodeURIComponent(String(m.id))}`, undefined, undefined);
+          if (isOk(via.status) || via.status === 404) r = via;
+        }
+      }
+      if (isOk(r.status) || r.status === 404) msgOk += 1;
       else cleanupFailures.push(`message ${m.id}: HTTP ${r.status} code=${JSON.stringify(r.code)}`);
     } catch (e) { cleanupFailures.push(`message ${m.id}: ${e.message}`); }
   }
@@ -420,7 +446,7 @@ async function probeB1() {
   try {
     const g = await apiCall('GET', `/guilds/${encodeURIComponent(String(guildWanted))}`);
     const mfaLevel = isOk(g.status) && g.json ? g.json.mfa_level : undefined;
-    record(c, `GET /guilds/{guild_id} -> ${g.status}; mfa_level=${JSON.stringify(mfa_level)} (1 = elevated actions require an enrolled authenticator)`);
+    record(c, `GET /guilds/{guild_id} -> ${g.status}; mfa_level=${JSON.stringify(mfaLevel)} (1 = elevated actions require an enrolled authenticator)`);
     if (!/^\d{5,20}$/.test(String(guildWanted))) record(c, 'guild id did not look like a snowflake (recorded)');
     if (!(await confirm(`Create a probe webhook named "${WEBHOOK_NAME}" in channel ${webhookChannelWanted}? (deleted in cleanup)`))) {
       record(c, 'operator declined webhook creation — B1 UNCONFIRMED and B2-B11 need the webhook');
@@ -464,7 +490,7 @@ async function probeB2() {
   let sent = null;
   try {
     sent = await executeWebhook(w, { username: override, content, allowed_mentions: {} });
-    record(c, `POST /v1/webhooks/{id}/{token}?wait=true username=${JSON.stringify(override)} -> ${sent.status}${sent.code ? ` code=${JSON.stringify(sent.code)}` : ''} (rate headers: ${JSON.stringify(sent.headers)})`,
+    record(c, `POST /webhooks/{id}/{token}?wait=true username=${JSON.stringify(override)} -> ${sent.status}${sent.code ? ` code=${JSON.stringify(sent.code)}` : ''} (rate headers: ${JSON.stringify(sent.headers)})`,
       sent.json && sent.json.id ? { id: sent.json.id, author_keys: fieldKeys(sent.json.author), author_username: sent.json.author && sent.json.author.username } : (sent.json ?? sent.text));
     if (!(isOk(sent.status) && sent.json && sent.json.id)) {
       record(c, `execute did not return a message object — attribution UNCONFIRMED`, sent.json ?? sent.text);
@@ -553,7 +579,7 @@ async function probeB5() {
   try {
     const patch = await tokenCall('PATCH', w.id, w.token, `/messages/${encodeURIComponent(String(target))}`,
       JSON.stringify({ content: newContent }), 'application/json');
-    record(c, `PATCH /v1/webhooks/{id}/{token}/messages/{mid} -> ${patch.status}${patch.code ? ` code=${JSON.stringify(patch.code)}` : ''} (edit relay gate)`,
+    record(c, `PATCH /webhooks/{id}/{token}/messages/{mid} -> ${patch.status}${patch.code ? ` code=${JSON.stringify(patch.code)}` : ''} (edit relay gate)`,
       patch.json ?? patch.text);
     const back = await readBack(webhookChannelWanted, target);
     const edited = back.ok && back.message ? back.message : null;
@@ -574,13 +600,14 @@ async function probeB6() {
   if (!w || !target) { record(c, 'no webhook/message to delete (B2 did not run) — UNCONFIRMED'); return done(c, 'skip'); }
   try {
     const del = await tokenCall('DELETE', w.id, w.token, `/messages/${encodeURIComponent(String(target))}`, undefined, undefined);
-    record(c, `DELETE /v1/webhooks/{id}/{token}/messages/{mid} -> ${del.status}${del.code ? ` code=${JSON.stringify(del.code)}` : ''} (body length=${(del.text || '').length})`, del.json ?? del.text);
-    const back = await readBack(webhookChannelWanted, target);
-    record(c, `read-back after delete: ${back.ok ? 'message STILL PRESENT' : 'message gone from history (expected)'}${back.listStatus ? ` (list HTTP ${back.listStatus})` : ''}`);
-    const ok = (isOk(del.status) || del.status === 404) && !back.ok;
+    record(c, `DELETE /webhooks/{id}/{token}/messages/{mid} -> ${del.status}${del.code ? ` code=${JSON.stringify(del.code)}` : ''} (body length=${(del.text || '').length})`, del.json ?? del.text);
+    const back = await readBackGone(webhookChannelWanted, target);
+    record(c, `read-back after delete: ${back.present ? 'message STILL PRESENT' : `message gone (direct GET 404 after ${back.attempts} attempt(s)) — expected`} (race-safe single-message GET)`,
+      { present: back.present, attempts: back.attempts });
+    const ok = (isOk(del.status) || del.status === 404) && !back.present;
     record(c, ok
-      ? 'OBSERVED: webhook DELETE removes the copy — delete relay supported; moderation story intact'
-      : `OBSERVED: DELETE status=${del.status} code=${JSON.stringify(del.code)}, read-back present=${back.ok} — delete relay to Fluxer is SKIPPED + logged; docs must carry the moderation caveat`);
+      ? 'OBSERVED: webhook DELETE removes the copy (204 + direct GET 404) — delete relay supported; moderation story intact'
+      : `OBSERVED: DELETE status=${del.status} code=${JSON.stringify(del.code)}, message present after polling — delete relay to Fluxer is SKIPPED + logged; docs must carry the moderation caveat`);
     if (ok) { // remove the pending cleanup entry — the message is already gone
       const i = createdMessages.findIndex(m => String(m.id) === String(target));
       if (i >= 0) createdMessages.splice(i, 1);
@@ -638,13 +665,19 @@ async function probeB10() {
     };
     record(c, `read-back suppression fields: ${JSON.stringify(sup)}`,
       { mention_everyone: m.mention_everyone, mentions: m.mentions, mention_roles: m.mention_roles, mention_channels: m.mention_channels });
+    // The §10.11 layer-1 gate is PING suppression: mention_everyone false +
+    // empty mentions/mention_roles. mention_channels is a RENDERING field —
+    // Fluxer resolves literal <#id> text into display metadata (B14 documents
+    // that syntax); an entry there is not a ping and does not fail the probe.
     const clean = m.mention_everyone === false
       && Array.isArray(m.mentions) && m.mentions.length === 0
-      && Array.isArray(m.mention_roles) && m.mention_roles.length === 0
-      && Array.isArray(m.mention_channels) && m.mention_channels.length === 0;
+      && Array.isArray(m.mention_roles) && m.mention_roles.length === 0;
+    const channelsNote = Array.isArray(m.mention_channels) && m.mention_channels.length > 0
+      ? ` NOTE: mention_channels is non-empty (Fluxer resolves literal <#id> text to display metadata, not a ping — see B14). Relay body-rewrite still neutralizes channel mentions to plain text (§10.11 layer 2).`
+      : '';
     record(c, clean
-      ? 'OBSERVED: webhook execute with allowed_mentions={} suppresses ALL mention types in the body (webhook default confirmed). Body-rewrite stays REQUIRED as layer 2 regardless (§10.11: defaults differ per platform and can change).'
-      : 'OBSERVED: some mentions populated despite allowed_mentions={} — webhook execute does NOT fully suppress; body-rewrite becomes load-bearing and must be tested');
+      ? 'OBSERVED: webhook execute with allowed_mentions={} suppresses ALL pings (mention_everyone=false, mentions=[], mention_roles=[]) — layer 1 confirmed on this build. Body-rewrite stays REQUIRED as layer 2 regardless (§10.11: defaults differ per platform and can change).' + channelsNote
+      : 'OBSERVED: some PING fields populated despite allowed_mentions={} — webhook execute does NOT fully suppress; body-rewrite becomes load-bearing and must be tested');
     return done(c, clean ? 'pass' : 'fail');
   } catch (e) { record(c, `error: ${e.message}`); return done(c, 'fail'); }
 }
@@ -804,7 +837,7 @@ async function probeB7() {
   for (const p of webhookPathProbes) for (const h of Object.keys(p.headers)) names.add(h);
   record(c, `header names observed on ${webhookPathProbes.length} successful webhook-route response(s): ${[...names].sort().join(', ') || 'none'}`);
   for (const p of createProbes.slice(0, 2)) record(c, `${p.method} ${p.path}: ${JSON.stringify(p.headers)}`);
-  const exec = webhookPathProbes.find(p => String(p.path).startsWith('POST /v1/webhooks'));
+  const exec = webhookPathProbes.find(p => String(p.path).startsWith('POST /webhooks'));
   if (exec) record(c, `first webhook execute headers: ${JSON.stringify(exec.headers)}`);
   record(c, '429 body shape (RATE_LIMITED, retry_after, bucket headers): DOC (docs:10) — not exercised; worker waits at head per §10.10. Rate-limit notes for webhook create: 10/minute/channel; execute: ~60/minute/webhook (docs) — update §10.10 with anything observed.');
   c.unconfirmed.push('429 body shape + Retry-After on the webhook routes: docs-only, not exercised (same open item as the fluxer spike)');
