@@ -59,6 +59,7 @@ describe("commandVisibility", () => {
     assert.equal(visibilityTier("note"), TIERS.staff);
     assert.equal(visibilityTier("setxp"), TIERS.staff);
     assert.equal(visibilityTier("honeypot"), TIERS.staff);
+    assert.equal(visibilityTier("bridge"), TIERS.staff);
     assert.equal(visibilityTier("staff"), TIERS.admin);
     assert.equal(visibilityTier("setcommandchannel"), TIERS.admin);
   });
