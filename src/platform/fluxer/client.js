@@ -13,7 +13,9 @@
  * Handle shape (PR 6 shared contract 5, consumed by fluxer/outbound.js):
  *   { instanceKey, rest, userId, fetchGuild(externalId),
  *     guildFetch(communityId, guildId) }
- * plus the lifecycle extras `label`, `ready`, `destroy`, and `outbound`.
+ * plus the lifecycle extras `label`, `ready`, `destroy`, `outbound`, and the
+ * opt-in DM consumer hook `onDmMessage(listener)` (§10.3 delta 1 — returns an
+ * unsubscribe function; consumers receive NormalizedDmMessage objects).
  *
  * Error handling (AGENTS.md): every async entry attaches its own catch;
  * every log carries `[fluxer]` + the instance key; nothing here ever calls
@@ -21,7 +23,11 @@
  */
 
 const pipelines = require("../../bot/pipelines");
-const { normalizeFluxerMessage, normalizeFluxerReaction } = require("./normalize");
+const {
+  normalizeFluxerMessage,
+  normalizeFluxerDmMessage,
+  normalizeFluxerReaction,
+} = require("./normalize");
 const { createFluxerOutbound } = require("./outbound");
 const { discoverInstance } = require("./discovery");
 const { getCommunityById } = require("../community");
@@ -134,6 +140,67 @@ function safeLogUrl(value) {
 }
 
 /**
+ * Opt-in DM consumer registry (§10.3 delta 1, KD 24) — the listener array
+ * behind handle.onDmMessage. Multiple consumers may register; emission is
+ * async-safe: each listener runs detached-in-order with its OWN catch, so one
+ * consumer throwing can never skip the next listener, kill the gateway
+ * handler, or take the instance down (AGENTS.md rule 1).
+ *
+ * Policy-free by contract (KD 1): this dispatcher knows nothing about the
+ * bridge — it hands the NormalizedDmMessage to whoever registered.
+ *
+ * @param {string} instanceKey instance label for the consumer-failure log line
+ * @returns {{
+ *   register: (listener: (dm: object) => any) => () => void,
+ *   emit: (dm: object) => Promise<void>,
+ *   listenerCount: () => number,
+ * }}
+ */
+function createDmDispatcher(instanceKey = "fluxer") {
+  const listeners = [];
+  return {
+    /**
+     * Register one consumer. Returns an unsubscribe function (safe to call
+     * twice; removing an unregistered listener is a no-op).
+     * @param {(dm: object) => any} listener
+     * @returns {() => void}
+     */
+    register(listener) {
+      if (typeof listener !== "function") {
+        throw new TypeError(
+          `[fluxer] ${instanceKey} onDmMessage: listener must be a function`,
+        );
+      }
+      listeners.push(listener);
+      return () => {
+        const i = listeners.indexOf(listener);
+        if (i >= 0) listeners.splice(i, 1);
+      };
+    },
+    /**
+     * Fan one NormalizedDmMessage out to every registered listener, awaiting
+     * each (a slow consumer delays the next — relay ordering beats concurrency).
+     * @param {object} dm NormalizedDmMessage
+     */
+    async emit(dm) {
+      for (const listener of [...listeners]) {
+        try {
+          await listener(dm);
+        } catch (err) {
+          console.error(
+            `[fluxer] dm consumer failed: ${err?.message || err} ` +
+              `(instance ${instanceKey}, message ${dm?.id ?? "?"}, author ${dm?.authorId ?? "?"})`,
+          );
+        }
+      }
+    },
+    listenerCount() {
+      return listeners.length;
+    },
+  };
+}
+
+/**
  * Create one Fluxer endpoint handle: dynamic SDK load → Client.fromDiscovery
  * (the SDK performs the § Boot discovery itself) → gateway login → event
  * wiring into the shared pipelines.
@@ -151,6 +218,7 @@ function safeLogUrl(value) {
  *   rest: object, outbound: object,
  *   fetchGuild: (externalId: string) => Promise<object|null>,
  *   guildFetch: (communityId: number, guildId?: string|null) => Promise<object|null>,
+ *   onDmMessage: (listener: (dm: object) => any) => () => void,
  *   destroy: () => Promise<void>,
  * } | null>}
  */
@@ -309,6 +377,11 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     );
   }
 
+  // Opt-in DM consumer registry (§10.3 delta 1, KD 24): MESSAGE_CREATE payloads
+  // with no guild normalize to NormalizedDmMessage and fan out to consumers
+  // registered via handle.onDmMessage. The guild pipeline path is untouched.
+  const dmDispatcher = createDmDispatcher(instanceKey);
+
   const handle = {
     instanceKey,
     label: (typeof entry?.label === "string" && entry.label.trim()) || origin,
@@ -320,6 +393,15 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     destroy,
     features,
     outbound: null,
+    /**
+     * Register a consumer for normalized inbound DMs (§10.3 delta 1, KD 24):
+     * `onDmMessage((normalizedDm) => …)` receives NormalizedDmMessage objects
+     * for gateway MESSAGE_CREATE events with no guild. Multiple consumers are
+     * allowed; returns an unsubscribe function. The guild pipeline (pipelines
+     * .onMessageCreate) is NOT touched by this path.
+     * @type {(listener: (dm: object) => any) => () => void}
+     */
+    onDmMessage: dmDispatcher.register,
   };
   // Contract 5: the OutboundClient is built over this handle. Outbound's
   // method set is spec 375-397; it never sees the SDK client itself.
@@ -340,12 +422,19 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
 
   onEvent(eventName("MessageCreate", "messageCreate"), "messageCreate", async (msg) => {
     const normalized = normalizeFluxerMessage(msg, { instanceKey });
-    if (!normalized) return; // DM / payload without guild_id (contract 4)
-    await pipelines.onMessageCreate(handle.outbound, normalized, {
-      registry: pipelineHooks.registry,
-      supervisor: pipelineHooks.supervisor,
-      gorkClient: null,
-    });
+    if (normalized) {
+      await pipelines.onMessageCreate(handle.outbound, normalized, {
+        registry: pipelineHooks.registry,
+        supervisor: pipelineHooks.supervisor,
+        gorkClient: null,
+      });
+      return;
+    }
+    // Guild gate hit: try the DM path (§10.3 delta 1). Payloads missing the
+    // fields a DM needs (id, channel, author) normalize to null and drop,
+    // exactly like the pre-PR-3 behavior.
+    const dm = normalizeFluxerDmMessage(msg, { instanceKey });
+    if (dm) await dmDispatcher.emit(dm);
   });
 
   onEvent(eventName("MessageReactionAdd", "messageReactionAdd"), "messageReactionAdd", async (payload) => {
@@ -387,4 +476,5 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
 module.exports = {
   createFluxerHandle,
   buildRestFacade,
+  createDmDispatcher,
 };

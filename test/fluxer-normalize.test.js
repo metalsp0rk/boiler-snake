@@ -15,6 +15,7 @@ const assert = require("node:assert/strict");
 
 const {
   normalizeFluxerMessage,
+  normalizeFluxerDmMessage,
   normalizeFluxerReaction,
 } = require("../src/platform/fluxer/normalize");
 
@@ -76,10 +77,24 @@ describe("platform/fluxer/normalize — normalizeFluxerMessage", () => {
       channels: ["1554600000000000011"],
     });
     assert.deepEqual(out.attachments, [
-      { name: "shot.png", url: "https://cdn.test/shot.png" },
+      {
+        name: "shot.png",
+        url: "https://cdn.test/shot.png",
+        id: "att-1",
+        size: null,
+        contentType: null,
+        flags: null,
+      },
     ]);
     assert.ok(out.createdAt instanceof Date);
     assert.equal(out.createdAt.getTime(), Date.parse(TS_ISO));
+    // Relay-required fields (§10.3 item 4) on a payload that carries none:
+    // every one is its "absent" value, never undefined.
+    assert.equal(out.webhookId, null);
+    assert.equal(out.authorDisplayName, "sparky");
+    assert.equal(out.type, null);
+    assert.deepEqual(out.messageSnapshots, []);
+    assert.deepEqual(out.stickers, []);
     // Pipeline-added fields (contract 1)
     assert.deepEqual(out.memberRoleIds, ["1554600000000000010", "1554600000000000012"]);
     assert.equal(out.channelTypes.get("1554600000000000011"), 0);
@@ -105,8 +120,15 @@ describe("platform/fluxer/normalize — normalizeFluxerMessage", () => {
       { instanceKey: "fluxer-1" },
     );
     assert.deepEqual(withFiles.attachments, [
-      { name: "a.png", url: "https://cdn.test/a.png" },
-      { name: "b.bin", url: "" },
+      {
+        name: "a.png",
+        url: "https://cdn.test/a.png",
+        id: "a",
+        size: null,
+        contentType: null,
+        flags: null,
+      },
+      { name: "b.bin", url: "", id: "b", size: null, contentType: null, flags: null },
     ]);
 
     const noFiles = normalizeFluxerMessage(
@@ -124,12 +146,20 @@ describe("platform/fluxer/normalize — normalizeFluxerMessage", () => {
     assert.equal(out.content, "");
   });
 
-  it("drops DMs: no guild_id → null", () => {
-    const out = normalizeFluxerMessage(
-      { t: "MESSAGE_CREATE", d: phase0D({ guild_id: undefined }) },
-      { instanceKey: "fluxer-1" },
-    );
-    assert.equal(out, null);
+  it("drops DMs from the GUILD path: no guild_id → null (and the DM normalizer emits the new shape)", () => {
+    const raw = { t: "MESSAGE_CREATE", d: phase0D({ guild_id: undefined }) };
+    // The guild pipeline's drop behavior is unchanged (contract 4)…
+    assert.equal(normalizeFluxerMessage(raw, { instanceKey: "fluxer-1" }), null);
+    // …and the SAME payload now produces a NormalizedDmMessage (§10.3 delta 1,
+    // KD 24) for the client's opt-in onDmMessage hook.
+    const dm = normalizeFluxerDmMessage(raw, { instanceKey: "fluxer-1" });
+    assert.ok(dm, "expected a normalized DM");
+    assert.equal(dm.platform, "fluxer");
+    assert.equal(dm.instanceKey, "fluxer-1");
+    assert.equal(dm.id, "1554600000000000001");
+    assert.equal(dm.channelId, "1554600000000000002");
+    assert.equal(dm.authorId, "1554600000000000003");
+    assert.equal(dm.content, "!xp");
   });
 
   it("drops payloads missing id, channel_id, or author (logged, no throw)", () => {
@@ -320,7 +350,16 @@ describe("platform/fluxer/normalize — SDK model payloads (camelCase)", () => {
     assert.equal(out.content, "!xp");
     assert.deepEqual(
       out.attachments,
-      [{ name: "shot.png", url: "https://cdn.test/shot.png" }],
+      [
+        {
+          name: "shot.png",
+          url: "https://cdn.test/shot.png",
+          id: "att-1",
+          size: null,
+          contentType: null,
+          flags: null,
+        },
+      ],
       "Map-based Collection entries must unwrap to values",
     );
     assert.equal(out.createdAt.toISOString(), TS_ISO);
@@ -330,10 +369,125 @@ describe("platform/fluxer/normalize — SDK model payloads (camelCase)", () => {
     // SDK Message carries NO member → member fields empty, never a throw.
     assert.deepEqual(out.memberRoleIds, []);
     assert.equal(out.memberRaw, null);
+    // Relay fields from the SDK model (camelCase): type is numeric, the rest
+    // are the payload's own (empty) values.
+    assert.equal(out.type, 0);
+    assert.equal(out.webhookId, null);
+    assert.deepEqual(out.stickers, []);
+    assert.deepEqual(out.messageSnapshots, []);
   });
 
-  it("drops SDK-shaped DM messages (guildId null) via the guild gate", () => {
-    assert.equal(normalizeFluxerMessage(sdkMessage({ guildId: null })), null);
+  it("fills the relay-required fields from raw payload truth (webhook author, type, attachment detail, snapshots, stickers)", () => {
+    const out = normalizeFluxerMessage(
+      {
+        t: "MESSAGE_CREATE",
+        d: phase0D({
+          webhook_id: "1554600000000000099",
+          type: 0,
+          author: {
+            id: "1554600000000000099", // Fluxer webhook author: author.id IS the webhook id
+            username: "Relay Bot",
+            global_name: "Relay (Bridge)",
+            bot: true,
+          },
+          attachments: [
+            {
+              id: "att-9",
+              filename: "clip.mp4",
+              url: "https://cdn.test/clip.mp4",
+              size: 4321,
+              content_type: "video/mp4",
+              flags: 1,
+            },
+          ],
+          message_snapshots: [{ message: { content: "forwarded text" } }],
+          stickers: [{ id: "1554600000000000077", name: "gork" }],
+        }),
+      },
+      { instanceKey: "https://fluxer.test" },
+    );
+
+    // BOTH raw truths are exposed: authorId stays the payload's author.id
+    // (= webhook id for a webhook author) and webhookId carries the payload's
+    // webhook_id — the pipeline gate needs both (KD 10).
+    assert.equal(out.authorId, "1554600000000000099");
+    assert.equal(out.webhookId, "1554600000000000099");
+    assert.equal(out.authorBot, true);
+    assert.equal(out.authorDisplayName, "Relay (Bridge)");
+    assert.equal(out.type, 0);
+    assert.deepEqual(out.attachments, [
+      {
+        name: "clip.mp4",
+        url: "https://cdn.test/clip.mp4",
+        id: "att-9",
+        size: 4321,
+        contentType: "video/mp4",
+        flags: 1,
+      },
+    ]);
+    assert.deepEqual(out.messageSnapshots, [{ message: { content: "forwarded text" } }]);
+    assert.deepEqual(out.stickers, [{ id: "1554600000000000077", name: "gork" }]);
+  });
+
+  it("normalizes an SDK-model payload's relay fields (camelCase webhookId, numeric flags)", () => {
+    const out = normalizeFluxerMessage(
+      {
+        id: "1555314179143892992",
+        channelId: "1526398982081740803",
+        guildId: "1526398982081740800",
+        author: { id: "1554590243921854464", username: "sparky", globalName: "Spark 🐍", bot: false },
+        content: "hi",
+        createdAt: new Date(TS_ISO),
+        type: 0,
+        webhookId: "1554600000000000055",
+        attachments: [
+          { id: "att-2", filename: "a.png", url: "https://cdn.test/a.png", size: 12, contentType: "image/png", flags: 1n },
+        ],
+        stickers: [{ id: "77", name: "poke" }],
+        messageSnapshots: [{ message: { content: "s" } }],
+      },
+      { instanceKey: "chat.test" },
+    );
+    assert.equal(out.webhookId, "1554600000000000055");
+    assert.equal(out.authorDisplayName, "Spark 🐍");
+    assert.equal(out.type, 0);
+    assert.deepEqual(out.attachments, [
+      {
+        name: "a.png",
+        url: "https://cdn.test/a.png",
+        id: "att-2",
+        size: 12,
+        contentType: "image/png",
+        flags: 1, // bigint-backed BitFields normalize to numbers
+      },
+    ]);
+    assert.deepEqual(out.stickers, [{ id: "77", name: "poke" }]);
+    assert.deepEqual(out.messageSnapshots, [{ message: { content: "s" } }]);
+  });
+
+  it("emits the DM shape for SDK-shaped DM messages (guildId null) and keeps the guild drop", () => {
+    const dmPayload = sdkMessage({ guildId: null });
+    // Guild path: unchanged drop (the guild pipeline never sees a DM).
+    assert.equal(normalizeFluxerMessage(dmPayload), null);
+    // DM path: full NormalizedDmMessage, keys exactly per the §10.3 typedef.
+    const dm = normalizeFluxerDmMessage(dmPayload, { instanceKey: "chat.test" });
+    assert.ok(dm);
+    assert.deepEqual(Object.keys(dm).sort(), [
+      "attachments",
+      "authorId",
+      "channelId",
+      "content",
+      "createdAt",
+      "id",
+      "instanceKey",
+      "mentions",
+      "platform",
+    ]);
+    assert.equal(dm.id, "1555314179143892992");
+    assert.equal(dm.channelId, "1526398982081740803");
+    assert.equal(dm.authorId, "1554590243921854464");
+    assert.equal(dm.content, "!xp");
+    assert.equal(dm.createdAt.toISOString(), TS_ISO);
   });
 
   it("normalizes an SDK reaction payload (flat camelCase ids, guild via reaction model)", () => {

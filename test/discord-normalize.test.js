@@ -94,12 +94,70 @@ describe("platform/discord/normalize — normalizeDiscordMessage", () => {
       everyone: true,
     });
     assert.deepEqual(message.attachments, [
-      { name: "shot.png", url: "https://cdn.example/shot.png" },
+      {
+        name: "shot.png",
+        url: "https://cdn.example/shot.png",
+        id: null,
+        size: null,
+        contentType: null,
+        flags: null,
+      },
     ]);
     assert.ok(message.createdAt instanceof Date);
     assert.equal(message.createdAt.getTime(), TS);
-    // Spec line 215: Discord messages NEVER enter the prefix branch.
+    // Relay-required fields (§10.3 item 4) at their "absent" values here.
+    assert.equal(message.webhookId, null);
+    assert.equal(message.type, null);
+    assert.deepEqual(message.messageSnapshots, []);
+    assert.deepEqual(message.stickers, []);
     assert.equal(message.parsePrefix, null);
+  });
+
+  it("fills the relay-required fields from the payload (webhookId, displayName, type, attachment detail, snapshots, stickers)", () => {
+    const { guild } = buildGuildMessage();
+    const author = createUser({ id: IDS.member, username: "member" });
+    author.globalName = "Spark 🐍";
+    const member = createMember({ guild, user: author, displayName: "Spark (nick)" });
+    const channel = createTextChannel({ id: IDS.channelGeneral, guild });
+    const message = createMessage({ guild, channel, author, member, id: "900" });
+    message.webhookId = "1554600000000000099";
+    message.type = 0;
+    message.attachments = new Map([
+      [
+        "att-9",
+        {
+          id: "att-9",
+          name: "clip.mp4",
+          url: "https://cdn.test/clip.mp4",
+          size: 4321,
+          contentType: "video/mp4",
+          flags: 1n, // bigint-backed BitField → number at the boundary
+        },
+      ],
+    ]);
+    message.stickers = new Map([["st-1", { id: "st-1", name: "gork" }]]);
+    message.messageSnapshots = [{ message: { content: "forwarded" } }];
+
+    normalizeDiscordMessage(message);
+
+    // Both raw truths: authorId stays the author, webhookId is the payload's.
+    assert.equal(message.authorId, IDS.member);
+    assert.equal(message.webhookId, "1554600000000000099");
+    // Guild member display name wins over the author's global name.
+    assert.equal(message.authorDisplayName, "Spark (nick)");
+    assert.equal(message.type, 0);
+    assert.deepEqual(message.attachments, [
+      {
+        name: "clip.mp4",
+        url: "https://cdn.test/clip.mp4",
+        id: "att-9",
+        size: 4321,
+        contentType: "video/mp4",
+        flags: 1,
+      },
+    ]);
+    assert.deepEqual(message.stickers, [{ id: "st-1", name: "gork" }]);
+    assert.deepEqual(message.messageSnapshots, [{ message: { content: "forwarded" } }]);
   });
 
   it("resolves communityId through the communities registry", () => {
@@ -158,6 +216,13 @@ describe("platform/discord/normalize — normalizeDiscordMessage", () => {
     });
     assert.deepEqual(message.attachments, []);
     assert.equal(message.createdAt, null);
+    // Relay fields on a bare DM-shaped message: all at their absent defaults,
+    // display name falling back to the username (never undefined).
+    assert.equal(message.webhookId, null);
+    assert.equal(message.type, null);
+    assert.deepEqual(message.messageSnapshots, []);
+    assert.deepEqual(message.stickers, []);
+    assert.equal(message.authorDisplayName, "member2");
     assert.equal(message.parsePrefix, null);
   });
 });

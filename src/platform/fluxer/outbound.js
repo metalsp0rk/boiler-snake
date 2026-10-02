@@ -38,6 +38,128 @@ function causeOf(err) {
 }
 
 /**
+ * attachments array (wire) / Collection (SDK Map) → entries array. Same duck
+ * typing as the gateway normalizer; anything else is an empty list.
+ * @param {unknown} value
+ * @returns {object[]}
+ */
+function attachmentEntries(value) {
+  if (Array.isArray(value)) return value;
+  if (value instanceof Map) return [...value.values()];
+  return [];
+}
+
+/** Numeric relay fields: finite numbers / bigint BitFields → number; else null. */
+function toNumberOrNull(value) {
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw =
+    value && typeof value === "object" && typeof value.valueOf === "function"
+      ? value.valueOf()
+      : null;
+  if (typeof raw === "bigint") return Number(raw);
+  return null;
+}
+
+/** id → string at the boundary; absent/null → null. */
+function toIdOrNull(value) {
+  return value != null ? String(value) : null;
+}
+
+/**
+ * Date / epoch ms / ISO string → ISO string (fetch shapes carry ISO, same as
+ * fetchMessages history). Unparseable input is null, never "Invalid Date".
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function toIsoString(value) {
+  if (value == null) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? new Date(value).toISOString() : null;
+  }
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/**
+ * Stickers array/Collection → [{ id, name }] (§10.3 item 2).
+ * @param {unknown} value
+ * @returns {Array<{ id: string, name: string|null }>}
+ */
+function mapStickerList(value) {
+  const list = Array.isArray(value) ? value : value instanceof Map ? [...value.values()] : [];
+  return list
+    .filter((s) => s && typeof s === "object" && s.id != null)
+    .map((s) => ({ id: String(s.id), name: s.name ?? null }));
+}
+
+/**
+ * REST-fetched Fluxer message (raw wire shape) → the §10.3 fetch shape:
+ * content, attachments [{ id, filename, size, contentType, flags, url,
+ * proxyUrl }], webhookId, author { id, username, displayName, bot },
+ * messageSnapshots, stickers, editedTimestamp, deleted state — guild-scoped
+ * (communityId / externalGuildId identify the owning community).
+ *
+ * @param {object} d raw GET /v1/channels/{c}/messages/{m} body
+ * @param {{ instanceKey: string, communityId: number }} ctx
+ * @returns {object}
+ */
+function normalizeFetchedMessage(d, { instanceKey, communityId }) {
+  const author = d.author && typeof d.author === "object" ? d.author : null;
+  const snapshots = d.message_snapshots ?? d.messageSnapshots;
+  // edited_timestamp arrives ISO (wire) or epoch ms (SDK); normalize to epoch ms.
+  const editedRaw = d.edited_timestamp ?? d.editedAt ?? d.editedTimestamp;
+  const editedMs = typeof editedRaw === "string" ? Date.parse(editedRaw) : toNumberOrNull(editedRaw);
+  return {
+    platform: "fluxer",
+    instanceKey,
+    communityId,
+    externalGuildId: toIdOrNull(d.guild_id ?? d.guildId),
+    id: String(d.id),
+    channelId: toIdOrNull(d.channel_id ?? d.channelId),
+    authorId: toIdOrNull(author?.id),
+    authorBot: Boolean(author?.bot),
+    author: author
+      ? {
+          id: toIdOrNull(author.id),
+          username: author.username ?? "",
+          displayName:
+            author.display_name ??
+            author.displayName ??
+            author.global_name ??
+            author.globalName ??
+            author.username ??
+            "",
+          bot: Boolean(author.bot),
+        }
+      : null,
+    content: typeof d.content === "string" ? d.content : (d.content ?? ""),
+    type: typeof d.type === "number" ? d.type : null,
+    flags: toNumberOrNull(d.flags),
+    webhookId: toIdOrNull(d.webhook_id ?? d.webhookId),
+    attachments: attachmentEntries(d.attachments)
+      .filter((a) => a && typeof a === "object")
+      .map((a) => ({
+        id: toIdOrNull(a.id),
+        filename: a.filename ?? "",
+        size: toNumberOrNull(a.size),
+        contentType: a.content_type ?? a.contentType ?? null,
+        flags: toNumberOrNull(a.flags),
+        url: a.url ?? "",
+        proxyUrl: a.proxy_url ?? a.proxyUrl ?? null,
+      })),
+    messageSnapshots: Array.isArray(snapshots) ? [...snapshots] : [],
+    stickers: mapStickerList(d.stickers),
+    editedTimestamp: Number.isFinite(editedMs) ? editedMs : null,
+    // A REST fetch-by-id only returns existing messages; deleted ids 404.
+    deleted: false,
+    createdAt: toIsoString(d.timestamp ?? d.created_at ?? d.createdAt),
+  };
+}
+
+
+/**
  * API error code from a transport error (Fluxer codes are strings like
  * "RATE_LIMITED"; numeric codes stringify as such).
  * @param {unknown} err
@@ -1002,6 +1124,50 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
           createdAt: m.timestamp ?? null,
         })),
       };
+    },
+
+    /**
+     * Fetch ONE message by id (§10.3 delta 2): GET
+     * /v1/channels/{c}/messages/{m} on the instance's API origin with the
+     * instance's bot credential (the REST facade carries auth; the token
+     * never enters an error string). The re-read path for media refresh, edit
+     * relay payloads, and spool-loss recovery — the shipped history call
+     * (fetchMessages) has no fetch-by-id, so this is not a duplicate of it.
+     *
+     * @param {number} communityId
+     * @param {string} channelId
+     * @param {string} messageId
+     * @returns {Promise<{ ok: true, message: object }|{ ok: false, error: string, code?: string }>}
+     */
+    async fetchMessage(communityId, channelId, messageId) {
+      assertCommunityId(communityId);
+      if (messageId == null || String(messageId) === "") {
+        return { ok: false, error: "fetchMessage: a messageId is required" };
+      }
+      let d;
+      try {
+        d = await rest.request(
+          "GET",
+          `/v1/channels/${String(channelId)}/messages/${String(messageId)}`,
+        );
+      } catch (err) {
+        return {
+          ok: false,
+          error: failureText(
+            "fetchMessage",
+            `message ${messageId} in channel ${channelId}`,
+            err,
+          ),
+          ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+        };
+      }
+      if (!d || typeof d !== "object" || d.id == null) {
+        return {
+          ok: false,
+          error: `fetchMessage: message ${messageId} in channel ${channelId} returned no message body`,
+        };
+      }
+      return { ok: true, message: normalizeFetchedMessage(d, { instanceKey, communityId }) };
     },
 
     /**

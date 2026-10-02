@@ -101,6 +101,7 @@ describe("platform/discord/outbound", () => {
       "setOverwrites",
       "banMember",
       "fetchMessages",
+      "fetchMessage",
     ]) {
       assert.equal(typeof outbound[name], "function", `missing ${name}`);
     }
@@ -183,6 +184,80 @@ describe("platform/discord/outbound", () => {
           createdAt: new Date(TS).toISOString(),
         },
       ]);
+    });
+
+    it("fetchMessage REST-reads one message by id into the §10.3 fetch shape", async () => {
+      const msg = textChannel.addMessage({ id: "fm-1", content: "hello", createdTimestamp: TS });
+      msg.editedTimestamp = TS + 5000;
+      msg.type = 0;
+      msg.webhookId = "wh-9";
+      msg.attachments = new Map([
+        [
+          "att-1",
+          {
+            id: "att-1",
+            name: "shot.png",
+            size: 10,
+            contentType: "image/png",
+            flags: 1n,
+            url: "https://cdn.test/s.png",
+            proxyURL: "https://proxy.test/s.png",
+          },
+        ],
+      ]);
+      msg.stickers = new Map([["st-1", { id: "st-1", name: "gork" }]]);
+
+      const res = await outbound.fetchMessage(communityId, IDS.channelGeneral, "fm-1");
+
+      assert.equal(res.ok, true);
+      const m = res.message;
+      assert.equal(m.platform, "discord");
+      assert.equal(m.instanceKey, "discord");
+      assert.equal(m.communityId, communityId, "the fetch shape is guild-scoped: community id rides along");
+      assert.equal(m.externalGuildId, IDS.guild);
+      assert.equal(m.id, "fm-1");
+      assert.equal(m.channelId, IDS.channelGeneral);
+      assert.equal(m.authorId, IDS.member);
+      assert.equal(m.authorBot, false);
+      assert.deepEqual(m.author, {
+        id: IDS.member,
+        username: "member",
+        displayName: "member",
+        bot: false,
+      });
+      assert.equal(m.content, "hello");
+      assert.equal(m.type, 0);
+      assert.equal(m.webhookId, "wh-9");
+      assert.equal(m.editedTimestamp, TS + 5000);
+      assert.equal(m.createdAt, new Date(TS).toISOString());
+      assert.equal(m.deleted, false);
+      assert.deepEqual(m.attachments, [
+        {
+          id: "att-1",
+          filename: "shot.png",
+          size: 10,
+          contentType: "image/png",
+          flags: 1, // bigint BitField → number at the boundary
+          url: "https://cdn.test/s.png",
+          proxyUrl: "https://proxy.test/s.png",
+        },
+      ]);
+      assert.deepEqual(m.stickers, [{ id: "st-1", name: "gork" }]);
+      assert.deepEqual(m.messageSnapshots, []);
+    });
+
+    it("fetchMessage reports missing messages and channels with specific, actionable errors", async () => {
+      const missingMsg = await outbound.fetchMessage(communityId, IDS.channelGeneral, "nope");
+      assert.equal(missingMsg.ok, false);
+      assert.match(missingMsg.error, /fetchMessage: message nope in channel .* not found/);
+
+      const missingChannel = await outbound.fetchMessage(communityId, "channel-missing", "m1");
+      assert.equal(missingChannel.ok, false);
+      assert.match(missingChannel.error, /channel channel-missing not found in community/);
+
+      const noId = await outbound.fetchMessage(communityId, IDS.channelGeneral, "");
+      assert.equal(noId.ok, false);
+      assert.match(noId.error, /a messageId is required/);
     });
   });
 
@@ -417,6 +492,7 @@ describe("platform/discord/outbound", () => {
       await assert.rejects(() => outbound.fetchUser(SNOWFLAKE, "u1"), { message });
       await assert.rejects(() => outbound.fetchMember(SNOWFLAKE, "u1"), { message });
       await assert.rejects(() => outbound.fetchRoles(SNOWFLAKE), { message });
+      await assert.rejects(() => outbound.fetchMessage(SNOWFLAKE, "c1", "m1"), { message });
       await assert.rejects(() => outbound.addRole(SNOWFLAKE, "u1", "r1"), { message });
       await assert.rejects(() => outbound.removeRole(SNOWFLAKE, "u1", "r1"), { message });
       await assert.rejects(() => outbound.banMember(SNOWFLAKE, "u1", "x"), { message });
@@ -471,6 +547,7 @@ describe("platform/discord/outbound", () => {
         ],
         ["banMember", () => dead.banMember(communityId, "u1", "spam")],
         ["fetchMessages", () => dead.fetchMessages("c1", { limit: 100 })],
+        ["fetchMessage", () => dead.fetchMessage(communityId, "c1", "m1")],
       ];
 
       for (const [name, call] of sendCalls) {
