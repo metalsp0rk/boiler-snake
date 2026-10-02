@@ -1211,6 +1211,23 @@ The normalizer and the outbound fake consume this object. A test that awards XP,
 7. **Docs:8 divergence recorded**: DM channel creation to a nonexistent recipient → 200. The adapter must not use `POST /users/@me/channels` for recipient validation.
 8. **Docs:5 owner-ban rule**: banning the guild owner is 403 MISSING_PERMISSIONS; honeypot/ban flows must expect it for owner-adjacent targets.
 
+## Live E2E verification (recorded 2026-10-02)
+
+Deep automated pass against a real self-hosted instance (`chat.metalspork.xyz`, OpenAPI 1.0.0) with the bot booted Fluxer-only (`FLUXER_INSTANCES`, no Discord). Verified end-to-end: discovery→gateway login; `!xp` + reaction XP accrual with cooldowns; DM-first (K2) private replies; `!help`/`!warn`/`!note`/`!userinfo`/`!leaderboard`; command-channel gating; reaction-role panel creation; ticket create (elevated-off → specific denial; elevated-on in a local test DB → `ticket-1` channel created live); OAuth PKCE login round-trip → `web_session_fx` → `/g/1` console pages 200. Not covered: YouTube/Twitch/GitHub tickers (no credentials), gork (no LLM key), voice (K8), decay (time-based; unit-covered).
+
+Fixed by this pass (merged):
+
+- **Presigned attachment wire shape** (PR #163): plan request key is `attachments` with a client-side `id` per item; plan response items arrive under `attachments` with **per-item** `upload_mode`; claims require the full `ClientUploadedAttachmentRequest` set (`id, filename, content_type, file_size, upload_filename`). The Phase 0 record's `files`/`uploads`/top-level-mode shape 400'd `INVALID_FORM_BODY` on every file send. Live-verified: `!leaderboard` posts the rendered PNG. Open item 5 (chunked) remains open.
+- **Fluxer-only web login** (PR #164): `GET /auth/login` no longer 503s when Discord `CLIENT_ID`/`CLIENT_SECRET` are unset (Fluxer buttons render; `?continue=1` explains explicitly); the callback's bot-visibility filter passed the external snowflake to `OutboundClient.fetchGuild(cid: number)` — threw on every login, silently fail-open. Ops note: Fluxer-only installs must set `SESSION_SECRET` **and** `OAUTH_STATE_SECRET` (both fall back to Discord's `CLIENT_SECRET`).
+- **Open item 6 is now confirmed**: `POST /oauth2/authorize/consent` with the user's token API session issues the auth code for the registered redirect URI — a full PKCE code exchange + web session was completed **without any browser** (no human click needed against the API).
+- Drive-by: `test/bridge-activate.test.js` handle regex fixed to the generator's real Crockford alphabet (was ~1-in-4 flaky on main).
+
+Remaining gaps (fix in dedicated PRs — service-level work, not drive-bys):
+
+1. **Jump URLs**: `src/features/reactionRoles/index.js:312,556` and `src/features/tickets/create.js:332` hardcode `https://discord.com/channels/…`. On Fluxer the link is dead **and** Fluxer auto-embeds it, so panel-creation DMs ship with a Discord marketing OpenGraph embed attached. Fix: platform-aware helper using the discovery `endpoints.webapp` base + the same `/channels/{guild}/{channel}/{message}` scheme (verified live 2026-10-02).
+2. **`TODO(fluxer-pr5)` — convert `reactionRoles/service.js`**: the pending-emoji consumer (`service.js:1632`) bails on `!message.guild` (Fluxer normalized messages have no discord.js shape), so Fluxer panels can never receive options and reaction→role grants never fire — confirmed live with two independent bots. Needs platform-agnostic session keying, OutboundClient replies, guild-emoji validation without a discord.js guild, and elevated-gated role writes.
+3. **Docs**: web-admin docs don't say Fluxer-only installs need `OAUTH_STATE_SECRET`/`SESSION_SECRET` (code-level fallback is to Discord's `CLIENT_SECRET`) — documented in `docs/fluxer.md` via PR #164; `docs/web-admin.md` could add the same note.
+
 ---
 
 ## Open Questions
