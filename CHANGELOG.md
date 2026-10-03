@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.31.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.30.1...v1.31.0) (2026-10-03)
+
+
+### Features
+
+* **bridge:** edit and delete relay (PR 6) ([1e0d1c6](https://github.com/metalsp0rk/boiler-snake/commit/1e0d1c6c1fe9c5968bcd9846adfa4afd442a1aef))
+* **bridge:** Fluxer prefix, DM connect, activation (PR 7) ([c762aee](https://github.com/metalsp0rk/boiler-snake/commit/c762aee7759c4d00ca61e304f5cba60b3ce5c7d9))
+* **bridge:** media spool + at-least-once worker (PR 5) ([e05af98](https://github.com/metalsp0rk/boiler-snake/commit/e05af98ea609942e7b0d6f78ac8711b43a1f0243))
+* **bridge:** schema, repository, codes, expiry (PR 2) ([84a38b9](https://github.com/metalsp0rk/boiler-snake/commit/84a38b911fc94f5c3033d5099cffb9c4969ffd45))
+* **bridge:** service, Discord command, pipeline gates (PR 4) ([8ee509d](https://github.com/metalsp0rk/boiler-snake/commit/8ee509dd703b046f58c9d1bd9bd9f21766f12455))
+* **fluxer:** convert reactionRoles pending-emoji flow to Fluxer (fluxer-pr5, gap [#1](https://github.com/metalsp0rk/boiler-snake/issues/1)) ([d45a7f3](https://github.com/metalsp0rk/boiler-snake/commit/d45a7f3c62c40a96607808823081f2d50bda0098))
+* **platform:** normalized DM ingestion, fetchMessage, webhook lifecycle (PR 3) ([7e097bb](https://github.com/metalsp0rk/boiler-snake/commit/7e097bb9fdd5821c543ab7e1ad177fe405aa8bff))
+
+
+### Bug Fixes
+
+* **bridge:** spike script live-run fixes ([72a2474](https://github.com/metalsp0rk/boiler-snake/commit/72a2474f1aa0150072b32688ae3819cb77fd5e70))
+* **fluxer:** adapt gateway/REST integration to the real SDK wire shapes ([785980b](https://github.com/metalsp0rk/boiler-snake/commit/785980bb4a8e9a9d0ec19793190f10263fb892b6))
+* **fluxer:** award message XP and deliver AttachmentBuilder files ([1caf683](https://github.com/metalsp0rk/boiler-snake/commit/1caf6837071562b83756d0144319d7a1ecc60abd))
+* **fluxer:** editReply anchors to the channel of the first send; name skip causes (review) ([201454a](https://github.com/metalsp0rk/boiler-snake/commit/201454ab9c7f15005340b703766a5802f59c6ce0))
+* **fluxer:** first editReply after defer sends the reply; honeypot warning via outbound ([284acc6](https://github.com/metalsp0rk/boiler-snake/commit/284acc656bb0a4412ddb1becce45c473a60b237e))
+* **fluxer:** platform-aware jump URLs and gork audit via Fluxer OutboundClient ([d0db6c1](https://github.com/metalsp0rk/boiler-snake/commit/d0db6c16c0def52b99bfa40466eec72bbd172fda))
+* **fluxer:** presigned attachment flow against the live OpenAPI contract ([8123533](https://github.com/metalsp0rk/boiler-snake/commit/81235336b3906ad1c394347ec506b23a3064a378))
+* **fluxer:** review fixes for PR [#168](https://github.com/metalsp0rk/boiler-snake/issues/168) — webapp-base import, jump guild id, audit pin ([323ad94](https://github.com/metalsp0rk/boiler-snake/commit/323ad947fd5dbb23dc1f7269e15874d62c2e23a6))
+* gateway MESSAGE_UPDATE with string-shaped mentions crashed the process ([54c2e32](https://github.com/metalsp0rk/boiler-snake/commit/54c2e322f9c7438564126fbd57a47830f22954e2))
+* **web:** Fluxer-only deployments can reach the console login ([c4c6f88](https://github.com/metalsp0rk/boiler-snake/commit/c4c6f886d795d10ded31a9d6f1df717a05a911c6))
+* **web:** thread getFluxerWebInstances into the landing registrar ([33dc7a1](https://github.com/metalsp0rk/boiler-snake/commit/33dc7a12a340c629ea932d19f10c08c11b0b08aa))
+* **xp:** empty !leaderboard replies in-channel on Fluxer (docs law) ([4ca8e3a](https://github.com/metalsp0rk/boiler-snake/commit/4ca8e3ae62c0ee9d063cedf5c06cf7a7b5e71bda))
+
 ## [1.30.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.30.0...v1.30.1) (2026-10-01)
 
 
