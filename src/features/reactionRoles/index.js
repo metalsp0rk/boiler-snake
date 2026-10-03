@@ -30,6 +30,7 @@ const {
   setPendingOptionRemove,
   clearPendingOptionEmoji,
   handlePendingOptionEmojiMessage,
+  handlePendingOptionEmojiMessageFluxer,
   syncMemberReactionRoles,
 } = require("./service");
 
@@ -211,28 +212,24 @@ const commands = [
 ];
 
 /**
- * Standard reply for Fluxer dispatches reaching Discord-only surfaces
- * (roadmap/fluxer.md § Handler migration rule; panel posts/reactions stay on
- * the raw interaction until the service cutover in PR 7).
- */
-const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
-
-/**
  * @param {import("../../platform/context").CommandContext} commandCtx
  * @param {object} [featureCtx]
  */
 async function handleReactionrole(commandCtx, featureCtx) {
   void featureCtx;
   const { communityId, outbound } = commandCtx;
-  // Display / pending-session key: the external guild id (the frozen in-memory
-  // service maps are keyed by the DISCORD SNOWFLAKE — see service.js).
+  // Display key for replies/audit text; Fluxer's external id is display-only.
+  // Settings/audit lookups need the INTEGER community id on Fluxer (the
+  // string→community mapping at the auditLog edge is Discord-only).
   const guildId = commandCtx.externalGuildId;
+  const settingsKey = commandCtx.platform === "fluxer" ? communityId : guildId;
 
   if (!(await requireStaffFromContext(commandCtx))) return;
 
-  // Discord-only escape hatch (roadmap § What stays Discord-only): the panel
-  // service posts real Discord messages and emoji reactions; its cutover to
-  // the OutboundClient is PR 7. Fluxer contexts never carry rawInteraction.
+  // Discord-only escape hatch (roadmap § What stays Discord-only): the
+  // Discord arms of edit/deploy/sync post real Discord messages through the
+  // raw interaction's guild. Fluxer contexts never carry rawInteraction and
+  // use the OutboundClient twins (PR 5).
   const raw = commandCtx.rawInteraction;
 
   const group = commandCtx.subcommandGroup;
@@ -320,7 +317,7 @@ async function handleReactionrole(commandCtx, featureCtx) {
         messageId: sent.id,
         webappBaseUrl: outbound.webappBaseUrl,
       });
-      await logConfigChange(outbound, guildId, {
+      await logConfigChange(outbound, settingsKey, {
         title: "Reaction-role panel created",
         command: "/reactionrole panel create",
         actor: commandCtx.user,
@@ -384,10 +381,17 @@ async function handleReactionrole(commandCtx, featureCtx) {
       // cutover is PR 7 (roadmap § Outbound client). Fluxer has no rawInteraction;
       // the service then reports "Panel message is missing" as a refresh failure
       // on the "Saved text" reply (graceful, never throws).
-      const result = await refreshPanelMessage(
-        raw?.guild,
-        updated ? { ...updated, guild_id: communityId } : updated,
-      );
+      // Platform branch (PR 5): Fluxer refreshes through the OutboundClient
+      // twin (editMessage + idempotent reaction PUTs); the Discord arm keeps
+      // the raw-interaction guild and refreshPanelMessage (the web console
+      // depends on that signature).
+      const result =
+        commandCtx.platform === "fluxer"
+          ? await refreshPanelMessageFluxer(outbound, communityId, updated)
+          : await refreshPanelMessage(
+              raw?.guild,
+              updated ? { ...updated, guild_id: communityId } : updated,
+            );
       const changeLines = [];
       if (title != null)
         changeLines.push(`Title: ${panel.title} → **${updated.title}**`);
@@ -396,7 +400,7 @@ async function handleReactionrole(commandCtx, featureCtx) {
           `Description updated (${String(panel.description || "").length} → ${String(updated.description || "").length} chars)`,
         );
       }
-      await logConfigChange(outbound, guildId, {
+      await logConfigChange(outbound, settingsKey, {
         title: "Reaction-role panel edited",
         command: "/reactionrole panel edit",
         actor: commandCtx.user,
@@ -429,62 +433,95 @@ async function handleReactionrole(commandCtx, featureCtx) {
         return;
       }
 
-      // deployPanelToChannel posts a real Discord message and adds emoji
-      // reactions via the service; the OutboundClient reaction surface is not
-      // wired into service.js until PR 7. Recipe 11 (roadmap
-      // § What stays Discord-only): Discord arm uses the raw interaction's
-      // guild, Fluxer gets the standard not-yet-available line.
-      if (!raw) {
-        await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
-        return;
-      }
-
       // May post + react several times (defer({sensitive:true}) ≙ the old
       // deferReply with the ephemeral flag).
       await commandCtx.defer({ sensitive: true });
 
-      const result = await deployPanelToChannel(
-        raw.guild,
-        messageId,
-        channelHandle,
-      );
+      const source = getReactionRolePanel(communityId, messageId);
+      if (!source) {
+        await commandCtx.editReply({
+          content: `No reaction-role panel with message ID \`${messageId}\`.`,
+        });
+        return;
+      }
+      const sourceOptions = listReactionRoleOptions(communityId, messageId);
+
+      // Platform branch (PR 5, gap #1): the Discord arm posts through the
+      // service (raw guild + message objects); Fluxer deploys via the
+      // OutboundClient twin — embed built from the source panel row, options
+      // copied, idempotent reaction PUTs seeding them.
+      let result;
+      let newMessageId;
+      let optionCount;
+      let deployJump = null;
+      if (commandCtx.platform === "fluxer") {
+        result = await deployPanelFluxer(outbound, communityId, ch.id, {
+          embedPayload: buildPanelEmbed(source, sourceOptions).toJSON(),
+          options: sourceOptions.map((o) => ({
+            emoji_key: o.emoji_key,
+            emoji_display: o.emoji_display,
+            role_id: o.role_id,
+            min_level: o.min_level,
+            removable: o.removable,
+          })),
+        });
+        newMessageId = result.messageId;
+        optionCount = sourceOptions.length;
+        deployJump = buildMessageJumpUrl({
+          platform: "fluxer",
+          guildId,
+          channelId: ch.id,
+          messageId: result.messageId,
+          webappBaseUrl: outbound.webappBaseUrl,
+        });
+      } else {
+        result = await deployPanelToChannel(raw.guild, messageId, channelHandle);
+        newMessageId = result.message?.id ?? null;
+        optionCount = result.optionCount ?? 0;
+        deployJump = result.message?.url ?? null;
+      }
       if (!result.ok) {
         await commandCtx.editReply({ content: result.error });
         return;
       }
 
-      const n = result.optionCount ?? 0;
       recordSlashAudit({
         communityId,
         actorUserId: commandCtx.userId,
         action: "reaction_roles.panel_deploy",
         targetType: "reaction_role_panel",
-        targetId: result.message.id,
+        targetId: newMessageId,
         details: {
           source_message_id: messageId,
           channel_id: ch.id,
-          option_count: n,
+          option_count: optionCount,
         },
       });
       let content =
         `Deployed panel from \`${messageId}\` → <#${ch.id}>.\n` +
-        `New message ID: \`${result.message.id}\`\n` +
-        `Jump: ${result.message.url}\n` +
-        `Copied **${n}** option${n === 1 ? "" : "s"} (source panel left in place).`;
+        `New message ID: \`${newMessageId}\`\n` +
+        `Jump: ${deployJump ?? "(link unavailable — the instance advertises no web address)"}\n` +
+        `Copied **${optionCount}** option${optionCount === 1 ? "" : "s"} (source panel left in place).`;
+      if (result.failed?.length) {
+        content +=
+          `\n⚠️ ${result.failed.length} option reaction${result.failed.length === 1 ? "" : "s"} failed to seed: ` +
+          result.failed.map((f) => `\`${f.emojiKey ?? "?"}\``).join(", ") +
+          " (panel posted; re-run `/reactionrole sync` after fixing the emoji)";
+      }
       if (result.error) {
         content += `\n⚠️ ${result.error}`;
       }
-      await logConfigChange(outbound, guildId, {
+      await logConfigChange(outbound, settingsKey, {
         title: "Reaction-role panel deployed",
         command: "/reactionrole panel deploy",
         actor: commandCtx.user,
         changes: [
           `Source panel: \`${messageId}\``,
           `New channel: <#${ch.id}>`,
-          `New message ID: \`${result.message.id}\``,
-          `Options copied: **${n}**`,
+          `New message ID: \`${newMessageId}\``,
+          `Options copied: **${optionCount}**`,
         ],
-        details: result.message.url,
+        details: deployJump ?? undefined,
       }).catch(() => {});
       await commandCtx.editReply({ content });
       return;
@@ -531,7 +568,7 @@ async function handleReactionrole(commandCtx, featureCtx) {
           targetId: messageId,
           details: { channel_id: channel_id ?? null },
         });
-        await logConfigChange(outbound, guildId, {
+        await logConfigChange(outbound, settingsKey, {
           title: "Reaction-role panel deleted",
           command: "/reactionrole panel delete",
           actor: commandCtx.user,
@@ -622,13 +659,12 @@ async function handleReactionrole(commandCtx, featureCtx) {
         return;
       }
 
-      // Replace any prior wait session for this admin.
-      // NOTE: the pending-emoji maps are frozen in-memory service state keyed by
-      // the DISCORD SNOWFLAKE (service.js resolves `message.guild.id` on the
-      // reply), so these stay snowflake-keyed (externalGuildId ≡ guild.id on
-      // Discord). TODO(fluxer-pr5): convert service.js.
-      clearPendingOptionEmoji(guildId, commandCtx.userId);
-      setPendingOptionAdd(guildId, commandCtx.userId, {
+      // Replace any prior wait session for this admin. PR 5 (gap #1): the
+      // pending-emoji maps are keyed by the INTEGER community id (unique per
+      // platform/instance), so Discord and Fluxer admins can never collide,
+      // and the Fluxer reply path resolves the same key.
+      clearPendingOptionEmoji(communityId, commandCtx.userId);
+      setPendingOptionAdd(communityId, commandCtx.userId, {
         messageId,
         roleId: role.id,
         level,
@@ -671,9 +707,9 @@ async function handleReactionrole(commandCtx, featureCtx) {
         return;
       }
 
-      // Snowflake-keyed frozen in-memory state (see note in "add").
-      clearPendingOptionEmoji(guildId, commandCtx.userId);
-      setPendingOptionRemove(guildId, commandCtx.userId, {
+      // Community-keyed in-memory state (see note in "add").
+      clearPendingOptionEmoji(communityId, commandCtx.userId);
+      setPendingOptionRemove(communityId, commandCtx.userId, {
         messageId,
         channelId: commandCtx.channelId,
       });
@@ -734,17 +770,18 @@ async function handleReactionrole(commandCtx, featureCtx) {
       return;
     }
 
-    // Frozen service surface reads `panel.guild_id` and forwards it to the
-    // community-keyed repo, so the repo row carries the INTEGER community id.
-    // The refresh edits real Discord messages (service cutover PR 7); Fluxer
-    // has no rawInteraction, so the service reports the missing message as a
-    // sync failure (graceful, never throws).
-    const result = await refreshPanelMessage(raw?.guild, {
-      ...panel,
-      guild_id: communityId,
-    });
+    // Platform branch (PR 5): Fluxer syncs through the OutboundClient twin;
+    // the Discord arm keeps refreshPanelMessage (raw guild + repo row carry
+    // the INTEGER community id via guild_id, per the frozen service surface).
+    const result =
+      commandCtx.platform === "fluxer"
+        ? await refreshPanelMessageFluxer(outbound, communityId, panel)
+        : await refreshPanelMessage(raw?.guild, {
+            ...panel,
+            guild_id: communityId,
+          });
     if (result.ok) {
-      await logConfigChange(outbound, guildId, {
+      await logConfigChange(outbound, settingsKey, {
         title: "Reaction-role panel synced",
         command: "/reactionrole sync",
         actor: commandCtx.user,
@@ -817,6 +854,7 @@ module.exports = {
   handleReactionRoleAdd,
   handleReactionRoleRemove,
   handlePendingOptionEmojiMessage,
+  handlePendingOptionEmojiMessageFluxer,
   syncMemberReactionRoles,
   // Fluxer (PR 9): OutboundClient-shaped reaction entry points + service twins.
   onFluxerReactionAdd,
