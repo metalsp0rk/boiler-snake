@@ -628,7 +628,15 @@ describe("runMemoryTurn (memory)", () => {
     assert.equal(entry.titleKey, "loves rust");
     assert.equal(entry.kind, "preference");
     assert.equal(entry.importance, 4);
-    assert.deepEqual(t.auditCalls[0].stats, { indexed: 3, stored: 1, skippedInvalid: 0 });
+    assert.deepEqual(t.auditCalls[0].stats, {
+      indexed: 3,
+      stored: 1,
+      skippedInvalid: 0,
+      // Gap #4 (PR): the audit carries the numeric community id so Fluxer
+      // flows can resolve the audit channel (the guildId string is
+      // display-only on Fluxer).
+      communityId: 1,
+    });
   });
 
   it("bogus subject → skippedInvalid counted, nothing stored, still audited (decision 25)", async () => {
