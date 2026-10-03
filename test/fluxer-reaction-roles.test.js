@@ -24,7 +24,7 @@ const { api: dbApi, cleanup } = loadDb();
 
 const service = require("../src/features/reactionRoles/service");
 const { ensureCommunity } = require("../src/platform/community");
-const { makeFakeRest, makeFakeHandle } = require("./helpers/fluxer");
+const { makeFakeRest, makeFakeHandle, gatewayMessage } = require("./helpers/fluxer");
 
 after(cleanup);
 
@@ -744,6 +744,8 @@ describe("fluxer reaction roles — pending emoji (PR 5, gap #1)", () => {
 describe("fluxer pipelines — reaction wiring (PR 9 replaces the PR 6 stubs)", () => {
   // Loaded lazily so the DB contract (loadDb first) holds.
   const pipelines = require("../src/bot/pipelines");
+const { buildDefaultRegistry } = require("../src/commands/registry");
+const { normalizeFluxerMessage } = require("../src/platform/fluxer/normalize");
 
   it("onFluxerReactionAdd: panel reaction is handled ⇒ NO reaction XP", async () => {
     setElevatedFlag(1);
@@ -793,5 +795,63 @@ describe("fluxer pipelines — reaction wiring (PR 9 replaces the PR 6 stubs)", 
       !lines.some((l) => l.includes("panel handling lands in PR 9")),
       "the PR 6 log-only stub is replaced by the real remove path",
     );
+  });
+
+  it("onMessageCreate routes the pending-emoji flow through the Fluxer twin (PR 5 pin)", async () => {
+    // Regression pin (review M1): the pipeline's platform branch IS the gap #1
+    // closure. Deleting the branch (back to the Discord-only consumer, which
+    // bails on !message.guild for normalized messages) must fail THIS test —
+    // direct twin calls alone would keep passing.
+    dbApi.createReactionRolePanel(COMMUNITY_ID, CH, "620", "Roles", "React to get a role.");
+    service.setPendingOptionAdd(COMMUNITY_ID, USER, {
+      messageId: "620",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/channels/${CH}/messages/620`]: () => ({ id: "620", channel_id: CH }),
+        [`PATCH /v1/channels/${CH}/messages/620`]: null,
+        [`PUT /v1/channels/${CH}/messages/620/reactions/${EMOJI_ENC}/@me`]: null,
+        [`GET /v1/guilds/${GUILD}/roles`]: () => [{ id: ROLE, name: "Elite", position: 5, permissions: "0" }],
+        [`POST /v1/channels/${CH}/messages`]: () => ({ id: "920" }),
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const msg = normalizeFluxerMessage(
+      {
+        t: "MESSAGE_CREATE",
+        d: gatewayMessage({
+          id: "8000000000000000009",
+          channel_id: CH,
+          guild_id: GUILD,
+          author: { id: USER, username: "admin", bot: false },
+          content: "👍",
+        }),
+      },
+      { instanceKey: INSTANCE },
+    );
+
+    const before = dbApi.getXp(COMMUNITY_ID, USER);
+    await pipelines.onMessageCreate(outbound, msg, {
+      registry: buildDefaultRegistry(),
+      supervisor: null,
+    });
+
+    const opt = dbApi.getReactionRoleOption(COMMUNITY_ID, "620", "👍");
+    assert.ok(opt, "the pipeline-branch twin upserted the option");
+    assert.equal(String(opt.role_id), ROLE);
+    const post = rest.calls.find(
+      (c) => c.method === "POST" && c.path === `/v1/channels/${CH}/messages`,
+    );
+    assert.ok(post && /Configured 👍/.test(post.body.content), "confirmation posted to the channel");
+    assert.equal(
+      dbApi.getXp(COMMUNITY_ID, USER),
+      before,
+      "a consumed emoji-config message earns no message XP (handled ⇒ return before XP)",
+    );
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), false);
   });
 });
