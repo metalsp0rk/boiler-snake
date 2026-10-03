@@ -29,7 +29,8 @@ const {
   normalizeFluxerReaction,
 } = require("./normalize");
 const { createFluxerOutbound } = require("./outbound");
-const { discoverInstance, normalizeWebappBase } = require("./discovery");
+const { discoverInstance } = require("./discovery");
+const { normalizeWebappBase } = require("../../core/jumpUrl");
 const { getCommunityById } = require("../community");
 const { normalizeOriginForKey } = require("../../config");
 
@@ -222,6 +223,30 @@ function createDmDispatcher(instanceKey = "fluxer") {
  *   destroy: () => Promise<void>,
  * } | null>}
  */
+/**
+ * Derive the jump-URL base from a discovery result (gap #2 wiring, review
+ * B1 pin): endpoints.webapp → normalized http(s) base, null when absent.
+ * An advertised-but-unusable value is warned once (specific cause). Exported
+ * so the `normalizeWebappBase` import binding is unit-testable WITHOUT
+ * booting the SDK — the shipped regression destructured it from ./discovery
+ * (which never exported it), went undefined at runtime, and the surrounding
+ * catch swallowed the TypeError, silently nulling every Fluxer jump link.
+ *
+ * @param {{ document?: { endpoints?: { webapp?: unknown } } }|null} discovered
+ * @param {string} instanceKey  log label only
+ * @returns {string|null}
+ */
+function deriveWebappBaseUrl(discovered, instanceKey) {
+  const raw = discovered?.document?.endpoints?.webapp;
+  const base = normalizeWebappBase(raw);
+  if (discovered && base == null && raw != null) {
+    console.warn(
+      `[fluxer] ${instanceKey} discovery exposed an unusable endpoints.webapp — jump links will be omitted for this instance`,
+    );
+  }
+  return base;
+}
+
 async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
   const origin = typeof entry?.origin === "string" ? entry.origin : "";
   const instanceKey =
@@ -366,25 +391,23 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
   // Discovered webapp base (endpoints.webapp) for platform-aware jump URLs
   // (src/core/jumpUrl.js). Absent/unusable → null → jump links are omitted.
   let webappBaseUrl = null;
+  let discovered = null;
   try {
-    const discovered = await discoverInstance(origin);
+    discovered = await discoverInstance(origin);
     const rawFeatures = discovered?.document?.features;
     if (rawFeatures && typeof rawFeatures === "object") {
       features = {
         presignedAttachmentUploads: rawFeatures.presigned_attachment_uploads === true,
       };
     }
-    webappBaseUrl = normalizeWebappBase(discovered?.document?.endpoints?.webapp);
-    if (webappBaseUrl == null && discovered?.document?.endpoints?.webapp != null) {
-      console.warn(
-        `[fluxer] ${instanceKey} discovery exposed an unusable endpoints.webapp — jump links will be omitted for this instance`,
-      );
-    }
   } catch (err) {
     console.warn(
       `[fluxer] ${instanceKey} discovery features lookup failed (file sends default to multipart): ${err?.message || err}`,
     );
   }
+  // Pure derivation, outside the try (PR #168 review M1): the catch above
+  // must describe only genuine discovery fetch failures.
+  webappBaseUrl = deriveWebappBaseUrl(discovered, instanceKey);
 
   // Opt-in DM consumer registry (§10.3 delta 1, KD 24): MESSAGE_CREATE payloads
   // with no guild normalize to NormalizedDmMessage and fan out to consumers
@@ -485,6 +508,7 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
 
 module.exports = {
   createFluxerHandle,
+  deriveWebappBaseUrl,
   buildRestFacade,
   createDmDispatcher,
 };

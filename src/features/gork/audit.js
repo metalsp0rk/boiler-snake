@@ -126,18 +126,6 @@ function formatMemoryLabel(selection, recalled = 0) {
 }
 
 /**
- * Resolve the OutboundClient that posts audit embeds (gap #4, 2026-10-02):
- * - a Fluxer OutboundClient (duck-typed via `platform: "fluxer"` +
- *   `sendChannel`) is used as-is — Fluxer-only installs have no discord.js
- *   client, and `getDiscordOutbound` throws there (prod `.err`: "gork Q&A
- *   audit log failed: createDiscordOutbound requires a Discord client").
- * - a discord.js Client is wrapped with `getDiscordOutbound` (unchanged).
- * - null/undefined → null: audits degrade to the console one-liner, never throw.
- *
- * @param {import("discord.js").Client|object|null} client
- * @returns {{ sendChannel: Function, fetchChannel: Function }|null}
- */
-/**
  * EmbedBuilder → plain wire JSON. The audit builders are discord.js
  * EmbedBuilder instances: the Discord adapter serializes them natively,
  * the Fluxer OutboundClient expects NormalizedEmbed plain objects (same
@@ -150,6 +138,18 @@ function plainEmbed(embed) {
   return typeof embed?.toJSON === "function" ? embed.toJSON() : embed;
 }
 
+/**
+ * Resolve the OutboundClient that posts audit embeds (gap #4, 2026-10-02):
+ * - a Fluxer OutboundClient (duck-typed via `platform: "fluxer"` +
+ *   `sendChannel`) is used as-is — Fluxer-only installs have no discord.js
+ *   client, and `getDiscordOutbound` throws there (prod `.err`: "gork Q&A
+ *   audit log failed: createDiscordOutbound requires a Discord client").
+ * - a discord.js Client is wrapped with `getDiscordOutbound` (unchanged).
+ * - null/undefined → null: audits degrade to the console one-liner, never throw.
+ *
+ * @param {import("discord.js").Client|object|null} client
+ * @returns {{ sendChannel: Function, fetchChannel: Function }|null}
+ */
 function resolveAuditOutbound(client) {
   if (!client) return null;
   if (client.platform === "fluxer" && typeof client.sendChannel === "function") {
@@ -340,9 +340,13 @@ async function logGorkQa(client, guildId, opts = {}) {
       });
     }
 
+    // M2: Fluxer callers may pass a null jumpGuildId (no usable external
+    // id) — the jump fields are then omitted, never built from the internal
+    // community id (that would be a dead link).
+    const jumpGid = opts.jumpGuildId === undefined ? guildId : opts.jumpGuildId;
     const links = [
-      questionMessage ? jumpLink("Question", guildId, questionMessage, jumpOptsFor(client)) : null,
-      replyMessage ? jumpLink("Reply", guildId, replyMessage, jumpOptsFor(client)) : null,
+      questionMessage ? jumpLink("Question", jumpGid, questionMessage, jumpOptsFor(client)) : null,
+      replyMessage ? jumpLink("Reply", jumpGid, replyMessage, jumpOptsFor(client)) : null,
     ].filter(Boolean);
     if (links.length) {
       embed.addFields({ name: "Jump", value: links.join(" · ") });
