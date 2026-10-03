@@ -29,7 +29,7 @@ const {
   normalizeFluxerReaction,
 } = require("./normalize");
 const { createFluxerOutbound } = require("./outbound");
-const { discoverInstance } = require("./discovery");
+const { discoverInstance, normalizeWebappBase } = require("./discovery");
 const { getCommunityById } = require("../community");
 const { normalizeOriginForKey } = require("../../config");
 
@@ -363,6 +363,9 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
   // lifetime, so this is a cache hit after the boot validation call. A failure
   // here is logged and degrades to multipart file sends (flag off).
   let features = {};
+  // Discovered webapp base (endpoints.webapp) for platform-aware jump URLs
+  // (src/core/jumpUrl.js). Absent/unusable → null → jump links are omitted.
+  let webappBaseUrl = null;
   try {
     const discovered = await discoverInstance(origin);
     const rawFeatures = discovered?.document?.features;
@@ -370,6 +373,12 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
       features = {
         presignedAttachmentUploads: rawFeatures.presigned_attachment_uploads === true,
       };
+    }
+    webappBaseUrl = normalizeWebappBase(discovered?.document?.endpoints?.webapp);
+    if (webappBaseUrl == null && discovered?.document?.endpoints?.webapp != null) {
+      console.warn(
+        `[fluxer] ${instanceKey} discovery exposed an unusable endpoints.webapp — jump links will be omitted for this instance`,
+      );
     }
   } catch (err) {
     console.warn(
@@ -392,6 +401,7 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     guildFetch,
     destroy,
     features,
+    webappBaseUrl,
     outbound: null,
     /**
      * Register a consumer for normalized inbound DMs (§10.3 delta 1, KD 24):

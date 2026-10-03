@@ -9,6 +9,7 @@ const { recordSlashAudit } = require("../../core/auditTrail");
 // resolved once per entry point (roadmap/fluxer.md § Repository boundary).
 const { ensureCommunity } = require("../../platform/community");
 const { formatTicketRef } = require("../../core/theme");
+const { buildMessageJumpUrl } = require("../../core/jumpUrl");
 const { formatChannelCreateError, formatStaffRoleAccessNote } =
   require("./overwrites");
 const { formatRateLimitMessage, buildCreateTicketModal, openTicketChannel } =
@@ -326,10 +327,19 @@ async function handleFor(commandCtx, ctx) {
     // outbound.fetchGuild (cache-first), same label as the old guild.name.
     const guild = await commandCtx.outbound.fetchGuild(communityId);
     const guildName = guild?.name || "this server";
+    // Ticket link is platform-aware (gap #2): the discord.com URL was a
+    // dead link on Fluxer (and auto-embedded a Discord marketing card).
+    // No usable base (null) → the DM names the channel without a link.
+    const ticketLink = buildMessageJumpUrl({
+      platform: commandCtx.platform,
+      guildId: commandCtx.externalGuildId,
+      channelId: channel.id,
+      webappBaseUrl: commandCtx.outbound.webappBaseUrl,
+    });
     const dm = await commandCtx.outbound.sendDm(target.id, {
       content:
-        `A support ticket was opened for you in **${guildName}**: ` +
-        `https://discord.com/channels/${commandCtx.externalGuildId}/${channel.id}`,
+        `A support ticket was opened for you in **${guildName}**` +
+        (ticketLink ? `: ${ticketLink}` : " (see the ticket channel listed in the server)."),
     });
     let dmNote = "";
     if (!dm.ok) {

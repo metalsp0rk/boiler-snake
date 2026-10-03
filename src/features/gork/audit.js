@@ -30,6 +30,7 @@
 
 const { sendAuditLog } = require("../logs/auditLog");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { buildMessageJumpUrl } = require("../../core/jumpUrl");
 const { Color, baseEmbed, truncateField } = require("../../core/theme");
 const { GORK_SUMMARIZE_FOCUS_MAX, GORK_SUMMARIZE_LANG_MAX } = require("./constants");
 const {
@@ -125,19 +126,92 @@ function formatMemoryLabel(selection, recalled = 0) {
 }
 
 /**
- * Build a Discord "jump to message" URL, or null when the message does
- * not carry enough ids to construct one.
+ * Resolve the OutboundClient that posts audit embeds (gap #4, 2026-10-02):
+ * - a Fluxer OutboundClient (duck-typed via `platform: "fluxer"` +
+ *   `sendChannel`) is used as-is — Fluxer-only installs have no discord.js
+ *   client, and `getDiscordOutbound` throws there (prod `.err`: "gork Q&A
+ *   audit log failed: createDiscordOutbound requires a Discord client").
+ * - a discord.js Client is wrapped with `getDiscordOutbound` (unchanged).
+ * - null/undefined → null: audits degrade to the console one-liner, never throw.
+ *
+ * @param {import("discord.js").Client|object|null} client
+ * @returns {{ sendChannel: Function, fetchChannel: Function }|null}
+ */
+/**
+ * EmbedBuilder → plain wire JSON. The audit builders are discord.js
+ * EmbedBuilder instances: the Discord adapter serializes them natively,
+ * the Fluxer OutboundClient expects NormalizedEmbed plain objects (same
+ * rule as the reaction-roles service's toPlainEmbed, PR 9).
+ *
+ * @param {object} embed
+ * @returns {object}
+ */
+function plainEmbed(embed) {
+  return typeof embed?.toJSON === "function" ? embed.toJSON() : embed;
+}
+
+function resolveAuditOutbound(client) {
+  if (!client) return null;
+  if (client.platform === "fluxer" && typeof client.sendChannel === "function") {
+    return client;
+  }
+  return getDiscordOutbound(client);
+}
+
+/**
+ * Settings-lookup key for the audit channel. Numeric community ids pass
+ * through (Fluxer callers pass opts.communityId); strings are Discord
+ * external guild ids, mapped at auditLog's edge. Fluxer call sites MUST
+ * pass a numeric communityId — the Discord-only string mapping can never
+ * resolve Fluxer external ids, and a null key degrades to console (safe).
+ *
+ * @param {object|null} client resolved audit client
+ * @param {string|number} guildId
+ * @param {{ communityId?: number }} opts
+ * @returns {string|number|null}
+ */
+function auditSettingsKey(client, guildId, opts = {}) {
+  if (client?.platform === "fluxer") {
+    const cid = Number(opts.communityId);
+    return Number.isSafeInteger(cid) ? cid : null;
+  }
+  return guildId;
+}
+
+/**
+ * Jump options shared by the Q&A embed's jump fields (platform + webapp
+ * base come from the resolved audit client; Discord keeps its fixed base).
+ * @param {object|null} client
+ * @returns {{ platform?: string, webappBaseUrl?: string|null }}
+ */
+function jumpOptsFor(client) {
+  return {
+    platform: client?.platform,
+    webappBaseUrl: client?.platform === "fluxer" ? client.webappBaseUrl ?? null : null,
+  };
+}
+
+/**
+ * Build a "jump to message" URL for the audit client's platform, or null
+ * when the message does not carry enough ids to construct one.
  *
  * @param {string} guildId
- * @param {object|null|undefined} message discord.js Message (or a
- *   { id, channelId }-shaped subset)
+ * @param {object|null|undefined} message discord.js Message, Fluxer
+ *   { id, channelId }-shaped subset, or the fluxerGorkAdapter view
+ * @param {{ platform?: string, webappBaseUrl?: string|null }} [opts]
  * @returns {string|null}
  */
-function messageJumpUrl(guildId, message) {
+function messageJumpUrl(guildId, message, opts = {}) {
   if (!guildId || !message?.id) return null;
   const channelId = message.channelId || (message.channel && message.channel.id);
   if (!channelId) return null;
-  return `https://discord.com/channels/${guildId}/${channelId}/${message.id}`;
+  return buildMessageJumpUrl({
+    platform: opts.platform,
+    guildId,
+    channelId,
+    messageId: message.id,
+    webappBaseUrl: opts.webappBaseUrl,
+  });
 }
 
 /**
@@ -145,10 +219,11 @@ function messageJumpUrl(guildId, message) {
  * @param {string} label link text (e.g. "Question")
  * @param {string} guildId
  * @param {object} message
+ * @param {object} [opts] messageJumpUrl options (platform/webapp base)
  * @returns {string|null}
  */
-function jumpLink(label, guildId, message) {
-  const url = messageJumpUrl(guildId, message);
+function jumpLink(label, guildId, message, opts = {}) {
+  const url = messageJumpUrl(guildId, message, opts);
   return url ? `[${label}](${url})` : null;
 }
 
@@ -158,7 +233,12 @@ function jumpLink(label, guildId, message) {
  * Never throws; a missing audit channel (or a failed send) degrades to a
  * one-line console log.
  *
- * @param {import("discord.js").Client} client
+ * @param {import("discord.js").Client|object|null} client  discord.js Client, a
+ *   Fluxer OutboundClient (duck-typed via `platform: "fluxer"`, gap #4), or
+ *   null (console-only audit)
+ * @param {number} [opts.communityId]  numeric community id — required for
+ *   audit-channel resolution on Fluxer (gap #4; a string guild id never
+ *   resolves a Fluxer community)
  * @param {string} guildId
  * @param {object} opts
  * @param {import("discord.js").User} [opts.user] asker
@@ -261,14 +341,18 @@ async function logGorkQa(client, guildId, opts = {}) {
     }
 
     const links = [
-      questionMessage ? jumpLink("Question", guildId, questionMessage) : null,
-      replyMessage ? jumpLink("Reply", guildId, replyMessage) : null,
+      questionMessage ? jumpLink("Question", guildId, questionMessage, jumpOptsFor(client)) : null,
+      replyMessage ? jumpLink("Reply", guildId, replyMessage, jumpOptsFor(client)) : null,
     ].filter(Boolean);
     if (links.length) {
       embed.addFields({ name: "Jump", value: links.join(" · ") });
     }
 
-    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(
+      resolveAuditOutbound(client),
+      auditSettingsKey(client, guildId, opts),
+      { embeds: [plainEmbed(embed)] },
+    );
     if (!sent) {
       console.log(
         `[gork] Q&A (no audit channel): ${askedBy} asked: ${truncateField(questionValue, 120)}`,
@@ -285,7 +369,12 @@ async function logGorkQa(client, guildId, opts = {}) {
  * Never throws; a missing audit channel (or a failed send) degrades to a
  * one-line console log.
  *
- * @param {import("discord.js").Client} client
+ * @param {import("discord.js").Client|object|null} client  discord.js Client, a
+ *   Fluxer OutboundClient (duck-typed via `platform: "fluxer"`, gap #4), or
+ *   null (console-only audit)
+ * @param {number} [opts.communityId]  numeric community id — required for
+ *   audit-channel resolution on Fluxer (gap #4; a string guild id never
+ *   resolves a Fluxer community)
  * @param {string} guildId
  * @param {object} opts
  * @param {import("discord.js").User} [opts.user] asker
@@ -309,7 +398,11 @@ async function logGorkFailure(client, guildId, opts = {}) {
       timestamp: true,
     });
 
-    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(
+      resolveAuditOutbound(client),
+      auditSettingsKey(client, guildId, opts),
+      { embeds: [plainEmbed(embed)] },
+    );
     if (!sent) {
       console.log(`[gork] failure (no audit channel): ${body}`);
     }
@@ -326,7 +419,12 @@ async function logGorkFailure(client, guildId, opts = {}) {
  * Never throws; a missing audit channel (or a failed send) degrades to
  * a one-line console log, mirroring logGorkQa.
  *
- * @param {import("discord.js").Client} client
+ * @param {import("discord.js").Client|object|null} client  discord.js Client, a
+ *   Fluxer OutboundClient (duck-typed via `platform: "fluxer"`, gap #4), or
+ *   null (console-only audit)
+ * @param {number} [opts.communityId]  numeric community id — required for
+ *   audit-channel resolution on Fluxer (gap #4; a string guild id never
+ *   resolves a Fluxer community)
  * @param {string} guildId
  * @param {object} stats
  * @param {number} [stats.indexed] memories indexed into the prompt
@@ -335,7 +433,8 @@ async function logGorkFailure(client, guildId, opts = {}) {
  *   by the write-path validation (decision 25 counter)
  * @returns {Promise<void>}
  */
-async function logGorkMemory(client, guildId, { indexed, stored, skippedInvalid } = {}) {
+async function logGorkMemory(client, guildId, opts = {}) {
+  const { indexed, stored, skippedInvalid } = opts;
   try {
     const count = (v) => Math.max(0, Math.floor(Number(v) || 0));
     const body = `Stored: +${count(stored)} · skipped_invalid: ${count(skippedInvalid)} · indexed: ${count(indexed)}`;
@@ -346,7 +445,11 @@ async function logGorkMemory(client, guildId, { indexed, stored, skippedInvalid 
       timestamp: true,
     });
 
-    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(
+      resolveAuditOutbound(client),
+      auditSettingsKey(client, guildId, opts),
+      { embeds: [plainEmbed(embed)] },
+    );
     if (!sent) {
       console.log(`[gork] memory (no audit channel): ${body}`);
     }
@@ -418,7 +521,12 @@ function describeSummarizeMode(mode, lastCount) {
  * Never throws; a missing audit channel (or a failed send) degrades to a
  * one-line console log, mirroring logGorkQa.
  *
- * @param {import("discord.js").Client} client
+ * @param {import("discord.js").Client|object|null} client  discord.js Client, a
+ *   Fluxer OutboundClient (duck-typed via `platform: "fluxer"`, gap #4), or
+ *   null (console-only audit)
+ * @param {number} [opts.communityId]  numeric community id — required for
+ *   audit-channel resolution on Fluxer (gap #4; a string guild id never
+ *   resolves a Fluxer community)
  * @param {string} guildId
  * @param {object} opts
  * @param {import("discord.js").User} [opts.user] invoking staff member
@@ -542,7 +650,11 @@ async function logGorkSummarize(client, guildId, opts = {}) {
       if (link) embed.addFields({ name: "Jump", value: link });
     }
 
-    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(
+      resolveAuditOutbound(client),
+      auditSettingsKey(client, guildId, opts),
+      { embeds: [plainEmbed(embed)] },
+    );
     if (!sent) {
       console.log(
         `[gork] summarize (no audit channel): ${requestedBy} ${modeLabel} in ${channelValue}`,
@@ -563,7 +675,12 @@ async function logGorkSummarize(client, guildId, opts = {}) {
  * Never throws; a missing audit channel (or a failed send) degrades to a
  * one-line console log.
  *
- * @param {import("discord.js").Client} client
+ * @param {import("discord.js").Client|object|null} client  discord.js Client, a
+ *   Fluxer OutboundClient (duck-typed via `platform: "fluxer"`, gap #4), or
+ *   null (console-only audit)
+ * @param {number} [opts.communityId]  numeric community id — required for
+ *   audit-channel resolution on Fluxer (gap #4; a string guild id never
+ *   resolves a Fluxer community)
  * @param {string} guildId
  * @param {object} opts
  * @param {import("discord.js").User} [opts.user] invoking staff member
@@ -594,7 +711,11 @@ async function logGorkSummarizeFailure(client, guildId, opts = {}) {
       timestamp: true,
     });
 
-    const sent = await sendAuditLog(getDiscordOutbound(client), guildId, { embeds: [embed] });
+    const sent = await sendAuditLog(
+      resolveAuditOutbound(client),
+      auditSettingsKey(client, guildId, opts),
+      { embeds: [plainEmbed(embed)] },
+    );
     if (!sent) {
       console.log(`[gork] summarize failure (no audit channel): ${body}`);
     }

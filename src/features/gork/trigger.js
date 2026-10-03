@@ -1278,6 +1278,9 @@ async function runGorkJob(deps) {
           trackGorkWork(
             logGorkQa(auditClient, guildId, {
               user: message.author,
+              // Audit-channel lookup: Fluxer needs the numeric community id
+              // (the guildId string is the Fluxer external id, display-only).
+              communityId,
               question,
               contextLabel: describeContext(ctx),
               searchQueries: searches,
@@ -1329,6 +1332,7 @@ async function runGorkJob(deps) {
           trackGorkWork(
             logGorkFailure(auditClient, guildId, {
               user: message.author,
+              communityId,
               question,
               reason: why,
             }),
@@ -1826,13 +1830,15 @@ async function runGorkHookFluxer(outbound, message) {
 
     // 12. Typing: Fluxer v1 has no typing endpoint — skipped (logged here
     //     once per trigger; the adapter's sendTyping is an inert no-op).
-    // 13. Detached LLM job (audit embeds are Discord-client-keyed: Fluxer
-    //     v1 has no audit channel, so auditClient is null — the audit
-    //     helpers degrade to their console one-liners).
+    // 13. Detached LLM job. Audit embeds post through this instance's
+    //     Fluxer OutboundClient (gap #4, 2026-10-02): the audit helpers
+    //     duck-type `client.platform === "fluxer"` and resolve the audit
+    //     channel by the numeric communityId threaded through opts below.
+    //     No audit channel configured → console one-liner (unchanged law).
     trackGorkWork(
       runGorkJob({
         slot,
-        auditClient: null,
+        auditClient: outbound,
         guildId,
         communityId,
         settings,

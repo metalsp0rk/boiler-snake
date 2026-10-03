@@ -9,13 +9,14 @@ Feature design and locked decisions live in the repo roadmap (`roadmap/web-admin
 The console is **dark by default** — nothing listens unless you set `PUBLIC_HTTP_PORT` (see [Configuration](configuration.md)). Minimum setup:
 
 1. Set `PUBLIC_HTTP_PORT` and `PUBLIC_BASE_URL` in `.env` (production must be **https** — the bot warns on non-localhost `http://`; put TLS/reverse proxy in front).
-2. Set `SESSION_SECRET` (falls back to `CLIENT_SECRET` with a warning).
+2. Set `SESSION_SECRET` (falls back to `CLIENT_SECRET` with a warning). **Fluxer-only installs** (no Discord `CLIENT_ID`/`CLIENT_SECRET`): set `SESSION_SECRET` **and** `OAUTH_STATE_SECRET` explicitly — both default to the Discord `CLIENT_SECRET`, which doesn't exist there, so a Fluxer login can't complete its OAuth state check (see [Fluxer](fluxer.md)).
 3. In the Discord Developer Portal, add the OAuth redirect `{PUBLIC_BASE_URL}/auth/login/callback`.
 4. Restart the bot and open `{PUBLIC_BASE_URL}/` — you'll be redirected to **Log in with Discord**, then land on the **guild list**: pick a guild to open its console.
 
 | Variable | Meaning |
 |----------|---------|
-| `SESSION_SECRET` | Signs session cookies (recommended) |
+| `SESSION_SECRET` | Signs session cookies (recommended; required on Fluxer-only installs) |
+| `OAUTH_STATE_SECRET` | Signs the OAuth login state (falls back to `CLIENT_SECRET`; required on Fluxer-only installs) |
 | `WEB_SESSION_TTL_HOURS` | Session lifetime (default `12`, hard cap 7 days) |
 | `WEB_TIER_CACHE_TTL_MS` | Tier-cache TTL (default `60000`) — bounds how long a revoked role can linger to ≤ 60 s |
 

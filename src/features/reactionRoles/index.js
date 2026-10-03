@@ -11,6 +11,7 @@ const {
 const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { buildMessageJumpUrl } = require("../../core/jumpUrl");
 const { Color } = require("../../core/theme");
 const {
   MAX_OPTIONS_PER_PANEL,
@@ -308,8 +309,17 @@ async function handleReactionrole(commandCtx, featureCtx) {
         targetId: sent.id,
         details: { channel_id: ch.id, title },
       });
-      // Message#url equivalent (guild-channel message URL — Discord display).
-      const jump = `https://discord.com/channels/${guildId}/${ch.id}/${sent.id}`;
+      // Message#url equivalent, platform-aware (gap #2): Fluxer builds the
+      // jump from the instance's discovered webapp base — a discord.com
+      // link is dead on Fluxer AND gets auto-embedded as a Discord
+      // marketing card (verified live 2026-10-02). null = render nothing.
+      const jump = buildMessageJumpUrl({
+        platform: commandCtx.platform,
+        guildId,
+        channelId: ch.id,
+        messageId: sent.id,
+        webappBaseUrl: outbound.webappBaseUrl,
+      });
       await logConfigChange(outbound, guildId, {
         title: "Reaction-role panel created",
         command: "/reactionrole panel create",
@@ -325,7 +335,7 @@ async function handleReactionrole(commandCtx, featureCtx) {
         content:
           `Created reaction-role panel in <#${ch.id}>.\n` +
           `Message ID: \`${sent.id}\`\n` +
-          `Jump: ${jump}\n` +
+          `Jump: ${jump ?? "(link unavailable — the instance advertises no web address)"}\n` +
           `Add options with \`/reactionrole option add message_id:${sent.id}\`.`,
         sensitive: true,
       });
@@ -553,9 +563,16 @@ async function handleReactionrole(commandCtx, featureCtx) {
         return;
       }
       const lines = panels.map((p) => {
-        const jump = `https://discord.com/channels/${guildId}/${p.channel_id}/${p.message_id}`;
+        const jump = buildMessageJumpUrl({
+          platform: commandCtx.platform,
+          guildId,
+          channelId: p.channel_id,
+          messageId: p.message_id,
+          webappBaseUrl: commandCtx.outbound.webappBaseUrl,
+        });
         const n = countReactionRoleOptions(communityId, p.message_id);
-        return `- **${p.title}** in <#${p.channel_id}> — \`${p.message_id}\` (${n} option${n === 1 ? "" : "s"}) — [jump](${jump})`;
+        const jumpPart = jump ? ` — [jump](${jump})` : "";
+        return `- **${p.title}** in <#${p.channel_id}> — \`${p.message_id}\` (${n} option${n === 1 ? "" : "s"})${jumpPart}`;
       });
       await commandCtx.reply({
         content: `**Reaction-role panels:**\n${lines.join("\n")}`,
