@@ -1165,7 +1165,7 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
      * @param {number} communityId
      * @param {string} channelId
      * @param {string} messageId
-     * @returns {Promise<{ ok: true, message: object }|{ ok: false, error: string, code?: string }>}
+     * @returns {Promise<{ ok: true, message: object }|{ ok: false, error: string, code?: string, status?: number }>}
      */
     async fetchMessage(communityId, channelId, messageId) {
       assertCommunityId(communityId);
@@ -1187,6 +1187,10 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
             err,
           ),
           ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+          // HTTP status (separate from the API code string in `code`) so
+          // callers can act on definitive responses (e.g. 404 = gone) —
+          // PR 5: refreshPanelMessageFluxer's presence probe.
+          ...(statusOf(err) != null ? { status: statusOf(err) } : {}),
         };
       }
       if (!d || typeof d !== "object" || d.id == null) {

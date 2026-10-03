@@ -347,7 +347,7 @@ describe("fluxer reaction roles — refreshPanelMessageFluxer", () => {
     seedPanel("512");
     const rest = makeFakeRest({
       routes: {
-        "GET /v1/channels/444/messages": [], // history probe: panel predates the page
+        "GET /v1/channels/444/messages/512": () => ({ id: "512", channel_id: "444" }),
         "PATCH /v1/channels/444/messages/512": null,
         [`PUT /v1/channels/444/messages/512/reactions/${EMOJI_ENC}/@me`]: null,
       },
@@ -369,8 +369,8 @@ describe("fluxer reaction roles — refreshPanelMessageFluxer", () => {
       "option reaction ensured (idempotent PUT)",
     );
     assert.ok(
-      lines.some((l) => l.includes("presence check skipped") && l.includes("single-message fetch")),
-      "presence degrades with a NAMED skip (no fetchMessage surface — spec 375–397)",
+      !lines.some((l) => l.includes("presence check")),
+      "presence resolves via fetchMessage (PR 5) — no degraded leg when the GET succeeds",
     );
     assert.ok(
       lines.some((l) => l.includes("Stale reaction cleanup skipped") && l.includes("reaction-list")),
@@ -378,6 +378,366 @@ describe("fluxer reaction roles — refreshPanelMessageFluxer", () => {
     );
     const patch = rest.calls.find((c) => c.method === "PATCH");
     assert.equal(typeof patch.body.embeds[0], "object", "embeds are plain JSON on the wire");
+  });
+
+  it("404 on the presence probe is conclusive: 'Panel message is missing', no writes", async () => {
+    seedPanel("523");
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/444/messages/523": () => {
+          const e = new Error("Not Found");
+          e.status = 404;
+          throw e;
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const { result } = await withConsole(() =>
+      service.refreshPanelMessageFluxer(outbound, COMMUNITY_ID, {
+        message_id: "523",
+        channel_id: CH,
+      }),
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Panel message is missing/);
+    assert.equal(hits(rest, "PATCH", "/v1/channels/444/messages/523").length, 0, "no edit on a gone message");
+    assert.equal(rest.calls.filter((c) => c.method === "PUT").length, 0, "no reactions on a gone message");
+  });
+
+  it("non-404 probe failure is named and the refresh continues", async () => {
+    seedPanel("524");
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/444/messages/524": () => {
+          const e = new Error("Forbidden");
+          e.status = 403;
+          throw e;
+        },
+        "PATCH /v1/channels/444/messages/524": null,
+        [`PUT /v1/channels/444/messages/524/reactions/${EMOJI_ENC}/@me`]: null,
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const { result, lines } = await withConsole(() =>
+      service.refreshPanelMessageFluxer(outbound, COMMUNITY_ID, {
+        message_id: "524",
+        channel_id: CH,
+      }),
+    );
+    assert.equal(result.ok, true, "a permissioned probe does not delete a live panel's refresh");
+    assert.ok(
+      lines.some((l) => l.includes("presence check inconclusive") && l.includes("Forbidden")),
+      "non-404 probe failure is logged by name with the cause",
+    );
+  });
+});
+
+describe("fluxer reaction roles — pending emoji (PR 5, gap #1)", () => {
+  const MSG = "9000000000000000001";
+  function fluxerMsg(overrides = {}) {
+    return {
+      platform: "fluxer",
+      instanceKey: INSTANCE,
+      communityId: COMMUNITY_ID,
+      externalGuildId: GUILD,
+      id: MSG,
+      channelId: CH,
+      authorId: USER,
+      authorBot: false,
+      authorDisplayName: "admin",
+      content: "👍",
+      createdAt: "2026-10-02T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+  function postBodies(rest) {
+    return rest.calls
+      .filter((c) => c.method === "POST" && c.path === `/v1/channels/${CH}/messages`)
+      .map((c) => c.body);
+  }
+  const ROLES_ROUTE = `GET /v1/guilds/${GUILD}/roles`;
+  const ROLES = [{ id: ROLE, name: "Elite", position: 5, permissions: "0" }];
+
+  it("option add: emoji upserts the option, seeds the reaction, refreshes the embed, confirms, clears the session", async () => {
+    dbApi.createReactionRolePanel(COMMUNITY_ID, CH, "600", "Roles", "React to get a role.");
+    service.setPendingOptionAdd(COMMUNITY_ID, USER, {
+      messageId: "600",
+      roleId: ROLE,
+      level: 3,
+      removable: true,
+      channelId: CH,
+    });
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/channels/${CH}/messages/600`]: () => ({ id: "600", channel_id: CH }),
+        [`PATCH /v1/channels/${CH}/messages/600`]: null,
+        [`PUT /v1/channels/${CH}/messages/600/reactions/${EMOJI_ENC}/@me`]: null,
+        [ROLES_ROUTE]: () => ROLES,
+        [`POST /v1/channels/${CH}/messages`]: () => ({ id: "910" }),
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result, lines } = await withConsole(() =>
+      service.handlePendingOptionEmojiMessageFluxer(outbound, fluxerMsg()),
+    );
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(lines.filter((l) => l.includes("failed")), [], "no degraded legs");
+
+    // Option persisted with the session's role/level/removable.
+    const opt = dbApi.getReactionRoleOption(COMMUNITY_ID, "600", EMOJI);
+    assert.ok(opt, "option row created");
+    assert.equal(String(opt.role_id), ROLE);
+    assert.equal(Number(opt.min_level), 3);
+
+    // Panel embed refreshed + option reaction seeded (idempotent PUT).
+    assert.equal(hits(rest, "PATCH", `/v1/channels/${CH}/messages/600`).length, 1);
+    assert.equal(
+      hits(rest, "PUT", `/v1/channels/${CH}/messages/600/reactions/${EMOJI_ENC}/@me`).length,
+      1,
+    );
+
+    // Confirmation names the role by NAME (K10: no Discord mention markup).
+    const confirms = postBodies(rest);
+    assert.equal(confirms.length, 1, "exactly one confirmation send");
+    assert.match(confirms[0].content, /Configured 👍 → \*\*Elite\*\*/);
+    assert.match(confirms[0].content, /Level 3\+/);
+    assert.match(confirms[0].content, /panel `600`/);
+    assert.deepEqual(confirms[0].allowed_mentions, { parse: [] }, "never pings from confirmations");
+    assert.ok(
+      !confirms[0].content.includes("<@&"),
+      "no <@&role> markup in Fluxer copy",
+    );
+
+    // Emoji config message stays (no deleteMessage surface) — named on the log.
+    assert.ok(
+      lines.some((l) => l.includes("left in place") && l.includes("no deleteMessage")),
+      "message-retention degradation is named (AGENTS: no silent drop)",
+    );
+
+    // Session consumed.
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), false);
+  });
+
+  it("option add rolls a session open across a retry: non-emoji keeps the wait alive with help copy", async () => {
+    dbApi.createReactionRolePanel(COMMUNITY_ID, CH, "601", "Roles", "React to get a role.");
+    service.setPendingOptionAdd(COMMUNITY_ID, USER, {
+      messageId: "601",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const rest = makeFakeRest({
+      routes: { [`POST /v1/channels/${CH}/messages`]: () => ({ id: "911" }) },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result } = await withConsole(() =>
+      // parseEmojiInput treats plain text as a label; the unparseable input
+      // is an empty message (attachment-only) — parsed null → help copy.
+      service.handlePendingOptionEmojiMessageFluxer(outbound, fluxerMsg({ content: "" })),
+    );
+    assert.equal(result.handled, true, "an open session consumes the message");
+    const body = postBodies(rest)[0];
+    assert.match(body.content, /doesn't look like an emoji/);
+    assert.match(body.content, /Still waiting/);
+    assert.deepEqual(body.message_reference, { message_id: MSG }, "reply references the admin's message");
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), true, "session stays open for a retry");
+  });
+
+  it("stop cancels with a referenced reply and clears the session", async () => {
+    dbApi.createReactionRolePanel(COMMUNITY_ID, CH, "602", "Roles", "React to get a role.");
+    service.setPendingOptionAdd(COMMUNITY_ID, USER, {
+      messageId: "602",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const rest = makeFakeRest({
+      routes: { [`POST /v1/channels/${CH}/messages`]: () => ({ id: "912" }) },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result } = await withConsole(() =>
+      service.handlePendingOptionEmojiMessageFluxer(outbound, fluxerMsg({ content: "STOP" })),
+    );
+    assert.equal(result.handled, true);
+    const body = postBodies(rest)[0];
+    assert.match(body.content, /Cancelled — no longer waiting for an emoji/);
+    assert.deepEqual(body.message_reference, { message_id: MSG });
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), false);
+  });
+
+  it("custom emoji the instance rejects (reaction 404) rolls the option back and keeps the session open", async () => {
+    dbApi.createReactionRolePanel(COMMUNITY_ID, CH, "603", "Roles", "React to get a role.");
+    const custom = "<:party:123456789012345678>";
+    const parsed = service.parseEmojiInput(custom);
+    assert.ok(parsed?.isCustom, "fixture: custom emoji parses");
+    const customEnc = encodeURIComponent(parsed.reactIdent);
+    service.setPendingOptionAdd(COMMUNITY_ID, USER, {
+      messageId: "603",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/channels/${CH}/messages/603`]: () => ({ id: "603", channel_id: CH }),
+        [`PATCH /v1/channels/${CH}/messages/603`]: null,
+        [`PUT /v1/channels/${CH}/messages/603/reactions/${customEnc}/@me`]: () => {
+          const e = new Error("Emoji not found");
+          e.status = 404;
+          throw e;
+        },
+        [`POST /v1/channels/${CH}/messages`]: () => ({ id: "913" }),
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result, lines } = await withConsole(() =>
+      service.handlePendingOptionEmojiMessageFluxer(outbound, fluxerMsg({ content: custom })),
+    );
+    assert.equal(result.handled, true);
+
+    // Valid-by-acceptance: the reaction POST rejected the emoji → row rolled back.
+    assert.equal(dbApi.getReactionRoleOption(COMMUNITY_ID, "603", parsed.key), null,
+      "rejected option must not linger (a dead reaction can never grant the role)");
+    const body = postBodies(rest)[0];
+    assert.match(body.content, /rejected by the server/);
+    assert.match(body.content, /Emoji not found/, "the instance's specific cause reaches the reply");
+    assert.match(body.content, /Still waiting — try another emoji/);
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), true, "session stays open for a valid emoji");
+    void lines;
+  });
+
+  it("option remove: the emoji deletes the row, refreshes the panel, confirms", async () => {
+    seedPanel("604");
+    service.setPendingOptionRemove(COMMUNITY_ID, USER, { messageId: "604", channelId: CH });
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/channels/${CH}/messages/604`]: () => ({ id: "604", channel_id: CH }),
+        [`PATCH /v1/channels/${CH}/messages/604`]: null,
+        [`POST /v1/channels/${CH}/messages`]: () => ({ id: "914" }),
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result } = await withConsole(() =>
+      service.handlePendingOptionEmojiMessageFluxer(outbound, fluxerMsg({ content: "👍" })),
+    );
+    assert.equal(result.handled, true);
+    assert.equal(dbApi.getReactionRoleOption(COMMUNITY_ID, "604", EMOJI), null, "option row deleted");
+    assert.equal(hits(rest, "PATCH", `/v1/channels/${CH}/messages/604`).length, 1, "embed refreshed");
+    assert.match(postBodies(rest)[0].content, /Removed 👍 from panel `604`/);
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), false);
+  });
+
+  it("remove for an emoji with no option: soft failure keeps the session open", async () => {
+    seedPanel("605"); // seeded with EMOJI
+    service.setPendingOptionRemove(COMMUNITY_ID, USER, { messageId: "605", channelId: CH });
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/channels/${CH}/messages/605`]: () => ({ id: "605", channel_id: CH }),
+        [`POST /v1/channels/${CH}/messages`]: () => ({ id: "915" }),
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result } = await withConsole(() =>
+      service.handlePendingOptionEmojiMessageFluxer(outbound, fluxerMsg({ content: "🎉" })),
+    );
+    assert.equal(result.handled, true);
+    assert.match(postBodies(rest)[0].content, /No option for 🎉 on panel `605`/);
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), true, "soft failure keeps the wait alive");
+  });
+
+  it("option cap: the 21st emoji is a hard failure and clears the session", async () => {
+    dbApi.createReactionRolePanel(COMMUNITY_ID, CH, "606", "Roles", "React to get a role.");
+    for (let i = 0; i < service.MAX_OPTIONS_PER_PANEL; i += 1) {
+      dbApi.upsertReactionRoleOption(COMMUNITY_ID, "606", `k${i}`, `e${i}`, ROLE, 0, true);
+    }
+    service.setPendingOptionAdd(COMMUNITY_ID, USER, {
+      messageId: "606",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const rest = makeFakeRest({
+      routes: { [`POST /v1/channels/${CH}/messages`]: () => ({ id: "916" }) },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result } = await withConsole(() =>
+      service.handlePendingOptionEmojiMessageFluxer(outbound, fluxerMsg()),
+    );
+    assert.equal(result.handled, true);
+    assert.match(postBodies(rest)[0].content, /already has 20 options/);
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), false, "cap hit clears the wait");
+  });
+
+  it("a bot author is never consumed and a session-less message is a no-op", async () => {
+    service.setPendingOptionAdd(COMMUNITY_ID, USER, {
+      messageId: "607",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const rest = makeFakeRest({ routes: {} });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const bot = await service.handlePendingOptionEmojiMessageFluxer(
+      outbound,
+      fluxerMsg({ authorBot: true }),
+    );
+    assert.equal(bot.handled, false, "bot messages never feed the emoji session");
+
+    const other = await service.handlePendingOptionEmojiMessageFluxer(
+      outbound,
+      fluxerMsg({ authorId: "someone-else" }),
+    );
+    assert.equal(other.handled, false, "only the session owner's messages are consumed");
+    assert.equal(rest.calls.length, 0, "no sends for non-matching messages");
+    assert.equal(service.hasPendingOptionEmoji(COMMUNITY_ID, USER), true, "session intact");
+
+    // A message with no resolvable community is a clean no-op.
+    const orphan = await service.handlePendingOptionEmojiMessageFluxer(
+      outbound,
+      { ...fluxerMsg(), communityId: null, externalGuildId: null, instanceKey: null },
+    );
+    assert.equal(orphan.handled, false);
+    service.clearPendingOptionEmoji(COMMUNITY_ID, USER);
+  });
+
+  it("session keyed by community: a Discord-snowflake guild id string cannot open the Fluxer session (gap #1 collision pin)", async () => {
+    dbApi.createReactionRolePanel(COMMUNITY_ID, CH, "608", "Roles", "React to get a role.");
+    service.setPendingOptionAdd(COMMUNITY_ID, USER, {
+      messageId: "608",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const rest = makeFakeRest({ routes: {} });
+    const { outbound } = makeFakeHandle({ rest });
+
+    // Same author id, external id that stringifies to the INTEGER community id —
+    // the old `${externalGuildId}:${userId}` key would collide here.
+    const attacker = await service.handlePendingOptionEmojiMessageFluxer(
+      outbound,
+      fluxerMsg({ communityId: null, externalGuildId: String(COMMUNITY_ID) }),
+    );
+    assert.equal(
+      attacker.handled,
+      false,
+      "keying by the internal id means an external id equal to the community id cannot hijack the session",
+    );
+    service.clearPendingOptionEmoji(COMMUNITY_ID, USER);
   });
 });
 
