@@ -47,32 +47,36 @@ const PENDING_EMOJI_TTL_MS = 5 * 60 * 1000;
 /** Never ping @everyone / @here / roles / users from panel text or embeds. */
 const NO_PING_MENTIONS = { parse: [] };
 
-// guildId:userId → pending option add/remove session (in-memory)
+// communityId:userId → pending option add/remove session (in-memory)
 // session.action: "add" | "remove"
+// PR 5 conversion (roadmap/fluxer.md § Live E2E verification, gap #1): keyed
+// by the INTEGER internal community id — unique per (platform, instanceKey,
+// external guild) — so a Fluxer guild whose id string equals a Discord
+// snowflake can never hijack (or be hijacked by) the other platform's session.
 const pendingOptionEmoji = new Map();
 
-function pendingOptionKey(guildId, userId) {
-  return `${guildId}:${userId}`;
+function pendingOptionKey(communityId, userId) {
+  return `${communityId}:${userId}`;
 }
 
-function setPendingOptionEmoji(guildId, userId, session) {
-  pendingOptionEmoji.set(pendingOptionKey(guildId, userId), {
+function setPendingOptionEmoji(communityId, userId, session) {
+  pendingOptionEmoji.set(pendingOptionKey(communityId, userId), {
     ...session,
     expiresAt: Date.now() + PENDING_EMOJI_TTL_MS,
   });
 }
 
 /** @deprecated use setPendingOptionEmoji — kept for call-site clarity */
-function setPendingOptionAdd(guildId, userId, session) {
-  setPendingOptionEmoji(guildId, userId, { ...session, action: "add" });
+function setPendingOptionAdd(communityId, userId, session) {
+  setPendingOptionEmoji(communityId, userId, { ...session, action: "add" });
 }
 
-function setPendingOptionRemove(guildId, userId, session) {
-  setPendingOptionEmoji(guildId, userId, { ...session, action: "remove" });
+function setPendingOptionRemove(communityId, userId, session) {
+  setPendingOptionEmoji(communityId, userId, { ...session, action: "remove" });
 }
 
-function getPendingOptionEmoji(guildId, userId) {
-  const k = pendingOptionKey(guildId, userId);
+function getPendingOptionEmoji(communityId, userId) {
+  const k = pendingOptionKey(communityId, userId);
   const session = pendingOptionEmoji.get(k);
   if (!session) return null;
   if (Date.now() > session.expiresAt) {
@@ -83,16 +87,16 @@ function getPendingOptionEmoji(guildId, userId) {
 }
 
 /** Push expiry forward while the admin is still actively retrying. */
-function touchPendingOptionEmoji(guildId, userId) {
-  const k = pendingOptionKey(guildId, userId);
+function touchPendingOptionEmoji(communityId, userId) {
+  const k = pendingOptionKey(communityId, userId);
   const session = pendingOptionEmoji.get(k);
   if (!session) return;
   session.expiresAt = Date.now() + PENDING_EMOJI_TTL_MS;
   pendingOptionEmoji.set(k, session);
 }
 
-function clearPendingOptionEmoji(guildId, userId) {
-  pendingOptionEmoji.delete(pendingOptionKey(guildId, userId));
+function clearPendingOptionEmoji(communityId, userId) {
+  pendingOptionEmoji.delete(pendingOptionKey(communityId, userId));
 }
 
 // Aliases used by older call sites
@@ -100,8 +104,8 @@ const getPendingOptionAdd = getPendingOptionEmoji;
 const clearPendingOptionAdd = clearPendingOptionEmoji;
 const touchPendingOptionAdd = touchPendingOptionEmoji;
 
-function hasPendingOptionEmoji(guildId, userId) {
-  return !!getPendingOptionEmoji(guildId, userId);
+function hasPendingOptionEmoji(communityId, userId) {
+  return !!getPendingOptionEmoji(communityId, userId);
 }
 
 // Custom emoji: <:name:id> or <a:name:id>
@@ -1127,16 +1131,16 @@ async function deployPanelFluxer(
  * "ensure present" needs no reaction-list diff — there is no reaction-list
  * surface on OutboundClient, spec 375–397).
  *
- * Where the Discord flow needs a single-message fetch (panel presence, reaction
- * enumeration) OutboundClient exposes only fetchMessages (history pages) — no
- * fetchMessage. Those legs are DEGRADED with named log lines; the presence
- * probe scans one history page with fetchMessages and never treats a scan miss
- * as "deleted" (the panel may simply predate the page).
+ * Where the Discord flow needs a single-message fetch (panel presence) it uses
+ * fetchMessage (§10.3 delta 2); reaction ENUMERATION has no surface, so stale-
+ * reaction cleanup stays a named log line. A 404 on the presence probe is the
+ * one conclusive "message is gone" answer (the Discord twin's behavior); any
+ * other probe failure is logged, never treated as deletion.
  *
  * @param {object} outbound OutboundClient (Fluxer)
  * @param {number} communityId INTEGER communities.id
  * @param {object} panel panel row (message_id + channel_id required)
- * @returns {Promise<{ ok: boolean, error?: string }>}
+ * @returns {Promise<{ ok: boolean, error?: string, warnings?: Array<{ type: "edit"|"react", emojiKey?: string, message: string }> }>}
  */
 async function refreshPanelMessageFluxer(outbound, communityId, panel) {
   if (!panel) return { ok: false, error: "Panel not found." };
@@ -1148,18 +1152,22 @@ async function refreshPanelMessageFluxer(outbound, communityId, panel) {
 
   const options = listReactionRoleOptions(communityId, messageId);
 
-  // Presence: one history page (the only sanctioned surface). Inconclusive is
-  // logged, never fatal — there is no single-message fetch to confirm.
+  // Presence: fetchMessage (single-message GET). 404 is conclusive — the
+  // Discord twin reports "Panel message is missing" and stops; every other
+  // probe failure (permissions, network, unsupported surface) is logged by
+  // name and the refresh continues (safer than deleting a live panel's config).
   try {
-    const page = await outbound.fetchMessages(String(channelId), { limit: 100 });
-    if (!page.ok) {
+    const fetched = await outbound.fetchMessage(
+      communityId,
+      String(channelId),
+      String(messageId),
+    );
+    if (fetched.ok === false) {
+      if (fetched.status === 404) {
+        return { ok: false, error: "Panel message is missing" };
+      }
       console.warn(
-        `[reactionRoles] Panel ${messageId} presence check inconclusive: ${page.error}`,
-      );
-    } else if (!page.messages.some((m) => String(m.id) === String(messageId))) {
-      console.log(
-        `[reactionRoles] Panel ${messageId} presence check skipped: not in the first history page ` +
-          `(OutboundClient has no single-message fetch — message may predate the page)`,
+        `[reactionRoles] Panel ${messageId} presence check inconclusive: ${fetched.error}`,
       );
     }
   } catch (err) {
@@ -1183,7 +1191,7 @@ async function refreshPanelMessageFluxer(outbound, communityId, panel) {
     editRes = { ok: false, error: String(err?.message || err) };
   }
   if (!editRes.ok) {
-    warnings.push(`Could not edit panel message: ${editRes.error}`);
+    warnings.push({ type: "edit", message: `Could not edit panel message: ${editRes.error}` });
   }
 
   // Ensure configured reactions (idempotent PUT per option).
@@ -1202,7 +1210,11 @@ async function refreshPanelMessageFluxer(outbound, communityId, panel) {
         `[reactionRoles] Failed to react with ${opt.emoji_display} on ${messageId}:`,
         res.error,
       );
-      warnings.push(`Failed to react with ${opt.emoji_display}: ${res.error}`);
+      warnings.push({
+        type: "react",
+        emojiKey: opt.emoji_key,
+        message: `Failed to react with ${opt.emoji_display}: ${res.error}`,
+      });
     }
   }
 
@@ -1214,7 +1226,11 @@ async function refreshPanelMessageFluxer(outbound, communityId, panel) {
   );
 
   return warnings.length
-    ? { ok: false, error: warnings.join("; ") }
+    ? {
+        ok: false,
+        error: warnings.map((w) => w.message).join("; "),
+        warnings,
+      }
     : { ok: true };
 }
 
@@ -1633,7 +1649,13 @@ async function handlePendingOptionEmojiMessage(message) {
 
   const guildId = message.guild.id;
   const userId = message.author.id;
-  const session = getPendingOptionEmoji(guildId, userId);
+  // PR 5: session state is keyed by the INTEGER community id. Normalized
+  // messages (bridge/audit transports) carry it resolved at the edge; plain
+  // discord.js messages resolve via the existing create-on-sight edge.
+  const communityId = Number.isSafeInteger(message.communityId)
+    ? message.communityId
+    : communityIdFor(guildId);
+  const session = getPendingOptionEmoji(communityId, userId);
   if (!session) return { handled: false };
 
   const action = session.action === "remove" ? "remove" : "add";
@@ -1641,7 +1663,7 @@ async function handlePendingOptionEmojiMessage(message) {
 
   // Cancel
   if (content.toLowerCase() === "stop") {
-    clearPendingOptionEmoji(guildId, userId);
+    clearPendingOptionEmoji(communityId, userId);
     try {
       await message.reply({
         content: "Cancelled — no longer waiting for an emoji.",
@@ -1663,7 +1685,7 @@ async function handlePendingOptionEmojiMessage(message) {
         : `That doesn't look like an emoji.\n${EMOJI_INPUT_HELP}`;
 
   if (emojiErr) {
-    touchPendingOptionEmoji(guildId, userId);
+    touchPendingOptionEmoji(communityId, userId);
     const waitingFor =
       action === "add"
         ? `for <@&${session.roleId}> on panel \`${session.messageId}\``
@@ -1687,9 +1709,9 @@ async function handlePendingOptionEmojiMessage(message) {
 
     if (!removed.ok) {
       if (removed.hardFail) {
-        clearPendingOptionEmoji(guildId, userId);
+        clearPendingOptionEmoji(communityId, userId);
       } else {
-        touchPendingOptionEmoji(guildId, userId);
+        touchPendingOptionEmoji(communityId, userId);
       }
       try {
         await message.reply({
@@ -1704,7 +1726,7 @@ async function handlePendingOptionEmojiMessage(message) {
       return { handled: true };
     }
 
-    clearPendingOptionEmoji(guildId, userId);
+    clearPendingOptionEmoji(communityId, userId);
     const channel = message.channel;
     await deleteAdminEmojiMessage(message);
     await sendChannelConfirm(
@@ -1743,9 +1765,9 @@ async function handlePendingOptionEmojiMessage(message) {
       applied.error?.includes("No reaction-role panel") ||
       applied.error?.includes("already has");
     if (hardFail) {
-      clearPendingOptionEmoji(guildId, userId);
+      clearPendingOptionEmoji(communityId, userId);
     } else {
-      touchPendingOptionEmoji(guildId, userId);
+      touchPendingOptionEmoji(communityId, userId);
     }
     try {
       await message.reply({
@@ -1760,7 +1782,7 @@ async function handlePendingOptionEmojiMessage(message) {
     return { handled: true };
   }
 
-  clearPendingOptionEmoji(guildId, userId);
+  clearPendingOptionEmoji(communityId, userId);
 
   const remText = session.removable ? "removable" : "permanent (not removable)";
   const channel = message.channel;
@@ -1791,6 +1813,368 @@ async function handlePendingOptionEmojiMessage(message) {
       `Panel: \`${session.messageId}\``,
       `Emoji: ${applied.display}`,
       `Role: <@&${session.roleId}> (\`${session.roleId}\`)`,
+      `Min level: **${session.level}**`,
+      `Removable: **${session.removable ? "yes" : "no"}**`,
+    ],
+  }).catch(() => {});
+
+  return { handled: true };
+}
+
+/**
+ * Fluxer twin of validateEmojiForGuild (PR 5, gap #1): no discord.js guild
+ * emoji cache exists on the OutboundClient, so custom emojis are validated
+ * "valid-by-acceptance" — the option is persisted and the option reaction
+ * POST inside refreshPanelMessageFluxer is the validator. A reaction
+ * rejection rolls the option back and surfaces the instance's specific
+ * cause (handlePendingOptionEmojiMessageFluxer), mirroring the Discord arm's
+ * reject-with-message behavior without a read-only emoji surface.
+ *
+ * @param {object|null} parsed parseEmojiInput result
+ * @returns {string|null} error text, null when usable
+ */
+function validateEmojiForFluxer(parsed) {
+  if (!parsed) {
+    return `That doesn't look like an emoji.\n${EMOJI_INPUT_HELP}`;
+  }
+  return null;
+}
+
+/**
+ * Fluxer twin of applyReactionRoleOption: persist the option and refresh the
+ * panel (embed + reactions) through the OutboundClient. Display enrichment
+ * (Discord guild-emoji cache) is skipped — the parsed display stands.
+ *
+ * A refresh whose ONLY failure is the new option's own reaction POST is
+ * treated as the instance rejecting the custom emoji: the row is rolled back
+ * (a reaction that can never exist cannot grant a role) and the result is
+ * flagged `emojiRejected` so the consumer keeps the session open for a retry.
+ * Any other failure keeps the persisted row (the Discord twin's "Saved
+ * option, but panel refresh failed" semantics).
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {number} communityId INTEGER communities.id
+ * @param {{ messageId: string, parsed: object, roleId: string, level: number, removable: boolean }} args
+ * @returns {Promise<{ ok: boolean, error?: string, display?: string, emojiRejected?: boolean, rolledBack?: boolean }>}
+ */
+async function applyReactionRoleOptionFluxer(
+  outbound,
+  communityId,
+  { messageId, parsed, roleId, level, removable },
+) {
+  const panel = getReactionRolePanel(communityId, messageId);
+  if (!panel) {
+    return {
+      ok: false,
+      error: `No reaction-role panel with message ID \`${messageId}\`.`,
+    };
+  }
+
+  const existingOpts = listReactionRoleOptions(communityId, messageId);
+  const already = existingOpts.some((o) => o.emoji_key === parsed.key);
+  if (!already && existingOpts.length >= MAX_OPTIONS_PER_PANEL) {
+    return {
+      ok: false,
+      error: `This panel already has ${MAX_OPTIONS_PER_PANEL} options (Discord reaction limit). Remove one first.`,
+    };
+  }
+
+  upsertReactionRoleOption(
+    communityId,
+    messageId,
+    parsed.key,
+    parsed.display,
+    roleId,
+    level,
+    removable,
+  );
+
+  const updated = getReactionRolePanel(communityId, messageId);
+  const result = await refreshPanelMessageFluxer(outbound, communityId, updated);
+  if (!result.ok) {
+    const warns = Array.isArray(result.warnings) ? result.warnings : [];
+    const rejected =
+      parsed.isCustom === true &&
+      warns.length > 0 &&
+      warns.every((w) => w.type === "react" && w.emojiKey === parsed.key);
+    if (rejected) {
+      let rolledBack = false;
+      try {
+        rolledBack = deleteReactionRoleOption(communityId, messageId, parsed.key);
+      } catch (err) {
+        console.error(
+          `[reactionRoles] Failed to roll back rejected emoji ${parsed.key} on ${messageId}:`,
+          err?.message || err,
+        );
+      }
+      return {
+        ok: false,
+        display: parsed.display,
+        emojiRejected: true,
+        rolledBack,
+        error: `That custom emoji was rejected by the server: ${warns[0].message}`,
+      };
+    }
+    return {
+      ok: false,
+      error: `Saved option, but panel refresh failed: ${result.error}`,
+      display: parsed.display,
+    };
+  }
+  return { ok: true, display: parsed.display };
+}
+
+/**
+ * Fluxer twin of removeReactionRoleOptionByEmoji (same hardFail semantics:
+ * missing panel = hard, missing option = soft/touch).
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {number} communityId INTEGER communities.id
+ * @param {{ messageId: string, parsed: object }} args
+ * @returns {Promise<{ ok: boolean, error?: string, display?: string, hardFail?: boolean }>}
+ */
+async function removeReactionRoleOptionByEmojiFluxer(
+  outbound,
+  communityId,
+  { messageId, parsed },
+) {
+  const panel = getReactionRolePanel(communityId, messageId);
+  if (!panel) {
+    return {
+      ok: false,
+      hardFail: true,
+      error: `No reaction-role panel with message ID \`${messageId}\`.`,
+    };
+  }
+
+  const removed = deleteReactionRoleOption(communityId, messageId, parsed.key);
+  if (!removed) {
+    return {
+      ok: false,
+      hardFail: false,
+      error: `No option for ${parsed.display} on panel \`${messageId}\`.`,
+      display: parsed.display,
+    };
+  }
+
+  const updated = getReactionRolePanel(communityId, messageId);
+  const result = await refreshPanelMessageFluxer(outbound, communityId, updated);
+  if (!result.ok) {
+    return {
+      ok: false,
+      hardFail: false,
+      error: `Removed option from DB, but panel refresh failed: ${result.error}`,
+      display: parsed.display,
+    };
+  }
+  return { ok: true, display: parsed.display };
+}
+
+/**
+ * Handle a Fluxer guild message (NormalizedMessage) while an admin is awaiting
+ * a reaction-role option emoji — the gap #1 conversion of
+ * handlePendingOptionEmojiMessage (roadmap/fluxer.md § Live E2E verification:
+ * Fluxer panels previously could never receive options, so reaction→role
+ * grants never fired).
+ *
+ * Mirrors the Discord arm's flow exactly: stop-cancel, parse-retry loop
+ * (touch keeps the session open), hardFail clears, the same audit pair.
+ * Platform deltas:
+ * - Session keyed by (communityId, authorId) — the integer community id is
+ *   the platform-safe key (gap #1).
+ * - Replies ride the OutboundClient to message.channelId with a
+ *   message_reference back to the admin's message (Discord twin: message.reply).
+ * - Custom emojis validate valid-by-acceptance (validateEmojiForFluxer):
+ *   an instance rejection rolls the option back and keeps the session open.
+ * - No deleteMessage on OutboundClient → the admin's emoji message stays,
+ *   named on the log (honeypot precedent, PR 9).
+ * - Role labels use the role NAME (roleNameForDmFluxer): Fluxer clients do
+ *   not render Discord `<@&id>` mention markup (K10).
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {object} message NormalizedMessage (platform "fluxer")
+ * @returns {Promise<{ handled: boolean }>} handled=true → skip XP for this message
+ */
+async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
+  if (message?.authorBot) return { handled: false };
+  const communityId = resolveFluxerReactionCommunity(message);
+  if (communityId == null) return { handled: false };
+  const userId = message.authorId == null ? "" : String(message.authorId);
+  if (!userId) return { handled: false };
+  const session = getPendingOptionEmoji(communityId, userId);
+  if (!session) return { handled: false };
+
+  const channelId = String(message.channelId ?? "");
+  const action = session.action === "remove" ? "remove" : "add";
+  const content = (message.content || "").trim();
+
+  // Best-effort send into the guild channel (Discord twin: message.reply /
+  // channel.send). Failures are named, never silent, never thrown.
+  const send = async (payload, label) => {
+    try {
+      const res = await outbound.sendChannel(channelId, {
+        ...payload,
+        allowedMentions: NO_PING_MENTIONS,
+      });
+      if (res && res.ok === false) {
+        console.warn(
+          `[reactionRoles] Fluxer emoji-config ${label} in channel ${channelId} failed: ${res.error}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[reactionRoles] Fluxer emoji-config ${label} in channel ${channelId} failed: ${err?.message || err}`,
+      );
+    }
+  };
+  const replyToAdmin = (text) =>
+    send({ content: text, message_reference: { message_id: message.id } }, "reply");
+  const confirm = (text) => send({ content: text }, "confirmation");
+  const roleLabel = () => roleNameForDmFluxer(outbound, communityId, session.roleId);
+
+  // Cancel
+  if (content.toLowerCase() === "stop") {
+    clearPendingOptionEmoji(communityId, userId);
+    await replyToAdmin("Cancelled — no longer waiting for an emoji.");
+    return { handled: true };
+  }
+
+  const parsed = parseEmojiInput(content);
+  // Add accepts anything parseable (custom emojis validate on reaction POST);
+  // remove only needs a parseable emoji key (Discord twin parity).
+  const emojiErr =
+    action === "add"
+      ? validateEmojiForFluxer(parsed)
+      : parsed
+        ? null
+        : `That doesn't look like an emoji.\n${EMOJI_INPUT_HELP}`;
+
+  if (emojiErr) {
+    touchPendingOptionEmoji(communityId, userId);
+    const waitingFor =
+      action === "add"
+        ? `for ${await roleLabel()} on panel \`${session.messageId}\``
+        : `to remove from panel \`${session.messageId}\``;
+    await replyToAdmin(
+      `${emojiErr}\n\n_Still waiting for an emoji ${waitingFor}. Send an emoji, or type \`stop\` to cancel._`,
+    );
+    return { handled: true };
+  }
+
+  if (action === "remove") {
+    const removed = await removeReactionRoleOptionByEmojiFluxer(outbound, communityId, {
+      messageId: session.messageId,
+      parsed,
+    });
+
+    if (!removed.ok) {
+      if (removed.hardFail) {
+        clearPendingOptionEmoji(communityId, userId);
+      } else {
+        touchPendingOptionEmoji(communityId, userId);
+      }
+      await replyToAdmin(
+        removed.hardFail
+          ? `${removed.error}\n_No longer waiting for an emoji._`
+          : `${removed.error}\n\n_Still waiting — try another emoji, or type \`stop\` to cancel._`,
+      );
+      return { handled: true };
+    }
+
+    clearPendingOptionEmoji(communityId, userId);
+    console.log(
+      `[fluxer] reactionRoles: emoji config message ${message.id} left in place — ` +
+        "OutboundClient has no deleteMessage surface",
+    );
+    await confirm(`Removed ${removed.display} from panel \`${session.messageId}\`.`);
+    // Emoji-confirmation flow: human actor, bot transport → origin 'slash'.
+    recordSlashAudit({
+      communityId,
+      actorUserId: userId,
+      action: "reaction_roles.option_remove",
+      targetType: "reaction_role_panel",
+      targetId: session.messageId,
+      details: { emoji: removed.display },
+    });
+    await logConfigChange(outbound, communityId, {
+      title: "Reaction-role option removed",
+      command: "/reactionrole option remove",
+      actor: { id: userId, username: message.authorDisplayName || undefined },
+      changes: [`Panel: \`${session.messageId}\``, `Emoji: ${removed.display}`],
+    }).catch(() => {});
+    return { handled: true };
+  }
+
+  // action === "add"
+  const applied = await applyReactionRoleOptionFluxer(outbound, communityId, {
+    messageId: session.messageId,
+    parsed,
+    roleId: session.roleId,
+    level: session.level,
+    removable: session.removable,
+  });
+
+  if (!applied.ok) {
+    if (applied.emojiRejected) {
+      // Instance rejected the custom emoji — the Discord arm's "not in this
+      // server" rejection keeps the session open for a retry.
+      touchPendingOptionEmoji(communityId, userId);
+      const rollbackNote = applied.rolledBack
+        ? ""
+        : "\n(Could not roll the option back — remove it with `!reactionrole option remove` if needed.)";
+      await replyToAdmin(
+        `${applied.error}${rollbackNote}\n\n_Still waiting — try another emoji, or type \`stop\` to cancel._`,
+      );
+      return { handled: true };
+    }
+    const hardFail =
+      applied.error?.includes("No reaction-role panel") ||
+      applied.error?.includes("already has");
+    if (hardFail) {
+      clearPendingOptionEmoji(communityId, userId);
+    } else {
+      touchPendingOptionEmoji(communityId, userId);
+    }
+    await replyToAdmin(
+      hardFail
+        ? `${applied.error}\n_No longer waiting for an emoji._`
+        : `${applied.error}\n\n_Still waiting — try another emoji, or type \`stop\` to cancel._`,
+    );
+    return { handled: true };
+  }
+
+  clearPendingOptionEmoji(communityId, userId);
+  console.log(
+    `[fluxer] reactionRoles: emoji config message ${message.id} left in place — ` +
+      "OutboundClient has no deleteMessage surface",
+  );
+  const remText = session.removable ? "removable" : "permanent (not removable)";
+  const roleText = await roleLabel();
+  await confirm(
+    `Configured ${applied.display} → ${roleText} ` +
+      `(Level ${session.level}+, ${remText}) on panel \`${session.messageId}\`.`,
+  );
+  recordSlashAudit({
+    communityId,
+    actorUserId: userId,
+    action: "reaction_roles.option_add",
+    targetType: "reaction_role_panel",
+    targetId: session.messageId,
+    details: {
+      role_id: session.roleId,
+      emoji: applied.display,
+      min_level: session.level,
+      removable: session.removable ? 1 : 0,
+    },
+  });
+  await logConfigChange(outbound, communityId, {
+    title: "Reaction-role option added",
+    command: "/reactionrole option add",
+    actor: { id: userId, username: message.authorDisplayName || undefined },
+    changes: [
+      `Panel: \`${session.messageId}\``,
+      `Emoji: ${applied.display}`,
+      `Role: ${roleText} (\`${session.roleId}\`)`,
       `Min level: **${session.level}**`,
       `Removable: **${session.removable ? "yes" : "no"}**`,
     ],
@@ -1837,5 +2221,9 @@ module.exports = {
   applyReactionRoleOption,
   removeReactionRoleOptionByEmoji,
   handlePendingOptionEmojiMessage,
+  handlePendingOptionEmojiMessageFluxer,
+  validateEmojiForFluxer,
+  applyReactionRoleOptionFluxer,
+  removeReactionRoleOptionByEmojiFluxer,
   handlePendingOptionAddMessage,
 };

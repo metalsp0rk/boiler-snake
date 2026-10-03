@@ -16,6 +16,7 @@ const {
   handleReactionRoleAdd,
   handleReactionRoleRemove,
   handlePendingOptionEmojiMessage,
+  handlePendingOptionEmojiMessageFluxer,
   handleReactionRoleAddFluxer,
   handleReactionRoleRemoveFluxer,
 } = require("../features/reactionRoles");
@@ -141,7 +142,14 @@ async function onMessageCreate(outbound, message, opts = {}) {
     // A prefix command must not be swallowed by a pending reaction-role emoji
     // session (spec § Normalized gateway events).
     if (!prefixCommand) {
-      const pendingRr = await handlePendingOptionEmojiMessage(message);
+      // Platform branch (PR 5, gap #1): Fluxer normalized messages have no
+      // discord.js shape (the Discord arm bails on !message.guild), so the
+      // emoji-config flow gets its OutboundClient twin here — the same
+      // honeypot pattern as the step below.
+      const pendingRr =
+        message.platform === "fluxer"
+          ? await handlePendingOptionEmojiMessageFluxer(outbound, message)
+          : await handlePendingOptionEmojiMessage(message);
       if (pendingRr.handled) return;
     }
 
