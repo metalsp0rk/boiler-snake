@@ -599,7 +599,7 @@ async function runMemoryTurn(opts = {}) {
     }
     if (stored > 0 || skippedInvalid > 0) {
       try {
-        await audit(auditClient, guildId, { indexed, stored, skippedInvalid });
+        await audit(auditClient, guildId, { indexed, stored, skippedInvalid, communityId });
       } catch {
         // Audit is best-effort: it must not alter the returned counts.
       }

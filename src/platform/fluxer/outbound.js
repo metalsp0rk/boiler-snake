@@ -639,6 +639,9 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
   const outbound = {
     platform: "fluxer",
     instanceKey,
+    // Discovered webapp base for jump URLs (src/core/jumpUrl.js); null when
+    // the instance's discovery document had no usable endpoints.webapp.
+    webappBaseUrl: handle.webappBaseUrl ?? null,
     // The single send adapter (spec § Embeds and attachments): exposed for
     // the send-path consumers (sendChannel/sendDm delegate to it).
     sendFluxerMessage,
