@@ -818,6 +818,12 @@ async function runGorkJob(deps) {
     slot,
     auditClient,
     guildId,
+    // Display/jump guild id override (PR #168 review M2): the Fluxer path
+    // falls back to the internal community id for LOG labels; a jump URL
+    // built from that id would be a plausible-looking dead link, so the
+    // Fluxer call site passes null here and audit omits the link (gap #2's
+    // "never a dead link" law).
+    jumpGuildId = null,
     communityId,
     settings,
     cfg,
@@ -1281,6 +1287,7 @@ async function runGorkJob(deps) {
               // Audit-channel lookup: Fluxer needs the numeric community id
               // (the guildId string is the Fluxer external id, display-only).
               communityId,
+              jumpGuildId,
               question,
               contextLabel: describeContext(ctx),
               searchQueries: searches,
@@ -1365,7 +1372,7 @@ async function runGorkJob(deps) {
       // message's UTC day, stamped server-side (never model-emitted).
       if (memoryOn && shippedAnswer !== null && memJob?.roster?.entries?.size) {
         const roster = memJob.roster;
-        const botId = auditClient?.user?.id ?? null;
+        const botId = auditClient?.user?.id ?? auditClient?.botUserId ?? null;
         // Interaction log: the extraction turn gets its OWN row
         // (kind 'memory_turn') linked to the qa record via parent_uid. Its
         // prompts are captured through onEvent (chatImpl wraps the default
@@ -1839,6 +1846,8 @@ async function runGorkHookFluxer(outbound, message) {
       runGorkJob({
         slot,
         auditClient: outbound,
+        jumpGuildId:
+          message.externalGuildId != null ? String(message.externalGuildId) : null,
         guildId,
         communityId,
         settings,

@@ -176,7 +176,7 @@ after(() => {
 
 /** Fresh DB + fluxer community with the keyword armed. Requires src modules
  *  AFTER loadDb (require-cache reset) so every helper binds to this env. */
-async function setup() {
+async function setup(opts = {}) {
   const env = await createIntegrationEnv();
   createdEnvs.push(env);
   const { ensureCommunity } = require("../src/platform/community");
@@ -188,10 +188,24 @@ async function setup() {
   env.db.updateGuildSettings(communityId, {
     gork_keyword: "gork",
     gork_cooldown_sec: 0,
+    ...(opts.auditChannelId ? { audit_log_channel_id: opts.auditChannelId } : {}),
   });
   const trigger = require("../src/features/gork/trigger");
-  const rest = makeFakeRest({ routes: makeRoutes() });
+  const routes = makeRoutes();
+  if (opts.auditChannelId) {
+    routes[`GET /v1/channels/${opts.auditChannelId}`] = () => ({
+      id: opts.auditChannelId,
+      type: 0,
+    });
+    routes[`POST /v1/channels/${opts.auditChannelId}/messages`] = () => ({
+      id: "9000000000000000009",
+    });
+  }
+  const rest = makeFakeRest({ routes });
   const handle = makeFakeHandle({ instanceKey: INSTANCE, rest });
+  // Real boot stamps the discovered endpoints.webapp onto handle → outbound
+  // (PR #168 gap #2); the fake handle has no discovery, so set the base.
+  handle.outbound.webappBaseUrl = "https://chat.test";
   const supervisor = {
     clientForCommunity: (cid) => (cid === communityId ? handle.outbound : null),
   };
@@ -231,6 +245,52 @@ describe("fluxer gork trigger (PR 8)", () => {
       assert.deepEqual(body.allowed_mentions, { parse: [] });
       // Plain text reply TO the keyword message (decision 11).
       assert.deepEqual(body.message_reference, { message_id: msg.id });
+    } finally {
+      ai.restore();
+      restoreEnv(saved);
+    }
+  });
+
+  it("posts the Q&A audit embed to the community audit channel (PR #168 M3 pin)", async () => {
+    // Regression pin: runGorkHookFluxer must pass the Fluxer OutboundClient
+    // as runGorkJob's auditClient (was null — "Fluxer v1 has no audit
+    // channel" — so every answered question lost its audit row on Fluxer
+    // and CI stayed green: the audit helpers were only tested directly).
+    const saved = saveEnv();
+    enableAiKey();
+    const ai = mockFetch([chatCompletionResponse("the answer")]);
+    try {
+      const { trigger, rest, supervisor, communityId } = await setup({ auditChannelId: "70009" });
+      const msg = fluxerMessage({ communityId });
+      await trigger.handleGorkMessage(supervisor, msg);
+      await trigger.whenGorkIdleForTests();
+
+      const auditPosts = rest.calls.filter(
+        (c) => c.method === "POST" && c.path === "/v1/channels/70009/messages",
+      );
+      assert.equal(
+        auditPosts.length,
+        1,
+        "the Q&A audit embed must post through the Fluxer OutboundClient to the configured audit channel",
+      );
+      const body = JSON.parse(JSON.stringify(auditPosts[0].body));
+      assert.equal(body.embeds[0].title, "Gork Q&A");
+      const jump = (body.embeds[0].fields || []).find((f) => f.name === "Jump");
+      assert.ok(
+        jump && jump.value.includes(`https://chat.test/channels/${GUILD}/${CHANNEL}/${msg.id}`),
+        `question jump uses the discovered webapp base: ${jump && jump.value}`,
+      );
+      assert.ok(
+        !JSON.stringify(body).includes("discord.com"),
+        "no discord.com links in a Fluxer audit embed (gap #2)",
+      );
+      // The channel answer is unaffected by the audit leg.
+      assert.equal(
+        rest.calls.filter((c) => c.method === "POST" && c.path === "/v1/channels/70001/messages")
+          .length,
+        1,
+        "exactly one channel answer",
+      );
     } finally {
       ai.restore();
       restoreEnv(saved);
