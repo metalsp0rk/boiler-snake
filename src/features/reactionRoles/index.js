@@ -31,6 +31,7 @@ const {
   clearPendingOptionEmoji,
   handlePendingOptionEmojiMessage,
   handlePendingOptionEmojiMessageFluxer,
+  roleNameForDmFluxer,
   syncMemberReactionRoles,
 } = require("./service");
 
@@ -505,7 +506,7 @@ async function handleReactionrole(commandCtx, featureCtx) {
       if (result.failed?.length) {
         content +=
           `\n⚠️ ${result.failed.length} option reaction${result.failed.length === 1 ? "" : "s"} failed to seed: ` +
-          result.failed.map((f) => `\`${f.emojiKey ?? "?"}\``).join(", ") +
+          result.failed.map((f) => `\`${f.emojiDisplay ?? f.emojiKey ?? "?"}\``).join(", ") +
           " (panel posted; re-run `/reactionrole sync` after fixing the emoji)";
       }
       if (result.error) {
@@ -672,11 +673,18 @@ async function handleReactionrole(commandCtx, featureCtx) {
         channelId: commandCtx.channelId,
       });
 
+      // Role label per platform (K10): Fluxer clients render Discord's
+      // <@&id> mention markup as raw text — name the role instead (review L1).
+      const roleLabel =
+        commandCtx.platform === "fluxer"
+          ? await roleNameForDmFluxer(outbound, communityId, role.id)
+          : `<@&${role.id}>`;
+
       const mins = Math.round(PENDING_EMOJI_TTL_MS / 60000);
       await commandCtx.reply({
         content:
           `**Send the emoji** as your next message in this server (message should be only the emoji).\n` +
-          `I'll map it to <@&${role.id}> on panel \`${messageId}\` (Level ${level}+, ${
+          `I'll map it to ${roleLabel} on panel \`${messageId}\` (Level ${level}+, ${
             removableFlag ? "removable" : "permanent"
           }).\n` +
           `Type **\`stop\`** to cancel. Expires in ${mins} minutes.`,

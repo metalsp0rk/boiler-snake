@@ -476,7 +476,10 @@ async function deployPanelToChannel(guild, sourceMessageId, destChannel) {
   }
 
   const newPanel = getReactionRolePanel(communityId, msg.id);
-  const refresh = await refreshPanelMessage(guild, newPanel);
+  const refresh = await refreshPanelMessage(
+    guild,
+    newPanel ? { ...newPanel, guild_id: communityId } : newPanel,
+  );
   if (!refresh.ok) {
     return {
       ok: true,
@@ -1118,7 +1121,9 @@ async function deployPanelFluxer(
         `[reactionRoles] Failed to react with ${opt.emoji_display || key} on ${messageId}:`,
         res.error,
       );
-      failed.push({ emojiKey: key, error: res.error });
+      // emojiDisplay rides along so the deploy reply names the emoji the
+      // admin sees (a raw custom-emoji snowflake is unactionable — review L2).
+      failed.push({ emojiKey: key, emojiDisplay: opt.emoji_display ?? key, error: res.error });
     }
   }
 
@@ -1567,7 +1572,13 @@ async function applyReactionRoleOption(
   );
 
   const updated = getReactionRolePanel(communityId, messageId);
-  const result = await refreshPanelMessage(guild, updated);
+  const result = await refreshPanelMessage(
+    guild,
+    // guild_id graft: the frozen surface reads panel.guild_id as the INTEGER
+    // community id; the repo row ships community_id (pre-PR5 rows crash
+    // assertCommunityId — pinned by test/reaction-roles-discord-pending.test.js).
+    updated ? { ...updated, guild_id: communityId } : updated,
+  );
   if (!result.ok) {
     return {
       ok: false,
@@ -1607,7 +1618,13 @@ async function removeReactionRoleOptionByEmoji(guild, { messageId, parsed }) {
   }
 
   const updated = getReactionRolePanel(communityId, messageId);
-  const result = await refreshPanelMessage(guild, updated);
+  const result = await refreshPanelMessage(
+    guild,
+    // guild_id graft: the frozen surface reads panel.guild_id as the INTEGER
+    // community id; the repo row ships community_id (pre-PR5 rows crash
+    // assertCommunityId — pinned by test/reaction-roles-discord-pending.test.js).
+    updated ? { ...updated, guild_id: communityId } : updated,
+  );
   if (!result.ok) {
     return {
       ok: false,
@@ -2207,6 +2224,7 @@ module.exports = {
   handleReactionRoleAddFluxer,
   handleReactionRoleRemoveFluxer,
   stripExtraneousReactionFluxer,
+  roleNameForDmFluxer,
   syncMemberReactionRoles,
   stripExtraneousReaction,
   validateEmojiForGuild,
