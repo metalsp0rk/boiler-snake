@@ -19,9 +19,11 @@ docker compose run --rm bot node src/commands/register.js
 - **Environment**: `.env` is ignored. Required: `DISCORD_TOKEN`, `CLIENT_ID`. Optional: `DEV_GUILD_ID` for instant command registration.
 - **Never commit secrets**: Do not put real or realistic-looking API keys, tokens, passwords, or credentials in the repo — including docs, examples, tests, comments, or commit messages. Use clearly fake placeholders (e.g. `YOUR_YOUTUBE_API_KEY`, `YOUR_BOT_TOKEN`). Real secrets belong only in `.env` (gitignored) or a secret manager. Patterns like Google `AIza…` keys trigger GitHub secret scanning even in documentation.
 - **Discord Intents**: Enable "Message Content Intent" in Developer Portal for reliable message tracking.
-- **Releases**: Conventional Commits + release-please on `main` → GitHub Release + GHCR image (`ghcr.io/metalsp0rk/boiler-snake`).
+- **Releases**: Conventional Commits + release-please on `main` → GitHub Release + GHCR image (`ghcr.io/metalsp0rk/boiler-snake`). The release-please PR stays open and gets force-updated after each merge; **merge it to cut the release** (it creates the tag + GitHub Release). PR titles become changelog entries, so keep them descriptive.
 - **PR workflow**: Always create a feature branch from `main`, push it, and open a PR with `gh pr create`. **Never push directly to `main`**. Merge with **rebase merge only** (`gh pr merge --rebase --delete-branch`). Do **not** use merge commits (`--merge`) or squash unless the user explicitly asks. Prefer linear history on `main`.
 - **Subagents**: Use subagents **frequently** for large jobs to keep the main session's context manageable (exploration, research, review, parallel work units). The limit is on **concurrency**: never run more than **2 subagents simultaneously**. For larger workloads, process in sequential batches of ≤2 — launch the next batch only when the current one finishes.
+- **Rebasing PRs**: When a PR conflicts, rebase the **branch** (`git checkout <branch> && git rebase main`), resolve, force-push with `--force-with-lease`, then rebase-merge. After rebasing, run the **full** `npm test` — conflicts can silently drop declarations (e.g. a const used by code from both sides).
+- **Command visibility**: Every registered slash command needs a tier in `src/core/commandVisibility.js`; `test/commandVisibility.test.js` fails the suite if a command is missing or mis-tiered. Add the tier in the same commit as the command.
 
 ## Key Commands
 
