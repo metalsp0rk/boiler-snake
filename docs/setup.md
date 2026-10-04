@@ -284,6 +284,40 @@ Self-serve emoji → role panels. Full guide: [Reaction Roles](reaction-roles.md
 /reactionrole option add message_id:… role:@Announcements
 ```
 
+## Updating to a New Release
+
+Releases are tagged via [release-please](https://github.com/googleapis/release-please) on `main` (see [CHANGELOG.md](https://github.com/metalsp0rk/boiler-snake/blob/main/CHANGELOG.md) for what changed).
+
+**Bare Node install** (from the repo checkout, with your `.env` in place):
+
+```bash
+git fetch --tags
+git checkout v1.5.0        # or `git pull --rebase` if you track main
+npm ci --omit=dev          # install exactly what the release tested
+# restart your service (systemd: systemctl restart boiler-snake;
+# OpenRC: rc-service boiler-snake restart; etc.)
+```
+
+**Docker Compose**:
+
+```bash
+docker compose pull
+docker compose up -d --build
+```
+
+**After every update, always re-register slash commands** — releases regularly add, remove, or change commands, and stale registrations show up as missing or broken commands in Discord:
+
+```bash
+npm run register
+```
+
+Notes:
+
+- **Database**: migrations under `src/db/migrations/` run automatically on startup. If a release's CHANGELOG mentions a database change, back up `xpbot.sqlite` first (see [Database Backup Setup](#database-backup-setup)).
+- **`.env`**: not touched by updates. If a release adds a new optional variable, check the release notes and `.env.example`.
+- **Role sync**: level-role and staff-role state is stored in the database and survives updates; no re-configuration needed.
+- **Rollback**: `git checkout <previous-tag> && npm ci --omit=dev` and restart. Downgrading across releases that added database migrations is not supported — restore from a pre-update backup instead.
+
 ## Database Backup Setup
 
 SQLite database (`xpbot.sqlite`) is created in the project root (or under `DATA_DIR` / `DB_PATH`).
