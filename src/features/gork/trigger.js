@@ -1464,6 +1464,16 @@ async function runGorkJob(deps) {
                   `[gork] memory turn in ${guildId}: +${res.stored} stored · ${res.skippedInvalid} skipped_invalid`,
                 );
               }
+              // Account-linking mirror fan-out (T5): degrade-only warnings
+              // surface HERE — console log + the interaction row's params —
+              // never user-visible (the extraction answer shipped before the
+              // mirror leg ran).
+              if (res?.warnings?.length) {
+                console.warn(
+                  `[gork] memory mirror fan-out warnings in ${guildId}: ${res.warnings.join(" | ")}`,
+                );
+                memParams.mirrorWarnings = res.warnings;
+              }
               if (memRecorder) {
                 // 'shipped' ONLY when the extraction actually got a
                 // successful LLM response (stored/skippedInvalid ride along

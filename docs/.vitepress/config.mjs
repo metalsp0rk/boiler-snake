@@ -29,6 +29,7 @@ export default defineConfig({
           { text: 'Web admin console', link: '/web-admin' },
           { text: 'Fluxer instances', link: '/fluxer' },
           { text: 'Channel bridges', link: '/bridge' },
+          { text: 'Account linking', link: '/account-linking' },
           { text: 'Warnings', link: '/warnings' },
           { text: 'Event reminders', link: '/event-reminders' },
           { text: 'Gork', link: '/gork' },
@@ -88,6 +89,7 @@ export default defineConfig({
           { text: 'Command restrictions', link: '/command-restrictions' },
           { text: 'Fluxer instances', link: '/fluxer' },
           { text: 'Channel bridges', link: '/bridge' },
+          { text: 'Account linking', link: '/account-linking' },
         ],
       },
       {

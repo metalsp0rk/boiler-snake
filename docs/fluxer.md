@@ -101,3 +101,8 @@ Running a Discord-only container next to a Fluxer-only container is an **ops cho
 - **`[web] FLUXER_INSTANCES is invalid — Fluxer web login disabled`** → the web console keeps running with Discord login. Fix the JSON to restore the Fluxer buttons.
 - **No Fluxer button on `/auth/login`** → that entry is missing `clientId`/`clientSecret` (the bot works; only the button needs OAuth credentials).
 - **`I could not DM you the result: …` in a channel** → expected when the user's DMs are closed (see DM policy).
+
+## See also
+
+- [Account linking](account-linking.md) — link a member's Discord and Fluxer accounts so XP and gork memories mirror between a bridge-paired pair
+- [Channel bridges](bridge.md) — pair individual channels between the two platforms
