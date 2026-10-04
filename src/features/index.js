@@ -26,4 +26,5 @@ module.exports = [
   require("./web"),
   require("./gork"),
   require("./bridge"),
+  require("./linking"),
 ];

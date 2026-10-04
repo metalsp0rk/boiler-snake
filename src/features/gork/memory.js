@@ -30,6 +30,17 @@
  * - runMemoryTurn: post-send write path (decision 25) — extraction LLM
  *   turn → validate → keyed upsert (per-person cap 25) → compact audit.
  *   Failure = silent drop with a console line; never user-visible.
+ *
+ * Account-linking fan-out (roadmap/account-linking.md T5): gork memories
+ * mirror between a linked Discord ↔ Fluxer account pair. Write fan-out
+ * (runMemoryTurn) copies each stored entry to the link's target tuple
+ * when the link's own `mirror_memory` switch is on; read fan-out
+ * (loadMemoryContext and the recall tool) merges the counterpart's rows
+ * into the same budget — reads follow link EXISTENCE, writes follow
+ * `mirror_memory`. ALL link resolution goes through
+ * src/features/linking/service.js (expandLinkedIds — the ONE seam, never
+ * re-implemented here), lazily required so this module's import stays
+ * side-effect-free; `opts.linkExpand` injects fakes in tests.
  */
 
 const { getAiConfig, chatCompletion } = require("../../core/ai");
@@ -439,12 +450,186 @@ function emptyMemoryContext() {
 }
 
 /**
+ * Default link expansion: the linking service's expandLinkedIds — the ONE
+ * place allowed to relate a source id to its cross-platform counterpart
+ * (identity firewall, roadmap/account-linking.md). LAZY require keeps this
+ * module's import free of DB side effects (same idiom as `require("../../db")`
+ * inside the orchestrators).
+ *
+ * @param {number} communityId source community (integer)
+ * @param {string[]} userIds source-side external user ids
+ * @returns {{ ok: boolean, targets: Array<object>, skipped?: number }}
+ */
+function defaultLinkExpand(communityId, userIds) {
+  return require("../linking/service").expandLinkedIds(communityId, userIds);
+}
+
+/**
+ * Re-rank a person's MERGED local+mirror rows into the repository's own
+ * per-person order (importance DESC, mem_date DESC, id DESC — §7.16.2), so
+ * mirror rows compete with local rows by importance and recency under the
+ * budget. New array in, sorted out; Array#sort is stable in Node.
+ *
+ * @param {object[]} rows
+ * @returns {object[]}
+ */
+function rankMergedMemoryRows(rows) {
+  const rank = (r) => Number(r?.importance) || 0;
+  return [...rows].sort(
+    (a, b) =>
+      rank(b) - rank(a) ||
+      String(b?.mem_date ?? "").localeCompare(String(a?.mem_date ?? "")) ||
+      Number(b?.id ?? 0) - Number(a?.id ?? 0),
+  );
+}
+
+/**
+ * Read fan-out (account-linking T5): expand the involved ids through their
+ * links and load each counterpart's rows. Read fan-out follows link
+ * EXISTENCE only — the link's `mirror_memory` switch gates WRITE fan-out,
+ * not reads (expandLinkedIds carries the flag; we ignore it here).
+ *
+ * Every failure degrades (AGENTS.md rules 2/5/6): a throwing/`{ok:false}`
+ * expansion costs ALL mirror rows, a single throwing counterpart query
+ * costs only that target — the local read path never fails from here.
+ *
+ * @param {object} ctx
+ * @param {object} ctx.db db facade (same instance the local read used)
+ * @param {number} ctx.communityId source community id
+ * @param {string[]} ctx.involved involved source user ids (bot id excluded)
+ * @param {Map<string, object>|undefined} ctx.rosterEntries roster entries,
+ *   keyed by source id — the attribution labels the conversation saw
+ * @param {Function} ctx.expand link expansion seam (service.expandLinkedIds shape)
+ * @returns {{ rows: object[], bySource: Map<string, object[]>, labels: Map<string, object> }}
+ *   rows = every loaded mirror row; bySource = mirror rows bucketed by the
+ *   SOURCE user id (merge into that person's round-robin bucket); labels =
+ *   target subject id → the source roster entry, so block lines name the
+ *   person the conversation saw, not the cross-platform id
+ */
+function expandLinkedMemoryRows({ db, communityId, involved, rosterEntries, expand }) {
+  const out = { rows: [], bySource: new Map(), labels: new Map() };
+  let targets = [];
+  try {
+    const res = expand(communityId, involved);
+    if (res && res.ok === false) {
+      throw new Error(String(res.error || "link expansion failed"));
+    }
+    targets = Array.isArray(res?.targets) ? res.targets : [];
+  } catch (err) {
+    console.log(
+      `[gork] memory link expansion failed in ${communityId}: ${err?.message || err}`,
+    );
+    return out;
+  }
+  for (const t of targets) {
+    const sourceKey = String(t?.sourceUserId ?? "");
+    if (!sourceKey) continue;
+    // Repository shape: integer community id + non-empty string user id.
+    if (!Number.isInteger(t?.targetCommunityId) || !String(t?.targetUserId ?? "")) continue;
+    try {
+      const rows =
+        db.gorkMemoryListForSubjects(t.targetCommunityId, [String(t.targetUserId)]) || [];
+      if (!rows.length) continue;
+      out.rows.push(...rows);
+      const bucket = out.bySource.get(sourceKey) ?? [];
+      bucket.push(...rows);
+      out.bySource.set(sourceKey, bucket);
+      // Attribution: mirror rows label as the SOURCE person (the roster
+      // entry the conversation saw), resolved when available.
+      const sourceEntry = rosterEntries?.get?.(sourceKey);
+      if (sourceEntry && !out.labels.has(String(t.targetUserId))) {
+        out.labels.set(String(t.targetUserId), sourceEntry);
+      }
+    } catch (err) {
+      console.log(
+        `[gork] memory mirror read failed in ${communityId} (subject ${sourceKey} @ community ${t.targetCommunityId}): ${err?.message || err}`,
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Write fan-out (account-linking T5): mirror ONE validated entry to the
+ * linked counterpart tuple (targetCommunityId, targetUserId) with identical
+ * memDate/title/titleKey/body/kind/importance/source_message_ids. The
+ * repository stamps fresh created_at/updated_at on the mirror row; the
+ * per-person cap applies on the target side exactly like the source side.
+ *
+ * Runs AFTER the primary upsert succeeded, and the extraction answer has
+ * already shipped — so this leg NEVER throws: every failure mode (a
+ * throwing/`{ok:false}` link resolution, a throwing target upsert) lands in
+ * the shared `warnings` array plus one `console.error("[linking] ...")`
+ * line with the ids (AGENTS.md rules 2/5/6).
+ *
+ * The link's `mirror_memory` switch is the memory-mirror gate: off is a
+ * clean no-op (mirror XP percentages are irrelevant — memory has its own
+ * switch, per the design bundle; expandLinkedIds ignores pct by design).
+ *
+ * @param {object} db db facade (same injected instance as the primary write)
+ * @param {object} ctx
+ * @param {number} ctx.communityId source community id
+ * @param {object} ctx.entry validated extraction entry (primary write shape)
+ * @param {string[]} ctx.warnings accumulates one specific string per failure
+ * @param {Function} ctx.expand link expansion seam (service.expandLinkedIds shape)
+ * @returns {void}
+ */
+function fanOutMemoryWrite(db, { communityId, entry, warnings, expand }) {
+  let target = null;
+  try {
+    const res = expand(communityId, [entry.subjectUserId]);
+    if (res && res.ok === false) {
+      throw new Error(String(res.error || "link resolution failed"));
+    }
+    target = Array.isArray(res?.targets) ? res.targets[0] ?? null : null;
+    if (!target) return; // no link — the everyday no-op
+    if (!target.mirrorMemory) return; // link exists; memory mirroring is OFF
+    // The mirrored row keys the TARGET tuple; content fields ride over
+    // byte-identically (titleKey included — it is part of the row key).
+    db.gorkMemoryUpsert(
+      {
+        communityId: target.targetCommunityId,
+        subjectUserId: String(target.targetUserId),
+        memDate: entry.memDate,
+        title: entry.title,
+        titleKey: entry.titleKey,
+        body: entry.body,
+        kind: entry.kind,
+        importance: entry.importance,
+        sourceMessageIds: entry.sourceMessageIds,
+      },
+      MEMORY_PER_PERSON_CAP,
+    );
+  } catch (err) {
+    const msg = String(err?.message ?? err);
+    const where = target
+      ? `community ${target.targetCommunityId} user ${target.targetUserId}`
+      : `community ${communityId} user ${entry?.subjectUserId}`;
+    console.error(
+      `[linking] gork mirror upsert failed ${where} title "${entry?.title ?? ""}":`,
+      msg,
+    );
+    warnings.push(`memory mirror to ${where} failed: ${msg}`);
+  }
+}
+
+/**
  * Read path (§7.16.2): build the MEMORY BLOCK for the people involved in
  * this trigger. Involved = roster entries minus the bot's own id
  * (decision 26 — gork never gets memories about itself). DB access goes
  * through the src/db facade required INSIDE the function body (the
  * module import stays side-effect-free); `opts.repo` injects a fake.
- * NEVER throws — any failure degrades to the empty context.
+ *
+ * Account-linking read fan-out (T5): each involved id with an active link
+ * ALSO contributes the counterpart's rows (expandLinkedIds), merged into
+ * that person's bucket and re-ranked, so mirror rows compete with local
+ * rows for the same `budgetChars` through selectMemories' importance/
+ * recency selection. `allRows` includes the mirror rows — the extraction
+ * turn's existing-memories block then sees the person's cross-platform
+ * history too (update, don't duplicate).
+ *
+ * NEVER throws — any failure (including the whole fan-out leg) degrades to
+ * the empty context, and per-target read failures degrade to local-only.
  *
  * @param {object} opts
  * @param {number} opts.communityId internal communities.id (repo-asserted)
@@ -452,11 +637,13 @@ function emptyMemoryContext() {
  * @param {number} opts.budgetChars clamped block budget (0 = unlimited)
  * @param {string|null} [opts.botId] the bot's own user id to exclude
  * @param {object} [opts.repo] db-facade override (tests)
+ * @param {Function} [opts.linkExpand] link-expansion seam (service.expandLinkedIds
+ *   shape; tests inject fakes, production defaults to the linking service)
  * @returns {{ block: string, mode: string, indexed: number, selectedIds: number[], rows: object[], allRows: object[] }}
  *   rows = included rows (block content); allRows = every row loaded
  *   (reused by the extraction turn as existingMemoriesBlock — no re-query)
  */
-function loadMemoryContext({ communityId, roster, budgetChars, botId, repo } = {}) {
+function loadMemoryContext({ communityId, roster, budgetChars, botId, repo, linkExpand } = {}) {
   try {
     const db = repo || require("../../db");
     const entries = roster?.entries;
@@ -464,13 +651,27 @@ function loadMemoryContext({ communityId, roster, budgetChars, botId, repo } = {
       (id) => String(id) !== String(botId ?? ""),
     );
     if (!involved.length) return emptyMemoryContext();
-    const allRows = db.gorkMemoryListForSubjects(communityId, involved) || [];
+    const localRows = db.gorkMemoryListForSubjects(communityId, involved) || [];
+    const expanded = expandLinkedMemoryRows({
+      db,
+      communityId,
+      involved,
+      rosterEntries: entries,
+      expand: typeof linkExpand === "function" ? linkExpand : defaultLinkExpand,
+    });
+    const allRows = expanded.rows.length ? [...localRows, ...expanded.rows] : localRows;
     if (!allRows.length) return emptyMemoryContext();
     const byPerson = new Map();
     for (const row of allRows) {
       const key = String(row.subject_user_id);
       if (!byPerson.has(key)) byPerson.set(key, []);
       byPerson.get(key).push(row);
+    }
+    // Mirror rows key by the TARGET subject id; merge them into the SOURCE
+    // person's bucket (the person the conversation saw) and re-rank, so
+    // per-person round-robin and the budget stay per-person-fair.
+    for (const [sourceKey, bucket] of expanded.bySource) {
+      byPerson.set(sourceKey, rankMergedMemoryRows([...(byPerson.get(sourceKey) ?? []), ...bucket]));
     }
     // Involved order (asker first, roster order) drives the round-robin.
     const peopleEntries = involved
@@ -479,7 +680,8 @@ function loadMemoryContext({ communityId, roster, budgetChars, botId, repo } = {
     const selection = selectMemories(peopleEntries, clampMemoryChars(budgetChars));
     const nameOf = (id) => {
       const entry = entries?.get?.(String(id)) ?? entries?.get?.(id);
-      return entry?.display || entry?.handle || String(id);
+      const label = entry || expanded.labels.get(String(id));
+      return label?.display || label?.handle || String(id);
     };
     return {
       block: formatMemoryBlock(selection, nameOf),
@@ -500,11 +702,14 @@ function loadMemoryContext({ communityId, roster, budgetChars, botId, repo } = {
  * that runs AFTER reply + audit + slot release. Extraction LLM round
  * (json_object, temperature 0.2, 1500 tokens, ~20 s) → parse →
  * validateExtraction → keyed upsert (per-person cap 25) → compact
- * logGorkMemory audit when anything stored or was skipped.
+ * logGorkMemory audit when anything stored or was skipped. Each
+ * successfully stored entry additionally fans out to the linked account
+ * (account-linking T5, fanOutMemoryWrite) when the link's mirror_memory
+ * switch is on; mirror failures are warnings, never throws.
  *
  * NEVER throws and NEVER rejects. Every drop path gets exactly one
- * compact console line. `opts.repo` / `opts.chatImpl` / `opts.logAudit`
- * are injectable for tests.
+ * compact console line. `opts.repo` / `opts.chatImpl` / `opts.logAudit` /
+ * `opts.linkExpand` are injectable for tests.
  *
  * @param {object} opts
  * @param {number} opts.communityId internal communities.id (repo-asserted)
@@ -522,7 +727,12 @@ function loadMemoryContext({ communityId, roster, budgetChars, botId, repo } = {
  * @param {object} [opts.repo] db-facade override (tests)
  * @param {Function} [opts.chatImpl] chatCompletion override (tests)
  * @param {Function} [opts.logAudit] logGorkMemory override (tests)
- * @returns {Promise<{ stored: number, skippedInvalid: number, mode: "extracted"|"none" }>}
+ * @param {Function} [opts.linkExpand] link-expansion seam (service.expandLinkedIds
+ *   shape; tests inject fakes, production defaults to the linking service)
+ * @returns {Promise<{ stored: number, skippedInvalid: number, mode: "extracted"|"none", warnings?: string[] }>}
+ *   `warnings` is ADDITIVE (absent when the mirror leg is clean): one specific
+ *   string per failed memory-mirror write, surfaced by the trigger call site
+ *   into debug/interaction logging only (the extraction answer already shipped).
  */
 async function runMemoryTurn(opts = {}) {
   const zeros = { stored: 0, skippedInvalid: 0, mode: "none" };
@@ -544,12 +754,15 @@ async function runMemoryTurn(opts = {}) {
       repo,
       chatImpl,
       logAudit,
+      linkExpand,
     } = opts;
     const allow = [...toAllowSet(allowList)];
     if (!allow.length) return zeros; // nobody allowed as subject: skip the LLM round
     const db = repo || require("../../db");
     const chat = typeof chatImpl === "function" ? chatImpl : chatCompletion;
     const audit = typeof logAudit === "function" ? logAudit : logGorkMemory;
+    const expand =
+      typeof linkExpand === "function" ? linkExpand : defaultLinkExpand;
 
     const cfg = memoryTurnConfig();
     const res = await chat(cfg, {
@@ -586,6 +799,7 @@ async function runMemoryTurn(opts = {}) {
       sourceMessageIds,
     });
     let stored = 0;
+    const mirrorWarnings = [];
     for (const entry of entries) {
       try {
         db.gorkMemoryUpsert(entry, MEMORY_PER_PERSON_CAP);
@@ -595,7 +809,17 @@ async function runMemoryTurn(opts = {}) {
         console.log(
           `[gork] memory upsert failed in ${guildId} (subject ${entry.subjectUserId}): ${err?.message || err}`,
         );
+        continue; // a primary write that failed has nothing to mirror
       }
+      // WRITE fan-out (account-linking T5): mirror the entry to the linked
+      // counterpart. The extraction answer already shipped — this leg
+      // degrades into `mirrorWarnings`, it never throws (rules 5/6).
+      fanOutMemoryWrite(db, {
+        communityId,
+        entry,
+        warnings: mirrorWarnings,
+        expand,
+      });
     }
     if (stored > 0 || skippedInvalid > 0) {
       try {
@@ -605,7 +829,11 @@ async function runMemoryTurn(opts = {}) {
       }
     }
     const wrote = stored > 0 || skippedInvalid > 0;
-    return { stored, skippedInvalid, mode: wrote ? "extracted" : "none" };
+    const result = { stored, skippedInvalid, mode: wrote ? "extracted" : "none" };
+    // Additive/back-compat: `warnings` rides along ONLY when the mirror leg
+    // degraded, so existing consumers' result shape stays byte-identical.
+    if (mirrorWarnings.length) result.warnings = mirrorWarnings;
+    return result;
   } catch (err) {
     // The write path never surfaces (decision 25): silent drop.
     console.log(`[gork] memory turn failed: ${err?.message || err}`);

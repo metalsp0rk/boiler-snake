@@ -520,6 +520,19 @@ function capMemoryLines(lines, totalMax) {
 }
 
 /**
+ * Staff memory commands below (show / forget / clear) are COMMUNITY-LOCAL
+ * by design in v1 (account-linking, roadmap/account-linking.md § Staff
+ * parity): they read and delete THIS community's gork_memories rows only.
+ * A memory mirrored to a linked account lives as a SEPARATE row in the
+ * counterpart community, so `/gork memory forget` and `clear` do NOT
+ * cascade to the mirrored rows on the linked platform (and `show` lists
+ * local rows only). Cross-platform cascading deletes are a documented v1
+ * limitation — see roadmap/account-linking.md (known limitations). Gork's
+ * own read paths (loadMemoryContext, recall_memories) DO fan out through
+ * the link; these staff listings deliberately do not.
+ */
+
+/**
  * /gork memory show [user]: ephemeral listing with `#id` handles — one
  * person's memories when `user` is given, otherwise the newest guild rows.
  * @param {import("../../platform/context").CommandContext} commandCtx

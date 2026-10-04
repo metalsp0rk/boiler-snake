@@ -43,6 +43,7 @@ const migrations = [
   require("./migrations/033_gork_summarize_input_tokens"),
   require("./migrations/034_communities"),
   require("./migrations/035_bridges"),
+  require("./migrations/036_user_links"),
 ];
 
 const helpers = {

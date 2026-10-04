@@ -31,6 +31,7 @@ const COMMAND_VISIBILITY = Object.freeze({
   eventreminder: TIERS.public,
   play: TIERS.public,
   music: TIERS.public,
+  link: TIERS.public,
 
   // Manage Server only (picker + handler)
   grantxp: TIERS.admin,

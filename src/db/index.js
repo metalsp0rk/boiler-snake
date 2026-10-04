@@ -39,6 +39,7 @@ const webSessions = require("./repositories/webSessions");
 const adminAudit = require("./repositories/adminAudit");
 const fluxerOAuthTransactions = require("./repositories/fluxerOAuthTransactions");
 const bridges = require("./repositories/bridges");
+const userLinks = require("./repositories/userLinks");
 
 module.exports = {
   db,
@@ -426,4 +427,21 @@ module.exports = {
   setBridgeLastError: bridges.setBridgeLastError,
   findExpiredPendingBridges: bridges.findExpiredPendingBridges,
   deleteBridgeCascade: bridges.deleteBridgeCascade,
+
+  // account linking (roadmap/account-linking.md T1: user_links schema + repo;
+  // the linking service/commands land in T2/T3)
+  LINK_MIRROR_DIRECTIONS: userLinks.LINK_MIRROR_DIRECTIONS,
+  USER_LINK_CODE_LIFETIME_MS: userLinks.LINK_CODE_LIFETIME_MS,
+  createUserLink: userLinks.createLink,
+  getUserLinkFor: userLinks.getLinkFor,
+  getUserLinkById: userLinks.getLinkById,
+  listUserLinksForCommunity: userLinks.listLinksForCommunity,
+  removeUserLink: userLinks.removeLink,
+  createLinkCode: userLinks.createLinkCode,
+  getLinkCodeByHash: userLinks.getLinkCodeByHash,
+  consumeLinkCode: userLinks.consumeLinkCode,
+  purgeExpiredLinkCodes: userLinks.purgeExpiredLinkCodes,
+  hasActiveBridgeBetween: userLinks.hasActiveBridgeBetween,
+  setUserLinkMirrorPct: userLinks.setMirrorPct,
+  setUserLinkMirrorMemory: userLinks.setMirrorMemory,
 };
