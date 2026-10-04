@@ -173,11 +173,13 @@ See [Help Tickets](../tickets.md) for full behavior.
 /ticket list
 /ticket list user:@Member
 /ticket info
+/ticket summarize
 ```
 
 - **`close`** — remove non-staff members; keep the channel for staff. Optional `reason` (shown to requester / archive) and `staff_note` (private note on the requester).  
 - **`archive`** — after close: save transcript (if not sensitive) and delete the channel.  
 - **`for`** — staff open a ticket on behalf of a member (no self-create rate limit).  
+- **`summarize`** — on-demand AI summary of the current ticket conversation (open or soft-closed, pre-archive). Uses `AI_API_KEY`/`AI_BASE_URL`/`AI_MODEL` when configured; otherwise replies with a stats-only fallback and labels it as such.  
 - **Ticket channel overwrites** (automatic staff-role view) use **senior** staff roles only; junior staff need named access (`addstaff`) or Manage Server.
 
 #### `/ticket panel` - Public entry panel
@@ -1103,7 +1105,7 @@ The **rundown itself posts publicly** in the channel (embed, never pings); its u
 | `/warn add\|list\|info\|void\|count\|export\|settings` | Staff gate | Yes |
 | `/userinfo` | Staff gate | Yes |
 | `/userinfo` **Activity** tab | Senior staff | Yes |
-| `/ticket for\|claim\|transfer\|adduser\|removeuser\|addstaff\|removestaff\|sensitive\|unsensitive\|close\|archive\|list\|info` | Staff gate | Yes |
+| `/ticket for\|claim\|transfer\|adduser\|removeuser\|addstaff\|removestaff\|sensitive\|unsensitive\|close\|archive\|list\|info\|summarize` | Staff gate | Yes |
 | `/staff role list` | Staff gate | Yes |
 | `/staff settings` | Staff gate | Yes |
 | `/setwarn dm\|log\|expiry` | Staff gate | Yes |
