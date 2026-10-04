@@ -180,7 +180,7 @@
               },
               "subject_user_id": {
                 "type": "string",
-                "description": "Discord user id whose stored memories to list (max 15)"
+                "description": "External user id whose stored memories to list — the id of a participant on this platform, or of the same person's linked account on the other platform (Discord ↔ Fluxer ids resolve to one person) (max 15)"
               }
             },
             "required": [],
@@ -261,7 +261,7 @@
                     },
                     "subject_user_id": {
                       "type": "string",
-                      "description": "Discord user id whose stored memories to list (max 15)"
+                      "description": "External user id whose stored memories to list — the id of a participant on this platform, or of the same person's linked account on the other platform (Discord ↔ Fluxer ids resolve to one person) (max 15)"
                     }
                   },
                   "required": [],

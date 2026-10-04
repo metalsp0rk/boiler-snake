@@ -433,7 +433,14 @@ describe("loadMemoryContext (memory)", () => {
         return [row(7, "42", "Loves Rust", "Codes in Rust daily.")];
       },
     });
-    const out = mem.loadMemoryContext({ communityId: 1, roster, budgetChars: 12000, botId: "bot1", repo });
+    const out = mem.loadMemoryContext({
+      communityId: 1,
+      roster,
+      budgetChars: 12000,
+      botId: "bot1",
+      repo,
+      linkExpand: () => ({ ok: true, targets: [] }), // no links: hermetic (no DB)
+    });
     assert.deepEqual(calls.listForSubjects[0], [1, ["42"]], "bot id never queried");
     assert.equal(out.mode, "bodies");
     assert.equal(out.indexed, 1);
@@ -443,7 +450,14 @@ describe("loadMemoryContext (memory)", () => {
   });
 
   it("nobody has memories → empty block, no injection", () => {
-    const out = mem.loadMemoryContext({ communityId: 1, roster, budgetChars: 5000, botId: null, repo: fakeRepo().repo });
+    const out = mem.loadMemoryContext({
+      communityId: 1,
+      roster,
+      budgetChars: 5000,
+      botId: null,
+      repo: fakeRepo().repo,
+      linkExpand: () => ({ ok: true, targets: [] }),
+    });
     assert.equal(out.block, "");
     assert.equal(out.mode, "none");
     assert.equal(out.indexed, 0);
@@ -499,14 +513,20 @@ describe("executeRecallMemory (tools/recallMemories)", () => {
     const rows = Array.from({ length: 20 }, (_, i) => row(300 + i, "42", `Fact ${i}`, "body"));
     const { repo } = fakeRepo({ gorkMemoryListForSubject: () => rows });
     const recalled = [];
-    const out = await executeRecallMemory({ subject_user_id: "42" }, { communityId: 1, repo, onRecall: (ids) => recalled.push(...ids) });
+    const out = await executeRecallMemory(
+      { subject_user_id: "42" },
+      { communityId: 1, repo, onRecall: (ids) => recalled.push(...ids), linkExpand: () => ({ ok: true, targets: [] }) },
+    );
     assert.equal(out.split("\n").length, 15);
     assert.equal(recalled.length, 15);
     assert.ok(out.startsWith("#300 — 42 — "), out.slice(0, 60));
   });
 
   it("list mode on an empty person is a graceful message, not an error", async () => {
-    const out = await executeRecallMemory({ subject_user_id: "42" }, { communityId: 1, repo: fakeRepo().repo });
+    const out = await executeRecallMemory(
+      { subject_user_id: "42" },
+      { communityId: 1, repo: fakeRepo().repo, linkExpand: () => ({ ok: true, targets: [] }) },
+    );
     assert.ok(!out.startsWith("Memory recall unavailable"), out);
   });
 
@@ -584,6 +604,8 @@ describe("runMemoryTurn (memory)", () => {
         chatImpl: fake.impl,
         repo: fakeRepoPack.repo,
         logAudit: fakeAuditPack.fn,
+        // No links in unit-land: the T5 fan-out seam stays hermetic (no DB).
+        linkExpand: () => ({ ok: true, targets: [] }),
         ...over,
       },
       chatSeen: fake.seen,

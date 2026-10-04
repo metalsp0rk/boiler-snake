@@ -4,7 +4,7 @@
 |---|---|
 | Author | Boiler Snake |
 | Date | 2026-10-01 (v2 rework; supersedes the 2026-09-25 v1 draft, which is preserved in git history) |
-| Status | **Draft v2** — no code. Written against the **shipped** Fluxer adapter (`src/platform/`, v1.30.0 / v1.30.1). All former blocking dependencies are shipped; the bridge now owns its own adapter deltas (§10.3). |
+| Status | **Shipped — PRs 1–8 landed 2026-10-01 → 2026-10-02 (v1.31.0)**. Implementation lives in `src/features/bridge/` (+ adapter deltas in `src/platform/`); operator guide is `docs/bridge.md`. Phase 0 (§10.14) executed live 2026-10-02 — 11 PASS / 3 DOC, no PENDING, KD 21 closed. Still open: the three docs-only spike follow-ups (B1 needs a run against an mfa_level-1 community; B12 needs the CDN avatar template captured from a live client — Fluxer→Discord relay omits avatars until recorded; B14 needs a human capture of `#name` chip serialization) and wiring the relay worker into the web ticker-health UI (§ Observability). Originally drafted as v2 (2026-10-01) against the shipped Fluxer adapter (`src/platform/`, v1.30.0 / v1.30.1). |
 | Roadmap feature | 10 |
 | Depends on | Shipped: `communities` + `assertCommunityId` (migration 034), `src/platform/` adapters, Fluxer prefix dispatch, K2 DM outbound (`sendDm`), `@fluxerjs/core@3.1.0`. Bridge-owned adapter work (DM ingestion, `fetchMessage`, webhook lifecycle) is enumerated in §10.3 and lands in bridge PR 3. |
 
@@ -79,7 +79,7 @@ What exists today that the design fits:
 - Reaction mirroring.
 - Destination-side edit/delete propagation (forward-only, KD 9).
 - Native sticker objects and custom-emoji image re-upload (text stand-ins; §10.8).
-- A web UI for pairing, and any linking of Discord and Fluxer user accounts.
+- A web UI for pairing, and any linking of Discord and Fluxer user accounts. *(The linking half is superseded by [account-linking.md](account-linking.md), 2026-10 — user-driven account linking with mirror sync, built on this spec's pairing-code pattern. It is a feature module, not a bridge feature: the web-UI non-goal stands, and this rejection remains bridge design history.)*
 - Discord↔Discord, Fluxer↔Fluxer, or federation between Fluxer instances.
 - Using the bridge as an XP or activity-counter duplicator.
 - Malware scanning of re-uploaded bytes.
@@ -786,7 +786,7 @@ Rollback of app code leaves the tables in place; no down migration in v1. Rows a
 5. **Bidirectional edit/delete relay (true mirror)** — rejected: needs per-copy editor attribution the gateway events don't carry, and re-opens the loop class KD 10 exists to close.
 6. **Best-effort delivery (v1-draft KD 14)** — **replaced** by at-least-once (KD 14): spool-at-enqueue + ack-then-delete. The v1-draft's one-duplicate window on Discord is retained (documented in §10.6); the v1-draft's one-**loss** window (crash between enqueue and worker) is closed by the spool.
 7. **Custom guild dispatcher for `!bridge`** (v1-draft §10.2) — **obsoleted** by the shipped prefix dispatcher + context handlers (KD 17). Keeping both would double-dispatch.
-8. **A separate bridge process or web pairing page** — rejected (one-process model; no components on Fluxer; weakens the code-is-the-capability contract into account linking).
+8. **A separate bridge process or web pairing page** — rejected (one-process model; no components on Fluxer; weakens the code-is-the-capability contract into account linking). *History note (2026-10): account linking later shipped as its own feature — [account-linking.md](account-linking.md) — reusing this file's pairing-code pattern, in-chat, code-as-capability, no web page. The rejection here stands as bridge design history: it argued against folding linking into the **bridge**, not against linking existing.*
 9. **Manage Guild-only commands** — rejected (KD 4). `staff_roles` is the bot's staff gate everywhere else that configures a channel.
 10. **`elevated_permissions`-gating webhook create** — rejected (KD 20): K8's flag covers roles/channels/bans; webhook management is a distinct permission with its own documented failure (`TWO_FACTOR_REQUIRED`), surfaced at connect with the specific sentence. Gating it would also inherit K8's open item (no supported way to set the flag) for a capability with a clean runtime signal.
 11. **Inbound-DM-less pairing (connect in guild channel)** — rejected (KD 24): the code would be publicly visible in the connect channel until consumed; DM both ways keeps the credential out of every channel.
