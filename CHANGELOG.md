@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.31.0...v1.32.0) (2026-10-09)
+
+
+### Features
+
+* Discord &lt;-&gt; Fluxer account linking with mirrored XP and gork memories ([0fba2e4](https://github.com/metalsp0rk/boiler-snake/commit/0fba2e44de21559be5c9a705fa6ed0fe9a4271bc))
+
 ## [1.31.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.30.1...v1.31.0) (2026-10-03)
 
 
