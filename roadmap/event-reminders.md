@@ -1,5 +1,7 @@
 # 2. Scheduled Event Reminders
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues](https://github.com/metalsp0rk/boiler-snake/issues), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Delivery-state fixes from the 2026-10 audit live under `audit-finding`; retirement is #225.
+
 ### Purpose
 
 Send configurable pre-event reminder pings for Discord’s built-in **Guild Scheduled Events**. Only users who marked **Interested** on the event are notified (via a per-event role). Anyone can **opt out** of reminder pings globally (per guild) or **mute** a single event.

@@ -1,5 +1,7 @@
 # 6. Warning System
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues](https://github.com/metalsp0rk/boiler-snake/issues), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). New work starts as an issue.
+
 ### Purpose
 
 Formal, **permanent** disciplinary record for guild members. Complements [staff notes](staff-notes.md#5-staff-notes-system): notes are private working memory; warnings are countable, auditable strikes that staff and (optionally) the member can see. Built for long-term history—voidable with a paper trail, **not** casually deleted.

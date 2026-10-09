@@ -1,5 +1,7 @@
 # 7. Gork (AI Keyword Q&A)
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `gork`](https://github.com/metalsp0rk/boiler-snake/issues/labels/gork), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Open triage/features: #174 (role-mention trigger), #175 (reply/mention crash triage — §7.15 Fix 3), #176 (silence when replying to gork's replies).
+
 ### Purpose
 
 A goofy AI question-answering bot. When a user types the trigger keyword — a literal
@@ -17,7 +19,7 @@ engineering beyond documentation.
 
 ### Status
 
-**Shipped** — design locked in [7.14](#714-design-decisions-locked). The per-scope daily usage budget extension ([7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-shipped)) is implemented (2026-09, migration `026_gork_budget`). Shipped extension: conversation rundown `/gork summarize` ([7.21](#721-conversation-rundown--gork-summarize--2026-09-design-locked-2026-09-27--decisions-5357)) — decisions 53–57 locked with the MVP impl 2026-09-27.
+**Shipped** — design locked in [7.14](#714-design-decisions-locked). The per-scope daily usage budget extension ([7.17](#717-daily-usage-budget-by-scope--2026-09-design-locked-2026-09-10--decisions-3037-shipped)) is implemented (2026-09, migration `026_gork_budget`). Shipped extension: conversation rundown `/gork summarize` ([7.21](#721-conversation-rundown--gork-summarize--2026-09-design-locked-2026-09-27--decisions-5357)) — decisions 53–57 locked with the MVP impl 2026-09-27. Open work is issue-tracked: #174 (role-mention trigger), #175 (Fix 3 crash triage), #176 (reply-to-gork-reply silence).
 
 ---
 

@@ -1,5 +1,7 @@
 # 10. Channel bridge (Discord ↔ Fluxer)
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `bridge`](https://github.com/metalsp0rk/boiler-snake/issues/labels/bridge), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Spike follow-ups (B1/B12/B14) and ticker-health wiring live in the `Fluxer/Bridge live verification` milestone.
+
 | | |
 |---|---|
 | Author | Boiler Snake |

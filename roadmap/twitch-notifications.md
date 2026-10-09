@@ -1,5 +1,7 @@
 # 3. Twitch Stream Notifications
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `twitch`](https://github.com/metalsp0rk/boiler-snake/issues/labels/twitch), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Open enhancements (`overrides`, templates, go-offline) are issues in the `Feature backlog` milestone.
+
 ### Purpose
 
 Notify a guild when any subscribed Twitch channel goes live. Supports **any number of channels** per guild, posts to a configurable Discord channel, and optionally **pings a guild-configurable role** that is **independent of YouTube** notification roles (`youtube_upload_role_id` and any future YouTube live role).
