@@ -8,6 +8,8 @@ Send configurable pre-event reminder pings for Discord’s built-in **Guild Sche
 
 **Shipped** — implemented in `src/features/eventReminders/` (see [docs/event-reminders.md](../docs/event-reminders.md)). Design decisions in [2.11](#211-design-decisions-locked) remain the product contract.
 
+Bot-owned events are the planned primary way to create an event: [community-events.md](community-events.md). Reminders for those events follow button signups, and they share this feature’s guild opt-out row. This file stays the contract for configs already stored here. New `/eventreminder create` calls retire once that plan’s parity list is met ([community-events.md §12.7](community-events.md)). Signup rows are not written into these tables.
+
 ---
 
 ### 2.1 Core behavior
