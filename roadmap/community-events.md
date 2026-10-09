@@ -1,5 +1,7 @@
 # 12. Community Events (Apollo-style)
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `community-events`](https://github.com/metalsp0rk/boiler-snake/issues/labels/community-events), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Phases: epic #218; #219–#223 (phases 1–5), #224 (DM wizard), #225 (`/eventreminder` retirement) — the phase checklists below are mirrored in those issue bodies; work the issues.
+
 | | |
 |---|---|
 | Author | Boiler Snake |

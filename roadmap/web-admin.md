@@ -1,5 +1,7 @@
 # 8. Web Admin Console
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues](https://github.com/metalsp0rk/boiler-snake/issues), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Any new console work starts as an issue.
+
 ### Purpose
 
 Replace the minimal, mostly-unauthenticated HTTP surface (`src/features/tickets/httpServer.js`) with a fully-featured, **Discord-login-gated admin interface** for guild staff and admins — a second transport for the *same* authorization model and service layer the slash commands already use. It also closes the long-standing ticket TODO "Login with Discord on transcript HTTP routes" ([help-tickets.md](help-tickets.md)) by making login **mandatory** on all ticket routes.
