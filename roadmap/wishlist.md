@@ -1,5 +1,7 @@
 # Wishlist — Review Backlog
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues](https://github.com/metalsp0rk/boiler-snake/issues), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). This backlog was fully drained on 2026-10-09 (all 45 items landed); the file is kept as the record of what was reviewed and why.
+
 > **Source**: three-agent review, 2026-09-09 (docs / tests / roadmap+wishlist). All items are
 > concrete, file-cited findings — work them as time allows, in any order. Check off when done.
 >

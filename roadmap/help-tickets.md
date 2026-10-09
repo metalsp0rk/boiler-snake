@@ -1,5 +1,7 @@
 # 1. Help Ticket System
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `tickets`](https://github.com/metalsp0rk/boiler-snake/issues/labels/tickets), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)).
+
 ### Purpose
 
 Ephemeral per-server ticket support: members open private channels with staff, staff respond, then **non-sensitive** tickets are closed and **archived** (AI summary + HTML transcript served by the bot). **Sensitive** tickets are never archived—content is destroyed with the channel.

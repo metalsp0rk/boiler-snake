@@ -1,5 +1,7 @@
 # Discord and Fluxer as service endpoints
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `fluxer`](https://github.com/metalsp0rk/boiler-snake/issues/labels/fluxer), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). The Phase 0 open items live as issues in the `Fluxer/Bridge live verification` milestone.
+
 | | |
 |---|---|
 | Author | Boiler Snake |

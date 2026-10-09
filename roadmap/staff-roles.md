@@ -1,5 +1,7 @@
 # 4. Guild Staff Roles (Admin Gate)
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `staff-roles`](https://github.com/metalsp0rk/boiler-snake/issues/labels/staff-roles), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). The capability-flags open item is a `Feature backlog` issue.
+
 ### Purpose
 
 One guild-scoped **multi-role allow-list** that powers the bot’s **admin/staff gate** for every feature that originally checked `ManageGuild` (config, honeypot ops, logs, YouTube, tickets, notes, warnings, …).

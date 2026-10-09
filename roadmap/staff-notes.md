@@ -1,5 +1,7 @@
 # 5. Staff Notes System
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues](https://github.com/metalsp0rk/boiler-snake/issues), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). New work starts as an issue.
+
 ### Purpose
 
 Private, staff-only notes about a guild member. Informal institutional memory for moderators—context that is **not** a formal disciplinary action and is **never** shown to the member.

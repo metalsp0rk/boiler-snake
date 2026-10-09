@@ -1,5 +1,7 @@
 # 11. Discord ↔ Fluxer account linking (mirror sync)
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues](https://github.com/metalsp0rk/boiler-snake/issues), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Implementation shipped (migration `036`); follow-ups live in the Fluxer/P1 milestones.
+
 | | |
 |---|---|
 | Author | Boiler Snake |

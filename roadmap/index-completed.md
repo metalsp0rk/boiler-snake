@@ -1,5 +1,7 @@
 # Boiler Snake Roadmap — Completed Features
 
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues](https://github.com/metalsp0rk/boiler-snake/issues), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Completed-feature history; nothing to track here.
+
 Archive for **fully implemented** roadmap features: shipped **and** zero open
 items in their feature file. The active roadmap (open features, spec/draft
 work, and every open item) lives in [index.md](index.md) — link "completed
