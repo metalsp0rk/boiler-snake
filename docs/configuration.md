@@ -503,7 +503,7 @@ Private support channels with panel, sensitive mode, and HTML archives. Full gui
 /staff role add role:@Moderator level:senior   # ticket visibility
 /ticket setcategory category:#Tickets
 /ticket setarchive channel:#ticket-archive
-/ticket panel channel:#support
+/ticket panel create channel:#support
 /ticket settings
 ```
 

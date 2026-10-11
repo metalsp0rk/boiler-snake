@@ -120,7 +120,7 @@ Lifecycle commands work **inside the ticket channel** even if command-channel re
 
 ## Ticket panel (button → modal)
 
-1. Staff runs `/ticket panel` in (or targeting) a public channel.
+1. Staff runs `/ticket panel create` in (or targeting) a public channel.
 2. The bot posts an embed with a persistent **Open a ticket** button.
 3. Members click the button → Discord modal asks for a short description.
 4. On submit, the bot runs the same self-create pipeline as `/ticket create` (rate limit, channel, overwrites, welcome embed).
