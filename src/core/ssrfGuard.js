@@ -18,7 +18,11 @@
  *    address mid-chain is caught on the hop where it is used);
  *  - a per-attempt timeout aborts the request via AbortController.
  *
- * Seams (fetchImpl / resolveHost) make the guard testable with no sockets.
+ * Seams (fetchImpl / resolveHost / setTimer / clearTimer) make the guard
+ * testable with no sockets and no real timers — the production timeout is
+ * unref'd on purpose, so tests MUST drive the abort via the timer seams
+ * (Node 22's test runner fails a test whose only pending work is an unref'd
+ * timer; Node 24+ keeps the loop ref'd — the injected timer sidesteps both).
  * This module never throws: callers get { ok: false, reason } with a specific,
  * human-readable refusal naming the host/address, per the AGENTS.md
  * error-reporting rules.
@@ -132,6 +136,8 @@ async function hostRefusalReason(hostname, resolveHost) {
  *   maxRedirects?: number,
  *   headers?: Record<string, string>,
  *   maxBytes?: number,
+ *   setTimer?: (fn: () => void, ms: number) => unknown,
+ *   clearTimer?: (handle: unknown) => void,
  * }} [opts]
  * @returns {Promise<{ ok: true, bytes: Buffer, contentType: string|null }
  *   | { ok: false, reason: string }>}
@@ -147,6 +153,18 @@ async function downloadGuarded(url, opts = {}) {
     ? opts.maxRedirects
     : MAX_REDIRECTS;
   const maxBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0 ? opts.maxBytes : null;
+  // Timer seams (tests inject a fake and fire the abort callback themselves —
+  // the production timeout is unref'd on purpose, so a test awaiting it would
+  // depend on the runner's event-loop-ref semantics, which differ between
+  // Node 22 and 24+). Defaults are the real global timers.
+  const setTimer =
+    typeof opts.setTimer === "function"
+      ? opts.setTimer
+      : (fn, ms) => setTimeout(fn, ms);
+  const clearTimer =
+    typeof opts.clearTimer === "function"
+      ? opts.clearTimer
+      : (handle) => clearTimeout(handle);
 
   let current = String(url ?? "");
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
@@ -163,8 +181,8 @@ async function downloadGuarded(url, opts = {}) {
     if (refusal) return { ok: false, reason: refusal };
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    if (typeof timer.unref === "function") timer.unref();
+    const timer = setTimer(() => controller.abort(), timeoutMs);
+    if (timer && typeof timer.unref === "function") timer.unref();
     let res;
     try {
       // No Authorization header, no bot credential: this is a plain fetch of
@@ -175,12 +193,12 @@ async function downloadGuarded(url, opts = {}) {
       }
       res = await fetchImpl(current, init);
     } catch (err) {
-      clearTimeout(timer);
+      clearTimer(timer);
       const text = String(err?.message || err);
       const reason = /abort/i.test(text) ? "download timed out" : `fetch failed: ${text}`;
       return { ok: false, reason };
     }
-    clearTimeout(timer);
+    clearTimer(timer);
 
     const status = Number(res?.status);
     if (Number.isFinite(status) && status >= 300 && status < 400) {

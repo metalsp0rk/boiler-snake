@@ -11,8 +11,10 @@
  *    second DNS answer flips to loopback (rebinding shape) is refused and the
  *    second hop is never fetched;
  *  - cross-host redirects refused, same-host budget ≤ 3 enforced;
- *  - an aborted fetch surfaces as the named "download timed out" reason
- *    (abort-driven, no wall-clock race);
+ *  - an aborted fetch surfaces as the named "download timed out" reason —
+ *    driven through the INJECTED timer seams: the suite arms no real timers
+ *    at all (the production timer is unref'd, and awaiting one is exactly
+ *    what killed the Node 22 CI run — see the timeout test);
  *  - maxBytes: content-length refused BEFORE the body is read, and actual
  *    bytes capped after read;
  *  - headers (User-Agent) and redirect:"manual" + signal pass-through.
@@ -277,19 +279,81 @@ describe("ssrfGuard.downloadGuarded", () => {
     assert.match(noloc.reason, /redirect with no location \(HTTP 301\)/);
   });
 
-  it("maps an aborted fetch to the named timeout reason (abort-driven, no clock race)", async () => {
-    // The fake fetch honors the AbortSignal: when the guard's timer fires,
-    // the abort event rejects the request deterministically.
-    const res = await guard.downloadGuarded("https://stall.example/x", {
-      timeoutMs: 5,
+  it("maps an aborted fetch to the named timeout reason (injected fake timer, no real clock)", async () => {
+    // The guard's production timeout timer is UNREF'd on purpose. A test that
+    // awaited the real timer would hinge on the runner's event-loop-ref
+    // detection (Node 22: "Promise resolution is still pending but the event
+    // loop has already resolved" + sibling cancellations; Node 24+: passes).
+    // Drive the abort through the timer seams instead: zero real timers,
+    // everything settles through microtasks the test itself orders.
+    let fireTimeout;
+    let cleared = false;
+    let stubAttached;
+    const attached = new Promise((r) => {
+      stubAttached = r;
+    });
+
+    const download = guard.downloadGuarded("https://stall.example/x", {
+      timeoutMs: 5, // never armed on a real clock — setTimer below replaces it
+      setTimer: (fn) => {
+        fireTimeout = fn;
+        return {}; // fake handle; the guard must tolerate a no-unref handle
+      },
+      clearTimer: () => {
+        cleared = true;
+      },
+      resolveHost: publicResolve,
+      fetchImpl: (url, init) => {
+        assert.ok(init?.signal, "guard must pass an AbortSignal");
+        return new Promise((_resolve, reject) => {
+          const abortError = () =>
+            Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+          if (init.signal.aborted) {
+            reject(abortError()); // already-aborted: settle NOW, never hangs
+            return;
+          }
+          init.signal.addEventListener(
+            "abort",
+            () => reject(abortError()),
+            { once: true }
+          );
+          stubAttached();
+        });
+      },
+    });
+
+    await attached; // the stub has attached its listener; the fake timer is captured
+    assert.equal(cleared, false, "the fake timer stays armed while the request is in flight");
+    fireTimeout(); // deterministic: fire the guard's own timeout callback NOW
+    const res = await download;
+
+    assert.equal(res.ok, false);
+    assert.equal(res.reason, "download timed out");
+    assert.equal(cleared, true, "the timer must be cleared once the request settles");
+  });
+
+  it("settles even when the timeout fires BEFORE the fetch stub starts (no hang)", async () => {
+    // The timer seam fires at ARM time: the signal is already aborted when
+    // the stub runs. A stub that only listens for the event would hang here;
+    // checking signal.aborted settles it. (Guards the exact race the fake
+    // timer can expose.)
+    const res = await guard.downloadGuarded("https://early.example/x", {
+      setTimer: (fn) => {
+        fn();
+        return {};
+      },
+      clearTimer: () => {},
+      resolveHost: publicResolve,
       fetchImpl: (url, init) =>
         new Promise((_resolve, reject) => {
-          assert.ok(init?.signal, "guard must pass an AbortSignal");
-          init.signal.addEventListener("abort", () => {
-            reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
-          });
+          const abortError = () =>
+            Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+          if (init.signal.aborted) {
+            reject(abortError());
+            return;
+          }
+          init.signal.addEventListener("abort", () => reject(abortError()), { once: true });
         }),
-      resolveHost: publicResolve,
     });
     assert.equal(res.ok, false);
     assert.equal(res.reason, "download timed out");
