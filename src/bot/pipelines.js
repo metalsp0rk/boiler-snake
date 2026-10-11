@@ -443,6 +443,75 @@ async function onMessageDelete(outbound, message) {
 }
 
 /**
+ * Fluxer MessageUpdate pipeline (audit #195 item 5 — Fluxer→Discord edit
+ * relay). The mirror of the Discord MessageUpdate listener, minus its
+ * normalizer's inline community resolve: normalizeFluxerMessage leaves
+ * communityId null by contract (4), so this entry resolves the communities
+ * row for the edge BEFORE delegating. Everything else — the KD 10 echo gate
+ * and the source-side kind-edit intake — is the platform-neutral
+ * onMessageUpdate below (§10.4: the intake lives IN the pipeline, no second
+ * listener).
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {object} message NormalizedMessage (post-update state)
+ */
+async function onFluxerMessageUpdate(outbound, message) {
+  try {
+    if (!message) return;
+    resolveFluxerCommunity(message);
+    await onMessageUpdate(outbound, message);
+  } catch (e) {
+    console.error("[fluxer MessageUpdate] error:", e?.message || e);
+  }
+}
+
+/**
+ * Fluxer MessageDelete pipeline (audit #195 item 5 — Fluxer→Discord delete
+ * relay). Same delegation contract as onFluxerMessageUpdate; the delete
+ * intake (echo gate, links check, supersession) is platform-neutral inside
+ * onMessageDelete.
+ *
+ * @param {object} outbound OutboundClient (Fluxer)
+ * @param {object} message normalizeFluxerMessageDelete output (partial)
+ */
+async function onFluxerMessageDelete(outbound, message) {
+  try {
+    if (!message) return;
+    resolveFluxerCommunity(message);
+    await onMessageDelete(outbound, message);
+  } catch (e) {
+    console.error("[fluxer MessageDelete] error:", e?.message || e);
+  }
+}
+
+/**
+ * Resolve + attach the communities row for a Fluxer normalized message
+ * (the create pipeline's step 2b as a named helper — the update/delete
+ * entries need the same resolve). A resolve failure leaves communityId
+ * null, which every bridge intake treats as "not a source end" (fails
+ * closed).
+ * @param {object} message normalized Fluxer message (mutated)
+ */
+function resolveFluxerCommunity(message) {
+  if (
+    message.platform !== "fluxer" ||
+    !message.externalGuildId ||
+    Number.isSafeInteger(message.communityId)
+  ) {
+    return;
+  }
+  try {
+    message.communityId = ensureCommunity({
+      platform: "fluxer",
+      instanceKey: message.instanceKey,
+      externalGuildId: String(message.externalGuildId),
+    });
+  } catch (e) {
+    console.error("[fluxer] community resolve failed:", e?.message || e);
+  }
+}
+
+/**
  * Normalize a raw gateway message inside a try/catch (audit C8).
  *
  * `normalizeDiscordMessage` throws SYNCHRONOUSLY inside the gateway listener
@@ -529,4 +598,6 @@ module.exports = {
   onMessageReactionRemove,
   onFluxerReactionAdd,
   onFluxerReactionRemove,
+  onFluxerMessageUpdate,
+  onFluxerMessageDelete,
 };
