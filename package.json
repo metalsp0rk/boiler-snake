@@ -16,12 +16,12 @@
     "test": "node --test test/*.test.js test/integration/*.test.js",
     "test:unit": "node --test test/*.test.js",
     "test:integration": "node --test test/integration/*.test.js",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-coverage-exclude='test/**' --test-coverage-exclude='scripts/**' --test-coverage-exclude='node_modules/**' --test-coverage-lines=77 --test-coverage-branches=67 --test-coverage-functions=77 test/*.test.js test/integration/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-coverage-exclude='test/**' --test-coverage-exclude='scripts/**' --test-coverage-exclude='node_modules/**' --test-coverage-lines=88 --test-coverage-branches=76 --test-coverage-functions=87 test/*.test.js test/integration/*.test.js",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
-  "//": "test:coverage = Node's built-in runner coverage (no deps) over src/ for BOTH suites in one run; include/exclude keep src/ only in the report. Threshold flags check OVERALL totals (node exits 1 when unmet). They baseline-lock the 2026-09-09 actuals (all files: lines 79.99%, branches 69.57%, funcs 79.72%) at ~3pts below: 77/67/77. Team targets are critical-paths 100% / high 90%+ (standards) — raise thresholds as coverage improves; never lower the gate to accommodate a regression.",
+  "//": "test:coverage = Node's built-in runner coverage (no deps) over src/ for BOTH suites in one run; include/exclude keep src/ only in the report. Threshold flags check OVERALL totals (node exits 1 when unmet). Gate raised 2026-10-11 (audit issue #203) from the stale 77/67/77 to 88/76/87: actuals re-measured on main the same day (all files: lines 89.48%, branches 77.47%, funcs 88.54%), so every gate keeps >1pt margin; CI enforces it on the Node 22.x leg of .github/workflows/test.yml (V8 versions can shift totals a little — if that leg goes red on totals, re-measure on CI's Node and re-baseline per house style, actuals-minus-3 rounded down, not to mask a regression). Team targets are critical-paths 100% / high 90%+ (standards) — raise thresholds as coverage improves; never lower the gate to accommodate a regression.",
   "dependencies": {
     "@fluxerjs/core": "3.1.0",
     "@mozilla/readability": "^0.6.0",
