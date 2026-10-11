@@ -4,6 +4,24 @@ const { createIntegrationEnv } = require("../helpers/harness");
 const { assertXp, assertBanned, assertNotBanned } = require("../helpers/assert");
 const { IDS } = require("../helpers/fixtures");
 
+/**
+ * Run `fn` with console.error captured; resolves to the joined log lines.
+ * (Same swap-and-restore pattern as feature-load.test.js, async-aware.)
+ * @param {() => Promise<void>|void} fn
+ * @returns {Promise<string[]>}
+ */
+async function captureConsoleError(fn) {
+  const orig = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args.join(" "));
+  try {
+    await fn();
+  } finally {
+    console.error = orig;
+  }
+  return logs;
+}
+
 describe("integration: message pipeline", () => {
   /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
   let env;
@@ -301,6 +319,186 @@ describe("integration: bridge pipeline gates", () => {
         )
         .get().c,
       0,
+    );
+  });
+
+  it("a half-shaped Fluxer normalized message is contract-rejected at the boundary — logged + skipped (issue #201)", async () => {
+    relay.clearRelayState();
+    const registry = createRegistry();
+    let dispatches = 0;
+    registry.registerHandler(
+      "bridge",
+      async () => {
+        dispatches += 1;
+      },
+      { api: "context" },
+    );
+    const handle = makeFakeHandle({ instanceKey: FLUXER_INSTANCE });
+    const fluxerCommunity = ensureCommunity({
+      platform: "fluxer",
+      instanceKey: FLUXER_INSTANCE,
+      externalGuildId: FLUXER_GUILD,
+    });
+
+    const msg = normalizeFluxerMessage(
+      {
+        t: "MESSAGE_CREATE",
+        d: gatewayMessage({
+          id: "610003",
+          channel_id: FLUXER_CHANNEL,
+          guild_id: FLUXER_GUILD,
+          content: "hello world",
+        }),
+      },
+      { instanceKey: FLUXER_INSTANCE },
+    );
+    msg.communityId = fluxerCommunity;
+    // Half-shaped hand-build: a REAL fluxer output with one REQUIRED field
+    // removed. The boundary must catch it before any pipeline step runs.
+    delete msg.content;
+
+    const xpBefore = env2.db.getXp(fluxerCommunity, "5"); // gateway author id
+    const logs = await captureConsoleError(() =>
+      pipelines.onMessageCreate(handle.outbound, msg, {
+        registry,
+        supervisor: null,
+      }),
+    );
+
+    // Loud + specific: the violation names the field AND the platform,
+    // logged as a contract line — never the generic pipeline error line.
+    assert.equal(
+      logs.filter(
+        (l) =>
+          l.includes("normalized-message contract violation") &&
+          l.includes('"content"') &&
+          l.includes('platform "fluxer"'),
+      ).length,
+      1,
+      `expected one contract-violation log naming content+fluxer, got: ${JSON.stringify(logs)}`,
+    );
+    assert.equal(
+      logs.filter((l) => l.startsWith("[MessageCreate] error:")).length,
+      0,
+      "contract failures stay distinguishable from downstream errors",
+    );
+    assert.equal(dispatches, 0, "nothing downstream ran");
+    // skipped message earns no XP
+    assertXp(env2.db, fluxerCommunity, "5", xpBefore);
+  });
+});
+
+/**
+ * Discord-side boundary tests for the NormalizedMessage required-field
+ * contract (issue #201, audit §6 P2): a half-shaped hand-built message is
+ * logged and SKIPPED at onMessageCreate entry (no XP, no cache); the
+ * adapter boundary catches payloads the normalizer cannot complete (no
+ * author); and guild-less (DM) messages keep flowing to the guild gate
+ * exactly as before — the contract MODELS the DM null, it does not newly
+ * reject it.
+ */
+describe("integration: normalized-message contract boundary (Discord, issue #201)", () => {
+  /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
+  let env3;
+  let pipelines;
+  let getDiscordOutbound;
+  let normalizeDiscordMessage;
+  let logsAudit3;
+
+  before(async () => {
+    env3 = await createIntegrationEnv();
+    env3.db.updateGuildSettings(env3.communityId, {
+      msg_xp: 5,
+      msg_cooldown_sec: 0,
+    });
+    pipelines = require("../../src/bot/pipelines");
+    ({ getDiscordOutbound } = require("../../src/platform/discord/outbound"));
+    ({ normalizeDiscordMessage } = require("../../src/platform/discord/normalize"));
+    logsAudit3 = require("../../src/features/logs/auditLog");
+  });
+
+  after(() => {
+    env3?.cleanup();
+  });
+
+  it("a full-shape normalized message still flows end-to-end (XP awarded)", async () => {
+    const before = env3.db.getXp(env3.communityId, IDS.member);
+    await env3.emitMessage({ author: env3.users.memberUser });
+    assertXp(env3.db, env3.communityId, IDS.member, before + 5);
+  });
+
+  it("a hand-built message missing a REQUIRED field is logged as a contract violation and skipped", async () => {
+    const raw = env3.makeMessage({
+      author: env3.users.memberUser,
+      id: "700000000000000101",
+    });
+    const half = { ...normalizeDiscordMessage(raw) };
+    delete half.channelId;
+
+    const xpBefore = env3.db.getXp(env3.communityId, IDS.member);
+    const logs = await captureConsoleError(() =>
+      pipelines.onMessageCreate(getDiscordOutbound(env3.client), half, {}),
+    );
+
+    assert.equal(
+      logs.filter(
+        (l) =>
+          l.includes("normalized-message contract violation") &&
+          l.includes('"channelId"') &&
+          l.includes('platform "discord"'),
+      ).length,
+      1,
+      `expected one contract log naming channelId+discord, got: ${JSON.stringify(logs)}`,
+    );
+    assert.equal(
+      logs.filter((l) => l.startsWith("[MessageCreate] error:")).length,
+      0,
+      "the contract line replaces the generic pipeline error line",
+    );
+    // skipped message earns no XP
+    assertXp(env3.db, env3.communityId, IDS.member, xpBefore);
+    // the message never reached the logs cache (full object → proper cache key)
+    assert.equal(logsAudit3.getCachedMessage(half), null);
+  });
+
+  it("a payload the Discord adapter cannot complete (no author) is logged + skipped, bot stays alive", async () => {
+    const raw = env3.makeMessage({
+      author: env3.users.memberUser,
+      id: "700000000000000102",
+    });
+    delete raw.author;
+    delete raw.member;
+
+    const logs = await captureConsoleError(() => env3.onMessageCreate(raw));
+    assert.equal(
+      logs.filter(
+        (l) =>
+          l.includes("normalized-message contract violation") &&
+          l.includes('"authorId"'),
+      ).length,
+      1,
+      `expected one contract log naming authorId, got: ${JSON.stringify(logs)}`,
+    );
+  });
+
+  it("guild-less (DM) messages still reach the guild gate — not newly contract-rejected", async () => {
+    const dm = {
+      id: "700000000000000103",
+      content: "hi bot (dm)",
+      guild: null,
+      guildId: null,
+      channel: { id: "dm-channel-1" },
+      channelId: "dm-channel-1",
+      author: { id: "900000000000000001", username: "dm-user", bot: false },
+      member: null,
+      createdAt: new Date(),
+      attachments: new Map(),
+    };
+    const logs = await captureConsoleError(() => env3.onMessageCreate(dm));
+    assert.deepEqual(
+      logs.filter((l) => l.includes("contract violation")),
+      [],
+      `a DM must pass the boundary (externalGuildId: null is the modeled shape), got: ${JSON.stringify(logs)}`,
     );
   });
 });

@@ -29,6 +29,7 @@ const { loadDb } = require("./helpers/env");
 const { cleanup } = loadDb();
 
 const { normalizeFluxerMessage } = require("../src/platform/fluxer/normalize");
+const { assertNormalizedMessage } = require("../src/platform/normalizedMessageContract");
 const { loadFluxerSdk } = require("../src/platform/fluxer/client");
 const { gatewayMessage } = require("./helpers/fluxer");
 
@@ -127,6 +128,9 @@ describe("platform/fluxer/normalize — real SDK GuildMember (issue #183, audit 
     assert.ok(out, "expected a normalized message");
     assert.deepEqual(out.memberRoleIds, [ROLE_STAFF, ROLE_SENIOR]);
     assert.equal(out.memberRaw, member, "the member instance passes through untouched");
+    // Issue #201: what the REAL gateway produces must satisfy the required-field
+    // contract the pipeline asserts at its boundary.
+    assertNormalizedMessage(out, { boundary: "onMessageCreate (issue #183 SDK shape)" });
   });
 
   it("yields NO ids (not a fallthrough) when a real manager holds zero role ids", async (t) => {
@@ -140,6 +144,7 @@ describe("platform/fluxer/normalize — real SDK GuildMember (issue #183, audit 
     );
 
     assert.deepEqual(out.memberRoleIds, []);
+    assertNormalizedMessage(out, { boundary: "onMessageCreate (issue #183 SDK shape)" });
   });
 
   it("resolves memberRoleIds from an SDK-message-shaped camelCase payload carrying a real GuildMember", async (t) => {
@@ -167,6 +172,9 @@ describe("platform/fluxer/normalize — real SDK GuildMember (issue #183, audit 
     assert.ok(out, "expected a normalized message");
     assert.deepEqual(out.memberRoleIds, [ROLE_STAFF, ROLE_SENIOR]);
     assert.deepEqual(out.mentions.roles, [ROLE_SENIOR], "mentionRoles stays an ordinary id array");
+    // Issue #201: the exact object client.js's messageCreate hook feeds the
+    // pipeline (post-normalize) passes the boundary validator.
+    assertNormalizedMessage(out, { boundary: "onMessageCreate (issue #183 SDK shape)" });
   });
 });
 
@@ -181,6 +189,7 @@ describe("platform/fluxer/normalize — raw wire member.roles array (regression 
     );
 
     assert.deepEqual(out.memberRoleIds, [ROLE_STAFF, ROLE_SENIOR]);
+    assertNormalizedMessage(out, { boundary: "onMessageCreate (wire-array regression shape)" });
   });
 
   it("defaults to [] when the payload carries no member or no roles", () => {
@@ -189,11 +198,13 @@ describe("platform/fluxer/normalize — raw wire member.roles array (regression 
       { instanceKey: "https://fluxer.test" },
     );
     assert.deepEqual(noMember.memberRoleIds, []);
+    assertNormalizedMessage(noMember, { boundary: "onMessageCreate (wire-array regression shape)" });
 
     const noRoles = normalizeFluxerMessage(
       { t: "MESSAGE_CREATE", d: gatewayMessage({ member: { nick: "hi" } }) },
       { instanceKey: "https://fluxer.test" },
     );
     assert.deepEqual(noRoles.memberRoleIds, []);
+    assertNormalizedMessage(noRoles, { boundary: "onMessageCreate (wire-array regression shape)" });
   });
 });
