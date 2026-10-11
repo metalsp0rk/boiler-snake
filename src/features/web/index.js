@@ -18,7 +18,7 @@
  * additive options only.
  */
 
-const { startWebServer } = require("../../web/server");
+const { startWebServer, stopWebServer } = require("../../web/server");
 const { setBotGuildsProvider } = require("../../web/auth/botGuilds");
 const { bindAuditClient } = require("../../web/middleware/audit");
 const { parseFluxerInstances } = require("../../config");
@@ -132,7 +132,7 @@ module.exports = {
     // per-community OutboundClient lookup, consumed by the Fluxer login
     // guild-visibility checks, the staff-tier member fetch, and the Fluxer
     // routing inside discord-cache/memberFetchQueue.
-    startWebServer({
+    const server = startWebServer({
       getClient: () => client,
       getFluxerWebInstances: buildFluxerWebInstancesProvider(),
       getCommunityClient: (communityId) => {
@@ -147,5 +147,11 @@ module.exports = {
         }
       },
     });
+    // Graceful-shutdown handle (audit C9): only when something actually
+    // listens — the dark-by-default boot has nothing to drain. stopWebServer
+    // closes the listener AND the session-prune job, letting in-flight HTTP
+    // finish instead of being hard-cut by docker stop.
+    if (!server) return;
+    return { stop: () => stopWebServer() };
   },
 };

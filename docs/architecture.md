@@ -29,6 +29,7 @@ src/
 │   ├── constants.js         # MAX_XP_AWARD, MAX_SAFE_XP
 │   ├── xpMath.js            # levelFromXp, clamps, validateXpValue
 │   ├── cooldowns.js
+│   ├── lifecycle.js         # Crash net (unhandledRejection/uncaughtException) + SIGTERM/SIGINT drain
 │   ├── permissions.js       # isAdminOrMod / isStaff / isSeniorStaff + require*
 │   ├── interaction.js
 │   ├── ai.js                # shared OpenAI-compatible client (tickets + gork)
@@ -114,6 +115,13 @@ client.login(token);
 
 The **web** feature's `start()` wires the Discord seams (`setBotGuildsProvider`, audit client binding) and calls `startWebServer()` — the public HTTP console. It is **dark by default**: nothing listens unless `PUBLIC_HTTP_PORT` (or the legacy `TICKET_HTTP_PORT` alias) is set. See [web-admin.md](./web-admin.md).
 
+### Process guards (`core/lifecycle.js`)
+
+`boot()` installs two process-level safety nets once per process (audit C8/C9):
+
+- **Crash net** — `unhandledRejection` logs the specific cause with context and keeps the process alive (one dropped async op ≠ broken invariants); `uncaughtException` logs, runs the same drain, then exits 1 for the supervisor to restart (`restart: unless-stopped`). The named dispatch sites (`boot.js` InteractionCreate, `bot/pipelines.js` gateway listeners incl. a try/catch around `normalizeDiscordMessage`) carry their own `.catch()`/guard — the net is the backstop, never the plan.
+- **Graceful shutdown** — `SIGTERM`/`SIGINT` drains named stop handles in reverse registration order (member-fetch queue → scheduler jobs → feature loop handles → Fluxer handles → Discord client), each awaited, each failure logged and continued. An 8s overall deadline (under docker's 10s grace) and a second-signal force-exit keep it from hanging; clean drain exits 0.
+
 ### Feature module contract
 
 ```javascript
@@ -126,6 +134,7 @@ module.exports = {
   buttonHandlers: { "prefix:": async (interaction, ctx) => {} }, // optional
   registerEvents(client, ctx) {},  // optional
   start(client, ctx) {},           // optional (ClientReady) — register scheduler jobs here
+                                   // may return `{ stop() }` — auto-drained on SIGTERM/SIGINT
 };
 ```
 

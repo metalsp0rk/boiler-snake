@@ -13,11 +13,15 @@
  *   buttonHandlers: { [customIdPrefix]: async (interaction, ctx) => void }
  *   registerEvents(supervisor, ctx): void
  *   start(supervisor, ctx): void   // ClientReady tickers/schedulers
+ *     // may return a loop handle `{ stop() }` (e.g. the bridge relay) —
+ *     // load.js registers it for the SIGTERM/SIGINT drain (core/lifecycle).
  *
  * PR 7 cutover (roadmap/fluxer.md § Supervisor): the first argument is the
  * platform Supervisor ({ discord, fluxer, clientForCommunity }), not the
  * Discord client. Features read supervisor.discord where they used the client.
  */
+
+const { registerShutdownHandle } = require("../core/lifecycle");
 
 /**
  * @param {object[]} features
@@ -57,6 +61,12 @@ function applyFeaturesToRegistry(features, registry) {
  * Run one lifecycle hook across all features, isolating failures: a throwing
  * feature is logged (with feature + hook context) and skipped instead of
  * killing the boot loop / login. See AGENTS.md → Error Handling.
+ *
+ * Graceful-shutdown contract (audit C9): a hook that returns a loop handle —
+ * an object with a `stop()` function (e.g. the bridge relay worker) — gets it
+ * registered with `core/lifecycle`, so the SIGTERM/SIGINT drain stops exactly
+ * what boot started. Features that return nothing contribute nothing.
+ *
  * @param {import("../platform/boot").Supervisor} supervisor
  * @param {object[]} features
  * @param {object} ctx
@@ -68,7 +78,13 @@ function runFeatureHook(supervisor, features, ctx, hookName) {
   for (const feature of features) {
     if (typeof feature?.[hookName] !== "function") continue;
     try {
-      feature[hookName](supervisor, ctx);
+      const result = feature[hookName](supervisor, ctx);
+      if (result && typeof result.stop === "function") {
+        registerShutdownHandle(
+          `feature:${feature.name || "unknown"}`,
+          () => result.stop(),
+        );
+      }
     } catch (err) {
       console.error(
         `[features] ${feature.name || "unknown"}.${hookName} failed:`,
