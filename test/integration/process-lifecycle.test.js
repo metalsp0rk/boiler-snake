@@ -47,6 +47,10 @@ function spawnFixture(mode) {
   const env = { ...process.env, DB_PATH: path.join(tmpDir, "life.sqlite"), DATA_DIR: tmpDir };
   delete env.DISCORD_TOKEN;
   delete env.FLUXER_INSTANCES;
+  // Config sanity (issue #205) runs at the real-index.js gate: the fixture's
+  // inherited shell env must never look like a half-configured Lavalink.
+  delete env.LAVALINK_HOST;
+  delete env.LAVALINK_PASSWORD;
   if (mode === "indexfail") {
     env.FLUXER_INSTANCES = '[{"origin":"https://fluxer.invalid","token":"YOUR_FAKE_FLUXER_TOKEN"}]';
   }

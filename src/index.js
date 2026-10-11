@@ -1,7 +1,7 @@
 // src/index.js — thin entry: env gate, registry, boot (Discord + Fluxer endpoints)
 require("dotenv").config();
 
-const { assertRuntimeEnv } = require("./config");
+const { assertRuntimeEnv, assertConfigSanity } = require("./config");
 const { buildDefaultRegistry } = require("./commands/registry");
 const { boot } = require("./platform/boot");
 const { drainAndExit } = require("./core/lifecycle");
@@ -9,6 +9,10 @@ const { drainAndExit } = require("./core/lifecycle");
 // Boot gate (spec § Boot rules 1-3): at least one platform credential, and a
 // malformed FLUXER_INSTANCES block throws even when DISCORD_TOKEN is set.
 assertRuntimeEnv();
+// Config sanity (audit §6 / issue #205): [config] WARN lines for
+// half-configured OAuth, and a hard exit for LAVALINK_HOST without
+// LAVALINK_PASSWORD. Specific messages only — never a silent half-config.
+assertConfigSanity();
 
 /**
  * Start every configured endpoint. Feature events/start hooks are wired by

@@ -23,17 +23,21 @@ DISCORD_TOKEN=YOUR_BOT_TOKEN
 
 ⚠️ **Never commit this to version control!** The `.gitignore` file should already exclude it.
 
-#### `CLIENT_ID` (Required)
-Your application's client ID. Also from Developer Portal → General Information.
-
-```env
-CLIENT_ID=YOUR_APP_CLIENT_ID
-```
-
 ### Optional Variables
 
+#### `CLIENT_ID` (Optional — needed for registration & OAuth features)
+Your application's client ID (Developer Portal → General Information).
+
+Discord **login does not need it** — the bot boots and works without it. What stays dark until you set it:
+
+- `npm run register` (slash-command registration CLI)
+- Command-permission OAuth (`/staff syncpermissions` slash-picker visibility)
+- The [Web Admin Console](web-admin.md) **Discord** sign-in
+
+Boot logs a `[config] WARN` naming exactly this when `DISCORD_TOKEN` is set and `CLIENT_ID` is not (audit #205 — the old "required" claim was false; login never checked it). Fluxer-only deployments legitimately have no Discord `CLIENT_ID`: they carry per-instance OAuth ids inside `FLUXER_INSTANCES` instead.
+
 #### `LAVALINK_HOST` (Optional — required for music)
-Hostname of a Lavalink **4.2+** node. Compose sets `lavalink`. Local: `127.0.0.1`. See [Music player](music.md).
+Hostname of a Lavalink **4.2+** node. Compose sets `lavalink`. Local: `127.0.0.1`. See [Music player](music.md). Setting `LAVALINK_HOST` **without** `LAVALINK_PASSWORD` **stops boot** (fail-fast — music would fail authorization at first play; see [Boot config sanity](#boot-config-sanity-audit-205)).
 
 ```env
 LAVALINK_HOST=127.0.0.1
@@ -162,6 +166,60 @@ default rather than silently disabling.
 Boundary semantics: rows at exactly the cutoff instant/day **survive** (strict
 older-than); expired oauth rows at exactly *now* die (the exact complement of
 the login-callback consume filter).
+
+#### Public HTTP, web console & OAuth secrets (optional)
+
+The console and ticket transcripts share one HTTP server; nothing listens
+unless a port is set. Full console guide: [Web Admin Console](web-admin.md).
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PUBLIC_HTTP_PORT` / `TICKET_HTTP_PORT` | *(off)* | Listen port for transcripts + OAuth callbacks (`PUBLIC_*` wins) |
+| `PUBLIC_BASE_URL` / `TICKET_PUBLIC_BASE_URL` | *(none)* | Public origin for links and OAuth redirects |
+| `OAUTH_REDIRECT_URI` | derived | Explicit OAuth redirect override (must match the Developer Portal) |
+| `SESSION_SECRET` | `CLIENT_SECRET` | Signs session cookies — falls back to `CLIENT_SECRET` with a boot warning; set it explicitly |
+| `OAUTH_STATE_SECRET` | `CLIENT_SECRET` | Signs OAuth login state. **Set a dedicated value**: an unset value falls back to the shared Discord app secret and boot logs `[config] WARN` (audit #205 — rotating `CLIENT_SECRET` would also invalidate in-flight OAuth states). Fluxer-only installs require it explicitly (no `CLIENT_SECRET` exists) |
+| `WEB_SESSION_TTL_HOURS` | `12` | Session lifetime (absolute cap 168 = 7 days) |
+| `WEB_TIER_CACHE_TTL_MS` | `60000` | Tier-cache TTL — bounds role-revocation lag |
+| `WEB_TRUST_PROXY` | *(off)* | Honor `X-Forwarded-For` only when set — required behind nginx/traefik for per-client rate limiting |
+| `WEB_MAX_BODY_BYTES` | `65536` | Request body cap; `413` beyond it |
+| `WEB_RATE_LIMIT_WINDOW_MS` | `60000` | Fixed window for all web rate buckets |
+| `WEB_RATE_LIMIT_AUTH_MAX` | `30` | Login + OAuth-callback hits per client IP per window |
+| `WEB_RATE_LIMIT_AUTH_USER_MAX` | `10` | Login + OAuth-callback hits per resolved user per window |
+| `WEB_RATE_LIMIT_MUTATION_MAX` | `120` | Mutations per user per window |
+| `WEB_DASHBOARD_CACHE_TTL_MS` | `30000` | Dashboard snapshot cache (30 s floor — lower values clamp up with a warning) |
+| `WEB_LOGIN_PROMPT` | `consent` | Discord OAuth prompt: `consent` or `none` (silent re-auth) |
+| `WEB_LOGIN_REDIRECT_URI` | derived | Explicit web-login redirect override |
+
+#### AI provider aliases & Gork turn deadlines (optional)
+
+`AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` are the canonical names;
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` are **legacy fallbacks**
+— when the matching `AI_*` var is unset, the `OPENAI_*` one is used. Prefer
+`AI_*` on new deploys.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GORK_SUMMARIZE_TURN_TIMEOUT_MS` | `60000` | Deadline for the `/gork summarize` one-shot generation turn; on timeout nothing posts and no budget is spent |
+| `GORK_INTERACTION_LOG` | *(on)* | `0` = process-wide kill-switch for the gork [interaction log](gork-logging.md). ON by default — rows contain conversation content (privacy knob) |
+| `GORK_INTERACTION_LOG_RETENTION_DAYS` | `30` | Days to keep interaction-log rows; `0` keeps rows forever |
+| `GORK_INTERACTION_LOG_MAX_JSON_CHARS` | `200000` | Transcript JSON budget per row; oldest events drop first |
+
+### Boot config sanity (audit #205)
+
+`src/index.js` runs `assertRuntimeEnv()` (a platform credential must exist)
+and then `assertConfigSanity()`. Every line it prints names the consequence
+and the exact fix — a half-configured feature never silent-drops:
+
+| Condition | Result |
+|-----------|--------|
+| `DISCORD_TOKEN` set, `CLIENT_ID` missing | `[config] WARN` — login works; registration, command-permission OAuth and web Discord sign-in are inert until it is set |
+| `LAVALINK_HOST` set, `LAVALINK_PASSWORD` missing | **Fail fast** — boot exits with the fix (music would fail authorization at first play) |
+| `CLIENT_SECRET` set, `OAUTH_STATE_SECRET` missing | `[config] WARN` — OAuth state signing shares the Discord app secret; set a dedicated secret |
+
+Parity is pinned by `test/env-parity.test.js`: every variable `src/` reads
+must have an entry in [`.env.example`](https://github.com/metalsp0rk/boiler-snake/blob/main/.env.example)
+(required/optional, default, consequence documented per entry).
 
 ---
 
@@ -614,7 +672,7 @@ Before going live:
 
 - [ ] Bot added to server (with correct permissions)
 - [ ] Commands registered (`npm run register`)
-- [ ] `DISCORD_TOKEN` and `CLIENT_ID` set in `.env`
+- [ ] `DISCORD_TOKEN` set in `.env` (plus `CLIENT_ID` for command registration and OAuth features — see [Configuration Guide](#configuration-guide) / boot `[config]` warnings)
 - [ ] Role position configured (bot above managed / senior staff roles)
 - [ ] Staff roles configured (`/staff role add …`, `/staff role list`)
 - [ ] XP rates adjusted (`/setxp`)
