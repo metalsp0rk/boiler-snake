@@ -431,6 +431,129 @@ describe("integration: twitch", () => {
     }
   });
 
+  it("runTwitchTick: one throwing login resolve does not abort the pass (#198)", async () => {
+    const prevId = process.env.TWITCH_CLIENT_ID;
+    const prevSecret = process.env.TWITCH_CLIENT_SECRET;
+    process.env.TWITCH_CLIENT_ID = "test-id";
+    process.env.TWITCH_CLIENT_SECRET = "test-secret";
+    // Pending rows carry a non-numeric broadcaster_id until resolved.
+    env.db.addTwitchChannel(env.communityId, "unres-poison", "poisonlogin", "Poison", null);
+    env.db.addTwitchChannel(env.communityId, "unres-good", "goodlogin", "Good", null);
+
+    const errors = [];
+    const origErr = console.error;
+    console.error = (...args) => errors.push(args.map(String).join(" "));
+    let fetched = [];
+    try {
+      await runTwitchTick(fakeSupervisor(env.client), {
+        resolveUser: async (login) => {
+          if (login === "poisonlogin") {
+            throw new Error("simulated Helix resolve outage");
+          }
+          if (login === "goodlogin") {
+            return {
+              id: "888500",
+              login: "goodlogin",
+              display_name: "Good",
+              profile_image_url: "",
+            };
+          }
+          return null;
+        },
+        fetchStreams: async (ids) => {
+          fetched = ids;
+          return [];
+        },
+      });
+
+      // The second pending row was still resolved + upgraded…
+      const good = env.db.getTwitchChannel(env.communityId, "goodlogin");
+      assert.equal(good.broadcaster_id, "888500", "second row never upgraded");
+      // …and became eligible for the same tick's stream batch.
+      assert.ok(fetched.includes("888500"), `expected 888500 in ${fetched}`);
+
+      // The poisoned row stayed pending and was logged with its login + cause.
+      const poison = env.db.getTwitchChannel(env.communityId, "poisonlogin");
+      assert.equal(poison.broadcaster_id, "unres-poison", "poison row mutated");
+      const lines = errors.filter((l) =>
+        l.includes("pending-subscription resolve failed"),
+      );
+      assert.equal(lines.length, 1, `expected one resolve error: ${errors.join(" | ")}`);
+      assert.ok(lines[0].includes("poisonlogin"), `login missing in: ${lines[0]}`);
+      assert.ok(
+        lines[0].includes("simulated Helix resolve outage"),
+        `cause missing in: ${lines[0]}`,
+      );
+    } finally {
+      console.error = origErr;
+      env.db.removeTwitchChannel(env.communityId, "poisonlogin");
+      env.db.removeTwitchChannel(env.communityId, "goodlogin");
+      if (prevId != null) process.env.TWITCH_CLIENT_ID = prevId;
+      else delete process.env.TWITCH_CLIENT_ID;
+      if (prevSecret != null) process.env.TWITCH_CLIENT_SECRET = prevSecret;
+      else delete process.env.TWITCH_CLIENT_SECRET;
+    }
+  });
+
+  it("runTwitchTick: a bad community id skips its row instead of killing the tick (#198)", async () => {
+    const prevId = process.env.TWITCH_CLIENT_ID;
+    const prevSecret = process.env.TWITCH_CLIENT_SECRET;
+    process.env.TWITCH_CLIENT_ID = "test-id";
+    process.env.TWITCH_CLIENT_SECRET = "test-secret";
+
+    // Bad row the write repos would never accept: community id the settings
+    // repo rejects (assertCommunityId throws) — the audit's "bad row" shape.
+    const now = Date.now();
+    env.db.db
+      .prepare(
+        `INSERT INTO twitch_channels
+         (community_id, broadcaster_id, login, display_name, profile_image_url,
+          is_live, last_stream_id, last_checked, created_at, updated_at)
+         VALUES (-1, '999500', 'badrow', 'BadRow', NULL, 0, NULL, NULL, ?, ?)`,
+      )
+      .run(now, now);
+    env.db.addTwitchChannel(env.communityId, "888501", "isolatedchan", "Isolated", null);
+
+    const errors = [];
+    const origErr = console.error;
+    console.error = (...args) => errors.push(args.map(String).join(" "));
+    let fetched = [];
+    try {
+      await runTwitchTick(fakeSupervisor(env.client), {
+        resolveUser: async () => null,
+        fetchStreams: async (ids) => {
+          fetched = ids;
+          return [];
+        },
+      });
+
+      // The healthy row was polled; the poisoned one dropped itself out.
+      assert.ok(fetched.includes("888501"), `expected 888501 in ${fetched}`);
+      assert.ok(!fetched.includes("999500"), "bad row must not reach the batch");
+
+      const lines = errors.filter((l) =>
+        l.includes("eligibility check failed"),
+      );
+      assert.equal(lines.length, 1, `expected one eligibility error: ${errors.join(" | ")}`);
+      assert.ok(lines[0].includes("badrow"), `login missing in: ${lines[0]}`);
+      assert.ok(lines[0].includes("-1"), `community id missing in: ${lines[0]}`);
+      assert.ok(
+        lines[0].includes("community id required"),
+        `cause missing in: ${lines[0]}`,
+      );
+    } finally {
+      console.error = origErr;
+      env.db.db
+        .prepare(`DELETE FROM twitch_channels WHERE broadcaster_id = '999500'`)
+        .run();
+      env.db.removeTwitchChannel(env.communityId, "isolatedchan");
+      if (prevId != null) process.env.TWITCH_CLIENT_ID = prevId;
+      else delete process.env.TWITCH_CLIENT_ID;
+      if (prevSecret != null) process.env.TWITCH_CLIENT_SECRET = prevSecret;
+      else delete process.env.TWITCH_CLIENT_SECRET;
+    }
+  });
+
   it("go-live embed expands Helix thumbnail template braces", async () => {
     // Regression: Helix returns thumbnail_url as a `{width}x{height}`
     // template; sending it raw made Discord reject EVERY go-live message
