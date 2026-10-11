@@ -18,7 +18,7 @@ const {
   getStaffRole,
   normalizeStaffLevel,
   hasCommandPermissionOauth,
-  getCommandPermissionOauth,
+  getCommandPermissionOauthStatus,
 } = require("../../db");
 const {
   isAdminOrModFromContext,
@@ -583,7 +583,8 @@ async function runSyncPermissionsViaCore(commandCtx, communityId, cfg) {
     }
 
     const result = out.result;
-    const oauth = getCommandPermissionOauth(communityId);
+    // Status columns only (no token material) — see getCommandPermissionOauthStatus.
+    const oauth = getCommandPermissionOauthStatus(communityId);
     recordSlashAudit({
       communityId,
       actorUserId: commandCtx.userId,
@@ -662,7 +663,7 @@ async function handleSettings(commandCtx, featureCtx) {
   const rows = listStaffRoles(communityId);
   const seniors = rows.filter((r) => normalizeStaffLevel(r.level) === "senior");
   const juniors = rows.filter((r) => normalizeStaffLevel(r.level) === "junior");
-  const oauth = getCommandPermissionOauth(communityId);
+  const oauth = getCommandPermissionOauthStatus(communityId);
   const syncLine = oauth
     ? `Command visibility sync: **authorized**` +
       (oauth.last_sync_at

@@ -22,7 +22,7 @@
  *  - secrets (§8.1-9/§8.7): the stored fake refresh/access tokens NEVER
  *    appear in any body; projection field list is token-shaped-name-free.
  *  - query budget (§8.6): exactly THREE bounded facade reads on /staff
- *    (listStaffRoles + listLevelRoles + getCommandPermissionOauth), ONE
+ *    (listStaffRoles + listLevelRoles + getCommandPermissionOauthStatus), ONE
  *    on /commands, every read guild-scoped to the viewed guild;
  *  - read-only exact paths: POST/PUT/PATCH/DELETE on the EXACT page paths
  *    (/staff, /commands) and every unregistered /g/ subpath stay the
@@ -96,7 +96,7 @@ const BOT_GUILDS = [GUILD_A, GUILD_CROSS];
 const STAFF_PAGE_READS = [
   "listStaffRoles",
   "listLevelRoles",
-  "getCommandPermissionOauth",
+  "getCommandPermissionOauthStatus",
 ];
 
 describe("web staff page + command-visibility panel (GET-only, staff tier)", () => {
@@ -594,7 +594,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       assert.deepEqual(
         calls.map((c) => c.name).sort(),
         [...STAFF_PAGE_READS].sort(),
-        "exactly one listStaffRoles + one listLevelRoles + one getCommandPermissionOauth"
+        "exactly one listStaffRoles + one listLevelRoles + one getCommandPermissionOauthStatus"
       );
       assert.deepEqual(
         calls.map((c) => c.args[0]),
@@ -607,7 +607,7 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       assert.equal(cmdPage.res.status, 200);
       assert.deepEqual(
         calls.map((c) => c.name),
-        ["getCommandPermissionOauth"],
+        ["getCommandPermissionOauthStatus"],
         "the commands page does not read roles it never shows"
       );
     });

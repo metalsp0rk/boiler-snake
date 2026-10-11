@@ -5,11 +5,20 @@
  * fluxer.md § Repository boundary): every storage function here takes the
  * integer `communityId` resolved by the caller at the edge (the OAuth state
  * carries the Discord snowflake; httpCallback.js converts it).
+ *
+ * At rest the token columns hold only the AES-256-GCM envelope (audit C6,
+ * #189); the repository layer encrypts on write and hands back DECRYPTED
+ * `refresh_token` / `access_token` on read. Everything in THIS file therefore
+ * works in plaintext throughout — including the raced-400 re-read in
+ * refreshAccessToken, which compares the token WE SENT (plaintext) against
+ * the freshly re-read row (decrypted plaintext), so the #193 CAS semantics
+ * survive a non-deterministic cipher (equal ciphertext is never required).
  */
 
 const {
   getCommandPermissionOAuthConfig,
 } = require("./config");
+const tokens = require("../../core/thirdPartyTokens");
 const {
   getCommandPermissionOauth,
   upsertCommandPermissionOauth,
@@ -66,6 +75,13 @@ async function exchangeAuthorizationCode(opts) {
   const cfg = getCommandPermissionOAuthConfig();
   if (!cfg.ready) {
     throw new Error(`OAuth not configured: missing ${cfg.missing.join(", ")}`);
+  }
+  // Audit C6 (#189): tokens are envelope-encrypted at rest. Fail BEFORE the
+  // token POST — a grant we cannot store (missing/invalid
+  // TOKEN_ENCRYPTION_KEY) must not burn the one-time authorization code and
+  // then strand the exchanged tokens.
+  if (!tokens.hasTokenKey()) {
+    throw tokens.keyMissingError("command-permission OAuth tokens");
   }
 
   const json = await postToken(

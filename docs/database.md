@@ -464,8 +464,11 @@ See [Twitch Stream Notifications](twitch-notifications.md).
 ### 8c. `github_watches`
 
 Per-guild watched GitHub repositories for release announcements. `token`
-(optional per-repo GitHub token) is stored locally and never surfaced by
-display queries — the ticker reads it via `getAllGithubWatches()` only.
+(optional per-repo GitHub token) is stored **AES-256-GCM envelope-encrypted
+at rest** (`v1.…` envelope, `TOKEN_ENCRYPTION_KEY` — audit C6, migration
+039 back-encrypts pre-existing plaintext rows and fails boot loudly if the
+key is missing while rows exist). It is never surfaced by display queries —
+the ticker reads the decrypted value via `getAllGithubWatches()` only.
 
 ```sql
 CREATE TABLE github_watches (
@@ -474,7 +477,7 @@ CREATE TABLE github_watches (
   repo_display              TEXT NOT NULL,     -- GitHub canonical full_name
   channel_id                TEXT,              -- NULL until /github channel
   role_id                   TEXT,              -- optional ping role
-  token                     TEXT,              -- optional per-repo API token
+  token                     TEXT,              -- optional per-repo API token (v1 AES-GCM envelope)
   last_release_id           INTEGER,           -- newest announced release (pointer)
   last_release_published_at INTEGER,
   last_checked              INTEGER,

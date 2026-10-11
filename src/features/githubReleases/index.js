@@ -9,6 +9,7 @@ const {
   normalizeGithubRepo,
 } = require("../../db");
 const { requireStaffFromContext } = require("../../core/permissions");
+const tokenKeys = require("../../core/thirdPartyTokens");
 const { logConfigChange } = require("../logs/auditLog");
 const { discordCommunityId } = require("../../platform/community");
 const { fetchRepo } = require("./github");
@@ -144,6 +145,17 @@ async function handleGithub(commandCtx, featureCtx) {
     const channel = commandCtx.options.getChannel("channel", false);
     const token = commandCtx.options.getString("token", false);
 
+    // Audit C6 (#189): PATs are envelope-encrypted at rest; without a usable
+    // TOKEN_ENCRYPTION_KEY the token could never be stored, so reject BEFORE
+    // the GitHub API call with the actionable config cause.
+    if (token && !tokenKeys.hasTokenKey()) {
+      await commandCtx.reply({
+        content: tokenKeys.keyMissingError("a GitHub token").message,
+        sensitive: true,
+      });
+      return;
+    }
+
     await commandCtx.defer({ sensitive: true });
 
     const existing = getGithubWatch(communityId, repo);
@@ -155,10 +167,20 @@ async function handleGithub(commandCtx, featureCtx) {
       return;
     }
 
-    const row = addGithubWatch(communityId, repo, check.fullName, {
-      channelId: channel ? channel.id : null,
-      token: token || null,
-    });
+    let row;
+    try {
+      row = addGithubWatch(communityId, repo, check.fullName, {
+        channelId: channel ? channel.id : null,
+        token: token || null,
+      });
+    } catch (err) {
+      // Specific cause (e.g. the key-vanished race past the pre-check) —
+      // never let the handler die into the router's generic fallback.
+      await commandCtx.editReply(
+        `Could not save the watch for **${repo}**: ${err?.message || err}`,
+      );
+      return;
+    }
 
     await logConfigChange(commandCtx.outbound, guildId, {
       title: existing

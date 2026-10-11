@@ -11,7 +11,8 @@
  *      level_roles rows        → listLevelRoles(communityId)          (guild-scoped, indexed —
  *                                Phase 2 staff page: the level→role config the
  *                                subtask-25 forms act on)
- *      command-perm OAuth row  → getCommandPermissionOauth(communityId) (PK row)
+ *      command-perm OAuth row  → getCommandPermissionOauthStatus(communityId) (PK row,
+ *                                STATUS COLUMNS ONLY — no token columns exist in it)
  *    No N+1, no full scans, no raw SQL here — existing src/db facade
  *    helpers ONLY (repositories stay untouched/read-only for this task).
  *    All three are config-table reads (a handful of rows per guild);
@@ -26,13 +27,16 @@
  *    actively misleading. The read budget is pinned by
  *    test/web-routes-staff.test.js with a counting facade proxy.
  *
- * Secrets contract (§8.1-9 / §8.7) — THE reason this module exists:
- * getCommandPermissionOauth() is a `SELECT *` whose row carries
- * `refresh_token` / `access_token` columns. {@link projectOauthView}
- * whitelist-projects the row onto NON-SECRET STATUS FIELDS ONLY; token
- * columns are dropped by construction and can never reach a view. The
- * projection output field list is exported (OAUTH_PUBLIC_FIELDS) so the
- * test can pin "no token/secret-shaped field ever leaves this module".
+ * Secrets contract (§8.1-9 / §8.7) — THE reason this module exists: the
+ * token columns are envelope-encrypted at rest (audit C6 #189) and the full
+ * getCommandPermissionOauth() row now carries DECRYPTED tokens — so this
+ * read-model doesn't use it at all. It reads getCommandPermissionOauthStatus()
+ * instead (explicit status columns; the token columns are not even selected),
+ * and {@link projectOauthView} whitelist-projects that row onto the public
+ * status fields ONLY. Token material is excluded TWICE by construction and
+ * can never reach a view; the projection output field list is exported
+ * (OAUTH_PUBLIC_FIELDS) so tests pin "no token/secret-shaped field ever
+ * leaves this module". (Slash /staff settings reads the same status helper.)
  *
  * Design: pure factory (db injectable, methods looked up per call so
  * monkey-patched facade proxies are what actually run — same contract as
@@ -95,8 +99,8 @@ function createStaffData(options = {}) {
    */
   function getOauthStatus(communityId) {
     const oauthRes = guardRead(
-      () => facade.getCommandPermissionOauth(communityId),
-      "command-permission oauth"
+      () => facade.getCommandPermissionOauthStatus(communityId),
+      "command-permission oauth status"
     );
     return {
       communityId,
