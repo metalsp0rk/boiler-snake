@@ -62,4 +62,10 @@ jobs:
     permissions:
       contents: read
       packages: write
-    timeout-minutes: 45
+    # NOTE: no timeout-minutes HERE — per GitHub's 'Reusing workflow
+    # configurations', a job calling a reusable workflow only accepts
+    # name/uses/with/secrets/strategy/needs/if/concurrency/permissions/
+    # cache-mode; any other key makes GitHub reject the whole workflow file
+    # (issue #203 follow-up: run 38167725090 failed in 0s exactly that way).
+    # The time bound lives on docker-publish.yml's build-and-push job
+    # (timeout-minutes: 45), where it actually applies to the image builds.
