@@ -19,13 +19,13 @@
  *    status ladder dashboardData.snapshotMusicPlayer uses;
  *  - live voice: "live state unavailable" whenever the cache-only client
  *    seam is unwired/broken (never a REST fetch);
- *  - sessions/config: honest "read failed" lines when a cluster degrades.
+ *  - config: honest "read failed" line when the cluster degrades.
  */
 
 const { html } = require("../escape");
 const { emptyState, banner } = require("../components");
 const { DEFAULTS: SETTINGS_DEFAULTS } = require("../../data/settingsData");
-const { QUEUE_DISPLAY_CAP, SESSIONS_CAP } = require("../../data/voiceData");
+const { QUEUE_DISPLAY_CAP } = require("../../data/voiceData");
 
 /** Honest degradation line for a cluster whose read failed. */
 const READ_FAILED = "Unavailable — the voice read failed for this section.";
@@ -50,21 +50,6 @@ const MUSIC_PILL = Object.freeze({
 /** Integer-ish display that never invents a number for null. */
 function num(value, suffix = "") {
   return value == null ? html`<em class="muted">unset</em>` : html`${value}${suffix}`;
-}
-
-/**
- * Deterministic UTC stamp for stored epoch-ms values (view twins keep this
- * identical — no locale drift, no fake "relative" times).
- */
-function utcMs(ms) {
-  if (ms == null || !Number.isFinite(Number(ms))) return html`<em class="muted">—</em>`;
-  let iso;
-  try {
-    iso = new Date(Number(ms)).toISOString();
-  } catch {
-    return html`<em class="muted">invalid</em>`;
-  }
-  return html`${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 }
 
 /** ms → "m:ss" / "h:mm:ss" (music/resolve.js formatDuration parity). */
@@ -251,51 +236,6 @@ function liveSection(live, resolveChannelName) {
 }
 
 // ---------------------------------------------------------------------------
-// Current voice sessions (voice_sessions table, bounded)
-// ---------------------------------------------------------------------------
-
-function sessionsSection(sessions, resolveChannelName) {
-  if (!sessions.available) {
-    return section("Voice sessions", emptyState(READ_FAILED));
-  }
-  const rows = sessions.rows.length
-    ? html`<table class="list-table settings-table">
-        <thead>
-          <tr><th scope="col">User</th><th scope="col">Channel</th><th scope="col">Joined</th><th scope="col">Minutes (this session)</th></tr>
-        </thead>
-        <tbody>
-          ${sessions.rows.map(
-            (r) => html`<tr>
-              <td><code class="user-id">${r.userId ?? "—"}</code></td>
-              <td>${channelRef(r.channelId, resolveChannelName)}</td>
-              <td>${utcMs(r.joinedAt)}</td>
-              <td class="voice-minutes">${r.minutesConnected == null
-                ? html`<em class="muted">—</em>`
-                : html`${r.minutesConnected}`}</td>
-            </tr>`
-          )}
-        </tbody>
-      </table>`
-    : emptyState("No current voice sessions stored for this guild.");
-  return section(
-    "Voice sessions",
-    html`
-      ${rows}
-      ${sessions.truncated
-        ? html`<p class="subheading">
-            Showing at most ${SESSIONS_CAP} rows (§8.6 cap — more may exist).
-          </p>`
-        : html``}
-      <p class="subheading">
-        <code>voice_sessions</code> stores the CURRENT session per user
-        (upsert on join, delete on leave) — minutes are for the ongoing
-        session. Historical per-user voice-minute totals need a new bounded
-        activity helper and are deferred (Phase 1 read-only).
-      </p>`
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Voice XP config (read-only)
 // ---------------------------------------------------------------------------
 
@@ -346,7 +286,6 @@ function formatAge(ms) {
 function renderVoiceBody({ snapshot, resolveChannelName }) {
   const s = snapshot || {};
   const emptyCluster = { available: false };
-  const sessions = s.sessions || emptyCluster;
   const config = s.config || emptyCluster;
   const music = s.music || { status: "unknown" };
   const live = s.live || { available: false };
@@ -359,7 +298,6 @@ function renderVoiceBody({ snapshot, resolveChannelName }) {
     <div class="settings-grid voice-grid">
       ${musicSection(music, resolveChannelName)}
       ${liveSection(live, resolveChannelName)}
-      ${sessionsSection(sessions, resolveChannelName)}
       ${configSection(config, s.guildId)}
       <p class="subheading settings-stamp">
         Read-only view — music CONTROL (skip/pause/stop) is out of v1 scope
