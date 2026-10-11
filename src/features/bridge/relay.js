@@ -2419,7 +2419,15 @@ function supervisorOutboundSeams(supervisor) {
           return supervisor.discord ? createDiscordWebhooks(supervisor.discord) : null;
         }
         const handle = supervisor.fluxer?.get?.(instanceKey) ?? null;
-        return handle ? createFluxerWebhooks({ rest: handle.rest, apiOrigin: "" }) : null;
+        // handle.apiOrigin is discovery's endpoints.api_public (audit C1):
+        // the ONLY authority for absolute webhook URLs. When discovery never
+        // resolved it (null), createFluxerWebhooks throws HERE — caught just
+        // below, logged with the instance key, and this seam returns null so
+        // the worker fails that end loudly instead of fetching relative
+        // /v1/webhooks/… URLs forever (the C1 outage).
+        return handle
+          ? createFluxerWebhooks({ rest: handle.rest, apiOrigin: handle.apiOrigin })
+          : null;
       } catch (err) {
         console.error(
           `[bridge] webhook api build failed for ${platform}:${instanceKey}: ${err?.message || err}`,
@@ -2508,4 +2516,6 @@ module.exports = {
   editPartChanged,
   createRelayWorker,
   startBridgeLoops,
+  // exported for tests: the production supervisor → webhook-api seam (audit C1)
+  supervisorOutboundSeams,
 };

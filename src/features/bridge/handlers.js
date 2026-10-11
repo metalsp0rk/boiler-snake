@@ -459,8 +459,13 @@ function makeSendMessage(supervisor) {
  * deps.webhookApiFor: the webhook lifecycle pair for one community, built
  * from the supervisor (spec §10.3: adapter modules, bridge-free). Synchronous
  * by contract with the service (the connect path awaits the API object, never
- * a promise of one). apiOrigin defaults to "" — create (the only connect-path
- * method) rides the bot-authorized rest facade; token endpoints are PR 5.
+ * a promise of one). The Fluxer adapter is built with the handle's discovered
+ * API origin (handle.apiOrigin = discovery endpoints.api_public) so token
+ * endpoints resolve to ABSOLUTE webhook URLs (audit C1). A handle whose
+ * discovery never resolved api_public makes createFluxerWebhooks throw at
+ * construction — caught here, logged with the instance key, surfaced as a
+ * null api so the service fails connect closed with its own specific
+ * sentence (never a silently relative webhook URL).
  */
 function webhookApiFor(supervisor, platform, instanceKey) {
   if (!supervisor) return null;
@@ -482,7 +487,9 @@ function webhookApiFor(supervisor, platform, instanceKey) {
     }
     if (!handle) return null;
     try {
-      return createFluxerWebhooks({ rest: handle.rest, apiOrigin: "" });
+      // Audit C1: the handle's discovered apiOrigin (endpoints.api_public) —
+      // null here throws at construction (handled by the catch below).
+      return createFluxerWebhooks({ rest: handle.rest, apiOrigin: handle.apiOrigin });
     } catch (err) {
       console.error(`[bridge] Fluxer webhook api build failed for ${instanceKey}:`, err?.message || err);
       return null;
@@ -1043,4 +1050,6 @@ module.exports = {
   staffFacts,
   maskOf,
   isoUtc,
+  // production supervisor → webhook-api seam (audit C1)
+  webhookApiFor,
 };

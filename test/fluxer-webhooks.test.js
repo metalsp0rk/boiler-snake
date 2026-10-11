@@ -12,7 +12,10 @@
  *   - error-code mapping (TWO_FACTOR_REQUIRED, MAX_WEBHOOKS_PER_CHANNEL, …)
  *     and the retryable ladder (429/5xx/network → true, 4xx → false);
  *   - 404-on-delete counts as ok;
- *   - token hygiene: a webhook token never appears in an error string.
+ *   - token hygiene: a webhook token never appears in an error string;
+ *   - audit C1: construction REQUIRES an absolute http(s) `apiOrigin`
+ *     (discovery's endpoints.api_public) — empty/relative/bad-scheme origins
+ *     throw at construction instead of building relative webhook URLs.
  */
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
@@ -351,9 +354,103 @@ describe("platform/fluxer/webhooks — patch / delete lifecycle", () => {
 
 describe("platform/fluxer/webhooks — transport wiring", () => {
   it("createRelayWebhook fails specifically when no REST transport is injected", async () => {
-    const api = createFluxerWebhooks({ fetch: makeFakeFetch({}) });
+    // A valid absolute apiOrigin is passed: the module requires it at
+    // construction (audit C1, below); THIS test is about the missing rest.
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: makeFakeFetch({}) });
     const res = await api.createRelayWebhook(1, "7", { name: "Relay" });
     assert.equal(res.ok, false);
     assert.match(res.error, /transport needs a rest facade with request\(\)/);
+  });
+});
+
+describe("platform/fluxer/webhooks — absolute apiOrigin required at construction (audit C1)", () => {
+  // Regression for the C1 outage: both bridge seams passed apiOrigin: "",
+  // every token call fetched the RELATIVE path /v1/webhooks/… →
+  // "Failed to parse URL" → the entire Discord→Fluxer relay was dead in
+  // production. The module must now refuse to construct at all.
+  it("throws at construction on a MISSING apiOrigin, with an actionable cause", () => {
+    assert.throws(
+      () => createFluxerWebhooks({ rest: makeFakeRest(), fetch: makeFakeFetch({}) }),
+      (err) => {
+        assert.match(err.message, /apiOrigin is required/);
+        assert.match(err.message, /endpoints\.api_public/);
+        assert.match(err.message, /relative webhook URLs/);
+        return true;
+      },
+    );
+  });
+
+  it("throws at construction on an EMPTY/blank apiOrigin (the exact prod shape was apiOrigin: \"\")", () => {
+    for (const bad of ["", "   "]) {
+      assert.throws(
+        () => createFluxerWebhooks({ rest: makeFakeRest(), apiOrigin: bad, fetch: makeFakeFetch({}) }),
+        /apiOrigin is required/,
+        `blank apiOrigin ${JSON.stringify(bad)} must not construct`,
+      );
+    }
+    assert.throws(
+      () => createFluxerWebhooks({ apiOrigin: null, fetch: makeFakeFetch({}) }),
+      /apiOrigin is required/,
+    );
+    assert.throws(
+      () => createFluxerWebhooks(),
+      /apiOrigin is required/,
+      "a transport-less construction fails on the SAME guard (never a relative-URL machine)",
+    );
+  });
+
+  it("throws on a RELATIVE or non-http(s) apiOrigin instead of building a broken URL", () => {
+    assert.throws(
+      () => createFluxerWebhooks({ apiOrigin: "/api", fetch: makeFakeFetch({}) }),
+      /not an absolute URL/,
+    );
+    assert.throws(
+      () => createFluxerWebhooks({ apiOrigin: "api.example.com", fetch: makeFakeFetch({}) }),
+      /not an absolute URL/,
+    );
+    assert.throws(
+      () => createFluxerWebhooks({ apiOrigin: "ws://api.example.com", fetch: makeFakeFetch({}) }),
+      /scheme "ws:" is not allowed/,
+    );
+    assert.throws(
+      () => createFluxerWebhooks({ apiOrigin: "javascript:alert(1)", fetch: makeFakeFetch({}) }),
+      /not an absolute URL|scheme "javascript:" is not allowed/,
+    );
+  });
+
+  it("accepts an absolute origin and builds ABSOLUTE token URLs (path prefix kept, trailing slash trimmed)", async () => {
+    const fetchStub = makeFakeFetch({
+      [`POST ${API}/v1/webhooks/${WH.id}/${TOKEN}?wait=true`]: jsonResponse(200, { id: "m-1" }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: `${API}/`, fetch: fetchStub });
+    const res = await api.executeRelayWebhook(WH, { content: "hi" });
+    assert.deepEqual(res, { ok: true, messageId: "m-1" });
+    assert.equal(fetchStub.calls.length, 1);
+    assert.ok(
+      fetchStub.calls[0].url.startsWith("https://"),
+      "the URL is absolute — never a path a URL parser rejects at send time",
+    );
+
+    // A discovery api_public WITH a path prefix keeps it (roadmap/fluxer.md
+    // § Boot: "if api_public is https://example.com/api, routes are under
+    // that prefix").
+    const prefixed = "https://example.com/api";
+    const stub2 = makeFakeFetch({
+      [`DELETE ${prefixed}/v1/webhooks/${WH.id}/${TOKEN}`]: jsonResponse(204, null),
+    });
+    const api2 = createFluxerWebhooks({ apiOrigin: `${prefixed}/`, fetch: stub2 });
+    assert.deepEqual(await api2.deleteRelayWebhook(WH), { ok: true });
+    assert.equal(stub2.calls[0].url, `${prefixed}/v1/webhooks/${WH.id}/${TOKEN}`);
+  });
+
+  it("never sends the token endpoint to a relative path even when rest exists (create alone is not enough)", () => {
+    // The C1-shaped call from the seams: { rest, apiOrigin: "" } — the
+    // construction itself is the failure point, before any request.
+    const rest = makeFakeRest({ routes: { "POST /v1/channels/7/webhooks": { id: "1", token: "t" } } });
+    assert.throws(
+      () => createFluxerWebhooks({ rest, apiOrigin: "" }),
+      /apiOrigin is required/,
+    );
+    assert.equal(rest.calls.length, 0);
   });
 });

@@ -13,7 +13,10 @@
  * Handle shape (PR 6 shared contract 5, consumed by fluxer/outbound.js):
  *   { instanceKey, rest, userId, fetchGuild(externalId),
  *     guildFetch(communityId, guildId) }
- * plus the lifecycle extras `label`, `ready`, `destroy`, `outbound`, and the
+ * plus the lifecycle extras `label`, `ready`, `destroy`, `outbound`, the
+ * discovered API origin `apiOrigin` (absolute origin of the instance's API
+ * from discovery's `api_public`, or null when discovery did not resolve —
+ * the ONLY authority for building absolute webhook URLs, audit C1), and the
  * opt-in DM consumer hook `onDmMessage(listener)` (§10.3 delta 1 — returns an
  * unsubscribe function; consumers receive NormalizedDmMessage objects).
  *
@@ -216,7 +219,7 @@ function createDmDispatcher(instanceKey = "fluxer") {
  *   instance; pipelineHooks.supervisor is threaded to dispatch (contract 3).
  * @returns {Promise<{
  *   instanceKey: string, label: string, userId: string|null, ready: boolean,
- *   rest: object, outbound: object,
+ *   rest: object, outbound: object, apiOrigin: string|null,
  *   fetchGuild: (externalId: string) => Promise<object|null>,
  *   guildFetch: (communityId: number, guildId?: string|null) => Promise<object|null>,
  *   onDmMessage: (listener: (dm: object) => any) => () => void,
@@ -409,6 +412,22 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
   // must describe only genuine discovery fetch failures.
   webappBaseUrl = deriveWebappBaseUrl(discovered, instanceKey);
 
+  // Absolute API origin for webhook token URLs (audit C1): discovery's
+  // api_public is the ONLY authority — never fall back to the instance
+  // origin (api_public commonly lives on a different host, and a plausible
+  // wrong host 404s just as silently as the relative-URL bug did). Null
+  // when discovery did not resolve; the bridge seam then fails loudly at
+  // webhook-API construction with a specific cause.
+  const apiOrigin =
+    discovered && typeof discovered.apiPublic === "string" && discovered.apiPublic
+      ? discovered.apiPublic
+      : null;
+  if (apiOrigin == null) {
+    console.warn(
+      `[fluxer] ${instanceKey} discovery did not resolve api_public — webhook URL construction will fail loudly for this instance`,
+    );
+  }
+
   // Opt-in DM consumer registry (§10.3 delta 1, KD 24): MESSAGE_CREATE payloads
   // with no guild normalize to NormalizedDmMessage and fan out to consumers
   // registered via handle.onDmMessage. The guild pipeline path is untouched.
@@ -425,6 +444,10 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     destroy,
     features,
     webappBaseUrl,
+    // Absolute API origin for webhook token URLs (audit C1) — the sole
+    // authority for building absolute Fluxer webhook URLs. Null only when
+    // discovery failed; the bridge seam then fails loudly at construction.
+    apiOrigin,
     outbound: null,
     /**
      * Register a consumer for normalized inbound DMs (§10.3 delta 1, KD 24):
