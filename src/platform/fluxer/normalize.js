@@ -13,8 +13,10 @@
  *
  * The real Fluxer SDK (core package 3.1.0, verified in prod 2026-10-01) emits
  * HYDRATED camelCase model instances for these events (Message: channelId,
- * guildId, createdAt, mentionRoles, attachments as a Collection; reaction
- * payloads: {messageId, channelId, userId, emoji, user, member, reaction}).
+ * guildId, createdAt, mentionRoles, attachments as a Collection; GuildMember:
+ * `roles` is a GuildMemberRoleManager — the ids live behind its `roleIds`
+ * getter, NOT on `roles` as an array (audit C2); reaction payloads:
+ * {messageId, channelId, userId, emoji, user, member, reaction}).
  * Every field read below accepts BOTH spellings — camelCase first where the
  * SDK model is the source of truth, snake_case kept for raw-wire payloads,
  * the Phase 0 law, and test fixtures.
@@ -289,8 +291,14 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     authorRaw: d.author,
     attachments,
     createdAt: toDate(timestamp),
-    // Pipeline-added fields (contract 1):
-    memberRoleIds: mapIdArray(member?.roles),
+    // Pipeline-added fields (contract 1). Member roles arrive in two shapes:
+    // the real gateway hands a hydrated GuildMember whose `roles` is a
+    // GuildMemberRoleManager with the ids behind its `roleIds` getter — audit
+    // C2: reading the manager as an array always yielded [] and locked out
+    // every payload-resolved staff member — while raw wire payloads and
+    // fixtures carry a plain id array on `roles`. Read the manager first;
+    // nullish-coalescing keeps the wire array (an empty manager stays []).
+    memberRoleIds: mapIdArray(member?.roles?.roleIds ?? member?.roles),
     channelTypes: mentionMap.channelTypes,
     memberRaw: member,
     // id→bot flags for resolved mentions (dispatch step 3 — never default false).

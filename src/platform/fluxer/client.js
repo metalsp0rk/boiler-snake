@@ -534,4 +534,10 @@ module.exports = {
   deriveWebappBaseUrl,
   buildRestFacade,
   createDmDispatcher,
+  // The single SDK load site (fluxer-sdk-import-guard). Tests that need real
+  // SDK model classes go through this instead of importing the package
+  // directly; it resolves to null when the package is absent so callers can
+  // skip gracefully (roadmap/fluxer.md § Tests: npm test stays green without
+  // the SDK installed).
+  loadFluxerSdk,
 };
