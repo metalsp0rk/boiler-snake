@@ -5,6 +5,11 @@ const {
   assertReplyContains,
   assertEphemeralReply,
 } = require("../helpers/assert");
+const {
+  exactlyOneSend,
+  assertPingsRoleOnly,
+  assertPingsNobody,
+} = require("../helpers/sendShape");
 const { IDS } = require("../helpers/fixtures");
 
 /**
@@ -26,6 +31,8 @@ describe("integration: twitch", () => {
   let env;
   let processSubscription;
   let runTwitchTick;
+  let processNewClips;
+  let processNewVods;
 
   after(() => {
     // Close SQLite handles and remove the temp dir created for this env.
@@ -37,6 +44,8 @@ describe("integration: twitch", () => {
     const ticker = require("../../src/features/twitch/ticker");
     processSubscription = ticker.processSubscription;
     runTwitchTick = ticker.runTwitchTick;
+    processNewClips = ticker.processNewClips;
+    processNewVods = ticker.processNewVods;
   });
 
   it("repo: add/get/remove twitch channel", () => {
@@ -585,6 +594,138 @@ describe("integration: twitch", () => {
       `thumbnail still templated: ${thumb}`,
     );
     assert.match(thumb, /-640x360\.jpg$/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // #199 (audit §6 P1, docs at-risk surfaces): ticker-level send-shape tests
+  // pinning the operator-doc contract (docs/twitch-notifications.md: go-live
+  // "Mention: the /settwitch role role only, via allowedMentions"; clip/VOD
+  // alerts "never ping the role"). Go-live arms drive the REAL ticker entry
+  // (runTwitchTick) with the transport mocked at the channel.send boundary;
+  // the shared sendShape helpers assert both sides — content tokens ↔ exact
+  // allowedMentions payload — so a suppressed-ping regression can never go
+  // green. The EventSub fast path reuses processSubscription → the same
+  // sendGoLiveNotification send, so it shares this pinned shape.
+  // ---------------------------------------------------------------------------
+
+  async function driveGoLiveViaTick(broadcasterId, login, { roleId }) {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+      twitch_notify_role_id: roleId,
+      twitch_polling_interval_minutes: 1,
+    });
+    // Fresh subscription, never checked → eligible for this tick.
+    env.db.addTwitchChannel(env.communityId, broadcasterId, login, `${login}Display`, "");
+    env.channels.notify.sent.length = 0;
+
+    const prevId = process.env.TWITCH_CLIENT_ID;
+    const prevSecret = process.env.TWITCH_CLIENT_SECRET;
+    process.env.TWITCH_CLIENT_ID = "test-id";
+    process.env.TWITCH_CLIENT_SECRET = "test-secret";
+    try {
+      await runTwitchTick(fakeSupervisor(env.client), {
+        resolveUser: async () => null,
+        fetchStreams: async (ids) =>
+          ids.includes(broadcasterId)
+            ? [
+                {
+                  id: `shape-stream-${broadcasterId}`,
+                  user_id: broadcasterId,
+                  user_login: login,
+                  title: "Shape contract stream",
+                  started_at: new Date().toISOString(),
+                },
+              ]
+            : [],
+      });
+    } finally {
+      if (prevId != null) process.env.TWITCH_CLIENT_ID = prevId;
+      else delete process.env.TWITCH_CLIENT_ID;
+      if (prevSecret != null) process.env.TWITCH_CLIENT_SECRET = prevSecret;
+      else delete process.env.TWITCH_CLIENT_SECRET;
+    }
+    return exactlyOneSend(env.channels.notify.sent, `twitch go-live (${login})`);
+  }
+
+  it("go-live send pings exactly the configured role (send-shape #199)", async () => {
+    const payload = await driveGoLiveViaTick("559101", "shapecast1", {
+      roleId: IDS.roleExempt,
+    });
+    assertPingsRoleOnly(payload, IDS.roleExempt, { label: "twitch go-live alert" });
+    assert.equal(payload.embeds.length, 1, "go-live alert carries exactly one embed");
+    assert.equal(payload.embeds[0].title, "Shape contract stream");
+  });
+
+  it("go-live send without a role builds no mention and allows none (send-shape #199)", async () => {
+    const payload = await driveGoLiveViaTick("559102", "shapecast2", { roleId: null });
+    assertPingsNobody(payload, { label: "twitch go-live alert (no role)" });
+    assert.equal(payload.embeds.length, 1, "go-live alert carries exactly one embed");
+  });
+
+  it("clip alerts never ping, even with a notify role configured (send-shape #199)", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+      twitch_notify_role_id: IDS.roleExempt,
+    });
+    env.db.addTwitchChannel(env.communityId, "559103", "clipshape", "ClipShape", null);
+    env.db.setTwitchChannelMediaFlags(env.communityId, "559103", {
+      notifyClips: true,
+      notifyVods: false,
+    });
+    env.channels.notify.sent.length = 0;
+    const sub = env.db.getTwitchChannel(env.communityId, "clipshape");
+    const wm = sub.last_clip_created_at;
+    assert.ok(wm > 0, "enabling the flag seeds the clip watermark");
+
+    await processNewClips(fakeSupervisor(env.client), sub, {
+      fetchClips: async () => [
+        {
+          id: "cshape1",
+          url: "https://twitch.tv/c/cshape1",
+          title: "Shape clip",
+          created_at: new Date(wm + 1000).toISOString(),
+          duration: 12,
+        },
+      ],
+    });
+
+    const payload = exactlyOneSend(env.channels.notify.sent, "twitch clip alert");
+    assertPingsNobody(payload, { label: "twitch clip alert" });
+    assert.equal(payload.embeds.length, 1, "clip alert carries exactly one embed");
+    assert.equal(payload.embeds[0].title, "Shape clip");
+  });
+
+  it("VOD alerts never ping, even with a notify role configured (send-shape #199)", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+      twitch_notify_role_id: IDS.roleExempt,
+    });
+    env.db.addTwitchChannel(env.communityId, "559104", "vodshape", "VodShape", null);
+    env.db.setTwitchChannelMediaFlags(env.communityId, "559104", {
+      notifyClips: false,
+      notifyVods: true,
+    });
+    env.channels.notify.sent.length = 0;
+    const sub = env.db.getTwitchChannel(env.communityId, "vodshape");
+    const wm = sub.last_video_created_at;
+    assert.ok(wm > 0, "enabling the flag seeds the VOD watermark");
+
+    await processNewVods(fakeSupervisor(env.client), sub, {
+      fetchArchives: async () => [
+        {
+          id: "vshape1",
+          title: "Shape VOD",
+          created_at: new Date(wm + 1000).toISOString(),
+          duration: "PT1H5M",
+          view_count: 3,
+        },
+      ],
+    });
+
+    const payload = exactlyOneSend(env.channels.notify.sent, "twitch VOD alert");
+    assertPingsNobody(payload, { label: "twitch VOD alert" });
+    assert.equal(payload.embeds.length, 1, "VOD alert carries exactly one embed");
+    assert.equal(payload.embeds[0].title, "Shape VOD");
   });
 
   it("denies non-staff /twitch", async () => {
