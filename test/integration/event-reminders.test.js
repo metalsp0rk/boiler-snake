@@ -620,3 +620,495 @@ describe("integration: event reminders", () => {
     );
   });
 });
+
+describe("integration: event reminder delivery state (#196, audit H12)", () => {
+  /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
+  let env;
+  let runEventReminderTick;
+  /** Claim-state constants live on the repository (facade stays function-only). */
+  let repo;
+
+  after(() => {
+    env?.cleanup();
+  });
+
+  before(async () => {
+    env = await createIntegrationEnv();
+    // Require AFTER createIntegrationEnv so the ticker binds to this env's DB.
+    runEventReminderTick =
+      require("../../src/features/eventReminders/ticker").runEventReminderTick;
+    repo = require("../../src/db/repositories/eventReminders.js");
+  });
+
+  /** Raw offset row by id (bypasses the join/claim layer). */
+  function offsetRow(offsetId) {
+    return env.db.db
+      .prepare(`SELECT * FROM event_reminder_offsets WHERE id=?`)
+      .get(offsetId);
+  }
+
+  /** Register a live scheduled event so safety cleanup leaves the config alone. */
+  async function liveEvent(id, name, startMs) {
+    const event = createScheduledEvent({
+      guild: env.guild,
+      id,
+      name,
+      scheduledStartTimestamp: startMs,
+      creatorId: IDS.admin,
+      subscriberIds: [],
+    });
+    env.guild.addScheduledEvent(event);
+    return event;
+  }
+
+  /** Config + role row wired to an event; returns the config (with offsets). */
+  async function reminderConfig(opts) {
+    const role = await env.guild.roles.create({
+      name: `event-${opts.shortname}`,
+    });
+    return env.db.createEventReminderConfig({
+      communityId: env.communityId,
+      scheduledEventId: opts.eventId,
+      shortname: opts.shortname,
+      roleId: role.id,
+      channelId: opts.channelId ?? null,
+      persistent: opts.persistent ?? false,
+      offsets: opts.offsets,
+      createdBy: IDS.admin,
+    });
+  }
+
+  it("migration 038 adds claim-state columns and pins sent rows terminal", async () => {
+    const cols = env.db.db
+      .prepare(`PRAGMA table_info(event_reminder_offsets)`)
+      .all()
+      .map((c) => c.name);
+    for (const col of [
+      "status",
+      "attempts",
+      "next_attempt_at",
+      "claimed_at",
+      "last_error",
+    ]) {
+      assert.ok(cols.includes(col), `column ${col} exists`);
+    }
+
+    // Backfill rule of 038: a row with sent_at set is terminal 'sent' — even
+    // if something clobbered the status. Re-running up() (idempotency contract)
+    // must restore it without duplicating columns.
+    await liveEvent("evt-196-mig", "Mig", Date.now() + 86_400_000);
+    const config = await reminderConfig({
+      eventId: "evt-196-mig",
+      shortname: "196-mig",
+      offsets: [{ offsetMinutes: 60, fireAt: Date.now() - 1000 }],
+    });
+    const offsetId = config.offsets[0].id;
+    env.db.claimDueReminders(Date.now(), 50);
+    assert.equal(env.db.markReminderSent(offsetId, "msg-mig"), true);
+
+    env.db.db
+      .prepare(`UPDATE event_reminder_offsets SET status='pending' WHERE id=?`)
+      .run(offsetId);
+    const migration = require("../../src/db/migrations/038_event_reminder_claim_state.js");
+    const { addColumnIfMissing } = require("../../src/db/connection");
+    migration.up(env.db.db, { addColumnIfMissing });
+
+    assert.equal(offsetRow(offsetId).status, "sent", "backfill pins sent rows");
+    const colsAfter = env.db.db
+      .prepare(`PRAGMA table_info(event_reminder_offsets)`)
+      .all()
+      .map((c) => c.name);
+    assert.deepEqual(
+      colsAfter.filter((c) => c === "status").length,
+      1,
+      "re-running the migration is a no-op on columns"
+    );
+  });
+
+  it("repo: claim CAS — one claimer, TTL recovers a dead worker, terminals never re-claim", async () => {
+    const T0 = Date.now();
+    await liveEvent("evt-196-claim", "Claim CAS", T0 + 24 * 3_600_000);
+    const config = await reminderConfig({
+      eventId: "evt-196-claim",
+      shortname: "196-claim",
+      offsets: [{ offsetMinutes: 60, fireAt: T0 - 1000 }],
+    });
+    const offsetId = config.offsets[0].id;
+
+    // Fresh row defaults: pending, no attempts, unscheduled (COALESCE → fire_at).
+    let row = offsetRow(offsetId);
+    assert.equal(row.status, "pending");
+    assert.equal(row.attempts, 0);
+    assert.equal(row.next_attempt_at, null);
+
+    // Claim 1: wins, flips to 'sending' with a lease stamp.
+    const due1 = env.db.claimDueReminders(T0, 50);
+    const mine = due1.find((d) => d.offset_id === offsetId);
+    assert.ok(mine, "due row is claimed");
+    assert.equal(mine.status, "sending");
+    assert.equal(mine.claimed_at, T0);
+    assert.equal(typeof mine.attempts, "number");
+
+    // CAS: a second ticker at the same instant claims nothing; the lease is
+    // held until TTL expiry, then a crashed worker's row is reclaimable.
+    assert.equal(
+      env.db
+        .claimDueReminders(T0, 50)
+        .some((d) => d.offset_id === offsetId),
+      false,
+      "concurrent claim sees the row as taken"
+    );
+    assert.equal(
+      env.db
+        .claimDueReminders(T0 + repo.REMINDER_CLAIM_TTL_MS - 1, 50)
+        .some((d) => d.offset_id === offsetId),
+      false,
+      "lease still fresh inside the TTL"
+    );
+    assert.ok(
+      env.db
+        .claimDueReminders(T0 + repo.REMINDER_CLAIM_TTL_MS + 1, 50)
+        .some((d) => d.offset_id === offsetId),
+      "lease-expired row is reclaimed by the next ticker"
+    );
+
+    // Sent is terminal: never claimable again, at any clock.
+    assert.equal(env.db.markReminderSent(offsetId, "msg-196"), true);
+    assert.equal(offsetRow(offsetId).status, "sent");
+    assert.equal(offsetRow(offsetId).sent_at !== null, true);
+    for (const t of [T0, T0 + 10 * 60_000, T0 + 99 * 60 * 60_000]) {
+      assert.equal(
+        env.db
+          .claimDueReminders(t, 50)
+          .some((d) => d.offset_id === offsetId),
+        false,
+        "sent row never re-claims"
+      );
+    }
+
+    // Retired rows are equally invisible to the claim queue.
+    env.db.updateEventReminderConfig(config.id, {
+      offsets: [{ offsetMinutes: 15, fireAt: T0 - 2000 }],
+    });
+    const off2 = env.db.getEventReminderConfigById(config.id).offsets.find(
+      (o) => o.sent_at == null
+    );
+    assert.ok(off2);
+    env.db.claimDueReminders(T0, 50);
+    assert.equal(env.db.retireReminderOffset(off2.id, "channel gone").won, true);
+    assert.equal(offsetRow(off2.id).status, "retired");
+    assert.equal(offsetRow(off2.id).last_error, "channel gone");
+    assert.equal(
+      env.db
+        .claimDueReminders(T0 + 60 * 60_000, 50)
+        .some((d) => d.offset_id === off2.id),
+      false,
+      "retired row never re-claims"
+    );
+
+    // Inactive configs drop out of the queue even with pending rows.
+    env.db.updateEventReminderConfig(config.id, {
+      offsets: [{ offsetMinutes: 5, fireAt: T0 - 3000 }],
+    });
+    env.db.db
+      .prepare(`UPDATE event_reminder_configs SET active=0 WHERE id=?`)
+      .run(config.id);
+    assert.equal(
+      env.db
+        .claimDueReminders(T0 + 60 * 60_000, 50)
+        .some((d) => d.config_id === config.id),
+      false,
+      "inactive config is not claimed"
+    );
+  });
+
+  it("backoff curve doubles from one tick and caps at 6h", () => {
+    const d = env.db.reminderRetryDelayMs;
+    assert.equal(d(1), 60_000);
+    assert.equal(d(2), 120_000);
+    assert.equal(d(3), 240_000);
+    assert.equal(d(9), 256 * 60_000);
+    assert.equal(d(10), 6 * 60 * 60_000, "2^9·60s exceeds the cap → capped at 6h");
+    assert.equal(d(99), 6 * 60 * 60_000);
+  });
+
+  it("concurrent tickers deliver a due offset exactly once (latch)", async () => {
+    const T0 = Date.now();
+    await liveEvent("evt-196-race", "Race", T0 + 24 * 3_600_000);
+    const config = await reminderConfig({
+      eventId: "evt-196-race",
+      shortname: "196-race",
+      offsets: [{ offsetMinutes: 60, fireAt: T0 - 1000 }],
+    });
+    const offsetId = config.offsets[0].id;
+
+    const channel = env.channels.notify;
+    env.db.updateGuildSettings(env.communityId, {
+      event_reminder_channel_id: IDS.channelNotify,
+    });
+    const originalSend = channel.send.bind(channel);
+    let sendCalls = 0;
+    let entered, releaseEntry;
+    const enteredP = new Promise((r) => (entered = r));
+    const releaseP = new Promise((r) => (releaseEntry = r));
+    channel.send = async (payload) => {
+      sendCalls += 1;
+      if (sendCalls === 1) {
+        entered();
+        await releaseP; // hold the winner mid-delivery while ticker #2 runs
+      }
+      return originalSend(payload);
+    };
+
+    try {
+      const first = channel.sent.length;
+      const tick1 = runEventReminderTick(env.client, { now: T0 });
+      await enteredP; // ticker #1 owns the claim, stuck inside send
+
+      // Ticker #2 runs fully while the claim is held → claims nothing.
+      await runEventReminderTick(env.client, { now: T0 + 5_000 });
+      assert.equal(sendCalls, 1, "second ticker never delivers");
+
+      releaseEntry();
+      await tick1;
+
+      assert.equal(sendCalls, 1, "exactly one sender for one claim");
+      assert.equal(channel.sent.length, first + 1);
+      const row = offsetRow(offsetId);
+      assert.equal(row.status, "sent");
+      assert.equal(row.attempts, 0);
+      assert.ok(row.message_id, "sent row records the message id");
+    } finally {
+      channel.send = originalSend;
+      releaseEntry();
+    }
+  });
+
+  it("gone notify channel RETIRES the offset after first detection — never re-claimed", async () => {
+    const T0 = Date.now();
+    await liveEvent("evt-196-gone", "Gone Chan", T0 + 48 * 3_600_000);
+    const config = await reminderConfig({
+      eventId: "evt-196-gone",
+      shortname: "196-gone",
+      channelId: "channel-deleted-999", // not in cache; mock fetch → null
+      offsets: [{ offsetMinutes: 60, fireAt: T0 - 1000 }],
+    });
+    const offsetId = config.offsets[0].id;
+    const before = env.channels.notify.sent.length;
+
+    await runEventReminderTick(env.client, { now: T0 });
+
+    let row = offsetRow(offsetId);
+    assert.equal(row.status, "retired", "retired on FIRST detection");
+    assert.match(row.last_error, /gone/i);
+    assert.equal(row.sent_at, null, "retired ≠ sent — no fake discard");
+    assert.equal(env.channels.notify.sent.length, before);
+
+    // The audit bug: minutes of re-claims for up to 30 days. Prove silence.
+    for (const dt of [60_000, 300_000, 30 * 60_000]) {
+      await runEventReminderTick(env.client, { now: T0 + dt });
+    }
+    row = offsetRow(offsetId);
+    assert.equal(row.status, "retired");
+    assert.equal(env.channels.notify.sent.length, before, "no re-fire, no ping storm");
+    assert.equal(
+      env.db
+        .claimDueReminders(T0 + 24 * 3_600_000, 50)
+        .some((d) => d.offset_id === offsetId),
+      false
+    );
+
+    // Row retires; the CONFIG stays active for the operator to fix the channel.
+    const cfg = env.db.getEventReminderConfigById(config.id);
+    assert.equal(cfg.active, 1, "gone-channel retire keeps the config alive");
+
+    // A 10003 error rejection classifies as gone too (own event → own config;
+    // the configs table enforces one config per scheduled event).
+    await liveEvent("evt-196-gone-code", "Gone Code", T0 + 48 * 3_600_000);
+    const config2 = await reminderConfig({
+      eventId: "evt-196-gone-code",
+      shortname: "196-gone-code",
+      channelId: "channel-10003",
+      offsets: [{ offsetMinutes: 15, fireAt: T0 - 1000 }],
+    });
+    const off2 = config2.offsets[0].id;
+    const originalFetch = env.guild.channels.fetch;
+    env.guild.channels.fetch = async () => {
+      const err = new Error("Unknown Channel");
+      err.code = 10003;
+      throw err;
+    };
+    try {
+      await runEventReminderTick(env.client, { now: T0 + 60_000 });
+    } finally {
+      env.guild.channels.fetch = originalFetch;
+    }
+    const row2 = offsetRow(off2);
+    assert.equal(row2.status, "retired", "Discord 10003 → gone, terminal");
+    assert.match(row2.last_error, /10003|Unknown Channel/i);
+  });
+
+  it("transient send failures back off on the curve, never before fire_at+1 tick, then terminal-fail", async () => {
+    const T0 = Date.now();
+    // Event far in the future so safety cleanup (start+5min) never touches it
+    // while the fake clock walks ~17h of backoff.
+    await liveEvent("evt-196-backoff", "Backoff", T0 + 100 * 86_400_000);
+    env.db.updateGuildSettings(env.communityId, {
+      event_reminder_channel_id: IDS.channelNotify,
+    });
+    const config = await reminderConfig({
+      eventId: "evt-196-backoff",
+      shortname: "196-backoff",
+      offsets: [{ offsetMinutes: 60, fireAt: T0 - 1000 }],
+    });
+    const offsetId = config.offsets[0].id;
+
+    const channel = env.channels.notify;
+    const originalSend = channel.send.bind(channel);
+    const first = channel.sent.length;
+    let sendCalls = 0;
+    channel.send = async (payload) => {
+      sendCalls += 1;
+      const err = new Error("500: Internal Server Error");
+      err.code = 0;
+      throw err; // transient — never a gone code
+    };
+
+    try {
+      let now = T0;
+      let last = null;
+      for (let i = 1; i <= repo.MAX_REMINDER_ATTEMPTS; i++) {
+        await runEventReminderTick(env.client, { now });
+        const row = offsetRow(offsetId);
+        assert.equal(row.attempts, i, `attempt ${i} recorded`);
+        assert.equal(row.sent_at, null, `row ${i} was NOT discarded-as-sent`);
+        assert.equal(sendCalls, i, "one delivery attempt per claim");
+
+        if (i === 1) {
+          // Audit floor: the retry is never earlier than the original
+          // next-offset plus one ticker tick, even with a 60s first delay.
+          assert.ok(
+            row.next_attempt_at >= config.offsets[0].fire_at + repo.REMINDER_TICK_MS,
+            "retry respects fire_at + 1 tick floor"
+          );
+          // And it does not fire early: a tick inside the backoff window
+          // must not claim the row.
+          await runEventReminderTick(env.client, {
+            now: row.next_attempt_at - 1000,
+          });
+          assert.equal(sendCalls, 1, "no early retry");
+        }
+
+        if (i < repo.MAX_REMINDER_ATTEMPTS) {
+          assert.equal(row.status, "pending", "transient → pending with schedule");
+          assert.equal(
+            row.next_attempt_at,
+            Math.max(
+              now + env.db.reminderRetryDelayMs(i),
+              config.offsets[0].fire_at + repo.REMINDER_TICK_MS
+            ),
+            `next_attempt_at = max(now+backoff(${i}), fire_at+tick)`
+          );
+          last = row.next_attempt_at;
+          now = row.next_attempt_at; // clock jumps to the scheduled retry — zero real sleeps
+        } else {
+          assert.equal(last !== null, true);
+          assert.equal(row.status, "failed", "terminal 'failed' after MAX attempts");
+          assert.match(row.last_error, /500|Internal Server Error/i);
+        }
+      }
+
+      // Terminal: even a tick years later produces no delivery attempt.
+      await runEventReminderTick(env.client, { now: T0 + 365 * 86_400_000 });
+      assert.equal(sendCalls, repo.MAX_REMINDER_ATTEMPTS);
+      assert.equal(channel.sent.length, first, "nothing ever reached Discord");
+    } finally {
+      channel.send = originalSend;
+    }
+  });
+
+  it("guild-fetch blip retries with backoff instead of permanently discarding (H12 discard bug)", async () => {
+    const T0 = Date.now();
+    await liveEvent("evt-196-guild", "Guild Blip", T0 + 48 * 3_600_000);
+    env.db.updateGuildSettings(env.communityId, {
+      event_reminder_channel_id: IDS.channelNotify,
+    });
+    const config = await reminderConfig({
+      eventId: "evt-196-guild",
+      shortname: "196-guild",
+      offsets: [{ offsetMinutes: 60, fireAt: T0 - 1000 }],
+    });
+    const offsetId = config.offsets[0].id;
+
+    // Guild disappears (restart cache-cold / fetch failure — mock fetch → null).
+    env.client.guilds.cache.delete(env.guildId);
+    try {
+      await runEventReminderTick(env.client, { now: T0 });
+    } finally {
+      env.client.guilds.cache.set(env.guildId, env.guild);
+    }
+
+    let row = offsetRow(offsetId);
+    assert.equal(row.sent_at, null, "NOT discarded via markReminderSent(null)");
+    assert.equal(row.status, "pending", "transient → back to pending");
+    assert.equal(row.attempts, 1);
+    assert.equal(row.next_attempt_at, T0 + env.db.reminderRetryDelayMs(1));
+
+    // Guild back → the scheduled retry delivers normally.
+    await runEventReminderTick(env.client, {
+      now: T0 + env.db.reminderRetryDelayMs(1),
+    });
+    row = offsetRow(offsetId);
+    assert.equal(row.status, "sent");
+    assert.ok(row.message_id);
+  });
+
+  it("event gone: non-persistent config cleans up; persistent retires offsets and survives", async () => {
+    const T0 = Date.now();
+    // No event registered for either config → event-gone branch.
+    env.db.updateGuildSettings(env.communityId, {
+      event_reminder_channel_id: IDS.channelNotify,
+    });
+    const transient = await reminderConfig({
+      eventId: "evt-196-gone-nonpersist",
+      shortname: "196-nonpersist",
+      offsets: [{ offsetMinutes: 60, fireAt: T0 - 1000 }],
+    });
+    const persistent = await reminderConfig({
+      eventId: "evt-196-gone-persist",
+      shortname: "196-persist",
+      persistent: true,
+      offsets: [{ offsetMinutes: 60, fireAt: T0 - 1000 }],
+    });
+
+    await runEventReminderTick(env.client, { now: T0 });
+
+    assert.equal(
+      env.db.getEventReminderConfigById(transient.id),
+      null,
+      "non-persistent: event gone → full cleanup (role/config deleted)"
+    );
+    const cfg = env.db.getEventReminderConfigById(persistent.id);
+    assert.ok(cfg, "persistent config survives the event instance");
+    assert.equal(cfg.active, 1);
+    assert.equal(cfg.offsets[0].status, "retired");
+    assert.match(cfg.offsets[0].last_error, /not found; persistent config kept/);
+    assert.equal(
+      env.db
+        .claimDueReminders(T0 + 3_600_000, 50)
+        .some((d) => d.config_id === persistent.id),
+      false,
+      "retired offsets of a persistent config never re-claim"
+    );
+
+    // Ticker cleanup is an automated mutation → one origin-'system' audit row
+    // (pins the noteCleanup wiring, which is otherwise invisible to row state).
+    const audited = env.db.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM admin_audit
+         WHERE action='event_reminders.cleanup' AND target_id=?`
+      )
+      .get(String(transient.id));
+    assert.equal(audited.c, 1, "event-gone cleanup writes the system audit trail");
+  });
+});

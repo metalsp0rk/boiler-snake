@@ -171,15 +171,23 @@ async function handleList(interaction, communityId) {
 
   const lines = configs.map((c) => {
     const ch = c.channel_id ? `<#${c.channel_id}>` : `default (${defaultCh})`;
+    // #196 delivery-state model: only claimable rows with no sent_at can fire
+    // (status alone is not trusted — legacy fixtures may write old column sets);
+    // retired/failed are terminal and must not show as upcoming.
     const next = (c.offsets || [])
-      .filter((o) => o.sent_at == null)
+      .filter((o) => o.sent_at == null && (o.status === "pending" || o.status === "sending"))
       .sort((a, b) => a.fire_at - b.fire_at)[0];
     const nextText = next
       ? `<t:${Math.floor(next.fire_at / 1000)}:R> (${formatOffsetMinutes(next.offset_minutes)} before)`
       : "_all sent / none pending_";
     const offs = (c.offsets || [])
       .map((o) => {
-        const mark = o.sent_at ? "✓" : "·";
+        const mark =
+          o.status === "sent" || o.sent_at != null
+            ? "✓"
+            : o.status === "retired" || o.status === "failed"
+              ? "✕"
+              : "·";
         return `${mark}${formatOffsetMinutes(o.offset_minutes)}`;
       })
       .join(" ");
@@ -926,7 +934,10 @@ async function handleRecurringButton(interaction) {
     ],
   }).catch(() => {});
 
-  const pending = (config.offsets || []).filter((o) => o.sent_at == null);
+  // Only rows that can still fire go in the "upcoming" list (#196 state model).
+  const pending = (config.offsets || []).filter(
+    (o) => o.sent_at == null && (o.status === "pending" || o.status === "sending")
+  );
   const fireLines =
     pending
       .map(

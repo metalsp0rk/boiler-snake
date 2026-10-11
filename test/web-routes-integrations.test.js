@@ -443,6 +443,10 @@ describe("web integrations page (GET /g/:guildId/integrations, staff tier, read-
         createdBy: "820000000000000002",
       });
       assert.ok(config && config.offsets.length === 2);
+      // markReminderSent is a CAS on the LIVE claim (#196): a row can only
+      // become 'sent' while claimed, so the fixture claims it first — the
+      // same transition the ticker performs.
+      api.claimDueReminders(FIRE_EARLY + 60_000, 50);
       api.markReminderSent(config.offsets[0].id, "923000000000000999");
       api.addHoneypotChannel(CID_A, "724000000000000401");
       api.setHoneypotWarningMessage(CID_A, "724000000000000401", "924000000000000402");

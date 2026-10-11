@@ -162,7 +162,14 @@ function projectReminderConfig(row) {
   let unsent = 0;
   let nextFireAt = null;
   for (const off of offsets) {
-    if (off?.sent_at == null) {
+    // #196 delivery-state model: only pending/sending offsets with no sent_at
+    // can still fire; retired/failed are terminal (fall back to sent_at on
+    // pre-038 shapes that have no status).
+    const status = typeof off?.status === "string" ? off.status : null;
+    const isUnsent = status
+      ? off?.sent_at == null && (status === "pending" || status === "sending")
+      : off?.sent_at == null;
+    if (isUnsent) {
       unsent += 1;
       const at = numOrNull(off?.fire_at);
       if (at != null && (nextFireAt == null || at < nextFireAt)) nextFireAt = at;

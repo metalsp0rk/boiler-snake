@@ -243,6 +243,33 @@ Offsets already in the past relative to the event start are skipped. Max **8** o
 - Gateway: interest add/remove, event update (reschedule or terminal), event delete.
 - Reschedule: unsent `fire_at` values recomputed when the event start time changes.
 
+### Offset delivery states
+
+Each offset row carries an explicit delivery state instead of relying on
+`sent_at IS NULL` alone (which conflated "not sent", "can't send", and "sent"):
+
+| State | Meaning |
+|-------|---------|
+| `pending` | Not yet delivered (or waiting for its next retry). Claimable when `COALESCE(next_attempt_at, fire_at) ≤ now`. |
+| `sending` | Currently claimed by a ticker (atomic compare-and-set, so two tickers can never deliver the same offset). A crashed sender is recovered: claims older than the **5-minute lease TTL** become claimable again. |
+| `sent` | Terminal — the message reached Discord (`sent_at` + `message_id` recorded). |
+| `retired` | Terminal — the reminder **can't** be delivered: the notify channel is gone (Discord `10003`/`10004`) or exists but is unsendable, or the event instance ended under a persistent (recurring) config. Retired **on first detection** — never re-claimed, so a deleted channel no longer burns the claim queue every minute. The config itself stays active so an operator can point it at a new channel via `/eventreminder edit` (re-arms a fresh offset row). |
+| `failed` | Terminal — a transient failure exhausted the retry budget (**12 attempts**). |
+
+**Transient vs gone:** network errors, 5xx, rate limits, missing access, a
+not-yet-cached guild, or a not-yet-configured channel are **transient**: the
+row goes back to `pending` with `attempts+1` and a growing backoff —
+1 min, 2, 4, 8, … doubling, capped at 6 h — and a retry is **never scheduled
+earlier than the original offset + one ticker tick**. After 12 failed attempts
+(~1 day of outage coverage) the offset goes `failed`. Only explicit
+"target is gone" classifications retire. Every transition logs the specific
+cause with the offset/config ids; the last reason is also stored on the row
+(`last_error`).
+
+Migration `038` added `status`, `attempts`, `next_attempt_at`, `claimed_at`,
+and `last_error` to `event_reminder_offsets` (rows already sent are backfilled
+to `sent`).
+
 ## Database
 
 Tables: `event_reminder_configs`, `event_reminder_offsets`, `event_reminder_optouts`, `event_reminder_event_optouts` (per-event mutes).  
