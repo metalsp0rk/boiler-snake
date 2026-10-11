@@ -397,6 +397,13 @@ module.exports = {
   // Fluxer web-login OAuth transactions (roadmap/fluxer.md § PKCE and state)
   createOAuthTransaction: fluxerOAuthTransactions.createOAuthTransaction,
   consumeOAuthTransaction: fluxerOAuthTransactions.consumeOAuthTransaction,
+  // retention sweeps (audit-2026-10 #192): bounded batched delete primitives
+  // consumed by src/features/retention/sweeps.js — NOT a delete policy here.
+  deleteExpiredOAuthTransactions: fluxerOAuthTransactions.deleteExpiredOAuthTransactions,
+  deleteActivityLogOlderThan: activity.deleteActivityLogOlderThan,
+  deleteAdminAuditOlderThan: adminAudit.deleteAdminAuditOlderThan,
+  deleteDailyAggregatesBeforeDay:
+    userChannelActivity.deleteDailyAggregatesBeforeDay,
 
   // channel bridge (roadmap/bridge.md PR 2: schema + repo + credential helpers;
   // the service/relay/commands land in PRs 4-7)

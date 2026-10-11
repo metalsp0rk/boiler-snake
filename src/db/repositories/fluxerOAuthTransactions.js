@@ -23,6 +23,15 @@ const { db, now } = require("../connection");
 const NONCE_RE = /^[0-9a-f]{32}$/;
 
 /**
+ * Expired rows the CREATE-path prune deletes at most per call (audit-2026-10
+ * #192). createOAuthTransaction is reachable PRE-AUTH (web login start), so
+ * this lazy delete bounds unauthenticated table growth even if the scheduled
+ * retention sweeper never fires — the gork interaction-log lazy-prune
+ * posture, bounded like the sweeper's batches.
+ */
+const LAZY_EXPIRED_PRUNE_LIMIT = 50;
+
+/**
  * Insert (or replace, keyed by nonce) a pending login transaction.
  * Called by the login start BEFORE the 302 to the authorize URL.
  *
@@ -58,6 +67,23 @@ function createOAuthTransaction({ nonce, codeVerifier, instanceKey, expiresAt })
     VALUES (?, ?, ?, ?)
   `
   ).run(nonce, codeVerifier, instanceKey, expiresAt);
+
+  // Opportunistic expired-row prune (audit-2026-10 #192): this write is
+  // reachable PRE-AUTH (web login start), and the only other DELETE
+  // (consumeOAuthTransaction) filters unexpired rows — so without this the
+  // table grew forever from abandoned logins. A bounded lazy delete on
+  // create keeps unauthenticated growth in check even when the scheduled
+  // retention sweeper never ran (link-code-sweeper precedent, gork lazy
+  // prune shape). Best-effort: one failed prune must NEVER fail the login
+  // redirect path; the sweeper job is the backstop.
+  try {
+    deleteExpiredOAuthTransactions(now(), LAZY_EXPIRED_PRUNE_LIMIT);
+  } catch (err) {
+    console.error(
+      "[db] fluxer_oauth_transactions expired-row lazy prune failed:",
+      err?.message || err
+    );
+  }
   return true;
 }
 
@@ -86,7 +112,39 @@ function consumeOAuthTransaction(nonce, at = now()) {
   return row || null;
 }
 
+/**
+ * Retention GC (audit-2026-10 #192): delete AT MOST `limit` transactions
+ * whose `expires_at` has passed — the row is DEAD the instant it expires
+ * (consumeOAuthTransaction only matches `expires_at > at`, so this filter is
+ * its exact complement: no gap, no window where a row is both sweeper-safe
+ * and callback-live). One bounded batch for the retention sweeper's
+ * LIMIT-batched loop; the create path also calls it opportunistically
+ * (LAZY_EXPIRED_PRUNE_LIMIT above).
+ *
+ * @param {number} [at=now()] ms epoch; rows with expires_at <= at die
+ * @param {number} [limit=500] max rows deleted by this single batch
+ * @returns {number} rows deleted by this batch
+ */
+function deleteExpiredOAuthTransactions(at = now(), limit = 500) {
+  const ts = Number(at);
+  if (!Number.isSafeInteger(ts)) {
+    throw new TypeError(
+      `deleteExpiredOAuthTransactions: at must be an integer ms epoch, got ${String(at)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteExpiredOAuthTransactions: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(`DELETE FROM fluxer_oauth_transactions WHERE expires_at <= ? LIMIT ?`)
+    .run(ts, limit).changes;
+}
+
 module.exports = {
+  LAZY_EXPIRED_PRUNE_LIMIT,
   createOAuthTransaction,
   consumeOAuthTransaction,
+  deleteExpiredOAuthTransactions,
 };

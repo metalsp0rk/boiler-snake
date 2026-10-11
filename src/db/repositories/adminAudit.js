@@ -242,6 +242,39 @@ function countAdminAudit(communityId, opts = {}) {
   );
 }
 
+/**
+ * Retention prune primitive (audit-2026-10 #192): delete AT MOST `limit`
+ * admin_audit rows strictly older than `cutoffMs` — one bounded batch for
+ * the retention sweeper's LIMIT-batched loop (loop policy lives in
+ * src/features/retention/sweeps.js). The trail is append-only per §8.1-7 in
+ * the sense that NOBODY edits rows and the web viewer never deletes; the
+ * retention sweep is the ONE sanctioned delete path, time-bounded by
+ * RETENTION_ADMIN_AUDIT_DAYS so the audit trail keeps a full year by
+ * default (audit-trail expectations outlast activity hygiene).
+ *
+ * Boundary mirrors deleteActivityLogOlderThan: rows at exactly `cutoffMs`
+ * SURVIVE (`created_at < cutoffMs`).
+ *
+ * @param {number} cutoffMs ms epoch; rows with created_at < cutoffMs die
+ * @param {number} [limit=500] max rows deleted by this single batch
+ * @returns {number} rows deleted by this batch
+ */
+function deleteAdminAuditOlderThan(cutoffMs, limit = 500) {
+  if (!Number.isSafeInteger(cutoffMs)) {
+    throw new TypeError(
+      `deleteAdminAuditOlderThan: cutoffMs must be an integer ms epoch, got ${String(cutoffMs)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteAdminAuditOlderThan: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(`DELETE FROM admin_audit WHERE created_at < ? LIMIT ?`)
+    .run(cutoffMs, limit).changes;
+}
+
 module.exports = {
   AUDIT_ORIGINS,
   MAX_AUDIT_LIST_LIMIT,
@@ -253,4 +286,5 @@ module.exports = {
   getAdminAuditById,
   listAdminAudit,
   countAdminAudit,
+  deleteAdminAuditOlderThan,
 };
