@@ -585,8 +585,31 @@ async function sweepHoneypotWarningReactions(client) {
 }
 
 /**
+ * Delete a honeypot-channel message without banning, logging the failure if
+ * the delete itself fails (channel stays empty like the exempt path).
+ */
+async function deleteMessageWithoutBan(message, cause) {
+  console.error(
+    `[honeypot] Honeypot hit in guild ${message.guild.id} from user ${message.author.id} ` +
+      `but exemption state is UNKNOWN (${cause}) — message deleted, NO ban issued.`,
+  );
+  try {
+    if (message.deletable) await message.delete();
+  } catch (e) {
+    console.warn(
+      `[honeypot] Could not delete message from ${message.author.id} in ${message.guild.id}:`,
+      e?.message || e,
+    );
+  }
+}
+
+/**
  * If the message is in a honeypot channel, delete it and ban the author (unless exempt).
  * Exempt users still have their message deleted, but are not banned.
+ * When the author's member state cannot be resolved (uncached member + failed
+ * `members.fetch`, audit C4) the message is deleted and the failure logged —
+ * never banned: a ban is irreversible and the docs promise staff are exempt,
+ * so one flaky 5xx must not ban a moderator.
  * Returns true when the message was handled as honeypot traffic (caller should not award XP).
  */
 async function handleHoneypotMessage(message) {
@@ -597,26 +620,36 @@ async function handleHoneypotMessage(message) {
 
   let member = message.member;
   if (!member) {
-    member = await message.guild.members
-      .fetch(message.author.id)
-      .catch(() => null);
+    let fetchCause = null;
+    try {
+      member = await message.guild.members.fetch(message.author.id);
+    } catch (e) {
+      fetchCause = `members.fetch failed: ${e?.message || e}`;
+    }
+    if (!member) {
+      // C4 fail-safe: a rejected fetch OR a fetch that resolves to no member
+      // leaves the exemption state unverifiable — delete-and-log, do NOT ban.
+      await deleteMessageWithoutBan(
+        message,
+        fetchCause || "members.fetch returned no member",
+      );
+      return true;
+    }
   }
 
   // Exempt roles (staff, etc.) — no ban, but still delete the message so the channel stays empty
-  if (member) {
-    const roleIds = [...member.roles.cache.keys()];
-    // staffRoles repo is community-keyed (PR 2): reuse the resolved id.
-    if (memberHasStaffRole(communityId, roleIds)) {
-      try {
-        if (message.deletable) await message.delete();
-      } catch (e) {
-        console.warn(
-          `[honeypot] Could not delete exempt message in ${message.guild.id}:`,
-          e?.message || e,
-        );
-      }
-      return true;
+  const roleIds = [...member.roles.cache.keys()];
+  // staffRoles repo is community-keyed (PR 2): reuse the resolved id.
+  if (memberHasStaffRole(communityId, roleIds)) {
+    try {
+      if (message.deletable) await message.delete();
+    } catch (e) {
+      console.warn(
+        `[honeypot] Could not delete exempt message in ${message.guild.id}:`,
+        e?.message || e,
+      );
     }
+    return true;
   }
 
   await executeHoneypotBan(message.guild, message.author, {
@@ -752,13 +785,31 @@ async function handleHoneypotFluxerMessage(outbound, message) {
 
 /**
  * If the member was granted a honeypot ban role, ban them (unless exempt).
+ * The ban only fires when the *previous* role state is known (audit C3):
+ * after a gateway resume/restart discord.js can emit GuildMemberUpdate with
+ * an uncached `oldMember`; treating the current roles as "all newly added"
+ * would instantly ban members who already held a ban role (irreversible
+ * action fired by a cache artifact). Unknown diff → logged skip, no ban.
  */
 async function handleHoneypotBanRole(oldMember, newMember) {
   if (!newMember?.guild) return;
   if (newMember.user?.bot) return;
 
   const guildId = newMember.guild.id;
-  const oldRoles = oldMember?.roles?.cache ?? new Map();
+
+  // C3: only proceed when the old role cache is a real cache we can diff
+  // against (an empty-but-known cache is fine — that is a genuine first
+  // grant). A missing/uncached oldMember means the diff is UNKNOWN.
+  const oldRoles = oldMember?.roles?.cache;
+  if (!oldRoles || typeof oldRoles.has !== "function") {
+    console.warn(
+      `[honeypot] GuildMemberUpdate for member ${newMember.id ?? "?"} in guild ${guildId} ` +
+        `arrived without cached previous member state (gateway resume/restart?) — ` +
+        `role diff unknown, skipping ban-role check (no ban).`,
+    );
+    return;
+  }
+
   const newRoles = newMember.roles?.cache ?? new Map();
 
   const addedRoleIds = [];
