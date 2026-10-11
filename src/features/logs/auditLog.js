@@ -29,13 +29,16 @@ const MESSAGE_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const messageCache = new Map();
 
 function cacheMessage(message) {
-  if (!message?.id || !message.guild) return;
-  if (message.author?.bot) return;
+  if (!message?.id) return;
+  if (message.authorBot || message.author?.bot) return;
 
-  // Spec § In-memory maps: keys are `${communityId}:${messageId}` so ids that
-  // collide across platforms (Discord snowflake vs Fluxer channel id) cannot
-  // cross-pollinate cache entries.
-  const communityId = discordCommunityId(message.guild.id);
+  // Platform-neutral community key (issue #200): the NormalizedMessage shape
+  // carries the INTEGER communities.id (resolved at the pipeline edge —
+  // contract 4); raw discord.js duck shapes keep resolving through the
+  // Discord guild id. Before this, the step silently cached NOTHING for a
+  // Fluxer message (the gate duck-typed `message.guild`, a Discord-only
+  // field — the audit's "duck-field deaths" at the pipeline's own step 3).
+  const communityId = messageCommunityKey(message);
   if (communityId == null) return;
 
   // Accepts both shapes: a discord.js Collection (raw message) and the
@@ -70,14 +73,25 @@ function cacheMessage(message) {
       .join("\n");
   }
 
+  // Spec § In-memory maps: keys are `${communityId}:${messageId}` so ids that
+  // collide across platforms (Discord snowflake vs Fluxer channel id) cannot
+  // cross-pollinate cache entries.
   messageCache.set(`${communityId}:${message.id}`, {
     content: message.content || "",
-    authorId: message.author?.id || "unknown",
-    authorTag: message.author?.tag || message.author?.username || "unknown",
+    authorId: message.authorId || message.author?.id || "unknown",
+    authorTag:
+      message.author?.tag ||
+      message.author?.username ||
+      // Fluxer normalized shape: the real User instance rides as authorRaw.
+      message.authorRaw?.username ||
+      message.authorDisplayName ||
+      "unknown",
     channelId: message.channel?.id || message.channelId || "unknown",
     attachments,
     embedsSummary,
-    createdTimestamp: message.createdTimestamp || Date.now(),
+    createdTimestamp:
+      message.createdTimestamp ||
+      (message.createdAt instanceof Date ? message.createdAt.getTime() : Date.now()),
     cachedAt: Date.now(),
   });
 
@@ -93,10 +107,23 @@ function cacheMessage(message) {
   }
 }
 
+/**
+ * Shared community-key derivation for the message cache (issue #200):
+ * normalized messages (BOTH platforms) carry the integer communities.id;
+ * raw discord.js shapes resolve through the Discord guild id; a bare id
+ * (internal callers tolerate raw ids) yields null → bare-id cache key.
+ * @param {object|string|null|undefined} message
+ * @returns {number|null}
+ */
+function messageCommunityKey(message) {
+  if (!message || typeof message !== "object") return null;
+  if (Number.isSafeInteger(message.communityId)) return message.communityId;
+  return discordCommunityId(message.guild?.id ?? null);
+}
+
 function getCachedMessage(message) {
   const messageId = message?.id ?? message; // tolerate raw ids from internal callers
-  const communityId =
-    message?.guild?.id != null ? discordCommunityId(message.guild.id) : null;
+  const communityId = messageCommunityKey(message);
   const cacheKey =
     communityId == null ? String(messageId) : `${communityId}:${messageId}`;
   const entry = messageCache.get(cacheKey);
@@ -110,8 +137,7 @@ function getCachedMessage(message) {
 
 function takeCachedMessage(message) {
   const messageId = message?.id ?? message;
-  const communityId =
-    message?.guild?.id != null ? discordCommunityId(message.guild.id) : null;
+  const communityId = messageCommunityKey(message);
   const cacheKey =
     communityId == null ? String(messageId) : `${communityId}:${messageId}`;
   const entry = getCachedMessage(message);
