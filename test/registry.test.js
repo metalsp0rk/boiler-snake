@@ -136,6 +136,7 @@ describe("buildDefaultRegistry", () => {
       "warnings",
       "userinfo",
       "userActivity",
+      "retention",
       "tickets",
       "music",
       "gork",
@@ -146,7 +147,7 @@ describe("buildDefaultRegistry", () => {
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 25);
+    assert.equal(features.length, 26);
   });
 
   it("registers userinfo button handler", () => {

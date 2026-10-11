@@ -463,6 +463,39 @@ function guildDailyMessageTotals(communityId, { sinceDay, limitDays = GUILD_DAIL
 }
 
 /**
+ * Retention prune primitive (audit-2026-10 #192): delete AT MOST `limit`
+ * daily-aggregate rows whose UTC calendar `day` is strictly BEFORE
+ * `cutoffDay` — one bounded batch for the retention sweeper's LIMIT-batched
+ * loop (loop policy lives in src/features/retention/sweeps.js). `day` is a
+ * lexicographically ordered YYYY-MM-DD string, so the string comparison is
+ * exact calendar arithmetic — no epoch math, no timezone drift.
+ *
+ * Boundary: rows ON `cutoffDay` SURVIVE (`day < cutoffDay`); with the
+ * default RETENTION_DAILY_AGGREGATES_DAYS=400 the sweep keeps at least 13
+ * months of monthly rollups (staff summaries / the dashboard's 30-day
+ * window ride well inside that).
+ *
+ * @param {string} cutoffDay YYYY-MM-DD; rows with day < cutoffDay die
+ * @param {number} [limit=500] max rows deleted by this single batch
+ * @returns {number} rows deleted by this batch
+ */
+function deleteDailyAggregatesBeforeDay(cutoffDay, limit = 500) {
+  if (typeof cutoffDay !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(cutoffDay)) {
+    throw new TypeError(
+      `deleteDailyAggregatesBeforeDay: cutoffDay must be YYYY-MM-DD, got ${String(cutoffDay)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteDailyAggregatesBeforeDay: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(`DELETE FROM user_channel_message_daily WHERE day < ? LIMIT ?`)
+    .run(cutoffDay, limit).changes;
+}
+
+/**
  * @param {string} communityId
  * @param {string} userId
  * @returns {object|null}
@@ -739,6 +772,7 @@ module.exports = {
   guildActivityStats,
   GUILD_DAILY_TOTALS_MAX_DAYS,
   guildDailyMessageTotals,
+  deleteDailyAggregatesBeforeDay,
   getUserActivityMeta,
   upsertUserActivityMeta,
   getBackfillCursor,
