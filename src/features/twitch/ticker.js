@@ -507,22 +507,31 @@ async function resolvePendingSubscriptions(deps = defaultDeps) {
   const subs = getAllTwitchChannels();
 
   for (const sub of subs) {
-    if (!/^\d+$/.test(sub.broadcaster_id)) {
-      const user = await resolveUser(sub.login);
-      if (!user) {
-        console.log(`[twitch] Could not resolve login ${sub.login}, skipping`);
-        continue;
+    // #198 (audit §6 P1): per-row isolation — one subscription whose
+    // resolve/upgrade throws must not abort the pass for the rest.
+    try {
+      if (!/^\d+$/.test(sub.broadcaster_id)) {
+        const user = await resolveUser(sub.login);
+        if (!user) {
+          console.log(`[twitch] Could not resolve login ${sub.login}, skipping`);
+          continue;
+        }
+        addTwitchChannel(
+          sub.community_id,
+          user.id,
+          user.login,
+          user.display_name,
+          user.profile_image_url,
+        );
+        if (sub.login !== user.login) {
+          removeTwitchChannel(sub.community_id, sub.login);
+        }
       }
-      addTwitchChannel(
-        sub.community_id,
-        user.id,
-        user.login,
-        user.display_name,
-        user.profile_image_url,
+    } catch (err) {
+      console.error(
+        `[twitch] pending-subscription resolve failed for ${sub.login} (community ${sub.community_id}); continuing:`,
+        err?.message || err,
       );
-      if (sub.login !== user.login) {
-        removeTwitchChannel(sub.community_id, sub.login);
-      }
     }
   }
 
@@ -531,13 +540,21 @@ async function resolvePendingSubscriptions(deps = defaultDeps) {
   const seen = new Map(); // broadcaster_id -> row
   for (const row of all) {
     if (!/^\d+$/.test(row.broadcaster_id)) continue;
-    const existing = seen.get(row.broadcaster_id);
-    if (existing && existing.login !== row.login) {
-      // Keep the row with the current (most recently written) login.
-      removeTwitchChannel(row.community_id, existing.login);
-      seen.set(row.broadcaster_id, row);
-    } else if (!existing) {
-      seen.set(row.broadcaster_id, row);
+    try {
+      const existing = seen.get(row.broadcaster_id);
+      if (existing && existing.login !== row.login) {
+        // Keep the row with the current (most recently written) login.
+        removeTwitchChannel(row.community_id, existing.login);
+        seen.set(row.broadcaster_id, row);
+      } else if (!existing) {
+        seen.set(row.broadcaster_id, row);
+      }
+    } catch (err) {
+      // #198: a bad row must not abort the heal pass for the others.
+      console.error(
+        `[twitch] login-heal pass failed for ${row.login} (community ${row.community_id}); continuing:`,
+        err?.message || err,
+      );
     }
   }
 }
@@ -562,15 +579,26 @@ async function runTwitchTick(supervisor, deps = defaultDeps) {
   const nowMs = Date.now();
   const all = getAllTwitchChannels().filter((s) => {
     if (!/^\d+$/.test(s.broadcaster_id)) return false;
-    const settings = getGuildSettings(s.community_id);
-    const intervalMs =
-      (Number(settings.twitch_polling_interval_minutes) || 2) * 60_000;
-    // Never re-check a row that was checked less than a minute ago
-    // (the base poll cadence), and honor the guild interval on top.
-    if (s.last_checked && nowMs - s.last_checked < Math.max(60_000, intervalMs)) {
+    // #198 (audit §6 P1): a bad row (e.g. a community id the settings repo
+    // rejects) must drop itself with a logged cause, not kill the tick for
+    // every other subscription.
+    try {
+      const settings = getGuildSettings(s.community_id);
+      const intervalMs =
+        (Number(settings.twitch_polling_interval_minutes) || 2) * 60_000;
+      // Never re-check a row that was checked less than a minute ago
+      // (the base poll cadence), and honor the guild interval on top.
+      if (s.last_checked && nowMs - s.last_checked < Math.max(60_000, intervalMs)) {
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error(
+        `[twitch] eligibility check failed for ${s.login} (community ${s.community_id}); skipping row:`,
+        err?.message || err,
+      );
       return false;
     }
-    return true;
   });
   if (!all.length) return;
   const uniqueIds = [...new Set(all.map((s) => s.broadcaster_id))];
