@@ -96,11 +96,6 @@ function updateYoutubeChannelLastChecked(channelId, lastCheckedMs, lastVideoId) 
   }
 }
 
-function cleanupOldNotifications(thresholdDays = 30) {
-  const cutoff = now() - thresholdDays * 24 * 60 * 60 * 1000;
-  db.prepare(`DELETE FROM youtube_channels WHERE last_checked < ?`).run(cutoff);
-}
-
 /** Cleanup malformed channel entries (non-UC/HC IDs from before normalization fix). */
 function cleanupMalformedYoutubeChannels() {
   const rows = db
@@ -129,6 +124,5 @@ module.exports = {
   addYoutubeChannel,
   removeYoutubeChannel,
   updateYoutubeChannelLastChecked,
-  cleanupOldNotifications,
   cleanupMalformedYoutubeChannels,
 };
