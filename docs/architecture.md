@@ -43,7 +43,7 @@ src/
 │   └── awardXp.js           # Unified XP → activity → roles → audit
 ├── features/
 │   ├── load.js              # applyFeaturesToRegistry / start / registerEvents
-│   ├── index.js             # Ordered feature list (23 modules)
+│   ├── index.js             # Ordered feature list (26 modules)
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
 │   ├── xp/                  # /xp /leaderboard /setxp /grantxp + award helpers
@@ -64,9 +64,12 @@ src/
 │   ├── warnings/            # /warn + /setwarn formal disciplinary records
 │   ├── userinfo/            # /userinfo staff card + note/warn/activity buttons
 │   ├── userActivity/        # /activityconfig + channel message counters + backfill
+│   ├── retention/           # hourly sweeps pruning the growth-only tables (#192)
 │   ├── tickets/             # /ticket support channels + panel button/modal + archive HTTP
 │   ├── gork/                # keyword AI Q&A, memory, budget, interaction log
-│   └── web/                 # Web admin console boot feature (starts src/web server)
+│   ├── web/                 # Web admin console boot feature (starts src/web server)
+│   ├── bridge/              # /bridge Discord↔Fluxer channel relay (webhooks + outbox)
+│   └── linking/             # !link Discord↔Fluxer account pairs + XP mirroring
 ├── commands/
 │   ├── registry.js          # name → handler map (from features)
 │   ├── router.js            # InteractionCreate dispatch
@@ -100,19 +103,42 @@ package.json
 
 ## Boot Sequence
 
+Entry (`src/index.js`) is a thin gate over `platform/boot.js` — current flow,
+supervisor era (PR 7):
+
 ```javascript
 require("dotenv").config();
-assertRuntimeEnv();                    // DISCORD_TOKEN
-const client = createClient();
-const registry = buildDefaultRegistry(); // features → commands + handlers
-const ctx = { client, registry, ensureHoneypotWarning };
+assertRuntimeEnv();     // >=1 platform credential: DISCORD_TOKEN or FLUXER_INSTANCES
+assertConfigSanity();   // #205: [config] WARN lines + LAVALINK_HOST-without-password fail-fast
 
-registerAllFeatureEvents(client, features, ctx);  // delete/ban/kick, ban-role, …
-registerOrderedPipelines(client);                   // MessageCreate / ReactionAdd
+const registry = buildDefaultRegistry();   // features → commands + handlers
+const result = await boot({ registry });   // everything below happens in boot()
+// terminal outcome only when EVERY configured endpoint failed:
+if (!result.ok) await drainAndExit({ reason: "…", exitCode: result.exitCode });
+```
 
-client.once(ClientReady, () => startAllFeatures(client, features, ctx));
-client.on(InteractionCreate, (i) => handleInteraction(i, ctx));
-client.login(token);
+Inside `boot()` (`src/platform/boot.js`):
+
+```javascript
+installProcessGuards();          // core/lifecycle: crash net + SIGTERM/SIGINT drain, once per process
+const supervisor = { discord, fluxer, clientForCommunity };  // N endpoints, one process
+
+// Discord arm (when DISCORD_TOKEN set): createClient → registerAllFeatureEvents
+//   → registerOrderedPipelines → ClientReady → startFeaturesOnce; InteractionCreate
+//   → router (with its own .catch — C8). An INITIAL login rejection is TERMINAL
+//   for the endpoint: one fatal, client released, supervisor.discord → null.
+// Fluxer arm: one handle per FLUXER_INSTANCES entry, logging in concurrently;
+//   onFluxerReady listeners wire late-arriving handles (bridge DM consumer).
+
+// Feature gate: arms when >=1 endpoint is READY (Discord ClientReady, or a
+//   Fluxer handle whenever Discord is not live — including after a terminal
+//   Discord failure). Never armed on a dead process. Watchdog logs what it is
+//   waiting on after FEATURE_GATE_WATCHDOG_MS (default 120000, 0 disables).
+
+// startAllFeatures runs load.js hooks per feature with failure isolation
+//   ([features] <name>.start failed: logged, skipped) and registers any
+//   returned { stop() } loop handle for the shutdown drain (LIFO:
+//   member-fetch-queue → scheduler → feature loops → endpoints).
 ```
 
 The **web** feature's `start()` wires the Discord seams (`setBotGuildsProvider`, audit client binding) and calls `startWebServer()` — the public HTTP console. It is **dark by default**: nothing listens unless `PUBLIC_HTTP_PORT` (or the legacy `TICKET_HTTP_PORT` alias) is set. See [web-admin.md](./web-admin.md).
@@ -206,6 +232,15 @@ Migrations on load:
 | `031_gork_ste_enabled` | `gork_ste_enabled` guild_settings column (gork STE answer style, roadmap §7.20) |
 | `032_twitch_eventsub_media` | Twitch EventSub fast-path + clips/VOD hooks (`twitch_eventsub_subs` table, clip/VOD alert columns + watermarks) |
 | `033_gork_summarize_input_tokens` | `guild_settings.gork_summarize_input_tokens` (per-guild `/gork summarize` input token budget) |
+| `034_communities` | Communities cutover (Fluxer PR 2): `communities` table; guild-scoped tables re-keyed `guild_id` → `community_id` in one transaction |
+| `035_bridges` | Channel bridge schema: `bridges` state machine, ends, outbox, message links, snapshots, connect-attempt state |
+| `036_user_links` | Account linking: `user_links` pairs + `user_link_codes` (per-direction mirror flags) |
+| `037_ticket_archive_claim` | CAS archive-claim marker on `tickets` (concurrent closes can't double-archive) |
+| `038_event_reminder_claim_state` | Real delivery state machine on `event_reminder_offsets` (`sending`/backoff/attempts) |
+| `039_encrypt_third_party_tokens` | One-time re-encryption of GitHub PATs + command-permission OAuth tokens to the `v1.` envelope (`TOKEN_ENCRYPTION_KEY`) |
+| `040_schema_hygiene` | CHECK constraints (`users.xp`, `gork_budget_rules.daily_limit`), `idx_users_guild_xp`, partial archived-ticket index, drop dead `voice_sessions` |
+
+Current registry: **40** migrations (`PRAGMA user_version` = 40 on a current DB). The authoritative per-migration table with full column/DDL notes lives in [database.md](database.md).
 
 ### Core XP API
 
@@ -235,7 +270,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 |---------|--------|
 | **xp** | Cooldowns in-memory; PNG leaderboard via `render/leaderboard` |
 | **voice** | Per-minute; ≥2 eligible humans; skip mute/deafen/AFK; job `voice` on `core/scheduler` |
-| **decay** | Cron `0 4 * * *` local; re-syncs level + reaction roles; job `decay` |
+| **decay** | Cron `0 4 * * *` (hardcoded const, evaluated in the **process timezone** — deployments pin `TZ=UTC`, see [decay.md](decay.md)); relative write against the live row (#191); re-syncs level + reaction roles; job `decay` |
 | **levelRoles** | Grace-period drop via `levelRoles/sync.js` |
 | **logs** | Audit + message log channels; in-memory delete cache |
 | **youtube** | RSS + optional Data API; guild notification channel |
@@ -254,14 +289,17 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **gork** | Keyword Q&A; detached from MessageCreate; per-guild queue + budget |
 | **web** | Web admin console (OAuth sign-in, guild-scoped pages, audit trail); boot feature starts the HTTP server dark-by-default — see [web-admin.md](./web-admin.md) |
 | **commandPermissions** | OAuth slash visibility for `staff_roles`; HTTP callback on the public ticket server |
+| **retention** | Hourly sweep pruning the growth-only tables (`activity_log`, `admin_audit`, `user_channel_message_daily`, expired `fluxer_oauth_transactions`) — `RETENTION_*` knobs, job `retentionSweeps` |
+| **bridge** | Discord↔Fluxer channel pairs: webhook copies + durable outbox (CAS claim), source-side edit/delete relay, SSRF-guarded media — jobs `bridge-relay` + `bridge-relay-ttl` |
+| **linking** | One Discord ↔ one Fluxer identity (`!link` codes), per-direction XP/roster mirroring; link-code sweeper job |
 
-Tickers (voice, youtube, twitch, githubReleases, eventReminders, warnings expiry, decay, honeypot sweep, XP cooldown sweep, audit message-cache) register named jobs on `src/core/scheduler.js`. The scheduler skips overlapping runs, always logs tick failures as `[scheduler] <name> tick failed:`, and exposes `snapshot()` (`lastTickAt`, `intervalMs`, `running`) for dashboards. Feature `start()` still decides *whether* a job is armed (e.g. YouTube skips without `YOUTUBE_API_KEY`). Invoke `runVoiceTick` / `runYoutubeTick` / … directly in tests — do not start timers.
+Tickers (voice, youtube, twitch, twitch-eventsub, githubReleases, eventReminders, warnings expiry, decay, honeypot sweep, XP cooldown sweep, audit message-cache, retention sweeps, link-code sweeper, bridge relay + TTL) register named jobs on `src/core/scheduler.js`. The scheduler skips overlapping runs, always logs tick failures as `[scheduler] <name> tick failed:`, and exposes `snapshot()` (`lastTickAt`, `intervalMs`, `running`) for dashboards. Feature `start()` still decides *whether* a job is armed (e.g. YouTube skips without `YOUTUBE_API_KEY`). Invoke `runVoiceTick` / `runYoutubeTick` / … directly in tests — do not start timers.
 
 ---
 
 ## Commands
 
-Slash builders and handlers are **co-located** on features. The registry exports **28** slash commands (unique names; see `test/registry.test.js`). Registration:
+Slash builders and handlers are **co-located** on features. The registry exports **30** slash commands (unique names; see `test/registry.test.js`; every name has a tier in `core/commandVisibility.js` — see `test/command-visibility.test.js`). Registration:
 
 ```bash
 npm run register   # node src/commands/register.js
@@ -305,13 +343,13 @@ npm run test:unit        # test/*.test.js
 npm run test:integration # test/integration/*.test.js
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**28** commands, **23** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
+Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**30** commands, **26** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
 
 ---
 
 ## Operator notes
 
-- Env: `DISCORD_TOKEN`, `CLIENT_ID`; optional `DEV_GUILD_ID`, `DATA_DIR`, `DB_PATH`
+- Env: `DISCORD_TOKEN` or `FLUXER_INSTANCES` (one credential minimum); `CLIENT_ID` recommended — boot `[config] WARN`s without it, and registration/OAuth/web sign-in need it; optional `DEV_GUILD_ID`, `DATA_DIR`, `DB_PATH`, `TZ` (compose pins UTC for the decay cron — see [configuration.md](./configuration.md))
 - YouTube (optional): `YOUTUBE_API_KEY` — see [youtube-notifications.md](./youtube-notifications.md)
 - Twitch (optional): `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` — see [twitch-notifications.md](./twitch-notifications.md)
 - Tickets (optional): `TICKET_HTTP_PORT`, `TICKET_PUBLIC_BASE_URL`, `TICKET_MAX_ASSET_BYTES`, `TICKET_MAX_ASSETS`; AI close summaries: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` — see [tickets.md](./tickets.md)
@@ -341,3 +379,12 @@ Root files that re-export features (for older requires / external scripts):
 | `register-commands.js` | `commands/register` |
 
 Prefer importing feature/canonical paths in new code.
+
+**Deprecation status (audit #206).** The ten shims above `db.js` have zero
+importers in `src/` or `test/` — they exist only for external scripts. Deleting
+them needs a major release (the repo is 1.x), so each now logs a one-time
+`[deprecation] <file> is deprecated and will be removed in v2 — use <target>`
+warning on first require (`core/deprecation.js`; once per process, pinned by
+`test/deprecation.test.js`). **v2.0 removes these files and the helper
+together.** `db.js` is not deprecated: 40+ internal consumers keep it as the
+stable facade.

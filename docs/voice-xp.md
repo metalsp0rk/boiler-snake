@@ -78,5 +78,5 @@ for each guild {
 
 **Solutions**:
 - Reduce `voice_xp_per_min` setting
-- Move users between channels (only one channelAwarded per minute)
+- Split users below 2 eligible humans in a channel — a channel with a single eligible user earns nothing (spreading people across channels **increases** total awards: every eligible channel is paid each tick, there is no per-tick channel cap)
 - Use decay system to balance long-term accumulation
