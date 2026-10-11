@@ -706,4 +706,72 @@ describe("integration: twitch-eventsub", () => {
     });
     assertEphemeralReply(missing, /No matching subscription/);
   });
+
+  it("reconciler: one broadcaster's throwing create does not stop the sweep (#198)", async () => {
+    const cfg = {
+      enabled: true,
+      secret: SECRET,
+      callbackUrl: "https://bot.example.com/hooks/twitch",
+      maxChannels: 50,
+      missing: [],
+    };
+    env.db.addTwitchChannel(env.communityId, "8880011", "boomguy", "BoomGuy", null);
+    env.db.addTwitchChannel(env.communityId, "8880012", "fineguy", "FineGuy", null);
+
+    const errors = [];
+    const origErr = console.error;
+    console.error = (...a) => errors.push(a.map(String).join(" "));
+    let summary;
+    try {
+      summary = await subs.reconcileEventsubSubscriptions({
+        getConfig: () => cfg,
+        createEventsubSubscription: async (req) => {
+          if (req.condition.broadcaster_user_id === "8880011") {
+            throw new Error("simulated Helix create outage");
+          }
+          return {
+            ok: true,
+            status: 202,
+            subscription: {
+              id: `sub-${req.type}-${req.condition.broadcaster_user_id}`,
+              status: "webhook_callback_verification_pending",
+            },
+          };
+        },
+        deleteEventsubSubscription: async () => ({ ok: true, status: 204 }),
+        listEventsubSubscriptions: async () => [],
+      });
+    } finally {
+      console.error = origErr;
+    }
+
+    // The sweep finished (no outer error) and counted the throw as a failure.
+    assert.equal(summary.error, undefined);
+    assert.ok(summary.failed >= 1, `expected a counted failure: ${JSON.stringify(summary)}`);
+
+    // The healthy broadcaster still got BOTH subs…
+    for (const type of subs.SUB_TYPES) {
+      assert.equal(
+        env.db.getTwitchEventsubSub(type, "8880012")?.subscription_id,
+        `sub-${type}-8880012`,
+        `${type} sub missing for the healthy broadcaster`,
+      );
+    }
+    // …the throwing one left no local row, and ran once (loop moved on).
+    assert.equal(env.db.getTwitchEventsubSub("stream.online", "8880011"), null);
+
+    const lines = errors.filter((l) =>
+      l.includes("EventSub reconcile failed"),
+    );
+    assert.equal(
+      lines.length,
+      1,
+      `expected one reconcile error, got: ${errors.join(" | ")}`,
+    );
+    assert.ok(lines[0].includes("8880011"), `broadcaster id missing in: ${lines[0]}`);
+    assert.ok(
+      lines[0].includes("simulated Helix create outage"),
+      `cause missing in: ${lines[0]}`,
+    );
+  });
 });

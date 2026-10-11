@@ -204,9 +204,20 @@ async function reconcileEventsubSubscriptions(deps = {}) {
     let created = 0;
     let failed = 0;
     for (const id of wanted) {
-      const r = await ensureBroadcasterSubs(id, cfg, deps);
-      created += r.created;
-      failed += r.failed;
+      // #198 (audit §6 P1): per-broadcaster isolation — one broadcaster whose
+      // create path throws must not skip the remaining broadcasters, and the
+      // prune pass below must still run this sweep.
+      try {
+        const r = await ensureBroadcasterSubs(id, cfg, deps);
+        created += r.created;
+        failed += r.failed;
+      } catch (err) {
+        failed += 1;
+        console.error(
+          `[twitch] EventSub reconcile failed for broadcaster ${id}:`,
+          err?.message || err,
+        );
+      }
     }
 
     // Prune locals whose broadcaster is no longer in the wanted set
@@ -217,8 +228,16 @@ async function reconcileEventsubSubscriptions(deps = {}) {
       if (!wantedSet.has(row.broadcaster_id)) toPrune.add(row.broadcaster_id);
     }
     for (const broadcasterId of toPrune) {
-      await dropBroadcasterSubs(broadcasterId, deps);
-      pruned += 1;
+      try {
+        await dropBroadcasterSubs(broadcasterId, deps);
+        pruned += 1;
+      } catch (err) {
+        // One failing prune must not strand the remaining orphans.
+        console.error(
+          `[twitch] EventSub prune failed for broadcaster ${broadcasterId}:`,
+          err?.message || err,
+        );
+      }
     }
 
     // Self-heal botched challenge round-trips: Twitch's own view of
