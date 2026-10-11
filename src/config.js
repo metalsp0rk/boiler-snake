@@ -3,8 +3,25 @@
  * Values are read where needed; this module documents the contract.
  *
  * Required:
- *   DISCORD_TOKEN  — bot token
- *   CLIENT_ID      — application id (slash registration)
+ *   DISCORD_TOKEN  — bot token (or at least one valid FLUXER_INSTANCES entry;
+ *                    assertRuntimeEnv accepts either as a platform credential)
+ *
+ * Conditionally required (checkConfigSanity warns when missing — never fatal):
+ *   CLIENT_ID      — application id. Base Discord login does NOT need it (the
+ *                    gateway tells us the application id), so the old "required"
+ *                    header claim was FALSE (audit #205). What DOES need it:
+ *                    the command-registration CLI (npm run register),
+ *                    command-permission OAuth (/staff syncpermissions), and the
+ *                    web-admin Discord sign-in.
+ *
+ * Boot sanity (assertConfigSanity, run from src/index.js after
+ * assertRuntimeEnv — audit §6 / issue #205):
+ *   - DISCORD_TOKEN set without CLIENT_ID                    → WARN
+ *   - LAVALINK_HOST set without LAVALINK_PASSWORD            → FAIL FAST
+ *   - CLIENT_SECRET set without OAUTH_STATE_SECRET           → WARN
+ *
+ * The full operator-facing variable list lives in .env.example;
+ * test/env-parity.test.js pins that every variable src/ reads has an entry.
  *
  * Optional:
  *   DEV_GUILD_ID   — register commands to one guild instantly
@@ -300,9 +317,103 @@ function assertRuntimeEnv() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Boot-time config sanity (issue #205 — audit §6 "Config sanity")
+// ---------------------------------------------------------------------------
+
+/**
+ * Presence test shared by the sanity rules: a whitespace-only value is NOT
+ * set (the per-feature readers trim too; a blank .env line is a mistake,
+ * not a configuration).
+ *
+ * @param {unknown} value raw env value
+ * @returns {boolean}
+ */
+function isConfigSet(value) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+/**
+ * Pure boot-config sanity rules — NO logging, NO throw; the caller decides
+ * what a warning and what a fatal means (test/config.test.js drives every
+ * branch with an injected env). Returns message strings WITHOUT the
+ * `[config]` log prefix. Every message names the consequence AND the fix
+ * (AGENTS.md error rule 3 — a warning the operator can act on).
+ *
+ * @param {NodeJS.ProcessEnv} [env] env source (tests inject)
+ * @returns {{ warnings: string[], errors: string[] }}
+ */
+function checkConfigSanity(env = process.env) {
+  const warnings = [];
+  const errors = [];
+
+  // 1. Discord login works without CLIENT_ID, but everything that must
+  //    address the application BY ID is silently inert (audit §5
+  //    "documented-required, never validated"). WARN, never fail: minimal
+  //    and Fluxer-first deployments are legitimate.
+  if (isConfigSet(env.DISCORD_TOKEN) && !isConfigSet(env.CLIENT_ID)) {
+    warnings.push(
+      "CLIENT_ID is not set while DISCORD_TOKEN is — base login works, but " +
+        "`npm run register` (slash commands), command-permission OAuth " +
+        "(/staff syncpermissions) and the web-admin Discord sign-in are unavailable. " +
+        "Set CLIENT_ID to the application id from " +
+        "https://discord.com/developers/applications (General Information).",
+    );
+  }
+
+  // 2. A Lavalink host with no password is worse than no host: the bot would
+  //    boot clean and every track would die on authorization at connect time,
+  //    far from the cause. FAIL FAST with the exact fix (issue #205).
+  if (isConfigSet(env.LAVALINK_HOST) && !isConfigSet(env.LAVALINK_PASSWORD)) {
+    errors.push(
+      "LAVALINK_HOST is set but LAVALINK_PASSWORD is not — music cannot " +
+        "authenticate to the Lavalink node. Set LAVALINK_PASSWORD to the node's " +
+        "server password (it must match Lavalink's application.yml; docker " +
+        "compose passes LAVALINK_PASSWORD through to both services), or unset " +
+        "LAVALINK_HOST to disable music.",
+    );
+  }
+
+  // 3. OAUTH_STATE_SECRET exists and is the dedicated source, but an unset
+  //    value still falls back to the shared CLIENT_SECRET (key-domain
+  //    coupling: rotating the Discord app secret also invalidates in-flight
+  //    OAuth states). Deprecation-style WARN — boot-compatible for every
+  //    existing deploy, loud about the dedicated fix.
+  if (isConfigSet(env.CLIENT_SECRET) && !isConfigSet(env.OAUTH_STATE_SECRET)) {
+    warnings.push(
+      "OAUTH_STATE_SECRET is not set — OAuth state signing falls back to the " +
+        "shared CLIENT_SECRET. Rotating the Discord app secret also invalidates " +
+        "pending OAuth states; set a dedicated OAUTH_STATE_SECRET " +
+        "(e.g. `openssl rand -hex 32`). See docs/configuration.md.",
+    );
+  }
+
+  return { warnings, errors };
+}
+
+/**
+ * Boot gate for the sanity rules (src/index.js runs it right after
+ * assertRuntimeEnv). Warnings log as `[config] WARN ...`; a hard error
+ * throws so the process exits with the specific message — a half-configured
+ * feature must never silent-drop its way through a boot.
+ *
+ * @param {NodeJS.ProcessEnv} [env] env source (tests inject)
+ */
+function assertConfigSanity(env = process.env) {
+  const { warnings, errors } = checkConfigSanity(env);
+  for (const warning of warnings) {
+    console.warn(`[config] WARN ${warning}`);
+  }
+  if (errors.length > 0) {
+    throw new Error(errors.map((e) => `[config] ${e}`).join(" | "));
+  }
+}
+
 module.exports = {
   requireEnv,
   assertRuntimeEnv,
+  checkConfigSanity,
+  assertConfigSanity,
   parseFluxerInstances,
   normalizeOriginForKey,
   getFluxerCommandPrefix,
