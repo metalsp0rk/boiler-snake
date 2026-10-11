@@ -62,7 +62,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 39);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 40);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -578,6 +578,21 @@ describe("db layer", () => {
 
     it("retired allUsersInGuild mapping is gone from the facade", () => {
       assert.equal("allUsersInGuild" in api, false);
+    });
+
+    it("voice-session + cleanupOldNotifications mappings retired (audit #204)", () => {
+      // The voice_sessions table is dropped by migration 040 (its repository
+      // had zero writers wired) and cleanupOldNotifications was an armed,
+      // un-wired youtube_channels data-deleter. Both mappings must STAY gone
+      // (same retirement contract as allUsersInGuild above).
+      for (const name of [
+        "upsertVoiceSession",
+        "getVoiceSession",
+        "deleteVoiceSession",
+        "cleanupOldNotifications",
+      ]) {
+        assert.equal(name in api, false, `${name} must not resurface on the facade`);
+      }
     });
   });
 });

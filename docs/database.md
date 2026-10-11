@@ -21,7 +21,6 @@ boiler-snake/
 |-------|---------|
 | `users` | Per-guild XP totals for each user |
 | `activity_log` | Historical XP activity tracking for decay analysis |
-| `voice_sessions` | Voice channel session data (legacy) |
 | `guild_settings` | Per-guild configuration settings |
 | `level_roles` | Role-to-level mappings with grace periods |
 | `role_drop_state` | Track when users dropped below role thresholds |
@@ -75,6 +74,13 @@ CREATE TABLE users (
 );
 ```
 
+Since migration `040_schema_hygiene` the live table also carries
+`CHECK (xp BETWEEN 0 AND 9007199254740991)` (post-034 the column is
+`community_id INTEGER`) — the documented `clampXpTotal` domain, so TEXT/
+`Infinity` poisoned cells and out-of-range totals are rejected by SQLite
+itself, not just by the JS clamps. Migration `034_communities` re-keys
+`guild_id TEXT` to `community_id INTEGER` on migrated databases.
+
 **Query patterns**:
 ```javascript
 // Get a user's XP
@@ -91,7 +97,9 @@ WHERE guild_id=? ORDER BY xp DESC LIMIT ?
 
 **Indices**:
 - Primary key on `(guild_id, user_id)`
-- No separate indices (composite PK is sufficient)
+- `idx_users_guild_xp` on `(community_id, xp DESC, user_id)` — added by
+  migration `040`: serves the slash and web leaderboard sorts without a
+  temp B-tree
 
 ---
 
@@ -137,21 +145,14 @@ WHERE kind='voice_minute' AND user_id=? ORDER BY created_at DESC LIMIT 10
 
 ---
 
-### 3. `voice_sessions`
+### 3. `voice_sessions` — retired
 
-Kept for compatibility; not actively used by current voice ticker implementation.
-
-```sql
-CREATE TABLE voice_sessions (
-  guild_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
-  joined_at INTEGER NOT NULL,    -- ms epoch when voice state recorded
-  PRIMARY KEY (guild_id, user_id)
-);
-```
-
-**Status**: Legacy table. Future features might use this instead of tracking in memory.
+Removed by migration `040_schema_hygiene` (audit-2026-10 #204). The write-side
+repository had zero wired callers, so the table never held rows on a
+bot-managed DB; the paired code (repository, facade entries, and the web
+voice page's DB-backed "sessions" panel) was removed in the same change.
+Connected voice users are read live from the bot's voice-state cache
+(cache-only web section) — nothing is persisted per session.
 
 ---
 
@@ -883,6 +884,16 @@ CREATE INDEX idx_tickets_channel
   ON tickets(channel_id);
 ```
 
+Migration `040_schema_hygiene` adds a partial index for the archived-ticket
+listing — it matches the exact filter every archived read uses and the
+community-scoped ORDER BY, so open tickets never touch it:
+
+```sql
+CREATE INDEX idx_tickets_archived
+  ON tickets (community_id, closed_at DESC, ticket_number DESC)
+  WHERE archived = 1 AND transcript_token IS NOT NULL;
+```
+
 #### `ticket_members`
 
 Extra member participants on a ticket (beyond the creator).
@@ -1144,7 +1155,7 @@ DELETE FROM gork_memories WHERE guild_id=?
 
 #### `gork_budget_rules`
 
-Per-scope daily-limit overrides for the gork usage budget (roadmap §7.17). Resolution is **channel → category → guild default** (`guild_settings.gork_daily_limit`); the most specific rule wins and owns the single counter. Limits are tri-state and clamped on write.
+Per-scope daily-limit overrides for the gork usage budget (roadmap §7.17). Resolution is **channel → category → guild default** (`guild_settings.gork_daily_limit`); the most specific rule wins and owns the single counter. Limits are tri-state and clamped on write — and since migration `040_schema_hygiene` enforced by the schema itself: `CHECK (daily_limit BETWEEN -1 AND 1000)`.
 
 ```sql
 CREATE TABLE gork_budget_rules (
@@ -1287,7 +1298,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`039` registered the version is `39`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`040` registered the version is `40`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size, the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **Partial versions are never trusted.** A crash *between* migrations (exactly the non-transactional data-move 003 represented, later hardened against in 034) leaves the older version recorded, so the next boot re-runs the full idempotent set instead of resuming from a cursor.
@@ -1321,7 +1332,7 @@ Concretely this means:
 
 | Id | Purpose |
 |----|---------|
-| `001_base_schema` | `CREATE TABLE IF NOT EXISTS` for core domains (users, activity_log, voice_sessions, guild_settings, level roles, command channels, YouTube, honeypot, `staff_roles`, reaction roles) |
+| `001_base_schema` | `CREATE TABLE IF NOT EXISTS` for core domains (users, activity_log, voice_sessions — later dropped by `040`, guild_settings, level roles, command channels, YouTube, honeypot, `staff_roles`, reaction roles) |
 | `002_guild_settings_columns` | Additive `guild_settings` columns: reaction XP/cooldown, YouTube upload role, audit/message log channels |
 | `003_youtube_composite_pk` | Rebuild `youtube_channels` **only if** PK is still single-column `id` (legacy installs) |
 | `004_youtube_and_honeypot_columns` | Ensure `youtube_channels.last_checked` and `honeypot_channels.warning_message_id` |
@@ -1360,6 +1371,7 @@ Concretely this means:
 | `037_ticket_archive_claim` | CAS archive-claim marker on `tickets` so concurrent closes can't double-archive (audit #197) |
 | `038_event_reminder_claim_state` | Real delivery state machine on `event_reminder_offsets` (`sending`/backoff/attempts; audit #196) |
 | `039_encrypt_third_party_tokens` | One-time re-encryption of third-party credentials (Discord OAuth tokens, GitHub PATs) to the AES-256-GCM `v1.` envelope; loud boot gate when `TOKEN_ENCRYPTION_KEY` is missing while rows exist (audit C6, #189) |
+| `040_schema_hygiene` | CHECK constraints via DDL-derived table rebuilds (`users.xp BETWEEN 0 AND 9007199254740991`, `gork_budget_rules.daily_limit BETWEEN -1 AND 1000`; violating rows fail boot loudly by name), `idx_users_guild_xp` + partial `idx_tickets_archived`, drop the dead `voice_sessions` table (audit #204) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

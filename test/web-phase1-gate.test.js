@@ -251,7 +251,6 @@ const GUILD_SCOPED_TABLES = new Set([
   "admin_audit",
   "user_channel_message_daily",
   "activity_log",
-  "voice_sessions",
   "guild_settings",
   "staff_roles",
   "allowed_command_channels",
@@ -642,7 +641,6 @@ describe("A. fixture scale (10k users / ≥10k message rows)", () => {
     assert.ok(seed.counts.ticketsArchived >= 2_000, `archived: ${seed.counts.ticketsArchived}`);
     assert.ok(seed.counts.ticketsOpen > 50, `open (dashboard 50-cap must saturate): ${seed.counts.ticketsOpen}`);
     assert.ok(seed.counts.audit >= 2_000, `audit: ${seed.counts.audit}`);
-    assert.equal(seed.counts.voiceSessions, 200);
     // determinism proof: the fixed-seed rng reproduces identical tokens
     // (the fixture is byte-stable run to run — required for the pins).
     assert.equal(detUuid(createRng()), detUuid(createRng()), "detUuid is seed-stable");

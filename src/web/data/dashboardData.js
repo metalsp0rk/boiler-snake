@@ -29,9 +29,9 @@
  *     limitDays ≤ 31 }) feeds getDailyActivitySeries() for the JSON chart
  *     API. The page snapshot keeps rendering the all-time
  *     guildActivityStats totals (unchanged Phase 1 behavior).
- *  3. voice_sessions: facade has only per-user get (no per-guild list) →
- *     live voice occupancy is NOT rendered; a `listVoiceSessions(communityId)`
- *     helper (table is bounded by connected users) would fix this.
+ *  3. voice_sessions: RETIRED (audit #204, migration 040) — the table had no
+ *     wired writers and is dropped; live voice occupancy reads the client's
+ *     voiceStates cache instead (see web voiceData getLiveVoice).
  *  4. tickets: no COUNT helper for open tickets (only countArchivedTickets) →
  *     the open count is derived from the capped list rows and saturates at
  *     50 with an explicit "50+" display.

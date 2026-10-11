@@ -95,7 +95,6 @@ const DEFAULT_SCALE = Object.freeze({
   audit: 2_000,
   dailyRows: 10_000, // user_channel_message_daily ("messages")
   activityLog: 10_000, // activity_log (XP/decay events)
-  voiceSessions: 200,
 });
 
 /**
@@ -499,20 +498,6 @@ function seed10k(api, spec) {
     tx();
   }
 
-  // --------------------------------------------------------- voice_sessions
-  {
-    const ins = db.prepare(
-      `INSERT INTO voice_sessions (community_id, user_id, channel_id, joined_at)
-       VALUES (?, ?, ?, ?)`
-    );
-    const tx = db.transaction(() => {
-      for (let i = 0; i < scale.voiceSessions; i++) {
-        ins.run(communityId, userIds[i], `9700000000000000${String(i % 7).padStart(2, "0")}`, base - i * 60_000);
-      }
-    });
-    tx();
-  }
-
   // ------------------------------------------------- activity ignore + meta
   {
     const ign = db.prepare(
@@ -633,7 +618,6 @@ function seed10k(api, spec) {
     audit: countOf(`SELECT COUNT(*) AS c FROM admin_audit WHERE community_id=?`, communityId),
     dailyRows: countOf(`SELECT COUNT(*) AS c FROM user_channel_message_daily WHERE community_id=?`, communityId),
     activityLog: countOf(`SELECT COUNT(*) AS c FROM activity_log WHERE community_id=?`, communityId),
-    voiceSessions: countOf(`SELECT COUNT(*) AS c FROM voice_sessions WHERE community_id=?`, communityId),
   };
 
   return { scale, userIds, trackedTicketIds, auditIds, counts, base };

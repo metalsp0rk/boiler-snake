@@ -3,18 +3,20 @@
  * roadmap web-admin.md §8.6 "Voice & Music: now-playing, queue VIEW only |
  * Staff | none (control out of scope)" + §8.9 + cross-cutting 404 rule +
  * query budget). HTTP-level net test: real Express app on an ephemeral
- * port, REAL SQLite (temp DB, real staff_roles rows, seeded voice_sessions
- * rows via the facade), FAKE Discord through the injected
- * createGuildAccessResolver seam — same harness style as
+ * port, REAL SQLite (temp DB, real staff_roles rows), FAKE Discord through
+ * the injected createGuildAccessResolver seam — same harness style as
  * test/web-routes-integrations.test.js.
+ *
+ * (audit-2026-10 #204: the DB-backed "Voice sessions" panel and its
+ * voice_sessions table were retired — the table had zero wired writers, so
+ * the panel always rendered empty; migration 040 drops it. The live voice
+ * section (cache-only client seam) is the honest connected-users source.)
  *
  * Covers:
  *  - tier matrix: anonymous ⇒ login redirect, stranger ⇒ generic 404,
  *    cross-guild ⇒ the SAME 404 bytes, malformed id ⇒ generic 404,
- *    junior/senior/admin ⇒ 200 (all four sections render);
- *  - seeded voice_sessions rows render user/channel/joined UTC + exact
- *    elapsed minutes (fake clock), guild-scoped (other guild's rows never
- *    leak), voice-XP config row rendered with the /setxp voice govern badge;
+ *    junior/senior/admin ⇒ 200 (all three sections render);
+ *  - voice-XP config row rendered with the /setxp voice govern badge;
  *  - music: NO player ⇒ honest "unavailable" render (never a throw, never a
  *    connection); fake client w/o manager ⇒ "lavalink not configured"; node
  *    down ⇒ "no lavalink node connected"; fake PLAYER OBJECT ⇒ now-playing +
@@ -23,8 +25,8 @@
  *  - live voice: cache-only snapshot unit checks (AFK/muted/eligible/≥2
  *    earning rules — voice ticker parity), absent client ⇒ "live state
  *    unavailable" on the page;
- *  - XSS probes through session ids + hostile track metadata;
- *  - §8.6 cache budget: uncached build = exactly 2 bounded facade reads + 1
+ *  - XSS probes through hostile track metadata + live channel names;
+ *  - §8.6 cache budget: uncached build = exactly 1 bounded facade read + 1
  *    call per runtime provider, ZERO inside the cached window (request path
  *    never fans out per hit), fresh again after expiry;
  *  - read-only (§8.9): POST/PUT/PATCH/DELETE on the path are the app-wide
@@ -55,25 +57,11 @@ const USER_STAFF = "830000000000000002"; // junior staff role ⇒ tier staff
 const USER_SENIOR = "830000000000000003"; // senior staff role ⇒ tier senior
 const USER_PLAIN = "830000000000000004"; // member, no staff role ⇒ no tier
 
-const VOICE_USER_1 = "835000000000000101"; // seeded current session (12 min)
-const VOICE_USER_2 = "835000000000000102"; // seeded current session (0 min)
-const CROSS_MARKER = "999900000000009999"; // session in the OTHER guild only
-const VOICE_CHANNEL_1 = "731000000000000201";
-const VOICE_CHANNEL_2 = "731000000000000202";
-
-// Fixed clock for the deterministic minutes/UTC checks.
+// Fixed clock for deterministic cache-age checks.
 const FIXED_NOW = 1759000000000;
-const JOINED_1 = FIXED_NOW - (12 * 60_000 + 30_000); // ⇒ 12 whole minutes
-const JOINED_2 = FIXED_NOW - 45_000; // ⇒ 0 minutes
 
 const ENV_KEYS = ["SESSION_SECRET", "DB_PATH", "DATA_DIR"];
 const BOT_GUILDS = [GUILD_A, GUILD_CROSS];
-
-/** Deterministic UTC display string the view renders for an epoch-ms. */
-function utcLabel(ms) {
-  const iso = new Date(ms).toISOString();
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
-}
 
 /** Minimal fake voiceStates cache (Map-backed, discord.js-shaped). */
 function fakeVoiceStates(entries) {
@@ -218,13 +206,6 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
     // Voice-XP config override (slash parity: /setxp voice).
     api.updateGuildSettings(CID_A, { voice_xp_per_min: 3 });
 
-    // Seed CURRENT voice sessions (voice_sessions = upsert-on-join,
-    // delete-on-leave): two users in GUILD_A, one marker row in GUILD_CROSS
-    // that must NEVER surface on the GUILD_A page.
-    api.upsertVoiceSession(CID_A, VOICE_USER_1, VOICE_CHANNEL_1, JOINED_1);
-    api.upsertVoiceSession(CID_A, VOICE_USER_2, VOICE_CHANNEL_2, JOINED_2);
-    api.upsertVoiceSession(CID_CROSS, CROSS_MARKER, VOICE_CHANNEL_1, JOINED_1);
-
     await mountApp();
   });
 
@@ -288,14 +269,14 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       ["senior staff", () => cookieOf.senior],
       ["guild owner (admin)", () => cookieOf.admin],
     ]) {
-      it(`${label} ⇒ 200 with all four sections`, async () => {
+      it(`${label} ⇒ 200 with all three sections`, async () => {
         const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookie() });
         assert.equal(res.status, 200);
         assert.match(res.headers.get("content-type"), /^text\/html; charset=utf-8/);
         assert.equal(res.headers.get("cache-control"), "no-store");
         assert.ok(body.includes("Now playing · queue (view-only)"), "music section");
         assert.ok(body.includes("<h2>Live voice</h2>"), "live voice section");
-        assert.ok(body.includes("<h2>Voice sessions</h2>"), "sessions section");
+        assert.ok(!body.includes("<h2>Voice sessions</h2>"), "retired sessions panel is gone (#204)");
         assert.ok(body.includes("<h2>Voice XP config</h2>"), "config section");
         assert.equal(body.match(/\son[a-z]+\s*=\s*["']/i), null, "no on* attribute anywhere");
       });
@@ -303,44 +284,14 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
   });
 
   // -------------------------------------------------------------------------
-  // Seeded voice_sessions rows + voice-XP config (exact values, guild-scoped)
+  // Voice-XP config (exact value, guild-scoped)
   // -------------------------------------------------------------------------
 
-  describe("seeded rows render exact values", () => {
-    /** Fresh data instance on a FROZEN clock ⇒ deterministic minutes. */
+  describe("voice-XP config renders exact values", () => {
+    /** Fresh data instance on a FROZEN clock ⇒ deterministic stamps. */
     function frozenClockData() {
       return voiceDataMod.createVoiceData({ now: () => FIXED_NOW });
     }
-
-    it("session rows render user/channel/joined UTC + whole minutes", async () => {
-      await mountApp({ voiceData: frozenClockData() });
-      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
-      assert.equal(res.status, 200);
-      assert.ok(body.includes(`<code class="user-id">${VOICE_USER_1}</code>`), "user 1 id");
-      assert.ok(body.includes(`<code class="user-id">${VOICE_USER_2}</code>`), "user 2 id");
-      assert.ok(body.includes(`<code class="channel-id">${VOICE_CHANNEL_1}</code>`), "channel 1");
-      assert.ok(body.includes(`<code class="channel-id">${VOICE_CHANNEL_2}</code>`), "channel 2");
-      assert.ok(body.includes(utcLabel(JOINED_1)), "joined stamp 1 (UTC)");
-      assert.ok(body.includes(utcLabel(JOINED_2)), "joined stamp 2 (UTC)");
-      // Whole-minute math on the frozen clock: 12.5 → 12, 45 s → 0.
-      const row1 = body.slice(
-        body.indexOf(VOICE_USER_1),
-        body.indexOf(VOICE_USER_1) + 600
-      );
-      assert.match(row1, /<td class="voice-minutes">12<\/td>/, "12 minutes rendered");
-      const row2 = body.slice(
-        body.indexOf(VOICE_USER_2),
-        body.indexOf(VOICE_USER_2) + 600
-      );
-      assert.match(row2, /<td class="voice-minutes">0<\/td>/, "0 minutes rendered");
-    });
-
-    it("other guild's session rows NEVER surface (guild-scoped read)", async () => {
-      await mountApp({ voiceData: frozenClockData() });
-      const { body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
-      assert.ok(body.includes(VOICE_USER_1), "own rows present");
-      assert.ok(!body.includes(CROSS_MARKER), "cross-guild marker never rendered");
-    });
 
     it("voice-XP config renders the stored value with the /setxp govern badge", async () => {
       await mountApp({ voiceData: frozenClockData() });
@@ -619,23 +570,10 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
   });
 
   // -------------------------------------------------------------------------
-  // XSS probes through stored session values
+  // Zero control surface (XSS coverage lives with the live/music sections —
+  // channel names and track metadata are the real user-shaped inputs; the
+  // stored voice_sessions XSS probe retired with the panel, audit #204)
   // -------------------------------------------------------------------------
-
-  describe("XSS probes via session-shaped values", () => {
-    before(() => {
-      api.upsertVoiceSession(CID_A, "835000000000009999", '<script>alert("ch")</script>', 1759100000000);
-    });
-
-    it("hostile channel id renders ESCAPED, never live", async () => {
-      await mountApp({ voiceData: voiceDataMod.createVoiceData({ now: () => FIXED_NOW }) });
-      const { res, body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
-      assert.equal(res.status, 200);
-      assert.ok(body.includes("&lt;script&gt;alert(&quot;ch&quot;)&lt;/script&gt;"), "channel id escaped");
-      assert.ok(!body.includes('<script>alert("ch")'), "no live script");
-      assert.equal(body.match(/\son[a-z]+\s*=\s*["']/i), null, "no on* attribute anywhere");
-    });
-  });
 
   // -------------------------------------------------------------------------
   // §8.9 — ZERO control surface
@@ -682,11 +620,12 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
   // -------------------------------------------------------------------------
 
   describe("cache budget: no per-hit fan-out", () => {
-    it("uncached build = 1 settings read + 1 bounded session statement + 1 call per provider; cache hit = ZERO; expiry re-reads", async () => {
+    it("uncached build = 1 settings read + ZERO raw statements + 1 call per provider; cache hit = ZERO; expiry re-reads", async () => {
       let fakeNow = FIXED_NOW;
       const calls = [];
-      const sqlArgs = [];
-      // Counting proxy: counts facade method reads AND every prepared SQL.
+      // Counting proxy: counts facade method reads AND every raw prepared
+      // statement (the retired sessions read used facade.db — post-#204 the
+      // data module must run NONE).
       const proxy = Object.create(api);
       proxy.getGuildSettings = (...args) => {
         calls.push("getGuildSettings");
@@ -695,14 +634,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       proxy.db = {
         prepare(sql) {
           calls.push("prepare");
-          const stmt = api.db.prepare(sql);
-          return {
-            all: (...args) => {
-              sqlArgs.push(args);
-              return stmt.all(...args);
-            },
-            get: (...args) => stmt.get(...args),
-          };
+          return api.db.prepare(sql);
         },
       };
       let musicCalls = 0;
@@ -727,23 +659,16 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       assert.equal(first.res.status, 200);
       assert.deepEqual(
         calls.slice().sort(),
-        ["getGuildSettings", "prepare"],
-        "exactly ONE settings read + ONE session statement per uncached build"
+        ["getGuildSettings"],
+        "exactly ONE settings read and NO raw statement per uncached build (sessions read retired, #204)"
       );
       assert.equal(musicCalls, 1, "player provider ran once");
       assert.equal(liveCalls, 1, "live provider ran once");
 
-      const sessionCall = sqlArgs.find((args) => args[0] === CID_A);
-      assert.ok(sessionCall, "session statement is guild-scoped (bound ?)");
-      assert.ok(
-        sqlArgs.every((args) => args[0] === CID_A),
-        "no cross-guild parameter ever passed"
-      );
-
       fakeNow += 10_000; // inside the (≥5 s subtask floor, 30 s actual) window
       const second = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(second.res.status, 200);
-      assert.equal(calls.length, 2, "cache hit must not touch the facade (§8.6)");
+      assert.equal(calls.length, 1, "cache hit must not touch the facade (§8.6)");
       assert.equal(musicCalls, 1, "cache hit must not re-read the player (§8.6)");
       assert.equal(liveCalls, 1, "cache hit must not re-read voice states");
       assert.ok(second.body.includes("(cached)"), "freshness rendered honestly");
@@ -751,7 +676,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       fakeNow += 25_000; // past the 30 s window
       const third = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.staff });
       assert.equal(third.res.status, 200);
-      assert.ok(calls.length > 2, "expired cache re-reads the facade");
+      assert.ok(calls.length > 1, "expired cache re-reads the facade");
       assert.equal(musicCalls, 2, "expiry re-runs the provider exactly once");
     });
 

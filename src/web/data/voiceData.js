@@ -4,12 +4,8 @@
  * out of scope) | 1" — subtask 21, Phase 1 READ-ONLY).
  *
  * Query-budget contract (§8.6, review-blocking):
- *  - the DB sections are TWO bounded facade reads per uncached assembly:
- *      current voice sessions → voice_sessions, ONE parameterized
- *                             `WHERE community_id = ? … LIMIT ≤ SESSIONS_CAP`
- *                             PK-prefix read (see readVoiceSessions for why
- *                             the facade `db` handle is used directly), and
- *      voice-XP config row    → getGuildSettings(guildId)  (1 PK row)
+ *  - the DB sections are ONE bounded facade read per uncached assembly:
+ *      voice-XP config row → getGuildSettings(guildId)  (1 PK row)
  *    cache hit issues ZERO queries; the whole snapshot is cached per guild
  *    for DEFAULT_CACHE_TTL_MS (30 s — the §8.6 floor and far above the ≥5 s
  *    cache the subtask requires; a hit ALSO skips both runtime providers, so
@@ -25,16 +21,12 @@
  *    strings mirrored 1:1, and this module never imports the bot runtime
  *    except through the lazily-required musicApi default parameter).
  *
- * DATA-SOURCE NOTES (report, 2026-09-08):
- *  1. voice_sessions stores ONLY the current session per (guild, user) —
- *     rows are upserted on join/move and deleted on leave (repository
- *     inspected). "Recent activity" therefore means CURRENT sessions with
- *     elapsed minutes; a historical per-user voice-minute summary would
- *     need a NEW bounded activity_log aggregate helper (kind='voice_minute')
- *     — repositories are READ-ONLY here (dashboardData gap 3 flagged the
- *     same: a `listVoiceSessions(guildId)` helper is the missing piece), so
- *     the per-guild session list is read via the facade's exported `db`
- *     handle with a parameterized, guild-scoped, LIMIT-capped statement.
+ * DATA-SOURCE NOTES:
+ *  1. (2026-10-11, audit #204) The DB-backed "current voice sessions" panel
+ *     was retired together with migration 040 dropping its data source: the
+ *     voice_sessions table had ZERO writers wired (its repository was never
+ *     called), so the panel always rendered empty. Live connected humans
+ *     (see note 2) are the real, cache-only source for who is in voice.
  *  2. Live connected humans come ONLY from the cache-only client seam
  *     (guild.voiceStates cache — the exact same source the voice ticker
  *     iterates). No intents/data ⇒ "live state unavailable", never a fetch.
@@ -57,11 +49,9 @@ const { DEFAULT_CACHE_TTL_MS, MIN_CACHE_TTL_MS, DEFAULT_MAX_ENTRIES, textOrNull,
 const guardRead = makeGuardRead("voice");
 
 
-/** §8.6 list cap: the session panel never renders or reads more. */
-const SESSIONS_CAP = 100;
 /** Slash parity: /music queue shows 10 upcoming tracks (render.js queueEmbed). */
 const QUEUE_DISPLAY_CAP = 10;
-/** Live-channel cap (a guild can show at most this many voice channels). */
+/** §8.6 list cap: the live-channel panel never renders or reads more. */
 const LIVE_CHANNEL_CAP = 50;
 
 /** Statuses the view renders for the music section (dashboardData mirror). */
@@ -70,60 +60,6 @@ const MUSIC_STATUSES = Object.freeze(["playing", "idle", "unavailable", "unknown
 const LIVE_UNAVAILABLE_DETAIL = "live state unavailable";
 
 
-
-/** Non-negative integer read (null when absent/non-finite/negative). */
-function nonNegNumOrNull(value) {
-  const n = numOrNull(value);
-  return n == null || n < 0 ? null : Math.floor(n);
-}
-
-
-/**
- * ONE bounded, guild-scoped, parameterized session read (see module header,
- * data-source note 1): the voice_sessions PK is (community_id, user_id), so
- * WHERE community_id = ? is a PK-prefix scan bounded by the guild's CONNECTED
- * users (rows live only while a user is connected), and the LIMIT keeps the
- * §8.6 cap even for absurd fixtures. Repositories stay untouched.
- * @param {object} facade src/db facade (exports the better-sqlite3 handle)
- * @param {number} communityId internal communities.id (fluxer PR 2)
- * @param {number} cap
- */
-function readVoiceSessions(facade, communityId, cap) {
-  const handle = facade && facade.db;
-  if (!handle || typeof handle.prepare !== "function") {
-    throw new TypeError("voice sessions read needs the facade db handle");
-  }
-  return handle
-    .prepare(
-      `SELECT community_id, user_id, channel_id, joined_at
-       FROM voice_sessions
-       WHERE community_id = ?
-       ORDER BY joined_at DESC
-       LIMIT ?`
-    )
-    .all(communityId, cap);
-}
-
-/**
- * One session row → the view model. `minutesConnected` is the CURRENT
- * session's elapsed whole minutes (now − joined_at, clamped ≥ 0); joined_at
- * in the future (clock skew) renders 0 with the honest joined-stamp.
- * @param {object} row raw voice_sessions row
- * @param {number} at build clock ms
- */
-function projectSessionRow(row, at) {
-  const joinedAt = nonNegNumOrNull(row?.joined_at);
-  let minutesConnected = null;
-  if (joinedAt != null) {
-    minutesConnected = Math.max(0, Math.floor((at - joinedAt) / 60_000));
-  }
-  return {
-    userId: textOrNull(row?.user_id, 64),
-    channelId: textOrNull(row?.channel_id, 64),
-    joinedAt,
-    minutesConnected,
-  };
-}
 
 /**
  * Pure mirror of src/features/voice/index.js isMutedOrDeafened (verified
@@ -451,20 +387,6 @@ function createVoiceData(options = {}) {
     };
   }
 
-  /** Sessions cluster: the ONE bounded guild-scoped statement (see header). */
-  function buildSessions(communityId, at) {
-    const res = guardRead(
-      () => readVoiceSessions(facade, communityId, SESSIONS_CAP),
-      "voice sessions"
-    );
-    const rows = res.available && Array.isArray(res.value) ? res.value : [];
-    return {
-      available: res.available,
-      rows: rows.map((r) => projectSessionRow(r, at)),
-      truncated: rows.length >= SESSIONS_CAP, // honest: LIMIT may have bitten
-    };
-  }
-
   async function callProvider(provider, guildId, label, degrade) {
     if (!provider) return degrade();
     try {
@@ -479,17 +401,16 @@ function createVoiceData(options = {}) {
   }
 
   /**
-   * ONE uncached assembly: 2 bounded facade queries + 2 in-memory provider
+   * ONE uncached assembly: 1 bounded facade query + 2 in-memory provider
    * reads (never awaited twice, never on cache hits).
    * @param {string} guildId external Discord snowflake (providers + display)
-   * @param {number} at clock ms for freshness + elapsed-minutes math
+   * @param {number} at clock ms for freshness math
    */
   async function buildSnapshot(guildId, at) {
     // Fluxer PR 2: repos key by the integer community id; providers keep the
     // external snowflake. Unregistered guilds degrade to available:false.
     const communityId = discordCommunityId(guildId);
-    const [sessions, config, musicRaw, liveRaw] = await Promise.all([
-      Promise.resolve(buildSessions(communityId, at)),
+    const [config, musicRaw, liveRaw] = await Promise.all([
       Promise.resolve(buildConfig(communityId)),
       callProvider(getMusicState, guildId, "music state", () => null),
       callProvider(getLiveVoice, guildId, "live voice", () => null),
@@ -497,7 +418,6 @@ function createVoiceData(options = {}) {
 
     return {
       guildId,
-      sessions,
       config,
       music: normalizeMusic(musicRaw),
       live: normalizeLive(liveRaw),
@@ -544,13 +464,10 @@ function createVoiceData(options = {}) {
 module.exports = {
   DEFAULT_CACHE_TTL_MS,
   MIN_CACHE_TTL_MS,
-  SESSIONS_CAP,
   QUEUE_DISPLAY_CAP,
   LIVE_CHANNEL_CAP,
   MUSIC_STATUSES,
   LIVE_UNAVAILABLE_DETAIL,
-  readVoiceSessions,
-  projectSessionRow,
   snapshotLiveVoice,
   snapshotMusicState,
   makeMusicStateAccessor,

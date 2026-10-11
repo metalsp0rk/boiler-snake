@@ -15,7 +15,6 @@ runMigrations();
 const users = require("./repositories/users");
 const guildSettings = require("./repositories/guildSettings");
 const activity = require("./repositories/activity");
-const voiceSessions = require("./repositories/voiceSessions");
 const levelRoles = require("./repositories/levelRoles");
 const commandChannels = require("./repositories/commandChannels");
 const youtube = require("./repositories/youtube");
@@ -101,10 +100,8 @@ module.exports = {
     userChannelActivity.upsertGuildChannelBackfillCursor,
   guildChannelBackfillProgress: userChannelActivity.guildChannelBackfillProgress,
 
-  // voice sessions
-  upsertVoiceSession: voiceSessions.upsertVoiceSession,
-  getVoiceSession: voiceSessions.getVoiceSession,
-  deleteVoiceSession: voiceSessions.deleteVoiceSession,
+  // voice sessions repository + facade entries retired (audit-2026-10 #204):
+  // no feature ever wrote voice_sessions (migration 040 drops the dead table).
 
   // level roles
   upsertLevelRole: levelRoles.upsertLevelRole,
@@ -126,7 +123,8 @@ module.exports = {
   addYoutubeChannel: youtube.addYoutubeChannel,
   removeYoutubeChannel: youtube.removeYoutubeChannel,
   updateYoutubeChannelLastChecked: youtube.updateYoutubeChannelLastChecked,
-  cleanupOldNotifications: youtube.cleanupOldNotifications,
+  // cleanupOldNotifications retired (audit-2026-10 #204): an un-wired
+  // data-deleter over youtube_channels; nothing ever called it.
   cleanupMalformedYoutubeChannels: youtube.cleanupMalformedYoutubeChannels,
 
   // Twitch
