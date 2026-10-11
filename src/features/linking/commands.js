@@ -18,12 +18,17 @@
  *    resort boundary fallback the router itself applies when a handler throws).
  *  - Discord replies are `sensitive: true` — the seam spelling of "private to
  *    the invoker" (src/platform/discord/context.js maps it to
- *    MessageFlags.Ephemeral). Fluxer has no ephemeral concept: replies go to
- *    the channel, and the create reply carries the "short-lived, one-time"
- *    note in its text (K2 DM mode is deliberately NOT used — the link code is
- *    addressed to the caller's peer on the other platform, and the service's
- *    minted code is single-use, so a public post is burned on first redeem;
- *    the reply text says so).
+ *    MessageFlags.Ephemeral). Fluxer has no ephemeral flag, so the private
+ *    surfaces ride the K2 DM path (roadmap/fluxer.md K2): `link create`
+ *    delivers the minted code to the caller's DM (outbound.sendDm, the same
+ *    path bridge uses) and the guild channel gets a DM-sentinel ack that never
+ *    carries the code; conflict refusals (which name WHO holds the code/
+ *    identity) send their full detail by DM and keep only the service's
+ *    non-revealing `publicError` in the channel. A failed DM surfaces its
+ *    specific cause in the channel (K2: delivery error only, never the body) —
+ *    mirroring src/platform/fluxer/context.js's `sendPayload` fallback.
+ *    Non-conflict refusals (unknown/expired/used code, same-platform,
+ *    no-bridge, …) name no peer and echo no code, so they stay in-channel.
  *  - `surfaceCmd` ("/link" vs "<prefix>link", K1 prefix read at call time) is
  *    resolved from the ctx shape and passed to EVERY service call so the
  *    service's sentences name the command on the caller's own platform.
@@ -161,8 +166,10 @@ function isoUtc(ms) {
 
 /**
  * Reply the caller with a specific sentence. Discord: ephemeral (the `sensitive`
- * seam key → MessageFlags.Ephemeral on the adapter). Fluxer: in-channel —
- * K2 DM mode is deliberately NOT used; see the file header for why.
+ * seam key → MessageFlags.Ephemeral on the adapter). Fluxer: in-channel — the
+ * channel-visible surface. Anything that must stay private on Fluxer (the
+ * minted create code, conflict detail) goes through {@link sendPrivateDm}
+ * instead; see the file header's reply contract (K2).
  *
  * @param {import("../../platform/context").CommandContext} ctx
  * @param {string} content
@@ -172,6 +179,42 @@ async function replyToCaller(ctx, content) {
   const payload = { content, allowedMentions: NO_PING };
   if (ctx.platform === "discord") payload.sensitive = true;
   await ctx.reply(payload);
+}
+
+/**
+ * Deliver a private body to the COMMAND AUTHOR over the shipped K2 DM path
+ * (roadmap/fluxer.md K2 + bridge precedent: `outbound.sendDm(userId, payload)`
+ * — POST /v1/users/@me/channels then post; recipient validity is only provable
+ * at send time). Resolves {ok:true} | {ok:false, error} with the SPECIFIC
+ * delivery cause — never throws (outbound.sendDm resolves failures as values;
+ * the try/catch is the belt so a broken client can't kill the handler,
+ * AGENTS.md rule 1). Only called on the Fluxer surface.
+ *
+ * @param {import("../../platform/context").CommandContext} ctx
+ * @param {string} content private reply body (may carry the code / peer detail)
+ * @returns {Promise<{ ok: true } | { ok: false, error: string }>}
+ */
+async function sendPrivateDm(ctx, content) {
+  const sendDm = ctx.outbound && ctx.outbound.sendDm;
+  if (typeof sendDm !== "function") {
+    return { ok: false, error: "this Fluxer client has no DM path (sendDm unavailable)" };
+  }
+  try {
+    const res = await sendDm.call(ctx.outbound, ctx.userId, { content, allowedMentions: NO_PING });
+    if (res && res.ok === true) return { ok: true };
+    return { ok: false, error: String((res && res.error) || "the DM send failed") };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+/**
+ * K2 channel fallback sentence — verbatim parity with
+ * src/platform/fluxer/context.js's `sendPayload` DM failure path: the channel
+ * reply is the SPECIFIC delivery error only, never the private body.
+ */
+function dmFailureText(why) {
+  return `I could not DM you the result: ${why}`;
 }
 
 /**
@@ -242,6 +285,20 @@ function createSuccessText(result, surfaceCmd, otherCmd) {
   );
 }
 
+/**
+ * The Fluxer channel-visible ack for `link create` once the code has landed in
+ * the caller's DM (issue #194 — "check your DMs" sentinel): names what happened
+ * and the retry path, and NEVER the code, an expiry instant, or any peer
+ * detail (the code itself is the private body carried by the DM).
+ */
+function createDmSentinelText(surfaceCmd) {
+  return (
+    "Link code sent — check your DMs. The channel never shows a link code (it is a " +
+    "single-use secret); if no DM arrived, allow DMs from this bot, and mint a fresh " +
+    `one with ${surfaceCmd} create if it expires. Your link shows up under ${surfaceCmd} status.`
+  );
+}
+
 function connectSuccessText(peerDesc, surfaceCmd) {
   return (
     `Linked to ${peerDesc}. ` +
@@ -264,23 +321,77 @@ function statusText(ctx, link, peerDesc) {
 }
 
 // ---------------------------------------------------------------------------
-// Subcommand handlers (all share the replyToCaller surface)
+// Subcommand handlers (replyToCaller for channel/ephemeral replies; private
+// Fluxer bodies ride sendPrivateDm — see the file header's reply contract)
 // ---------------------------------------------------------------------------
 
-/** `link create` — mint the one-time code (ephemeral on Discord). */
+/**
+ * `link create` — mint the one-time code. Discord: ephemeral reply. Fluxer:
+ * the code goes to the caller's DM through the K2 path (issue #194 — the
+ * channel must never carry the credential) and the channel gets the
+ * DM-sentinel ack. A failed DM delivery surfaces its specific cause in the
+ * channel as the delivery error ONLY (K2 fallback, src/platform/fluxer/
+ * context.js parity) — the minted row stays as it is (it expires on its own
+ * and the plaintext is never re-posted; bridge rolls its pending row back
+ * here, linking has no row to roll back because the code is the only state).
+ */
 async function handleCreate(ctx, featureCtx, surfaceCmd) {
   const result = await service.createLinkCode(ctx.communityId, ctx.userId, { surfaceCmd });
   if (!result.ok) return replyToCaller(ctx, result.error);
-  return replyToCaller(ctx, createSuccessText(result, surfaceCmd, otherSideCmdFor(ctx)));
+  const detail = createSuccessText(result, surfaceCmd, otherSideCmdFor(ctx));
+  if (ctx.platform !== "discord") {
+    const dm = await sendPrivateDm(ctx, detail);
+    if (!dm.ok) {
+      console.error(
+        `[linking] create: DM delivery to user ${ctx.userId} in community ${ctx.communityId} failed: ${dm.error}`,
+      );
+      // K2: the channel sees the delivery failure, never the code.
+      return replyToCaller(ctx, dmFailureText(dm.error));
+    }
+    return replyToCaller(ctx, createDmSentinelText(surfaceCmd));
+  }
+  return replyToCaller(ctx, detail);
+}
+
+/**
+ * Reply to a service refusal on the right SURFACE (issue #194).
+ *  - Discord: ephemeral = private → the full-detail sentence verbatim.
+ *  - Fluxer refusals WITHOUT `publicError` (unknown/expired/used code,
+ *    same-platform, no-bridge, format, …): already carry no peer identifier
+ *    and no code echo — channel-visible verbatim, as always.
+ *  - Fluxer CONFLICT refusals (caller/target already linked, lost the
+ *    link-insert race — the service attached `publicError`): the channel gets
+ *    the non-revealing public sentence; the full detail (peer ids, date) goes
+ *    to the caller's DM. If that DM fails the channel reply additionally
+ *    names the specific delivery cause (AGENTS.md rule 3) — the public
+ *    sentence itself carries no peer detail either way.
+ */
+async function replyRefusal(ctx, result) {
+  if (ctx.platform === "discord" || !result.publicError) {
+    return replyToCaller(ctx, result.error);
+  }
+  const dm = await sendPrivateDm(ctx, result.error);
+  if (!dm.ok) {
+    console.error(
+      `[linking] conflict detail DM to user ${ctx.userId} in community ${ctx.communityId} failed: ${dm.error}`,
+    );
+    return replyToCaller(
+      ctx,
+      `${result.publicError} I could not DM you the full detail: ${dm.error}`,
+    );
+  }
+  return replyToCaller(ctx, result.publicError);
 }
 
 /** `link connect <code>` — redeem the peer's code. The service's failure
  *  sentences (expired / used / same-platform / no bridge / already linked)
- *  are replied verbatim, exactly as written in service.js. */
+ *  are replied verbatim on the private surface, exactly as written in
+ *  service.js; conflict refusals keep the peer detail out of the Fluxer
+ *  channel (replyRefusal). */
 async function handleConnect(ctx, featureCtx, surfaceCmd) {
   const code = ctx.options.getString("code");
   const result = await service.redeemLinkCode(ctx.communityId, ctx.userId, code, { surfaceCmd });
-  if (!result.ok) return replyToCaller(ctx, result.error);
+  if (!result.ok) return replyRefusal(ctx, result);
   const peerDesc = await describePeer(ctx, featureCtx, result.peer);
   return replyToCaller(ctx, connectSuccessText(peerDesc, surfaceCmd));
 }
@@ -403,6 +514,8 @@ module.exports = {
   surfaceCmdFor,
   otherSideCmdFor,
   createSuccessText,
+  createDmSentinelText,
+  dmFailureText,
   connectSuccessText,
   statusText,
 };
