@@ -398,6 +398,38 @@ function start(supervisor, ctx) {
     .catch((err) => {
       console.error("[music] Lavalink init failed:", err?.message || err);
     });
+
+  // Graceful-shutdown handle (audit C9): destroy live players so Lavalink
+  // sessions and voice connections close cleanly instead of being hard-cut
+  // (the manager itself keeps no timers — players are the leak). Runs BEFORE
+  // the Discord client destroy: player.destroy sends its leave via the shard.
+  return {
+    stop() {
+      const players = manager.players;
+      if (!players || typeof players.values !== "function") return;
+      const destroys = [];
+      for (const player of players.values()) {
+        if (player && typeof player.destroy === "function") {
+          try {
+            destroys.push(player.destroy("bot shutdown", true));
+          } catch (err) {
+            console.error(
+              `[music] player destroy failed (guild ${player.guildId ?? "?"}):`,
+              err?.message || err,
+            );
+          }
+        }
+      }
+      return Promise.allSettled(destroys).then((results) => {
+        const failed = results.filter((r) => r.status === "rejected").length;
+        if (failed > 0) {
+          console.error(
+            `[music] ${failed}/${destroys.length} player(s) failed to destroy on shutdown`,
+          );
+        }
+      });
+    },
+  };
 }
 
 module.exports = {

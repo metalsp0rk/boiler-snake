@@ -28,6 +28,12 @@ const { getCommunityById } = require("./community");
 const { parseFluxerInstances } = require("../config");
 const { ensureHoneypotWarning } = require("../features/honeypot");
 const { createFluxerHandle } = require("./fluxer/client");
+const {
+  installProcessGuards,
+  registerShutdownHandle,
+} = require("../core/lifecycle");
+const schedulerApi = require("../core/scheduler");
+const { stopMemberFetchQueue } = require("../web/services/memberFetchQueue");
 
 /**
  * @typedef {object} Supervisor
@@ -83,6 +89,11 @@ function registerFeatureEventsOnce(supervisor, featureList, ctx) {
  * @returns {Promise<{ ok: boolean, exitCode: number, supervisor: Supervisor }>}
  */
 async function boot({ registry } = {}) {
+  // C8/C9 (audit §6 P0.4): process-level crash net + SIGTERM/SIGINT drain,
+  // installed exactly once per process (idempotent — repeated boot() calls
+  // in tests never stack listeners). See src/core/lifecycle.js for policy.
+  installProcessGuards();
+
   const commandRegistry = registry ?? buildDefaultRegistry();
   const entries = readFluxerEntries();
   const discordToken = process.env.DISCORD_TOKEN;
@@ -100,6 +111,29 @@ async function boot({ registry } = {}) {
   supervisor.onFluxerReady = function onFluxerReady(listener) {
     if (typeof listener === "function") fluxerReadyListeners.push(listener);
   };
+
+  // --- Graceful-shutdown handles for the endpoints (audit C9) --------------
+  // Registered FIRST so the drain stops them LAST (handles drain LIFO):
+  // feature-start loops (web/tickers/relay, registered in startFeaturesOnce)
+  // close before the sockets they send through. Each handle reads the LIVE
+  // supervisor, so handles created after boot (late Fluxer logins) are
+  // covered too. Failures per handle are logged and the drain continues.
+  registerShutdownHandle("fluxer", async () => {
+    for (const [instanceKey, handle] of supervisor.fluxer) {
+      try {
+        if (typeof handle?.destroy === "function") await handle.destroy();
+      } catch (err) {
+        console.error(
+          `[shutdown] fluxer ${instanceKey} destroy failed:`,
+          err?.message || err,
+        );
+      }
+    }
+  });
+  registerShutdownHandle("discord", async () => {
+    const client = supervisor.discord;
+    if (client && typeof client.destroy === "function") await client.destroy();
+  });
 
   /**
    * Map a community id to the OutboundClient that can speak to it.
@@ -150,6 +184,13 @@ async function boot({ registry } = {}) {
     // PR 7 cutover (spec § Supervisor): the FIRST argument is the supervisor;
     // features read the Discord client from supervisor.discord themselves.
     startAllFeatures(supervisor, features, featureCtx);
+    // C9: periodic work drains BEFORE the endpoints — registered AFTER the
+    // feature-start handles (which self-register their `{ stop }` loops via
+    // load.js) so LIFO drains member-fetch-queue → scheduler → feature loops
+    // → endpoints. scheduler.stop() covers every named job, including the
+    // bridge relay tick and expiry sweeper.
+    registerShutdownHandle("scheduler", () => schedulerApi.stop());
+    registerShutdownHandle("member-fetch-queue", () => stopMemberFetchQueue());
   }
 
   /** One boolean promise per configured endpoint: true = that endpoint came up. */
@@ -169,9 +210,18 @@ async function boot({ registry } = {}) {
         discordReady = true;
         startFeaturesOnce();
       });
-      client.on(Events.InteractionCreate, (interaction) =>
-        handleInteraction(interaction, featureCtx)
-      );
+      client.on(Events.InteractionCreate, (interaction) => {
+        // C8: the router already wraps every handler; this catch is the
+        // last-resort net so an escaped rejection from the dispatch promise
+        // is logged with the interaction's identity instead of hitting the
+        // process-level net (or, pre-fix, killing the process).
+        handleInteraction(interaction, featureCtx).catch((err) =>
+          console.error(
+            `[discord] interaction dispatch failed (${interaction?.commandName ?? interaction?.type ?? "unknown"}):`,
+            err?.message || err,
+          ),
+        );
+      });
       discordLogin = client.login(discordToken);
     } catch (err) {
       // Construction/wiring failure: Discord is down for this process;
