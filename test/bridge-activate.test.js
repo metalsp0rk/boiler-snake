@@ -20,6 +20,8 @@
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { loadDb, communityKey } = require("./helpers/env");
 
@@ -30,6 +32,7 @@ const service = require("../src/features/bridge/service");
 const tokenCrypto = require("../src/features/bridge/tokenCrypto");
 const codes = require("../src/features/bridge/codes");
 const relay = require("../src/features/bridge/relay");
+const media = require("../src/features/bridge/media");
 const repo = require("../src/db/repositories/bridges");
 const { getCommunityById } = require("../src/platform/community");
 
@@ -175,9 +178,9 @@ describe("bridge service (PR 4)", () => {
     seedChannels([
       "A-01", "A-02", "A-03", "A-04", "A-05", "A-06", "A-07", "A-08",
       "A-09", "A-10", "A-11", "A-12", "A-13", "A-14", "A-15", "A-16",
-      "A-17", "A-18", "A-19", "A-20", "A-21", "A-22", "A-23",
+      "A-17", "A-18", "A-19", "A-20", "A-21", "A-22", "A-23", "A-31",
       "B-03", "B-05", "B-06", "B-07", "B-08", "B-11", "B-12", "B-13",
-      "B-14", "B-15", "B-16", "B-17", "B-18", "E-01",
+      "B-14", "B-15", "B-16", "B-17", "B-18", "B-31", "E-01",
       "CH-VOICE", "CH-INVOKER", "CH-BOTPERM", "CH-HP",
     ]);
     channels.set(`${rowA.id}:CH-VOICE`, { ...FULL(), type: 2 });
@@ -1117,6 +1120,53 @@ describe("bridge service (PR 4)", () => {
       "This channel isn't in a bridge. Use /bridge list to see bridges in this community.",
     );
     assert.ok(repo.getBridgeById(pair.bridge.id), "untouched");
+  });
+
+  it("disconnect deletes the bridge's spool directory (audit #195 item 4)", async () => {
+    const pair = mintPending("A-31");
+    webhookApis.set("discord:discord", fakeWebhookApi("D12"));
+    webhookApis.set(`fluxer:${rowB.instanceKey}`, fakeWebhookApi("F12"));
+    const connected = await service.connectBridge({
+      community: rowB,
+      invocationChannelId: "900",
+      targetChannelId: "B-31",
+      rawCode: pair.minted.displayCode,
+      actorUserId: "u",
+      via: "slash",
+      clock: () => T0,
+      staff: STAFF,
+      deps: baseDeps({ activateBridge: activate }),
+    });
+    assert.equal(connected.ok, true, connected.error);
+
+    // Seed the bridge's spool like the media pipeline would: two message
+    // dirs, one carrying a file (the other empty-but-present).
+    const bridgeDir = path.join(media.spoolRootDir(), pair.publicId);
+    const msgDir = media.spoolDirFor(pair.publicId, "555001");
+    fs.mkdirSync(msgDir, { recursive: true });
+    fs.writeFileSync(media.spoolFilePath(pair.publicId, "555001", 0), "queued bytes");
+    fs.mkdirSync(media.spoolDirFor(pair.publicId, "555002"), { recursive: true });
+    assert.ok(fs.existsSync(bridgeDir), "the spool dir exists before disconnect");
+
+    const res = await service.disconnectBridge({
+      community: rowA,
+      invocationChannelId: "900",
+      publicId: pair.publicId,
+      actorUserId: "u",
+      staff: STAFF,
+      deps: baseDeps(),
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.deepEqual(res.warnings, [], "removal succeeded: no warning is owed");
+    assert.equal(
+      fs.existsSync(bridgeDir),
+      false,
+      "the whole bridge spool dir (every message dir + file) is gone",
+    );
+
+    // Disconnecting without a spool dir is a clean no-op (never an error):
+    // covered by every other disconnect test here, all asserting
+    // deepEqual(warnings, []).
   });
 
   // -------------------------------------------------------------------------

@@ -610,6 +610,46 @@ function readSpooledFile(publicId, srcMessageId, index) {
 }
 
 /**
+ * Delete a WHOLE bridge's spool directory (disconnect; audit #195 item 4).
+ * Every per-message spool dir of a disconnected bridge is stranded data:
+ * the outbox rows that referenced it are cascade-deleted with the bridge,
+ * so nothing can ever read those bytes. The start-time orphan pass is the
+ * backstop, but a long-running process would hold the bytes (and the
+ * process-wide spool cap) until restart — disconnect must remove them now.
+ *
+ * Accounting is refreshed from the surviving files (same rules as
+ * deleteSpoolDir), so a full-spool latch releases on the way down.
+ *
+ * @param {string} publicId bridge handle (path-segment-checked)
+ * @returns {{existed: boolean, error: string|null}} — existed is true when
+ *   the directory was there (removed or not); error names the failure when
+ *   removal failed (already logged).
+ */
+function deleteSpoolPublicDir(publicId) {
+  if (!isSafeSpoolId(publicId)) {
+    return { existed: false, error: "refused: publicId is not a safe spool path segment" };
+  }
+  const root = spoolRootDir();
+  const dir = path.resolve(root, publicId);
+  if (dir === root || !dir.startsWith(root + path.sep)) {
+    return { existed: false, error: "refused: spool path escaped the spool root" };
+  }
+  if (!fs.existsSync(dir)) return { existed: false, error: null };
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    console.error(
+      `[bridge] disconnect spool cleanup failed for ${publicId}: ${err?.message || err}`,
+    );
+    return { existed: true, error: String(err?.message || err) };
+  }
+  const scan = initSpoolAccountingScanOnce();
+  spoolUsage.total = scan.totalBytes;
+  spoolUsage.byBridge = scan.byBridge;
+  return { existed: true, error: null };
+}
+
+/**
  * Delete one source message's spool directory (ack-then-delete, supersession,
  * disconnect). Returns true when the directory existed. Accounting is
  * refreshed from the surviving files so the spool-full latch releases on the
@@ -666,6 +706,7 @@ module.exports = {
   spoolAttachments,
   readSpooledFile,
   deleteSpoolDir,
+  deleteSpoolPublicDir,
   // accounting + notices
   initSpoolAccounting,
   resetSpoolAccounting,
