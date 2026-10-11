@@ -271,7 +271,7 @@ Private support channels with category, archive, and optional public panel. Full
 ```bash
 /ticket setcategory category:#Tickets
 /ticket setarchive channel:#ticket-archive
-/ticket panel channel:#support
+/ticket panel create channel:#support
 /ticket settings
 ```
 
