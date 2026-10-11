@@ -143,6 +143,9 @@ describe("platform/fluxer/normalize — normalizeFluxerMessage", () => {
     assert.equal(out.type, null);
     assert.deepEqual(out.messageSnapshots, []);
     assert.deepEqual(out.stickers, []);
+    // Issue #200 additions on a payload that carries none: absent values, never undefined.
+    assert.deepEqual(out.embeds, []);
+    assert.equal(out.flags, null);
     // Pipeline-added fields (contract 1)
     assert.deepEqual(out.memberRoleIds, ["1554600000000000010", "1554600000000000012"]);
     assert.equal(out.channelTypes.get("1554600000000000011"), 0);
@@ -184,6 +187,42 @@ describe("platform/fluxer/normalize — normalizeFluxerMessage", () => {
       { instanceKey: "fluxer-1" },
     );
     assert.deepEqual(noFiles.attachments, []);
+  });
+
+  // Issue #200 (audit §6 P2): the bridge relay consumes message.embeds and
+  // message.flags (§10.8 payload); before the normalize passthroughs existed
+  // BOTH arms were structurally dead for every real Fluxer message.
+  it("passes embeds through and lifts message-level flags to a number (#200)", () => {
+    const embeds = [
+      { title: "T", description: "D", url: "https://e.test", color: 0xff0000, fields: [{ name: "f", value: "v", inline: true }] },
+      { description: "second" },
+    ];
+    const out = normalizeFluxerMessage(
+      { t: "MESSAGE_CREATE", d: phase0D({ embeds, flags: 16 }) },
+      { instanceKey: "fluxer-1" },
+    );
+    assert.deepEqual(out.embeds, embeds, "embed entries pass through verbatim");
+    assert.notEqual(out.embeds, embeds, "the array is copied, not aliased");
+    assert.equal(out.flags, 16, "wire flags arrive as a number");
+
+    // Non-numeric flags (junk wire values) become null — never a lossy 0.
+    const junk = normalizeFluxerMessage(
+      { t: "MESSAGE_CREATE", d: phase0D({ flags: "16", embeds: "nope" }) },
+      { instanceKey: "fluxer-1" },
+    );
+    assert.equal(junk.flags, null);
+    assert.deepEqual(junk.embeds, []);
+  });
+
+  it("maps a bigint-backed BitField flags value to a number (#200, SDK BitField shape)", () => {
+    // The real hydrated SDK Message carries `flags` as a bigint-backed
+    // BitField object; toNumberOrNull unwraps valueOf().
+    const bitField = { valueOf: () => 16n };
+    const out = normalizeFluxerMessage(
+      { t: "MESSAGE_CREATE", d: phase0D({ flags: bitField }) },
+      { instanceKey: "fluxer-1" },
+    );
+    assert.equal(out.flags, 16);
   });
 
   it('missing content becomes ""', () => {

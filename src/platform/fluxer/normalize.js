@@ -219,6 +219,22 @@ function mapSnapshots(value) {
 }
 
 /**
+ * embeds (issue #200): a real hydrated SDK Message carries `embeds` as the
+ * SDK's camelCase view array (toMessageEmbed); the raw wire carries the
+ * gateway objects. The bridge relay (§10.8 payload) reads `message.embeds`
+ * behind an Array.isArray guard — before this field existed the relay's
+ * embeds arm could NEVER fire for a Fluxer source (audit: "embeds gap hid
+ * behind green fixtures"). Shallow copy; entries pass through verbatim —
+ * both entry shapes (wire snake, SDK camel) carry the keys the relay reads
+ * (title/description/url/color/fields).
+ * @param {unknown} value
+ * @returns {object[]}
+ */
+function mapEmbeds(value) {
+  return Array.isArray(value) ? [...value] : [];
+}
+
+/**
  * Author display name, dual-shape (wire snake_case, SDK camelCase). Falls back
  * to the username, then "" — a display name is cosmetic, never required.
  * @param {object} author raw author object
@@ -293,6 +309,12 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     // (username lives only on the gateway payload — contract 6).
     authorRaw: d.author,
     attachments,
+    // Issue #200 (audit §6 P2): the SDK's hydrated Message carries the
+    // camelCase embed view and the wire its raw embeds — the bridge relay's
+    // §10.8 payload reads message.embeds, and WITHOUT this field the arm
+    // could never fire for a Fluxer source (the "embeds hid behind green
+    // fixtures" class). Additive; consumers type-guard (Array.isArray).
+    embeds: mapEmbeds(d.embeds),
     createdAt: toDate(timestamp),
     // Pipeline-added fields (contract 1 — the REQUIRED subset of this shape
     // is enforced at runtime by src/platform/normalizedMessageContract.js at
@@ -320,6 +342,12 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     // authorId above), and BOTH are exposed — the gate needs both.
     webhookId: toIdOrNull(d.webhook_id ?? d.webhookId),
     type: typeof d.type === "number" ? d.type : null,
+    // Issue #200 (audit §6 P2): message-level flags. The real hydrated SDK
+    // Message exposes `flags` as a MessageFlagsBitField (bigint-backed) and
+    // the raw wire carries a number; the relay's CONTAINS_EXPLICIT_MEDIA
+    // check (§10.8, bit 1<<4) reads message.flags numerically and was dead
+    // while this field was missing. Additive; consumers type-guard.
+    flags: toNumberOrNull(d.flags),
     messageSnapshots: mapSnapshots(d.message_snapshots ?? d.messageSnapshots),
     stickers: mapStickers(d.stickers),
     parsePrefix: null,
