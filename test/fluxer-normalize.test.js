@@ -296,6 +296,40 @@ describe("platform/fluxer/normalize — normalizeFluxerMessage", () => {
   });
 });
 
+/**
+ * Issue #200 (audit §6 P2): the C2 failure mode was memberRoleIds going
+ * SILENTLY EMPTY when the real instance shape disagreed with the fixture
+ * shape. The guard converts "SDK drifted under us" from a silent [] into a
+ * loud, specific throw at the normalizer (caught + logged by the client.js
+ * event boundary; the message is dropped, never dispatched on guessed roles).
+ */
+describe("platform/fluxer/normalize — memberRoleIds shape guard (#200)", () => {
+  const norm = (member) =>
+    normalizeFluxerMessage({ t: "MESSAGE_CREATE", d: phase0D({ member }) }, { instanceKey: "f" });
+
+  it("accepts the SDK manager shape (roleIds getter) and the wire array", () => {
+    assert.deepEqual(norm({ roles: { roleIds: ["r1", "r2"] } }).memberRoleIds, ["r1", "r2"]);
+    assert.deepEqual(norm({ roles: ["r1"] }).memberRoleIds, ["r1"]);
+    assert.deepEqual(norm({ roles: [] }).memberRoleIds, [], "an empty manager/array stays []");
+    assert.deepEqual(norm(undefined).memberRoleIds, [], "no member at all → []");
+    assert.deepEqual(norm({ nick: "hi" }).memberRoleIds, [], "member without roles → []");
+  });
+
+  it("THROWS on a roles value that is neither a roleIds manager nor an array", () => {
+    // Renamed getter (the drift the meta-test simulates on a real instance):
+    assert.throws(
+      () => norm({ roles: { ids: ["r1"] } }),
+      /unrecognized shape.*roleIds|roleIds array.*drift/i,
+    );
+    // Plain-object role bag (would have iterated to [] silently before):
+    assert.throws(() => norm({ roles: { 0: "r1" } }), TypeError);
+    // String (C2-era confusion class):
+    assert.throws(() => norm({ roles: "r1,r2" }), TypeError);
+    // roleIds that stopped being an array:
+    assert.throws(() => norm({ roles: { roleIds: "1554600000000000010" } }), TypeError);
+  });
+});
+
 describe("platform/fluxer/normalize — normalizeFluxerReaction", () => {
   it("normalizes a unicode reaction (Phase 0 single-object payload)", () => {
     const out = normalizeFluxerReaction(

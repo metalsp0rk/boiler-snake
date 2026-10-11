@@ -235,6 +235,34 @@ function mapEmbeds(value) {
 }
 
 /**
+ * memberRoleIds from either REAL shape, with a drift guard (issue #200):
+ * - SDK GuildMember: `roles` is a GuildMemberRoleManager and the ids live
+ *   behind its `roleIds` GETTER (audit C2 — reading the manager as an array
+ *   yielded [] for every gateway message and locked out payload-resolved
+ *   staff);
+ * - raw wire payloads / fixtures: `roles` is a plain id array.
+ * Anything else (roles present but neither a roleIds array nor an array) is
+ * SDK MODEL DRIFT: THROW with the specific cause instead of silently
+ * yielding [] — C2's failure mode was silent emptiness, so a renamed or
+ * removed `roleIds` must fail loudly at the normalizer. The client.js
+ * onEvent boundary owns the catch/log (AGENTS.md rule 1): the message is
+ * dropped, never dispatched on guessed roles.
+ * @param {object|null|undefined} member
+ * @returns {string[]}
+ */
+function memberRoleIdsOf(member) {
+  const roles = member?.roles;
+  if (roles == null) return [];
+  if (Array.isArray(roles.roleIds)) return mapIdArray(roles.roleIds);
+  if (Array.isArray(roles)) return mapIdArray(roles);
+  throw new TypeError(
+    "[fluxer] GuildMember.roles has an unrecognized shape (neither the SDK " +
+      "manager's roleIds array nor a wire id array) — the SDK model drifted; " +
+      "refusing to guess memberRoleIds (audit C2 class, issue #200)",
+  );
+}
+
+/**
  * Author display name, dual-shape (wire snake_case, SDK camelCase). Falls back
  * to the username, then "" — a display name is cosmetic, never required.
  * @param {object} author raw author object
@@ -320,14 +348,12 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     // is enforced at runtime by src/platform/normalizedMessageContract.js at
     // the onMessageCreate boundary, issue #201; the fields below beyond the
     // required set are Fluxer-only extras whose consumers type-guard).
-    // Member roles arrive in two shapes:
-    // the real gateway hands a hydrated GuildMember whose `roles` is a
-    // GuildMemberRoleManager with the ids behind its `roleIds` getter — audit
-    // C2: reading the manager as an array always yielded [] and locked out
-    // every payload-resolved staff member — while raw wire payloads and
-    // fixtures carry a plain id array on `roles`. Read the manager first;
-    // nullish-coalescing keeps the wire array (an empty manager stays []).
-    memberRoleIds: mapIdArray(member?.roles?.roleIds ?? member?.roles),
+    // Member roles arrive in two shapes — see memberRoleIdsOf (issue #200
+    // guard): the real gateway hands a hydrated GuildMember whose `roles` is
+    // a GuildMemberRoleManager (ids behind the `roleIds` getter, audit C2),
+    // raw wire payloads carry a plain id array, and ANY other shape throws
+    // loudly instead of replaying C2's silent emptiness.
+    memberRoleIds: memberRoleIdsOf(member),
     channelTypes: mentionMap.channelTypes,
     memberRaw: member,
     // id→bot flags for resolved mentions (dispatch step 3 — never default false).
