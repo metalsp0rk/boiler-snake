@@ -617,6 +617,40 @@ function closeTicketArchived(ticketId, opts) {
 }
 
 /**
+ * Atomically claim the archive pipeline for one ticket (audit-2026-10 #197).
+ *
+ * CAS BEFORE WORK: the archive pipeline is not idempotent (transcript fetch +
+ * embed post + requester DM + channel delete), so it must not run twice.
+ * The first caller flips `archive_claimed_at` from NULL inside one UPDATE
+ * (better-sqlite3 `changes === 1`); every later caller — a concurrent
+ * `/ticket archive`, a retry, or a stale in-memory row — gets `won:false`
+ * and must no-op with a specific message naming the ticket.
+ *
+ * `archived` deliberately keeps its own meaning (content-archived marker at
+ * finalize time, sensitive rows never set it, pinned by existing tests);
+ * the claim is a separate internal column so no reader of `archived` /
+ * `status` changes behavior. Crash semantics are sticky on purpose: if the
+ * winner dies mid-archive the ticket stays claimed and re-archiving is
+ * blocked — the requirement is concurrency-safety, not crash recovery.
+ *
+ * @param {number} ticketId
+ * @returns {{ won: boolean, ticket: object|null }} `won` true only for the
+ *   caller that claimed; `ticket` is the LIVE row (so the loser can tell
+ *   "already archived" from "mid-archive" and name the ticket).
+ */
+function claimTicketArchive(ticketId) {
+  const info = db
+    .prepare(
+      `
+    UPDATE tickets SET archive_claimed_at=?
+    WHERE id=? AND archived=0 AND archive_claimed_at IS NULL
+  `
+    )
+    .run(now(), ticketId);
+  return { won: info.changes === 1, ticket: getTicketById(ticketId) || null };
+}
+
+/**
  * External channel delete: mark closed/disposed, no content archive.
  * @param {number} communityId
  * @param {string} channelId
@@ -1158,6 +1192,7 @@ module.exports = {
   markTicketClosed,
   closeTicketSensitive,
   closeTicketArchived,
+  claimTicketArchive,
   markTicketClosedByChannelDelete,
   saveTicketMessages,
   listTicketMessages,

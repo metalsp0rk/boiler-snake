@@ -8,6 +8,7 @@ const {
   markTicketClosed,
   closeTicketSensitive,
   closeTicketArchived,
+  claimTicketArchive,
   saveTicketMessages,
   generateTranscriptToken,
   getTicketSettings,
@@ -490,13 +491,25 @@ async function softCloseTicket(opts) {
  * Archive: fetch/transcript (if non-sensitive), post to archive channel, delete channel.
  * Ticket should already be soft-closed; if still open, soft-close is not automatic —
  * caller should ensure status is closed.
+ *
+ * Concurrency (audit-2026-10 #197): the pipeline CAS-CLAIMS the ticket
+ * (`claimTicketArchive`, atomic UPDATE) BEFORE doing any work. A loser —
+ * concurrent `/ticket archive`, retry, or a stale row — returns immediately
+ * with `skipped` set to a specific message naming the ticket (never a
+ * generic reply); the winner does the work exactly once. The claim is
+ * sticky by design: a winner that dies mid-archive leaves the ticket
+ * claimed (re-archive blocked) — concurrency-safety, not crash recovery.
+ *
  * @param {object} opts
  * @param {import("discord.js").Client} opts.client
  * @param {import("discord.js").GuildTextBasedChannel} opts.channel
  * @param {object} opts.ticket
  * @param {string} opts.archivedBy
  * @param {string} [opts.guildName]
- * @returns {Promise<{ ticket: object, warnings: string[] }>}
+ * @param {object} [opts.summaryOpts] Seam forwarded to summarizeTicket
+ *   (chatImpl / fetchImpl / setTimer / clearTimer / timeoutMs; tests).
+ * @returns {Promise<{ ticket: object, warnings: string[], skipped?: string }>}
+ *   `skipped` set (and no work done) when another close holds the archive claim.
  */
 async function archiveTicketPipeline(opts) {
   const { client, channel, archivedBy } = opts;
@@ -505,11 +518,23 @@ async function archiveTicketPipeline(opts) {
   const sensitive = Number(ticket.is_sensitive) === 1;
   const closeReason = ticket.close_reason || null;
 
-  if (Number(ticket.archived) === 1) {
-    return {
-      ticket,
-      warnings: ["Ticket is already archived."],
-    };
+  // CAS BEFORE WORK (#197): one atomic claim decides who archives. The old
+  // in-memory `archived === 1` check let two concurrent closes both do the
+  // work (double transcript embeds / DMs / deletes). `archived` itself is
+  // untouched until finalize (sensitive rows keep archived=0; web + gork
+  // readers unchanged).
+  const claim = claimTicketArchive(ticket.id);
+  if (!claim.won) {
+    const live = claim.ticket || getTicketById(ticket.id) || ticket;
+    const ref = formatTicketRef(live.ticket_number ?? ticket.ticket_number);
+    const msg =
+      Number(live.archived) === 1
+        ? `Ticket ${ref} is already archived.`
+        : `Ticket ${ref} is already being archived by another close — nothing was done here.`;
+    console.warn(
+      `[tickets] archive skipped for ${ref} (by ${archivedBy}): ${msg}`
+    );
+    return { ticket: live || ticket, warnings: [msg], skipped: msg };
   }
 
   if (sensitive) {
@@ -642,8 +667,16 @@ async function archiveTicketPipeline(opts) {
   const summary = await summarizeTicket(
     { ...ticket, close_reason: closeReason },
     messages,
-    { closeReason },
+    {
+      closeReason,
+      ...(opts.summaryOpts ? opts.summaryOpts : {}),
+    },
   );
+  // The summary service never throws: an AI failure or deadline abort
+  // degrades to the stats fallback and carries a `warning` naming the
+  // specific cause (AGENTS.md) — surface it to the archiver instead of
+  // silently posting a fallback summary. The archive itself COMPLETES.
+  if (summary.warning) warnings.push(summary.warning);
 
   const publicUrl = relativePath ? transcriptPublicUrl(token) : null;
 

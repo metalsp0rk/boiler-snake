@@ -63,6 +63,12 @@ function getAiConfig() {
  * @param {number} [opts.timeoutMs] Abort the request after this many ms.
  * @param {AbortSignal} [opts.signal] External abort signal (deadline).
  * @param {Function} [opts.fetchImpl] Injectable fetch (tests).
+ * @param {Function} [opts.setTimer] Injectable (fn, ms) → handle scheduler
+ *   for the timeoutMs deadline (tests inject a fake and fire the abort
+ *   themselves — same seam idiom as the SSRF guard, so a hung-completion
+ *   fixture never waits on the real clock). Default: real setTimeout.
+ * @param {Function} [opts.clearTimer] Injectable (handle) → void canceller.
+ *   Default: real clearTimeout.
  * @returns {Promise<object>}
  *   ok:true → data (parsed JSON body).
  *   ok:false → status (HTTP code) and/or error + reason
@@ -76,8 +82,18 @@ async function requestCompletion(cfg, payload, opts = {}) {
   const controller = new AbortController();
   let timer = null;
   const onAbort = () => controller.abort();
+  // Timer seams (default = the real global timers; callers never override
+  // in production): tests drive the deadline abort by hand.
+  const setTimer =
+    typeof opts.setTimer === "function"
+      ? opts.setTimer
+      : (fn, ms) => setTimeout(fn, ms);
+  const clearTimer =
+    typeof opts.clearTimer === "function"
+      ? opts.clearTimer
+      : (handle) => clearTimeout(handle);
   if (opts.timeoutMs) {
-    timer = setTimeout(onAbort, opts.timeoutMs);
+    timer = setTimer(onAbort, opts.timeoutMs);
   }
   if (opts.signal) {
     if (opts.signal.aborted) controller.abort();
@@ -127,7 +143,7 @@ async function requestCompletion(cfg, payload, opts = {}) {
       url,
     };
   } finally {
-    if (timer) clearTimeout(timer);
+    if (timer) clearTimer(timer);
     if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
   }
 }
