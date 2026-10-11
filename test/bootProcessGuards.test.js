@@ -23,6 +23,13 @@ const { cleanup } = loadDb();
 const lifecycle = require("../src/core/lifecycle");
 const { boot } = require("../src/platform/boot");
 
+// CI determinism (PR #238 lesson): park the module on its test-safe state
+// BEFORE boot() installs the guards with no options. boot still registers
+// the real listeners (the point of these tests), but the drain/fatal exit
+// seam stays the resetForTests no-op — a stray rejection or signal in THIS
+// worker can never hit the real process.exit and cancel the file.
+lifecycle.resetForTests();
+
 after(cleanup);
 
 const CREDENTIAL_VARS = ["DISCORD_TOKEN", "FLUXER_INSTANCES"];

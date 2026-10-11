@@ -2,11 +2,15 @@
  * Unit tests for src/core/lifecycle.js — the process crash net + graceful
  * shutdown module (audit 2026-10 C8/C9, issue #185).
  *
- * Everything is exercised through the injected seams (logger/exit/triggerSignal),
- * so no test here installs listeners that survive its own file, sends real
- * signals, or exits the test process. Real-process behavior (escaped
- * rejection survival, SIGTERM drain → exit 0) is covered by
- * test/integration/process-lifecycle.test.js spawning a child fixture.
+ * DETERMINISM CONTRACT (CI incident, PR #238): this file's process must never
+ * reach a real `process.exit` and no drain may depend on wall-clock time.
+ * Every install injects logger/exit/timer seams — the drain deadline is a
+ * controllable fake timer, so the deadline test fires it by hand instead of
+ * racing a real 40ms timer against the afterEach state swap. resetForTests()
+ * additionally parks a no-op exit seam so a late continuation from a previous
+ * test cannot terminate the test worker. Real termination (SIGTERM → exit 0,
+ * fatal → exit 1, force-exit) is covered by
+ * test/integration/process-lifecycle.test.js on a spawned child process.
  */
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
@@ -30,21 +34,82 @@ function makeExit() {
   return fn;
 }
 
+/**
+ * Controllable timer seam: runShutdown schedules exactly one deadline timer
+ * per drain; nothing here touches the wall clock. `fireAll` delivers due
+ * callbacks immediately (the deadline is the only timer the module arms).
+ */
+function makeTimers() {
+  const scheduled = [];
+  return {
+    setTimeoutFn: (fn, ms) => {
+      const t = { fn, ms, cleared: false };
+      scheduled.push(t);
+      return t;
+    },
+    clearTimeoutFn: (id) => {
+      if (!id) return;
+      id.cleared = true;
+      const i = scheduled.indexOf(id);
+      if (i >= 0) scheduled.splice(i, 1);
+    },
+    fireAll() {
+      const due = scheduled.splice(0, scheduled.length);
+      let fired = 0;
+      for (const t of due) {
+        if (!t.cleared) {
+          t.fn();
+          fired += 1;
+        }
+      }
+      return fired;
+    },
+    /** scheduled (uncleared) timers — 0 after every completed drain */
+    count: () => scheduled.filter((t) => !t.cleared).length,
+  };
+}
+
+/** Install guards with fully inert seams; returns { logger, exit, timers }. */
+function installSeams(options = {}) {
+  const logger = makeLogger();
+  const exit = makeExit();
+  const timers = makeTimers();
+  lifecycle.installProcessGuards({
+    logger,
+    exit,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn,
+    ...options,
+  });
+  return { logger, exit, timers };
+}
+
 const SIGNALS = ["SIGTERM", "SIGINT", "unhandledRejection", "uncaughtException"];
 const counts = () => Object.fromEntries(SIGNALS.map((s) => [s, process.listenerCount(s)]));
 
-describe("installProcessGuards", () => {
-  beforeEach(() => lifecycle.resetForTests());
-  afterEach(() => lifecycle.resetForTests());
+/** Wedged stop handle + its resolver. */
+function wedgedHandle(name = "wedged") {
+  const box = {};
+  const fn = () => new Promise((resolve) => { box.release = resolve; });
+  return { name, fn, box };
+}
 
+beforeEach(() => lifecycle.resetForTests());
+afterEach(async () => {
+  // Join any drain still in flight BEFORE swapping module state: a pending
+  // handleSignal/fatal continuation must never survive into the next test
+  // (this race is exactly what cancelled the file on CI).
+  const active = lifecycle.getActiveShutdown();
+  if (active) await active;
+  lifecycle.resetForTests();
+});
+
+describe("installProcessGuards", () => {
   it("registers the crash net + signal handlers and is idempotent", () => {
     const before = counts();
-    const { alreadyInstalled } = lifecycle.installProcessGuards({
-      logger: makeLogger(),
-      exit: makeExit(),
-    });
-    assert.equal(alreadyInstalled, false);
+    const { logger, exit, timers } = installSeams();
     assert.equal(lifecycle.isInstalled(), true);
+    assert.ok(logger && exit && timers);
     assert.equal(process.listenerCount("unhandledRejection"), before.unhandledRejection + 1);
     assert.equal(process.listenerCount("uncaughtException"), before.uncaughtException + 1);
     assert.equal(process.listenerCount("SIGTERM"), before.SIGTERM + 1);
@@ -60,8 +125,20 @@ describe("installProcessGuards", () => {
     assert.deepEqual(counts(), before, "dispose removes exactly what install added");
   });
 
+  it("rejects non-function seams loudly (a typo must not silently arm the real process.exit)", () => {
+    assert.throws(
+      () => lifecycle.installProcessGuards({ exit: { calls: [] } }),
+      /options\.exit must be a function/,
+    );
+    assert.throws(
+      () => lifecycle.installProcessGuards({ setTimeoutFn: "nope" }),
+      /options\.setTimeoutFn must be a function/,
+    );
+    assert.equal(lifecycle.isInstalled(), false, "a rejected install stays uninstalled");
+  });
+
   it("getHandlers exposes the crash-net handlers for direct invocation", () => {
-    lifecycle.installProcessGuards({ logger: makeLogger(), exit: makeExit() });
+    installSeams();
     const handlers = lifecycle.getHandlers();
     assert.equal(typeof handlers.unhandledRejection, "function");
     assert.equal(typeof handlers.uncaughtException, "function");
@@ -81,17 +158,12 @@ describe("installProcessGuards", () => {
 });
 
 describe("unhandledRejection net (C8)", () => {
-  beforeEach(() => lifecycle.resetForTests());
-  afterEach(() => lifecycle.resetForTests());
-
   it("logs the specific cause with context and never exits", () => {
-    const logger = makeLogger();
-    const exit = makeExit();
-    lifecycle.installProcessGuards({ logger, exit });
+    const { logger, exit } = installSeams();
 
     lifecycle.getHandlers().unhandledRejection(new Error("escaped boom"));
 
-    assert.equal(exit.calls.length, 0, "rejections are logged, never fatal");
+    assert.deepEqual(exit.calls, [], "rejections are logged, never fatal");
     assert.ok(
       logger.lines.error.some(
         (l) => l.includes("[process] unhandledRejection") && l.includes("escaped boom"),
@@ -102,30 +174,23 @@ describe("unhandledRejection net (C8)", () => {
   });
 
   it("survives a non-Error rejection reason (never dies inside the net)", () => {
-    const logger = makeLogger();
-    const exit = makeExit();
-    lifecycle.installProcessGuards({ logger, exit });
+    const { logger, exit } = installSeams();
 
     lifecycle.getHandlers().unhandledRejection("string reason");
     lifecycle.getHandlers().unhandledRejection(undefined);
 
-    assert.equal(exit.calls.length, 0);
+    assert.deepEqual(exit.calls, []);
     assert.ok(logger.lines.error.some((l) => l.includes("string reason")));
     lifecycle.disposeProcessGuards();
   });
 });
 
 describe("uncaughtException net (C8, documented: drain then exit 1)", () => {
-  beforeEach(() => lifecycle.resetForTests());
-  afterEach(() => lifecycle.resetForTests());
-
   it("logs, drains stop handles, then exits 1 for the supervisor", async () => {
-    const logger = makeLogger();
-    const exit = makeExit();
     const order = [];
     lifecycle.registerShutdownHandle("a", () => order.push("a"));
     lifecycle.registerShutdownHandle("b", () => order.push("b"));
-    lifecycle.installProcessGuards({ logger, exit });
+    const { logger, exit, timers } = installSeams();
 
     lifecycle.getHandlers().uncaughtException(new Error("sync invariant broken"));
     const result = await lifecycle.getActiveShutdown();
@@ -138,43 +203,72 @@ describe("uncaughtException net (C8, documented: drain then exit 1)", () => {
     assert.deepEqual(order, ["b", "a"], "handles drain LIFO");
     assert.deepEqual(exit.calls, [1], "fatal path always exits 1");
     assert.equal(result.reason, "uncaughtException");
+    assert.equal(timers.count(), 0, "the deadline timer is cleared by the completed drain");
     lifecycle.disposeProcessGuards();
   });
 
   it("exits immediately when a fatal lands while a drain is already running", async () => {
-    const logger = makeLogger();
-    const exit = makeExit();
-    let release;
-    lifecycle.registerShutdownHandle(
-      "wedged",
-      () => new Promise((resolve) => { release = resolve; }),
-    );
-    lifecycle.installProcessGuards({ logger, exit, deadlineMs: 60_000 });
+    const { exit, timers } = installSeams({ deadlineMs: 60_000 });
+    const { name, fn, box } = wedgedHandle();
+    lifecycle.registerShutdownHandle(name, fn);
 
     lifecycle.triggerSignal("SIGTERM");
     lifecycle.getHandlers().uncaughtException(new Error("mid-drain fatal"));
     assert.deepEqual(exit.calls, [1], "second fatal forces exit without waiting");
 
-    release();
+    box.release();
     await lifecycle.getActiveShutdown();
+    // The original signal drain completes afterwards and also records (in a
+    // real process the forced exit above would already be terminal).
+    assert.deepEqual(exit.calls, [1, 0]);
+    assert.equal(timers.count(), 0);
     lifecycle.disposeProcessGuards();
+  });
+
+  it("a mid-drain state swap must never reach the REAL process.exit (CI regression)", async () => {
+    // Reproduces the PR #238 cancellation shape: signal starts a wedged
+    // drain, the NEXT test's beforeEach resets the module state mid-drain,
+    // then the wedged handle resolves and the stale continuation calls
+    // state.exit. resetForTests parks a no-op exit exactly for this. If the
+    // module ever swaps process.exit back in, THIS worker dies mid-file.
+    const { exit } = installSeams({ deadlineMs: 60_000 });
+    const { name, fn, box } = wedgedHandle();
+    lifecycle.registerShutdownHandle(name, fn);
+
+    lifecycle.triggerSignal("SIGTERM");
+    lifecycle.resetForTests(); // the beforeEach of the next test lands mid-drain
+    // The stale continuation now runs against post-reset state — it may log
+    // through the console logger; keep this quiet so nothing leaks into TAP.
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = () => {};
+    console.error = () => {};
+    try {
+      box.release(); // stale drain resolves AFTER the reset
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+
+    assert.deepEqual(exit.calls, [], "the stale continuation hit the no-op seam");
+    assert.equal(lifecycle.isInstalled(), false);
+    // (No timers.count() check here: post-reset the stale drain clears
+    // through the NEW timer seam — the captured fake timer object is inert
+    // either way. The value of this test is that the worker kept running.)
+    // If we are still executing: the worker survived. That is the assertion.
   });
 });
 
 describe("graceful shutdown drain (C9)", () => {
-  beforeEach(() => lifecycle.resetForTests());
-  afterEach(() => lifecycle.resetForTests());
-
   it("SIGTERM drains sequentially LIFO and exits 0", async () => {
-    const logger = makeLogger();
-    const exit = makeExit();
     const order = [];
     lifecycle.registerShutdownHandle("first", () => order.push("first"));
     lifecycle.registerShutdownHandle("second", async () => {
       await null;
       order.push("second");
     });
-    lifecycle.installProcessGuards({ logger, exit });
+    const { logger, exit, timers } = installSeams();
 
     assert.equal(lifecycle.triggerSignal("SIGTERM"), true);
     const result = await lifecycle.getActiveShutdown();
@@ -184,12 +278,12 @@ describe("graceful shutdown drain (C9)", () => {
     assert.ok(logger.lines.log.some((l) => l.includes("[shutdown] signal SIGTERM: draining 2")));
     assert.ok(logger.lines.log.some((l) => l.includes("drain complete")));
     assert.equal(result.timedOut, false);
+    assert.equal(timers.count(), 0, "completed drain clears its deadline timer");
     lifecycle.disposeProcessGuards();
   });
 
   it("SIGINT works too", async () => {
-    const exit = makeExit();
-    lifecycle.installProcessGuards({ logger: makeLogger(), exit });
+    const { exit } = installSeams();
     assert.equal(lifecycle.triggerSignal("SIGINT"), true);
     await lifecycle.getActiveShutdown();
     assert.deepEqual(exit.calls, [0]);
@@ -197,14 +291,12 @@ describe("graceful shutdown drain (C9)", () => {
   });
 
   it("a failing handle is logged with its cause, the drain continues, partials are reported", async () => {
-    const logger = makeLogger();
-    const exit = makeExit();
     const ran = [];
     lifecycle.registerShutdownHandle("good", () => ran.push("good"));
     lifecycle.registerShutdownHandle("bad", () => {
       throw new Error("SQLITE_FULL: disk full");
     });
-    lifecycle.installProcessGuards({ logger, exit });
+    const { logger, exit } = installSeams();
 
     lifecycle.triggerSignal("SIGTERM");
     const result = await lifecycle.getActiveShutdown();
@@ -221,16 +313,18 @@ describe("graceful shutdown drain (C9)", () => {
   });
 
   it("deadline: a wedged handle logs the stuck names and forces exit code 1", async () => {
-    const logger = makeLogger();
-    const exit = makeExit();
-    let release;
-    lifecycle.registerShutdownHandle("wedged", () => new Promise((r) => { release = r; }));
+    const { logger, exit, timers } = installSeams({ deadlineMs: 40 });
+    const { name, fn, box } = wedgedHandle();
+    lifecycle.registerShutdownHandle(name, fn);
     lifecycle.registerShutdownHandle("quick", () => {});
-    lifecycle.installProcessGuards({ logger, exit, deadlineMs: 40 });
 
     lifecycle.triggerSignal("SIGTERM");
-    const result = await lifecycle.getActiveShutdown();
+    // NO wall clock: fire the scheduled deadline by hand — fully
+    // deterministic on any runner load.
+    assert.equal(timers.count(), 1, "runShutdown armed exactly one deadline timer");
+    assert.equal(timers.fireAll(), 1, "the deadline callback fires once");
 
+    const result = await lifecycle.getActiveShutdown();
     assert.equal(result.timedOut, true);
     assert.ok(
       logger.lines.error.some(
@@ -239,47 +333,43 @@ describe("graceful shutdown drain (C9)", () => {
     );
     assert.deepEqual(exit.calls, [1]);
 
-    release();
+    box.release(); // let the wedged stop fn settle (no continuations left)
     lifecycle.disposeProcessGuards();
   });
 
   it("second signal while draining forces an immediate exit", async () => {
-    const logger = makeLogger();
-    const exit = makeExit();
-    let release;
-    lifecycle.registerShutdownHandle(
-      "wedged",
-      () => new Promise((resolve) => { release = resolve; }),
-    );
-    lifecycle.installProcessGuards({ logger, exit, deadlineMs: 60_000 });
+    const { logger, exit, timers } = installSeams({ deadlineMs: 60_000 });
+    const { name, fn, box } = wedgedHandle();
+    lifecycle.registerShutdownHandle(name, fn);
 
     lifecycle.triggerSignal("SIGTERM");
     lifecycle.triggerSignal("SIGINT"); // operator presses again — force
 
-    assert.deepEqual(exit.calls, [1], "forced exit happens without waiting for the drain");
+    assert.equal(exit.calls[0], 1, "forced exit happens without waiting for the drain");
     assert.ok(
       logger.lines.error.some((l) => l.includes("second SIGINT") && l.includes("forcing immediate exit")),
     );
 
-    release();
+    box.release();
     await lifecycle.getActiveShutdown();
+    assert.deepEqual(exit.calls, [1, 0], "forced exit first; the late drain records after");
+    assert.equal(timers.count(), 0);
     lifecycle.disposeProcessGuards();
   });
 
   it("runShutdown is idempotent — concurrent callers join the same drain", async () => {
-    lifecycle.installProcessGuards({ logger: makeLogger(), exit: makeExit() });
+    const { timers } = installSeams();
     const first = lifecycle.runShutdown({ reason: "a" });
     const second = lifecycle.runShutdown({ reason: "b" });
     assert.equal(first, second);
-    assert.equal((await first).reason, "a");
+    const result = await first;
+    assert.equal(result.reason, "a");
+    assert.equal(timers.count(), 0);
     lifecycle.disposeProcessGuards();
   });
 });
 
 describe("registerShutdownHandle", () => {
-  beforeEach(() => lifecycle.resetForTests());
-  afterEach(() => lifecycle.resetForTests());
-
   it("validates arguments", () => {
     assert.throws(() => lifecycle.registerShutdownHandle(null, () => {}), /name is required/);
     assert.throws(() => lifecycle.registerShutdownHandle("x", 42), /stop function is required for x/);
@@ -297,7 +387,7 @@ describe("registerShutdownHandle", () => {
     const unregister = lifecycle.registerShutdownHandle("job", () => ran.push("old"));
     lifecycle.registerShutdownHandle("job", () => ran.push("new"));
     unregister(); // must NOT drop the replacement
-    lifecycle.installProcessGuards({ logger: makeLogger(), exit: makeExit() });
+    installSeams();
     await lifecycle.runShutdown({ reason: "test" });
     assert.deepEqual(ran, ["new"]);
     assert.deepEqual(lifecycle.shutdownHandleNames(), ["job"]);
