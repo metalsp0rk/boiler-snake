@@ -242,6 +242,9 @@ function authorDisplayNameOf(author) {
  * contract 4 — `null` when `d` has no guild_id). The DM path is the separate
  * normalizeFluxerDmMessage (§10.3 delta 1, KD 24), wired by client.js's
  * opt-in `onDmMessage` hook — this function's drop behavior is unchanged.
+ * Every NON-NULL return satisfies contract 1 as enforced by
+ * src/platform/normalizedMessageContract.js at the pipeline boundary
+ * (issue #201) — never hand-build a message around this normalizer.
  *
  * @param {{t?: string, d?: object}|object} raw gateway event `{t, d}` (a bare
  *   `d` payload is accepted too)
@@ -291,7 +294,11 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     authorRaw: d.author,
     attachments,
     createdAt: toDate(timestamp),
-    // Pipeline-added fields (contract 1). Member roles arrive in two shapes:
+    // Pipeline-added fields (contract 1 — the REQUIRED subset of this shape
+    // is enforced at runtime by src/platform/normalizedMessageContract.js at
+    // the onMessageCreate boundary, issue #201; the fields below beyond the
+    // required set are Fluxer-only extras whose consumers type-guard).
+    // Member roles arrive in two shapes:
     // the real gateway hands a hydrated GuildMember whose `roles` is a
     // GuildMemberRoleManager with the ids behind its `roleIds` getter — audit
     // C2: reading the manager as an array always yielded [] and locked out

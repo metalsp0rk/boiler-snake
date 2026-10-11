@@ -81,6 +81,11 @@ function mapStickerList(value) {
  * Idempotent: running it twice on the same object produces the same field
  * values (plain assignment + the idempotent ensureCommunity).
  *
+ * Every return satisfies the shared required-field contract enforced at the
+ * pipeline boundary by src/platform/normalizedMessageContract.js ("contract
+ * 1", issue #201): guild-less (DM) messages carry `externalGuildId: null`
+ * EXPLICITLY — that nullability is the modeled DM semantics, not absence.
+ *
  * PR 3 (§10.3 item 4) adds the relay-required fields — webhookId,
  * authorDisplayName, type, attachment {id, size, contentType, flags},
  * messageSnapshots, stickers — same field set the Fluxer normalizer fills.
