@@ -420,6 +420,24 @@ describe("bridge media (PR 5)", () => {
     assert.ok(fs.existsSync(path.join(keeper, "0")), "known bridges keep their spool");
   });
 
+  it("deleteSpoolPublicDir removes a whole bridge dir; refuses junk, no-ops on absent", () => {
+    const base = media.spoolRootDir();
+    const dir = path.join(base, "b_del0001", "700");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "0"), "stranded");
+
+    assert.deepEqual(media.deleteSpoolPublicDir("b_del0001"), { existed: true, error: null });
+    assert.equal(fs.existsSync(path.join(base, "b_del0001")), false, "message dirs die with the bridge dir");
+
+    // Absent dir: clean no-op (every disconnect without queued media).
+    assert.deepEqual(media.deleteSpoolPublicDir("b_del0001"), { existed: false, error: null });
+
+    // Path-segment junk is refused before the filesystem is touched.
+    const refused = media.deleteSpoolPublicDir("../etc");
+    assert.equal(refused.existed, false);
+    assert.match(refused.error, /safe spool path segment/);
+  });
+
   // -------------------------------------------------------------------------
   // Enqueue integration: the spool + payload land on the durable row
   // -------------------------------------------------------------------------
