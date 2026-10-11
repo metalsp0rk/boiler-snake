@@ -49,8 +49,8 @@ A status row looks like: `Bridge b_… — state: active, direction: Discord →
 |--------------|---------------------------|
 | Text message / reply | The text, mentions rendered to plain labels (`@name`, `#name`); `@everyone`/`@here` are de-pinged, never a ping. Long text splits into `(continued)` parts, same author name |
 | Files | Re-uploaded as normal attachments — 50 MiB per file to Fluxer, 20 MiB to Discord; 10 files per send, more files ride extra sends. Oversized files are named: `Attachment not copied: … is over the destination limit …` |
-| Source edit | The copy is updated in place (all parts of it) |
-| Source delete | All copies of that message are deleted |
+| Source edit (either side) | The copy is updated in place (all parts of it). A pin/unpin or flag-only update copies nothing; a copy's parts are tracked from the moment each one posts, so even a partially-delivered message keeps getting its edits relayed |
+| Source delete (either side) | All copies of that message are deleted |
 | Reply reference | A header line `↪ in reply to {name}: {snippet}` — no jump link across platforms |
 | Voice message | The audio as a plain attachment, captioned `Voice message` |
 | Sticker | A `Sticker: {name}` line |
@@ -70,8 +70,8 @@ A status row looks like: `Bridge b_… — state: active, direction: Discord →
 - **Attribution.** Each end relays through its own webhook, named `Boiler Snake Bridge`, with the **source author's name on every message** (per-message username override; guild nickname when present). Avatars are best-effort; Fluxer→Discord copies carry the name without an avatar.
 - **Pace.** The worker wakes every 250 ms and keeps at most one send in flight per direction (message N+1 never passes message N) and four concurrent sends process-wide. A 429 or Fluxer slowmode parks the copy at the head of its queue for the declared `Retry-After` (capped at 60 s) — rate limits never consume the five retry attempts.
 - **Files are spooled at enqueue** under `DATA_DIR/bridge-spool/`, so a restart during an outage doesn't lose attachments: queued work resumes from disk, and a message whose spool bytes are gone re-fetches the source once before giving up.
-- **Delivery is at-least-once.** Fluxer copies dedupe by an idempotency nonce; a crash in the instant after Discord accepted a message but before the bot recorded it can duplicate that one message. Nothing is silently dropped: a copy that can't be delivered after five attempts leaves a named notice (below) and a visible `last error`.
-- **Echoes can't loop.** Copies are webhook-authored, and the pipeline gate drops bot- and webhook-authored messages on both ends, so a copy is never re-copied. Bridge command lines, this bot's own messages, and every other bot/webhook post never cross either.
+- **Delivery is at-least-once.** Fluxer copies dedupe by an idempotency nonce; a crash in the instant after Discord accepted a message but before the bot recorded it can duplicate that one message. Each part's destination id is recorded the moment that part posts — so a crash or a parked part mid-message neither loses track of what already landed (its edits/deletes still relay) nor re-posts it without a reason. Nothing is silently dropped: a copy that can't be delivered after five attempts leaves a named notice (below) and a visible `last error`.
+- **Echoes can't loop.** Copies are webhook-authored, and the pipeline gate drops bot- and webhook-authored messages on both ends, so a copy is never re-copied. The bot also recognizes its own relay traffic by message id — including the echoes of its own edits and deletes — and drops those before any feature sees them. The in-memory recognition window is TTL-bounded (destination ids expire after **10 minutes**, swept every 60 s), so long-running processes stay flat; the durable per-message pairing in the database is the backstop behind it. Bridge command lines, this bot's own messages, and every other bot/webhook post never cross either.
 
 ## Codes and handles
 
@@ -93,6 +93,8 @@ A status row looks like: `Bridge b_… — state: active, direction: Discord →
 | `Bridge b_… is not copying files in this direction: the spool is full (…). Messages' text continues to copy; …` | The media spool hit its cap; text keeps flowing. The notice fires **once per direction per incident**, and returns to normal once the spool drains |
 | `The bridge webhook was refused: this channel is at its webhook limit (…). Remove a webhook and run … connect again. Bridge not connected.` | The end that refused has no free webhook slot — per-channel and per-community refusals get their own sentences. Free a slot and `connect` with the same code |
 | `Fluxer refused to create the bridge webhook: TWO_FACTOR_REQUIRED. On an MFA-elevated community the bot was not exempt from Manage Webhooks. Bridge not connected.` | The instance requires 2FA on webhook creation and the bot isn't exempt — exempt the bot, then `connect` again with the same code |
+| `Activating the bridge failed: … The webhooks created for this attempt were deleted and no channels were paired — fix the cause and run … connect again.` | The final activation step threw (e.g. a database fault mid-commit); the connect unwinds itself — the webhooks it just created are removed so a failed attempt leaves nothing behind, and the code stays pending for one clean retry |
+| `Disconnected bridge b_…, but its spool directory could not be removed (…); the next restart will reclaim it.` | The bridge is gone; its queued media bytes couldn't be deleted right now (disk/permissions). Harmless — the start-time orphan pass reclaims them on the next restart |
 
 Every webhook-side connect refusal leaves the code pending and says so: `No channels were paired and the code is still valid — fix the cause and run connect again.` One direction failing never blocks the other. The bridge stays `active` across restarts; queued copies resume from disk.
 
@@ -115,9 +117,9 @@ Real values live only in `.env` (or your secret store) — never in tickets, scr
 
 ## Moderation notes
 
-- Destination moderators **can delete copies** — they are normal webhook messages. Destination-side edits and deletes are never copied back (bridges are forward-only: source edits the destination, never the reverse).
-- A source-side delete removes the copies on the other side (subject to the failure ladder above).
-- `disconnect` deletes both relay webhooks (`Boiler Snake Bridge`) and releases both channels. Copies already posted are **not** deleted — clean up with Discord/Fluxer purge tools if you need to.
+- Destination moderators **can delete copies** — they are normal webhook messages. Destination-side edits and deletes are never copied back (bridges are forward-only: source edits the destination, never the reverse). This holds for both directions: a Fluxer-side moderation edit of a Discord-sourced copy does not echo back to Discord, and vice-versa.
+- A source-side delete removes the copies on the other side (subject to the failure ladder above), from **either** platform — a message deleted on Fluxer takes down its Discord copy and the other way round.
+- `disconnect` deletes both relay webhooks (`Boiler Snake Bridge`), releases both channels, and removes any media the bridge still had spooled on disk (queued files that never finished sending). Copies already posted are **not** deleted — clean up with Discord/Fluxer purge tools if you need to.
 - Relay copies earn **no XP** on the destination; the source human earns XP normally on their own platform. Copies also never reach Gork, activity stats, or message caches.
 
 ## Troubleshooting
