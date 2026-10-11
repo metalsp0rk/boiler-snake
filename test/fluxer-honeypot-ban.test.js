@@ -235,6 +235,230 @@ describe("fluxer honeypot — gates unchanged", () => {
   });
 });
 
+/**
+ * Issue #280 — the Fluxer twin of the Discord C4 fail-safe (PR #237, audit
+ * §2/§6): the exemption check may only run on role state we can TRUST.
+ *
+ * Authority order:
+ *   1. fetchMember resolves a member carrying roles → AUTHORITATIVE (it
+ *      overrides a stale payload in BOTH directions).
+ *   2. Fetch rejected/null but the payload carried NON-EMPTY roles →
+ *      authoritative-positive (#183 manager path only yields real ids for a
+ *      member it actually carried) — staff exempt, known non-staff bans.
+ *   3. Fetch rejected/null AND payload roles empty/absent → UNKNOWN
+ *      (`[]` is ambiguous per #274: member-with-zero-roles vs member-absent) →
+ *      consume the hit, log user + community + cause, NEVER ban.
+ *
+ * Accepted tradeoff (same as #237): a real hit during a transient Fluxer
+ * failure goes unbanned — a false negative beats banning a moderator.
+ */
+describe("fluxer honeypot — #280 role-state fail-safe (never ban on unknown state)", () => {
+  const STAFF = "role-staff"; // upsert, so re-asserting per test is cheap
+
+  /**
+   * Outbound whose fetchMember REJECTS. The real OutboundClient never rejects
+   * for platform failures (it logs the REST cause and resolves null,
+   * src/platform/fluxer/outbound.js) — this stub pins the defensive try/catch
+   * arm in handleHoneypotFluxerMessage: a throwing fetch must degrade to the
+   * authority fallback, never to a ban evaluated against a degraded role set.
+   * The spread is safe: OutboundClient methods close over the handle, no `this`.
+   */
+  function rejectingFetchOutbound(rest) {
+    const { outbound } = makeFakeHandle({ rest });
+    return {
+      ...outbound,
+      fetchMember: async () => {
+        throw new Error("503 SERVICE_UNAVAILABLE: fake fluxer rest outage");
+      },
+    };
+  }
+
+  it("rejected fetchMember + non-empty non-staff payload roles → still bans (payload is authoritative-positive)", async () => {
+    dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
+    setElevatedFlag(1);
+    const author = "p280-pos";
+    const rest = makeFakeRest({
+      routes: { [`PUT /v1/guilds/${GUILD}/bans/${author}`]: null },
+    });
+    const outbound = rejectingFetchOutbound(rest);
+
+    const { result, lines } = await withConsole(() =>
+      honeypot.handleHoneypotFluxerMessage(
+        outbound,
+        normalizedMessage({ authorId: author, memberRoleIds: ["role-random"] }),
+      ),
+    );
+
+    assert.equal(result, true, "the message is consumed as a honeypot hit");
+    assert.equal(
+      banHits(rest, author).length,
+      1,
+      "a KNOWN non-staff payload set under a degraded fetch bans exactly as before (healthy path preserved)",
+    );
+    assert.ok(lines.some((l) => l.includes(`Banned user ${author}`)));
+    assert.ok(
+      !lines.some((l) => l.includes("member state unknown")),
+      "a non-empty payload set is NOT unknown state",
+    );
+  });
+
+  it("rejected fetchMember + empty payload roles → UNKNOWN: no ban; log names user, community and the fetch cause", async () => {
+    dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
+    setElevatedFlag(1);
+    const author = "p280-unknown-rej";
+    const rest = makeFakeRest({ routes: {} });
+    const outbound = rejectingFetchOutbound(rest);
+
+    const { result, lines } = await withConsole(() =>
+      honeypot.handleHoneypotFluxerMessage(outbound, normalizedMessage({ authorId: author })),
+    );
+
+    assert.equal(result, true, "the hit is still consumed (no XP, no command dispatch)");
+    assert.equal(
+      rest.calls.filter((c) => c.method === "PUT").length,
+      0,
+      "NEVER ban on unknown state — zero elevated traffic, even at flag 1",
+    );
+    assert.ok(
+      lines.some(
+        (l) =>
+          l.includes("member state unknown") &&
+          l.includes(author) &&
+          l.includes(`community ${COMMUNITY_ID}`) &&
+          l.includes("503 SERVICE_UNAVAILABLE") &&
+          l.includes("no ban"),
+      ),
+      "the fail-safe log carries the ids + the SPECIFIC fetch cause (AGENTS.md rule 2), never a generic string",
+    );
+    assert.ok(
+      lines.some((l) => l.includes("message stands")),
+      "consumption semantics match the staff-exempt branch: the message stands (no delete surface)",
+    );
+    const audited = dbApi.db
+      .prepare("SELECT 1 AS x FROM admin_audit WHERE action='honeypot.enforce' AND target_id=?")
+      .get(author);
+    assert.equal(
+      audited,
+      undefined,
+      "an unknown-state hit records no honeypot.enforce audit row — same semantics as the staff-exempt branch",
+    );
+  });
+
+  it("rejected fetchMember + payload roles carrying the staff role → exempt via payload, no ban (staff safe under failure)", async () => {
+    dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
+    dbApi.addStaffRole(COMMUNITY_ID, STAFF);
+    setElevatedFlag(1);
+    const author = "p280-staff-fallback";
+    const rest = makeFakeRest({ routes: {} });
+    const outbound = rejectingFetchOutbound(rest);
+
+    const { result, lines } = await withConsole(() =>
+      honeypot.handleHoneypotFluxerMessage(
+        outbound,
+        normalizedMessage({ authorId: author, memberRoleIds: [STAFF] }),
+      ),
+    );
+
+    assert.equal(result, true);
+    assert.equal(banHits(rest, author).length, 0, "staff exercising the documented test line are NEVER banned under a transient failure");
+    assert.ok(
+      lines.some((l) => l.includes("exempt member") && l.includes("no ban")),
+      "the exemption decision is logged (no silent drop)",
+    );
+    assert.ok(
+      !lines.some((l) => l.includes("member state unknown")),
+      "a payload carrying staff roles is known-positive state, not unknown",
+    );
+  });
+
+  it("fetchMember resolving to null + empty payload roles → UNKNOWN: no ban (pins the null variant)", async () => {
+    dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
+    setElevatedFlag(1);
+    const author = "p280-null-unknown";
+    // No member route on the fake: the REAL OutboundClient logs the REST cause
+    // and resolves null (it never rejects) — the null arm of the same rule 3.
+    const rest = makeFakeRest({ routes: {} });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result, lines } = await withConsole(() =>
+      honeypot.handleHoneypotFluxerMessage(outbound, normalizedMessage({ authorId: author })),
+    );
+
+    assert.equal(result, true, "the hit is consumed");
+    assert.equal(
+      rest.calls.filter(
+        (c) => c.method === "GET" && c.path === `/v1/guilds/${GUILD}/members/${author}`,
+      ).length,
+      1,
+      "the authoritative member fetch WAS attempted before falling back",
+    );
+    assert.equal(rest.calls.filter((c) => c.method === "PUT").length, 0, "no ban on unknown state");
+    assert.ok(
+      lines.some(
+        (l) =>
+          l.includes("member state unknown") &&
+          l.includes(author) &&
+          l.includes(`community ${COMMUNITY_ID}`) &&
+          l.includes("fetchMember returned no member") &&
+          l.includes("no ban"),
+      ),
+      "the null variant logs user + community + the no-member cause with the same no-ban posture",
+    );
+  });
+
+  it("authoritative EMPTY roles override a stale STAFF payload → bans (pins the authority order, direction 1)", async () => {
+    dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
+    dbApi.addStaffRole(COMMUNITY_ID, STAFF);
+    setElevatedFlag(1);
+    const author = "p280-stale-staff";
+    // REST says the member holds NO roles; the payload still claims the staff
+    // role (stale dispatch state). A successful fetch is AUTHORITATIVE — the
+    // stale exemption must not shield a real hit.
+    const rest = makeFakeRest({
+      routes: {
+        ...memberRoute(author, []),
+        [`PUT /v1/guilds/${GUILD}/bans/${author}`]: null,
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result, lines } = await withConsole(() =>
+      honeypot.handleHoneypotFluxerMessage(
+        outbound,
+        normalizedMessage({ authorId: author, memberRoleIds: [STAFF] }),
+      ),
+    );
+
+    assert.equal(result, true);
+    assert.equal(
+      banHits(rest, author).length,
+      1,
+      "authoritative non-staff overrides a stale staff payload (a KNOWN empty set is not unknown state)",
+    );
+    assert.ok(!lines.some((l) => l.includes("exempt member")), "the stale payload exemption did not fire");
+    assert.ok(lines.some((l) => l.includes(`Banned user ${author}`)));
+  });
+
+  it("authoritative STAFF roles rescue a stale EMPTY payload → exempt, no ban (direction 2)", async () => {
+    dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
+    dbApi.addStaffRole(COMMUNITY_ID, STAFF);
+    setElevatedFlag(1);
+    const author = "p280-stale-empty";
+    // The payload carried no roles (ambiguous []), but the authoritative fetch
+    // resolves the member WITH the staff role → exempt, never ban.
+    const rest = makeFakeRest({ routes: memberRoute(author, [STAFF]) });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result, lines } = await withConsole(() =>
+      honeypot.handleHoneypotFluxerMessage(outbound, normalizedMessage({ authorId: author })),
+    );
+
+    assert.equal(result, true);
+    assert.equal(banHits(rest, author).length, 0, "the authoritative staff role is checked BEFORE any ban decision");
+    assert.ok(lines.some((l) => l.includes("exempt member") && l.includes("no ban")));
+  });
+});
+
 describe("fluxer pipelines — honeypot warning-reaction strip (PR 9 fluxer branch)", () => {
   it("a reaction on a warning notice is wiped via removeEmojiReaction — for bots too", async () => {
     dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
