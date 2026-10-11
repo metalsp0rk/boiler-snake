@@ -49,12 +49,17 @@ function spawnFixture(mode) {
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const state = { child, output: "" };
+  const state = { child, output: "", closed: false };
   child.stdout.on("data", (d) => {
     state.output += d.toString();
   });
   child.stderr.on("data", (d) => {
     state.output += d.toString();
+  });
+  child.on("close", () => {
+    // 'close' = stdio fully drained (Node emits 'exit' FIRST, so output
+    // asserted right after exitCode flips can miss the last pipe chunks).
+    state.closed = true;
   });
   return state;
 }
@@ -73,13 +78,21 @@ async function waitForOutput(state, needle, timeoutMs = 30_000) {
   }
 }
 
-/** Wait for exit; SIGKILL + fail if it never happens. */
+/**
+ * Wait for exit AND stdio close; SIGKILL + fail if the exit never happens.
+ * Waiting for 'close' matters: 'exit' can fire while the child's final
+ * stdout/stderr chunks are still in flight through the pipe, and the callers
+ * assert on those last logs right after.
+ */
 async function waitForExit(state, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
-  while (state.child.exitCode === null) {
+  while (state.child.exitCode === null || !state.closed) {
+    if (state.child.exitCode !== null && state.closed) break;
     if (Date.now() > deadline) {
       state.child.kill("SIGKILL");
-      assert.fail(`child did not exit within ${timeoutMs}ms\n--- output ---\n${state.output}`);
+      assert.fail(
+        `child did not exit+close within ${timeoutMs}ms (exit=${state.child.exitCode})\n--- output ---\n${state.output}`,
+      );
     }
     await sleep(25);
   }
@@ -99,6 +112,10 @@ describe("process lifecycle on a real spawned boot (C8/C9)", () => {
     const state = spawnFixture("reject");
     try {
       await waitForOutput(state, "BOOT ok=false");
+      // The handshake prints BOOT and HANDLES as SEPARATE pipe writes — wait
+      // for the second chunk too before asserting (under suite load the
+      // parent can observe BOOT one poll-cycle before HANDLES lands).
+      await waitForOutput(state, "HANDLES ");
       // The endpoint handles boot registers must be drained on shutdown.
       assert.match(state.output, /HANDLES [^\n]*discord/);
 
