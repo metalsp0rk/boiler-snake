@@ -5,21 +5,44 @@ on:
     branches:
       - main
 
+# Workflow-level permissions are the CEILING every job's GITHUB_TOKEN is
+# capped at (GitHub intersects job permissions with this top level). The
+# publish-image job below calls docker-publish.yml, which pushes the GHCR
+# image and legitimately needs packages:write — that is why packages:write
+# stays here. The release-please JOB itself is scoped down to
+# contents+pull-requests below (issue #203): the third-party action's own
+# token must not be able to touch packages.
 permissions:
   contents: write
   pull-requests: write
   packages: write
 
+concurrency:
+  # NEVER cancel mid-release: a release-please run incrementally mutates the
+  # release PR / tag / GitHub release; a cancelled run can leave a half-cut
+  # release. Concurrent pushes to main queue behind the in-flight release.
+  group: release-please
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Least privilege (issue #203): release-please-action only writes the
+    # release PR, version bump commits, tags, and GitHub releases. It does
+    # NOT publish packages — the GHCR image push lives entirely in the
+    # publish-image job (docker-publish.yml) — so this job's token gets no
+    # packages permission even though the workflow ceiling allows it.
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release-please.outputs.release_created }}
       tag_name: ${{ steps.release-please.outputs.tag_name }}
     steps:
       - name: Release Please
         id: release-please
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # googleapis/release-please-action@v4.4.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
@@ -39,3 +62,4 @@ jobs:
     permissions:
       contents: read
       packages: write
+    timeout-minutes: 45

@@ -6,19 +6,58 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+# Newest push to a given PR/branch wins; never pile up stale test runs.
+# Safe to cancel here: this workflow only runs tests (no deploy/publish side effects).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         # Floor follows jsdom 30 (gork read_page): Node ^22.22.2 || ^24.15.0 || >=26.
         node-version: [22.x, 24.x]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4.4.0
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node@v4.4.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
-      - run: npm test
+      # The Node 22 leg (engines floor) runs the full suite under the coverage
+      # gate (audit issue #203): test:coverage executes the SAME files as
+      # `npm test` (test/*.test.js + test/integration/*.test.js) plus the
+      # thresholds in package.json, so one matrix leg covers execution + gate
+      # without double-running the suites. The 24.x leg keeps plain `npm test`.
+      - name: npm run test:coverage (coverage gate)
+        if: matrix.node-version == '22.x'
+        run: npm run test:coverage
+      - name: npm test
+        if: matrix.node-version != '22.x'
+        run: npm test
+
+  # Build the VitePress site on every PR (audit issue #203): docs.yml only
+  # builds on push to main, so dead links previously surfaced at deploy time.
+  # VitePress fails the build on dead links by default (no ignoreDeadLinks in
+  # docs/.vitepress/config.mjs), so this job is the dead-link gate.
+  # Always-on rather than docs/**-path-filtered: the job costs ~1-2 min
+  # (npm ci + ~5s vitepress build) and path filters would let package.json /
+  # vitepress dependency bumps slip through untested.
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:build
