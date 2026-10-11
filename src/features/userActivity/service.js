@@ -155,25 +155,47 @@ function shouldSkipChannel(communityId, channelId, categoryId) {
 
 /**
  * Record one human guild message into daily counters.
- * @param {import("discord.js").Message} message
+ *
+ * Issue #200 (audit §6 P2): the live pipeline carries NormalizedMessages,
+ * which have NO `guild`/`author` ducks on Fluxer — the old gates
+ * (`!message.guild || !message.author`, then a discord-platform
+ * ensureCommunity) silently skipped EVERY Fluxer message, so the
+ * "channel-activity row" the audit names as a required pipeline effect did
+ * not exist for the new platform. Reads are now contract-first with duck
+ * fallbacks: integer communityId (contract 4) → authorId/authorBot →
+ * createdAt; a raw discord message (no normalized fields) resolves exactly
+ * as before through message.guild.
+ * @param {object} message NormalizedMessage (or a raw discord.js message)
  * @returns {boolean} true if counted
  */
 function recordUserChannelMessage(message) {
   try {
-    if (!message?.guild || !message.author) return false;
-    if (message.author.bot) return false;
+    if (!message?.author && message?.authorId == null) return false;
+    if (message.authorBot || message.author?.bot) return false;
     if (message.system) return false;
 
-    const communityId = ensureCommunity({
-      platform: "discord",
-      instanceKey: "discord",
-      externalGuildId: message.guild.id,
-    });
-    const userId = message.author.id;
+    // Community: the resolved integer id rides on the normalized message
+    // (both adapters); raw shapes keep the Discord guild resolve. A Fluxer
+    // message whose resolve FAILED (communityId null) is NOT re-resolved
+    // here — failing closed matches the pipeline's contract.
+    let communityId = Number.isSafeInteger(message.communityId)
+      ? message.communityId
+      : null;
+    if (communityId == null) {
+      if (!message.guild) return false;
+      communityId = ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: message.guild.id,
+      });
+    }
+    const userId = message.authorId ?? message.author.id;
     const channelId = message.channelId || message.channel?.id || null;
-    if (!channelId) return false;
+    if (!userId || !channelId) return false;
 
-    const createdMs = message.createdTimestamp || Date.now();
+    const createdMs =
+      message.createdTimestamp ||
+      (message.createdAt instanceof Date ? message.createdAt.getTime() : Date.now());
     // Seed watermark from this message's timestamp so it is not dropped
     const settings = ensureGuildActivitySettings(communityId, {
       collectFromMs: createdMs,
@@ -191,7 +213,10 @@ function recordUserChannelMessage(message) {
         categoryId = ch.parentId;
       }
     }
-    if (categoryId == null) {
+    if (categoryId == null && message.guild) {
+      // Guild metadata walk needs the Discord channel cache; a Fluxer
+      // normalized message carries no guild duck → no category scoping
+      // (ignore-list kinds that need it are Discord-channel concepts).
       categoryId = resolveChannelMeta(message.guild, channelId).categoryId;
     }
 
