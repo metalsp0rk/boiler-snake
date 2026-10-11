@@ -580,9 +580,11 @@ function buildRelayPayload(message, { bridge, direction, srcCommunityId, lookup 
       display: message.authorDisplayName ?? message.author?.username ?? "",
       // §10.7 attribution: the handle lets the worker compose the username
       // override ("display (@handle)" when they differ); avatarUrl is the
-      // best-effort https source avatar (Fluxer → Discord sends none — the
-      // worker applies that rule at send time).
-      handle: String(message.author?.username ?? ""),
+      // best-effort https source avatar. Issue #200: a normalized Fluxer
+      // message carries NO `author` duck — the username lives on authorRaw
+      // (the real SDK User instance), so handle read "" for every Fluxer
+      // source and the attribution override silently degraded to display-only.
+      handle: String(message.author?.username ?? message.authorRaw?.username ?? ""),
       avatarUrl: httpsAvatarUrl(message),
     },
     text: neutralizeContent(message.content ?? "", message.mentions, lookup),
@@ -603,20 +605,47 @@ function buildRelayPayload(message, { bridge, direction, srcCommunityId, lookup 
 
 /**
  * Best-effort source avatar URL (spec §10.7): https only, taken from the
- * message payload only — never a URL found in message text.
+ * message payload only — never a URL found in message text. Reads BOTH real
+ * shapes (issue #200, audit: "docs' avatars are best-effort is FALSE —
+ * httpsAvatarUrl string-checks a method"):
+ * - string-shaped fields (raw-wire users, hand-built payloads): avatarUrl /
+ *   avatarURL / avatar;
+ * - real user INSTANCES (discord.js User on the Discord path, the SDK User
+ *   on Fluxer's authorRaw): both expose avatarURL as a METHOD — calling it
+ *   is what "best-effort" always meant; an un-buildable URL is absence
+ *   (null), never an error.
+ * The send side still applies §10.7's direction rule (Fluxer → Discord
+ * copies carry the name without an avatar).
  * @param {object} message
  * @returns {string|null}
  */
 function httpsAvatarUrl(message) {
-  const raw =
-    message?.author?.avatarURL ??
-    message?.author?.avatarUrl ??
-    message?.author?.avatar ??
-    null;
-  if (typeof raw !== "string" || raw.trim() === "") return null;
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith("https://")) return null;
-  return trimmed;
+  for (const source of [message?.author, message?.authorRaw]) {
+    if (!source || typeof source !== "object") continue;
+    // String-shaped URLs win (wire payloads and fixtures carry them inline).
+    for (const candidate of [source.avatarUrl, source.avatarURL]) {
+      if (typeof candidate === "string" && candidate.trim() !== "") {
+        const trimmed = candidate.trim();
+        return trimmed.startsWith("https://") ? trimmed : null;
+      }
+    }
+    // Real user instances: avatarURL() (null / throw / non-https = absence).
+    if (typeof source.avatarURL === "function") {
+      let url = null;
+      try {
+        url = source.avatarURL();
+      } catch {
+        url = null; // best-effort by contract — an un-buildable URL is absence
+      }
+      if (typeof url === "string" && url.trim().startsWith("https://")) return url.trim();
+    }
+    // Last resort: a URL-shaped `avatar` field (SDK users carry only a hash
+    // here — the https gate below rejects it, as it must).
+    if (typeof source.avatar === "string" && source.avatar.trim().startsWith("https://")) {
+      return source.avatar.trim();
+    }
+  }
+  return null;
 }
 
 /**
