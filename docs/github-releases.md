@@ -54,10 +54,11 @@ If a ping role is configured, the message mentions that role only — never `@ev
 
 ## Tokens & privacy
 
-- A token passed to `/github watch` is stored in the bot's local SQLite database and used **only** as the `Authorization` header for GitHub API calls to that repository. It is never displayed by `/github list` (which only shows "token set") and never logged.
+- A token passed to `/github watch` is stored in the bot's local SQLite database — **encrypted at rest** (AES-256-GCM envelope, `TOKEN_ENCRYPTION_KEY`; see [Configuration](configuration.md#third-party-token-encryption-optional)) — and used **only** as the `Authorization` header for GitHub API calls to that repository. It is never displayed by `/github list` (which only shows "token set") and never logged.
 - Tokens are optional: public repositories work unauthenticated, subject to GitHub's 60 req/hour per-IP rate limit. A read-only fine-grained token scoped to the single target repository is the safest choice; private repos need a token with `repo` read access.
+- `/github watch` with a `token:` rejects up-front (before any GitHub call) when `TOKEN_ENCRYPTION_KEY` is unset — tokens are never stored in plaintext. Watches without a token work regardless.
 
 ## Requirements
 
-- No environment variables required — the GitHub REST API is public.
+- No environment variables required for unauthenticated watching — the GitHub REST API is public. Storing a per-repo token requires `TOKEN_ENCRYPTION_KEY` (see [Configuration](configuration.md#third-party-token-encryption-optional)).
 - The bot needs **View Channel** + **Send Messages** in the target channel.

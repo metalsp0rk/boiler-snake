@@ -1,9 +1,35 @@
 const { db, now } = require("../connection");
+const tokens = require("../../core/thirdPartyTokens");
 
 // src/platform/community.js requires the db facade (src/db/index.js), so a
 // top-level require here would be a load-time cycle (partial exports). The
 // lazy require resolves after boot; assertCommunityId stays single-source.
 const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
+
+/**
+ * AT REST (audit-2026-10 C6, #189): `github_watches.token` holds ONLY the
+ * `v1.<iv>.<tag>.<ciphertext>` AES-256-GCM envelope (src/core/
+ * thirdPartyTokens.js, TOKEN_ENCRYPTION_KEY). Writes encrypt (a missing key
+ * throws the actionable key-missing error — a provided PAT is NEVER stored
+ * in plaintext); getAllGithubWatches decrypts per row for the ticker. The
+ * user-facing getters keep `(token IS NOT NULL) AS has_token` and never
+ * select the column itself.
+ */
+
+/**
+ * Encrypt a provided PAT for storage. null/undefined/"" stays NULL; a real
+ * token with a missing/invalid key throws (caller's handler surfaces the
+ * cause — AGENTS.md 3).
+ *
+ * @param {string|null|undefined} token
+ * @returns {string|null} envelope or NULL
+ */
+function encryptTokenColumn(token) {
+  if (token == null || token === "") return null;
+  const envelope = tokens.encryptToken(token);
+  if (envelope == null) throw tokens.keyMissingError("the GitHub token");
+  return envelope;
+}
 
 /**
  * Normalize a GitHub repository reference to "owner/name".
@@ -51,14 +77,42 @@ function getGithubWatches(communityId) {
   `).all(communityId);
 }
 
-/** Rows for the ticker — includes the per-repo token. Never surface to users. */
+/**
+ * Rows for the ticker — includes the per-repo token DECRYPTED (columns hold
+ * envelopes at rest). Never surface to users.
+ *
+ * Per-row fault tolerance (AGENTS.md 5, same posture as the voice/twitch
+ * tickers): a row whose envelope cannot be decrypted (foreign/rotated key,
+ * tampered bytes) is logged with its ids and dropped from the result instead
+ * of failing the whole read — one broken row must not stop every other
+ * watch's notifications. With migration 039 + a stable key this path only
+ * fires on misconfiguration or tampering.
+ */
 function getAllGithubWatches() {
-  return db.prepare(`
+  const rows = db.prepare(`
   SELECT community_id, repo, repo_display, channel_id, role_id, token,
          last_release_id, last_release_published_at, last_checked
   FROM github_watches
   ORDER BY created_at ASC
   `).all();
+  const usable = [];
+  for (const row of rows) {
+    try {
+      usable.push({
+        ...row,
+        token:
+          row.token == null || row.token === ""
+            ? row.token
+            : tokens.decryptToken(row.token),
+      });
+    } catch (err) {
+      console.error(
+        `[github] Skipping watch ${row.repo} (community ${row.community_id}): ` +
+          `stored token could not be decrypted: ${err?.message || err}`,
+      );
+    }
+  }
+  return usable;
 }
 
 function getGithubWatch(communityId, repo) {
@@ -87,6 +141,7 @@ function addGithubWatch(communityId, repo, repoDisplay, { channelId = null, toke
   assertCommunityId(communityId);
   const normalized = normalizeGithubRepo(repo);
   if (!normalized) throw new Error(`Invalid repository: ${repo}`);
+  const tokenEnc = encryptTokenColumn(token);
   const t = now();
   db.prepare(`
   INSERT INTO github_watches
@@ -102,7 +157,7 @@ function addGithubWatch(communityId, repo, repoDisplay, { channelId = null, toke
     normalized,
     repoDisplay || normalized,
     channelId,
-    token || null,
+    tokenEnc,
     t,
     t,
   );
@@ -149,7 +204,9 @@ function updateGithubWatch(
   }
   if (token !== undefined) {
     fields.push("token=?");
-    params.push(token);
+    // undefined keeps, null clears, a string stores as a fresh envelope
+    // (missing key → throws; the previous envelope stays untouched).
+    params.push(encryptTokenColumn(token));
   }
   params.push(communityId, normalized);
   db.prepare(

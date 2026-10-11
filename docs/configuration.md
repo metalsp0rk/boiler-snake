@@ -121,6 +121,20 @@ FLUXER_COMMAND_PREFIX=!
 
 See [Help Tickets](tickets.md) and [Gork](gork.md).
 
+#### Third-party token encryption (optional)
+
+| Variable | Purpose |
+|----------|---------|
+| `TOKEN_ENCRYPTION_KEY` | 32 bytes of base64 (`openssl rand -base64 32`): AES-256-GCM encryption at rest for **GitHub PATs** ([/github watch](github-releases.md)) and the Discord user OAuth tokens behind [`/staff syncpermissions`](staff-roles.md). Separate from `BRIDGE_TOKEN_KEY` on purpose |
+
+When unset, features that would *store* a token fail with an actionable
+message naming this variable (tokens are never stored in plaintext);
+token-less watching still works unauthenticated. On the first boot of the
+version that added it, the one-time migration also **requires** the key if
+such rows already exist in the database — boot stops with the exact fix
+instead of running with half-encrypted columns. No rotation in v1: changing
+the key strands stored tokens (re-add watches, re-run the sync authorize).
+
 #### Database location
 
 | Variable | Purpose |

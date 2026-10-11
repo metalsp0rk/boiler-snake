@@ -75,10 +75,10 @@ Replies are **ephemeral**.
 
 Handlers always enforce the staff gate. Discord’s `/` picker is separate: staff-tier commands default to **Manage Server** visibility. To also show them to configured staff roles **without** Manage Server, run a one-time OAuth sync per guild.
 
-1. Operator sets `CLIENT_SECRET`, public HTTP (`PUBLIC_HTTP_PORT` / `PUBLIC_BASE_URL` or ticket aliases), and registers the OAuth2 redirect  
+1. Operator sets `CLIENT_SECRET`, public HTTP (`PUBLIC_HTTP_PORT` / `PUBLIC_BASE_URL` or ticket aliases), `TOKEN_ENCRYPTION_KEY` (encrypts the stored tokens at rest — see [Configuration](configuration.md#third-party-token-encryption-optional)), and registers the OAuth2 redirect  
    `https://your-host/oauth/command-permissions/callback` in the Discord Developer Portal.
 2. Admin runs `/staff syncpermissions` and opens the **Authorize** link (needs Manage Server + Manage Roles).
-3. The bot stores a refresh token and sets per-command role **allow** overwrites for every role in `staff_roles`.
+3. The bot stores a refresh token (**AES-256-GCM encrypted at rest**; the authorize step refuses to run without `TOKEN_ENCRYPTION_KEY`) and sets per-command role **allow** overwrites for every role in `staff_roles`.
 4. Later `/staff role add|remove` re-syncs automatically when a token is stored. Use `force_reauth:true` if auth expired.
 
 **Not synced (by design):** public commands (`/xp`, `/warn`, `/ticket`, …) and Manage Server–only commands (`/staff`, `/setcommandchannel`). Mixed commands stay fully visible; staff subcommands are still gated in code.
