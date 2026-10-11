@@ -50,6 +50,13 @@ const AI_ENV_KEYS = [
   "GORK_LLM_MAX_TOOL_ROUNDS",
   "GORK_LLM_THINKING_TOKEN_BUDGET",
   "GORK_MAX_ANSWER_CHARS",
+  // issue #227 vision knobs (must be scrubbed so ambient values cannot
+  // change image behavior inside these tests)
+  "GORK_VISION_MODEL",
+  "GORK_VISION_MAX_IMAGES",
+  "GORK_VISION_MAX_IMAGE_BYTES",
+  "GORK_VISION_MAX_TOTAL_BYTES",
+  "GORK_VISION_DOWNLOAD_TIMEOUT_MS",
 ];
 
 const TEST_AI_KEY = "test-key";
@@ -214,7 +221,7 @@ function makeGorkMessage(env, opts = {}) {
     deleted: false,
     system: false,
     createdTimestamp: opts.createdTimestamp || Date.now(),
-    attachments: new Map(),
+    attachments: opts.attachments || new Map(),
     embeds: [],
     reply: async (payload) => {
       const sent = await channel.send(payload);
@@ -3196,6 +3203,319 @@ describe("integration: gork STE answer style (§7.20)", () => {
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
+    }
+  });
+});
+
+// ---------- vision (issue #227) ----------
+
+/**
+ * Vision suite wiring: images download through the trigger module's
+ * test seams (`setVisionSeamsForTests` — fetch + dns, mirroring the
+ * readPage tool seams) so no network is touched and the global mockFetch
+ * stays exclusively the AI transport. Pixels are real canvas-built PNGs,
+ * so the data URLs are real (multimodal payload shape asserted exactly).
+ */
+describe("integration: gork vision (issue #227)", () => {
+  const { createCanvas } = require("@napi-rs/canvas");
+
+  const VISION_KEYS = [
+    "GORK_VISION_MODEL",
+    "GORK_VISION_MAX_IMAGES",
+    "GORK_VISION_MAX_IMAGE_BYTES",
+    "GORK_VISION_MAX_TOTAL_BYTES",
+    "GORK_VISION_DOWNLOAD_TIMEOUT_MS",
+  ];
+
+  function clearVisionEnv() {
+    for (const key of VISION_KEYS) delete process.env[key];
+  }
+
+  /** Deterministic real PNG (passthrough-sized by default). */
+  function visionPng(width = 800, height = 600) {
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "rgb(9,120,201)";
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = "rgb(220,40,40)";
+    ctx.fillRect(0, 0, width / 3, height / 3);
+    return canvas.toBuffer("image/png");
+  }
+
+  const PUBLIC_DNS = async () => ["93.184.216.34"];
+
+  /** download seam: every image URL returns `bytes` (or throws). */
+  function imageSeams(bytes, { fail = false } = {}) {
+    return {
+      fetchImpl: async (url) => {
+        if (fail) throw new Error(`cdn down (${url})`);
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          arrayBuffer: async () => bytes,
+        };
+      },
+      resolveHost: PUBLIC_DNS,
+    };
+  }
+
+  function attMap(entries) {
+    return new Map(
+      entries.map((e, i) => [
+        `att-${i}`,
+        {
+          name: e.name,
+          url: e.url,
+          contentType: e.contentType || "image/png",
+          size: e.size ?? 1234,
+        },
+      ]),
+    );
+  }
+
+  /** Vision-field extractor from the first audit embed. */
+  function auditField(env, name) {
+    const embed = env.channels.log.sent[0]?.embeds?.[0];
+    if (!embed) return null;
+    const data =
+      typeof embed.toJSON === "function" ? embed.toJSON() : embed.data || embed;
+    return (data.fields || []).find((f) => f.name === name) || null;
+  }
+
+  it("image trigger + image-only context message: multimodal user content + audit Vision label", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-vision-full") });
+    const saved = saveEnv();
+    clearVisionEnv();
+    const trigger = require("../../src/features/gork/trigger");
+    const png = visionPng();
+    trigger.setVisionSeamsForTests(imageSeams(png));
+    const fetchMock = mockFetch([
+      chatCompletionResponse("A blue rectangle with a red top-left corner."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.communityId, {
+        gork_keyword: "gork",
+        audit_log_channel_id: IDS.channelLog,
+      });
+
+      // Image-only PRIOR message (issue #227: context.js must not skip it).
+      // Id must sort BEFORE the trigger id (harness lexicographic cursor).
+      env.channels.general.addMessage({
+        id: "a-vprior-1",
+        content: "",
+        author: { id: IDS.member2, username: "member2", tag: "member2#0000" },
+        createdTimestamp: Date.now() - 15000,
+        attachments: attMap([{ name: "prior.png", url: "https://cdn.test/prior.png" }]),
+      });
+
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-vision-1",
+        content: "gork: what is in this image?",
+        attachments: attMap([
+          { name: "shot.png", url: "https://cdn.test/shot.png", size: png.length },
+        ]),
+      });
+
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(replies.length, 1, "gork answers the image question");
+      assert.equal(
+        replies[0].content,
+        "A blue rectangle with a red top-left corner.",
+      );
+
+      assert.equal(fetchMock.calls.length, 1);
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+
+      // Multimodal shape: [ {type:text}, {type:image_url}, … ].
+      assert.ok(Array.isArray(userMsg.content), "user content is a parts array");
+      assert.equal(userMsg.content[0].type, "text");
+      assert.ok(userMsg.content[0].text.includes("what is in this image?"));
+      const imageParts = userMsg.content.filter((p) => p.type === "image_url");
+      assert.equal(imageParts.length, 2, "trigger image + context-window image");
+      for (const part of imageParts) {
+        assert.ok(
+          part.image_url.url.startsWith("data:image/png;base64,"),
+          "images ride as base64 data URLs, not CDN links",
+        );
+        const raw = Buffer.from(part.image_url.url.split("base64,")[1], "base64");
+        assert.ok(raw.length > 0);
+        assert.ok(raw.length <= png.length, "passthrough keeps the original bytes");
+      }
+
+      // Audit embed carries the vision tally.
+      const vision = auditField(env, "Vision");
+      assert.ok(vision, "inline Vision field on the Q&A audit embed");
+      assert.equal(vision.value, "2/2 image(s)");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+      trigger.setVisionSeamsForTests(null);
+    }
+  });
+
+  it("keyword-alone + image triggers (no question, no reply reference)", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-vision-kw") });
+    const saved = saveEnv();
+    clearVisionEnv();
+    const trigger = require("../../src/features/gork/trigger");
+    const png = visionPng(640, 480);
+    trigger.setVisionSeamsForTests(imageSeams(png));
+    const fetchMock = mockFetch([chatCompletionResponse("A cat. Obviously.")]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
+
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-vision-kw-1",
+        content: "gork", // keyword alone — pre-#227 this was fully silent
+        attachments: attMap([
+          { name: "cat.jpg", url: "https://cdn.test/cat.jpg", contentType: "image/jpeg" },
+        ]),
+      });
+
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(replies.length, 1, "keyword + image is a question now");
+      assert.equal(fetchMock.calls.length, 1);
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(Array.isArray(userMsg.content));
+      assert.match(userMsg.content[0].text, /sent only the gork keyword/);
+      assert.equal(userMsg.content.filter((p) => p.type === "image_url").length, 1);
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+      trigger.setVisionSeamsForTests(null);
+    }
+  });
+
+  it("image download failure degrades: reply ships, plain-string content carries the note", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-vision-degraded") });
+    const saved = saveEnv();
+    clearVisionEnv();
+    const trigger = require("../../src/features/gork/trigger");
+    trigger.setVisionSeamsForTests(imageSeams(null, { fail: true }));
+    const fetchMock = mockFetch([chatCompletionResponse("I cannot see it, friend.")]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
+
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-vision-bad-1",
+        content: "gork: describe the screenshot",
+        attachments: attMap([{ name: "gone.png", url: "https://cdn.test/gone.png" }]),
+      });
+
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(replies.length, 1, "a broken image NEVER kills the reply");
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.equal(
+        typeof userMsg.content,
+        "string",
+        "no parts survive → plain-string content path",
+      );
+      assert.match(userMsg.content, /Image notes:.*gone\.png.*fetch failed/s);
+      assert.match(userMsg.content, /describe the screenshot/);
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+      trigger.setVisionSeamsForTests(null);
+    }
+  });
+
+  it("GORK_VISION_MAX_IMAGES=0: keyword-alone + image stays fully silent", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-vision-off") });
+    const saved = saveEnv();
+    clearVisionEnv();
+    const fetchMock = mockFetch([]); // any AI call rejects
+    try {
+      enableAiKey();
+      process.env.GORK_VISION_MAX_IMAGES = "0";
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
+
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-vision-off-1",
+        content: "gork",
+        attachments: attMap([{ name: "shot.png", url: "https://cdn.test/shot.png" }]),
+      });
+
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(replies.length, 0, "no trigger with vision disabled");
+      assert.equal(fetchMock.calls.length, 0);
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("GORK_VISION_MODEL replaces the model only when images ride", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-vision-model") });
+    const saved = saveEnv();
+    clearVisionEnv();
+    const trigger = require("../../src/features/gork/trigger");
+    const png = visionPng(320, 240);
+    trigger.setVisionSeamsForTests(imageSeams(png));
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Handled by the vision model."),
+      chatCompletionResponse("Handled by the base model."),
+    ]);
+    try {
+      enableAiKey();
+      process.env.GORK_VISION_MODEL = "vision-only-model";
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
+
+      attachTyping(env.channels.general);
+      const withImage = makeGorkMessage(env, {
+        id: "t-vision-model-1",
+        content: "gork: what is this?",
+        attachments: attMap([{ name: "a.png", url: "https://cdn.test/a.png" }]),
+      });
+      await env.onMessageCreate(withImage.message);
+      await gorkIdle();
+
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      assert.equal(body.model, "vision-only-model", "override rides with images");
+
+      // Text-only follow-up (different user → cooldown scope is per-user):
+      const textOnly = makeGorkMessage(env, {
+        id: "t-vision-model-2",
+        content: "gork: thanks!",
+        author: env.users.memberUser2 || undefined,
+      });
+      if (textOnly.message.author.id === withImage.message.author.id) {
+        // same user would hit the cooldown — bump via staff member instead
+        textOnly.message.memberPermissions = { has: () => true };
+      }
+      await env.onMessageCreate(textOnly.message);
+      await gorkIdle();
+
+      assert.equal(fetchMock.calls.length, 2);
+      const body2 = JSON.parse(fetchMock.calls[1].init.body);
+      assert.equal(
+        body2.model,
+        "gpt-4o-mini",
+        "text-only turns keep the configured model",
+      );
+      assert.equal(typeof body2.messages.find((m) => m.role === "user").content, "string");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+      trigger.setVisionSeamsForTests(null);
     }
   });
 });

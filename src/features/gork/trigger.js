@@ -46,6 +46,13 @@ const { ensureCommunity } = require("../../platform/community");
 const { snowflakeTimeMs } = require("../../platform/snowflake");
 const { safeCutIndex, sliceSafe } = require("../../core/text");
 const { buildContext, formatContext, hasReference } = require("./context");
+// issue #227 (vision): attachment filtering, download, 1280-box downscale.
+const {
+  collectImageCandidates,
+  prepareVisionImages,
+  messageHasImage,
+  visionLimits,
+} = require("./images");
 const {
   buildRoster,
   buildRosterFluxer,
@@ -265,8 +272,47 @@ function gorkDebugEnabled() {
   return /^(1|true|yes|on)$/i.test(String(process.env.GORK_DEBUG ?? "").trim());
 }
 
+/**
+ * Whether a message makes a keyword-alone trigger viable as a VISION
+ * trigger (issue #227): it carries a supported image attachment AND
+ * vision is enabled right now (`GORK_VISION_MAX_IMAGES` > 0). Re-read
+ * per message like every other env knob.
+ *
+ * @param {unknown} message discord.js Message or duck/Fluxer shape
+ * @returns {boolean}
+ */
+function hasVisionTrigger(message) {
+  return visionLimits().maxImages > 0 && messageHasImage(message);
+}
+
 /** Max wait for the channel-history fetch phase (§7.15 Fix 3 hardening). */
 const CONTEXT_DEADLINE_MS = 20_000;
+
+/**
+ * Max wait for the whole vision phase (issue #227): downloads + decodes
+ * run in parallel with a per-image timeout inside images.js; the phase
+ * deadline is the belt so a wedged CDN fetch can never hold the guild
+ * queue slot open (same hardening shape as CONTEXT_DEADLINE_MS). On
+ * expiry the job proceeds with NO images (logged note).
+ */
+const VISION_DEADLINE_MS = 45_000;
+
+/**
+ * TEST SEAM for the vision network surface ({ fetchImpl, resolveHost },
+ * same shape as the readPage tool seams). Production never sets this —
+ * images.js falls through to global fetch + real DNS.
+ */
+let visionTestSeams = null;
+
+/**
+ * TEST SEAM: install/clear the vision fetch+dns seams for detached jobs
+ * (integration tests). Pass null to clear.
+ *
+ * @param {{fetchImpl?: Function, resolveHost?: Function}|null} seams
+ */
+function setVisionSeamsForTests(seams) {
+  visionTestSeams = seams && typeof seams === "object" ? seams : null;
+}
 
 /** LOCKED canned reply: the guild queue is full (decision 20, verbatim). */
 const QUEUE_FULL_REPLY =
@@ -635,9 +681,10 @@ async function runGorkHook(client, message) {
     if (!triggered) return;
 
     // 7. Keyword alone: answer from reply-chain context only when the
-    //    message references another message; otherwise fully silent —
-    //    no LLM call, no reply (decision 3).
-    if (!question && !hasReference(message)) return;
+    //    message references another message OR carries an image
+    //    (issue #227: "gork look at this" + screenshot is a question);
+    //    otherwise fully silent — no LLM call, no reply (decision 3).
+    if (!question && !hasReference(message) && !hasVisionTrigger(message)) return;
 
     // 7.5. Daily usage budget (§7.17, decision 33): resolve the scope and
     //      enforce BEFORE the cooldown (check order: match → scope → blocked
@@ -1053,6 +1100,59 @@ async function runGorkJob(deps) {
           formatChannelBlock(channel),
           askerLabel,
         );
+        // ── Vision (issue #227) ──────────────────────────────────────────
+        // Download + downscale every candidate image (trigger message
+        // first, then context-window messages) and, when any image made
+        // it through, send the user turn as multimodal content parts.
+        // Text-only turns keep the byte-identical plain-string path.
+        // prepareVisionImages never rejects; the phase deadline bounds
+        // a wedged CDN. Per-attachment failures degrade to `notes`
+        // lines appended to the text (logged with ids inside images.js).
+        const visionCandidates = collectImageCandidates(message, ctx.messages || []);
+        let vision = { parts: [], notes: [], sent: 0, skipped: 0, bytes: 0 };
+        if (visionCandidates.length && visionLimits().maxImages > 0) {
+          dbg(`vision candidates=${visionCandidates.length}`);
+          vision = await withDeadline(
+            prepareVisionImages(visionCandidates, {
+              ids: {
+                guildId,
+                userId: message.author?.id,
+                messageId: message.id,
+              },
+              ...(visionTestSeams || {}),
+            }),
+            VISION_DEADLINE_MS,
+            null,
+          );
+          if (!vision) {
+            console.error(
+              `[gork] vision phase timed out in ${guildId} (user=${message.author.id} msg=${message.id}) — answering without images`,
+            );
+            vision = {
+              parts: [],
+              notes: ["image processing timed out — the images were not included"],
+              sent: 0,
+              skipped: visionCandidates.length,
+              bytes: 0,
+            };
+          }
+          dbg(`vision done sent=${vision.sent} skipped=${vision.skipped} bytes=${vision.bytes}`);
+        }
+        const userText = vision.notes.length
+          ? `${userPrompt}\n\n(Image notes: ${vision.notes.join("; ")})`
+          : userPrompt;
+        const userContent = vision.parts.length
+          ? [{ type: "text", text: userText }, ...vision.parts]
+          : userText;
+        // Vision model override (GORK_VISION_MODEL, the AI_SMALL_MODEL
+        // precedent): only replaces the configured model when images
+        // actually ride. cfg itself stays untouched (the memory turn
+        // keeps its own config).
+        const visionModelOverride = String(process.env.GORK_VISION_MODEL || "").trim();
+        const jobCfg =
+          vision.parts.length && visionModelOverride
+            ? { ...cfg, model: visionModelOverride }
+            : cfg;
         // Snapshot of the sampling params actually spread into llmOpts
         // (re-read per job like every other knob); the interaction log
         // records exactly these.
@@ -1060,7 +1160,9 @@ async function runGorkJob(deps) {
         const llmOpts = {
           messages: [
             { role: "system", content: system },
-            { role: "user", content: userPrompt },
+            // issue #227: array content (text part + image_url data URLs)
+            // when images ride; plain string otherwise (byte-identical).
+            { role: "user", content: userContent },
           ],
           ...llmParamsUsed,
           tools: tools.length ? tools : undefined,
@@ -1118,16 +1220,20 @@ async function runGorkJob(deps) {
               question,
               triggerContent: message.content,
               replyToMessageId: message.reference?.messageId ?? null,
-              model: cfg.model,
+              model: jobCfg.model,
               params: { ...llmParamsUsed },
               tools: llmOpts.tools ?? null,
               settings: buildSettingsSnapshot(settings),
               system,
-              user: userPrompt,
+              // The exact text part of the user turn (issue #227: with
+              // images the real content is [text, image parts]; the text
+              // part + contextMeta.images stay the replay record).
+              user: userText,
               contextMeta: {
                 mode: ctx.mode ?? null,
                 collected: ctx.collected ?? 0,
                 chars: (promptCtx.text || "").length,
+                ...(vision.sent ? { images: vision.sent } : {}),
               },
               // Reuse the already-fetched rows (oldest→newest as collected,
               // cap 60); null-safe against discord.js test fakes. This set
@@ -1183,8 +1289,8 @@ async function runGorkJob(deps) {
                 onEvent: (evt) => qaRecorder.onEvent({ ...evt, attempt }),
               }
             : llmOpts;
-        dbg(`llm call start model=${cfg.model} url=${cfg.baseUrl}`);
-        let res = await chatWithTools(cfg, qaCallOpts(1));
+        dbg(`llm call start model=${jobCfg.model} url=${jobCfg.baseUrl}`);
+        let res = await chatWithTools(jobCfg, qaCallOpts(1));
         dbg(
           `llm call done ok=${res.ok ? 1 : 0} durMs=${res.durationMs ?? 0} toolCalls=${res.toolCalls ?? 0}`,
         );
@@ -1194,10 +1300,10 @@ async function runGorkJob(deps) {
         // canned failure reply.
         if (res.ok && !(res.content || "").trim()) {
           console.log(
-            `[gork] ${describeLlmFailure(res)} from ${cfg.model} in ${guildId} (${res.durationMs ?? 0}ms); retrying once`,
+            `[gork] ${describeLlmFailure(res)} from ${jobCfg.model} in ${guildId} (${res.durationMs ?? 0}ms); retrying once`,
           );
           dbg("retrying empty answer (attempt 2)");
-          res = await chatWithTools(cfg, qaCallOpts(2));
+          res = await chatWithTools(jobCfg, qaCallOpts(2));
           dbg(
             `llm retry done ok=${res.ok ? 1 : 0} durMs=${res.durationMs ?? 0} toolCalls=${res.toolCalls ?? 0}`,
           );
@@ -1294,7 +1400,7 @@ async function runGorkJob(deps) {
               pageReads: reads,
               // §7.19 (decision 48): read_discord runs join the tally.
               linkReads,
-              model: cfg.model,
+              model: jobCfg.model,
               durationMs: res.durationMs,
               answer: capped,
               questionMessage: message,
@@ -1304,6 +1410,11 @@ async function runGorkJob(deps) {
               // Read-side audit label (§7.16.3); OFF → undefined → no field.
               memoryLabel: memoryOn
                 ? formatMemoryLabel(mem, recalled)
+                : undefined,
+              // Vision label (issue #227): "3/4 images" — only present
+              // when candidate images existed for this exchange.
+              visionLabel: visionCandidates.length
+                ? `${vision.sent}/${visionCandidates.length} image(s)`
                 : undefined,
               // Budget label (§7.17.7): "3/5 in #general" — only present
               // when the effective limit is a real cap (>= 1).
@@ -1561,6 +1672,10 @@ function fluxerGorkAdapter(outbound, message) {
     content: row?.content ?? "",
     channelId,
     createdAt: row?.createdAt ?? null,
+    // OutboundClient.fetchMessages rows carry no attachments (issue #227
+    // follow-up: map them once the history call surfaces them), so
+    // Fluxer context-window messages stay text-only for vision.
+    attachments: [],
     author: {
       id: row?.authorId ?? null,
       username: null,
@@ -1642,6 +1757,10 @@ function fluxerGorkAdapter(outbound, message) {
       has: (bit) => typeof bit === "bigint" && (mask & bit) === bit,
     },
     memberRoleIds: Array.isArray(message.memberRoleIds) ? message.memberRoleIds : [],
+    // Normalized {name,url}[] (issue #227): the vision pipeline decides
+    // by extension (no content-type on the wire) and the SSRF posture
+    // refuses private-instance hosts with a logged per-image note.
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
     // Fluxer v1 normalized messages carry no reply reference (Phase 0
     // MESSAGE_CREATE has no message_reference handling): keyword-alone
     // triggers stay silent, mirroring Discord decision 3.
@@ -1750,10 +1869,13 @@ async function runGorkHookFluxer(outbound, message) {
     // candidate (every slow path below speaks through it).
     const msg = fluxerGorkAdapter(outbound, message);
 
-    // 7. Keyword alone: Fluxer normalized messages carry no reply reference
-    //    (adapter reference is null), so this stays silent — the mirror of
-    //    Discord decision 3.
-    if (!question && !hasReference(msg)) return;
+    // 7. Keyword alone: Fluxer normalized messages carry no reply
+    //    reference (adapter reference is null), so this stays silent
+    //    UNLESS the message carries an image (issue #227 mirror of the
+    //    Discord gate — the normalized {name,url} attachments decide by
+    //    extension; downloads of private-instance hosts are refused by
+    //    the SSRF posture and degrade to a logged note).
+    if (!question && !hasReference(msg) && !hasVisionTrigger(msg)) return;
 
     // 7.5. Daily usage budget (§7.17): identical calls, community-keyed.
     //      msg.channel.type is 0 (Fluxer text), so a Fluxer trigger can
@@ -1958,6 +2080,11 @@ module.exports = {
   llmParams,
   describeLlmFailure,
   gorkDebugEnabled,
+  hasVisionTrigger,
+  /** issue #227 phase deadline (exported for tests). */
+  VISION_DEADLINE_MS,
+  /** TEST SEAM: install/clear vision fetch+dns seams (see visionTestSeams). */
+  setVisionSeamsForTests,
   /** TEST SEAM: settle-drain for detached gork work (see pendingGorkWork). */
   whenGorkIdleForTests,
 };
