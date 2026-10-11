@@ -29,6 +29,7 @@ const pipelines = require("../../bot/pipelines");
 const {
   normalizeFluxerMessage,
   normalizeFluxerDmMessage,
+  normalizeFluxerMessageDelete,
   normalizeFluxerReaction,
 } = require("./normalize");
 const { createFluxerOutbound } = require("./outbound");
@@ -463,11 +464,12 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
   // method set is spec 375-397; it never sees the SDK client itself.
   handle.outbound = createFluxerOutbound(handle);
 
-  /** Attach one gateway event with its own catch (AGENTS.md rule 1). */
+  /** Attach one gateway event with its own catch (AGENTS.md rule 1). All
+   *  listener args are forwarded (MessageUpdate carries (old, new)). */
   const onEvent = (name, label, fn) => {
-    client.on(name, (payload) => {
+    client.on(name, (...args) => {
       Promise.resolve()
-        .then(() => fn(payload))
+        .then(() => fn(...args))
         .catch((err) => {
           console.error(
             `[fluxer] ${instanceKey} ${label} failed: ${err?.message || err}`,
@@ -491,6 +493,27 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     // exactly like the pre-PR-3 behavior.
     const dm = normalizeFluxerDmMessage(msg, { instanceKey });
     if (dm) await dmDispatcher.emit(dm);
+  });
+
+  // Bridge edit/delete intake (audit #195 item 5, roadmap/bridge.md §10.4
+  // "Source-side update/delete intake"). The SDK emits MESSAGE_UPDATE as
+  // (old, new) — prefer the NEW state, the live content (same rule as the
+  // Discord listener); a DM or an unusable partial normalizes to null and
+  // drops (no v1 consumer for DM edits). MESSAGE_DELETE arrives as a
+  // payload-shaped partial WITHOUT reliable author info — its own
+  // normalizer lifts the identity triple the intake needs; the echo gate +
+  // links checks own the rest. Guild-scoped: resolveSourceContext fails
+  // closed for unbridged channels, so non-bridge traffic is a no-op.
+  onEvent(eventName("MessageUpdate", "messageUpdate"), "messageUpdate", async (oldMessage, newMessage) => {
+    const normalized = normalizeFluxerMessage(newMessage ?? oldMessage, { instanceKey });
+    if (!normalized) return;
+    await pipelines.onFluxerMessageUpdate(handle.outbound, normalized);
+  });
+
+  onEvent(eventName("MessageDelete", "messageDelete"), "messageDelete", async (payload) => {
+    const normalized = normalizeFluxerMessageDelete(payload, { instanceKey });
+    if (!normalized) return;
+    await pipelines.onFluxerMessageDelete(handle.outbound, normalized);
   });
 
   onEvent(eventName("MessageReactionAdd", "messageReactionAdd"), "messageReactionAdd", async (payload) => {

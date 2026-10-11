@@ -16,6 +16,7 @@ const assert = require("node:assert/strict");
 const {
   normalizeFluxerMessage,
   normalizeFluxerDmMessage,
+  normalizeFluxerMessageDelete,
   normalizeFluxerReaction,
 } = require("../src/platform/fluxer/normalize");
 
@@ -53,6 +54,53 @@ function phase0D(overrides = {}) {
     ...overrides,
   };
 }
+
+describe("platform/fluxer/normalize — normalizeFluxerMessageDelete (#195 item 5)", () => {
+  it("lifts the identity triple from the raw wire delete payload", () => {
+    const out = normalizeFluxerMessageDelete(
+      {
+        t: "MESSAGE_DELETE",
+        d: {
+          id: "1554600000000009901",
+          channel_id: "1554600000000009902",
+          guild_id: "1554590611015729152",
+        },
+      },
+      { instanceKey: "flux.example:8443" },
+    );
+    assert.deepEqual(out, {
+      platform: "fluxer",
+      instanceKey: "flux.example:8443",
+      communityId: null, // the pipeline resolves it (contract 4)
+      externalGuildId: "1554590611015729152",
+      id: "1554600000000009901",
+      channelId: "1554600000000009902",
+    });
+  });
+
+  it("accepts the SDK PartialMessage shape (camelCase ids, no guild_id)", () => {
+    const out = normalizeFluxerMessageDelete(
+      { id: "42", channelId: "7", guildId: "99", content: null, authorId: "5", author: null },
+      { instanceKey: "inst" },
+    );
+    assert.ok(out);
+    assert.equal(out.id, "42");
+    assert.equal(out.channelId, "7");
+    assert.equal(out.externalGuildId, "99");
+  });
+
+  it("drops DM deletes and unusable payloads (no throw)", () => {
+    assert.equal(
+      normalizeFluxerMessageDelete({ id: "1", channel_id: "7" }, { instanceKey: "i" }),
+      null,
+      "no guild id → DM (or junk): no v1 consumer",
+    );
+    assert.equal(normalizeFluxerMessageDelete({ id: "1", guild_id: "9" }, {}), null);
+    assert.equal(normalizeFluxerMessageDelete({ channel_id: "7", guild_id: "9" }, {}), null);
+    assert.equal(normalizeFluxerMessageDelete(null), null);
+    assert.equal(normalizeFluxerMessageDelete("nope"), null);
+  });
+});
 
 describe("platform/fluxer/normalize — normalizeFluxerMessage", () => {
   it("maps a Phase 0 MESSAGE_CREATE payload field by field", () => {
