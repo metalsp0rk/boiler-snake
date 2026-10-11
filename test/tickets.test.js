@@ -1038,59 +1038,59 @@ describe("tickets media assets", () => {
       "base64"
     );
 
-    const origFetch = global.fetch;
-    global.fetch = async (url) => {
+    // SSRF-guard seams (src/core/ssrfGuard.js): fake DNS resolves the CDN
+    // name to a PUBLIC address, fake fetch serves the bytes.
+    const fetchImpl = async (url) => {
       assert.match(String(url), /cdn\.example/);
       return {
         ok: true,
+        status: 200,
         headers: {
           get: (h) =>
             h.toLowerCase() === "content-type" ? "image/png" : null,
         },
-        arrayBuffer: async () => png,
+        arrayBuffer: async () =>
+          png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength),
       };
     };
+    const resolveHost = async () => ["93.184.216.34"]; // public, no traffic
 
-    try {
-      const result = await mirrorTicketAssets(
-        [
-          {
-            message_id: "1",
-            author_id: "u",
-            content: "pic",
-            attachment_urls: [
-              {
-                url: "https://cdn.example/attachments/1/photo.png",
-                name: "photo.png",
-                contentType: "image/png",
-              },
-            ],
-            embeds_json: JSON.stringify([
-              { image: { url: "https://cdn.example/embed/thumb.png" } },
-            ]),
-          },
-        ],
-        { communityId: communityKey("g-media"), token }
-      );
+    const result = await mirrorTicketAssets(
+      [
+        {
+          message_id: "1",
+          author_id: "u",
+          content: "pic",
+          attachment_urls: [
+            {
+              url: "https://cdn.example/attachments/1/photo.png",
+              name: "photo.png",
+              contentType: "image/png",
+            },
+          ],
+          embeds_json: JSON.stringify([
+            { image: { url: "https://cdn.example/embed/thumb.png" } },
+          ]),
+        },
+      ],
+      { communityId: communityKey("g-media"), token, fetchImpl, resolveHost }
+    );
 
-      assert.equal(result.downloaded, 2);
-      assert.equal(result.failed, 0);
-      const att = result.messages[0].attachment_urls[0];
-      assert.match(att.href, new RegExp(`/t/${token}/assets/`));
-      assert.equal(att.local, true);
-      assert.equal(att.kind, "image");
+    assert.equal(result.downloaded, 2);
+    assert.equal(result.failed, 0);
+    const att = result.messages[0].attachment_urls[0];
+    assert.match(att.href, new RegExp(`/t/${token}/assets/`));
+    assert.equal(att.local, true);
+    assert.equal(att.kind, "image");
 
-      const embeds = JSON.parse(result.messages[0].embeds_json);
-      assert.match(embeds[0].image.url, new RegExp(`/t/${token}/assets/`));
+    const embeds = JSON.parse(result.messages[0].embeds_json);
+    assert.match(embeds[0].image.url, new RegExp(`/t/${token}/assets/`));
 
-      const localName = path.basename(att.href);
-      const abs = resolveAssetAbsolutePath(communityKey("g-media"), token, localName);
-      assert.ok(abs);
-      assert.ok(fs.existsSync(abs));
-      assert.ok(fs.readFileSync(abs).length > 0);
-    } finally {
-      global.fetch = origFetch;
-    }
+    const localName = path.basename(att.href);
+    const abs = resolveAssetAbsolutePath(communityKey("g-media"), token, localName);
+    assert.ok(abs);
+    assert.ok(fs.existsSync(abs));
+    assert.ok(fs.readFileSync(abs).length > 0);
   });
 
   it("renders images in transcript HTML", () => {
