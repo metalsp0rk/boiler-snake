@@ -5,6 +5,12 @@ const {
   assertReplyContains,
   assertEphemeralReply,
 } = require("../helpers/assert");
+const {
+  exactlyOneSend,
+  assertPingsEveryone,
+  assertPingsRoleOnly,
+  assertPingsNobody,
+} = require("../helpers/sendShape");
 const { IDS } = require("../helpers/fixtures");
 
 /**
@@ -123,9 +129,12 @@ describe("integration: youtube", () => {
     );
   });
 
-  // Audit H11 (#186): ticker-level send-shape tests asserting allowedMentions
-  // on the *production* send path (sendNotification), not just /testnotification.
-  // The mock channel records each send payload verbatim into `sent`.
+  // Audit H11 (#186) / send-shape contract tests (#199): ticker-level tests
+  // asserting allowedMentions on the *production* send path (sendNotification
+  // via processChannel), not just /testnotification. The mock channel records
+  // each send payload verbatim into `sent`; the shared sendShape helpers pin
+  // both sides of the contract (content mention tokens ↔ exact allowedMentions
+  // payload) so a suppressed-ping regression can never go green again.
   const UPLOAD_ROLE = "666000000000000001";
 
   async function driveUploadNotification(channelIdSuffix, { uploadRole }) {
@@ -164,20 +173,12 @@ describe("integration: youtube", () => {
 
   it("upload send with configured role pings exactly that role (H11)", async () => {
     const payload = await driveUploadNotification("role1", { uploadRole: UPLOAD_ROLE });
-    assert.deepEqual(payload.allowedMentions, { parse: ["roles"], roles: [UPLOAD_ROLE] });
-    assert.ok(
-      payload.content.startsWith(`<@&${UPLOAD_ROLE}>`),
-      `content should mention the role: ${payload.content}`
-    );
+    assertPingsRoleOnly(payload, UPLOAD_ROLE, { label: "youtube upload alert" });
   });
 
   it("upload send without a configured role allows no mentions (H11)", async () => {
     const payload = await driveUploadNotification("norole", { uploadRole: null });
-    assert.deepEqual(payload.allowedMentions, { parse: [] });
-    assert.ok(
-      !payload.content.includes("@everyone") && !payload.content.includes("<@&"),
-      `content should build no mention: ${payload.content}`
-    );
+    assertPingsNobody(payload, { label: "youtube upload alert (no role)" });
   });
 
   it("live send pings @everyone as documented (H11)", async () => {
@@ -209,13 +210,8 @@ describe("integration: youtube", () => {
         ],
       }),
     });
-    assert.equal(env.channels.notify.sent.length, 1, "expected exactly one send");
-    const payload = env.channels.notify.sent[0];
-    assert.deepEqual(payload.allowedMentions, { parse: ["everyone"] });
-    assert.ok(
-      payload.content.startsWith("@everyone"),
-      `live content should open with @everyone: ${payload.content}`
-    );
+    const payload = exactlyOneSend(env.channels.notify.sent, "youtube live alert");
+    assertPingsEveryone(payload, { label: "youtube live alert" });
   });
 
   it("processChannel skips already-notified video id", async () => {
