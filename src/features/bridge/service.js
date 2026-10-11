@@ -1217,6 +1217,28 @@ async function disconnectBridge({
       });
     }
 
+    // Spool-dir delete on disconnect (audit #195 item 4): every per-message
+    // spool dir under this bridge is stranded once its outbox rows are
+    // cascade-deleted — nothing can read those bytes. Remove them NOW (the
+    // start-time orphan pass is only the restart backstop; a long-running
+    // process would otherwise pin the bytes against the process-wide spool
+    // cap until the next boot). Best effort: a failure is a space leak the
+    // orphan pass reclaims at restart, never a disconnect failure.
+    try {
+      const spool = media.deleteSpoolPublicDir(bridge.public_id);
+      if (spool.error) {
+        warnings.push(
+          `Disconnected bridge ${bridge.public_id}, but its spool directory could not be removed (${spool.error}); the next restart will reclaim it.`,
+        );
+      }
+    } catch (err) {
+      // deleteSpoolPublicDir already catches; this belt is for the seam only.
+      console.error(
+        `[bridge] disconnect spool cleanup threw for ${bridge.public_id}:`,
+        causeOf(err),
+      );
+    }
+
     relay.refreshRelayMaps();
 
     return { ok: true, publicId: bridge.public_id, warnings };
