@@ -1498,4 +1498,247 @@ describe("integration: tickets", () => {
       botMember.roles.cache.delete(IDS.roleExempt);
     }
   });
+
+  // --- audit-2026-10 #197: archive pipeline CAS claim + summary deadline ---
+
+  /** Title of the first embed in a captured channel.send payload, or "". */
+  function embedTitleOf(payload) {
+    const e = payload?.embeds?.[0];
+    if (!e) return "";
+    try {
+      return String(
+        typeof e.toJSON === "function" ? e.toJSON()?.title : e?.title
+      );
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Soft-close a fresh staff-opened ticket and hand back the live channel
+   * with a counting delete wrapper.
+   */
+  async function closedTicketForArchiveRace(reason) {
+    const ticket = await openViaStaff({ reason });
+    const channel = env.guild.channels.cache.get(ticket.channel_id);
+    assert.ok(channel, "ticket channel present");
+    channel.addMessage({
+      content: "please help",
+      author: { id: IDS.member, username: "member", tag: "member#0000" },
+      createdTimestamp: Date.now() - 5000,
+    });
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: ticket.channel_id,
+      options: { reason: "resolved" },
+    });
+    assert.match(env.lastReplyContent(close), /closed/i);
+
+    const state = { deletes: 0 };
+    const realDelete = channel.delete.bind(channel);
+    channel.delete = async (...args) => {
+      state.deletes += 1;
+      return realDelete(...args);
+    };
+    return { ticket, channel, state };
+  }
+
+  it("concurrent archive: CAS claim lets exactly one pipeline do the work (#197)", async () => {
+    const { ticket, channel, state } = await closedTicketForArchiveRace(
+      "double-archive-race"
+    );
+    const { archiveTicketPipeline } = require("../../src/features/tickets/close");
+    const logBefore = env.channels.log.sent.length;
+
+    // Two closes race with STALE pre-claim rows (both archived=0). The CAS
+    // claim is a synchronous UPDATE, so exactly one caller wins regardless
+    // of interleaving — no timing assumptions in the assertions.
+    const run = () =>
+      archiveTicketPipeline({
+        client: env.client,
+        channel,
+        ticket: env.db.getTicketById(ticket.id),
+        archivedBy: IDS.admin,
+        guildName: env.guild.name,
+      });
+    const results = await Promise.all([run(), run()]);
+
+    const losers = results.filter((r) => r.skipped);
+    assert.equal(losers.length, 1, "exactly one close skipped");
+    assert.match(
+      losers[0].skipped,
+      new RegExp(
+        `Ticket #${ticket.ticket_number} is already being archived by another close`
+      ),
+      `loser message names the ticket + cause: ${losers[0].skipped}`
+    );
+
+    // Work done EXACTLY once: one delete, one archive embed, one archived row.
+    assert.equal(state.deletes, 1, "channel deleted exactly once");
+    const titles = env.channels.log
+      .sent.slice(logBefore)
+      .map(embedTitleOf)
+      .filter((t) => /archived/i.test(t));
+    assert.equal(titles.length, 1, "transcript archive embed posted once");
+
+    const after = env.db.getTicketById(ticket.id);
+    assert.equal(after.archived, 1);
+    assert.ok(after.transcript_token, "transcript finalized");
+    assert.equal(after.channel_id, null);
+    // Channel content saved once (open/close notices ride along — same
+    // rows the single-winner archive fetched; the loser saved nothing).
+    assert.ok(env.db.listTicketMessages(ticket.id).length >= 1);
+  });
+
+  it("sequential archive after a completed archive: loser says already archived (#197)", async () => {
+    const { ticket, channel, state } = await closedTicketForArchiveRace(
+      "archive-after-archive"
+    );
+    const { archiveTicketPipeline } = require("../../src/features/tickets/close");
+
+    const first = await archiveTicketPipeline({
+      client: env.client,
+      channel,
+      ticket: env.db.getTicketById(ticket.id),
+      archivedBy: IDS.admin,
+      guildName: env.guild.name,
+    });
+    assert.ok(!first.skipped, "first archive runs");
+    assert.equal(first.ticket.archived, 1);
+    assert.equal(state.deletes, 1);
+
+    // A stale-row retry (e.g. an in-flight second command) must no-op and
+    // name the REAL state ("already archived"), never re-do work.
+    const stale = { ...ticket, archived: 0 };
+    const second = await archiveTicketPipeline({
+      client: env.client,
+      channel,
+      ticket: stale,
+      archivedBy: IDS.admin,
+      guildName: env.guild.name,
+    });
+    assert.match(second.skipped, new RegExp(`Ticket #${ticket.ticket_number} is already archived\\.`));
+    assert.equal(state.deletes, 1, "no second delete");
+  });
+
+  it("concurrent sensitive archive: one stub embed, loser skips, archived stays 0 (#197)", async () => {
+    const ticket = await openViaStaff({ reason: "sens-archive-race" });
+    env.db.setTicketSensitive(ticket.id, IDS.admin);
+    const channel = env.guild.channels.cache.get(ticket.channel_id);
+    assert.ok(channel);
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: ticket.channel_id,
+      options: { reason: "handled off-channel" },
+    });
+    assert.match(env.lastReplyContent(close), /closed/i);
+
+    let deletes = 0;
+    const realDelete = channel.delete.bind(channel);
+    channel.delete = async (...args) => {
+      deletes += 1;
+      return realDelete(...args);
+    };
+
+    const { archiveTicketPipeline } = require("../../src/features/tickets/close");
+    const logBefore = env.channels.log.sent.length;
+    const run = () =>
+      archiveTicketPipeline({
+        client: env.client,
+        channel,
+        ticket: env.db.getTicketById(ticket.id),
+        archivedBy: IDS.admin,
+        guildName: env.guild.name,
+      });
+    const results = await Promise.all([run(), run()]);
+
+    const losers = results.filter((r) => r.skipped);
+    assert.equal(losers.length, 1, "exactly one sensitive close skipped");
+    assert.match(
+      losers[0].skipped,
+      /is already being archived by another close/
+    );
+    assert.equal(deletes, 1, "channel deleted once");
+    const stubs = env.channels.log
+      .sent.slice(logBefore)
+      .map(embedTitleOf)
+      .filter((t) => /archived \(sensitive/.test(t));
+    assert.equal(stubs.length, 1, "sensitive stub posted exactly once");
+
+    // Sensitive invariant preserved through the claim flow: archived stays 0.
+    const after = env.db.getTicketById(ticket.id);
+    assert.equal(after.archived, 0);
+    assert.equal(after.channel_id, null);
+  });
+
+  it("archive with a hung summary completion aborts at the deadline and surfaces the timeout (fake timer, #197)", async () => {
+    const { ticket, channel } = await closedTicketForArchiveRace(
+      "summary-hang-archive"
+    );
+    const { archiveTicketPipeline } = require("../../src/features/tickets/close");
+
+    process.env.AI_API_KEY = "test-key-not-real";
+    try {
+      // Completion that only EVER settles via the deadline's abort signal
+      // (wedged provider socket). Driven by fake timers — zero wall clock.
+      const hangFetch = (_url, { signal } = {}) =>
+        new Promise((_res, rej) => {
+          if (signal?.aborted) {
+            rej(new Error("This operation was aborted"));
+            return;
+          }
+          signal.addEventListener("abort", () =>
+            rej(new Error("This operation was aborted"))
+          );
+        });
+
+      let armDeadline;
+      const armed = new Promise((resolve) => {
+        armDeadline = resolve;
+      });
+      const run = archiveTicketPipeline({
+        client: env.client,
+        channel,
+        ticket: env.db.getTicketById(ticket.id),
+        archivedBy: IDS.admin,
+        guildName: env.guild.name,
+        summaryOpts: {
+          timeoutMs: 15000,
+          fetchImpl: hangFetch,
+          setTimer: (fn) => {
+            armDeadline(fn); // hand the abort callback to the test
+            return { fake: true };
+          },
+          clearTimer: () => {},
+        },
+      });
+
+      const fireDeadline = await armed; // pipeline reached the bounded summary call
+      fireDeadline(); // deadline expires NOW — deterministically
+      const result = await run;
+
+      assert.ok(!result.skipped, "this run owned the archive claim");
+      assert.match(
+        result.warnings.join("\n"),
+        new RegExp(
+          `Ticket #${ticket.ticket_number} summary generation timed out after 15s`
+        ),
+        `archive reply surfaces the specific cause: ${result.warnings}`
+      );
+
+      // Partial-failure contract: the archive COMPLETES with the stats
+      // fallback summary — the transcript is archived and the channel gone.
+      const after = env.db.getTicketById(ticket.id);
+      assert.equal(after.archived, 1);
+      assert.ok(after.transcript_token);
+      const stored = JSON.parse(after.ai_summary_json);
+      assert.equal(stored.source, "fallback");
+    } finally {
+      delete process.env.AI_API_KEY;
+    }
+  });
 });

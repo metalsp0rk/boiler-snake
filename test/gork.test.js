@@ -679,6 +679,47 @@ describe("chatWithTools (core/ai)", () => {
     assert.equal(r.reason, "network");
   });
 
+  // audit-2026-10 #197: injectable deadline timers (ssrfGuard #239 idiom) so
+  // a hung-completion fixture aborts at the deadline with zero real clocks.
+  it("chatCompletion: fake-timer deadline aborts a hung fetch with reason 'timeout'", async () => {
+    const hangFetch = (_url, { signal } = {}) =>
+      new Promise((_res, rej) => {
+        if (signal?.aborted) { rej(new Error("This operation was aborted")); return; }
+        signal.addEventListener("abort", () => rej(new Error("This operation was aborted")));
+      });
+    let fire = null;
+    const cleared = [];
+    const p = chatCompletion(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      timeoutMs: 60000,
+      fetchImpl: hangFetch,
+      setTimer: (fn) => { fire = fn; return "fake-handle"; },
+      clearTimer: (h) => cleared.push(h),
+    });
+    assert.equal(typeof fire, "function", "timeout armed synchronously via the seam");
+    fire(); // simulate the deadline expiring — no real timer ever ran
+    const r = await p;
+    assert.ok(!r.ok);
+    assert.equal(r.reason, "timeout");
+    assert.deepEqual(cleared, ["fake-handle"], "injected clearTimer got the handle");
+  });
+
+  it("chatCompletion: an already-aborted external signal short-circuits to 'timeout'", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const r = await chatCompletion(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      signal: ac.signal,
+      fetchImpl: (_url, { signal } = {}) =>
+        new Promise((_res, rej) => {
+          if (signal?.aborted) { rej(new Error("This operation was aborted")); return; }
+          signal.addEventListener("abort", () => rej(new Error("This operation was aborted")));
+        }),
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.reason, "timeout");
+  });
+
   it("chatCompletion: HTTP failure captures endpoint url + provider error body", async () => {
     const r = await chatCompletion(AI_CFG, {
       messages: [{ role: "user", content: "hi" }],
