@@ -1,6 +1,12 @@
 /**
  * Download Discord media into transcript asset dirs and rewrite URLs for local serving.
  *
+ * All downloads run through the shared SSRF guard (src/core/ssrfGuard.js,
+ * audit C5): ticket media URLs are member-authored, so https is required and
+ * every hop's host is resolved and refused when it maps to loopback, RFC1918,
+ * or link-local (cloud-metadata) ranges. Refused files are recorded as
+ * warnings on the archive result, never silently dropped.
+ *
  * Layout (the dir segment is the INTEGER community id — roadmap/fluxer.md
  * § Transcript storage; migration 034 moved the tree off Discord snowflakes):
  *   {DATA_DIR}/ticket-transcripts/{community_id}/{token}/assets/{nnn_filename}
@@ -12,6 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const { dataDir } = require("../../db/connection");
 const { assertCommunityId } = require("../../platform/community");
+const { downloadGuarded } = require("../../core/ssrfGuard");
 
 /**
  * @param {number} communityId
@@ -182,37 +189,40 @@ function parseAttachmentList(raw) {
 }
 
 /**
- * Download a single URL to dest path. Throws on failure.
+ * Download a single URL to dest path THROUGH THE SHARED SSRF GUARD
+ * (src/core/ssrfGuard.js, audit C5 / §6 P0.7). Ticket content is
+ * member-authored, so every URL here is untrusted: https only, hostname
+ * resolved and checked per hop against loopback/RFC1918/link-local (cloud
+ * metadata) ranges, same-host redirects only, per-attempt timeout. Throws
+ * with the specific refusal on failure (never a silent drop).
+ *
  * @param {string} url
  * @param {string} destPath
+ * @param {{
+ *   fetchImpl?: (url: string, init?: object) => Promise<any>,
+ *   resolveHost?: (host: string) => Promise<string[]>,
+ *   timeoutMs?: number,
+ * }} [opts] guard seams (tests inject; production uses fetch + DNS)
  * @returns {Promise<{ bytes: number, contentType: string|null }>}
  */
-async function downloadUrlToFile(url, destPath) {
-  const res = await fetch(url, {
-    redirect: "follow",
+async function downloadUrlToFile(url, destPath, opts = {}) {
+  const res = await downloadGuarded(url, {
+    fetchImpl: opts.fetchImpl,
+    resolveHost: opts.resolveHost,
+    timeoutMs: opts.timeoutMs,
+    maxBytes: MAX_ASSET_BYTES,
     headers: {
       // Discord CDN is happier with a UA
       "User-Agent": "BoilerSnake-TicketArchive/1.0",
     },
   });
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status} for ${url}`);
-  }
-
-  const contentType = res.headers.get("content-type");
-  const lenHeader = res.headers.get("content-length");
-  if (lenHeader && Number(lenHeader) > MAX_ASSET_BYTES) {
-    throw new Error(`File too large (${lenHeader} bytes)`);
-  }
-
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > MAX_ASSET_BYTES) {
-    throw new Error(`File too large (${buf.length} bytes)`);
+    throw new Error(`${res.reason} for ${url}`);
   }
 
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  fs.writeFileSync(destPath, buf);
-  return { bytes: buf.length, contentType };
+  fs.writeFileSync(destPath, res.bytes);
+  return { bytes: res.bytes.length, contentType: res.contentType };
 }
 
 /**
@@ -222,6 +232,9 @@ async function downloadUrlToFile(url, destPath) {
  * @param {object} opts
  * @param {number} opts.communityId integer community id (transcript dir segment)
  * @param {string} opts.token UUID transcript token
+ * @param {(url: string, init?: object) => Promise<any>} [opts.fetchImpl] SSRF-guard fetch seam (tests)
+ * @param {(host: string) => Promise<string[]>} [opts.resolveHost] DNS seam for the guard (tests)
+ * @param {number} [opts.downloadTimeoutMs] per-attempt download timeout override
  * @returns {Promise<{
  *   messages: object[],
  *   downloaded: number,
@@ -232,6 +245,11 @@ async function downloadUrlToFile(url, destPath) {
  */
 async function mirrorTicketAssets(messages, opts) {
   const { communityId, token } = opts;
+  const downloadOpts = {
+    fetchImpl: opts.fetchImpl,
+    resolveHost: opts.resolveHost,
+    timeoutMs: opts.downloadTimeoutMs,
+  };
   const assetsDir = absoluteAssetsDir(communityId, token);
   fs.mkdirSync(assetsDir, { recursive: true });
 
@@ -272,7 +290,7 @@ async function mirrorTicketAssets(messages, opts) {
     const dest = path.join(assetsDir, localName);
 
     try {
-      const { contentType } = await downloadUrlToFile(item.url, dest);
+      const { contentType } = await downloadUrlToFile(item.url, dest, downloadOpts);
       const ct = contentType || item.contentType;
       const kind = mediaKind(localName, ct);
       urlMap.set(item.url, {
@@ -287,9 +305,13 @@ async function mirrorTicketAssets(messages, opts) {
       downloaded += 1;
     } catch (err) {
       failed += 1;
+      // Specific cause per file (AGENTS.md error rules): the archive records
+      // WHY the asset is missing (e.g. SSRF refusal) and keeps archiving.
+      const reason = err?.message || String(err);
+      warnings.push(`Media not archived (${item.url}): ${reason}.`);
       console.warn(
         `[tickets] asset download failed (${item.url}):`,
-        err?.message || err
+        reason
       );
     }
   }
