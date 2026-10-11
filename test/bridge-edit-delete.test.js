@@ -48,6 +48,10 @@ const media = require("../src/features/bridge/media");
 const repo = require("../src/db/repositories/bridges");
 const tokenCrypto = require("../src/features/bridge/tokenCrypto");
 const pipelines = require("../src/bot/pipelines");
+const {
+  normalizeFluxerMessage,
+  normalizeFluxerMessageDelete,
+} = require("../src/platform/fluxer/normalize");
 const { getCommunityById } = require("../src/platform/community");
 
 after(() => cleanup?.());
@@ -913,5 +917,200 @@ describe("bridge edit/delete relay (PR 6)", () => {
       0,
       "bot/webhook authors on the source side never enqueue (§10.4)",
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // #195 item 5 — FLUXER-side update/delete intake (Fluxer → Discord relay).
+  // The mirror of every gate above, driven through the shipped pipeline
+  // entries with Fluxer-normalized messages (source end b → destination end
+  // a = Discord): the edit relays as a PATCH of the discord copy, the delete
+  // as a DELETE, and the protections (echo, bot author, hash coalescing,
+  // non-bridge channels) enqueue NOTHING.
+  // -------------------------------------------------------------------------
+
+  /** A Fluxer-normalized source message (wire snake shape through the REAL
+   *  gateway normalizer — the same object client.js hands the pipeline). */
+  function fluxerSrcMessage(id, channelB, over = {}) {
+    const { content = "edited on fluxer", authorBot = false, authorId = "77", ...rest } = over;
+    return normalizeFluxerMessage(
+      {
+        id,
+        channel_id: channelB,
+        guild_id: rowB.externalGuildId,
+        author: { id: authorId, username: "flora", bot: authorBot },
+        content,
+        timestamp: new Date().toISOString(),
+        attachments: [],
+        mentions: [],
+        ...rest,
+      },
+      { instanceKey: rowB.instanceKey },
+    );
+  }
+
+  it("a Fluxer-side edit relays to Discord: pipeline intake → ONE PATCH of the discord copy", async () => {
+    const { bridge, publicId, channelB } = seedBridge("both");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    // The delivered create: a FLUXER source message copied to Discord (b_to_a).
+    const createRow = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "b_to_a",
+      kind: "create",
+      srcMessageId: msgId,
+      payload: createPayload(publicId, msgId, {
+        direction: "b_to_a",
+        srcCommunityId: rowB.id,
+        srcChannelId: channelB,
+        text: "hello from fluxer",
+      }),
+    });
+    db.db.prepare("UPDATE bridge_outbox SET state = 'done' WHERE id = ?").run(createRow.id);
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowB.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dc-copy",
+    });
+
+    // Worker: the SOURCE re-read rides the fluxer outbound, the PATCH rides
+    // the DISCORD webhook transport (the reverse of every shipped test).
+    const src = fakeSource({ content: "edited on fluxer" });
+    const dF = scriptedApi("dF");
+    const worker = makeWorker({
+      getWebhookApi: (p) => (p === "discord" ? dF : null),
+      getOutbound: (p) => (p === "fluxer" ? src : null),
+    });
+
+    await pipelines.onFluxerMessageUpdate(
+      {},
+      fluxerSrcMessage(msgId, channelB, { content: "edited on fluxer" }),
+    );
+    const rows = outboxRows(bridge.id, "edit");
+    assert.equal(rows.length, 1, "the fluxer MESSAGE_UPDATE enqueued kind-edit");
+    assert.equal(rows[0].direction, "b_to_a");
+    assert.equal(JSON.parse(rows[0].payload_json).text, "edited on fluxer");
+
+    await worker.drainAll();
+    assert.equal(src.fetches.length, 1, "the worker RE-READS the fluxer source");
+    assert.equal(dF.execCalls.length, 0, "an edit NEVER re-posts the discord copy");
+    assert.equal(dF.patchCalls.length, 1, "ONE PATCH of the discord copy");
+    assert.equal(dF.patchCalls[0].dstMessageId, "dc-copy");
+    assert.equal(dF.patchCalls[0].patch.content, "edited on fluxer");
+    assert.deepEqual(dF.patchCalls[0].patch.allowedMentions, { parse: [] }, "NO_PING on Discord (§10.11)");
+    assert.equal(outboxRows(bridge.id, "edit")[0].state, "done");
+  });
+
+  it("a Fluxer-side delete relays to Discord: pipeline intake → DELETE of the discord copy", async () => {
+    const { bridge, publicId, channelB } = seedBridge("both");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowB.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dc-copy2",
+    });
+    void publicId;
+    const dG = scriptedApi("dG");
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "discord" ? dG : null) });
+
+    // The SDK's MESSAGE_DELETE partial (payload-shaped, NO author) through
+    // the real delete normalizer.
+    await pipelines.onFluxerMessageDelete(
+      {},
+      normalizeFluxerMessageDelete(
+        { id: msgId, channel_id: channelB, guild_id: rowB.externalGuildId },
+        { instanceKey: rowB.instanceKey },
+      ),
+    );
+    const rows = outboxRows(bridge.id, "delete");
+    assert.equal(rows.length, 1, "the fluxer MESSAGE_DELETE enqueued kind-delete");
+    assert.equal(rows[0].direction, "b_to_a");
+
+    await worker.drainAll();
+    assert.deepEqual(dG.deleteCalls.map((c) => c.dstMessageId), ["dc-copy2"]);
+    assert.equal(outboxRows(bridge.id, "delete")[0].state, "done");
+    // The 404-is-success ladder and supersession are the SAME code the
+    // Discord-side tests above already cover (platform-neutral executor).
+  });
+
+  it("the fluxer-side gates mirror the Discord protections: nothing enqueues", async () => {
+    seedBridge("both");
+    relay.clearRelayState();
+
+    // (a) Echo (KD 10): the id is a copy THIS process relayed to fluxer —
+    // our own PATCH/takedown echo must never re-enter as a source edit.
+    const copyId = snowflakeNow();
+    relay.noteRelayedDestination("fluxer", rowB.instanceKey, copyId);
+    await pipelines.onFluxerMessageUpdate(
+      {},
+      fluxerSrcMessage(copyId, "EB-echo", { content: "our own patch echo" }),
+    );
+    await pipelines.onFluxerMessageDelete(
+      {},
+      normalizeFluxerMessageDelete(
+        { id: copyId, channel_id: "EB-echo", guild_id: rowB.externalGuildId },
+        { instanceKey: rowB.instanceKey },
+      ),
+    );
+
+    // (b) Bot/webhook author (the copy author case).
+    const botMsgId = snowflakeNow();
+    await pipelines.onFluxerMessageUpdate(
+      {},
+      fluxerSrcMessage(botMsgId, "EB-gate", { content: "webhook copy edited", authorBot: true }),
+    );
+
+    // (c) Non-bridge channel.
+    const offBridgeId = snowflakeNow();
+    await pipelines.onFluxerMessageUpdate(
+      {},
+      fluxerSrcMessage(offBridgeId, "999-not-bridged", { content: "hi" }),
+    );
+    await pipelines.onFluxerMessageDelete(
+      {},
+      normalizeFluxerMessageDelete(
+        { id: offBridgeId, channel_id: "999-not-bridged", guild_id: rowB.externalGuildId },
+        { instanceKey: rowB.instanceKey },
+      ),
+    );
+
+    for (const id of [copyId, botMsgId, offBridgeId]) {
+      assert.equal(
+        db.db.prepare("SELECT COUNT(*) AS c FROM bridge_outbox WHERE src_message_id = ?").get(id).c,
+        0,
+        `message ${id}: echoed/bot/off-bridge fluxer updates and deletes never enqueue`,
+      );
+    }
+  });
+
+  it("a fluxer pin/flag-noise update coalesces against the snapshot (§10.10 mirror)", async () => {
+    const { bridge, channelB } = seedBridge("both");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowB.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dc-noise",
+    });
+
+    // First real edit enqueues (and writes the snapshot)…
+    await pipelines.onFluxerMessageUpdate(
+      {},
+      fluxerSrcMessage(msgId, channelB, { content: "content v2" }),
+    );
+    assert.equal(outboxCount(bridge.id, "edit"), 1);
+
+    // …a pin-noise MESSAGE_UPDATE carrying the SAME content hashes
+    // identically: the coalescing rule is platform-neutral (§10.10).
+    await pipelines.onFluxerMessageUpdate(
+      {},
+      fluxerSrcMessage(msgId, channelB, { content: "content v2" }),
+    );
+    assert.equal(outboxCount(bridge.id, "edit"), 1, "unchanged content enqueues NOTHING");
   });
 });

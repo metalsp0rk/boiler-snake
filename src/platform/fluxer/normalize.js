@@ -458,8 +458,52 @@ function normalizeFluxerReaction(raw, { instanceKey = "fluxer" } = {}) {
   };
 }
 
+/**
+ * Normalize one Fluxer MESSAGE_DELETE gateway event.
+ *
+ * The MESSAGE_UPDATE intake does NOT need its own function: the SDK emits the
+ * hydrated (old, new) Message pair and normalizeFluxerMessage's dual-shape
+ * reads accept it directly — the pipeline feeds it the NEW state (mirrors the
+ * Discord MessageUpdate wiring, roadmap/bridge.md §10.4 "Source-side
+ * update/delete intake").
+ *
+ * A delete payload carries NO author, so normalizeFluxerMessage's author
+ * gate would drop it. The delete intake needs only the identity triple —
+ * (id, channel, guild) — the bridge intake adds the rest: relayed-source
+ * (links) + direction + echo checks (§10.4/§10.7).
+ *
+ * @param {{t?: string, d?: object}|object} raw gateway event `{t, d}` (a bare
+ *   `d` payload is accepted too)
+ * @param {{instanceKey?: string}} [opts]
+ * @returns {object|null} a NormalizedMessage-shaped partial (id, channelId,
+ *   externalGuildId, communityId: null), or null for DMs / unusable payloads
+ */
+function normalizeFluxerMessageDelete(raw, { instanceKey = "fluxer" } = {}) {
+  const d = raw && typeof raw === "object" && "d" in raw ? raw.d : raw;
+  if (!d || typeof d !== "object") return null;
+
+  // Dual-shape reads, same contract as the create/update path.
+  const guildId = d.guild_id ?? d.guildId;
+  const channelId = d.channel_id ?? d.channelId;
+
+  // Guild gate: DM deletes have no v1 consumer (bridge ends are guild channels).
+  if (guildId == null || guildId === "") return null;
+  if (d.id == null || channelId == null) return null;
+
+  return {
+    platform: "fluxer",
+    instanceKey,
+    // Filled by the pipeline via ensureCommunity (contract 4).
+    communityId: null,
+    externalGuildId: String(guildId),
+    id: String(d.id),
+    channelId: String(channelId),
+  };
+}
+
 module.exports = {
   normalizeFluxerMessage,
   normalizeFluxerDmMessage,
+  normalizeFluxerMessageDelete,
   normalizeFluxerReaction,
 };
