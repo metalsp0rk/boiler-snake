@@ -628,6 +628,67 @@ describe("bridge service (PR 4)", () => {
     assert.equal(repo.getBridgeById(pair.bridge.id).state, "pending");
   });
 
+  it("a THROWN activation deletes both webhooks and leaves no residue (audit #195, spec §10.7 step 9 throw branch)", async () => {
+    // Fresh channel ids so this test's bridge never collides with the file's
+    // seeded pairs (UNIQUE (community_id, channel_id) is real).
+    channels.set(`${rowA.id}:A-THROW`, FULL());
+    channels.set(`${rowB.id}:B-THROW`, FULL());
+    const pair = mintPending("A-THROW");
+    const apiA = fakeWebhookApi("DTHROW");
+    const apiB = fakeWebhookApi("FTHROW");
+    webhookApis.set("discord:discord", apiA);
+    webhookApis.set(`fluxer:${rowB.instanceKey}`, apiB);
+
+    const res = await service.connectBridge({
+      community: rowB,
+      invocationChannelId: "900",
+      targetChannelId: "B-THROW",
+      rawCode: pair.minted.displayCode,
+      actorUserId: "u",
+      via: "slash",
+      clock: () => T0,
+      staff: STAFF,
+      deps: baseDeps({
+        // A DB fault mid-activation: the transaction rolls itself back, but
+        // both webhooks ALREADY EXIST — the throw path must unwind them.
+        activateBridge: async () => {
+          throw new Error("SQLITE_BUSY: database is locked");
+        },
+      }),
+    });
+
+    assert.equal(res.ok, false);
+    assert.equal(
+      res.error,
+      `Activating the bridge failed: SQLITE_BUSY: database is locked. The webhooks created for this attempt were deleted and no channels were paired — fix the cause and run /bridge connect again.`,
+      "the reply names the cause (AGENTS.md rule 3) and states the cleanup",
+    );
+    assert.deepEqual(apiB.deleted, ["wh-FTHROW-1"], "the B-end webhook was deleted");
+    assert.deepEqual(apiA.deleted, ["wh-DTHROW-1"], "the A-end webhook was deleted");
+
+    // No DB residue: the row is STILL pending with its code usable, and the
+    // CAS transaction inserted no end B.
+    const stored = repo.getBridgeById(pair.bridge.id);
+    assert.equal(stored.state, "pending", "the row stays pending for a retry");
+    assert.ok(stored.code_hash, "the code hash survives: the code is still spendable");
+    assert.equal(repo.listBridgeEnds(pair.bridge.id).length, 1, "end B was NOT inserted");
+
+    // The same code still connects cleanly on the retry (nothing was spent).
+    const retry = await service.connectBridge({
+      community: rowB,
+      invocationChannelId: "900",
+      targetChannelId: "B-THROW",
+      rawCode: pair.minted.displayCode,
+      actorUserId: "u",
+      via: "slash",
+      clock: () => T0,
+      staff: STAFF,
+      deps: baseDeps({ activateBridge: activate }),
+    });
+    assert.equal(retry.ok, true, retry.error);
+    assert.equal(repo.getBridgeById(pair.bridge.id).state, "active");
+  });
+
   it("connect enforces the per-community failure counter (5 in 10 minutes)", async () => {
     const communityD = communityKey("900000000000010004", "fluxer", "inst4");
     const rowD = getCommunityById(communityD);
