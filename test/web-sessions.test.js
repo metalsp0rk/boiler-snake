@@ -204,8 +204,17 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       const s = withEnv({ WEB_SESSION_TTL_HOURS: "200" }, () =>
         sessions.createSession({ userId: "u-cap-create" })
       );
+      // 5 s tolerance (same convention as every sibling creation-expiry
+      // assertion above): createSession computes expiresAt from its own
+      // Date.now() while the repo stamps created_at on a SECOND, later clock
+      // read, so the measurement carries that drift. Under full-suite CI
+      // load the gap exceeded 5 ms once (PR #238, 24.x — cancelled-after-
+      // fail-fast sibling of the flake this run surfaced); the 32 h gap
+      // between the 200 h TTL and the cap keeps the assertion meaningful at
+      // any seconds-scale tolerance.
       assert.ok(
-        Math.abs(s.expiresAt - s.createdAt - sessions.ABSOLUTE_CAP_MS) < 5
+        Math.abs(s.expiresAt - s.createdAt - sessions.ABSOLUTE_CAP_MS) < 5000,
+        `expiry ≈ created_at + 7d cap (got ${s.expiresAt - s.createdAt}ms)`
       );
     });
 
