@@ -48,7 +48,8 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
 |-------|----------|
 | `@gork how do I center a div` | Answer the explicit question, with context |
 | `@gork` (alone), replying to a message | No explicit question — answer from the reply-chain context |
-| `@gork` (alone), no reply reference | No LLM call; **no reply at all** (fully silent) |
+| `@gork` (alone) + image attachment | No explicit question — answer from the [image](#vision-images) (plus context) |
+| `@gork` (alone), no reply reference, no image | No LLM call; **no reply at all** (fully silent) |
 
 Gork is **disabled in open ticket channels**: if the channel has a [ticket](tickets.md) that is not yet archived, triggers are silently ignored — ticket conversations stay staff-focused (ticket content is already handled by the ticket AI on close).
 
@@ -64,7 +65,7 @@ Guild setting `gork_context_window` — how many prior messages feed the prompt 
 | No reply reference | The X messages immediately before the keyword message |
 
 - **Included:** all readable messages — human **and** bot messages, including gork's own prior answers (often the useful context for follow-ups)
-- **Excluded:** the triggering keyword message itself; messages with empty content are skipped
+- **Excluded:** the triggering keyword message itself; messages with empty content are skipped **unless they carry attachments** — an image-only message joins the context as `[username] [image attached]` and its images feed [vision](#vision-images)
 - **Broken chain links:** a deleted or unfetchable message in the chain is skipped; walking stops when the reference chain ends or X is reached
 - **Shape:** one line per message, `[<username>] <content>`, oldest → newest
 - **Caps:** 500 chars per message, 12,000 chars total context
@@ -132,6 +133,23 @@ It is **always on** — no setting, command, or env var. When gork answers at al
 - **Fail-soft**: every denial returns a plain `Could not read …: <reason>` and the model answers from what it has — a refused read never breaks the reply
 
 Fetched messages arrive as **data, never instructions**, so message content can't steer gork; replies keep pings disabled, so ids quoted from the fetched text can't notify anyone.
+
+## Vision (images)
+
+Gork can **see images** (issue #227). When the triggering message and/or context-window messages carry image attachments, gork downloads them, downscales them, and answers from the pixels — "gork what's in this screenshot?" works, and a bare `@gork` + image is a valid trigger.
+
+| Aspect | Detail |
+|--------|--------|
+| Accepted types | `image/png`, `image/jpeg`, `image/webp`, `image/gif` (first frame). Anything else (svg, tiff, video…) is skipped |
+| Downscale rule | Every image is fitted into a **1280×1280 box**, aspect ratio preserved, **never upscaled**; an image already inside the box rides unchanged (e.g. a 4032×3024 photo becomes 1280×960) |
+| Transport | Images are sent to the provider as **base64 data URLs**, never as Discord CDN links — the configured provider may be self-hosted and unable to fetch them, and links expire |
+| Bounds | Max **4 images per request** (`GORK_VISION_MAX_IMAGES`, `0` disables vision), 15 MiB per download, 12 MiB total per request — all env-tunable, re-read per job |
+| Download safety | https only; DNS-resolved loopback / link-local / RFC1918 hosts are **refused** before any fetch (same posture as `read_page`) |
+| Degradation | A failed download/decode/oversize skips **that image only**: it's logged (`[gork] vision image skipped …`), counted in the audit `Vision` field, and the reply carries a visible `(Image notes: …)` line — the answer never dies on a broken image |
+| Model | Requests that carry images use `AI_MODEL` as usual; set `GORK_VISION_MODEL` to route image requests to a vision-capable model while text-only turns keep a cheaper default |
+| Fluxer | Trigger-message images work (extension decides the type); Fluxer context-window images land in a follow-up |
+
+Out of scope (by design): `/gork summarize` and the `read_discord` / `read_history` tools keep their `[N attachment(s)]` text collapse, and the memory-extraction turn stays text-only.
 
 ## Commands
 
@@ -395,6 +413,7 @@ Every completed Q&A posts a **Gork Q&A** embed to the guild's [audit log channel
 | Model / duration | e.g. `gpt-4o-mini` / `3.4s` |
 | Answer | ≤1,000 chars |
 | Budget | `3/5 in #general` — the post-answer spend, only when an effective cap (≥ 1) applied (see [Daily usage budget](#daily-usage-budget)). Budget/block **rejections never post audit embeds** (console lines only) |
+| Vision | `2/3 image(s)` — images included vs. candidate images found, only when the exchange had image attachments (see [Vision](#vision-images)) |
 | Jump links | To the original question message and the gork reply |
 
 Failed or timed-out exchanges log a compact one-liner (asker + error reason). If no audit channel is configured, gork falls back to console logs.
@@ -403,7 +422,7 @@ Staff changes (keyword, rules, cooldown, search, `/gork enable`, and every `/gor
 
 ## Privacy
 
-Gork sends the question **and** the conversation context to the **configured LLM provider** (`AI_BASE_URL`). There is no privacy guardrail engineering beyond this note — this is a single-server personal project. If you do not want messages leaving your infrastructure, point `AI_BASE_URL` at a self-hosted OpenAI-compatible model, or leave `AI_API_KEY` unset to keep gork off.
+Gork sends the question **and** the conversation context to the **configured LLM provider** (`AI_BASE_URL`). With [vision](#vision-images), image attachments on the trigger/context messages are downloaded, downscaled (max 1280×1280), and sent to the same provider as base64 data URLs. There is no privacy guardrail engineering beyond this note — this is a single-server personal project. If you do not want messages leaving your infrastructure, point `AI_BASE_URL` at a self-hosted OpenAI-compatible model, leave `AI_API_KEY` unset to keep gork off, or set `GORK_VISION_MAX_IMAGES=0` to keep images local-free (disabled).
 
 ## Guardrails
 
@@ -437,6 +456,14 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 - **The asker can't see it**: reads require the *asking user's* own ViewChannel on the target, not just the bot's — gork can't leak a private channel to someone who can't open it
 - **Open ticket**: unarchived ticket channels are always off-limits (archived ones are readable again)
 - **Deleted message / unknown id / unreadable channel type** (forum, category): graceful `Could not read …` — the model answers from context instead
+
+### Gork can't see the image
+
+- Is the file a supported type? Only png / jpeg / webp / gif ride to the model; svg, tiff, video, and other attachments are skipped by design
+- Check the bot log for `[gork] vision image skipped …` lines — they name the attachment, where it came from (`trigger`/`context`), and the exact reason (download refusal, oversize, decode failure). The reply itself carries an `(Image notes: …)` line for the same failures
+- Too many images? Only the **first 4** candidates ride (trigger message first, then context); the rest are noted, not silently dropped from the audit
+- Does the model actually accept images? A text-only model rejects multimodal payloads — point `GORK_VISION_MODEL` (or `AI_MODEL`) at a vision-capable model, or set `GORK_VISION_MAX_IMAGES=0` to disable vision entirely
+- **LAN/self-hosted Fluxer media**: image hosts that resolve to private addresses are refused by the SSRF posture (same law as `read_page`)
 
 ### Gork feels slow or drops questions
 

@@ -262,6 +262,9 @@ function jumpLink(label, guildId, message, opts = {}) {
  *   "3/5 in #general"); the inline "Budget" field is added only when this
  *   is a non-empty string — i.e. an effective cap >= 1 applied (§7.17.7,
  *   decision 37). Rejections never reach this embed (console-only).
+ * @param {string} [opts.visionLabel] issue #227 vision tally (e.g.
+ *   "2/3 image(s)"); the inline "Vision" field is added only when this is
+ *   a non-empty string (no image attachments → field absent).
  * @param {string} [opts.steLabel] "on"/"off" for the guild's STE answer
  *   style (§7.20, decision 52); the inline "STE" field is added only when
  *   this is a non-empty string. Q&A audits always set it.
@@ -283,6 +286,7 @@ async function logGorkQa(client, guildId, opts = {}) {
     memoryLabel,
     channelLabel,
     budgetLabel,
+    visionLabel,
     steLabel,
   } = opts;
   try {
@@ -336,6 +340,16 @@ async function logGorkQa(client, guildId, opts = {}) {
       embed.addFields({
         name: "Budget",
         value: truncateField(budgetLabel.trim(), 1024),
+        inline: true,
+      });
+    }
+
+    // issue #227: inline Vision field ("3/4 image(s)"), only when the
+    // exchange had image attachments on the trigger/context messages.
+    if (typeof visionLabel === "string" && visionLabel.trim()) {
+      embed.addFields({
+        name: "Vision",
+        value: truncateField(visionLabel.trim(), 1024),
         inline: true,
       });
     }

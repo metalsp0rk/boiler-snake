@@ -36,6 +36,13 @@ const AI_ENV_KEYS = [
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
   "OPENAI_MODEL",
+  // issue #227 vision knobs (scrubbed so ambient values cannot change
+  // image behavior inside these tests)
+  "GORK_VISION_MODEL",
+  "GORK_VISION_MAX_IMAGES",
+  "GORK_VISION_MAX_IMAGE_BYTES",
+  "GORK_VISION_MAX_TOTAL_BYTES",
+  "GORK_VISION_DOWNLOAD_TIMEOUT_MS",
 ];
 
 function saveEnv() {
@@ -414,5 +421,119 @@ describe("staff syncpermissions on Fluxer (PR 8 locked reply)", () => {
       "Only server administrators (Manage Server) can sync command visibility.",
       "the pre-existing Discord non-admin copy is byte-identical",
     );
+  });
+});
+
+/* ------------------------- vision (issue #227) ---------------------------- */
+
+describe("fluxer gork vision (issue #227)", () => {
+  it("keyword-alone + normalized image attachment triggers a multimodal answer", async () => {
+    const saved = saveEnv();
+    enableAiKey();
+    const { createCanvas } = require("@napi-rs/canvas");
+    const canvas = createCanvas(300, 200);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "rgb(30,160,90)";
+    ctx.fillRect(0, 0, 300, 200);
+    const png = canvas.toBuffer("image/png");
+
+    const ai = mockFetch([chatCompletionResponse("a green rectangle")]);
+    let trigger = null;
+    try {
+      const s = await setup();
+      trigger = s.trigger;
+      trigger.setVisionSeamsForTests({
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          arrayBuffer: async () => png,
+        }),
+        resolveHost: async () => ["93.184.216.34"],
+      });
+
+      // Keyword ALONE + a Fluxer-normalized attachment ({name,url} — no
+      // content-type: the extension must decide). Pre-#227 this was
+      // fully silent on both platforms.
+      const msg = fluxerMessage({
+        communityId: s.communityId,
+        content: "gork",
+        attachments: [{ name: "shot.png", url: "https://media.fluxer.test/u/shot.png" }],
+      });
+
+      await trigger.handleGorkMessage(s.supervisor, msg);
+      await trigger.whenGorkIdleForTests();
+
+      // The LLM saw a multimodal user turn with the data-URL image.
+      const chat = ai.calls.find((c) => c.body?.messages);
+      assert.ok(chat, "exactly one AI round trip");
+      const user = chat.body.messages.find((m) => m.role === "user");
+      assert.ok(Array.isArray(user.content), "multimodal content array");
+      assert.equal(user.content[0].type, "text");
+      const parts = user.content.filter((p) => p.type === "image_url");
+      assert.equal(parts.length, 1);
+      assert.ok(parts[0].image_url.url.startsWith("data:image/png;base64,"));
+
+      // The answer still ships through the Fluxer outbound with locked
+      // ping-free payload shape.
+      const posts = s.rest.calls.filter(
+        (c) => c.method === "POST" && c.path === `/v1/channels/${CHANNEL}/messages`,
+      );
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].body.content, "a green rectangle");
+      assert.deepEqual(posts[0].body.allowed_mentions, { parse: [] });
+    } finally {
+      ai.restore();
+      if (trigger) trigger.setVisionSeamsForTests(null);
+      restoreEnv(saved);
+    }
+  });
+
+  it("private-instance media hosts are refused (SSRF posture) — reply still ships text-only", async () => {
+    const saved = saveEnv();
+    enableAiKey();
+    const ai = mockFetch([chatCompletionResponse("I cannot see that image.")]);
+    let trigger = null;
+    try {
+      const s = await setup();
+      trigger = s.trigger;
+      // No seams: the REAL download posture runs — the URL host must
+      // resolve publicly. .example never resolves → refused (no fetch).
+      trigger.setVisionSeamsForTests({
+        fetchImpl: async () => {
+          throw new Error("must not fetch a refused host");
+        },
+        resolveHost: async () => ["10.0.0.5"],
+      });
+
+      const msg = fluxerMessage({
+        communityId: s.communityId,
+        content: "gork: what is on my screen?",
+        attachments: [{ name: "screen.png", url: "https://fluxer.lan/u/screen.png" }],
+      });
+      const originalError = console.error;
+      console.error = () => {}; // swallow the expected per-image degradation log
+      try {
+        await trigger.handleGorkMessage(s.supervisor, msg);
+        await trigger.whenGorkIdleForTests();
+      } finally {
+        console.error = originalError;
+      }
+
+      const chat = ai.calls.find((c) => c.body?.messages);
+      assert.ok(chat, "the question is still answered");
+      const user = chat.body.messages.find((m) => m.role === "user");
+      assert.equal(typeof user.content, "string", "no parts → plain-string path");
+      assert.match(user.content, /Image notes:.*screen\.png/s);
+
+      const posts = s.rest.calls.filter(
+        (c) => c.method === "POST" && c.path === `/v1/channels/${CHANNEL}/messages`,
+      );
+      assert.equal(posts.length, 1, "degradation never eats the reply");
+    } finally {
+      ai.restore();
+      if (trigger) trigger.setVisionSeamsForTests(null);
+      restoreEnv(saved);
+    }
   });
 });
