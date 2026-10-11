@@ -1333,6 +1333,100 @@ describe("bridge service (PR 4)", () => {
     assert.equal(payload.embeds[0].title, "T");
   });
 
+  /**
+   * Issue #200 (audit §6 P2) source-side attribution/avatar: the real shapes.
+   * A normalized Fluxer message carries NO `author` duck (the username lives
+   * on authorRaw, and avatarURL is a METHOD on real user instances) — before
+   * #200 the handle was "" for every Fluxer source and an avatar was
+   * structurally impossible for EITHER platform.
+   */
+  it("the relay payload reads handle + avatar from the REAL author shapes (#200)", () => {
+    const opts = {
+      bridge: { id: 1, public_id: "b_test1234", direction: "both" },
+      direction: "b_to_a",
+      srcCommunityId: 1,
+    };
+    const base = (over) => ({
+      id: "1700000000000000009",
+      channelId: "B-01",
+      authorId: "42",
+      authorDisplayName: "Talker G",
+      content: "hi",
+      mentions: { users: [], roles: [], channels: [] },
+      type: 0,
+      ...over,
+    });
+    const build = (over) =>
+      relay.buildRelayPayload(base(over), { ...opts, lookup: relay.mentionLookupFromMessage(base(over)) });
+
+    // Fluxer normalized shape: no author duck, SDK-User-shaped authorRaw.
+    const fluxer = build({
+      authorRaw: {
+        username: "talker",
+        avatar: "HASH", // a hash is NOT a URL — never relayed as one
+        avatarURL: () => "https://media.test/avatars/42/HASH.png",
+      },
+    });
+    assert.equal(fluxer.author.handle, "talker", "handle falls through to authorRaw.username");
+    assert.equal(fluxer.author.avatarUrl, "https://media.test/avatars/42/HASH.png");
+
+    // Discord duck shape: the discord.js User exposes avatarURL() as a method —
+    // the audit's "string-checks a method" fix on the platform that shipped.
+    const discord = build({
+      author: { id: "42", username: "talker", avatarURL: () => "https://cdn.discordapp.com/avatars/42/a.png" },
+    });
+    assert.equal(discord.author.handle, "talker");
+    assert.equal(discord.author.avatarUrl, "https://cdn.discordapp.com/avatars/42/a.png");
+
+    // Best-effort contract: null / throwing / non-https sources are ABSENCE, never an error.
+    assert.equal(build({ author: { id: "42", avatarURL: () => null } }).author.avatarUrl, null);
+    assert.equal(build({ author: { id: "42", avatarURL: () => { throw new Error("no endpoints"); } } }).author.avatarUrl, null);
+    assert.equal(
+      build({ author: { id: "42", avatarUrl: "http://insecure.test/a.png" } }).author.avatarUrl,
+      null,
+      "https-only stays true",
+    );
+    // String-shaped inline URLs keep winning over the method form.
+    assert.equal(
+      build({ author: { id: "42", avatarUrl: "https://inline.test/a.png", avatarURL: () => "https://method.test/b.png" } })
+        .author.avatarUrl,
+      "https://inline.test/a.png",
+    );
+  });
+
+  it("DELIBERATE FIXTURE DRIFT (#200): a relay payload built from a REAL SDK Message contract carries handle, embeds, and flags", () => {
+    // The audit named handle/attribution, embeds, and message flags as the
+    // Fluxer arms that hid behind hand-built fixtures. The SDK-shaped
+    // end-to-end proof (a real instance → normalize → this payload builder)
+    // lives in test/integration/fluxer-sdk-pipeline.test.js; this pin keeps
+    // the payload builder honest for the normalized SHAPE alone: an author
+    // that looks exactly like normalizeFluxerMessage's output on a real
+    // instance (authorRaw present, no author duck, embeds array, numeric flags).
+    const message = {
+      id: "1700000000000000010",
+      channelId: "B-02",
+      authorId: "42",
+      authorDisplayName: "Talker G",
+      authorRaw: { username: "talker", avatar: null, avatarURL: () => null },
+      content: "hello world",
+      mentions: { users: [], roles: [], channels: [] },
+      embeds: [{ title: "T", description: "D", fields: [] }],
+      flags: 16, // CONTAINS_EXPLICIT_MEDIA (1 << 4)
+      attachments: [],
+      stickers: [],
+      type: 0,
+    };
+    const payload = relay.buildRelayPayload(message, {
+      bridge: { id: 1, public_id: "b_test1234", direction: "both" },
+      direction: "b_to_a",
+      srcCommunityId: 1,
+      lookup: relay.mentionLookupFromMessage(message),
+    });
+    assert.equal(payload.author.handle, "talker");
+    assert.equal(payload.embeds.length, 1, "the embeds arm fires for a Fluxer-shaped source");
+    assert.equal(payload.explicitMedia, true, "message-level flags reach the §10.8 check");
+  });
+
   it("the loop gate drops relay webhooks, bot authors, echoes, and !bridge lines", () => {
     relay.clearRelayState();
     const base = { id: "m1", channelId: "A-01", authorId: "5", author: { id: "5" } };
