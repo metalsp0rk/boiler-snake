@@ -236,6 +236,29 @@ function handleSignal(signal) {
     });
 }
 
+/**
+ * Drain, then exit through the injectable exit seam with an explicit code.
+ * Entry points use this for TERMINAL boot outcomes (audit C9 + issue #190):
+ * all configured endpoints failed and nothing can work — the exit is always
+ * PRECEDED by the same LIFO drain a signal gets, never a bare
+ * `process.exit` hard-cutting sockets and the WAL mid-write. `runShutdown`
+ * is idempotent, so a drain already in flight is joined (and still exits —
+ * the caller declared the outcome terminal). Tests drive this through the
+ * injected `exit`/`logger` seams; the real `process.exit` is never
+ * exercised in-suite (#185 lesson).
+ *
+ * @param {{ reason?: string, exitCode?: number }} [options] exitCode is the
+ *   CALLER's code (default 1 — a boot-fatal exit is non-zero even when the
+ *   drain itself ran clean), not the drain's signal-shutdown code
+ * @returns {Promise<{reason: string, failed: string[], timedOut: boolean, exitCode: number, elapsedMs: number}>}
+ *   the drain result (the exit request has already been made when it resolves)
+ */
+async function drainAndExit({ reason = "fatal", exitCode = 1 } = {}) {
+  const result = await runShutdown({ reason });
+  state.exit(exitCode);
+  return result;
+}
+
 // --- crash net handlers (stable identities so install/dispose pair cleanly) ---
 
 function onUnhandledRejection(reason) {
@@ -386,6 +409,7 @@ module.exports = {
   unregisterShutdownHandle,
   shutdownHandleNames,
   runShutdown,
+  drainAndExit,
   getActiveShutdown,
   resetForTests,
 };

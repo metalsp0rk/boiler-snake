@@ -397,3 +397,53 @@ describe("registerShutdownHandle", () => {
     lifecycle.disposeProcessGuards();
   });
 });
+
+describe("drainAndExit (terminal boot outcomes — issue #190 / audit C9)", () => {
+  it("drains handles (LIFO) first, then exits via the seam with the explicit code", async () => {
+    const { logger, exit, timers } = installSeams();
+    const order = [];
+    lifecycle.registerShutdownHandle("endpoints", () => order.push("endpoints"));
+    lifecycle.registerShutdownHandle("scheduler", () => order.push("scheduler"));
+
+    const result = await lifecycle.drainAndExit({
+      reason: "boot: every configured endpoint failed",
+      exitCode: 1,
+    });
+
+    assert.deepEqual(order, ["scheduler", "endpoints"], "drain runs BEFORE the exit, LIFO");
+    assert.deepEqual(exit.calls, [1], "exit goes through the injectable seam (never process.exit in-suite)");
+    assert.equal(result.timedOut, false);
+    assert.ok(
+      logger.lines.log.some(
+        (l) =>
+          l.includes("[shutdown] boot: every configured endpoint failed: draining 2 shutdown handle(s)"),
+      ),
+    );
+    assert.equal(timers.count(), 0, "the drain deadline is released");
+    lifecycle.disposeProcessGuards();
+  });
+
+  it("defaults to exit code 1 even after a clean drain (boot-fatal stays non-zero)", async () => {
+    const { exit } = installSeams();
+    const result = await lifecycle.drainAndExit({ reason: "boot: all failed" });
+    assert.equal(result.exitCode, 0, "the DRAIN ran clean (signal-style code)…");
+    assert.deepEqual(exit.calls, [1], "…but the caller's terminal code wins");
+    lifecycle.disposeProcessGuards();
+  });
+
+  it("joins an in-flight drain (idempotent) and still exits", async () => {
+    const { exit } = installSeams({ deadlineMs: 60_000 });
+    const { name, fn, box } = wedgedHandle();
+    lifecycle.registerShutdownHandle(name, fn);
+
+    const first = lifecycle.runShutdown({ reason: "signal SIGTERM" });
+    const second = lifecycle.drainAndExit({ reason: "boot: all failed", exitCode: 1 });
+    assert.equal(lifecycle.getActiveShutdown(), first, "the existing drain is joined, not restarted");
+
+    box.release();
+    const result = await second;
+    assert.equal(result.reason, "signal SIGTERM", "joined the first drain's reason");
+    assert.deepEqual(exit.calls, [1], "exit fires once the joined drain settles");
+    lifecycle.disposeProcessGuards();
+  });
+});
