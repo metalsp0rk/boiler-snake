@@ -67,6 +67,17 @@ function createTempDbPath() {
 }
 
 /**
+ * Clearly-fake default for TOKEN_ENCRYPTION_KEY (third-party token envelope,
+ * src/core/thirdPartyTokens.js + migration 039): base64 of 32 zero bytes —
+ * valid under the strict base64/32-byte key rule, worthless as a secret
+ * (AGENTS.md). loadDb() installs it when unset so tests run against a DB
+ * that migrated with a CONFIGURED key, exactly like a real deployment of the
+ * new code. Tests that exercise the missing/invalid-key paths delete or
+ * overwrite it explicitly (and must restore it after).
+ */
+const FAKE_TOKEN_ENCRYPTION_KEY = Buffer.alloc(32).toString("base64");
+
+/**
  * Point DB_PATH at a fresh temp SQLite file, clear src cache, load migrations.
  *
  * The returned `cleanup()` closes the src/db handle and removes tmpDir;
@@ -79,6 +90,11 @@ function loadDb() {
   process.env.DB_PATH = dbPath;
   // Tickets HTML transcripts resolve under DATA_DIR
   process.env.DATA_DIR = tmpDir;
+  // Third-party token crypto: migration 039 + the token repositories expect
+  // a configured TOKEN_ENCRYPTION_KEY (see FAKE_TOKEN_ENCRYPTION_KEY above).
+  if (!process.env.TOKEN_ENCRYPTION_KEY) {
+    process.env.TOKEN_ENCRYPTION_KEY = FAKE_TOKEN_ENCRYPTION_KEY;
+  }
   resetSrcModules();
   const api = require("../../src/db");
   // Track the raw better-sqlite3 handle src/db opened so cleanup() can close it
@@ -108,4 +124,5 @@ module.exports = {
   createTempDbPath,
   loadDb,
   communityKey,
+  FAKE_TOKEN_ENCRYPTION_KEY,
 };

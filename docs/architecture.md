@@ -35,6 +35,8 @@ src/
 │   ├── ai.js                # shared OpenAI-compatible client (tickets + gork)
 │   ├── commandVisibility.js # slash picker tiers (public/staff/admin)
 │   ├── scheduler.js         # named jobs: overlap skip, align, cron, snapshots
+│   ├── tokenCrypto.js       # generic AES-256-GCM `v1.` envelope codec (shared by bridge + third-party bindings)
+│   ├── thirdPartyTokens.js  # at-rest encryption for GitHub PATs + command-permission OAuth tokens (TOKEN_ENCRYPTION_KEY)
 │   ├── theme.js
 │   └── text.js
 ├── services/

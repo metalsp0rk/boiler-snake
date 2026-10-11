@@ -178,6 +178,8 @@ module.exports = {
 
   // command permission OAuth (slash visibility sync)
   getCommandPermissionOauth: commandPermissionOauth.getCommandPermissionOauth,
+  getCommandPermissionOauthStatus:
+    commandPermissionOauth.getCommandPermissionOauthStatus,
   upsertCommandPermissionOauth:
     commandPermissionOauth.upsertCommandPermissionOauth,
   updateCommandPermissionAccessToken:
