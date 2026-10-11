@@ -118,6 +118,7 @@ describe("gork interaction log repository", () => {
     const i26 = migrations.findIndex((m) => m.id === "026_gork_budget");
     assert.ok(i27 >= 0, "027_gork_interaction_log must be registered in migrate.js");
     assert.ok(i26 >= 0 && i27 > i26, "027 must be registered right after 026");
+    api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay
     assert.doesNotThrow(() => runMigrations(), "027 up() must be idempotent");
   });
 

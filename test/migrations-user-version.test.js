@@ -1,0 +1,193 @@
+const { describe, it, before, after } = require("node:test");
+const assert = require("node:assert/strict");
+
+const { loadDb, communityKey } = require("./helpers/env");
+
+// Audit-2026-10 #202: PRAGMA user_version migration guard + explicit
+// connection pragmas. See src/db/migrate.js for the tracking model:
+// full idempotent replay stays the correctness mechanism; user_version is
+// the record of a completed pass and the fast-skip flag.
+describe("user_version migration guard (audit #202)", () => {
+  let api;
+  let cleanup;
+
+  before(() => {
+    // Contract: loadDb() runs before any other `src/` require — it points
+    // DB_PATH at a fresh temp SQLite file, resets the src require cache and
+    // only then loads src/db (which runs runMigrations() on load).
+    ({ api, cleanup } = loadDb());
+  });
+
+  after(() => cleanup?.());
+
+  const version = () => Number(api.db.pragma("user_version", { simple: true }));
+
+  // Swap a registry entry's up() for an instrumented one. Returns
+  // { restore, calls } — `calls.count` PROVES whether the replay actually
+  // ran (or was skipped) instead of scraping console output.
+  function instrument(migrationId) {
+    const { migrations } = require("../src/db/migrate");
+    const idx = migrations.findIndex((m) => m.id === migrationId);
+    assert.ok(idx >= 0, `migration ${migrationId} must be registered`);
+    const original = migrations[idx];
+    const calls = { count: 0 };
+    migrations[idx] = {
+      ...original,
+      up: (db, helpers) => {
+        calls.count += 1;
+        return original.up(db, helpers);
+      },
+    };
+    return { calls, restore: () => (migrations[idx] = original) };
+  }
+
+  it("fresh DB: load-time migrate() stamps user_version with the full registry", () => {
+    const { migrations, LATEST_VERSION } = require("../src/db/migrate");
+    // Tripwire pinned per the issue's verification: the current registry is
+    // 001–039. When a migration 040 lands, bump this number AND the registry
+    // rule (versions are registry size; migrations are append-only).
+    assert.equal(migrations.length, 39);
+    assert.equal(LATEST_VERSION, 39);
+    assert.equal(version(), 39, "load-time migrate() must stamp the version");
+  });
+
+  it("re-run on an applied DB is a recorded no-op skip", () => {
+    const { runMigrations } = require("../src/db/migrate");
+    // Poison one up() — if the guard truly SKIPS the replay this call cannot
+    // throw; if it (wrongly) replays, the poison throws and the test fails.
+    const { migrations } = require("../src/db/migrate");
+    const idx = migrations.findIndex((m) => m.id === "020_twitch");
+    const original = migrations[idx];
+    migrations[idx] = {
+      ...original,
+      up: () => {
+        throw new Error("replay must not run when user_version is current");
+      },
+    };
+    try {
+      const result = runMigrations();
+      assert.deepEqual(result, { skipped: true, version: 39, latest: 39 });
+    } finally {
+      migrations[idx] = original;
+    }
+    assert.equal(version(), 39, "skip path must not touch the recorded version");
+  });
+
+  it("legacy DB (user_version=0): full replay runs, is safe on applied schema, re-stamps", () => {
+    const { runMigrations } = require("../src/db/migrate");
+    // Seed data so the replay proves it preserves an already-migrated DB.
+    const g = communityKey("g-userversion-legacy");
+    api.addXp(g, "u-keep", 42);
+
+    api.db.pragma("user_version = 0"); // every pre-guard DB looks like this
+    const probe = instrument("035_bridges");
+    try {
+      const result = runMigrations();
+      assert.equal(result.skipped, false, "version 0 must take the full replay path");
+      assert.equal(result.version, 39);
+      assert.equal(
+        probe.calls.count,
+        1,
+        "the instrumented migration must actually have been replayed"
+      );
+    } finally {
+      probe.restore();
+    }
+    assert.equal(version(), 39, "successful replay re-stamps the version");
+    assert.equal(api.getXp(g, "u-keep"), 42, "replay must not disturb data");
+  });
+
+  it("interrupted pass (partial version) still runs the FULL replay, not just the tail", () => {
+    const { runMigrations } = require("../src/db/migrate");
+    // A stale partial version must NOT be treated as "those steps are done":
+    // correctness comes from replaying everything idempotently.
+    api.db.pragma("user_version = 20");
+    const { migrations } = require("../src/db/migrate");
+    const early = migrations[4]; // migration 005 — far below version 20
+    const original = early;
+    let earlyRan = false;
+    migrations[4] = {
+      ...original,
+      up: (db, helpers) => {
+        earlyRan = true;
+        return original.up(db, helpers);
+      },
+    };
+    try {
+      const result = runMigrations();
+      assert.equal(result.skipped, false);
+      assert.ok(earlyRan, "steps BELOW the recorded version must still replay");
+      assert.equal(version(), 39);
+    } finally {
+      migrations[4] = original;
+    }
+  });
+
+  it("downgrade guard: user_version newer than the registry throws specifically", () => {
+    const { runMigrations } = require("../src/db/migrate");
+    api.db.pragma("user_version = 999");
+    assert.throws(
+      () => runMigrations(),
+      (err) =>
+        /user_version=999/.test(err.message) &&
+        /NEWER/.test(err.message) &&
+        /version 39/.test(err.message) &&
+        /039_encrypt_third_party_tokens/.test(err.message),
+      "error must name both the DB version and the newest known migration"
+    );
+    // The guard refuses to mutate: version stays exactly as found.
+    assert.equal(version(), 999);
+    api.db.pragma("user_version = 39"); // leave the DB usable for later tests
+  });
+
+  it("a failing migration does NOT stamp the version (next boot replays)", () => {
+    const { runMigrations, migrations } = require("../src/db/migrate");
+    api.db.pragma("user_version = 0");
+    const original = migrations[2]; // 003 — the audit's non-transactional outlier
+    migrations[2] = { ...original, up: () => { throw new Error("boom: simulated 003 crash"); } };
+    try {
+      assert.throws(() => runMigrations(), /simulated 003 crash/);
+    } finally {
+      migrations[2] = original;
+    }
+    assert.equal(version(), 0, "an interrupted pass must leave the old version recorded");
+    // Recovery: the replay is idempotent, so the next boot finishes and stamps.
+    const result = runMigrations();
+    assert.equal(result.skipped, false);
+    assert.equal(version(), 39);
+  });
+
+  it("a second skip path after recovery reports the stamped version", () => {
+    const { runMigrations } = require("../src/db/migrate");
+    assert.deepEqual(runMigrations(), { skipped: true, version: 39, latest: 39 });
+  });
+});
+
+describe("explicit connection pragmas (audit #202)", () => {
+  let api;
+  let cleanup;
+
+  before(() => {
+    ({ api, cleanup } = loadDb());
+  });
+
+  after(() => cleanup?.());
+
+  const pragma = (name) => api.db.pragma(name, { simple: true });
+
+  it("journal_mode is WAL (file DB), set explicitly in connection.js", () => {
+    assert.equal(String(pragma("journal_mode")).toLowerCase(), "wal");
+  });
+
+  it("foreign_keys is ON — matches the pre-#202 effective value (better-sqlite3 default)", () => {
+    assert.equal(Number(pragma("foreign_keys")), 1);
+  });
+
+  it("synchronous is FULL (2) — SQLite durable default, now explicit", () => {
+    assert.equal(Number(pragma("synchronous")), 2);
+  });
+
+  it("busy_timeout is 5000ms — bounded wait, consistent with the single-writer contract", () => {
+    assert.equal(Number(pragma("busy_timeout")), 5000);
+  });
+});
