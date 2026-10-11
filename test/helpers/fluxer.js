@@ -100,20 +100,29 @@ function gatewayMessage(overrides = {}) {
 /**
  * Build a contract-5 handle for outbound/dispatch tests.
  *
- * @param {{ instanceKey?: string, userId?: string, rest?: object }} [options]
+ * `apiOrigin` mirrors the REAL handle contract (audit C1): the absolute API
+ * origin from discovery's endpoints.api_public, or null when discovery did
+ * not resolve. Fixtures that need webhook URL building MUST pass an absolute
+ * origin (the platform always does — a Fluxer instance cannot log in without
+ * it); leaving it null models the discovery-failure path, where webhook-API
+ * construction must fail loudly.
+ *
+ * @param {{ instanceKey?: string, userId?: string, rest?: object, apiOrigin?: string|null }} [options]
  * @returns {{ instanceKey: string, userId: string, rest: object,
- *   outbound: object, fetchGuild: () => Promise<null>, ready: boolean,
- *   destroy: () => void }}
+ *   apiOrigin: string|null, outbound: object, fetchGuild: () => Promise<null>,
+ *   ready: boolean, destroy: () => void }}
  */
 function makeFakeHandle({
   instanceKey = "https://fluxer.test",
   userId = "bot-1",
   rest = makeFakeRest(),
+  apiOrigin = null,
 } = {}) {
   const handle = {
     instanceKey,
     userId,
     rest,
+    apiOrigin,
     fetchGuild: async () => null,
     ready: true,
     destroy() {},

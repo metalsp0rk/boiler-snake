@@ -163,17 +163,69 @@ function validateWebhook(webhook, method) {
 }
 
 /**
+ * Validate the webhook apiOrigin (audit C1) and return its canonical form
+ * (trimmed, trailing slashes removed, path prefix preserved). The token
+ * endpoints embed the webhook token in a FULL URL and must be absolute: an
+ * empty or relative origin hands fetch the bare `/v1/webhooks/…` path, which
+ * throws "Failed to parse URL" and silently burns every relay attempt — the
+ * exact C1 outage. Construction therefore THROWS here, where the cause is
+ * specific and fixable, instead of failing at send time looking like a
+ * transient network error. Callers (the bridge seams) catch, log with the
+ * instance key, and refuse to build a webhook API that could only produce
+ * relative URLs.
+ *
+ * The value's only legitimate source is discovery's `endpoints.api_public`
+ * (roadmap/fluxer.md § Boot — a different host than the web origin is
+ * allowed and path prefixes are never dropped). Never a guessed host.
+ *
+ * @param {unknown} value the Fluxer handle's apiOrigin
+ * @returns {string} absolute http(s) origin, safe to prefix `/v1/...` onto
+ * @throws {Error} specific, actionable message on empty/relative/bad scheme
+ */
+function requireAbsoluteApiOrigin(value) {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw === "") {
+    throw new Error(
+      "createFluxerWebhooks: apiOrigin is required — the absolute http(s) API origin " +
+        "from Fluxer discovery (endpoints.api_public, exposed as handle.apiOrigin). " +
+        "Refusing to build relative webhook URLs: an empty origin would make every " +
+        "relay send fetch the path /v1/webhooks/… and fail (audit C1). Check that this " +
+        "instance's /.well-known/fluxer discovery resolved api_public.",
+    );
+  }
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      `createFluxerWebhooks: apiOrigin ${JSON.stringify(raw)} is not an absolute URL — ` +
+        "expected http(s)://host[/prefix] from discovery's endpoints.api_public (audit C1).",
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `createFluxerWebhooks: apiOrigin scheme "${parsed.protocol}" is not allowed — ` +
+        "expected http: or https: from discovery's endpoints.api_public (audit C1).",
+    );
+  }
+  return raw.replace(/\/+$/, "");
+}
+
+/**
  * Build the webhook lifecycle bound to one instance's transports.
  *
  * @param {{
  *   rest?: { request: (method: string, path: string, opts?: { body?: any, query?: any }) => Promise<any> },
- *   apiOrigin?: string,
+ *   apiOrigin: string,
  *   fetch?: (url: string, init?: object) => Promise<any>,
  * }} transport
  *   `rest` is required by createRelayWebhook (bot-authorized). Token
- *   endpoints need `fetch`; `apiOrigin` (e.g. the instance's API origin from
- *   discovery) prefixes their URLs — with it empty the fetch receives the
- *   `/v1/...` path verbatim, which is what the test doubles assert on.
+ *   endpoints need `fetch` and an ABSOLUTE `apiOrigin` — discovery's
+ *   `endpoints.api_public` (the Fluxer handle's `apiOrigin`) — which prefixes
+ *   their URLs. Construction throws on an empty/relative/non-http(s) origin:
+ *   a relative origin would hand fetch the bare `/v1/...` path and fail at
+ *   send time (audit C1). Test doubles inject a fake `fetch` plus a fake
+ *   absolute origin and assert on the full URL.
  * @returns {{
  *   createRelayWebhook: (communityId: number, channelId: string, opts: { name: string }) => Promise<object>,
  *   executeRelayWebhook: (webhook: object, opts: object) => Promise<object>,
@@ -184,8 +236,10 @@ function validateWebhook(webhook, method) {
  */
 function createFluxerWebhooks(transport = {}) {
   const rest = transport.rest;
-  const apiOrigin =
-    typeof transport.apiOrigin === "string" ? transport.apiOrigin.replace(/\/+$/, "") : "";
+  // Audit C1: an absolute http(s) origin is REQUIRED — see
+  // requireAbsoluteApiOrigin. Never build a machine that can only emit
+  // relative webhook URLs.
+  const apiOrigin = requireAbsoluteApiOrigin(transport.apiOrigin);
   const fetchImpl =
     typeof transport.fetch === "function"
       ? transport.fetch
