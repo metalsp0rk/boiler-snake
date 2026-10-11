@@ -368,3 +368,88 @@ describe("guildDailyMessageTotals (bounded guild×day aggregation)", () => {
     assert.throws(() => db.guildDailyMessageTotals(communityKey("g-gdt"), { sinceDay: 20260101 }), /sinceDay/);
   });
 });
+
+/**
+ * Issue #200 (audit §6 P2): recordUserChannelMessage (the message pipeline's
+ * step 9) duck-typed `message.guild`/`message.author` and re-resolved the
+ * community through the DISCORD platform — so every normalized Fluxer
+ * message was silently skipped and the audit's "channel activity row" never
+ * existed for the new platform. Reads are contract-first now (integer
+ * communityId, authorId, createdAt) with the raw discord path unchanged.
+ */
+describe("recordUserChannelMessage — platform-neutral live counting (#200)", () => {
+  let recordUserChannelMessage;
+  let dbApi;
+  before(() => {
+    const { api } = loadDb();
+    dbApi = api;
+    ({ recordUserChannelMessage } = require("../src/features/userActivity/service"));
+  });
+
+  it("counts a normalized Fluxer message against its integer community id", () => {
+    const cid = communityKey("1554590611015729555", "fluxer", "https://ua200.test");
+    const msg = {
+      platform: "fluxer",
+      instanceKey: "https://ua200.test",
+      communityId: cid,
+      id: "m-1",
+      channelId: "700",
+      authorId: "u-1",
+      authorBot: false,
+      content: "hi",
+      createdAt: new Date(),
+    };
+    assert.equal(recordUserChannelMessage(msg), true, "fluxer messages reach the daily counters now");
+    const rows = dbApi.db
+      .prepare("SELECT community_id, channel_id, count FROM user_channel_message_daily WHERE community_id = ?")
+      .all(cid);
+    assert.equal(rows.length, 1);
+    assert.equal(Number(rows[0].community_id), cid);
+    assert.equal(rows[0].count, 1);
+  });
+
+  it("fails closed when the Fluxer community resolve failed (communityId null, no guild duck)", () => {
+    assert.equal(
+      recordUserChannelMessage({
+        platform: "fluxer",
+        instanceKey: "x",
+        communityId: null,
+        id: "m-2",
+        channelId: "700",
+        authorId: "u-2",
+        authorBot: false,
+        createdAt: new Date(),
+      }),
+      false,
+      "a failed community resolve is NOT re-resolved here — it fails closed",
+    );
+  });
+
+  it("skips bots and keeps the raw Discord path counting through the guild resolve", () => {
+    const cid = communityKey("900000000000000222");
+    assert.equal(
+      recordUserChannelMessage({
+        platform: "fluxer",
+        communityId: cid,
+        channelId: "700",
+        authorId: "u-3",
+        authorBot: true,
+        createdAt: new Date(),
+      }),
+      false,
+    );
+    assert.equal(
+      recordUserChannelMessage({
+        guild: { id: "900000000000000222" },
+        author: { id: "u-4", bot: false },
+        channelId: "900",
+        createdTimestamp: Date.now(),
+      }),
+      true,
+    );
+    const total = dbApi.db
+      .prepare("SELECT COALESCE(SUM(count), 0) AS c FROM user_channel_message_daily WHERE community_id = ?")
+      .get(cid).c;
+    assert.equal(Number(total), 1);
+  });
+});
