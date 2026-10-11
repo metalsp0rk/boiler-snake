@@ -101,6 +101,12 @@ const BRIDGE_MESSAGES = Object.freeze({
   saveFailed: (message) => `Could not save the bridge: ${message}.`,
   webhookCreateFailed: (side, detail) =>
     `The bridge webhook creation on the ${side} end failed: ${detail}. No channels were paired and the code is still valid — fix the cause and run connect again.`,
+  // §10.7 step 9 for a THROWN activation (audit #195): the webhooks this
+  // attempt created are deleted and the transaction rolled every row back,
+  // so the truth the reply carries is: webhooks gone, nothing paired, code
+  // still usable. Same voice as webhookCreateFailed — the cause rides in.
+  activateFailed: (detail, cmd) =>
+    `Activating the bridge failed: ${detail}. The webhooks created for this attempt were deleted and no channels were paired — fix the cause and run ${cmd} connect again.`,
   channelUnreadable: (channelId, detail) =>
     `I couldn't load channel ${channelId}: ${detail}. Pick a channel the bot can read and try again.`,
   botPermsUnreadable: (channelId, detail) =>
@@ -943,35 +949,53 @@ async function connectBridge({
     }
     created.push({ api: apiA, webhook: madeA.webhook });
 
-    // Encrypt both tokens BEFORE the transaction: a key that vanished between
-    // the step-3 check and here must not leave a half-activated bridge.
-    const tokenEncB = tokenCrypto.encryptWebhookToken(madeB.webhook.token, { keyGetter: deps.keyGetter });
-    const tokenEncA = tokenCrypto.encryptWebhookToken(madeA.webhook.token, { keyGetter: deps.keyGetter });
-    if (tokenEncB == null || tokenEncA == null) {
-      await cleanupCreated();
-      return { ok: false, error: BRIDGE_MESSAGES.keyMissing };
-    }
-
     // ---- Step 8: the compare-and-swap. Only the winner writes end B.
-    const activation = activateBridge
-      ? await activateBridge(deps.db, {
-          bridgeId: bridge.id,
-          connectedAt: nowMs,
-          endB: {
-            communityId: community.id,
-            channelId: factsB.id,
-            nsfw: nsfwB,
-            everyoneDeniedView: privateB,
-            webhookId: String(madeB.webhook.id),
-            tokenEnc: tokenEncB,
-          },
-          endAWebhook: {
-            webhookId: String(madeA.webhook.id),
-            tokenEnc: tokenEncA,
-          },
-          endAFlags: { nsfw: nsfwA, everyoneDeniedView: privateA },
-        })
-      : { won: false, reason: "not wired" };
+    // Audit #195 (spec §10.7 step 9, THROW branch): every step from here can
+    // throw after both webhooks exist — the token encrypt, and an activator
+    // whose transaction dies mid-commit (the better-sqlite3 transaction
+    // rolls itself back, so no end B / state row survives, but the two live
+    // webhooks WOULD leak without this unwind). Track and delete what this
+    // attempt created; the row stays pending and the code stays usable.
+    let activation;
+    try {
+      // Encrypt both tokens BEFORE the transaction: a key that vanished
+      // between the step-3 check and here must not leave a half-activated
+      // bridge.
+      const tokenEncB = tokenCrypto.encryptWebhookToken(madeB.webhook.token, { keyGetter: deps.keyGetter });
+      const tokenEncA = tokenCrypto.encryptWebhookToken(madeA.webhook.token, { keyGetter: deps.keyGetter });
+      if (tokenEncB == null || tokenEncA == null) {
+        await cleanupCreated();
+        return { ok: false, error: BRIDGE_MESSAGES.keyMissing };
+      }
+
+      activation = await activateBridge(deps.db, {
+        bridgeId: bridge.id,
+        connectedAt: nowMs,
+        endB: {
+          communityId: community.id,
+          channelId: factsB.id,
+          nsfw: nsfwB,
+          everyoneDeniedView: privateB,
+          webhookId: String(madeB.webhook.id),
+          tokenEnc: tokenEncB,
+        },
+        endAWebhook: {
+          webhookId: String(madeA.webhook.id),
+          tokenEnc: tokenEncA,
+        },
+        endAFlags: { nsfw: nsfwA, everyoneDeniedView: privateA },
+      });
+    } catch (err) {
+      // Step 9 (throw branch): delete both webhooks, insert no end, report
+      // the named cause (AGENTS.md rule 3: the reply is actionable, the
+      // code stays pending for a retry).
+      await cleanupCreated();
+      console.error(
+        `[bridge] connect ${bridge.public_id}: activation threw after creating ${created.length} webhook(s) — cleaned up:`,
+        causeOf(err),
+      );
+      return { ok: false, error: BRIDGE_MESSAGES.activateFailed(causeOf(err), surfaceCmd) };
+    }
 
     if (!activation || activation.won !== true) {
       // Step 9: lost the swap — delete both webhooks, insert no end.
