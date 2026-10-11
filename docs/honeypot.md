@@ -8,7 +8,7 @@ Catch spam accounts and raiders with decoy **channels** and/or **roles**. Non-ex
 
 A **honeypot channel** looks like a normal channel but is only meant to trap bots and malicious accounts that auto-join and post everywhere. Legitimate members are never told about these channels (or are blocked from seeing them via Discord permissions).
 
-When anyone posts in a honeypot channel, the bot **deletes** the message (if it can). Exempt roles are not banned; non-exempt users are:
+When anyone posts in a honeypot channel, the bot **deletes** the message (if it can). Exempt roles are not banned; non-exempt users are — and a ban is never issued when the author's exemption state can't be verified (see [Enforcement Details](#enforcement-details)):
 
 1. **DMed** with the ban reason (if DMs are open)
 2. **Banned** from the guild
@@ -28,6 +28,8 @@ When a non-exempt member **receives** a configured ban role, the bot:
 2. **Bans** them from the guild
 
 Members who **already** hold the role when you run `/honeypot banrole add` are **not** retroactively banned—only new grants (via `GuildMemberUpdate`) trigger the ban.
+
+Ban-role checks are **fail-safe**: a ban fires only when the bot can see the member's **previous** role state and the ban role is *newly* present. If a `GuildMemberUpdate` arrives without cached previous member state (e.g. right after a bot restart or gateway resume), the role diff is unknown and the bot logs a skip instead of banning — existing roles are never treated as newly granted.
 
 ### Exempt roles = staff roles
 
@@ -199,6 +201,8 @@ Prefer `/staff role remove` when you only mean to change the admin gate, so the 
 | Bot or webhook message | Ignored (no ban, no delete) |
 | Human with staff / exempt role | Message deleted; no ban; no XP |
 | Human without staff / exempt role | DM → delete message → ban; no XP |
+| Author's member state can't be resolved (`members.fetch` fails / returns no member) | Message deleted; error logged; **no ban** (exemption unknown — a transient error never bans staff) |
+| Ban-role `GuildMemberUpdate` with uncached previous member (restart/resume) | Skipped; logged; **no ban** (role diff unknown — existing roles never treated as new grants) |
 | DM closed / blocked | Ban still proceeds; failure logged |
 | Bot lacks Ban Members / role hierarchy | Ban fails; error logged; message may still be deleted |
 | Rapid multiple messages | In-flight de-dupe (~10s) avoids repeated ban attempts |
