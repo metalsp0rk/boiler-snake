@@ -443,32 +443,81 @@ async function onMessageDelete(outbound, message) {
 }
 
 /**
+ * Normalize a raw gateway message inside a try/catch (audit C8).
+ *
+ * `normalizeDiscordMessage` throws SYNCHRONOUSLY inside the gateway listener
+ * on bad input — including its synchronous `ensureCommunity` SQLite insert
+ * (a disk-full/constraint throw). An uncaught throw there crashes the whole
+ * process (the 2026-10-01 gatewayPayloadGuard incident class), so the throw
+ * is caught at the listener boundary: log with the message id, drop that one
+ * message, keep the bot (and the other platform's connection) alive.
+ *
+ * @param {string} event listener name for the log prefix
+ * @param {unknown} message raw discord.js Message
+ * @returns {object|null} the normalized message, or null when normalize threw
+ */
+function safeNormalizeDiscord(event, message) {
+  try {
+    return normalizeDiscordMessage(message);
+  } catch (e) {
+    console.error(
+      `[${event}] normalize failed (message ${message?.id ?? "?"}), message dropped:`,
+      e?.message || e,
+    );
+    return null;
+  }
+}
+
+/**
  * Ordered gateway pipelines that span multiple features.
  * (Independent events — delete/ban/kick, etc. — register via feature.registerEvents.)
+ *
+ * Every listener (audit C8): normalize runs under `safeNormalizeDiscord`, and
+ * the pipeline promise carries its own `.catch()` so a rejection is logged
+ * with the event name — fire-and-forget here can never reach the process net.
  *
  * @param {import("discord.js").Client} client
  */
 function registerOrderedPipelines(client) {
   const outbound = getDiscordOutbound(client);
-  client.on(Events.MessageCreate, (message) =>
-    onMessageCreate(outbound, normalizeDiscordMessage(message), {
+  client.on(Events.MessageCreate, (message) => {
+    const normalized = safeNormalizeDiscord("MessageCreate", message);
+    if (!normalized) return;
+    onMessageCreate(outbound, normalized, {
       gorkClient: client,
-    })
-  );
+    }).catch((e) =>
+      console.error("[MessageCreate] pipeline rejected:", e?.message || e)
+    );
+  });
   client.on(Events.MessageReactionAdd, (reaction, user) =>
-    onMessageReactionAdd(client, reaction, user)
+    onMessageReactionAdd(client, reaction, user).catch((e) =>
+      console.error("[ReactionAdd] pipeline rejected:", e?.message || e)
+    )
   );
   client.on(Events.MessageReactionRemove, (reaction, user) =>
-    onMessageReactionRemove(client, reaction, user)
+    onMessageReactionRemove(client, reaction, user).catch((e) =>
+      console.error("[ReactionRemove] pipeline rejected:", e?.message || e)
+    )
   );
   // Bridge echo gates (KD 10): the update pair carries (old, new); prefer the
   // new state — it is the live content — and fall back to the old one.
-  client.on(Events.MessageUpdate, (oldMessage, newMessage) =>
-    onMessageUpdate(outbound, normalizeDiscordMessage(newMessage ?? oldMessage))
-  );
-  client.on(Events.MessageDelete, (message) =>
-    onMessageDelete(outbound, normalizeDiscordMessage(message))
-  );
+  client.on(Events.MessageUpdate, (oldMessage, newMessage) => {
+    const normalized = safeNormalizeDiscord(
+      "MessageUpdate",
+      newMessage ?? oldMessage,
+    );
+    if (!normalized) return;
+    onMessageUpdate(outbound, normalized).catch((e) =>
+      console.error("[MessageUpdate] pipeline rejected:", e?.message || e)
+    );
+  });
+  client.on(Events.MessageDelete, (message) => {
+    const normalized = safeNormalizeDiscord("MessageDelete", message);
+    if (!normalized) return;
+    onMessageDelete(outbound, normalized).catch((e) =>
+      console.error("[MessageDelete] pipeline rejected:", e?.message || e)
+    );
+  });
 }
 
 module.exports = {
