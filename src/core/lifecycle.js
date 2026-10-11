@@ -51,6 +51,10 @@ const state = {
   logger: console,
   /** @type {(code: number) => void} */
   exit: (code) => process.exit(code),
+  /** Timer seams for the drain deadline: tests inject controllable fakes so
+   *  no drain ever depends on wall-clock (CI determinism, see resetForTests). */
+  setTimeoutFn: (fn, ms) => setTimeout(fn, ms),
+  clearTimeoutFn: (id) => clearTimeout(id),
   /** @type {Array<[string, () => void]>} installed signal listeners */
   listeners: [],
   /** @type {{unhandledRejection: Function, uncaughtException: Function}|null} */
@@ -161,17 +165,18 @@ function runShutdown({ reason = "manual" } = {}) {
     }
   })();
 
-  /** @type {NodeJS.Timeout|null} */
+  /** @type {unknown} */
   let timer = null;
   const deadline = new Promise((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), state.deadlineMs);
+    timer = state.setTimeoutFn(() => resolve("timeout"), state.deadlineMs);
     // The race never needs the timer to hold the loop open on its own.
-    if (typeof timer.unref === "function") timer.unref();
+    if (timer && typeof timer.unref === "function") timer.unref();
   });
 
   state.draining = Promise.race([drain.then(() => "done"), deadline]).then(
     (outcome) => {
-      if (timer) clearTimeout(timer);
+      if (timer != null) state.clearTimeoutFn(timer);
+      timer = null;
       const elapsedMs = Date.now() - startedAt;
       if (outcome === "timeout") {
         const stuck = names.filter((n) => !finished.has(n));
@@ -193,7 +198,8 @@ function runShutdown({ reason = "manual" } = {}) {
     // Only reachable if the logger itself throws — never let the drain's own
     // bookkeeping escape as an unhandled rejection (AGENTS.md rule 1).
     (err) => {
-      if (timer) clearTimeout(timer);
+      if (timer != null) state.clearTimeoutFn(timer);
+      timer = null;
       state.logger.error("[shutdown] drain bookkeeping failed:", err?.message || err);
       return { reason, failed, timedOut: false, exitCode: 0, elapsedMs: Date.now() - startedAt };
     },
@@ -272,7 +278,9 @@ function onUncaughtException(err) {
  *   deadlineMs?: number,
  *   logger?: { log: Function, error: Function },
  *   exit?: (code: number) => void,
- * }} [options] seams for tests (logger/exit are injected in unit tests)
+ *   setTimeoutFn?: (fn: Function, ms: number) => unknown,
+ *   clearTimeoutFn?: (id: unknown) => void,
+ * }} [options] seams for tests (logger/exit/timers injected in unit tests)
  * @returns {{ alreadyInstalled: boolean }}
  */
 function installProcessGuards(options = {}) {
@@ -291,6 +299,12 @@ function installProcessGuards(options = {}) {
     throw new TypeError("installProcessGuards: options.exit must be a function");
   }
   if (typeof options.exit === "function") state.exit = options.exit;
+  for (const seam of ["setTimeoutFn", "clearTimeoutFn"]) {
+    if (options[seam] !== undefined && typeof options[seam] !== "function") {
+      throw new TypeError(`installProcessGuards: options.${seam} must be a function`);
+    }
+    if (typeof options[seam] === "function") state[seam] = options[seam];
+  }
 
   process.on("unhandledRejection", onUnhandledRejection);
   process.on("uncaughtException", onUncaughtException);
@@ -332,7 +346,15 @@ function resetForTests() {
   state.signals = [...DEFAULT_SHUTDOWN_SIGNALS];
   state.deadlineMs = DEFAULT_DRAIN_DEADLINE_MS;
   state.logger = console;
-  state.exit = (code) => process.exit(code);
+  // Test-safe default exit — deliberately NOT process.exit. A late drain
+  // continuation (handleSignal's `.then(state.exit)` on a promise an earlier
+  // test left pending) can fire AFTER the next beforeEach/reset swapped the
+  // module state; with the real process.exit that race killed the whole
+  // test-file worker mid-suite on CI. Production keeps the module-init
+  // process.exit default — boot() installs with no options and never resets.
+  state.exit = () => {};
+  state.setTimeoutFn = (fn, ms) => setTimeout(fn, ms);
+  state.clearTimeoutFn = (id) => clearTimeout(id);
 }
 
 /** @returns {boolean} true while the guards are installed */
