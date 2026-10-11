@@ -315,6 +315,17 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
 
   const attachments = mapAttachments(d.attachments);
 
+  // Guarded member roles (issue #200 review): on shape drift the guard's
+  // TypeError is re-raised naming the message id, so the drop log at the
+  // client.js onEvent boundary is reproducible from that line alone
+  // (AGENTS.md rule 2 — identifying ids).
+  let memberRoleIds;
+  try {
+    memberRoleIds = memberRoleIdsOf(member);
+  } catch (err) {
+    throw new TypeError(`${err?.message || err} (message ${String(d.id)})`, { cause: err });
+  }
+
   return {
     platform: "fluxer",
     instanceKey,
