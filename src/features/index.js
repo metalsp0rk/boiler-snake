@@ -22,6 +22,7 @@ module.exports = [
   require("./warnings"),
   require("./userinfo"),
   require("./userActivity"),
+  require("./retention"),
   require("./tickets"),
   require("./web"),
   require("./gork"),

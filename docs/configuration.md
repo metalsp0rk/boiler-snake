@@ -142,6 +142,27 @@ the key strands stored tokens (re-add watches, re-run the sync authorize).
 | `DATA_DIR` | Directory for `xpbot.sqlite` and `ticket-transcripts/` |
 | `DB_PATH` | Full path to the SQLite file (overrides `DATA_DIR` for the DB file only) |
 
+#### Data retention sweeps (optional)
+
+Tables that only ever grow get pruned by one hourly sweep (plus one at boot),
+listed on the web job-health page as `retentionSweeps`. Every delete is a
+LIMIT-batched loop bounded at **500 rows × 40 batches per table per sweep**,
+so a huge backlog never blocks SQLite writes — it simply finishes on the next
+sweep. Each knob takes a number of days to keep; **`0` or `off` disables that
+table's sweep** (rows kept forever); an invalid value falls back to the
+default rather than silently disabling.
+
+| Variable | Default | Prunes | Rationale |
+|----------|---------|--------|-----------|
+| `RETENTION_ACTIVITY_DAYS` | **90** | `activity_log` rows older than N days | XP/decay reads use ≤30-day windows; 90 days is a 3× margin — older award rows are read by no feature |
+| `RETENTION_ADMIN_AUDIT_DAYS` | **365** | `admin_audit` rows older than N days | `admin_audit` IS the durable staff trail (web-admin §8.1-7); a full annual cycle keeps "when did staff change this?" answerable while bounding a per-mutation table |
+| `RETENTION_DAILY_AGGREGATES_DAYS` | **400** | `user_channel_message_daily` UTC days before the cutoff day | 400 days ≥ 13 full calendar months, so monthly rollups stay continuous for a year-plus of staff activity summaries (dashboard windows are 30 days) |
+| `RETENTION_OAUTH_TX_SWEEP` | **1** | `fluxer_oauth_transactions` rows past their own `expires_at` (≤10 min old) | Expired PKCE login rows used to be undeletable (unauthenticated growth — audit #192). `0`/`off` freezes only the sweep; the bounded lazy prune when a transaction is *created* always runs |
+
+Boundary semantics: rows at exactly the cutoff instant/day **survive** (strict
+older-than); expired oauth rows at exactly *now* die (the exact complement of
+the login-callback consume filter).
+
 ---
 
 ## Per-Guild Settings
