@@ -141,6 +141,8 @@ Pings are `@event-<shortname>` in message **content** plus an embed in the notif
 
 **Reschedule:** if event start time changes, recompute all **unsent** `fire_at` from new start − offsets.
 
+**Delivery-state rework (shipped — 2026-10 audit H12, issue #196; supersedes the `sent_at IS NULL` query sketch above):** each offset carries explicit state (`event_reminder_offsets` columns from migration `038`: `status`, `attempts`, `next_attempt_at`, `claimed_at`, `last_error`). The ticker **claims atomically** (CAS `UPDATE … WHERE` inside one IMMEDIATE transaction — same house pattern as the ticket archive claim): `pending → sending` with a 5-minute lease TTL so a crashed sender's row is reclaimable and two tickers can never deliver one offset. Each attempt resolves to exactly one outcome: `sent` (delivered), `retired` (notify channel gone 10003/10004 or unsendable, event instance ended under a persistent config — terminal on **first** detection, never re-claimed), or transient → back to `pending` with `attempts+1` and `next_attempt_at = max(now + 60s·2^(attempts−1) [capped 6h], fire_at + one tick)` — never earlier than the original next-offset + one tick — going terminal `failed` after 12 attempts. The pre-fix behaviors (gone channel re-claimed every minute for 30 days; transient guild-fetch failure permanently discarded via `markReminderSent(null)`) are the bugs this state model closes. Operator docs: [docs/event-reminders.md](../docs/event-reminders.md) “Offset delivery states”.
+
 ---
 
 ### 2.6 Guild settings & permissions

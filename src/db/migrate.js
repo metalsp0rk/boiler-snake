@@ -45,6 +45,7 @@ const migrations = [
   require("./migrations/035_bridges"),
   require("./migrations/036_user_links"),
   require("./migrations/037_ticket_archive_claim"),
+  require("./migrations/038_event_reminder_claim_state"),
 ];
 
 const helpers = {
