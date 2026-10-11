@@ -9,6 +9,7 @@
 
 const {
   verifyOAuthState,
+  PURPOSES,
 } = require("./oauthState");
 const {
   ensureCommunity,
@@ -97,6 +98,33 @@ async function handleCommandPermissionOAuthCallback(req, res, url) {
       htmlPage(
         "Invalid or expired link",
         `<p>Run <code>/staff syncpermissions</code> again in Discord to get a fresh authorize link.</p>`,
+        false
+      )
+    );
+    return true;
+  }
+
+  // Audit §6 P1 (#193): purpose binding is only real if EVERY callback CHECKS
+  // it (roadmap/web-admin.md §8.3). States minted for another flow — the web
+  // login flows (web_login / web_login_fluxer) — must never complete a
+  // command-permissions grant, even when correctly signed. Legacy untagged
+  // states resolve to `cmd_perms` inside verifyOAuthState, so existing
+  // authorize links are unaffected. verifyOAuthState has already consumed the
+  // state's single-use nonce (Discord purposes), so the rejected state is
+  // burned here and cannot be replayed into its own flow's callback either.
+  if (verified.purpose !== PURPOSES.CMD_PERMS) {
+    console.warn(
+      "[commandPermissions] OAuth callback: state rejected (wrong purpose " +
+        `"${verified.purpose}", expected "${PURPOSES.CMD_PERMS}")`
+    );
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(
+      htmlPage(
+        "Wrong authorization link",
+        `<p>This authorize link was issued for the <code>${escapeHtml(
+          verified.purpose
+        )}</code> flow, not command-permission sync.</p>` +
+          `<p>Run <code>/staff syncpermissions</code> again in Discord to get the correct authorize link.</p>`,
         false
       )
     );

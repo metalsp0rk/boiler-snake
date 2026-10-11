@@ -21,6 +21,8 @@ const {
 } = require("../src/features/commandPermissions/config");
 const {
   createOAuthState,
+  verifyOAuthState,
+  PURPOSES,
   _resetNoncesForTests,
 } = require("../src/features/commandPermissions/oauthState");
 
@@ -499,6 +501,198 @@ describe("oauthTokens.getValidAccessToken", () => {
     assert.ok(row, "transient failure must not delete a potentially valid grant");
     assert.equal(row.refresh_token, "rt-ok");
   });
+
+  // Issue #193 (2): single-flight. Two concurrent getValidAccessToken callers
+  // for one community must share ONE token POST. Determinism: the mock
+  // suspends the POST on a deferred we control (latch), never a sleep — by
+  // the time getValidAccessToken returns, its synchronous prefix has either
+  // issued the fetch (visible in `calls` immediately) or joined the in-flight
+  // promise (calls unchanged).
+  it("single-flights concurrent refreshes into exactly one token POST", async () => {
+    // Arrange
+    const cid = communityKey("g-tok-sf");
+    dbApi.upsertCommandPermissionOauth(cid, {
+      refreshToken: "rt-slow",
+      accessToken: "at-old",
+      accessExpiresAt: Date.now() - 1000,
+    });
+    let releaseFetch;
+    const gate = new Promise((resolve) => {
+      releaseFetch = resolve;
+    });
+    let markArrived;
+    const arrived = new Promise((resolve) => {
+      markArrived = resolve;
+    });
+    const { calls } = mockFetch(async () => {
+      markArrived();
+      await gate; // hold the network call open until the test lets it finish
+      return tokenResponse(200, {
+        access_token: "at-winner",
+        refresh_token: "rt-rotated",
+        expires_in: 3600,
+      });
+    });
+
+    // Act — first caller reaches Discord and suspends inside the responder
+    const first = oauthTokens.getValidAccessToken(cid);
+    await arrived;
+    assert.equal(calls.length, 1, "first caller must have issued the POST");
+
+    // Second caller while the first is still in flight: its synchronous
+    // prefix runs to completion (sync DB read → in-flight join) before this
+    // assert, so calls.length is already final — no sleep needed.
+    const second = oauthTokens.getValidAccessToken(cid);
+    assert.equal(
+      calls.length,
+      1,
+      "concurrent caller must await the in-flight refresh, never re-POST"
+    );
+
+    // Release — both resolve off the same refresh, exactly one grant survives.
+    releaseFetch();
+    const [t1, t2] = await Promise.all([first, second]);
+    assert.equal(t1, "at-winner");
+    assert.equal(t2, "at-winner", "joiner resolves off the winner's refresh");
+    assert.equal(calls.length, 1);
+    const row = dbApi.getCommandPermissionOauth(cid);
+    assert.equal(row.access_token, "at-winner");
+    assert.equal(row.refresh_token, "rt-rotated");
+
+    // Cleanup on settle: after the in-flight entry is gone, a later refresh
+    // starts its own POST (the map never leaks a settled promise).
+    dbApi.upsertCommandPermissionOauth(cid, {
+      refreshToken: "rt-rotated",
+      accessToken: "at-old-again",
+      accessExpiresAt: Date.now() - 1000,
+    });
+    const third = await oauthTokens.getValidAccessToken(cid);
+    assert.equal(third, "at-winner", "second refresh serves its own response");
+    assert.equal(calls.length, 2);
+  });
+
+  // Issue #193 (2) hygiene: a rejecting refresh must not poison later calls —
+  // the in-flight entry is cleared on settle (both outcomes), so the next
+  // attempt gets a fresh POST instead of replaying the stored rejection.
+  it("retries after a failed single-flighted refresh (no poisoned entry)", async () => {
+    const cid = communityKey("g-tok-poison");
+    dbApi.upsertCommandPermissionOauth(cid, {
+      refreshToken: "rt-flaky",
+      accessToken: "at-old",
+      accessExpiresAt: Date.now() - 1000,
+    });
+    let posts = 0;
+    mockFetch(() => {
+      posts += 1;
+      if (posts === 1) return tokenResponse(500, { error: "server_error" });
+      return tokenResponse(200, {
+        access_token: "at-recovered",
+        refresh_token: "rt-next",
+        expires_in: 3600,
+      });
+    });
+
+    const err = await oauthTokens
+      .getValidAccessToken(cid)
+      .catch((e) => e);
+    assert.equal(err.code, "server_error", "first attempt fails transiently");
+
+    const token = await oauthTokens.getValidAccessToken(cid);
+    assert.equal(token, "at-recovered", "later call must start a fresh refresh");
+    assert.equal(posts, 2);
+  });
+
+  // Issue #193 (3): the raced 400. Our refresh POST loses to a winner that
+  // replaced the stored grant BEFORE Discord rejected our stale copy (mocked
+  // as: the row swaps inside the token responder, then the 400 lands). The
+  // loser must NOT delete the grant — it serves the winner's token instead.
+  it("keeps the grant and serves the winner's token on a raced refresh 400", async () => {
+    const cid = communityKey("g-tok-race");
+    dbApi.upsertCommandPermissionOauth(cid, {
+      refreshToken: "rt-loser",
+      accessToken: "at-loser",
+      accessExpiresAt: Date.now() - 1000,
+    });
+    mockFetch(async () => {
+      // Winner lands first: a parallel refresh/re-auth rotated the stored
+      // grant (different refresh_token + newer updated_at)...
+      dbApi.upsertCommandPermissionOauth(cid, {
+        refreshToken: "rt-winner",
+        accessToken: "at-winner",
+        accessExpiresAt: Date.now() + 600_000,
+        authorizedByUserId: "u-winner",
+      });
+      // ...then Discord rejects OUR now-stale refresh token.
+      return tokenResponse(400, {
+        error: "invalid_grant",
+        error_description: "Invalid Refresh Token",
+      });
+    });
+
+    // Act
+    const token = await oauthTokens.getValidAccessToken(cid);
+
+    // Assert — grant survives and the WINNER's token is served
+    assert.equal(token, "at-winner", "loser must serve the winner's stored token");
+    const row = dbApi.getCommandPermissionOauth(cid);
+    assert.ok(row, "a 400 that raced a winner must NOT delete the grant");
+    assert.equal(row.refresh_token, "rt-winner");
+    assert.equal(row.access_token, "at-winner");
+    assert.equal(row.authorized_by_user_id, "u-winner");
+  });
+
+  // Issue #193 (3) counter-case: if the stored token is STILL the one we sent
+  // (nothing raced), the 400 is a genuine revocation → the pre-existing
+  // delete + reauth_required contract holds (covered by the "drops the stored
+  // grant" test above). Edge: if the row vanished mid-flight, nothing is
+  // deleted and the caller still gets the actionable reauth tag.
+  it("tags reauth_required (without deleting) when the row vanished mid-flight", async () => {
+    const cid = communityKey("g-tok-vanish");
+    dbApi.upsertCommandPermissionOauth(cid, {
+      refreshToken: "rt-gone",
+      accessToken: "at-old",
+      accessExpiresAt: Date.now() - 1000,
+    });
+    mockFetch(async () => {
+      // e.g. a parallel re-auth deleted-then-failed before re-inserting
+      dbApi.deleteCommandPermissionOauth(cid);
+      return tokenResponse(400, {
+        error: "invalid_grant",
+        error_description: "Invalid Refresh Token",
+      });
+    });
+
+    const err = await oauthTokens
+      .getValidAccessToken(cid)
+      .catch((e) => e);
+    assert.equal(err.code, "reauth_required");
+    assert.equal(err.message, "Invalid Refresh Token");
+    assert.equal(dbApi.getCommandPermissionOauth(cid), null);
+  });
+
+  // Repository regression (audit #193 sibling bug, same refresh path): a
+  // refresh response WITHOUT a rotated refresh_token used to hit a
+  // ReferenceError (`access_expiresAt`) in updateCommandPermissionAccessToken
+  // — the access token never persisted and the caller got a bogus failure.
+  it("persists the new access token when Discord does not rotate the refresh token", async () => {
+    const cid = communityKey("g-tok-norotate");
+    dbApi.upsertCommandPermissionOauth(cid, {
+      refreshToken: "rt-keep",
+      accessToken: "at-old",
+      accessExpiresAt: Date.now() - 1000,
+    });
+    mockFetch(() =>
+      tokenResponse(200, { access_token: "at-norotate", expires_in: 600 })
+    );
+
+    const token = await oauthTokens.getValidAccessToken(cid);
+
+    assert.equal(token, "at-norotate");
+    const row = dbApi.getCommandPermissionOauth(cid);
+    assert.equal(row.access_token, "at-norotate");
+    assert.equal(row.refresh_token, "rt-keep", "unrotated refresh token must be kept");
+    assert.ok(row.access_expires_at > Date.now());
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -614,6 +808,87 @@ describe("handleCommandPermissionOAuthCallback", () => {
     );
     assert.equal(exchangeCalls[0].code, "c1");
     assert.equal(syncCalls.length, 1);
+  });
+
+  // Issue #193 (1): purpose binding. A VALIDLY signed state minted for the
+  // web-login flows (web_login / web_login_fluxer, roadmap/web-admin.md §8.3)
+  // must never complete a command-permissions grant. The old code verified
+  // the signature and sailed straight into the exchange — the guild/user
+  // claims a web_login state carries were good enough to finish a cmd_perms
+  // round. Legacy UNTAGGED states still verify as cmd_perms (baseline test
+  // above proves that path stays green).
+  it("rejects states minted for another OAuth purpose without attempting an exchange", async () => {
+    // Arrange — guild resolves to a real community so ONLY the purpose gate
+    // stands between these states and a completed grant.
+    communityKey("g-cb-wp");
+    const webLoginState = createOAuthState({
+      purpose: PURPOSES.WEB_LOGIN,
+      guildId: "g-cb-wp",
+      userId: "u-attacker",
+    });
+    const fluxerState = createOAuthState({
+      purpose: PURPOSES.WEB_LOGIN_FLUXER,
+      guildId: "g-cb-wp",
+      nonce: "0123456789abcdef0123456789abcdef",
+    });
+    const warns = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => warns.push(args.join(" "));
+
+    let wp;
+    let fx;
+    try {
+      // Act
+      wp = makeRes();
+      await handleCommandPermissionOAuthCallback(
+        makeReq(),
+        wp,
+        callbackUrl({ code: "c-wp", state: webLoginState })
+      );
+      fx = makeRes();
+      await handleCommandPermissionOAuthCallback(
+        makeReq(),
+        fx,
+        callbackUrl({ code: "c-fx", state: fluxerState })
+      );
+    } finally {
+      console.warn = origWarn;
+    }
+
+    // Assert — specific denial naming the flow mismatch, zero exchange/sync
+    for (const [label, res] of [
+      ["web_login", wp],
+      ["web_login_fluxer", fx],
+    ]) {
+      assert.equal(res.statusCode, 400, `${label} state must be rejected with 400`);
+      assert.match(res.body, /Wrong authorization link/);
+      assert.match(
+        res.body,
+        new RegExp(`issued for the <code>${label}</code> flow`),
+        `${label} denial must name the actual purpose (error law #3: specific cause)`
+      );
+      assert.match(res.body, /not command-permission sync/);
+      assert.match(res.body, /syncpermissions/);
+    }
+    assert.equal(exchangeCalls.length, 0, "no token exchange for a cross-purpose state");
+    assert.equal(syncCalls.length, 0, "no sync after a cross-purpose state");
+    assert.ok(
+      warns.some(
+        (w) =>
+          w.includes("[commandPermissions] OAuth callback: state rejected") &&
+          w.includes("web_login")
+      ),
+      `wrong-purpose rejection must be logged with the feature prefix, got: ${JSON.stringify(warns)}`
+    );
+
+    // The wrong-purpose state is BURNED, not returned for reuse:
+    // verifyOAuthState consumed its single-use nonce before the purpose
+    // branch ran, so replay — even somewhere else — fails verification.
+    assert.equal(
+      verifyOAuthState(webLoginState),
+      null,
+      "wrong-purpose rejection must have consumed the state's nonce"
+    );
   });
 
   // Objective: "Valid state + code → successful … session completion/DB
