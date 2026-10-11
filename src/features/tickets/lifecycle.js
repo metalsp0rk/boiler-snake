@@ -328,6 +328,14 @@ async function handleArchive(commandCtx, ctx) {
       guildName: raw.guild?.name,
     });
 
+    // CAS claim loser (#197): another close holds the archive — reply with
+    // the specific message (names the ticket) and record nothing; this run
+    // did zero work.
+    if (result.skipped) {
+      await commandCtx.editReply({ content: result.skipped, sensitive: true });
+      return;
+    }
+
     recordSlashAudit({
       communityId: commandCtx.communityId,
       actorUserId: commandCtx.userId,

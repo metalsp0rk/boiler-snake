@@ -259,6 +259,88 @@ describe("tickets repository", () => {
     assert.equal(closed.channel_id, null);
   });
 
+  // audit-2026-10 #197: the archive pipeline must CAS a claim BEFORE doing
+  // work. The claim lives in tickets.archive_claimed_at (migration 037);
+  // `archived` keeps its finalize-time meaning untouched.
+  it("claimTicketArchive: first caller wins, later callers no-op (CAS)", () => {
+    const t = db.createTicket({
+      communityId: communityKey("g-claim"),
+      creatorUserId: "u",
+      channelId: "ch-claim",
+    });
+    db.markTicketClosed(t.id, { closedBy: "mod", closeReason: "done" });
+
+    const first = db.claimTicketArchive(t.id);
+    assert.equal(first.won, true);
+    assert.ok(Number(first.ticket.archive_claimed_at) > 0, "claim stamped");
+
+    // Mid-archive (archived still 0 — work in flight): loser gets won:false
+    // plus the LIVE row so it can name the ticket and its real state.
+    const second = db.claimTicketArchive(t.id);
+    assert.equal(second.won, false);
+    assert.equal(second.ticket.archived, 0);
+    assert.equal(second.ticket.id, t.id);
+
+    // Finalize normally (closeTicketArchived semantics unchanged)…
+    const token = db.generateTranscriptToken();
+    const closed = db.closeTicketArchived(t.id, {
+      closedBy: "mod",
+      closeReason: "done",
+      transcriptToken: token,
+      transcriptPath: `ticket-transcripts/g-claim/${token}.html`,
+    });
+    assert.equal(closed.archived, 1);
+
+    // …then a re-claim loses with the live archived flag visible.
+    const third = db.claimTicketArchive(t.id);
+    assert.equal(third.won, false);
+    assert.equal(third.ticket.archived, 1);
+
+    // Unknown ticket: loses cleanly, null row (no throw).
+    const missing = db.claimTicketArchive(9999999);
+    assert.equal(missing.won, false);
+    assert.equal(missing.ticket, null);
+  });
+
+  it("claimTicketArchive stays sticky after a transcriptless archive", () => {
+    // closeTicketArchived with no transcript leaves archived=0 (pinned
+    // behavior) — WITHOUT the claim such a ticket could be archived twice.
+    const t = db.createTicket({
+      communityId: communityKey("g-claim2"),
+      creatorUserId: "u",
+      channelId: "ch-claim2",
+    });
+    db.markTicketClosed(t.id, { closedBy: "mod", closeReason: "oops" });
+    assert.equal(db.claimTicketArchive(t.id).won, true);
+    db.closeTicketArchived(t.id, {
+      closedBy: "mod",
+      closeReason: "oops",
+      transcriptToken: null,
+      transcriptPath: null,
+    });
+    const retry = db.claimTicketArchive(t.id);
+    assert.equal(retry.won, false, "failed-transcript archive stays claimed");
+  });
+
+  it("claimTicketArchive works for sensitive tickets (archived stays 0)", () => {
+    const t = db.createTicket({
+      communityId: communityKey("g-claim3"),
+      creatorUserId: "u",
+      channelId: "ch-claim3",
+    });
+    db.setTicketSensitive(t.id, "mod");
+    db.markTicketClosed(t.id, { closedBy: "mod", closeReason: "done" });
+    assert.equal(db.claimTicketArchive(t.id).won, true);
+    const done = db.closeTicketSensitive(t.id, {
+      closedBy: "mod",
+      closeReason: "done",
+    });
+    assert.equal(done.archived, 0, "sensitive rows never carry archived=1");
+    const retry = db.claimTicketArchive(t.id);
+    assert.equal(retry.won, false, "second concurrent stub post blocked");
+    assert.equal(retry.ticket.archived, 0);
+  });
+
   it("markTicketClosedByChannelDelete closes open tickets only", () => {
     const open = db.createTicket({
       communityId: communityKey("g-del"),
@@ -878,6 +960,167 @@ describe("tickets transcript + summary", () => {
       assert.equal(sum.source, "fallback");
     } finally {
       global.fetch = origFetch;
+      delete process.env.AI_API_KEY;
+    }
+  });
+
+  // --- audit-2026-10 #197: the summary LLM call is deadline-bounded ---
+
+  it("summarizeTicket always passes a bounded timeout to the completion call", async () => {
+    process.env.AI_API_KEY = "test-key-not-real";
+    try {
+      const {
+        summarizeTicket,
+        DEFAULT_SUMMARY_TIMEOUT_MS,
+        ticketSummaryTimeoutMs,
+      } = require("../src/features/tickets/summary");
+      assert.equal(DEFAULT_SUMMARY_TIMEOUT_MS, 20000, "bounded default (#197)");
+
+      const seen = [];
+      const chatImpl = async (_cfg, o) => {
+        seen.push(o);
+        return {
+          ok: true,
+          content: JSON.stringify({ resolution: "r", summary: "s" }),
+        };
+      };
+      const ticket = {
+        ticket_number: 9,
+        creator_user_id: "u",
+        reason: "x",
+        close_reason: "y",
+      };
+
+      delete process.env.TICKET_SUMMARY_TIMEOUT_MS;
+      assert.equal(ticketSummaryTimeoutMs(), DEFAULT_SUMMARY_TIMEOUT_MS);
+      await summarizeTicket(ticket, [], { chatImpl });
+      assert.equal(seen[0].timeoutMs, DEFAULT_SUMMARY_TIMEOUT_MS);
+
+      process.env.TICKET_SUMMARY_TIMEOUT_MS = "15000";
+      await summarizeTicket(ticket, [], { chatImpl });
+      assert.equal(seen[1].timeoutMs, 15000, "env knob re-read per call");
+
+      process.env.TICKET_SUMMARY_TIMEOUT_MS = "bogus";
+      await summarizeTicket(ticket, [], { chatImpl });
+      assert.equal(
+        seen[2].timeoutMs,
+        DEFAULT_SUMMARY_TIMEOUT_MS,
+        "invalid env falls back to the bounded default"
+      );
+    } finally {
+      delete process.env.AI_API_KEY;
+      delete process.env.TICKET_SUMMARY_TIMEOUT_MS;
+    }
+  });
+
+  it("summarizeTicket aborts a hung completion at the deadline (fake timer, zero real-clock waits)", async () => {
+    process.env.AI_API_KEY = "test-key-not-real";
+    try {
+      const { summarizeTicket } = require("../src/features/tickets/summary");
+      // Never resolves on its own — ONLY the deadline's abort signal settles
+      // it (mirrors a wedged provider socket).
+      const hangFetch = (_url, { signal } = {}) =>
+        new Promise((_res, rej) => {
+          if (signal?.aborted) {
+            rej(new Error("This operation was aborted"));
+            return;
+          }
+          signal.addEventListener("abort", () =>
+            rej(new Error("This operation was aborted"))
+          );
+        });
+
+      let fireDeadline = null;
+      const cleared = [];
+      const sumPromise = summarizeTicket(
+        {
+          ticket_number: 4,
+          creator_user_id: "u",
+          reason: "x",
+          close_reason: "closed",
+        },
+        [{ author_tag: "u", content: "hello", author_id: "u" }],
+        {
+          fetchImpl: hangFetch,
+          setTimer: (fn) => {
+            fireDeadline = fn;
+            return { fake: true };
+          },
+          clearTimer: (handle) => cleared.push(handle),
+        }
+      );
+      // requestCompletion arms the deadline synchronously, before its first
+      // await — no polling, no real time.
+      assert.equal(typeof fireDeadline, "function", "deadline armed");
+      fireDeadline(); // simulate expiry at the injected seam
+      const sum = await sumPromise;
+
+      assert.equal(sum.source, "fallback", "archive keeps the stats fallback");
+      assert.match(
+        sum.warning,
+        /Ticket #4 summary generation timed out after 20s/,
+        `user-facing warning names the deadline: ${sum.warning}`
+      );
+      assert.match(sum.warning, /stats fallback summary/);
+      assert.equal(cleared.length, 1, "deadline timer cleaned up");
+    } finally {
+      delete process.env.AI_API_KEY;
+    }
+  });
+
+  it("summarizeTicket honors an explicit timeoutMs and names it in the warning", async () => {
+    process.env.AI_API_KEY = "test-key-not-real";
+    try {
+      const { summarizeTicket } = require("../src/features/tickets/summary");
+      const hangFetch = (_url, { signal } = {}) =>
+        new Promise((_res, rej) => {
+          if (signal?.aborted) rej(new Error("aborted"));
+          else signal.addEventListener("abort", () => rej(new Error("aborted")));
+        });
+      let fireDeadline = null;
+      const sumPromise = summarizeTicket(
+        { ticket_number: 7, creator_user_id: "u", reason: "x", close_reason: "c" },
+        [],
+        {
+          timeoutMs: 15000,
+          fetchImpl: hangFetch,
+          setTimer: (fn) => {
+            fireDeadline = fn;
+            return "t";
+          },
+          clearTimer: () => {},
+        }
+      );
+      fireDeadline();
+      const sum = await sumPromise;
+      assert.match(
+        sum.warning,
+        /Ticket #7 summary generation timed out after 15s/
+      );
+    } finally {
+      delete process.env.AI_API_KEY;
+    }
+  });
+
+  it("summarizeTicket AI HTTP failure carries the specific cause in the warning", async () => {
+    process.env.AI_API_KEY = "test-key-not-real";
+    try {
+      const { summarizeTicket } = require("../src/features/tickets/summary");
+      const sum = await summarizeTicket(
+        { ticket_number: 8, creator_user_id: "u", reason: "x", close_reason: "c" },
+        [],
+        {
+          fetchImpl: async () => ({
+            ok: false,
+            status: 429,
+            text: async () => "rate limit exceeded",
+          }),
+        }
+      );
+      assert.equal(sum.source, "fallback");
+      assert.match(sum.warning, /Ticket #8 AI summary unavailable \(HTTP 429: rate limit exceeded\)/);
+      assert.match(sum.warning, /stats fallback summary/);
+    } finally {
       delete process.env.AI_API_KEY;
     }
   });
