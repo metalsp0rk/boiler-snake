@@ -741,4 +741,134 @@ describe("bridge relay worker (PR 5)", () => {
       "the orphan row for the deleted bridge drains without a send",
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Per-part, id-synchronous links commit (roadmap/bridge.md §10.6,
+  // audit #195 item 2): the links row for a part lands the moment THAT
+  // part's send ACKed — a later park, crash, or restart-replay can neither
+  // strand an already-posted copy nor duplicate its row.
+  // -------------------------------------------------------------------------
+
+  /** Restart-style replay: return a parked row to 'pending' (mirrors
+   *  requeueStaleOutbox after a crash; claim is state+attempts only). */
+  function requeueRow(outboxId) {
+    db.db
+      .prepare("UPDATE bridge_outbox SET state = 'pending', attempts = 0, last_error = NULL WHERE id = ?")
+      .run(outboxId);
+  }
+
+  it("a park mid-list keeps the links rows of already-posted parts (#195 item 2)", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "10300",
+      payload: createPayload(publicId, "10300", {
+        text: "b".repeat(4500), // Fluxer's 4000-char limit → 2 parts
+      }),
+    });
+    const fluxer = scriptedApi("fP", [
+      { ok: true, messageId: "keep-1" },
+      ...Array.from({ length: 5 }, () => ({ ok: false, error: "HTTP 500: boom", retryable: true })),
+    ]);
+    const worker = makeWorker({ getWebhookApi: () => fluxer });
+    await worker.drainAll();
+
+    assert.equal(fluxer.calls.length, 6, "part 1 sent once, part 2 burned the 5-attempt ladder");
+    assert.equal(rowState(row.id).state, "failed", "part 2 parked the row");
+    // THE FIX: with the old batched-at-end commit this list would be EMPTY —
+    // part 1's copy is on the destination but its row only landed after the
+    // whole list succeeded. It must be durable NOW: edit/delete relay needs
+    // it to find the copy.
+    const links = repo.listBridgeMessageLinks(bridge.id, "10300");
+    assert.deepEqual(links.map((l) => [l.part_index, l.dst_message_id]), [[0, "keep-1"]]);
+    assert.equal(rowState(row.id).dest_message_id, "keep-1", "the row names the committed copy");
+  });
+
+  it("restart replay dedupes against committed rows: nonce id re-arms, never re-inserts (#195 item 2)", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "10301",
+      payload: createPayload(publicId, "10301", { text: "c".repeat(4500) }),
+    });
+    // Run 1: part 1 lands, part 2's endpoint dies → park.
+    const run1 = scriptedApi("fR1", [
+      { ok: true, messageId: "n-1" },
+      ...Array.from({ length: 5 }, () => ({ ok: false, error: "HTTP 500: boom", retryable: true })),
+    ]);
+    await makeWorker({ getWebhookApi: () => run1 }).drainAll();
+
+    // Restart re-queue (spec §10.10): the row replays and re-sends EVERY
+    // part; the Fluxer nonce returns the ORIGINAL id for part 1.
+    requeueRow(row.id);
+    const run2 = scriptedApi("fR2", [
+      { ok: true, messageId: "n-1" }, // nonce replay → same id
+      { ok: true, messageId: "n-2" },
+    ]);
+    const worker2 = makeWorker({ getWebhookApi: () => run2 });
+    await worker2.drainAll();
+
+    const links = repo.listBridgeMessageLinks(bridge.id, "10301");
+    assert.deepEqual(
+      links.map((l) => [l.part_index, l.dst_message_id]),
+      [
+        [0, "n-1"],
+        [1, "n-2"],
+      ],
+      "committed part 1 keeps exactly ONE row (the PK would reject a second)",
+    );
+    assert.equal(rowState(row.id).state, "done");
+    assert.equal(rowState(row.id).dest_message_id, "n-1");
+  });
+
+  it("a re-send that yields a DIFFERENT id keeps the committed copy and names the duplicate (#195 item 2)", async () => {
+    const { bridge, publicId } = seedBridge("both");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "b_to_a",
+      kind: "create",
+      srcMessageId: "10302",
+      payload: createPayload(publicId, "10302", {
+        direction: "b_to_a",
+        srcCommunityId: rowB.id,
+        srcChannelId: "RB-9",
+        text: "d".repeat(2500),
+      }),
+    });
+    const run1 = scriptedApi("dD1", [
+      { ok: true, messageId: "first-1" },
+      ...Array.from({ length: 5 }, () => ({ ok: false, error: "HTTP 500: boom", retryable: true })),
+    ]);
+    await makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? null : run1) }).drainAll();
+
+    requeueRow(row.id);
+    // A Discord re-send CAN produce a second id (the §10.6 duplicate window).
+    const run2 = scriptedApi("dD2", [
+      { ok: true, messageId: "other-1" },
+      { ok: true, messageId: "dD2-2" },
+    ]);
+    const warns = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warns.push(args.join(" "));
+    try {
+      await makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? null : run2) }).drainAll();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const links = repo.listBridgeMessageLinks(bridge.id, "10302");
+    assert.deepEqual(
+      links.map((l) => [l.part_index, l.dst_message_id]),
+      [
+        [0, "first-1"], // the FIRST committed id stays authoritative
+        [1, "dD2-2"],
+      ],
+    );
+    assert.equal(rowState(row.id).state, "done");
+    assert.equal(rowState(row.id).dest_message_id, "first-1");
+    assert.equal(warns.length, 1, "the duplicate window is named once, never silent");
+    assert.match(warns[0], /re-execution posted part 0 of 10302 as other-1/);
+    assert.match(warns[0], /keeping the committed copy first-1/);
+  });
 });
