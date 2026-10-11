@@ -6,8 +6,8 @@ const {
   getGuildSettings,
   updateGuildSettings,
 } = require("../../db");
-// src/db/index.js still maps the removed `allUsersInGuild` name, so import the
-// renamed repository functions directly. // TODO(fluxer-pr4): facade re-export.
+// Community-scoped enumeration is not facade-exported by design (#207):
+// require the repository functions directly.
 const {
   allUsersInCommunity,
   listCommunityIdsWithUsers,
