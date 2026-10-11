@@ -154,7 +154,11 @@ Requires a **closed** ticket channel.
 2. Resolve display names (guild nickname → global name → username) for requester, staff owner, message authors, and `<@id>` mentions in content.
 3. **Download media** (attachments, embed images/thumbnails/videos, stickers) into  
    `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/assets/`, rewrite links to  
-   `/t/{uuid}/assets/…` (served by the bot). Caps: 50 MiB/file, 100 files/ticket (env overrides below).
+   `/t/{uuid}/assets/…` (served by the bot). Caps: 50 MiB/file, 100 files/ticket (env overrides below).
+   Every download runs through the shared SSRF guard (`src/core/ssrfGuard.js`, same guard the bridge
+   uses): https-only, and each redirect hop's hostname is resolved and refused when it maps to
+   loopback, RFC1918, or link-local (cloud-metadata) ranges — a member cannot aim the bot at
+   internal addresses. Refused files are listed as warnings in the archive reply; the archive continues.
 4. Store rows in `ticket_messages` (resolved authors, expanded mentions, local asset hrefs).
 5. Write HTML under `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/index.html`.
 6. Summarize (AI or fallback).
