@@ -112,7 +112,7 @@ function updateCommandPermissionAccessToken(
       SET access_token=?, access_expires_at=?, updated_at=?
       WHERE community_id=?
     `
-    ).run(accessToken, access_expiresAt ?? accessExpiresAt, t, communityId);
+    ).run(accessToken, accessExpiresAt, t, communityId);
   }
 }
 
