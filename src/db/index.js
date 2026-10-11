@@ -59,7 +59,11 @@ module.exports = {
   searchUsers: users.searchUsers,
   USER_SEARCH_LIMIT: users.SEARCH_LIMIT,
   topUsers: users.topUsers,
-  allUsersInGuild: users.allUsersInGuild,
+  // allUsersInGuild retired (audit P2, #207): the repository function was
+  // renamed to allUsersInCommunity and this mapping shipped `undefined`.
+  // Community-scoped enumeration callers require the repository directly
+  // (see src/features/decay) — the guild-flavored name is what invited
+  // cross-community stale-snapshot bugs (#191).
 
   // activity (XP / decay)
   logActivity: activity.logActivity,
@@ -368,7 +372,9 @@ module.exports = {
   MAX_AUDIT_LIST_LIMIT: adminAudit.MAX_AUDIT_LIST_LIMIT,
   MAX_AUDIT_DETAILS_JSON: adminAudit.MAX_AUDIT_DETAILS_JSON,
   normalizeAuditOrigin: adminAudit.normalizeAuditOrigin,
-  serializeAuditDetails: adminAudit.serializeAuditDetails,
+  // serializeAuditDetails mapping retired (#207 smoke test): the repository
+  // never exported it, so this shipped `undefined`; it is internal to
+  // insertAdminAudit and has no facade callers.
   insertAdminAudit: adminAudit.insertAdminAudit,
   getAdminAuditById: adminAudit.getAdminAuditById,
   listAdminAudit: adminAudit.listAdminAudit,

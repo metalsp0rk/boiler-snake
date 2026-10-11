@@ -511,4 +511,69 @@ describe("db layer", () => {
       );
     });
   });
+
+  describe("facade export shape (audit P2, #207)", () => {
+    // The facade surface is repository functions plus this explicit set of
+    // constants/handles. A typo'd mapping silently exports `undefined` —
+    // the class of bug that shipped `allUsersInGuild` as undefined while
+    // the repository had been renamed to allUsersInCommunity. Adding a
+    // constant to the facade means adding it here deliberately.
+    const NON_FUNCTION_EXPORTS = new Set([
+      "db",
+      "dbPath",
+      "MAX_SAFE_XP",
+      "USER_SEARCH_LIMIT",
+      "IGNORE_KINDS",
+      "BACKFILL_STATUSES",
+      "EVENTSUB_TYPES",
+      "STAFF_LEVELS",
+      "MAX_NOTE_CONTENT",
+      "MAX_WARN_REASON",
+      "MAX_EVIDENCE_TEXT",
+      "MAX_EXPIRY_DAYS",
+      "MAX_TICKET_REASON",
+      "MAX_SESSION_LIST_LIMIT",
+      "AUDIT_ORIGINS",
+      "MAX_AUDIT_LIST_LIMIT",
+      "MAX_AUDIT_DETAILS_JSON",
+      "BRIDGE_STATES",
+      "BRIDGE_DIRECTIONS",
+      "BRIDGE_RELAY_DIRECTIONS",
+      "BRIDGE_OUTBOX_STATES",
+      "BRIDGE_CODE_LIFETIME_MS",
+      "BRIDGE_CONNECT_MISS_LIMIT",
+      "BRIDGE_CONNECT_WINDOW_MS",
+      "BRIDGE_OUTBOX_MAX_ATTEMPTS",
+      "LINK_MIRROR_DIRECTIONS",
+      "USER_LINK_CODE_LIFETIME_MS",
+    ]);
+
+    it("exports no undefined value", () => {
+      const undefinedKeys = Object.keys(api).filter(
+        (k) => api[k] === undefined
+      );
+      assert.deepEqual(undefinedKeys, [], "typo'd or dead facade mappings ship undefined");
+    });
+
+    it("every export is an allow-listed constant/handle or a function", () => {
+      const offenders = Object.entries(api)
+        .filter(
+          ([key, value]) =>
+            !NON_FUNCTION_EXPORTS.has(key) && typeof value !== "function"
+        )
+        .map(([key]) => key);
+      assert.deepEqual(offenders, []);
+    });
+
+    it("allow-list names all exist on the facade", () => {
+      const missing = [...NON_FUNCTION_EXPORTS].filter(
+        (key) => !(key in api) || api[key] === undefined
+      );
+      assert.deepEqual(missing, [], "allow-list is stale for removed exports");
+    });
+
+    it("retired allUsersInGuild mapping is gone from the facade", () => {
+      assert.equal("allUsersInGuild" in api, false);
+    });
+  });
 });
