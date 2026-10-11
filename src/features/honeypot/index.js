@@ -672,13 +672,32 @@ async function handleHoneypotMessage(message) {
  * honeypot hit"). Resolves the configured channel by the message's INTEGER
  * community id (the pipeline resolves it before calling this).
  *
- * PR 9: the ban leg calls `outbound.banMember` UNCONDITIONALLY — the K8
- * self-gate answers flag 0 with code "elevated_disabled" and a specific
- * reason (no network; logged), flag 1 performs the real ban. A hit CONSUMES
- * the message (no XP, no gork, no dispatch). Message deletion stays out of
- * scope (no OutboundClient.deleteMessage — the suppression line remains).
+ * PR 9: the ban leg calls `outbound.banMember` whenever the author's role
+ * state is KNOWN (issue #280: never on unknown state) — the K8 self-gate
+ * answers flag 0 with code "elevated_disabled" and a specific reason (no
+ * network; logged), flag 1 performs the real ban. A hit CONSUMES the message
+ * (no XP, no gork, no dispatch). Message deletion stays out of scope (no
+ * OutboundClient.deleteMessage — the suppression line remains).
  * Staff-exempt authors keep their message (no delete surface) and are never
- * banned.
+ * banned, and so does every author whose exemption state cannot be verified:
+ * the same fail-safe posture as the Discord twin (audit C4, PR #237).
+ *
+ * Role-state authority (#280) — the exemption check may only run on roles we
+ * can trust, in this order:
+ *   1. `fetchMember` resolves a member carrying a role array → AUTHORITATIVE
+ *      (it overrides a stale payload in both directions).
+ *   2. Fetch rejected/null but the payload carried NON-EMPTY role ids →
+ *      authoritative-POSITIVE: the #183 member-manager path only yields real
+ *      ids for a member it actually carried, so staff stay exempt under a
+ *      transient failure and a known non-staff set bans exactly as before.
+ *   3. Fetch rejected/null AND the payload set is empty/absent → UNKNOWN.
+ *      `[]` is ambiguous (issue #274: dispatch sends `[]` both for "member
+ *      present, zero roles" and for "the payload carried no member"), so an
+ *      empty set may be a member-absence artifact rather than a known-empty
+ *      one. A ban is irreversible and the docs promise staff are exempt →
+ *      consume the hit, log user + community + cause, NEVER ban. Accepted
+ *      tradeoff (same as #237): a real hit during a transient Fluxer failure
+ *      goes unbanned — a false negative beats banning a moderator.
  *
  * @param {object} outbound OutboundClient (Fluxer adapter)
  * @param {object} message NormalizedMessage (communityId resolved)
@@ -690,15 +709,36 @@ async function handleHoneypotFluxerMessage(outbound, message) {
   if (!isHoneypotChannel(communityId, message.channelId)) return false;
 
   // Honeypot hit: the line is consumed as a hit, never as a command/XP.
-  let roleIds = Array.isArray(message.memberRoleIds) ? message.memberRoleIds : [];
+  const payloadRoleIds = Array.isArray(message.memberRoleIds) ? message.memberRoleIds : [];
+  let roleIds = null; // null = the REST leg did not resolve a member record
+  let fetchCause = null;
   try {
     const member = await outbound.fetchMember(communityId, message.authorId);
-    if (member && Array.isArray(member.roleIds)) roleIds = member.roleIds;
+    if (member && Array.isArray(member.roleIds)) {
+      roleIds = member.roleIds; // authority rule 1
+    } else {
+      // OutboundClient.fetchMember never rejects — it logs the REST cause and
+      // resolves null (src/platform/fluxer/outbound.js), so the specific
+      // network cause is already in the log beside this line.
+      fetchCause = "fetchMember returned no member";
+    }
   } catch (e) {
-    console.warn(
-      `[fluxer] honeypot member fetch failed for ${message.authorId} in community ${communityId}:`,
-      e?.message || e,
+    fetchCause = `fetchMember failed: ${e?.message || e}`;
+  }
+
+  if (roleIds === null && payloadRoleIds.length > 0) {
+    roleIds = payloadRoleIds; // authority rule 2 (non-empty payload = positive state)
+  }
+  if (roleIds === null) {
+    // Authority rule 3: member state UNKNOWN. Consumption semantics match the
+    // staff-exempt branch below — the hit is recorded, the message stands (no
+    // delete surface), and NO ban is issued. Never ban on unknown state.
+    console.error(
+      `[fluxer] honeypot member state unknown for ${message.authorId} in community ${communityId} ` +
+        `channel ${message.channelId}: ${fetchCause} — no ban, message stands ` +
+        `(no delete surface in PR 6)`,
     );
+    return true;
   }
 
   if (memberHasStaffRole(communityId, roleIds)) {
