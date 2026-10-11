@@ -57,11 +57,58 @@ const helpers = {
   getPrimaryKeyColumns,
 };
 
+// ── Schema version tracking via PRAGMA user_version (audit-2026-10 #202) ──
+// The model, deliberately minimal:
+//   * The CORRECTNESS mechanism stays the FULL idempotent replay below: every
+//     migration up() is gated (IF NOT EXISTS / addColumnIfMissing / detected
+//     rebuilds), so replaying all of them on an applied DB is a no-op.
+//   * `user_version` is only the RECORD of a completed full pass and the
+//     fast-skip flag. After a successful pass we stamp it with the highest
+//     registered version; the next boot sees a match and skips the replay.
+//   * The version is the registry SIZE — migrations may only ever be
+//     APPENDED to the list above (same rule as numbered migration files).
+//   * Any other value runs the full replay: `0` is every pre-guard database
+//     (all steps already applied but never recorded — replay is safe by the
+//     idempotency contract above), and a partial version means a pass was
+//     interrupted mid-way (exactly the 003-style non-transactional data-move
+//     hazard 034 hardened against). We never trust a partial version to mean
+//     "those steps ran cleanly"; we re-run the idempotent steps and re-stamp.
+//   * A version HIGHER than this build knows means old code against a newer
+//     DB — refuse to touch it and fail loudly with both numbers.
+const LATEST_VERSION = migrations.length;
+
+/** Current recorded schema version (`PRAGMA user_version`, 0 = never stamped). */
+function readUserVersion() {
+  return Number(db.pragma("user_version", { simple: true }));
+}
+
 /**
- * Run all migrations in order.
+ * Run all migrations in order, recording the applied schema version.
  * Migrations are written to be idempotent (IF NOT EXISTS / addColumnIfMissing / gated rebuilds).
+ *
+ * @returns {{ skipped: boolean, version: number, latest: number }}
+ *   `skipped` — the fast path ran because the DB already records the latest
+ *   version; `version` — the version recorded after this call.
  */
 function runMigrations() {
+  const current = readUserVersion();
+
+  if (current > LATEST_VERSION) {
+    const newest = migrations[LATEST_VERSION - 1]?.id ?? `#${LATEST_VERSION}`;
+    throw new Error(
+      `[db] Schema version guard: database user_version=${current} is NEWER than the newest migration this build knows ` +
+        `(version ${LATEST_VERSION} = ${newest}). This code is older than the database — running it would corrupt the newer schema. ` +
+        `Upgrade the bot to a build that includes migration ${current}, or restore a database backup taken before it ran.`
+    );
+  }
+
+  if (current === LATEST_VERSION) {
+    console.log(
+      `[db] Schema at version ${current}/${LATEST_VERSION} (user_version guard) — skipping migration replay`
+    );
+    return { skipped: true, version: current, latest: LATEST_VERSION };
+  }
+
   for (const migration of migrations) {
     try {
       migration.up(db, helpers);
@@ -70,9 +117,20 @@ function runMigrations() {
       throw err;
     }
   }
+
+  // Stamp AFTER the whole pass succeeds. A crash mid-pass leaves the old
+  // (lower) version recorded, so the next boot replays the idempotent set
+  // again instead of trusting a half-applied state.
+  db.pragma(`user_version = ${LATEST_VERSION}`);
+  console.log(
+    `[db] Migrations applied (user_version ${current} -> ${LATEST_VERSION})`
+  );
+  return { skipped: false, version: LATEST_VERSION, latest: LATEST_VERSION };
 }
 
 module.exports = {
   runMigrations,
+  readUserVersion,
+  LATEST_VERSION,
   migrations,
 };

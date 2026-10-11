@@ -87,6 +87,7 @@ describe("bridge repo (PR 2)", () => {
 
     it("re-running all migrations (incl. 035) is idempotent", () => {
       const { runMigrations } = require("../src/db/migrate");
+      api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay
       assert.doesNotThrow(() => runMigrations());
       assert.doesNotThrow(() => runMigrations());
     });

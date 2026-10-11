@@ -162,8 +162,8 @@ Independent events (message delete, ban, kick, honeypot ban-role, tickers) regis
 
 ## Database Layer (`db/`)
 
-- **connection.js** — SQLite open (`DB_PATH` / `DATA_DIR`), WAL
-- **migrate.js** + **migrations/** — idempotent ordered steps
+- **connection.js** — SQLite open (`DB_PATH` / `DATA_DIR`), explicit pragmas: WAL, `foreign_keys=ON`, `synchronous=FULL`, `busy_timeout=5000` (single-writer contract: one process per DB file — see [database.md](database.md))
+- **migrate.js** + **migrations/** — idempotent ordered steps; `PRAGMA user_version` records a completed pass and fast-skips replay when current; any mismatch re-runs the full idempotent set and re-stamps; a version newer than the registry fails boot loudly
 - **repositories/** — users, guildSettings, activity, youtube, twitch, honeypot, reactionRoles, staff notes/roles, warnings, tickets, user activity, …
 - **index.js** — public facade (same API as legacy single-file `db.js`)
 
