@@ -22,6 +22,11 @@ services:
       - lavalink
     environment:
       DATA_DIR: /data
+      # Fixed process clock (audit #206): the daily decay cron is the hardcoded
+      # `0 4 * * *` and node-cron evaluates it in the process timezone — an
+      # unset TZ makes "4 AM" drift with the host. UTC keeps decay at 04:00 UTC
+      # on every deploy; override in .env only if you really want local time.
+      TZ: ${TZ:-UTC}
       LAVALINK_HOST: lavalink
       LAVALINK_PORT: "2333"
       LAVALINK_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}

@@ -7,16 +7,17 @@ The core feature of Boiler Snake is its customizable XP and leveling system, whi
 ### 1. Messages
 - **Configurable**: Set XP per message (default: 5)
 - **Cooldown**: Prevents spam farming (default: 20 seconds)
-- Example: With `msg_xp=5` and `msg_cooldown_sec=20`, a user can earn up to 270 XP/hour from messages
+- Theoretical cap: `3600 / msg_cooldown_sec × msg_xp` XP/hour — the defaults (`msg_xp=5`, `msg_cooldown_sec=20`) give **900 XP/h**, only reachable by posting steadily every 20 seconds for a full hour
 
 ### 2. Reactions
 - **Configurable**: Set XP per reaction (default: 2)
 - **Cooldown**: Configurable delay between reaction XP awards (default: 10 seconds)
-- Example: With `reaction_xp=2` and `reaction_cooldown_sec=10`, users can earn up to 720 XP/hour from reactions
+- Theoretical cap: `3600 / reaction_cooldown_sec × reaction_xp` XP/hour — the defaults (`reaction_xp=2`, `reaction_cooldown_sec=10`) give **720 XP/h** (reactions only; caps are per-source and stack with the others)
 
 ### 3. Voice Channels
-- **Per-minute ticker**: Awards XP once per minute for eligible voice participants
+- **Per-minute ticker**: Awards XP once per minute for eligible voice participants (a user holds one voice channel per guild, so one award per user per tick; **every** eligible channel is awarded each tick)
 - **Configurable rate**: Set XP per minute (default: 1)
+- Theoretical cap: `60 × voice_xp_per_min` XP/hour of continuous eligible voice (default: 60 XP/h)
 - **Eligibility rules**:
   - Must be in a non-AFK voice channel
   - Cannot be muted or deafened (self or server)

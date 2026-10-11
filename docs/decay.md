@@ -4,7 +4,7 @@ Reduce XP for inactive users to encourage consistent participation and prevent "
 
 ## Overview
 
-The decay system runs daily at 4:00 AM server time (configurable via cron) and reduces XP for users who don't meet minimum activity thresholds.
+The decay system runs daily at **04:00 in the process timezone** and reduces XP for users who don't meet minimum activity thresholds. The schedule is a hardcoded cron constant (`0 4 * * *`) — there is **no `DECAY_CRON` env knob**; the way to control *when* it fires is the process clock. Deployments pin `TZ=UTC` (docker compose defaults it, audit #206), so the practical contract is **04:00 UTC on every host**. On a bare `npm start`, "4 AM" means the host's local time — including its DST quirks.
 
 ## Configuration
 
@@ -57,29 +57,34 @@ Settings: `messages=10, days=14, percent=5`
 
 ### Schedule
 ```javascript
-// Runs at 4 AM server time daily
-cron.schedule("0 4 * * *", runDecayForGuild);
+// src/features/decay/index.js — a const, not an env var (no DECAY_CRON knob)
+const DECAY_CRON = "0 4 * * *";   // node-cron semantics: PROCESS timezone
+
+startDecayScheduler → registerJob({ name: "decay", cron: DECAY_CRON, run: … })
 ```
+
+The job runs on the shared scheduler (`core/scheduler.js`, overlap-skip). Docker
+compose sets `TZ: ${TZ:-UTC}`, so the fire time is 04:00 **UTC** on every
+deploy; a bare host runs it at its own local 4 AM.
 
 ### Code Flow
 ```javascript
-for each guild {
-  for each user {
-    msgCount = count recent messages (last N days)
-    
-    if msgCount < minimum {
-      newXp = floor(oldXp × (1 - decay_percent))
-      
-      // Update XP in database
-      setXp(guildId, userId, newXp)
-      
-      // Sync roles (may drop below thresholds)
-      level = levelFromXp(newXp)
-      syncMemberRoles(member, level)           // /leveltorole (+ grace period)
-      syncMemberReactionRoles(member, level) // reaction-role min_level (immediate)
-    }
+for each community with tracked users {          // one failure never aborts the rest
+  for each user row {                            // snapshot is ENUMERATION only (#191)
+    msgCount = countMessagesInWindow(community, user, decay_window_days)
+    if msgCount >= decay_min_messages continue
+
+    // Relative write against the LIVE row, in one transaction (#191/H10):
+    //   UPDATE users SET xp = MIN(MAX_SAFE, MAX(0, FLOOR(xp * (1 - pct))))
+    // XP earned while the tick runs is never overwritten.
+    applyDecay(community, user, pct)             // no-op ⇒ null (pct 0, xp 0, unchanged)
+
+    // role re-sync at the new level (per-user try/catch, #198):
+    syncMemberRoles(...)                         // /leveltorole (+ grace period)
+    syncMemberReactionRoles(...)                 // reaction-role min_level (immediate)
   }
 }
+```
 
 ### Role checks after decay
 
@@ -91,7 +96,6 @@ For every user who **actually loses XP**, the bot re-evaluates roles at the new 
 | **Reaction roles** | If the member holds a reaction-claim role and their level is below that role’s **minimum** configured `min_level` (lowest among all options granting that role), the role is **removed immediately** |
 
 Reaction-role removal on decay does **not** remove the user’s reaction on the panel message (they can re-react once they meet the level again).
-```
 
 ### Activity Log Integration
 
@@ -159,11 +163,20 @@ Index in place: `idx_activity_recent (guild_id, user_id, kind, created_at)`
 
 ## Edge Cases
 
-### Edge Case 1: Zero XP After Decay
+### Edge Case 1: XP Reaching Zero
 ```javascript
-floor(50 × (1 - 0.9)) = floor(5) = 5 XP
+floor(50 × (1 - 0.9)) = floor(5) = 5 XP       // one 90% tick: 50 → 5…
+floor(5 × 0.9)  = 4                           // …repeated 10% ticks keep walking down:
+floor(4 × 0.9)  = 3
+floor(1 × 0.9)  = 0   // with 10% decay, 1 XP decays to NOTHING
+floor(19 × (1 - 0.95)) = floor(0.95) = 0   // 95% decay zeroes 19 XP in one tick
 ```
-XP can never reach zero via decay (always at least floor(XP × 0.05))
+
+XP **can** reach zero via decay. The write is `MAX(0, FLOOR(xp × keep))` — a
+repeated floor of a fraction strictly below 1, so any XP total an inactive user
+keeps below the message threshold eventually walks down to `0` (faster for
+small totals: any total below `1 / keep` hits zero on the next tick). Zero is
+absorbing: `applyDecay` is a no-op once the row is 0.
 
 ### Edge Case 2: Already Low XP
 If user has very little XP, decay may have negligible effect:
