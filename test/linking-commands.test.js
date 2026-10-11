@@ -19,6 +19,9 @@
  *      the user_links row readable via api.getUserLinkFrom BOTH sides, with
  *      Discord stored as side `a` (canonical orientation).
  *  (c) mirrored mint direction: `!link create` → `/link connect` works too.
+ *      The Fluxer create reply is DM-first (K2, issue #194): the code lands in
+ *      the author's DM, the channel gets the sentinel ack WITHOUT the code,
+ *      and a failed DM delivery posts the delivery error only (never the code).
  *  (d) /link status names the peer (resolved display name + ids) and every
  *      mirror rate; a caller with no link gets the specific create-guidance.
  *  (e) remove deletes the row and quotes the service's non-retroactive note
@@ -29,6 +32,10 @@
  *      generic): invalid alphabet, missing code, unknown code, expired code,
  *      already-used code, same-platform redemption, unpaired communities,
  *      caller already linked, target already linked (code NOT burned).
+ *      Discord stays ephemeral-full-detail; on Fluxer the CONFLICT refusals
+ *      (caller/target linked, lost link-insert race) are scrubbed in-channel
+ *      (no peer identifier, no code echo — issue #194) with the full detail
+ *      delivered to the author by DM.
  *  (h) unknown subcommand: the handler names the valid set; the prefix parser
  *      turns it into a usage reply naming the same set.
  *
@@ -46,6 +53,7 @@ const { api, cleanup } = loadDb();
 
 const service = require("../src/features/linking/service");
 const { handleLink } = require("../src/features/linking/commands");
+const userLinksRepo = require("../src/db/repositories/userLinks");
 const { buildDiscordCommandContext } = require("../src/platform/discord/context");
 const { buildDefaultRegistry } = require("../src/commands/registry");
 const { parsePrefix } = require("../src/platform/fluxer/commands");
@@ -60,7 +68,12 @@ const {
   lastReplyEphemeral,
   MessageFlags,
 } = require("./helpers/discord");
-const { makeFakeRest, makeFakeHandle, gatewayMessage } = require("./helpers/fluxer");
+const {
+  FluxerRestError,
+  makeFakeRest,
+  makeFakeHandle,
+  gatewayMessage,
+} = require("./helpers/fluxer");
 
 after(cleanup);
 
@@ -87,6 +100,12 @@ const FX_2 = "flux-cmd-2";
 const FX_5 = "flux-cmd-5";
 const FX_6 = "flux-cmd-6";
 const FX_7 = "flux-cmd-7";
+
+/**
+ * DM channel the fake REST opens for `POST /v1/users/@me/channels` (the K2
+ * sendDm route shape, same fixture form as test/bridge-activation.test.js).
+ */
+const DM_CHANNEL = "dm-link-cmd";
 
 /** Service sentences — handlers must reply these VERBATIM. */
 const M = service.LINK_MESSAGES;
@@ -158,13 +177,31 @@ function makeDiscordCtx({ userId, subcommand, options = {}, guildExternalId = DC
   return { interaction, ctx };
 }
 
-/** One `!link …` through the REAL parser + dispatcher; returns the channel POSTs. */
+/**
+ * One `!link …` through the REAL parser + dispatcher. Returns the recorded
+ * channel POSTs, the DM channel POSTs (K2 sendDm deliveries), the DM-open
+ * calls, and the raw rest for route-level assertions.
+ *
+ * `dmMode: "fail"` scripts the DM delivery to fail with a CANNOT_SEND_TO_USER
+ * shaped REST error (the send-time code Phase 0 recorded for Fluxer).
+ */
 async function runFluxer(
   content,
   authorId,
-  { guildExternalId = FX_GUILD, allowUsageError = false } = {},
+  { guildExternalId = FX_GUILD, allowUsageError = false, dmMode = "ok" } = {},
 ) {
   const routes = { [`POST /v1/channels/${CHANNEL}/messages`]: { id: "r-1" } };
+  if (dmMode === "ok") {
+    routes["POST /v1/users/@me/channels"] = { id: DM_CHANNEL, type: 1 };
+    routes[`POST /v1/channels/${DM_CHANNEL}/messages`] = { id: "dm-msg-1" };
+  } else {
+    routes["POST /v1/users/@me/channels"] = () => {
+      throw new FluxerRestError("403 CANNOT_SEND_TO_USER: POST /v1/users/@me/channels", {
+        status: 403,
+        code: "CANNOT_SEND_TO_USER",
+      });
+    };
+  }
   if (guildExternalId !== FX_GUILD) routes[`GET /v1/guilds/${guildExternalId}/roles`] = [];
   const rest = makeFakeRest({ routes });
   const { outbound } = makeFakeHandle({ instanceKey: FX_INSTANCE, rest });
@@ -193,7 +230,13 @@ async function runFluxer(
 
   await dispatchPrefixCommand(outbound, normalized, parsed, { registry, supervisor: nameSupervisor });
   const posts = rest.calls.filter((c) => c.method === "POST" && c.path === `/v1/channels/${CHANNEL}/messages`);
-  return { rest, posts, body: posts[posts.length - 1]?.body };
+  const dms = rest.calls.filter(
+    (c) => c.method === "POST" && c.path === `/v1/channels/${DM_CHANNEL}/messages`,
+  );
+  const dmOpens = rest.calls.filter(
+    (c) => c.method === "POST" && c.path === "/v1/users/@me/channels",
+  );
+  return { rest, posts, body: posts[posts.length - 1]?.body, dms, dmBody: dms[dms.length - 1]?.body, dmOpens };
 }
 
 function codeRowFor(userLabel) {
@@ -294,14 +337,31 @@ describe("linking command surface (account-linking T3/T6)", () => {
   });
 
   // (c) ---------------------------------------------------------------------
-  it("mirrored direction: Fluxer !link create mints in-channel; Discord /link connect redeems it", async () => {
+  it("mirrored direction: Fluxer !link create sends the code by DM (K2); the channel gets the sentinel; Discord /link connect redeems it", async () => {
     const out = await runFluxer("!link create", FX_2);
-    assert.equal(out.posts.length, 1, "Fluxer create replies in-channel (no ephemeral concept)");
-    const match = out.body.content.match(CODE_RE);
-    assert.ok(match, `expected a LNK- code in: ${out.body.content}`);
-    assert.match(out.body.content, /^Link code, shown once: LNK-/);
+
+    // The channel ack is the DM sentinel — never the code (issue #194).
+    assert.equal(out.posts.length, 1, "one channel ack");
+    assert.deepEqual(out.body.allowed_mentions, { parse: [] }, "the ack never pings");
+    assert.match(out.body.content, /^Link code sent — check your DMs\./, out.body.content);
+    assert.ok(out.body.content.includes("!link create"), "the sentinel names the caller's command");
+    assert.ok(out.body.content.includes("!link status"), out.body.content);
+    assert.ok(
+      !out.body.content.includes("LNK-"),
+      `the channel never shows a link code: ${out.body.content}`,
+    );
+
+    // The credential landed in the AUTHOR's DM through the K2 sendDm path.
+    assert.equal(out.dmOpens.length, 1, "the DM channel was opened for the author");
+    assert.deepEqual(out.dmOpens[0].body, { recipient_id: FX_2 });
+    assert.equal(out.dms.length, 1, "exactly one DM delivery");
+    const dmContent = out.dmBody.content;
+    const match = dmContent.match(CODE_RE);
+    assert.ok(match, `expected a LNK- code in the DM: ${dmContent}`);
+    assert.match(dmContent, /^Link code, shown once: LNK-/);
+    assert.match(dmContent, /about 15 minutes/);
     // Opposite-side hint for a Fluxer caller uses the DISCORD spelling.
-    assert.ok(out.body.content.includes("/link connect"), out.body.content);
+    assert.ok(dmContent.includes("/link connect"), dmContent);
 
     const { interaction, ctx } = makeDiscordCtx({
       userId: DISC_2,
@@ -324,6 +384,30 @@ describe("linking command surface (account-linking T3/T6)", () => {
     assert.equal(link.community_id_a, dcId);
     assert.equal(link.user_id_b, FX_2);
     assert.ok(Number.isInteger(codeRowFor(FX_2).used_at), "the Fluxer-minted code is spent");
+  });
+
+  it("Fluxer !link create with a failing DM: the channel gets the specific delivery error, never the code (K2 fallback)", async () => {
+    const out = await runFluxer("!link create", "flux-cmd-10", { dmMode: "fail" });
+
+    assert.equal(out.posts.length, 1, "exactly one channel reply (the delivery error)");
+    assert.equal(out.dms.length, 0, "nothing was delivered");
+    assert.match(
+      out.body.content,
+      /^I could not DM you the result: /,
+      `channel reply is the K2 delivery-error-only form: ${out.body.content}`,
+    );
+    assert.ok(
+      out.body.content.includes("CANNOT_SEND_TO_USER"),
+      `the specific send-time cause surfaces: ${out.body.content}`,
+    );
+    assert.ok(
+      !out.body.content.includes("LNK-"),
+      `the minted code never reaches the channel: ${out.body.content}`,
+    );
+
+    // The minted row is ordinary state: unconsumed, it expires on its own.
+    const row = codeRowFor("flux-cmd-10");
+    assert.equal(row.used_at, null, "the undelivered code stays unconsumed (expires on its own)");
   });
 
   // (d) ---------------------------------------------------------------------
@@ -540,6 +624,148 @@ describe("linking command surface (account-linking T3/T6)", () => {
     );
     const row = api.db.prepare("SELECT used_at FROM user_link_codes WHERE id = ?").get(minted.linkCode.id);
     assert.equal(row.used_at, null, "fail-closed ordering: a fixable refusal never burns the code");
+  });
+
+  // (g, Fluxer surfaces — issue #194) CONFLICT refusals: the channel-visible
+  // reply carries NO peer identifier and no code echo; the full detail lands
+  // in the caller's DM (the Discord twin above keeps it ephemeral-verbatim).
+  it("!link connect, caller already linked → channel gets the non-revealing sentence, DM carries the peer detail, code NOT burned", async () => {
+    // FX_2 is linked to DISC_2 (test c). The DM-visible full sentence must
+    // name that peer; the channel reply must not.
+    const existing = api.getUserLinkFor(fxId, FX_2);
+    assert.ok(existing, "fixture link from test (c)");
+    const minted = await service.createLinkCode(dcId, "disc-cmd-10"); // fresh, unlinked minter
+    assert.equal(minted.ok, true, minted.error || "");
+
+    const out = await runFluxer(`!link connect code ${minted.code}`, FX_2);
+
+    assert.equal(out.posts.length, 1, "one channel reply");
+    assert.equal(out.body.content, M.callerLinkedPublic("!link"), out.body.content);
+    assert.ok(
+      !out.body.content.includes("user ") &&
+        !out.body.content.includes(DISC_2) &&
+        !out.body.content.includes(FX_2),
+      `the channel reply names no peer identifier: ${out.body.content}`,
+    );
+    assert.ok(!out.body.content.includes("LNK-"), "no code echo on the public surface");
+
+    assert.equal(out.dms.length, 1, "full detail delivered by DM");
+    assert.equal(
+      out.dmBody.content,
+      M.callerLinked(FX_2, fxId, DISC_2, dcId, isoOf(existing.created_at), "!link"),
+      "the DM carries the full callerLinked sentence verbatim",
+    );
+
+    const row = api.db.prepare("SELECT used_at FROM user_link_codes WHERE id = ?").get(minted.linkCode.id);
+    assert.equal(row.used_at, null, "the fixable refusal still never burns the code");
+  });
+
+  it("!link connect, code owner already linked → channel names no peer, DM carries the targetLinked detail", async () => {
+    // Link disc-cmd-11 ↔ FX_5 through the service seam, then a SECOND code
+    // from the now-linked disc-cmd-11 is redeemed in-channel by an unlinked
+    // caller: the channel reply must reveal neither identity pair.
+    const minted1 = await service.createLinkCode(dcId, "disc-cmd-11");
+    assert.equal(minted1.ok, true, minted1.error || "");
+    const made = await service.redeemLinkCode(fxId, FX_5, minted1.code);
+    assert.equal(made.ok, true, made.error || "");
+    const existing = api.getUserLinkFor(dcId, "disc-cmd-11");
+    assert.ok(existing);
+
+    const minted2 = await service.createLinkCode(dcId, "disc-cmd-11");
+    assert.equal(minted2.ok, true, minted2.error || "");
+
+    const out = await runFluxer(`!link connect code ${minted2.code}`, "flux-cmd-11");
+
+    assert.equal(out.body.content, M.targetLinkedPublic("!link"), out.body.content);
+    assert.ok(
+      !out.body.content.includes("user ") &&
+        !out.body.content.includes("disc-cmd-11") &&
+        !out.body.content.includes(FX_5),
+      `the channel reply names no peer identifier: ${out.body.content}`,
+    );
+    assert.ok(!out.body.content.includes("LNK-"), "no code echo on the public surface");
+
+    assert.equal(out.dms.length, 1, "full detail delivered by DM");
+    assert.equal(
+      out.dmBody.content,
+      M.targetLinked("disc-cmd-11", dcId, FX_5, fxId, isoOf(existing.created_at), "!link"),
+      "the DM carries the full targetLinked sentence verbatim",
+    );
+
+    const row = api.db.prepare("SELECT used_at FROM user_link_codes WHERE id = ?").get(minted2.linkCode.id);
+    assert.equal(row.used_at, null, "code NOT burned by the fixable refusal");
+  });
+
+  it("!link connect, lost link-insert race → channel gets the non-revealing retry sentence, DM keeps the repo detail, code burned", async () => {
+    // Claim race: every pre-check passed (both sides unlinked), the code was
+    // consumed, then createLink loses the row-UNIQUE race and its repository
+    // detail names the side that got linked meanwhile (both user ids). The
+    // channel must show the scrubbed retry sentence; the DM keeps the detail.
+    const minted = await service.createLinkCode(dcId, "disc-cmd-12");
+    assert.equal(minted.ok, true, minted.error || "");
+
+    const raceDetail =
+      `the first side (user disc-cmd-12 in community ${dcId}) is already linked to ` +
+      "user race-peer-9 in community 999999 (linked since 2026-01-01T00:00:00.000Z) — " +
+      "remove that link first";
+    const originalCreateLink = userLinksRepo.createLink;
+    userLinksRepo.createLink = () => ({ ok: false, error: raceDetail });
+    let out;
+    try {
+      out = await runFluxer(`!link connect code ${minted.code}`, "flux-cmd-12");
+    } finally {
+      userLinksRepo.createLink = originalCreateLink;
+    }
+
+    assert.equal(out.body.content, M.createFailedPublic("!link"), out.body.content);
+    assert.ok(
+      !out.body.content.includes("race-peer-9") &&
+        !out.body.content.includes("disc-cmd-12") &&
+        !out.body.content.includes(FX_5) &&
+        !out.body.content.includes("user "),
+      `the channel reply hides the concurrent-change detail: ${out.body.content}`,
+    );
+    assert.ok(!out.body.content.includes("LNK-"), "no code echo on the public surface");
+
+    assert.equal(out.dms.length, 1, "full detail delivered by DM");
+    assert.equal(
+      out.dmBody.content,
+      M.createFailed(raceDetail, "!link"),
+      "the DM carries the full createFailed sentence (repo detail included) verbatim",
+    );
+
+    const row = api.db.prepare("SELECT used_at FROM user_link_codes WHERE id = ?").get(minted.linkCode.id);
+    assert.ok(Number.isInteger(row.used_at), "the code was consumed before the insert race — spent");
+  });
+
+  it("!link connect refusal whose DM ALSO fails: the channel names the delivery cause, still no peer detail", async () => {
+    // Caller FX_2 is linked (fixture c) AND the DM is refused: the channel
+    // reply is the public sentence + the specific delivery cause (AGENTS.md
+    // rule 3) — never the peer detail the DM could not carry.
+    const minted = await service.createLinkCode(dcId, "disc-cmd-13");
+    assert.equal(minted.ok, true, minted.error || "");
+
+    const out = await runFluxer(`!link connect code ${minted.code}`, FX_2, { dmMode: "fail" });
+
+    assert.equal(out.posts.length, 1, "one channel reply");
+    assert.equal(out.dms.length, 0, "the DM did not land");
+    assert.ok(
+      out.body.content.startsWith(M.callerLinkedPublic("!link")),
+      `public sentence leads: ${out.body.content}`,
+    );
+    assert.ok(
+      out.body.content.includes("I could not DM you the full detail: ") &&
+        out.body.content.includes("CANNOT_SEND_TO_USER"),
+      `the specific DM failure cause surfaces: ${out.body.content}`,
+    );
+    // The delivery error may name the CALLER (their id is already public in
+    // this channel) — what must NEVER appear is the peer the full sentence
+    // would have carried.
+    assert.ok(
+      !out.body.content.includes(DISC_2) &&
+        !out.body.content.includes(M.callerLinked(FX_2, fxId, DISC_2, dcId, "x", "!link")),
+      `no peer detail even on the double-failure path: ${out.body.content}`,
+    );
   });
 
   // (h) ---------------------------------------------------------------------

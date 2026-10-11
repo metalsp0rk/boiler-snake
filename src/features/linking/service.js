@@ -83,6 +83,22 @@ const LINK_MESSAGES = Object.freeze({
     `in community ${peerCommunityId} (linked since ${iso}). That account must run ${cmd} remove before it can be linked again.`,
   createFailed: (detail, cmd) =>
     `Could not save the link: ${detail}. The link code was already spent, so create a new one with ${cmd} create.`,
+  // PUBLIC-surface (channel-visible) variants of the conflict replies (audit
+  // 2026-10 §6 P1 / issue #194): the Fluxer guild channel is a public surface,
+  // so these name the failure and the fix path but NEVER who holds the
+  // code/identity and never echo a code. The full-detail sentences above stay
+  // on the private surfaces (Discord ephemeral, Fluxer DM to the caller);
+  // redeemLinkCode attaches the matching public sentence as `publicError` so
+  // the handlers choose by reply surface without re-deriving the branch.
+  callerLinkedPublic: (cmd) =>
+    `Your account is already linked here, so this code cannot be redeemed. ` +
+    `${cmd} status shows the link, and ${cmd} remove unlinks it before a new account can be linked.`,
+  targetLinkedPublic: (cmd) =>
+    `The account behind that link code is already linked to another account, so it cannot accept a second link. ` +
+    `That account must run ${cmd} remove on its side before it can be linked again.`,
+  createFailedPublic: (cmd) =>
+    `Could not save the link: one of the two accounts was linked by a concurrent change. ` +
+    `The link code was already spent, so create a new one with ${cmd} create.`,
   mintFailed: (detail) => `Could not mint a link code: ${detail}.`,
   mirrorNoLink: (userId, communityId, cmd) =>
     `user ${userId} in community ${communityId} has no account link to configure — ` +
@@ -355,7 +371,11 @@ async function createLinkCode(communityId, userId, opts = {}) {
  * @param {() => number} [opts.clock] epoch-ms clock (tests inject)
  * @param {object} [opts.repo] repository seam (tests inject)
  * @param {string} [opts.surfaceCmd='/link'] command hint in user replies
- * @returns {Promise<{ ok: true, link: object, peer: object } | { ok: false, error: string }>}
+ * @returns {Promise<{ ok: true, link: object, peer: object } | { ok: false, error: string, publicError?: string, codeBurned?: boolean }>}
+ *   Conflict refusals (caller/target already linked, lost link-insert race)
+ *   additionally carry `publicError`: the non-revealing sentence for the
+ *   channel-visible Fluxer surface (issue #194); `error` keeps the full
+ *   detail for the private (ephemeral / DM) surface.
  */
 async function redeemLinkCode(communityId, userId, rawCode, opts = {}) {
   const linkRepo = opts.repo ?? repo;
@@ -453,6 +473,10 @@ async function redeemLinkCode(communityId, userId, rawCode, opts = {}) {
           isoUtc(callerLink.created_at),
           surfaceCmd,
         ),
+        // Identity conflict: the full sentence names the caller's existing
+        // peer, so the public (channel-visible) surface gets the scrubbed
+        // variant instead (issue #194).
+        publicError: LINK_MESSAGES.callerLinkedPublic(surfaceCmd),
       };
     }
     const targetLink = linkRepo.getLinkFor(codeRow.community_id, codeRow.user_id);
@@ -469,6 +493,9 @@ async function redeemLinkCode(communityId, userId, rawCode, opts = {}) {
           isoUtc(targetLink.created_at),
           surfaceCmd,
         ),
+        // Identity conflict: names the code owner AND their peer — scrubbed
+        // on the public surface (issue #194).
+        publicError: LINK_MESSAGES.targetLinkedPublic(surfaceCmd),
       };
     }
 
@@ -510,6 +537,10 @@ async function redeemLinkCode(communityId, userId, rawCode, opts = {}) {
         ok: false,
         codeBurned: true,
         error: LINK_MESSAGES.createFailed(created.error, surfaceCmd),
+        // Claim race: the repository's detail names the side that holds the
+        // link (describeExistingLink includes both user ids), so the public
+        // surface gets the scrubbed variant (issue #194).
+        publicError: LINK_MESSAGES.createFailedPublic(surfaceCmd),
       };
     }
 
