@@ -25,7 +25,7 @@
   "dependencies": {
     "@fluxerjs/core": "3.1.0",
     "@mozilla/readability": "^0.6.0",
-    "@napi-rs/canvas": "^0.1.67",
+    "@napi-rs/canvas": "^1.0.10",
     "better-sqlite3": "^12.11.1",
     "discord.js": "^14.16.0",
     "dotenv": "^16.4.5",
