@@ -32,7 +32,7 @@
     "express": "^5.2.1",
     "jsdom": "^30.0.1",
     "lavalink-client": "^2.11.0",
-    "node-cron": "^3.0.3",
+    "node-cron": "^4.6.0",
     "rss-parser": "^3.13.0",
     "turndown": "^7.2.4"
   },
