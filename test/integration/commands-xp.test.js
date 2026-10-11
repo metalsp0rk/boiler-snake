@@ -399,6 +399,24 @@ describe("integration: leaderboard pagination", () => {
     assert.equal(clampLeaderboardPage(0), 1);
     assert.equal(clampLeaderboardPage(999), 20);
     assert.equal(clampLeaderboardPage(2.7), 2);
+    // Audit P0.6: crafted button payloads with an oversized page clamp to
+    // LB_PAGE_MAX at the parse site instead of reaching fetch/offset math.
+    assert.deepEqual(
+      parseLeaderboardButtonCustomId("lb:u1:10:21"),
+      { requesterId: "u1", limit: 10, page: 20 },
+    );
+    assert.deepEqual(
+      parseLeaderboardButtonCustomId("lb:u1:10:999999"),
+      { requesterId: "u1", limit: 10, page: 20 },
+    );
+    assert.deepEqual(
+      parseLeaderboardButtonCustomId("lb:u1:10:20"),
+      { requesterId: "u1", limit: 10, page: 20 },
+    );
+    assert.deepEqual(
+      parseLeaderboardButtonCustomId("lb:u1:10:1"),
+      { requesterId: "u1", limit: 10, page: 1 },
+    );
   });
 });
 

@@ -199,7 +199,10 @@ function parseLeaderboardButtonCustomId(customId) {
     return null;
   }
   if (!Number.isInteger(page) || page < 1) return null;
-  return { requesterId, limit, page };
+  // Apply the page ceiling like the slash-command arm does (audit P0.6):
+  // a crafted customId with an oversized page must clamp, not reach the
+  // limit*page+1 fetch/offset math in buildLeaderboardPagePayload.
+  return { requesterId, limit, page: clampLeaderboardPage(page) };
 }
 
 /**
