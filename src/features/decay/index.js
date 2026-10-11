@@ -2,7 +2,7 @@ const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
 const { registerJob } = require("../../core/scheduler");
 const {
   countMessagesInWindow,
-  setXp,
+  applyDecay,
   getGuildSettings,
   updateGuildSettings,
 } = require("../../db");
@@ -214,10 +214,17 @@ function resolveOutbound(supervisor, communityId) {
 
 /**
  * Run one decay pass for a community.
+ *
  * @param {object|null} supervisor PR 7 supervisor ({discord, fluxer, clientForCommunity})
  * @param {number} communityId  internal communities.id
+ * @param {object} [opts]
+ * @param {(user: {user_id: string, xp: number}) => Promise<void>|void} [opts.onBeforeDecay]
+ *   Test seam (#191 verification): async hook invoked per user AFTER the
+ *   activity check and BEFORE the decay write — the exact window where an
+ *   award used to be lost to the stale-snapshot overwrite. Production
+ *   callers (the cron job) pass no opts.
  */
-async function runDecayForGuild(supervisor, communityId) {
+async function runDecayForGuild(supervisor, communityId, opts = {}) {
   const settings = getGuildSettings(communityId);
   if (!settings.decay_enabled) return;
 
@@ -265,86 +272,109 @@ async function runDecayForGuild(supervisor, communityId) {
   // K8: Fluxer role mutations are elevated-gated; Discord rows always re-sync.
   const fluxerCanResync = !isDiscordRow && Number(community.elevatedPermissions) === 1;
 
+  // Per-guild decay percent is read once at tick start (from `settings`
+  // above); a /setdecay edit mid-tick applies on the NEXT tick. Acceptable
+  // per #191 — the lost-update fix only requires the XP BASE to be live.
+  const pct = Math.min(
+    0.95,
+    Math.max(0, Number(settings.decay_percent) || 0),
+  );
+  const onBeforeDecay =
+    typeof opts.onBeforeDecay === "function" ? opts.onBeforeDecay : null;
+
+  // The snapshot is an ENUMERATION only (audit H10, #191): u.xp is never
+  // used for arithmetic. applyDecay re-reads the row and writes a value
+  // relative to the CURRENT stored XP, so awards landing between here and
+  // the write survive the tick.
   const users = allUsersInCommunity(communityId);
   for (const u of users) {
-    const msgCount = countMessagesInWindow(
-      communityId,
-      u.user_id,
-      settings.decay_window_days,
-    );
+    try {
+      const msgCount = countMessagesInWindow(
+        communityId,
+        u.user_id,
+        settings.decay_window_days,
+      );
 
-    if (msgCount >= settings.decay_min_messages) continue;
+      if (msgCount >= settings.decay_min_messages) continue;
 
-    const pct = Math.min(
-      0.95,
-      Math.max(0, Number(settings.decay_percent) || 0),
-    );
-    const newXp = Math.floor(u.xp * (1 - pct));
-    if (newXp === u.xp) continue;
+      if (onBeforeDecay) await onBeforeDecay(u);
 
-    const oldLvl = levelFromXp(u.xp, settings.level_xp_factor);
-    setXp(communityId, u.user_id, newXp);
-    recordSystemAudit({
-      communityId,
-      action: "decay.xp_decay",
-      targetType: "user",
-      targetId: u.user_id,
-      details: {
-        before_xp: u.xp,
-        after_xp: newXp,
-        percent: pct,
-        old_level: oldLvl,
-      },
-    });
+      // Relative decay against the LIVE row (no-op ⇒ null: pct 0, xp 0,
+      // untracked user, or a total too small to change).
+      const decayed = applyDecay(communityId, u.user_id, pct);
+      if (!decayed) continue;
 
-    const lvl = levelFromXp(newXp, settings.level_xp_factor);
+      const beforeXp = decayed.before_xp;
+      const newXp = decayed.after_xp;
+      const oldLvl = levelFromXp(beforeXp, settings.level_xp_factor);
+      recordSystemAudit({
+        communityId,
+        action: "decay.xp_decay",
+        targetType: "user",
+        targetId: u.user_id,
+        details: {
+          before_xp: beforeXp,
+          after_xp: newXp,
+          percent: pct,
+          old_level: oldLvl,
+        },
+      });
 
-    if (isDiscordRow) {
-      const member = await guild.members.fetch(u.user_id).catch(() => null);
-      if (member) {
-        const levelChanges = await syncMemberRoles(outbound, communityId, member, lvl);
-        await logLevelRoleChanges(
-          outbound,
-          communityId,
-          member,
-          levelChanges,
-          lvl,
-          "decay",
-        ).catch(() => {});
+      const lvl = levelFromXp(newXp, settings.level_xp_factor);
 
-        await syncMemberReactionRoles(member, lvl, {
-          client,
-          logSource: "decay_reaction_role",
-        });
+      if (isDiscordRow) {
+        const member = await guild.members.fetch(u.user_id).catch(() => null);
+        if (member) {
+          const levelChanges = await syncMemberRoles(outbound, communityId, member, lvl);
+          await logLevelRoleChanges(
+            outbound,
+            communityId,
+            member,
+            levelChanges,
+            lvl,
+            "decay",
+          ).catch(() => {});
 
-        if (lvl < oldLvl) {
-          console.log(
-            `[decay] ${guildId}/${u.user_id}: XP ${u.xp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`,
-          );
+          await syncMemberReactionRoles(member, lvl, {
+            client,
+            logSource: "decay_reaction_role",
+          });
+
+          if (lvl < oldLvl) {
+            console.log(
+              `[decay] ${guildId}/${u.user_id}: XP ${beforeXp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`,
+            );
+          }
+        }
+      } else if (fluxerCanResync) {
+        // Fluxer elevated path (spec 575): re-sync roles through the OutboundClient
+        // MemberHandle surface; K8 self-gates the actual REST calls. Reaction-role
+        // sync needs discord.js member objects and stays Discord-only (PR 6 limit).
+        const member = await outbound.fetchMember(communityId, u.user_id);
+        if (member) {
+          const levelChanges = await syncMemberRoles(outbound, communityId, member, lvl);
+          await logLevelRoleChanges(
+            outbound,
+            communityId,
+            member,
+            levelChanges,
+            lvl,
+            "decay",
+          ).catch(() => {});
+
+          if (lvl < oldLvl) {
+            console.log(
+              `[decay] ${guildId}/${u.user_id}: XP ${beforeXp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`,
+            );
+          }
         }
       }
-    } else if (fluxerCanResync) {
-      // Fluxer elevated path (spec 575): re-sync roles through the OutboundClient
-      // MemberHandle surface; K8 self-gates the actual REST calls. Reaction-role
-      // sync needs discord.js member objects and stays Discord-only (PR 6 limit).
-      const member = await outbound.fetchMember(communityId, u.user_id);
-      if (member) {
-        const levelChanges = await syncMemberRoles(outbound, communityId, member, lvl);
-        await logLevelRoleChanges(
-          outbound,
-          communityId,
-          member,
-          levelChanges,
-          lvl,
-          "decay",
-        ).catch(() => {});
-
-        if (lvl < oldLvl) {
-          console.log(
-            `[decay] ${guildId}/${u.user_id}: XP ${u.xp}→${newXp} (level ${oldLvl}→${lvl}); roles rechecked`,
-          );
-        }
-      }
+    } catch (err) {
+      // #198 (decay leg): one user's REST/role-sync failure must not abort
+      // the remaining users of this community — log with both ids and move on.
+      console.error(
+        `[decay] ${guildId}/${u.user_id}: user decay failed; continuing tick: ${err?.message || err}`,
+      );
     }
   }
 }

@@ -80,6 +80,59 @@ function setXp(communityId, userId, xp) {
   `).run(safe, now(), communityId, userId);
 }
 
+/**
+ * Relative XP decay for ONE user (audit H10, #191): the UPDATE computes the
+ * new total from the CURRENT stored column value inside a transaction —
+ * never from a value the caller snapshotted earlier. Any XP awarded between
+ * the caller's enumeration and this call is therefore preserved (the decay
+ * applies to the live total). Rounding matches the historical JS behavior
+ * bit-for-bit: floor(xp * (1 - decayRate)) with IEEE-754 doubles and the
+ * same MAX_SAFE_XP / [0, …] clamps used by addXp.
+ *
+ * `decayRate` is a fraction (0.1 = 10%); values outside (0, 1] are treated
+ * as no-ops (> 1 clamps to 1 → full wipe). No row, zero XP, or a rate that
+ * would not change the total ⇒ no write at all.
+ *
+ * @param {number} communityId
+ * @param {string} userId
+ * @param {number} decayRate decay fraction in (0, 1]
+ * @returns {{ before_xp: number, after_xp: number }|null} live before/after
+ *          values when the row changed, null on every no-op path.
+ */
+function applyDecay(communityId, userId, decayRate) {
+  assertCommunityId(communityId);
+  let rate = Number(decayRate);
+  if (!Number.isFinite(rate) || rate <= 0) return null;
+  if (rate > 1) rate = 1;
+  const keep = 1 - rate;
+  if (keep >= 1) return null; // rate too small to change any total
+
+  const tx = db.transaction((cId, uId, keepFactor) => {
+    const currentRow = db
+      .prepare(`SELECT xp FROM users WHERE community_id=? AND user_id=?`)
+      .get(cId, uId);
+    if (!currentRow) return null;
+    const beforeXp = clampXpTotal(currentRow.xp);
+    if (beforeXp === 0) return null;
+
+    db.prepare(`
+      UPDATE users
+      SET xp = MIN(?, MAX(0, CAST(FLOOR(xp * ?) AS INTEGER))),
+          updated_at = ?
+      WHERE community_id=? AND user_id=?
+    `).run(MAX_SAFE_XP, keepFactor, now(), cId, uId);
+
+    const afterRow = db
+      .prepare(`SELECT xp FROM users WHERE community_id=? AND user_id=?`)
+      .get(cId, uId);
+    const afterXp = clampXpTotal(afterRow?.xp ?? 0);
+    if (afterXp === beforeXp) return null;
+    return { before_xp: beforeXp, after_xp: afterXp };
+  });
+
+  return tx(communityId, userId, keep);
+}
+
 function getXp(communityId, userId) {
   assertCommunityId(communityId);
   const row = db.prepare(`SELECT xp FROM users WHERE community_id=? AND user_id=?`).get(communityId, userId);
@@ -228,6 +281,7 @@ module.exports = {
   ensureUser,
   addXp,
   setXp,
+  applyDecay,
   getXp,
   getUser,
   searchUsers,
