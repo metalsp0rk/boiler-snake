@@ -4,6 +4,7 @@ require("dotenv").config();
 const { assertRuntimeEnv } = require("./config");
 const { buildDefaultRegistry } = require("./commands/registry");
 const { boot } = require("./platform/boot");
+const { drainAndExit } = require("./core/lifecycle");
 
 // Boot gate (spec § Boot rules 1-3): at least one platform credential, and a
 // malformed FLUXER_INSTANCES block throws even when DISCORD_TOKEN is set.
@@ -21,9 +22,17 @@ async function main() {
   // exit lives here — not in boot() — so tests can exercise boot() safely.
   if (result.ok === false) {
     console.error(
-      `[boot] all configured endpoints failed to start; exiting with code ${result.exitCode}`,
+      `[boot] all configured endpoints failed to start; draining, then exiting with code ${result.exitCode}`,
     );
-    process.exit(result.exitCode);
+    // Audit C9 + issue #190: the terminal all-endpoints-failed path exits
+    // THROUGH the lifecycle drain (endpoint stop handles LIFO, each logged)
+    // instead of a bare process.exit hard-cutting sockets/WAL. The exit
+    // goes through core/lifecycle's injectable seam, so tests can drive
+    // the exact path without killing their own worker (#185 lesson).
+    await drainAndExit({
+      reason: "boot: every configured endpoint failed",
+      exitCode: result.exitCode,
+    });
   }
 }
 
