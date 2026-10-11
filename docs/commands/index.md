@@ -75,7 +75,7 @@ Open a private ticket channel with staff. See [Help Tickets](../tickets.md).
 
 **Response**: Ephemeral link to the new `ticket-N` channel. Subject to per-guild rate limit (default 60 minutes between self-creates).
 
-Members can also use a public **Open a ticket** panel button (posted by admins with `/ticket panel`) which opens a modal for the description, then uses the same create pipeline.
+Members can also use a public **Open a ticket** panel button (posted by staff with `/ticket panel create`) which opens a modal for the description, then uses the same create pipeline.
 
 ### `/ticket settings` - View Ticket Config
 
@@ -154,7 +154,7 @@ Require the **Manage Guild** permission, or a configured **staff role** for staf
 See [Help Tickets](../tickets.md) for full behavior.
 
 **Public:** `create`, `settings`  
-**Staff gate:** `for`, `claim`, `transfer`, `adduser`, `removeuser`, `addstaff`, `removestaff`, `sensitive`, `unsensitive`, `close`, `archive`, `list`, `info`, `panel`, `setcategory`, `setarchive`, `setratelimit`
+**Staff gate:** `for`, `claim`, `transfer`, `adduser`, `removeuser`, `addstaff`, `removestaff`, `sensitive`, `unsensitive`, `close`, `archive`, `list`, `info`, `summarize`, `panel …` (subcommand group: `create`/`list`/`edit`/`delete`), `setcategory`, `setarchive`, `setratelimit`
 
 #### Staff lifecycle (open ticket channel unless noted)
 
@@ -182,14 +182,42 @@ See [Help Tickets](../tickets.md) for full behavior.
 - **`summarize`** — on-demand AI summary of the current ticket conversation (open or soft-closed, pre-archive). Uses `AI_API_KEY`/`AI_BASE_URL`/`AI_MODEL` when configured; otherwise replies with a stats-only fallback and labels it as such.  
 - **Ticket channel overwrites** (automatic staff-role view) use **senior** staff roles only; junior staff need named access (`addstaff`) or Manage Server.
 
-#### `/ticket panel` - Public entry panel
+#### `/ticket panel` - Public entry panels (subcommand group)
+
+Staff-only stored **panel registry** (table `ticket_panels`). Panels post an embed with an **Open a ticket** button; clicking it opens a modal for a short description, then runs the same self-create pipeline as `/ticket create` (same rate limit). Each posted panel is keyed by its Discord **message ID** and can be listed, re-edited in place, or deleted.
+
+##### `panel create` - Post a New Panel
 
 ```bash
-/ticket panel
-/ticket panel channel:#support title:Need help? description:Staff will reply in a private channel.
+/ticket panel create
+/ticket panel create channel:#support title:Need help? description:Staff will reply in a private channel.
 ```
 
-Posts an embed with an **Open a ticket** button. Clicking the button opens a modal; submit creates a ticket (same rate limit as `/ticket create`).
+Posts the panel embed + button. Options: `channel` (optional, text/announcement; defaults to the current channel), `title` (optional, ≤256), `description` (optional, ≤2000). Replies ephemerally with the panel **message ID** (and jump link) to use with `edit`/`delete`.
+
+##### `panel list` - List Registered Panels
+
+```bash
+/ticket panel list
+```
+
+Ephemeral list of every panel in this server: title, channel, message ID, and jump link.
+
+##### `panel edit` - Re-edit a Posted Panel
+
+```bash
+/ticket panel edit message_id:123456789 title:New Title
+```
+
+`message_id` **required**; `title` (≤256) and `description` (≤2000) optional, but at least one must be provided. Updates the registry row and re-edits the posted embed in place. Unknown message ID → ephemeral "no panel" reply.
+
+##### `panel delete` - Remove a Panel
+
+```bash
+/ticket panel delete message_id:123456789
+```
+
+`message_id` **required**. Removes the registry row and best-effort deletes the Discord message (reports the Discord delete as a warning if it fails; still deletes the row). If you deleted the Discord message by hand, use this to clear the stored row.
 
 #### Admin config
 
@@ -1111,7 +1139,8 @@ The **rundown itself posts publicly** in the channel (embed, never pings); its u
 | `/setwarn dm\|log\|expiry` | Staff gate | Yes |
 | `/activityconfig` | Staff gate | Yes |
 | `/grantxp` | ManageGuild | Yes |
-| `/ticket panel\|setcategory\|setarchive\|setratelimit` | Staff gate | Yes |
+| `/ticket panel create\|list\|edit\|delete` | Staff gate | Yes |
+| `/ticket setcategory\|setarchive\|setratelimit` | Staff gate | Yes |
 | `/honeypot channel\|banrole` | Staff gate | Yes |
 | `/honeypot exempt …` | ManageGuild | Yes |
 | `/eventreminder setchannel` | Staff gate | Yes |
@@ -1187,10 +1216,10 @@ STAFF GATE (Manage Server OR any staff role):
 /setwarn dm|log|expiry
 /userinfo [user]                   → Member card (Activity = senior)
 /activityconfig ignore|status|backfill
-/ticket for|claim|transfer|list|info
+/ticket for|claim|transfer|list|info|summarize
 /ticket adduser|removeuser|addstaff|removestaff
 /ticket sensitive|unsensitive|close|archive
-/ticket panel|setcategory|setarchive|setratelimit
+/ticket panel create|list|edit|delete | setcategory|setarchive|setratelimit
 /staff role list | /staff settings
 /settings | /setxp | /setdecay | /setlog
 /leveltorole set|remove|list
