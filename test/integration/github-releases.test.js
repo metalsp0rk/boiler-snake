@@ -5,6 +5,11 @@ const {
   assertReplyContains,
   assertEphemeralReply,
 } = require("../helpers/assert");
+const {
+  exactlyOneSend,
+  assertPingsRoleOnly,
+  assertPingsNobody,
+} = require("../helpers/sendShape");
 
 describe("integration: github releases", () => {
   /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
@@ -323,6 +328,54 @@ describe("integration: github releases", () => {
     assertReplyContains(interaction, /Checked 1 watch/i);
     assertReplyContains(interaction, /no channel configured/i);
     env.db.removeGithubWatch(env.communityId, "demo/app");
+  });
+
+  // ---------------------------------------------------------------------------
+  // #199 (audit §6 P1, docs at-risk surfaces): ticker-level send-shape tests
+  // pinning the operator-doc contract (docs/github-releases.md: "If a ping
+  // role is configured, the message mentions that role only — never
+  // @everyone."). processWatch is the production per-watch tick step (the
+  // hourly ticker loops over it); the fake supervisor records the payload
+  // verbatim at the channel.send boundary and the sendShape helpers assert
+  // both sides — content tokens ↔ exact allowedMentions payload.
+  // ---------------------------------------------------------------------------
+
+  const SHAPE_ROLE = "667000000000000003";
+
+  async function driveReleaseSend({ roleId }) {
+    // Fresh watch (remove is a no-op when absent) → first check announces the
+    // newest release, i.e. exactly one production send.
+    env.db.removeGithubWatch(env.communityId, "shape/repo");
+    env.db.addGithubWatch(env.communityId, "shape/repo", "Shape/Repo", {
+      channelId: env.channels.notify.id,
+    });
+    env.db.updateGithubWatch(env.communityId, "shape/repo", { roleId });
+    const watch = env.db.getAllGithubWatches().find((w) => w.repo === "shape/repo");
+    const { supervisor, sent } = fakeSupervisor();
+    const result = await processWatch(supervisor, watch, {
+      fetchReleases: async () => ({ ok: true, releases: [rel(900)] }),
+    });
+    assert.equal(result.ok, true, `processWatch failed: ${JSON.stringify(result)}`);
+    const payload = exactlyOneSend(sent, "github release announcement");
+    env.db.removeGithubWatch(env.communityId, "shape/repo");
+    return payload;
+  }
+
+  it("release send with a ping role mentions exactly that role (send-shape #199)", async () => {
+    const payload = await driveReleaseSend({ roleId: SHAPE_ROLE });
+    assertPingsRoleOnly(payload, SHAPE_ROLE, { label: "github release alert" });
+    assert.match(payload.content, /Shape\/Repo/, "content names the repo");
+    assert.match(payload.content, /Release 900/, "content names the release");
+    assert.equal(payload.embeds.length, 1, "release alert carries exactly one embed");
+    assert.equal(payload.embeds[0].title, "📦 Release 900");
+  });
+
+  it("release send without a ping role allows no mentions (send-shape #199)", async () => {
+    const payload = await driveReleaseSend({ roleId: null });
+    // No-role sends are embed-only: content stays null, nothing is mentionable.
+    assert.equal(payload.content, null);
+    assertPingsNobody(payload, { label: "github release alert (no role)" });
+    assert.equal(payload.embeds.length, 1, "release alert carries exactly one embed");
   });
 
   it("/github is denied for non-staff", async () => {
