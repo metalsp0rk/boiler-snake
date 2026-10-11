@@ -156,6 +156,8 @@ module.exports = {
 | **MessageReactionAdd** | partials → honeypot warning strip → RR panels → reaction XP |
 | **MessageReactionRemove** | reaction-role remove |
 
+**Normalized-message contract.** Both adapters (`src/platform/discord/normalize.js`, `src/platform/fluxer/normalize.js`) hand the pipeline the same duck-free shape, and the required subset of that shape is asserted at the single boundary both flow through — `assertNormalizedMessage` in `src/platform/normalizedMessageContract.js`, called first inside `onMessageCreate`. Required fields (ids as non-empty strings, arrays as arrays, `authorBot` boolean, `createdAt`/`communityId`/`externalGuildId`/`webhookId`/`type`/`parsePrefix` explicitly nullable) are listed with their nullability in the validator’s header. A half-shaped message can never enter a feature: the validator throws naming the field and the platform, and the pipeline catch logs it as a distinct `normalized-message contract violation` line and skips the message. Guild-vs-DM is modeled by the contract, not duck-typed: `externalGuildId` is string-or-null (`null` only for guild-less Discord DMs; the Fluxer normalizer gates guild-less payloads into the separate DM shape), so pipeline gates key off that field instead of `!message.guild`. Separate shapes — `NormalizedReaction`, the MESSAGE_DELETE identity partial, and `NormalizedDmMessage` — are separate contracts with their own intake-time checks.
+
 Independent events (message delete, ban, kick, honeypot ban-role, tickers) register via each feature’s `registerEvents` / `start`.
 
 ---

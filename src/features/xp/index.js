@@ -609,11 +609,13 @@ async function handleGrantXp(commandCtx, featureCtx) {
  * Award message XP. Returns true if this path consumed the event for XP purposes
  * (callers still run honeypot/cache before this).
  *
- * Reads the NormalizedMessage fields (authorBot, externalGuildId, communityId)
- * plus the preserved Discord duck fields. `options.isPrefixCommand` is the
- * backstop from roadmap/fluxer.md § Normalized gateway events: a real prefix
- * command earns no message XP. The pipeline's prefix branch already skips
- * this call for prefix lines; the flag protects any future caller.
+ * Reads the NormalizedMessage fields (authorBot, authorId, externalGuildId,
+ * communityId) — the contract-guaranteed shape, nothing else (issue #201:
+ * the Discord duck fallbacks on this step were the audit's C-class crash
+ * source and are removed). `options.isPrefixCommand` is the backstop from
+ * roadmap/fluxer.md § Normalized gateway events: a real prefix command earns
+ * no message XP. The pipeline's prefix branch already skips this call for
+ * prefix lines; the flag protects any future caller.
  *
  * @param {object} outbound OutboundClient (awardXp delivery seam)
  * @param {object} message normalized message (normalizeDiscordMessage output)
@@ -622,13 +624,15 @@ async function handleGrantXp(commandCtx, featureCtx) {
 async function tryAwardMessageXp(outbound, message, options = {}) {
   if (options.isPrefixCommand) return;
   if (message.authorBot) return;
-  if (!message.guild && !message.externalGuildId) return;
-  // Dual-shape: Discord duck fields (author.id / guild.id) with Fluxer
-  // normalized fields (authorId / externalGuildId). Prod 2026-10-01: the
-  // author/guild duck reads crashed EVERY Fluxer message at this step, so
-  // no Fluxer message ever earned XP (pipeline catch logged "reading 'id'").
-  const authorId = message.authorId ?? message.author?.id;
-  const externalGuildId = message.externalGuildId ?? message.guild?.id;
+  // NormalizedMessage contract (issue #201): the pipeline validates
+  // authorId/externalGuildId at its boundary, so the old duck fallbacks
+  // (`!message.guild`, `?? message.guild?.id`) are gone. The null guards
+  // stay as cheap defense for direct callers. Prod 2026-10-01 (duck reads
+  // crashed EVERY Fluxer message here — see test/fluxer-xp-award.test.js):
+  // normalized fields are the ONLY shape this step reads.
+  if (message.externalGuildId == null) return;
+  const authorId = message.authorId;
+  const externalGuildId = message.externalGuildId;
   if (authorId == null || externalGuildId == null) return;
   const communityId = Number.isSafeInteger(message.communityId)
     ? message.communityId

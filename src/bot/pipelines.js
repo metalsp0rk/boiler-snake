@@ -23,6 +23,13 @@ const {
 const { recordUserChannelMessage } = require("../features/userActivity");
 const { getDiscordOutbound } = require("../platform/discord/outbound");
 const { normalizeDiscordMessage } = require("../platform/discord/normalize");
+// NormalizedMessage required-field contract (issue #201, audit §6 P2): one
+// shared validator at the boundary BOTH adapters' normalized MESSAGE_CREATE
+// output flows through — never per-feature duck-type checks.
+const {
+  assertNormalizedMessage,
+  NormalizedMessageContractError,
+} = require("../platform/normalizedMessageContract");
 // Fluxer (PR 6): the prefix parser and dispatcher are SDK-free (the SDK
 // package is never in their import graph), so top-level requires are
 // safe for Discord-only boots and tests.
@@ -36,10 +43,14 @@ const bridgeRelay = require("../features/bridge/relay");
 /**
  * MessageCreate pipeline (exported for integration tests), spec order from
  * roadmap/fluxer.md § Normalized gateway events (+ bridge gates, roadmap/bridge.md §10.4):
- * 0. bridge loop gate (relay copies, bot traffic, echoes) + bridge command
- *    line branch (Fluxer guild, human author): dispatched exactly once via
- *    the shipped dispatcher; no cache, gork, enqueue, activity, or XP
- * 1. guild gate (normalized: externalGuildId mirrors the Discord guild)
+ * 0a. normalized-message contract assertion (issue #201): both adapters'
+ *     output enters through THIS validator — a violation is logged (naming
+ *     field + platform) and the message is skipped, never a crash
+ * 0b. bridge loop gate (relay copies, bot traffic, echoes) + bridge command
+ *     line branch (Fluxer guild, human author): dispatched exactly once via
+ *     the shipped dispatcher; no cache, gork, enqueue, activity, or XP
+ * 1. guild gate (contract: externalGuildId — null only for guild-less
+ *    Discord DMs, which stop here; the `guild` duck object is no longer consulted)
  * 2. bot author gate (normalized: authorBot)
  * 2b. Fluxer community resolution (Fluxer only: externalGuildId → communities.id)
  * 3. message cache (logs)
@@ -54,11 +65,16 @@ const bridgeRelay = require("../features/bridge/relay");
  * 9. user channel activity counters (all human messages)
  * 10. message XP (with the isPrefixCommand backstop)
  *
- * `message` is a NormalizedMessage (output of normalizeDiscordMessage): the
- * normalized fields (authorBot, externalGuildId, communityId, parsePrefix,
- * …) plus every Discord duck field (guild, author, channel, …), which
- * unmigrated features keep reading. `isPrefixCommand` at step 10 is a backstop
- * for future callers (spec line 227) — on Discord parsePrefix is always null.
+ * `message` is a NormalizedMessage (output of normalizeDiscordMessage or
+ * normalizeFluxerMessage): the normalized fields (authorBot, externalGuildId,
+ * communityId, parsePrefix, …) plus every Discord duck field (guild, author,
+ * channel, …), which unmigrated features keep reading. On entry the object is
+ * validated against the shared required-field contract
+ * (src/platform/normalizedMessageContract.js, "contract 1") — the guild/DM
+ * semantics are explicit there: `externalGuildId` is string-or-null, so the
+ * guild gate below never duck-types `message.guild`. `isPrefixCommand` at
+ * step 10 is a backstop for future callers (spec line 227) — on Discord
+ * parsePrefix is always null.
  *
  * @param {object} outbound OutboundClient (getDiscordOutbound(client))
  * @param {object} message normalized discord.js Message
@@ -74,9 +90,16 @@ const bridgeRelay = require("../features/bridge/relay");
  */
 async function onMessageCreate(outbound, message, opts = {}) {
   try {
-    // Bridge loop gate (KD 10, spec §10.4): FIRST line — relay copies, bot
-    // traffic, and destination echoes never reach the cache, gork, activity
-    // counters, XP, or the enqueue below.
+    // Contract gate (issue #201): the single required-field assertion for
+    // BOTH adapters' normalized output, ahead of every step below (the
+    // gates themselves read platform/instanceKey/id). A violation throws
+    // naming field + platform; the catch logs it distinctly and the message
+    // is skipped — an adapter can never ship half-shaped traffic downstream.
+    assertNormalizedMessage(message, { boundary: "onMessageCreate" });
+
+    // Bridge loop gate (KD 10, spec §10.4): FIRST pipeline line — relay
+    // copies, bot traffic, and destination echoes never reach the cache,
+    // gork, activity counters, XP, or the enqueue below.
     if (bridgeRelay.createLoopGate(message)) return;
 
     // Bridge command lines (Fluxer guild, human author): command traffic, not
@@ -116,7 +139,11 @@ async function onMessageCreate(outbound, message, opts = {}) {
       return;
     }
 
-    if (!message.guild && !message.externalGuildId) return;
+    // Guild gate: contract-guaranteed field — `externalGuildId` is
+    // string-or-null (null = guild-less Discord DM). The old
+    // `!message.guild && !message.externalGuildId` duck disjunct is gone:
+    // the adapter boundary already proved this key exists (issue #201).
+    if (message.externalGuildId == null) return;
     if (message.authorBot) return;
 
     // Fluxer (PR 6): resolve the communities row at this edge — repositories
@@ -203,6 +230,15 @@ async function onMessageCreate(outbound, message, opts = {}) {
       isPrefixCommand: Boolean(prefixCommand),
     });
   } catch (e) {
+    if (e instanceof NormalizedMessageContractError) {
+      // Adapter-boundary fault, not a feature fault: named distinctly (with
+      // the field + platform the validator produced) so the log tells the
+      // adapter apart from downstream failures. Message skipped, pipeline alive.
+      console.error(
+        `[MessageCreate] normalized-message contract violation (message skipped): ${e.message}`,
+      );
+      return;
+    }
     console.error("[MessageCreate] error:", e?.message || e);
   }
 }
