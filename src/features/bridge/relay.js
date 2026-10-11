@@ -1691,6 +1691,48 @@ function createRelayWorker(deps = {}) {
   }
 
   /**
+   * Commit ONE part's links row the moment its send ACKed with an id
+   * (roadmap/bridge.md §10.6 "id-synchronous commit"; audit #195 item 2).
+   * The batched-at-end commit meant a crash or poison-park mid-list left
+   * already-posted destination copies with NO links row — edit/delete relay
+   * could never find them, and a crash-restart re-posted every part.
+   *
+   * Re-execution (restart re-queue after a crash mid-list) re-sends every
+   * part: the Fluxer nonce returns the ORIGINAL id, so the committed row
+   * already matches and nothing is inserted — the echo note is re-armed.
+   * A Discord re-send CAN produce a second id (the documented §10.6
+   * duplicate window): the PRIMARY KEY is (bridge, src, part_index), so the
+   * FIRST committed id stays authoritative and the duplicate is named in the
+   * log — at-least-once's accepted trade, never a silent overwrite.
+   *
+   * @returns {string} the committed destination id for this part index
+   */
+  function commitPartLink(bridge, payload, partIndex, messageId, noteRelayedId) {
+    const committed = repo
+      .listBridgeMessageLinks(bridge.id, payload.srcMessageId)
+      .find((l) => Number(l.part_index) === partIndex);
+    if (committed) {
+      if (String(committed.dst_message_id) !== String(messageId)) {
+        console.warn(
+          `[bridge] worker: re-execution posted part ${partIndex} of ${payload.srcMessageId} as ${messageId}; ` +
+            `keeping the committed copy ${committed.dst_message_id} (§10.6 Discord duplicate window)`,
+        );
+      }
+      noteRelayedId(String(committed.dst_message_id));
+      return String(committed.dst_message_id);
+    }
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: payload.srcCommunityId,
+      srcMessageId: payload.srcMessageId,
+      partIndex,
+      dstMessageId: messageId,
+    });
+    noteRelayedId(String(messageId));
+    return String(messageId);
+  }
+
+  /**
    * The kind-`edit` branch (spec §10.7 "Edit relay"). The source is RE-READ
    * via the source port (fetchSourceMessage) and the neutralized text /
    * sticker / embed renderings are rebuilt from the FETCHED message — the
@@ -1828,7 +1870,6 @@ function createRelayWorker(deps = {}) {
       srcPlatform: opCtx.srcPlatform,
     };
 
-    const createdLinks = [];
     for (const part of newParts) {
       const link = links.find((l) => Number(l.part_index) === part.partIndex) || null;
       const old = oldParts[part.partIndex];
@@ -1871,21 +1912,17 @@ function createRelayWorker(deps = {}) {
       }
       if (!link && result.ok && result.messageId != null) {
         // A NEW part beyond the original chunking: POST + its own links row
-        // (a file set change adds files on the destination in order).
-        createdLinks.push({ partIndex: part.partIndex, messageId: result.messageId });
+        // (a file set change adds files on the destination in order). The
+        // row commits ID-SYNCHRONOUSLY (audit #195 item 2) so a park on a
+        // later part never strands this copy without a links row.
+        commitPartLink(
+          bridge,
+          payload,
+          part.partIndex,
+          result.messageId,
+          opCtx.noteRelayedDestination,
+        );
       }
-    }
-
-    // Ack-then-delete (spec §10.10): links first, done, spool dir last.
-    for (const l of createdLinks) {
-      repo.addBridgeMessageLink({
-        bridgeId: bridge.id,
-        srcCommunityId: payload.srcCommunityId,
-        srcMessageId: payload.srcMessageId,
-        partIndex: l.partIndex,
-        dstMessageId: l.messageId,
-      });
-      opCtx.noteRelayedDestination(l.messageId);
     }
     if (resolveErrors.length > 0) {
       // Partial media failure names itself on the row (partial-failure rule).
@@ -2147,29 +2184,32 @@ function createRelayWorker(deps = {}) {
           repo.setBridgeLastError(bridge.id, result.reason);
         }
         if (result.ok && result.messageId != null) {
-          createdIds.push({ partIndex: part.partIndex, messageId: result.messageId });
+          // ID-SYNCHRONOUS COMMIT (roadmap/bridge.md §10.6, audit #195 item
+          // 2): the links row lands the moment THIS part's send ACKed — a
+          // later park or crash can no longer strand an already-posted copy
+          // without a links row.
+          const committedId = commitPartLink(
+            bridge,
+            payload,
+            part.partIndex,
+            result.messageId,
+            opCtx.noteRelayedDestination,
+          );
+          if (createdIds.length === 0) {
+            // The row names its first copy immediately (partial-failure
+            // rule: a later park still shows what was actually delivered).
+            db.prepare("UPDATE bridge_outbox SET dest_message_id = ? WHERE id = ?").run(
+              committedId,
+              row.id,
+            );
+          }
+          createdIds.push({ partIndex: part.partIndex, messageId: committedId });
         }
       }
 
-      // Ack-then-delete: links rows + dest id + done FIRST, spool dir LAST
-      // (spec §10.10: a crash before the delete leaves a durable row whose
-      // re-execution is deduped by the Fluxer nonce).
-      for (const link of createdIds) {
-        repo.addBridgeMessageLink({
-          bridgeId: bridge.id,
-          srcCommunityId: payload.srcCommunityId,
-          srcMessageId: payload.srcMessageId,
-          partIndex: link.partIndex,
-          dstMessageId: link.messageId,
-        });
-        noteRelayedDestination(dstCommunity.platform, dstCommunity.instanceKey, link.messageId);
-      }
-      if (createdIds.length > 0) {
-        db.prepare("UPDATE bridge_outbox SET dest_message_id = ? WHERE id = ?").run(
-          createdIds[0].messageId,
-          row.id,
-        );
-      }
+      // Ack-then-delete: done FIRST, spool dir LAST (spec §10.10: a crash
+      // before the delete leaves a durable row whose re-execution is deduped
+      // by the Fluxer nonce; links rows committed per part above).
       if (resolveErrors.length > 0) {
         // Names what the body named (partial-failure report on the row).
         db.prepare("UPDATE bridge_outbox SET last_error = ? WHERE id = ?").run(
