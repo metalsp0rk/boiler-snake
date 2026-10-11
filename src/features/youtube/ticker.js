@@ -614,11 +614,23 @@ async function sendNotification(
       }
     }
 
+    // Ping allow-list must permit the mention this content actually builds
+    // (audit H11): `parse: []` suppressed every production ping while
+    // /testnotification (plain reply, no override) looked fine. Live alerts
+    // intentionally @everyone (docs/youtube-notifications.md); upload alerts
+    // ping only the configured role, never @everyone (mirrors twitch ticker).
+    const allowedMentions =
+      notificationType === "live"
+        ? { parse: ["everyone"] }
+        : uploadRoleId
+          ? { parse: ["roles"], roles: [uploadRoleId] }
+          : { parse: [] };
+
     // OutboundClient.sendChannel replaces client.channels.fetch + channel.send.
     // Embeds are flattened to plain NormalizedEmbed JSON at this boundary.
     const result = await outbound.sendChannel(channelId, {
       content: content,
-      allowedMentions: { parse: [] },
+      allowedMentions,
       embeds: embeds.map(toPlainEmbed),
     });
 

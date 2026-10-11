@@ -123,6 +123,101 @@ describe("integration: youtube", () => {
     );
   });
 
+  // Audit H11 (#186): ticker-level send-shape tests asserting allowedMentions
+  // on the *production* send path (sendNotification), not just /testnotification.
+  // The mock channel records each send payload verbatim into `sent`.
+  const UPLOAD_ROLE = "666000000000000001";
+
+  async function driveUploadNotification(channelIdSuffix, { uploadRole }) {
+    const channelId = `UCshape${channelIdSuffix}000001`;
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: uploadRole,
+    });
+    env.db.addYoutubeChannel(
+      env.communityId,
+      channelId,
+      "ShapeChannel",
+      `https://www.youtube.com/channel/${channelId}`,
+      ""
+    );
+    env.db.updateYoutubeChannelLastChecked(channelId, Date.now() - 60_000, null);
+    env.channels.notify.sent.length = 0;
+
+    const channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(fakeSupervisor(env.client), env.communityId, channelData, {
+      fetchYouTubeFeed: async () => ({
+        title: "feed",
+        items: [
+          {
+            id: `vid-shape-${channelIdSuffix}`,
+            title: `Shape Video ${channelIdSuffix}`,
+            pubDate: new Date(Date.now() - 10_000).toISOString(),
+            liveBroadcastContent: "none",
+          },
+        ],
+      }),
+    });
+    assert.equal(env.channels.notify.sent.length, 1, "expected exactly one send");
+    return env.channels.notify.sent[0];
+  }
+
+  it("upload send with configured role pings exactly that role (H11)", async () => {
+    const payload = await driveUploadNotification("role1", { uploadRole: UPLOAD_ROLE });
+    assert.deepEqual(payload.allowedMentions, { parse: ["roles"], roles: [UPLOAD_ROLE] });
+    assert.ok(
+      payload.content.startsWith(`<@&${UPLOAD_ROLE}>`),
+      `content should mention the role: ${payload.content}`
+    );
+  });
+
+  it("upload send without a configured role allows no mentions (H11)", async () => {
+    const payload = await driveUploadNotification("norole", { uploadRole: null });
+    assert.deepEqual(payload.allowedMentions, { parse: [] });
+    assert.ok(
+      !payload.content.includes("@everyone") && !payload.content.includes("<@&"),
+      `content should build no mention: ${payload.content}`
+    );
+  });
+
+  it("live send pings @everyone as documented (H11)", async () => {
+    const channelId = "UCshapelive0000001";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: null,
+    });
+    env.db.addYoutubeChannel(
+      env.communityId,
+      channelId,
+      "LiveShapeChannel",
+      `https://www.youtube.com/channel/${channelId}`,
+      ""
+    );
+    env.channels.notify.sent.length = 0;
+
+    const channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(fakeSupervisor(env.client), env.communityId, channelData, {
+      fetchYouTubeFeed: async () => ({
+        title: "feed",
+        items: [
+          {
+            id: "vid-shape-live1",
+            title: "Live Now!",
+            pubDate: new Date(Date.now() - 10_000).toISOString(),
+            liveBroadcastContent: "live",
+          },
+        ],
+      }),
+    });
+    assert.equal(env.channels.notify.sent.length, 1, "expected exactly one send");
+    const payload = env.channels.notify.sent[0];
+    assert.deepEqual(payload.allowedMentions, { parse: ["everyone"] });
+    assert.ok(
+      payload.content.startsWith("@everyone"),
+      `live content should open with @everyone: ${payload.content}`
+    );
+  });
+
   it("processChannel skips already-notified video id", async () => {
     env.db.updateGuildSettings(env.communityId, {
       youtube_notification_channel_id: IDS.channelNotify,
