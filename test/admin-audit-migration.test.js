@@ -69,6 +69,7 @@ describe("admin_audit (migration 024 + repo helpers)", () => {
 
     it("re-running all migrations (incl. 024) on an existing DB stays safe", () => {
       const { runMigrations } = require("../src/db/migrate");
+      api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay
       assert.doesNotThrow(() => runMigrations());
     });
   });

@@ -4,7 +4,7 @@ Deep dive into Boiler Snake's SQLite database structure and how data is organize
 
 ## Overview
 
-The bot uses **SQLite** with **WAL mode** for reliable concurrent access. All data is stored in a single file: `xpbot.sqlite` (located in the project root by default). Override with `DATA_DIR` (directory) or `DB_PATH` (full file path). Docker Compose uses `DATA_DIR=/data` with a named volume.
+The bot uses **SQLite** with **WAL mode** for reliable single-writer/multi-reader access. All data is stored in a single file: `xpbot.sqlite` (located in the project root by default). Override with `DATA_DIR` (directory) or `DB_PATH` (full file path). Docker Compose uses `DATA_DIR=/data` with a named volume. Exactly **one bot process may own a given database file** — see [Single-Writer Contract](#single-writer-contract).
 
 ## Database Location
 
@@ -1283,6 +1283,42 @@ Migrations run **automatically** when the db module loads (`src/db/migrate.js` v
 
 There is no separate manual migration CLI for normal operation: starting the bot (or any process that loads the db) applies all steps in order.
 
+### Schema version tracking (`PRAGMA user_version`)
+
+Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
+
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`039` registered the version is `39`.
+- **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
+- **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size, the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
+- **Partial versions are never trusted.** A crash *between* migrations (exactly the non-transactional data-move 003 represented, later hardened against in 034) leaves the older version recorded, so the next boot re-runs the full idempotent set instead of resuming from a cursor.
+- **Downgrades fail loud.** If `user_version` is *higher* than the registered migrations (old code against a newer database), boot throws with both version numbers named and refuses to modify anything.
+
+There is deliberately no down-migration story — fix-forward SQLite with the backup discipline below (per the 2026-10 audit).
+
+### Connection PRAGMAs (explicit)
+
+`src/db/connection.js` sets every runtime pragma explicitly at open. Each value matches what the bot already ran with under ambient library defaults; they are written down so a library upgrade cannot silently change behaviour, and `test/migrations-user-version.test.js` pins them:
+
+| PRAGMA | Value | Why |
+|--------|-------|-----|
+| `journal_mode` | `WAL` | Readers never block the writer; `-wal`/`-shm` sidecars live beside the DB (see below) |
+| `foreign_keys` | `ON` | FK enforcement. better-sqlite3 opened connections with this ON already — the bot's effective value never changes, it is now explicit. Migration 034 toggles it OFF around its own table rebuilds and restores it |
+| `synchronous` | `FULL` | Durable on every commit (SQLite's own default, kept) |
+| `busy_timeout` | `5000` | Wait up to 5 s on a locked DB instead of erroring instantly — a safety valve for a brief overlap (e.g. an `sqlite3` CLI `.backup`), **not** a licence to run a second writer |
+
+`user_version` itself is managed by `src/db/migrate.js`, not at connect time.
+
+### Single-writer contract
+
+**One process per SQLite file. Ever.** The bot opens exactly one read-write connection per process (better-sqlite3 is synchronous), and everything built on the database — migration replay on boot, claim/CAS patterns for tickets, reminders and the bridge outbox — assumes an exclusive writer.
+
+Concretely this means:
+
+- Do **not** run two bot processes, two containers, or a staging and a production deployment against the same `DB_PATH` / shared volume. WAL lets *readers* coexist with the single writer inside cooperating processes on one machine; it is not a multi-writer or multi-host coordination mechanism.
+- Short-lived external access is fine: an `sqlite3` CLI session or a `.backup` run rides on WAL's reader support (and `busy_timeout` absorbs a momentary lock clash). Never run scripts that *write* while the bot is live.
+- WAL keeps `xpbot.sqlite-wal` and `xpbot.sqlite-shm` **beside the DB file** — persist the whole data directory, never the `.sqlite` file alone. The Docker deployment notes carry the same rule (see [AGENTS.md on GitHub](https://github.com/metalsp0rk/boiler-snake/blob/main/AGENTS.md) — Known Gotchas: “persist the whole data dir (WAL files beside the DB)”).
+- Backups: prefer `.backup` (see [Backup Recommendations](#backup-recommendations)); snapshot the full directory only with the bot stopped.
+
 | Id | Purpose |
 |----|---------|
 | `001_base_schema` | `CREATE TABLE IF NOT EXISTS` for core domains (users, activity_log, voice_sessions, guild_settings, level roles, command channels, YouTube, honeypot, `staff_roles`, reaction roles) |
@@ -1318,6 +1354,12 @@ There is no separate manual migration CLI for normal operation: starting the bot
 | `031_gork_ste_enabled` | `guild_settings.gork_ste_enabled` — STE anti-slop answer style toggle (roadmap §7.20, see [Gork](gork.md#answer-style-ste)) |
 | `032_twitch_eventsub_media` | `twitch_eventsub_subs` table + per-subscription clip/VOD alert columns with watermarks |
 | `033_gork_summarize_input_tokens` | `guild_settings.gork_summarize_input_tokens` — per-guild `/gork summarize` input token budget |
+| `034_communities` | Communities cutover (Fluxer PR 2): `communities` table; every guild-scoped table re-keyed `guild_id TEXT` → `community_id INTEGER` in one transaction (003-style move, transactional + FK-gated); transcript dirs moved post-commit |
+| `035_bridges` | Channel bridge schema: `bridges` state machine, `bridge_ends`, outbox, message links, snapshots, connect-attempt state (see [Bridge](bridge.md)) |
+| `036_user_links` | Account linking: `user_links` pairs + `user_link_codes` (one Discord ↔ one Fluxer identity, per-direction mirror flags; see [Account Linking](account-linking.md)) |
+| `037_ticket_archive_claim` | CAS archive-claim marker on `tickets` so concurrent closes can't double-archive (audit #197) |
+| `038_event_reminder_claim_state` | Real delivery state machine on `event_reminder_offsets` (`sending`/backoff/attempts; audit #196) |
+| `039_encrypt_third_party_tokens` | One-time re-encryption of third-party credentials (Discord OAuth tokens, GitHub PATs) to the AES-256-GCM `v1.` envelope; loud boot gate when `TOKEN_ENCRYPTION_KEY` is missing while rows exist (audit C6, #189) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

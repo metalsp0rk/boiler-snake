@@ -187,8 +187,9 @@ describe("user links (migration 036_user_links)", () => {
       });
       assert.equal(created.ok, true);
 
+      api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay
       assert.doesNotThrow(() => runMigrations());
-      assert.doesNotThrow(() => runMigrations());
+      assert.doesNotThrow(() => runMigrations()); // 2nd call: user_version fast-skip path
 
       const row = api.getUserLinkFor(cidA, "u-keep");
       assert.ok(row, "existing links survive a re-run");
@@ -199,6 +200,9 @@ describe("user links (migration 036_user_links)", () => {
       // Simulate an older DB: drop both tables, then run the full migration set.
       api.db.exec(`DROP TABLE user_links`);
       api.db.exec(`DROP TABLE user_link_codes`);
+      // #202 guard: version 0 = pre-guard DB, so the replay actually runs
+      // (and re-stamps) instead of fast-skipping on a current version.
+      api.db.pragma("user_version = 0");
       const { runMigrations } = require("../src/db/migrate");
       assert.doesNotThrow(() => runMigrations());
       for (const table of ["user_links", "user_link_codes"]) {

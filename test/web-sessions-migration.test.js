@@ -116,8 +116,9 @@ describe("web sessions (migration 028 + repo helpers)", () => {
         discordTag: "keeper#0001",
         expiresAt: Date.now() + 60_000,
       });
+      api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay
       assert.doesNotThrow(() => runMigrations());
-      assert.doesNotThrow(() => runMigrations());
+      assert.doesNotThrow(() => runMigrations()); // 2nd call: user_version fast-skip path
       const row = api.getWebSession("keep-me");
       assert.ok(row, "existing rows survive a re-run");
       assert.equal(row.user_id, "u-keep");
@@ -126,6 +127,9 @@ describe("web sessions (migration 028 + repo helpers)", () => {
     it("applies to a pre-existing DB that lacks the table (upgrade path)", () => {
       // Simulate an older DB: drop table, then run the full migration set.
       api.db.exec(`DROP TABLE web_sessions`);
+      // #202 guard: version 0 = pre-guard DB, so the replay actually runs
+      // (and re-stamps) instead of fast-skipping on a current version.
+      api.db.pragma("user_version = 0");
       const { runMigrations } = require("../src/db/migrate");
       assert.doesNotThrow(() => runMigrations());
       const table = api.db

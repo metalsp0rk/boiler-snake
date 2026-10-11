@@ -298,6 +298,10 @@ describe("migration 039_encrypt_third_party_tokens", () => {
 
       // Simulated deploy restart: close every tracked handle, then require
       // src/db fresh against the SAME file → migrations (incl. 039) run.
+      // #202 guard: the pre-guard legacy DB this boot simulates carries no
+      // recorded version, so zero it — the full replay (incl. 039) runs and
+      // re-stamps; the THIRD boot below then rides the user_version fast-skip.
+      api.db.pragma("user_version = 0");
       for (const handle of dbs) handle.close();
       dbs.length = 0;
       resetSrcModules();
