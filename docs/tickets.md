@@ -68,7 +68,7 @@ ticket-transcripts/{guild_id}/{uuid}/index.html
 ticket-transcripts/{guild_id}/{uuid}/assets/001_photo.png
 ```
 
-Reverse-proxy TLS in front of the bot process. The index is **not** Discord-login-gated (MVP) — keep the host private (VPN, basic auth, firewall). Sensitive tickets never appear on the index (no content archive). Still treat the Discord archive channel as staff-only.
+Reverse-proxy TLS in front of the bot process. The whole archive surface is **login-mandatory** (web-admin Phase 0c, §8.1-3 — locked decision, no flag): every `/t` path (index, transcript, `/raw`, assets) requires a live web-console session — anonymous requests 302 to `/auth/login`. A transcript (and its assets) opens for **staff+ of the ticket's guild** (resolved from the ticket row, never from a URL parameter) or for the ticket's **participants** (requester / staff owners); everything else — a stranger with a valid session, an unknown token, a sensitive ticket (its transcript token is cleared on close), a cross-guild probe — gets the same generic `404`. The `/t` index lists only archived tickets from guilds where the viewer resolves staff+ (`?guild=` is honored only for one of those). Only `/health` and `/static` are login-free (they carry no user data). Sensitive tickets never appear anywhere (no content archive). Still treat the Discord archive channel as staff-only.
 
 9. Optional AI summaries (non-sensitive closes only):
 
@@ -116,7 +116,7 @@ Lifecycle commands work **inside the ticket channel** even if command-channel re
 | `/ticket setcategory` | Parent category for new tickets |
 | `/ticket setarchive` | Channel for close embeds + transcript links |
 | `/ticket setratelimit` | Minutes between self-creates (`0` = off) |
-| `/ticket panel [channel] [title] [description]` | Post a public **Open a ticket** panel (button → modal) |
+| `/ticket panel create\|list\|edit\|delete` | Post and manage **Open a ticket** panels (stored panel registry; button → modal) |
 
 ## Ticket panel (button → modal)
 
@@ -126,7 +126,7 @@ Lifecycle commands work **inside the ticket channel** even if command-channel re
 4. On submit, the bot runs the same self-create pipeline as `/ticket create` (rate limit, channel, overwrites, welcome embed).
 5. The member gets an ephemeral link to the new ticket channel.
 
-Panels are plain bot messages (no DB row). Delete the Discord message to remove a panel, or post another with `/ticket panel`. Re-register slash commands after deploy if `/ticket panel` is missing.
+Panels are registered in the `ticket_panels` table: `/ticket panel list` shows them, `/ticket panel edit` updates the title/description (re-edits the posted embed in place), `/ticket panel delete` removes the row and best-effort deletes the Discord message. If you delete the Discord message by hand, remove the registry row with `delete`. Re-register slash commands after deploy if `/ticket panel` is missing.
 
 ## Sensitive tickets
 
@@ -179,10 +179,8 @@ Optional env for media mirroring:
 
 ## Not in MVP
 
-- Discord OAuth gate on `/t/{uuid}`
 - Concurrent open-ticket caps
 - Re-download / re-mirror media for tickets archived before local assets existed
-- Stored panel registry (list/edit/delete via commands) — delete the Discord message or repost
 
 ## Related
 

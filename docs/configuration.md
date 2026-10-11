@@ -146,6 +146,12 @@ the key strands stored tokens (re-add watches, re-run the sync authorize).
 | `DATA_DIR` | Directory for `xpbot.sqlite` and `ticket-transcripts/` |
 | `DB_PATH` | Full path to the SQLite file (overrides `DATA_DIR` for the DB file only) |
 
+#### Process clock (`TZ`)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TZ` | host TZ (compose: **UTC**) | Timezone cron schedules evaluate in. The daily decay job is the hardcoded `0 4 * * *` — there is **no `DECAY_CRON` env knob** — so *when* it fires is controlled by the process clock. Docker compose passes `TZ: ${TZ:-UTC}`: decay runs at 04:00 UTC on every deploy, DST-free (audit #206). Node/libc consume `TZ` themselves; `src/` never reads it, which is why the parity guard doesn't pin it |
+
 #### Data retention sweeps (optional)
 
 Tables that only ever grow get pruned by one hourly sweep (plus one at boot),

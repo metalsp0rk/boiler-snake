@@ -197,6 +197,8 @@ Boiler Snake logged in as YourBot#1234
 
 Compose also starts a **Lavalink** sidecar for [music](music.md). Set `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` in `.env` if you want Spotify links and search. Without `LAVALINK_HOST` (bare `npm start` and no local node), `/play` replies that music is not configured.
 
+Compose pins the bot's clock with `TZ: ${TZ:-UTC}`: the daily decay cron is the hardcoded `0 4 * * *` evaluated in the **process timezone**, so UTC means decay fires at 04:00 UTC on every host (override with `TZ` in `.env` only if you really want local time — audit #206).
+
 For a local Lavalink process instead of Compose, see [Music player](music.md#2-lavalink-node-required).
 
 ## First-Time Setup Wizard

@@ -8,7 +8,7 @@ cp .env.example .env && npm install && npm start
 
 Docker:
 ```bash
-cp .env.example .env   # set DISCORD_TOKEN, CLIENT_ID
+cp .env.example .env   # set DISCORD_TOKEN (+ CLIENT_ID for the register step below)
 docker compose up -d --build
 docker compose run --rm bot node src/commands/register.js
 ```
@@ -16,7 +16,7 @@ docker compose run --rm bot node src/commands/register.js
 ## Critical Setup Notes
 
 - **Database**: SQLite (`xpbot.sqlite`). Default: project root. Override with `DATA_DIR` (dir) or `DB_PATH` (full file path). Docker compose uses `DATA_DIR=/data` + named volume.
-- **Environment**: `.env` is ignored. Required: `DISCORD_TOKEN`, `CLIENT_ID`. Optional: `DEV_GUILD_ID` for instant command registration.
+- **Environment**: `.env` is ignored. Boot gate (`assertRuntimeEnv`): at least one platform credential — `DISCORD_TOKEN` **or** `FLUXER_INSTANCES` (a malformed Fluxer block throws even when a token is set). `CLIENT_ID` is optional for login but boot `[config] WARN`s without it and registration/OAuth/web-sign-in stay dark; `npm run register` itself requires **both** `DISCORD_TOKEN` and `CLIENT_ID`. Optional: `DEV_GUILD_ID` for instant command registration.
 - **Never commit secrets**: Do not put real or realistic-looking API keys, tokens, passwords, or credentials in the repo — including docs, examples, tests, comments, or commit messages. Use clearly fake placeholders (e.g. `YOUR_YOUTUBE_API_KEY`, `YOUR_BOT_TOKEN`). Real secrets belong only in `.env` (gitignored) or a secret manager. Patterns like Google `AIza…` keys trigger GitHub secret scanning even in documentation.
 - **Discord Intents**: Enable "Message Content Intent" in Developer Portal for reliable message tracking.
 - **Releases**: Conventional Commits + release-please on `main` → GitHub Release + GHCR image (`ghcr.io/metalsp0rk/boiler-snake`). The release-please PR stays open and gets force-updated after each merge; **merge it to cut the release** (it creates the tag + GitHub Release). PR titles become changelog entries, so keep them descriptive.

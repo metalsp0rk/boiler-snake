@@ -366,7 +366,7 @@ function registerSystemRoutes(app, options = {}) {
       title: "Audit log",
       heading: "Audit log",
       subheading:
-        "The append-only admin_audit trail (web + slash + system origins), newest first. Read-only — no exports, no deletes.",
+        "The append-only admin_audit trail (web + slash + system origins), newest first. Read-only — no exports, no deletes here; the retention sweep is the only delete path, pruning rows past RETENTION_ADMIN_AUDIT_DAYS (default 365).",
       content: renderAuditBody(req, { page, names }),
       guilds: await shellGuilds(resolver, req),
     });
