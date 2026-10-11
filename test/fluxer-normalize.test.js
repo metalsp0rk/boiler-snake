@@ -316,10 +316,15 @@ describe("platform/fluxer/normalize — memberRoleIds shape guard (#200)", () =>
   });
 
   it("THROWS on a roles value that is neither a roleIds manager nor an array", () => {
-    // Renamed getter (the drift the meta-test simulates on a real instance):
+    // Renamed getter (the drift the meta-test simulates on a real instance).
+    // The normalizer re-raises naming the message id too — the boundary drop
+    // log must be reproducible from the line alone (AGENTS.md rule 2).
     assert.throws(
       () => norm({ roles: { ids: ["r1"] } }),
-      /unrecognized shape.*roleIds|roleIds array.*drift/i,
+      (err) =>
+        err instanceof TypeError &&
+        /unrecognized shape.*roleIds|roleIds array.*drift/i.test(err.message) &&
+        err.message.includes("1554600000000000001"),
     );
     // Plain-object role bag (would have iterated to [] silently before):
     assert.throws(() => norm({ roles: { 0: "r1" } }), TypeError);

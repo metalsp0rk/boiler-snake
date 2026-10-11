@@ -704,8 +704,9 @@ describe("FIXTURE DRIFT (issue #200): SDK shape changes FAIL THE SUITE", () => {
       (err) =>
         err instanceof TypeError &&
         /roleIds/i.test(err.message) &&
-        /drift/i.test(err.message),
-      "drift must throw a specific TypeError naming roleIds — an empty [] here is the C2 lockout shipping green again",
+        /drift/i.test(err.message) &&
+        err.message.includes(MSG_ID),
+      "drift must throw a specific TypeError naming roleIds AND the message id (AGENTS.md rule 2 — the drop log must be reproducible from the line alone); an empty [] here is the C2 lockout shipping green again",
     );
 
     // Control: the UNPROXIED real member still normalizes fine (the throw is
