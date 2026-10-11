@@ -355,9 +355,14 @@ describe("integration: one REAL SDK-shaped Fluxer message through the full pipel
     });
 
     assert.equal(
-      logs.filter((l) => l.includes("messageCreate failed") && /roleIds/i.test(l)).length,
+      logs.filter(
+        (l) =>
+          l.includes("messageCreate failed") &&
+          /roleIds/i.test(l) &&
+          l.includes(String(real.id)),
+      ).length,
       1,
-      `one loud, specific boundary log, got: ${JSON.stringify(logs)}`,
+      `one loud, specific boundary log naming roleIds drift AND the message id (AGENTS.md rule 2), got: ${JSON.stringify(logs)}`,
     );
     assert.equal(env.db.getXp(communityId, USER_ID), xpBefore, "drifted traffic never earns XP");
   });

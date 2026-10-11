@@ -51,10 +51,14 @@
  *                   roadmap/fluxer.md: Discord NEVER enters the prefix branch)
  *
  * NOT required (deliberately): the Discord duck fields (guild, author,
- * channel, member, embeds, …) that unmigrated features keep reading; the
- * Fluxer-only normalized extras (memberRoleIds, channelTypes, mentionBots,
- * authorRaw, memberRaw, mentionUsersRaw) whose consumers type-guard with
- * Array.isArray / Map checks — Discord's normalizer never produces them.
+ * channel, member, …) that unmigrated features keep reading; and the extras
+ * whose consumers type-guard with Array.isArray / Map / numeric checks:
+ * memberRoleIds, channelTypes, mentionBots, authorRaw, memberRaw,
+ * mentionUsersRaw are Fluxer-only — Discord's normalizer never produces
+ * them — while embeds and flags ride on BOTH adapters (since issue #200 the
+ * Fluxer normalizer always emits `embeds` (array) plus a numeric-or-null
+ * `flags`; Discord's are untouched duck fields). Still optional extras,
+ * never contract-guaranteed.
  * Separate contracts (NOT validated here — see the issue #201 PR):
  * NormalizedReaction, the MESSAGE_DELETE identity partial
  * (normalizeFluxerMessageDelete / partial Discord deletes), and
