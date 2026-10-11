@@ -36,8 +36,10 @@ function sleep(ms) {
 
 /**
  * Spawn the boot fixture with a private temp DB and NO platform credentials
- * (boot must stay offline: zero endpoints, zero network).
- * @param {string} mode fixture mode: reject | hang | fatal
+ * (boot must stay offline: zero endpoints, zero network) — except mode
+ * "indexfail", which passes one clearly-fake Fluxer entry whose factory the
+ * fixture stubs to a deterministic failure (still zero network).
+ * @param {string} mode fixture mode: reject | hang | fatal | indexfail
  */
 function spawnFixture(mode) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "boiler-snake-lc-"));
@@ -45,8 +47,14 @@ function spawnFixture(mode) {
   const env = { ...process.env, DB_PATH: path.join(tmpDir, "life.sqlite"), DATA_DIR: tmpDir };
   delete env.DISCORD_TOKEN;
   delete env.FLUXER_INSTANCES;
+  if (mode === "indexfail") {
+    env.FLUXER_INSTANCES = '[{"origin":"https://fluxer.invalid","token":"YOUR_FAKE_FLUXER_TOKEN"}]';
+  }
   const child = spawn(process.execPath, [FIXTURE, mode], {
     env,
+    // Run from the private temp dir so dotenv can never pick up the repo's
+    // local .env (index.js loads dotenv against CWD).
+    cwd: tmpDir,
     stdio: ["ignore", "pipe", "pipe"],
   });
   const state = { child, output: "", closed: false };
@@ -180,6 +188,43 @@ describe("process lifecycle on a real spawned boot (C8/C9)", () => {
       assert.ok(
         state.output.includes("[shutdown] uncaughtException: draining"),
         "the fatal path drains through the same shutdown handles",
+      );
+    } finally {
+      killQuiet(state);
+    }
+  });
+
+  it("real index.js entry: every configured endpoint failed → drain via lifecycle, exit 1 (C7 / #190)", async () => {
+    const state = spawnFixture("indexfail");
+    try {
+      const code = await waitForExit(state);
+      assert.equal(code, 1, `all-endpoints-failed must exit 1\n--- output ---\n${state.output}`);
+      // Boot reports the terminal outcome specifically…
+      assert.ok(
+        state.output.includes("[boot] every configured endpoint failed (1 endpoint(s))"),
+        `expected the all-failed fatal, got:\n${state.output}`,
+      );
+      assert.ok(
+        state.output.includes("the feature layer was never armed"),
+        `expected the never-armed note, got:\n${state.output}`,
+      );
+      // …and the entry point exits THROUGH the drain, not a bare process.exit.
+      assert.ok(
+        state.output.includes("all configured endpoints failed to start; draining, then exiting with code 1"),
+        `expected the drain-then-exit log, got:\n${state.output}`,
+      );
+      assert.match(
+        state.output,
+        /\[shutdown\] boot: every configured endpoint failed: draining \d+ shutdown handle\(s\)/,
+      );
+      assert.ok(
+        state.output.includes("[shutdown] drain complete"),
+        `expected the drain to complete before exit, got:\n${state.output}`,
+      );
+      // The reported path owns the exit — never the last-resort catch.
+      assert.ok(
+        !state.output.includes("[boot] fatal startup error"),
+        `unexpected last-resort startup fatal:\n${state.output}`,
       );
     } finally {
       killQuiet(state);

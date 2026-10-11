@@ -124,6 +124,14 @@ The **web** feature's `start()` wires the Discord seams (`setBotGuildsProvider`,
 - **Crash net** — `unhandledRejection` logs the specific cause with context and keeps the process alive (one dropped async op ≠ broken invariants); `uncaughtException` logs, runs the same drain, then exits 1 for the supervisor to restart (`restart: unless-stopped`). The named dispatch sites (`boot.js` InteractionCreate, `bot/pipelines.js` gateway listeners incl. a try/catch around `normalizeDiscordMessage`) carry their own `.catch()`/guard — the net is the backstop, never the plan.
 - **Graceful shutdown** — `SIGTERM`/`SIGINT` drains named stop handles in reverse registration order (member-fetch queue → scheduler jobs → feature loop handles → Fluxer handles → Discord client), each awaited, each failure logged and continued. An 8s overall deadline (under docker's 10s grace) and a second-signal force-exit keep it from hanging; clean drain exits 0.
 
+### Endpoint failure policy (audit C7)
+
+`boot()` treats an endpoint as **terminal for the process** only when its INITIAL login fails — a later gateway reconnect loop never is (the login promise already settled):
+
+- **Discord login rejected/failed** → one specific fatal (`[boot] discord login failed: … — endpoint disabled for this process`), the dead client is released, and `supervisor.discord` returns to `null` — exactly the state a Fluxer-only boot has — so the feature layer arms on the surviving Fluxer endpoint(s). Discord-hard features are isolated by the per-feature boot hooks (`[features] <name>.start failed:` logged, skipped). A bad `DISCORD_TOKEN` degrades; it does not zombie-boot or kill the process.
+- **No endpoint ever ready** → the feature gate stays shut (no tickers/web console/relay on a dead process); `boot()` reports `{ ok:false, exitCode:1 }` and `src/index.js` exits **through the lifecycle drain** (`core/lifecycle.drainAndExit`).
+- **Watchdog** → if the gate has not opened within `FEATURE_GATE_WATCHDOG_MS` (default 120000, `0` disables), boot logs `[boot] watchdog: feature layer has not started after …ms — still waiting on: …` naming the endpoint(s) still pending. One-shot, unref'd, cleared when the gate opens or the all-endpoints-failed fatal owns the outcome.
+
 ### Feature module contract
 
 ```javascript
