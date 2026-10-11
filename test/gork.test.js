@@ -17,11 +17,14 @@ const {
   gorkQueue,
   QUEUE_FULL_REPLY,
   LLM_FAILURE_REPLY,
+  hasVisionTrigger,
 } = require("../src/features/gork/trigger");
 const {
   buildContext,
   hasReference,
   hasContent,
+  attachmentSummary,
+  isContextRelevant,
   clampWindowSize,
   formatMessageLine,
   formatContext,
@@ -1697,5 +1700,150 @@ describe("gork summarize card + caps (constants, §7.21)", () => {
       C.summarizeInputTokenCapChars(-99999) >= C.GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR,
       "cap never below the floor",
     );
+  });
+});
+
+// ---------- vision context integration (issue #227) ----------
+
+describe("context attachment handling (vision, issue #227)", () => {
+  const img = (name = "shot.png", url = "https://cdn.test/shot.png") => ({
+    name,
+    url,
+    contentType: "image/png",
+    size: 1234,
+  });
+
+  it("attachmentSummary names images and collapses the rest", () => {
+    assert.equal(attachmentSummary({}), "");
+    assert.equal(attachmentSummary({ attachments: [] }), "");
+    assert.equal(attachmentSummary({ attachments: [img()] }), "[image attached]");
+    assert.equal(
+      attachmentSummary({ attachments: [img("a.png"), img("b.png")] }),
+      "[2 images attached]",
+    );
+    assert.equal(
+      attachmentSummary({
+        attachments: [
+          { name: "clip.mp4", url: "u", contentType: "video/mp4" },
+          { name: "d.pdf", url: "u2", contentType: "application/pdf" },
+        ],
+      }),
+      "[2 attachment(s)]",
+    );
+    assert.equal(
+      attachmentSummary({ attachments: [img(), { name: "d.pdf", url: "u", contentType: "application/pdf" }] }),
+      "[image attached, 1 attachment(s)]",
+    );
+  });
+
+  it("isContextRelevant admits image-only messages, still rejects empty ones", () => {
+    assert.equal(isContextRelevant({ content: "" }), false);
+    assert.equal(isContextRelevant({ content: "   ", attachments: [] }), false);
+    assert.equal(isContextRelevant({ content: "", attachments: [img()] }), true);
+    assert.equal(
+      isContextRelevant({ content: "", attachments: [{ name: "a", url: "u", contentType: "video/mp4" }] }),
+      true,
+    );
+    assert.equal(isContextRelevant({ content: "text" }), true);
+  });
+
+  it("formatMessageLine keeps text-only lines BYTE-IDENTICAL", () => {
+    const m = makeMsg({ id: "m1", content: "plain text", username: "u1" });
+    assert.equal(formatMessageLine(m), "[u1] plain text");
+  });
+
+  it("formatMessageLine appends the placeholder for attachments and renders empty-with-image", () => {
+    const withImage = makeMsg({ id: "m1", content: "look", username: "u1" });
+    withImage.attachments = [img()];
+    assert.equal(formatMessageLine(withImage), "[u1] look [image attached]");
+
+    const imageOnly = makeMsg({ id: "m2", content: "", username: "u2" });
+    imageOnly.attachments = [img()];
+    assert.equal(formatMessageLine(imageOnly), "[u2] [image attached]");
+  });
+
+  it("buildContext includes image-only prior messages with their placeholder line", async () => {
+    const shot = makeMsg({ id: "m0002", content: "", username: "user2" });
+    shot.attachments = [img()];
+    const prior = [
+      makeMsg({ id: "m0001", content: "hello", username: "user1" }),
+      shot,
+      makeMsg({ id: "m0003", content: "", username: "empty" }), // still skipped
+    ];
+    const trig = makeMsg({ id: "m0009", content: "@gork what is this", username: "asker" });
+    trig.channel = makeChannel([...prior, trig], { collectionLike: true });
+
+    const r = await buildContext(trig, 5);
+    assert.equal(r.collected, 2, "text + image-only admitted; empty dropped");
+    assert.equal(r.text, "[user1] hello\n[user2] [image attached]");
+  });
+
+  it("the reply-chain walk admits image-only links and keeps walking past them", async () => {
+    const root = makeMsg({ id: "m0100", content: "", username: "rooter", channelId: "chan-1" });
+    root.attachments = [img("root.png", "https://cdn.test/root.png")];
+    const mid = makeMsg({
+      id: "m0101", content: "mid", username: "mider", channelId: "chan-1",
+      reference: { messageId: "m0100" }, fetchReference: async () => root,
+    });
+    const trig = makeMsg({
+      id: "m0102", content: "@gork", username: "asker", channelId: "chan-1",
+      reference: { messageId: "m0101" }, fetchReference: async () => mid,
+    });
+    trig.channel = makeChannel([root, mid, trig], { collectionLike: true });
+
+    const r = await buildContext(trig, 5);
+    assert.equal(r.mode, "reply-chain");
+    assert.ok(r.text.includes("[rooter] [image attached]"), r.text);
+    assert.ok(r.text.includes("[mider] mid"), r.text);
+    // The image-only chain link carries its attachment object for the
+    // vision candidate collector.
+    const rootRow = r.messages.find((m) => m.id === "m0100");
+    assert.equal(rootRow.attachments.length, 1);
+  });
+
+  it("messages WITHOUT attachments behave exactly as before (byte-identical spec)", async () => {
+    // The makeMsg fakes carry no attachments field at all: the pre-#227
+    // locked example must reproduce exactly.
+    const prior = [
+      makeMsg({ id: "m0001", content: "hello", username: "user1" }),
+      makeMsg({ id: "m0002", content: "", username: "user2" }),
+      makeMsg({ id: "m0003", content: "bot says hi", username: "bot" }),
+    ];
+    const trig = makeMsg({ id: "m0008", content: "@gork q", username: "u" });
+    trig.channel = makeChannel([...prior, trig], { collectionLike: true });
+    const r = await buildContext(trig, 5);
+    assert.equal(r.text, "[user1] hello\n[bot] bot says hi");
+  });
+});
+
+describe("hasVisionTrigger (keyword-alone gate, issue #227)", () => {
+  const savedEnv = process.env.GORK_VISION_MAX_IMAGES;
+  const cleanup = () => {
+    if (savedEnv === undefined) delete process.env.GORK_VISION_MAX_IMAGES;
+    else process.env.GORK_VISION_MAX_IMAGES = savedEnv;
+  };
+
+  it("true for a message with a supported image attachment", () => {
+    delete process.env.GORK_VISION_MAX_IMAGES;
+    assert.equal(
+      hasVisionTrigger({
+        attachments: [{ name: "a.png", url: "https://x/a.png", contentType: "image/png" }],
+      }),
+      true,
+    );
+  });
+
+  it("false without images and false when vision is disabled (MAX_IMAGES=0)", () => {
+    delete process.env.GORK_VISION_MAX_IMAGES;
+    assert.equal(hasVisionTrigger({ attachments: [] }), false);
+    assert.equal(hasVisionTrigger({}), false);
+    process.env.GORK_VISION_MAX_IMAGES = "0";
+    assert.equal(
+      hasVisionTrigger({
+        attachments: [{ name: "a.png", url: "https://x/a.png", contentType: "image/png" }],
+      }),
+      false,
+    );
+    cleanup();
   });
 });

@@ -1117,7 +1117,10 @@ read_discord(link)
 | 48 | **Audit/log:** Q&A audit embed gains `Link reads: N` beside the Search/Page-read tallies; interaction log gets it via the existing `llmOpts.tools` snapshot; cooldown/queue/budget semantics unchanged. |
 
 **Out of scope:** per-guild toggle or window-size knobs (deliberate — decisions table
-above; revisit only if a guild needs it disabled); attachment/embed body reading;
+above; revisit only if a guild needs it disabled); attachment/embed body reading
+(<- **superseded 2026-10-10 for IMAGES by §7.22 Vision (this file)**:
+trigger/context images ride as real image parts; embed bodies and non-image
+attachment bodies remain out of scope);
 cross-guild reads; model-controlled window params; message **search** (link/mention
 targets only); writing anything to Discord.
 
@@ -1493,3 +1496,67 @@ day**, exactly as written above.
       embed budget
 - [x] `docs/gork.md` + `docs/commands/index.md` + `npm run docs:build`
 - [x] Tick this checklist + §8 in `index.md`; header → LOCKED (decisions 53–57)
+
+---
+
+### 7.22 Vision — image attachments in the LLM call — 2026-10 design (LOCKED 2026-10-10 — decisions 58–64)
+
+> **Issue #227** (milestone *Gork next*). This section SUPERSEDES the §7.19
+> "attachment/embed body reading" out-of-scope line for IMAGES: trigger and
+> context-window image attachments now ride to the model as real multimodal
+> image parts. Embed bodies and non-image attachment bodies remain
+> out of scope (see below).
+
+**Why:** gork was text-only — every attachment collapsed to `[N attachment(s)]`
+and image-only messages were skipped by the context builder, so "gork what's in
+this screenshot?" could not work. Pixels are the most-asked-for modality.
+
+#### Design Decisions (LOCKED — decisions 58–64)
+
+| # | Decision |
+|---|----------|
+| 58 | **The 1280-box rule (hard requirement):** every image is downscaled to fit a **1280×1280 box before the LLM call**, aspect ratio preserved, fractional pixels round down, minimum 1, and an image already inside the box is sent **as-is** (original bytes, no re-encode). NEVER upscale (e.g. 4032×3024 → 1280×960). Resize is `@napi-rs/canvas` decode → draw → re-encode (no new npm deps, the leaderboard precedent); resized output encodes png→png / webp→webp (alpha preserved) and everything else → jpeg. |
+| 59 | **Transport = local download + base64 data URLs**, never the raw CDN link: the configured provider may be self-hosted (`AI_BASE_URL`, e.g. vLLM) and cannot fetch Discord/Fluxer URLs, links expire, and the downscale must happen locally anyway. Downloads reuse the bridge media SSRF posture (https only, per-hop resolved-address checks — loopback/link-local/RFC1918 refused — same-host redirects ≤ 3, timed abort). |
+| 60 | **Message shape:** image turns send the user turn as a content-parts array — `[{type:"text", text: …}, {type:"image_url", image_url:{url:"data:…"}}]`; text-only turns keep the byte-identical plain-string content path. `core/ai.js` is UNTOUCHED (messages pass through verbatim). |
+| 61 | **Scope = trigger message + context window.** `context.js` stops skipping empty-content messages that carry attachments: they collect and render a placeholder line (`[image attached]` / `[N images attached]` / `[N attachment(s)]`), and their images join the candidate list. Candidates are ordered trigger-first, then context oldest→newest, deduped by URL. The keyword-alone gate (decision 3) admits `@gork` + image as a valid question. |
+| 62 | **Bounded constants (env, re-read per job):** max **4** images per LLM request (`GORK_VISION_MAX_IMAGES`, `0` = vision fully off), per-attachment download ceiling 15 MiB (`GORK_VISION_MAX_IMAGE_BYTES`), total re-encoded bytes per request 12 MiB (`GORK_VISION_MAX_TOTAL_BYTES`), per-image download timeout 10 s (`GORK_VISION_DOWNLOAD_TIMEOUT_MS`), whole-phase deadline 45 s. MIME allowlist png/jpeg/webp/gif (explicit non-allowlisted content-types decide alone; the extension only speaks when the platform ships none — Fluxer's `{name,url}` shape). GIF = first frame via canvas decode. |
+| 63 | **Per-attachment degradation (AGENTS.md error rules):** a failed download / oversize / decode / budget-overflow skips THAT image — logged as `[gork] vision image skipped guild=… user=… msg=… <name> [trigger|context]: <reason>` — and the text part gains an `(Image notes: …)` line naming each failure. The reply NEVER dies on a broken image; a whole-phase timeout answers text-only with a note. |
+| 64 | **Surfaces + model routing:** the Q&A audit embed gains an inline `Vision` field (`2/3 image(s)`, only when candidates existed) and the interaction log's `contextMeta` gains `images: N` (replay records the exact TEXT part). `GORK_VISION_MODEL` (the `AI_SMALL_MODEL` precedent) replaces the model ONLY on requests that actually carry images; `cfg` and the memory turn are untouched. Budget math does NOT yet count image tokens (see out of scope). |
+
+**Out of scope (follow-ups, file issues):** `/gork summarize` +
+`read_discord`/`read_history` keep their `[N attachment(s)]` text collapse; the
+memory-extraction turn (decision 25) stays text-only; image-token accounting in
+§7.17 budget / summarize budgets; per-guild vision toggle; Fluxer
+context-window images (`fetchMessages` rows carry no attachments yet — the
+Fluxer TRIGGER message's normalized `{name,url}` attachments DO work); embed
+bodies.
+
+**Implementation checklist (done — PR `feat/gork-vision`):**
+
+- [x] `src/features/gork/images.js` — pure resize math (`resolveTargetSize`),
+      buffer-in/buffer-out `downscaleImageBuffer` (lazy canvas require),
+      filtering (`isImageAttachment` + extension fallback), candidate
+      collection (order/dedupe), `prepareVisionImages` orchestration
+      (parallel download, deterministic total-bytes walk, per-attachment
+      notes + logs); `test/gork-images.test.js` (35 tests: box math incl.
+      never-upscale/passthrough/round-down, real-canvas resize, SSRF posture
+      refusal before fetch, count/bytes caps, env knobs)
+- [x] `context.js` — `attachmentSummary` / `isContextRelevant`; image-only
+      messages collect + render placeholders; text-only lines byte-identical
+      (pinned by unit tests)
+- [x] `trigger.js` — keyword-alone + image trigger (both platforms); vision
+      phase in `runGorkJob` (phase deadline, `withDeadline` degradation);
+      multimodal `messages`; `GORK_VISION_MODEL` routing; audit `visionLabel`;
+      interaction-log `contextMeta.images`; `setVisionSeamsForTests` seam
+- [x] Fluxer duck adapter exposes normalized trigger attachments (context
+      rows pinned `attachments: []` + follow-up comment); trigger gate mirrored
+- [x] `audit.js` — inline `Vision` field
+- [x] `.env.example` — `GORK_VISION_*` block
+- [x] Unit + integration tests (`test/gork-images.test.js`,
+      `test/gork.test.js` context/vision suites, `test/integration/gork.test.js`
+      vision suite ×5 incl. multimodal payload + degradation + model override,
+      `test/fluxer-gork-trigger.test.js` ×2)
+- [x] `docs/gork.md` — Vision section + trigger/context/audit/privacy/
+      troubleshooting updates; `npm run docs:build` green
+- [ ] Live verification (issue #227 checklist): dev guild image post →
+      answer references actual pixels; audit `Vision` field lands

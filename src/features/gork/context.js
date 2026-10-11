@@ -12,12 +12,10 @@
  * - **Prior** (no reply reference): the X messages immediately before the
  *   keyword message in its channel.
  *
- * Rules (locked spec):
+ * Rules (locked spec; issue #227 amends the empty-content rule):
  * - Included: all readable messages — human and bot, including gork's own
- *   prior answers.
- * - Excluded: the triggering keyword message itself; messages with empty
- *   content are skipped (collection keeps going until X non-empty messages
- *   are collected or the channel has no more).
+ *   prior answers; messages with empty content are skipped UNLESS they
+ *   carry attachments (image-only messages render a placeholder line).
  * - Broken chain links (deleted/unfetchable reference) are skipped; the
  *   walk stops when the chain ends or X is reached.
  * - Shape: one line per message, `[username] content`, oldest → newest,
@@ -65,6 +63,7 @@
  */
 
 const { sliceSafe } = require("../../core/text");
+const { iterAttachments, isImageAttachment } = require("./images");
 
 const MIN_WINDOW = 1;
 const MAX_WINDOW = 50;
@@ -113,7 +112,9 @@ function hasReference(message) {
 
 /**
  * Whether the message has non-empty text content (whitespace-only counts
- * as empty). Empty-content messages are skipped from the context.
+ * as empty). Empty-content messages are skipped from the context —
+ * EXCEPT messages carrying attachments (issue #227): those are collected
+ * via {@link isContextRelevant} and render an attachment placeholder.
  *
  * @param {GorkMessage|null|undefined} message
  * @returns {boolean}
@@ -121,6 +122,42 @@ function hasReference(message) {
 function hasContent(message) {
   if (!message || message.content == null) return false;
   return String(message.content).trim().length > 0;
+}
+
+/**
+ * Attachment placeholder for a context line (issue #227):
+ * `[image attached]` / `[2 images attached]` / `[3 attachment(s)]` —
+ * images are named as such (they ride to the LLM as real image parts),
+ * everything else keeps the `[N attachment(s)]` collapse convention the
+ * read tools use. "" when the message carries no attachments.
+ *
+ * Duck-safe: `attachments` may be a discord.js Collection, a Map, an
+ * array (Fluxer normalized), or absent.
+ *
+ * @param {GorkMessage|null|undefined} message
+ * @returns {string}
+ */
+function attachmentSummary(message) {
+  const atts = iterAttachments(message && message.attachments);
+  if (!atts.length) return "";
+  const images = atts.filter(isImageAttachment).length;
+  const others = atts.length - images;
+  const bits = [];
+  if (images) bits.push(images === 1 ? "image attached" : `${images} images attached`);
+  if (others) bits.push(`${others} attachment(s)`);
+  return `[${bits.join(", ")}]`;
+}
+
+/**
+ * Whether a message belongs in the context window (issue #227 supersedes
+ * the plain empty-content skip): any non-empty text, OR any attachment
+ * (image-only messages are real conversation content now).
+ *
+ * @param {GorkMessage|null|undefined} message
+ * @returns {boolean}
+ */
+function isContextRelevant(message) {
+  return hasContent(message) || attachmentSummary(message) !== "";
 }
 
 /**
@@ -153,7 +190,12 @@ function formatMessageLine(message, opts = {}) {
     Boolean(opts && opts.askerId) &&
     authorId != null &&
     String(authorId) === String(opts.askerId);
-  const body = sliceSafe(String((message && message.content) || ""), MESSAGE_CHAR_CAP);
+  const body = sliceSafe(
+    [String((message && message.content) || ""), attachmentSummary(message)]
+      .filter(Boolean)
+      .join(" "),
+    MESSAGE_CHAR_CAP,
+  );
   return `[${isAsker ? "ASKER " : ""}${name}] ${body}`;
 }
 
@@ -213,7 +255,7 @@ async function walkReplyChain(triggerMessage, target) {
     }
     if (!next || !next.id || seen.has(next.id)) break;
     seen.add(next.id);
-    if (hasContent(next)) chain.push(next);
+    if (isContextRelevant(next)) chain.push(next);
     current = next;
   }
   return chain;
@@ -248,7 +290,7 @@ async function collectMessages(channel, target, beforeId, fetcher) {
     // than everything already collected, so prepend. When the batch holds more
     // non-empty messages than we still need, take the newest ones (closest to
     // cursor = start of the array); reverse so `collected` stays oldest → newest.
-    const fresh = values.filter(hasContent);
+    const fresh = values.filter(isContextRelevant);
     const take = Math.min(fresh.length, target - collected.length);
     collected.unshift(...fresh.slice(0, take).reverse());
     // Advance past the whole batch (empty-content messages included) so
@@ -356,6 +398,8 @@ module.exports = {
   buildContext,
   hasReference,
   hasContent,
+  attachmentSummary,
+  isContextRelevant,
   clampWindowSize,
   formatMessageLine,
   formatContext,
