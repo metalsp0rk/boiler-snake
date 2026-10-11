@@ -261,6 +261,89 @@ function isRelayedDestinationForTest(platform, instanceKey, messageId) {
 }
 
 /**
+ * Default interval for the relay/echo map TTL sweep (audit #195 item 3).
+ * The destination-id TTL itself is {@link DESTINATION_TTL_MS} (spec §10.4:
+ * 10 minutes); sweeping every minute evicts an expired id within ~1% of
+ * its lifetime — cheap, and it bounds the maps without any read-path cost.
+ * The cadence rides the scheduler job created by startBridgeLoops
+ * (overlap-skipped like the expiry sweeper).
+ */
+const TTL_SWEEP_INTERVAL_MS = 60_000;
+
+/**
+ * Evict every TTL-expired entry from the in-memory relay maps
+ * (audit #195 item 3). The lazy delete in the create gate only fires when a
+ * NEW message happens to carry the expired id — for bot/webhook-authored
+ * echoes the pipeline returns before that check, so without this sweep the
+ * maps grew one entry per relayed message for the whole process lifetime.
+ *
+ * Rules:
+ *  - destinationIds (create-gate window, spec §10.4 "TTL 10 minutes"):
+ *    every id whose expiry has passed is deleted; the map is NOT reloaded
+ *    from SQLite, so its entries exist only inside their TTL window.
+ *  - echoMessageIds (update/delete echo set): entries written by
+ *    noteRelayedDestination always have a destinationIds expiry, and are
+ *    evicted together with it. Entries seeded by reloadRelayMaps from
+ *    bridge_message_links have NO destinationIds entry — they are the
+ *    DURABLE half of the echo gate (spec §10.4) and are kept; they are
+ *    bounded by the links table and rebuilt on every reload. Evicting an
+ *    in-process echo id is loop-safe: the update/delete intake requires a
+ *    links row keyed by the SOURCE id (a destination copy is a dst id,
+ *    never a src) and drops bot/webhook authors — the durable checks hold
+ *    independently of this cache.
+ *
+ * Keys left completely empty are removed (deployment slices that went
+ * quiet release their slice).
+ *
+ * @param {number} [nowMs] injectable clock (tests run on a fake clock)
+ * @returns {{destinations: number, echoes: number, keys: number}} evicted counts
+ */
+function sweepRelayMapTtls(nowMs = Date.now()) {
+  let destinations = 0;
+  let echoes = 0;
+  const touched = new Set(); // deployment keys this sweep wrote to
+  for (const [key, dest] of [...destinationIds]) {
+    for (const [id, expiresAt] of dest) {
+      if (expiresAt > nowMs) continue;
+      dest.delete(id);
+      destinations += 1;
+      echoMessageIds.get(key)?.delete(id);
+      echoes += 1;
+      touched.add(key);
+    }
+    if (dest.size === 0) destinationIds.delete(key);
+  }
+  for (const [key, set] of [...echoMessageIds]) {
+    if (set.size === 0) {
+      echoMessageIds.delete(key);
+      touched.add(key);
+    }
+  }
+  // keys = deployment slices that left BOTH maps entirely (a dest slice that
+  // drained while SQLite-seeded echo ids remain does NOT count — the echo
+  // half is durable, bounded by the links table, and re-seeded per reload).
+  let keys = 0;
+  for (const key of touched) {
+    if (!destinationIds.has(key) && !echoMessageIds.has(key)) keys += 1;
+  }
+  return { destinations, echoes, keys };
+}
+
+/**
+ * Test seam: total entries currently held by the relay/echo maps — the
+ * observable bound for the TTL sweep ("memory-map TTL eviction
+ * observable", #195 verification list).
+ * @returns {{echoMessageIds: number, destinationIds: number}}
+ */
+function relayMapSizeForTest() {
+  let echoTotal = 0;
+  for (const set of echoMessageIds.values()) echoTotal += set.size;
+  let destTotal = 0;
+  for (const m of destinationIds.values()) destTotal += m.size;
+  return { echoMessageIds: echoTotal, destinationIds: destTotal };
+}
+
+/**
  * True when a Fluxer GUILD message's content parses as a `bridge` prefix
  * command line (spec §10.4, KD 17). Command traffic, not chat: the pipeline
  * dispatches it through the shipped dispatcher EXACTLY ONCE (the registry
@@ -2352,9 +2435,10 @@ function createRelayWorker(deps = {}) {
  *
  * Order (spec §10.10 Restart + §10.8): rebuild spool accounting from disk,
  * return abandoned 'sending' rows to 'pending', reload the relay/echo maps,
- * run the start-time orphan-spool pass, then register the worker tick and
- * the 60-second expiry sweeper with the scheduler. Guarded against
- * double-start (the spec's "guarded against double-start"). The tick works
+ * run the start-time orphan-spool pass, then register the worker tick, the
+ * 60-second expiry sweeper, and the relay/echo-map TTL sweep with the
+ * scheduler. Guarded against double-start (the spec's "guarded against
+ * double-start"). The tick works
  * with ZERO clients ready: a Fluxer-only deployment boots the same way, and
  * per-direction sends resolve their transport lazily per row.
  *
@@ -2420,6 +2504,22 @@ function startBridgeLoops(supervisor = null, opts = {}) {
     jobs.push("bridge-expiry");
   } catch (err) {
     console.error("[bridge] sweeper job registration failed:", err?.message || err);
+  }
+  // Relay/echo map TTL sweep (audit #195 item 3): bound the in-process maps
+  // the create-gate and echo-gate read. The scheduler owns the cadence and
+  // skips overlaps, so a slow sweep never stacks (same contract as the
+  // expiry sweeper).
+  try {
+    scheduler.registerJob({
+      name: "bridge-relay-ttl",
+      intervalMs: Number.isFinite(opts.ttlSweepIntervalMs)
+        ? opts.ttlSweepIntervalMs
+        : TTL_SWEEP_INTERVAL_MS,
+      run: () => sweepRelayMapTtls(),
+    });
+    jobs.push("bridge-relay-ttl");
+  } catch (err) {
+    console.error("[bridge] relay-map TTL sweep job registration failed:", err?.message || err);
   }
 
   loopHandle = {
@@ -2533,6 +2633,10 @@ module.exports = {
   clearRelayState,
   isRelayedEcho,
   isRelayedDestinationForTest,
+  // #195 item 3: relay/echo map TTL sweep (scheduler job in startBridgeLoops)
+  TTL_SWEEP_INTERVAL_MS,
+  sweepRelayMapTtls,
+  relayMapSizeForTest,
   createLoopGate,
   isBridgeCommandLine,
   relayDirectionForEnd,

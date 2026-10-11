@@ -871,4 +871,99 @@ describe("bridge relay worker (PR 5)", () => {
     assert.match(warns[0], /re-execution posted part 0 of 10302 as other-1/);
     assert.match(warns[0], /keeping the committed copy first-1/);
   });
+
+  // -------------------------------------------------------------------------
+  // Relay/echo map TTL sweep (audit #195 item 3): the maps grow one entry per
+  // relayed message; the create gate's lazy delete is nearly unreachable for
+  // bot-authored echoes, so the scheduled sweep is what bounds them.
+  // -------------------------------------------------------------------------
+
+  it("the TTL sweep evicts expired destination ids WITH their echo entries (observable)", () => {
+    relay.clearRelayState();
+    const now = 1_800_000_000_000;
+    relay.noteRelayedDestination("fluxer", "ttl.example", "dup-1", { nowMs: now });
+    relay.noteRelayedDestination("fluxer", "ttl.example", "dup-2", { nowMs: now + 60_000 });
+    assert.deepEqual(relay.relayMapSizeForTest(), { echoMessageIds: 2, destinationIds: 2 });
+    assert.equal(relay.isRelayedEcho("fluxer", "ttl.example", "dup-1"), true);
+
+    // One millisecond before expiry: nothing moves.
+    assert.deepEqual(
+      relay.sweepRelayMapTtls(now + relay.DESTINATION_TTL_MS - 1),
+      { destinations: 0, echoes: 0, keys: 0 },
+    );
+
+    // At expiry: dup-1 is gone from BOTH maps (the echo entry's only bound),
+    // dup-2 lives in its own window.
+    assert.deepEqual(
+      relay.sweepRelayMapTtls(now + relay.DESTINATION_TTL_MS),
+      { destinations: 1, echoes: 1, keys: 0 },
+    );
+    assert.equal(relay.isRelayedDestinationForTest("fluxer", "ttl.example", "dup-1"), undefined);
+    assert.equal(relay.isRelayedEcho("fluxer", "ttl.example", "dup-1"), false);
+    assert.equal(relay.isRelayedEcho("fluxer", "ttl.example", "dup-2"), true);
+    assert.deepEqual(relay.relayMapSizeForTest(), { echoMessageIds: 1, destinationIds: 1 });
+
+    // The whole slice drains after dup-2 expires: the deployment key dies.
+    assert.deepEqual(
+      relay.sweepRelayMapTtls(now + 60_000 + relay.DESTINATION_TTL_MS),
+      { destinations: 1, echoes: 1, keys: 1 },
+    );
+    assert.deepEqual(relay.relayMapSizeForTest(), { echoMessageIds: 0, destinationIds: 0 });
+  });
+
+  it("the sweep keeps SQLite-seeded echo ids — the durable half of the gate", () => {
+    const { bridge } = seedBridge("a_to_b");
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: "5001",
+      partIndex: 0,
+      dstMessageId: "durable-1",
+    });
+    relay.clearRelayState();
+    relay.reloadRelayMaps({ db: db.db });
+    assert.equal(relay.isRelayedEcho("fluxer", "relay.example", "durable-1"), true);
+
+    // Ten years into the future: reload-seeded echo ids have no destination
+    // entry — they are bounded by the links table (spec §10.4), not the TTL.
+    const farFuture = Date.now() + 10 * 365 * 24 * 3600 * 1000;
+    const res = relay.sweepRelayMapTtls(farFuture);
+    assert.equal(res.destinations, 0);
+    assert.equal(res.echoes, 0);
+    assert.equal(
+      relay.isRelayedEcho("fluxer", "relay.example", "durable-1"),
+      true,
+      "the durable echo entry survives every sweep until reload rebuilds it",
+    );
+    relay.clearRelayState();
+    relay.reloadRelayMaps({ db: db.db });
+  });
+
+  it("startBridgeLoops registers the TTL sweep job; the loop stop handle removes it", () => {
+    const jobs = new Map();
+    const scheduler = {
+      registerJob: (spec) => jobs.set(spec.name, spec),
+      stop: (name) => jobs.delete(name),
+    };
+    const handle = relay.startBridgeLoops(null, {
+      scheduler,
+      repo: { requeueStaleOutbox: () => 0, getBridgeByPublicId: () => null },
+      isKnownPublicId: () => true, // the orphan pass may not touch the shared spool
+      getWebhookApi: () => null,
+      getOutbound: () => null,
+      keyGetter: () => KEY,
+      sendMessage: async () => ({ ok: true }),
+      sleep: async () => {},
+    });
+    try {
+      assert.ok(handle && typeof handle.stop === "function", "the loop handle is stoppable");
+      const spec = jobs.get("bridge-relay-ttl");
+      assert.ok(spec, "the relay/echo TTL sweep runs on the scheduler (60 s default)");
+      assert.equal(spec.intervalMs, relay.TTL_SWEEP_INTERVAL_MS);
+      assert.deepEqual(spec.run(), { destinations: 0, echoes: 0, keys: 0 });
+    } finally {
+      handle.stop();
+    }
+    assert.equal(jobs.size, 0, "the loop stop removes every job, TTL sweep included");
+  });
 });
