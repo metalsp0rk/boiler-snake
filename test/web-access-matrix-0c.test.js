@@ -471,7 +471,10 @@ const KNOWN_G_PATHS = [
   "/g/:guildId/leaderboard/user/:userId",
 ];
 
-const SUBS_B = { guildId: CID_B, userId: USER_PLAIN };
+// eventId: Community Events calendar (#222) mounts /g/:guildId/events/:eventId;
+// the sweep only needs a concrete value — every guild-A session must still see
+// the byte-generic 404 for guild-B paths (guildScope 404s before the route).
+const SUBS_B = { guildId: CID_B, userId: USER_PLAIN, eventId: "999" };
 
 describe("B | cross-guild probes: guild-A sessions see nothing of guild B", () => {
   it("B | live router enumeration finds the guild-scoped surface", () => {
@@ -633,7 +636,7 @@ describe("C | login-mandatory sweep (§8.1-3)", () => {
     // Integer community ids fail the 5-20-digit snowflake gate, so the login
     // redirect is bare (no ?guild= echo).
     for (const route of harness.listGetRoutesUnder(app, "/g/")) {
-      const url = harness.buildConcretePath(route.path, { guildId: CID_A, userId: USER_PLAIN });
+      const url = harness.buildConcretePath(route.path, { guildId: CID_A, userId: USER_PLAIN, eventId: "999" });
       await harness.runOutcome({
         base,
         url,

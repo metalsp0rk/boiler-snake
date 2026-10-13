@@ -676,7 +676,7 @@ after(() => {
 // registry is the ground truth — both directions or the gate fails by name).
 // ===========================================================================
 
-describe("A1. registry ↔ matrix integrity — 42 mutations, no drift (§8.8)", () => {
+describe("A1. registry ↔ matrix integrity — 47 mutations, no drift (§8.8)", () => {
   before(async () => {
     for (const [app, setter] of [
       [appMain, (b) => (baseMain = b)],
@@ -693,7 +693,11 @@ describe("A1. registry ↔ matrix integrity — 42 mutations, no drift (§8.8)",
 
   it("runtime registry covers EVERY mutation AND every matrix row exists (no drift either way)", () => {
     const registry = appMain.locals.webMutations;
-    assert.equal(registry.length, 42, "the final surface is 42 mutations (40 Phase-0a→3 + the 2 Phase-4 session revokes… verified 1:1 below)");
+    assert.equal(
+      registry.length,
+      47,
+      "the final surface is 47 mutations (40 Phase-0a→3 + the 2 Phase-4 session revokes + the 5 Community Events calendar mutations… verified 1:1 below)"
+    );
     const regTemplates = new Set(registry.map((m) => m.path));
     const tableTemplates = new Set(PARITY.map((r) => r.template));
     assert.deepEqual(
@@ -736,7 +740,7 @@ describe("A1. registry ↔ matrix integrity — 42 mutations, no drift (§8.8)",
 // (extracted VERBATIM from the Phase-2 gate). Ledger books every success.
 // ===========================================================================
 
-describe("A2. per-mutation acceptance ladder — all 42 mutations (four §8.6 rules + service + audit + fail-closed)", () => {
+describe("A2. per-mutation acceptance ladder — all 47 mutations (four §8.6 rules + service + audit + fail-closed)", () => {
   for (const entry of appMain.locals.webMutations) {
     const row = PARITY.find((r) => r.template === entry.path);
     const label = row
@@ -953,6 +957,16 @@ const PAGES = [
   { path: "/g/:guildId/xp/grant", tier: "admin", marker: "<h1>Grant XP" },
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
   { path: "/g/:guildId/t", tier: "staff", marker: "<h1>Ticket archive" },
+  // Community Events calendar (#222): staff-tier console (roadmap E-decisions;
+  // AGENTS.md §4 — the /event twin gates on requireStaff, the web mirrors it;
+  // the detail page's :eventId resolves against the fixture draft seeded in
+  // the C sweep).
+  { path: "/g/:guildId/events", tier: "staff", marker: "<h1>Event calendar" },
+  { path: "/g/:guildId/events/archive", tier: "staff", marker: "<h1>Archive" },
+  { path: "/g/:guildId/events/presets", tier: "staff", marker: "<h1>Signup presets" },
+  { path: "/g/:guildId/events/series", tier: "staff", marker: "<h1>Recurring series" },
+  { path: "/g/:guildId/events/scheduled", tier: "staff", marker: "<h1>Scheduled posts" },
+  { path: "/g/:guildId/events/:eventId", tier: "staff", marker: "<h1>Event" },
   { path: "/g/:guildId/users/:userId/card", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/roles", tier: "staff", json: true },
@@ -978,8 +992,25 @@ describe("C. tier conformance sweep — final GET surface + mutation ladder evid
   });
 
   it("every page answers every viewer class exactly per its tier: anon 302 · stranger/plain/cross 404 · 200 vs fixed 403", async () => {
+    // Events detail (#222) needs ONE resolvable :eventId. A2's EV-row ladders
+    // purge + AUTOINCREMENT-reset the events surface before every real run,
+    // so AFTER A2 the sequence is clean ⇒ this probe row lands on id 1 and
+    // stays (nothing else touches event tables below).
+    const evProbe = api.createEvent({
+      communityId: CID_A,
+      creatorId: USER_WARN_SUBJECT,
+      title: "Gate Probe Event",
+      status: "draft",
+      startAt: Date.now() + 86_400_000,
+    });
+    assert.ok(evProbe.ok, `probe event seeded: ${evProbe.error}`);
+    const eventId = String(evProbe.event.id);
+    const concrete = (p) =>
+      p.replace(":guildId", CID_A)
+        .replace(":userId", USER_WARN_SUBJECT)
+        .replace(":eventId", eventId);
     for (const page of PAGES) {
-      const url = page.path.replace(":guildId", CID_A).replace(":userId", USER_WARN_SUBJECT);
+      const url = concrete(page.path);
       await harness.runOutcome({
         base: baseMain,
         url,
@@ -1001,7 +1032,10 @@ describe("C. tier conformance sweep — final GET surface + mutation ladder evid
         expect: harness.expectGenericNotFound(),
         label: `plain ${page.path}`,
       });
-      const crossUrl = page.path.replace(":guildId", CID_CROSS).replace(":userId", USER_WARN_SUBJECT);
+      const crossUrl = page.path
+        .replace(":guildId", CID_CROSS)
+        .replace(":userId", USER_WARN_SUBJECT)
+        .replace(":eventId", eventId);
       await harness.runOutcome({
         base: baseMain,
         url: crossUrl,
@@ -1049,7 +1083,11 @@ describe("C. tier conformance sweep — final GET surface + mutation ladder evid
     const derived = (t) => PARITY.filter((r) => ladder.expectedTierFor(r.template) === t).length;
     assert.equal(derived("admin"), 10, "10 admin mutations (role×3, channels×2, exempt×2, grant, sync, system sessions revoke)");
     assert.equal(derived("senior"), 3, "3 senior mutations (claim/close/summarize — §8.6 Tickets row)");
-    assert.equal(derived("staff"), 29, "29 staff mutations (28 + Phase-4 self sessions revoke)");
+    assert.equal(
+      derived("staff"),
+      34,
+      "34 staff mutations (28 + Phase-4 self sessions revoke + the 5 Community Events calendar rows)"
+    );
   });
 });
 
