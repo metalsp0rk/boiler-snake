@@ -12,6 +12,13 @@ const {
 } = require("../../features/commandPermissions/httpCallback");
 
 /**
+ * Community events phase 5: Google Calendar connect callback
+ * (GET /oauth/gcal/callback). Same login-free OAuth carve-out — the signed,
+ * single-use state is the authentication (roadmap/community-events.md).
+ */
+const { handleCallback: handleGcalCallback } = require("../../features/events/gcal");
+
+/**
  * Register the OAuth callback routes on an Express app (no listen side
  * effect). The trailing-slash alias is registered explicitly so router
  * strict/trailing-slash settings can never change the legacy surface.
@@ -31,6 +38,19 @@ function registerOauthRoutes(app) {
         req,
         res,
         new URL(req.url || "/", "http://localhost")
+      )
+  );
+
+  app.get(
+    [
+      "/oauth/gcal/callback",
+      "/oauth/gcal/callback/",
+    ],
+    (req, res) =>
+      handleGcalCallback(
+        req,
+        res,
+        new URL(req.url || "/", "http://localhost").searchParams
       )
   );
 }

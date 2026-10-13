@@ -5,12 +5,193 @@ const { IDS, ADMIN_PERMS } = require("./fixtures");
 /**
  * Map-like role cache with .has / .keys / iteration used by the bot.
  */
+/**
+ * Real code reads role caches through discord.js Collection helpers
+ * (`cache.some(...)`, `cache.find(...)`). Plain Maps lack those — attach the
+ * same read-side API so production code runs unmodified against the mock.
+ * Mutators stay pure Map semantics.
+ */
+function asCollectionLike(map) {
+  if (!map.some) {
+    map.some = (fn) => {
+      for (const [k, v] of map) if (fn(v, k, map)) return true;
+      return false;
+    };
+  }
+  if (!map.find) {
+    map.find = (fn) => {
+      for (const [k, v] of map) if (fn(v, k, map)) return v;
+      return undefined;
+    };
+  }
+  if (!map.filter) {
+    map.filter = (fn) => {
+      const out = new Map();
+      for (const [k, v] of map) if (fn(v, k, map)) out.set(k, v);
+      return out;
+    };
+  }
+  if (!map.first) {
+    map.first = (n = 1) => {
+      const it = map.values();
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const r = it.next();
+        if (r.done) break;
+        out.push(r.value);
+      }
+      return n === 1 ? out[0] : out;
+    };
+  }
+  return map;
+}
+
 function createRoleCache(initialIds = []) {
   const map = new Map();
   for (const id of initialIds) {
     map.set(id, { id });
   }
-  return map;
+  return asCollectionLike(map);
+}
+
+/**
+ * Give a user-like object the DM surface:
+ * - `sends[]` raw payloads (assertion buffer) with `sent` as an ALIAS of the
+ *   same array — either name may be read or cleared;
+ * - `send(payload)` records the raw payload and returns a fake Message with
+ *   edit/delete (thread-less, like real DMs);
+ * - `dmsClosed = true` → send throws the discord.js CANNOT_SEND_TO_USER
+ *   shape (`{ message: "Cannot send messages to this user", code: 50007 }`).
+ * Users that already expose `send()` are returned untouched, so per-test DM
+ * spies keep winning. Applied to members too (member.user stays the SAME
+ * object as interaction.user / the users-cache object — identity contract).
+ *
+ * @param {object} user
+ * @returns {object} the same object, DM-attached
+ */
+function attachDmSurface(user) {
+  if (!user || typeof user !== "object" || typeof user.send === "function") {
+    return user;
+  }
+  const sends = user.sends || [];
+  user.sends = sends;
+  user.sent = user.sent || sends;
+  if (user.dmsClosed == null) user.dmsClosed = false;
+  user.send = async (payload) => {
+    if (user.dmsClosed) {
+      throw Object.assign(new Error("Cannot send messages to this user"), {
+        code: 50007,
+      });
+    }
+    sends.push(payload);
+    // Minimal DM channel so message.channel.send(...) round-trips to sends.
+    const dmChannel =
+      user.dmChannel ||
+      (user.dmChannel = { id: `dm-channel-${user.id}`, type: 1, send: (p) => user.send(p) });
+    return createFakeMessage({
+      id: `dm-${user.id}`,
+      payload,
+      channel: dmChannel,
+      guild: null,
+      threads: false,
+    });
+  };
+  return user;
+}
+
+/**
+ * Shared fake Message for channel/thread/DM sends and seeded messages.
+ * Beyond the recorded payload it supports the lifecycle surface product
+ * code uses on fetched/sent messages:
+ * - `edit(patch)` merges content/embeds/components/files/allowedMentions
+ *   into the message and appends the RAW patch to `edits[]` (assertion
+ *   buffer); returns the message (discord.js resolves to the Message);
+ * - `startThread({ name, invitable, reason })` (no args tolerated) creates
+ *   a thread-like channel on the parent, records it in `threadsStarted[]`
+ *   and sets `threadId`; honors parent `__failThreads` (50013);
+ * - `pin()/unpin()` toggle `pinned`, `pin()` returns the message;
+ * - `delete()` sets `deleted` and runs `onDelete` (channel cache removal).
+ *
+ * @param {object} params
+ * @param {string} params.id
+ * @param {object|string} params.payload
+ * @param {object} params.channel
+ * @param {object|null} params.guild
+ * @param {object} [params.author]
+ * @param {boolean} [params.threads] allow startThread (false for DMs)
+ * @param {(msg: object) => void} [params.onDelete]
+ */
+function createFakeMessage({ id, payload, channel, guild, author, threads = true, onDelete = null }) {
+  const msg = {
+    id,
+    content: typeof payload === "string" ? payload : payload?.content,
+    embeds: typeof payload === "object" ? payload?.embeds : undefined,
+    files: typeof payload === "object" ? payload?.files : undefined,
+    components:
+      typeof payload === "object" ? payload?.components : undefined,
+    allowedMentions:
+      typeof payload === "object" ? payload?.allowedMentions ?? null : null,
+    mentions:
+      (typeof payload === "object" && payload?.mentions) || {
+        users: new Map(),
+        roles: new Map(),
+        channels: new Map(),
+        repliedMessage: null,
+        repliedUser: null,
+      },
+    channel,
+    guild,
+    createdTimestamp: Date.now(),
+    url: `https://discord.com/channels/${guild?.id || "0"}/${channel?.id || "0"}/${id}`,
+    author: author || { id: "bot", bot: true, username: "bot" },
+    attachments: new Map(),
+    reactions: { cache: new Map(), removeAll: async () => {} },
+    react: async () => {},
+    pinned: false,
+    threadId: null,
+    deleted: false,
+    /** Raw patches passed to edit(), in order (assertion buffer). */
+    edits: [],
+    /** Threads created from this message (assertion buffer). */
+    threadsStarted: [],
+    edit: async (patch) => {
+      const p = typeof patch === "string" ? { content: patch } : patch || {};
+      msg.edits.push(patch);
+      for (const key of [
+        "content",
+        "embeds",
+        "components",
+        "files",
+        "allowedMentions",
+      ]) {
+        if (p[key] !== undefined) msg[key] = p[key];
+      }
+      return msg;
+    },
+    pin: async () => {
+      msg.pinned = true;
+      return msg;
+    },
+    unpin: async () => {
+      msg.pinned = false;
+      return msg;
+    },
+    delete: async () => {
+      msg.deleted = true;
+      if (onDelete) onDelete(msg);
+      return msg;
+    },
+  };
+  msg._wasDeleted = () => msg.deleted;
+  if (threads) {
+    msg.startThread = async (threadOpts) => {
+      const thread = createThreadChannel(channel, threadOpts || {});
+      msg.threadsStarted.push(thread);
+      msg.threadId = thread.id;
+      return thread;
+    };
+  }
+  return msg;
 }
 
 /**
@@ -19,20 +200,12 @@ function createRoleCache(initialIds = []) {
 function createUser(opts = {}) {
   const id = opts.id || IDS.member;
   const username = opts.username || `user_${id}`;
-  const bot = !!opts.bot;
-  const sends = [];
-  const user = {
+  return attachDmSurface({
     id,
     username,
     tag: `${username}#0000`,
-    bot,
-    sends,
-    send: async (content) => {
-      sends.push(content);
-      return { id: `dm-${id}`, content };
-    },
-  };
-  return user;
+    bot: !!opts.bot,
+  });
 }
 
 /**
@@ -45,6 +218,9 @@ function createUser(opts = {}) {
  */
 function createMember(opts) {
   const { guild, user } = opts;
+  // Keep member.user identity-stable AND DM-capable (sent[]/send()/
+  // dmsClosed) even when a test hands in a plain { id } user object.
+  attachDmSurface(user);
   const roleIds = opts.roleIds ? [...opts.roleIds] : [];
   // @everyone is guild id in Discord
   if (!roleIds.includes(guild.id)) roleIds.unshift(guild.id);
@@ -52,6 +228,34 @@ function createMember(opts) {
   const rolesCache = createRoleCache(roleIds);
   const added = [];
   const removed = [];
+
+  // discord.js `member.roles.highest`: the max-position role in the cache.
+  // Plain mock roles count as position 1 (above @everyone); roles present in
+  // guild.roles.cache use that position. An explicit assignment (e.g. the
+  // harness's bot member) wins outright via the setter.
+  let highestOverride = null;
+  const rolePositionOf = (role) => {
+    if (!role || String(role.id) === String(guild.id)) return 0; // @everyone
+    const direct = Number(role.position);
+    if (role.position != null && Number.isFinite(direct)) return direct;
+    const viaGuild = Number(guild.roles?.cache?.get?.(role.id)?.position);
+    if (role.position == null && Number.isFinite(viaGuild)) return viaGuild;
+    return 1;
+  };
+  const computeHighest = () => {
+    let top = { id: guild.id, name: "@everyone", position: 0 };
+    for (const role of rolesCache.values()) {
+      const p = rolePositionOf(role);
+      if (p > top.position) {
+        top = {
+          id: role.id,
+          name: role.name || String(role.id),
+          position: p,
+        };
+      }
+    }
+    return top;
+  };
 
   let permissionsBits =
     opts.permissions != null
@@ -77,6 +281,12 @@ function createMember(opts) {
         removed.push(roleId);
         return member;
       },
+      get highest() {
+        return highestOverride ?? computeHighest();
+      },
+      set highest(v) {
+        highestOverride = v;
+      },
     },
     permissions: {
       has: (flag) => (permissionsBits & BigInt(flag)) === BigInt(flag),
@@ -99,8 +309,16 @@ function createTextChannel(opts = {}) {
   const messages = new Map();
   const sent = [];
   const overwrites = new Map();
+  /** Ids of messages removed via message.delete() (assertion buffer). */
+  const deletedMessages = [];
   let deleted = false;
   let channelName = opts.name || `channel-${id}`;
+
+  // Drop a message from the channel cache when message.delete() is called.
+  const onMessageDeleted = (msg) => {
+    messages.delete(msg.id);
+    deletedMessages.push(msg.id);
+  };
 
   const channel = {
     id,
@@ -158,9 +376,23 @@ function createTextChannel(opts = {}) {
         return new Map(slice.map((m) => [m.id, m]));
       },
     },
+    /** Payloads passed to send() (for assertions). */
     sent,
+    _deletedMessages: deletedMessages,
+    /** Bot user stamped on sent messages (author identity, if provided). */
+    _clientUser: opts.clientUser || null,
     deleted: false,
     isTextBased: () => true,
+    /**
+     * Minimal ThreadManager: channel.threads.create({ name, invitable,
+     * reason, private }) → thread-like channel sharing the per-guild
+     * `thread-N` id space with message.startThread().
+     */
+    threads: {
+      cache: new Map(),
+      create: async (threadOpts) =>
+        createThreadChannel(channel, threadOpts || {}),
+    },
     permissionsFor: () => ({
       has: () => true,
     }),
@@ -179,53 +411,112 @@ function createTextChannel(opts = {}) {
     _wasDeleted: () => deleted,
     send: async (payload) => {
       const msgId = `msg-sent-${sent.length + 1}-${id}`;
-      const msg = {
+      const msg = createFakeMessage({
         id: msgId,
-        content: typeof payload === "string" ? payload : payload?.content,
-        embeds: typeof payload === "object" ? payload?.embeds : undefined,
-        files: typeof payload === "object" ? payload?.files : undefined,
-        components:
-          typeof payload === "object" ? payload?.components : undefined,
+        payload,
         channel,
         guild,
-        createdTimestamp: Date.now(),
-        url: `https://discord.com/channels/${guild?.id || "0"}/${id}/${msgId}`,
-        author: opts.clientUser || { id: "bot", bot: true, username: "bot" },
-        attachments: new Map(),
-        pin: async () => {},
-        react: async () => {},
-        reactions: { cache: new Map(), removeAll: async () => {} },
-      };
+        author: opts.clientUser,
+        onDelete: onMessageDeleted,
+      });
       sent.push(payload);
       messages.set(msg.id, msg);
       return msg;
     },
-    /** Payloads passed to send() (for assertions). */
-    get sent() {
-      return sent;
-    },
     /** Seed a user message into the channel (tests / archive). */
     addMessage(msgOpts = {}) {
       const msgId = msgOpts.id || `msg-seed-${messages.size + 1}-${id}`;
-      const msg = {
+      const msg = createFakeMessage({
         id: msgId,
-        content: msgOpts.content || "",
+        payload: msgOpts,
+        channel,
+        guild,
         author: msgOpts.author || {
           id: IDS.member,
           username: "member",
           tag: "member#0000",
         },
-        embeds: msgOpts.embeds || [],
-        attachments: msgOpts.attachments || new Map(),
-        createdTimestamp: msgOpts.createdTimestamp || Date.now(),
-        channel,
-        guild,
-      };
+        onDelete: onMessageDeleted,
+      });
+      // Seed defaults differ from a send() payload; keep them exact.
+      msg.content = msgOpts.content || "";
+      msg.embeds = msgOpts.embeds || [];
+      msg.attachments = msgOpts.attachments || new Map();
+      if (msgOpts.createdTimestamp != null) {
+        msg.createdTimestamp = msgOpts.createdTimestamp;
+      }
       messages.set(msgId, msg);
       return msg;
     },
   };
   return channel;
+}
+
+/**
+ * Create a thread-like fake channel (discord.js PublicThread=11 /
+ * PrivateThread=12). Full channel surface (send/edit/archive/setName/...)
+ * plus `parent`, `archived`, `invitable` and a minimal thread `members`
+ * manager. Registered in BOTH `parent.threads.cache` and the guild channels
+ * cache; ids come from a per-guild `thread-N` counter shared with
+ * message.startThread(). Set `parent.__failThreads = true` to make thread
+ * creation throw the Discord 50013 "Missing Permissions" shape.
+ *
+ * @param {object|null} parent channel the thread is started from
+ * @param {object} [opts] { name, invitable, reason, private, type, id }
+ */
+function createThreadChannel(parent, opts = {}) {
+  const guild = opts.guild || parent?.guild || null;
+  if (parent && parent.__failThreads) {
+    throw Object.assign(new Error("Missing Permissions"), { code: 50013 });
+  }
+  let seq;
+  if (guild) {
+    guild._threadSeq = (guild._threadSeq || 0) + 1;
+    seq = guild._threadSeq;
+  } else {
+    createThreadChannel._orphanSeq = (createThreadChannel._orphanSeq || 0) + 1;
+    seq = createThreadChannel._orphanSeq;
+  }
+  const privateThread = opts.private === true || opts.type === 12;
+  const thread = createTextChannel({
+    id: opts.id || `thread-${seq}`,
+    guild,
+    name: opts.name || `thread-${seq}`,
+    type: privateThread ? 12 : 11,
+    parentId: parent?.id ?? null,
+    // Threads inherit the parent's bot author so thread messages look bot-sent.
+    clientUser: opts.clientUser || parent?._clientUser,
+  });
+  thread.parent = parent || null;
+  thread.archived = false;
+  thread.locked = false;
+  thread.invitable = !!opts.invitable;
+  thread._reason = opts.reason ?? null;
+  const participants = new Map();
+  thread.members = {
+    cache: participants,
+    add: async (member) => {
+      participants.set(String(member?.id ?? member), member);
+      return member;
+    },
+    remove: async (member) => {
+      participants.delete(String(member?.id ?? member));
+      return member;
+    },
+  };
+  thread.archive = async () => {
+    thread.archived = true;
+    return thread;
+  };
+  // discord.js >=14.16 archive toggle (replaces edit({ archived })); the
+  // setName inherited from the channel factory already covers renames.
+  thread.setArchived = async (archived = true) => {
+    thread.archived = !!archived;
+    return thread;
+  };
+  if (parent?.threads?.cache) parent.threads.cache.set(thread.id, thread);
+  if (guild?.channels?.cache) guild.channels.cache.set(thread.id, thread);
+  return thread;
 }
 
 /**
@@ -235,8 +526,10 @@ function createGuild(opts = {}) {
   const id = opts.id || IDS.guild;
   const membersById = new Map();
   const channelsById = new Map();
-  const rolesById = new Map();
+  const rolesById = asCollectionLike(new Map());
   const scheduledEventsById = new Map();
+  /** Channels produced by guild.channels.create() (assertion buffer). */
+  const createdChannels = [];
   const bans = [];
   const voiceStates = new Map();
   let roleSeq = 1;
@@ -269,6 +562,8 @@ function createGuild(opts = {}) {
     },
     channels: {
       cache: channelsById,
+      /** Every channel passed to channels.create() (assertion buffer). */
+      created: createdChannels,
       fetch: async (channelId) => {
         if (channelsById.has(channelId)) return channelsById.get(channelId);
         return null;
@@ -285,20 +580,35 @@ function createGuild(opts = {}) {
         if (data.permissionOverwrites) {
           await ch.permissionOverwrites.set(data.permissionOverwrites);
         }
+        // Audit trail: reason + ordered creation log for assertions.
+        ch._createReason = data.reason ?? null;
         channelsById.set(chId, ch);
+        createdChannels.push(ch);
         return ch;
       },
     },
     roles: {
       cache: rolesById,
       create: async (data) => {
-        const roleId = data.id || `role-${roleSeq++}`;
+        const seq = roleSeq++;
+        const roleId = data.id || `role-${seq}`;
+        // Default position stays MANAGEABLE: the tickets/events hierarchy
+        // checks require the bot's highest role STRICTLY above created roles,
+        // so cap the default below guild.members.me when one is set.
+        const botPos = Number(guild.members?.me?.roles?.highest?.position);
+        const position =
+          data.position != null
+            ? data.position
+            : Number.isFinite(botPos)
+              ? Math.min(seq, Math.max(botPos - 1, 0))
+              : seq;
         const role = {
           id: roleId,
           name: data.name || roleId,
           mentionable: !!data.mentionable,
           hoist: !!data.hoist,
-          position: data.position != null ? data.position : roleSeq,
+          position,
+          managed: !!data.managed,
           guild,
           members: new Map(),
           setName: async (name) => {
@@ -359,6 +669,11 @@ function createGuild(opts = {}) {
  * @param {number} [opts.status] GuildScheduledEventStatus
  * @param {string} [opts.creatorId]
  * @param {string[]} [opts.subscriberIds]
+ * @param {string} [opts.title] adopt-flow alias of name
+ * @param {string} [opts.description]
+ * @param {string} [opts.location]
+ * @param {string} [opts.channelId]
+ * @param {Date} [opts.scheduledStartTime] defaults from the timestamp
  */
 function createScheduledEvent(opts) {
   const guild = opts.guild;
@@ -368,18 +683,26 @@ function createScheduledEvent(opts) {
   for (const uid of subscriberIds) {
     subscribers.set(uid, { user: { id: uid } });
   }
+  const startTs =
+    opts.scheduledStartTimestamp != null
+      ? opts.scheduledStartTimestamp
+      : Date.now() + 3 * 24 * 60 * 60 * 1000;
 
   const event = {
     id,
     name: opts.name || "Test Event",
+    // Adopt flow (#225) reads the discord.js scheduled-event fields:
+    // title / scheduledStartTime (Date) / description / channelId / location.
+    title: opts.title || opts.name || "Test Event",
+    description: opts.description || null,
+    location: opts.location || null,
+    channelId: opts.channelId || null,
     guild,
     guildId: guild?.id,
     creatorId: opts.creatorId || null,
     status: opts.status != null ? opts.status : 1, // Scheduled
-    scheduledStartTimestamp:
-      opts.scheduledStartTimestamp != null
-        ? opts.scheduledStartTimestamp
-        : Date.now() + 3 * 24 * 60 * 60 * 1000,
+    scheduledStartTimestamp: startTs,
+    scheduledStartTime: opts.scheduledStartTime || new Date(startTs),
     fetchSubscribers: async () => subscribers,
     setSubscribers(ids) {
       subscribers.clear();
@@ -518,6 +841,9 @@ function createReaction(opts) {
 function createChatInputInteraction(opts) {
   const guild = opts.guild ?? null;
   const user = opts.user;
+  // DM surface on the interaction user (no-op for harness users) so DM
+  // flows can be driven straight from an interaction's user object.
+  attachDmSurface(user);
   const member = opts.member;
   const channelId = opts.channelId || IDS.channelGeneral;
   const optionsMap = opts.options || {};
@@ -674,10 +1000,15 @@ function createChatInputInteraction(opts) {
  * @param {object} [opts.fields] map customId → value(s)
  *   text: string, stringSelect: string[], channelSelect: Map|object
  * @param {boolean} [opts.admin]
+ * @param {string} [opts.channelId] channel for follow-up sends (defaults to
+ *   the guild cache entry for the id; pass a channel object to override)
+ * @param {object} [opts.channel]
+ * @param {object} [opts.message] the message the modal was opened from
  */
 function createModalSubmitInteraction(opts) {
   const guild = opts.guild ?? null;
   const user = opts.user;
+  attachDmSurface(user); // DM-capable, identity-stable user (see chat input)
   const member = opts.member;
   const fieldMap = opts.fields || {};
   const replies = [];
@@ -695,6 +1026,13 @@ function createModalSubmitInteraction(opts) {
       return false;
     },
   };
+
+  // Modal handlers post follow-up results to the interaction channel.
+  const channelId = opts.channelId || opts.channel?.id || null;
+  const channel =
+    opts.channel ||
+    guild?.channels?.cache?.get?.(channelId) ||
+    null;
 
   const fields = {
     getTextInputValue: (id) => {
@@ -729,6 +1067,10 @@ function createModalSubmitInteraction(opts) {
     customId: opts.customId,
     guild,
     guildId: guild?.id ?? null,
+    channelId,
+    channel,
+    // Component message the modal was opened from (assertion context).
+    message: opts.message || null,
     user,
     member: member || null,
     memberPermissions,
@@ -772,10 +1114,15 @@ function createModalSubmitInteraction(opts) {
  * @param {object} [opts.member]
  * @param {object} [opts.client]
  * @param {boolean} [opts.admin]
+ * @param {string} [opts.channelId] channel for follow-up sends (defaults to
+ *   the guild cache entry for the id; pass a channel object to override)
+ * @param {object} [opts.channel]
+ * @param {object} [opts.message] the message the button lives on
  */
 function createButtonInteraction(opts) {
   const guild = opts.guild ?? null;
   const user = opts.user;
+  attachDmSurface(user); // DM-capable, identity-stable user (see chat input)
   const member = opts.member;
   const replies = [];
   const updates = [];
@@ -795,10 +1142,21 @@ function createButtonInteraction(opts) {
     },
   };
 
+  // Channel/message context: ev: handlers post results to interaction.channel
+  // and re-edit interaction.message.
+  const channelId = opts.channelId || opts.channel?.id || null;
+  const channel =
+    opts.channel ||
+    guild?.channels?.cache?.get?.(channelId) ||
+    null;
+
   const interaction = {
     customId: opts.customId,
     guild,
     guildId: guild?.id ?? null,
+    channelId,
+    channel,
+    message: opts.message || null,
     user,
     member: member || null,
     memberPermissions,
@@ -858,6 +1216,20 @@ function createButtonInteraction(opts) {
       }
       interaction.deferred = true;
     },
+    // Loader-style defer (public/ephemeral follow-up after the work).
+    deferReply: async () => {
+      if (interaction.deferred || interaction.replied) {
+        const err = new Error(
+          "The reply to this interaction has already been sent or deferred.",
+        );
+        err.name = "DiscordjsError";
+        err.code = "InteractionAlreadyReplied";
+        throw err;
+      }
+      interaction.deferred = true;
+    },
+    /** Tolerated alias of deferReply (task shorthand `defer()`). */
+    defer: async () => interaction.deferReply(),
     showModal: async (modal) => {
       modals.push(modal);
       interaction.replied = true;
@@ -923,6 +1295,9 @@ function lastReplyEphemeral(interaction) {
 
 module.exports = {
   createRoleCache,
+  attachDmSurface,
+  createFakeMessage,
+  createThreadChannel,
   createUser,
   createMember,
   createTextChannel,

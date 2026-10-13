@@ -184,6 +184,13 @@ const WRITE_HELPERS = new Set([
   // revoke write (runs INSIDE auth/sessions.js revokeSessionById via the
   // facade — the recorder doctrine the ticket rows already prove).
   "deleteWebSessionById",
+  // Community Events calendar (#222): the five EV-row writes. updateEvent is
+  // shared by the archive service write and the series-row attach.
+  "createEvent",
+  "updateEvent",
+  "stopEventSeries",
+  "createEventPreset",
+  "deleteEventPreset",
 ]);
 
 /** Every facade helper the counting proxy wraps (reads + writes + audit). */
@@ -246,6 +253,14 @@ const FACADE_METHODS = [
   "deleteWebSessionById",
   "listWebSessionsByUser",
   "listAllWebSessions",
+  // Community Events calendar (#222): the EV rows' write helpers — the ladder
+  // records them through the SAME facade proxy (series.js calls the facade,
+  // not the repository module, so the wrapper is live in its path).
+  "createEvent",
+  "updateEvent",
+  "stopEventSeries",
+  "createEventPreset",
+  "deleteEventPreset",
 ];
 
 /**
@@ -540,6 +555,55 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       `UPDATE web_sessions SET created_at=${createdAt}, last_seen_at=${createdAt}, expires_at=${EXPIRES_FAR} WHERE id='${id}'`
     );
   };
+  // ---- Community Events calendar (#222) fixtures ---------------------------
+  // The EV rows drive the DRAFT surface (create / archive / series-stop /
+  // preset save+delete): seeded rows carry NO channel/message artifacts, so
+  // every service-side Discord cleanup leg is an honest offline no-op under
+  // the cache-only fake client. prepare() purges + re-seeds before EVERY
+  // real ladder run ⇒ deterministic autoincrement id 1 and a static PRG
+  // Location across the senior pass-through, positive and fail-inject steps.
+  const EV_START = Date.UTC(2027, 4, 5, 19, 0, 0); // "2027-05-05 19:00" @ UTC
+  const EV_START_TEXT = "2027-05-05 19:00";
+  // The web calendar's redirect() appends `?<kind>=<encodeURIComponent(
+  // message.slice(0,240))>` — build the expectation the SAME way.
+  const evFlash = (m) => encodeURIComponent(String(m).slice(0, 240));
+  const EV_PURGE_ORDER = [
+    // children FIRST (FK-safe order): everything referencing events(id) —
+    // INCLUDING event_series (template_event_id) — precedes events.
+    "event_signups",
+    "event_options",
+    "event_notifications",
+    "event_activity",
+    "event_crosspost_messages",
+    "event_crossposts",
+    "event_google_links",
+    "event_mutes",
+    "event_wizards",
+    "event_series",
+    "events",
+    "event_channels",
+    "event_preset_options",
+    "event_presets",
+    "event_guild_settings",
+  ];
+  const purgeEventSurface = () => {
+    for (const t of EV_PURGE_ORDER) purgeAutoincrement(t);
+  };
+  const seedDraftEvent = (title = "Gate Archive Target") =>
+    api.createEvent({
+      communityId: F.COMMUNITY_A,
+      creatorId: F.USER_STAFF,
+      title,
+      status: "draft",
+      startAt: EV_START,
+    });
+  const seedPreset = () =>
+    api.createEventPreset(
+      F.COMMUNITY_A,
+      "Gate Preset",
+      [{ label: "Red", capacity: 5 }, { label: "Blue", capacity: 0 }],
+      F.USER_STAFF
+    );
   return [
     // ---- Settings surface (subtask 24) — §8.6 "Settings" row ------------------
     {
@@ -1625,6 +1689,147 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
         status: 302,
         location: `/g/${F.COMMUNITY_A}/system/sessions?error=invalid_selection`,
         fields: { target_user_id: F.USER_PLAIN, created_at: "x" },
+      },
+    },
+    // ---- Community Events calendar (issue #219–#225, web console #222) ------
+    // All five surfaces are STAFF tier (AGENTS.md §4; roadmap/community-events
+    // .md E-decisions): the body-routed templates carry the VERB in `fields`
+    // exactly like the rendered forms do. Slash evidence names the SAME
+    // service/facade path the /event command group runs.
+    {
+      no: "EV1",
+      area: "events (calendar: create draft)",
+      template: "/g/:guildId/events",
+      method: "POST",
+      tier: "staff",
+      slash: "/event create → service draft path → facade createEvent (src/features/events/service.js + handlers.js)",
+      helpers: ["createEvent"],
+      action: "events.create",
+      targetType: "event",
+      targetId: "1", // prepare purged the surface ⇒ first AUTOINCREMENT id
+      mirror: false, // events follows the integrations posture: DB row IS the trail
+      fields: { title: "Gate Night Tourney", start: EV_START_TEXT },
+      prepare: () => purgeEventSurface(),
+      details: D({ via: "web", start: EV_START }),
+      okLocation: `/g/${F.COMMUNITY_A}/events/1?ok=${evFlash("Draft saved — review, then Publish.")}`,
+      reject: {
+        // title/start gate runs BEFORE the first facade write
+        status: 302,
+        location: `/g/${F.COMMUNITY_A}/events?err=${evFlash("Title and start time are required.")}`,
+        fields: {},
+      },
+    },
+    {
+      no: "EV2",
+      area: "events (per-event action: archive)",
+      template: "/g/:guildId/events/action",
+      method: "POST",
+      tier: "staff",
+      slash: "/event archive → service.archiveEvent → facade updateEvent (src/features/events/service.js)",
+      helpers: ["updateEvent"],
+      action: "events.archive",
+      targetType: "event",
+      targetId: "1", // the seeded draft (prepare re-mints it before every real run)
+      mirror: false,
+      fields: { action: "archive", event_id: "1" },
+      prepare: () => {
+        purgeEventSurface();
+        seedDraftEvent();
+      },
+      details: D({ via: "web" }),
+      okLocation: `/g/${F.COMMUNITY_A}/events/1?ok=${evFlash("Archived.")}`,
+      reject: {
+        // unknown verb: the dispatcher answers BEFORE loadEvent — zero reads,
+        // zero writes; Location falls back to the calendar list (no event_id)
+        status: 302,
+        location: `/g/${F.COMMUNITY_A}/events?err=${evFlash("Unknown event action \`bogus\`.")}`,
+        fields: { action: "bogus" },
+      },
+    },
+    {
+      no: "EV3",
+      area: "events (series: stop)",
+      template: "/g/:guildId/events/series",
+      method: "POST",
+      tier: "staff",
+      slash: "/event series stop → series.stopSeries → facade stopEventSeries (src/features/events/series.js)",
+      helpers: ["stopEventSeries"],
+      action: "events.series_stop",
+      targetType: "event",
+      targetId: "1", // audit target = the series' TEMPLATE event
+      mirror: false,
+      fields: { action: "stop", series_id: "1" },
+      prepare: () => {
+        purgeEventSurface();
+        const ev = seedDraftEvent("Gate Series Template");
+        const s = api.createEventSeries({
+          communityId: F.COMMUNITY_A,
+          templateEventId: ev.event.id,
+          cadence: "weekly",
+          weekdays: [3],
+          timeOfDayMin: 19 * 60,
+          endMode: "count",
+          endCount: 8,
+          nextOccurrenceAt: EV_START + 7 * 86_400_000,
+          createdBy: F.USER_STAFF,
+        });
+        if (!s.ok) throw new Error(`series seed failed: ${s.error}`);
+        api.updateEvent(ev.event.id, { series_id: s.series.id });
+      },
+      details: D({ via: "web", seriesId: 1 }),
+      okLocation: `/g/${F.COMMUNITY_A}/events/series?ok=${evFlash("Series stopped.")}`,
+      reject: {
+        status: 302,
+        location: `/g/${F.COMMUNITY_A}/events/series?err=${evFlash("Unknown series action \`bogus\`.")}`,
+        fields: { action: "bogus", series_id: "1" },
+      },
+    },
+    {
+      no: "EV4",
+      area: "events (signup presets: save)",
+      template: "/g/:guildId/events/presets",
+      method: "POST",
+      tier: "staff",
+      slash: "/event preset save → ui.parseSignupOptionSpec + facade createEventPreset (src/features/events/presets.js)",
+      helpers: ["createEventPreset"],
+      action: "events.preset_save",
+      targetType: "event",
+      targetId: "1", // audit target = the created preset row
+      mirror: false,
+      fields: { name: "Gate Preset", spec: "Red|5, Blue" },
+      prepare: () => purgeEventSurface(),
+      details: D({ via: "web", name: "Gate Preset" }),
+      okLocation: `/g/${F.COMMUNITY_A}/events/presets?ok=${evFlash('Preset "Gate Preset" saved.')}`,
+      reject: {
+        status: 302,
+        location: `/g/${F.COMMUNITY_A}/events/presets?err=${evFlash("Preset name required.")}`,
+        fields: { spec: "Red" },
+      },
+    },
+    {
+      no: "EV5",
+      area: "events (signup presets: delete)",
+      template: "/g/:guildId/events/presets/delete",
+      method: "POST",
+      tier: "staff",
+      slash: "/event preset delete → facade deleteEventPreset (src/features/events/presets.js)",
+      helpers: ["deleteEventPreset"],
+      action: "events.preset_delete",
+      targetType: "event",
+      targetId: "1", // the seeded preset (prepare re-mints it)
+      mirror: false,
+      fields: { preset_id: "1" },
+      prepare: () => {
+        purgeEventSurface();
+        seedPreset();
+      },
+      details: D({ via: "web", name: "Gate Preset" }),
+      okLocation: `/g/${F.COMMUNITY_A}/events/presets?ok=${evFlash('Preset "Gate Preset" deleted.')}`,
+      reject: {
+        // missing preset_id: the lookup misses → refusal, ZERO writes
+        status: 302,
+        location: `/g/${F.COMMUNITY_A}/events/presets?err=${evFlash("No such preset here.")}`,
+        fields: {},
       },
     },
   ];

@@ -378,6 +378,15 @@ const PAGES = [
   // senior tighten (requireTier("senior") — outcomeFor's ladder proves it).
   { path: "/g/:guildId/tickets", tier: "senior", marker: "<h1>Ticket actions" },
   { path: "/g/:guildId/t", tier: "staff", marker: "<h1>Ticket archive" },
+  // Community Events calendar (#222): the staff-tier web console (roadmap E
+  // decisions; the /event slash twin gates on requireStaff). The detail page
+  // resolves :eventId against the guild-A fixture draft seeded in before().
+  { path: "/g/:guildId/events", tier: "staff", marker: "<h1>Event calendar" },
+  { path: "/g/:guildId/events/archive", tier: "staff", marker: "<h1>Archive" },
+  { path: "/g/:guildId/events/presets", tier: "staff", marker: "<h1>Signup presets" },
+  { path: "/g/:guildId/events/series", tier: "staff", marker: "<h1>Recurring series" },
+  { path: "/g/:guildId/events/scheduled", tier: "staff", marker: "<h1>Scheduled posts" },
+  { path: "/g/:guildId/events/:eventId", tier: "staff", marker: "<h1>Event" },
   // §8.15-15.10 read-only JSON type-ahead APIs (json:true → expectJsonOk)
   { path: "/g/:guildId/users/:userId/card", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
@@ -445,6 +454,15 @@ const GATE_MEASURE = process.env.GATE_MEASURE === "1";
     "/g/:guildId/xp/grant": { req1: 3, req2: 3 },
     "/g/:guildId/tickets": { req1: 4, req2: 4 },
     "/g/:guildId/t": { req1: 5, req2: 5 },
+    // Community Events calendar (#222) — MEASURED via GATE_MEASURE=1 on this
+    // fixture (cold includes the per-request guild-scope reads; the pages
+    // ride the repo's tiny settings cache for warm reads).
+    "/g/:guildId/events": { req1: 6, req2: 5 },
+    "/g/:guildId/events/archive": { req1: 4, req2: 4 },
+    "/g/:guildId/events/presets": { req1: 4, req2: 4 },
+    "/g/:guildId/events/series": { req1: 4, req2: 4 },
+    "/g/:guildId/events/scheduled": { req1: 4, req2: 4 },
+    "/g/:guildId/events/:eventId": { req1: 9, req2: 9 },
     "/t": { req1: 5, req2: 5 },
     // §8.15-15.10 lookups: no q ⇒ early-empty; the whole stack is just
     // auth + one scope read (measured 2/2 — the floor for any /g page).
@@ -507,6 +525,20 @@ before(async () => {
     participantUserIds: [USER_MEMBER, USER_TSTAFF],
     baseMs: fakeNow,
   });
+
+  // Community Events calendar (#222): ONE guild-A draft for the
+  // /g/:guildId/events/:eventId page probe (suite D matrix + the budget
+  // path). The events table is fresh at this point ⇒ id 1, which is what
+  // concrete()'s :eventId substitution pins.
+  const evFix = api.createEvent({
+    communityId: CID_A,
+    creatorId: USER_ADMIN,
+    title: "Gate Fixture Meetup",
+    status: "draft",
+    startAt: fakeNow + 86_400_000,
+  });
+  assert.ok(evFix.ok, `event fixture: ${evFix.error}`);
+  assert.equal(Number(evFix.event.id), 1, "fixture event lands on id 1");
 
   const resolver = createGuildAccessResolver({
     discord: fakeDiscord,
@@ -606,7 +638,12 @@ after(async () => {
 // ---------------------------------------------------------------------------
 
 const concrete = (routePath, guildId) =>
-  harness.buildConcretePath(routePath, { guildId, userId: USER_TRACKED });
+  harness.buildConcretePath(routePath, {
+    guildId,
+    userId: USER_TRACKED,
+    // /g/:guildId/events/:eventId (#222) — the before() fixture event.
+    eventId: "1",
+  });
 
 /** Budget pass = every /g page (concrete, guild A) + the /t index. */
 const BUDGET_URLS = [
@@ -809,10 +846,13 @@ describe("E. cross-guild probes at scale", () => {
   it("positive control: guild-B staff resolves 200 on B and 403 on B-admin/SENIOR pages", async () => {
     // :userId pages are skipped here — guild B has no seeded profile rows
     // (a profile 404 on B would prove nothing); guild A's map coverage is
-    // the matrix's job (suite D).
+    // the matrix's job (suite D). The events :eventId page skips for the
+    // same reason — guild B holds no fixture event (#222).
     // staffB holds a JUNIOR staff_roles row ⇒ tier staff: every ABOVE-staff
     // page (admin AND the Phase-3 senior ticket-actions page) must 403.
-    for (const page of PAGES.filter((p) => !p.path.includes(":userId"))) {
+    for (const page of PAGES.filter(
+      (p) => !p.path.includes(":userId") && !p.path.includes(":eventId")
+    )) {
       await harness.runOutcome({
         base,
         url: concrete(page.path, CID_B),
