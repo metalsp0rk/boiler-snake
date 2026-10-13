@@ -44,11 +44,11 @@ describe("user_version migration guard (audit #202)", () => {
   it("fresh DB: load-time migrate() stamps user_version with the full registry", () => {
     const { migrations, LATEST_VERSION } = require("../src/db/migrate");
     // Tripwire pinned per the issue's verification: the current registry is
-    // 001–040. When a migration 041 lands, bump this number AND the registry
+    // 001–041. When a migration 042 lands, bump this number AND the registry
     // rule (versions are registry size; migrations are append-only).
-    assert.equal(migrations.length, 40);
-    assert.equal(LATEST_VERSION, 40);
-    assert.equal(version(), 40, "load-time migrate() must stamp the version");
+    assert.equal(migrations.length, 41);
+    assert.equal(LATEST_VERSION, 41);
+    assert.equal(version(), 41, "load-time migrate() must stamp the version");
   });
 
   it("re-run on an applied DB is a recorded no-op skip", () => {
@@ -66,11 +66,11 @@ describe("user_version migration guard (audit #202)", () => {
     };
     try {
       const result = runMigrations();
-      assert.deepEqual(result, { skipped: true, version: 40, latest: 40 });
+      assert.deepEqual(result, { skipped: true, version: 41, latest: 41 });
     } finally {
       migrations[idx] = original;
     }
-    assert.equal(version(), 40, "skip path must not touch the recorded version");
+    assert.equal(version(), 41, "skip path must not touch the recorded version");
   });
 
   it("legacy DB (user_version=0): full replay runs, is safe on applied schema, re-stamps", () => {
@@ -84,7 +84,7 @@ describe("user_version migration guard (audit #202)", () => {
     try {
       const result = runMigrations();
       assert.equal(result.skipped, false, "version 0 must take the full replay path");
-      assert.equal(result.version, 40);
+      assert.equal(result.version, 41);
       assert.equal(
         probe.calls.count,
         1,
@@ -93,7 +93,7 @@ describe("user_version migration guard (audit #202)", () => {
     } finally {
       probe.restore();
     }
-    assert.equal(version(), 40, "successful replay re-stamps the version");
+    assert.equal(version(), 41, "successful replay re-stamps the version");
     assert.equal(api.getXp(g, "u-keep"), 42, "replay must not disturb data");
   });
 
@@ -117,7 +117,7 @@ describe("user_version migration guard (audit #202)", () => {
       const result = runMigrations();
       assert.equal(result.skipped, false);
       assert.ok(earlyRan, "steps BELOW the recorded version must still replay");
-      assert.equal(version(), 40);
+      assert.equal(version(), 41);
     } finally {
       migrations[4] = original;
     }
@@ -131,13 +131,13 @@ describe("user_version migration guard (audit #202)", () => {
       (err) =>
         /user_version=999/.test(err.message) &&
         /NEWER/.test(err.message) &&
-        /version 40/.test(err.message) &&
-        /040_schema_hygiene/.test(err.message),
+        /version 41/.test(err.message) &&
+        /041_heal_partial_community_cutover/.test(err.message),
       "error must name both the DB version and the newest known migration"
     );
     // The guard refuses to mutate: version stays exactly as found.
     assert.equal(version(), 999);
-    api.db.pragma("user_version = 40"); // leave the DB usable for later tests
+    api.db.pragma("user_version = 41"); // leave the DB usable for later tests
   });
 
   it("a failing migration does NOT stamp the version (next boot replays)", () => {
@@ -154,12 +154,12 @@ describe("user_version migration guard (audit #202)", () => {
     // Recovery: the replay is idempotent, so the next boot finishes and stamps.
     const result = runMigrations();
     assert.equal(result.skipped, false);
-    assert.equal(version(), 40);
+    assert.equal(version(), 41);
   });
 
   it("a second skip path after recovery reports the stamped version", () => {
     const { runMigrations } = require("../src/db/migrate");
-    assert.deepEqual(runMigrations(), { skipped: true, version: 40, latest: 40 });
+    assert.deepEqual(runMigrations(), { skipped: true, version: 41, latest: 41 });
   });
 });
 

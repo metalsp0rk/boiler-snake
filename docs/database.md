@@ -1298,11 +1298,12 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`040` registered the version is `40`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`041` registered the version is `41`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size, the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **Partial versions are never trusted.** A crash *between* migrations (exactly the non-transactional data-move 003 represented, later hardened against in 034) leaves the older version recorded, so the next boot re-runs the full idempotent set instead of resuming from a cursor.
 - **Downgrades fail loud.** If `user_version` is *higher* than the registered migrations (old code against a newer database), boot throws with both version numbers named and refuses to modify anything.
+- **Legacy drift heals via NEW migrations, never via re-runs.** The fast-skip plus per-migration idempotence gates mean a step whose guard says "already done" never re-evaluates — so a database left in a *historically partial* state by an old version of a migration file can only converge through a NEW migration written for that state. That is exactly what `041_heal_partial_community_cutover` is for (audit #285): `034_communities` gates its rebuild block on `users` still having `guild_id`, and DBs whose `users` was cut over by a pre-fix 034 kept stragglers (e.g. `youtube_channels` on `guild_id TEXT`, breaking every repository query on `community_id`). 041 detects any surviving guild-scoped straggler and rebuilds it with 034's DDL-derivation discipline; on healthy databases it is a pure no-op.
 
 There is deliberately no down-migration story — fix-forward SQLite with the backup discipline below (per the 2026-10 audit).
 
@@ -1372,6 +1373,7 @@ Concretely this means:
 | `038_event_reminder_claim_state` | Real delivery state machine on `event_reminder_offsets` (`sending`/backoff/attempts; audit #196) |
 | `039_encrypt_third_party_tokens` | One-time re-encryption of third-party credentials (Discord OAuth tokens, GitHub PATs) to the AES-256-GCM `v1.` envelope; loud boot gate when `TOKEN_ENCRYPTION_KEY` is missing while rows exist (audit C6, #189) |
 | `040_schema_hygiene` | CHECK constraints via DDL-derived table rebuilds (`users.xp BETWEEN 0 AND 9007199254740991`, `gork_budget_rules.daily_limit BETWEEN -1 AND 1000`; violating rows fail boot loudly by name), `idx_users_guild_xp` + partial `idx_tickets_archived`, drop the dead `voice_sessions` table (audit #204) |
+| `041_heal_partial_community_cutover` | Self-healing repair for DBs stuck in a **partial** 034 cutover (audit #285): detects every surviving `GUILD_SCOPED_TABLES` straggler (still `guild_id`, or missing `community_id`), backfills `communities` from its guild values and rebuilds it with 034's live-DDL derivation (data/PK/indexes preserved, FK-toggled transaction). Un-mappable rows (NULL guild_id etc.) fail boot loudly by name; healthy DB = pure no-op. Idempotent; the only convergence path for the historical partial state under #202's fast-skip |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

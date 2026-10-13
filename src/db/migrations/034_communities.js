@@ -417,4 +417,15 @@ function up(db, { now, tableExists, getColumns, addColumnIfMissing }) {
   return { migrated: needsRebuild, moves };
 }
 
-module.exports = { id: "034_communities", up, moveTranscriptDirs };
+// GUILD_SCOPED_TABLES + transformCreateTableSql are additionally exported for
+// 041_heal_partial_community_cutover (#285), which heals DBs this migration's
+// users-gated block could never re-evaluate. Export-only addition — up() and
+// every behavioural constant below are unchanged; 041 must not drift from the
+// cutover it repairs, so the list and the DDL derivation stay single-source.
+module.exports = {
+  id: "034_communities",
+  up,
+  moveTranscriptDirs,
+  GUILD_SCOPED_TABLES,
+  transformCreateTableSql,
+};
