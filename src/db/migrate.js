@@ -48,6 +48,7 @@ const migrations = [
   require("./migrations/038_event_reminder_claim_state"),
   require("./migrations/039_encrypt_third_party_tokens"),
   require("./migrations/040_schema_hygiene"),
+  require("./migrations/041_heal_partial_community_cutover"),
 ];
 
 const helpers = {
