@@ -29,6 +29,7 @@ const COMMAND_VISIBILITY = Object.freeze({
   warn: TIERS.public,
   ticket: TIERS.public,
   eventreminder: TIERS.public,
+  event: TIERS.public,
   play: TIERS.public,
   music: TIERS.public,
   link: TIERS.public,

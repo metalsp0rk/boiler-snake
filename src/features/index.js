@@ -16,6 +16,7 @@ module.exports = [
   require("./honeypot"),
   require("./reactionRoles"),
   require("./eventReminders"),
+  require("./events"),
   require("./staffRoles"),
   require("./commandPermissions"),
   require("./staffNotes"),

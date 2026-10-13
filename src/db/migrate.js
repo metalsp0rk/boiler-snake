@@ -49,6 +49,10 @@ const migrations = [
   require("./migrations/039_encrypt_third_party_tokens"),
   require("./migrations/040_schema_hygiene"),
   require("./migrations/041_heal_partial_community_cutover"),
+  require("./migrations/042_events_core"),
+  require("./migrations/043_events_series_presets"),
+  require("./migrations/044_event_channels_wizards"),
+  require("./migrations/045_event_integrations"),
 ];
 
 const helpers = {

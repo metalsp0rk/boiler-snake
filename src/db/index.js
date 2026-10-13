@@ -39,6 +39,7 @@ const adminAudit = require("./repositories/adminAudit");
 const fluxerOAuthTransactions = require("./repositories/fluxerOAuthTransactions");
 const bridges = require("./repositories/bridges");
 const userLinks = require("./repositories/userLinks");
+const events = require("./repositories/events");
 
 module.exports = {
   db,
@@ -462,4 +463,113 @@ module.exports = {
   hasActiveBridgeBetween: userLinks.hasActiveBridgeBetween,
   setUserLinkMirrorPct: userLinks.setMirrorPct,
   setUserLinkMirrorMemory: userLinks.setMirrorMemory,
+
+  // community events (epic #218: roadmap/community-events.md). Constants
+  // (MAX_OPTIONS_PER_EVENT, claim TTLs, …) stay on the repository module —
+  // consumers require src/db/repositories/events directly (db-layer facade
+  // shape rule).
+  getEventGuildSettings: events.getEventGuildSettings,
+  updateEventGuildSettings: events.updateEventGuildSettings,
+
+  createEvent: events.createEvent,
+  getEventById: events.getEventById,
+  getEventForCommunity: events.getEventForCommunity,
+  getEventByMessage: events.getEventByMessage,
+  listEvents: events.listEvents,
+  listUpcomingEvents: events.listUpcomingEvents,
+  updateEvent: events.updateEvent,
+  markEventPosted: events.markEventPosted,
+  setEventThread: events.setEventThread,
+  claimDueScheduledPosts: events.claimDueScheduledPosts,
+  recordEventPostFailure: events.recordEventPostFailure,
+  deleteEventCascade: events.deleteEventCascade,
+  listExpiredPendingConfirmDrafts: events.listExpiredPendingConfirmDrafts,
+  listEventsToAutoArchive: events.listEventsToAutoArchive,
+  listDigestSettings: events.listDigestSettings,
+  setEventDigestLastSent: events.setEventDigestLastSent,
+
+  listEventOptions: events.listEventOptions,
+  getEventOptionById: events.getEventOptionById,
+  countEventOptions: events.countEventOptions,
+  createEventOption: events.createEventOption,
+  updateEventOption: events.updateEventOption,
+  deleteEventOption: events.deleteEventOption,
+  reorderEventOptions: events.reorderEventOptions,
+
+  getEventSignup: events.getSignup,
+  listEventUserSignups: events.listUserSignups,
+  listEventSignups: events.listEventSignups,
+  countEventSignups: events.countEventSignups,
+  listEventAttendingUserIds: events.listAttendingUserIds,
+  listEventRoleIdsUserStillHolds: events.listEventRoleIdsUserStillHolds,
+  applyEventSignupChoice: events.applySignupChoice,
+  removeEventSignupRow: events.removeSignupRow,
+  forceEventSignup: events.forceSignup,
+  listUserEventsAcrossCommunity: events.listUserEventsAcrossCommunity,
+
+  createEventReminders: events.createEventReminders,
+  listEventReminders: events.listEventReminders,
+  getEventReminderById: events.getEventReminderById,
+  deleteEventReminder: events.deleteEventReminder,
+  rescheduleUnsentEventReminders: events.rescheduleUnsentEventReminders,
+  retireAllUnsentEventReminders: events.retireAllUnsentEventReminders,
+  claimDueEventReminders: events.claimDueEventReminders,
+  markEventReminderSent: events.markEventReminderSent,
+  retireEventReminder: events.retireEventReminder,
+  markEventReminderRetry: events.markEventReminderRetry,
+
+  setEventMute: events.setEventMute,
+  clearEventMute: events.clearEventMute,
+  isEventMuted: events.isEventMuted,
+  listEventMutes: events.listEventMutes,
+  clearEventMutesForEvent: events.clearEventMutesForEvent,
+
+  logEventActivity: events.logEventActivity,
+  listEventActivity: events.listEventActivity,
+
+  createEventSeries: events.createEventSeries,
+  getEventSeries: events.getEventSeries,
+  getEventSeriesForCommunity: events.getEventSeriesForCommunity,
+  listEventSeries: events.listEventSeries,
+  updateEventSeries: events.updateEventSeries,
+  stopEventSeries: events.stopEventSeries,
+  dissolveEventSeries: events.dissolveEventSeries,
+  listDueEventSeries: events.listDueEventSeries,
+
+  createEventPreset: events.createEventPreset,
+  getEventPreset: events.getEventPreset,
+  getEventPresetByName: events.getEventPresetByName,
+  listEventPresets: events.listEventPresets,
+  deleteEventPreset: events.deleteEventPreset,
+
+  markEventChannel: events.markEventChannel,
+  unmarkEventChannel: events.unmarkEventChannel,
+  isEventChannel: events.isEventChannel,
+  listEventChannels: events.listEventChannels,
+  setEventChannelPurge: events.setEventChannelPurge,
+
+  getEventWizard: events.getEventWizard,
+  upsertEventWizard: events.upsertEventWizard,
+  deleteEventWizard: events.deleteEventWizard,
+  listUserOpenWizards: events.listUserOpenWizards,
+  deleteStaleEventWizards: events.deleteStaleEventWizards,
+
+  upsertEventGoogleLink: events.upsertEventGoogleLink,
+  getEventGoogleLink: events.getEventGoogleLink,
+  updateEventGoogleLinkTokens: events.updateEventGoogleLinkTokens,
+  disableEventGoogleLink: events.disableEventGoogleLink,
+  deleteEventGoogleLink: events.deleteEventGoogleLink,
+
+  inviteEventCrosspost: events.inviteEventCrosspost,
+  getEventCrosspostById: events.getEventCrosspostById,
+  getEventCrosspostByCode: events.getEventCrosspostByCode,
+  getEventCrosspostByPair: events.getEventCrosspostByPair,
+  approveEventCrosspost: events.approveEventCrosspost,
+  revokeEventCrosspost: events.revokeEventCrosspost,
+  listEventCrosspostsForCommunity: events.listEventCrosspostsForCommunity,
+  listActiveCrosspostsForSource: events.listActiveCrosspostsForSource,
+  updateEventCrosspost: events.updateEventCrosspost,
+  recordEventCrosspostMessage: events.recordEventCrosspostMessage,
+  listEventCrosspostMessagesForEvent: events.listEventCrosspostMessagesForEvent,
+  deleteEventCrosspostMessagesForEvent: events.deleteEventCrosspostMessagesForEvent,
 };
