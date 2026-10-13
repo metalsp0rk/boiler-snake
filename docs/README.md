@@ -65,6 +65,11 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Exempt roles for staff
   - Setup order, permissions, and troubleshooting
 
+- **[Community Events](community-events.md)**
+  - Bot-owned events with button RSVP, capacity, waitlists
+  - Reminders on the signup list, recurring series, presets, DM wizard
+  - Google Calendar sync, cross-guild posting, event channels
+
 - **[Scheduled Event Reminders](event-reminders.md)**
   - Pre-event pings for Interested members
   - Dedicated event roles and opt-out

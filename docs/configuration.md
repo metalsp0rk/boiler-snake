@@ -139,6 +139,16 @@ such rows already exist in the database — boot stops with the exact fix
 instead of running with half-encrypted columns. No rotation in v1: changing
 the key strands stored tokens (re-add watches, re-run the sync authorize).
 
+#### Google Calendar sync (optional)
+
+| Variable | Purpose |
+|----------|---------|
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth client (Web application) for [Community Events](community-events.md) Google Calendar sync — per-user connect via `/event gcal connect`, tokens envelope-encrypted at rest (`TOKEN_ENCRYPTION_KEY`). Unset ⇒ the integration is dark and the command replies with what to set |
+| `GOOGLE_REDIRECT_URI` | The exact redirect URL registered on the Google Cloud console: `https://your.host/oauth/gcal/callback`. Unset ⇒ derived from `PUBLIC_BASE_URL` (either way the public web server must be up to receive the callback) |
+
+Use placeholders in any committed file — real client secrets live only in
+`.env`.
+
 #### Database location
 
 | Variable | Purpose |

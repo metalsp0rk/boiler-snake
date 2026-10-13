@@ -50,7 +50,7 @@ docker compose run --rm bot node src/commands/register.js
 | `src/bot/pipelines.js` | Ordered MessageCreate / ReactionAdd pipelines |
 | `src/render/leaderboard.js` | Leaderboard PNG |
 
-**Features:** settings, commandChannels, commandPermissions, xp, decay, voice, music, levelRoles, logs, youtube, twitch, githubReleases, honeypot, reactionRoles, eventReminders, staffRoles, staffNotes, warnings, userinfo, userActivity, retention, gork, tickets, web, bridge, linking.
+**Features:** settings, commandChannels, commandPermissions, xp, decay, voice, music, levelRoles, logs, youtube, twitch, githubReleases, honeypot, reactionRoles, eventReminders, events, staffRoles, staffNotes, warnings, userinfo, userActivity, retention, gork, tickets, web, bridge, linking.
 
 See [docs/architecture.md](docs/architecture.md) for the full layout and boot sequence.
 

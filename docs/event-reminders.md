@@ -1,5 +1,11 @@
 # Scheduled Event Reminders
 
+> **New configs are retired (E13).** `/eventreminder create` now replies with a pointer to
+> [`/event`](community-events.md) — the bot-owned Community Events system posts its own events and pings
+> **button signups** automatically, with no Interested-role dependency. Existing linked reminder configs
+> keep delivering until their Discord scheduled event ends (or you `/eventreminder clear` them);
+> `edit`/`clear`/`sync`/`setchannel` stay available for that legacy surface.
+
 Pre-event reminder pings for Discord **Guild Scheduled Events**. Only members who marked **Interested** are notified (via a dedicated `event-<shortname>` role). Users can opt out of **all** reminder pings per guild, or **mute** a single linked event.
 
 ## How it works

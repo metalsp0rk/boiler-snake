@@ -342,6 +342,7 @@ docker compose run --rm bot node src/commands/register.js
 | Warnings | [warnings.md](warnings.md) |
 | Staff notes | [staff-notes.md](staff-notes.md) |
 | Event reminders | [event-reminders.md](event-reminders.md) |
+| Community events | [community-events.md](community-events.md) |
 | User activity | [user-activity.md](user-activity.md) |
 
 ---
@@ -471,7 +472,7 @@ With daily decay:
 - Activity analytics dashboard
 - XP transfer between servers
 
-**Recently added**: [Music player](music.md); [Twitch stream notifications](twitch-notifications.md) (multi-channel go-live alerts + dedicated ping role); [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
+**Recently added**: [Community events](community-events.md) (`/event` — bot-owned events with button RSVP, waitlists, series, reminders on the signup list); [Music player](music.md); [Twitch stream notifications](twitch-notifications.md) (multi-channel go-live alerts + dedicated ping role); [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
 
 ---
 
