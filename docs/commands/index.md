@@ -705,12 +705,43 @@ Configure trusted staff roles for the admin/staff gate, honeypot exemption, and 
 
 Shows counts, what each level controls, and that only Manage Server can mutate staff roles.
 
+### `/event` - Community Events (bot-owned events + RSVP)
+
+The **bot-owned** events system: create events the bot posts (no Discord "Scheduled Event" dependency), members RSVP with **buttons**, and signups drive an attendee role, reminders, and optional Google Calendar entries. Full guide: [Community Events](../community-events.md).
+
+**Permission**: the command registers at the **public** picker tier; each group gates in the handler — `create`/`edit`/`post`/`delete`/`duplicate`/`adopt` and `list` are open to everyone by default (a configured `event_channels` **create-role** narrows creation), organizer/staff gates apply per event (`edit`, `response`, `options`, `series`, per-event `reminders add/remove/list`, `channel`, `crosspost`), and `/event settings …` is **Staff gate**.
+
+Slash visibility: staff-tier subcommands ride ManageGuild `defaultMemberPermissions` — same posture as the rest of the console (see [Staff Roles](../staff-roles.md)); handlers are the source of truth.
+
+#### Subcommands
+
+```bash
+/event create title:"…" start:"7pm" channel:#announcements   # DM wizard fallback: /event wizard
+/event list · edit (event|in_dm) · duplicate · post · delete · adopt [scheduled_event]
+/event response add|remove|move member option (event)        # organizer stand-ins
+/event reminders on|off|status|mute|unmute|default … · add|remove|list (event)
+/event options list|add|edit|remove|reorder|whitelist (event)
+/event preset save|list|delete [name]                        # signup presets (≤10/server)
+/event series list|skip|stop                                 # weekly/monthly recurrence
+/event channel mark|unmark|list|sort|purge                   # event channels (+ create-role narrowing)
+/event crosspost invite|approve|revoke|list|config           # two-guild relay (bridge pairing)
+/event google connect|status|disconnect|autoset              # Google Calendar sync
+/event settings show|timezone|role|show-attendees|thread-reminders|reminder-channel|auto-archive|digest
+```
+
+**Start times** parse natural text in the guild timezone (`/event settings timezone`): `7pm`, `tomorrow 14:00`, `in 2 days`, `2026-11-05 19:00`.
+
+**Ephemeral**: yes (config/edit/duplicate/reminders/preset/series/channel replies); the posted event is a public embed + buttons.
+
+> `/eventreminder create` (the Guild-Scheduled-Event reminder twin) is **retired**: it replies with a pointer here. Reminder *delivery* for `/event` events is automatic (`/event reminders`).
+
 ### `/eventreminder` - Scheduled Event Reminders
 
 Pre-event reminder pings for Discord **Guild Scheduled Events**. Members who marked **Interested** get a bot-managed `event-<shortname>` role and are pinged at configured offsets. See [Scheduled Event Reminders](../event-reminders.md).
 
 **Permission**:
-- `create` / `edit` / `clear` / `sync` — **ManageGuild** **or** that scheduled event’s **creator**
+- `create` — **retired** (E13): replies with a pointer to [`/event`](#event---community-events-bot-owned-events--rsvp); new reminder configs no longer live here
+- `edit` / `clear` / `sync` — **ManageGuild** **or** that scheduled event's **creator**
 - `setchannel` — **Staff gate**
 - `list` — any member
 - `optout` / `optin` / `mute` / `unmute` / `status` — any member (documented under [Public Commands](#public-commands))
@@ -720,7 +751,7 @@ Bot needs **Manage Roles** (role above `event-*`), send access in the notify cha
 #### Subcommands
 
 ```bash
-/eventreminder create event:<scheduled event>
+/eventreminder create event:<scheduled event>   # RETIRED — see /event create
 /eventreminder edit event:<linked event>
 /eventreminder list
 /eventreminder clear event:<linked event>
@@ -732,7 +763,7 @@ Bot needs **Manage Roles** (role above `event-*`), send access in the notify cha
 
 | Subcommand | Description |
 |------------|-------------|
-| `create` | Opens a modal to link reminders to a scheduled event (shortname, offsets, optional channel override + embed description) |
+| `create` | **Retired** (E13) — ephemeral redirect to `/event create` / `/event wizard`; bot-owned events drive reminders off button signups instead of Interested roles |
 | `edit` | Re-open the configure modal for an existing config |
 | `list` | Active configs, offsets, next fire time, default channel |
 | `clear` | Stop reminders; delete the `event-<shortname>` role and DB rows |
@@ -1144,7 +1175,14 @@ The **rundown itself posts publicly** in the channel (embed, never pings); its u
 | `/honeypot channel\|banrole` | Staff gate | Yes |
 | `/honeypot exempt …` | ManageGuild | Yes |
 | `/eventreminder setchannel` | Staff gate | Yes |
-| `/eventreminder create\|edit\|clear\|sync` | ManageGuild **or** event creator | Yes |
+| `/eventreminder edit\|clear\|sync` | ManageGuild **or** event creator | Yes |
+| `/event create\|list\|wizard` | Public (create narrowed by `event_channels` create-role when set) | Yes |
+| `/event edit\|post\|duplicate\|delete\|adopt\|response\|options\|series` | Staff gate **or** event organizer | Yes |
+| `/event reminders on\|off\|status\|mute\|unmute\|default` | Public (own prefs) | Yes |
+| `/event reminders add\|remove\|list` | Staff gate **or** event organizer | Yes |
+| `/event preset\|channel\|crosspost\|google` | Staff gate (crosspost approve = dest staff; google = own account) | Yes |
+| `/event settings …` | Staff gate | Yes |
+| `/eventreminder create` | **Retired** → redirects to `/event create` (E13) | Yes |
 | `/settings` | Staff gate | Yes |
 | `/setxp` | Staff gate | Yes |
 | `/setdecay` | Staff gate | Yes |
