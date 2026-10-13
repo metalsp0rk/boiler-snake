@@ -66,6 +66,15 @@ async function createIntegrationEnv(options = {}) {
   const member2User = createUser({ id: IDS.member2, username: "member2" });
   const botUser = createUser({ id: IDS.bot, username: "bot", bot: true });
 
+  // Identity contract: interaction.user === client.users cache object ===
+  // member.user. Registering the human harness users keeps cache lookups
+  // handing back the very objects tests assert DM sends on. botUser stays
+  // unregistered so users.fetch(client.user.id) keeps resolving client.user
+  // (the createClient special-case existing flows lean on).
+  client.users.addUser(adminUser);
+  client.users.addUser(memberUser);
+  client.users.addUser(member2User);
+
   const adminMember = createMember({ guild, user: adminUser, admin: true });
   const member = createMember({ guild, user: memberUser, admin: false });
   const member2 = createMember({ guild, user: member2User, admin: false });

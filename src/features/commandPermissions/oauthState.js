@@ -22,6 +22,9 @@ const STATE_TTL_MS = 15 * 60 * 1000;
 const PURPOSES = Object.freeze({
   CMD_PERMS: "cmd_perms",
   WEB_LOGIN: "web_login",
+  // Community events phase 5 (roadmap/community-events.md): Google Calendar
+  // connect flow for /event google. Same HMAC-state machinery, own purpose.
+  GCAL: "gcal",
   // roadmap/fluxer.md § PKCE and state (PR 10): Fluxer web login. NOT
   // interchangeable with web_login (Discord); its single-use guarantee comes
   // from the fluxer_oauth_transactions table, not the in-memory nonce map.

@@ -46,6 +46,7 @@ const { registerGuildArchiveRoutes } = require("./routes/guildArchive");
 const { registerLookupRoutes } = require("./routes/lookups");
 const { registerDashboardApiRoutes } = require("./routes/dashboardApi");
 const { registerSyncActionRoutes } = require("./routes/syncAction");
+const { registerEventsCalendarRoutes } = require("./routes/events");
 const { createSessionMiddleware } = require("./middleware/session");
 const { setCommunityClientProvider } = require("./routes/shared/discord-cache");
 const { createGuildAccessResolver } = require("./auth/guildAccess");
@@ -419,6 +420,13 @@ function createWebApp(options = {}) {
   // getClient stays the cache-only seam (never a fetch on a request path).
   registerTicketActionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, services: options.services, ticketActions: options.ticketActions });
   registerGuildArchiveRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
+  // Community Events calendar (#222, roadmap community-events.md §12.4):
+  // month view, event pages, archive/presets/series/scheduled lists, and the
+  // mutation endpoints that flow through src/features/events/service.js so
+  // web edits sync back to the Discord message. AFTER the guild shell (the
+  // /g/:guildId scope owns auth + cross-guild 404s); getClient is the same
+  // cache-only seam every other console route uses.
+  registerEventsCalendarRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
   // Command-visibility sync trigger (Phase 3, subtask 31): admin-only
   // POST /g/:guildId/commands/sync — the web twin of slash
   // /staff syncpermissions (§8.6 "Command visibility" row = Admin trigger;

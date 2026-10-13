@@ -91,6 +91,10 @@ const NAV_GROUPS = Object.freeze([
       // §8.15 first-class archive: guild-scoped shell view of /t (sidebar
       // stays; transcript docs still served by the canonical /t surface).
       { suffix: "/t", label: "Ticket archive", minTier: "staff" },
+      // Community Events calendar (#222) — month view, drafts, attendees,
+      // archive, presets, series, scheduled posts. Staff tier = the route
+      // tier of routes/events.js.
+      { suffix: "/events", label: "Events", minTier: "staff" },
     ],
   },
   {
