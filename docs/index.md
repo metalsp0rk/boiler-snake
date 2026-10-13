@@ -63,6 +63,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [Music Player](music.md) - Voice playback with Spotify catalog + Lavalink
 - [Twitch Stream Notifications](twitch-notifications.md) - Go-live alerts for any number of subscribed streamers
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
+- [Community Events](community-events.md) - Bot-owned `/event` with button RSVP, waitlists, reminders, series
 - [Scheduled Event Reminders](event-reminders.md) - Pre-event pings for Interested members
 - [Staff Roles](staff-roles.md) - Junior/senior trusted roles for staff gate and tickets
 - [Staff Notes](staff-notes.md) - Private staff-only notes about members

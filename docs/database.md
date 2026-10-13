@@ -1288,6 +1288,30 @@ See [Gork (AI Keyword Q&A)](gork.md) and [Gork Interaction Logging](gork-logging
 
 ---
 
+### 20. Community events tables
+
+Bot-owned events with button RSVPs (migrations `042`–`045`; feature guide: [Community Events](community-events.md)). All ids are `INTEGER PRIMARY KEY AUTOINCREMENT` unless noted; all times are epoch ms.
+
+| Table | Purpose — notable columns |
+|---|---|
+| `events` | The event: `community_id`, `creator_id`, `title`, `status` (`draft` / `pending_confirm` / `scheduled` / `posted` / `archived` / `post_failed`), `start_at`, `end_at`, `duration_minutes`, `channel_id`, `message_id`, `thread_id`, `post_at` (scheduled post), `cutoff_at`, `location`, `image_url`, `color`, `announce_role_ids` (JSON), `attendee_role_id` + `attendee_role_existing` (0/1 flag; the role id lives in `attendee_role_id` in both modes), `role_whitelist`, `multiple_signups`, `thread_enabled`, `thread_private`, `series_id`, `occurrence_index`, `auto_archive_at`, post-retry bookkeeping (`post_attempts`, `next_attempt_at`, `last_post_error`), `digest_last_sent_at`. |
+| `event_options` | Signup options per event (`label`, `emoji`, `position`, `capacity`, `waitlist_on`, `reminders_on`, `role_whitelist` JSON). Unique `(event_id, label)`. |
+| `event_signups` | One row per (event, option, user): `state` (`attending` / `waitlist` / `refused`), `optout` (per-event reminder mute), `position` for waitlist order. |
+| `event_notifications` | Queued reminder deliveries: `event_id`, `option_id`, `fire_at`, `state` (`pending` / `sent` / `retry` / `retired`), `attempts`, `last_error`, `delivered_at`, `message_id`. The claim/retire state machine mirrors feature 2's delivery states. |
+| `event_mutes` | Per-user, per-event reminder mute `(event_id, user_id)` — the "don't ping me for this event" switch on the RSVP card. |
+| `event_guild_settings` | One row per community: `time_zone` (IANA), `default_reminder_minutes`, `default_thread_enabled`, `show_attendees`, `thread_reminders`, `auto_archive` + `auto_archive_delay_minutes`, `reminder_channel_id`, `digest_channel_id` + `digest_frequency` + `digest_hour_utc` + `digest_weekday`, `create_role_id`, `edit_role_id`, `delete_role_id`, `attendee_role_id`, `gcal_auto_community_member_id` + `gcal_auto_disabled_reason`. |
+| `event_activity` | Append-only event log (`event_id`, `actor_id`, `action`, `detail`, `created_at`) — backs the web calendar activity feed. |
+| `event_series` | Recurrence: `template_event_id`, `recurrence` (`weekly` / `monthly`), `weekdays` JSON, `month_day`, `end_mode` (`never` / `on_date` / `after_count`), `end_at`, `end_count`, `next_occurrence_at` cursor, `occurrences_created`, `status` (`active` / `stopped` / `finished`). |
+| `event_presets` + `event_preset_options` | Saved signup-option groups per community (`name` unique per community; options carry label/emoji/capacity/waitlist/reminders/whitelist). |
+| `event_channels` | Marked event channels per community `(community_id, channel_id)` with `purge` opt-in flag (E7). |
+| `event_wizards` | DM creation-wizard state, one row per `(community_id, user_id)`: current `step`, partial answers JSON, message context. |
+| `event_google_links` | Per-user Google OAuth: `refresh_token_ciphertext` (envelope-encrypted, `TOKEN_ENCRYPTION_KEY`), `email`, `calendar_id`, `auto_sync` flag (the guild's auto-sync calendar is the member row with `auto_sync=1`). |
+| `event_crossposts` + `event_crosspost_messages` | Cross-guild pairs: `code`, `source_community_id` / `destination_community_id` + channels, `state` (`invited` / `approved` / `revoked`), per-destination `role_whitelist` (signup gate), `mention_role_ids`, `post_offset_minutes`; message rows map destination copies to the source event (`dest_message_id=''` marks an undelivered delayed copy). |
+
+Shared with feature 2: the **guild-wide** reminder opt-out stays a single row in feature 2's `event_reminder_optouts` — `/event reminders off` and `/eventreminder optout` read and write the same preference (design record E14).
+
+---
+
 ## Database Migrations
 
 Migrations run **automatically** when the db module loads (`src/db/migrate.js` via `src/db/index.js` / the `src/db.js` facade). Steps live under `src/db/migrations/` and are written to be **idempotent** (`CREATE TABLE IF NOT EXISTS`, `addColumnIfMissing`, gated rebuilds, no-op cleanups).
@@ -1298,7 +1322,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`041` registered the version is `41`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`045` registered the version is `45`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size, the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **Partial versions are never trusted.** A crash *between* migrations (exactly the non-transactional data-move 003 represented, later hardened against in 034) leaves the older version recorded, so the next boot re-runs the full idempotent set instead of resuming from a cursor.

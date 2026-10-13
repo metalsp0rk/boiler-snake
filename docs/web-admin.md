@@ -28,7 +28,7 @@ Tiers mirror the bot's gates exactly — the same staff roles apply:
 
 | Tier | Who (same as slash) | Console access |
 |------|---------------------|----------------|
-| **Staff** | `ManageGuild` **or** any `staff_roles` level ([Staff Roles](staff-roles.md)) | Dashboard, users, leaderboard, moderation (warns/notes pages + issue/void), settings reads + staff-tier writes (XP rate, decay, log channels, level roles), staff list, integrations (YouTube/Twitch/reaction-roles/event-reminders/honeypot), voice (read), ticket transcripts (`/t`) |
+| **Staff** | `ManageGuild` **or** any `staff_roles` level ([Staff Roles](staff-roles.md)) | Dashboard, users, leaderboard, moderation (warns/notes pages + issue/void), settings reads + staff-tier writes (XP rate, decay, log channels, level roles), staff list, integrations (YouTube/Twitch/reaction-roles/event-reminders/honeypot), **events** (calendar + all `/event` twin writes), voice (read), ticket transcripts (`/t`) |
 | **Senior** | senior `staff_roles` rows | Everything staff sees **plus** the ticket actions page (list, claim/close/summarize) and the user Activity tab (mirrors `/userinfo` Activity / ticket-overwrite seniority) |
 | **Admin** | `ManageGuild` only | Everything above **plus** system + audit-trail pages and ManageGuild-tier mutations: grant XP, staff-role add/remove/setlevel, command-channel edits, command-visibility sync, honeypot exempt |
 
@@ -68,6 +68,7 @@ return 404. Pages:
 - **`/g/{guildId}/settings`** — read view of every guild setting + staff-tier writes (command channels, level roles, integrations, cooldowns, decay, …)
 - **`/g/{guildId}/staff`** — staff roles + command-visibility panel (incl. `/staff syncpermissions` trigger)
 - **`/g/{guildId}/integrations`** — YouTube / Twitch watches, reaction roles, event reminders, honeypot
+- **`/g/{guildId}/events`** — the **Community Events** calendar (staff): month grid of posted events + drafts/scheduled queues, a create form, and per-event detail with the full action set (publish / edit / duplicate / options / signups / reminders / archive / delete + Retry-sync). Siblings: `/events/archive` (kept history), `/events/scheduled` (due-queue + failures), `/events/series` (skip/stop), `/events/presets` (signup presets CRUD). Every mutation is audited (`events.*`, origin `web`); event visibility follows channel visibility where the bot can see it (fail-open otherwise). See [Community Events](community-events.md).
 - **`/g/{guildId}/voice`** — live voice state (read-only; no queue control)
 - **`/g/{guildId}/sessions`** — **Your sessions**: every live sign-in on *your own* account (browser, sign-in/last-seen/expiry times) with revoke. Revoking the row marked *current* is a clean logout. You can never see or touch anyone else's sessions from here.
 - **`/g/{guildId}/system`**, **`/g/{guildId}/audit`** — process/DB/queue health and the `admin_audit` trail, filtered by guild (both **admin-only**)

@@ -58,6 +58,7 @@ src/
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
 │   ├── reactionRoles/       # /reactionrole + panel service
 │   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
+│   ├── events/              # /event community events: buttons RSVP, series, presets, gcal, crossposts + web calendar
 │   ├── staffRoles/          # /staff role gate (isStaff / requireStaff; junior|senior)
 │   ├── commandPermissions/  # OAuth slash visibility sync (no slash of its own)
 │   ├── staffNotes/          # /note staff-only private notes
@@ -87,7 +88,7 @@ src/
 │   ├── app.js               # App assembly: routes + middleware
 │   ├── config.js            # PUBLIC_HTTP_PORT / PUBLIC_BASE_URL contract (+ legacy TICKET_* aliases)
 │   ├── auth/                # Discord OAuth login, sessions, bot-guild provider
-│   ├── routes/              # dashboard, users, tickets, moderation, settings, sessions, system, …
+│   ├── routes/              # dashboard, users, tickets, moderation, settings, sessions, system, events, …
 │   ├── views/               # Server-rendered pages per console area
 │   ├── data/                # Data-access layer for views (guild/ticket/dashboard data)
 │   ├── middleware/          # auth guards, audit mirror, rate limiting
@@ -192,7 +193,7 @@ Independent events (message delete, ban, kick, honeypot ban-role, tickers) regis
 
 - **connection.js** — SQLite open (`DB_PATH` / `DATA_DIR`), explicit pragmas: WAL, `foreign_keys=ON`, `synchronous=FULL`, `busy_timeout=5000` (single-writer contract: one process per DB file — see [database.md](database.md))
 - **migrate.js** + **migrations/** — idempotent ordered steps; `PRAGMA user_version` records a completed pass and fast-skips replay when current; any mismatch re-runs the full idempotent set and re-stamps; a version newer than the registry fails boot loudly
-- **repositories/** — users, guildSettings, activity, youtube, twitch, honeypot, reactionRoles, staff notes/roles, warnings, tickets, user activity, …
+- **repositories/** — users, guildSettings, activity, youtube, twitch, honeypot, reactionRoles, staff notes/roles, warnings, tickets, user activity, events (events/options/signups/series/presets/channels/gcal/crossposts), …
 - **index.js** — public facade (same API as legacy single-file `db.js`)
 
 Migrations on load:
@@ -239,8 +240,13 @@ Migrations on load:
 | `038_event_reminder_claim_state` | Real delivery state machine on `event_reminder_offsets` (`sending`/backoff/attempts) |
 | `039_encrypt_third_party_tokens` | One-time re-encryption of GitHub PATs + command-permission OAuth tokens to the `v1.` envelope (`TOKEN_ENCRYPTION_KEY`) |
 | `040_schema_hygiene` | CHECK constraints (`users.xp`, `gork_budget_rules.daily_limit`), `idx_users_guild_xp`, partial archived-ticket index, drop dead `voice_sessions` |
+| `041_heal_partial_community_cutover` | One-time repair of communities left half-cutover by the 035 crash window (duplicate/discarded rows healed deterministically) |
+| `042_events_core` | Community Events ([community-events.md](community-events.md)): `events`, `event_options`, `event_signups`, `event_notifications` (reminder rows), `event_activity`, `event_mutes`, `event_guild_settings` |
+| `043_events_series_presets` | `event_series` (recurrence cursor) + `event_presets` / `event_preset_options` (signup presets) |
+| `044_event_channels_wizards` | `event_channels` (per-channel event config incl. create-role narrowing) + `event_wizards` (DM create-wizard state) |
+| `045_event_integrations` | `event_google_links` (per-user gcal OAuth tokens, `v1.` envelope) + `event_crossposts` / `event_crosspost_messages` (cross-post pipeline) |
 
-Current registry: **40** migrations (`PRAGMA user_version` = 40 on a current DB). The authoritative per-migration table with full column/DDL notes lives in [database.md](database.md).
+Current registry: **45** migrations (`PRAGMA user_version` = 45 on a current DB). The authoritative per-migration table with full column/DDL notes lives in [database.md](database.md).
 
 ### Core XP API
 
@@ -279,6 +285,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **honeypot** | Channel posts / ban-roles; warning PNG; exempt roles |
 | **reactionRoles** | Bot panels, min level, removable options |
 | **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |
+| **events** | `/event` community events (E1–E15, [roadmap record](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/community-events.md)): DM create-wizard, button RSVP + waitlists, temp/existing attendee roles, reminders (attendee + role targets), weekly/monthly series, signup presets, scheduled posts with backoff, auto-archive, gcal sync, cross-post pairs + the web calendar (`/g/:guildId/events*`) — see [community-events.md](community-events.md) |
 | **staffRoles** | `/staff` role list; junior (command gate) vs senior (ticket channel overwrites); ManageGuild for mutations |
 | **staffNotes** | `/note` private staff notes (`requireStaff`) |
 | **warnings** | `/warn` add/void/list; `/warn mine` public; `/setwarn` staff gate |
@@ -293,7 +300,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **bridge** | Discord↔Fluxer channel pairs: webhook copies + durable outbox (CAS claim), source-side edit/delete relay, SSRF-guarded media — jobs `bridge-relay` + `bridge-relay-ttl` |
 | **linking** | One Discord ↔ one Fluxer identity (`!link` codes), per-direction XP/roster mirroring; link-code sweeper job |
 
-Tickers (voice, youtube, twitch, twitch-eventsub, githubReleases, eventReminders, warnings expiry, decay, honeypot sweep, XP cooldown sweep, audit message-cache, retention sweeps, link-code sweeper, bridge relay + TTL) register named jobs on `src/core/scheduler.js`. The scheduler skips overlapping runs, always logs tick failures as `[scheduler] <name> tick failed:`, and exposes `snapshot()` (`lastTickAt`, `intervalMs`, `running`) for dashboards. Feature `start()` still decides *whether* a job is armed (e.g. YouTube skips without `YOUTUBE_API_KEY`). Invoke `runVoiceTick` / `runYoutubeTick` / … directly in tests — do not start timers.
+Tickers (voice, youtube, twitch, twitch-eventsub, githubReleases, eventReminders, events (due posts, reminders, series cursor, auto-archive, cleanup — one `events` cron job with named steps), warnings expiry, decay, honeypot sweep, XP cooldown sweep, audit message-cache, retention sweeps, link-code sweeper, bridge relay + TTL) register named jobs on `src/core/scheduler.js`. The scheduler skips overlapping runs, always logs tick failures as `[scheduler] <name> tick failed:`, and exposes `snapshot()` (`lastTickAt`, `intervalMs`, `running`) for dashboards. Feature `start()` still decides *whether* a job is armed (e.g. YouTube skips without `YOUTUBE_API_KEY`). Invoke `runVoiceTick` / `runYoutubeTick` / … directly in tests — do not start timers.
 
 ---
 
