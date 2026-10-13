@@ -99,7 +99,7 @@ describe("integration: event reminders", () => {
     assert.ok(interaction.replies.length >= 1);
   });
 
-  it("/eventreminder create opens modal for admin", async () => {
+  it("/eventreminder create is retired: points at /event and persists nothing", async () => {
     const start = Date.now() + 2 * 24 * 60 * 60 * 1000;
     const event = createScheduledEvent({
       guild: env.guild,
@@ -117,10 +117,18 @@ describe("integration: event reminders", () => {
       admin: true,
       options: { event: "evt-create-1" },
     });
-    assert.equal(interaction.modals.length, 1);
-    const modal = interaction.modals[0];
-    const json = typeof modal.toJSON === "function" ? modal.toJSON() : modal;
-    assert.match(json.custom_id || json.customId, /^er:create:evt-create-1$/);
+    // Retirement (issue #225): no modal, no persistence — an honest redirect
+    const texts = interaction.replies
+      .flatMap((r) => [r?.content, ...(r?.embeds || [])])
+      .map(String)
+      .join(" ");
+    assert.match(texts, /\/event create/);
+    assert.match(texts, /\/event adopt/);
+    assert.equal(interaction.modals.length, 0);
+    assert.equal(
+      env.db.getConfigByScheduledEventId(env.communityId, "evt-create-1"),
+      null,
+    );
   });
 
   it("modal create persists config, role, and offsets", async () => {
@@ -205,14 +213,17 @@ describe("integration: event reminders", () => {
       event_reminder_channel_id: IDS.channelNotify,
     });
 
-    const ix = await env.runCommand({
-      commandName: "eventreminder",
-      subcommand: "create",
-      admin: true,
-      options: { event: "evt-persist-1", persistent: true },
+    // Command create is retired; the modal flow itself stays alive for
+    // in-flight `er:create:*…:p1` submissions — build it the way the
+    // pre-retirement command used to.
+    const feature = require("../../src/features/eventReminders/index.js");
+    const modal = feature.buildReminderModal({
+      mode: "create",
+      persistent: true,
+      eventId: "evt-persist-1",
+      eventName: "Weekly Raid",
     });
-    assert.equal(ix.modals.length, 1);
-    const json = ix.modals[0].toJSON();
+    const json = modal.toJSON();
     assert.match(
       json.custom_id || json.customId,
       /^er:create:evt-persist-1:p1$/,

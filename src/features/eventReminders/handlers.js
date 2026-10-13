@@ -211,6 +211,20 @@ async function handleList(interaction, communityId) {
 }
 
 async function handleCreate(interaction, communityId) {
+  // #225 retirement (E13): bot-owned `/event` is the only create path.
+  // Configs already in event_reminder_* keep firing (edit/list/clear/sync/
+  // setchannel/opt-out all stay live) — only NEW configs are refused, so
+  // this returns before the create modal ever opens.
+  await replyEphemeral(interaction, {
+    content: [
+      "📆 **New reminder configs are retired** — create the event with `/event create` (or `/event wizard`) instead: reminders follow the button signups automatically.",
+      "Bringing an existing Discord scheduled event over? `/event adopt scheduled_event:<id>` turns it into a draft bot event.",
+      "Configs that already exist keep firing — `edit`, `list`, `clear`, `sync`, `setchannel`, and the opt-out family still work.",
+    ].join("\n"),
+  });
+  return;
+
+  // eslint-disable-next-line no-unreachable
   const eventId = interaction.options.getString("event", true);
   const scheduledEvent = await fetchScheduledEvent(interaction.guild, eventId);
   if (!scheduledEvent) {
