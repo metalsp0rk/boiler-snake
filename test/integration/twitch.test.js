@@ -283,7 +283,7 @@ describe("integration: twitch", () => {
     assert.ok(env.channels.notify.sent.length >= 1);
     const sent = env.channels.notify.sent[env.channels.notify.sent.length - 1];
     assert.match(sent.content, new RegExp(`<@&${IDS.roleExempt}>`));
-    assert.deepEqual(sent.allowedMentions, { parse: ["roles"], roles: [IDS.roleExempt] });
+    assert.deepEqual(sent.allowedMentions, { roles: [IDS.roleExempt] });
   });
 
   it("processSubscription no-ops without notification channel", async () => {
