@@ -142,10 +142,12 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
     const result = await outbound.sendChannel(notifyChannelId, {
       content,
       embeds: [toPlainEmbed(createGoLiveEmbed(sub, stream))],
-      // Only allow the configured role to be pinged (never @everyone/@here).
-      allowedMentions: roleId
-        ? { parse: ["roles"], roles: [roleId] }
-        : { parse: [] },
+      // Strict role allow-list (#272, docs-verified): `{ roles: [id] }`
+      // WITHOUT `parse` pins the ping to the configured role — smuggled role
+      // tokens in stream titles stay plain text. `{parse:["roles"], roles:…}`
+      // is invalid per the live Discord docs (parse is mutually exclusive
+      // with the id lists). Precedent: eventReminders/service.js.
+      allowedMentions: roleId ? { roles: [roleId] } : { parse: [] },
     });
     if (!result || result.ok !== true) {
       console.error(
