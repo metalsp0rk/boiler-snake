@@ -11,12 +11,14 @@
  *
  * Security (all guards live here, every one is DI-testable):
  * - http/https only, hostname required — everything else fails closed.
- * - SSRF: the hostname is resolved with `dns.promises.lookup(host,
- *   { all: true, verbatim: true })` (injectable `resolver`) and EVERY
- *   resolved address must pass `isPublicAddress()` (loopback, RFC1918,
- *   CGNAT, link-local, reserved/broadcast ranges, IPv6 ::/::1/fc00::/7/
- *   fe80::/10/ff00::/2, IPv4-mapped IPv6). `localhost` and the
- *   `.local`/`.internal`/`.localhost` suffixes are blocked pre-DNS.
+ * - SSRF: the address policy is the SHARED guard (src/core/ssrfGuard.js —
+ *   #273 consolidated the third bespoke implementation into it). The
+ *   hostname is resolved through the injectable `resolver` seam and EVERY
+ *   resolved address is class-checked by the shared `isDisallowedAddress`
+ *   (loopback, RFC1918, CGNAT, link-local, reserved/broadcast/multicast,
+ *   IPv6 ::/::1/fc00::/7/fe80::/10/c000::/2, IPv4-mapped IPv6 in every
+ *   notation). `localhost` and the `.local`/`.internal`/`.localhost`
+ *   suffixes are blocked pre-resolution (read-page hostname policy).
  *   Known limitation: DNS-rebinding between validation and fetch is not
  *   mitigated beyond the redirect re-validation below.
  * - Fetch uses `redirect: "manual"` with at most 2 redirects, and each
@@ -33,12 +35,12 @@
  * tool loop always continues. jsdom/readability/turndown are required
  * lazily inside the extraction path so bot startup stays light.
  *
- * Dependencies are injectable for tests: `options.resolver` (default
- * `dns.promises.lookup`), `options.fetchImpl` (default global fetch),
+ * Dependencies are injectable for tests: `options.resolver` (default: the
+ * shared guard's resolver), `options.fetchImpl` (default global fetch),
  * `options.timeoutMs` (default DEFAULT_TIMEOUT_MS, per page).
  */
 
-const { promises: dnsPromises } = require("node:dns");
+const ssrfGuard = require("../../../core/ssrfGuard");
 
 /** Abort one page (whole redirect chain) after this many ms (spec: 10s). */
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -105,134 +107,30 @@ const READ_PAGE_TOOL = Object.freeze({
 
 /* ------------------------- SSRF address checks ------------------------- */
 
-/**
- * Parse a dotted-quad IPv4 string into an unsigned 32-bit long.
- * Anything else (octets > 255, hex, partial addresses) → null.
- * @param {string} text
- * @returns {number|null}
+/*
+ * #273: the ADDRESS GRAMMAR (literal parsing, blocked ranges, IPv4-mapped
+ * unwrapping) is owned by the shared guard, src/core/ssrfGuard.js — the
+ * audit counted this module's local copy as the third bespoke
+ * implementation ("share it, don't fork it"). What stays here is the
+ * read-page POLICY: the pre-resolution hostname block list and the locked
+ * inline failure reasons.
  */
-function parseIPv4Long(text) {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(
-    String(text).trim(),
-  );
-  if (!m) return null;
-  let long = 0;
-  for (let i = 1; i <= 4; i += 1) {
-    const octet = Number(m[i]);
-    if (octet > 255 || (m[i].length > 1 && m[i].startsWith("0"))) return null;
-    long = long * 256 + octet;
-  }
-  return long >>> 0;
-}
 
 /**
- * Expand an IPv6 string (compression + embedded IPv4 + zone tolerated)
- * into exactly 8 numeric hextets, or null when malformed.
- * @param {string} text
- * @returns {number[]|null}
- */
-function parseIPv6Groups(text) {
-  const raw = String(text).trim().toLowerCase().split("%")[0];
-  if (!raw || !raw.includes(":")) return null;
-  const sides = raw.split("::");
-  if (sides.length > 2) return null;
-
-  const parseSide = (side) => {
-    if (!side) return [];
-    const out = [];
-    for (const item of side.split(":")) {
-      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(item)) {
-        const v4 = parseIPv4Long(item);
-        if (v4 === null) return null;
-        out.push((v4 >>> 16) & 0xffff, v4 & 0xffff);
-        continue;
-      }
-      if (!/^[0-9a-f]{1,4}$/.test(item)) return null;
-      out.push(parseInt(item, 16));
-    }
-    return out;
-  };
-
-  const head = parseSide(sides[0]);
-  const tail = parseSide(sides[1] || "");
-  if (head === null || tail === null) return null;
-  if (sides.length === 2) {
-    const gap = 8 - head.length - tail.length;
-    if (gap < 1) return null; // `::` must stand for at least one zero group
-    return [...head, ...Array(gap).fill(0), ...tail];
-  }
-  return head.length === 8 ? head : null;
-}
-
-/**
- * IPv4 ranges blocked by policy, locked list: 0/8, 10/8, 100.64/10
- * (CGNAT), 127/8, 169.254/16, 172.16/12, 192.0.0/24, 192.0.2/24,
- * 192.88.99/24, 192.168/16, 198.18/15, 198.51.100/24, 203.0.113/24,
- * 224/4 (multicast), 240/4 (reserved).
- * @type {{ long: number, mask: number }[]}
- */
-const BLOCKED_V4_CIDRS = [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.0.0.0", 24],
-  ["192.0.2.0", 24],
-  ["192.88.99.0", 24],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["198.51.100.0", 24],
-  ["203.0.113.0", 24],
-  ["224.0.0.0", 4],
-  ["240.0.0.0", 4],
-].map(([base, bits]) => ({
-  long: parseIPv4Long(base),
-  mask: bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0,
-}));
-
-/** @param {number} long @returns {boolean} */
-function isPublicIPv4Long(long) {
-  return !BLOCKED_V4_CIDRS.some(
-    ({ long: base, mask }) => (long & mask) >>> 0 === (base & mask) >>> 0,
-  );
-}
-
-/**
- * Whether an IP literal is publicly routable under the locked policy.
- * IPv4-mapped IPv6 (`::ffff:a.b.c.d` / `::ffff:h:h`) is unwrapped and
- * re-checked as IPv4. Anything malformed fails closed (false).
+ * Whether an IP literal is publicly routable — a thin inversion of the
+ * shared `ssrfGuard.isDisallowedAddress` (malformed input fails closed
+ * there, so it is "not public" here).
  * @param {unknown} ip
  * @returns {boolean}
  */
 function isPublicAddress(ip) {
-  const text = typeof ip === "string" ? ip.trim() : "";
-  if (!text) return false;
-
-  const v4 = parseIPv4Long(text);
-  if (v4 !== null) return isPublicIPv4Long(v4);
-
-  const groups = parseIPv6Groups(text);
-  if (!groups) return false;
-
-  // IPv4-mapped (::ffff:a.b.c.d or ::ffff:h:h) → unwrap and re-check.
-  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
-    return isPublicIPv4Long(((groups[6] << 16) | groups[7]) >>> 0);
-  }
-
-  const allZero = groups.every((g) => g === 0); // ::
-  const loopback =
-    groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1; // ::1
-  if (allZero || loopback) return false;
-  if ((groups[0] & 0xfe00) === 0xfc00) return false; // fc00::/7
-  if ((groups[0] & 0xffc0) === 0xfe80) return false; // fe80::/10
-  if ((groups[0] & 0xc000) === 0xc000) return false; // ff00::/2
-  return true;
+  const text = typeof ip === "string" ? ip : "";
+  return !ssrfGuard.isDisallowedAddress(text);
 }
 
 /**
- * Whether a hostname must be blocked without any DNS lookup: the literal
+ * Whether a hostname must be blocked without a name-resolution round trip:
+ * the literal
  * `localhost` and the `.local` / `.internal` / `.localhost` suffixes.
  * An empty/absent hostname fails closed too.
  * @param {unknown} hostname
@@ -248,11 +146,6 @@ function isBlockedHostname(hostname) {
 /** URL hostnames are bracketed for IPv6 ([::1]); zones use %. */
 function stripHostBrackets(hostname) {
   return String(hostname).replace(/^\[+/, "").replace(/[\]%].*$/, "");
-}
-
-/** @param {string} host @returns {boolean} */
-function isIpLiteral(host) {
-  return parseIPv4Long(host) !== null || parseIPv6Groups(host) !== null;
 }
 
 /**
@@ -289,7 +182,7 @@ async function validateTargetUrl(rawUrl, resolver) {
   const host = stripHostBrackets(parsed.hostname).toLowerCase();
   if (!host) return { ok: false, reason: REASON_BLOCKED };
 
-  if (isIpLiteral(host)) {
+  if (ssrfGuard.isIpLiteralHost(host)) {
     return isPublicAddress(host)
       ? { ok: true, url: parsed }
       : { ok: false, reason: REASON_BLOCKED };
@@ -632,8 +525,8 @@ async function readOneUrl(rawUrl, deps) {
  * @param {unknown} args raw tool args (see normalizeUrls for the
  *   tolerated shapes)
  * @param {object} [options]
- * @param {Function} [options.resolver] DNS stub; defaults to
- *   `dns.promises.lookup`
+ * @param {Function} [options.resolver] name-resolution stub; defaults to
+ *   the shared guard's resolver (`ssrfGuard.defaultResolveHost`)
  * @param {Function} [options.fetchImpl] fetch stub; defaults to
  *   `globalThis.fetch`
  * @param {number} [options.timeoutMs] per-page timeout; default
@@ -651,7 +544,7 @@ async function executeReadPage(args, options = {}) {
       resolver:
         typeof opts.resolver === "function"
           ? opts.resolver
-          : (host, lookupOpts) => dnsPromises.lookup(host, lookupOpts),
+          : ssrfGuard.defaultResolveHost,
       fetchImpl:
         typeof opts.fetchImpl === "function" ? opts.fetchImpl : globalThis.fetch,
       timeoutMs:

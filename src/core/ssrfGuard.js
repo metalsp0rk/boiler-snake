@@ -10,9 +10,14 @@
  *  - https-only (no file:, no data:, no http:);
  *  - every hop's hostname is RESOLVED (dns.lookup, injectable) and every
  *    returned address is class-checked: loopback, "this host" (0/8), RFC1918,
- *    link-local (169.254.0.0/16 — cloud metadata), and the IPv6 equivalents
- *    (::/0 unspecified, ::1 loopback, fc00::/7 ULA, fe80::/10 link-local),
- *    including IPv4-mapped IPv6 forms;
+ *    link-local (169.254.0.0/16 — cloud metadata), CGNAT (100.64/10),
+ *    IANA special-purpose/TEST-NET/benchmarking, multicast and reserved
+ *    (224/4 + 240/4) — plus the IPv6 equivalents (::/0 unspecified, ::1
+ *    loopback, fc00::/7 ULA, fe80::/10 link-local, the unassigned c000::/2
+ *    block incl. ff00::/8 multicast) and ALL IPv4-mapped IPv6 forms
+ *    (dotted AND hex, e.g. ::ffff:7f00:1 == 127.0.0.1). The widened list is
+ *    the #273 union with gork's locked read-page policy — shared so every
+ *    download surface gets the strictest posture ("share it, don't fork");
  *  - redirects are followed MANUALLY, capped, same-host only, and the full
  *    address check RE-RUNS on every hop (a DNS record that flips to a private
  *    address mid-chain is caught on the hop where it is used);
@@ -52,9 +57,57 @@ function isIPv4Literal(host) {
 }
 
 /**
+ * Whether a (bracket-stripped) hostname is an IPv4 or IPv6 literal. Exported
+ * so URL-reading callers classify hostnames through THIS module instead of
+ * consulting `net` themselves (#273 — one place owns the address grammar).
+ * @param {string} host
+ * @returns {boolean}
+ */
+function isIpLiteralHost(host) {
+  const s = String(host ?? "").replace(/^\[|\]$/g, "");
+  return net.isIPv4(s) || net.isIPv6(s);
+}
+
+/**
+ * Refused IPv4 prefix ranges. This is the UNION of the bridge/ticket spec
+ * (loopback, this-host, RFC1918, link-local) and gork's locked read-page
+ * policy (#273): CGNAT, IANA special-purpose, TEST-NETs, benchmarking,
+ * multicast and reserved — nothing routable to a real public host lives
+ * here, so sharing the stricter list cannot legitimately deny a CDN or
+ * instance origin, while every one of these classes is a plausible
+ * SSRF-reachable target (metadata services, carrier-NAT pivots).
+ */
+const BLOCKED_V4_PREFIXES = [
+  ["0.0.0.0", 8], // "this host on this network"
+  ["10.0.0.0", 8], // RFC1918
+  ["100.64.0.0", 10], // CGNAT (RFC 6598)
+  ["127.0.0.0", 8], // loopback
+  ["169.254.0.0", 16], // link-local (cloud metadata)
+  ["172.16.0.0", 12], // RFC1918
+  ["192.0.0.0", 24], // IANA special-purpose
+  ["192.0.2.0", 24], // TEST-NET-1
+  ["192.88.99.0", 24], // 6to4 relay anycast
+  ["192.168.0.0", 16], // RFC1918
+  ["198.18.0.0", 15], // benchmarking
+  ["198.51.100.0", 24], // TEST-NET-2
+  ["203.0.113.0", 24], // TEST-NET-3
+  ["224.0.0.0", 4], // multicast
+  ["240.0.0.0", 4], // reserved (+ broadcast)
+].map(([baseText, bits]) => {
+  const bp = String(baseText).split(".").map(Number);
+  return {
+    base: (((bp[0] << 24) | (bp[1] << 16) | (bp[2] << 8) | bp[3]) >>> 0),
+    mask: bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0,
+  };
+});
+
+/**
  * Classify one address: true when the download target must be refused.
- * Refused classes (spec): loopback, link-local, RFC1918 — plus the IPv6
- * equivalents (unspecified, ULA) and IPv4-mapped IPv6 forms.
+ * Refused classes (spec + the #273 union): every BLOCKED_V4_PREFIXES range;
+ * IPv6 unspecified/loopback/ULA/link-local plus the unassigned c000::/2
+ * block (covers ff00::/8 multicast); IPv4-mapped IPv6 forms — dotted AND
+ * hex (e.g. ::ffff:7f00:1 == 127.0.0.1: a literal the pre-#273 guard let
+ * through).
  * @param {string} address
  * @returns {boolean}
  */
@@ -67,19 +120,26 @@ function isDisallowedAddress(address) {
   if (net.isIPv4(ip)) {
     const p = ip.split(".").map((n) => Number(n));
     if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
-    const [a, b] = p;
-    if (a === 0 || a === 10) return true; // "this host" + RFC1918 10/8
-    if (a === 127) return true; // loopback
-    if (a === 169 && b === 254) return true; // link-local
-    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918 172.16/12
-    if (a === 192 && b === 168) return true; // RFC1918 192.168/16
-    return false;
+    const long = ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
+    return BLOCKED_V4_PREFIXES.some(({ base, mask }) => (long & mask) === (base & mask));
   }
   if (net.isIPv6(ip)) {
     const lower = ip.toLowerCase();
     if (lower === "::" || lower === "::1") return true; // unspecified + loopback
+    const hexMapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(lower);
+    if (hexMapped) {
+      // IPv4-mapped IPv6 in hex hextet form (::ffff:7f00:1) — unwrap to the
+      // dotted quad and re-classify, so no mapped notation reaches a decision.
+      const hi = parseInt(hexMapped[1], 16);
+      const lo = parseInt(hexMapped[2], 16);
+      return isDisallowedAddress(
+        `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`,
+      );
+    }
     if (/^f[cd][0-9a-f]{2}:/i.test(lower)) return true; // ULA fc00::/7
     if (/^fe[89ab][0-9a-f]:/i.test(lower)) return true; // link-local fe80::/10
+    const first = /^([0-9a-f]{1,4}):/.exec(lower);
+    if (first && (parseInt(first[1], 16) & 0xc000) === 0xc000) return true; // c000::/2 (unassigned; incl. ff00::/8 multicast)
     const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(lower);
     if (v4) return isDisallowedAddress(v4[1]);
     return false;
@@ -248,6 +308,7 @@ module.exports = {
   DOWNLOAD_TIMEOUT_MS,
   MAX_REDIRECTS,
   isIPv4Literal,
+  isIpLiteralHost,
   isDisallowedAddress,
   defaultResolveHost,
   hostRefusalReason,

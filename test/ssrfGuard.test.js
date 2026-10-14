@@ -97,6 +97,58 @@ describe("ssrfGuard.isDisallowedAddress", () => {
     assert.equal(guard.isDisallowedAddress(null), true);
   });
 
+  // #273 union: the shared list absorbed gork's locked read-page policy.
+  // Every added class is non-routable-to-public, so bridge/tickets keep
+  // every legitimate host while the whole surface gets the strict posture.
+  it("refuses the #273 union classes (CGNAT, IANA/TEST-NET, benchmarking, multicast, reserved)", () => {
+    for (const ip of [
+      "100.64.0.1", // CGNAT 100.64/10 lower edge (was ALLOWED pre-#273)
+      "100.127.255.255", // CGNAT upper edge
+      "192.0.0.1", // IANA special-purpose /24
+      "192.0.2.1", // TEST-NET-1
+      "192.88.99.1", // 6to4 relay anycast
+      "198.18.0.1", // benchmarking 198.18/15
+      "198.51.100.1", // TEST-NET-2
+      "203.0.113.1", // TEST-NET-3
+      "224.0.0.1", // multicast 224/4 lower edge
+      "239.255.255.255", // multicast upper edge
+      "240.0.0.1", // reserved 240/4
+      "255.255.255.255", // broadcast
+    ]) {
+      assert.equal(guard.isDisallowedAddress(ip), true, `must refuse ${ip}`);
+    }
+  });
+
+  it("refuses IPv4-mapped IPv6 in HEX hextet form (the pre-#273 shared-guard bypass)", () => {
+    // ::ffff:7f00:1 IS 127.0.0.1 — the old guard classified it as a plain
+    // IPv6 address and let it through. All mapped notations unwrap to IPv4.
+    assert.equal(guard.isDisallowedAddress("::ffff:7f00:1"), true);
+    assert.equal(guard.isDisallowedAddress("::ffff:0a00:0005"), true); // 10.0.0.5
+    assert.equal(guard.isDisallowedAddress("::ffff:c0a8:0101"), true); // 192.168.1.1
+  });
+
+  it("refuses the unassigned c000::/2 block (incl. ff00::/8 multicast) but not global unicast", () => {
+    for (const ip of ["c000::1", "ff00::", "ff02::1", "ffff::1", "febf::1"]) {
+      assert.equal(guard.isDisallowedAddress(ip), true, `must refuse ${ip}`);
+    }
+    for (const ip of [
+      "bfff::ffff", // just below c000::/2
+      "2001:db8::1",
+      "2606:4700:4700::1111",
+    ]) {
+      assert.equal(guard.isDisallowedAddress(ip), false, `must allow ${ip}`);
+    }
+  });
+
+  it("isIpLiteralHost recognizes v4/v6 literals (bracketed forms) and rejects names", () => {
+    assert.equal(guard.isIpLiteralHost("93.184.216.34"), true);
+    assert.equal(guard.isIpLiteralHost("[::1]"), true);
+    assert.equal(guard.isIpLiteralHost("::ffff:0a00:0005"), true);
+    assert.equal(guard.isIpLiteralHost("example.com"), false);
+    assert.equal(guard.isIpLiteralHost("01.2.3.4"), false); // leading zeros are not literals
+    assert.equal(guard.isIpLiteralHost(""), false);
+  });
+
   it("allows public addresses (same classes the bridge guard allows)", () => {
     for (const ip of [
       PUBLIC_IP,
@@ -104,9 +156,13 @@ describe("ssrfGuard.isDisallowedAddress", () => {
       "172.15.0.1", // just below RFC1918 172.16/12
       "172.32.0.1", // just above
       "169.253.0.1", // just below link-local
-      "100.64.0.1", // CGNAT is NOT in the guard's refused spec set
+      "99.255.255.255", // just below the #273 CGNAT block
+      "100.128.0.1", // just above it (CGNAT itself is refused — see union test)
+      "223.255.255.255", // just below multicast 224/4
       "2606:2800:220:1:248:1893:25c8:1946",
       "::ffff:8.8.8.8",
+      "::ffff:0808:0808", // same, in hex hextet form
+      "::ffff:0102:0304", // 1.2.3.4 — mapped form of a public address
     ]) {
       assert.equal(guard.isDisallowedAddress(ip), false, `must allow ${ip}`);
     }

@@ -157,8 +157,9 @@ Requires a **closed** ticket channel.
    `/t/{uuid}/assets/…` (served by the bot). Caps: 50 MiB/file, 100 files/ticket (env overrides below).
    Every download runs through the shared SSRF guard (`src/core/ssrfGuard.js`, same guard the bridge
    uses): https-only, and each redirect hop's hostname is resolved and refused when it maps to
-   loopback, RFC1918, or link-local (cloud-metadata) ranges — a member cannot aim the bot at
-   internal addresses. Refused files are listed as warnings in the archive reply; the archive continues.
+   loopback, RFC1918, CGNAT, link-local (cloud-metadata), or the other non-public classes
+   (TEST-NETs, multicast, reserved — the #273 union with gork's read-page policy) — a member
+   cannot aim the bot at internal addresses. Refused files are listed as warnings in the archive reply; the archive continues.
 4. Store rows in `ticket_messages` (resolved authors, expanded mentions, local asset hrefs).
 5. Write HTML under `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/index.html`.
 6. Summarize (AI or fallback).
