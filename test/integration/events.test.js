@@ -801,6 +801,16 @@ describe("integration: community events", () => {
     assert.match(refused.warnings.join(" "), /already posted/);
     assert.equal(env.channels.general.sent.length, sentBefore, "no duplicate post");
 
+    // Command path refuses while the message is alive (regression: the
+    // handler used to pre-guard on status and never reach verification).
+    const refusedCmd = await env.runCommand({
+      commandName: "event",
+      subcommand: "post",
+      admin: true,
+      options: { event: ev.id },
+    });
+    assert.match(lastReplyContent(refusedCmd), /already posted/i);
+
     // 2) Someone deletes the post outside the bot → /event post re-posts.
     env.channels.general.messages.cache.delete(firstMessageId);
     const repost = await service.postEventNow(env.client, getEvent(ev.id), {
@@ -835,6 +845,21 @@ describe("integration: community events", () => {
     assert.match(blocked.error, /couldn't verify the original message/);
     assert.match(blocked.error, /temporarily unavailable/, "cause surfaced");
     assert.equal(getEvent(ev.id).message_id, again.message_id, "no repost happened");
+
+    // 4) Command path re-posts a deleted message (the user-facing bug).
+    env.channels.general.messages.cache.delete(again.message_id);
+    const repostCmd = await env.runCommand({
+      commandName: "event",
+      subcommand: "post",
+      admin: true,
+      options: { event: ev.id },
+    });
+    const cmdText = lastReplyContent(repostCmd);
+    assert.match(cmdText, /Posted ✅/);
+    assert.match(cmdText, /deleted — reposting/);
+    const thrice = getEvent(ev.id);
+    assert.notEqual(thrice.message_id, again.message_id, "command repost landed a new id");
+    assert.ok(env.channels.general.messages.cache.has(thrice.message_id));
   });
 
   it("archive keeps the row for the dashboard (E8); delete hard-removes it", async () => {

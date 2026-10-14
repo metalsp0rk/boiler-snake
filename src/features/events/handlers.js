@@ -409,11 +409,13 @@ async function handlePost(interaction, ctx) {
   if (!ev.ok) return fail(interaction, ev.error);
   const gate = manageGate(interaction, communityId, ev.event, "post");
   if (!gate.ok) return fail(interaction, gate.error);
-  if (ev.event.status === "posted") {
-    return fail(interaction, "That event is already posted.");
-  }
   const res = await service.postEventNow(client, ev.event, { actorId: interaction.user.id });
   if (!res.ok) return fail(interaction, res.error);
+  // The service verifies the original message: refused only while it is
+  // alive; a deleted post re-posts cleanly instead of locking the event.
+  if (res.warnings?.includes("already posted")) {
+    return fail(interaction, "That event is already posted.");
+  }
   return replyEphemeral(
     interaction,
     `Posted ✅${res.warnings?.length ? ` — notes: ${res.warnings.join("; ")}` : ""}`
