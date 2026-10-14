@@ -22,4 +22,4 @@ function up(database) {
   `);
 }
 
-module.exports = { up };
+module.exports = { id: "016_command_permission_oauth", up };

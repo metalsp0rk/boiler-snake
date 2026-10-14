@@ -83,6 +83,33 @@ const helpers = {
 //     DB — refuse to touch it and fail loudly with both numbers.
 const LATEST_VERSION = migrations.length;
 
+// ── Registry integrity (#278) ──
+// Every migration must export a non-empty, unique `id`. The id is what
+// failure logs and the downgrade guard name, and tests/tooling index the
+// registry by it — a missing or colliding id makes those messages lie and
+// lets a future append silently claim an id another entry already owns.
+// This asserts the shape of the REGISTRY (not the DB), so it runs on every
+// path through runMigrations(), the fast-skip included.
+function assertRegistryIntegrity() {
+  const seen = new Map();
+  migrations.forEach((migration, index) => {
+    const id = migration?.id;
+    if (typeof id !== "string" || id.trim() === "") {
+      throw new Error(
+        `[db] Migration registry integrity: entry #${index + 1} exports no id — ` +
+          `every migration must export \`id: "<NNN_name>"\` (see the neighbouring files).`
+      );
+    }
+    if (seen.has(id)) {
+      throw new Error(
+        `[db] Migration registry integrity: duplicate id "${id}" (registry positions ` +
+          `#${seen.get(id) + 1} and #${index + 1}) — ids must be unique.`
+      );
+    }
+    seen.set(id, index);
+  });
+}
+
 /** Current recorded schema version (`PRAGMA user_version`, 0 = never stamped). */
 function readUserVersion() {
   return Number(db.pragma("user_version", { simple: true }));
@@ -97,6 +124,7 @@ function readUserVersion() {
  *   version; `version` — the version recorded after this call.
  */
 function runMigrations() {
+  assertRegistryIntegrity();
   const current = readUserVersion();
 
   if (current > LATEST_VERSION) {
@@ -137,6 +165,7 @@ function runMigrations() {
 module.exports = {
   runMigrations,
   readUserVersion,
+  assertRegistryIntegrity,
   LATEST_VERSION,
   migrations,
 };
