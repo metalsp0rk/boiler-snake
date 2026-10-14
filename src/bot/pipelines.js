@@ -53,7 +53,8 @@ const bridgeRelay = require("../features/bridge/relay");
  *    Discord DMs, which stop here; the `guild` duck object is no longer consulted)
  * 2. bot author gate (normalized: authorBot)
  * 2b. Fluxer community resolution (Fluxer only: externalGuildId → communities.id)
- * 3. message cache (logs)
+ * 3. message cache (logs — Discord only: cacheMessage drops Fluxer writes,
+ *    consumer-less rows per issue #277; re-enable with the reader + test)
  * 4. parsePrefix (Fluxer only — null on Discord, so step 7 is dead code there;
  *    fluxer normalized messages carry parsePrefix null, so it runs here)
  * 5. reaction-role pending emoji capture (only for non-prefix lines)

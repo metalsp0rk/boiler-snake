@@ -7,8 +7,9 @@
  *   step 0a contract gate   — the #201 validator accepts the SDK-shaped
  *                             normalize output (no contract log lines)
  *   step 2b community       — communities row + message.communityId resolve
- *   step 3  message cache   — the logs content cache holds the message
- *                             (platform-neutral keys, issue #200 fix)
+ *   step 3  message cache   — NO row: the consumer-less Fluxer write is
+ *                             dropped per issue #277 (the #200 fix made it
+ *                             observable; nothing ever read it)
  *   step 9  channel activity — one user_channel_message_daily row
  *   step 10 message XP      — xp row + activity_log kind 'message'
  *   bridge                  — NO outbox rows for a non-bridged channel
@@ -176,7 +177,7 @@ describe("integration: one REAL SDK-shaped Fluxer message through the full pipel
       .get(messageId).c;
   }
 
-  it("every pipeline step's observable effect: community, cache row, activity row, XP row, no outbox, zero logs", async (t) => {
+  it("every pipeline step's observable effect: community, NO cache row (#277), activity row, XP row, no outbox, zero logs", async (t) => {
     if (!sdk) return t.skip("real SDK not installed — guarded loader resolved to null");
 
     const client = makeRealClient();
@@ -202,13 +203,22 @@ describe("integration: one REAL SDK-shaped Fluxer message through the full pipel
     // 2b. Community resolve (the SAME row the test seeded).
     assert.equal(normalized.communityId, communityId, "step 2b resolved the communities row");
 
-    // 3. Message cache row — observable through the logs cache lookup (the
-    // issue #200 fix: pre-fix this step silently skipped Fluxer messages).
-    const cached = logsAudit.getCachedMessage(normalized);
-    assert.ok(cached, "step 3 cached the message");
-    assert.equal(cached.content, "hello world");
-    assert.equal(cached.authorTag, "talker", "authorTag from the real authorRaw username");
-    assert.equal(cached.channelId, CHANNEL_ID);
+    // 3. Message cache — ZERO rows (issue #277 drop): the write step runs
+    // for every message but cacheMessage gates Fluxer out, because the
+    // cache's only readers are the Discord delete-audit paths (the Fluxer
+    // edit/delete intake resolves link rows, never takeCachedMessage). The
+    // null is meaningful, not an early bail: step 2b resolved the community
+    // (above) and steps 9/10 below still fired for this exact message.
+    assert.equal(
+      logsAudit.takeCachedMessage(normalized),
+      null,
+      "#277 drop: no Fluxer cache row to take",
+    );
+    assert.equal(
+      logsAudit.getCachedMessage(normalized),
+      null,
+      "#277 drop: no Fluxer cache row at all (pre-drop, #200's write landed here unread)",
+    );
 
     // 9. Channel activity row (user_channel_message_daily).
     assert.equal(activityCount(USER_ID), 1, "exactly one activity count for the message");
