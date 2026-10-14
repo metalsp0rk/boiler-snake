@@ -770,6 +770,73 @@ describe("integration: community events", () => {
     assert.equal(getEvent(stale.event.id), null, "stale preview cleaned");
   });
 
+  it("reposts when the posted message was deleted; refuses while it lives", async () => {
+    const created = env.db.createEvent({
+      communityId: cid(),
+      creatorId: env.users.adminUser.id,
+      title: "Movie Marathon",
+      status: "draft",
+      startAt: now() + 3 * 3_600_000,
+      channelId: env.channels.general.id,
+      threadEnabled: 0,
+      options: [{ label: "Yes", reminders_on: 1 }],
+    });
+    assert.ok(created.ok, created.error);
+    const ev = created.event;
+
+    const first = await service.postEventNow(env.client, ev, {
+      actorId: env.users.adminUser.id,
+    });
+    assert.ok(first.ok, first.error);
+    const posted = getEvent(ev.id);
+    const firstMessageId = posted.message_id;
+    assert.ok(firstMessageId, "post stored the message id");
+
+    // 1) Message alive → honest "already posted", zero new messages.
+    const sentBefore = env.channels.general.sent.length;
+    const refused = await service.postEventNow(env.client, getEvent(ev.id), {
+      actorId: env.users.adminUser.id,
+    });
+    assert.equal(refused.ok, true);
+    assert.match(refused.warnings.join(" "), /already posted/);
+    assert.equal(env.channels.general.sent.length, sentBefore, "no duplicate post");
+
+    // 2) Someone deletes the post outside the bot → /event post re-posts.
+    env.channels.general.messages.cache.delete(firstMessageId);
+    const repost = await service.postEventNow(env.client, getEvent(ev.id), {
+      actorId: env.users.adminUser.id,
+    });
+    assert.ok(repost.ok, repost.error);
+    const again = getEvent(ev.id);
+    assert.equal(again.status, "posted");
+    assert.notEqual(again.message_id, firstMessageId, "fresh message id");
+    assert.ok(
+      env.channels.general.messages.cache.has(again.message_id),
+      "new message landed in the channel"
+    );
+    assert.match(repost.warnings.join(" "), /was deleted — reposting/);
+    assert.match(repost.warnings.join(" "), /skipped on repost/, "no duplicate fan-out/sync");
+    const actions = env.db.listEventActivity(ev.id).map((a) => a.action);
+    assert.ok(actions.includes("reposted"), "activity logged the repost");
+
+    // 3) Verification impossible (non-404) → refuse with the cause, no repost.
+    const ch = env.channels.general;
+    const realFetch = ch.messages.fetch;
+    ch.messages.fetch = async () => {
+      const err = new Error("Discord temporarily unavailable");
+      err.code = 50020;
+      throw err;
+    };
+    const blocked = await service.postEventNow(env.client, getEvent(ev.id), {
+      actorId: env.users.adminUser.id,
+    });
+    ch.messages.fetch = realFetch;
+    assert.equal(blocked.ok, false);
+    assert.match(blocked.error, /couldn't verify the original message/);
+    assert.match(blocked.error, /temporarily unavailable/, "cause surfaced");
+    assert.equal(getEvent(ev.id).message_id, again.message_id, "no repost happened");
+  });
+
   it("archive keeps the row for the dashboard (E8); delete hard-removes it", async () => {
     const created = env.db.createEvent({
       communityId: cid(),
