@@ -25,9 +25,15 @@ const { getDiscordOutbound } = require("../platform/discord/outbound");
 const { normalizeDiscordMessage } = require("../platform/discord/normalize");
 // NormalizedMessage required-field contract (issue #201, audit §6 P2): one
 // shared validator at the boundary BOTH adapters' normalized MESSAGE_CREATE
-// output flows through — never per-feature duck-type checks.
+// output flows through — never per-feature duck-type checks. Issue #279
+// extends the same pattern to the adjacent fluxer-normalized shapes: the
+// reaction entries get assertNormalizedReaction, the fluxer delete entry
+// gets assertNormalizedDelete (delete partials are NEVER full-message
+// validated). Same module, same error class, same boundary discipline.
 const {
   assertNormalizedMessage,
+  assertNormalizedReaction,
+  assertNormalizedDelete,
   NormalizedMessageContractError,
 } = require("../platform/normalizedMessageContract");
 // Fluxer (PR 6): the prefix parser and dispatcher are SDK-free (the SDK
@@ -338,6 +344,10 @@ async function onMessageReactionRemove(client, reaction, user) {
  * here — no partials, no discord.js reaction objects.
  *
  * Order mirrors the Discord pipeline exactly (spec § Normalized gateway events):
+ * 0. normalized-reaction contract assertion (issue #279): the
+ *    normalizeFluxerReaction output enters shared code HERE — a violation is
+ *    logged (naming field + platform) and the reaction is skipped, never a
+ *    crash and never a downstream feature seeing a half-shaped payload.
  * honeypot-warning strip (runs for bots too) → bot gate → community resolve →
  * reaction-role panels (handled ⇒ no XP) → reaction XP. Reaction-role panels
  * are the PR 9 fluxer service entry (spec § Outbound client: panels are Fluxer
@@ -349,6 +359,15 @@ async function onMessageReactionRemove(client, reaction, user) {
 async function onFluxerReactionAdd(outbound, normalizedReaction) {
   try {
     if (!normalizedReaction) return;
+
+    // Contract gate (issue #279): the required-field assertion for the
+    // NormalizedReaction shape (src/platform/normalizedMessageContract.js),
+    // ahead of every step below. A violation throws naming field + platform;
+    // the catch logs it distinctly and the reaction is skipped — an adapter
+    // can never ship half-shaped reaction traffic downstream. (A null payload
+    // is the normalizer's OWN logged drop signal, not a contract violation —
+    // it stays the quiet no-op above.)
+    assertNormalizedReaction(normalizedReaction, { boundary: "onFluxerReactionAdd" });
 
     // Honeypot warning notices stay reaction-free — Discord runs the strip
     // before the bot gate, so we mirror that ordering.
@@ -381,6 +400,16 @@ async function onFluxerReactionAdd(outbound, normalizedReaction) {
 
     await tryAwardReactionXpFluxer(outbound, normalizedReaction);
   } catch (e) {
+    if (e instanceof NormalizedMessageContractError) {
+      // Adapter-boundary fault, not a feature fault (issue #279, the #201
+      // idiom): named distinctly (field + platform from the validator) so
+      // the log tells the adapter apart from downstream failures. Reaction
+      // skipped, pipeline alive.
+      console.error(
+        `[fluxer ReactionAdd] normalized-reaction contract violation (reaction skipped): ${e.message}`,
+      );
+      return;
+    }
     console.error("[fluxer] ReactionAdd error:", e?.message || e);
   }
 }
@@ -391,12 +420,20 @@ async function onFluxerReactionAdd(outbound, normalizedReaction) {
  * K8 flag 0; the reaction cleanup itself is never elevated). Replaces the PR 6
  * log stub — the wire surface shipped in PR 6 is now wired.
  *
+ * Entry contract (issue #279): same assertNormalizedReaction gate as the Add
+ * entry — a violation logs distinctly and skips the payload.
+ *
  * @param {object} outbound OutboundClient (Fluxer)
  * @param {object} normalizedReaction normalizeFluxerReaction output
  */
 async function onFluxerReactionRemove(outbound, normalizedReaction) {
   try {
     if (!normalizedReaction) return;
+
+    // Contract gate (issue #279) — see onFluxerReactionAdd for the full
+    // rationale; both reaction entries share the NormalizedReaction shape.
+    assertNormalizedReaction(normalizedReaction, { boundary: "onFluxerReactionRemove" });
+
     if (normalizedReaction.userBot) return;
 
     let communityId = normalizedReaction.communityId;
@@ -417,6 +454,16 @@ async function onFluxerReactionRemove(outbound, normalizedReaction) {
 
     await handleReactionRoleRemoveFluxer(outbound, normalizedReaction);
   } catch (e) {
+    if (e instanceof NormalizedMessageContractError) {
+      // Adapter-boundary fault, not a feature fault (issue #279, the #201
+      // idiom): named distinctly (field + platform from the validator) so
+      // the log tells the adapter apart from downstream failures. Reaction
+      // skipped, pipeline alive.
+      console.error(
+        `[fluxer ReactionRemove] normalized-reaction contract violation (reaction skipped): ${e.message}`,
+      );
+      return;
+    }
     console.error("[fluxer] ReactionRemove error:", e?.message || e);
   }
 }
@@ -508,15 +555,40 @@ async function onFluxerMessageUpdate(outbound, message) {
  * intake (echo gate, links check, supersession) is platform-neutral inside
  * onMessageDelete.
  *
+ * Entry contract (issue #279): the payload is the DELETE-IDENTITY PARTIAL
+ * (normalizeFluxerMessageDelete dual shape: raw wire snake_case or SDK
+ * PartialMessage camelCase — both normalize to the same six keys). It is
+ * validated against assertNormalizedDelete — NEVER the full message
+ * contract: a partial delete has no author/content by design and full
+ * rules would reject every legitimate delete. Violations log distinctly
+ * and skip; the Discord duck-shape delete path is untouched.
+ *
  * @param {object} outbound OutboundClient (Fluxer)
  * @param {object} message normalizeFluxerMessageDelete output (partial)
  */
 async function onFluxerMessageDelete(outbound, message) {
   try {
     if (!message) return;
+
+    // Contract gate (issue #279): identity triple + community-resolvable
+    // anchor + platform tags must all be present BEFORE the resolve below
+    // (resolveFluxerCommunity keys off externalGuildId; the echo gate keys
+    // off platform/instanceKey/id). A violation logs distinctly + skips —
+    // the bridge intake never sees a duck-typed partial.
+    assertNormalizedDelete(message, { boundary: "onFluxerMessageDelete" });
+
     resolveFluxerCommunity(message);
     await onMessageDelete(outbound, message);
   } catch (e) {
+    if (e instanceof NormalizedMessageContractError) {
+      // Adapter-boundary fault, not a feature fault (issue #279, the #201
+      // idiom): named field + platform, distinct from downstream errors.
+      // Delete skipped, pipeline alive.
+      console.error(
+        `[fluxer MessageDelete] normalized-delete contract violation (delete skipped): ${e.message}`,
+      );
+      return;
+    }
     console.error("[fluxer MessageDelete] error:", e?.message || e);
   }
 }
