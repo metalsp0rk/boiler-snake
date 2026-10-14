@@ -235,12 +235,22 @@ function mapEmbeds(value) {
 }
 
 /**
- * memberRoleIds from either REAL shape, with a drift guard (issue #200):
+ * memberRoleIds from either REAL shape, with a drift guard (issue #200) and
+ * the #274 member-absence split:
+ * - member ABSENT (the payload carried no guild member — uncached guild /
+ *   cold member cache): NULL, never []. #274: `[]` used to mean BOTH
+ *   "member present with zero roles" and "no member at all", and
+ *   resolveFluxerPermissions rule 1 treats any Array as payload-
+ *   authoritative and skips the REST fallback — so an uncached staff member
+ *   was fail-closed denied, the #183 lockout through a different door.
+ *   NULL = member absent (the REST fallback is allowed);
+ *   [] = member present with zero roles (payload-authoritative).
  * - SDK GuildMember: `roles` is a GuildMemberRoleManager and the ids live
  *   behind its `roleIds` GETTER (audit C2 — reading the manager as an array
  *   yielded [] for every gateway message and locked out payload-resolved
  *   staff);
- * - raw wire payloads / fixtures: `roles` is a plain id array.
+ * - raw wire payloads / fixtures: `roles` is a plain id array; a member
+ *   object with a nullish `roles` stays [] (present, zero roles).
  * Anything else (roles present but neither a roleIds array nor an array) is
  * SDK MODEL DRIFT: THROW with the specific cause instead of silently
  * yielding [] — C2's failure mode was silent emptiness, so a renamed or
@@ -248,10 +258,12 @@ function mapEmbeds(value) {
  * onEvent boundary owns the catch/log (AGENTS.md rule 1): the message is
  * dropped, never dispatched on guessed roles.
  * @param {object|null|undefined} member
- * @returns {string[]}
+ * @returns {string[]|null} null = member absent (REST fallback allowed);
+ *   string[] = member present (authoritative — [] means zero roles)
  */
 function memberRoleIdsOf(member) {
-  const roles = member?.roles;
+  if (member == null) return null; // #274: absent member ≠ zero roles
+  const roles = member.roles;
   if (roles == null) return [];
   if (Array.isArray(roles.roleIds)) return mapIdArray(roles.roleIds);
   if (Array.isArray(roles)) return mapIdArray(roles);
@@ -359,12 +371,16 @@ function normalizeFluxerMessage(raw, { instanceKey = "fluxer" } = {}) {
     // is enforced at runtime by src/platform/normalizedMessageContract.js at
     // the onMessageCreate boundary, issue #201; the fields below beyond the
     // required set are Fluxer-only extras whose consumers type-guard).
-    // Member roles arrive in two shapes — see memberRoleIdsOf (issue #200
-    // guard): the real gateway hands a hydrated GuildMember whose `roles` is
-    // a GuildMemberRoleManager (ids behind the `roleIds` getter, audit C2),
-    // raw wire payloads carry a plain id array, and ANY other shape throws
-    // loudly instead of replaying C2's silent emptiness.
-    memberRoleIds: memberRoleIdsOf(member),
+    // Member roles arrive in three states — see memberRoleIdsOf (issue #200
+    // guard + issue #274 absence split): the real gateway hands a hydrated
+    // GuildMember whose `roles` is a GuildMemberRoleManager (ids behind the
+    // `roleIds` getter, audit C2), raw wire payloads carry a plain id array,
+    // a payload with NO member yields NULL (REST fallback allowed, #274),
+    // a present member with no roles yields [] (authoritative), and ANY
+    // other shape throws loudly instead of replaying C2's silent emptiness.
+    // The guarded value from above is reused (the drift guard's throw
+    // already ran before this literal is built).
+    memberRoleIds,
     channelTypes: mentionMap.channelTypes,
     memberRaw: member,
     // id→bot flags for resolved mentions (dispatch step 3 — never default false).

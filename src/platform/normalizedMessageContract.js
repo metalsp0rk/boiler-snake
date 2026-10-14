@@ -58,7 +58,11 @@
  * them — while embeds and flags ride on BOTH adapters (since issue #200 the
  * Fluxer normalizer always emits `embeds` (array) plus a numeric-or-null
  * `flags`; Discord's are untouched duck fields). Still optional extras,
- * never contract-guaranteed.
+ * never contract-guaranteed. memberRoleIds is validated NEITHER as required
+ * nor as array on purpose: issue #274 pins null = member absent (REST
+ * fallback allowed) vs [] = member present with zero roles (authoritative),
+ * and its consumers type-guard (Array.isArray) — never tighten this extra
+ * to a plain-array rule.
  * Separate contracts (NOT validated here — see the issue #201 PR):
  * NormalizedReaction, the MESSAGE_DELETE identity partial
  * (normalizeFluxerMessageDelete / partial Discord deletes), and
