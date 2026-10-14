@@ -13,6 +13,7 @@
  *
  * Handlers are ephemeral-first: the RSVP click never pollutes the channel.
  */
+const { MessageFlags } = require("discord.js");
 const repo = require("../../db/repositories/events");
 const { ensureCommunity } = require("../../platform/community");
 const { isStaff } = require("../../core/permissions");
@@ -31,7 +32,7 @@ function clientFor(ctx) {
 }
 
 async function note(interaction, content) {
-  const payload = { content, ephemeral: true };
+  const payload = { content, flags: MessageFlags.Ephemeral };
   if (interaction.deferred || interaction.replied) {
     await interaction.followUp(payload).catch(() => {});
   } else {
@@ -69,7 +70,7 @@ async function handleSignup(interaction, ctx) {
 
   // Source event clicked in its own channel: normal engine path.
   if (event.community_id === localCommunity) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const res = await service.toggleSignup(client, {
       guild: interaction.guild,
       member: interaction.member,
@@ -82,7 +83,7 @@ async function handleSignup(interaction, ctx) {
   }
 
   // Cross-post copy (E12): gated write-through to the source event.
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const pair = crosspost.pairForCopy(event.community_id, localCommunity);
   const gate = crosspost.canSignupFromDestination(pair, interaction.member);
   if (!gate.ok) return interaction.editReply(gate.error);
@@ -152,7 +153,7 @@ async function handleConfirmPost(interaction, ctx) {
   if (event.creator_id !== interaction.user.id && !isStaff(interaction)) {
     return note(interaction, "Only the organizer or staff can post this event.");
   }
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const res = await service.postEventNow(client, event, { actorId: interaction.user.id });
   if (!res.ok) return interaction.editReply(`Couldn't post it: \`${res.error}\``);
   return interaction.editReply(
@@ -200,7 +201,7 @@ async function handleDeleteAsk(interaction, ctx) {
   return interaction.reply({
     content: `Really delete **${event.title}** (${event.id}) with all signups?`,
     components: ui.buildDeleteConfirmComponents(event.id, interaction.user.id),
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 

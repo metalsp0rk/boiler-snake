@@ -19,6 +19,7 @@ const {
   createMember,
   createScheduledEvent,
   lastReplyContent,
+  lastReplyEphemeral,
 } = require("../helpers/discord");
 
 // CONTRACT (see registry.test.js note): no `src/` requires above
@@ -123,7 +124,7 @@ describe("integration: community events", () => {
     assert.match(text, /Preview|look right/i);
     const reply = interaction.replies[interaction.replies.length - 1];
     assert.ok(reply.components?.length >= 1, "confirm buttons attached");
-    assert.equal(reply.ephemeral, true);
+    assert.ok(lastReplyEphemeral(interaction), "preview reply is ephemeral");
 
     const events = repo.listUpcomingEvents(cid(), { limit: 10 });
     eventA = events.find((e) => e.title === "Game Night");

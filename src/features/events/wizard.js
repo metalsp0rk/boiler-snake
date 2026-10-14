@@ -13,7 +13,7 @@
 const db = require("../../db");
 const repo = require("../../db/repositories/events");
 const { replyEphemeral } = require("../../core/interaction");
-const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
+const { ButtonBuilder, ButtonStyle, ActionRowBuilder, MessageFlags } = require("discord.js");
 const { parseDuration } = require("./timeParse");
 const { parseSignupOptionSpec } = require("./ui");
 const service = require("./service");
@@ -403,7 +403,7 @@ async function handleButton(interaction, ctx) {
     const evId = row.event_id ?? draft.event_id;
     const res = require("./options").replaceOptions(evId, specs);
     if (!res.ok) {
-      await interaction.reply({ content: res.error, ephemeral: true });
+      await interaction.reply({ content: res.error, flags: MessageFlags.Ephemeral });
       return;
     }
     saveState(row.community_id, row.user_id, "confirm", draft, evId);
@@ -422,7 +422,7 @@ async function handleButton(interaction, ctx) {
     if (!res.ok) {
       await interaction.reply({
         content: `Couldn't post it: \`${res.error}\` — the draft stays in /event list for \`/event post\`.`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -435,7 +435,7 @@ async function handleButton(interaction, ctx) {
     });
     return;
   }
-  await interaction.reply({ content: "Unknown wizard step.", ephemeral: true });
+  await interaction.reply({ content: "Unknown wizard step.", flags: MessageFlags.Ephemeral });
 }
 
 /**
