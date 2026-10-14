@@ -24,7 +24,12 @@
  *    path bridge uses) and the guild channel gets a DM-sentinel ack that never
  *    carries the code; conflict refusals (which name WHO holds the code/
  *    identity) send their full detail by DM and keep only the service's
- *    non-revealing `publicError` in the channel. A failed DM surfaces its
+ *    non-revealing `publicError` in the channel; and the SUCCESS replies that
+ *    name the linked peer (`connect` success, `status`, `remove`) are private
+ *    pairings too — on Fluxer they ride the same DM-first path, the channel
+ *    getting a peer-free sentinel (issue #276: on a shared channel even your
+ *    OWN "account X ↔ account Y" pairing is information for everyone
+ *    watching). A failed DM surfaces its
  *    specific cause in the channel (K2: delivery error only, never the body) —
  *    mirroring src/platform/fluxer/context.js's `sendPayload` fallback.
  *    Non-conflict refusals (unknown/expired/used code, same-platform,
@@ -218,6 +223,65 @@ function dmFailureText(why) {
 }
 
 /**
+ * DM-first private body for the peer-naming SUCCESS replies (issue #276):
+ *  - Discord: ephemeral = already private → the full detail verbatim.
+ *  - Fluxer: the detail (names the caller's linked peer) goes to the caller's
+ *    DM through the K2 path; the channel gets the peer-free sentinel. If the
+ *    DM cannot be delivered the channel names the specific delivery cause
+ *    (AGENTS.md rule 3) plus, when given, `failureLead` — the bare outcome
+ *    fact (e.g. "Linked — that link code is spent.") the user needs because
+ *    the DM did not carry it. Neither form ever carries the peer detail.
+ */
+async function replyPeerDetail(ctx, detail, sentinelText, { failureLead = "", logTag = "peer detail" } = {}) {
+  if (ctx.platform === "discord") return replyToCaller(ctx, detail);
+  const dm = await sendPrivateDm(ctx, detail);
+  if (!dm.ok) {
+    console.error(
+      `[linking] ${logTag} DM to user ${ctx.userId} in community ${ctx.communityId} failed: ${dm.error}`,
+    );
+    const why = dmFailureText(dm.error);
+    return replyToCaller(ctx, failureLead ? `${failureLead} ${why}` : why);
+  }
+  return replyToCaller(ctx, sentinelText);
+}
+
+/**
+ * Fluxer channel-visible ack for `link connect` once the pairing detail
+ * landed in the caller's DM (#276): names what happened and the next
+ * commands, NEVER a peer identifier.
+ */
+function connectDmSentinelText(surfaceCmd) {
+  return (
+    "Linked — the pairing details are on their way to your DMs (link pairings " +
+    "stay out of the channel). XP and gork memories now mirror between the two " +
+    `accounts; change rates with ${surfaceCmd} config, inspect with ` +
+    `${surfaceCmd} status. That link code is spent.`
+  );
+}
+
+/** Fluxer channel-visible ack for `link status` (#276) — no pairing at all. */
+function statusDmSentinelText(surfaceCmd) {
+  return (
+    "Your link details are on their way to your DMs — the pairing stays out of " +
+    "the channel. If nothing arrived, allow DMs from this bot and run " +
+    `${surfaceCmd} status again.`
+  );
+}
+
+/**
+ * Fluxer channel-visible ack for `link remove` (#276): the operation is
+ * confirmed in-channel WITHOUT the peer identifier; the non-retroactive
+ * service note (peer-free by construction) rides along.
+ */
+function removeDmSentinelText(note) {
+  return (
+    "Unlinked — the confirmation details are on their way to your DMs (link " +
+    "pairings stay out of the channel). " +
+    String(note ?? "").trim()
+  ).trim();
+}
+
+/**
  * "name — user 123 on Fluxer (instance fluxer, community 2)" — the peer
  * descriptor the service renders (id + platform, never a handle the bot
  * cannot resolve), decorated with a display name when the target platform
@@ -387,16 +451,22 @@ async function replyRefusal(ctx, result) {
  *  sentences (expired / used / same-platform / no bridge / already linked)
  *  are replied verbatim on the private surface, exactly as written in
  *  service.js; conflict refusals keep the peer detail out of the Fluxer
- *  channel (replyRefusal). */
+ *  channel (replyRefusal). Success names the peer, so on Fluxer it rides the
+ *  DM-first path too (replyPeerDetail, issue #276). */
 async function handleConnect(ctx, featureCtx, surfaceCmd) {
   const code = ctx.options.getString("code");
   const result = await service.redeemLinkCode(ctx.communityId, ctx.userId, code, { surfaceCmd });
   if (!result.ok) return replyRefusal(ctx, result);
   const peerDesc = await describePeer(ctx, featureCtx, result.peer);
-  return replyToCaller(ctx, connectSuccessText(peerDesc, surfaceCmd));
+  return replyPeerDetail(ctx, connectSuccessText(peerDesc, surfaceCmd), connectDmSentinelText(surfaceCmd), {
+    failureLead: "Linked — that link code is spent.",
+    logTag: "connect pairing",
+  });
 }
 
-/** `link status` — the caller's link, party-only. */
+/** `link status` — the caller's link, party-only. The pairing itself is the
+ *  private fact (#276): Fluxer gets the detail by DM and a scrubbed channel
+ *  ack; the NO-LINK reply names only the caller, so it stays in-channel. */
 async function handleStatus(ctx, featureCtx, surfaceCmd) {
   const result = service.getLinkFor(ctx.communityId, ctx.userId);
   if (!result.ok) return replyToCaller(ctx, result.error);
@@ -409,11 +479,15 @@ async function handleStatus(ctx, featureCtx, surfaceCmd) {
     );
   }
   const peerDesc = await describePeer(ctx, featureCtx, result.peer);
-  return replyToCaller(ctx, statusText(ctx, result.link, peerDesc));
+  return replyPeerDetail(ctx, statusText(ctx, result.link, peerDesc), statusDmSentinelText(surfaceCmd), {
+    logTag: "status pairing",
+  });
 }
 
 /** `link remove` — caller must be a party. The service's `note` (mirroring is
- *  not retroactive) is displayed verbatim. */
+ *  not retroactive) is displayed verbatim. The confirmation names the peer,
+ *  so on Fluxer it rides the DM-first path; the channel keeps the outcome and
+ *  the peer-free service note (#276). */
 async function handleRemove(ctx, surfaceCmd) {
   const result = service.removeLink(ctx.communityId, ctx.userId, { surfaceCmd });
   if (!result.ok) return replyToCaller(ctx, result.error);
@@ -422,9 +496,14 @@ async function handleRemove(ctx, surfaceCmd) {
   const peerCommunityId = callerIsA ? link.community_id_b : link.community_id_a;
   const peerUserId = callerIsA ? link.user_id_b : link.user_id_a;
   const peerPlatform = platformLabel(getCommunityById(peerCommunityId)?.platform);
-  return replyToCaller(
+  return replyPeerDetail(
     ctx,
     `Unlinked from user ${peerUserId} on ${peerPlatform} (community ${peerCommunityId}). ${result.note}`,
+    removeDmSentinelText(result.note),
+    {
+      failureLead: "Unlinked — your link is removed.",
+      logTag: "remove pairing",
+    },
   );
 }
 
@@ -515,6 +594,9 @@ module.exports = {
   otherSideCmdFor,
   createSuccessText,
   createDmSentinelText,
+  connectDmSentinelText,
+  statusDmSentinelText,
+  removeDmSentinelText,
   dmFailureText,
   connectSuccessText,
   statusText,
