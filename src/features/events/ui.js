@@ -1063,21 +1063,28 @@ function buildEditModal(event) {
 
 // ── embeds ──────────────────────────────────────────────────────────────────
 
-function formatOptionLine(opt, counts, showAttendees, nameOf) {
+/**
+ * One signup option as an embed-column: `name` is the option (emoji+label),
+ * `value` is the count block (total/capacity, waitlist, attendee names).
+ * Rendered as an INLINE field so Discord lays options out three-per-row
+ * (Yes | No | Maybe read as columns on desktop, stacking on mobile).
+ */
+function formatOptionColumn(opt, counts, showAttendees, nameOf) {
   const c = counts[opt.id] || { signedUp: 0, waitlisted: 0 };
   const cap = opt.capacity > 0 ? `/${opt.capacity}` : "";
-  let line = `${opt.emoji ? `${opt.emoji} ` : ""}**${opt.label}** — ${c.signedUp}${cap}`;
+  const name = `${opt.emoji ? `${opt.emoji} ` : ""}${opt.label}`.slice(0, 256);
+  const lines = [`**${c.signedUp}${cap}**`];
   if (opt.capacity > 0 && opt.waitlist_on) {
-    line += c.waitlisted > 0 ? ` · waitlist ${c.waitlisted}` : " · waitlist ready";
+    lines.push(c.waitlisted > 0 ? `waitlist ${c.waitlisted}` : "waitlist ready");
   }
   if (showAttendees && c.signedUp > 0) {
     const names = (opt._attendees || []).slice(0, MAX_VISIBLE_NAMES).map(nameOf);
     if (names.length) {
       const more = c.signedUp - names.length;
-      line += `\n${names.join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
+      lines.push(`${names.join(", ")}${more > 0 ? ` +${more}` : ""}`);
     }
   }
-  return line;
+  return { name, value: truncateField(lines.join("\n")) };
 }
 
 /**
@@ -1108,16 +1115,35 @@ function buildEventMessage(event, { options, counts, settings, nameOf = (id) => 
   embed.addFields({ name: "📍 Where", value: truncateField(where), index: 1 });
 
   const showAttendees = settings?.show_attendees !== 0;
-  const signupField =
-    options
-      .map((o) => formatOptionLine(o, counts, showAttendees, nameOf))
-      .join("\n") || "_No signup options yet._";
-  embed.addFields({ name: "🙋 Signups", value: truncateField(signupField), index: 2 });
+  if (!options.length) {
+    embed.addFields({ name: "🙋 Signups", value: "_No signup options yet._", index: 2 });
+  } else {
+    // One INLINE field per option: Discord renders inline fields three-per-row,
+    // so the default Yes/No/Maybe set reads as a column row. Extra options flow
+    // to the next row; the cap keeps us well clear of the 25-field embed limit
+    // (When/Where/meta take three more).
+    const MAX_OPTION_COLUMNS = 15;
+    const shown = options.slice(0, MAX_OPTION_COLUMNS);
+    const overflow = options.length - shown.length;
+    for (const opt of shown) {
+      const { name, value } = formatOptionColumn(opt, counts, showAttendees, nameOf);
+      embed.addFields({ name, value, inline: true });
+    }
+    if (overflow > 0) {
+      embed.addFields({
+        name: "＋",
+        value: `_${overflow} more option${overflow === 1 ? "" : "s"}_`,
+        inline: true,
+      });
+    }
+  }
 
   const meta = [`Organizer <@${event.creator_id}>`, `Event \`${event.id}\``];
   if (event.multiple_signups) meta.push("Multiple signups allowed");
   if (event.series_id) meta.push("Series occurrence");
-  embed.addFields({ name: "ℹ️", value: truncateField(meta.join(" · ")), index: 3 });
+  // Appended last on purpose (no `index`): option columns are inserted
+  // dynamically, so meta must follow by insertion order, not a fixed slot.
+  embed.addFields({ name: "ℹ️", value: truncateField(meta.join(" · ")) });
   if (event.image_url) embed.setImage(event.image_url);
 
   return {
