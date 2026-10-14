@@ -191,3 +191,88 @@ describe("explicit connection pragmas (audit #202)", () => {
     assert.equal(Number(pragma("busy_timeout")), 5000);
   });
 });
+
+describe("migration registry integrity (audit #278)", () => {
+  let api;
+  let cleanup;
+
+  before(() => {
+    ({ api, cleanup } = loadDb());
+  });
+
+  after(() => cleanup?.());
+
+  const registry = () => require("../src/db/migrate").migrations;
+
+  it("every registered migration exports a unique non-empty id", () => {
+    const ids = registry().map((m) => m.id);
+    assert.ok(
+      ids.every((id) => typeof id === "string" && id.trim() !== ""),
+      `all ${ids.length} entries must export an id`
+    );
+    assert.equal(new Set(ids).size, ids.length, "registry ids must be unique");
+    assert.doesNotThrow(() =>
+      require("../src/db/migrate").assertRegistryIntegrity()
+    );
+  });
+
+  it("016 exports its id (the file the audit flagged as the lone outlier)", () => {
+    const migration = require("../src/db/migrations/016_command_permission_oauth");
+    assert.equal(migration.id, "016_command_permission_oauth");
+    assert.equal(typeof migration.up, "function");
+  });
+
+  it("a missing id is refused with the registry position named", () => {
+    const { assertRegistryIntegrity } = require("../src/db/migrate");
+    const { migrations } = require("../src/db/migrate");
+    const original = migrations[15]; // 016 — the historical offender
+    migrations[15] = { up: original.up }; // strip the id, keep the shape
+    try {
+      assert.throws(
+        () => assertRegistryIntegrity(),
+        (err) =>
+          /registry integrity/i.test(err.message) &&
+          /entry #16/.test(err.message) &&
+          /exports no id/.test(err.message)
+      );
+    } finally {
+      migrations[15] = original;
+    }
+  });
+
+  it("a duplicate id is refused with the id named", () => {
+    const { assertRegistryIntegrity } = require("../src/db/migrate");
+    const { migrations } = require("../src/db/migrate");
+    const original = migrations[16]; // 017
+    migrations[16] = { ...original, id: migrations[15].id }; // collide with 016
+    try {
+      assert.throws(
+        () => assertRegistryIntegrity(),
+        (err) =>
+          /registry integrity/i.test(err.message) &&
+          /duplicate id "016_command_permission_oauth"/.test(err.message) &&
+          /#16 and #17/.test(err.message)
+      );
+    } finally {
+      migrations[16] = original;
+    }
+  });
+
+  it("runMigrations enforces the assertion on the fast-skip path too", () => {
+    const { runMigrations } = require("../src/db/migrate");
+    // DB is already stamped (skip path) — the registry check must still run.
+    assert.deepEqual(
+      runMigrations(),
+      { skipped: true, version: 45, latest: 45 },
+      "sanity: healthy registry takes the skip path"
+    );
+    const { migrations } = require("../src/db/migrate");
+    const original = migrations[0];
+    migrations[0] = { up: original.up };
+    try {
+      assert.throws(() => runMigrations(), /registry integrity/i);
+    } finally {
+      migrations[0] = original;
+    }
+  });
+});
