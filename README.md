@@ -1,77 +1,77 @@
-# Boiler Snake (discord.js v14)
-# MIT LICENSE
+# Boiler Snake
 
-Per-guild configurable XP/level bot that tracks:
-- **Messages**
-- **Reactions**
-- **Voice minutes** (per-minute ticker; ignores muted/deafened users and alone-in-channel idling)
+**Multi-platform Discord + Fluxer community bot**: XP & levels, moderation suite, notifications, AI Q&A ("gork"), cross-platform message bridges, account linking, and a staff web console — all per-community configurable on a single SQLite file.
 
-Includes:
-- Per-guild settings stored in **SQLite** (zero-setup for self-hosting)
-- Tunable **decay** (daily cron)
-- **Level → Role** automation with **drop-below grace days**
-- **Command restriction** to allowed channels per guild
-- Admin/mod commands for configuration
-- **Music player** (`/play` in voice via Lavalink; Spotify is catalog-only)
+**Documentation site:** [metalsp0rk.github.io/boiler-snake](https://metalsp0rk.github.io/boiler-snake/) (built from `docs/` with VitePress). Start with the [setup guide](docs/setup.md), the [configuration guide](docs/configuration.md), and the [commands reference](docs/commands/).
+
+## Features
+
+**XP & gamification**
+- **Multi-source XP** — messages, reactions, and voice minutes (per-minute ticker; ignores muted/deafened and alone-in-channel), all rates per community
+- **Levels → roles** automation with drop-below grace days; paginated **PNG leaderboards**
+- **Daily XP decay** for inactivity (`/setdecay`, schedule via `DECAY_CRON`)
+- **Reaction roles** — self-serve emoji panels with level gates
+
+**Moderation & staff suite**
+- **Help tickets** — button→modal panels, private channels, sensitive mode, HTML transcripts
+- **Warnings** (formal, voidable, member-visible `/warn mine`) and **private staff notes**
+- **Staff userinfo card** + senior-staff user-activity rankings
+- **Staff roles** (junior/senior gate), command-channel allow-lists, **honeypot** decoy channels
+- **Audit + message logs**, data **retention sweeps**
+
+**Events & notifications**
+- **Community events** — bot-owned `/event` with button RSVP, waitlists, reminders, recurring series
+- **Scheduled event reminders** for Discord events; **YouTube**, **Twitch** (EventSub + polling fallback), and **GitHub release** notifications
+- **Music player** — `/play` in voice via Lavalink (Spotify is catalog-only)
+
+**AI: gork**
+- `@gork <question>` — grounded LLM answers per community with tool use: **web search**, **`read_page`** (SSRF-guarded), **`read_discord`**, vision (downscaled image understanding), cross-chat **memory**, per-scope budgets
+
+**Multi-platform (Fluxer)**
+- Runs against Discord, Fluxer instances, or **both at once** (`FLUXER_INSTANCES`)
+- **Channel bridges** — Discord↔Fluxer relay with webhook copies, edit/delete relay, SSRF-guarded media
+- **Account linking** (`/link` / `!link`) — mirror XP and gork memories between a member's Discord and Fluxer identities
+- **Web admin console** — staff-gated dashboard (health/tickers, settings, events calendar, ticket transcripts), dark unless `PUBLIC_HTTP_PORT` is set
 
 ## Architecture
 
-Modular monolith: feature modules under `src/features/`, shared `src/core/` + `src/db/`, thin `src/index.js`.  
-See [docs/architecture.md](docs/architecture.md) and [AGENTS.md](AGENTS.md).
+Modular monolith: feature modules under `src/features/`, shared `src/core/` + `src/db/`, thin `src/index.js`; named jobs on a shared scheduler; ordered Discord/Fluxer message pipelines. See [docs/architecture.md](docs/architecture.md) and [AGENTS.md](AGENTS.md).
 
-**Documentation site:** [metalsp0rk.github.io/boiler-snake](https://metalsp0rk.github.io/boiler-snake/) (built from `docs/` with VitePress).
+Slash commands live on Discord; the same command tree is exposed on Fluxer as `<prefix>link`, `<prefix>bridge`, … (default prefix `!`). Handlers are the security source of truth; `src/core/commandVisibility.js` pins picker visibility per command.
 
 ## Setup
 
-Requirements: **Node.js 22.22.2+** (Discord.js 14; gork `read_page` uses jsdom 30 which needs ≥22.22.2)
+Requirements: **Node.js 22.22.2+** (discord.js 14; gork `read_page` uses jsdom 30 which needs ≥22.22.2)
+
+Boot gate: the bot needs **at least one platform credential** — `DISCORD_TOKEN` **or** `FLUXER_INSTANCES`. `CLIENT_ID` is optional for login but required for command registration, command-permission OAuth (`/staff syncpermissions`), and web-admin Discord sign-in. The full, commented variable list lives in [`.env.example`](.env.example) (kept in lockstep with the code by a parity test).
 
 ### Option A: Node (local)
 
-1) Install dependencies
 ```bash
 npm install
-```
-
-2) Create `.env`
-```bash
-cp .env.example .env
-# edit .env
-```
-
-3) Register slash commands
-- **Production (multi-guild):** register global commands (default). Note: global command updates can take time to propagate.
-- **Development (fast):** set `DEV_GUILD_ID` in `.env` to register instantly to one guild.
-
-```bash
-npm run register
-```
-
-4) Run bot
-```bash
+cp .env.example .env   # edit: DISCORD_TOKEN (+ CLIENT_ID recommended)
+npm run register       # slash commands (set DEV_GUILD_ID in .env for instant dev registration)
 npm start
 ```
 
+- **Production (multi-guild):** `npm run register` registers globally by default (global updates can take time to propagate).
+- **Development:** set `DEV_GUILD_ID` in `.env` for instant single-guild registration.
+
 ### Option B: Docker Compose
 
-1) Create `.env` with `DISCORD_TOKEN` and `CLIENT_ID` (see `.env.example`).
-
-2) Build and start (SQLite persists on the `bot-data` volume under `/data`):
 ```bash
+cp .env.example .env   # set DISCORD_TOKEN (+ CLIENT_ID for the register step)
 docker compose up -d --build
-```
-
-Or pull a published image from GHCR (after a release):
-```bash
-docker compose pull
-docker compose up -d
-```
-
-3) Register slash commands once:
-```bash
 docker compose run --rm bot node src/commands/register.js
 ```
 
-Image: `ghcr.io/metalsp0rk/boiler-snake` (tags: `latest`, `vX.Y.Z`).
+Or pull a published image (after a release):
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+Image: `ghcr.io/metalsp0rk/boiler-snake` (tags: `latest`, `vX.Y.Z`). SQLite persists on the `bot-data` volume under `/data` — persist the whole data dir (WAL files live beside the DB).
 
 ### Database path
 
@@ -82,43 +82,18 @@ By default the DB is `xpbot.sqlite` in the project root. Override with:
 | `DATA_DIR` | Directory for `xpbot.sqlite` (Docker sets `/data`) |
 | `DB_PATH` | Full path to the database file (wins over `DATA_DIR`) |
 
+Migrations under `src/db/migrations/` run automatically on boot.
+
 ## Required Discord Developer Portal settings
 
 - Enable the **Message Content Intent** if you want `messageCreate` to fire reliably for all message events.
   - Without it, the bot may not receive message content and (depending on gateway/intents configuration) may not receive message events as expected.
-- Create Bot & Token from Discord Developer Portal.  Bot must have the following permissions:
+- Create Bot & Token from Discord Developer Portal. Bot must have the following permissions:
 ![Bot Permissions](https://github.com/metalsp0rk/boiler-snake/blob/main/bot_settings.png "Bot Permissions")
 
 ## Commands
 
-User commands:
-- `/xp [user]`
-- `/leaderboard`
-
-Admin/mod commands (requires **Manage Guild** by default):
-- `/setxp message:<int> reaction:<int> voice:<int> msgcooldown:<int> reactioncooldown:<int> factor:<int>`
-- `/grantxp user:<user> amount:<int> [reason:<string>]` — manually grant XP (Manage Server only)
-- `/setdecay enabled:<bool> messages:<int> days:<int> percent:<0-95>`
-- `/leveltorole set role:<role> level:<int> dropdays:<int>`
-- `/leveltorole remove role:<role>`
-- `/leveltorole list`
-- `/reactionrole panel create|edit|delete|list` — bot-owned self-serve role panels
-- `/reactionrole option add|remove|list` — emoji → role (add: send emoji as next message)
-- `/reactionrole sync` — repair panel embed + bot reactions
-- `/setcommandchannel add channel:<channel>`
-- `/setcommandchannel remove channel:<channel>`
-- `/setcommandchannel list`
-- `/settings` (shows current guild settings, role mappings, allowed channels)
-- `/eventreminder create|edit|list|clear|sync|setchannel|optout|optin|mute|unmute|status` — scheduled event reminder pings
-- `/staff role add|remove|setlevel|list` · `/staff settings` · `/staff syncpermissions` — guild staff roles (admin gate; also honeypot exemption)
-- `/note add|list|edit|delete|info|settings` — private staff notes about members
-- `/warn add|list|info|void|count|mine|export|settings` — formal permanent warnings
-- `/setwarn dm` — toggle member DMs on warn issue/void
-- `/setwarn log` — dedicated channel for warning issue/void embeds (falls back to audit log)
-- `/setwarn expiry` — default auto-void days for new warnings (0 = never, the default)
-- `/userinfo user:<member>` — staff card (XP + note/warning counts + Activity + drill-down buttons)
-- `/activityconfig ignore|backfill|status` — user-activity ignore list and history backfill (staff)
-- `/ticket create|for|close|archive|claim|…` — help tickets; `/ticket panel` posts Open-ticket button → modal
+User-facing: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create|…`, `/event …`, `/eventreminder …`, `/play`, `/music …`, `/link …` (public); everything else sits behind the staff gate (Manage Guild **or** a configured `staff_roles` level) or admin-only. Fluxer mirrors the same tree under the configured command prefix. The complete, always-current reference is [docs/commands/](https://metalsp0rk.github.io/boiler-snake/commands/).
 
 ## Database Backup
 
@@ -144,6 +119,14 @@ cp xpbot.sqlite.backup xpbot.sqlite
 # Restart the bot
 ```
 
+## Tests
+
+```bash
+npm test              # unit + integration (offline: mocked Discord/Fluxer I/O, real SQLite)
+npm run test:unit     # unit only
+npm run test:integration
+```
+
 ## Releases
 
 Versions follow [SemVer](https://semver.org/) via [release-please](https://github.com/googleapis/release-please) and [Conventional Commits](https://www.conventionalcommits.org/):
@@ -167,6 +150,5 @@ Merging to `main` opens/updates a Release PR. Merging that PR tags `vX.Y.Z`, pub
 - SQLite DB file is created automatically (project root, or `DATA_DIR` / `DB_PATH`).
 - Ensure you have a font installed that handles symbols and emoji. (sudo apt install fonts-noto-core fonts-noto fonts-dejavu-core fonts-noto-color-emoji). The Docker image includes these fonts.
 - Roles for auto-granting must be BELOW the bot's role in the discord server's role settings (Drag bot's role above the desired roles to grant)
-
 
 Disclaimer: GPT 5.2 was used for debugging and assisting with creation of the leaderboard extents. Bot logo was AI generated.
