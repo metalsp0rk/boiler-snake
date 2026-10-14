@@ -2,13 +2,13 @@
  * Google Calendar integration for community events (epic #218, phase 5).
  *
  * Two surfaces, both opt-in per user:
- *  • `/event google connect` → standard OAuth (auth code + offline refresh),
+ *  • `/eventconfig google connect` → standard OAuth (auth code + offline refresh),
  *    callback on the public web server at GET /oauth/gcal/callback; tokens
  *    are envelope-encrypted at rest (TOKEN_ENCRYPTION_KEY, audit C6 rule:
  *    refuse the grant when the key can't store it).
  *  • `📅 My calendar` button on a posted event adds it to the clicker's
  *    connected calendar; a guild can also designate one calendar as the
- *    community calendar (`/event google autoset`) that every posted event
+ *    community calendar (`/eventconfig google autoset`) that every posted event
  *    auto-syncs into.
  *
  * No googleSDK dependency — plain fetch against the REST endpoints.
@@ -44,7 +44,7 @@ function getConfig() {
   return { ready: missing.length === 0, missing, clientId, clientSecret, redirectUri: base };
 }
 
-/** `/event google connect` → authorize URL for the user's DM/reply. */
+/** `/eventconfig google connect` → authorize URL for the user's DM/reply. */
 function startConnect(communityId, userId) {
   const cfg = getConfig();
   if (!cfg.ready) {
@@ -175,7 +175,7 @@ async function fetchPrimaryEmail(accessToken) {
 /** Fresh access token (refresh once when near expiry). Returns null+error. */
 async function freshToken(communityId, userId) {
   const link = repo.getEventGoogleLink(communityId, userId);
-  if (!link || link.enabled !== 1) return { ok: false, error: "No connected Google Calendar (use /event google connect)." };
+  if (!link || link.enabled !== 1) return { ok: false, error: "No connected Google Calendar (use /eventconfig google connect)." };
   const needsRefresh = link.expiry == null || Date.now() >= Number(link.expiry);
   if (!needsRefresh) {
     try {
@@ -273,7 +273,7 @@ function disconnect(communityId, userId) {
 }
 
 /**
- * `/event google autoset [--member] [--off]` — community-calendar toggle.
+ * `/eventconfig google autoset [--member] [--off]` — community-calendar toggle.
  * member omitted = the caller.
  */
 function autoset(communityId, callerId, { memberId = null, off = false } = {}) {

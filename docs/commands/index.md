@@ -707,9 +707,9 @@ Shows counts, what each level controls, and that only Manage Server can mutate s
 
 ### `/event` - Community Events (bot-owned events + RSVP)
 
-The **bot-owned** events system: create events the bot posts (no Discord "Scheduled Event" dependency), members RSVP with **buttons**, and signups drive an attendee role, reminders, and optional Google Calendar entries. Full guide: [Community Events](../community-events.md).
+The **bot-owned** events system: create events the bot posts (no Discord "Scheduled Event" dependency), members RSVP with **buttons**, and signups drive an attendee role, reminders, and optional Google Calendar entries. The feature spans **four public-tier commands** — `/event` (lifecycle), `/eventsignup` (signups/options/presets), `/eventconfig` (settings/reminders/series/Google Calendar), `/eventchannels` (channels + cross-posting). Full guide: [Community Events](../community-events.md).
 
-**Permission**: the command registers at the **public** picker tier; each group gates in the handler — `create`/`edit`/`post`/`delete`/`duplicate`/`adopt` and `list` are open to everyone by default (a configured `event_channels` **create-role** narrows creation), organizer/staff gates apply per event (`edit`, `response`, `options`, `series`, per-event `reminders add/remove/list`, `channel`, `crosspost`), and `/event settings …` is **Staff gate**.
+**Permission**: all four commands register at the **public** picker tier; each group gates in the handler — `create`/`edit`/`post`/`delete`/`duplicate`/`adopt` and `list` are open to everyone by default (a configured `event_channels` **create-role** narrows creation), organizer/staff gates apply per event (`edit`, `response`, `options`, `series`, per-event `reminders add/remove/list`, `channel`, `crosspost`), and `/eventconfig settings …` is **Staff gate**.
 
 Slash visibility: staff-tier subcommands ride ManageGuild `defaultMemberPermissions` — same posture as the rest of the console (see [Staff Roles](../staff-roles.md)); handlers are the source of truth.
 
@@ -718,22 +718,61 @@ Slash visibility: staff-tier subcommands ride ManageGuild `defaultMemberPermissi
 ```bash
 /event create title:"…" start:"7pm" channel:#announcements   # DM wizard fallback: /event wizard
 /event list · edit (event|in_dm) · duplicate · post · delete · adopt [scheduled_event]
-/event response add|remove|move member option (event)        # organizer stand-ins
-/event reminders on|off|status|mute|unmute|default … · add|remove|list (event)
-/event options list|add|edit|remove|reorder|whitelist (event)
-/event preset save|list|delete [name]                        # signup presets (≤10/server)
-/event series list|skip|stop                                 # weekly/monthly recurrence
-/event channel mark|unmark|list|sort|purge                   # event channels (+ create-role narrowing)
-/event crosspost invite|approve|revoke|list|config           # two-guild relay (bridge pairing)
-/event google connect|status|disconnect|autoset              # Google Calendar sync
-/event settings show|timezone|role|show-attendees|thread-reminders|reminder-channel|auto-archive|digest
 ```
 
-**Start times** parse natural text in the guild timezone (`/event settings timezone`): `7pm`, `tomorrow 14:00`, `in 2 days`, `2026-11-05 19:00`.
+**Start times** parse natural text in the guild timezone (`/eventconfig settings timezone`): `7pm`, `tomorrow 14:00`, `in 2 days`, `2026-11-05 19:00`.
 
 **Ephemeral**: yes (config/edit/duplicate/reminders/preset/series/channel replies); the posted event is a public embed + buttons.
 
-> `/eventreminder create` (the Guild-Scheduled-Event reminder twin) is **retired**: it replies with a pointer here. Reminder *delivery* for `/event` events is automatic (`/event reminders`).
+### `/eventsignup` - Event Signups, Options & Presets
+
+Organizer-side signup management, live option editing, and saved signup presets for Community Events. Full guide: [Community Events](../community-events.md).
+
+**Permission**: registers at the **public** picker tier; `response` and `options` gate to **Staff gate or event organizer** per event, `preset` is **Staff gate**.
+
+#### Subcommands
+
+```bash
+/eventsignup response add|remove|move member option (event)  # organizer stand-ins
+/eventsignup options list|add|edit|remove|reorder|whitelist (event)
+/eventsignup preset save|list|delete [name]                  # signup presets (≤10/server)
+```
+
+**Ephemeral**: yes.
+
+### `/eventconfig` - Community Events Settings, Reminders, Series & Google Calendar
+
+Guild-wide Community Events settings, reminder preferences/offsets, recurring-series control, and Google Calendar sync. Full guide: [Community Events](../community-events.md).
+
+**Permission**: registers at the **public** picker tier; `reminders on|off|status|mute|unmute|default` are personal prefs (open to all), `reminders add/remove/list` and `series` gate to **Staff gate or event organizer**, and `settings …` plus `google autoset` are **Staff gate** (`google connect|status|disconnect` act on your own account).
+
+#### Subcommands
+
+```bash
+/eventconfig settings show|timezone|role|show-attendees|thread-reminders|reminder-channel|auto-archive|digest
+/eventconfig reminders on|off|status|mute|unmute|default … · add|remove|list (event)
+/eventconfig series list|skip|stop                               # weekly/monthly recurrence
+/eventconfig google connect|status|disconnect|autoset            # Google Calendar sync
+```
+
+**Ephemeral**: yes.
+
+### `/eventchannels` - Event Channels & Cross-Posting
+
+Mark event channels (with create-role narrowing, sorting, purge) and relay one event into **another guild**. Full guide: [Community Events](../community-events.md).
+
+**Permission**: registers at the **public** picker tier; both groups gate to **Staff gate** in the handler (crosspost `approve` = destination staff).
+
+#### Subcommands
+
+```bash
+/eventchannels channel mark|unmark|list|sort|purge           # event channels (+ create-role narrowing)
+/eventchannels crosspost invite|approve|revoke|list|config   # two-guild relay (bridge pairing)
+```
+
+**Ephemeral**: yes.
+
+> `/eventreminder create` (the Guild-Scheduled-Event reminder twin) is **retired**: it replies with a pointer to the `/event` family. Reminder *delivery* for Community Events is automatic (`/eventconfig reminders`).
 
 ### `/eventreminder` - Scheduled Event Reminders
 
@@ -1177,11 +1216,16 @@ The **rundown itself posts publicly** in the channel (embed, never pings); its u
 | `/eventreminder setchannel` | Staff gate | Yes |
 | `/eventreminder edit\|clear\|sync` | ManageGuild **or** event creator | Yes |
 | `/event create\|list\|wizard` | Public (create narrowed by `event_channels` create-role when set) | Yes |
-| `/event edit\|post\|duplicate\|delete\|adopt\|response\|options\|series` | Staff gate **or** event organizer | Yes |
-| `/event reminders on\|off\|status\|mute\|unmute\|default` | Public (own prefs) | Yes |
-| `/event reminders add\|remove\|list` | Staff gate **or** event organizer | Yes |
-| `/event preset\|channel\|crosspost\|google` | Staff gate (crosspost approve = dest staff; google = own account) | Yes |
-| `/event settings …` | Staff gate | Yes |
+| `/event edit\|post\|duplicate\|delete\|adopt` | Staff gate **or** event organizer | Yes |
+| `/eventsignup response\|options` | Staff gate **or** event organizer | Yes |
+| `/eventsignup preset` | Staff gate | Yes |
+| `/eventconfig reminders on\|off\|status\|mute\|unmute\|default` | Public (own prefs) | Yes |
+| `/eventconfig reminders add\|remove\|list` | Staff gate **or** event organizer | Yes |
+| `/eventconfig series` | Staff gate **or** event organizer | Yes |
+| `/eventconfig settings …` | Staff gate | Yes |
+| `/eventconfig google …` | Own account (`autoset` = Staff gate) | Yes |
+| `/eventchannels channel` | Staff gate | Yes |
+| `/eventchannels crosspost …` | Staff gate (approve = dest staff) | Yes |
 | `/eventreminder create` | **Retired** → redirects to `/event create` (E13) | Yes |
 | `/settings` | Staff gate | Yes |
 | `/setxp` | Staff gate | Yes |
@@ -1245,6 +1289,10 @@ PUBLIC:
 /ticket settings                   → View ticket config
 /eventreminder optout|optin|mute|unmute|status → Reminder ping preferences
 /eventreminder list                → List active event reminders
+/event create|list|wizard          → Community events (edit/post/delete/adopt gated per event)
+/eventsignup response|options|preset → Event signups/options/presets (staff/organizer gates)
+/eventconfig settings|reminders|google|series → Event settings (own reminder prefs public; settings = staff)
+/eventchannels channel|crosspost   → Event channels + cross-posting (staff gate)
 /play query:                       → Play in your voice channel
 /music skip|pause|resume|stop|leave|queue|nowplaying|volume|shuffle|remove|seek
 

@@ -58,7 +58,7 @@ src/
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
 │   ├── reactionRoles/       # /reactionrole + panel service
 │   ├── eventReminders/      # /eventreminder + modal + ticker + gateway
-│   ├── events/              # /event community events: buttons RSVP, series, presets, gcal, crossposts + web calendar
+│   ├── events/              # /event + /eventsignup /eventconfig /eventchannels community events: buttons RSVP, series, presets, gcal, crossposts + web calendar
 │   ├── staffRoles/          # /staff role gate (isStaff / requireStaff; junior|senior)
 │   ├── commandPermissions/  # OAuth slash visibility sync (no slash of its own)
 │   ├── staffNotes/          # /note staff-only private notes
@@ -285,7 +285,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **honeypot** | Channel posts / ban-roles; warning PNG; exempt roles |
 | **reactionRoles** | Bot panels, min level, removable options |
 | **eventReminders** | Modal config, interest-synced roles, offset ticker, cleanup |
-| **events** | `/event` community events (E1–E15, [roadmap record](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/community-events.md)): DM create-wizard, button RSVP + waitlists, temp/existing attendee roles, reminders (attendee + role targets), weekly/monthly series, signup presets, scheduled posts with backoff, auto-archive, gcal sync, cross-post pairs + the web calendar (`/g/:guildId/events*`) — see [community-events.md](community-events.md) |
+| **events** | `/event` + `/eventsignup`/`/eventconfig`/`/eventchannels` community events (E1–E15, [roadmap record](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/community-events.md)): DM create-wizard, button RSVP + waitlists, temp/existing attendee roles, reminders (attendee + role targets), weekly/monthly series, signup presets, scheduled posts with backoff, auto-archive, gcal sync, cross-post pairs + the web calendar (`/g/:guildId/events*`) — see [community-events.md](community-events.md) |
 | **staffRoles** | `/staff` role list; junior (command gate) vs senior (ticket channel overwrites); ManageGuild for mutations |
 | **staffNotes** | `/note` private staff notes (`requireStaff`) |
 | **warnings** | `/warn` add/void/list; `/warn mine` public; `/setwarn` staff gate |

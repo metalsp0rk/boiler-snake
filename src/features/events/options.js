@@ -76,7 +76,7 @@ function replaceOptions(eventId, specs) {
     return {
       ok: false,
       error:
-        "This event already has signups — change options one at a time with `/event options add|edit|remove`.",
+        "This event already has signups — change options one at a time with `/eventsignup options add|edit|remove`.",
     };
   }
   if (specs.length > repo.MAX_OPTIONS_PER_EVENT) {
@@ -122,7 +122,7 @@ function reorder(eventId, orderText) {
   }
 }
 
-/** Plain-text option table for /event options list. */
+/** Plain-text option table for /eventsignup options list. */
 function renderOptionTable(eventId) {
   const options = repo.listEventOptions(eventId);
   if (!options.length) return "_No options yet._";

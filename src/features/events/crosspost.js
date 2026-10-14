@@ -1,8 +1,8 @@
 /**
  * Cross-community event posting (epic #218, phase 5, E12/E13-adjacent).
  *
- * A pair (source → destination) is created by `/event crosspost invite`
- * (source staff) and completed by `/event crosspost approve <code>` (dest
+ * A pair (source → destination) is created by `/eventchannels crosspost invite`
+ * (source staff) and completed by `/eventchannels crosspost approve <code>` (dest
  * staff). On post, the event fans out to every ACTIVE destination as a
  * read-only copy: the buttons still write to the SOURCE event, gated by the
  * pair's `role_whitelist` (destination-side roles). Edits sync the copy

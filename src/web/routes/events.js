@@ -823,7 +823,7 @@ function registerEventsCalendarRoutes(app, options = {}) {
         if (!template) return bad(res, cid, path, "Series template event is gone.");
         if (!(await canManage(req, template)))
           return bad(res, cid, path, "You don't hold event-edit rights here.");
-        // Same semantics as `/event series skip <event>`: skip targets the
+        // Same semantics as `/eventconfig series skip <event>`: skip targets the
         // NEXT unposted occurrence sitting at the cursor, not the template.
         let target = template;
         if (action === "skip" && s.next_occurrence_at != null) {
