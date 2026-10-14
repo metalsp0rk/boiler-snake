@@ -691,10 +691,11 @@ async function handleHoneypotMessage(message) {
  *      ids for a member it actually carried, so staff stay exempt under a
  *      transient failure and a known non-staff set bans exactly as before.
  *   3. Fetch rejected/null AND the payload set is empty/absent → UNKNOWN.
- *      `[]` is ambiguous (issue #274: dispatch sends `[]` both for "member
- *      present, zero roles" and for "the payload carried no member"), so an
- *      empty set may be a member-absence artifact rather than a known-empty
- *      one. A ban is irreversible and the docs promise staff are exempt →
+ *      `[]` stays ambiguous here by design: issue #274 fixed the NORMALIZER
+ *      (an absent member now normalizes to memberRoleIds null, not []), but
+ *      a hand-built or legacy [] payload still cannot be trusted as
+ *      "known-empty", so the empty case keeps its UNKNOWN posture. A ban is
+ *      irreversible and the docs promise staff are exempt →
  *      consume the hit, log user + community + cause, NEVER ban. Accepted
  *      tradeoff (same as #237): a real hit during a transient Fluxer failure
  *      goes unbanned — a false negative beats banning a moderator.

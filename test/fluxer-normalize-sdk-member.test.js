@@ -192,14 +192,19 @@ describe("platform/fluxer/normalize — raw wire member.roles array (regression 
     assertNormalizedMessage(out, { boundary: "onMessageCreate (wire-array regression shape)" });
   });
 
-  it("defaults to [] when the payload carries no member or no roles", () => {
+  it("null for no member vs [] for a member without roles (issue #274 split)", () => {
+    // Absent member (uncached guild member, cold member cache): NULL —
+    // resolveFluxerPermissions rule 1 must fall back to fetchMember instead
+    // of treating a fabricated [] as payload-authoritative (#183 lockout).
     const noMember = normalizeFluxerMessage(
       { t: "MESSAGE_CREATE", d: gatewayMessage({ member: undefined }) },
       { instanceKey: "https://fluxer.test" },
     );
-    assert.deepEqual(noMember.memberRoleIds, []);
+    assert.equal(noMember.memberRoleIds, null);
     assertNormalizedMessage(noMember, { boundary: "onMessageCreate (wire-array regression shape)" });
 
+    // Present member carrying no roles: [] stays AUTHORITATIVE — this is a
+    // known-empty role set, not a cache miss.
     const noRoles = normalizeFluxerMessage(
       { t: "MESSAGE_CREATE", d: gatewayMessage({ member: { nick: "hi" } }) },
       { instanceKey: "https://fluxer.test" },

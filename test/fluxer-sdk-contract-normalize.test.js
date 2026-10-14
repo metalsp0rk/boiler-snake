@@ -394,20 +394,23 @@ describe("platform/fluxer/normalize — real SDK Message contract (issue #200)",
     assertNormalizedMessage(out, { boundary: "onMessageCreate (issue #200 SDK shape)" });
   });
 
-  it("yields memberRoleIds [] for the cold-cache case the gateway really hits (member getter → null)", async (t) => {
+  it("yields memberRoleIds null for the cold-cache case the gateway really hits (member getter → null)", async (t) => {
     const sdk = await sdkModels();
     if (!sdk) return t.skip("real SDK not installed — guarded loader resolved to null");
 
     // NO guild seeded: message.member (the getter) resolves to null exactly
     // like a gateway message that races GUILD_CREATE — the member must be
     // resolved from REST/cache by consumers, normalize invents nothing.
+    // Issue #274: that absence is NULL, not [] — [] would claim an
+    // authoritative zero-role member and lock resolveFluxerPermissions
+    // rule 1 out of its fetchMember fallback (#183 lockout door).
     const client = makeRealClient(sdk);
     const message = hydrateMessageCreate(sdk, client, wireMessageCreate());
     assert.equal(message.member, null);
 
     const out = normalizeFluxerMessage(message, { instanceKey: "https://fluxer.test" });
     assert.ok(out, "a guild-cold message still normalizes");
-    assert.deepEqual(out.memberRoleIds, []);
+    assert.equal(out.memberRoleIds, null);
     assert.equal(out.memberRaw, null);
     assertNormalizedMessage(out, { boundary: "onMessageCreate (issue #200 cold-cache shape)" });
   });

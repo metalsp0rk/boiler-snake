@@ -288,7 +288,10 @@ describe("platform/fluxer/normalize — normalizeFluxerMessage", () => {
     delete d.mention_roles;
     delete d.mention_channels;
     const out = normalizeFluxerMessage({ t: "MESSAGE_CREATE", d }, { instanceKey: "fluxer-1" });
-    assert.deepEqual(out.memberRoleIds, []);
+    // Issue #274: member absent is NULL, not [] — [] claims "member present
+    // with zero roles" (authoritative), while null lets the permission
+    // resolver fall back to REST for the uncached guild member.
+    assert.equal(out.memberRoleIds, null);
     assert.deepEqual(out.mentions.roles, []);
     assert.deepEqual(out.mentions.channels, []);
     assert.equal(out.channelTypes.size, 0);
@@ -311,8 +314,17 @@ describe("platform/fluxer/normalize — memberRoleIds shape guard (#200)", () =>
     assert.deepEqual(norm({ roles: { roleIds: ["r1", "r2"] } }).memberRoleIds, ["r1", "r2"]);
     assert.deepEqual(norm({ roles: ["r1"] }).memberRoleIds, ["r1"]);
     assert.deepEqual(norm({ roles: [] }).memberRoleIds, [], "an empty manager/array stays []");
-    assert.deepEqual(norm(undefined).memberRoleIds, [], "no member at all → []");
     assert.deepEqual(norm({ nick: "hi" }).memberRoleIds, [], "member without roles → []");
+  });
+
+  // Issue #274: "member absent" must be NULL, not [] — [] is payload-
+  // authoritative (a zero-role member), while null lets
+  // resolveFluxerPermissions rule 1 fall back to fetchMember instead of
+  // fail-closing an uncached staff member (the #183 lockout door).
+  it("distinguishes an absent member (null) from a present zero-role member (#274)", () => {
+    assert.equal(norm(undefined).memberRoleIds, null, "no member at all → null (REST fallback allowed)");
+    assert.equal(norm(null).memberRoleIds, null, "explicit null member → null too");
+    assert.deepEqual(norm({ roles: [] }).memberRoleIds, [], "present with zero roles → [] (authoritative)");
   });
 
   it("THROWS on a roles value that is neither a roleIds manager nor an array", () => {
@@ -492,8 +504,9 @@ describe("platform/fluxer/normalize — SDK model payloads (camelCase)", () => {
     assert.deepEqual(out.mentions.users, ["1554600000000000009"]);
     assert.deepEqual(out.mentions.roles, ["1554600000000000010"]);
     assert.equal(out.mentionBots.get("1554600000000000009"), true);
-    // SDK Message carries NO member → member fields empty, never a throw.
-    assert.deepEqual(out.memberRoleIds, []);
+    // SDK Message carries NO member → memberRoleIds null (#274: absent
+    // member ≠ zero roles; REST fallback stays allowed), never a throw.
+    assert.equal(out.memberRoleIds, null);
     assert.equal(out.memberRaw, null);
     // Relay fields from the SDK model (camelCase): type is numeric, the rest
     // are the payload's own (empty) values.

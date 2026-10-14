@@ -275,6 +275,81 @@ describe("fluxer/permissions — resolveFluxerPermissions (fail-closed, spec 559
     assert.deepEqual(rest.calls, [], "a roleless gateway member must not fan out to the network");
   });
 
+  it("issue #274 rule 1: payload WITHOUT a member (memberRoleIds null) takes the fetchMember fallback", async () => {
+    // The dispatch seam passes member:null when the normalized payload
+    // carries no memberRoleIds array (#274) — an uncached staff member must
+    // resolve through REST, not be fail-closed on a fabricated [] (#183 door).
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/guilds/${GUILD}/members/5`]: {
+          id: "5",
+          user: { id: "5", username: "staffy", bot: false },
+          roles: ["r-mod"],
+        },
+        [`GET /v1/guilds/${GUILD}/roles`]: [
+          { id: GUILD, permissions: "0" },
+          { id: "r-mod", permissions: String(MANAGE_GUILD) },
+        ],
+        [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, permission_overwrites: [] },
+      },
+    });
+    const handle = {
+      instanceKey: INSTANCE,
+      userId: "bot-1",
+      rest,
+      fetchGuild: async () => ({ id: GUILD, name: "B", ownerId: "someone-else", afkChannelId: null }),
+    };
+    handle.outbound = createFluxerOutbound(handle);
+    const res = await resolveFluxerPermissions({
+      outbound: handle.outbound,
+      communityId: COMMUNITY_ID,
+      userId: "5",
+      channelId: CHANNEL,
+      instanceKey: INSTANCE,
+      member: null, // the #274 payload shape: member absent → null, never []
+    });
+    assert.equal(res.ok, true, "the REST fallback resolves the member — no fail-closed denial");
+    assert.deepEqual(res.memberRoleIds, ["r-mod"], "the fetched staff role rides through to the staff_roles gates");
+    assert.equal(hasBit(res.channelPermissions, MANAGE_GUILD), true, "the staff mask resolves off the fetched ids");
+    assert.ok(
+      rest.calls.some((c) => c.method === "GET" && c.path === `/v1/guilds/${GUILD}/members/5`),
+      "fetchMember fired for the absent member",
+    );
+  });
+
+  it("issue #274 rule 1: [] (member present, zero roles) stays authoritative — NO fetchMember", async () => {
+    // The authoritative-empty contract: a KNOWN zero-role member must not
+    // fan out to the network (the zero-REST guarantee above, named for the
+    // #274 null-vs-[] split so the two cases cannot silently merge again).
+    const rest = makeFakeRest({
+      routes: {
+        // If resolution ever hit this route the [] was treated as absent —
+        // the exact merge #274 forbids.
+        [`GET /v1/guilds/${GUILD}/members/5`]: {
+          id: "5",
+          user: { id: "5", username: "staffy", bot: false },
+          roles: ["r-mod"],
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const res = await resolveFluxerPermissions({
+      outbound,
+      communityId: COMMUNITY_ID,
+      userId: "5",
+      channelId: CHANNEL,
+      instanceKey: INSTANCE,
+      member: { roleIds: [], bot: false, username: "tester" },
+    });
+    assert.equal(res.ok, true);
+    assert.deepEqual(res.memberRoleIds, [], "the empty set is the payload's truth");
+    assert.equal(res.channelPermissions, 0n, "fail-closed 0n: zero roles deny the staff gates");
+    assert.ok(
+      !rest.calls.some((c) => c.method === "GET" && c.path.startsWith(`/v1/guilds/${GUILD}/members`)),
+      "an authoritative [] must NEVER call fetchMember",
+    );
+  });
+
   it("rule 1: member fetch failure → ok:false with the exact copy (handler not called)", async () => {
     const rest = makeFakeRest({ routes: {} }); // GET member → 404 FAKE_NO_ROUTE
     const { outbound } = makeFakeHandle({ rest });
@@ -473,9 +548,11 @@ describe("fluxer/permissions — dispatch integration (step 2.5, fail closed)", 
   it("a member record the gateway did not carry + fetch failure aborts BEFORE the handler", async () => {
     const rest = makeFakeRest({ routes: { [`POST /v1/channels/${CHANNEL}/messages`]: { id: "d-1" } } });
     const { outbound } = makeFakeHandle({ rest });
-    const message = fluxerMessage({ content: "!xp" });
-    delete message.memberRoleIds; // simulate a payload without the member record
-    message.memberRoleIds = null;
+    // Issue #274 natural shape: a payload WITHOUT a member normalizes to
+    // memberRoleIds null (fabricating [] here would claim an authoritative
+    // zero-role member and skip the fetchMember fallback entirely).
+    const message = fluxerMessage({ content: "!xp", member: null });
+    assert.equal(message.memberRoleIds, null, "member absent normalizes to null (#274)");
     const parsed = parsePrefix("!xp", P);
     assert.ok(parsed && !parsed.usageError);
 
@@ -555,5 +632,56 @@ describe("fluxer/permissions — dispatch integration (step 2.5, fail closed)", 
       1,
       "fetchRoles runs exactly once for the member's role ids",
     );
+  });
+
+  it("issue #274: payload WITHOUT a member + REST staff member runs the handler instead of locking out", async () => {
+    // The #274 end-to-end door: uncached guild member (cold cache) → payload
+    // carries no member → memberRoleIds null (#274) → dispatch passes
+    // member:null → rule 1 takes fetchMember → staff resolved → handler runs.
+    // Before the fix the fabricated [] was payload-authoritative: mask 0n
+    // and no REST, denying the uncached staff member the #183 way.
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/guilds/${GUILD}/members/5`]: {
+          id: "5",
+          user: { id: "5", username: "staffy", bot: false },
+          roles: ["r-admin"],
+        },
+        "GET /v1/guilds/1554590611015729152/roles": [
+          { id: GUILD, permissions: "0" },
+          { id: "r-admin", permissions: String(ADMINISTRATOR) },
+        ],
+        [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, permission_overwrites: [] },
+        "POST /v1/users/@me/channels": { id: "dm-10", type: 1 },
+        "POST /v1/channels/dm-10/messages": { id: "r-10" },
+        [`POST /v1/channels/${CHANNEL}/messages`]: { id: "d-10" },
+      },
+    });
+    const handle = {
+      instanceKey: INSTANCE,
+      userId: "bot-1",
+      rest,
+      fetchGuild: async () => ({ id: GUILD, name: "B", ownerId: "someone-else", afkChannelId: null }),
+    };
+    handle.outbound = createFluxerOutbound(handle);
+    const message = fluxerMessage({ content: "!xp", member: null });
+    assert.equal(message.memberRoleIds, null, "absent member → null at the normalize seam (#274)");
+    const parsed = parsePrefix("!xp", P);
+
+    await dispatchPrefixCommand(handle.outbound, message, parsed, { registry, supervisor: null });
+
+    assert.equal(
+      rest.calls.filter((c) => c.method === "GET" && c.path === `/v1/guilds/${GUILD}/members/5`).length,
+      1,
+      "the absent member drove exactly one fetchMember",
+    );
+    assert.ok(
+      rest.calls.some((c) => c.path === "/v1/channels/dm-10/messages"),
+      "the /xp handler ran — REST-resolved staff is not fail-closed",
+    );
+    const channelPosts = rest.calls.filter(
+      (c) => c.method === "POST" && c.path === `/v1/channels/${CHANNEL}/messages`,
+    );
+    assert.equal(channelPosts.length, 0, "no fail-closed copy was posted in the channel");
   });
 });
