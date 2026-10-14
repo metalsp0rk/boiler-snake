@@ -18,7 +18,8 @@
  *   separate `checkConfigSanity`/`assertConfigSanity` pair (WARN, never
  *   fatal), which src/index.js runs right after this gate.
  * - `checkConfigSanity(env)` is PURE (no console, no throw): it returns
- *   `{ warnings, errors }` for the three #205 rules; `assertConfigSanity`
+ *   `{ warnings, errors }` for the three #205 rules plus the #282 DECAY_CRON
+ *   fail-fast; `assertConfigSanity`
  *   logs warnings as `[config] WARN ...` and throws on any error.
  * - Optional vars (DEV_GUILD_ID, DATA_DIR, DB_PATH, CLIENT_SECRET, ...) are
  *   only DOCUMENTED in this module; defaults and the DB_PATH-wins-over-
@@ -48,6 +49,7 @@ const KNOWN_VARS = [
   "LAVALINK_HOST",
   "LAVALINK_PASSWORD",
   "OAUTH_STATE_SECRET",
+  "DECAY_CRON",
 ];
 
 // Clearly fake values only.
@@ -95,10 +97,13 @@ describe("src/config.js module contract", () => {
   it("exports the env-gate + Fluxer parsing surface and loads with zero env", () => {
     const config = loadFreshConfig();
     assert.deepEqual(Object.keys(config).sort(), [
+      "DEFAULT_DECAY_CRON",
       "assertConfigSanity",
       "assertRuntimeEnv",
       "checkConfigSanity",
+      "getDecayCron",
       "getFluxerCommandPrefix",
+      "isValidCronExpression",
       "normalizeOriginForKey",
       "parseFluxerInstances",
       "requireEnv",
@@ -109,6 +114,8 @@ describe("src/config.js module contract", () => {
     assert.equal(typeof config.assertRuntimeEnv, "function");
     assert.equal(typeof config.checkConfigSanity, "function");
     assert.equal(typeof config.assertConfigSanity, "function");
+    assert.equal(typeof config.getDecayCron, "function");
+    assert.equal(typeof config.isValidCronExpression, "function");
   });
 
   // Positive: pins the lazy-read behavior — env set AFTER require is still
@@ -408,6 +415,33 @@ describe("checkConfigSanity — pure rules (issue #205)", () => {
     assert.deepEqual(checkConfigSanity(envWithout("CLIENT_SECRET")), { warnings: [], errors: [] });
   });
 
+  // Rule 4 — DECAY_CRON knob (issue #282): FAIL FAST on a malformed
+  // expression. The scheduler grammar and this check share node-cron, so a
+  // value that passes here can never die at registration time.
+  it("fails fast when DECAY_CRON is set to a malformed expression (names the bad value)", () => {
+    const { warnings, errors } = checkConfigSanity({ ...SANE_ENV, DECAY_CRON: "not a cron" });
+    assert.deepEqual(warnings, []);
+    assert.equal(errors.length, 1);
+    const [error] = errors;
+    assert.ok(error.includes("DECAY_CRON"), error);
+    assert.ok(error.includes('"not a cron"'), error);
+    assert.ok(error.includes("0 4 * * *"), error); // names the default it replaces
+  });
+
+  it("valid or defaulted DECAY_CRON is silent; whitespace-only counts as unset", () => {
+    for (const expr of ["0 4 * * *", "30 3 * * *", "0 2 * * 1", "*/15 * * * *"]) {
+      assert.deepEqual(
+        checkConfigSanity({ ...SANE_ENV, DECAY_CRON: expr }),
+        { warnings: [], errors: [] },
+        `${expr} must validate`,
+      );
+    }
+    assert.deepEqual(checkConfigSanity({ ...SANE_ENV, DECAY_CRON: "   " }), {
+      warnings: [],
+      errors: [],
+    });
+  });
+
   it("accumulates multiple findings in one pass", () => {
     const { warnings, errors } = checkConfigSanity({
       DISCORD_TOKEN: FAKE.DISCORD_TOKEN,
@@ -512,5 +546,49 @@ describe("assertConfigSanity — boot wiring (issue #205)", () => {
     assert.equal(thrown, null);
     assert.equal(warnings.length, 1, JSON.stringify(warnings));
     assert.ok(warnings[0].includes("CLIENT_ID"), warnings[0]);
+  });
+});
+
+describe("getDecayCron — decay schedule knob (issue #282)", () => {
+  const { getDecayCron, DEFAULT_DECAY_CRON } = loadFreshConfig();
+
+  it("unset or whitespace-only DECAY_CRON → the historical 0 4 * * * default", () => {
+    assert.equal(DEFAULT_DECAY_CRON, "0 4 * * *");
+    assert.equal(getDecayCron({}), DEFAULT_DECAY_CRON);
+    assert.equal(getDecayCron({ DECAY_CRON: "   " }), DEFAULT_DECAY_CRON);
+  });
+
+  it("a valid expression is used, trimmed", () => {
+    assert.equal(getDecayCron({ DECAY_CRON: " 0 2 * * 1 " }), "0 2 * * 1");
+    assert.equal(getDecayCron({ DECAY_CRON: "*/30 5-9 * * 2-6" }), "*/30 5-9 * * 2-6");
+  });
+
+  it("a malformed expression throws naming the bad value (defense behind the boot gate)", () => {
+    assert.throws(
+      () => getDecayCron({ DECAY_CRON: "0 4 * *" }),
+      (err) =>
+        /DECAY_CRON/.test(err.message) &&
+        /"0 4 \* \*"/.test(err.message) &&
+        /0 4 \* \* \*/.test(err.message),
+    );
+  });
+
+  it("assertConfigSanity wires the rule into boot: malformed DECAY_CRON is fatal, named", () => {
+    const saved = { ...process.env };
+    clearKnownEnv();
+    try {
+      process.env.DISCORD_TOKEN = FAKE.DISCORD_TOKEN;
+      process.env.CLIENT_ID = FAKE.CLIENT_ID;
+      process.env.DECAY_CRON = "daily at four";
+      assert.throws(
+        () => loadFreshConfig().assertConfigSanity(),
+        (err) =>
+          /\[config\]/.test(err.message) &&
+          err.message.includes('"daily at four"'),
+      );
+    } finally {
+      clearKnownEnv();
+      Object.assign(process.env, saved);
+    }
   });
 });

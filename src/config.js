@@ -19,12 +19,14 @@
  *   - DISCORD_TOKEN set without CLIENT_ID                    → WARN
  *   - LAVALINK_HOST set without LAVALINK_PASSWORD            → FAIL FAST
  *   - CLIENT_SECRET set without OAUTH_STATE_SECRET           → WARN
+ *   - DECAY_CRON set but not a valid cron expression         → FAIL FAST (#282)
  *
  * The full operator-facing variable list lives in .env.example;
  * test/env-parity.test.js pins that every variable src/ reads has an entry.
  *
  * Optional:
  *   DEV_GUILD_ID   — register commands to one guild instantly
+ *   DECAY_CRON     — daily decay job schedule (default "0 4 * * *", process TZ)
  *   DATA_DIR       — directory for xpbot.sqlite (default: project root)
  *   DB_PATH        — full path to sqlite file (wins over DATA_DIR)
  *   YOUTUBE_API_KEY — YouTube Data API (live detection / channel resolve)
@@ -71,6 +73,8 @@
  * `Authorization: Bot <token>` to the discovered api_public and inside the
  * gateway Identify payload. It is NEVER logged (spec § Boot).
  */
+
+const nodeCron = require("node-cron");
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -334,6 +338,52 @@ function isConfigSet(value) {
 }
 
 /**
+ * Default decay schedule (issue #282): daily 04:00 in the process timezone —
+ * the historical hardcoded constant. Docker compose pins `TZ=UTC`, so the
+ * shipped contract is 04:00 UTC (audit #206).
+ */
+const DEFAULT_DECAY_CRON = "0 4 * * *";
+
+/**
+ * Validate a cron expression with node-cron — the SAME validator the
+ * scheduler schedules with, so config and runtime never disagree about the
+ * grammar. Never throws (a broken expression validates false).
+ *
+ * @param {string} expr
+ * @returns {boolean}
+ */
+function isValidCronExpression(expr) {
+  try {
+    return nodeCron.validate(expr);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Effective cron for the daily decay job (issue #282). Unset/whitespace →
+ * DEFAULT_DECAY_CRON. The boot gate (checkConfigSanity rule 4) throws on a
+ * malformed expression before any feature registers; re-validating here is
+ * cheap defense-in-depth so a caller bypassing the gate still gets the bad
+ * expression named rather than a scheduler crash far from the cause.
+ *
+ * @param {NodeJS.ProcessEnv} [env] env source (tests inject)
+ * @returns {string} cron expression
+ */
+function getDecayCron(env = process.env) {
+  if (!isConfigSet(env.DECAY_CRON)) return DEFAULT_DECAY_CRON;
+  const expr = env.DECAY_CRON.trim();
+  if (!isValidCronExpression(expr)) {
+    throw new Error(
+      `[config] DECAY_CRON is not a valid cron expression: "${expr}" — use 5 fields, ` +
+        `e.g. "0 4 * * *" (daily 04:00) or "0 2 * * 1" (Mondays). ` +
+        `Unset DECAY_CRON for the default "${DEFAULT_DECAY_CRON}".`,
+    );
+  }
+  return expr;
+}
+
+/**
  * Pure boot-config sanity rules — NO logging, NO throw; the caller decides
  * what a warning and what a fatal means (test/config.test.js drives every
  * branch with an injected env). Returns message strings WITHOUT the
@@ -388,6 +438,23 @@ function checkConfigSanity(env = process.env) {
     );
   }
 
+  // 4. DECAY_CRON knob (issue #282): validated with node-cron — the same
+  //    grammar the scheduler fires with. FAIL FAST: a typo would otherwise
+  //    die inside the decay feature-boot (or silently mean a different time
+  //    than the operator wrote).
+  if (
+    isConfigSet(env.DECAY_CRON) &&
+    !isValidCronExpression(env.DECAY_CRON.trim())
+  ) {
+    errors.push(
+      `DECAY_CRON="${env.DECAY_CRON.trim()}" is not a valid cron expression — the ` +
+        `daily decay job cannot be scheduled. Use 5 fields (e.g. "0 4 * * *" = daily ` +
+        `04:00, "0 2 * * 1" = Mondays), or unset DECAY_CRON for the default ` +
+        `"${DEFAULT_DECAY_CRON}". Times evaluate in the process TZ (docker compose ` +
+        `pins UTC).`,
+    );
+  }
+
   return { warnings, errors };
 }
 
@@ -417,4 +484,7 @@ module.exports = {
   parseFluxerInstances,
   normalizeOriginForKey,
   getFluxerCommandPrefix,
+  getDecayCron,
+  isValidCronExpression,
+  DEFAULT_DECAY_CRON,
 };
