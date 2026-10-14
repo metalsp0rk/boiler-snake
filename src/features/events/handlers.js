@@ -18,7 +18,7 @@ const { ensureCommunity } = require("../../platform/community");
 const { isStaff } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
 const { baseEmbed, truncateField, tsFull, tsRelative, Color } = require("../../core/theme");
-const { PermissionFlagsBits } = require("discord.js");
+const { PermissionFlagsBits, MessageFlags } = require("discord.js");
 
 const ui = require("./ui");
 const service = require("./service");
@@ -212,14 +212,14 @@ async function handleCreate(interaction, ctx) {
   if (postAt) {
     return interaction.reply({
       ...ui.buildPreviewEmbed(fresh, { options: repo.listEventOptions(fresh.id) }),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
       content: `Scheduled for ${tsFull(postAt)}${seriesNote}. Post it early with \`/event post event:${fresh.id}\`, or fix the time with \`/event edit\`.`,
     });
   }
   return interaction.reply({
     ...ui.buildPreviewEmbed(fresh, { options: repo.listEventOptions(fresh.id) }),
     components: ui.buildConfirmComponents(fresh.id),
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
     content: `Almost there — does the time look right?${seriesNote}`,
   });
 }
@@ -361,7 +361,7 @@ async function handleDelete(interaction, ctx) {
   return interaction.reply({
     content: `Really delete **${ev.event.title}** (${ev.event.id}) with all signups?`,
     components: ui.buildDeleteConfirmComponents(ev.event.id, interaction.user.id),
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -378,7 +378,7 @@ async function handleList(interaction, ctx) {
       ),
     };
   }
-  return interaction.reply({ ...ui.buildListEmbed(events, { countsByEvent }), ephemeral: true });
+  return interaction.reply({ ...ui.buildListEmbed(events, { countsByEvent }), flags: MessageFlags.Ephemeral });
 }
 
 async function handleWizard(interaction, ctx) {
@@ -696,7 +696,7 @@ async function handleSettings(interaction, ctx) {
   if (sub === "show") {
     const gate = staffGate(interaction, communityId);
     if (!gate.ok) return fail(interaction, gate.error);
-    return interaction.reply({ ...settingsEmbed(settings), ephemeral: true });
+    return interaction.reply({ ...settingsEmbed(settings), flags: MessageFlags.Ephemeral });
   }
 
   if (sub === "show-attendees") {
@@ -1076,7 +1076,7 @@ async function handleChannelSort(interaction, ctx, channel) {
   if (!repo.isEventChannel(communityId, channel.id)) {
     return fail(interaction, "Mark it with `/event channel mark` first — sort only touches event channels.");
   }
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const messages = await channel.messages.fetch({ limit: 50 }).catch(async () => {
     const cached = channel.messages?.cache;
     return cached ? [...cached.values()] : [];
@@ -1343,9 +1343,9 @@ async function handleEvent(interaction, ctx) {
     );
     const cause = err?.message || String(err);
     if (interaction.deferred || interaction.replied) {
-      await interaction.followUp({ content: `Something went wrong: \`${cause}\``, ephemeral: true }).catch(() => {});
+      await interaction.followUp({ content: `Something went wrong: \`${cause}\``, flags: MessageFlags.Ephemeral }).catch(() => {});
     } else {
-      await interaction.reply({ content: `Something went wrong: \`${cause}\``, ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: `Something went wrong: \`${cause}\``, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
 }
