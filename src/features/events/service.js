@@ -242,16 +242,68 @@ function armDefaultReminder(event, settings) {
 // ── posting ─────────────────────────────────────────────────────────────────
 
 /**
+ * Does the event's posted message still exist? Real discord.js throws
+ * DiscordAPIError 10008 (Unknown Message) / 10003 (Unknown Channel) for
+ * deleted messages or channels; the test fakes resolve null. Anything else
+ * (network, permissions) is "unverifiable" — a repost must never run on a
+ * false negative, or a live post gets duplicated.
+ *
+ * @returns {Promise<{state: "alive"|"gone"|"unverifiable", error?: string}>}
+ */
+async function postedMessageCheck(event, guild) {
+  if (!event.message_id || !event.channel_id) return { state: "gone" };
+  let channel = null;
+  try {
+    channel =
+      guild.channels.cache.get(event.channel_id) ??
+      (await guild.channels.fetch(event.channel_id));
+  } catch (err) {
+    if (err?.code === 10003 || err?.code === 404) return { state: "gone" };
+    return { state: "unverifiable", error: err?.message || String(err) };
+  }
+  if (!channel) return { state: "gone" };
+  try {
+    const msg = await channel.messages.fetch(event.message_id);
+    return msg ? { state: "alive" } : { state: "gone" };
+  } catch (err) {
+    if (err?.code === 10008 || err?.code === 10003 || err?.code === 404) {
+      return { state: "gone" };
+    }
+    return { state: "unverifiable", error: err?.message || String(err) };
+  }
+}
+
+/**
  * Post a draft (from /event create confirm, /event post, the scheduled-post
  * step, or a series materialization). Partial failures degrade: the event is
  * posted and every skipped side effect lands in `warnings` (AGENTS rule 5).
+ *
+ * A "posted" event is only refused when its original message is verified to
+ * still exist; if the message was deleted out from under us the event
+ * re-posts cleanly (the DB alone must never lock an event out of Discord).
  */
 async function postEventNow(client, event, { actorId = null, announce = true } = {}) {
   const warnings = [];
-  if (event.status === "posted") return { ok: true, event, warnings: ["already posted"] };
   const guild = await guildFor(client, event.community_id);
   if (!guild) {
     return { ok: false, error: `the guild for this event is not reachable (community ${event.community_id})` };
+  }
+
+  let reposting = false;
+  if (event.status === "posted") {
+    const check = await postedMessageCheck(event, guild);
+    if (check.state === "alive") return { ok: true, event, warnings: ["already posted"] };
+    if (check.state === "unverifiable") {
+      console.error(
+        `[events] posted-message verification failed event=${event.id} msg=${event.message_id}: ${check.error}`,
+      );
+      return {
+        ok: false,
+        error: `already posted, but I couldn't verify the original message (${check.error}) — try again; if the post really is gone this will re-post it`,
+      };
+    }
+    reposting = true;
+    warnings.push("previous post message was deleted — reposting");
   }
   const channelId = event.channel_id;
   if (!channelId) return { ok: false, error: "no post channel set — add one with /event edit" };
@@ -333,22 +385,35 @@ async function postEventNow(client, event, { actorId = null, announce = true } =
   const armed = armDefaultReminder(fresh, settings);
   if (!armed.ok) warnings.push(armed.warning);
 
-  db.logEventActivity({ eventId: fresh.id, actorId, action: "posted", detail: `message ${posted.id}` });
+  db.logEventActivity({
+    eventId: fresh.id,
+    actorId,
+    action: reposting ? "reposted" : "posted",
+    detail: `message ${posted.id}`,
+  });
 
-  // Cross-post fan-out + Google auto-sync (both degrade to warnings).
-  try {
-    const x = require("./crosspost");
-    const res = await x.fanoutOnPost(client, fresh);
-    warnings.push(...res.warnings);
-  } catch (err) {
-    warnings.push(`cross-post fan-out failed: ${err?.message || err}`);
-  }
-  try {
-    const gcal = require("./gcal");
-    const res = await gcal.autoSyncOnPost(client, fresh);
-    warnings.push(...(res?.warnings || []));
-  } catch (err) {
-    warnings.push(`calendar auto-sync failed: ${err?.message || err}`);
+  if (reposting) {
+    // Cross-post copies and the calendar entry belong to the FIRST post —
+    // fan-out/insert are not idempotent, a repost must not duplicate them.
+    // (Side effects that failed on the first post can be redone from their
+    // own commands.)
+    warnings.push("cross-post copies and calendar auto-sync skipped on repost");
+  } else {
+    // Cross-post fan-out + Google auto-sync (both degrade to warnings).
+    try {
+      const x = require("./crosspost");
+      const res = await x.fanoutOnPost(client, fresh);
+      warnings.push(...res.warnings);
+    } catch (err) {
+      warnings.push(`cross-post fan-out failed: ${err?.message || err}`);
+    }
+    try {
+      const gcal = require("./gcal");
+      const res = await gcal.autoSyncOnPost(client, fresh);
+      warnings.push(...(res?.warnings || []));
+    } catch (err) {
+      warnings.push(`calendar auto-sync failed: ${err?.message || err}`);
+    }
   }
 
   // Sync the audience role in case a draft already collected signups (web).
