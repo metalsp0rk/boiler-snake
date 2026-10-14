@@ -28,9 +28,9 @@ const {
 } = require("../../core/auditTrail");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { getCommunityById } = require("../../platform/community");
+const { getDecayCron } = require("../../config");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
-const DECAY_CRON = "0 4 * * *";
 
 const commands = [
   new SlashCommandBuilder()
@@ -382,7 +382,9 @@ async function runDecayForGuild(supervisor, communityId, opts = {}) {
 function startDecayScheduler(supervisor) {
   registerJob({
     name: "decay",
-    cron: DECAY_CRON,
+    // #282: operator knob via DECAY_CRON (validated at boot by
+    // assertConfigSanity; default "0 4 * * *" — see docs/decay.md).
+    cron: getDecayCron(),
     run: async () => {
       // Spec 575: iterate the communities that have tracked users; every
       // repository below receives the integer community id.

@@ -156,11 +156,12 @@ Use placeholders in any committed file — real client secrets live only in
 | `DATA_DIR` | Directory for `xpbot.sqlite` and `ticket-transcripts/` |
 | `DB_PATH` | Full path to the SQLite file (overrides `DATA_DIR` for the DB file only) |
 
-#### Process clock (`TZ`)
+#### Process clock and decay schedule
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `TZ` | host TZ (compose: **UTC**) | Timezone cron schedules evaluate in. The daily decay job is the hardcoded `0 4 * * *` — there is **no `DECAY_CRON` env knob** — so *when* it fires is controlled by the process clock. Docker compose passes `TZ: ${TZ:-UTC}`: decay runs at 04:00 UTC on every deploy, DST-free (audit #206). Node/libc consume `TZ` themselves; `src/` never reads it, which is why the parity guard doesn't pin it |
+| `TZ` | host TZ (compose: **UTC**) | Timezone cron schedules evaluate in. Docker compose passes `TZ: ${TZ:-UTC}`, so decay (and every cron job) runs at the same UTC instant on every deploy, DST-free (audit #206). Node/libc consume `TZ` themselves; `src/` never reads it, which is why the parity guard doesn't pin it |
+| `DECAY_CRON` | `0 4 * * *` | Schedule for the daily XP decay job, 5-field cron evaluated in `TZ` above (issue #282). Validated at boot with node-cron — a malformed value **stops boot** naming the bad expression. Unset keeps the historical hardcoded time (04:00) |
 
 #### Data retention sweeps (optional)
 
@@ -665,13 +666,13 @@ Verify XP rates, cooldowns, and the **Level curve factor** match expectations. U
 
 1. Check decay settings are enabled in [`/settings`](./commands/)
 2. Verify user sent enough messages in time window
-3. Wait for 4:00 AM server time (when decay runs)
+3. Wait for the next scheduled decay run — 04:00 by default (see [`DECAY_CRON`](#process-clock-and-decay-schedule))
 
 **Force test decay** (manual):
 ```javascript
 // In bot console or via database:
 UPDATE users SET xp=1000 WHERE guild_id='XYZ' AND user_id='ABC';
--- Then wait for next scheduled decay run at 4 AM
+-- Then wait for the next scheduled decay run
 ```
 
 ### Issue: YouTube notifications not working

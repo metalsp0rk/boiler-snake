@@ -4,7 +4,14 @@ Reduce XP for inactive users to encourage consistent participation and prevent "
 
 ## Overview
 
-The decay system runs daily at **04:00 in the process timezone** and reduces XP for users who don't meet minimum activity thresholds. The schedule is a hardcoded cron constant (`0 4 * * *`) — there is **no `DECAY_CRON` env knob**; the way to control *when* it fires is the process clock. Deployments pin `TZ=UTC` (docker compose defaults it, audit #206), so the practical contract is **04:00 UTC on every host**. On a bare `npm start`, "4 AM" means the host's local time — including its DST quirks.
+The decay system runs daily on a cron schedule — **`0 4 * * *` by default
+(daily 04:00 in the process timezone)**, overridable with the `DECAY_CRON`
+env knob (issue #282) — and reduces XP for users who don't meet minimum
+activity thresholds. With the default, the way to control *when* it fires
+is still the process clock: deployments pin `TZ=UTC` (docker compose
+defaults it, audit #206), so the shipped contract is **04:00 UTC on every
+host**. A malformed `DECAY_CRON` value **stops boot** and names the bad
+expression (config sanity rule 4, audit #205 pattern).
 
 ## Configuration
 
@@ -57,11 +64,15 @@ Settings: `messages=10, days=14, percent=5`
 
 ### Schedule
 ```javascript
-// src/features/decay/index.js — a const, not an env var (no DECAY_CRON knob)
-const DECAY_CRON = "0 4 * * *";   // node-cron semantics: PROCESS timezone
+// src/config.js — DECAY_CRON env knob (issue #282), default unchanged
+const DEFAULT_DECAY_CRON = "0 4 * * *";  // node-cron semantics: PROCESS timezone
 
-startDecayScheduler → registerJob({ name: "decay", cron: DECAY_CRON, run: … })
+startDecayScheduler → registerJob({ name: "decay", cron: getDecayCron(), run: … })
 ```
+
+`DECAY_CRON` (unset → the default) is validated at boot with node-cron —
+the same grammar the scheduler fires with — and a malformed value stops
+boot naming the bad expression.
 
 The job runs on the shared scheduler (`core/scheduler.js`, overlap-skip). Docker
 compose sets `TZ: ${TZ:-UTC}`, so the fire time is 04:00 **UTC** on every
