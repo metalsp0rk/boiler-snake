@@ -964,6 +964,7 @@ function buildEditModal(event) {
   const title = new TextInputBuilder()
     .setCustomId("title")
     .setLabel("Title")
+    .setRequired(true)
     .setStyle(TextInputStyle.Short)
     .setMaxLength(150)
     .setValue(event.title.slice(0, 100));
@@ -986,8 +987,11 @@ function buildEditModal(event) {
     .setRequired(false)
     .setStyle(TextInputStyle.Short)
     .setMaxLength(200);
+  // `required` belongs to the text input itself — LabelBuilder has no setRequired.
   for (const c of [title, start, description, location]) {
-    modal.addLabelComponents(new LabelBuilder().setLabel(c.data.label).setRequired(c.data.required ?? true).setTextInputComponent(c));
+    modal.addLabelComponents(
+      new LabelBuilder().setLabel(c.data.label).setTextInputComponent(c)
+    );
   }
   return modal;
 }

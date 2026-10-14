@@ -5,6 +5,7 @@
  *                       (blank = keep, "-" = clear). Time is re-parsed in the
  *                       guild zone and reminders re-arm via service.editEvent.
  */
+const { MessageFlags } = require("discord.js");
 const repo = require("../../db/repositories/events");
 const { ensureCommunity } = require("../../platform/community");
 const service = require("./service");
@@ -27,11 +28,11 @@ async function handleEditModal(interaction, ctx) {
   });
   const event = Number.isInteger(eventId) ? repo.getEventForCommunity(eventId, communityId) : null;
   if (!event) {
-    return interaction.reply({ content: "That event no longer exists here.", ephemeral: true });
+    return interaction.reply({ content: "That event no longer exists here.", flags: MessageFlags.Ephemeral });
   }
   const gate = service.canManageEvent(interaction.member, communityId, event, "edit");
   if (!gate.ok) {
-    return interaction.reply({ content: gate.error, ephemeral: true });
+    return interaction.reply({ content: gate.error, flags: MessageFlags.Ephemeral });
   }
 
   const title = String(interaction.fields.getTextInputValue("title") || "").trim();
@@ -47,7 +48,7 @@ async function handleEditModal(interaction, ctx) {
     if (!startRes.ok) {
       return interaction.reply({
         content: `I couldn't read the start time: \`${startRes.error}\` — nothing was changed.`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
     patch.start_at = startRes.atMs;
@@ -60,10 +61,10 @@ async function handleEditModal(interaction, ctx) {
   else if (location === "-") patch.location = "";
 
   if (!Object.keys(patch).length) {
-    return interaction.reply({ content: "Nothing changed.", ephemeral: true });
+    return interaction.reply({ content: "Nothing changed.", flags: MessageFlags.Ephemeral });
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const res = await service.editEvent(client, {
     member: interaction.member,
     communityId,
@@ -79,7 +80,7 @@ async function handleEditModal(interaction, ctx) {
 
 async function handleEventModal(interaction, ctx) {
   if (interaction.customId.startsWith("evm:edit:")) return handleEditModal(interaction, ctx);
-  return interaction.reply({ content: "Unknown event form.", ephemeral: true });
+  return interaction.reply({ content: "Unknown event form.", flags: MessageFlags.Ephemeral });
 }
 
 module.exports = { handleEventModal };
