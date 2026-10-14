@@ -64,6 +64,10 @@ async function main() {
 
   console.log(`\nRegistration complete: ${successCount} succeeded, ${failCount} failed`);
 
+  // issue #291: each guild PUT is atomic — a failure there means the guild's
+  // commands stay dark, so never signal success to the caller (CI/deploy).
+  if (failCount > 0) process.exitCode = 1;
+
   await client.destroy();
 }
 
