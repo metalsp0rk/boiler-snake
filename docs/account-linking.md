@@ -29,7 +29,9 @@ Discord, in #general:        /link create
   → ephemeral reply: LNK-… code (shown once, expires in 15 minutes)
 Fluxer, in the paired community:
   !link connect LNK-…
-  → "Linked: Discord user <name> ↔ Fluxer user <name>. XP mirrors 100% both ways."
+  → channel ack: linked, code spent, details sent by DM (issue #276 — the
+    pairing itself is private); the DM carries
+    "Linked: Discord user <name> ↔ Fluxer user <name>. XP mirrors 100% both ways."
 Check: /link status  ·  !link status
 ```
 
@@ -46,7 +48,7 @@ Check: /link status  ·  !link status
 
 A code is rejected with a specific reason if it is **expired, already used, malformed, posted on the same platform that created it, or redeemed in a community that has no active bridge to the creating community**. If either account is already linked, the private reply (ephemeral on Discord, DM on Fluxer) names the side that's linked and the date its existing link was made — `!link remove` (or `/link remove`) on that side clears it first. The channel-visible reply on Fluxer for those conflict cases only says the link already exists: it never names who holds it and never echoes the code.
 
-Fluxer has no ephemeral replies, so anything private rides the **DM path**: `!link create` sends the code to your DM (the channel never shows one), and if the DM can't be delivered the channel reply is just that delivery error — never the code. Treat a minted code like a temporary ticket: it can be redeemed once, it dies in 15 minutes, and it is worthless on the platform it was created on.
+Fluxer has no ephemeral replies, so anything private rides the **DM path**: `!link create` sends the code to your DM (the channel never shows one), conflict details go by DM (the channel only says a link already exists), and the replies that name your linked peer — successful `connect`, `status`, `remove` — are **DM-first too** (issue #276): the channel gets a scrubbed ack that says what happened without publishing *your* pairing to everyone watching. If a DM can't be delivered the channel reply is just that delivery error (plus the bare outcome, e.g. "linked, code spent") — never the private body. Treat a minted code like a temporary ticket: it can be redeemed once, it dies in 15 minutes, and it is worthless on the platform it was created on.
 
 ## Commands
 
@@ -56,7 +58,7 @@ Every verb exists on both platforms — `/link …` on Discord, `!link …` on F
 |------------|--------------|
 | `/link create` · `!link create` | Mint a one-time link code for you. Shown once — ephemeral on Discord, by DM on Fluxer. |
 | `/link connect <code>` · `!link connect <code>` | Redeem a code from the other platform's side. |
-| `/link status` · `!link status` | Show your link: the peer account, the date it was created, mirror percentages, memory-mirror state. |
+| `/link status` · `!link status` | Show your link: the peer account, the date it was created, mirror percentages, memory-mirror state. On Fluxer the pairing is delivered by DM; the channel only gets an ack. |
 | `/link config <direction> <pct>` | Set one mirror direction. Direction is from the **source** side's point of view: `discord-to-fluxer` or `fluxer-to-discord`. Integer 0–100. |
 | `/link config memory on\|off` | Turn gork memory mirroring on/off for the link. |
 | `/link remove` · `!link remove` | Delete your link. Mirrored data already written stays (see Limitations). |
