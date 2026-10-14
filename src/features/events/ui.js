@@ -90,6 +90,15 @@ function timeOption(sc, name, description, required = false) {
   );
 }
 
+/**
+ * /event — the flat subcommands. The signup/config/channels groups live in
+ * buildEventSignupCommand / buildEventConfigCommand / buildEventChannelsCommand
+ * below: one `/event` command serialized to 21,136 chars and Discord refused
+ * the registration PUT with APPLICATION_COMMAND_TOO_LARGE (max 8000). All
+ * four names route to the same handleEvent — its DISPATCH keys on
+ * `group-sub`/`sub`, never the top-level name, so the split is collision-free.
+ * test/command-size.test.js guards every registry command < 8000 chars.
+ */
 function buildCommandEvent() {
   return new SlashCommandBuilder()
     .setName("event")
@@ -253,518 +262,569 @@ function buildCommandEvent() {
             .setRequired(true)
             .setAutocomplete(true),
         ),
-    )
-    // ── response group ─────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("response")
-        .setDescription("Organizer/staff: add, remove, or move a member on the signup list.")
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("add")
-              .setDescription("Add a member to an option (bypasses capacity/whitelist).")
-              .addUserOption((o) =>
-                o.setName("member").setDescription("Member to add").setRequired(true),
-              )
-              .addIntegerOption((o) =>
-                o
-                  .setName("option")
-                  .setDescription("Signup option id (see /event options list)")
-                  .setRequired(true)
-                  .setAutocomplete(true),
-              ),
-          ),
-        )
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("remove")
-              .setDescription("Remove a member from an option (next waiter is promoted).")
-              .addUserOption((o) =>
-                o.setName("member").setDescription("Member to remove").setRequired(true),
-              )
-              .addIntegerOption((o) =>
-                o
-                  .setName("option")
-                  .setDescription("Signup option id")
-                  .setRequired(true)
-                  .setAutocomplete(true),
-              ),
-          ),
-        )
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("move")
-              .setDescription("Move a member between options.")
-              .addUserOption((o) =>
-                o.setName("member").setDescription("Member to move").setRequired(true),
-              )
-              .addIntegerOption((o) =>
-                o
-                  .setName("from_option")
-                  .setDescription("Current option id")
-                  .setRequired(true)
-                  .setAutocomplete(true),
-              )
-              .addIntegerOption((o) =>
-                o
-                  .setName("to_option")
-                  .setDescription("Target option id")
-                  .setRequired(true)
-                  .setAutocomplete(true),
-              ),
-          ),
-        ),
-    )
-    // ── reminders group ────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("reminders")
-        .setDescription("Reminder controls: personal opt-out, per-event mute, custom reminders.")
-        .addSubcommand((sc) =>
-          sc
-            .setName("off")
-            .setDescription("Stop event reminder pings for you everywhere in this server (shared with /eventreminder opt-out)."),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("on")
-            .setDescription("Resume event reminder pings for you in this server."),
-        )
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("mute")
-              .setDescription("Silence reminders for one event (you only)."),
-          ).addIntegerOption((o) =>
+    );
+}
+
+/**
+ * /eventsignup — groups split out of `/event` (8000-char payload cap):
+ * signup options, presets, and organizer/staff member responses.
+ */
+function buildEventSignupCommand() {
+  return new SlashCommandBuilder()
+    .setName("eventsignup")
+    .setDescription("Community events: manage signup options, presets, and member responses.")
+    .addSubcommandGroup(responseGroup)
+    .addSubcommandGroup(optionsGroup)
+    .addSubcommandGroup(presetGroup);
+}
+
+/**
+ * /eventconfig — server event settings, reminder controls, Google Calendar,
+ * recurring series (moved out of `/event`, see buildCommandEvent).
+ */
+function buildEventConfigCommand() {
+  return new SlashCommandBuilder()
+    .setName("eventconfig")
+    .setDescription("Community events: server settings, reminders, recurring series, Google Calendar.")
+    .addSubcommandGroup(settingsGroup)
+    .addSubcommandGroup(remindersGroup)
+    .addSubcommandGroup(googleGroup)
+    .addSubcommandGroup(seriesGroup);
+}
+
+/**
+ * /eventchannels — event-channel marking/purge and cross-server posting
+ * (moved out of `/event`, see buildCommandEvent).
+ */
+function buildEventChannelsCommand() {
+  return new SlashCommandBuilder()
+    .setName("eventchannels")
+    .setDescription("Community events: mark event channels, purge past events, cross-post to other servers.")
+    .addSubcommandGroup(channelGroup)
+    .addSubcommandGroup(crosspostGroup);
+}
+
+// ── group builders (moved verbatim from buildCommandEvent; the split commands
+// above assemble them — option order stays required-before-optional, #291) ──
+
+/** `response` group — organizer/staff member management (/eventsignup). */
+function responseGroup(g) {
+  return g
+    .setName("response")
+    .setDescription("Organizer/staff: add, remove, or move a member on the signup list.")
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("add")
+          .setDescription("Add a member to an option (bypasses capacity/whitelist).")
+          .addUserOption((o) =>
+            o.setName("member").setDescription("Member to add").setRequired(true),
+          )
+          .addIntegerOption((o) =>
             o
               .setName("option")
-              .setDescription("Only this signup option (optional)")
-              .setRequired(false)
-              .setAutocomplete(true),
-          ),
-        )
-        .addSubcommand((sc) =>
-          withEvent(sc.setName("unmute").setDescription("Undo /event reminders mute.")),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("status")
-            .setDescription("Your reminder state: server opt-out, event mutes, attendee roles held."),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("default")
-            .setDescription("Staff: default reminder lead for newly posted events (0 = none).")
-            .addIntegerOption((o) =>
-              o
-                .setName("minutes")
-                .setDescription("Minutes before start (0 disables the default reminder)")
-                .setRequired(true)
-                .setMinValue(0)
-                .setMaxValue(43200),
-            ),
-        )
-        // issue #291: withEvent() first so `event` + `minutes` (both required)
-        // precede the optional message/role.
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("add")
-              .setDescription("Organizer/staff: add a reminder to a posted or draft event (max 8)."),
-          )
-            .addIntegerOption((o) =>
-              o
-                .setName("minutes")
-                .setDescription("Minutes before start")
-                .setRequired(true)
-                .setMinValue(1)
-                .setMaxValue(43200),
-            )
-            .addStringOption((o) =>
-              o
-                .setName("message")
-                .setDescription("Custom body ({event} {starts_in} {starts_at} {role} {location} {url})")
-                .setMaxLength(500),
-            )
-            .addRoleOption((o) =>
-              o
-                .setName("role")
-                .setDescription("Also ping this role (role reminder, signups not required)"),
-            ),
-        )
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("remove")
-              .setDescription("Organizer/staff: delete an unsent reminder."),
-          ).addIntegerOption((o) =>
-            o
-              .setName("reminder")
-              .setDescription("Reminder id (see /event reminders list)")
+              .setDescription("Signup option id (see /eventsignup options list)")
               .setRequired(true)
               .setAutocomplete(true),
           ),
-        )
-        .addSubcommand((sc) =>
-          withEvent(sc.setName("list").setDescription("Organizer/staff: this event's reminders.")),
+      ),
+    )
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("remove")
+          .setDescription("Remove a member from an option (next waiter is promoted).")
+          .addUserOption((o) =>
+            o.setName("member").setDescription("Member to remove").setRequired(true),
+          )
+          .addIntegerOption((o) =>
+            o
+              .setName("option")
+              .setDescription("Signup option id")
+              .setRequired(true)
+              .setAutocomplete(true),
+          ),
+      ),
+    )
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("move")
+          .setDescription("Move a member between options.")
+          .addUserOption((o) =>
+            o.setName("member").setDescription("Member to move").setRequired(true),
+          )
+          .addIntegerOption((o) =>
+            o
+              .setName("from_option")
+              .setDescription("Current option id")
+              .setRequired(true)
+              .setAutocomplete(true),
+          )
+          .addIntegerOption((o) =>
+            o
+              .setName("to_option")
+              .setDescription("Target option id")
+              .setRequired(true)
+              .setAutocomplete(true),
+          ),
+      ),
+    );
+}
+
+/** `reminders` group — reminder controls (/eventconfig). */
+function remindersGroup(g) {
+  return g
+    .setName("reminders")
+    .setDescription("Reminder controls: personal opt-out, per-event mute, custom reminders.")
+    .addSubcommand((sc) =>
+      sc
+        .setName("off")
+        .setDescription("Stop event reminder pings for you everywhere in this server (shared with /eventreminder opt-out)."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("on")
+        .setDescription("Resume event reminder pings for you in this server."),
+    )
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("mute")
+          .setDescription("Silence reminders for one event (you only)."),
+      ).addIntegerOption((o) =>
+        o
+          .setName("option")
+          .setDescription("Only this signup option (optional)")
+          .setRequired(false)
+          .setAutocomplete(true),
+      ),
+    )
+    .addSubcommand((sc) =>
+      withEvent(sc.setName("unmute").setDescription("Undo /eventconfig reminders mute.")),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("status")
+        .setDescription("Your reminder state: server opt-out, event mutes, attendee roles held."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("default")
+        .setDescription("Staff: default reminder lead for newly posted events (0 = none).")
+        .addIntegerOption((o) =>
+          o
+            .setName("minutes")
+            .setDescription("Minutes before start (0 disables the default reminder)")
+            .setRequired(true)
+            .setMinValue(0)
+            .setMaxValue(43200),
         ),
     )
-    // ── settings group ─────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("settings")
-        .setDescription("Server event defaults (staff-gated per subcommand).")
-        .addSubcommand((sc) =>
-          sc
-            .setName("show")
-            .setDescription("Show the current event settings."),
+    // issue #291: withEvent() first so `event` + `minutes` (both required)
+    // precede the optional message/role.
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("add")
+          .setDescription("Organizer/staff: add a reminder to a posted or draft event (max 8)."),
+      )
+        .addIntegerOption((o) =>
+          o
+            .setName("minutes")
+            .setDescription("Minutes before start")
+            .setRequired(true)
+            .setMinValue(1)
+            .setMaxValue(43200),
         )
-        .addSubcommand((sc) =>
-          sc
-            .setName("show-attendees")
-            .setDescription("Show/hide attendee names on the event message.")
-            .addBooleanOption((o) =>
-              o.setName("enabled").setDescription("Show names?").setRequired(true),
-            ),
+        .addStringOption((o) =>
+          o
+            .setName("message")
+            .setDescription("Custom body ({event} {starts_in} {starts_at} {role} {location} {url})")
+            .setMaxLength(500),
         )
-        .addSubcommand((sc) =>
-          sc
-            .setName("timezone")
-            .setDescription("IANA zone for naive time entry (e.g. America/New_York).")
-            .addStringOption((o) =>
-              o.setName("zone").setDescription("IANA zone name; 'UTC' resets").setRequired(true).setMaxLength(60),
-            ),
-        )
-        .addSubcommand((sc) =>
-          sc
+        .addRoleOption((o) =>
+          o
             .setName("role")
-            .setDescription("Require a role for an action (empty = everyone).")
-            .addStringOption((o) =>
-              o
-                .setName("action")
-                .setDescription("Which action to gate")
-                .setRequired(true)
-                .addChoices(
-                  { name: "create", value: "create" },
-                  { name: "edit", value: "edit" },
-                  { name: "delete", value: "delete" },
-                  { name: "event channels", value: "channels" },
-                  { name: "signup options", value: "options" },
-                ),
-            )
-            .addRoleOption((o) =>
-              o.setName("role").setDescription("Role required (omit with clear:true)"),
-            )
-            .addBooleanOption((o) =>
-              o.setName("clear").setDescription("Remove the gate instead"),
-            ),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("thread-reminders")
-            .setDescription("Deliver reminders in the event thread (on) or the channel (off).")
-            .addBooleanOption((o) =>
-              o.setName("enabled").setDescription("Thread delivery?").setRequired(true),
-            ),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("reminder-channel")
-            .setDescription("Fallback channel for reminders when there is no thread.")
-            .addChannelOption((o) =>
-              o.setName("channel").setDescription("Channel; omit with clear:true").addChannelTypes(ChannelType.GuildText),
-            )
-            .addBooleanOption((o) => o.setName("clear").setDescription("Unset instead")),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("auto-archive")
-            .setDescription("Delete the Discord message after the event ends (default off).")
-            .addBooleanOption((o) =>
-              o.setName("enabled").setDescription("Auto-archive on?").setRequired(true),
-            )
-            .addIntegerOption((o) =>
-              o
-                .setName("delay_minutes")
-                .setDescription("Delay after end (default 120)")
-                .setMinValue(0)
-                .setMaxValue(43200),
-            ),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("digest")
-            .setDescription("Upcoming-events digest into a channel.")
-            .addChannelOption((o) =>
-              o.setName("channel").setDescription("Digest channel (clear:true to stop)").addChannelTypes(ChannelType.GuildText),
-            )
-            .addStringOption((o) =>
-              o
-                .setName("frequency")
-                .setDescription("daily | weekly | none")
-                .addChoices(
-                  { name: "daily", value: "daily" },
-                  { name: "weekly", value: "weekly" },
-                  { name: "none", value: "none" },
-                ),
-            )
-            .addIntegerOption((o) =>
-              o.setName("hour_utc").setDescription("UTC hour to post (0-23)").setMinValue(0).setMaxValue(23),
-            )
-            .addIntegerOption((o) =>
-              o.setName("weekday").setDescription("Weekly only: 0=Sun…6=Sat").setMinValue(0).setMaxValue(6),
-            )
-            .addBooleanOption((o) => o.setName("clear").setDescription("Stop digests instead")),
+            .setDescription("Also ping this role (role reminder, signups not required)"),
         ),
     )
-    // ── options group ──────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("options")
-        .setDescription("Customize signup options (creator/staff).")
-        .addSubcommand((sc) =>
-          withEvent(sc.setName("list").setDescription("List this event's options with ids and counts.")),
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("remove")
+          .setDescription("Organizer/staff: delete an unsent reminder."),
+      ).addIntegerOption((o) =>
+        o
+          .setName("reminder")
+          .setDescription("Reminder id (see /eventconfig reminders list)")
+          .setRequired(true)
+          .setAutocomplete(true),
+      ),
+    )
+    .addSubcommand((sc) =>
+      withEvent(sc.setName("list").setDescription("Organizer/staff: this event's reminders.")),
+    );
+}
+
+/** `settings` group — server event defaults (/eventconfig). */
+function settingsGroup(g) {
+  return g
+    .setName("settings")
+    .setDescription("Server event defaults (staff-gated per subcommand).")
+    .addSubcommand((sc) =>
+      sc
+        .setName("show")
+        .setDescription("Show the current event settings."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("show-attendees")
+        .setDescription("Show/hide attendee names on the event message.")
+        .addBooleanOption((o) =>
+          o.setName("enabled").setDescription("Show names?").setRequired(true),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("timezone")
+        .setDescription("IANA zone for naive time entry (e.g. America/New_York).")
+        .addStringOption((o) =>
+          o.setName("zone").setDescription("IANA zone name; 'UTC' resets").setRequired(true).setMaxLength(60),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("role")
+        .setDescription("Require a role for an action (empty = everyone).")
+        .addStringOption((o) =>
+          o
+            .setName("action")
+            .setDescription("Which action to gate")
+            .setRequired(true)
+            .addChoices(
+              { name: "create", value: "create" },
+              { name: "edit", value: "edit" },
+              { name: "delete", value: "delete" },
+              { name: "event channels", value: "channels" },
+              { name: "signup options", value: "options" },
+            ),
         )
-        // issue #291: withEvent() first so `event` + `label` (both required)
-        // precede the optional emoji/capacity/waitlist/reminders/only_role.
-        .addSubcommand((sc) =>
-          withEvent(sc.setName("add").setDescription("Add a signup option."))
-            .addStringOption((o) =>
-              o.setName("label").setDescription("Button label").setRequired(true).setMaxLength(50),
-            )
-            .addStringOption((o) => o.setName("emoji").setDescription("Emoji").setMaxLength(16))
-            .addIntegerOption((o) =>
-              o.setName("capacity").setDescription("Capacity (0 = unlimited)").setMinValue(0).setMaxValue(100000),
-            )
-            .addBooleanOption((o) => o.setName("waitlist").setDescription("Waitlist when full (default yes)"))
-            .addBooleanOption((o) => o.setName("reminders").setDescription("Counts as attending / gets reminders (default no)"))
-            .addRoleOption((o) => o.setName("only_role").setDescription("Restrict signups to this role")),
+        .addRoleOption((o) =>
+          o.setName("role").setDescription("Role required (omit with clear:true)"),
         )
-        // issue #291: withEvent() first so `event` + `option` (both required)
-        // precede the optional edit fields.
-        .addSubcommand((sc) =>
-          withEvent(sc.setName("edit").setDescription("Edit one option."))
-            .addIntegerOption((o) =>
-              o.setName("option").setDescription("Option id").setRequired(true).setAutocomplete(true),
-            )
-            .addStringOption((o) => o.setName("label").setDescription("New label").setMaxLength(50))
-            .addStringOption((o) => o.setName("emoji").setDescription("New emoji").setMaxLength(16))
-            .addIntegerOption((o) =>
-              o.setName("capacity").setDescription("New capacity (0 = unlimited)").setMinValue(0).setMaxValue(100000),
-            )
-            .addBooleanOption((o) => o.setName("waitlist").setDescription("Waitlist when full"))
-            .addBooleanOption((o) => o.setName("reminders").setDescription("Counts as attending"))
-            .addRoleOption((o) => o.setName("only_role").setDescription("Restrict to role (clear:true to open)"))
-            .addBooleanOption((o) => o.setName("clear_role").setDescription("Remove the role restriction")),
+        .addBooleanOption((o) =>
+          o.setName("clear").setDescription("Remove the gate instead"),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("thread-reminders")
+        .setDescription("Deliver reminders in the event thread (on) or the channel (off).")
+        .addBooleanOption((o) =>
+          o.setName("enabled").setDescription("Thread delivery?").setRequired(true),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("reminder-channel")
+        .setDescription("Fallback channel for reminders when there is no thread.")
+        .addChannelOption((o) =>
+          o.setName("channel").setDescription("Channel; omit with clear:true").addChannelTypes(ChannelType.GuildText),
         )
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("remove")
-              .setDescription("Remove an option (its signups go too; waiters promote).")
-              .addIntegerOption((o) =>
-                o.setName("option").setDescription("Option id").setRequired(true).setAutocomplete(true),
-              ),
+        .addBooleanOption((o) => o.setName("clear").setDescription("Unset instead")),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("auto-archive")
+        .setDescription("Delete the Discord message after the event ends (default off).")
+        .addBooleanOption((o) =>
+          o.setName("enabled").setDescription("Auto-archive on?").setRequired(true),
+        )
+        .addIntegerOption((o) =>
+          o
+            .setName("delay_minutes")
+            .setDescription("Delay after end (default 120)")
+            .setMinValue(0)
+            .setMaxValue(43200),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("digest")
+        .setDescription("Upcoming-events digest into a channel.")
+        .addChannelOption((o) =>
+          o.setName("channel").setDescription("Digest channel (clear:true to stop)").addChannelTypes(ChannelType.GuildText),
+        )
+        .addStringOption((o) =>
+          o
+            .setName("frequency")
+            .setDescription("daily | weekly | none")
+            .addChoices(
+              { name: "daily", value: "daily" },
+              { name: "weekly", value: "weekly" },
+              { name: "none", value: "none" },
+            ),
+        )
+        .addIntegerOption((o) =>
+          o.setName("hour_utc").setDescription("UTC hour to post (0-23)").setMinValue(0).setMaxValue(23),
+        )
+        .addIntegerOption((o) =>
+          o.setName("weekday").setDescription("Weekly only: 0=Sun…6=Sat").setMinValue(0).setMaxValue(6),
+        )
+        .addBooleanOption((o) => o.setName("clear").setDescription("Stop digests instead")),
+    );
+}
+
+/** `options` group — custom signup options (/eventsignup). */
+function optionsGroup(g) {
+  return g
+    .setName("options")
+    .setDescription("Customize signup options (creator/staff).")
+    .addSubcommand((sc) =>
+      withEvent(sc.setName("list").setDescription("List this event's options with ids and counts.")),
+    )
+    // issue #291: withEvent() first so `event` + `label` (both required)
+    // precede the optional emoji/capacity/waitlist/reminders/only_role.
+    .addSubcommand((sc) =>
+      withEvent(sc.setName("add").setDescription("Add a signup option."))
+        .addStringOption((o) =>
+          o.setName("label").setDescription("Button label").setRequired(true).setMaxLength(50),
+        )
+        .addStringOption((o) => o.setName("emoji").setDescription("Emoji").setMaxLength(16))
+        .addIntegerOption((o) =>
+          o.setName("capacity").setDescription("Capacity (0 = unlimited)").setMinValue(0).setMaxValue(100000),
+        )
+        .addBooleanOption((o) => o.setName("waitlist").setDescription("Waitlist when full (default yes)"))
+        .addBooleanOption((o) => o.setName("reminders").setDescription("Counts as attending / gets reminders (default no)"))
+        .addRoleOption((o) => o.setName("only_role").setDescription("Restrict signups to this role")),
+    )
+    // issue #291: withEvent() first so `event` + `option` (both required)
+    // precede the optional edit fields.
+    .addSubcommand((sc) =>
+      withEvent(sc.setName("edit").setDescription("Edit one option."))
+        .addIntegerOption((o) =>
+          o.setName("option").setDescription("Option id").setRequired(true).setAutocomplete(true),
+        )
+        .addStringOption((o) => o.setName("label").setDescription("New label").setMaxLength(50))
+        .addStringOption((o) => o.setName("emoji").setDescription("New emoji").setMaxLength(16))
+        .addIntegerOption((o) =>
+          o.setName("capacity").setDescription("New capacity (0 = unlimited)").setMinValue(0).setMaxValue(100000),
+        )
+        .addBooleanOption((o) => o.setName("waitlist").setDescription("Waitlist when full"))
+        .addBooleanOption((o) => o.setName("reminders").setDescription("Counts as attending"))
+        .addRoleOption((o) => o.setName("only_role").setDescription("Restrict to role (clear:true to open)"))
+        .addBooleanOption((o) => o.setName("clear_role").setDescription("Remove the role restriction")),
+    )
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("remove")
+          .setDescription("Remove an option (its signups go too; waiters promote).")
+          .addIntegerOption((o) =>
+            o.setName("option").setDescription("Option id").setRequired(true).setAutocomplete(true),
           ),
-        )
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("reorder")
-              .setDescription("Reorder options by id list, e.g. `3,1,2`.")
-              .addStringOption((o) =>
-                o.setName("order").setDescription("Comma-separated option ids").setRequired(true).setMaxLength(120),
-              ),
+      ),
+    )
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("reorder")
+          .setDescription("Reorder options by id list, e.g. `3,1,2`.")
+          .addStringOption((o) =>
+            o.setName("order").setDescription("Comma-separated option ids").setRequired(true).setMaxLength(120),
           ),
+      ),
+    )
+    // issue #291: withEvent() first so the required `event` precedes the
+    // optional role/clear.
+    .addSubcommand((sc) =>
+      withEvent(sc.setName("whitelist").setDescription("Event-wide role whitelist for all options."))
+        .addRoleOption((o) => o.setName("role").setDescription("Required role"))
+        .addBooleanOption((o) => o.setName("clear").setDescription("Remove the whitelist")),
+    );
+}
+
+/** `preset` group — saved signup-option presets (/eventsignup). */
+function presetGroup(g) {
+  return g
+    .setName("preset")
+    .setDescription("Saved signup-option presets for this server.")
+    .addSubcommand((sc) =>
+      sc
+        .setName("save")
+        .setDescription("Save an event's current options as a preset.")
+        .addIntegerOption((o) =>
+          o.setName("event").setDescription("Event to copy options from").setRequired(true).setAutocomplete(true),
         )
-        // issue #291: withEvent() first so the required `event` precedes the
-        // optional role/clear.
-        .addSubcommand((sc) =>
-          withEvent(sc.setName("whitelist").setDescription("Event-wide role whitelist for all options."))
-            .addRoleOption((o) => o.setName("role").setDescription("Required role"))
-            .addBooleanOption((o) => o.setName("clear").setDescription("Remove the whitelist")),
+        .addStringOption((o) =>
+          o.setName("name").setDescription("Preset name").setRequired(true).setMaxLength(60),
         ),
     )
-    // ── preset group ───────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("preset")
-        .setDescription("Saved signup-option presets for this server.")
-        .addSubcommand((sc) =>
-          sc
-            .setName("save")
-            .setDescription("Save an event's current options as a preset.")
-            .addIntegerOption((o) =>
-              o.setName("event").setDescription("Event to copy options from").setRequired(true).setAutocomplete(true),
-            )
-            .addStringOption((o) =>
-              o.setName("name").setDescription("Preset name").setRequired(true).setMaxLength(60),
-            ),
-        )
-        .addSubcommand((sc) =>
-          sc.setName("list").setDescription("List this server's presets."),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("delete")
-            .setDescription("Delete a preset.")
-            .addStringOption((o) =>
-              o.setName("name").setDescription("Preset name").setRequired(true).setMaxLength(60),
-            ),
+    .addSubcommand((sc) =>
+      sc.setName("list").setDescription("List this server's presets."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("delete")
+        .setDescription("Delete a preset.")
+        .addStringOption((o) =>
+          o.setName("name").setDescription("Preset name").setRequired(true).setMaxLength(60),
+        ),
+    );
+}
+
+/** `series` group — recurring event series (/eventconfig). */
+function seriesGroup(g) {
+  return g
+    .setName("series")
+    .setDescription("Recurring event series.")
+    .addSubcommand((sc) =>
+      sc.setName("list").setDescription("Series in this server with next occurrence times."),
+    )
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("skip")
+          .setDescription("Skip one occurrence of a series (the posted ones stay)."),
+      ),
+    )
+    .addSubcommand((sc) =>
+      withEvent(
+        sc
+          .setName("stop")
+          .setDescription("Stop a series: posted events stay as one-offs, future drafts go."),
+      ),
+    );
+}
+
+/** `channel` group — event channels: mark, sort, purge (/eventchannels). */
+function channelGroup(g) {
+  return g
+    .setName("channel")
+    .setDescription("Event channels: mark, sort, purge.")
+    .addSubcommand((sc) =>
+      sc
+        .setName("mark")
+        .setDescription("Mark a channel as an event channel.")
+        .addChannelOption((o) =>
+          o.setName("channel").setDescription("Channel to mark").addChannelTypes(ChannelType.GuildText),
         ),
     )
-    // ── series group ───────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("series")
-        .setDescription("Recurring event series.")
-        .addSubcommand((sc) =>
-          sc.setName("list").setDescription("Series in this server with next occurrence times."),
-        )
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("skip")
-              .setDescription("Skip one occurrence of a series (the posted ones stay)."),
-          ),
-        )
-        .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("stop")
-              .setDescription("Stop a series: posted events stay as one-offs, future drafts go."),
-          ),
+    .addSubcommand((sc) =>
+      sc
+        .setName("unmark")
+        .setDescription("Unmark an event channel.")
+        .addChannelOption((o) =>
+          o.setName("channel").setDescription("Channel to unmark").addChannelTypes(ChannelType.GuildText),
         ),
     )
-    // ── channel group ──────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("channel")
-        .setDescription("Event channels: mark, sort, purge.")
-        .addSubcommand((sc) =>
-          sc
-            .setName("mark")
-            .setDescription("Mark a channel as an event channel.")
-            .addChannelOption((o) =>
-              o.setName("channel").setDescription("Channel to mark").addChannelTypes(ChannelType.GuildText),
-            ),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("unmark")
-            .setDescription("Unmark an event channel.")
-            .addChannelOption((o) =>
-              o.setName("channel").setDescription("Channel to unmark").addChannelTypes(ChannelType.GuildText),
-            ),
-        )
-        .addSubcommand((sc) =>
-          sc.setName("list").setDescription("List marked event channels."),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("sort")
-            .setDescription("Re-pin event messages oldest-first (max 50).")
-            .addChannelOption((o) =>
-              o.setName("channel").setDescription("Event channel to sort").addChannelTypes(ChannelType.GuildText),
-            ),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("purge")
-            .setDescription("Purge or toggle purge for an event channel (off by default; pins survive).")
-            .addChannelOption((o) =>
-              o.setName("channel").setDescription("Event channel").addChannelTypes(ChannelType.GuildText),
-            )
-            .addBooleanOption((o) => o.setName("enabled").setDescription("Set the channel's purge flag"))
-            .addBooleanOption((o) => o.setName("run").setDescription("Run one purge pass now")),
+    .addSubcommand((sc) =>
+      sc.setName("list").setDescription("List marked event channels."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("sort")
+        .setDescription("Re-pin event messages oldest-first (max 50).")
+        .addChannelOption((o) =>
+          o.setName("channel").setDescription("Event channel to sort").addChannelTypes(ChannelType.GuildText),
         ),
     )
-    // ── crosspost group ────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("crosspost")
-        .setDescription("Post this server's events into another server (destination must approve).")
-        .addSubcommand((sc) =>
-          sc
-            .setName("invite")
-            .setDescription("Ask a destination guild to accept cross-posts (source admin).")
-            .addStringOption((o) =>
-              o.setName("destination_guild_id").setDescription("Destination guild id").setRequired(true).setMaxLength(30),
-            )
-            .addChannelOption((o) =>
-              o.setName("destination_channel").setDescription("Where their admin should allow posts"),
-            )
-            .addStringOption((o) =>
-              o.setName("roles").setDescription("Roles to mention in the destination, comma-separated").setMaxLength(300),
-            ),
+    .addSubcommand((sc) =>
+      sc
+        .setName("purge")
+        .setDescription("Purge or toggle purge for an event channel (off by default; pins survive).")
+        .addChannelOption((o) =>
+          o.setName("channel").setDescription("Event channel").addChannelTypes(ChannelType.GuildText),
         )
-        .addSubcommand((sc) =>
-          sc
-            .setName("approve")
-            .setDescription("Approve a cross-post invite sent to this server (destination admin).")
-            .addStringOption((o) =>
-              o.setName("code").setDescription("Invite code from /event crosspost list").setRequired(true).setMaxLength(20),
-            )
-            .addChannelOption((o) =>
-              o.setName("channel").setDescription("Channel to receive posts").addChannelTypes(ChannelType.GuildText),
-            ),
+        .addBooleanOption((o) => o.setName("enabled").setDescription("Set the channel's purge flag"))
+        .addBooleanOption((o) => o.setName("run").setDescription("Run one purge pass now")),
+    );
+}
+
+/** `crosspost` group — cross-server event posting (/eventchannels). */
+function crosspostGroup(g) {
+  return g
+    .setName("crosspost")
+    .setDescription("Post this server's events into another server (destination must approve).")
+    .addSubcommand((sc) =>
+      sc
+        .setName("invite")
+        .setDescription("Ask a destination guild to accept cross-posts (source admin).")
+        .addStringOption((o) =>
+          o.setName("destination_guild_id").setDescription("Destination guild id").setRequired(true).setMaxLength(30),
         )
-        .addSubcommand((sc) =>
-          sc
-            .setName("revoke")
-            .setDescription("Revoke a cross-post pair (either side).")
-            .addIntegerOption((o) =>
-              o.setName("id").setDescription("Cross-post id from /event crosspost list").setRequired(true),
-            ),
+        .addChannelOption((o) =>
+          o.setName("destination_channel").setDescription("Where their admin should allow posts"),
         )
-        .addSubcommand((sc) =>
-          sc.setName("list").setDescription("Cross-post pairs involving this server."),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("config")
-            .setDescription("Per-destination posts: mentions, role whitelist, post offset.")
-            .addIntegerOption((o) =>
-              o.setName("id").setDescription("Cross-post id").setRequired(true),
-            )
-            .addStringOption((o) => o.setName("roles").setDescription("Mentions, comma-separated").setMaxLength(300))
-            .addRoleOption((o) => o.setName("signup_role").setDescription("Restrict destination signups to this role"))
-            .addBooleanOption((o) => o.setName("clear_signup_role").setDescription("Open destination signups"))
-            .addIntegerOption((o) =>
-              o.setName("offset_minutes").setDescription("Post offset vs source post (-60 to 43200)").setMinValue(-43200).setMaxValue(43200),
-            ),
+        .addStringOption((o) =>
+          o.setName("roles").setDescription("Roles to mention in the destination, comma-separated").setMaxLength(300),
         ),
     )
-    // ── google group ───────────────────────────────────────────────────
-    .addSubcommandGroup((g) =>
-      g
-        .setName("google")
-        .setDescription("Google Calendar integration.")
-        .addSubcommand((sc) =>
-          sc
-            .setName("connect")
-            .setDescription("Connect your own Google Calendar so you can sync events you can see."),
+    .addSubcommand((sc) =>
+      sc
+        .setName("approve")
+        .setDescription("Approve a cross-post invite sent to this server (destination admin).")
+        .addStringOption((o) =>
+          o.setName("code").setDescription("Invite code from /eventchannels crosspost list").setRequired(true).setMaxLength(20),
         )
-        .addSubcommand((sc) =>
-          sc.setName("status").setDescription("Your calendar link status."),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("disconnect")
-            .setDescription("Disconnect your Google Calendar for this server."),
-        )
-        .addSubcommand((sc) =>
-          sc
-            .setName("autoset")
-            .setDescription("Staff: auto-sync newly posted events into a connected member's calendar.")
-            .addUserOption((o) =>
-              o.setName("member").setDescription("Connected member whose calendar receives events"),
-            )
-            .addBooleanOption((o) => o.setName("off").setDescription("Turn auto-sync off")),
+        .addChannelOption((o) =>
+          o.setName("channel").setDescription("Channel to receive posts").addChannelTypes(ChannelType.GuildText),
         ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("revoke")
+        .setDescription("Revoke a cross-post pair (either side).")
+        .addIntegerOption((o) =>
+          o.setName("id").setDescription("Cross-post id from /eventchannels crosspost list").setRequired(true),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc.setName("list").setDescription("Cross-post pairs involving this server."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("config")
+        .setDescription("Per-destination posts: mentions, role whitelist, post offset.")
+        .addIntegerOption((o) =>
+          o.setName("id").setDescription("Cross-post id").setRequired(true),
+        )
+        .addStringOption((o) => o.setName("roles").setDescription("Mentions, comma-separated").setMaxLength(300))
+        .addRoleOption((o) => o.setName("signup_role").setDescription("Restrict destination signups to this role"))
+        .addBooleanOption((o) => o.setName("clear_signup_role").setDescription("Open destination signups"))
+        .addIntegerOption((o) =>
+          o.setName("offset_minutes").setDescription("Post offset vs source post (-60 to 43200)").setMinValue(-43200).setMaxValue(43200),
+        ),
+    );
+}
+
+/** `google` group — Google Calendar integration (/eventconfig). */
+function googleGroup(g) {
+  return g
+    .setName("google")
+    .setDescription("Google Calendar integration.")
+    .addSubcommand((sc) =>
+      sc
+        .setName("connect")
+        .setDescription("Connect your own Google Calendar so you can sync events you can see."),
+    )
+    .addSubcommand((sc) =>
+      sc.setName("status").setDescription("Your calendar link status."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("disconnect")
+        .setDescription("Disconnect your Google Calendar for this server."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("autoset")
+        .setDescription("Staff: auto-sync newly posted events into a connected member's calendar.")
+        .addUserOption((o) =>
+          o.setName("member").setDescription("Connected member whose calendar receives events"),
+        )
+        .addBooleanOption((o) => o.setName("off").setDescription("Turn auto-sync off")),
     );
 }
 
@@ -1123,6 +1183,9 @@ module.exports = {
   DEFAULT_OPTIONS,
   MAX_VISIBLE_NAMES,
   buildCommandEvent,
+  buildEventSignupCommand,
+  buildEventConfigCommand,
+  buildEventChannelsCommand,
   buildEventComponents,
   buildEventMessage,
   buildPreviewEmbed,

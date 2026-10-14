@@ -28,7 +28,7 @@ Tiers mirror the bot's gates exactly — the same staff roles apply:
 
 | Tier | Who (same as slash) | Console access |
 |------|---------------------|----------------|
-| **Staff** | `ManageGuild` **or** any `staff_roles` level ([Staff Roles](staff-roles.md)) | Dashboard, users, leaderboard, moderation (warns/notes pages + issue/void), settings reads + staff-tier writes (XP rate, decay, log channels, level roles), staff list, integrations (YouTube/Twitch/reaction-roles/event-reminders/honeypot), **events** (calendar + all `/event` twin writes), voice (read), ticket transcripts (`/t`) |
+| **Staff** | `ManageGuild` **or** any `staff_roles` level ([Staff Roles](staff-roles.md)) | Dashboard, users, leaderboard, moderation (warns/notes pages + issue/void), settings reads + staff-tier writes (XP rate, decay, log channels, level roles), staff list, integrations (YouTube/Twitch/reaction-roles/event-reminders/honeypot), **events** (calendar + all Community Events twin writes: `/event`, `/eventsignup`, `/eventconfig`, `/eventchannels`), voice (read), ticket transcripts (`/t`) |
 | **Senior** | senior `staff_roles` rows | Everything staff sees **plus** the ticket actions page (list, claim/close/summarize) and the user Activity tab (mirrors `/userinfo` Activity / ticket-overwrite seniority) |
 | **Admin** | `ManageGuild` only | Everything above **plus** system + audit-trail pages and ManageGuild-tier mutations: grant XP, staff-role add/remove/setlevel, command-channel edits, command-visibility sync, honeypot exempt |
 

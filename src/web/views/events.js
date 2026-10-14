@@ -565,7 +565,7 @@ function renderPresets({ cid, presets, csrfToken }) {
     ${flash()}
     <h1>Signup presets</h1>
     <p class="muted">
-      Saved option groups reusable at create time (twins <code>/event preset</code>
+      Saved option groups reusable at create time (twins <code>/eventsignup preset</code>
       in Discord).
     </p>
     <form method="post" action="/g/${cid}/events/presets" class="form">

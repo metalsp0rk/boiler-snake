@@ -19,12 +19,17 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 31 slash commands with unique names", () => {
+  it("exports 34 slash commands with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 31);
+    assert.equal(commands.length, 34);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
+    // /event split (APPLICATION_COMMAND_TOO_LARGE): all four names registered.
+    assert.ok(names.includes("event"));
+    assert.ok(names.includes("eventsignup"));
+    assert.ok(names.includes("eventconfig"));
+    assert.ok(names.includes("eventchannels"));
     assert.ok(names.includes("bridge"));
     assert.ok(names.includes("link"));
     assert.ok(names.includes("note"));
