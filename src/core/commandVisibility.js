@@ -29,7 +29,12 @@ const COMMAND_VISIBILITY = Object.freeze({
   warn: TIERS.public,
   ticket: TIERS.public,
   eventreminder: TIERS.public,
+  // /event split (8000-char payload cap): signup/config/channels siblings,
+  // same public tier — per-subcommand staff gates stay in handlers.js.
   event: TIERS.public,
+  eventsignup: TIERS.public,
+  eventconfig: TIERS.public,
+  eventchannels: TIERS.public,
   play: TIERS.public,
   music: TIERS.public,
   link: TIERS.public,

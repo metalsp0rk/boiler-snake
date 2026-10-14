@@ -163,7 +163,7 @@ function skipOccurrence(event) {
     return { ok: false, error: "That series is not active." };
   }
   // schema CHECK vocabulary (042): 'skipped' — 'cancelled' would throw a
-  // constraint error and dead-end /event series skip in the router.
+  // constraint error and dead-end /eventconfig series skip in the router.
   repo.updateEvent(event.id, { status: "skipped" });
   if (series.next_occurrence_at != null && event.start_at >= series.next_occurrence_at - 86_400_000) {
     advanceCursor(series, series.next_occurrence_at);

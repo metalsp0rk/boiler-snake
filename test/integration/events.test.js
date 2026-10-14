@@ -380,7 +380,7 @@ describe("integration: community events", () => {
 
   it("settings: valid + invalid timezone, create-role gate, show", async () => {
     const bad = await env.runCommand({
-      commandName: "event",
+      commandName: "eventconfig",
       subcommandGroup: "settings",
       subcommand: "timezone",
       admin: true,
@@ -389,7 +389,7 @@ describe("integration: community events", () => {
     assert.match(lastReplyContent(bad), /valid timezone/i);
 
     await env.runCommand({
-      commandName: "event",
+      commandName: "eventconfig",
       subcommandGroup: "settings",
       subcommand: "timezone",
       admin: true,
@@ -399,7 +399,7 @@ describe("integration: community events", () => {
 
     // gate create behind a role the plain member lacks
     await env.runCommand({
-      commandName: "event",
+      commandName: "eventconfig",
       subcommandGroup: "settings",
       subcommand: "role",
       admin: true,
@@ -409,7 +409,7 @@ describe("integration: community events", () => {
     assert.match(lastReplyContent(denied), /role|staff|organizer/i);
     // clear it again
     await env.runCommand({
-      commandName: "event",
+      commandName: "eventconfig",
       subcommandGroup: "settings",
       subcommand: "role",
       admin: true,
@@ -424,7 +424,7 @@ describe("integration: community events", () => {
     const draft = repo.listUpcomingEvents(cid(), { limit: 40 }).find((e) => e.status === "draft");
     assert.ok(draft, "have a draft to mutate");
     const add = await env.runCommand({
-      commandName: "event",
+      commandName: "eventsignup",
       subcommandGroup: "options",
       subcommand: "add",
       admin: true,
@@ -432,7 +432,7 @@ describe("integration: community events", () => {
     });
     assert.match(lastReplyContent(add), /added/i);
     const list = await env.runCommand({
-      commandName: "event",
+      commandName: "eventsignup",
       subcommandGroup: "options",
       subcommand: "list",
       admin: true,
@@ -441,7 +441,7 @@ describe("integration: community events", () => {
     assert.match(lastReplyContent(list), /VIP/);
 
     const save = await env.runCommand({
-      commandName: "event",
+      commandName: "eventsignup",
       subcommandGroup: "preset",
       subcommand: "save",
       admin: true,
@@ -463,7 +463,7 @@ describe("integration: community events", () => {
     const ev = getEvent(eventA.id);
     const role = env.guild.roles.cache.get(attendeeRoleId);
     const add = await env.runCommand({
-      commandName: "event",
+      commandName: "eventconfig",
       subcommandGroup: "reminders",
       subcommand: "add",
       admin: true,
@@ -474,7 +474,7 @@ describe("integration: community events", () => {
     const roleRow = rows.find((r) => r.target === "role");
     assert.ok(roleRow, "role reminder row");
     const remove = await env.runCommand({
-      commandName: "event",
+      commandName: "eventconfig",
       subcommandGroup: "reminders",
       subcommand: "remove",
       admin: true,

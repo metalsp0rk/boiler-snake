@@ -472,7 +472,7 @@ With daily decay:
 - Activity analytics dashboard
 - XP transfer between servers
 
-**Recently added**: [Community events](community-events.md) (`/event` — bot-owned events with button RSVP, waitlists, series, reminders on the signup list); [Music player](music.md); [Twitch stream notifications](twitch-notifications.md) (multi-channel go-live alerts + dedicated ping role); [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
+**Recently added**: [Community events](community-events.md) (`/event` + `/eventsignup` / `/eventconfig` / `/eventchannels` — bot-owned events with button RSVP, waitlists, series, reminders on the signup list); [Music player](music.md); [Twitch stream notifications](twitch-notifications.md) (multi-channel go-live alerts + dedicated ping role); [Help Tickets](tickets.md); [User activity](user-activity.md) (`/userinfo` Activity, `/activityconfig`); [Warnings](warnings.md); [Staff notes](staff-notes.md); [Staff roles](staff-roles.md) (`/staff`); [Scheduled event reminders](event-reminders.md); [Honeypot channels](honeypot.md)
 
 ---
 

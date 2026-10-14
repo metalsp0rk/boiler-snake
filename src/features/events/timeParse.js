@@ -136,7 +136,7 @@ function parseEventTime(text, { timeZone = "UTC", nowMs = Date.now() } = {}) {
   if (tz !== "UTC" && tzOffsetMs(nowMs, tz) == null) {
     return {
       ok: false,
-      error: `Unknown time zone \`${tz}\` in guild settings (staff can fix it with \`/event settings timezone\`).`,
+      error: `Unknown time zone \`${tz}\` in guild settings (staff can fix it with \`/eventconfig settings timezone\`).`,
     };
   }
 

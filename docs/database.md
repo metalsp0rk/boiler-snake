@@ -1308,7 +1308,7 @@ Bot-owned events with button RSVPs (migrations `042`–`045`; feature guide: [Co
 | `event_google_links` | Per-user Google OAuth: `refresh_token_ciphertext` (envelope-encrypted, `TOKEN_ENCRYPTION_KEY`), `email`, `calendar_id`, `auto_sync` flag (the guild's auto-sync calendar is the member row with `auto_sync=1`). |
 | `event_crossposts` + `event_crosspost_messages` | Cross-guild pairs: `code`, `source_community_id` / `destination_community_id` + channels, `state` (`invited` / `approved` / `revoked`), per-destination `role_whitelist` (signup gate), `mention_role_ids`, `post_offset_minutes`; message rows map destination copies to the source event (`dest_message_id=''` marks an undelivered delayed copy). |
 
-Shared with feature 2: the **guild-wide** reminder opt-out stays a single row in feature 2's `event_reminder_optouts` — `/event reminders off` and `/eventreminder optout` read and write the same preference (design record E14).
+Shared with feature 2: the **guild-wide** reminder opt-out stays a single row in feature 2's `event_reminder_optouts` — `/eventconfig reminders off` and `/eventreminder optout` read and write the same preference (design record E14).
 
 ---
 

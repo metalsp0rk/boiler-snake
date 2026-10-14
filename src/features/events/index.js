@@ -1,7 +1,9 @@
 /**
  * Community events feature (epic #218, roadmap/community-events.md).
  *
- * Slash: /event … (public tier; per-subcommand gates in handlers.js)
+ * Slash: /event, /eventsignup, /eventconfig, /eventchannels (public tier;
+ * per-subcommand gates in handlers.js — the /event split keeps every command
+ * under Discord's 8000-char payload cap, all four route to handleEvent)
  * Buttons: ev:* (signups, confirm, edit, delete, calendar, wizard)
  * Modals:  evm:edit:<eventId>
  * Gateway: MessageCreate for DM wizard answers (E15)
@@ -9,7 +11,12 @@
  */
 const { Events } = require("discord.js");
 const { startEventsTicker } = require("./ticker");
-const { buildCommandEvent } = require("./ui");
+const {
+  buildCommandEvent,
+  buildEventSignupCommand,
+  buildEventConfigCommand,
+  buildEventChannelsCommand,
+} = require("./ui");
 const { handleEvent } = require("./handlers");
 const { autocompleteEvent } = require("./autocomplete");
 const { handleEventButton } = require("./buttons");
@@ -79,12 +86,28 @@ function start(supervisor) {
 
 module.exports = {
   name: "events",
-  commands: [buildCommandEvent()],
+  // /event is split in four: one command serialized to 21,136 chars and
+  // Discord refused it (APPLICATION_COMMAND_TOO_LARGE, max 8000). The
+  // DISPATCH keys in handlers.js are group-sub/sub, never the top-level
+  // name, so all four commands share handleEvent + autocompleteEvent.
+  // test/command-size.test.js guards every registry command < 8000 chars.
+  commands: [
+    buildCommandEvent(),
+    buildEventSignupCommand(),
+    buildEventConfigCommand(),
+    buildEventChannelsCommand(),
+  ],
   handlers: {
     event: handleEvent,
+    eventsignup: handleEvent,
+    eventconfig: handleEvent,
+    eventchannels: handleEvent,
   },
   autocomplete: {
     event: autocompleteEvent,
+    eventsignup: autocompleteEvent,
+    eventconfig: autocompleteEvent,
+    eventchannels: autocompleteEvent,
   },
   buttonHandlers: {
     "ev:": handleEventButton,

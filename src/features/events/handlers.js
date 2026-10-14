@@ -118,7 +118,7 @@ async function handleCreate(interaction, ctx) {
     specs = res.options;
   } else if (presetName) {
     const preset = repo.getEventPresetByName(communityId, presetName);
-    if (!preset) return fail(interaction, `No preset **${presetName}** — see \`/event preset list\`.`);
+    if (!preset) return fail(interaction, `No preset **${presetName}** — see \`/eventsignup preset list\`.`);
     specs = presets.toSpecs(preset.options);
   } else {
     specs = presets.defaultSpecs();
@@ -460,7 +460,7 @@ async function handleResponse(interaction, ctx) {
   const optRef = sub === "move" ? o.getInteger("from_option") : o.getInteger("option");
   const fromOpt = optRef == null ? null : options.resolveOption(ev.event.id, optRef);
   if (optRef != null && !fromOpt) {
-    return fail(interaction, `No option \`${optRef}\` on that event (see \`/event options list event:${ev.event.id}\`).`);
+    return fail(interaction, `No option \`${optRef}\` on that event (see \`/eventsignup options list event:${ev.event.id}\`).`);
   }
 
   let res;
@@ -541,7 +541,7 @@ async function handleReminders(interaction, ctx) {
     return replyEphemeral(
       interaction,
       sub === "off"
-        ? "Default reminders **off** for this server (existing events keep theirs; \`/event reminders remove\`)."
+        ? "Default reminders **off** for this server (existing events keep theirs; \`/eventconfig reminders remove\`)."
         : `Default reminders **on** (${next} min before start).`
     );
   }
@@ -610,7 +610,7 @@ async function handleReminders(interaction, ctx) {
   if (sub === "remove") {
     const row = repo.getEventReminderById(o.getInteger("reminder"));
     if (!row || row.event_id !== ev.event.id) {
-      return fail(interaction, "That reminder isn't on this event (see `/event reminders list`).");
+      return fail(interaction, "That reminder isn't on this event (see `/eventconfig reminders list`).");
     }
     const removed = repo.deleteEventReminder(row.id);
     return replyEphemeral(
@@ -624,7 +624,7 @@ async function handleReminders(interaction, ctx) {
   if (!rows.length) {
     return replyEphemeral(
       interaction,
-      `No reminders for **${ev.event.title}** yet — one is armed automatically ${settings.default_reminder_minutes} min before start (change via \`/event reminders default\` or add one with \`/event reminders add\`).`
+      `No reminders for **${ev.event.title}** yet — one is armed automatically ${settings.default_reminder_minutes} min before start (change via \`/eventconfig reminders default\` or add one with \`/eventconfig reminders add\`).`
     );
   }
   return replyEphemeral(
@@ -862,7 +862,7 @@ async function handleOptions(interaction, ctx) {
 
   if (sub === "edit") {
     const opt = options.resolveOption(ev.event.id, o.getInteger("option"));
-    if (!opt) return fail(interaction, "That option isn't on this event (see `/event options list`).");
+    if (!opt) return fail(interaction, "That option isn't on this event (see `/eventsignup options list`).");
     const patch = {};
     if (o.getString("label") != null) patch.label = o.getString("label");
     if (o.getString("emoji") != null) patch.emoji = o.getString("emoji");
@@ -885,7 +885,7 @@ async function handleOptions(interaction, ctx) {
     if ((counts.signed_up || 0) > 0) {
       return fail(
         interaction,
-        `**${opt.label}** has ${counts.signed_up} signup(s) — remove them first with \`/event response remove\`.`
+        `**${opt.label}** has ${counts.signed_up} signup(s) — remove them first with \`/eventsignup response remove\`.`
       );
     }
     repo.deleteEventOption(opt.id);
@@ -951,7 +951,7 @@ async function handlePreset(interaction, ctx) {
   }
   const rows = presets.list(communityId);
   if (!rows.length) {
-    return replyEphemeral(interaction, "No presets yet — save one with `/event preset save` from any event.");
+    return replyEphemeral(interaction, "No presets yet — save one with `/eventsignup preset save` from any event.");
   }
   return replyEphemeral(
     interaction,
@@ -1010,7 +1010,7 @@ async function handleChannel(interaction, ctx) {
   if (sub === "list") {
     const rows = repo.listEventChannels(communityId);
     if (!rows.length) {
-      return replyEphemeral(interaction, "No event channels marked — `/event channel mark` turns one into a dedicated event feed.");
+      return replyEphemeral(interaction, "No event channels marked — `/eventchannels channel mark` turns one into a dedicated event feed.");
     }
     return replyEphemeral(
       interaction,
@@ -1027,7 +1027,7 @@ async function handleChannel(interaction, ctx) {
     repo.markEventChannel(communityId, channel.id);
     return replyEphemeral(
       interaction,
-      `<#${channel.id}> is an event channel now. Use \`/event settings reminder-channel\` or create events there with \`/event create channel:#…\`. Purge stays **off** until enabled (E7).`
+      `<#${channel.id}> is an event channel now. Use \`/eventconfig settings reminder-channel\` or create events there with \`/event create channel:#…\`. Purge stays **off** until enabled (E7).`
     );
   }
   if (sub === "unmark") {
@@ -1046,7 +1046,7 @@ async function handleChannel(interaction, ctx) {
         return replyEphemeral(
           interaction,
           enabled
-            ? `Purge **on** for <#${channel.id}>: \`/event channel purge run:yes\` deletes non-event, unpinned messages (E7).`
+            ? `Purge **on** for <#${channel.id}>: \`/eventchannels channel purge run:yes\` deletes non-event, unpinned messages (E7).`
             : `Purge **off** for <#${channel.id}>.`
         );
       }
@@ -1054,7 +1054,7 @@ async function handleChannel(interaction, ctx) {
     if (!run) return fail(interaction, "Set `enabled` and/or `run: yes`.");
     const flagged = repo.listEventChannels(communityId).find((r) => r.channel_id === channel.id);
     if (!flagged || !flagged.purge) {
-      return fail(interaction, "Purge isn't enabled for that channel — `/event channel purge enabled:yes` first (E7: opt-in only).");
+      return fail(interaction, "Purge isn't enabled for that channel — `/eventchannels channel purge enabled:yes` first (E7: opt-in only).");
     }
     const del = await purgeChannelMessages(client, interaction, channel);
     return replyEphemeral(
@@ -1074,7 +1074,7 @@ async function handleChannel(interaction, ctx) {
 async function handleChannelSort(interaction, ctx, channel) {
   const { client, communityId } = resolveCtx(interaction, ctx);
   if (!repo.isEventChannel(communityId, channel.id)) {
-    return fail(interaction, "Mark it with `/event channel mark` first — sort only touches event channels.");
+    return fail(interaction, "Mark it with `/eventchannels channel mark` first — sort only touches event channels.");
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const messages = await channel.messages.fetch({ limit: 50 }).catch(async () => {
@@ -1175,7 +1175,7 @@ async function handleCrosspost(interaction, ctx) {
     if (!res.ok) return fail(interaction, res.error || `Could not create the invite: ${res.error}`);
     return replyEphemeral(
       interaction,
-      `Give this code to staff in \`${destGuildId}\` — they run \`/event crosspost approve\`:\n**\`${res.crosspost.invite_code}\`** (id \`${res.crosspost.id}\`)`
+      `Give this code to staff in \`${destGuildId}\` — they run \`/eventchannels crosspost approve\`:\n**\`${res.crosspost.invite_code}\`** (id \`${res.crosspost.id}\`)`
     );
   }
 
@@ -1192,14 +1192,14 @@ async function handleCrosspost(interaction, ctx) {
     if (res && res.ok === false) return fail(interaction, res.error);
     return replyEphemeral(
       interaction,
-      `Cross-post active ✅ — events from the partner server will appear${channel ? ` in <#${channel.id}>` : ""}. Their members' signups still count toward THEIR event; you can gate them with \`/event crosspost config\`.`
+      `Cross-post active ✅ — events from the partner server will appear${channel ? ` in <#${channel.id}>` : ""}. Their members' signups still count toward THEIR event; you can gate them with \`/eventchannels crosspost config\`.`
     );
   }
 
   if (sub === "revoke") {
     const id = o.getInteger("id");
     const pair = repo.getEventCrosspostById(id);
-    if (!pair) return fail(interaction, `No cross-post id \`${id}\` (see \`/event crosspost list\`).`);
+    if (!pair) return fail(interaction, `No cross-post id \`${id}\` (see \`/eventchannels crosspost list\`).`);
     if (pair.source_community_id !== communityId && pair.dest_community_id !== communityId) {
       return fail(interaction, "That pair doesn't involve this server.");
     }
@@ -1232,7 +1232,7 @@ async function handleCrosspost(interaction, ctx) {
   // list
   const rows = repo.listEventCrosspostsForCommunity(communityId);
   if (!rows.length) {
-    return replyEphemeral(interaction, "No cross-posts yet — `/event crosspost invite` starts a pair.");
+    return replyEphemeral(interaction, "No cross-posts yet — `/eventchannels crosspost invite` starts a pair.");
   }
   return replyEphemeral(
     interaction,
@@ -1280,7 +1280,7 @@ async function handleGoogle(interaction, ctx) {
       interaction,
       st.connected
         ? `Connected as **${st.email || "unknown"}** (calendar \`${st.calendarId}\`). Tap **📅 My calendar** on any event to add it.`
-        : "Not connected — `/event google connect` links your calendar."
+        : "Not connected — `/eventconfig google connect` links your calendar."
     );
   }
   if (sub === "autoset") {
@@ -1331,14 +1331,14 @@ async function handleEvent(interaction, ctx) {
   if (!fn) {
     return fail(
       interaction,
-      `\`/event ${group ? group + " " + sub : sub}\` isn't wired up yet (this build is missing that handler).`
+      `\`/${interaction.commandName} ${group ? group + " " + sub : sub}\` isn't wired up yet (this build is missing that handler).`
     );
   }
   try {
     await fn(interaction, ctx);
   } catch (err) {
     console.error(
-      `[events] /event ${key} guild=${interaction.guildId} user=${interaction.user?.id} failed:`,
+      `[events] /${interaction.commandName} ${key} guild=${interaction.guildId} user=${interaction.user?.id} failed:`,
       err?.message || err
     );
     const cause = err?.message || String(err);

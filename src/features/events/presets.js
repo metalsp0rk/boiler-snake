@@ -55,7 +55,7 @@ function applyToEvent(communityId, name, eventId) {
   if (!preset) {
     return {
       ok: false,
-      error: `No preset **${name}** here. See \`/event preset list\`.`,
+      error: `No preset **${name}** here. See \`/eventsignup preset list\`.`,
     };
   }
   return options.replaceOptions(eventId, toSpecs(preset.options));
