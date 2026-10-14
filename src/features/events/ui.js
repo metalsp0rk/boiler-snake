@@ -1023,34 +1023,39 @@ function buildEditModal(event) {
     .setTitle(`Edit: ${event.title}`.slice(0, 45));
   const title = new TextInputBuilder()
     .setCustomId("title")
-    .setLabel("Title")
     .setRequired(true)
     .setStyle(TextInputStyle.Short)
     .setMaxLength(150)
     .setValue(event.title.slice(0, 100));
   const start = new TextInputBuilder()
     .setCustomId("start")
-    .setLabel("Start time (blank = unchanged)")
     .setRequired(false)
     .setStyle(TextInputStyle.Short)
     .setMaxLength(80)
     .setPlaceholder("in 2h · tomorrow 7pm · 2026-11-05T19:00Z");
   const description = new TextInputBuilder()
     .setCustomId("description")
-    .setLabel("Description (blank = keep, '-' = clear)")
     .setRequired(false)
     .setStyle(TextInputStyle.Paragraph)
     .setMaxLength(1000);
   const location = new TextInputBuilder()
     .setCustomId("location")
-    .setLabel("Location (blank = keep, '-' = clear)")
     .setRequired(false)
     .setStyle(TextInputStyle.Short)
     .setMaxLength(200);
-  // `required` belongs to the text input itself — LabelBuilder has no setRequired.
-  for (const c of [title, start, description, location]) {
+  // Components-v2 labels: the label text lives ONLY on the LabelBuilder —
+  // a TextInput nested in a Label must not carry its own `label` (Discord
+  // rejects with TEXT_INPUT_COMPONENT_LABEL_IN_LABEL_COMPONENT). `required`
+  // stays on the text input (LabelBuilder has no setRequired).
+  const fields = [
+    ["Title", title],
+    ["Start time (blank = unchanged)", start],
+    ["Description (blank = keep, '-' = clear)", description],
+    ["Location (blank = keep, '-' = clear)", location],
+  ];
+  for (const [label, input] of fields) {
     modal.addLabelComponents(
-      new LabelBuilder().setLabel(c.data.label).setTextInputComponent(c)
+      new LabelBuilder().setLabel(label).setTextInputComponent(input)
     );
   }
   return modal;
