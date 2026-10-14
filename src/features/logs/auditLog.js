@@ -32,12 +32,32 @@ function cacheMessage(message) {
   if (!message?.id) return;
   if (message.authorBot || message.author?.bot) return;
 
+  // No Fluxer writes (issue #277, the issue's sanctioned "drop" alternative):
+  // this cache's ONLY readers are the Discord delete-audit paths below
+  // (logMessageDelete / logMessageBulkDelete, both guild-gated), while the
+  // Fluxer edit/delete intake (PR #250's pipeline entries) resolves bridge
+  // LINK rows and never reaches for takeCachedMessage. #200 made the step-3
+  // write observable for Fluxer, but with no reader the rows were exactly
+  // what the issue calls "write-only-by-accident" — accumulated until the
+  // retention sweeps (#192), read by nothing. Gated at the cache's single
+  // write seam (the only production caller is the pipeline's step 3) so the
+  // invariant holds for any future caller too. Normalized Fluxer messages
+  // carry the contract's `platform` field (#201 pins it); raw discord.js
+  // duck shapes never do and keep caching through the guild key untouched.
+  // RE-ENABLING requires wiring the consumer (edit-relay PartialMessage
+  // resolution / delete-intake audit) AND a read-path integration test.
+  if (message.platform === "fluxer") return;
+
   // Platform-neutral community key (issue #200): the NormalizedMessage shape
   // carries the INTEGER communities.id (resolved at the pipeline edge —
   // contract 4); raw discord.js duck shapes keep resolving through the
   // Discord guild id. Before this, the step silently cached NOTHING for a
   // Fluxer message (the gate duck-typed `message.guild`, a Discord-only
   // field — the audit's "duck-field deaths" at the pipeline's own step 3).
+  // #277 history note: that observability was short-lived — the Fluxer write
+  // is dropped outright (gate above), so today only Discord shapes write.
+  // The key stays platform-neutral because the READ path still resolves
+  // through normalized shapes, and a future Fluxer consumer builds on it.
   const communityId = messageCommunityKey(message);
   if (communityId == null) return;
 
