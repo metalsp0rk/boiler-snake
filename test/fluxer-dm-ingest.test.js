@@ -5,7 +5,10 @@
  *  - normalizeFluxerDmMessage: DM payloads → NormalizedDmMessage (exact shape).
  *  - createDmDispatcher (src/platform/fluxer/client.js): the opt-in consumer
  *    registry behind handle.onDmMessage — multiple consumers, per-listener
- *    fault isolation, unsubscribe.
+ *    fault isolation, unsubscribe. Since issue #279 emit ALSO gates the
+ *    NormalizedDmMessage contract (half-shaped DMs log + skip — the
+ *    violation pins live in test/normalizedShapeContracts.test.js), so the
+ *    fixtures below deliver real normalized DMs.
  *  - The guild pipeline is untouched: guild payloads keep normalizing to
  *    NormalizedMessage and never reach the DM normalizer.
  *
@@ -47,6 +50,20 @@ function dmD(overrides = {}) {
     timestamp: TS_ISO,
     ...overrides,
   });
+}
+
+/**
+ * A contract-valid NormalizedDmMessage from the REAL normalizer. Since
+ * issue #279 the dispatcher's emit asserts the shape at the consumer-entry
+ * boundary, so the fault-isolation/unsubscribe pins below deliver real
+ * normalized DMs (pre-#279 they passed hand-built `{id}` objects — exactly
+ * the half-shaped payload class the contract now rejects and skips).
+ */
+function normalizedDm(instanceKey, overrides = {}) {
+  return normalizeFluxerDmMessage(
+    { t: "MESSAGE_CREATE", d: dmD(overrides) },
+    { instanceKey },
+  );
 }
 
 describe("platform/fluxer/normalize — normalizeFluxerDmMessage", () => {
@@ -207,7 +224,9 @@ describe("platform/fluxer/client — createDmDispatcher (opt-in onDmMessage hook
       dispatcher.register(async () => {
         throw new Error("async boom");
       });
-      await dispatcher.emit({ id: "m1", authorId: "u1" });
+      // Contract-valid DM (issue #279): the listener, not the payload, is
+      // the fault under test — emit's contract gate must not swallow it.
+      await dispatcher.emit(normalizedDm("inst-2"));
       assert.equal(
         lines.filter((l) => l.includes("async boom")).length,
         1,
@@ -223,12 +242,12 @@ describe("platform/fluxer/client — createDmDispatcher (opt-in onDmMessage hook
     const off = dispatcher.register(() => {
       hits += 1;
     });
-    await dispatcher.emit({ id: "m1" });
+    await dispatcher.emit(normalizedDm("inst-3", { id: "1554600000000005091" }));
     assert.equal(hits, 1);
 
     off();
     off(); // second call is a no-op
-    await dispatcher.emit({ id: "m2" });
+    await dispatcher.emit(normalizedDm("inst-3", { id: "1554600000000005092" }));
     assert.equal(hits, 1, "the unregistered consumer receives nothing more");
     assert.equal(dispatcher.listenerCount(), 0);
   });

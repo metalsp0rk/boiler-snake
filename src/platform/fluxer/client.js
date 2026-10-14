@@ -34,6 +34,14 @@ const {
 } = require("./normalize");
 const { createFluxerOutbound } = require("./outbound");
 const { discoverInstance } = require("./discovery");
+// NormalizedDmMessage contract (issue #279): the DM fan-out (emit) is the
+// single point where normalizeFluxerDmMessage output enters shared consumer
+// code — the same #201 validator module, same error class, same boundary
+// discipline (distinct log + skip, never a crash).
+const {
+  assertNormalizedDm,
+  NormalizedMessageContractError,
+} = require("../normalizedMessageContract");
 const { normalizeWebappBase } = require("../../core/jumpUrl");
 const { getCommunityById } = require("../community");
 const { normalizeOriginForKey } = require("../../config");
@@ -185,9 +193,26 @@ function createDmDispatcher(instanceKey = "fluxer") {
     /**
      * Fan one NormalizedDmMessage out to every registered listener, awaiting
      * each (a slow consumer delays the next — relay ordering beats concurrency).
+     *
+     * Contract gate (issue #279): this fan-out is where fluxer-normalized DMs
+     * enter shared consumer code, so the NormalizedDmMessage required-field
+     * contract is asserted HERE — consumers only ever see the §10.3 typedef
+     * shape. A violation names field + platform, is logged distinctly from
+     * downstream consumer failures, and the DM is skipped; it never reaches
+     * the gateway handler's catch as a generic listener failure.
+     *
      * @param {object} dm NormalizedDmMessage
      */
     async emit(dm) {
+      try {
+        assertNormalizedDm(dm, { boundary: "onDmMessage" });
+      } catch (err) {
+        if (!(err instanceof NormalizedMessageContractError)) throw err;
+        console.error(
+          `[fluxer] ${instanceKey} normalized-dm contract violation (DM skipped): ${err.message}`,
+        );
+        return;
+      }
       for (const listener of [...listeners]) {
         try {
           await listener(dm);
