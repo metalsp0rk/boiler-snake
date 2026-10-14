@@ -146,8 +146,13 @@ async function handleConfirmPost(interaction, ctx) {
   const client = clientFor(ctx);
   const event = await loadEvent(interaction);
   if (!event) return;
-  if (event.status === "posted") return note(interaction, "Already posted ✅");
-  if (event.status !== "pending_confirm" && event.status !== "draft") {
+  // "posted" is allowed through: the service verifies whether the original
+  // message still exists and re-posts cleanly if it was deleted.
+  if (
+    event.status !== "pending_confirm" &&
+    event.status !== "draft" &&
+    event.status !== "posted"
+  ) {
     return note(interaction, `This event is ${event.status} — nothing to post.`);
   }
   if (event.creator_id !== interaction.user.id && !isStaff(interaction)) {
@@ -156,6 +161,9 @@ async function handleConfirmPost(interaction, ctx) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const res = await service.postEventNow(client, event, { actorId: interaction.user.id });
   if (!res.ok) return interaction.editReply(`Couldn't post it: \`${res.error}\``);
+  if (res.warnings?.includes("already posted")) {
+    return interaction.editReply("Already posted ✅");
+  }
   return interaction.editReply(
     `Posted ✅${res.warnings?.length ? ` — notes: ${res.warnings.join("; ")}` : ""}`
   );
