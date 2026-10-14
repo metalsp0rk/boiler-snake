@@ -386,6 +386,85 @@ describe("integration: bridge pipeline gates", () => {
     // skipped message earns no XP
     assertXp(env2.db, fluxerCommunity, "5", xpBefore);
   });
+
+  /**
+   * Issue #277 (sanctioned drop): the step-3 message-cache write lands ZERO
+   * rows for Fluxer. The cache's only readers are the Discord edit/delete
+   * audit paths (logMessageDelete / logMessageBulkDelete); the Fluxer
+   * edit/delete intake resolves bridge LINK rows, never takeCachedMessage —
+   * so the #200-observable Fluxer write was write-only-by-accident. This
+   * SDK-free proof drives a REAL normalized Fluxer MESSAGE_CREATE through
+   * the shipped pipeline (gatewayMessage wire shape → the shipped
+   * normalizer), shows the message genuinely reached step 3 and beyond, and
+   * asserts the Discord twin STILL caches (the gate must never starve the
+   * delete-audit consumers).
+   */
+  it("a Fluxer chat message writes no message-cache row while the Discord twin keeps caching (issue #277)", async () => {
+    relay.clearRelayState();
+    const handle = makeFakeHandle({ instanceKey: FLUXER_INSTANCE });
+    const fluxerCommunity = ensureCommunity({
+      platform: "fluxer",
+      instanceKey: FLUXER_INSTANCE,
+      externalGuildId: FLUXER_GUILD,
+    });
+    // Same XP wiring as the SDK-shaped walk (fluxer-sdk-pipeline.test.js):
+    // steps 9/10 execute for real, so the zero-log assertion below proves a
+    // COMPLETE walk, not one thinned by unset guild settings.
+    env2.db.updateGuildSettings(fluxerCommunity, { msg_xp: 5, msg_cooldown_sec: 0 });
+
+    const msg = normalizeFluxerMessage(
+      {
+        t: "MESSAGE_CREATE",
+        d: gatewayMessage({
+          id: "610004",
+          channel_id: FLUXER_CHANNEL,
+          guild_id: FLUXER_GUILD,
+          content: "cache me not",
+        }),
+      },
+      { instanceKey: FLUXER_INSTANCE },
+    );
+    // communityId stays NULL on purpose: step 2b resolves it IN-pipeline, so
+    // the null cache lookup below cannot be an unresolved-community artifact.
+
+    const logs = await captureConsoleError(() =>
+      pipelines.onMessageCreate(handle.outbound, msg, {}),
+    );
+    assert.deepEqual(logs, [], `clean pipeline walk, got: ${JSON.stringify(logs)}`);
+
+    // The message really passed step 3: the pipeline resolved its community
+    // (2b) and earned the activity counter (9) — a platform-blind early
+    // bail could not produce both.
+    assert.equal(msg.communityId, fluxerCommunity, "step 2b resolved the community row");
+    assert.equal(activityCount(fluxerCommunity, "5"), 1, "step 9 counted the human message");
+
+    // ZERO Fluxer cache rows — the #277 drop, observable at both readers.
+    assert.equal(
+      logsAudit.getCachedMessage(msg),
+      null,
+      "step 3 wrote no Fluxer cache row (issue #277 drop)",
+    );
+    assert.equal(
+      logsAudit.takeCachedMessage(msg),
+      null,
+      "and nothing downstream can take one",
+    );
+
+    // Discord twin through the SAME step 3: caching still happens, so the
+    // delete-audit consumers (takeCachedMessage at auditLog's
+    // logMessageDelete/logMessageBulkDelete) keep resolving content.
+    const author = env2.createUser({ id: "510000000000000099", username: "twin" });
+    const discordMsg = await env2.emitMessage({
+      author,
+      id: "700000000000000201",
+      content: "delete-audit fuel",
+    });
+    const cached = logsAudit.getCachedMessage(discordMsg);
+    assert.ok(cached, "Discord messages keep reaching the cache (issue #277 gate is Fluxer-only)");
+    assert.equal(cached.content, "delete-audit fuel");
+    assert.equal(cached.authorId, author.id);
+    assert.ok(logsAudit.takeCachedMessage(discordMsg), "the audit readers resolve the same key");
+  });
 });
 
 /**
