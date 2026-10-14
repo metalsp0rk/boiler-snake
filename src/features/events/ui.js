@@ -60,6 +60,16 @@ class SlashCommandOptionRef {
   }
 }
 
+/**
+ * Append the required `event` integer option (event id, autocomplete).
+ *
+ * issue #291: options serialize in insertion order and Discord rejects any
+ * payload where a required option follows an optional one
+ * (APPLICATION_COMMAND_OPTIONS_REQUIRED_INVALID) — and the registration PUT
+ * is atomic, so one bad subcommand darkens EVERY command. ALWAYS apply this
+ * to a bare/descriptor-only subcommand builder, never after optional options.
+ * test/command-option-order.test.js guards the whole registry offline.
+ */
 function withEvent(sc, name = "event") {
   return sc.addIntegerOption((o) =>
     o
@@ -192,16 +202,15 @@ function buildCommandEvent() {
           timeOptionTarget(o, "end_date", 'Series: last allowed occurrence, e.g. "Dec 31"'),
         ),
     )
+    // issue #291: withEvent() applies to the bare builder first, so the
+    // required `event` option precedes the optional edit fields/start/in_dm.
     .addSubcommand((sc) =>
-      withEvent(
-        timeOption(
-          addEditFields(
-            sc.setName("edit").setDescription("Edit an event (creator or staff)."),
-          ),
-          "start",
-          "New start time (unsent reminders move with it)",
+      timeOption(
+        addEditFields(
+          withEvent(sc.setName("edit").setDescription("Edit an event (creator or staff).")),
         ),
-        "event",
+        "start",
+        "New start time (unsent reminders move with it)",
       ).addBooleanOption((o) =>
         o.setName("in_dm").setDescription("Edit one field through the DM wizard instead"),
       ),
@@ -358,31 +367,33 @@ function buildCommandEvent() {
                 .setMaxValue(43200),
             ),
         )
+        // issue #291: withEvent() first so `event` + `minutes` (both required)
+        // precede the optional message/role.
         .addSubcommand((sc) =>
           withEvent(
             sc
               .setName("add")
-              .setDescription("Organizer/staff: add a reminder to a posted or draft event (max 8).")
-              .addIntegerOption((o) =>
-                o
-                  .setName("minutes")
-                  .setDescription("Minutes before start")
-                  .setRequired(true)
-                  .setMinValue(1)
-                  .setMaxValue(43200),
-              )
-              .addStringOption((o) =>
-                o
-                  .setName("message")
-                  .setDescription("Custom body ({event} {starts_in} {starts_at} {role} {location} {url})")
-                  .setMaxLength(500),
-              )
-              .addRoleOption((o) =>
-                o
-                  .setName("role")
-                  .setDescription("Also ping this role (role reminder, signups not required)"),
-              ),
-          ),
+              .setDescription("Organizer/staff: add a reminder to a posted or draft event (max 8)."),
+          )
+            .addIntegerOption((o) =>
+              o
+                .setName("minutes")
+                .setDescription("Minutes before start")
+                .setRequired(true)
+                .setMinValue(1)
+                .setMaxValue(43200),
+            )
+            .addStringOption((o) =>
+              o
+                .setName("message")
+                .setDescription("Custom body ({event} {starts_in} {starts_at} {role} {location} {url})")
+                .setMaxLength(500),
+            )
+            .addRoleOption((o) =>
+              o
+                .setName("role")
+                .setDescription("Also ping this role (role reminder, signups not required)"),
+            ),
         )
         .addSubcommand((sc) =>
           withEvent(
@@ -517,41 +528,37 @@ function buildCommandEvent() {
         .addSubcommand((sc) =>
           withEvent(sc.setName("list").setDescription("List this event's options with ids and counts.")),
         )
+        // issue #291: withEvent() first so `event` + `label` (both required)
+        // precede the optional emoji/capacity/waitlist/reminders/only_role.
         .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("add")
-              .setDescription("Add a signup option.")
-              .addStringOption((o) =>
-                o.setName("label").setDescription("Button label").setRequired(true).setMaxLength(50),
-              )
-              .addStringOption((o) => o.setName("emoji").setDescription("Emoji").setMaxLength(16))
-              .addIntegerOption((o) =>
-                o.setName("capacity").setDescription("Capacity (0 = unlimited)").setMinValue(0).setMaxValue(100000),
-              )
-              .addBooleanOption((o) => o.setName("waitlist").setDescription("Waitlist when full (default yes)"))
-              .addBooleanOption((o) => o.setName("reminders").setDescription("Counts as attending / gets reminders (default no)"))
-              .addRoleOption((o) => o.setName("only_role").setDescription("Restrict signups to this role")),
-          ),
+          withEvent(sc.setName("add").setDescription("Add a signup option."))
+            .addStringOption((o) =>
+              o.setName("label").setDescription("Button label").setRequired(true).setMaxLength(50),
+            )
+            .addStringOption((o) => o.setName("emoji").setDescription("Emoji").setMaxLength(16))
+            .addIntegerOption((o) =>
+              o.setName("capacity").setDescription("Capacity (0 = unlimited)").setMinValue(0).setMaxValue(100000),
+            )
+            .addBooleanOption((o) => o.setName("waitlist").setDescription("Waitlist when full (default yes)"))
+            .addBooleanOption((o) => o.setName("reminders").setDescription("Counts as attending / gets reminders (default no)"))
+            .addRoleOption((o) => o.setName("only_role").setDescription("Restrict signups to this role")),
         )
+        // issue #291: withEvent() first so `event` + `option` (both required)
+        // precede the optional edit fields.
         .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("edit")
-              .setDescription("Edit one option.")
-              .addIntegerOption((o) =>
-                o.setName("option").setDescription("Option id").setRequired(true).setAutocomplete(true),
-              )
-              .addStringOption((o) => o.setName("label").setDescription("New label").setMaxLength(50))
-              .addStringOption((o) => o.setName("emoji").setDescription("New emoji").setMaxLength(16))
-              .addIntegerOption((o) =>
-                o.setName("capacity").setDescription("New capacity (0 = unlimited)").setMinValue(0).setMaxValue(100000),
-              )
-              .addBooleanOption((o) => o.setName("waitlist").setDescription("Waitlist when full"))
-              .addBooleanOption((o) => o.setName("reminders").setDescription("Counts as attending"))
-              .addRoleOption((o) => o.setName("only_role").setDescription("Restrict to role (clear:true to open)"))
-              .addBooleanOption((o) => o.setName("clear_role").setDescription("Remove the role restriction")),
-          ),
+          withEvent(sc.setName("edit").setDescription("Edit one option."))
+            .addIntegerOption((o) =>
+              o.setName("option").setDescription("Option id").setRequired(true).setAutocomplete(true),
+            )
+            .addStringOption((o) => o.setName("label").setDescription("New label").setMaxLength(50))
+            .addStringOption((o) => o.setName("emoji").setDescription("New emoji").setMaxLength(16))
+            .addIntegerOption((o) =>
+              o.setName("capacity").setDescription("New capacity (0 = unlimited)").setMinValue(0).setMaxValue(100000),
+            )
+            .addBooleanOption((o) => o.setName("waitlist").setDescription("Waitlist when full"))
+            .addBooleanOption((o) => o.setName("reminders").setDescription("Counts as attending"))
+            .addRoleOption((o) => o.setName("only_role").setDescription("Restrict to role (clear:true to open)"))
+            .addBooleanOption((o) => o.setName("clear_role").setDescription("Remove the role restriction")),
         )
         .addSubcommand((sc) =>
           withEvent(
@@ -573,14 +580,12 @@ function buildCommandEvent() {
               ),
           ),
         )
+        // issue #291: withEvent() first so the required `event` precedes the
+        // optional role/clear.
         .addSubcommand((sc) =>
-          withEvent(
-            sc
-              .setName("whitelist")
-              .setDescription("Event-wide role whitelist for all options.")
-              .addRoleOption((o) => o.setName("role").setDescription("Required role"))
-              .addBooleanOption((o) => o.setName("clear").setDescription("Remove the whitelist")),
-          ),
+          withEvent(sc.setName("whitelist").setDescription("Event-wide role whitelist for all options."))
+            .addRoleOption((o) => o.setName("role").setDescription("Required role"))
+            .addBooleanOption((o) => o.setName("clear").setDescription("Remove the whitelist")),
         ),
     )
     // ── preset group ───────────────────────────────────────────────────
