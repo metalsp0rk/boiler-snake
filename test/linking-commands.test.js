@@ -17,15 +17,20 @@
  *      SHA-256 digest lands in user_link_codes (the plaintext is shown once).
  *  (b) `!link connect <code>` redeems a Discord-minted code: success reply +
  *      the user_links row readable via api.getUserLinkFrom BOTH sides, with
- *      Discord stored as side `a` (canonical orientation).
+ *      Discord stored as side `a` (canonical orientation). On Fluxer the
+ *      pairing detail is DM-first (#276): channel gets the peer-free sentinel.
  *  (c) mirrored mint direction: `!link create` → `/link connect` works too.
  *      The Fluxer create reply is DM-first (K2, issue #194): the code lands in
  *      the author's DM, the channel gets the sentinel ack WITHOUT the code,
  *      and a failed DM delivery posts the delivery error only (never the code).
  *  (d) /link status names the peer (resolved display name + ids) and every
  *      mirror rate; a caller with no link gets the specific create-guidance.
+ *      On Fluxer the pairing itself is DM-first (#276): the channel ack is
+ *      scrubbed, the detail (and any delivery error) is not channel-visible.
  *  (e) remove deletes the row and quotes the service's non-retroactive note
- *      VERBATIM; a second remove is the repo's specific no-op sentence.
+ *      VERBATIM; a second remove is the repo's specific no-op sentence. On
+ *      Fluxer the peer-naming confirmation rides the DM (#276); the channel
+ *      keeps the outcome + the peer-free note.
  *  (f) config: Discord caller "to-fluxer 50" → a_to_b=50 (status shows it);
  *      Fluxer caller "to-discord 30" → b_to_a=30 (caller-relative mapping).
  *  (g) EVERY service refusal is replied VERBATIM (AGENTS.md rule 3 — never a
@@ -305,20 +310,35 @@ describe("linking command surface (account-linking T3/T6)", () => {
   it("Fluxer !link connect redeems the Discord-minted code; the link row reads back from BOTH sides", async () => {
     const out = await runFluxer(`!link connect code ${state.discCode}`, FX_1);
 
+    // (#276) The channel-visible ack is the peer-free sentinel; the pairing
+    // detail rides the DM.
     assert.equal(out.posts.length, 1, "Fluxer replies in-channel — exactly one POST");
     assert.deepEqual(out.body.allowed_mentions, { parse: [] }, "replies never ping");
-    // Peer descriptor carries the supervisor-resolved display name + ids.
-    assert.ok(
-      out.body.content.startsWith(
-        `Linked to disc-name — user ${DISC_1} on Discord (instance discord, community ${dcId}).`,
-      ),
-      `connect reply names the peer: ${out.body.content}`,
+    assert.match(
+      out.body.content,
+      /^Linked — the pairing details are on their way to your DMs/,
+      out.body.content,
     );
-    assert.match(out.body.content, /XP and gork memories now mirror/);
+    assert.ok(
+      !out.body.content.includes(DISC_1) &&
+        !out.body.content.includes("disc-name") &&
+        !out.body.content.includes("user "),
+      `the channel sentinel names no peer: ${out.body.content}`,
+    );
     // surfaceCmd is the CALLER's platform spelling: "!link", never "/link".
     assert.match(out.body.content, /!link config/);
     assert.match(out.body.content, /!link status/);
     assert.match(out.body.content, /That link code is spent\.$/);
+
+    assert.equal(out.dms.length, 1, "pairing detail delivered by DM");
+    // Peer descriptor carries the supervisor-resolved display name + ids.
+    assert.ok(
+      out.dmBody.content.startsWith(
+        `Linked to disc-name — user ${DISC_1} on Discord (instance discord, community ${dcId}).`,
+      ),
+      `the DM names the peer: ${out.dmBody.content}`,
+    );
+    assert.match(out.dmBody.content, /XP and gork memories now mirror/);
 
     const linkFromDc = api.getUserLinkFor(dcId, DISC_1);
     const linkFromFx = api.getUserLinkFor(fxId, FX_1);
@@ -429,11 +449,23 @@ describe("linking command surface (account-linking T3/T6)", () => {
     assert.ok(dcContent.includes("gork memory mirroring: on."));
 
     const fx = await runFluxer("!link status", FX_1);
+    // (#276): the pairing arrives by DM; the channel ack is scrubbed.
+    assert.match(
+      fx.body.content,
+      /^Your link details are on their way to your DMs/,
+      fx.body.content,
+    );
     assert.ok(
-      fx.body.content.includes(
+      !fx.body.content.includes(DISC_1) &&
+        !fx.body.content.includes("disc-name") &&
+        !fx.body.content.includes("user "),
+      `the status channel ack names no peer: ${fx.body.content}`,
+    );
+    assert.ok(
+      fx.dmBody.content.includes(
         `Linked: you (Fluxer user ${FX_1} in community ${fxId}) ↔ disc-name — user ${DISC_1} on Discord (instance discord, community ${dcId}).`,
       ),
-      `Fluxer-side status is caller-relative: ${fx.body.content}`,
+      `the DM-side status is caller-relative: ${fx.dmBody.content}`,
     );
 
     // Negative: a caller with no link gets the specific create-guidance sentence.
@@ -444,17 +476,26 @@ describe("linking command surface (account-linking T3/T6)", () => {
   });
 
   // (e) ---------------------------------------------------------------------
-  it("!link remove deletes the row and quotes the service's non-retroactive note verbatim", async () => {
+  it("!link remove deletes the row; the channel gets the peer-free confirmation + note, the DM the peer detail", async () => {
     const out = await runFluxer("!link remove", FX_1);
-    assert.ok(
-      out.body.content.includes(`Unlinked from user ${DISC_1} on Discord (community ${dcId}).`),
+    assert.match(
       out.body.content,
+      /^Unlinked — the confirmation details are on their way to your DMs/,
+      out.body.content,
+    );
+    assert.ok(
+      !out.body.content.includes(DISC_1) && !out.body.content.includes("user "),
+      `the channel confirmation names no peer: ${out.body.content}`,
     );
     assert.ok(
       out.body.content.includes(
         "XP and memories already mirrored on the other platform stay in place; mirroring stops from now on.",
       ),
-      "the service note (mirror is not retroactive) rides along verbatim",
+      "the service note (mirror is not retroactive) rides along verbatim — peer-free by construction",
+    );
+    assert.ok(
+      out.dmBody.content.includes(`Unlinked from user ${DISC_1} on Discord (community ${dcId}).`),
+      `the DM carries the peer-naming confirmation: ${out.dmBody.content}`,
     );
     assert.equal(api.getUserLinkFor(dcId, DISC_1), null, "row gone from the Discord side");
     assert.equal(api.getUserLinkFor(fxId, FX_1), null, "row gone from the Fluxer side");
@@ -505,7 +546,8 @@ describe("linking command surface (account-linking T3/T6)", () => {
     assert.equal(Number(api.getUserLinkFor(fxId, FX_1).mirror_memory), 0);
 
     const status = await runFluxer("!link status", FX_1);
-    assert.ok(status.body.content.includes("gork memory mirroring: off."), status.body.content);
+    // (#276): the status detail (incl. the memory switch) rides the DM.
+    assert.ok(status.dmBody.content.includes("gork memory mirroring: off."), status.dmBody.content);
   });
 
   it("config refusals are the service's own sentences (nothing-to-set, pct-without-direction, no-link)", async () => {
@@ -558,8 +600,8 @@ describe("linking command surface (account-linking T3/T6)", () => {
     assert.equal(minted.ok, true, minted.error || "");
     const first = await runFluxer(`!link connect code ${minted.code}`, FX_6);
     assert.ok(
-      first.body.content.startsWith(`Linked to disc-name — user ${DISC_6} on Discord`),
-      `first redeem succeeds: ${first.body.content}`,
+      first.dmBody.content.startsWith(`Linked to disc-name — user ${DISC_6} on Discord`),
+      `first redeem succeeds (pairing by DM): ${first.dmBody.content}`,
     );
     const row = api.db.prepare("SELECT used_at FROM user_link_codes WHERE id = ?").get(minted.linkCode.id);
     assert.ok(Number.isInteger(row.used_at), "used_at stamped by the first redeem");
@@ -765,6 +807,56 @@ describe("linking command surface (account-linking T3/T6)", () => {
       !out.body.content.includes(DISC_2) &&
         !out.body.content.includes(M.callerLinked(FX_2, fxId, DISC_2, dcId, "x", "!link")),
       `no peer detail even on the double-failure path: ${out.body.content}`,
+    );
+  });
+
+  // (g, Fluxer surfaces — issue #276) SUCCESS replies that name the peer ride
+  // the same K2 DM-first path: channel gets the peer-free sentinel; on DM
+  // failure the channel names the delivery cause (plus the bare outcome fact
+  // where one exists) and NEVER the pairing.
+  it("!link connect success whose DM ALSO fails: channel confirms the link + delivery cause, names no peer", async () => {
+    const minted = await service.createLinkCode(dcId, "disc-cmd-14");
+    assert.equal(minted.ok, true, minted.error || "");
+
+    const out = await runFluxer(`!link connect code ${minted.code}`, "flux-cmd-14", { dmMode: "fail" });
+
+    assert.equal(out.dms.length, 0, "the DM did not land");
+    assert.equal(out.posts.length, 1, "one channel reply");
+    assert.ok(
+      out.body.content.startsWith("Linked — that link code is spent."),
+      `the bare outcome fact leads: ${out.body.content}`,
+    );
+    assert.ok(
+      out.body.content.includes("I could not DM you the result: ") &&
+        out.body.content.includes("CANNOT_SEND_TO_USER"),
+      `the specific delivery cause surfaces: ${out.body.content}`,
+    );
+    // The delivery error may name the CALLER (their id is already public in
+    // this channel) — what must NEVER appear is the peer pairing.
+    assert.ok(
+      !out.body.content.includes("disc-cmd-14") &&
+        !out.body.content.includes("disc-name") &&
+        !out.body.content.includes("Linked to "),
+      `no pairing on the double-failure path: ${out.body.content}`,
+    );
+    assert.ok(api.getUserLinkFor(fxId, "flux-cmd-14"), "a failed DM does NOT roll back the link");
+    service.removeLink(fxId, "flux-cmd-14");
+  });
+
+  it("!link status whose DM fails: the channel gets the delivery error only, never the pairing", async () => {
+    // FX_2 ↔ DISC_2 is linked (fixture c) — the status detail must not leak.
+    const out = await runFluxer("!link status", FX_2, { dmMode: "fail" });
+    assert.equal(out.posts.length, 1, "one channel reply");
+    assert.match(
+      out.body.content,
+      /^I could not DM you the result: /,
+      `delivery-error-only form: ${out.body.content}`,
+    );
+    assert.ok(
+      !out.body.content.includes(DISC_2) &&
+        !out.body.content.includes("disc-name") &&
+        !out.body.content.includes("Linked: you"),
+      `the pairing stays out of the channel: ${out.body.content}`,
     );
   });
 
