@@ -35,6 +35,7 @@ docker compose run --rm bot node src/commands/register.js
 | `npm test` | Unit + integration tests (`node --test`) |
 | `npm run test:unit` | Unit tests only |
 | `npm run test:integration` | Offline full-stack integration tests (mocked Discord I/O, real SQLite) |
+| `npm run test:e2e` | Tier-4 E2E vs fauxcord mock Discord (`scripts/e2e/start-mock.sh` first; see docs/e2e.md) |
 | `docker compose up -d` | Run bot in container (volume for SQLite) |
 
 ## Architecture Highlights

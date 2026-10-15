@@ -1,0 +1,560 @@
+diff --git a/src/db.ts b/src/db.ts
+index b4549a7..4c91291 100644
+--- a/src/db.ts
++++ b/src/db.ts
+@@ -43,6 +43,33 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
+   typing_at: 'TEXT',
+ }
+ 
++/** E2E-fidelity columns (boiler-snake spike): persisted components + attached message. */
++const MESSAGES_E2E_COLUMNS: Record<string, string> = {
++  components: 'TEXT',
++}
++const INTERACTIONS_E2E_COLUMNS: Record<string, string> = {
++  message_id: 'TEXT',
++}
++
++/** Adds the E2E-fidelity columns to messages/interactions when missing. */
++function migrateE2eFidelityColumns(db: Database): void {
++  for (const [table, cols] of [
++    ['messages', MESSAGES_E2E_COLUMNS],
++    ['interactions', INTERACTIONS_E2E_COLUMNS],
++  ] as const) {
++    const existing = new Set(
++      (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
++        (col) => col.name
++      )
++    )
++    for (const [name, ddl] of Object.entries(cols)) {
++      if (!existing.has(name)) {
++        db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`)
++      }
++    }
++  }
++}
++
+ /**
+  * Adds channel feature columns (currently just voice_status) to an
+  * existing `channels` table when missing. Kept separate from
+@@ -802,6 +829,7 @@ export function initializeDatabase(dbPath: string): Database {
+ 
+   migrateChannelsThreadColumns(db)
+   migrateChannelsFeatureColumns(db)
++  migrateE2eFidelityColumns(db)
+ 
+   return db
+ }
+diff --git a/src/routes/test.ts b/src/routes/test.ts
+index 543d9ef..3eb8d6e 100644
+--- a/src/routes/test.ts
++++ b/src/routes/test.ts
+@@ -149,7 +149,7 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+   // command, without a real Discord client.
+   app.post('/_test/interactions', async (c) => {
+     const body = await c.req.json<TestInteractionRequest>()
+-    const result = createTestInteraction(db, body)
++    const result = createTestInteraction(db, body, baseUrl)
+     return result.ok
+       ? c.json(result.interaction, 201)
+       : c.json({ message: '404: Not Found', code: 0 }, 404)
+diff --git a/src/routes/webhooks.ts b/src/routes/webhooks.ts
+index dfcc278..021e713 100644
+--- a/src/routes/webhooks.ts
++++ b/src/routes/webhooks.ts
+@@ -67,6 +67,8 @@ function createFollowupOrWebhookMessage(
+           username: payload.username as string | undefined,
+           tts: payload.tts as boolean | undefined,
+           embeds: payload.embeds as unknown[] | undefined,
++          // SPIKE PATCH (boiler-snake e2e): persist components on followups
++          components: payload.components as unknown[] | undefined,
+         },
+         baseUrl
+       )
+@@ -80,6 +82,8 @@ function createFollowupOrWebhookMessage(
+           content: payload.content as string | undefined,
+           tts: payload.tts as boolean | undefined,
+           embeds: payload.embeds as unknown[] | undefined,
++          // SPIKE PATCH (boiler-snake e2e): persist components on followups
++          components: payload.components as unknown[] | undefined,
+         },
+         baseUrl
+       )
+@@ -480,6 +484,10 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+     const payload = await c.req.json<{
+       content?: string
+       embeds?: unknown[]
++      // SPIKE PATCH (boiler-snake e2e): editReply payloads can carry
++      // components/flags; updateMessage supports both.
++      components?: unknown[]
++      flags?: number
+     }>()
+     const updated = updateMessage(db, messageId, payload, baseUrl)
+     if (!updated) {
+diff --git a/src/services/interactions.ts b/src/services/interactions.ts
+index 9f13b9c..670bde7 100644
+--- a/src/services/interactions.ts
++++ b/src/services/interactions.ts
+@@ -10,8 +10,9 @@ import type { Database } from '../db'
+ import { generateSnowflake } from '../snowflake'
+ import { gatewayBus } from '../gateway/bus'
+ import { getGuildMember } from './guild-members'
++import { getChannel } from './channels'
+ import { getUser } from './users'
+-import { createMessage, type MessageObject } from './messages'
++import { createMessage, getMessage, updateMessage, type MessageObject } from './messages'
+ 
+ /** Interaction object for API responses and Gateway dispatch */
+ export interface InteractionObject {
+@@ -23,6 +24,13 @@ export interface InteractionObject {
+   channel_id?: string
+   member?: Record<string, unknown>
+   user?: Record<string, unknown>
++  message?: Record<string, unknown>
++  // SPIKE PATCH (boiler-snake e2e): fields real Discord always sends that
++  // discord.js v14 hard-requires (BaseInteraction reduce over entitlements).
++  entitlements?: unknown[]
++  attachment_size_limit?: number
++  authorizing_integration_owners?: Record<string, string>
++  context?: number
+   token: string
+   version: number
+ }
+@@ -41,6 +49,7 @@ interface InteractionRow {
+   member_json: string | null
+   responded: number
+   initial_response_message_id: string | null
++  message_id: string | null
+   created_at: string
+ }
+ 
+@@ -55,7 +64,8 @@ interface InteractionRow {
+  */
+ function toInteractionObject(
+   db: Database,
+-  row: InteractionRow
++  row: InteractionRow,
++  baseUrl = ''
+ ): InteractionObject {
+   const storedData = JSON.parse(row.data) as Record<string, unknown>
+   let data: Record<string, unknown> | undefined
+@@ -90,6 +100,37 @@ function toInteractionObject(
+     ...(row.guild_id && { guild_id: row.guild_id }),
+     ...(member && { member: member as unknown as Record<string, unknown> }),
+     ...(user && { user: user as unknown as Record<string, unknown> }),
++    // --- SPIKE PATCH (boiler-snake e2e): component interactions carry the
++    // message they are attached to (real Discord always sends `message` for
++    // MESSAGE_COMPONENT interactions; handler code reads interaction.message).
++    ...(row.message_id &&
++      (() => {
++        const attached = getMessage(db, row.message_id, baseUrl)
++        return attached
++          ? { message: attached as unknown as Record<string, unknown> }
++          : {}
++      })()),
++    // --- SPIKE PATCH (boiler-snake e2e): fields real Discord ALWAYS sends
++    // on gateway INTERACTION_CREATE that were missing here. discord.js v14
++    // hard-requires `entitlements` (constructor reduce) and resolves
++    // interaction.channelId ONLY from the nested `channel` object.
++    entitlements: [],
++    attachment_size_limit: 10_485_760,
++    authorizing_integration_owners: row.guild_id ? { '0': row.guild_id } : {},
++    context: row.guild_id ? 0 : 1,
++    ...(row.channel_id &&
++      (() => {
++        const ch = getChannel(db, row.channel_id)
++        return ch
++          ? {
++              channel: {
++                id: ch.id,
++                type: ch.type,
++                ...(row.guild_id && { guild_id: row.guild_id }),
++              },
++            }
++          : {}
++      })()),
+   }
+ 
+   return result
+@@ -106,6 +147,9 @@ export interface CreateInteractionParams {
+   commandId?: string
+   data?: Record<string, unknown>
+   userId: string
++  messageId?: string
++  /** Used to hydrate the attached component message's attachment URLs */
++  baseUrl?: string
+ }
+ 
+ /**
+@@ -121,8 +165,8 @@ export function createInteraction(
+ ): InteractionObject {
+   db.prepare(
+     `INSERT INTO interactions
+-       (id, application_id, token, type, guild_id, channel_id, command_id, data, user_id)
+-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
++       (id, application_id, token, type, guild_id, channel_id, command_id, data, user_id, message_id)
++     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   ).run(
+     params.interactionId,
+     params.applicationId,
+@@ -132,13 +176,14 @@ export function createInteraction(
+     params.channelId ?? null,
+     params.commandId ?? null,
+     JSON.stringify(params.data ?? {}),
+-    params.userId
++    params.userId,
++    params.messageId ?? null
+   )
+ 
+   const row = db
+     .prepare('SELECT * FROM interactions WHERE id = ?')
+     .get(params.interactionId) as InteractionRow
+-  const interaction = toInteractionObject(db, row)
++  const interaction = toInteractionObject(db, row, params.baseUrl)
+ 
+   gatewayBus.emit('interaction.create', {
+     applicationId: params.applicationId,
+@@ -186,6 +231,7 @@ export interface InteractionCallbackPayload {
+     embeds?: unknown[]
+     tts?: boolean
+     flags?: number
++    components?: unknown[]
+   }
+ }
+ 
+@@ -257,6 +303,9 @@ export function handleInteractionCallback(
+         tts: payload.data?.tts,
+         embeds: payload.data?.embeds,
+         flags: payload.data?.flags,
++        // SPIKE PATCH (boiler-snake e2e): real Discord persists components on
++        // interaction replies — handlers that post button panels depend on it.
++        components: payload.data?.components,
+       },
+       baseUrl
+     )
+@@ -265,6 +314,24 @@ export function handleInteractionCallback(
+     ).run(messageId, row.id)
+     interaction.response_message_id = messageId
+     resource = { type: 4, message }
++  } else if (payload.type === 7 && row.message_id) {
++    // SPIKE PATCH (boiler-snake e2e): UPDATE_MESSAGE edits the component's
++    // attached message (real Discord semantics). Without this, every
++    // `interaction.update(...)` button handler silently no-ops in the mock.
++    const edited = updateMessage(
++      db,
++      row.message_id,
++      {
++        content: payload.data?.content,
++        embeds: payload.data?.embeds,
++        components: payload.data?.components,
++        flags: payload.data?.flags,
++      },
++      baseUrl
++    )
++    db.prepare('UPDATE interactions SET responded = 1 WHERE id = ?').run(row.id)
++    interaction.response_message_id = row.message_id
++    if (edited) resource = { type: 7, message: edited }
+   } else {
+     db.prepare('UPDATE interactions SET responded = 1 WHERE id = ?').run(row.id)
+   }
+diff --git a/src/services/messages.ts b/src/services/messages.ts
+index ba966e1..7110695 100644
+--- a/src/services/messages.ts
++++ b/src/services/messages.ts
+@@ -63,6 +63,8 @@ export interface MessageRow {
+   referenced_message_id: string | null
+   created_at: string
+   edited_at: string | null
++  /** Persisted components JSON (added by migrateE2eFidelityColumns) */
++  components?: string | null
+ }
+ 
+ /** User record type retrieved from the DB */
+@@ -155,8 +157,8 @@ export interface MessageObject {
+   mention_roles: never[]
+   attachments: AttachmentObject[]
+   embeds: unknown[]
+-  /** Message components (slash command components, always empty in the mock) */
+-  components: never[]
++  /** Message components (persisted JSON in the `components` column) */
++  components: unknown[]
+   /** Reaction list (the field itself is omitted when there are no reactions) */
+   reactions?: ReactionObject[]
+   pinned: boolean
+@@ -246,7 +248,9 @@ export function toMessageObject(
+     embeds: embeds
+       .toSorted((a, b) => a.position - b.position)
+       .map((e) => JSON.parse(e.data) as unknown),
+-    components: [],
++    components: row.components
++      ? (JSON.parse(row.components) as unknown[])
++      : [],
+     pinned: row.pinned === 1,
+     type: row.type,
+     flags: row.flags,
+@@ -414,6 +418,7 @@ export interface MessageCreateParams {
+   embeds?: unknown[]
+   messageReference?: { message_id?: string }
+   flags?: number
++  components?: unknown[]
+ }
+ 
+ /**
+@@ -464,8 +469,8 @@ export function createMessage(
+   baseUrl: string
+ ): MessageObject {
+   db.prepare(
+-    `INSERT INTO messages (id, channel_id, author_id, author_token, content, tts, flags, referenced_message_id)
+-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
++    `INSERT INTO messages (id, channel_id, author_id, author_token, content, tts, flags, referenced_message_id, components)
++     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   ).run(
+     params.messageId,
+     params.channelId,
+@@ -474,7 +479,8 @@ export function createMessage(
+     params.content ?? '',
+     params.tts ? 1 : 0,
+     params.flags ?? 0,
+-    params.messageReference?.message_id ?? null
++    params.messageReference?.message_id ?? null,
++    params.components ? JSON.stringify(params.components) : null
+   )
+ 
+   // Save embeds
+@@ -517,7 +523,7 @@ export function createMessage(
+ export function updateMessage(
+   db: Database,
+   messageId: string,
+-  payload: { content?: string; embeds?: unknown[] | null; flags?: number },
++  payload: { content?: string; embeds?: unknown[] | null; flags?: number; components?: unknown[] | null },
+   baseUrl: string
+ ): MessageObject | null {
+   const row = db
+@@ -531,6 +537,16 @@ export function updateMessage(
+     ).run(payload.content, messageId)
+   }
+ 
++  // Components: null clears, undefined is a no-op, array replaces (mirrors embeds semantics)
++  if (payload.components !== undefined) {
++    db.prepare(
++      'UPDATE messages SET components = ?, edited_at = datetime(\'now\') WHERE id = ?'
++    ).run(
++      payload.components === null ? null : JSON.stringify(payload.components),
++      messageId
++    )
++  }
++
+   // null is equivalent to an empty array (delete all embeds). undefined means "no change" and is ignored
+   if (payload.embeds !== undefined) {
+     db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
+diff --git a/src/services/test-control.ts b/src/services/test-control.ts
+index 000b187..13f5356 100644
+--- a/src/services/test-control.ts
++++ b/src/services/test-control.ts
+@@ -11,6 +11,7 @@ import { gatewayBus } from '../gateway/bus'
+ import { buildGuildCreatePayload } from './guilds'
+ import { getGuildMember } from './guild-members'
+ import { getChannel } from './channels'
++import { getUser } from './users'
+ import {
+   createMessage,
+   getGuildIdForChannel,
+@@ -408,11 +409,21 @@ export function injectTestMessage(
+ export interface TestInteractionRequest {
+   application_id: string
+   type?: number
+-  command_name: string
++  /** Required for slash-command interactions (type 2); unused for components. */
++  command_name?: string
+   guild_id?: string
+   channel_id?: string
+   user_id?: string
+   options?: Record<string, unknown>[]
++  /**
++   * SPIKE PATCH (boiler-snake e2e): component interactions (type 3).
++   * `custom_id` + `message_id` are required; `component_type` defaults to 2
++   * (button); `values` carries select-menu selections.
++   */
++  custom_id?: string
++  component_type?: number
++  values?: string[]
++  message_id?: string
+ }
+ 
+ /** Result of a test-interaction creation attempt */
+@@ -425,19 +436,126 @@ interface CommandIdRow {
+   id: string
+ }
+ 
++/** Minimal row shape needed to confirm an attached message exists */
++interface MessageIdRow {
++  id: string
++}
++
++/**
++ * SPIKE PATCH (boiler-snake e2e): builds `data.resolved` for user-typed
++ * slash options (option type 6). Real Discord always resolves mentioned
++ * users into `data.resolved.users` (+ guild-scoped `members`), and
++ * discord.js `interaction.options.getUser()` reads exclusively from there —
++ * without it every user-option command receives a null user in the mock.
++ * @param db - Database
++ * @param options - Slash command options as provided by the test request
++ * @param guildId - Optional guild scope for member resolution
++ * @returns Resolved payload, or undefined when no user options exist
++ */
++function buildResolvedUsers(
++  db: Database,
++  options: Record<string, unknown>[],
++  guildId?: string
++): Record<string, unknown> | undefined {
++  const userOptionIds = new Set<string>()
++  const walkOptions = (opts: Record<string, unknown>[]) => {
++    for (const o of opts) {
++      if (Number(o.type) === 6 && typeof o.value === 'string') {
++        userOptionIds.add(o.value as string)
++      }
++      // Sub-command groups: user options live nested in `options`.
++      if (Array.isArray(o.options)) {
++        walkOptions(o.options as Record<string, unknown>[])
++      }
++    }
++  }
++  walkOptions(options)
++  if (userOptionIds.size === 0) return undefined
++
++  const users: Record<string, unknown> = {}
++  const members: Record<string, unknown> = {}
++  for (const id of userOptionIds) {
++    const user = getUser(db, id)
++    if (!user) continue
++    users[id] = user
++    if (guildId) {
++      const member = getGuildMember(db, guildId, id)
++      if (member) {
++        // Discord omits the nested `user` from resolved.members entries.
++        const { user: _nested, ...rest } = member as unknown as Record<
++          string,
++          unknown
++        >
++        members[id] = rest
++      }
++    }
++  }
++  if (Object.keys(users).length === 0) return undefined
++  return {
++    users,
++    ...(Object.keys(members).length > 0 && { members }),
++  }
++}
++
+ /**
+  * Simulates an interaction against a registered command, without a real
+  * Discord client. Prefers a guild-scoped command match (when `guild_id` is
+  * given) and falls back to a global command of the same name; a request
+  * with no `guild_id` only ever matches a global command.
++ *
++ * SPIKE PATCH (boiler-snake e2e): also simulates MESSAGE_COMPONENT (type 3)
++ * interactions — button/select clicks — by passing `custom_id` plus the
++ * `message_id` of a stored message (which becomes the interaction's
++ * attached `message`).
+  * @param db - Database
+  * @param request - Test interaction request body
++ * @param baseUrl - Base URL used to hydrate the attached message
+  * @returns The created interaction, or unknown_command if no match exists
+  */
+ export function createTestInteraction(
+   db: Database,
+-  request: TestInteractionRequest
++  request: TestInteractionRequest,
++  baseUrl = ''
+ ): CreateTestInteractionResult {
++  const userId = request.user_id ?? generateSnowflake()
++  const interactionId = generateSnowflake()
++  // Interaction tokens authorize the callback/followup endpoints on their
++  // own (no bot-token auth), so use a CSPRNG rather than a predictable
++  // Snowflake-derived value, matching webhook token generation.
++  const interactionToken = randomBytes(48).toString('base64url')
++
++  // --- SPIKE PATCH (boiler-snake e2e): component interaction branch -----
++  if (request.type === 3 || request.custom_id !== undefined) {
++    if (!request.custom_id || !request.message_id) {
++      return { ok: false, reason: 'unknown_command' }
++    }
++    const attached = db
++      .prepare('SELECT id FROM messages WHERE id = ?')
++      .get(request.message_id) as MessageIdRow | undefined
++    if (!attached) return { ok: false, reason: 'unknown_command' }
++
++    const interaction = createInteraction(db, {
++      interactionId,
++      applicationId: request.application_id,
++      token: interactionToken,
++      type: 3,
++      guildId: request.guild_id,
++      channelId: request.channel_id,
++      data: {
++        custom_id: request.custom_id,
++        component_type: request.component_type ?? 2,
++        ...(request.values && { values: request.values }),
++      },
++      userId,
++      messageId: request.message_id,
++      baseUrl,
++    })
++    return { ok: true, interaction }
++  }
++
++  if (!request.command_name) return { ok: false, reason: 'unknown_command' }
++  // -----------------------------------------------------------------------
++
+   const guildCommand = request.guild_id
+     ? (db
+         .prepare(
+@@ -459,12 +577,10 @@ export function createTestInteraction(
+   const command = guildCommand ?? globalCommand
+   if (!command) return { ok: false, reason: 'unknown_command' }
+ 
+-  const userId = request.user_id ?? generateSnowflake()
+-  const interactionId = generateSnowflake()
+-  // Interaction tokens authorize the callback/followup endpoints on their
+-  // own (no bot-token auth), so use a CSPRNG rather than a predictable
+-  // Snowflake-derived value, matching webhook token generation.
+-  const interactionToken = randomBytes(48).toString('base64url')
++  const options = request.options ?? []
++  // SPIKE PATCH (boiler-snake e2e): resolve user-typed options like real
++  // Discord does so discord.js options.getUser() works.
++  const resolved = buildResolvedUsers(db, options, request.guild_id)
+ 
+   const interaction = createInteraction(db, {
+     interactionId,
+@@ -474,8 +590,9 @@ export function createTestInteraction(
+     guildId: request.guild_id,
+     channelId: request.channel_id,
+     commandId: command.id,
+-    data: { options: request.options ?? [] },
++    data: { options, ...(resolved && { resolved }) },
+     userId,
++    baseUrl,
+   })
+ 
+   return { ok: true, interaction }
+diff --git a/src/services/webhooks.ts b/src/services/webhooks.ts
+index 974e618..010a2f9 100644
+--- a/src/services/webhooks.ts
++++ b/src/services/webhooks.ts
+@@ -249,6 +249,8 @@ export interface WebhookExecuteParams {
+   username?: string
+   tts?: boolean
+   embeds?: unknown[]
++  // SPIKE PATCH (boiler-snake e2e): followups can carry button components
++  components?: unknown[]
+ }
+ 
+ /**
+@@ -292,6 +294,7 @@ export function executeWebhook(
+       content: params.content,
+       tts: params.tts,
+       embeds: params.embeds,
++      components: params.components,
+     },
+     baseUrl
+   )

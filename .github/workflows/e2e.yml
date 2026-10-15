@@ -1,0 +1,49 @@
+name: E2E (fauxcord mock Discord)
+
+# Tier-4 E2E suite: boots the real bot against a pinned+patched fauxcord
+# mock (scripts/e2e/start-mock.sh). See docs/e2e.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FAUXCORD_URL: http://127.0.0.1:3100
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node@v4.4.0
+        with:
+          # Engines floor (same leg policy as test.yml's coverage gate).
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+
+      # Clone fauxcord at the pinned commit, apply the vendored patch series
+      # (scripts/e2e/fauxcord-e2e.patch), install, start, wait for health.
+      - name: Start fauxcord mock
+        run: scripts/e2e/start-mock.sh
+
+      - name: npm run test:e2e
+        run: npm run test:e2e
+
+      # Mock-side log is the first thing to triage when the suite fails.
+      - name: Upload mock log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@330a01c49ab1ba1cdfecb8714a9ca3c449c96402 # actions/upload-artifact@v4.4.3
+        with:
+          name: fauxcord-log
+          path: /tmp/opencode/fauxcord-data-e2e/fauxcord.log
+          retention-days: 5
