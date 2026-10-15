@@ -16,9 +16,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# CI policy: private self-hosted runner only (boiler-snake-runner-01 on the
+# docker host). Do not switch jobs to ubuntu-latest / public runners.
 jobs:
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     timeout-minutes: 15
     env:
       FAUXCORD_URL: http://127.0.0.1:3100
