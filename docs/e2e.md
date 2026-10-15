@@ -43,6 +43,7 @@ change; the mismatch restarts the mock automatically. Overrides: `PORT`,
 | `test/e2e/e2e-warnings.test.js` | 4 | `/warn` sub-commands: nested USER-option resolution, staff gate on `add`/`list`, public `mine`, DB-side effects |
 | `test/e2e/e2e-xp.test.js` | 5 | `/setxp` persist + validation copies, `/grantxp` slash-origin audit rows (before/after/reason), `/xp` non-member zero-state, message-XP **cooldown expiry** re-award (window shortened via `/setxp`) |
 | `test/e2e/e2e-settings.test.js` | 6 | `/setcommandchannel` add/list/remove via CHANNEL-option resolution + gate flips, gate-before-permission ordering, admin lockout exemption, `/settings` staff view, `/staff syncpermissions` dark config, register PUT fidelity (tier `defaultMemberPermissions` on the mock) |
+| `test/e2e/e2e-staffroles.test.js` | 7 | `/staff role add/list/setlevel/remove` via ROLE-option resolution, `@everyone` guard, admin-only denials, and seniority TRANSITIONS: the same senior-only `/userinfo` Activity click flips junior-denial → served on `/staff role setlevel`, back to denial on remove |
 | `test/e2e/e2e-mockgaps.test.js` | 23 | patch proofs for the interaction gaps: note-**modal** display/submit/validation round-trip, **autocomplete** choices over seeded rows, **human reaction** injection → reaction XP + cooldown + remove |
 
 Each file gets its own **namespace** (`test/e2e/helpers/mockenv.js` →
