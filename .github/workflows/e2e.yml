@@ -42,7 +42,7 @@ jobs:
       # Mock-side log is the first thing to triage when the suite fails.
       - name: Upload mock log (on failure)
         if: failure()
-        uses: actions/upload-artifact@330a01c49ab1ba1cdfecb8714a9ca3c449c96402 # actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # actions/upload-artifact@v4.4.3
         with:
           name: fauxcord-log
           path: /tmp/opencode/fauxcord-data-e2e/fauxcord.log

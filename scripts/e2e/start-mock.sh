@@ -17,6 +17,7 @@ FAUXCORD_REPO="${FAUXCORD_REPO:-https://github.com/tomacheese/fauxcord}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_FILE="$SCRIPT_DIR/fauxcord-e2e.patch"
+LOCK_FILE="$SCRIPT_DIR/fauxcord.lock.json"
 
 PORT="${PORT:-3100}"
 HOST="${HOST:-127.0.0.1}"
@@ -50,6 +51,9 @@ cd "$FAUXCORD_DIR"
 if [ -n "$(git status --porcelain -- src)" ]; then
   git checkout -q -- .
 fi
+# Drop a previously vendored (untracked) lockfile so a pin bump never runs
+# against the previous pin's resolution.
+git clean -qf -- package-lock.json 2>/dev/null || true
 if [ "$(git rev-parse HEAD)" != "$FAUXCORD_PIN" ]; then
   echo "[start-mock] fetching pinned commit ${FAUXCORD_PIN:0:8}"
   git fetch --quiet origin "$FAUXCORD_PIN"
@@ -62,9 +66,25 @@ git apply --check "$PATCH_FILE"
 git apply "$PATCH_FILE"
 
 # --- install + start ---------------------------------------------------------
+# fauxcord commits NO package-lock.json upstream, so `npm ci` is impossible
+# without one: we vendor the lockfile generated for the pinned commit
+# (scripts/e2e/fauxcord.lock.json) and copy it in. Regenerate BOTH this lock
+# and the patch whenever FAUXCORD_PIN moves:
+#   cd <clone at new pin> && npm install && cp package-lock.json <repo>/scripts/e2e/fauxcord.lock.json
+# `npm ci` (not install) keeps resolution frozen — immune to upstream drift
+# and to npm resolve-crash classes seen in the field.
 if [ ! -d node_modules ]; then
-  echo "[start-mock] npm install (first run)"
-  npm install --no-audit --no-fund --silent
+  if [ ! -f package-lock.json ]; then
+    if [ ! -f "$LOCK_FILE" ]; then
+      echo "[start-mock] FAIL: no upstream lockfile and no vendored $LOCK_FILE" >&2
+      exit 1
+    fi
+    echo "[start-mock] installing from vendored lockfile (first run)"
+    cp "$LOCK_FILE" package-lock.json
+  else
+    echo "[start-mock] installing from upstream lockfile (first run)"
+  fi
+  npm ci --no-audit --no-fund --no-progress
 fi
 
 rm -f "$PID_FILE"
