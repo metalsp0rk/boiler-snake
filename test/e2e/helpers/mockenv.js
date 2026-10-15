@@ -80,6 +80,7 @@ function namespaceIds(ns) {
     general: id(11),
     staffRole: id(12),
     channel2: id(13),
+    category: id(14), // type-4 channel slot (ticket categories, setcategory)
     human: id(20), // primary operator (seeded staff where the scenario says so)
     target: id(21), // interaction subject (never staff)
     outsider: id(22), // unprivileged human (never staff, never in allow-lists)
@@ -434,6 +435,21 @@ class MockEnv {
   /** GET /channels/:id — includes persisted permission_overwrites. */
   async channel(channelId) {
     return j(`${this.base}/api/channels/${channelId}`, { headers: this.auth });
+  }
+
+  /** List stored messages of a channel (GET /channels/:id/messages). */
+  async messages(channelId) {
+    return j(`${this.base}/api/channels/${channelId}/messages`, {
+      headers: this.auth,
+    });
+  }
+
+  /** DELETE /channels/:id — dispatches CHANNEL_DELETE (cache-eviction tests). */
+  async deleteChannel(channelId) {
+    return j(`${this.base}/api/channels/${channelId}`, {
+      method: "DELETE",
+      headers: this.auth,
+    });
   }
 
   /** Flattened button components of a stored message. */
