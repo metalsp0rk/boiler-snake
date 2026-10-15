@@ -83,6 +83,7 @@ function namespaceIds(ns) {
     human: id(20), // primary operator (seeded staff where the scenario says so)
     target: id(21), // interaction subject (never staff)
     outsider: id(22), // unprivileged human (never staff, never in allow-lists)
+    ghost: id(31), // user row WITHOUT guild membership (resolve-but-not-member probes)
   };
 }
 
@@ -154,6 +155,19 @@ class MockEnv {
       await this.inject(`member-bootstrap ${user.id}`, user.id, channels[0].id);
     }
     return { users, channels };
+  }
+
+  /**
+   * Ensure a bare users row exists WITHOUT guild membership (resolve-but-
+   * not-member probes). 409 tolerated: test users survive setup deletion.
+   */
+  async createUser(username, id) {
+    return j(`${this.base}/_test/users`, {
+      method: "POST",
+      body: JSON.stringify({ id, username }),
+    }).catch((err) => {
+      if (!/409|CONFLICT/i.test(`${err.status} ${err.message}`)) throw err;
+    });
   }
 
   /** Wipe ALL mock state (single-namespace runs only — never between files). */
