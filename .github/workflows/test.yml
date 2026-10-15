@@ -15,9 +15,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# CI policy: private self-hosted runner only (boiler-snake-runner-01 on the
+# docker host). Do not switch jobs to ubuntu-latest / public runners.
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     timeout-minutes: 15
     strategy:
       matrix:
@@ -51,7 +53,7 @@ jobs:
   # (npm ci + ~5s vitepress build) and path filters would let package.json /
   # vitepress dependency bumps slip through untested.
   docs:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4.4.0

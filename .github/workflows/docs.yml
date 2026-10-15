@@ -19,9 +19,11 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+# CI policy: private self-hosted runner only (boiler-snake-runner-01 on the
+# docker host). Do not switch jobs to ubuntu-latest / public runners.
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4.4.0
@@ -37,7 +39,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     timeout-minutes: 10
     environment:
       name: github-pages
