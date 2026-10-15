@@ -33,6 +33,23 @@ jobs:
           cache: npm
       - run: npm ci
 
+      # TEMP DIAGNOSTIC (ci/e2e-runner-diag only — do not merge): surface the
+      # real fauxcord `npm install` failure that start-mock.sh silences on the
+      # self-hosted runner.
+      - name: DIAG runner env + verbose fauxcord install
+        run: |
+          uname -a
+          cat /etc/os-release || true
+          node -v; npm -v
+          for t in python3 make g++ cc ldd curl git; do
+            printf '%-8s ' "$t"; command -v "$t" || echo MISSING
+          done
+          rm -rf /tmp/opencode/fauxcord-diag
+          git clone --quiet https://github.com/tomacheese/fauxcord /tmp/opencode/fauxcord-diag
+          git -C /tmp/opencode/fauxcord-diag checkout --quiet --detach fe7a9f5c2b61ab100c1b933220c7d1d92921dcb9
+          cd /tmp/opencode/fauxcord-diag
+          npm install --no-audit --no-fund
+
       # Clone fauxcord at the pinned commit, apply the vendored patch series
       # (scripts/e2e/fauxcord-e2e.patch), install, start, wait for health.
       - name: Start fauxcord mock
