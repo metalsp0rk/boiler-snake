@@ -503,18 +503,20 @@ index ba966e1..7110695 100644
    if (payload.embeds !== undefined) {
      db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..6a7a7ba 100644
+index 000b187..55d7459 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
-@@ -11,6 +11,7 @@ import { gatewayBus } from '../gateway/bus'
+@@ -10,7 +10,9 @@ import { generateSnowflake } from '../snowflake'
+ import { gatewayBus } from '../gateway/bus'
  import { buildGuildCreatePayload } from './guilds'
  import { getGuildMember } from './guild-members'
++import { getRole } from './guild-roles'
  import { getChannel } from './channels'
 +import { getUser } from './users'
  import {
    createMessage,
    getGuildIdForChannel,
-@@ -408,11 +409,29 @@ export function injectTestMessage(
+@@ -408,11 +410,29 @@ export function injectTestMessage(
  export interface TestInteractionRequest {
    application_id: string
    type?: number
@@ -545,7 +547,7 @@ index 000b187..6a7a7ba 100644
  }
  
  /** Result of a test-interaction creation attempt */
-@@ -425,19 +444,173 @@ interface CommandIdRow {
+@@ -425,19 +445,210 @@ interface CommandIdRow {
    id: string
  }
  
@@ -555,35 +557,45 @@ index 000b187..6a7a7ba 100644
 +}
 +
 +/**
-+ * SPIKE PATCH (boiler-snake e2e): builds `data.resolved` for user-typed
-+ * slash options (option type 6). Real Discord always resolves mentioned
-+ * users into `data.resolved.users` (+ guild-scoped `members`), and
-+ * discord.js `interaction.options.getUser()` reads exclusively from there —
-+ * without it every user-option command receives a null user in the mock.
++ * SPIKE PATCH (boiler-snake e2e): builds `data.resolved` for entity-typed
++ * slash options — USER (6), CHANNEL (7), ROLE (8). Real Discord always
++ * resolves mentioned entities into `data.resolved.*` (+ guild-scoped
++ * `members`), and discord.js `interaction.options.getUser()/getChannel()/
++ * getRole()` read exclusively from there — without it every entity-option
++ * command receives a null value in the mock.
 + * @param db - Database
 + * @param options - Slash command options as provided by the test request
-+ * @param guildId - Optional guild scope for member resolution
-+ * @returns Resolved payload, or undefined when no user options exist
++ * @param guildId - Optional guild scope for member/role resolution
++ * @returns Resolved payload, or undefined when no entity options exist
 + */
-+function buildResolvedUsers(
++function buildResolvedEntities(
 +  db: Database,
 +  options: Record<string, unknown>[],
 +  guildId?: string
 +): Record<string, unknown> | undefined {
 +  const userOptionIds = new Set<string>()
++  const channelOptionIds = new Set<string>()
++  const roleOptionIds = new Set<string>()
 +  const walkOptions = (opts: Record<string, unknown>[]) => {
 +    for (const o of opts) {
-+      if (Number(o.type) === 6 && typeof o.value === 'string') {
-+        userOptionIds.add(o.value as string)
++      const t = Number(o.type)
++      if ((t === 6 || t === 7 || t === 8) && typeof o.value === 'string') {
++        if (t === 6) userOptionIds.add(o.value as string)
++        else if (t === 7) channelOptionIds.add(o.value as string)
++        else roleOptionIds.add(o.value as string)
 +      }
-+      // Sub-command groups: user options live nested in `options`.
++      // Sub-command groups: entity options live nested in `options`.
 +      if (Array.isArray(o.options)) {
 +        walkOptions(o.options as Record<string, unknown>[])
 +      }
 +    }
 +  }
 +  walkOptions(options)
-+  if (userOptionIds.size === 0) return undefined
++  if (
++    userOptionIds.size + channelOptionIds.size + roleOptionIds.size ===
++    0
++  )
++    return undefined
 +
 +  const users: Record<string, unknown> = {}
 +  const members: Record<string, unknown> = {}
@@ -603,10 +615,37 @@ index 000b187..6a7a7ba 100644
 +      }
 +    }
 +  }
-+  if (Object.keys(users).length === 0) return undefined
++
++  // SPIKE PATCH (boiler-snake e2e): channel options (type 7) resolve into
++  // data.resolved.channels — discord.js options.getChannel() reads them.
++  const channels: Record<string, unknown> = {}
++  for (const id of channelOptionIds) {
++    const channel = getChannel(db, id)
++    if (channel) channels[id] = channel
++  }
++
++  // SPIKE PATCH (boiler-snake e2e): role options (type 8) resolve into
++  // data.resolved.roles — discord.js options.getRole() reads them.
++  const roles: Record<string, unknown> = {}
++  if (guildId) {
++    for (const id of roleOptionIds) {
++      const role = getRole(db, guildId, id)
++      if (role) roles[id] = role
++    }
++  }
++
++  if (
++    Object.keys(users).length +
++      Object.keys(channels).length +
++      Object.keys(roles).length ===
++    0
++  )
++    return undefined
 +  return {
 +    users,
 +    ...(Object.keys(members).length > 0 && { members }),
++    ...(Object.keys(channels).length > 0 && { channels }),
++    ...(Object.keys(roles).length > 0 && { roles }),
 +  }
 +}
 +
@@ -720,7 +759,7 @@ index 000b187..6a7a7ba 100644
    const guildCommand = request.guild_id
      ? (db
          .prepare(
-@@ -459,12 +632,10 @@ export function createTestInteraction(
+@@ -459,12 +670,10 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -733,11 +772,11 @@ index 000b187..6a7a7ba 100644
 +  const options = request.options ?? []
 +  // SPIKE PATCH (boiler-snake e2e): resolve user-typed options like real
 +  // Discord does so discord.js options.getUser() works.
-+  const resolved = buildResolvedUsers(db, options, request.guild_id)
++  const resolved = buildResolvedEntities(db, options, request.guild_id)
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,8 +645,9 @@ export function createTestInteraction(
+@@ -474,8 +683,9 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,
