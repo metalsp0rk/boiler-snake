@@ -27,8 +27,11 @@ scripts/e2e/stop-mock.sh         # stop the mock
 ```
 
 `start-mock.sh` is idempotent (reuses a healthy mock; `FRESH=1` forces a
-restart). Overrides: `PORT`, `FAUXCORD_DIR`, `FAUXCORD_DATA_DIR`,
-`FAUXCORD_URL`, `FAUXCORD_PIN`.
+restart). A healthy mock is only reused when it was booted from the same
+patch, pin, and installer version (marker file in the data dir) — a stale
+mock from a parallel checkout or shared CI volume can never mask a patch
+change; the mismatch restarts the mock automatically. Overrides: `PORT`,
+`FAUXCORD_DIR`, `FAUXCORD_DATA_DIR`, `FAUXCORD_URL`, `FAUXCORD_PIN`.
 
 ## What the suite covers
 

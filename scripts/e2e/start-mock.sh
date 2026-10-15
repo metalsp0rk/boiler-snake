@@ -3,8 +3,9 @@
 #
 # Clones fauxcord (pinned commit), applies the vendored fidelity/simulation
 # patch (scripts/e2e/fauxcord-e2e.patch — upstream PRs pending), installs,
-# and starts the server in the background. Idempotent: exits 0 immediately
-# when a healthy mock already answers (set FRESH=1 to force a restart).
+# and starts the server in the background. Idempotent: exits 0 when a healthy
+# mock already answers WITH A MATCHING PATCH/PIN MARKER (set FRESH=1 to force
+# a restart; a marker mismatch restarts the mock automatically).
 #
 # Env overrides: FAUXCORD_DIR (clone location), PORT, HOST, FAUXCORD_DATA_DIR,
 # FAUXCORD_URL (health-check + suite target; defaults to http://127.0.0.1:PORT),
@@ -27,14 +28,34 @@ BASE_URL="${BASE_URL:-http://${HOST}:${PORT}}"
 PID_FILE="${PID_FILE:-$FAUXCORD_DATA_DIR/fauxcord.pid}"
 LOG_FILE="${LOG_FILE:-$FAUXCORD_DATA_DIR/fauxcord.log}"
 export FAUXCORD_URL="${FAUXCORD_URL:-$BASE_URL}"
+# stop-mock.sh (invoked below) resolves its pidfile from this — export or a
+# custom data dir would leave the running mock untouched on restart.
+export FAUXCORD_DATA_DIR
+
+# Mock installer version — also part of the restart-marker below.
+PNPM_VERSION="${PNPM_VERSION:-12.11.2}"
 
 healthy() {
   curl -sf --max-time 2 "$FAUXCORD_URL/_mock/health" >/dev/null 2>&1
 }
 
-if healthy && [ "${FRESH:-0}" != "1" ]; then
+# --- patch/pin integrity marker ---------------------------------------------
+# A healthy mock may have been booted from a DIFFERENT patch series or pin —
+# e.g. a leftover mock on a shared runner volume, or a parallel dev/CI slot.
+# Reusing it would silently run this branch's suite against a mock that does
+# not contain this branch's fauxcord-e2e.patch (green CI, untested patch).
+# Record what the running mock was built from; restart when it disagrees.
+MARKER_FILE="${MARKER_FILE:-$FAUXCORD_DATA_DIR/fauxcord.patch-marker}"
+WANT_MARKER="$(sha256sum "$PATCH_FILE" | cut -d' ' -f1) $FAUXCORD_PIN pnpm@$PNPM_VERSION"
+
+if healthy && [ "${FRESH:-0}" != "1" ] \
+  && [ "$(cat "$MARKER_FILE" 2>/dev/null)" = "$WANT_MARKER" ]; then
   echo "[start-mock] healthy mock already answering at $FAUXCORD_URL — reusing it (FRESH=1 to restart)"
   exit 0
+fi
+
+if healthy; then
+  echo "[start-mock] mock at $FAUXCORD_URL healthy but built from a stale patch/pin (marker '$(cat "$MARKER_FILE" 2>/dev/null || echo '<none>')' != '$WANT_MARKER') — restarting"
 fi
 
 "$SCRIPT_DIR/stop-mock.sh" >/dev/null 2>&1 || true
@@ -73,7 +94,6 @@ git apply "$PATCH_FILE"
 # nested peer sets — hit hard on the self-hosted runner); it was also never
 # lockfile-deterministic. better-sqlite3 v13 ships prebuilds resolved at
 # require time, so pnpm's build-script gating is not a concern here.
-PNPM_VERSION="${PNPM_VERSION:-12.11.2}"
 if [ ! -d node_modules ]; then
   echo "[start-mock] pnpm install (first run, pnpm@$PNPM_VERSION)"
   npx --yes "pnpm@$PNPM_VERSION" install --frozen-lockfile --reporter=append-only
@@ -90,6 +110,7 @@ echo $! >"$PID_FILE"
 # --- wait for health ---------------------------------------------------------
 for _ in $(seq 1 60); do
   if healthy; then
+    printf '%s' "$WANT_MARKER" > "$MARKER_FILE"
     echo "[start-mock] mock healthy at $FAUXCORD_URL (pid $(cat "$PID_FILE"), log $LOG_FILE)"
     exit 0
   fi
