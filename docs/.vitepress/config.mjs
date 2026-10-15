@@ -97,6 +97,7 @@ export default defineConfig({
         items: [
           { text: 'Database', link: '/database' },
           { text: 'Architecture', link: '/architecture' },
+          { text: 'E2E Tests', link: '/e2e' },
           { text: 'FAQ', link: '/FAQ' },
         ],
       },
