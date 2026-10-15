@@ -90,6 +90,68 @@ index dfcc278..021e713 100644
      }>()
      const updated = updateMessage(db, messageId, payload, baseUrl)
      if (!updated) {
+diff --git a/src/services/guild-members.ts b/src/services/guild-members.ts
+index b16fa10..15553c0 100644
+--- a/src/services/guild-members.ts
++++ b/src/services/guild-members.ts
+@@ -117,6 +117,36 @@ function getMemberRoleIds(
+   return rows.map((r) => r.role_id)
+ }
+ 
++/**
++ * SPIKE PATCH (boiler-snake e2e): aggregates the union of the assigned
++ * roles' `permissions` bitfields into a decimal string. Real Discord
++ * always sends `permissions` on guild member objects (and on the
++ * interaction `member`), and discord.js builds
++ * `interaction.memberPermissions` from it — without the field every
++ * ManageGuild-positive branch is untestable in Tier-4 E2E.
++ * @param db - Database
++ * @param roleIds - Role IDs assigned to the member
++ * @returns Decimal-string bitfield ('0' when the member holds no roles)
++ */
++function aggregateRolePermissions(db: Database, roleIds: string[]): string {
++  if (roleIds.length === 0) return '0'
++  const placeholders = roleIds.map(() => '?').join(', ')
++  const rows = db
++    .prepare(
++      `SELECT permissions FROM roles WHERE id IN (${placeholders})`
++    )
++    .all(...roleIds) as { permissions: string }[]
++  let acc = 0n
++  for (const row of rows) {
++    try {
++      acc |= BigInt(row.permissions || '0')
++    } catch {
++      // Defensive: ignore malformed bitfields instead of failing the read.
++    }
++  }
++  return acc.toString()
++}
++
+ /**
+  * Retrieves a guild member.
+  * @param db - Database
+@@ -143,6 +173,9 @@ export function getGuildMember(
+         bot: number
+       }
+     | undefined
++  // SPIKE PATCH (boiler-snake e2e): member objects carry the aggregated
++  // role permissions string (real Discord does; see aggregateRolePermissions).
++  const roleIds = getMemberRoleIds(db, guildId, userId)
+   return userRow
+     ? {
+         avatar: null,
+@@ -153,7 +186,9 @@ export function getGuildMember(
+         nick: memberRow.nick,
+         pending: false,
+         premium_since: null,
+-        roles: getMemberRoleIds(db, guildId, userId),
++        roles: roleIds,
++        // SPIKE PATCH (boiler-snake e2e)
++        permissions: aggregateRolePermissions(db, roleIds),
+         user: {
+           id: userRow.id,
+           username: userRow.username,
 diff --git a/src/services/interactions.ts b/src/services/interactions.ts
 index 9f13b9c..670bde7 100644
 --- a/src/services/interactions.ts
