@@ -401,11 +401,39 @@ class MockEnv {
     );
   }
 
+  /**
+   * awaitReply() for handlers that DEFER first: the mock materializes the
+   * defer placeholder immediately (like real Discord), so plain awaitReply
+   * can race the follow-up editReply. Waits until the original reply is
+   * non-blank (content, embeds, or components present).
+   */
+  async awaitSettledReply(interaction, { timeoutMs = 10_000 } = {}) {
+    return poll(
+      async () => {
+        const msg = await j(
+          `${this.base}/webhooks/${this.ids.app}/${interaction.token}/messages/@original`,
+        ).catch((err) => (err.status === 404 ? null : Promise.reject(err)));
+        if (!msg) return null;
+        const filled =
+          String(msg.content ?? "").length > 0 ||
+          (Array.isArray(msg.embeds) && msg.embeds.length > 0) ||
+          (Array.isArray(msg.components) && msg.components.length > 0);
+        return filled ? msg : null;
+      },
+      { timeoutMs, label: `settled reply for interaction ${interaction.id}` },
+    );
+  }
+
   /** Full-fidelity stored message read (components/flags intact). */
   async message(messageId, channelId = this.ids.general) {
     return j(`${this.base}/api/channels/${channelId}/messages/${messageId}`, {
       headers: this.auth,
     });
+  }
+
+  /** GET /channels/:id — includes persisted permission_overwrites. */
+  async channel(channelId) {
+    return j(`${this.base}/api/channels/${channelId}`, { headers: this.auth });
   }
 
   /** Flattened button components of a stored message. */

@@ -45,6 +45,33 @@ index b4549a7..fd978c8 100644
  
    return db
  }
+diff --git a/src/routes/channel-messages.ts b/src/routes/channel-messages.ts
+index 535851f..4a6e719 100644
+--- a/src/routes/channel-messages.ts
++++ b/src/routes/channel-messages.ts
+@@ -193,6 +193,9 @@ export function createChannelMessageRoutes(
+         messageReference: payload.message_reference as
+           { message_id?: string } | undefined,
+         flags: payload.flags as number | undefined,
++        // SPIKE PATCH (boiler-snake e2e): real Discord persists components on
++        // channel messages too (ticket panels depend on reading them back).
++        components: payload.components as unknown[] | undefined,
+       },
+       baseUrl
+     )
+diff --git a/src/routes/guilds.ts b/src/routes/guilds.ts
+index 310fa2a..986e6cb 100644
+--- a/src/routes/guilds.ts
++++ b/src/routes/guilds.ts
+@@ -145,6 +145,8 @@ export function createGuildRoutes(db: Database): Hono {
+       nsfw: payload.nsfw,
+       parentId: payload.parent_id,
+       position: payload.position ?? channels.length,
++      // SPIKE PATCH (boiler-snake e2e): persist creation-time overwrites.
++      permissionOverwrites: payload.permission_overwrites ?? undefined,
+     })
+ 
+     return c.json(newChannel, 201)
 diff --git a/src/routes/test.ts b/src/routes/test.ts
 index 543d9ef..895f3a6 100644
 --- a/src/routes/test.ts
@@ -134,7 +161,7 @@ index 543d9ef..895f3a6 100644
    app.post('/_test/polls/:messageId/votes', async (c) => {
      const { messageId } = c.req.param()
 diff --git a/src/routes/webhooks.ts b/src/routes/webhooks.ts
-index dfcc278..021e713 100644
+index dfcc278..8f944c1 100644
 --- a/src/routes/webhooks.ts
 +++ b/src/routes/webhooks.ts
 @@ -67,6 +67,8 @@ function createFollowupOrWebhookMessage(
@@ -166,6 +193,172 @@ index dfcc278..021e713 100644
      }>()
      const updated = updateMessage(db, messageId, payload, baseUrl)
      if (!updated) {
+@@ -531,7 +539,24 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       return c.json(err.body, 404)
+     }
+ 
+-    const msg = getMessage(db, messageId, baseUrl)
++    // SPIKE PATCH (boiler-snake e2e): discord.js URL-encodes the @original
++    // literal (%40original), which the encoded-form route above cannot
++    // match (hono statics match raw segments and params stay encoded).
++    // Resolve it here to the interaction's original/placeholder message.
++    const targetId =
++      messageId === '@original' || messageId === '%40original'
++        ? getOriginalMessageId(db, webhookId, token)
++        : messageId
++    if (!targetId) {
++      const err = discordError(
++        DiscordErrorCode.UNKNOWN_MESSAGE,
++        'Unknown Message',
++        404
++      )
++      return c.json(err.body, 404)
++    }
++
++    const msg = getMessage(db, targetId, baseUrl)
+     if (!msg) {
+       const err = discordError(
+         DiscordErrorCode.UNKNOWN_MESSAGE,
+@@ -562,7 +587,22 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       embeds?: unknown[]
+     }>()
+ 
+-    const updated = updateMessage(db, messageId, payload, baseUrl)
++    // SPIKE PATCH (boiler-snake e2e): resolve the URL-encoded @original
++    // literal (see the GET sibling above) — this is the editReply path.
++    const targetId =
++      messageId === '@original' || messageId === '%40original'
++        ? getOriginalMessageId(db, webhookId, token)
++        : messageId
++    if (!targetId) {
++      const err = discordError(
++        DiscordErrorCode.UNKNOWN_MESSAGE,
++        'Unknown Message',
++        404
++      )
++      return c.json(err.body, 404)
++    }
++
++    const updated = updateMessage(db, targetId, payload, baseUrl)
+     if (!updated) {
+       const err = discordError(
+         DiscordErrorCode.UNKNOWN_MESSAGE,
+@@ -588,7 +628,22 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       return c.json(err.body, 404)
+     }
+ 
+-    const deleted = deleteMessage(db, messageId)
++    // SPIKE PATCH (boiler-snake e2e): resolve the URL-encoded @original
++    // literal (see the GET sibling above).
++    const targetId =
++      messageId === '@original' || messageId === '%40original'
++        ? getOriginalMessageId(db, webhookId, token)
++        : messageId
++    if (!targetId) {
++      const err = discordError(
++        DiscordErrorCode.UNKNOWN_MESSAGE,
++        'Unknown Message',
++        404
++      )
++      return c.json(err.body, 404)
++    }
++
++    const deleted = deleteMessage(db, targetId)
+     if (!deleted) {
+       const err = discordError(
+         DiscordErrorCode.UNKNOWN_MESSAGE,
+diff --git a/src/services/channels.ts b/src/services/channels.ts
+index fd0421d..cd1adff 100644
+--- a/src/services/channels.ts
++++ b/src/services/channels.ts
+@@ -370,6 +370,12 @@ export interface ChannelUpdatePayload {
+   nsfw?: boolean
+   rate_limit_per_user?: number
+   position?: number
++  /**
++   * SPIKE PATCH (boiler-snake e2e): discord.js
++   * `channel.permissionOverwrites.set()` sends the full overwrite set on a
++   * channel PATCH; real Discord REPLACES the set. See updateChannel.
++   */
++  permission_overwrites?: unknown
+ }
+ 
+ /**
+@@ -409,6 +415,35 @@ export function updateChannel(
+     )
+   }
+ 
++  // SPIKE PATCH (boiler-snake e2e): a PATCH carrying permission_overwrites
++  // REPLACES the channel's overwrite set (discord.js
++  // channel.permissionOverwrites.set() semantics — see the ticket open/
++  // lifecycle path). Other PATCH fields are unaffected.
++  if (Array.isArray(payload.permission_overwrites)) {
++    db.prepare('DELETE FROM channel_overwrites WHERE channel_id = ?').run(
++      channelId
++    )
++    for (const ow of payload.permission_overwrites as Array<{
++      id?: unknown
++      type?: unknown
++      allow?: unknown
++      deny?: unknown
++    }>) {
++      if (
++        !ow ||
++        typeof ow.id !== 'string' ||
++        typeof ow.type !== 'number'
++      ) {
++        continue
++      }
++      putChannelOverwrite(db, channelId, ow.id, {
++        type: ow.type,
++        allow: String(ow.allow ?? '0'),
++        deny: String(ow.deny ?? '0'),
++      })
++    }
++  }
++
+   const updated = db
+     .prepare('SELECT * FROM channels WHERE id = ?')
+     .get(channelId) as ChannelRow
+@@ -484,6 +519,16 @@ export interface GuildChannelCreateParams {
+   nsfw?: boolean
+   parentId?: string | null
+   position: number
++  /**
++   * SPIKE PATCH (boiler-snake e2e): real Discord persists the creation-time
++   * permission_overwrites (ticket channels depend on reading them back).
++   */
++  permissionOverwrites?: Array<{
++    id: string
++    type: number
++    allow?: string | number
++    deny?: string | number
++  }>
+ }
+ 
+ /**
+@@ -514,8 +559,19 @@ export function createGuildChannel(
+   const row = db
+     .prepare('SELECT * FROM channels WHERE id = ?')
+     .get(channelId) as ChannelRow
+-  // A newly created channel never has permission overwrites yet.
+-  const result = toChannelObject(row, [])
++  // SPIKE PATCH (boiler-snake e2e): persist creation-time overwrites —
++  // real Discord stores them and GET /channels/:id must echo them back.
++  for (const ow of params.permissionOverwrites ?? []) {
++    if (!ow || typeof ow.id !== 'string' || typeof ow.type !== 'number') {
++      continue
++    }
++    putChannelOverwrite(db, channelId, ow.id, {
++      type: ow.type,
++      allow: String(ow.allow ?? '0'),
++      deny: String(ow.deny ?? '0'),
++    })
++  }
++  const result = toChannelObject(row, getChannelOverwrites(db, row.id))
+ 
+   gatewayBus.emit('channel.create', {
+     channel: result as unknown as Record<string, unknown>,
 diff --git a/src/services/guild-members.ts b/src/services/guild-members.ts
 index b16fa10..15553c0 100644
 --- a/src/services/guild-members.ts
@@ -229,7 +422,7 @@ index b16fa10..15553c0 100644
            id: userRow.id,
            username: userRow.username,
 diff --git a/src/services/interactions.ts b/src/services/interactions.ts
-index 9f13b9c..b097623 100644
+index 9f13b9c..a75c1e5 100644
 --- a/src/services/interactions.ts
 +++ b/src/services/interactions.ts
 @@ -10,8 +10,9 @@ import type { Database } from '../db'
@@ -387,7 +580,7 @@ index 9f13b9c..b097623 100644
        },
        baseUrl
      )
-@@ -265,6 +325,24 @@ export function handleInteractionCallback(
+@@ -265,6 +325,50 @@ export function handleInteractionCallback(
      ).run(messageId, row.id)
      interaction.response_message_id = messageId
      resource = { type: 4, message }
@@ -409,6 +602,32 @@ index 9f13b9c..b097623 100644
 +    db.prepare('UPDATE interactions SET responded = 1 WHERE id = ?').run(row.id)
 +    interaction.response_message_id = row.message_id
 +    if (edited) resource = { type: 7, message: edited }
++  } else if (
++    payload.type === 5 &&
++    row.channel_id &&
++    !row.initial_response_message_id
++  ) {
++    // SPIKE PATCH (boiler-snake e2e): DEFERRED_CHANNEL_RESPONSE creates a
++    // placeholder message on real Discord (id == interaction id, flags
++    // honored) so the follow-up editReply (PATCH webhook @original) has a
++    // target. Without it every defer→editReply handler (ticket create/panel/
++    // close …) lost its final reply to a 404 in the mock.
++    createMessage(
++      db,
++      {
++        messageId: row.id,
++        channelId: row.channel_id,
++        authorId: row.application_id,
++        authorToken: 'interaction',
++        content: '',
++        flags: payload.data?.flags,
++      },
++      baseUrl
++    )
++    db.prepare(
++      'UPDATE interactions SET responded = 1, initial_response_message_id = ? WHERE id = ?'
++    ).run(row.id, row.id)
++    interaction.response_message_id = row.id
    } else {
      db.prepare('UPDATE interactions SET responded = 1 WHERE id = ?').run(row.id)
    }
@@ -808,3 +1027,42 @@ index 974e618..010a2f9 100644
      },
      baseUrl
    )
+diff --git a/src/validators/channel.ts b/src/validators/channel.ts
+index 3044d9e..b2cd906 100644
+--- a/src/validators/channel.ts
++++ b/src/validators/channel.ts
+@@ -95,6 +95,14 @@ export interface ChannelUpdatePayload {
+   nsfw?: unknown
+   rate_limit_per_user?: unknown
+   position?: unknown
++  /**
++   * SPIKE PATCH (boiler-snake e2e): discord.js
++   * `channel.permissionOverwrites.set()` sends a channel PATCH carrying the
++   * full overwrite set; real Discord REPLACES the set with it. Without this
++   * the mock silently dropped it and ticket lifecycle changes (adduser,
++   * sensitive, close) were unobservable.
++   */
++  permission_overwrites?: unknown
+ }
+ 
+ /**
+diff --git a/src/validators/guild.ts b/src/validators/guild.ts
+index edac0e7..dad7d4d 100644
+--- a/src/validators/guild.ts
++++ b/src/validators/guild.ts
+@@ -30,6 +30,15 @@ export interface ChannelCreatePayload {
+   nsfw?: boolean
+   parent_id?: string | null
+   position?: number | null
++  /** SPIKE PATCH (boiler-snake e2e): creation-time overwrites are persisted. */
++  permission_overwrites?:
++    | Array<{
++        id: string
++        type: number
++        allow?: string | number
++        deny?: string | number
++      }>
++    | null
+ }
+ 
+ /** Role creation request type */
