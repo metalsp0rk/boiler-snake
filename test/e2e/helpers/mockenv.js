@@ -180,6 +180,27 @@ class MockEnv {
     );
   }
 
+  /** Revoke a role from a user. */
+  async removeRole(userId, roleId) {
+    return j(
+      `${this.base}/api/guilds/${this.ids.guild}/members/${userId}/roles/${roleId}`,
+      { method: "DELETE", headers: this.auth },
+    );
+  }
+
+  /**
+   * Update a guild role (name/permissions). `permissions` is a decimal
+   * bitfield string; the mock aggregates it into member objects'
+   * `permissions` for interaction gating.
+   */
+  async patchRole(roleId, patch) {
+    return j(`${this.base}/api/guilds/${this.ids.guild}/roles/${roleId}`, {
+      method: "PATCH",
+      headers: this.auth,
+      body: JSON.stringify(patch),
+    });
+  }
+
   /**
    * Inject a human-authored message (also upserts guild membership).
    * @param {string} content
