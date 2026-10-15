@@ -186,6 +186,17 @@ class MockEnv {
     });
   }
 
+  /**
+   * Registered guild command rows via the mock application-commands REST
+   * route (register PUT fidelity — e.g. tier defaultMemberPermissions).
+   */
+  async listGuildCommands() {
+    return j(
+      `${this.base}/api/applications/${this.ids.app}/guilds/${this.ids.guild}/commands`,
+      { headers: this.auth },
+    );
+  }
+
   /** Grant a role to a user (guild member must exist; see provision()). */
   async grantRole(userId, roleId) {
     return j(
