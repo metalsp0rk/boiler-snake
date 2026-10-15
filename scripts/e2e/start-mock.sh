@@ -7,7 +7,8 @@
 # when a healthy mock already answers (set FRESH=1 to force a restart).
 #
 # Env overrides: FAUXCORD_DIR (clone location), PORT, HOST, FAUXCORD_DATA_DIR,
-# FAUXCORD_URL (health-check + suite target; defaults to http://127.0.0.1:PORT).
+# FAUXCORD_URL (health-check + suite target; defaults to http://127.0.0.1:PORT),
+# PNPM_VERSION (mock installer; default = upstream packageManager pin).
 set -euo pipefail
 
 # Keep in sync with the base of scripts/e2e/fauxcord-e2e.patch. Bump only
@@ -17,7 +18,6 @@ FAUXCORD_REPO="${FAUXCORD_REPO:-https://github.com/tomacheese/fauxcord}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_FILE="$SCRIPT_DIR/fauxcord-e2e.patch"
-LOCK_FILE="$SCRIPT_DIR/fauxcord.lock.json"
 
 PORT="${PORT:-3100}"
 HOST="${HOST:-127.0.0.1}"
@@ -66,25 +66,17 @@ git apply --check "$PATCH_FILE"
 git apply "$PATCH_FILE"
 
 # --- install + start ---------------------------------------------------------
-# fauxcord commits NO package-lock.json upstream, so `npm ci` is impossible
-# without one: we vendor the lockfile generated for the pinned commit
-# (scripts/e2e/fauxcord.lock.json) and copy it in. Regenerate BOTH this lock
-# and the patch whenever FAUXCORD_PIN moves:
-#   cd <clone at new pin> && npm install && cp package-lock.json <repo>/scripts/e2e/fauxcord.lock.json
-# `npm ci` (not install) keeps resolution frozen — immune to upstream drift
-# and to npm resolve-crash classes seen in the field.
+# fauxcord is pnpm-based upstream (pnpm-lock.yaml + packageManager pin in the
+# pinned tree), so provision the mock with pnpm against that lockfile.
+# `npm install` re-resolved the whole dev tree from the registry on every run
+# and crashes npm 10.9.9's arborist (npm/cli#7672, "edgesOut" TypeError on
+# nested peer sets — hit hard on the self-hosted runner); it was also never
+# lockfile-deterministic. better-sqlite3 v13 ships prebuilds resolved at
+# require time, so pnpm's build-script gating is not a concern here.
+PNPM_VERSION="${PNPM_VERSION:-12.11.2}"
 if [ ! -d node_modules ]; then
-  if [ ! -f package-lock.json ]; then
-    if [ ! -f "$LOCK_FILE" ]; then
-      echo "[start-mock] FAIL: no upstream lockfile and no vendored $LOCK_FILE" >&2
-      exit 1
-    fi
-    echo "[start-mock] installing from vendored lockfile (first run)"
-    cp "$LOCK_FILE" package-lock.json
-  else
-    echo "[start-mock] installing from upstream lockfile (first run)"
-  fi
-  npm ci --no-audit --no-fund --no-progress
+  echo "[start-mock] pnpm install (first run, pnpm@$PNPM_VERSION)"
+  npx --yes "pnpm@$PNPM_VERSION" install --frozen-lockfile --reporter=append-only
 fi
 
 rm -f "$PID_FILE"

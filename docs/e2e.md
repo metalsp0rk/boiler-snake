@@ -65,19 +65,20 @@ patch series without which the bot's handlers crash or silently no-op:
   fills them, so `interaction.options.getUser()` works.
 
 The patch is intended to be upstreamed; until then CI and local runs apply
-it on the pinned base. fauxcord commits **no `package-lock.json`**, so the
-repo also vendors `scripts/e2e/fauxcord.lock.json` (the resolution generated
-for the pinned commit) and `start-mock.sh` installs with `npm ci` — the mock
-never sees upstream dependency drift.
+it on the pinned base. fauxcord is pnpm-based upstream (committed
+`pnpm-lock.yaml`), so `start-mock.sh` provisions the mock with
+`npx pnpm@$PNPM_VERSION install --frozen-lockfile` against that lockfile —
+the mock never sees upstream dependency drift. (npm was dropped entirely:
+re-resolving fauxcord's dev tree from the registry crashes npm 10.9.9's
+arborist, npm/cli#7672.)
 
-When bumping `FAUXCORD_PIN`, regenerate BOTH artifacts against the new base
-and rerun the suite:
+When bumping `FAUXCORD_PIN`, regenerate the patch against the new base,
+align `PNPM_VERSION` in `start-mock.sh` with the pin's `packageManager`
+line if it moved, and rerun the suite:
 
 ```bash
 cd <clone at new pin>
 git apply <repo>/scripts/e2e/fauxcord-e2e.patch   # re-derive as needed
-npm install   # full install, NOT --package-lock-only
-cp package-lock.json <repo>/scripts/e2e/fauxcord.lock.json
 git diff > <repo>/scripts/e2e/fauxcord-e2e.patch
 ```
 
@@ -103,7 +104,7 @@ git diff > <repo>/scripts/e2e/fauxcord-e2e.patch
 ## CI
 
 `.github/workflows/e2e.yml` runs the suite on every PR and `main` push:
-`start-mock.sh` (clone pinned commit → apply patch → `npm install` →
+`start-mock.sh` (clone pinned commit → apply patch → locked `pnpm install` →
 health-check) then `npm run test:e2e`, uploading the mock log as an artifact
 on failure.
 
