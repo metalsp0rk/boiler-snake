@@ -65,9 +65,21 @@ patch series without which the bot's handlers crash or silently no-op:
   fills them, so `interaction.options.getUser()` works.
 
 The patch is intended to be upstreamed; until then CI and local runs apply
-it on the pinned base. When bumping `FAUXCORD_PIN`, re-derive the patch
-against the new base (`git diff > scripts/e2e/fauxcord-e2e.patch`) and rerun
-the suite.
+it on the pinned base. fauxcord commits **no `package-lock.json`**, so the
+repo also vendors `scripts/e2e/fauxcord.lock.json` (the resolution generated
+for the pinned commit) and `start-mock.sh` installs with `npm ci` — the mock
+never sees upstream dependency drift.
+
+When bumping `FAUXCORD_PIN`, regenerate BOTH artifacts against the new base
+and rerun the suite:
+
+```bash
+cd <clone at new pin>
+git apply <repo>/scripts/e2e/fauxcord-e2e.patch   # re-derive as needed
+npm install   # full install, NOT --package-lock-only
+cp package-lock.json <repo>/scripts/e2e/fauxcord.lock.json
+git diff > <repo>/scripts/e2e/fauxcord-e2e.patch
+```
 
 ## Mock quirks worth knowing
 
