@@ -1,0 +1,40 @@
+diff --git a/src/services/interactions.ts b/src/services/interactions.ts
+index 9f13b9c..07d981f 100644
+--- a/src/services/interactions.ts
++++ b/src/services/interactions.ts
+@@ -10,6 +10,7 @@ import type { Database } from '../db'
+ import { generateSnowflake } from '../snowflake'
+ import { gatewayBus } from '../gateway/bus'
+ import { getGuildMember } from './guild-members'
++import { getChannel } from './channels'
+ import { getUser } from './users'
+ import { createMessage, type MessageObject } from './messages'
+ 
+@@ -90,6 +91,27 @@ function toInteractionObject(
+     ...(row.guild_id && { guild_id: row.guild_id }),
+     ...(member && { member: member as unknown as Record<string, unknown> }),
+     ...(user && { user: user as unknown as Record<string, unknown> }),
++    // --- SPIKE PATCH (boiler-snake e2e): fields real Discord ALWAYS sends
++    // on gateway INTERACTION_CREATE that were missing here. discord.js v14
++    // hard-requires `entitlements` (constructor reduce) and resolves
++    // interaction.channelId ONLY from the nested `channel` object.
++    entitlements: [],
++    attachment_size_limit: 10_485_760,
++    authorizing_integration_owners: row.guild_id ? { '0': row.guild_id } : {},
++    context: row.guild_id ? 0 : 1,
++    ...(row.channel_id &&
++      (() => {
++        const ch = getChannel(db, row.channel_id)
++        return ch
++          ? {
++              channel: {
++                id: ch.id,
++                type: ch.type,
++                ...(row.guild_id && { guild_id: row.guild_id }),
++              },
++            }
++          : {}
++      })()),
+   }
+ 
+   return result
