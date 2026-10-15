@@ -70,6 +70,23 @@ patch series without which the bot's handlers crash or silently no-op:
   embedded `member`) aggregate the assigned roles' permission bitfields
   into a decimal string, so `interaction.memberPermissions` reflects real
   role bits and ManageGuild-positive paths are testable (#311).
+- **Modal simulation** — `POST /_test/interactions` accepts `type: 5` +
+  `custom_id` + a `fields` map; the mock builds real Discord's
+  `data.components` (TEXT_INPUT rows) so `interaction.fields.getTextInputValue()`
+  reads the submitted values (#328, gap 1).
+- **Autocomplete simulation + stored callbacks** — `type: 4` INTERACTION_CREATE
+  with a focused option drives `interaction.options.getFocused()`; the bot's
+  choices response is handled and persisted. Every callback payload (modal
+  display = type 9, autocomplete = type 8, …) is stored on the interaction
+  row and read back via `GET /_test/interactions/:id` (#328, gap 2).
+- **Human reaction injection** — `POST`/`DELETE /_test/reactions` persists a
+  reaction from an arbitrary user and dispatches `MESSAGE_REACTION_ADD`/
+  `_REMOVE`, so the reaction pipeline (XP, reaction roles, honeypot) runs
+  end-to-end (the REST `@me` routes only ever react as the bot) (#328, gap 3).
+
+Still open in the patch series (issue #328): **voice states** (gap 6 — needs
+upstream design) and **DMs / guild-less interactions** (gap 7 — pairs with a
+router decision). Dependent feature rows stay `it.todo` citing the gap.
 
 The patch is intended to be upstreamed; until then CI and local runs apply
 it on the pinned base. fauxcord is pnpm-based upstream (committed
@@ -122,9 +139,11 @@ on failure.
    `after()` — it health-checks the mock (with a start-mock hint on miss),
    provisions, sets production env (`DISCORD_API_BASE` seam), boots via
    `src/platform/boot`, and registers commands.
-3. Drive interactions through `env.mock.slash()` / `env.mock.click()` and
-   assert with `awaitReply()` / `message()` plus `env.dbmod` /
-   `env.communityId` for DB-side effects.
+3. Drive interactions through `env.mock.slash()` / `click()` / `modal()` /
+   `autocomplete()` / `react()` and assert with `awaitReply()` /
+   `message()` plus `env.dbmod` / `env.communityId` for DB-side effects.
+   `env.mock.interactionState(id)` reads a stored callback payload (modal
+   display, autocomplete choices) for responses that create no message.
 4. Suites that mutate shared guild state must use
    `describe(..., { concurrency: 1 }, ...)`.
 
