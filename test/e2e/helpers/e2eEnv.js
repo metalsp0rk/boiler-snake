@@ -78,6 +78,23 @@ async function createE2eEnv(options) {
   });
   const dbmod = require(path.join(REPO_ROOT, "src/db"));
 
+  // Fail-fast guard: src/db/connection.js resolves DB_PATH at REQUIRE time.
+  // If a suite file (or anything it imports) pulled a src module in BEFORE
+  // this point, the singleton is silently bound to the DEV database and the
+  // suite reads/writes real dev data. Catch that here instead.
+  const boundFile = dbmod.db
+    .prepare("PRAGMA database_list")
+    .all()
+    .find((d) => d.name === "main")?.file;
+  if (boundFile && path.resolve(boundFile) !== path.resolve(process.env.DB_PATH)) {
+    throw new Error(
+      `[e2e] namespace ${ns}: sqlite bound to ${boundFile} — expected ` +
+        `${process.env.DB_PATH}. Something required a src/** module before ` +
+        "createE2eEnv() set DB_PATH (connection.js resolves the path at " +
+        "require time); require src modules lazily inside tests.",
+    );
+  }
+
   const { boot } = require(path.join(REPO_ROOT, "src/platform/boot"));
   const started = await boot({ featureGateWatchdogMs: 8000 });
   if (!started.ok) {
