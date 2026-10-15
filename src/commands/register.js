@@ -30,7 +30,18 @@ async function main() {
 
   const { commands } = buildDefaultRegistry();
 
-  const rest = new REST({ version: "10" }).setToken(token);
+  // E2E spike seam (mirrors src/client.js): DISCORD_API_BASE redirects this
+  // CLI at a local mock Discord (fauxcord) instead of discord.com. Unset in
+  // production ⇒ options exactly as before.
+  const apiBase =
+    typeof process.env.DISCORD_API_BASE === "string"
+      ? process.env.DISCORD_API_BASE.trim()
+      : "";
+  const restApi = apiBase ? `${apiBase.replace(/\/+$/, "")}/api` : undefined;
+
+  const rest = new REST(
+    restApi ? { version: "10", api: restApi } : { version: "10" },
+  ).setToken(token);
 
   if (devGuildId) {
     await rest.put(Routes.applicationGuildCommands(clientId, devGuildId), {
@@ -40,7 +51,10 @@ async function main() {
     return;
   }
 
-  const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  const client = new Client({
+    intents: [GatewayIntentBits.Guilds],
+    ...(restApi ? { rest: { api: restApi }, ws: { compress: false } } : {}),
+  });
   await client.login(token);
 
   const guilds = await client.guilds.fetch();
