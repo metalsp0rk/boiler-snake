@@ -45,3 +45,20 @@ try {
 }
 
 console.log(out.join('\n'));
+
+// Force npm ci to fail HERE so npm replays this script's output into the
+// job log (successful script output is swallowed when a later script dies).
+// Also dump what npm thinks better-sqlite3's scripts are, post-reify, via
+// a marker file check + the on-disk package.json if already unpacked.
+try {
+  const bsPkg = path.join(process.cwd(), 'node_modules', 'better-sqlite3', 'package.json');
+  if (fs.existsSync(bsPkg)) {
+    const pj = JSON.parse(fs.readFileSync(bsPkg, 'utf8'));
+    console.log('ondisk better-sqlite3 scripts:', JSON.stringify(pj.scripts));
+  } else {
+    console.log('ondisk better-sqlite3: not yet unpacked (preinstall runs pre-reify)');
+  }
+} catch (e) {
+  console.log('ondisk read failed:', e.message);
+}
+process.exit(1);
