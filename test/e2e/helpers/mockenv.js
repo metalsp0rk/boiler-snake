@@ -262,6 +262,105 @@ class MockEnv {
   }
 
   /**
+   * Simulate a MODAL_SUBMIT (type 5) INTERACTION_CREATE — modal field
+   * values land in `interaction.fields.getTextInputValue()` (the patched
+   * mock builds the real Discord `data.components` shape).
+   * @param {{customId: string, fields?: Record<string, string>, messageId?: string, userId?: string, channelId?: string}} req
+   */
+  async modal({
+    customId,
+    fields = {},
+    messageId,
+    userId = this.ids.human,
+    channelId = this.ids.general,
+  }) {
+    return j(`${this.base}/_test/interactions`, {
+      method: "POST",
+      body: JSON.stringify({
+        application_id: this.ids.app,
+        type: 5,
+        custom_id: customId,
+        fields,
+        ...(messageId && { message_id: messageId }),
+        guild_id: this.ids.guild,
+        channel_id: channelId,
+        user_id: userId,
+      }),
+    });
+  }
+
+  /**
+   * Simulate an AUTOCOMPLETE (type 4) INTERACTION_CREATE. `options` must
+   * carry the focused option (`{name, type: 3, value, focused: true}`);
+   * the bot's choices response is readable via interactionState().
+   * @param {{command: string, options: object[], userId?: string, channelId?: string}} req
+   */
+  async autocomplete({
+    command,
+    options,
+    userId = this.ids.human,
+    channelId = this.ids.general,
+  }) {
+    return j(`${this.base}/_test/interactions`, {
+      method: "POST",
+      body: JSON.stringify({
+        application_id: this.ids.app,
+        type: 4,
+        command_name: command,
+        options,
+        guild_id: this.ids.guild,
+        channel_id: channelId,
+        user_id: userId,
+      }),
+    });
+  }
+
+  /**
+   * Stored interaction row incl. the bot's persisted callback payload:
+   * `response_json` = {type: 9 modal display | type 8 autocomplete choices
+   * | type 4 reply | ...} once the handler has responded.
+   */
+  async interactionState(interactionId) {
+    return j(`${this.base}/_test/interactions/${interactionId}`);
+  }
+
+  /**
+   * Inject a HUMAN reaction (persisted + REACTION_ADD dispatched to the
+   * bot). `messageId` required; reactor defaults to the namespace human.
+   * @param {{messageId: string, emoji: string, userId?: string, channelId?: string}} req
+   */
+  async react({
+    messageId,
+    emoji,
+    userId = this.ids.human,
+    channelId = this.ids.general,
+  }) {
+    return j(`${this.base}/_test/reactions`, {
+      method: "POST",
+      body: JSON.stringify({
+        channel_id: channelId,
+        message_id: messageId,
+        user_id: userId,
+        emoji,
+      }),
+    });
+  }
+
+  /** Remove an injected reaction (REACTION_REMOVE dispatch). */
+  async unreact({ messageId, emoji, userId = this.ids.human, channelId = this.ids.general }) {
+    return j(`${this.base}/_test/reactions`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        channel_id: channelId,
+        message_id: messageId,
+        user_id: userId,
+        emoji,
+      }),
+    });
+  }
+
+  /**
    * Await the bot's initial reply for an interaction (ephemerals included —
    * the token acts as the followup webhook token; mock quirk: visible to
    * any caller, real Discord restricts to the invoker).

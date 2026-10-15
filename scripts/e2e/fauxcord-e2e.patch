@@ -1,8 +1,8 @@
 diff --git a/src/db.ts b/src/db.ts
-index b4549a7..4c91291 100644
+index b4549a7..fd978c8 100644
 --- a/src/db.ts
 +++ b/src/db.ts
-@@ -43,6 +43,33 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
+@@ -43,6 +43,34 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
    typing_at: 'TEXT',
  }
  
@@ -12,6 +12,7 @@ index b4549a7..4c91291 100644
 +}
 +const INTERACTIONS_E2E_COLUMNS: Record<string, string> = {
 +  message_id: 'TEXT',
++  response_json: 'TEXT',
 +}
 +
 +/** Adds the E2E-fidelity columns to messages/interactions when missing. */
@@ -36,7 +37,7 @@ index b4549a7..4c91291 100644
  /**
   * Adds channel feature columns (currently just voice_status) to an
   * existing `channels` table when missing. Kept separate from
-@@ -802,6 +829,7 @@ export function initializeDatabase(dbPath: string): Database {
+@@ -802,6 +830,7 @@ export function initializeDatabase(dbPath: string): Database {
  
    migrateChannelsThreadColumns(db)
    migrateChannelsFeatureColumns(db)
@@ -45,10 +46,18 @@ index b4549a7..4c91291 100644
    return db
  }
 diff --git a/src/routes/test.ts b/src/routes/test.ts
-index 543d9ef..3eb8d6e 100644
+index 543d9ef..895f3a6 100644
 --- a/src/routes/test.ts
 +++ b/src/routes/test.ts
-@@ -149,7 +149,7 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -16,6 +16,7 @@ import {
+   createTestInteraction,
+ } from '../services/test-control'
+ import type { TestInteractionRequest } from '../services/test-control'
++import { addReaction, removeReaction } from '../services/reactions'
+ import { getChannelWebhooks } from '../services/webhooks'
+ import { injectPollVote } from '../services/polls'
+ 
+@@ -149,12 +150,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
    // command, without a real Discord client.
    app.post('/_test/interactions', async (c) => {
      const body = await c.req.json<TestInteractionRequest>()
@@ -57,6 +66,73 @@ index 543d9ef..3eb8d6e 100644
      return result.ok
        ? c.json(result.interaction, 201)
        : c.json({ message: '404: Not Found', code: 0 }, 404)
+   })
+ 
++  // GET /_test/interactions/:interactionId — SPIKE PATCH (boiler-snake
++  // e2e): inspect a stored interaction row, including the bot's persisted
++  // callback payload (response_json: modal displays, autocomplete choices).
++  app.get('/_test/interactions/:interactionId', (c) => {
++    const { interactionId } = c.req.param()
++    const row = db
++      .prepare('SELECT * FROM interactions WHERE id = ?')
++      .get(interactionId) as
++      | (Record<string, unknown> & { response_json: string | null })
++      | undefined
++    if (!row) return c.json({ message: '404: Not Found', code: 0 }, 404)
++    const { member_json: _memberJson, ...rest } = row
++    return c.json({
++      ...rest,
++      response_json: row.response_json
++        ? (JSON.parse(row.response_json) as unknown)
++        : null,
++    })
++  })
++
++  // POST /_test/reactions — SPIKE PATCH (boiler-snake e2e): inject a HUMAN
++  // reaction (persisted + MESSAGE_REACTION_ADD dispatch). The REST
++  // /reactions/:emoji/@me routes only ever react as the bot; reaction
++  // pipelines (reaction XP, reaction-role panels, honeypot clicks) need
++  // reactions from arbitrary users. DELETE mirrors removal
++  // (MESSAGE_REACTION_REMOVE). Body: {channel_id, message_id, user_id, emoji}.
++  app.post('/_test/reactions', async (c) => {
++    const { channel_id, message_id, user_id, emoji } = await c.req.json<{
++      channel_id: string
++      message_id: string
++      user_id: string
++      emoji: string
++    }>()
++    const msg = db
++      .prepare('SELECT channel_id FROM messages WHERE id = ?')
++      .get(message_id) as { channel_id: string } | undefined
++    if (!msg || msg.channel_id !== channel_id || !user_id || !emoji) {
++      return c.json({ message: '404: Not Found', code: 0 }, 404)
++    }
++    // INSERT OR IGNORE + conditional dispatch inside addReaction: a duplicate
++    // reaction persists nothing and dispatches nothing (matches Discord).
++    addReaction(db, message_id, user_id, emoji)
++    return c.json({ ok: true }, 201)
++  })
++
++  app.delete('/_test/reactions', async (c) => {
++    const { channel_id, message_id, user_id, emoji } = await c.req.json<{
++      channel_id: string
++      message_id: string
++      user_id: string
++      emoji: string
++    }>()
++    const msg = db
++      .prepare('SELECT channel_id FROM messages WHERE id = ?')
++      .get(message_id) as { channel_id: string } | undefined
++    if (!msg || msg.channel_id !== channel_id || !user_id || !emoji) {
++      return c.json({ message: '404: Not Found', code: 0 }, 404)
++    }
++    removeReaction(db, message_id, user_id, emoji)
++    return c.json({ ok: true })
++  })
++
+   // POST /_test/polls/:messageId/votes — Inject a poll vote for testing
+   app.post('/_test/polls/:messageId/votes', async (c) => {
+     const { messageId } = c.req.param()
 diff --git a/src/routes/webhooks.ts b/src/routes/webhooks.ts
 index dfcc278..021e713 100644
 --- a/src/routes/webhooks.ts
@@ -153,7 +229,7 @@ index b16fa10..15553c0 100644
            id: userRow.id,
            username: userRow.username,
 diff --git a/src/services/interactions.ts b/src/services/interactions.ts
-index 9f13b9c..670bde7 100644
+index 9f13b9c..b097623 100644
 --- a/src/services/interactions.ts
 +++ b/src/services/interactions.ts
 @@ -10,8 +10,9 @@ import type { Database } from '../db'
@@ -181,15 +257,17 @@ index 9f13b9c..670bde7 100644
    token: string
    version: number
  }
-@@ -41,6 +49,7 @@ interface InteractionRow {
+@@ -41,6 +49,9 @@ interface InteractionRow {
    member_json: string | null
    responded: number
    initial_response_message_id: string | null
 +  message_id: string | null
++  /** SPIKE PATCH (boiler-snake e2e): last callback payload (modal show, autocomplete choices, ...) */
++  response_json: string | null
    created_at: string
  }
  
-@@ -55,7 +64,8 @@ interface InteractionRow {
+@@ -55,7 +66,8 @@ interface InteractionRow {
   */
  function toInteractionObject(
    db: Database,
@@ -199,7 +277,7 @@ index 9f13b9c..670bde7 100644
  ): InteractionObject {
    const storedData = JSON.parse(row.data) as Record<string, unknown>
    let data: Record<string, unknown> | undefined
-@@ -90,6 +100,37 @@ function toInteractionObject(
+@@ -90,6 +102,37 @@ function toInteractionObject(
      ...(row.guild_id && { guild_id: row.guild_id }),
      ...(member && { member: member as unknown as Record<string, unknown> }),
      ...(user && { user: user as unknown as Record<string, unknown> }),
@@ -237,7 +315,7 @@ index 9f13b9c..670bde7 100644
    }
  
    return result
-@@ -106,6 +147,9 @@ export interface CreateInteractionParams {
+@@ -106,6 +149,9 @@ export interface CreateInteractionParams {
    commandId?: string
    data?: Record<string, unknown>
    userId: string
@@ -247,7 +325,7 @@ index 9f13b9c..670bde7 100644
  }
  
  /**
-@@ -121,8 +165,8 @@ export function createInteraction(
+@@ -121,8 +167,8 @@ export function createInteraction(
  ): InteractionObject {
    db.prepare(
      `INSERT INTO interactions
@@ -258,7 +336,7 @@ index 9f13b9c..670bde7 100644
    ).run(
      params.interactionId,
      params.applicationId,
-@@ -132,13 +176,14 @@ export function createInteraction(
+@@ -132,13 +178,14 @@ export function createInteraction(
      params.channelId ?? null,
      params.commandId ?? null,
      JSON.stringify(params.data ?? {}),
@@ -275,7 +353,7 @@ index 9f13b9c..670bde7 100644
  
    gatewayBus.emit('interaction.create', {
      applicationId: params.applicationId,
-@@ -186,6 +231,7 @@ export interface InteractionCallbackPayload {
+@@ -186,6 +233,7 @@ export interface InteractionCallbackPayload {
      embeds?: unknown[]
      tts?: boolean
      flags?: number
@@ -283,7 +361,23 @@ index 9f13b9c..670bde7 100644
    }
  }
  
-@@ -257,6 +303,9 @@ export function handleInteractionCallback(
+@@ -236,6 +284,15 @@ export function handleInteractionCallback(
+   if (!row) return { ok: false, reason: 'not_found' }
+   if (row.responded === 1) return { ok: false, reason: 'already_responded' }
+ 
++  // SPIKE PATCH (boiler-snake e2e): persist the raw callback payload so test
++  // suites can assert response kinds that create no message (modal display
++  // type-4-with-components, autocomplete type-8 choices):
++  //   GET /_test/interactions/:id -> { response_json }
++  db.prepare('UPDATE interactions SET response_json = ? WHERE id = ?').run(
++    JSON.stringify(payload),
++    row.id
++  )
++
+   const interaction: InteractionCallbackResponse['interaction'] = {
+     id: row.id,
+     type: row.type,
+@@ -257,6 +314,9 @@ export function handleInteractionCallback(
          tts: payload.data?.tts,
          embeds: payload.data?.embeds,
          flags: payload.data?.flags,
@@ -293,7 +387,7 @@ index 9f13b9c..670bde7 100644
        },
        baseUrl
      )
-@@ -265,6 +314,24 @@ export function handleInteractionCallback(
+@@ -265,6 +325,24 @@ export function handleInteractionCallback(
      ).run(messageId, row.id)
      interaction.response_message_id = messageId
      resource = { type: 4, message }
@@ -409,7 +503,7 @@ index ba966e1..7110695 100644
    if (payload.embeds !== undefined) {
      db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..13f5356 100644
+index 000b187..6a7a7ba 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
 @@ -11,6 +11,7 @@ import { gatewayBus } from '../gateway/bus'
@@ -420,7 +514,7 @@ index 000b187..13f5356 100644
  import {
    createMessage,
    getGuildIdForChannel,
-@@ -408,11 +409,21 @@ export function injectTestMessage(
+@@ -408,11 +409,29 @@ export function injectTestMessage(
  export interface TestInteractionRequest {
    application_id: string
    type?: number
@@ -440,10 +534,18 @@ index 000b187..13f5356 100644
 +  component_type?: number
 +  values?: string[]
 +  message_id?: string
++  /**
++   * SPIKE PATCH (boiler-snake e2e): modal-submit interactions (type 5).
++   * `custom_id` is required; `fields` maps each text-input custom_id to
++   * its submitted value (mock builds the action-row component tree real
++   * Discord sends in `data.components`). `message_id` is optional and
++   * attaches the originating message when the modal opened from one.
++   */
++  fields?: Record<string, string>
  }
  
  /** Result of a test-interaction creation attempt */
-@@ -425,19 +436,126 @@ interface CommandIdRow {
+@@ -425,19 +444,173 @@ interface CommandIdRow {
    id: string
  }
  
@@ -536,6 +638,46 @@ index 000b187..13f5356 100644
 +  // Snowflake-derived value, matching webhook token generation.
 +  const interactionToken = randomBytes(48).toString('base64url')
 +
++  // --- SPIKE PATCH (boiler-snake e2e): modal-submit interaction branch ----
++  if (request.type === 5) {
++    if (!request.custom_id) {
++      return { ok: false, reason: 'unknown_command' }
++    }
++    if (request.message_id) {
++      const attached = db
++        .prepare('SELECT id FROM messages WHERE id = ?')
++        .get(request.message_id) as MessageIdRow | undefined
++      if (!attached) return { ok: false, reason: 'unknown_command' }
++    }
++    // Real Discord delivers modal values as action rows of TEXT_INPUT
++    // (type 4) components carrying `value`; discord.js ModalValues reads
++    // exactly that shape for interaction.fields.getTextInputValue().
++    const components = Object.entries(request.fields ?? {}).map(
++      ([fieldCustomId, value]) => ({
++        type: 1,
++        components: [
++          { type: 4, custom_id: fieldCustomId, value: String(value) },
++        ],
++      })
++    )
++    const interaction = createInteraction(db, {
++      interactionId,
++      applicationId: request.application_id,
++      token: interactionToken,
++      type: 5,
++      guildId: request.guild_id,
++      channelId: request.channel_id,
++      data: {
++        custom_id: request.custom_id,
++        components,
++      },
++      userId,
++      messageId: request.message_id,
++      baseUrl,
++    })
++    return { ok: true, interaction }
++  }
++
 +  // --- SPIKE PATCH (boiler-snake e2e): component interaction branch -----
 +  if (request.type === 3 || request.custom_id !== undefined) {
 +    if (!request.custom_id || !request.message_id) {
@@ -566,12 +708,19 @@ index 000b187..13f5356 100644
 +  }
 +
 +  if (!request.command_name) return { ok: false, reason: 'unknown_command' }
++  // SPIKE PATCH (boiler-snake e2e): the shared command path serves slash
++  // (type 2) and AUTOCOMPLETE (type 4, focused option carried in
++  // `options`); the bot's interaction.respond(choices) callback (type 8)
++  // lands in the interaction's response_json for assertions.
++  if (request.type != null && request.type !== 2 && request.type !== 4) {
++    return { ok: false, reason: 'unknown_command' }
++  }
 +  // -----------------------------------------------------------------------
 +
    const guildCommand = request.guild_id
      ? (db
          .prepare(
-@@ -459,12 +577,10 @@ export function createTestInteraction(
+@@ -459,12 +632,10 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -588,7 +737,7 @@ index 000b187..13f5356 100644
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,8 +590,9 @@ export function createTestInteraction(
+@@ -474,8 +645,9 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,
