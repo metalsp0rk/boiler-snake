@@ -41,6 +41,9 @@ change; the mismatch restarts the mock automatically. Overrides: `PORT`,
 | `test/e2e/e2e-buttons.test.js` | 2 | the **button round-trip**: staff-gated `/userinfo` panel with persisted components → simulated button click → handler → persisted message edit; senior/junior/unprivileged staff tiers |
 | `test/e2e/e2e-gates.test.js` | 3 | command-channel allow-list (deny outside / allow inside), the admin/staff tier split (`/grantxp` denies a `staff_roles`-only member), and the ManageGuild-positive arc (grant a role carrying the bit → `/grantxp` succeeds + DB write; drop the bit → denial again) |
 | `test/e2e/e2e-warnings.test.js` | 4 | `/warn` sub-commands: nested USER-option resolution, staff gate on `add`/`list`, public `mine`, DB-side effects |
+| `test/e2e/e2e-xp.test.js` | 5 | `/setxp` persist + validation copies, `/grantxp` slash-origin audit rows (before/after/reason), `/xp` non-member zero-state, message-XP **cooldown expiry** re-award (window shortened via `/setxp`) |
+| `test/e2e/e2e-settings.test.js` | 6 | `/setcommandchannel` add/list/remove via CHANNEL-option resolution + gate flips, gate-before-permission ordering, admin lockout exemption, `/settings` staff view, `/staff syncpermissions` dark config, register PUT fidelity (tier `defaultMemberPermissions` on the mock) |
+| `test/e2e/e2e-mockgaps.test.js` | 23 | patch proofs for the interaction gaps: note-**modal** display/submit/validation round-trip, **autocomplete** choices over seeded rows, **human reaction** injection → reaction XP + cooldown + remove |
 
 Each file gets its own **namespace** (`test/e2e/helpers/mockenv.js` →
 `namespaceIds(ns)`): unique bot token, app id, guild, channels, and users, so
@@ -63,9 +66,12 @@ patch series without which the bot's handlers crash or silently no-op:
   message instead of silently marking the interaction responded.
 - **Component simulation** — `POST /_test/interactions` accepts
   `type: 3` + `custom_id` + `message_id` so button clicks can be simulated.
-- **`data.resolved`** — USER-typed options (including nested sub-command
-  options) resolve into `resolved.users`/`members` the way real Discord
-  fills them, so `interaction.options.getUser()` works.
+- **`data.resolved`** — entity-typed options — USER, CHANNEL (type 7), ROLE
+  (type 8), including nested sub-command options — resolve into
+  `resolved.users`/`members`/`channels`/`roles` the way real Discord fills
+  them, so `interaction.options.getUser()/getChannel()/getRole()` work
+  (`/setcommandchannel`, `/staff role …` and every other entity-option
+  command depend on it).
 - **Member `permissions`** — member objects (including the interaction-
   embedded `member`) aggregate the assigned roles' permission bitfields
   into a decimal string, so `interaction.memberPermissions` reflects real
