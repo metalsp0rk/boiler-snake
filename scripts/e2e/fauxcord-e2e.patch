@@ -45,6 +45,95 @@ index b4549a7..fd978c8 100644
  
    return db
  }
+diff --git a/src/e2e-control-api.test.ts b/src/e2e-control-api.test.ts
+index b122764..0ac6244 100644
+--- a/src/e2e-control-api.test.ts
++++ b/src/e2e-control-api.test.ts
+@@ -1,6 +1,7 @@
+ import { afterEach, describe, expect, it } from 'vitest'
+ import WebSocket from 'ws'
+ import { GatewayOp } from './gateway/opcodes'
++import { snowflakeToTimestamp } from './snowflake'
+ import { createRealServer } from './test-helpers'
+ 
+ const token = 'Bot control-api-token'
+@@ -294,4 +295,76 @@ describe('Fauxcord control APIs over a real server', () => {
+       d: { data: { name: 'ping' } },
+     })
+   })
++
++  it('injects messages with explicit historical timestamps (boiler-snake patch)', async () => {
++    const server = await createRealServer()
++    close = server.close
++
++    const setup = await fetch(`${server.baseUrl}/_test/setup`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({
++        token,
++        user: { id: applicationId, username: 'ControlBot' },
++        guilds: [
++          {
++            id: guildId,
++            name: 'Control Guild',
++            channels: [{ id: channelId, name: 'control', type: 0 }],
++          },
++        ],
++      }),
++    })
++    expect(setup.status).toBe(201)
++
++    const userResponse = await fetch(`${server.baseUrl}/_test/users`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ username: 'HistoryUser' }),
++    })
++    const user = (await userResponse.json()) as { id: string }
++
++    // A day old — the snowflake id must encode the requested time so
++    // discord.js derives createdTimestamp from it (history/backfill flows).
++    const historicMs = Date.now() - 24 * 60 * 60 * 1000
++    const old = await fetch(
++      `${server.baseUrl}/_test/channels/${channelId}/messages`,
++      {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          content: 'old history',
++          author: { id: user.id },
++          created_timestamp: historicMs,
++        }),
++      }
++    )
++    expect(old.status).toBe(201)
++    const oldMsg = (await old.json()) as { id: string }
++    expect(snowflakeToTimestamp(oldMsg.id).getTime()).toBe(historicMs)
++
++    const fresh = await fetch(
++      `${server.baseUrl}/_test/channels/${channelId}/messages`,
++      {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          content: 'fresh message',
++          author: { id: user.id },
++        }),
++      }
++    )
++    expect(fresh.status).toBe(201)
++
++    // Ordering follows the embedded time: REST pagination with before=<fresh>
++    // must surface the historic message.
++    const freshMsg = (await fresh.json()) as { id: string }
++    const page = await fetch(
++      `${server.baseUrl}/channels/${channelId}/messages?before=${freshMsg.id}`,
++      { headers: { Authorization: token } }
++    )
++    expect(page.status).toBe(200)
++    const rows = (await page.json()) as { id: string }[]
++    expect(rows.map((row) => row.id)).toContain(oldMsg.id)
++  })
+ })
 diff --git a/src/routes/channel-messages.ts b/src/routes/channel-messages.ts
 index 535851f..4a6e719 100644
 --- a/src/routes/channel-messages.ts
@@ -73,7 +162,7 @@ index 310fa2a..986e6cb 100644
  
      return c.json(newChannel, 201)
 diff --git a/src/routes/test.ts b/src/routes/test.ts
-index 543d9ef..895f3a6 100644
+index 543d9ef..22e1742 100644
 --- a/src/routes/test.ts
 +++ b/src/routes/test.ts
 @@ -16,6 +16,7 @@ import {
@@ -84,7 +173,31 @@ index 543d9ef..895f3a6 100644
  import { getChannelWebhooks } from '../services/webhooks'
  import { injectPollVote } from '../services/polls'
  
-@@ -149,12 +150,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -127,6 +128,7 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+     const payload = await c.req.json<{
+       content?: string
+       author?: { id?: string }
++      created_timestamp?: number
+     }>()
+ 
+     if (!payload.content || !payload.author?.id) {
+@@ -136,7 +138,14 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+     const result = injectTestMessage(
+       db,
+       channelId,
+-      { content: payload.content, author: { id: payload.author.id } },
++      {
++        content: payload.content,
++        author: { id: payload.author.id },
++        ...(typeof payload.created_timestamp === 'number' &&
++        Number.isFinite(payload.created_timestamp)
++          ? { created_timestamp: payload.created_timestamp }
++          : {}),
++      },
+       baseUrl
+     )
+ 
+@@ -149,12 +158,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
    // command, without a real Discord client.
    app.post('/_test/interactions', async (c) => {
      const body = await c.req.json<TestInteractionRequest>()
@@ -722,7 +835,7 @@ index ba966e1..7110695 100644
    if (payload.embeds !== undefined) {
      db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..55d7459 100644
+index 000b187..e61cd31 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
 @@ -10,7 +10,9 @@ import { generateSnowflake } from '../snowflake'
@@ -735,7 +848,30 @@ index 000b187..55d7459 100644
  import {
    createMessage,
    getGuildIdForChannel,
-@@ -408,11 +410,29 @@ export function injectTestMessage(
+@@ -350,6 +352,13 @@ export function createTestUser(
+ export interface InjectTestMessageRequest {
+   content: string
+   author: { id: string }
++  /**
++   * Optional epoch-millis to embed in the message snowflake so the injected
++   * message reads as OLD history (E2E-fidelity for history-reading flows,
++   * e.g. userActivity backfill counting only pre-watermark messages).
++   * Omit = now.
++   */
++  created_timestamp?: number
+ }
+ 
+ /**
+@@ -397,7 +406,7 @@ export function injectTestMessage(
+       // Neither a real bot token nor the webhook sentinel value, so this
+       // message resolves to a plain, non-bot, non-webhook author.
+       authorToken: '',
+-      messageId: generateSnowflake(),
++      messageId: generateSnowflake(request.created_timestamp),
+       content: request.content,
+     },
+     baseUrl
+@@ -408,11 +417,29 @@ export function injectTestMessage(
  export interface TestInteractionRequest {
    application_id: string
    type?: number
@@ -766,7 +902,7 @@ index 000b187..55d7459 100644
  }
  
  /** Result of a test-interaction creation attempt */
-@@ -425,19 +445,210 @@ interface CommandIdRow {
+@@ -425,19 +452,210 @@ interface CommandIdRow {
    id: string
  }
  
@@ -978,7 +1114,7 @@ index 000b187..55d7459 100644
    const guildCommand = request.guild_id
      ? (db
          .prepare(
-@@ -459,12 +670,10 @@ export function createTestInteraction(
+@@ -459,12 +677,10 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -995,7 +1131,7 @@ index 000b187..55d7459 100644
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,8 +683,9 @@ export function createTestInteraction(
+@@ -474,8 +690,9 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,
@@ -1027,6 +1163,31 @@ index 974e618..010a2f9 100644
      },
      baseUrl
    )
+diff --git a/src/snowflake.ts b/src/snowflake.ts
+index 8398c74..c2e33f9 100644
+--- a/src/snowflake.ts
++++ b/src/snowflake.ts
+@@ -19,9 +19,19 @@ let lastTimestamp = -1n
+  * Generates a Discord-compatible Snowflake ID.
+  *
+  * If more than 4096 calls occur within the same millisecond, waits until the next millisecond.
++ * @param timestampMs - Optional absolute epoch-millis to embed (E2E-fidelity:
++ * injected history needs past timestamps; discord.js derives
++ * `createdTimestamp` from the snowflake). Omit for wall-clock generation.
+  * @returns String representation of the Snowflake ID
+  */
+-export function generateSnowflake(): string {
++export function generateSnowflake(timestampMs?: number): string {
++  if (timestampMs != null && Number.isFinite(timestampMs)) {
++    // Explicit clock: no de-dup counter needed (callers inject distinct
++    // historical times); keep the worker/process bits identical.
++    const explicit = BigInt(Math.floor(timestampMs)) - DISCORD_EPOCH
++    return ((explicit << 22n) | (WORKER_ID << 17n) | (PROCESS_ID << 12n)).toString()
++  }
++
+   let timestamp = BigInt(Date.now()) - DISCORD_EPOCH
+ 
+   if (timestamp === lastTimestamp) {
 diff --git a/src/validators/channel.ts b/src/validators/channel.ts
 index 3044d9e..b2cd906 100644
 --- a/src/validators/channel.ts

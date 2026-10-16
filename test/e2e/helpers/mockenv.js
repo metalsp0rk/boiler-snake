@@ -229,14 +229,23 @@ class MockEnv {
 
   /**
    * Inject a human-authored message (also upserts guild membership).
+   * `atMs` (epoch millis) embeds a PAST timestamp in the message snowflake
+   * (patch v8) — discord.js then derives `createdTimestamp` from the id,
+   * which is what history-reading flows key off (userActivity backfill only
+   * counts pre-watermark messages). Omit = now.
    * @param {string} content
    * @param {string} authorId
    * @param {string} [channelId]
+   * @param {{atMs?: number}} [opts]
    */
-  async inject(content, authorId, channelId = this.ids.general) {
+  async inject(content, authorId, channelId = this.ids.general, { atMs } = {}) {
     return j(`${this.base}/_test/channels/${channelId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content, author: { id: authorId } }),
+      body: JSON.stringify({
+        content,
+        author: { id: authorId },
+        ...(atMs != null && { created_timestamp: atMs }),
+      }),
     });
   }
 
