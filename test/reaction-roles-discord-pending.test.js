@@ -146,3 +146,129 @@ describe("discord reaction roles — pending-emoji consumer keying (PR 5 pin)", 
     service.clearPendingOptionEmoji(DISCORD_CID, USER);
   });
 });
+
+/**
+ * Issue #370 regression — the CI-clobber race. The capture handler clears
+ * its session AFTER awaits (panel PATCH inside apply/remove). If the admin
+ * arms the NEXT config command during that window, an unconditional clear
+ * silently kills the new session and its emoji is ignored with zero logs
+ * (root cause of the ns16 e2e CI failures on PR #369). Terminal map ops are
+ * token-guarded: a stale capture can never clobber a newer session.
+ */
+const LIVE_GUILD = {
+  id: GUILD,
+  channels: {
+    fetch: async () => ({
+      messages: {
+        fetch: async () => ({
+          id: "9001-live",
+          edit: async () => ({}),
+          react: async () => ({}),
+          reactions: { cache: [] },
+        }),
+      },
+    }),
+  },
+};
+
+describe("discord reaction roles — in-flight capture cannot clobber the next pending session (#370)", () => {
+  it("an in-flight ADD capture (success) does not clear a REMOVE session armed during the panel PATCH", async () => {
+    dbApi.createReactionRolePanel(DISCORD_CID, CH, "9100", "Roles", "d");
+    dbApi.upsertReactionRoleOption(DISCORD_CID, "9100", "⭐", "⭐", ROLE, 0, 1);
+
+    // Session A: map 👍 on panel 9100. The capture writes the row then
+    // awaits the panel PATCH (LIVE_GUILD makes it SUCCEED — the destructive
+    // terminal clear, not the touch path).
+    service.setPendingOptionAdd(DISCORD_CID, USER, {
+      messageId: "9100",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const { message: msgA } = fakeDiscordMessage({ content: "👍", guild: LIVE_GUILD });
+    const inflight = service.handlePendingOptionEmojiMessage(msgA);
+
+    // DURING A's await (sync line before microtask drain): the admin's next
+    // command arms session B — remove ⭐.
+    service.setPendingOptionRemove(DISCORD_CID, USER, { messageId: "9100", channelId: CH });
+
+    const resA = await inflight;
+    assert.equal(resA.handled, true, "capture A completed");
+    assert.ok(dbApi.getReactionRoleOption(DISCORD_CID, "9100", "👍"), "A's option row persisted");
+
+    const live = service.getPendingOptionEmoji(DISCORD_CID, USER);
+    assert.ok(live, "session B SURVIVED A's terminal clear (stale clear must no-op)");
+    assert.equal(live.action, "remove", "B is still the REMOVE session");
+
+    // And B really consumes its next emoji end-to-end.
+    const { message: msgB, sent: sentB } = fakeDiscordMessage({
+      content: "⭐",
+      guild: LIVE_GUILD,
+    });
+    const resB = await service.handlePendingOptionEmojiMessage(msgB);
+    assert.equal(resB.handled, true, "B consumed its emoji");
+    assert.ok(
+      sentB.some((p) => String(p.content).includes("Removed ⭐ from panel `9100`.")),
+      "B's confirm reply sent",
+    );
+    assert.ok(
+      !dbApi.getReactionRoleOption(DISCORD_CID, "9100", "⭐"),
+      "⭐ row deleted",
+    );
+    assert.equal(service.hasPendingOptionEmoji(DISCORD_CID, USER), false, "B completed clean");
+  });
+
+  it("a stale hard-fail clear (panel gone) cannot kill a session armed during the await", async () => {
+    // Session A: remove on a NONEXISTENT panel → hardFail terminal clear.
+    service.setPendingOptionRemove(DISCORD_CID, USER, {
+      messageId: "9998",
+      channelId: CH,
+    });
+    const { message: msgA, sent: sentA } = fakeDiscordMessage({ content: "🎉" });
+    const inflight = service.handlePendingOptionEmojiMessage(msgA);
+
+    // B armed during A's await (resolves on the microtask drain after the
+    // synchronous hardFail return).
+    service.setPendingOptionRemove(DISCORD_CID, USER, {
+      messageId: "9101",
+      channelId: CH,
+    });
+
+    const res = await inflight;
+    assert.equal(res.handled, true, "hardFail handled");
+    assert.ok(
+      sentA.some((p) => String(p.content).includes("No reaction-role panel")),
+      "hardFail copy named the missing panel",
+    );
+    const live = service.getPendingOptionEmoji(DISCORD_CID, USER);
+    assert.ok(live, "B survived the stale hardFail clear");
+    assert.equal(live.messageId, "9101", "B intact");
+    service.clearPendingOptionEmoji(DISCORD_CID, USER);
+  });
+
+  it("the store guards clear/touch by token: matching token still works (happy path intact)", () => {
+    service.setPendingOptionAdd(DISCORD_CID, USER, {
+      messageId: "9102",
+      roleId: ROLE,
+      level: 0,
+      removable: true,
+      channelId: CH,
+    });
+    const s1 = service.getPendingOptionEmoji(DISCORD_CID, USER);
+    service.setPendingOptionRemove(DISCORD_CID, USER, {
+      messageId: "9102",
+      channelId: CH,
+    });
+    // Stale ops (s1 token) are no-ops against the newer session.
+    service.clearPendingOptionEmojiIfToken(DISCORD_CID, USER, s1.token);
+    assert.ok(service.getPendingOptionEmoji(DISCORD_CID, USER), "stale clear no-op");
+    // Current token clears.
+    const s2 = service.getPendingOptionEmoji(DISCORD_CID, USER);
+    service.clearPendingOptionEmojiIfToken(DISCORD_CID, USER, s2.token);
+    assert.equal(service.hasPendingOptionEmoji(DISCORD_CID, USER), false, "matching clear works");
+    // Stale touch cannot revive a cleared key.
+    service.touchPendingOptionEmojiIfToken(DISCORD_CID, USER, s1.token);
+    assert.equal(service.hasPendingOptionEmoji(DISCORD_CID, USER), false, "stale touch no-op");
+  });
+});
