@@ -199,7 +199,39 @@ describe(
         return await poll(predicate, { timeoutMs: 4000, label: `${label} (first pass)` });
       } catch {
         await env.mock.inject(text, env.ids.human, env.ids.general);
-        return poll(predicate, { timeoutMs: 12000, label: `${label} (after re-inject)` });
+        try {
+          return await poll(predicate, { timeoutMs: 12000, label: `${label} (after re-inject)` });
+        } catch (err) {
+          // One-shot CI diagnostic (root-cause hunt: ns16 "remove confirm"
+          // CI-only timeouts, 3/3 in CI, 0/N locally incl. canonical mock on
+          // node 22.22 — see #359/#361 triage). Read-only; must never mask
+          // the real failure. Remove once root-caused.
+          try {
+            const d = env.supervisor?.discord;
+            const msgs = ((await env.mock.messages(env.ids.general)) ?? [])
+              .slice(-10)
+              .map((m) => ({
+                a: String(m.author?.id ?? m.authorId ?? m.author ?? "?").slice(-5),
+                c: String(m.content).slice(0, 40),
+              }));
+            console.error(
+              `[ns16-diag] ${JSON.stringify({
+                label,
+                ws: d?.ws?.getStatus?.() ?? String(d?.ws?.status ?? "?"),
+                genCached: d ? d.channels.cache.has(env.ids.general) : "?",
+                genSend: typeof d?.channels?.cache?.get(env.ids.general)?.send,
+                guildCached: d ? d.guilds.cache.has(env.ids.guild) : "?",
+                lockRow: !!env.dbmod.getReactionRoleOption(env.communityId, st.panel, "🔒"),
+                colorRow: !!env.dbmod.getReactionRoleOption(env.communityId, st.panel, "🎉"),
+                msgCount: msgs.length,
+                tail: msgs,
+              })}`,
+            );
+          } catch {
+            /* diagnostics must never mask the real failure */
+          }
+          throw err;
+        }
       }
     };
 
