@@ -36,8 +36,8 @@ const { j, poll, namespaceIds } = require("./helpers/mockenv");
  * embed (raw Client passed where OutboundClient required; silent catch).
  *
  * Documented dark arms (todos at the bottom): member-side DM copies (mock
- * cannot list DM channels) and the honeypot warning-notice PNG (channel-send
- * with attachment = the multipart gap family, #312).
+ * cannot list DM channels). The honeypot warning-notice PNG was the last
+ * multipart-gap casualty (#312) — delivered, now a live arm.
  */
 describe(
   "e2e: reaction pipeline — /reactionrole pending-emoji flow, claims via injected reactions, honeypot enforcement",
@@ -647,8 +647,45 @@ describe(
     // Members receive BAN/level-gate DM copies — unassertable while the
     // mock cannot enumerate DM channels (GET /users/@me/channels 404).
     it.todo("honeypot BAN DM + level-gate DM embed content (mock cannot list DM channels)");
-    // `/honeypot channel add` posts a PNG warning notice through a
-    // channel-send WITH attachment — the multipart family (#312).
-    it.todo("honeypot warning-notice PNG posted into the trap (blocked on #312: mock multipart file uploads)");
+
+    // #312 DELIVERED: channel-send multipart persists uploads — the former
+    // "warning-notice PNG blocked" todo became this arm. The exemptions arm
+    // above already DISARMED `trap`, so re-adding posts a fresh notice.
+    it("/honeypot channel add posts the warning-notice PNG into the trap (multipart channel-send)", async () => {
+      const addCopy = await contentOf(
+        await slash("honeypot", [grp("channel", "add", [chanOpt("channel", trap)])]),
+      );
+      assert.match(addCopy, /honeypot|trap/i, `channel add copy (got: ${addCopy})`);
+
+      const notice = await poll(
+        async () =>
+          (await env.mock.messages(trap)).find(
+            (m) => (m.attachments ?? []).some((a) => a.filename === "honeypot-warning.png"),
+          ) ?? null,
+        { timeoutMs: 8000, label: "warning-notice PNG in trap" },
+      );
+      const att = notice.attachments.find((a) => a.filename === "honeypot-warning.png");
+      assert.equal(att.content_type, "image/png", "content-type sniffed from PNG bytes");
+      assert.ok(att.size > 0, "non-empty render");
+      assert.match(String(att.url), /\/_mock\/attachments\//, "mock serves the bytes");
+
+      const res = await fetch(att.url);
+      assert.ok(res.ok, `PNG GET (HTTP ${res.status})`);
+      const bytes = Buffer.from(await res.arrayBuffer());
+      assert.deepEqual(
+        bytes.subarray(0, 4),
+        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        "PNG magic bytes",
+      );
+      assert.equal(bytes.length, att.size, "served bytes match the stored size");
+
+      // Reuse contract: adding the trap again must NOT post a second notice.
+      await slash("honeypot", [grp("channel", "add", [chanOpt("channel", trap)])]);
+      await new Promise((r) => setTimeout(r, 400));
+      const notices = (await env.mock.messages(trap)).filter((m) =>
+        (m.attachments ?? []).some((a) => a.filename === "honeypot-warning.png"),
+      );
+      assert.equal(notices.length, 1, "existing warning notice reused (ensureHoneypotWarning)");
+    });
   },
 );

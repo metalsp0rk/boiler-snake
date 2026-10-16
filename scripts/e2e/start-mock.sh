@@ -61,6 +61,12 @@ fi
 "$SCRIPT_DIR/stop-mock.sh" >/dev/null 2>&1 || true
 
 mkdir -p "$FAUXCORD_DATA_DIR"
+# Attachment storage (multipart POST/PATCH callbacks): fauxcord defaults to
+# /data/uploads, which is unwritable on standard runners (the mkdir EACCES
+# that broke every attachment POST in early e2e CI). Co-locate with the mock
+# DB's data dir so one volume covers both.
+UPLOAD_PATH="${UPLOAD_PATH:-$FAUXCORD_DATA_DIR/uploads}"
+mkdir -p "$UPLOAD_PATH"
 
 # --- clone / sync to pinned commit ------------------------------------------
 if [ ! -d "$FAUXCORD_DIR/.git" ]; then
@@ -104,6 +110,7 @@ rm -f "$PID_FILE"
 # kill the whole npm→sh→tsx chain with one signal (Linux: util-linux).
 setsid env PORT="$PORT" HOST="$HOST" BASE_URL="$BASE_URL" \
   DB_PATH="$FAUXCORD_DATA_DIR/mock.db" \
+  UPLOAD_PATH="$UPLOAD_PATH" \
   npm start >"$LOG_FILE" 2>&1 < /dev/null &
 echo $! >"$PID_FILE"
 
