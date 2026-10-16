@@ -54,6 +54,14 @@ const NO_PING_MENTIONS = { parse: [] };
 // external guild) — so a Fluxer guild whose id string equals a Discord
 // snowflake can never hijack (or be hijacked by) the other platform's session.
 const pendingOptionEmoji = new Map();
+/**
+ * Monotonic session token source (#370). Every `set` stamps a fresh token;
+ * capture handlers guard their post-await terminal ops with it so a stale
+ * capture can never clear/touch a session the admin armed while that capture
+ * was in flight (CI-observed clobber: slow ⭐-add capture cleared the next
+ * pending REMOVE, silencing the admin's emoji with zero logs).
+ */
+let pendingSeq = 0;
 
 function pendingOptionKey(communityId, userId) {
   return `${communityId}:${userId}`;
@@ -62,6 +70,7 @@ function pendingOptionKey(communityId, userId) {
 function setPendingOptionEmoji(communityId, userId, session) {
   pendingOptionEmoji.set(pendingOptionKey(communityId, userId), {
     ...session,
+    token: ++pendingSeq,
     expiresAt: Date.now() + PENDING_EMOJI_TTL_MS,
   });
 }
@@ -97,6 +106,26 @@ function touchPendingOptionEmoji(communityId, userId) {
 
 function clearPendingOptionEmoji(communityId, userId) {
   pendingOptionEmoji.delete(pendingOptionKey(communityId, userId));
+}
+
+/**
+ * Token-guarded terminal ops (#370): mutate ONLY while the stored session is
+ * still the one the caller consumed before its awaits. A newer session armed
+ * during an in-flight capture is never clobbered; a cleared/expired key is
+ * never revived. The sync slash-replace path keeps calling the unconditional
+ * clear (immediately followed by its own set — no window there).
+ */
+function clearPendingOptionEmojiIfToken(communityId, userId, token) {
+  const k = pendingOptionKey(communityId, userId);
+  const session = pendingOptionEmoji.get(k);
+  if (session && session.token === token) pendingOptionEmoji.delete(k);
+}
+
+function touchPendingOptionEmojiIfToken(communityId, userId, token) {
+  const session = pendingOptionEmoji.get(pendingOptionKey(communityId, userId));
+  if (session && session.token === token) {
+    session.expiresAt = Date.now() + PENDING_EMOJI_TTL_MS;
+  }
 }
 
 // Aliases used by older call sites
@@ -1674,13 +1703,16 @@ async function handlePendingOptionEmojiMessage(message) {
     : communityIdFor(guildId);
   const session = getPendingOptionEmoji(communityId, userId);
   if (!session) return { handled: false };
+  // #370: every terminal map op after an await must carry this token so a
+  // newer session armed mid-flight is never clobbered by the stale capture.
+  const sessionToken = session.token;
 
   const action = session.action === "remove" ? "remove" : "add";
   const content = (message.content || "").trim();
 
   // Cancel
   if (content.toLowerCase() === "stop") {
-    clearPendingOptionEmoji(communityId, userId);
+    clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     try {
       await message.reply({
         content: "Cancelled — no longer waiting for an emoji.",
@@ -1702,7 +1734,7 @@ async function handlePendingOptionEmojiMessage(message) {
         : `That doesn't look like an emoji.\n${EMOJI_INPUT_HELP}`;
 
   if (emojiErr) {
-    touchPendingOptionEmoji(communityId, userId);
+    touchPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     const waitingFor =
       action === "add"
         ? `for <@&${session.roleId}> on panel \`${session.messageId}\``
@@ -1726,9 +1758,9 @@ async function handlePendingOptionEmojiMessage(message) {
 
     if (!removed.ok) {
       if (removed.hardFail) {
-        clearPendingOptionEmoji(communityId, userId);
+        clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
       } else {
-        touchPendingOptionEmoji(communityId, userId);
+        touchPendingOptionEmojiIfToken(communityId, userId, sessionToken);
       }
       try {
         await message.reply({
@@ -1743,7 +1775,7 @@ async function handlePendingOptionEmojiMessage(message) {
       return { handled: true };
     }
 
-    clearPendingOptionEmoji(communityId, userId);
+    clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     const channel = message.channel;
     await deleteAdminEmojiMessage(message);
     await sendChannelConfirm(
@@ -1782,9 +1814,9 @@ async function handlePendingOptionEmojiMessage(message) {
       applied.error?.includes("No reaction-role panel") ||
       applied.error?.includes("already has");
     if (hardFail) {
-      clearPendingOptionEmoji(communityId, userId);
+      clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     } else {
-      touchPendingOptionEmoji(communityId, userId);
+      touchPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     }
     try {
       await message.reply({
@@ -1799,7 +1831,7 @@ async function handlePendingOptionEmojiMessage(message) {
     return { handled: true };
   }
 
-  clearPendingOptionEmoji(communityId, userId);
+  clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
 
   const remText = session.removable ? "removable" : "permanent (not removable)";
   const channel = message.channel;
@@ -2020,6 +2052,9 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
   if (!userId) return { handled: false };
   const session = getPendingOptionEmoji(communityId, userId);
   if (!session) return { handled: false };
+  // #370: every terminal map op after an await must carry this token so a
+  // newer session armed mid-flight is never clobbered by the stale capture.
+  const sessionToken = session.token;
 
   const channelId = String(message.channelId ?? "");
   const action = session.action === "remove" ? "remove" : "add";
@@ -2051,7 +2086,7 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
 
   // Cancel
   if (content.toLowerCase() === "stop") {
-    clearPendingOptionEmoji(communityId, userId);
+    clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     await replyToAdmin("Cancelled — no longer waiting for an emoji.");
     return { handled: true };
   }
@@ -2067,7 +2102,7 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
         : `That doesn't look like an emoji.\n${EMOJI_INPUT_HELP}`;
 
   if (emojiErr) {
-    touchPendingOptionEmoji(communityId, userId);
+    touchPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     const waitingFor =
       action === "add"
         ? `for ${await roleLabel()} on panel \`${session.messageId}\``
@@ -2086,9 +2121,9 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
 
     if (!removed.ok) {
       if (removed.hardFail) {
-        clearPendingOptionEmoji(communityId, userId);
+        clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
       } else {
-        touchPendingOptionEmoji(communityId, userId);
+        touchPendingOptionEmojiIfToken(communityId, userId, sessionToken);
       }
       await replyToAdmin(
         removed.hardFail
@@ -2098,7 +2133,7 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
       return { handled: true };
     }
 
-    clearPendingOptionEmoji(communityId, userId);
+    clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     console.log(
       `[fluxer] reactionRoles: emoji config message ${message.id} left in place — ` +
         "OutboundClient has no deleteMessage surface",
@@ -2135,7 +2170,7 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
     if (applied.emojiRejected) {
       // Instance rejected the custom emoji — the Discord arm's "not in this
       // server" rejection keeps the session open for a retry.
-      touchPendingOptionEmoji(communityId, userId);
+      touchPendingOptionEmojiIfToken(communityId, userId, sessionToken);
       const rollbackNote = applied.rolledBack
         ? ""
         : "\n(Could not roll the option back — remove it with `!reactionrole option remove` if needed.)";
@@ -2148,9 +2183,9 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
       applied.error?.includes("No reaction-role panel") ||
       applied.error?.includes("already has");
     if (hardFail) {
-      clearPendingOptionEmoji(communityId, userId);
+      clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     } else {
-      touchPendingOptionEmoji(communityId, userId);
+      touchPendingOptionEmojiIfToken(communityId, userId, sessionToken);
     }
     await replyToAdmin(
       hardFail
@@ -2160,7 +2195,7 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
     return { handled: true };
   }
 
-  clearPendingOptionEmoji(communityId, userId);
+  clearPendingOptionEmojiIfToken(communityId, userId, sessionToken);
   console.log(
     `[fluxer] reactionRoles: emoji config message ${message.id} left in place — ` +
       "OutboundClient has no deleteMessage surface",
@@ -2232,6 +2267,8 @@ module.exports = {
   setPendingOptionAdd,
   setPendingOptionRemove,
   getPendingOptionEmoji,
+  clearPendingOptionEmojiIfToken,
+  touchPendingOptionEmojiIfToken,
   getPendingOptionAdd,
   clearPendingOptionEmoji,
   clearPendingOptionAdd,
