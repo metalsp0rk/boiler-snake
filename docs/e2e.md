@@ -112,6 +112,14 @@ patch series without which the bot's handlers crash or silently no-op:
 - **`channel.send` persists components** — plain REST message creation keeps
   button rows (only interaction-callback replies used to), so panel messages
   round-trip with their `tk:open` buttons intact.
+- **Historical message timestamps** — `POST /_test/channels/:id/messages`
+  accepts `created_timestamp` (epoch ms) and embeds it in the message
+  snowflake, so discord.js derives `createdTimestamp` from the id and REST
+  pagination (`before`/`after`, ordered by the embedded time) surfaces the
+  message as OLD history. Without it every injected message is "now", and
+  history-reading flows (userActivity backfill counts only pre-watermark
+  messages) could never count anything (#320 enabler; read with
+  `env.mock.inject(content, author, channel, { atMs })`).
 
 Still open in the patch series (issue #328): **voice states** (gap 6 — needs
 upstream design) and **DMs / guild-less interactions** (gap 7 — pairs with a
