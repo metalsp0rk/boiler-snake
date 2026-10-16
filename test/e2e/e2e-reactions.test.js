@@ -184,6 +184,25 @@ describe(
     const panelRow = (messageId) =>
       env.dbmod.getReactionRolePanel(env.communityId, messageId);
 
+    // CI-hardened pending flow: the emoji message rides the gateway
+    // (MESSAGE_CREATE), which on throttled CI runners can deliver late or
+    // drop the dispatch outright (the mock has no RESUME replay — both CI
+    // failures on PR #359 were exactly this class on the `remove confirm`
+    // arm). Re-inject once mid-poll: the pending session is either still
+    // open (the second delivery drives the transition) or already consumed
+    // (the duplicate degrades to a plain XP message — state untouched).
+    // Every pending-flow confirmation below is idempotent, so a spurious
+    // second delivery is inert.
+    const injectAndPoll = async (text, predicate, label) => {
+      await env.mock.inject(text, env.ids.human, env.ids.general);
+      try {
+        return await poll(predicate, { timeoutMs: 4000, label: `${label} (first pass)` });
+      } catch {
+        await env.mock.inject(text, env.ids.human, env.ids.general);
+        return poll(predicate, { timeoutMs: 12000, label: `${label} (after re-inject)` });
+      }
+    };
+
     it("gates: outsider denied on reactionrole + honeypot channels; exempt trio is admin-only for staff too", async () => {
       const denied = "You don't have permission to use this.";
       assert.equal(
@@ -267,25 +286,24 @@ describe(
       // known shortcode) → parse refusal, session RETAINED (still waiting).
       // NOTE: arbitrary prose like "not an emoji" PARSES as a literal unicode
       // emoji (product behavior) — only looksLikePlainTextLabel inputs refuse.
-      const bad = await env.mock.inject("gamer", env.ids.human, env.ids.general);
-      const refusal = await poll(
+      const refusal = await injectAndPoll(
+        "gamer",
         async () =>
           ((await env.mock.messages(env.ids.general)) ?? []).find(
             (m) => String(m.content).includes("That doesn't look like an emoji"),
           ),
-        { timeoutMs: 8000, label: "pending-emoji refusal" },
+        "pending-emoji refusal",
       );
       assert.ok(String(refusal.content).includes("Still waiting for an emoji"), "still-waiting footer");
-      void bad;
 
       // stop → cancel copy, session cleared (a later emoji is NOT consumed).
-      await env.mock.inject("stop", env.ids.human, env.ids.general);
-      const cancelled = await poll(
+      const cancelled = await injectAndPoll(
+        "stop",
         async () =>
           ((await env.mock.messages(env.ids.general)) ?? []).find((m) =>
             String(m.content).includes("Cancelled — no longer waiting"),
           ),
-        { timeoutMs: 8000, label: "pending-emoji cancel" },
+        "pending-emoji cancel",
       );
       assert.ok(cancelled);
 
@@ -294,13 +312,13 @@ describe(
         "reactionrole",
         [grp("option", "add", [strOpt("message_id", st.panel), roleOpt("role", roles.color.id)])],
       );
-      await env.mock.inject("🎉", env.ids.human, env.ids.general);
-      await poll(
+      await injectAndPoll(
+        "🎉",
         async () =>
           ((await env.mock.messages(env.ids.general)) ?? []).find((m) =>
             String(m.content).includes("Configured 🎉"),
           ),
-        { timeoutMs: 8000, label: "option configured confirm" },
+        "option configured confirm",
       );
 
       const opt = env.dbmod.getReactionRoleOption(env.communityId, st.panel, "🎉");
@@ -411,11 +429,11 @@ describe(
         "reactionrole",
         [grp("option", "add", [strOpt("message_id", st.panel), roleOpt("role", roles.lock.id), boolOpt("removable", false)])],
       );
-      await env.mock.inject("🔒", env.ids.human, env.ids.general);
-      await poll(async () => (env.dbmod.getReactionRoleOption(env.communityId, st.panel, "🔒") ? true : null), {
-        timeoutMs: 8000,
-        label: "🔒 option row",
-      });
+      await injectAndPoll(
+        "🔒",
+        async () => (env.dbmod.getReactionRoleOption(env.communityId, st.panel, "🔒") ? true : null),
+        "🔒 option row",
+      );
 
       await env.mock.react({ messageId: st.panel, emoji: "🔒", userId: env.ids.outsider });
       await poll(async () => ((await memberRoleIds(env.ids.outsider)).includes(roles.lock.id) ? true : null), {
@@ -455,13 +473,13 @@ describe(
     it("option remove pending flow deletes rows + re-renders; panel deploy copies, delete removes row + message", async () => {
       const rmStart = await slash("reactionrole", [grp("option", "remove", [strOpt("message_id", st.panel)])]);
       assert.match(await contentOf(rmStart), /\*\*Send the emoji\*\* to remove/);
-      await env.mock.inject("🔒", env.ids.human, env.ids.general);
-      await poll(
+      await injectAndPoll(
+        "🔒",
         async () =>
           ((await env.mock.messages(env.ids.general)) ?? []).find((m) =>
             String(m.content).includes("Removed 🔒 from panel"),
           ),
-        { timeoutMs: 8000, label: "remove confirm" },
+        "remove confirm",
       );
       assert.equal(env.dbmod.getReactionRoleOption(env.communityId, st.panel, "🔒"), null, "row deleted");
       const msg = await env.mock.message(st.panel, env.ids.general);
