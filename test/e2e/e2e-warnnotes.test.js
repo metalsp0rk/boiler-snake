@@ -455,13 +455,49 @@ describe(
       assert.ok(auditRow("warnings.log_channel_clear"));
     });
 
-    // `/warn export` builds its reply with a `files` attachment — the mock
-    // cannot accept multipart interaction callbacks (#312, same blocker as
-    // the leaderboard PNG row in ns5), so the whole reply arm is DARK here.
-    // The handler-side record builder is unit-covered (test/warningsExport*).
-    it.todo(
-      "/warn export staff-record file reply (blocked on #312: mock multipart interaction callbacks)",
-    );
+    // #312 DELIVERED: the mock now parses multipart interaction callbacks, so
+    // the former "warn export blocked" todo became this live arm. (Record
+    // STRUCTURE stays unit-covered in test/warningsExport*.)
+    it("/warn export replies ephemerally with the staff-record .md attachment", async () => {
+      for (const reason of ["EXPORT-MARKER alpha", "EXPORT-MARKER beta"]) {
+        env.dbmod.createWarning({
+          communityId: env.communityId,
+          externalGuildId: env.ids.guild,
+          userId: env.ids.target,
+          issuerId: env.ids.human,
+          reason,
+          guildDefaultDays: 0,
+        });
+      }
+
+      const inter = await slash("warn", [
+        sub("export", [userOpt("user", env.ids.target)]),
+      ]);
+      const reply = await env.mock.awaitSettledReply(inter);
+      assert.match(
+        String(reply.content),
+        new RegExp(
+          `Staff record for <@${env.ids.target}>: \\*\\*\\d+\\*\\* warning\\(s\\), \\*\\*\\d+\\*\\* note\\(s\\) in file`,
+        ),
+      );
+
+      const atts = reply.attachments ?? [];
+      assert.equal(atts.length, 1, "the markdown export rides along");
+      const att = atts[0];
+      assert.match(
+        String(att.filename),
+        new RegExp(`^staff-record-${env.ids.target}-\\d{4}-\\d{2}-\\d{2}\\.md$`),
+        "exportFilename contract",
+      );
+      assert.ok(att.size > 0, "non-empty file");
+
+      const res = await fetch(att.url);
+      assert.ok(res.ok, `export bytes served (HTTP ${res.status})`);
+      const body = Buffer.from(await res.arrayBuffer()).toString("utf8");
+      const hits = body.match(/EXPORT-MARKER/g) ?? [];
+      assert.equal(hits.length, 2, "both seeded warnings made the record");
+      assert.match(body, /Staff Record/i, "markdown header present");
+    });
 
     it("/warn list pagination: full pages, tail page, out-of-range boundary copy", async () => {
       for (let i = 0; i < 12; i += 1) {

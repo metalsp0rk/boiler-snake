@@ -1,3 +1,24 @@
+diff --git a/src/app.ts b/src/app.ts
+index fda0398..1ff7d3f 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -155,14 +155,14 @@ export function buildApp(
+     app.route(prefix, createGatewayRoutes(db, config.baseUrl))
+     app.route(prefix, createSoundboardRoutes(db))
+     // Webhook routes are also enabled for all prefixes (to support /api/v10/webhooks/...)
+-    app.route(prefix, createWebhookRoutes(db, config.baseUrl))
++    app.route(prefix, createWebhookRoutes(db, config.baseUrl, config.uploadPath))
+     app.route(prefix, createInviteRoutes(db))
+     app.route(
+       prefix,
+       createApplicationRoutes(db, config.baseUrl, config.uploadPath)
+     )
+     app.route(prefix, createApplicationCommandRoutes(db))
+-    app.route(prefix, createInteractionRoutes(db, config.baseUrl))
++    app.route(prefix, createInteractionRoutes(db, config.baseUrl, config.uploadPath))
+     app.route(prefix, createLobbyRoutes(db))
+     app.route(prefix, createStageInstanceRoutes(db))
+     app.route(prefix, createCatalogRoutes(db))
 diff --git a/src/db.ts b/src/db.ts
 index b4549a7..fd978c8 100644
 --- a/src/db.ts
@@ -134,6 +155,118 @@ index b122764..0ac6244 100644
 +    expect(rows.map((row) => row.id)).toContain(oldMsg.id)
 +  })
  })
+diff --git a/src/gateway/opcodes.ts b/src/gateway/opcodes.ts
+index 175d2c7..d14b1ee 100644
+--- a/src/gateway/opcodes.ts
++++ b/src/gateway/opcodes.ts
+@@ -8,6 +8,8 @@ export const GatewayOp = {
+   Identify: 2,
+   Resume: 6,
+   Reconnect: 7,
++  /** SPIKE PATCH (boiler-snake e2e): handled in server.ts (chunks reply). */
++  RequestGuildMembers: 8,
+   InvalidSession: 9,
+   Hello: 10,
+   HeartbeatAck: 11,
+diff --git a/src/gateway/server.ts b/src/gateway/server.ts
+index dd89b8b..5bc7072 100644
+--- a/src/gateway/server.ts
++++ b/src/gateway/server.ts
+@@ -11,6 +11,8 @@ import type { GatewayReadyDispatchData } from 'discord-api-types/v10'
+ import type { WSContext, WSEvents } from 'hono/ws'
+ import type { Database } from '../db'
+ import { buildGuildCreatePayload } from '../services/guilds'
++// SPIKE PATCH (boiler-snake e2e): op 8 replies read the member table.
++import { getGuildMembers } from '../services/guild-members'
+ import { SessionManager, type Session } from './session'
+ import { GatewayOp, GatewayCloseCode } from './opcodes'
+ import { encodePayload, decodePayload } from './protocol'
+@@ -395,6 +397,73 @@ function handleResume(
+  * @param sessionIdByWs - Map of WSContext to sessionId
+  * @param ws - The connected WebSocket context
+  */
++/**
++ * SPIKE PATCH (boiler-snake e2e): op 8 REQUEST_GUILD_MEMBERS.
++ *
++ * discord.js GuildMemberManager#fetch({ user: [...] }) with MORE THAN ONE
++ * id (e.g. the leaderboard pagination arm's name resolution) does NOT use
++ * REST — it sends op 8 and waits for a GUILD_MEMBERS_CHUNK carrying its
++ * nonce; a mock that ignores op 8 leaves the promise pending until
++ * discord.js' 120s timeout (observed: leaderboard pages silently never
++ * render). Reply a single matching chunk — discord.js treats any chunk
++ * under 1000 members as terminal.
++ */
++function handleRequestGuildMembers(
++  db: Database,
++  sessionManager: SessionManager,
++  sessionIdByWs: WeakMap<WSContext, string>,
++  ws: WSContext,
++  data: unknown
++): void {
++  const d = data as {
++    guild_id?: string
++    query?: string
++    user_ids?: string[]
++    limit?: number
++    nonce?: string | null
++  } | null
++  if (!d || typeof d.guild_id !== 'string') return
++
++  let members = getGuildMembers(db, d.guild_id, 1000, '0')
++  if (Array.isArray(d.user_ids) && d.user_ids.length > 0) {
++    const wanted = new Set(d.user_ids.map((id) => String(id)))
++    members = members.filter((m) => wanted.has(m.user.id))
++  } else if (typeof d.query === 'string' && d.query.length > 0) {
++    const q = d.query.toLowerCase()
++    members = members.filter(
++      (m) =>
++        m.user.username.toLowerCase().startsWith(q) ||
++        (m.nick ?? '').toLowerCase().startsWith(q)
++    )
++  }
++  if (typeof d.limit === 'number' && d.limit > 0) {
++    members = members.slice(0, Math.min(d.limit, 1000))
++  }
++
++  const chunk = {
++    guild_id: d.guild_id,
++    members,
++    chunk_index: 0,
++    chunk_count: 1,
++    not_found: [],
++    nonce: typeof d.nonce === 'string' ? d.nonce : null,
++    presences: [],
++  }
++  const sessionId = sessionIdByWs.get(ws)
++  const session = sessionId ? sessionManager.get(sessionId) : undefined
++  if (session) {
++    sendDispatch(sessionManager, session, 'GUILD_MEMBERS_CHUNK', chunk)
++  } else {
++    ws.send(
++      encodePayload({
++        op: GatewayOp.Dispatch as number,
++        t: 'GUILD_MEMBERS_CHUNK',
++        d: chunk,
++      })
++    )
++  }
++}
++
+ function handleHeartbeat(
+   sessionManager: SessionManager,
+   sessionIdByWs: WeakMap<WSContext, string>,
+@@ -475,6 +544,11 @@ export function createGatewayWebSocketHandler(
+           handleHeartbeat(sessionManager, sessionIdByWs, ws)
+           break
+         }
++        case GatewayOp.RequestGuildMembers: {
++          // SPIKE PATCH (boiler-snake e2e): see handleRequestGuildMembers.
++          handleRequestGuildMembers(db, sessionManager, sessionIdByWs, ws, payload.d)
++          break
++        }
+         default: {
+           // Unknown opcodes are ignored (real Discord also ignores unknown
+           // opcodes from clients).
 diff --git a/src/routes/channel-messages.ts b/src/routes/channel-messages.ts
 index 535851f..4a6e719 100644
 --- a/src/routes/channel-messages.ts
@@ -161,6 +294,80 @@ index 310fa2a..986e6cb 100644
      })
  
      return c.json(newChannel, 201)
+diff --git a/src/routes/interactions.ts b/src/routes/interactions.ts
+index 99f69e6..c45426f 100644
+--- a/src/routes/interactions.ts
++++ b/src/routes/interactions.ts
+@@ -11,6 +11,8 @@ import type { Database } from '../db'
+ import { DiscordErrorCode, discordError } from '../errors'
+ import { handleInteractionCallback } from '../services/interactions'
+ import type { InteractionCallbackPayload } from '../services/interactions'
++// SPIKE PATCH (boiler-snake e2e): multipart callbacks (payload_json + files).
++import type { UploadedFile } from '../services/attachments'
+ 
+ /**
+  * Creates the Interactions API routes.
+@@ -18,7 +20,12 @@ import type { InteractionCallbackPayload } from '../services/interactions'
+  * @param baseUrl - Base URL
+  * @returns Hono router instance
+  */
+-export function createInteractionRoutes(db: Database, baseUrl: string): Hono {
++export function createInteractionRoutes(
++  db: Database,
++  baseUrl: string,
++  // SPIKE PATCH (boiler-snake e2e): upload dir for multipart callbacks.
++  uploadPath?: string
++): Hono {
+   const app = new Hono()
+ 
+   // POST /interactions/:interactionId/:interactionToken/callback
+@@ -26,14 +33,43 @@ export function createInteractionRoutes(db: Database, baseUrl: string): Hono {
+     '/interactions/:interactionId/:interactionToken/callback',
+     async (c) => {
+       const { interactionId, interactionToken } = c.req.param()
+-      const payload = await c.req.json<InteractionCallbackPayload>()
+ 
+-      const result = handleInteractionCallback(
++      // SPIKE PATCH (boiler-snake e2e): multipart/form-data support — the
++      // webhook-POST precedent (payload_json + files[N] parts). discord.js
++      // sends multipart for every reply/update carrying files (e.g. the
++      // leaderboard PNG). JSON-only bodies keep their exact prior path.
++      const contentType = c.req.header('content-type') ?? ''
++      let payload: InteractionCallbackPayload
++      const files: UploadedFile[] = []
++      if (contentType.includes('multipart/form-data')) {
++        const formData = await c.req.formData()
++        const payloadJson = formData.get('payload_json')
++        // A multipart callback without payload_json is malformed; type 0
++        // falls through the handler to the plain responded-mark (no message).
++        payload = payloadJson
++          ? (JSON.parse(payloadJson as string) as InteractionCallbackPayload)
++          : { type: 0 }
++        for (const [key, value] of formData) {
++          if ((key === 'file' || key.startsWith('files[')) && value instanceof File) {
++            files.push({
++              name: value.name,
++              type: value.type,
++              data: await value.arrayBuffer(),
++            })
++          }
++        }
++      } else {
++        payload = await c.req.json<InteractionCallbackPayload>()
++      }
++
++      const result = await handleInteractionCallback(
+         db,
+         interactionId,
+         interactionToken,
+         payload,
+-        baseUrl
++        baseUrl,
++        files,
++        uploadPath
+       )
+ 
+       if (!result.ok) {
 diff --git a/src/routes/test.ts b/src/routes/test.ts
 index 543d9ef..22e1742 100644
 --- a/src/routes/test.ts
@@ -273,11 +480,117 @@ index 543d9ef..22e1742 100644
    // POST /_test/polls/:messageId/votes — Inject a poll vote for testing
    app.post('/_test/polls/:messageId/votes', async (c) => {
      const { messageId } = c.req.param()
+diff --git a/src/routes/webhooks.test.ts b/src/routes/webhooks.test.ts
+index 4690343..8c98a10 100644
+--- a/src/routes/webhooks.test.ts
++++ b/src/routes/webhooks.test.ts
+@@ -492,7 +492,7 @@ describe('Webhook routes — interaction followup fallback', () => {
+   })
+ 
+   it('resolves .../messages/@original after a type-4 callback', async () => {
+-    handleInteractionCallback(
++    await handleInteractionCallback(
+       db,
+       'int1',
+       'itoken1',
+@@ -521,7 +521,7 @@ describe('Webhook routes — interaction followup fallback', () => {
+   })
+ 
+   it('edits the initial response via PATCH .../messages/@original', async () => {
+-    handleInteractionCallback(
++    await handleInteractionCallback(
+       db,
+       'int1',
+       'itoken1',
+@@ -551,7 +551,7 @@ describe('Webhook routes — interaction followup fallback', () => {
+   })
+ 
+   it('deletes the initial response via DELETE .../messages/@original', async () => {
+-    handleInteractionCallback(
++    await handleInteractionCallback(
+       db,
+       'int1',
+       'itoken1',
 diff --git a/src/routes/webhooks.ts b/src/routes/webhooks.ts
-index dfcc278..8f944c1 100644
+index dfcc278..7cab093 100644
 --- a/src/routes/webhooks.ts
 +++ b/src/routes/webhooks.ts
-@@ -67,6 +67,8 @@ function createFollowupOrWebhookMessage(
+@@ -30,6 +30,26 @@ import {
+   validateWebhookUpdate,
+ } from '../validators/webhook'
+ import { isEmptyMessage } from '../validators/message'
++// SPIKE PATCH (boiler-snake e2e): multipart file persistence.
++import {
++  applyIncomingAttachments,
++  type UploadedFile,
++} from '../services/attachments'
++
++/** SPIKE PATCH (boiler-snake e2e): collect files[N]/file parts from formData. */
++async function collectFiles(formData: FormData): Promise<UploadedFile[]> {
++  const files: UploadedFile[] = []
++  for (const [key, value] of formData) {
++    if ((key === 'file' || key.startsWith('files[')) && value instanceof File) {
++      files.push({
++        name: value.name,
++        type: value.type,
++        data: await value.arrayBuffer(),
++      })
++    }
++  }
++  return files
++}
+ import { parseGithubBody, parseSlackBody } from '../lib/route-helpers'
+ 
+ /**
+@@ -46,7 +66,46 @@ import { parseGithubBody, parseSlackBody } from '../lib/route-helpers'
+  * @param baseUrl - Base URL
+  * @returns The created message object
+  */
+-function createFollowupOrWebhookMessage(
++async function createFollowupOrWebhookMessage(
++  db: Database,
++  messageId: string,
++  webhook: ReturnType<typeof getWebhookByToken>,
++  webhookIdParam: string,
++  targetChannelId: string,
++  payload: Record<string, unknown>,
++  baseUrl: string,
++  // SPIKE PATCH (boiler-snake e2e): webhook-execute files persist too
++  // (webhook.send / interaction.followUp with attachments).
++  files: UploadedFile[] = [],
++  uploadPath?: string
++) {
++  const msg = createFollowupOrWebhookMessageCore(
++    db,
++    messageId,
++    webhook,
++    webhookIdParam,
++    targetChannelId,
++    payload,
++    baseUrl
++  )
++  if (files.length > 0 && uploadPath) {
++    await applyIncomingAttachments(
++      db,
++      uploadPath,
++      baseUrl,
++      targetChannelId,
++      msg.id,
++      files,
++      Array.isArray(payload.attachments) ? (payload.attachments as unknown[]) : undefined
++    )
++    // Re-read so wait=true answers carry the hydrated attachments (real
++    // Discord returns the full message object from executeWebhook).
++    return getMessage(db, msg.id, baseUrl) ?? msg
++  }
++  return msg
++}
++
++function createFollowupOrWebhookMessageCore(
+   db: Database,
+   messageId: string,
+   webhook: ReturnType<typeof getWebhookByToken>,
+@@ -67,6 +126,8 @@ function createFollowupOrWebhookMessage(
            username: payload.username as string | undefined,
            tts: payload.tts as boolean | undefined,
            embeds: payload.embeds as unknown[] | undefined,
@@ -286,7 +599,7 @@ index dfcc278..8f944c1 100644
          },
          baseUrl
        )
-@@ -80,6 +82,8 @@ function createFollowupOrWebhookMessage(
+@@ -80,6 +141,8 @@ function createFollowupOrWebhookMessage(
            content: payload.content as string | undefined,
            tts: payload.tts as boolean | undefined,
            embeds: payload.embeds as unknown[] | undefined,
@@ -295,18 +608,158 @@ index dfcc278..8f944c1 100644
          },
          baseUrl
        )
-@@ -480,6 +484,10 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
-     const payload = await c.req.json<{
+@@ -93,6 +156,11 @@ function getOriginalMessageId(
+   const interaction = getInteractionFollowupTarget(db, webhookId, token)
+   if (interaction?.initialResponseMessageId)
+     return interaction.initialResponseMessageId
++  // SPIKE PATCH (boiler-snake e2e): ANSWERED component interactions with no
++  // message-producing response (DEFERRED_UPDATE_MESSAGE / update) target
++  // their host message — the leaderboard pagination arm (deferUpdate +
++  // editReply with a PNG). Un-answered interactions keep 404-ing here.
++  if (interaction?.messageId) return interaction.messageId
+   const webhook = getWebhookByToken(db, webhookId, token)
+   if (!webhook) return null
+   const message = db
+@@ -109,7 +177,12 @@ function getOriginalMessageId(
+  * @param baseUrl - Base URL
+  * @returns Hono router instance
+  */
+-export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
++export function createWebhookRoutes(
++  db: Database,
++  baseUrl: string,
++  // SPIKE PATCH (boiler-snake e2e): upload dir for multipart routes.
++  uploadPath?: string
++): Hono {
+   const app = new Hono()
+ 
+   // GET /webhooks/:webhookId — Retrieve a webhook by ID
+@@ -369,23 +442,18 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+     let payload: Record<string, unknown>
+     let hasAttachments = false
+ 
++    // SPIKE PATCH (boiler-snake e2e): parsed files persist, not just the
++    // empty-message check (previously the parts were parsed then dropped).
++    let uploadFiles: UploadedFile[] = []
+     if (contentType.includes('multipart/form-data')) {
+       const formData = await c.req.formData()
+       const payloadJson = formData.get('payload_json')
+       payload = payloadJson
+         ? (JSON.parse(payloadJson as string) as Record<string, unknown>)
+         : {}
+-      // A file-only message (no content/embeds) is not empty, so detect any
+-      // uploaded file entry rather than assuming there are no attachments.
+-      for (const [key, value] of formData) {
+-        if (
+-          (key === 'file' || key.startsWith('files[')) &&
+-          value instanceof File
+-        ) {
+-          hasAttachments = true
+-          break
+-        }
+-      }
++      uploadFiles = await collectFiles(formData)
++      // A file-only message (no content/embeds) is not empty.
++      hasAttachments = uploadFiles.length > 0
+     } else {
+       payload = await c.req.json<Record<string, unknown>>()
+     }
+@@ -410,15 +478,19 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       // When wait is false, execute asynchronously (save to DB in the background)
+       const messageId = generateSnowflake()
+       try {
+-        createFollowupOrWebhookMessage(
++        void createFollowupOrWebhookMessage(
+           db,
+           messageId,
+           webhook,
+           webhookId,
+           targetChannelId,
+           payload,
+-          baseUrl
+-        )
++          baseUrl,
++          uploadFiles,
++          uploadPath
++        ).catch(() => {
++          // Ignored because this runs in the background
++        })
+       } catch {
+         // Ignored because this runs in the background
+       }
+@@ -426,14 +498,16 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+     }
+ 
+     const messageId = generateSnowflake()
+-    const msg = createFollowupOrWebhookMessage(
++    const msg = await createFollowupOrWebhookMessage(
+       db,
+       messageId,
+       webhook,
+       webhookId,
+       targetChannelId,
+       payload,
+-      baseUrl
++      baseUrl,
++      uploadFiles,
++      uploadPath
+     )
+ 
+     return c.json(msg)
+@@ -477,10 +551,28 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       )
+       return c.json(err.body, 404)
+     }
+-    const payload = await c.req.json<{
++    // SPIKE PATCH (boiler-snake e2e): multipart editReply (payload_json +
++    // files) — updateMessage persists the fields, then the attachments list
++    // REPLACES the message's rows (omitted rows are deleted).
++    const contentType = c.req.header('content-type') ?? ''
++    let payload: {
        content?: string
        embeds?: unknown[]
-+      // SPIKE PATCH (boiler-snake e2e): editReply payloads can carry
-+      // components/flags; updateMessage supports both.
+-    }>()
 +      components?: unknown[]
 +      flags?: number
-     }>()
++      attachments?: unknown[]
++    }
++    let files: UploadedFile[] = []
++    if (contentType.includes('multipart/form-data')) {
++      const formData = await c.req.formData()
++      const payloadJson = formData.get('payload_json')
++      payload = payloadJson
++        ? (JSON.parse(payloadJson as string) as typeof payload)
++        : {}
++      files = await collectFiles(formData)
++    } else {
++      payload = await c.req.json<typeof payload>()
++    }
      const updated = updateMessage(db, messageId, payload, baseUrl)
      if (!updated) {
-@@ -531,7 +539,24 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       const err = discordError(
+@@ -490,7 +582,20 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       )
+       return c.json(err.body, 404)
+     }
+-    return c.json(updated)
++    if (uploadPath && (files.length > 0 || Array.isArray(payload.attachments))) {
++      await applyIncomingAttachments(
++        db,
++        uploadPath,
++        baseUrl,
++        updated.channel_id,
++        messageId,
++        files,
++        payload.attachments,
++        { replace: true }
++      )
++    }
++    // Re-read so the response carries the freshly persisted attachments.
++    return c.json(getMessage(db, messageId, baseUrl) ?? updated)
+   })
+ 
+   // DELETE /webhooks/:webhookId/:token/messages/@original
+@@ -531,7 +636,24 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
        return c.json(err.body, 404)
      }
  
@@ -332,9 +785,34 @@ index dfcc278..8f944c1 100644
      if (!msg) {
        const err = discordError(
          DiscordErrorCode.UNKNOWN_MESSAGE,
-@@ -562,7 +587,22 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+@@ -557,12 +679,45 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       return c.json(err.body, 404)
+     }
+ 
+-    const payload = await c.req.json<{
++    // SPIKE PATCH (boiler-snake e2e): multipart + components/flags/
++    // attachments parity with the static @original route (discord.js
++    // URL-encodes @original, so THIS is the route editReply really hits).
++    const contentType = c.req.header('content-type') ?? ''
++    let payload: {
+       content?: string
        embeds?: unknown[]
-     }>()
+-    }>()
++      components?: unknown[]
++      flags?: number
++      attachments?: unknown[]
++    }
++    let files: UploadedFile[] = []
++    if (contentType.includes('multipart/form-data')) {
++      const formData = await c.req.formData()
++      const payloadJson = formData.get('payload_json')
++      payload = payloadJson
++        ? (JSON.parse(payloadJson as string) as typeof payload)
++        : {}
++      files = await collectFiles(formData)
++    } else {
++      payload = await c.req.json<typeof payload>()
++    }
  
 -    const updated = updateMessage(db, messageId, payload, baseUrl)
 +    // SPIKE PATCH (boiler-snake e2e): resolve the URL-encoded @original
@@ -356,7 +834,29 @@ index dfcc278..8f944c1 100644
      if (!updated) {
        const err = discordError(
          DiscordErrorCode.UNKNOWN_MESSAGE,
-@@ -588,7 +628,22 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+@@ -571,7 +726,20 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
+       )
+       return c.json(err.body, 404)
+     }
+-    return c.json(updated)
++    if (uploadPath && (files.length > 0 || Array.isArray(payload.attachments))) {
++      await applyIncomingAttachments(
++        db,
++        uploadPath,
++        baseUrl,
++        updated.channel_id,
++        targetId,
++        files,
++        payload.attachments,
++        { replace: true }
++      )
++    }
++    // Re-read so the response carries the freshly persisted attachments.
++    return c.json(getMessage(db, targetId, baseUrl) ?? updated)
+   })
+ 
+   // DELETE /webhooks/:webhookId/:token/messages/:messageId — Delete a message sent via webhook
+@@ -588,7 +756,22 @@ export function createWebhookRoutes(db: Database, baseUrl: string): Hono {
        return c.json(err.body, 404)
      }
  
@@ -380,6 +880,106 @@ index dfcc278..8f944c1 100644
      if (!deleted) {
        const err = discordError(
          DiscordErrorCode.UNKNOWN_MESSAGE,
+diff --git a/src/services/attachments.ts b/src/services/attachments.ts
+index 49c12e3..d8e34e0 100644
+--- a/src/services/attachments.ts
++++ b/src/services/attachments.ts
+@@ -8,6 +8,95 @@ import { mkdir, writeFile, readFile, access } from 'node:fs/promises'
+ import path from 'node:path'
+ import { constants } from 'node:fs'
+ import type { Database } from '../db'
++import { generateSnowflake } from '../snowflake'
++
++/** SPIKE PATCH (boiler-snake e2e): a multipart-uploaded file part. */
++export interface UploadedFile {
++  name: string
++  type: string
++  data: ArrayBuffer
++}
++
++/**
++ * SPIKE PATCH (boiler-snake e2e): persist multipart files onto an existing
++ * message, mirroring discord.js' `payload_json.attachments` contract:
++ *   - entries whose id names an existing attachment row are KEPT;
++ *   - remaining entries are NEW-file stubs (discord.js sends sequential ids
++ *     "0","1",...) paired positionally with the files[N] parts;
++ *   - replace=true (message EDIT semantics) deletes existing rows the list
++ *     omits — an edit not listing an attachment removes it, like real
++ *     Discord. With no list at all, files simply append to the message.
++ * ENOENT from a missing upload dir is tolerated (in-memory test envs);
++ * anything else surfaces (channel-messages.ts POST precedent).
++ */
++export async function applyIncomingAttachments(
++  db: Database,
++  uploadPath: string,
++  baseUrl: string,
++  channelId: string,
++  messageId: string,
++  files: UploadedFile[],
++  attachmentsList?: unknown[],
++  opts: { replace?: boolean } = {}
++): Promise<void> {
++  const rows = db
++    .prepare('SELECT id FROM attachments WHERE message_id = ?')
++    .all(messageId) as { id: string }[]
++  const existingIds = new Set(rows.map((r) => r.id))
++
++  if (Array.isArray(attachmentsList)) {
++    const entries = attachmentsList.filter(
++      (a): a is { id?: unknown; filename?: unknown } =>
++        a !== null && typeof a === 'object'
++    )
++    const listedExisting = new Set(
++      entries
++        .map((e) => String(e.id ?? ''))
++        .filter((id) => existingIds.has(id))
++    )
++    if (opts.replace) {
++      for (const id of existingIds) {
++        if (!listedExisting.has(id)) {
++          db.prepare('DELETE FROM attachments WHERE message_id = ? AND id = ?').run(
++            messageId,
++            id
++          )
++        }
++      }
++    }
++  }
++
++  for (let i = 0; i < files.length; i++) {
++    const f = files[i]
++    const filename =
++      f.name ||
++      (typeof attachmentsList?.[i] === 'object' &&
++      attachmentsList[i] !== null &&
++      typeof (attachmentsList[i] as { filename?: unknown }).filename === 'string'
++        ? String((attachmentsList[i] as { filename: string }).filename)
++        : `attachment-${i}`)
++    const contentType =
++      f.type && f.type !== 'application/octet-stream'
++        ? f.type
++        : guessContentType(filename)
++    try {
++      await saveAttachment(
++        db,
++        uploadPath,
++        baseUrl,
++        channelId,
++        messageId,
++        generateSnowflake(),
++        filename,
++        contentType,
++        f.data
++      )
++    } catch (err) {
++      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
++        throw err
++      }
++    }
++  }}
+ 
+ /** Maximum attachment size (25MB) */
+ export const MAX_FILE_SIZE = 25 * 1024 * 1024
 diff --git a/src/services/channels.ts b/src/services/channels.ts
 index fd0421d..cd1adff 100644
 --- a/src/services/channels.ts
@@ -534,11 +1134,64 @@ index b16fa10..15553c0 100644
          user: {
            id: userRow.id,
            username: userRow.username,
+diff --git a/src/services/interactions.test.ts b/src/services/interactions.test.ts
+index 489c642..6a84d16 100644
+--- a/src/services/interactions.test.ts
++++ b/src/services/interactions.test.ts
+@@ -74,7 +74,7 @@ describe('interactions service', () => {
+     ).toBeNull()
+   })
+ 
+-  it('handles a type-4 callback by creating a message and recording responded', () => {
++  it('handles a type-4 callback by creating a message and recording responded', async () => {
+     createInteraction(db, {
+       interactionId: 'int3',
+       applicationId,
+@@ -84,7 +84,7 @@ describe('interactions service', () => {
+       userId,
+     })
+ 
+-    const result = handleInteractionCallback(
++    const result = await handleInteractionCallback(
+       db,
+       'int3',
+       'token3',
+@@ -103,8 +103,8 @@ describe('interactions service', () => {
+     expect(target?.initialResponseMessageId).not.toBeNull()
+   })
+ 
+-  it('returns not_found for an unknown interaction', () => {
+-    const result = handleInteractionCallback(
++  it('returns not_found for an unknown interaction', async () => {
++    const result = await handleInteractionCallback(
+       db,
+       'missing',
+       'missing',
+@@ -114,7 +114,7 @@ describe('interactions service', () => {
+     expect(result).toEqual({ ok: false, reason: 'not_found' })
+   })
+ 
+-  it('returns already_responded on a second callback', () => {
++  it('returns already_responded on a second callback', async () => {
+     createInteraction(db, {
+       interactionId: 'int4',
+       applicationId,
+@@ -123,8 +123,8 @@ describe('interactions service', () => {
+       channelId,
+       userId,
+     })
+-    handleInteractionCallback(db, 'int4', 'token4', { type: 5 }, BASE_URL)
+-    const second = handleInteractionCallback(
++    await handleInteractionCallback(db, 'int4', 'token4', { type: 5 }, BASE_URL)
++    const second = await handleInteractionCallback(
+       db,
+       'int4',
+       'token4',
 diff --git a/src/services/interactions.ts b/src/services/interactions.ts
-index 9f13b9c..a75c1e5 100644
+index 9f13b9c..35d6aec 100644
 --- a/src/services/interactions.ts
 +++ b/src/services/interactions.ts
-@@ -10,8 +10,9 @@ import type { Database } from '../db'
+@@ -10,8 +10,14 @@ import type { Database } from '../db'
  import { generateSnowflake } from '../snowflake'
  import { gatewayBus } from '../gateway/bus'
  import { getGuildMember } from './guild-members'
@@ -546,10 +1199,15 @@ index 9f13b9c..a75c1e5 100644
  import { getUser } from './users'
 -import { createMessage, type MessageObject } from './messages'
 +import { createMessage, getMessage, updateMessage, type MessageObject } from './messages'
++// SPIKE PATCH (boiler-snake e2e): multipart callbacks persist real files.
++import {
++  applyIncomingAttachments,
++  type UploadedFile,
++} from './attachments'
  
  /** Interaction object for API responses and Gateway dispatch */
  export interface InteractionObject {
-@@ -23,6 +24,13 @@ export interface InteractionObject {
+@@ -23,6 +29,13 @@ export interface InteractionObject {
    channel_id?: string
    member?: Record<string, unknown>
    user?: Record<string, unknown>
@@ -563,7 +1221,7 @@ index 9f13b9c..a75c1e5 100644
    token: string
    version: number
  }
-@@ -41,6 +49,9 @@ interface InteractionRow {
+@@ -41,6 +54,9 @@ interface InteractionRow {
    member_json: string | null
    responded: number
    initial_response_message_id: string | null
@@ -573,7 +1231,7 @@ index 9f13b9c..a75c1e5 100644
    created_at: string
  }
  
-@@ -55,7 +66,8 @@ interface InteractionRow {
+@@ -55,7 +71,8 @@ interface InteractionRow {
   */
  function toInteractionObject(
    db: Database,
@@ -583,7 +1241,7 @@ index 9f13b9c..a75c1e5 100644
  ): InteractionObject {
    const storedData = JSON.parse(row.data) as Record<string, unknown>
    let data: Record<string, unknown> | undefined
-@@ -90,6 +102,37 @@ function toInteractionObject(
+@@ -90,6 +107,37 @@ function toInteractionObject(
      ...(row.guild_id && { guild_id: row.guild_id }),
      ...(member && { member: member as unknown as Record<string, unknown> }),
      ...(user && { user: user as unknown as Record<string, unknown> }),
@@ -621,7 +1279,7 @@ index 9f13b9c..a75c1e5 100644
    }
  
    return result
-@@ -106,6 +149,9 @@ export interface CreateInteractionParams {
+@@ -106,6 +154,9 @@ export interface CreateInteractionParams {
    commandId?: string
    data?: Record<string, unknown>
    userId: string
@@ -631,7 +1289,7 @@ index 9f13b9c..a75c1e5 100644
  }
  
  /**
-@@ -121,8 +167,8 @@ export function createInteraction(
+@@ -121,8 +172,8 @@ export function createInteraction(
  ): InteractionObject {
    db.prepare(
      `INSERT INTO interactions
@@ -642,7 +1300,7 @@ index 9f13b9c..a75c1e5 100644
    ).run(
      params.interactionId,
      params.applicationId,
-@@ -132,13 +178,14 @@ export function createInteraction(
+@@ -132,13 +183,14 @@ export function createInteraction(
      params.channelId ?? null,
      params.commandId ?? null,
      JSON.stringify(params.data ?? {}),
@@ -659,15 +1317,77 @@ index 9f13b9c..a75c1e5 100644
  
    gatewayBus.emit('interaction.create', {
      applicationId: params.applicationId,
-@@ -186,6 +233,7 @@ export interface InteractionCallbackPayload {
+@@ -162,18 +214,35 @@ export function getInteractionFollowupTarget(
+   db: Database,
+   applicationId: string,
+   token: string
+-): { channelId: string; initialResponseMessageId: string | null } | null {
++): {
++  channelId: string
++  initialResponseMessageId: string | null
++  // SPIKE PATCH (boiler-snake e2e): component interactions carry their host
++  // message; real Discord maps @original to it (discord.js fetchReply()
++  // returns interaction.message), so deferUpdate()+editReply() on a button
++  // PATCHes the host — not a fresh message. Only exposed once the
++  // interaction is ANSWERED (responded=1): pre-callback polls keep seeing
++  // 404 until the handler actually responds (awaitSettledReply contract).
++  messageId: string | null
++} | null {
+   const row = db
+     .prepare(
+-      'SELECT channel_id, initial_response_message_id FROM interactions WHERE application_id = ? AND token = ?'
++      'SELECT channel_id, initial_response_message_id, message_id, responded FROM interactions WHERE application_id = ? AND token = ?'
+     )
+     .get(applicationId, token) as
+-    | { channel_id: string | null; initial_response_message_id: string | null }
++    | {
++        channel_id: string | null
++        initial_response_message_id: string | null
++        message_id: string | null
++        responded: number
++      }
+     | undefined
+   return row?.channel_id
+     ? {
+         channelId: row.channel_id,
+         initialResponseMessageId: row.initial_response_message_id,
++        messageId:
++          row.responded === 1 ? row.message_id ?? null : null,
+       }
+     : null
+ }
+@@ -186,6 +255,11 @@ export interface InteractionCallbackPayload {
      embeds?: unknown[]
      tts?: boolean
      flags?: number
 +    components?: unknown[]
++    // SPIKE PATCH (boiler-snake e2e): reply/edit attachment list — kept
++    // entries name existing rows, remaining entries pair positionally with
++    // the files[N] multipart parts.
++    attachments?: unknown[]
    }
  }
  
-@@ -236,6 +284,15 @@ export function handleInteractionCallback(
+@@ -223,19 +297,31 @@ export type InteractionCallbackResult =
+  * @param baseUrl - Base URL (for message attachment URLs)
+  * @returns Result of the callback attempt
+  */
+-export function handleInteractionCallback(
++export async function handleInteractionCallback(
+   db: Database,
+   interactionId: string,
+   token: string,
+   payload: InteractionCallbackPayload,
+-  baseUrl: string
+-): InteractionCallbackResult {
++  baseUrl: string,
++  // SPIKE PATCH (boiler-snake e2e): multipart reply/update files.
++  files: UploadedFile[] = [],
++  uploadPath?: string
++): Promise<InteractionCallbackResult> {
+   const row = db
+     .prepare('SELECT * FROM interactions WHERE id = ? AND token = ?')
+     .get(interactionId, token) as InteractionRow | undefined
    if (!row) return { ok: false, reason: 'not_found' }
    if (row.responded === 1) return { ok: false, reason: 'already_responded' }
  
@@ -683,7 +1403,7 @@ index 9f13b9c..a75c1e5 100644
    const interaction: InteractionCallbackResponse['interaction'] = {
      id: row.id,
      type: row.type,
-@@ -257,6 +314,9 @@ export function handleInteractionCallback(
+@@ -257,14 +343,98 @@ export function handleInteractionCallback(
          tts: payload.data?.tts,
          embeds: payload.data?.embeds,
          flags: payload.data?.flags,
@@ -693,10 +1413,29 @@ index 9f13b9c..a75c1e5 100644
        },
        baseUrl
      )
-@@ -265,6 +325,50 @@ export function handleInteractionCallback(
++    // SPIKE PATCH (boiler-snake e2e): multipart reply — persist files[N]
++    // onto the fresh message (new rows, no pruning needed).
++    if (files.length > 0 && uploadPath) {
++      await applyIncomingAttachments(
++        db,
++        uploadPath,
++        baseUrl,
++        row.channel_id,
++        messageId,
++        files,
++        payload.data?.attachments
++      )
++    }
+     db.prepare(
+       'UPDATE interactions SET responded = 1, initial_response_message_id = ? WHERE id = ?'
      ).run(messageId, row.id)
      interaction.response_message_id = messageId
-     resource = { type: 4, message }
+-    resource = { type: 4, message }
++    // Re-read so with_response=true responses carry hydrated attachments.
++    resource = {
++      type: 4,
++      message: getMessage(db, messageId, baseUrl) ?? message,
++    }
 +  } else if (payload.type === 7 && row.message_id) {
 +    // SPIKE PATCH (boiler-snake e2e): UPDATE_MESSAGE edits the component's
 +    // attached message (real Discord semantics). Without this, every
@@ -712,9 +1451,29 @@ index 9f13b9c..a75c1e5 100644
 +      },
 +      baseUrl
 +    )
++    // SPIKE PATCH (boiler-snake e2e): multipart update (leaderboard page
++    // re-render) — files replace the edited message's attachments: rows the
++    // attachments list omits are deleted, new stubs pair with files[N].
++    if (uploadPath && (files.length > 0 || Array.isArray(payload.data?.attachments))) {
++      await applyIncomingAttachments(
++        db,
++        uploadPath,
++        baseUrl,
++        row.channel_id ?? edited?.channel_id ?? '',
++        row.message_id,
++        files,
++        payload.data?.attachments,
++        { replace: true }
++      )
++    }
 +    db.prepare('UPDATE interactions SET responded = 1 WHERE id = ?').run(row.id)
 +    interaction.response_message_id = row.message_id
-+    if (edited) resource = { type: 7, message: edited }
++    if (edited) {
++      resource = {
++        type: 7,
++        message: getMessage(db, row.message_id, baseUrl) ?? edited,
++      }
++    }
 +  } else if (
 +    payload.type === 5 &&
 +    row.channel_id &&

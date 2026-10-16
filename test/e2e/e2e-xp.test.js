@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { PermissionFlagsBits } = require("discord.js");
 
 const { createE2eEnv } = require("./helpers/e2eEnv");
-const { poll } = require("./helpers/mockenv");
+const { poll, j } = require("./helpers/mockenv");
 
 const MSG_DENIED = "You don't have permission to use this.";
 
@@ -59,9 +59,153 @@ describe("e2e: XP settings, audit & leaderboard", { concurrency: 1 }, () => {
     assert.match(String(reply.content), /no leaderboard data/i);
   });
 
-  it.todo("/leaderboard with seeded XP → PNG attachment reply + lb: prev/next buttons, click re-render + persisted edit — blocked on #312 (mock multipart interaction callbacks)");
-
   it.todo("Voice XP rules (AFK ignore, ≥2 eligible humans, muted/deafened) — blocked on #328 gap 6 (mock voice-state support)");
+
+  // ── #312 DELIVERED — the old "blocked on #312 (mock multipart interaction
+  // callbacks)" todo became these three arms. fauxcord now parses
+  // payload_json + files[N] on interaction callbacks and webhook PATCHes,
+  // persists uploads under UPLOAD_PATH, and hydrates /_mock/attachments URLs
+  // (leaderboard PNG pagination is the marquee product flow; the route-level
+  // multipart arms live in e2e-multipart.test.js, ns 24).
+  const lb = {};
+  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+  const originalOf = (token) =>
+    j(`${env.mock.base}/webhooks/${env.ids.app}/${token}/messages/@original`).catch(
+      () => null,
+    );
+
+  const pollOriginal = (token, needle, label) =>
+    poll(
+      async () => {
+        const m = await originalOf(token);
+        return m && String(m.content ?? "").includes(needle) ? m : null;
+      },
+      { timeoutMs: 10_000, label },
+    );
+
+  const attachmentBytes = async (url) => {
+    const res = await fetch(url);
+    assert.ok(res.ok, `attachment GET ${url} → HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  };
+
+  it("/leaderboard limit:5 replies with the PNG page + lb: Prev/Next buttons (#312 multipart reply)", async () => {
+    // 12 users, XP strictly descending → deterministic ranks 1..12.
+    for (let i = 0; i < 12; i++) {
+      env.dbmod.addXp(
+        env.communityId,
+        String(7700000000000000000n + BigInt(i)),
+        (12 - i) * 100,
+      );
+    }
+
+    const inter = await env.mock.slash({
+      command: "leaderboard",
+      options: [{ name: "limit", type: 4, value: 5 }],
+    });
+    const reply = await env.mock.awaitSettledReply(inter);
+
+    assert.equal(String(reply.content), "**Leaderboard — ranks 1–5**");
+    const atts = reply.attachments ?? [];
+    assert.equal(atts.length, 1, "exactly one PNG attachment");
+    const att = atts[0];
+    assert.equal(att.filename, "boiler-snake-leaderboard.png");
+    assert.equal(att.content_type, "image/png", "content-type sniffed from bytes");
+    assert.ok(att.size > 0, "non-empty upload");
+    assert.match(String(att.url), /\/_mock\/attachments\//, "mock serves the bytes");
+
+    const bytes = await attachmentBytes(att.url);
+    assert.deepEqual(bytes.subarray(0, 4), PNG_MAGIC, "PNG magic bytes round-trip");
+    assert.equal(bytes.length, att.size, "served bytes match the stored size");
+
+    const row = reply.components[0].components;
+    assert.equal(row[0].custom_id, `lb:${env.ids.human}:5:0`);
+    assert.equal(row[0].label, "◀ Prev");
+    assert.equal(row[0].disabled, true, "Prev disabled on page 1");
+    assert.equal(row[1].custom_id, `lb:${env.ids.human}:5:2`);
+    assert.equal(row[1].label, "Next ▶");
+    assert.equal(row[1].disabled, false, "Next enabled (12 ranked users)");
+
+    lb.msgId = String(reply.id);
+    lb.att1 = String(att.id);
+  });
+
+  it("Next button re-renders ranks 6–10 and REPLACES the PNG (deferUpdate + editReply multipart)", async () => {
+    const click = await env.mock.click({
+      customId: `lb:${env.ids.human}:5:2`,
+      messageId: lb.msgId,
+    });
+    // The click's @original resolves to the HOST message (component-interaction
+    // fallback): poll until the edit lands with page-2 content.
+    const edited = await pollOriginal(click.token, "ranks 6–10", "leaderboard page-2 edit");
+
+    const atts = edited.attachments ?? [];
+    assert.equal(atts.length, 1, "edit REPLACED the attachment (exactly one)");
+    const att = atts[0];
+    assert.notEqual(String(att.id), lb.att1, "page-1 attachment row pruned, fresh row saved");
+    assert.equal(att.filename, "boiler-snake-leaderboard.png");
+    const bytes = await attachmentBytes(att.url);
+    assert.deepEqual(bytes.subarray(0, 4), PNG_MAGIC, "page-2 PNG bytes served");
+    assert.equal(bytes.length, att.size);
+
+    const row = edited.components[0].components;
+    assert.equal(row[0].custom_id, `lb:${env.ids.human}:5:1`);
+    assert.equal(row[0].disabled, false, "Prev live on page 2");
+    assert.equal(row[1].custom_id, `lb:${env.ids.human}:5:3`);
+    assert.equal(row[1].disabled, false, "page 3 exists (ranks 11–12)");
+    lb.att2 = String(att.id);
+  });
+
+  it("outsiders can't page; a deep page edit lands the empty copy and omission preserves the attachment", async () => {
+    const denied = await env.mock.click({
+      customId: `lb:${env.ids.human}:5:3`,
+      messageId: lb.msgId,
+      userId: env.ids.outsider,
+    });
+    // Content-match poll (not awaitReply): with the component-interaction
+    // @original fallback, the host message answers 200 immediately — the
+    // denial lands when initial_response_message_id starts winning.
+    const denial = await pollOriginal(
+      denied.token,
+      "Only the person who ran /leaderboard can page it.",
+      "pagination denial",
+    );
+    assert.equal(
+      String(denial.content),
+      "Only the person who ran /leaderboard can page it.",
+    );
+
+    // The denial is its own reply — the host message never moved to page 3.
+    const host = (await env.mock.messages(env.ids.general)).find(
+      (m) => String(m.id) === lb.msgId,
+    );
+    assert.match(String(host.content), /ranks 6–10/, "denial did not page the host");
+    assert.equal(String(host.attachments[0].id), lb.att2, "host still carries the page-2 PNG");
+
+    // Crafted deep page: page 4 of 12 users is the empty state (no real
+    // button needed — the mock click accepts any customId on a live message).
+    const deep = await env.mock.click({
+      customId: `lb:${env.ids.human}:5:4`,
+      messageId: lb.msgId,
+    });
+    const empty = await pollOriginal(
+      deep.token,
+      "No leaderboard data yet.",
+      "leaderboard empty-page edit",
+    );
+
+    const row = empty.components[0].components;
+    assert.equal(row[0].custom_id, `lb:${env.ids.human}:5:3`);
+    assert.equal(row[0].disabled, false, "Prev offers a way back from the empty page");
+    assert.equal(row[1].custom_id, `lb:${env.ids.human}:5:5`);
+    assert.equal(row[1].disabled, true, "nothing beyond the empty page");
+    // MOCK-SEMANTICS PIN: the empty-page editReply OMITS `attachments`, and
+    // fauxcord (like the Discord docs' omitted = unchanged) preserves the
+    // message's attachment in that case — the page-2 PNG row survives.
+    assert.equal((empty.attachments ?? []).length, 1, "omission preserves attachments (mock)");
+    assert.equal(String(empty.attachments[0].id), lb.att2, "still the page-2 upload");
+  });
 
   it("/setxp persists each provided field and echoes the change (staff)", async () => {
     const inter = await env.mock.slash({
