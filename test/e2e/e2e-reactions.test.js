@@ -184,47 +184,74 @@ describe(
     const panelRow = (messageId) =>
       env.dbmod.getReactionRolePanel(env.communityId, messageId);
 
-    // CI-hardened pending flow: the emoji message rides the gateway
-    // (MESSAGE_CREATE), which on throttled CI runners can deliver late or
-    // drop the dispatch outright (the mock has no RESUME replay — both CI
-    // failures on PR #359 were exactly this class on the `remove confirm`
-    // arm). Re-inject once mid-poll: the pending session is either still
-    // open (the second delivery drives the transition) or already consumed
-    // (the duplicate degrades to a plain XP message — state untouched).
-    // Every pending-flow confirmation below is idempotent, so a spurious
-    // second delivery is inert.
+    // Delivery-verified pending flow. Root cause (proven via the #361
+    // diagnostic + a scratch force-kill experiment): on the CI runner the
+    // bot's gateway socket blinks mid-suite (~15s discord.js reconnect
+    // cycle); MESSAGE_CREATEs dispatched during the gap are LOST FOREVER
+    // (the mock has no RESUME replay — #362). The blind +4s re-inject
+    // failed because both attempts landed inside the same gap. Oracle: a
+    // per-arm `messageCreate` listener — discord.js fires it ONLY on
+    // gateway dispatch (REST reads never emit it; proven by the
+    // dead-socket experiment), so seen.has(id) is exact delivery truth.
+    // On a missed delivery: ride out the reconnect ladder, re-inject
+    // (bounded), then delete the never-delivered residue so flow-side
+    // cleanup asserts keep meaning "the flow deleted what it processed".
+    // The same exposure remains on the reaction-event arms (green so far);
+    // #362 removes the whole class mock-side.
     const injectAndPoll = async (text, predicate, label) => {
-      await env.mock.inject(text, env.ids.human, env.ids.general);
-      try {
-        return await poll(predicate, { timeoutMs: 4000, label: `${label} (first pass)` });
-      } catch {
-        await env.mock.inject(text, env.ids.human, env.ids.general);
+      const client = env.supervisor?.discord;
+      const seen = new Set();
+      const listener = client?.on ? (msg) => seen.add(String(msg?.id)) : null;
+      if (listener) client.on("messageCreate", listener);
+      const delivered = async (id, ms = 4000) => {
+        if (!id || !listener) return true;
         try {
-          return await poll(predicate, { timeoutMs: 12000, label: `${label} (after re-inject)` });
+          await poll(() => (seen.has(String(id)) ? true : null), {
+            timeoutMs: ms,
+            label: `${label} (delivery)`,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      try {
+        const first = await env.mock.inject(text, env.ids.human, env.ids.general);
+        if (first?.id && !(await delivered(first.id))) {
+          for (let round = 0; round < 3; round++) {
+            await new Promise((r) => setTimeout(r, 4000)); // reconnect-ladder budget
+            const again = await env.mock.inject(text, env.ids.human, env.ids.general);
+            if (!again?.id || (await delivered(again.id, 5000))) break;
+          }
+          for (const m of ((await env.mock.messages(env.ids.general)) ?? [])) {
+            if (
+              String(m.content) === text &&
+              String(m.author?.id ?? m.authorId ?? "") === String(env.ids.human)
+            ) {
+              await api(`/channels/${env.ids.general}/messages/${m.id}`, {
+                method: "DELETE",
+              }).catch(() => {});
+            }
+          }
+        }
+        try {
+          return await poll(predicate, { timeoutMs: 10000, label: `${label} (confirm)` });
         } catch (err) {
-          // One-shot CI diagnostic (root-cause hunt: ns16 "remove confirm"
-          // CI-only timeouts, 3/3 in CI, 0/N locally incl. canonical mock on
-          // node 22.22 — see #359/#361 triage). Read-only; must never mask
-          // the real failure. Remove once root-caused.
+          // Tripwire diagnostic (kept post-root-cause: fires only if the
+          // recovery path above stops rescuing — see #362). Read-only.
           try {
             const d = env.supervisor?.discord;
-            const msgs = ((await env.mock.messages(env.ids.general)) ?? [])
-              .slice(-10)
-              .map((m) => ({
-                a: String(m.author?.id ?? m.authorId ?? m.author ?? "?").slice(-5),
-                c: String(m.content).slice(0, 40),
-              }));
+            const all = (await env.mock.messages(env.ids.general)) ?? [];
             console.error(
               `[ns16-diag] ${JSON.stringify({
                 label,
-                ws: d?.ws?.getStatus?.() ?? String(d?.ws?.status ?? "?"),
+                ws: String(d?.ws?.status ?? "?"),
+                shard: String(d?.ws?.shards?.first?.()?.status ?? "?"),
                 genCached: d ? d.channels.cache.has(env.ids.general) : "?",
-                genSend: typeof d?.channels?.cache?.get(env.ids.general)?.send,
-                guildCached: d ? d.guilds.cache.has(env.ids.guild) : "?",
                 lockRow: !!env.dbmod.getReactionRoleOption(env.communityId, st.panel, "🔒"),
                 colorRow: !!env.dbmod.getReactionRoleOption(env.communityId, st.panel, "🎉"),
-                msgCount: msgs.length,
-                tail: msgs,
+                msgTotal: all.length,
+                newest: all.slice(0, 5).map((m) => String(m.content).slice(0, 40)),
               })}`,
             );
           } catch {
@@ -232,6 +259,8 @@ describe(
           }
           throw err;
         }
+      } finally {
+        if (listener) client.off("messageCreate", listener);
       }
     };
 
