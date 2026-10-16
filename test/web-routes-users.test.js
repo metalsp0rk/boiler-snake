@@ -88,6 +88,19 @@ let savedEnv;
 /** Mutable harness state (declared BEFORE the hooks below reference it). */
 const suite = { server: null, base: "", cookies: {} };
 
+/**
+ * Volatile per-response/per-session blobs in the shell HTML — the CSP
+ * nonce and the random CSRF token (base64) embedded on <body> — legitimately
+ * contain arbitrary digit runs. Negative substring-leak assertions must scan
+ * only STABLE markup or they flake whenever a random blob happens to contain
+ * the probe digits (this exact collision burned CI at B_XP=7331).
+ */
+function stableHtml(body) {
+  return body
+    .replace(/nonce="[^"]*"/g, "")
+    .replace(/data-csrf-token="[^"]*"/g, "");
+}
+
 /** Count non-overlapping occurrences (cheap DOM-free row counting). */
 function count(haystack, needle) {
   let n = 0;
@@ -529,7 +542,10 @@ describe("404 semantics", () => {
     const { res, body } = await hit(`/g/${CID_A}/users/${B_SUBJECT}`, { key: "senior" });
     assert.equal(res.status, 404);
     assert.ok(body.includes("No bot data exists"));
-    assert.ok(!body.includes(String(B_XP)), "guild-B XP never visible under guild A");
+    assert.ok(
+      !stableHtml(body).includes(String(B_XP)),
+      "guild-B XP never visible under guild A",
+    );
   });
 
   it("member-cache-known user without DB rows → 200 profile marked untracked", async () => {
