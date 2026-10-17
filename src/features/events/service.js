@@ -758,6 +758,15 @@ async function duplicateEvent(client, event, actorId) {
     reminders_on: o.reminders_on,
     role_whitelist: o.role_whitelist,
   }));
+  // Patch keys are snake_case ON PURPOSE (#374): createEvent destructures
+  // only its camelCase header params (communityId/creatorId/title/status/
+  // startAt/channelId/postAt/options); everything else flows through
+  // normalizeEventPatch, which silently DROPS keys outside EVENT_PATCH_
+  // COLUMNS — the old camelCase keys (endAt, durationMinutes, imageUrl, …)
+  // made every duplicate lose its schedule, image, roles, cutoff, whitelist
+  // and thread settings with a "Draft saved" reply.
+  // JSON columns must arrive as ARRAYS: toJsonArray() stringifies arrays
+  // but maps raw strings (the stored column form) to "[]".
   const copy = db.createEvent({
     communityId: event.community_id,
     creatorId: actorId,
@@ -767,17 +776,17 @@ async function duplicateEvent(client, event, actorId) {
     channelId: event.channel_id,
     description: event.description,
     location: event.location,
-    endAt: event.end_at,
-    durationMinutes: event.duration_minutes,
-    imageUrl: event.image_url,
+    end_at: event.end_at,
+    duration_minutes: event.duration_minutes,
+    image_url: event.image_url,
     color: event.color,
-    announceRoleIds: JSON.parse(event.announce_role_ids || "[]"),
-    roleMode: "temp",
-    cutoffAt: event.cutoff_at,
-    roleWhitelist: JSON.parse(event.role_whitelist || "[]"),
-    multipleSignups: event.multiple_signups,
-    threadEnabled: event.thread_enabled,
-    threadPrivate: event.thread_private,
+    announce_role_ids: JSON.parse(event.announce_role_ids || "[]"),
+    role_mode: "temp",
+    cutoff_at: event.cutoff_at,
+    role_whitelist: JSON.parse(event.role_whitelist || "[]"),
+    multiple_signups: event.multiple_signups,
+    thread_enabled: event.thread_enabled,
+    thread_private: event.thread_private,
     options,
   });
   if (!copy.ok) return copy;
