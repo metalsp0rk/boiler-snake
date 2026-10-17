@@ -340,7 +340,7 @@ const commands = [
       sc
         .setName("summarize-budget")
         .setDescription(
-          "Set the /gork summarize input token budget (8000-120000; default 80000).",
+          `Set the /gork summarize input token budget (${GORK_SUMMARIZE_INPUT_TOKENS_MIN}-${GORK_SUMMARIZE_INPUT_TOKENS_MAX}; default ${GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT}).`,
         )
         .addIntegerOption((opt) =>
           opt

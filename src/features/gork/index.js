@@ -10,7 +10,7 @@
  *   per-scope daily usage budgets with `/gork budget` (roadmap/gork.md
  *   §7.17 — tri-state `-1/0/cap`, channel → category → guild default);
  *   set the /gork summarize input token budget with
- *   `/gork summarize-budget` (8,000–120,000; default 80,000 tokens).
+ *   `/gork summarize-budget` (8,000–200,000; default 80,000 tokens).
  * - `handleGorkMessage`: the onMessageCreate pipeline hook — answers
  *   keyword triggers using conversation context and optional web search.
  *

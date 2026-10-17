@@ -147,7 +147,7 @@ describe("/gork summarize-budget command surface", () => {
     return sub;
   }
 
-  it("exposes one required integer `tokens` option bounded 8000-120000", () => {
+  it("exposes one required integer `tokens` option bounded 8000-200000", () => {
     const sub = budgetJson();
     assert.equal(sub.type, T_SUB, "sub-command");
     assert.equal(sub.options.length, 1, "one option: tokens");
@@ -156,7 +156,7 @@ describe("/gork summarize-budget command surface", () => {
     assert.equal(tokens.type, T_INT, "integer option");
     assert.equal(tokens.required, true, "budget value is required");
     assert.equal(tokens.min_value, 8000, "min 8000");
-    assert.equal(tokens.max_value, 120000, "max 120000");
+    assert.equal(tokens.max_value, 200000, "max 200000");
     assert.equal(tokens.min_value, GORK_SUMMARIZE_INPUT_TOKENS_MIN, "bound from constants.js");
     assert.equal(tokens.max_value, GORK_SUMMARIZE_INPUT_TOKENS_MAX, "bound from constants.js");
   });
@@ -164,7 +164,7 @@ describe("/gork summarize-budget command surface", () => {
   it("description fits Discord's limits and names the default", () => {
     const sub = budgetJson();
     assert.ok(sub.description.length <= 100, "subcommand description ≤ 100");
-    assert.match(sub.description, /8000-120000/, "bounds disclosed in the description");
+    assert.match(sub.description, /8000-200000/, "bounds disclosed in the description");
     assert.ok(
       sub.options[0].description.includes(String(GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT)),
       "default disclosed in the option description",

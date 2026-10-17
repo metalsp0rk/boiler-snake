@@ -1707,7 +1707,7 @@ describe("gork summarize card + caps (constants, §7.21)", () => {
   it("summarize input budget: 80k tokens default, clamped 8k-120k, 312k-char transcript (§7.21.2)", () => {
     assert.equal(C.GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT, 80000, "default input token budget");
     assert.equal(C.GORK_SUMMARIZE_INPUT_TOKENS_MIN, 8000, "lower bound");
-    assert.equal(C.GORK_SUMMARIZE_INPUT_TOKENS_MAX, 120000, "upper bound");
+    assert.equal(C.GORK_SUMMARIZE_INPUT_TOKENS_MAX, 200000, "upper bound");
     assert.equal(C.GORK_TOKEN_CHAR_RATIO, 4, "conservative chars-per-token estimate");
     assert.equal(C.GORK_SUMMARIZE_PROMPT_RESERVE_CHARS, 8000, "prompt-zone reserve");
     assert.equal(C.GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR, 1000, "transcript char floor");
@@ -1727,7 +1727,7 @@ describe("gork summarize card + caps (constants, §7.21)", () => {
     assert.equal(C.clampSummarizeInputTokens(NaN), 80000, "NaN → default");
     assert.equal(C.clampSummarizeInputTokens(0), 8000, "below min clamps up");
     assert.equal(C.clampSummarizeInputTokens(-999), 8000, "negative clamps up");
-    assert.equal(C.clampSummarizeInputTokens(1e9), 120000, "above max clamps down");
+    assert.equal(C.clampSummarizeInputTokens(1e9), 200000, "above max clamps down");
     assert.equal(C.clampSummarizeInputTokens(50000.7), 50000, "fraction floors");
     assert.equal(C.clampSummarizeInputTokens(20000), 20000, "in-range passes through");
   });

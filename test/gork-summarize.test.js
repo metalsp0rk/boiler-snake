@@ -593,7 +593,7 @@ describe("/gork summarize-budget", () => {
       { client: env.client },
     );
     assert.equal(D.lastReplyEphemeral(ixn), true);
-    assert.match(D.lastReplyContent(ixn), /8000-120000 tokens/, "names the allowed range");
+    assert.match(D.lastReplyContent(ixn), /8000-200000 tokens/, "names the allowed range");
     assert.equal(
       api.getGuildSettings(env.communityId).gork_summarize_input_tokens,
       80000,

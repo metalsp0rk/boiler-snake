@@ -1587,7 +1587,7 @@ async function summarizeMain(commandCtx) {
   }
 
   // 4. Deferred BEFORE any range read or generation (reads paginate up to
-  //    1,000 messages; generation runs to a 60s deadline).
+  //    1,000 messages; generation runs to a 15-minute deadline).
   await commandCtx.defer();
 
   const settings = getGuildSettings(communityId);
@@ -1669,7 +1669,7 @@ async function handleSummarize(commandCtx, featureCtx) {
 
 /**
  * /gork summarize-budget: set the per-guild INPUT token budget for
- * /gork summarize (8,000–120,000; default 80,000). The range reader
+ * /gork summarize (8,000–200,000; default 80,000). The range reader
  * converts it to a transcript char cap (4 chars/token minus the prompt-zone
  * reserve), so the LLM input stays inside the configured budget.
  * @param {import("../../platform/context").CommandContext} commandCtx

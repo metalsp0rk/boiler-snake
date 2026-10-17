@@ -217,7 +217,7 @@ unless a port is set. Full console guide: [Web Admin Console](web-admin.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GORK_SUMMARIZE_TURN_TIMEOUT_MS` | `60000` | Deadline for the `/gork summarize` one-shot generation turn; on timeout nothing posts and no budget is spent |
+| `GORK_SUMMARIZE_TURN_TIMEOUT_MS` | `900000` | Deadline for the `/gork summarize` one-shot generation turn (15 minutes — a rundown is a long-running inference job); on timeout nothing posts and no budget is spent |
 | `GORK_INTERACTION_LOG` | *(on)* | `0` = process-wide kill-switch for the gork [interaction log](gork-logging.md). ON by default — rows contain conversation content (privacy knob) |
 | `GORK_INTERACTION_LOG_RETENTION_DAYS` | `30` | Days to keep interaction-log rows; `0` keeps rows forever |
 | `GORK_INTERACTION_LOG_MAX_JSON_CHARS` | `200000` | Transcript JSON budget per row; oldest events drop first |

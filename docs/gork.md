@@ -171,7 +171,7 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork budget <action>` | Per-user daily usage budgets per channel/category — see [Daily usage budget](#daily-usage-budget) |
 | `/gork log <on\|off>` | Toggle the gork [interaction log](gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
 | `/gork summarize <mode>` | Conversation rundown of a message range — see [Conversation rundown](#conversation-rundown) |
-| `/gork summarize-budget <tokens>` | Set the per-guild **input token budget** for `/gork summarize` (8,000–120,000; default 80,000) |
+| `/gork summarize-budget <tokens>` | Set the per-guild **input token budget** for `/gork summarize` (8,000–200,000; default 80,000) |
 | `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, ste state, memory state, budget default + rule count, summarize input token budget, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
 `/settings` also shows a **Gork** field (enabled + keyword + window + search + ste + memory state + summarize input budget).
@@ -304,7 +304,7 @@ Rule changes post a config-change embed to the [audit log](audit-log.md), and an
 
 `/gork summarize` turns a stretch of conversation into a **rundown** for staff: pick a message range in one channel and gork posts a digest embed — **Headline**, **What was decided**, **Open questions**, **Action items**, **Who said what that mattered** — back to the channel you ran the command in. The sections are fixed (an empty one says "none"); the output is hard-capped at **3,500 chars** so one embed always holds it (a cut shows a visible `…[truncated]` marker). Manual by design: a human picks the range and the moment — there is no automatic/ticker summary.
 
-The rundown is a digest, **not** a Q&A answer: gork replaces its answer prompt with a dedicated summarize card, makes **one** model call (no tool loop — no web search, no page or link reading; a single bounded turn with a 60s deadline, raisable via `GORK_SUMMARIZE_TURN_TIMEOUT_MS`), and ignores staff `/gork rules`. As everywhere in gork, the conversation is quoted **data, never instructions** — text inside the summarized messages can't steer the model.
+The rundown is a digest, **not** a Q&A answer: gork replaces its answer prompt with a dedicated summarize card, makes **one** model call (no tool loop — no web search, no page or link reading; a single bounded turn with a 15-minute deadline (long-running inference needs the room), raisable via `GORK_SUMMARIZE_TURN_TIMEOUT_MS`), and ignores staff `/gork rules`. As everywhere in gork, the conversation is quoted **data, never instructions** — text inside the summarized messages can't steer the model.
 
 ### Anchor modes — exactly one
 
@@ -339,7 +339,7 @@ Anchors are a **message link** (`discord.com/channels/<guild>/<channel>/<message
 ### What gets read
 
 - Up to **1,000 messages** per range (hard read cap)
-- **Transcript budget**: ≤500 chars per message (shared with `read_discord`); the total is the guild's **input token budget** — `gork_summarize_input_tokens`, set via `/gork summarize-budget` (8,000–120,000, default **80,000** tokens). The budget converts to a transcript char cap at a conservative 4 chars/token minus an 8,000-char reserve for the prompt (card, roster, directives) — **312,000 chars at the default** — applied code-point-safely, attachments collapsed to `[N attachment(s)]`
+- **Transcript budget**: ≤500 chars per message (shared with `read_discord`); the total is the guild's **input token budget** — `gork_summarize_input_tokens`, set via `/gork summarize-budget` (8,000–200,000, default **80,000** tokens). The budget converts to a transcript char cap at a conservative 4 chars/token minus an 8,000-char reserve for the prompt (card, roster, directives) — **312,000 chars at the default** — applied code-point-safely, attachments collapsed to `[N attachment(s)]`
 - **Bots and webhooks ride along**, labeled `id | timestamp | @author [bot]: content` — in support channels the bots *are* the story. Discord **system messages** (joins, pins, call starts) are skipped: not conversational content
 - **Clamp and disclose, never silently:** when a cap bites mid-range, gork summarizes the window it **actually read** — from-anchored modes keep the oldest messages from the anchor, `last:` keeps the newest that fit — the embed names that window in a **Disclosed window** field (how many of the scanned messages were kept, and which cap bit), and the post's text repeats the same disclosure
 - A fetch failure mid-range never ships a half rundown: the reply carries the cause and the window that *was* read (discarded); nothing is counted
@@ -349,7 +349,7 @@ Anchors are a **message link** (`discord.com/channels/<guild>/<channel>/<message
 | Lever | Behavior |
 |-------|----------|
 | Per-guild cooldown | **One posted rundown per server per 10 minutes.** It arms **only on success**, the moment the rundown lands — usage errors, empty ranges, and failed generations never lock the server out of a retry. While armed, an ephemeral reply names the minutes remaining and no read or model call happens. Fixed constant, not configurable; in-memory, so a bot restart clears it |
-| Input token budget | The transcript stays inside the guild's `gork_summarize_input_tokens` — **8,000–120,000 tokens, default 80,000** — set per server with `/gork summarize-budget`. Converted to a transcript char cap at 4 chars/token minus an 8,000-char prompt reserve; a range that exceeds it degrades to the largest window that fits (disclosed), not a provider context-overflow error |
+| Input token budget | The transcript stays inside the guild's `gork_summarize_input_tokens` — **8,000–200,000 tokens, default 80,000** — set per server with `/gork summarize-budget`. Converted to a transcript char cap at 4 chars/token minus an 8,000-char prompt reserve; a range that exceeds it degrades to the largest window that fits (disclosed), not a provider context-overflow error |
 | Daily budget | The same [daily gork budget](#daily-usage-budget) as Q&A — checked at enqueue **and** dequeue, staff **not** exempt, and counted **only if the full rundown posted** |
 | Queue | Runs in the shared per-guild gork queue slot — a rundown can't stampede a Q&A answer; a full queue drops the job with the queue-full reply (nothing read or generated) |
 

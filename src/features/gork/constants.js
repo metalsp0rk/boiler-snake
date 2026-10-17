@@ -49,8 +49,8 @@ const GORK_SUMMARIZE_RANGE_MAX_MESSAGES = 1000;
 const GORK_SUMMARIZE_INPUT_TOKENS_DEFAULT = 80000;
 /** Lower bound of the per-guild summarize input token budget. */
 const GORK_SUMMARIZE_INPUT_TOKENS_MIN = 8000;
-/** Upper bound of the per-guild summarize input token budget (fits common 128k-context models). */
-const GORK_SUMMARIZE_INPUT_TOKENS_MAX = 120000;
+/** Upper bound of the per-guild summarize input token budget (raised to 200k for large-context providers; models with smaller windows reject or degrade — the admin's choice when raising the budget). */
+const GORK_SUMMARIZE_INPUT_TOKENS_MAX = 200000;
 /** Conservative chars-per-token estimate used to convert the token budget to a char cap. */
 const GORK_TOKEN_CHAR_RATIO = 4;
 /**
@@ -63,7 +63,7 @@ const GORK_SUMMARIZE_PROMPT_RESERVE_CHARS = 8000;
 const GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR = 1000;
 
 /**
- * Clamp a per-guild /gork summarize input token budget to 8,000–120,000.
+ * Clamp a per-guild /gork summarize input token budget to 8,000–200,000.
  * Out-of-range numbers clamp to the nearest bound; null/undefined/non-numeric
  * fall back to the 80,000 default. The settings layer clamps on write
  * (guildSettings mirrors these bounds); consumers re-clamp at read time

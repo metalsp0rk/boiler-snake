@@ -67,8 +67,8 @@ const SUMMARIZE_TEMPERATURE = 0.3;
  * content:null / finish_reason "length".
  */
 const SUMMARIZE_MAX_TOKENS = 4000;
-/** Bounded one-shot deadline (memory.js keeps its extraction turn bounded too); GORK_SUMMARIZE_TURN_TIMEOUT_MS overrides. */
-const SUMMARIZE_TURN_TIMEOUT_MS = 60_000;
+/** Bounded one-shot deadline (memory.js keeps its extraction turn bounded too); GORK_SUMMARIZE_TURN_TIMEOUT_MS overrides. Generous by design: a summarize run is a long-running inference job over a big transcript. */
+const SUMMARIZE_TURN_TIMEOUT_MS = 900_000; // 15 minutes
 /**
  * Visible truncation marker for the hard output cap — same style as
  * trigger.js's ANSWER_TRUNCATE_MARKER (Fix 6), kept local so this module
@@ -112,7 +112,7 @@ function envPositiveInt(name, fallback) {
 
 /**
  * One-shot generation deadline, re-read at CALL time like every other
- * gork knob: GORK_SUMMARIZE_TURN_TIMEOUT_MS overrides the 60s default.
+ * gork knob: GORK_SUMMARIZE_TURN_TIMEOUT_MS overrides the 15-minute default.
  *
  * @returns {number} timeout in ms (≥ 1)
  */
