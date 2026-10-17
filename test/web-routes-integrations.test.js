@@ -404,7 +404,7 @@ describe("web integrations page (GET /g/:guildId/integrations, staff tier, read-
         "https://www.youtube.com/@daily-uploads",
         null
       );
-      api.updateYoutubeChannelLastChecked("UCytseed001", YT_LAST_CHECKED, "vid-9001");
+      api.updateYoutubeChannelLastChecked(CID_A, "UCytseed001", YT_LAST_CHECKED, "vid-9001");
       api.addTwitchChannel(CID_A, "btv-seed-1", "coolstreamer", "Cool Streamer", null);
       api.updateTwitchChannelLiveState(CID_A, "btv-seed-1", {
         isLive: true,

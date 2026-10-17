@@ -79,20 +79,28 @@ function removeYoutubeChannel(communityId, channelId) {
   return !!db.prepare(`SELECT changes()`).get().changes;
 }
 
-function updateYoutubeChannelLastChecked(channelId, lastCheckedMs, lastVideoId) {
+/**
+ * Advance the watermark for ONE community's row. `youtube_channels` has a
+ * composite PK (community_id, id): the same YouTube channel subscribed in
+ * N communities is N rows sharing `id`, so the WHERE MUST stay community-
+ * scoped (#377) — the old `WHERE id=?` let one guild's tick rewrite every
+ * other guild's watermark, silently burning their pending uploads.
+ */
+function updateYoutubeChannelLastChecked(communityId, channelId, lastCheckedMs, lastVideoId) {
+  assertCommunityId(communityId);
   const t = now();
   if (lastVideoId) {
     db.prepare(`
      UPDATE youtube_channels
      SET last_checked=?, last_video_id=?, updated_at=?
-     WHERE id=?
-     `).run(lastCheckedMs, lastVideoId, t, channelId);
+     WHERE community_id=? AND id=?
+     `).run(lastCheckedMs, lastVideoId, t, communityId, channelId);
   } else {
     db.prepare(`
      UPDATE youtube_channels
      SET last_checked=?, updated_at=?
-     WHERE id=?
-     `).run(lastCheckedMs, t, channelId);
+     WHERE community_id=? AND id=?
+     `).run(lastCheckedMs, t, communityId, channelId);
   }
 }
 
