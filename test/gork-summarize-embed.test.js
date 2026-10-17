@@ -394,3 +394,56 @@ describe("helpers", () => {
     assert.equal(SE.formatRangeLabel(null, null), "");
   });
 });
+
+// ---------- #453 platform-aware jump links ----------
+
+describe("renderSummarizeEmbeds — #453 platform-aware jump links", () => {
+  const fluxUrl = (id) =>
+    `https://chat.fluxer.test/channels/${GUILD}/${CHANNEL}/${id}`;
+
+  it("fluxer meta routes footer links to the instance webapp base", () => {
+    const footer = json(
+      SE.renderSummarizeEmbeds(
+        "a",
+        meta({
+          platform: "fluxer",
+          webappBaseUrl: "https://chat.fluxer.test/",
+        }),
+      )[0],
+    ).footer.text;
+    assert.ok(footer.includes(`[${fluxUrl(FIRST)} → ${fluxUrl(LAST)}]`), footer);
+    assert.ok(!footer.includes("discord.com"), "no dead discord.com links on fluxer");
+  });
+
+  it("fluxer without a discovered webapp base degrades to bare ids, never discord.com", () => {
+    const footer = json(
+      SE.renderSummarizeEmbeds(
+        "a",
+        meta({ platform: "fluxer", webappBaseUrl: null }),
+      )[0],
+    ).footer.text;
+    assert.ok(!footer.includes("discord.com"), footer);
+    assert.ok(
+      footer.includes(FIRST) && footer.includes(LAST),
+      "bare ids still identify the range",
+    );
+  });
+
+  it("discord (and default meta) keeps the discord.com scheme", () => {
+    for (const over of [{}, { platform: "discord" }]) {
+      const footer = json(SE.renderSummarizeEmbeds("a", meta(over))[0]).footer.text;
+      assert.ok(footer.includes(msgUrl(FIRST)), `discord scheme kept: ${footer}`);
+    }
+  });
+
+  it("messageJumpUrl forwards platform opts and still requires the message leg", () => {
+    assert.equal(
+      SE.messageJumpUrl(GUILD, CHANNEL, FIRST, {
+        platform: "fluxer",
+        webappBaseUrl: "https://chat.fluxer.test",
+      }),
+      fluxUrl(FIRST),
+    );
+    assert.equal(SE.messageJumpUrl(GUILD, CHANNEL, "  "), null);
+  });
+});
