@@ -722,6 +722,114 @@ async function setInteractionLog(commandCtx) {
 }
 
 /**
+ * /gork logchannel [channel] [clear]: dedicated channel for the "Gork Q&A"
+ * audit embeds (completed exchanges + failure one-liners), so they stop
+ * cluttering the general audit log. Unset (or cleared) → the Q&A stream
+ * falls back to the guild's audit log channel (`audit_log_channel_id`).
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function setLogChannel(commandCtx) {
+  const guildId = commandCtx.externalGuildId;
+  const communityId = commandCtx.communityId;
+  const clear = commandCtx.options.getBoolean("clear") === true;
+  const ch = commandCtx.options.getChannel("channel", false);
+  const beforeId = getGuildSettings(communityId).gork_log_channel_id ?? null;
+
+  if (clear) {
+    try {
+      updateGuildSettings(communityId, { gork_log_channel_id: null });
+    } catch (err) {
+      // Surface the specific cause (AGENTS.md): never a bare generic failure.
+      return commandCtx.reply({
+        content: `Could not clear the Q&A log channel: ${err?.message || err}`,
+        sensitive: true,
+      });
+    }
+    // Log while the old channel may still be the audit fallback target.
+    await logConfigChange(commandCtx.outbound, guildId, {
+      title: beforeId
+        ? "Gork Q&A log channel cleared"
+        : "Gork Q&A log channel was already unset",
+      command: "/gork logchannel",
+      actor: commandCtx.user,
+      changes: [
+        beforeId
+          ? `Q&A log: <#${beforeId}> → *audit log channel*`
+          : "Q&A log: *audit log channel* (no change)",
+      ],
+    }).catch(() => {});
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "gork.log_channel_clear",
+      targetType: "guild",
+      targetId: guildId,
+      details: { previous_channel_id: beforeId },
+    });
+    return commandCtx.reply({
+      content:
+        "Gork Q&A log channel cleared — Q&A embeds go back to the audit log channel.",
+      sensitive: true,
+    });
+  }
+
+  if (!ch) {
+    return commandCtx.reply({
+      content:
+        "Provide a `channel` for the Gork Q&A embeds, or set `clear:true` to fall back to the audit log channel.",
+      sensitive: true,
+    });
+  }
+
+  // Validate the picker id names a real, fetchable channel (same check as
+  // /setlog: a null handle means deleted or the bot lacks access).
+  const channelHandle = await commandCtx.outbound.fetchChannel(
+    communityId,
+    ch.id,
+  );
+  if (!channelHandle) {
+    console.error(
+      `[gork] /gork logchannel: channel ${ch.id} unavailable in community ${communityId}`,
+    );
+    return commandCtx.reply({
+      content: `I can't find channel <#${ch.id}> in this server. It may have been deleted, or the bot lacks access. Pick a visible text channel, or set \`clear:true\` to fall back to the audit log channel.`,
+      sensitive: true,
+    });
+  }
+
+  try {
+    updateGuildSettings(communityId, { gork_log_channel_id: ch.id });
+  } catch (err) {
+    return commandCtx.reply({
+      content: `Could not set the Q&A log channel: ${err?.message || err}`,
+      sensitive: true,
+    });
+  }
+  recordSlashAudit({
+    communityId,
+    actorUserId: commandCtx.userId,
+    action: "gork.log_channel_set",
+    targetType: "channel",
+    targetId: ch.id,
+    details: { previous_channel_id: beforeId },
+  });
+  await logConfigChange(commandCtx.outbound, guildId, {
+    title: "Gork Q&A log channel set",
+    command: "/gork logchannel",
+    actor: commandCtx.user,
+    changes: [
+      beforeId
+        ? `Q&A log: <#${beforeId}> → <#${ch.id}>`
+        : `Q&A log: *audit log channel* → <#${ch.id}>`,
+    ],
+  }).catch(() => {});
+  return commandCtx.reply({
+    content: `Gork Q&A embeds will be sent to <#${ch.id}>.`,
+    sensitive: true,
+  });
+}
+
+/**
  * /gork memory budget <chars>: cap for the injected memory block
  * (0–64,000; 0 = unlimited; garbage → default 12,000).
  * @param {import("../../platform/context").CommandContext} commandCtx
@@ -1123,6 +1231,14 @@ async function showStatus(commandCtx) {
         // §7.21: per-guild /gork summarize INPUT token budget (8k–120k, default 80k).
         name: "Summarize budget",
         value: `${clampSummarizeInputTokens(settings.gork_summarize_input_tokens)} input tokens`,
+        inline: true,
+      },
+      {
+        // Dedicated Q&A log channel (/gork logchannel); NULL → audit-log fallback.
+        name: "Q&A Log",
+        value: settings.gork_log_channel_id
+          ? `<#${settings.gork_log_channel_id}>`
+          : "audit log (fallback)",
         inline: true,
       },
     ],
@@ -1725,6 +1841,7 @@ module.exports = {
   handleMemory,
   handleBudget,
   setInteractionLog,
+  setLogChannel,
   showStatus,
   handleSummarize,
   setSummarizeBudget,
