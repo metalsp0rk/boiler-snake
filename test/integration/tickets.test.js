@@ -533,6 +533,95 @@ describe("integration: tickets", () => {
     assert.ok(after.transcript_token);
   });
 
+  // #418 (audit LT-1): the transcript FILE is the archive. A write failure
+  // must abort everything (no finalize, no channel delete, no success copy)
+  // AND leave the archive retryable (claim released).
+  it("transcript-write failure aborts the archive and the retry succeeds (#418)", async () => {
+    const ticket = await openViaStaff({
+      user: env.users.memberUser,
+      reason: "418 write failure",
+    });
+    const chId = ticket.channel_id;
+    const ticketChannel = env.guild.channels.cache.get(chId);
+    ticketChannel.addMessage({ id: "418-msg-1", content: "keep me" });
+
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: chId,
+      options: { reason: "resolved" },
+    });
+    assert.match(env.lastReplyContent(close), /closed/i);
+
+    // Force a REAL write failure at the fs boundary (production code
+    // untouched): mkdir of the transcript's {community}/{token} directory
+    // throws, exactly like ENOSPC/EROFS in the field. Scoped to the
+    // transcripts path and restored before the retry runs.
+    const realFs = require("node:fs");
+    let intercepted = false;
+    const realMkdir = realFs.mkdirSync;
+    realFs.mkdirSync = function (p, ...rest) {
+      const s = String(p);
+      // Only the transcript write's own mkdir (…/ticket-transcripts/{id}/{token}),
+      // not the mirror step's …/assets or the community dir — the pipeline
+      // catches the mirror failure separately.
+      if (!intercepted && /ticket-transcripts\/\d+\/[^/]+$/.test(s)) {
+        intercepted = true;
+        const err = new Error(`EACCES: permission denied, mkdir '${s}'`);
+        err.code = "EACCES";
+        err.path = s;
+        throw err;
+      }
+      return realMkdir.call(this, p, ...rest);
+    };
+    let archiveText = "";
+    try {
+      const failed = await env.runCommand({
+        commandName: "ticket",
+        subcommand: "archive",
+        admin: true,
+        channelId: chId,
+      });
+      archiveText = env.lastReplyContent(failed);
+    } finally {
+      realFs.mkdirSync = realMkdir;
+    }
+
+    // The reply names the cause — never a success copy (AGENTS.md rule 3).
+    assert.match(archiveText, /was NOT archived/i);
+    assert.match(archiveText, /could not write the transcript file/i);
+
+    // Nothing destructive happened: not finalized, channel kept, no phantom
+    // token advertised or stored.
+    const aborted = env.db.getTicketById(ticket.id);
+    assert.equal(aborted.archived, 0, "abort leaves the ticket un-finalized");
+    assert.equal(aborted.channel_id, chId, "the channel is kept");
+    assert.equal(aborted.transcript_token, null, "no phantom token stored");
+    assert.equal(aborted.transcript_path, null);
+    assert.ok(
+      env.guild.channels.cache.get(chId),
+      "the ticket channel still exists after the abort",
+    );
+
+    // The claim was released — the retry archives for real (this is the
+    // whole point: LT-1 stranded content with the only recovery path blocked).
+    const retry = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "archive",
+      admin: true,
+      channelId: chId,
+    });
+    assert.match(env.lastReplyContent(retry), /archived/i);
+    const after = env.db.getTicketById(ticket.id);
+    assert.equal(after.archived, 1);
+    assert.ok(after.transcript_token);
+    assert.ok(after.transcript_path);
+    assert.equal(after.channel_id, null);
+    const texts = env.db.listTicketMessages(ticket.id).map((m) => m.content);
+    assert.ok(texts.includes("keep me"), "transcript content survived the abort");
+  });
+
   it("/ticket adduser + removeuser + addstaff + removestaff + transfer", async () => {
     const ticket = await openViaStaff({
       user: env.users.memberUser,

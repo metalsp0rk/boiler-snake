@@ -161,7 +161,7 @@ Requires a **closed** ticket channel.
    (TEST-NETs, multicast, reserved — the #273 union with gork's read-page policy) — a member
    cannot aim the bot at internal addresses. Refused files are listed as warnings in the archive reply; the archive continues.
 4. Store rows in `ticket_messages` (resolved authors, expanded mentions, local asset hrefs).
-5. Write HTML under `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/index.html`.
+5. Write HTML under `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/index.html`. **This write is the archive**: if it fails (disk full, bad permissions), the whole archive aborts before anything destructive — the ticket is not finalized, the channel is kept, no phantom transcript link/token is shown, the archive claim is released so a retry works, and the reply names the specific cause (#418).
 6. Summarize (AI or fallback).
 7. Post embed to the archive channel (summary + link if `TICKET_PUBLIC_BASE_URL` set).
 8. **DM the requester** (creator only): ticket ref, close reason, and a **View transcript** link when `TICKET_PUBLIC_BASE_URL` is configured (ref + reason only otherwise). Best-effort: if the DM fails (closed DMs, blocked bot), the archive reply notes a warning — the archive itself never fails because of it.

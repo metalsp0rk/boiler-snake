@@ -631,7 +631,9 @@ function closeTicketArchived(ticketId, opts) {
  * the claim is a separate internal column so no reader of `archived` /
  * `status` changes behavior. Crash semantics are sticky on purpose: if the
  * winner dies mid-archive the ticket stays claimed and re-archiving is
- * blocked — the requirement is concurrency-safety, not crash recovery.
+ * blocked — the requirement is concurrency-safety, not crash recovery. A
+ * CLEAN abort before any destructive step releases the claim
+ * ({@link releaseTicketArchiveClaim}, #418) so the retry path stays open.
  *
  * @param {number} ticketId
  * @returns {{ won: boolean, ticket: object|null }} `won` true only for the
@@ -648,6 +650,26 @@ function claimTicketArchive(ticketId) {
     )
     .run(now(), ticketId);
   return { won: info.changes === 1, ticket: getTicketById(ticketId) || null };
+}
+
+/**
+ * Release the archive claim on a CLEAN ABORT (audit LT-1 #418): when the
+ * pipeline fails deterministically BEFORE any destructive step (finalize /
+ * channel delete), the ticket must become retryable — the transcript file IS
+ * the archive, and stranding a claimed-but-unarchivable ticket is how
+ * content got lost. Crash semantics stay sticky on purpose (#197): only the
+ * explicit pre-destructive abort path calls this. `archived` untouched.
+ *
+ * @param {number} ticketId
+ * @returns {boolean} true when a claim was released
+ */
+function releaseTicketArchiveClaim(ticketId) {
+  const info = db
+    .prepare(
+      "UPDATE tickets SET archive_claimed_at=NULL WHERE id=? AND archived=0"
+    )
+    .run(ticketId);
+  return info.changes === 1;
 }
 
 /**
@@ -1193,6 +1215,7 @@ module.exports = {
   closeTicketSensitive,
   closeTicketArchived,
   claimTicketArchive,
+  releaseTicketArchiveClaim,
   markTicketClosedByChannelDelete,
   saveTicketMessages,
   listTicketMessages,
