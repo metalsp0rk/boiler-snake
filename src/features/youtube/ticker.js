@@ -8,6 +8,7 @@ const {
   getYoutubeChannelById,
   addYoutubeChannel,
   updateYoutubeChannelLastChecked,
+  markYoutubeLiveNotified,
   updateGuildSettings,
 } = require("../../db");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
@@ -405,6 +406,9 @@ async function processChannel(
 
   // Track if we found any uploads in the time window
   let foundUploadInWindow = false;
+  // #378: the live entry whose alert this loop dispatched (persisted AFTER
+  // the loop as the row's dedicated live pointer).
+  let notifiedLiveId = null;
 
   for (const entry of feed.items) {
     // Track both live streams and regular uploads
@@ -422,6 +426,22 @@ async function processChannel(
 
     const info = extractVideoInfo(entry);
     if (!info || !info.videoId) continue;
+
+    // #378: live alerts dedup on their OWN row state, never the shared
+    // last_video_id pointer. The end-of-tick pointer update stores the
+    // newest feed item, so a single upload published during a stream moves
+    // it off the live entry — and since live entries have no publish-window
+    // guard, the @everyone alert then re-fired EVERY tick for the whole
+    // stream (and "upcoming" streams re-fired alongside newer uploads).
+    if (
+      notificationType === "live" &&
+      info.videoId === (channelData.last_live_id || null)
+    ) {
+      console.log(
+        `[youtube] Skipping ${info.title} - live alert already dispatched for this stream`,
+      );
+      continue;
+    }
 
     // Skip if we've already notified about this video (using last_video_id as snapshot)
     if (lastVideoId && info.videoId === lastVideoId) {
@@ -481,6 +501,18 @@ async function processChannel(
       notificationType,
       useSimpleEmbed,
     );
+    if (notificationType === "live") {
+      // Deliberately after the dispatch attempt: #380 reworks the
+      // watermark to advance only past DELIVERED items and will make this
+      // mark delivery-conditional too.
+      notifiedLiveId = info.videoId;
+    }
+  }
+
+  // #378: persist the live pointer for the stream this pass alerted, so the
+  // next tick (or the next restart) cannot re-ping @everyone mid-stream.
+  if (notifiedLiveId) {
+    markYoutubeLiveNotified(communityId, channelId, notifiedLiveId);
   }
 
   // Update last-checked time and store the most recent video ID
