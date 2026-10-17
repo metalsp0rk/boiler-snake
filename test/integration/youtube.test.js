@@ -250,6 +250,69 @@ describe("integration: youtube", () => {
     assert.equal(env.channels.notify.sent.length, 0);
   });
 
+  it("#378: live alert never re-fires when a newer upload moves the shared pointer", async () => {
+    const channelId = "UClivededup00001";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: null,
+    });
+    env.db.addYoutubeChannel(env.communityId, channelId, "DedupLive", `https://www.youtube.com/channel/${channelId}`, "");
+    // One prior check so the "first hour only" window never plays a role.
+    env.db.updateYoutubeChannelLastChecked(env.communityId, channelId, Date.now() - 10 * 60_000, null);
+    env.channels.notify.sent.length = 0;
+
+    const feed = () => ({
+      title: "feed",
+      items: [
+        {
+          // Newest entry: a normal upload published DURING the stream.
+          id: "vid-dedup-upload",
+          title: "Fresh Upload",
+          pubDate: new Date(Date.now() - 60_000).toISOString(),
+          liveBroadcastContent: "none",
+        },
+        {
+          id: "vid-dedup-live",
+          title: "Marathon Stream",
+          pubDate: new Date(Date.now() - 5 * 60_000).toISOString(),
+          liveBroadcastContent: "live",
+        },
+      ],
+    });
+
+    // Tick 1: upload alert + exactly one live @everyone.
+    let channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(fakeSupervisor(env.client), env.communityId, channelData, {
+      fetchYouTubeFeed: async () => feed(),
+    });
+    assert.equal(env.channels.notify.sent.length, 2, "upload alert + live alert on first sight");
+    const liveMsg = env.channels.notify.sent.find((m) => /went live/i.test(m.content || ""));
+    assert.ok(liveMsg, "live alert sent");
+    assertPingsEveryone(liveMsg, { label: "youtube live alert" });
+
+    // The end-of-tick pointer is the NEWEST item (the upload) — the old code
+    // re-fired the live @everyone every tick from here for the whole stream.
+    channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.equal(channelData.last_video_id, "vid-dedup-upload", "shared pointer moved to the upload");
+    assert.equal(channelData.last_live_id, "vid-dedup-live", "#378: dedicated live pointer persisted");
+
+    // Ticks 2-4 replay the 5-minute ticker mid-stream: NOTHING may re-fire.
+    env.channels.notify.sent.length = 0;
+    for (let tick = 0; tick < 3; tick++) {
+      channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+      await processChannel(fakeSupervisor(env.client), env.communityId, channelData, {
+        fetchYouTubeFeed: async () => feed(),
+      });
+    }
+    assert.equal(
+      env.channels.notify.sent.length,
+      0,
+      "live alert (and upload) never re-fire while notified state stands (#378)",
+    );
+
+    env.db.removeYoutubeChannel(env.communityId, channelId);
+  });
+
   it("processChannel no-ops without notification channel", async () => {
     env.db.updateGuildSettings(env.communityId, {
       youtube_notification_channel_id: null,
