@@ -13,7 +13,7 @@ function normalizeYoutubeName(name) {
 function getYoutubeChannels(communityId) {
   assertCommunityId(communityId);
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at
   FROM youtube_channels
   WHERE community_id=?
   ORDER BY created_at ASC
@@ -22,7 +22,7 @@ function getYoutubeChannels(communityId) {
 
 function getAllYoutubeChannels() {
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at
   FROM youtube_channels
   ORDER BY created_at ASC
   `).all();
@@ -32,7 +32,7 @@ function getYoutubeChannelById(communityId, channelId) {
   assertCommunityId(communityId);
   const normalized = normalizeYoutubeName(channelId);
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at
   FROM youtube_channels
   WHERE community_id=? AND (id=? OR channel_url LIKE '%/' || ? || '/')
   `).get(communityId, normalized, normalized);
@@ -121,6 +121,23 @@ function markYoutubeLiveNotified(communityId, channelId, liveVideoId) {
   `).run(liveVideoId || null, t, communityId, channelId);
 }
 
+/**
+ * Stamp the WALL-CLOCK moment this row was last swept by the ticker
+ * (#379). This is the polling-interval gate's clock: `last_checked` is the
+ * ordinal notification window (#380) and deliberately does not move on
+ * quiet sweeps, so cadence needs its own column — nothing
+ * notification-related is touched here.
+ */
+function markYoutubeChannelCheckedAt(communityId, channelId, checkedAtMs = now()) {
+  assertCommunityId(communityId);
+  const t = Number.isFinite(checkedAtMs) ? Math.trunc(checkedAtMs) : now();
+  db.prepare(`
+   UPDATE youtube_channels
+   SET last_checked_at=?, updated_at=?
+   WHERE community_id=? AND id=?
+  `).run(t, t, communityId, channelId);
+}
+
 /** Cleanup malformed channel entries (non-UC/HC IDs from before normalization fix). */
 function cleanupMalformedYoutubeChannels() {
   const rows = db
@@ -150,5 +167,6 @@ module.exports = {
   removeYoutubeChannel,
   updateYoutubeChannelLastChecked,
   markYoutubeLiveNotified,
+  markYoutubeChannelCheckedAt,
   cleanupMalformedYoutubeChannels,
 };

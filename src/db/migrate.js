@@ -54,6 +54,7 @@ const migrations = [
   require("./migrations/044_event_channels_wizards"),
   require("./migrations/045_event_integrations"),
   require("./migrations/046_youtube_live_pointer"),
+  require("./migrations/047_youtube_checked_at"),
 ];
 
 const helpers = {
