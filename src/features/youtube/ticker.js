@@ -388,7 +388,7 @@ async function processChannel(
 
   if (!feed.items || !feed.items.length) {
     console.log(`[youtube] No videos found for ${channelName}`);
-    updateYoutubeChannelLastChecked(channelId, Date.now());
+    updateYoutubeChannelLastChecked(communityId, channelId, Date.now());
     return;
   }
 
@@ -485,7 +485,7 @@ async function processChannel(
 
   // Update last-checked time and store the most recent video ID
   const newLastVideoId = feed.items[0]?.id || null;
-  updateYoutubeChannelLastChecked(channelId, Date.now(), newLastVideoId);
+  updateYoutubeChannelLastChecked(communityId, channelId, Date.now(), newLastVideoId);
 }
 
 function createLiveEmbed(channelData, videoInfo, channelUrl) {
