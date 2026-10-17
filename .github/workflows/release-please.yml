@@ -24,8 +24,10 @@ concurrency:
   group: release-please
   cancel-in-progress: false
 
-# CI policy: private self-hosted runner only (boiler-snake-runner-01 on the
-# docker host). Do not switch jobs to ubuntu-latest / public runners.
+# CI policy: private self-hosted runner pool only (boiler-snake-runner-01..03
+# on the docker host — three bridge-networked containers, one job each, so up
+# to 3 CI jobs run concurrently). Do not switch jobs to ubuntu-latest /
+# public runners.
 jobs:
   release-please:
     runs-on: [self-hosted, linux, X64]
