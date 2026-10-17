@@ -56,6 +56,7 @@ const migrations = [
   require("./migrations/046_youtube_live_pointer"),
   require("./migrations/047_youtube_checked_at"),
   require("./migrations/048_gork_log_channel"),
+  require("./migrations/049_honeypot_pause"),
 ];
 
 const helpers = {

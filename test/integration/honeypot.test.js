@@ -315,4 +315,110 @@ describe("integration: honeypot", () => {
     assertBanned(env.guild, user.id);
     assert.equal(message.deleted, true);
   });
+
+  // ── #440 (audit F2-4): mass-ban safety valve ──────────────────────────────
+
+  function postTrap(id) {
+    const user = env.createUser({ id, username: `raider-${id}` });
+    const member = env.createMember({ guild: env.guild, user });
+    env.guild.addMember(member);
+    const message = env.createMessage({
+      guild: env.guild,
+      channel: env.channels.honeypot,
+      author: user,
+      member,
+      content: "raid spam",
+    });
+    return { user, message };
+  }
+
+  it("mass-ban breaker caps the window, persists the pause, and only an admin resumes (#440)", async () => {
+    ensureHoneypotChannel();
+    const hp = require("../../src/features/honeypot");
+    hp.clearBanWindow(env.communityId);
+    env.db.updateGuildSettings(env.communityId, {
+      honeypot_paused_at: null,
+      honeypot_pause_reason: null,
+    });
+    env.guild._bans.length = 0;
+
+    const MAX = hp.BAN_WINDOW_MAX;
+
+    // The first MAX posts ban — the feature works as documented.
+    for (let i = 0; i < MAX; i++) {
+      const { user, message } = postTrap(`user-hb-${i}`);
+      await handleHoneypotMessage(message);
+      assertBanned(env.guild, user.id);
+      assert.equal(message.deleted, true);
+    }
+    assert.equal(env.guild._bans.length, MAX);
+    assert.equal(hp.isEnforcementPaused(env.communityId), false);
+
+    // Attempt MAX+1: the ban does NOT execute — the breaker trips.
+    const tripper = postTrap("user-hb-boom");
+    await handleHoneypotMessage(tripper.message);
+    assertNotBanned(env.guild, tripper.user.id); // the tripping ban never runs
+    assert.equal(
+      tripper.message.deleted,
+      true,
+      "suppression continues after the trip",
+    );
+    assert.equal(env.guild._bans.length, MAX, "nothing ever bans past the cap");
+    assert.equal(hp.isEnforcementPaused(env.communityId), true);
+
+    const settings = env.db.getGuildSettings(env.communityId);
+    assert.ok(
+      Number(settings.honeypot_paused_at) > 0,
+      "pause is PERSISTED — a restart must not re-arm the irreversible path",
+    );
+    assert.match(settings.honeypot_pause_reason, /honeypot bans within 5 minutes/);
+    assert.equal(
+      env.db
+        .listAdminAudit(env.communityId, { limit: 100 })
+        .filter((r) => r.action === "honeypot.breaker_trip").length,
+      1,
+      "the trip is auditable",
+    );
+
+    // Later posts: deleted, never banned.
+    const later = postTrap("user-hb-later");
+    await handleHoneypotMessage(later.message);
+    assertNotBanned(env.guild, later.user.id);
+    assert.equal(later.message.deleted, true);
+
+    // Junior staff cannot release the brake.
+    env.db.addStaffRole(env.communityId, IDS.roleExempt, "senior");
+    const junior = env.createMember({
+      guild: env.guild,
+      user: env.users.memberUser,
+      admin: false,
+      roleIds: [IDS.roleExempt],
+    });
+    env.guild.addMember(junior);
+    const denied = await env.runCommand({
+      commandName: "honeypot",
+      subcommandGroup: "safety",
+      subcommand: "resume",
+      admin: false,
+      user: env.users.memberUser,
+      member: junior,
+    });
+    assertEphemeralReply(denied, /administrators/i);
+    assert.equal(hp.isEnforcementPaused(env.communityId), true);
+
+    // Admin clears it; bans are live again (window reset too).
+    const resumed = await env.runCommand({
+      commandName: "honeypot",
+      subcommandGroup: "safety",
+      subcommand: "resume",
+      admin: true,
+    });
+    assertReplyContains(resumed, /resumed/i);
+    assert.equal(hp.isEnforcementPaused(env.communityId), false);
+
+    const rearmed = postTrap("user-hb-after");
+    await handleHoneypotMessage(rearmed.message);
+    // enforcement re-armed after resume (window was reset)
+    assertBanned(env.guild, rearmed.user.id);
+  });
 });
