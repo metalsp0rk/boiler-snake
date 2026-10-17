@@ -66,6 +66,19 @@ Example with `dropdays=7`:
 - If user drops below level at 14:00 on Monday
 - Role is revoked at 14:00 on the following Monday (if not promoted back)
 
+### When the Drop Is Evaluated
+
+The grace timer is checked from three places:
+
+1. **On any XP award** — the unified award path re-syncs the member's roles.
+2. **On the daily decay tick** — for every user whose XP it rewrote that tick.
+3. **Daily grace-drop sweeper** (`levelRoles/dropSweeper.js`, ~05:17 UTC) —
+   re-runs the sync for every armed timer whose grace has expired, purely on
+   elapsed time. This is the safety net for users whose XP never changes again
+   (decayed to 0, or decay-exempt): without it the timer would never fire and
+   the role would be kept forever (#428). Actual revocation therefore lands on
+   the first sweep after the deadline — at most ~24h after the exact moment.
+
 ## Best Practices
 
 ### Setting Level Thresholds
