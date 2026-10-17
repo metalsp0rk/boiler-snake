@@ -16,8 +16,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# CI policy: private self-hosted runner only (boiler-snake-runner-01 on the
-# docker host). Do not switch jobs to ubuntu-latest / public runners.
+# CI policy: private self-hosted runner pool only (boiler-snake-runner-01..03
+# on the docker host — three bridge-networked containers, one job each, so up
+# to 3 CI jobs run concurrently). Do not switch jobs to ubuntu-latest /
+# public runners.
+#
+# Parallel-safe (closes #450): each runner instance is its own container with
+# its own network namespace and container-local /tmp/opencode, so the fauxcord
+# mock (PORT 3100 + FAUXCORD_DATA_DIR) is per-instance — concurrent e2e runs
+# on different instances can never share a mock, and two jobs never share one
+# instance (one job per runner). The per-ref concurrency group above only
+# cancels stale runs of the SAME ref.
 jobs:
   e2e:
     runs-on: [self-hosted, linux, X64]
