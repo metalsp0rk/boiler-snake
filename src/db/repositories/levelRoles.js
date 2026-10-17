@@ -54,10 +54,54 @@ function setRoleBelowSince(communityId, userId, roleId, belowSinceOrNull) {
   `).run(communityId, userId, roleId, belowSinceOrNull, t);
 }
 
+/**
+ * Pending grace-drop timers for one community (#428, audit XE-1): rows the
+ * sync started when a member fell below a level-role threshold, joined with
+ * the role mapping so a sweeper can decide per-role grace expiry. These are
+ * exactly the members the XP-change-driven sync paths can MISS (a user whose
+ * XP never changes again — decayed to 0, or decay-exempt with msg_xp=0 —
+ * never re-enters syncMemberRoles, so the grace timer would never fire).
+ *
+ * @param {number} communityId
+ * @returns {Array<{user_id: string, role_id: string, below_since: number, level_required: number, drop_grace_days: number}>}
+ */
+function listPendingRoleDrops(communityId) {
+  assertCommunityId(communityId);
+  return db
+    .prepare(
+      `
+    SELECT s.user_id, s.role_id, s.below_since, r.level_required, r.drop_grace_days
+    FROM role_drop_state s
+    JOIN level_roles r
+      ON r.community_id = s.community_id AND r.role_id = s.role_id
+    WHERE s.community_id = ? AND s.below_since IS NOT NULL
+    ORDER BY s.below_since ASC
+  `
+    )
+    .all(communityId);
+}
+
+/**
+ * Communities with at least one pending drop timer — the sweeper's worklist
+ * (avoids ticking every community just to find nothing).
+ *
+ * @returns {number[]}
+ */
+function listCommunityIdsWithPendingRoleDrops() {
+  return db
+    .prepare(
+      "SELECT DISTINCT community_id FROM role_drop_state WHERE below_since IS NOT NULL ORDER BY community_id ASC"
+    )
+    .all()
+    .map((r) => r.community_id);
+}
+
 module.exports = {
   upsertLevelRole,
   deleteLevelRole,
   listLevelRoles,
   getRoleDropState,
   setRoleBelowSince,
+  listPendingRoleDrops,
+  listCommunityIdsWithPendingRoleDrops,
 };

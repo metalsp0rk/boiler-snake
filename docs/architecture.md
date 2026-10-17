@@ -277,7 +277,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **xp** | Cooldowns in-memory; PNG leaderboard via `render/leaderboard` |
 | **voice** | Per-minute; ≥2 eligible humans; skip mute/deafen/AFK; job `voice` on `core/scheduler` |
 | **decay** | Cron `0 4 * * *` (hardcoded const, evaluated in the **process timezone** — deployments pin `TZ=UTC`, see [decay.md](decay.md)); relative write against the live row (#191); re-syncs level + reaction roles; job `decay` |
-| **levelRoles** | Grace-period drop via `levelRoles/sync.js` |
+| **levelRoles** | Grace-period drop via `levelRoles/sync.js`; daily sweeper job `levelrole-drop` (cron `17 5 * * *`) fires expired timers even when XP is frozen (#428) |
 | **logs** | Audit + message log channels; in-memory delete cache |
 | **youtube** | RSS + optional Data API; guild notification channel |
 | **twitch** | Helix poll (≤100 ids/req); go-live dedup by stream id; separate channel + role from YouTube |

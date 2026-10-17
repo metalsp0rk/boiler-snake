@@ -110,6 +110,9 @@ module.exports = {
   listLevelRoles: levelRoles.listLevelRoles,
   getRoleDropState: levelRoles.getRoleDropState,
   setRoleBelowSince: levelRoles.setRoleBelowSince,
+  listPendingRoleDrops: levelRoles.listPendingRoleDrops,
+  listCommunityIdsWithPendingRoleDrops:
+    levelRoles.listCommunityIdsWithPendingRoleDrops,
 
   // command channel restriction
   addAllowedCommandChannel: commandChannels.addAllowedCommandChannel,
