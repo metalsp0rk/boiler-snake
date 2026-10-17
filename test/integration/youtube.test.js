@@ -593,6 +593,70 @@ describe("integration: youtube", () => {
     assertEphemeralReply(interaction, /permission/i);
   });
 
+  // #442 (audit INT-7): the old probe `SELECT changes()` yields a column
+  // LITERALLY named "changes()", so `.changes` was undefined and
+  // removeYoutubeChannel returned FALSE EVEN WHEN THE DELETE LANDED — both
+  // callers had to paper over it with duplicated row-count diffs (now gone).
+  it("#442: removeYoutubeChannel reports the DELETE honestly", () => {
+    const channelId = "UCreturnflag0001";
+    env.db.addYoutubeChannel(
+      env.communityId,
+      channelId,
+      "FlagCanary",
+      `https://www.youtube.com/channel/${channelId}`,
+      "",
+    );
+
+    assert.equal(
+      env.db.removeYoutubeChannel(env.communityId, channelId),
+      true,
+      "a delete that landed must report true",
+    );
+    assert.equal(
+      env.db.getYoutubeChannelById(env.communityId, channelId),
+      undefined,
+      "row is gone",
+    );
+    assert.equal(
+      env.db.removeYoutubeChannel(env.communityId, channelId),
+      false,
+      "a delete that matched nothing reports false",
+    );
+  });
+
+  it("/youtube remove confirms via the honest repo flag — no row-count rescue (#442)", async () => {
+    const channelId = "UCslashremove001";
+    env.db.addYoutubeChannel(
+      env.communityId,
+      channelId,
+      "SlashCanary",
+      `https://www.youtube.com/channel/${channelId}`,
+      "",
+    );
+
+    const remove = await env.runCommand({
+      commandName: "youtube",
+      subcommand: "remove",
+      admin: true,
+      options: { channel: channelId },
+    });
+    assert.match(env.lastReplyContent(remove), /Unsubscribed from \*\*SlashCanary\*\*/);
+    assert.equal(
+      env.db.getYoutubeChannelById(env.communityId, channelId),
+      undefined,
+      "row gone",
+    );
+
+    // Unknown id keeps the pre-delete guard reply.
+    const missing = await env.runCommand({
+      commandName: "youtube",
+      subcommand: "remove",
+      admin: true,
+      options: { channel: "UCdoes-not-exist" },
+    });
+    assert.equal(env.lastReplyContent(missing), "No subscription found.");
+  });
+
   it("#377: watermark writes are community-scoped — a sibling watching the same channel is untouched", () => {
     // youtube_channels PK is (community_id, id): one subscribed YouTuber is
     // one row PER community sharing `id`. The old `WHERE id=?` UPDATE let

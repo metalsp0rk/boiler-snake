@@ -283,8 +283,6 @@ async function handleYoutube(commandCtx, featureCtx) {
       return;
     }
 
-    const channelsBefore = getYoutubeChannels(communityId).length;
-
     let removed = false;
     let removeErr = null;
     try {
@@ -293,7 +291,6 @@ async function handleYoutube(commandCtx, featureCtx) {
         guildId,
         channelId,
         foundChannel: foundChannel?.channel_name,
-        channelsBefore,
         removed,
         error: null,
       });
@@ -302,12 +299,9 @@ async function handleYoutube(commandCtx, featureCtx) {
       console.error("[youtube] Remove error:", err);
     }
 
-    const channelsAfter = getYoutubeChannels(communityId).length;
-    if (!removed && channelsAfter < channelsBefore) {
-      // Actually removed but function returned false - DB issue?
-      removed = true;
-    }
-
+    // #442 (audit INT-7): the repo return is honest now (res.changes), so
+    // the old row-count-diff rescue for its always-false return is gone —
+    // the flag alone decides.
     if (removed) {
       recordSlashAudit({
         communityId,
