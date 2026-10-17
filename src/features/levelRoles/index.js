@@ -8,6 +8,7 @@ const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { syncMemberRoles } = require("./sync");
+const { startLevelRoleDropSweeper } = require("./dropSweeper");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -170,6 +171,12 @@ module.exports = {
   // handler receives a CommandContext instead of a raw interaction.
   handlerApi: {
     leveltorole: "context",
+  },
+  // Daily grace-drop sweeper (#428): XP-frozen users never re-enter the
+  // XP-change sync paths, so their elapsed drop-grace timers would never
+  // fire without this time-driven job.
+  start(supervisor) {
+    startLevelRoleDropSweeper(supervisor);
   },
   // re-export for services that still import roles.js
   syncMemberRoles,
