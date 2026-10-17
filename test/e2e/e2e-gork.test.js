@@ -187,6 +187,9 @@ describe(
         "Interaction Log": "On (0 rows)",
         Budget: "default unlimited · 0 rules",
         "Summarize budget": "80000 input tokens",
+        // #33b9d97 added the Q&A Log line (dedicated /gork logchannel);
+        // the fresh e2e guild never sets one → audit-log fallback.
+        "Q&A Log": "audit log (fallback)",
       });
       assert.equal(auditTotal(), totalBefore, "status is read-only");
     });
