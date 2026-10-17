@@ -2,7 +2,8 @@
  * Unit tests for buildRestFacade in src/platform/fluxer/client.js.
  *
  * Background (prod 2026-10-01): the shipped façade required rest.request(),
- * which @fluxerjs/rest@3.x's REST class does NOT have (verbs only: get/post/
+ * which the REST package's REST class (3.x) does NOT have (verbs only:
+ * get/post/
  * patch/put/delete) — every outbound call threw "SDK surface mismatch".
  * It also forwarded Phase 0 "/v1/..." routes verbatim, and the SDK's
  * resolveRequestUrl ALWAYS prepends /v{version} → /api/v1/v1/... → 404 on
