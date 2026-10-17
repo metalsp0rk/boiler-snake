@@ -339,7 +339,7 @@ describe("migration 041 heals the real partial 034 cutover (#285 drill state)", 
     assert.equal(added.community_id, idC);
     assert.deepEqual(ytRepo.getYoutubeChannels(idC).map((r) => r.id), ["UCgamma", "UCdelta"], "created_at ASC order");
 
-    ytRepo.updateYoutubeChannelLastChecked("UCdelta", 1700000009000, "vid-new");
+    ytRepo.updateYoutubeChannelLastChecked(idC, "UCdelta", 1700000009000, "vid-new");
     assert.equal(db.prepare("SELECT last_video_id, last_checked FROM youtube_channels WHERE id='UCdelta'").get().last_video_id, "vid-new");
     ytRepo.removeYoutubeChannel(idC, "UCdelta"); // (return value rides a `changes()` column-name quirk — see web/routes/integrations.js)
     assert.equal(fixture.db.prepare("SELECT COUNT(*) n FROM youtube_channels WHERE id='UCdelta'").get().n, 0);

@@ -104,7 +104,7 @@ describe("integration: youtube", () => {
     );
     // mark as previously checked so we don't hit "last hour only" first-run window
     const lastChecked = Date.now() - 60_000;
-    env.db.updateYoutubeChannelLastChecked("UCproc00000000001", lastChecked, null);
+    env.db.updateYoutubeChannelLastChecked(env.communityId, "UCproc00000000001", lastChecked, null);
 
     const channelData = env.db.getYoutubeChannelById(env.communityId, "UCproc00000000001");
     const published = Date.now() - 10_000;
@@ -150,7 +150,7 @@ describe("integration: youtube", () => {
       `https://www.youtube.com/channel/${channelId}`,
       ""
     );
-    env.db.updateYoutubeChannelLastChecked(channelId, Date.now() - 60_000, null);
+    env.db.updateYoutubeChannelLastChecked(env.communityId, channelId, Date.now() - 60_000, null);
     env.channels.notify.sent.length = 0;
 
     const channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
@@ -226,6 +226,7 @@ describe("integration: youtube", () => {
       ""
     );
     env.db.updateYoutubeChannelLastChecked(
+      env.communityId,
       "UCskip00000000001",
       Date.now() - 120_000,
       "vid-old-1"
@@ -297,5 +298,40 @@ describe("integration: youtube", () => {
       user: env.users.memberUser,
     });
     assertEphemeralReply(interaction, /permission/i);
+  });
+
+  it("#377: watermark writes are community-scoped — a sibling watching the same channel is untouched", () => {
+    // youtube_channels PK is (community_id, id): one subscribed YouTuber is
+    // one row PER community sharing `id`. The old `WHERE id=?` UPDATE let
+    // community A's tick rewrite community B's watermark — burning B's
+    // pending uploads silently. Two communities, ONE shared channel id.
+    const { ensureCommunity } = require("../../src/platform/community");
+    const cidOther = ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: "990000000000000099",
+    });
+    const shared = "UCshared0000000001";
+    env.db.addYoutubeChannel(env.communityId, shared, "SharedChannel", `https://www.youtube.com/channel/${shared}`, "");
+    env.db.addYoutubeChannel(cidOther, shared, "SharedChannel", `https://www.youtube.com/channel/${shared}`, "");
+    env.db.updateYoutubeChannelLastChecked(cidOther, shared, 1_000, "vid-other-sentinel");
+
+    env.db.updateYoutubeChannelLastChecked(env.communityId, shared, 2_000, "vid-mine");
+
+    const mine = env.db.getYoutubeChannelById(env.communityId, shared);
+    const theirs = env.db.getYoutubeChannelById(cidOther, shared);
+    assert.equal(mine.last_checked, 2_000, "own row advanced");
+    assert.equal(mine.last_video_id, "vid-mine");
+    assert.equal(theirs.last_checked, 1_000, "sibling watermark NOT clobbered (#377)");
+    assert.equal(theirs.last_video_id, "vid-other-sentinel", "sibling pointer NOT clobbered");
+
+    // The no-pointer branch (lastVideoId falsy) must be scoped too.
+    env.db.updateYoutubeChannelLastChecked(env.communityId, shared, 3_000);
+    assert.equal(theirs.last_checked, 1_000, "sibling untouched by the null-video branch");
+    assert.equal(env.db.getYoutubeChannelById(env.communityId, shared).last_checked, 3_000);
+
+    // Leave the shared env clean for the count-sensitive tests.
+    env.db.removeYoutubeChannel(env.communityId, shared);
+    env.db.removeYoutubeChannel(cidOther, shared);
   });
 });
