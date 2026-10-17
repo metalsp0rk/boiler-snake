@@ -129,7 +129,7 @@ See [Help Tickets](tickets.md) and [Gork](gork.md).
 
 | Variable | Purpose |
 |----------|---------|
-| `TOKEN_ENCRYPTION_KEY` | 32 bytes of base64 (`openssl rand -base64 32`): AES-256-GCM encryption at rest for **GitHub PATs** ([/github watch](github-releases.md)) and the Discord user OAuth tokens behind [`/staff syncpermissions`](staff-roles.md). Separate from `BRIDGE_TOKEN_KEY` on purpose |
+| `TOKEN_ENCRYPTION_KEY` | 32 bytes of base64 (`openssl rand -base64 32`): AES-256-GCM encryption at rest for **GitHub PATs** (entered via [/github token](github-releases.md#set-a-repository-token)) and the Discord user OAuth tokens behind [`/staff syncpermissions`](staff-roles.md). Separate from `BRIDGE_TOKEN_KEY` on purpose |
 
 When unset, features that would *store* a token fail with an actionable
 message naming this variable (tokens are never stored in plaintext);
