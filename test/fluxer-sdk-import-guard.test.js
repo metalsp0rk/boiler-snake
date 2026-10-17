@@ -1,13 +1,13 @@
 /**
- * Guard test (PR 6 bundle, K6): the SDK package name string may appear in
- * EXACTLY ONE production file — src/platform/fluxer/client.js — which loads
- * the SDK via a dynamic await import() inside an async factory. Feature
- * modules, every other src/** file, and ALL of test/** must never reference
- * the package name: `npm test` has to stay green with the SDK not installed
- * (roadmap/fluxer.md § Tests: "The default test run must not import or
- * require that package").
+ * Guard test (PR 6 bundle, K6; extended for the REST package in #381): each
+ * SDK package name string may appear in EXACTLY ONE production file —
+ * src/platform/fluxer/client.js — which loads them via a dynamic await
+ * import() inside an async factory. Feature modules, every other src/**
+ * file, and ALL of test/** must never reference a package name: `npm test`
+ * has to stay green with the SDK not installed (roadmap/fluxer.md § Tests:
+ * "The default test run must not import or require that package").
  *
- * The needle is assembled from fragments so this file never contains the
+ * Each needle is assembled from fragments so this file never contains the
  * contiguous string it hunts for.
  */
 const { test } = require("node:test");
@@ -16,7 +16,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
-const NEEDLE = "@fluxer" + "js" + "/core";
+const NEEDLES = [
+  // Core SDK (PR 6 law) and the REST module (#381, audit G2-2: the multipart
+  // contract tests need the REAL serialization module behind one guarded
+  // load site — the same K6 rule applies to its package name).
+  { needle: "@fluxer" + "js" + "/core", importConst: "SDK_PACKAGE_NAME" },
+  { needle: "@fluxer" + "js" + "/rest", importConst: "REST_PACKAGE_NAME" },
+];
 const ALLOWED_REL = path.join("src", "platform", "fluxer", "client.js");
 
 /**
@@ -39,7 +45,7 @@ function collectJsFiles(dir, out = []) {
   return out;
 }
 
-test("no file under src/ or test/ references the SDK package except the client factory", () => {
+test("no file under src/ or test/ references the SDK packages except the client factory", () => {
   const files = [
     ...collectJsFiles(path.join(ROOT, "src")),
     ...collectJsFiles(path.join(ROOT, "test")),
@@ -57,8 +63,10 @@ test("no file under src/ or test/ references the SDK package except the client f
     if (rel === ALLOWED_REL) continue;
     // Streamed read of the full file; .js sources are small.
     const content = fs.readFileSync(file, "utf8");
-    if (content.includes(NEEDLE)) {
-      offenders.push(rel);
+    for (const { needle } of NEEDLES) {
+      if (content.includes(needle)) {
+        offenders.push(`${rel} → ${needle}`);
+      }
     }
   }
 
@@ -69,21 +77,23 @@ test("no file under src/ or test/ references the SDK package except the client f
   );
 });
 
-test("the allowed file contains the package name and loads it dynamically", () => {
+test("the allowed file contains each package name and loads it dynamically", () => {
   const allowed = path.join(ROOT, "src", "platform", "fluxer", "client.js");
   assert.ok(fs.existsSync(allowed), "src/platform/fluxer/client.js must exist");
   const content = fs.readFileSync(allowed, "utf8");
-  const occurrences = content.split(NEEDLE).length - 1;
-  assert.ok(
-    occurrences >= 1,
-    "the allowed file must reference the SDK package name at its import site",
-  );
-  // And it must be a DYNAMIC import (the K6 load-safety contract), never a
-  // top-level require.
-  assert.ok(
-    content.includes("await import(SDK_PACKAGE_NAME)"),
-    "the SDK must be loaded via await import() through the single constant",
-  );
-  assert.equal(content.includes('require("' + NEEDLE + '")'), false);
-  assert.equal(content.includes("require('" + NEEDLE + "')"), false);
+  for (const { needle, importConst } of NEEDLES) {
+    const occurrences = content.split(needle).length - 1;
+    assert.ok(
+      occurrences >= 1,
+      `the allowed file must reference ${needle} at its import site`,
+    );
+    // And it must be a DYNAMIC import (the K6 load-safety contract), never a
+    // top-level require.
+    assert.ok(
+      content.includes(`await import(${importConst})`),
+      `${needle} must be loaded via await import() through the single constant`,
+    );
+    assert.equal(content.includes('require("' + needle + '")'), false);
+    assert.equal(content.includes("require('" + needle + "')"), false);
+  }
 });

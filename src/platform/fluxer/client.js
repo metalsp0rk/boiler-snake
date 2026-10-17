@@ -73,6 +73,36 @@ async function loadFluxerSdk(instanceKey) {
 }
 
 /**
+ * The REST package name in exactly one expression (same K6 shape as
+ * SDK_PACKAGE_NAME). Production REST traffic reaches it TRANSITIVELY (the
+ * core client's RequestManager ships in @fluxerjs/rest, pinned to the core
+ * version), so this loader exists to hand the REAL serialization module to
+ * the multipart SDK-contract tests (audit G2-2, #381): the suite must never
+ * verify a fake where the SDK's own class check decides what is on the wire.
+ * The import guard allows this name in this file only.
+ */
+const REST_PACKAGE_NAME = "@fluxerjs/rest";
+
+/**
+ * Dynamic-import the REST module; null on absence so contract tests SKIP
+ * instead of failing when the package is not installed (roadmap/fluxer.md
+ * § Tests).
+ *
+ * @param {string} instanceKey
+ * @returns {Promise<any|null>} the REST module namespace, or null
+ */
+async function loadFluxerRest(instanceKey) {
+  try {
+    return await import(REST_PACKAGE_NAME);
+  } catch (err) {
+    console.error(
+      `[fluxer] ${instanceKey} REST module load failed (${REST_PACKAGE_NAME}): ${err?.message || err}`,
+    );
+    return null;
+  }
+}
+
+/**
  * HTTP verb → @fluxerjs/rest REST facade method. The real SDK REST surface
  * (@fluxerjs/rest@3.x, verified in prod 2026-10-01) exposes get/post/patch/
  * put/delete — NO `.request()`. RequestManager routes are resolved as
@@ -588,4 +618,7 @@ module.exports = {
   // skip gracefully (roadmap/fluxer.md § Tests: npm test stays green without
   // the SDK installed).
   loadFluxerSdk,
+  // The guarded @fluxerjs/rest load site (#381): multipart SDK-contract
+  // tests exercise the REAL serialization module; null when absent (skip).
+  loadFluxerRest,
 };
