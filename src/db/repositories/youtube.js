@@ -13,7 +13,7 @@ function normalizeYoutubeName(name) {
 function getYoutubeChannels(communityId) {
   assertCommunityId(communityId);
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked
   FROM youtube_channels
   WHERE community_id=?
   ORDER BY created_at ASC
@@ -22,7 +22,7 @@ function getYoutubeChannels(communityId) {
 
 function getAllYoutubeChannels() {
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked
   FROM youtube_channels
   ORDER BY created_at ASC
   `).all();
@@ -32,7 +32,7 @@ function getYoutubeChannelById(communityId, channelId) {
   assertCommunityId(communityId);
   const normalized = normalizeYoutubeName(channelId);
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_checked
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked
   FROM youtube_channels
   WHERE community_id=? AND (id=? OR channel_url LIKE '%/' || ? || '/')
   `).get(communityId, normalized, normalized);
@@ -104,6 +104,23 @@ function updateYoutubeChannelLastChecked(communityId, channelId, lastCheckedMs, 
   }
 }
 
+/**
+ * Record the live stream whose alert was dispatched for ONE community's row
+ * (#378). Live alerts get dedicated state because the shared
+ * `last_video_id` pointer is also upload bookkeeping: one upload published
+ * during a stream moves that pointer off the live entry, and the live entry
+ * re-fired its @everyone alert every tick for the whole stream.
+ */
+function markYoutubeLiveNotified(communityId, channelId, liveVideoId) {
+  assertCommunityId(communityId);
+  const t = now();
+  db.prepare(`
+   UPDATE youtube_channels
+   SET last_live_id=?, updated_at=?
+   WHERE community_id=? AND id=?
+  `).run(liveVideoId || null, t, communityId, channelId);
+}
+
 /** Cleanup malformed channel entries (non-UC/HC IDs from before normalization fix). */
 function cleanupMalformedYoutubeChannels() {
   const rows = db
@@ -132,5 +149,6 @@ module.exports = {
   addYoutubeChannel,
   removeYoutubeChannel,
   updateYoutubeChannelLastChecked,
+  markYoutubeLiveNotified,
   cleanupMalformedYoutubeChannels,
 };

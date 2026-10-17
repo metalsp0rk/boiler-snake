@@ -124,6 +124,7 @@ module.exports = {
   addYoutubeChannel: youtube.addYoutubeChannel,
   removeYoutubeChannel: youtube.removeYoutubeChannel,
   updateYoutubeChannelLastChecked: youtube.updateYoutubeChannelLastChecked,
+  markYoutubeLiveNotified: youtube.markYoutubeLiveNotified,
   // cleanupOldNotifications retired (audit-2026-10 #204): an un-wired
   // data-deleter over youtube_channels; nothing ever called it.
   cleanupMalformedYoutubeChannels: youtube.cleanupMalformedYoutubeChannels,
