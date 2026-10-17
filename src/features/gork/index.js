@@ -40,6 +40,7 @@ const {
   handleMemory,
   handleBudget,
   setInteractionLog,
+  setLogChannel,
   showStatus,
   handleSummarize,
   setSummarizeBudget,
@@ -95,6 +96,8 @@ async function handleGork(commandCtx, featureCtx) {
       return handleBudget(commandCtx);
     case "log":
       return setInteractionLog(commandCtx);
+    case "logchannel":
+      return setLogChannel(commandCtx);
     case "summarize":
       // requireStaffFromContext above gates the whole /gork family (decision
       // 53: the rundown is staff-only); the handler owns the mode/cooldown/

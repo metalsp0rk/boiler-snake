@@ -195,6 +195,7 @@ CREATE TABLE guild_settings (
   gork_memory_enabled INTEGER NOT NULL DEFAULT 0,    -- community memory switch (default off)
   gork_memory_chars INTEGER NOT NULL DEFAULT 12000,  -- memory-block char budget; 0 = unlimited
   gork_daily_limit INTEGER NOT NULL DEFAULT 0,       -- guild-default daily budget; -1 blocked | 0 unlimited | 1..1000
+  gork_log_channel_id TEXT,                          -- Gork Q&A embeds channel; NULL → fall back to audit log
 
   audit_log_channel_id TEXT,                     -- NULL when not configured
   message_log_channel_id TEXT,                   -- NULL when not configured
@@ -238,6 +239,7 @@ CREATE TABLE guild_settings (
 | `gork_memory_enabled` | 0 | Community memory master switch (memory inert until on) |
 | `gork_memory_chars` | 12000 | Memory-block char budget (`0` = unlimited) |
 | `gork_daily_limit` | 0 | Guild-default gork daily budget: `-1` blocked, `0` unlimited, `1–1000` (clamped on write) |
+| `gork_log_channel_id` | NULL | Dedicated gork Q&A log channel (`/gork logchannel`; NULL → fall back to audit log) |
 | `audit_log_channel_id` | NULL | Staff audit log channel |
 | `message_log_channel_id` | NULL | Deleted-message log channel |
 | `event_reminder_channel_id` | NULL | Default event-reminder notify channel |
