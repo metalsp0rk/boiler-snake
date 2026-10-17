@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.33.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.32.0...v1.33.0) (2026-10-17)
+
+
+### Features
+
+* **gork:** raise summarize turn timeout to 15m and input budget max to 200k ([ff5716e](https://github.com/metalsp0rk/boiler-snake/commit/ff5716e1875a3a2c7382d6040a3f2b5c71765da6))
+* **gork:** split the Q&A audit stream into a dedicated /gork logchannel ([33b9d97](https://github.com/metalsp0rk/boiler-snake/commit/33b9d9738717bdb61cefdb9840d0bbaeaa99e742))
+
 ## [1.32.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.31.0...v1.32.0) (2026-10-17)
 
 
