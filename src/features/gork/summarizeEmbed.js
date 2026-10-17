@@ -58,23 +58,37 @@ const EMPTY_RUNDOWN_BODY = "(empty)";
 /** House fallback for an id we cannot name (sanitize.js "@someone" precedent). */
 const UNKNOWN_USER_LABEL = "@someone";
 
+const { buildMessageJumpUrl } = require("../../core/jumpUrl");
+
 /**
- * Discord jump URL for one message, or null when any id leg is missing.
- * Same shape as audit.js `messageJumpUrl` (kept local so this module stays
- * dependency-light and pure — audit.js pulls in the log sender).
+ * Platform-aware jump URL for one message, or null when any id leg is
+ * missing. #453 (audit): this used to hardcode `https://discord.com/...`
+ * while its sibling audit.js built the SAME link through `core/jumpUrl` —
+ * on a Fluxer community (or a custom webapp base) the footer then shipped
+ * wrong-platform dead links, which Fluxer additionally auto-embeds. One
+ * answer to "what is this message's URL" again: `core/jumpUrl` (kept as a
+ * local wrapper so this module stays pure and dependency-light).
  *
  * @param {string|number|null|undefined} guildId
  * @param {string|number|null|undefined} channelId
  * @param {string|number|null|undefined} messageId
+ * @param {{platform?: string|null, webappBaseUrl?: string|null}} [jumpOpts]
+ *   platform + Fluxer webapp base (audit.js's `jumpOptsFor(client)` shape);
+ *   omitted → Discord scheme, exactly like before (#453)
  * @returns {string|null}
  */
-function messageJumpUrl(guildId, channelId, messageId) {
-  if (guildId == null || channelId == null || messageId == null) return null;
-  const gid = String(guildId);
-  const cid = String(channelId);
-  const mid = String(messageId);
-  if (!gid || !cid || !mid) return null;
-  return `https://discord.com/channels/${gid}/${cid}/${mid}`;
+function messageJumpUrl(guildId, channelId, messageId, jumpOpts = {}) {
+  // A RANGE link needs the message leg — buildMessageJumpUrl would happily
+  // emit a channel-only URL, which is not what any caller here wants (pinned
+  // by the "all three id legs" test).
+  if (messageId == null || String(messageId).trim() === "") return null;
+  return buildMessageJumpUrl({
+    platform: jumpOpts?.platform ?? null,
+    guildId,
+    channelId,
+    messageId,
+    webappBaseUrl: jumpOpts?.webappBaseUrl ?? null,
+  });
 }
 
 /**
@@ -111,13 +125,16 @@ function formatUserHandle(invoker) {
  *
  * @param {{ firstId?: string|number|null, lastId?: string|number|null, channelId?: string|number|null }|null|undefined} range
  * @param {string|number|null|undefined} guildId
+ * @param {{platform?: string|null, webappBaseUrl?: string|null}} [jumpOpts]
+ *   platform/base for the links (#453)
  * @returns {string}
  */
-function formatRangeLabel(range, guildId) {
+function formatRangeLabel(range, guildId, jumpOpts = {}) {
   const first = range?.firstId != null ? String(range.firstId) : "";
   const last = range?.lastId != null ? String(range.lastId) : "";
   if (!first && !last) return "";
-  const link = (id) => (id ? messageJumpUrl(guildId, range?.channelId, id) || id : "…");
+  const link = (id) =>
+    id ? messageJumpUrl(guildId, range?.channelId, id, jumpOpts) || id : "…";
   return `[${link(first)} → ${link(last)}]`;
 }
 
@@ -209,9 +226,15 @@ function chunkBody(text, budget) {
  * @returns {string}
  */
 function buildFooter(meta) {
-  const rangeLabel = formatRangeLabel(meta?.range, meta?.guildId);
+  const jumpOpts = {
+    platform: meta?.platform,
+    webappBaseUrl: meta?.webappBaseUrl,
+  };
+  const rangeLabel = formatRangeLabel(meta?.range, meta?.guildId, jumpOpts);
   const handle = formatUserHandle(meta?.invoker);
-  return [rangeLabel, handle ? `Requested by ${handle}` : ""].filter(Boolean).join(" · ");
+  return [rangeLabel, handle ? `Requested by ${handle}` : ""]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /**
@@ -221,6 +244,11 @@ function buildFooter(meta) {
  * @param {object} [meta] render metadata supplied by the handler (08) from
  *   the reader result — the renderer stays decoupled from how it is produced
  * @param {string|number|null} [meta.guildId] for the footer jump links
+ * @param {string|null} [meta.platform] "fluxer" → Fluxer webapp base for the
+ *   footer jump links (anything else, incl. undefined, keeps discord.com) —
+ *   the audit.js `jumpOptsFor(client)` pair, threaded so both share
+ *   `core/jumpUrl` (#453)
+ * @param {string|null} [meta.webappBaseUrl] Fluxer instance webapp base
  * @param {string} [meta.mode] mode label ("from→now" etc.) — shown in an
  *   inline "Mode" field when non-empty (audit carries the canonical copy)
  * @param {{ firstId?: string|number|null, lastId?: string|number|null, channelId?: string|number|null }} [meta.range]

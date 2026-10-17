@@ -61,6 +61,7 @@ const {
   logGorkSummarize,
   logGorkSummarizeFailure,
   createSummarizeInteractionRecorder,
+  jumpOptsFor,
 } = require("./audit");
 const { NO_PING_MENTIONS } = require("./sanitize");
 const { formatChannelLabel } = require("./channel");
@@ -1485,6 +1486,9 @@ async function runSummarizeJob({
   // continuation path (model overflowed the one-embed budget) — log it.
   const embeds = renderSummarizeEmbeds(gen.text, {
     guildId,
+    // #453: footer jump links share core/jumpUrl with the audit embed — on a
+    // Fluxer community they must point at the instance webapp, not discord.com.
+    ...jumpOptsFor(client),
     mode: read.mode,
     range: {
       firstId: read.firstId,
