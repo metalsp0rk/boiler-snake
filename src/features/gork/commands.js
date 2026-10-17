@@ -355,6 +355,29 @@ const commands = [
     )
     .addSubcommand((sc) =>
       sc
+        .setName("logchannel")
+        .setDescription(
+          "Set the channel for Gork Q&A audit embeds (default: the audit log channel).",
+        )
+        .addChannelOption((opt) =>
+          opt
+            .setName("channel")
+            .setDescription("Channel for Gork Q&A embeds")
+            .setRequired(false)
+            .addChannelTypes(
+              ChannelType.GuildText,
+              ChannelType.GuildAnnouncement,
+            ),
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("clear")
+            .setDescription("Clear it — Q&A embeds go back to the audit log channel")
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
         .setName("status")
         .setDescription("Show the current gork configuration for this guild."),
     ),

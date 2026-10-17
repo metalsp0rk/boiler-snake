@@ -208,7 +208,7 @@ function memberLabel(member) {
  * @param {string|number} guildId  Discord guild snowflake (external id; resolved
  *        to the internal community id for the guild_settings lookup) — or an
  *        already-resolved community id (number) from new-style call sites.
- * @param {"audit"|"message"|"warn"} kind
+ * @param {"audit"|"message"|"warn"|"gork"} kind
  * @returns {Promise<{ id: string }|null>}  channel handle for sendToLogChannel
  */
 async function resolveLogChannel(outbound, guildId, kind) {
@@ -222,6 +222,9 @@ async function resolveLogChannel(outbound, guildId, kind) {
   } else if (kind === "warn") {
     // Dedicated warn channel when set; otherwise fall back to general audit log.
     channelId = settings.warn_log_channel_id || settings.audit_log_channel_id;
+  } else if (kind === "gork") {
+    // Dedicated gork Q&A channel when set; otherwise fall back to general audit log.
+    channelId = settings.gork_log_channel_id || settings.audit_log_channel_id;
   } else {
     channelId = settings.audit_log_channel_id;
   }
@@ -270,6 +273,14 @@ async function sendMessageLog(outbound, guildId, payload) {
 
 async function sendWarnLog(outbound, guildId, payload) {
   return sendToLogChannel(outbound, guildId, "warn", payload);
+}
+
+/**
+ * Gork Q&A stream (exchanges + failures): dedicated `gork_log_channel_id`
+ * when set, otherwise falls back to the general audit log channel.
+ */
+async function sendGorkLog(outbound, guildId, payload) {
+  return sendToLogChannel(outbound, guildId, "gork", payload);
 }
 
 /**
@@ -1051,6 +1062,7 @@ module.exports = {
   sendAuditLog,
   sendMessageLog,
   sendWarnLog,
+  sendGorkLog,
   fetchRecentAuditEntry,
   buildMessageDeleteEmbed,
   buildMessageBulkDeleteEmbed,

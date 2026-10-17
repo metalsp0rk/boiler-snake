@@ -170,9 +170,10 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork memory <action>` | Curate the community memory — see [Memory](#memory) |
 | `/gork budget <action>` | Per-user daily usage budgets per channel/category — see [Daily usage budget](#daily-usage-budget) |
 | `/gork log <on\|off>` | Toggle the gork [interaction log](gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
+| `/gork logchannel <#channel>` | Send the **Gork Q&A** audit embeds to a dedicated channel so they stop cluttering the [audit log](audit-log.md); `clear:true` puts them back (fallback: the audit log channel) |
 | `/gork summarize <mode>` | Conversation rundown of a message range — see [Conversation rundown](#conversation-rundown) |
 | `/gork summarize-budget <tokens>` | Set the per-guild **input token budget** for `/gork summarize` (8,000–200,000; default 80,000) |
-| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, ste state, memory state, budget default + rule count, summarize input token budget, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
+| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, ste state, memory state, budget default + rule count, summarize input token budget, Q&A log channel, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
 `/settings` also shows a **Gork** field (enabled + keyword + window + search + ste + memory state + summarize input budget).
 
@@ -191,6 +192,7 @@ All values are stored per-guild in `guild_settings`:
 | `gork_memory_chars` | Memory-block char budget; `0` = unlimited | `12000` |
 | `gork_daily_limit` | Guild-default daily budget (see [Daily usage budget](#daily-usage-budget)): `-1` blocked, `0` unlimited, `1–1000` | `0` (unlimited) |
 | `gork_summarize_input_tokens` | Input token budget for one `/gork summarize` rundown (see [Conversation rundown](#conversation-rundown)) | `80000` |
+| `gork_log_channel_id` | Dedicated channel for the **Gork Q&A** audit embeds; `NULL` → falls back to `audit_log_channel_id` | `NULL` |
 
 Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `user_id`, who banned them, when); budget rules and usage counters in `gork_budget_rules` / `gork_usage`.
 
@@ -401,7 +403,7 @@ Disabled states are **silent**, not canned replies: `/gork enable off`, a cleare
 
 ## Audit Logging
 
-Every completed Q&A posts a **Gork Q&A** embed to the guild's [audit log channel](audit-log.md) (configured with `/setlog audit`):
+Every completed Q&A posts a **Gork Q&A** embed to the guild's **gork log channel** — a dedicated channel set with `/gork logchannel` — falling back to the general [audit log channel](audit-log.md) (configured with `/setlog audit`) when unset:
 
 | Field | Value |
 |-------|-------|
@@ -416,7 +418,7 @@ Every completed Q&A posts a **Gork Q&A** embed to the guild's [audit log channel
 | Vision | `2/3 image(s)` — images included vs. candidate images found, only when the exchange had image attachments (see [Vision](#vision-images)) |
 | Jump links | To the original question message and the gork reply |
 
-Failed or timed-out exchanges log a compact one-liner (asker + error reason). If no audit channel is configured, gork falls back to console logs.
+Failed or timed-out exchanges log a compact one-liner (asker + error reason) to the same stream — the gork log channel when set, otherwise the audit log. When neither channel exists, gork falls back to console logs. Memory and summarize entries always stay in the general audit channel; only the Q&A stream moves.
 
 Staff changes (keyword, rules, cooldown, search, `/gork enable`, and every `/gork ban` / `/gork unban`) post a **config-change embed** to the same audit channel — bans and unbans are recorded with the acting moderator, so the ban list is auditable even though banned users never learn about it.
 

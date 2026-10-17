@@ -1,8 +1,10 @@
 /**
  * Gork audit logging (roadmap/gork.md §7.7, design decision 14).
  *
- * Every completed Q&A posts a "Gork Q&A" embed to the guild's audit
- * channel (via logs/auditLog `sendAuditLog`): asker mention, question
+ * Every completed Q&A posts a "Gork Q&A" embed to the guild's gork log
+ * channel (`gork_log_channel_id`, set via `/gork logchannel`), falling back
+ * to the general audit channel when unset (via logs/auditLog
+ * `sendGorkLog`): asker mention, question
  * (≤300 chars; "(keyword only)" when the trigger was just the keyword),
  * context mode (e.g. "reply chain (4 msgs)" / "10 prior messages"), the
  * channel the exchange happened in ("#general", §7.18),
@@ -10,8 +12,8 @@
  * (≤1000 chars), and jump links to the question and the gork reply.
  *
  * Failed / timed-out exchanges log a compact one-liner (asker + error
- * reason). When no audit channel is configured (or the send fails), a
- * one-line console log is the fallback.
+ * reason) to the same stream. When neither channel is configured (or the
+ * send fails), a one-line console log is the fallback.
  *
  * Community memory (§7.16.3, decision 25): the Q&A embed gains a
  * read-side-only "Memory" label (e.g. "bodies ×9 · 1 recalled") — the
@@ -28,7 +30,7 @@
  * gork reply path.
  */
 
-const { sendAuditLog } = require("../logs/auditLog");
+const { sendAuditLog, sendGorkLog } = require("../logs/auditLog");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { buildMessageJumpUrl } = require("../../core/jumpUrl");
 const { Color, baseEmbed, truncateField } = require("../../core/theme");
@@ -366,7 +368,7 @@ async function logGorkQa(client, guildId, opts = {}) {
       embed.addFields({ name: "Jump", value: links.join(" · ") });
     }
 
-    const sent = await sendAuditLog(
+    const sent = await sendGorkLog(
       resolveAuditOutbound(client),
       auditSettingsKey(client, guildId, opts),
       { embeds: [plainEmbed(embed)] },
@@ -416,7 +418,7 @@ async function logGorkFailure(client, guildId, opts = {}) {
       timestamp: true,
     });
 
-    const sent = await sendAuditLog(
+    const sent = await sendGorkLog(
       resolveAuditOutbound(client),
       auditSettingsKey(client, guildId, opts),
       { embeds: [plainEmbed(embed)] },

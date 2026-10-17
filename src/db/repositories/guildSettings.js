@@ -150,6 +150,7 @@ function getGuildSettings(communityId) {
       gork_interaction_log_enabled: 1,
       gork_summarize_input_tokens: 80000,
       gork_ste_enabled: 0,
+      gork_log_channel_id: null,
       updated_at: now(),
     };
   }
@@ -203,6 +204,7 @@ function updateGuildSettings(communityId, patch) {
     "gork_interaction_log_enabled",
     "gork_ste_enabled",
     "gork_summarize_input_tokens",
+    "gork_log_channel_id",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
