@@ -356,8 +356,10 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
    *   upload_filename }]`. Only per-item `upload_mode: "singlepart"` runs
    *   (chunked is Phase 0 open item 5) — other modes return { ok:false }
    *   naming the mode.
-   * - Files otherwise → multipart POST (Phase 0 PASS: `payload_json` +
-   *   `files[i]` entries via the Node 18+ FormData/Blob globals).
+   * - Files otherwise → multipart POST via the SDK's own form builder
+   *   (#373): pass `{ body, files }` to rest.request and the SDK appends
+   *   `payload_json` + `files[i]` on its undici FormData. A hand-built
+   *   global FormData does NOT survive the SDK's instanceof gate.
    *
    * Every failure resolves { ok:false, error } naming method, target, and
    * cause — 413/400 responses carry the response status and the API error
@@ -550,25 +552,27 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
       }
     }
 
-    // --- files, no presigned flag: multipart POST (Phase 0 PASS: a
-    // payload_json part plus files[i] parts, FormData/Blob Node 18+ globals).
+    // --- files, no presigned flag: multipart POST built by the SDK itself
+    // (#373). The old code hand-built a Node-GLOBAL FormData and pushed it
+    // through the REST facade — but the SDK's buildBody gates multipart on
+    // `options.body instanceof <npm-undici>.FormData`, and the global class
+    // is NOT an instance of it. The form therefore fell through to
+    // JSON.stringify(formData) === "{}": content, embeds and every file
+    // were shredded before the wire, and buildHeaders stamped
+    // Content-Type: application/json on top. (The hand-built form also
+    // never appended the payload_json `attachments` index the server needs
+    // to bind files[i] parts — it was broken even when the class check
+    // would have passed.) Handing the SDK { body, files } hits its own
+    // multipart branch: real undici FormData, payload_json + files[i]
+    // parts, attachments claims appended automatically.
     if (files.length > 0) {
-      let form;
-      try {
-        form = new FormData();
-        form.append("payload_json", JSON.stringify(body));
-        files.forEach((f, i) => {
-          form.append(`files[${i}]`, new Blob([new Uint8Array(f.data)], { type: f.contentType }), f.name);
-        });
-      } catch (err) {
-        return {
-          ok: false,
-          error: `${method}: multipart send to ${target} failed: ${causeOf(err)}`,
-        };
-      }
       try {
         const data = await rest.request("POST", `/v1/channels/${channelId}/messages`, {
-          body: form,
+          body,
+          files: files.map((f) => ({
+            data: new Uint8Array(f.data),
+            filename: f.name,
+          })),
         });
         return { ok: true, id: data?.id != null ? String(data.id) : "", channelId };
       } catch (err) {

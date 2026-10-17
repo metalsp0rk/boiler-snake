@@ -84,24 +84,7 @@ describe("fluxer /warn export — K2: the export file rides the DM, never the ch
     const { outbound } = makeFakeHandle({ rest });
     const ctx = exportContext(outbound);
 
-    // Spy on FormData.append so the multipart PART NAME and filename are
-    // observable (the encoding itself happens in the transport). Arity is
-    // preserved: WHATWG append(name, value, undefined) counts as a FILE part
-    // (filename ES-converted to "undefined") and rejects string values — the
-    // 2-arg payload_json call must not gain a phantom third argument.
-    const realAppend = FormData.prototype.append;
-    const parts = [];
-    FormData.prototype.append = function (name, value, filename) {
-      parts.push({ name, filename });
-      return arguments.length > 2
-        ? realAppend.apply(this, arguments)
-        : realAppend.call(this, name, value);
-    };
-    try {
-      await handleExport(ctx, undefined);
-    } finally {
-      FormData.prototype.append = realAppend;
-    }
+    await handleExport(ctx, undefined);
 
     assert.equal(ctx.replied, true);
     // 1. DM channel opened first (Phase 0: POST /v1/users/@me/channels) — to
@@ -113,27 +96,21 @@ describe("fluxer /warn export — K2: the export file rides the DM, never the ch
     assert.ok(dmPost, "the export is sent to the DM channel");
     assert.ok(!rest.calls.some((c) => c.path === `/v1/channels/${CHANNEL}/messages`), "nothing in the channel");
 
-    // 3. Wire shape: Phase 0 multipart — payload_json + files[0].
-    assert.ok(dmPost.body instanceof FormData, "files send as multipart (Phase 0 PASS shape)");
-    assert.deepEqual(
-      parts.map((p) => p.name),
-      ["payload_json", "files[0]"],
-      "payload_json part plus one file part",
-    );
+    // 3. Wire shape (#373): the SDK files contract — plain JSON body + files
+    // parts the SDK multipart-encodes itself (payload_json + files[0]).
+    assert.ok(!(dmPost.body instanceof FormData), "no hand-built form reaches the SDK facade");
+    assert.equal(dmPost.files.length, 1, "one file part rides the SDK files option");
     assert.match(
-      parts[1].filename,
+      dmPost.files[0].filename,
       new RegExp(`^staff-record-${TARGET}-\\d{4}-\\d{2}-\\d{2}\\.md$`),
       "exportFilename names the file",
     );
 
-    const payload = JSON.parse(dmPost.body.get("payload_json"));
-    assert.match(payload.content, /Staff record for <@100000000000000042>/);
-    assert.match(payload.content, /Ephemeral — staff handoff only/);
+    assert.match(dmPost.body.content, /Staff record for <@100000000000000042>/);
+    assert.match(dmPost.body.content, /Ephemeral — staff handoff only/);
 
-    // 4. The markdown Buffer carries the staff record, secret included.
-    const blob = dmPost.body.get("files[0]");
-    assert.ok(blob instanceof Blob, "file data travels as a Blob (Node 18+ global)");
-    const text = await blob.text();
+    // 4. The markdown bytes carry the staff record, secret included.
+    const text = Buffer.from(dmPost.files[0].data).toString("utf8");
     assert.match(text, /# Staff record export/);
     assert.ok(text.includes(SECRET_REASON), "the warning reason is inside the DM'd file");
     assert.match(text, /zed/, "subject label from the resolved user");
