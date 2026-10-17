@@ -1,4 +1,11 @@
-const { SlashCommandBuilder, PermissionFlagsBits } = require("discord.js");
+const {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ActionRowBuilder,
+} = require("discord.js");
 const {
   getGithubWatches,
   getAllGithubWatches,
@@ -8,7 +15,13 @@ const {
   updateGithubWatch,
   normalizeGithubRepo,
 } = require("../../db");
-const { requireStaffFromContext } = require("../../core/permissions");
+const {
+  requireStaffFromContext,
+  requireStaff,
+} = require("../../core/permissions");
+const { showModalFromContext } = require("../../platform/context");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
+const { replyEphemeral } = require("../../core/interaction");
 const tokenKeys = require("../../core/thirdPartyTokens");
 const { logConfigChange } = require("../logs/auditLog");
 const { discordCommunityId } = require("../../platform/community");
@@ -16,6 +29,34 @@ const { fetchRepo } = require("./github");
 const { processWatch, startGithubReleaseTicker } = require("./ticker");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
+
+// #444 (audit INT-9): PATs must never be entered as a chat-input option —
+// Discord renders slash option values publicly in the channel (only the
+// REPLY is ephemeral), so the option leaked the live token to everyone
+// reading. Token entry moved to this modal: modal submissions are visible
+// ONLY to the submitter. customId carries the normalized repo (safe charset:
+// normalizeGithubRepo output).
+const MODAL_PREFIX_TOKEN = "gh:token:";
+const MODAL_FIELD_TOKEN = "token";
+
+/**
+ * @param {string} repo normalized owner/name
+ * @returns {ModalBuilder}
+ */
+function buildGithubTokenModal(repo) {
+  const input = new TextInputBuilder()
+    .setCustomId(MODAL_FIELD_TOKEN)
+    .setLabel("GitHub token for " + repo)
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setMaxLength(255)
+    .setPlaceholder("Fine-grained PAT (submit empty to clear)");
+
+  return new ModalBuilder()
+    .setCustomId(`${MODAL_PREFIX_TOKEN}${repo}`)
+    .setTitle(`GitHub token — ${repo}`)
+    .addComponents(new ActionRowBuilder().addComponents(input));
+}
 
 const commands = [
   new SlashCommandBuilder()
@@ -37,16 +78,26 @@ const commands = [
             .setName("channel")
             .setDescription("Channel to post release notes to")
             .setRequired(false),
-        )
-        .addStringOption((opt) =>
-          opt
-            .setName("token")
-            .setDescription(
-              "Optional GitHub token (private repo / higher rate limit)",
-            )
-            .setRequired(false),
         ),
     )
+    .addSubcommand((sc) => {
+      // #444: token entry is MODAL-ONLY. A string option here would render
+      // the PAT publicly in channel; the modal submission is ephemeral by
+      // platform design.
+      const sub = sc
+        .setName("token")
+        .setDescription(
+          "Set/clear the GitHub token for a repository (opens a private prompt).",
+        );
+      sub.addStringOption((opt) =>
+        opt
+          .setName("repo")
+          .setDescription("Repository (owner/name — creates the watch if new)")
+          .setRequired(true)
+          .setAutocomplete(true),
+      );
+      return sub;
+    })
     .addSubcommand((sc) => {
       const sub = sc
         .setName("remove")
@@ -143,26 +194,18 @@ async function handleGithub(commandCtx, featureCtx) {
       return;
     }
     const channel = commandCtx.options.getChannel("channel", false);
-    const token = commandCtx.options.getString("token", false);
-
-    // Audit C6 (#189): PATs are envelope-encrypted at rest; without a usable
-    // TOKEN_ENCRYPTION_KEY the token could never be stored, so reject BEFORE
-    // the GitHub API call with the actionable config cause.
-    if (token && !tokenKeys.hasTokenKey()) {
-      await commandCtx.reply({
-        content: tokenKeys.keyMissingError("a GitHub token").message,
-        sensitive: true,
-      });
-      return;
-    }
 
     await commandCtx.defer({ sensitive: true });
 
     const existing = getGithubWatch(communityId, repo);
-    const check = await fetchRepo(repo, token || null);
+    const check = await fetchRepo(repo, null);
     if (!check.ok) {
+      // #444: point at the PRIVATE token flow instead of the removed public
+      // option; a private repo fails here precisely because no token exists.
       await commandCtx.editReply(
-        `Could not track **${repo}**: ${check.error}`,
+        `Could not track **${repo}**: ${check.error}` +
+          `\n\nIf this repository is private, store a token first with ` +
+          `\`/github token repo:${repo}\` — the prompt is visible only to you.`,
       );
       return;
     }
@@ -171,11 +214,10 @@ async function handleGithub(commandCtx, featureCtx) {
     try {
       row = addGithubWatch(communityId, repo, check.fullName, {
         channelId: channel ? channel.id : null,
-        token: token || null,
       });
     } catch (err) {
-      // Specific cause (e.g. the key-vanished race past the pre-check) —
-      // never let the handler die into the router's generic fallback.
+      // Specific cause — never let the handler die into the router's generic
+      // fallback.
       await commandCtx.editReply(
         `Could not save the watch for **${repo}**: ${err?.message || err}`,
       );
@@ -193,7 +235,6 @@ async function handleGithub(commandCtx, featureCtx) {
         channel
           ? `Channel: <#${channel.id}>`
           : "Channel: unchanged / *not set*",
-        token ? "Token: *updated*" : "Token: unchanged",
       ],
     }).catch(() => {});
 
@@ -206,7 +247,43 @@ async function handleGithub(commandCtx, featureCtx) {
     } else {
       replyMsg += ` Release notes will be posted to <#${row.channel_id}>.`;
     }
+    replyMsg +=
+      "\nToken (optional, private): `/github token` — needed only for private repos or a higher rate limit.";
     await commandCtx.editReply(replyMsg);
+    return;
+  }
+
+  if (sub === "token") {
+    const raw = commandCtx.options.getString("repo", true);
+    const repo = normalizeGithubRepo(raw);
+    if (!repo) {
+      await commandCtx.reply({
+        content: `\`${raw}\` is not a repository reference. Use \`owner/name\`.`,
+        sensitive: true,
+      });
+      return;
+    }
+    // PATs are envelope-encrypted at rest (audit C6); without a usable
+    // TOKEN_ENCRYPTION_KEY no token could ever be stored — say so BEFORE
+    // opening the modal, so the user never types a secret into a dead end.
+    if (!tokenKeys.hasTokenKey()) {
+      await commandCtx.reply({
+        content: tokenKeys.keyMissingError("a GitHub token").message,
+        sensitive: true,
+      });
+      return;
+    }
+    const shown = await showModalFromContext(
+      commandCtx,
+      buildGithubTokenModal(repo),
+    );
+    if (!shown) {
+      await commandCtx.reply({
+        content:
+          "This platform can't open the private token prompt — GitHub tokens are configured from Discord for now.",
+        sensitive: true,
+      });
+    }
     return;
   }
 
@@ -401,6 +478,142 @@ async function handleGithub(commandCtx, featureCtx) {
   }
 }
 
+/**
+ * #444 (audit INT-9): the ONLY token write path. A modal submission is
+ * visible solely to its submitter — unlike the removed chat-input option.
+ * The token is validated against GitHub BEFORE it is stored (a bad token
+ * gets a specific, private error instead of a silent hourly failure), then
+ * envelope-encrypted via the repository layer (C6). Nothing here ever
+ * echoes the token value.
+ *
+ * Setting a token for a repo that is not yet watched CREATES the watch
+ * (validation already proved repo+token work) — this is also the bootstrap
+ * path for private repos, which cannot pass `/github watch` unauthenticated.
+ * Submitting empty clears the token of an existing watch.
+ *
+ * @param {import("discord.js").ModalSubmitInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleGithubTokenModal(interaction, ctx) {
+  if (!(await requireStaff(interaction))) return;
+
+  const customId = interaction.customId || "";
+  if (!customId.startsWith(MODAL_PREFIX_TOKEN)) return;
+  const repo = normalizeGithubRepo(customId.slice(MODAL_PREFIX_TOKEN.length));
+  if (!repo) {
+    await replyEphemeral(interaction, {
+      content: "Invalid modal state (missing repository).",
+    });
+    return;
+  }
+
+  let rawValue = "";
+  try {
+    rawValue = interaction.fields.getTextInputValue(MODAL_FIELD_TOKEN) || "";
+  } catch {
+    rawValue = "";
+  }
+  const token = String(rawValue).trim();
+
+  const communityId = discordCommunityId(interaction.guildId);
+  if (communityId == null) {
+    await replyEphemeral(interaction, {
+      content: "This server isn't initialized yet — try again in a moment.",
+    });
+    return;
+  }
+
+  const existing = getGithubWatch(communityId, repo);
+
+  // Validation + storage take network time; the GitHub fetch can outrun the
+  // 3s interaction window, so the whole branch runs behind an ephemeral defer.
+  await interaction.deferReply({ ephemeral: true });
+
+  if (!token) {
+    if (!existing) {
+      await interaction.editReply(
+        `**${repo}** is not tracked here — nothing to clear.`,
+      );
+      return;
+    }
+    try {
+      updateGithubWatch(communityId, repo, { token: null });
+    } catch (err) {
+      await interaction.editReply(
+        `Could not clear the token for **${repo}**: ${err?.message || err}`,
+      );
+      return;
+    }
+    await logConfigChange(
+      getDiscordOutbound(ctx?.client || interaction.client),
+      interaction.guildId,
+      {
+        title: "GitHub token cleared",
+        command: "/github token",
+        actor: interaction.user,
+        changes: [`Repository: **${existing.repo_display}**`, "Token: *cleared*"],
+      },
+    ).catch(() => {});
+    await interaction.editReply(
+      `Token cleared for **${repo}** — release checks fall back to unauthenticated lookups.`,
+    );
+    return;
+  }
+
+  // Key-gone-since-open race: the command pre-checked, the modal may outlive it.
+  if (!tokenKeys.hasTokenKey()) {
+    await interaction.editReply(
+      tokenKeys.keyMissingError("a GitHub token").message,
+    );
+    return;
+  }
+
+  const check = await fetchRepo(repo, token);
+  if (!check.ok) {
+    await interaction.editReply(
+      `GitHub did not accept that token for **${repo}**: ${check.error} — nothing was saved.`,
+    );
+    return;
+  }
+
+  try {
+    if (existing) {
+      updateGithubWatch(communityId, repo, { token });
+    } else {
+      addGithubWatch(communityId, repo, check.fullName, { token });
+    }
+  } catch (err) {
+    await interaction.editReply(
+      `Could not save the token for **${repo}**: ${err?.message || err}`,
+    );
+    return;
+  }
+
+  await logConfigChange(
+    getDiscordOutbound(ctx?.client || interaction.client),
+    interaction.guildId,
+    {
+      title: existing ? "GitHub token updated" : "GitHub watch created with token",
+      command: "/github token",
+      actor: interaction.user,
+      changes: [
+        `Repository: **${check.fullName}**`,
+        existing
+          ? "Token: *updated* (validated)"
+          : "Watch created — Token: *set* (validated)",
+      ],
+    },
+  ).catch(() => {});
+
+  let msg = `Token saved for **${check.fullName}** (encrypted at rest, validated against GitHub).`;
+  const row = getGithubWatch(communityId, repo);
+  if (row && !row.channel_id) {
+    msg +=
+      "\nThis watch has no notification channel yet — run `/github channel` to pick one.";
+  }
+  await interaction.editReply(msg);
+}
+
 async function handleGithubAutocomplete(interaction) {
   if (!interaction.guild) {
     await interaction.respond([]);
@@ -453,5 +666,14 @@ module.exports = {
   autocomplete: {
     github: handleGithubAutocomplete,
   },
+  // #444: private (modal) token entry — router dispatches modal submits by
+  // longest customId prefix.
+  modalHandlers: {
+    [MODAL_PREFIX_TOKEN]: handleGithubTokenModal,
+  },
+  // Exported for tests
+  buildGithubTokenModal,
+  MODAL_PREFIX_TOKEN,
+  MODAL_FIELD_TOKEN,
   start,
 };

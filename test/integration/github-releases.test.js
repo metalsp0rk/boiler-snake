@@ -387,4 +387,165 @@ describe("integration: github releases", () => {
     });
     assertEphemeralReply(interaction, /permission/i);
   });
+
+  // #444 (audit INT-9): the PAT must never traverse a chat-input option —
+  // Discord renders option values publicly. Token entry is modal-only; these
+  // tests pin the builder shape AND the modal round-trip through the REAL
+  // githubGet status handling (fetch-level stub, not a permissive fake).
+  describe("#444 private token entry", () => {
+    const github = require("../../src/features/githubReleases");
+    const {
+      createModalSubmitInteraction,
+    } = require("../helpers/discord");
+
+    function stubGithubFetch(handler) {
+      const real = globalThis.fetch;
+      const seen = [];
+      globalThis.fetch = async (url, init = {}) => {
+        const urlStr = String(url);
+        seen.push({ url: urlStr, init });
+        const r = handler(urlStr, init) || {};
+        const status = r.status ?? 200;
+        return {
+          ok: status < 400,
+          status,
+          headers: {
+            get: (h) => (r.headers || {})[String(h).toLowerCase()] ?? null,
+          },
+          json: async () => r.json ?? {},
+          text: async () => r.text ?? "",
+        };
+      };
+      return { seen, restore: () => (globalThis.fetch = real) };
+    }
+
+    function tokenColumn(communityId, repo) {
+      return env.db.db
+        .prepare("SELECT token FROM github_watches WHERE community_id=? AND repo=?")
+        .get(communityId, repo)?.token;
+    }
+
+    function submitToken(repo, tokenValue, { admin = true } = {}) {
+      const modalIx = createModalSubmitInteraction({
+        customId: `${github.MODAL_PREFIX_TOKEN}${repo}`,
+        guild: env.guild,
+        user: admin ? env.users.adminUser : env.users.memberUser,
+        member: admin ? env.members.adminMember : env.members.member,
+        admin,
+        client: env.client,
+        fields: tokenValue === null ? {} : { [github.MODAL_FIELD_TOKEN]: tokenValue },
+      });
+      return env.handleInteraction(modalIx, env.ctx).then(() => modalIx);
+    }
+
+    it("the command builders carry NO public token option (#444 pin)", () => {
+      const json = github.commands
+        .find((c) => c.toJSON().name === "github")
+        .toJSON();
+      const watch = json.options.find((o) => o.name === "watch");
+      assert.ok(
+        !watch.options.some((o) => o.name === "token"),
+        "/github watch must not expose a token option — option values render publicly in channel",
+      );
+      const tokenSub = json.options.find((o) => o.name === "token");
+      assert.ok(tokenSub, "/github token (modal entry) must exist");
+      assert.ok(
+        tokenSub.options.some((o) => o.name === "repo" && o.autocomplete === true),
+        "token subcommand keys off the repo (autocomplete)",
+      );
+    });
+
+    it("/github token opens the submitter-visible-only modal", async () => {
+      const interaction = await env.runCommand({
+        commandName: "github",
+        subcommand: "token",
+        admin: true,
+        options: { repo: "demo/app" },
+      });
+      assert.equal(interaction.modals.length, 1, "the token flow opens a modal");
+      const modal = interaction.modals[0];
+      const json = typeof modal.toJSON === "function" ? modal.toJSON() : modal;
+      assert.equal(json.custom_id, `${github.MODAL_PREFIX_TOKEN}demo/app`);
+    });
+
+    it("modal submit validates, stores the token ENCRYPTED, and never echoes it", async () => {
+      env.db.addGithubWatch(env.communityId, "gh444/app", "GH444/App", {
+        channelId: env.channels.notify.id,
+      });
+      const SECRET = "ghp_444NOTREAL_secret";
+      const stub = stubGithubFetch(() => ({ json: { full_name: "GH444/App" } }));
+      let modalIx;
+      try {
+        modalIx = await submitToken("gh444/app", SECRET);
+      } finally {
+        stub.restore();
+      }
+
+      // The token rode the real githubGet Authorization header…
+      const auth = stub.seen[0]?.init?.headers?.Authorization;
+      assert.equal(auth, `Bearer ${SECRET}`, "validation used the entered token");
+      // …and reached storage only as a v1 envelope, never plaintext.
+      const stored = tokenColumn(env.communityId, "gh444/app");
+      assert.ok(stored && stored !== SECRET, "stored value is not the plaintext");
+      assert.ok(
+        stored.startsWith(require("../../src/core/thirdPartyTokens").ENVELOPE_PREFIX),
+        "stored token is an encryption envelope",
+      );
+      // The reply confirms without repeating the secret, and is ephemeral.
+      assert.equal(modalIx.deferredEphemeral, true, "deferred ephemerally — only the submitter sees it");
+      const content = JSON.stringify(modalIx.replies.map((r) => r.content ?? ""));
+      assert.ok(!content.includes(SECRET), "the reply must not echo the token");
+      assertReplyContains(modalIx, /Token saved/i);
+    });
+
+    it("a token GitHub rejects is refused with the specific cause — nothing stored", async () => {
+      env.db.addGithubWatch(env.communityId, "gh444/bad", "GH444/Bad");
+      const stub = stubGithubFetch(() => ({ status: 401 }));
+      let modalIx;
+      try {
+        modalIx = await submitToken("gh444/bad", "ghp_bad_token");
+      } finally {
+        stub.restore();
+      }
+      assertReplyContains(modalIx, /did not accept that token/i);
+      assertReplyContains(modalIx, /rejected/i);
+      assertReplyContains(modalIx, /nothing was saved/i);
+      assert.equal(tokenColumn(env.communityId, "gh444/bad"), null);
+    });
+
+    it("empty submit clears the stored token", async () => {
+      env.db.addGithubWatch(env.communityId, "gh444/clear", "GH444/Clear", {
+        token: "tok-to-clear",
+      });
+      const modalIx = await submitToken("gh444/clear", null);
+      assertReplyContains(modalIx, /Token cleared/i);
+      assert.equal(tokenColumn(env.communityId, "gh444/clear"), null);
+    });
+
+    it("setting a token for an unwatched repo bootstraps the watch (private-repo path)", async () => {
+      const stub = stubGithubFetch(() => ({ json: { full_name: "GH444/New" } }));
+      try {
+        await submitToken("gh444/new", "ghp_new_token");
+      } finally {
+        stub.restore();
+      }
+      const row = env.db.getGithubWatch(env.communityId, "gh444/new");
+      assert.ok(row, "the watch row was created by the token flow");
+      assert.equal(row.has_token, 1);
+      assert.ok(!row.channel_id, "no channel yet — the reply points at /github channel");
+    });
+
+    it("modal submits from non-staff are denied and never reach GitHub", async () => {
+      env.db.addGithubWatch(env.communityId, "gh444/gate", "GH444/Gate");
+      const stub = stubGithubFetch(() => ({ json: {} }));
+      try {
+        const modalIx = await submitToken("gh444/gate", "sneaky", { admin: false });
+        assertEphemeralReply(modalIx, /permission/i);
+      } finally {
+        stub.restore();
+      }
+      assert.equal(stub.seen.length, 0, "the gate runs before any network call");
+      assert.equal(tokenColumn(env.communityId, "gh444/gate"), null);
+    });
+  });
 });

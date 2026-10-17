@@ -1088,8 +1088,11 @@ function createModalSubmitInteraction(opts) {
       replies.push(payload);
       return payload;
     },
-    deferReply: async () => {
+    deferReply: async (opts) => {
       interaction.deferred = true;
+      if (opts && (opts.ephemeral || opts.withResponse === false)) {
+        interaction.deferredEphemeral = true;
+      }
     },
     editReply: async (payload) => {
       // discord.js accepts a plain string; normalize it to a payload object
