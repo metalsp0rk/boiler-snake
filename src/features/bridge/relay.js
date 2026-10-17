@@ -1935,9 +1935,11 @@ function createRelayWorker(deps = {}) {
     }
 
     // Merge the new/changed attachment descriptors over the create set and
-    // resolve their bytes: spool first (enqueue spooled the new ids), then
-    // the freshly fetched attachment URLs — the edit path already holds the
-    // source attachments, so no second fetch (resolveSpooledBytes override).
+    // resolve bytes for EVERY attachment riding the PATCH: spool first
+    // (enqueue spooled the new ids), then the freshly fetched attachment
+    // URLs — the edit path already holds the source attachments, so no
+    // second fetch (resolveSpooledBytes override). Create-era files need
+    // this too (#376) — see the resolution loop below.
     const resolveErrors = [];
     const attached = new Map();
     for (const d of Array.isArray(createPayload?.attachments) ? createPayload.attachments : []) {
@@ -1969,6 +1971,31 @@ function createRelayWorker(deps = {}) {
         }
       }
       attached.set(String(d.sourceAttachmentId), merged);
+    }
+
+    // BRG-2 (#376): the create-era descriptors ride the PATCH too (PATCH
+    // re-sends the attachment set), so EVERY one of them needs bytes. The
+    // old code resolved only the NEW ids — unchanged create-era files came
+    // through with no data (their spool dir died at create-ack),
+    // buildSendParts emitted them with data:null, and the adapters refuse
+    // data:null DETERMINISTICALLY ("needs Buffer data, got null") — not a
+    // 429, not 404, not avatar-suspect: the ladder burned attempts 1-5 into
+    // a poison-park for EVERY text edit of a message that had attachments
+    // at create time. Fall back to re-downloading from the fetched source
+    // message (already in hand) exactly like the new-id path; a file that
+    // can no longer be fetched gets a named skipReason (it is then omitted
+    // and named in the body, §10.8 parity) — never a null-data file.
+    for (const d of attached.values()) {
+      if (d.data != null || d.skipReason != null) continue;
+      const resolved = await resolveSpooledBytes(d, payload, opCtx.sourcePort, srcAttachments);
+      if (resolved.bytes != null) {
+        d.data = resolved.bytes;
+        d.bytes = resolved.bytes.length;
+        d.skipReason = null;
+      } else {
+        d.skipReason = `fetch-failed: ${resolved.error}`;
+        resolveErrors.push(resolved.error);
+      }
     }
 
     const { parts: newParts } = buildSendParts(

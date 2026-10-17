@@ -254,7 +254,7 @@ describe("bridge edit/delete relay (PR 6)", () => {
   }
 
   /** Worker with all seams faked; collects notices + sleep cadence. */
-  function makeWorker({ getWebhookApi, getOutbound, sendMessage, sleep } = {}) {
+  function makeWorker({ getWebhookApi, getOutbound, sendMessage, sleep, fetchImpl, resolveHost, downloadTimeoutMs } = {}) {
     const notices = [];
     const sleeps = [];
     const worker = relay.createRelayWorker({
@@ -263,6 +263,11 @@ describe("bridge edit/delete relay (PR 6)", () => {
       getWebhookApi: getWebhookApi ?? (() => null),
       getOutbound: getOutbound ?? (() => null),
       keyGetter: () => KEY,
+      // Worker-side media downloads (spool-miss re-fetch, #376) ride the
+      // same faked transport as the enqueue-side spool.
+      fetchImpl,
+      resolveHost,
+      downloadTimeoutMs,
       sendMessage:
         sendMessage ??
         (async (communityId, channelId, content) => {
@@ -749,6 +754,97 @@ describe("bridge edit/delete relay (PR 6)", () => {
       "ack-then-delete: the spool directory is cleaned after the PATCH",
     );
     assert.equal(repo.getBridgeOutboxById(enq.outboxId).state, "done");
+  });
+
+  // -------------------------------------------------------------------------
+  // 5b. #376 / BRG-2: a TEXT edit of a message that had attachments at
+  // create used to ALWAYS poison-park — the create-era descriptors rode
+  // the PATCH with data:null (their spool died at create-ack, bytes were
+  // only ever resolved for NEW ids), and the adapters refuse data:null
+  // deterministically: attempts 1-5 burned, park + notice.
+  // -------------------------------------------------------------------------
+
+  it("a text edit of a message with create-era attachments re-sends REAL bytes (#376)", async () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+
+    const attachment = {
+      id: "att-old",
+      name: "chart.png",
+      size: 6,
+      url: "https://cdn.example.test/chart.png",
+      contentType: "image/png",
+    };
+    const mediaSeam = {
+      fetchImpl: async (url) => ({
+        urls: url,
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5, 6]).buffer,
+      }),
+      resolveHost: async () => ["93.184.216.34"],
+    };
+
+    // CREATE with the attachment, executed and acked: links exist, the
+    // spool dir is deleted at ack — production shape for every later edit.
+    const enqCreate = await relay.enqueueBridgeMessage(
+      srcMessage(msgId, { channelId: channelA, content: "with file", attachments: [attachment] }),
+      { media: mediaSeam },
+    );
+    assert.ok(enqCreate?.enqueued, "create with attachment enqueues");
+
+    const srcAttach = { id: "att-old", filename: "chart.png", size: 6, url: "https://cdn.example.test/chart.png" };
+    const f12 = scriptedApi("f12");
+    // The worker RE-READS the source (§10.7) — the fake must return the
+    // message AS IT IS NOW: the edited text plus the still-present
+    // attachment (Discord reports existing attachments on edited messages).
+    const src12 = fakeSource({ content: "text only edit", attachments: [srcAttach] });
+    const workerDeps = {
+      getWebhookApi: (p) => (p === "fluxer" ? f12 : null),
+      getOutbound: (p) => (p === "discord" ? src12 : null),
+      fetchImpl: mediaSeam.fetchImpl,
+      resolveHost: mediaSeam.resolveHost,
+    };
+    let worker = makeWorker(workerDeps);
+    await worker.drainAll();
+    assert.ok(repo.listBridgeMessageLinks(bridge.id, msgId).length >= 1, "create landed + linked");
+    assert.equal(
+      fs.existsSync(media.spoolDirFor(publicId, msgId)),
+      false,
+      "create ack deleted the spool dir (edits can only re-download)",
+    );
+
+    // TEXT-only edit. Discord still reports the existing attachment on the
+    // edited message, and the enqueue correctly filters it as seen — so the
+    // edit payload carries ZERO new ids while the PATCH must still resend
+    // the create-era file with real bytes.
+    const enqEdit = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "text only edit", attachments: [attachment] }),
+    );
+    assert.ok(enqEdit?.enqueued, "the text edit enqueues");
+    const editPayload = JSON.parse(repo.getBridgeOutboxById(enqEdit.outboxId).payload_json);
+    assert.equal(editPayload.attachments.length, 0, "no NEW attachment ids on the edit");
+
+    worker = makeWorker(workerDeps);
+    await worker.drainAll();
+
+    assert.equal(f12.patchCalls.length, 1, "exactly one PATCH — no ladder burn (#376)");
+    const files = f12.patchCalls[0].patch.files;
+    assert.equal(files.length, 1, "the create-era attachment rides the PATCH");
+    assert.equal(files[0].name, "chart.png");
+    assert.ok(
+      files[0].data != null && files[0].data.length === 6,
+      "descriptor carries REAL bytes (pre-fix: null — adapters reject data:null, park + notice)",
+    );
+    assert.equal(
+      Buffer.compare(Buffer.from(files[0].data), Buffer.from([1, 2, 3, 4, 5, 6])),
+      0,
+      "bytes re-downloaded from the fetched source url",
+    );
+    assert.equal(repo.getBridgeOutboxById(enqEdit.outboxId).state, "done", "the edit lands (no poison-park)");
+    assert.equal(repo.getBridgeById(bridge.id).last_error, null, "nothing poisoned");
   });
 
   // -------------------------------------------------------------------------
