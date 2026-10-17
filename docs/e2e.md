@@ -209,6 +209,15 @@ git diff > <repo>/scripts/e2e/fauxcord-e2e.patch
 health-check) then `npm run test:e2e`, uploading the mock log as an artifact
 on failure.
 
+The workflow runs on the private runner pool (`boiler-snake-runner-01..03` on
+the docker host), so e2e can run concurrently with the test/docs jobs — and
+even two e2e jobs from different refs can overlap. That is safe by topology
+(closes audit finding G2-5 / #450): each runner instance is its own container
+with its own network namespace and container-local `/tmp/opencode`, so the
+mock's port 3100 and `FAUXCORD_DATA_DIR` are per-instance, and one instance
+never runs two jobs at once. Mock reuse via the patch/pin marker is therefore
+also per-instance: a fresh instance builds its own mock.
+
 ## Adding scenarios
 
 1. Pick a free namespace number (grep for `ns:` in `test/e2e/`).

@@ -34,9 +34,9 @@ concurrency:
   group: docker-publish
   cancel-in-progress: false
 
-# CI policy: private self-hosted runner only (boiler-snake-runner-01 on the
-# docker host — native docker daemon). Do not switch jobs to ubuntu-latest /
-# public runners.
+# CI policy: private self-hosted runner pool only (boiler-snake-runner-01..03
+# on the docker host — native docker daemon via mounted socket). Do not switch
+# jobs to ubuntu-latest / public runners.
 jobs:
   build-and-push:
     runs-on: [self-hosted, linux, X64]
