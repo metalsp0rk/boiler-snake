@@ -471,12 +471,12 @@ function registerIntegrationsRoutes(app, options = {}) {
       );
       if (!found) return redirectIntegrations(res, communityId, "error", "yt_not_found");
 
-      db.removeYoutubeChannel(communityId, found.id);
-      // Slash's own rescue (features/youtube/index.js): the repo's
-      // `SELECT changes()` probe yields a column literally named
-      // "changes()", so removeYoutubeChannel can return false even when the
-      // DELETE landed — confirm by row count instead of trusting the flag.
-      if (db.getYoutubeChannels(communityId).length >= channelsBefore.length) {
+      // #442 (audit INT-7): the repo return is honest now (res.changes > 0;
+      // the old `SELECT changes()` probe yielded a column named "changes()"
+      // and lied false), so this no longer needs the row-count rescue —
+      // false means the row genuinely isn't there (e.g. removed concurrently).
+      const removed = db.removeYoutubeChannel(communityId, found.id);
+      if (!removed) {
         return redirectIntegrations(res, communityId, "error", "yt_not_found");
       }
       req.audit({

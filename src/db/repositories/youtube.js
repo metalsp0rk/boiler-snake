@@ -75,8 +75,15 @@ function addYoutubeChannel(communityId, channelId, channelName, channelUrl, thum
 
 function removeYoutubeChannel(communityId, channelId) {
   assertCommunityId(communityId);
-  db.prepare(`DELETE FROM youtube_channels WHERE community_id=? AND id=?`).run(communityId, channelId);
-  return !!db.prepare(`SELECT changes()`).get().changes;
+  // #442 (audit INT-7): the old probe `SELECT changes()` yields a column
+  // literally named "changes()", so `.changes` was undefined and this
+  // returned FALSE EVEN WHEN THE DELETE LANDED. Both callers had to paper
+  // over it with row-count diffs. Trust the run() result (the pattern the
+  // twitch repo already uses).
+  const res = db
+    .prepare(`DELETE FROM youtube_channels WHERE community_id=? AND id=?`)
+    .run(communityId, channelId);
+  return res.changes > 0;
 }
 
 /**
