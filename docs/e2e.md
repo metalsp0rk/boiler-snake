@@ -33,6 +33,14 @@ mock from a parallel checkout or shared CI volume can never mask a patch
 change; the mismatch restarts the mock automatically. Overrides: `PORT`,
 `FAUXCORD_DIR`, `FAUXCORD_DATA_DIR`, `FAUXCORD_URL`, `FAUXCORD_PIN`.
 
+Because the mock is host-global and CI runs on a single self-hosted runner,
+the e2e workflow serializes **all** runs behind one `fauxcord-e2e`
+concurrency group (`cancel-in-progress: false`) — a PR run and a
+push-to-main run never overlap on the shared mock (#450). The same hazard
+applies to local runs on the runner's host machine: don't run
+`npm run test:e2e` while an e2e CI job is in flight
+(`gh run ls --workflow e2e.yml`).
+
 ## What the suite covers
 
 | Suite | Namespace | Covers |
