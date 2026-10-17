@@ -635,3 +635,43 @@ describe("honeypot channel add — Fluxer arm (no raw guild, PR 7 shape)", () =>
     assert.equal(status, "Warning notice skipped (no OutboundClient on this command context).");
   });
 });
+
+describe("fluxer honeypot ban — mass-ban breaker pause (#440)", () => {
+  it("paused community: the elevated ban PUT never fires; the hit is still consumed", async () => {
+    dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
+    setElevatedFlag(1); // without the pause this WOULD issue a real ban PUT
+    dbApi.updateGuildSettings(COMMUNITY_ID, {
+      honeypot_paused_at: Date.now(),
+      honeypot_pause_reason: "breaker trip under test",
+    });
+    const rest = makeFakeRest({ routes: memberRoute("spammer-paused") });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result, lines } = await withConsole(() =>
+      honeypot.handleHoneypotFluxerMessage(
+        outbound,
+        normalizedMessage({ authorId: "spammer-paused" }),
+      ),
+    );
+
+    assert.equal(result, true, "the message stays consumed as a honeypot hit");
+    assert.equal(
+      rest.calls.filter((c) => c.path.startsWith(`/v1/guilds/${GUILD}/bans/`))
+        .length,
+      0,
+      "no ban PUT while the persisted pause is in effect",
+    );
+    assert.ok(
+      lines.some(
+        (l) =>
+          l.includes("mass-ban breaker") && l.includes("spammer-paused"),
+      ),
+      `the pause suppression is logged specifically, got ${JSON.stringify(lines)}`,
+    );
+
+    dbApi.updateGuildSettings(COMMUNITY_ID, {
+      honeypot_paused_at: null,
+      honeypot_pause_reason: null,
+    });
+  });
+});

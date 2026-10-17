@@ -151,6 +151,8 @@ function getGuildSettings(communityId) {
       gork_summarize_input_tokens: 80000,
       gork_ste_enabled: 0,
       gork_log_channel_id: null,
+      honeypot_paused_at: null,
+      honeypot_pause_reason: null,
       updated_at: now(),
     };
   }
@@ -205,6 +207,8 @@ function updateGuildSettings(communityId, patch) {
     "gork_ste_enabled",
     "gork_summarize_input_tokens",
     "gork_log_channel_id",
+    "honeypot_paused_at",
+    "honeypot_pause_reason",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
