@@ -852,6 +852,19 @@ async function enqueueBridgeEdit(message, deps = {}) {
       .get(bridge.id, direction, messageId);
     if (pendingDelete) return null;
 
+    // BRG-1 (#375): UNIQUE(bridge_id, direction, src_message_id, kind) spans
+    // the TERMINAL states, so with a `done`/`failed` edit row for this source
+    // message the next edit's INSERT would violate it, get swallowed as a
+    // routine `bridge_outbox_duplicate` below, and the edit would be lost
+    // FOREVER (the snapshot hash has already moved — every later edit hits
+    // the same wall). Mirror the delete path's terminal-row pre-delete
+    // (§10.10 "second takedown enqueues cleanly") so re-edits always queue.
+    db.prepare(
+      `DELETE FROM bridge_outbox
+       WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'edit'
+         AND state IN ('done', 'failed')`,
+    ).run(bridge.id, direction, messageId);
+
     // Snapshot updated BEFORE the enqueue (spec §10.7/§10.10): the second of
     // two rapid edits hashes against the first edit's hash, so a content-
     // identical follow-up coalesces into the SAME pending row.
@@ -879,7 +892,12 @@ async function enqueueBridgeEdit(message, deps = {}) {
     });
     ctx = { repo, db, bridge, messageId, payload, row, newRawAttachments, direction };
   } catch (err) {
-    if (err?.code === "bridge_outbox_duplicate") return null; // one-pending-edit / done-row replay
+    if (err?.code === "bridge_outbox_duplicate") {
+      // Only a concurrent PENDING/SENDING row can still collide (terminal
+      // rows were pre-deleted above): the in-flight row coalesces this edit
+      // per §10.10, and a later edit re-queues cleanly.
+      return null;
+    }
     console.error("[bridge] enqueue failed:", err?.message || err);
     return null;
   }
