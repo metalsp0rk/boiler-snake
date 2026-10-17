@@ -318,8 +318,11 @@ describe(
       const bad = await contentOf(await slash("github", [sub("watch", [strOpt("repo", "not a repo")])]));
       assert.match(bad, /is not a repository reference\. Use `owner\/name` or a GitHub URL\./);
 
+      // #444: token entry lives in /github token (modal-only). Without
+      // TOKEN_ENCRYPTION_KEY the command must refuse BEFORE ever opening
+      // the prompt — same pre-network guarantee, new surface.
       const refused = await contentOf(
-        await slash("github", [sub("watch", [strOpt("repo", "octo/hello"), strOpt("token", "ghp_fake")])]),
+        await slash("github", [sub("token", [strOpt("repo", "octo/hello")])]),
       );
       assert.match(
         refused,

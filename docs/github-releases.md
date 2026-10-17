@@ -10,7 +10,7 @@ Track one or more GitHub repositories per server and post release notes to a con
 - **Baseline on add**: the first check of a new watch posts the current latest release once; later polls only announce newer releases
 - **Pre-releases included** (marked as such); drafts are never posted
 - **Long changelogs are truncated** with a "Read the full release notes on GitHub" link
-- **Optional per-repo token**: for private repositories or to raise the API rate limit (unauthenticated lookups share 60 requests/hour per IP)
+- **Optional per-repo token**: for private repositories or to raise the API rate limit (unauthenticated lookups share 60 requests/hour per IP) — entered **privately** via `/github token`
 
 ## Commands (staff)
 
@@ -21,10 +21,14 @@ All commands require **Manage Guild** (or a configured staff role).
 ```bash
 /github watch repo:metalsp0rk/boiler-snake channel:#releases
 /github watch repo:https://github.com/owner/repo channel:#releases
-/github watch repo:owner/private-repo channel:#releases token:YOUR_TOKEN
+/github token repo:owner/private-repo
 ```
 
-Accepts `owner/name`, a GitHub URL, or an SSH remote (`git@github.com:owner/repo.git`). Re-running `watch` updates the channel/token without resetting release state.
+Accepts `owner/name`, a GitHub URL, or an SSH remote (`git@github.com:owner/repo.git`). Re-running `watch` updates the channel without resetting release state.
+
+### Set a repository token
+
+`/github token repo:owner/name` opens a **private prompt** (a Discord modal): what you type is visible **only to you**, never in the channel. The token is validated against GitHub before it is stored, and the watch is created if it doesn't exist yet — this is also how you start tracking a **private** repository. Submitting the prompt empty clears the stored token.
 
 ### Configure a watch
 
@@ -54,9 +58,10 @@ If a ping role is configured, the message mentions that role only — never `@ev
 
 ## Tokens & privacy
 
-- A token passed to `/github watch` is stored in the bot's local SQLite database — **encrypted at rest** (AES-256-GCM envelope, `TOKEN_ENCRYPTION_KEY`; see [Configuration](configuration.md#third-party-token-encryption-optional)) — and used **only** as the `Authorization` header for GitHub API calls to that repository. It is never displayed by `/github list` (which only shows "token set") and never logged.
+- **Token entry is modal-only.** Discord renders slash-command option values publicly in the channel, so the old `token:` option on `/github watch` leaked entered PATs to everyone reading (audit INT-9). `/github token` uses a modal instead — submissions are visible only to the submitter.
+- A token entered via `/github token` is validated against GitHub first (a rejected token is refused with the specific cause, nothing stored), then written to the bot's local SQLite database — **encrypted at rest** (AES-256-GCM envelope, `TOKEN_ENCRYPTION_KEY`; see [Configuration](configuration.md#third-party-token-encryption-optional)) — and used **only** as the `Authorization` header for GitHub API calls to that repository. It is never displayed by `/github list` (which only shows "token set") and never logged or echoed.
 - Tokens are optional: public repositories work unauthenticated, subject to GitHub's 60 req/hour per-IP rate limit. A read-only fine-grained token scoped to the single target repository is the safest choice; private repos need a token with `repo` read access.
-- `/github watch` with a `token:` rejects up-front (before any GitHub call) when `TOKEN_ENCRYPTION_KEY` is unset — tokens are never stored in plaintext. Watches without a token work regardless.
+- `/github token` rejects up-front (before the prompt even opens) when `TOKEN_ENCRYPTION_KEY` is unset — tokens are never stored in plaintext. Watches without a token work regardless. On platforms without modal support the command says so instead of faking the prompt; token configuration is currently Discord-only.
 
 ## Requirements
 
