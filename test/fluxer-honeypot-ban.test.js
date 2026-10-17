@@ -581,10 +581,9 @@ describe("honeypot channel add — Fluxer arm (no raw guild, PR 7 shape)", () =>
       (c) => c.method === "POST" && c.path === `/v1/channels/${ADD_CHANNEL}/messages`,
     );
     assert.ok(post, "warning PNG must be posted to the honeypot channel");
-    assert.ok(
-      post.body instanceof globalThis.FormData,
-      "warning PNG posts multipart (AttachmentBuilder flow)",
-    );
+    assert.ok(!(post.body instanceof globalThis.FormData), "no hand-built form reaches the SDK facade (#373)");
+    assert.equal(post.files?.length, 1, "the warning PNG rides the SDK files option");
+    assert.match(post.files[0].filename, /\.png$/);
     assert.equal(rowWarningMessageId(), "warn-1");
     cleanRow();
   });

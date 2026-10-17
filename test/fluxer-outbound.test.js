@@ -78,7 +78,7 @@ describe("fluxer/outbound — send shapes", () => {
     assert.deepEqual(rest.calls[0].body.allowed_mentions, { roles: ["555"] });
   });
 
-  it("files send as multipart: payload_json + files[i] parts (Phase 0 PASS shape)", async () => {
+  it("files send as multipart: the SDK builds the form — we hand it {body, files} (#373)", async () => {
     const rest = makeFakeRest({
       routes: { "POST /v1/channels/444/messages": { id: "m-1" } },
     });
@@ -91,14 +91,24 @@ describe("fluxer/outbound — send shapes", () => {
 
     assert.deepEqual(res, { ok: true, id: "m-1", channelId: "444" });
     assert.equal(rest.calls.length, 1);
-    const body = rest.calls[0].body;
-    assert.ok(body instanceof FormData, "the file path posts a FormData multipart body");
-    const payload = JSON.parse(body.get("payload_json"));
-    assert.equal(payload.content, "see attached", "payload_json carries the content part");
-    const blob = body.get("files[0]");
-    assert.ok(blob instanceof Blob, "file data travels as a Blob (Node 18+ global)");
-    assert.equal(await blob.text(), "PNGBYTES", "the bytes ride the file part");
-    assert.equal(blob.type, "application/octet-stream", "contentType defaults to octet-stream");
+    const call = rest.calls[0];
+    // The FLX-1 bug (#373): a hand-built Node-GLOBAL FormData never reaches
+    // the wire — the SDK's buildBody only multipart-encodes its own (npm
+    // undici) FormData; anything else is JSON.stringify'd, and a FormData
+    // stringifies to "{}". The contract is therefore { body: JSON, files }.
+    assert.ok(
+      !(call.body instanceof globalThis.FormData) && !call.body?.get,
+      "the file path hands the SDK a plain JSON body, never a (global) FormData",
+    );
+    assert.equal(call.body.content, "see attached", "content rides the JSON body");
+    assert.equal(call.body.attachments, undefined, "the SDK appends attachments claims itself");
+    assert.equal(call.files.length, 1, "file parts ride the SDK files option");
+    assert.equal(call.files[0].filename, "board.png");
+    assert.ok(
+      call.files[0].data instanceof Uint8Array && !(call.files[0].data instanceof Buffer),
+      "file bytes travel as a plain Uint8Array (Buffer leaks Node internals into the SDK path)",
+    );
+    assert.equal(Buffer.from(call.files[0].data).toString(), "PNGBYTES", "the bytes ride the file part");
   });
 
   it("files entries accept contentType and string data (React-style { name, data, contentType? })", async () => {
@@ -112,11 +122,10 @@ describe("fluxer/outbound — send shapes", () => {
     });
 
     assert.equal(res.ok, true);
-    const body = rest.calls[0].body;
-    assert.deepEqual(JSON.parse(body.get("payload_json")), {}, "a files-only payload sends no empty content key");
-    const blob = body.get("files[0]");
-    assert.equal(await blob.text(), "# staff record", "string data is utf8-encoded");
-    assert.equal(blob.type, "text/markdown", "contentType passes through to the part");
+    const call = rest.calls[0];
+    assert.deepEqual(call.body, {}, "a files-only payload sends no empty content key");
+    assert.equal(call.files[0].filename, "record.md", "the name rides the SDK filename claim");
+    assert.equal(Buffer.from(call.files[0].data).toString("utf8"), "# staff record", "string data is utf8-encoded");
   });
 
   it("a bad files entry is refused by index BEFORE any network call", async () => {
@@ -154,9 +163,9 @@ describe("fluxer/outbound — send shapes", () => {
     assert.equal(rest.calls[0].path, "/v1/users/@me/channels");
     const dmPost = rest.calls[1];
     assert.equal(dmPost.path, "/v1/channels/dm-9/messages");
-    assert.ok(dmPost.body instanceof FormData, "the DM file send is multipart too");
-    assert.equal(JSON.parse(dmPost.body.get("payload_json")).content, "staff record attached");
-    assert.equal(await dmPost.body.get("files[0]").text(), "# record");
+    assert.equal(dmPost.body.content, "staff record attached", "the DM file send uses the SDK files contract too");
+    assert.equal(dmPost.files.length, 1, "the record travels as an SDK file part");
+    assert.equal(Buffer.from(dmPost.files[0].data).toString(), "# record");
   });
 
   it("edits refuse files with the named cause (files are a send-path concept)", async () => {
@@ -893,10 +902,10 @@ describe("fluxer/outbound — AttachmentBuilder-shaped file entries", () => {
     assert.equal(res.ok, true, res.error);
     const post = rest.calls.find((c) => c.method === "POST" && c.path === "/v1/channels/444/messages");
     assert.ok(post, "expected the multipart message POST");
-    // No presigned flag on the fake handle → multipart (Phase 0 flow).
-    assert.ok(post.body instanceof globalThis.FormData, "expected a FormData multipart body");
-    const payload = JSON.parse(post.body.get("payload_json"));
-    assert.equal(payload.content, "**Leaderboard — ranks 1–2**");
+    // No presigned flag on the fake handle → multipart (SDK {body, files}).
+    assert.equal(post.body.content, "**Leaderboard — ranks 1–2**", "content rides the JSON body");
+    assert.equal(post.files.length, 1, "the PNG rides the SDK files option");
+    assert.equal(Buffer.from(post.files[0].data).toString(), "fake-png-bytes", "the bytes survive the mapping");
   });
 
   it("string attachment payloads still normalize (warning exports)", async () => {
