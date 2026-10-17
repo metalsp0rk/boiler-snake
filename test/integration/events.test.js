@@ -376,6 +376,79 @@ describe("integration: community events", () => {
     assert.ok(copies.some((e) => e.status === "draft"), "duplicate is a draft");
   });
 
+  it("/event duplicate copies EVERY schedule/media/role/cutoff/thread field (#374 regression)", async () => {
+    // Old bug: duplicateEvent passed camelCase patch keys (endAt, …) that
+    // normalizeEventPatch silently drops → the "Draft saved" copy quietly
+    // lost ~10 fields. This test seeds every copied column with a
+    // NON-default value and fails if any single one re-drops.
+    const start = now() + 86_400_000;
+    const src = repo.createEvent({
+      communityId: cid(),
+      creatorId: env.users.adminUser.id,
+      title: "Full House",
+      status: "draft",
+      startAt: start,
+      channelId: env.channels.general.id,
+      description: "everything set",
+      location: "clubhouse",
+      end_at: start + 7_200_000,
+      duration_minutes: 120,
+      image_url: "https://example.invalid/img.png",
+      color: "#ff8800",
+      announce_role_ids: ["111", "222"],
+      attendee_role_id: "333",
+      attendee_role_existing: 1,
+      role_mode: "existing",
+      cutoff_at: start - 3_600_000,
+      role_whitelist: ["444"],
+      multiple_signups: true,
+      thread_enabled: false,
+      thread_private: true,
+      options: [{ label: "Main", capacity: 5 }],
+    });
+    assert.ok(src.ok, src.error);
+
+    const dup = await env.runCommand({
+      commandName: "event",
+      subcommand: "duplicate",
+      admin: true,
+      options: { event: src.event.id },
+    });
+    assert.match(lastReplyContent(dup), /Copied as draft/i);
+
+    const copy = repo
+      .listUpcomingEvents(cid(), { limit: 50 })
+      .find((e) => e.title === "Copy of Full House");
+    assert.ok(copy, "duplicate row exists");
+    assert.equal(copy.start_at, start);
+    assert.equal(copy.end_at, start + 7_200_000, "end time survives");
+    assert.equal(copy.duration_minutes, 120, "duration survives");
+    assert.equal(copy.image_url, "https://example.invalid/img.png", "image survives");
+    assert.equal(copy.color, "#ff8800");
+    assert.equal(copy.description, "everything set");
+    assert.equal(copy.location, "clubhouse");
+    assert.equal(copy.cutoff_at, start - 3_600_000, "cutoff survives");
+    assert.deepEqual(JSON.parse(copy.announce_role_ids), ["111", "222"], "announce roles survive");
+    assert.deepEqual(JSON.parse(copy.role_whitelist), ["444"], "whitelist survives");
+    assert.equal(copy.multiple_signups, 1, "multiple_signups survives");
+    assert.equal(copy.thread_enabled, 0, "thread_enabled survives");
+    assert.equal(copy.thread_private, 1, "thread_private survives");
+    // Documented exceptions: the copy never inherits the source's attendee
+    // role — it always mints a fresh temp role on post.
+    assert.equal(copy.role_mode, "temp");
+    assert.equal(copy.attendee_role_id, null);
+    // Signup options ride along.
+    const opts = repo.listEventOptions(copy.id);
+    assert.equal(opts.length, 1, "options copied");
+    assert.equal(opts[0].label, "Main");
+    assert.equal(opts[0].capacity, 5);
+
+    // Leave the shared fixture clean: archive both rows so later tests'
+    // draft-scoped lookups see exactly what they saw before this test.
+    repo.updateEvent(src.event.id, { status: "archived" });
+    repo.updateEvent(copy.id, { status: "archived" });
+  });
+
   // ── settings + role gates (E4) ────────────────────────────────────────────
 
   it("settings: valid + invalid timezone, create-role gate, show", async () => {
@@ -421,7 +494,16 @@ describe("integration: community events", () => {
   // ── options + presets ─────────────────────────────────────────────────────
 
   it("options add/list/reorder and preset save→apply on a draft", async () => {
-    const draft = repo.listUpcomingEvents(cid(), { limit: 40 }).find((e) => e.status === "draft");
+    // Anchor on the KNOWN draft: a bare first-draft find silently latched
+    // onto whatever draft a neighboring test added (e.g. the #374 duplicate
+    // regression's "Copy of Full House") and miscounted preset options.
+    // Anchor on the KNOWN duplicate draft (title carries the " v2" suffix
+    // from the earlier edit test): a bare first-draft find silently latched
+    // onto whatever draft a neighboring test added (e.g. the #374 duplicate
+    // regression's "Copy of Full House") and miscounted preset options.
+    const draft = repo
+      .listUpcomingEvents(cid(), { limit: 40 })
+      .find((e) => e.title.startsWith("Copy of Game Night") && e.status === "draft");
     assert.ok(draft, "have a draft to mutate");
     const add = await env.runCommand({
       commandName: "eventsignup",
