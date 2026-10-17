@@ -336,6 +336,23 @@ async function handleArchive(commandCtx, ctx) {
       return;
     }
 
+    // #418: a pre-destructive ABORT. Nothing was finalized, the claim was
+    // released (a retry is possible), the channel is intact — surface the
+    // specific cause and record NOTHING (no archive happened, no audit row,
+    // no success copy).
+    if (result.error) {
+      console.error(
+        `[tickets] archive aborted for ticket #${ticket.ticket_number} (by ${commandCtx.userId}): ${result.error}`,
+      );
+      await commandCtx.editReply({
+        content:
+          `Ticket **${formatTicketRef(ticket.ticket_number)}** was NOT archived — ` +
+          `${result.error}`,
+        sensitive: true,
+      });
+      return;
+    }
+
     recordSlashAudit({
       communityId: commandCtx.communityId,
       actorUserId: commandCtx.userId,

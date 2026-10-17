@@ -9,6 +9,7 @@ const {
   closeTicketSensitive,
   closeTicketArchived,
   claimTicketArchive,
+  releaseTicketArchiveClaim,
   saveTicketMessages,
   generateTranscriptToken,
   getTicketSettings,
@@ -508,8 +509,12 @@ async function softCloseTicket(opts) {
  * @param {string} [opts.guildName]
  * @param {object} [opts.summaryOpts] Seam forwarded to summarizeTicket
  *   (chatImpl / fetchImpl / setTimer / clearTimer / timeoutMs; tests).
- * @returns {Promise<{ ticket: object, warnings: string[], skipped?: string }>}
- *   `skipped` set (and no work done) when another close holds the archive claim.
+ * @returns {Promise<{ ticket: object, warnings: string[], skipped?: string, error?: string }>}
+ *   `skipped` set (and no work done) when another close holds the archive
+ *   claim. `error` set when the pipeline ABORTED before any destructive step
+ *   (#418): nothing was finalized, the claim was released (retryable), and
+ *   the channel was kept — callers must surface the cause, never a
+ *   success-flavored reply.
  */
 async function archiveTicketPipeline(opts) {
   const { client, channel, archivedBy } = opts;
@@ -660,8 +665,34 @@ async function archiveTicketPipeline(opts) {
     );
     relativePath = written.relativePath;
   } catch (err) {
-    console.error("[tickets] HTML write failed:", err);
-    warnings.push("Failed to write HTML transcript.");
+    // #418 (audit LT-1): the transcript FILE is the archive. Finalizing or
+    // deleting the channel after this failure strands the content
+    // (archived marker without a stored token/path → the web surface 404s
+    // forever), the archive embed advertises a token for a file that does
+    // not exist, and the channel delete destroys the only source a re-run
+    // could render. Nothing destructive has happened yet, so release the
+    // claim (#418 retryable abort; crash stickiness from #197 stays) and
+    // return the specific cause — the channel and rows are kept.
+    const cause = err?.message || String(err);
+    console.error(
+      `[tickets] transcript write failed for ticket #${ticket.ticket_number} — archive aborted:`,
+      err
+    );
+    try {
+      releaseTicketArchiveClaim(ticket.id);
+    } catch (releaseErr) {
+      console.error(
+        `[tickets] could not release the archive claim for ticket #${ticket.ticket_number}: ${releaseErr?.message || releaseErr}`,
+      );
+    }
+    return {
+      ticket: getTicketById(ticket.id) || ticket,
+      warnings: [],
+      error:
+        `could not write the transcript file: ${cause} — nothing was ` +
+        `finalized and the channel was kept. Fix the cause (disk/permissions) ` +
+        `and run /ticket archive again.`,
+    };
   }
 
   const summary = await summarizeTicket(
@@ -694,7 +725,10 @@ async function archiveTicketPipeline(opts) {
     archived || ticket,
     summary,
     publicUrl,
-    { closeReason, transcriptToken: token },
+    // #418: advertise a token ONLY when the transcript file exists. The old
+    // unconditional `token` printed a live-looking UUID for a file that was
+    // never written and never stored.
+    { closeReason, transcriptToken: relativePath ? token : null },
   ).catch((err) => {
     console.error("[tickets] archive embed failed:", err);
     return null;
