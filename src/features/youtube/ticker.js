@@ -404,21 +404,24 @@ async function processChannel(
     channelData.last_video_id ||
     (channelWithLastChecked ? channelWithLastChecked.last_video_id : null);
 
-  // Track if we found any uploads in the time window
-  let foundUploadInWindow = false;
-  // #378: the live entry whose alert this loop dispatched (persisted AFTER
-  // the loop as the row's dedicated live pointer).
-  let notifiedLiveId = null;
-
+  // Pass 1 — classify + dedup into a PENDING list. (Audit #380: the old
+  // loop sent newest-first and advanced the watermark UNCONDITIONALLY
+  // after the loop, so a single failed send — revoked perms, rate-limit
+  // burst, deleted notify channel — or a crash mid-loop permanently
+  // burned every pending upload: the next tick found them at-or-older
+  // than last_checked or hidden behind the pointer and skipped them
+  // silently. This is the twitch/github burn class; github's fix is the
+  // template: deliver oldest-first, advance state only past DELIVERED
+  // items, stop at the first failure, persist per delivery so a crash
+  // cannot lose delivered progress.)
+  const pending = [];
   for (const entry of feed.items) {
     // Track both live streams and regular uploads
-    let isLive, notificationType;
+    let notificationType;
 
     if (isLiveVideo(entry)) {
-      isLive = true;
       notificationType = "live";
     } else if (isVideoUpload(entry)) {
-      isLive = false;
       notificationType = "upload";
     } else {
       continue; // Skip non-video entries
@@ -428,11 +431,8 @@ async function processChannel(
     if (!info || !info.videoId) continue;
 
     // #378: live alerts dedup on their OWN row state, never the shared
-    // last_video_id pointer. The end-of-tick pointer update stores the
-    // newest feed item, so a single upload published during a stream moves
-    // it off the live entry — and since live entries have no publish-window
-    // guard, the @everyone alert then re-fired EVERY tick for the whole
-    // stream (and "upcoming" streams re-fired alongside newer uploads).
+    // last_video_id pointer (the live pointer is only ever set after a
+    // DELIVERED alert, #380 — a failed live send is retried next tick).
     if (
       notificationType === "live" &&
       info.videoId === (channelData.last_live_id || null)
@@ -451,15 +451,16 @@ async function processChannel(
       continue;
     }
 
-    // For uploads, check if published within the time window
+    // For uploads, check if published within the time window. NEVER
+    // break: an older pending video must still be retried, and the feed
+    // is a fixed ~15-25 item RSS (#380).
     if (notificationType === "upload") {
       if (lastChecked) {
         if (info.published <= lastChecked) {
           console.log(
             `[youtube] Skipping ${info.title} - already checked (published: ${new Date(info.published).toISOString()}, last checked: ${new Date(lastChecked).toISOString()})`,
           );
-          // Stop processing older videos
-          break;
+          continue;
         }
       } else {
         // Never checked before: only notify on videos from the last hour
@@ -473,51 +474,59 @@ async function processChannel(
       }
     }
 
-    // Check if already notified
-    const alreadyNotified = channelData.last_video_id === info.videoId;
+    pending.push({ info, notificationType });
+  }
 
-    if (alreadyNotified) {
-      console.log(
-        `[youtube] Already notified about ${info.title} (${notificationType}) for ${channelName}`,
-      );
-      // For uploads that were previously notified but are newer than lastChecked, continue
-      if (notificationType === "upload") {
-        continue;
-      }
-      // Stop processing older videos if we hit a previously seen one
-      break;
-    }
+  // Pass 2 — deliver oldest-first so the ordinal window (last_checked)
+  // can only ever advance past videos that actually reached Discord.
+  pending.sort((a, b) => a.info.published - b.info.published);
 
-    foundUploadInWindow = true;
-
-    const useSimpleEmbed = notificationType === "upload";
-    await sendNotification(
+  let delivered = 0;
+  let sendFailed = false;
+  for (const item of pending) {
+    const useSimpleEmbed = item.notificationType === "upload";
+    const res = await sendNotification(
       outbound,
       communityId,
       settings.youtube_notification_channel_id,
       channelData,
-      info,
+      item.info,
       channelUrl,
-      notificationType,
+      item.notificationType,
       useSimpleEmbed,
     );
-    if (notificationType === "live") {
-      // Deliberately after the dispatch attempt: #380 reworks the
-      // watermark to advance only past DELIVERED items and will make this
-      // mark delivery-conditional too.
-      notifiedLiveId = info.videoId;
+    if (!res || res.ok !== true) {
+      sendFailed = true;
+      console.error(
+        `[youtube] Notification failed for ${channelName} (${item.notificationType} ${item.info.videoId}): ${res?.error || "unknown"} — watermark kept, pending videos retry next tick`,
+      );
+      break; // keep the watermark where it is; retry the rest next tick
+    }
+    delivered += 1;
+
+    // Persist PER DELIVERY (crash between sends can never un-deliver a
+    // sent alert — the old single end-of-loop write lost everything).
+    if (item.notificationType === "live") {
+      // #378 + #380: only a DELIVERED live alert marks the stream.
+      markYoutubeLiveNotified(communityId, channelId, item.info.videoId);
+    } else {
+      // Ordinal watermark: advance to the delivered video's publish time
+      // (never wall-clock past an undelivered neighbour) and pin the
+      // pointer to the delivered video.
+      updateYoutubeChannelLastChecked(
+        communityId,
+        channelId,
+        Math.max(lastChecked || 0, item.info.published),
+        item.info.videoId,
+      );
     }
   }
 
-  // #378: persist the live pointer for the stream this pass alerted, so the
-  // next tick (or the next restart) cannot re-ping @everyone mid-stream.
-  if (notifiedLiveId) {
-    markYoutubeLiveNotified(communityId, channelId, notifiedLiveId);
+  if (delivered > 0 && !sendFailed) {
+    console.log(
+      `[youtube] ${channelName}: ${delivered} notification(s) delivered, watermark at the newest delivered publish`,
+    );
   }
-
-  // Update last-checked time and store the most recent video ID
-  const newLastVideoId = feed.items[0]?.id || null;
-  updateYoutubeChannelLastChecked(communityId, channelId, Date.now(), newLastVideoId);
 }
 
 function createLiveEmbed(channelData, videoInfo, channelUrl) {
@@ -604,7 +613,10 @@ function createUploadEmbed(channelData, videoInfo, channelUrl) {
 /**
  * Post one notification through the OutboundClient (spec § Scheduler jobs:
  * sendChannel on the row's client — no channel pre-fetch).
+ * Returns the delivery result (#380) — callers advance the watermark only
+ * past `ok: true` sends; nothing here throws, per the services contract.
  * @param {object} outbound OutboundClient for the row's community
+ * @returns {Promise<{ok: true}|{ok: false, error: string}>}
  */
 async function sendNotification(
   outbound,
@@ -672,22 +684,24 @@ async function sendNotification(
     });
 
     if (!result || result.ok !== true) {
+      const error = result?.error || "no ready client";
       console.error(
-        `[youtube] Failed to send notification for ${videoInfo?.title}: ${
-          result?.error || "no ready client"
-        }`,
+        `[youtube] Failed to send notification for ${videoInfo?.title}: ${error}`,
       );
-      return;
+      return { ok: false, error };
     }
 
     console.log(
       `[youtube] Sent notification for ${videoInfo.title} in community ${communityId}`,
     );
+    return { ok: true };
   } catch (err) {
+    const error = err?.message || String(err);
     console.error(
       `[youtube] Failed to send notification for ${videoInfo?.title}:`,
-      err?.message || err,
+      error,
     );
+    return { ok: false, error };
   }
 }
 

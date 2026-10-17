@@ -313,6 +313,182 @@ describe("integration: youtube", () => {
     env.db.removeYoutubeChannel(env.communityId, channelId);
   });
 
+  it("#380: a failed send keeps the watermark — the upload retries next tick instead of burning", async () => {
+    const channelId = "UCburn00000000001";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: null,
+    });
+    env.db.addYoutubeChannel(env.communityId, channelId, "BurnCanary", `https://www.youtube.com/channel/${channelId}`, "");
+    const floor = Date.now() - 10 * 60_000;
+    env.db.updateYoutubeChannelLastChecked(env.communityId, channelId, floor, null);
+
+    const feed = () => ({
+      title: "feed",
+      items: [
+        {
+          id: "vid-burn-1",
+          title: "Do Not Burn",
+          pubDate: new Date(Date.now() - 60_000).toISOString(),
+          liveBroadcastContent: "none",
+        },
+      ],
+    });
+
+    // Tick 1: the notify channel is DOWN (sendChannel resolves ok:false —
+    // revoked perms / deleted channel / rate-limit burst).
+    const brokenSupervisor = {
+      discord: env.client,
+      fluxer: new Map(),
+      clientForCommunity: () => ({
+        sendChannel: async () => ({ ok: false, error: "Missing Access" }),
+      }),
+    };
+    let channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(brokenSupervisor, env.communityId, channelData, {
+      fetchYouTubeFeed: async () => feed(),
+    });
+
+    // OLD CODE: watermark jumped to wall-clock now → this video is older
+    // than it forever → silently burned. NEW CODE: nothing moved.
+    channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.equal(channelData.last_checked, floor, "watermark KEPT after a failed send (#380)");
+    assert.equal(channelData.last_video_id, null, "pointer KEPT after a failed send");
+
+    // Tick 2: channel healthy again → the upload IS delivered, not burned.
+    env.channels.notify.sent.length = 0;
+    channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(fakeSupervisor(env.client), env.communityId, channelData, {
+      fetchYouTubeFeed: async () => feed(),
+    });
+    const payload = exactlyOneSend(env.channels.notify.sent, "retried upload");
+    assert.match(payload.content, /youtu\.be\/vid-burn-1/, "the pending upload delivered on the retry tick");
+    channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.equal(channelData.last_video_id, "vid-burn-1", "watermark advanced ONLY past the delivery");
+
+    env.db.removeYoutubeChannel(env.communityId, channelId);
+  });
+
+  it("#380: oldest-first delivery — a mid-list failure defers NEWER items and never burns them", async () => {
+    const channelId = "UCburn00000000002";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: null,
+    });
+    env.db.addYoutubeChannel(env.communityId, channelId, "PartialChannel", `https://www.youtube.com/channel/${channelId}`, "");
+    const floor = Date.now() - 10 * 60_000;
+    env.db.updateYoutubeChannelLastChecked(env.communityId, channelId, floor, null);
+
+    const feed = () => ({
+      title: "feed",
+      items: [
+        {
+          id: "vid-burn-new",
+          title: "Second up",
+          pubDate: new Date(Date.now() - 60_000).toISOString(),
+          liveBroadcastContent: "none",
+        },
+        {
+          id: "vid-burn-old",
+          title: "First up",
+          pubDate: new Date(Date.now() - 3 * 60_000).toISOString(),
+          liveBroadcastContent: "none",
+        },
+      ],
+    });
+
+    // The OLDER video sends fine; the newer one hits a 429.
+    const attempts = [];
+    const flakySupervisor = {
+      discord: env.client,
+      fluxer: new Map(),
+      clientForCommunity: () => ({
+        sendChannel: async (_cid, payload) => {
+          attempts.push(payload.content || "");
+          if (/vid-burn-new/.test(payload.content || "")) {
+            return { ok: false, error: "429 rate limited" };
+          }
+          return { ok: true };
+        },
+      }),
+    };
+    let channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(flakySupervisor, env.communityId, channelData, {
+      fetchYouTubeFeed: async () => feed(),
+    });
+    assert.deepEqual(
+      attempts.map((c) => (/vid-burn-old/.test(c) ? "old" : "new")),
+      ["old", "new"],
+      "delivered oldest-first; the loop stopped at the failure",
+    );
+    channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.equal(channelData.last_video_id, "vid-burn-old", "watermark advanced past the DELIVERED item only");
+    assert.ok(channelData.last_checked > floor && channelData.last_checked <= Date.now() - 3 * 60_000 + 5000, "ordinal window = the delivered publish, not wall-clock");
+
+    // Recovery tick: ONLY the failed video fires — no re-ping for the
+    // delivered one, no burn for the failed one.
+    env.channels.notify.sent.length = 0;
+    channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(fakeSupervisor(env.client), env.communityId, channelData, {
+      fetchYouTubeFeed: async () => feed(),
+    });
+    const payload = exactlyOneSend(env.channels.notify.sent, "recovered newer upload");
+    assert.match(payload.content, /youtu\.be\/vid-burn-new/, "failed item delivered on retry");
+
+    env.db.removeYoutubeChannel(env.communityId, channelId);
+  });
+
+  it("#380: a failed live alert does NOT mark the stream — the @everyone ping retries", async () => {
+    const channelId = "UCburn00000000003";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: null,
+    });
+    env.db.addYoutubeChannel(env.communityId, channelId, "RetryLive", `https://www.youtube.com/channel/${channelId}`, "");
+    env.db.updateYoutubeChannelLastChecked(env.communityId, channelId, Date.now() - 10 * 60_000, null);
+
+    const feed = () => ({
+      title: "feed",
+      items: [
+        {
+          id: "vid-burn-live",
+          title: "Marathon",
+          pubDate: new Date(Date.now() - 60_000).toISOString(),
+          liveBroadcastContent: "live",
+        },
+      ],
+    });
+
+    const brokenSupervisor = {
+      discord: env.client,
+      fluxer: new Map(),
+      clientForCommunity: () => ({
+        sendChannel: async () => ({ ok: false, error: "Missing Access" }),
+      }),
+    };
+    let channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(brokenSupervisor, env.communityId, channelData, {
+      fetchYouTubeFeed: async () => feed(),
+    });
+    channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.equal(channelData.last_live_id, null, "failed live send does NOT mark the stream (#380)");
+
+    env.channels.notify.sent.length = 0;
+    channelData = env.db.getYoutubeChannelById(env.communityId, channelId);
+    await processChannel(fakeSupervisor(env.client), env.communityId, channelData, {
+      fetchYouTubeFeed: async () => feed(),
+    });
+    const payload = exactlyOneSend(env.channels.notify.sent, "retried live alert");
+    assertPingsEveryone(payload, { label: "retried youtube live alert" });
+    assert.equal(
+      env.db.getYoutubeChannelById(env.communityId, channelId).last_live_id,
+      "vid-burn-live",
+      "live pointer marked ONLY after the delivered alert",
+    );
+
+    env.db.removeYoutubeChannel(env.communityId, channelId);
+  });
+
   it("processChannel no-ops without notification channel", async () => {
     env.db.updateGuildSettings(env.communityId, {
       youtube_notification_channel_id: null,
