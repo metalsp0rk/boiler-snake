@@ -194,6 +194,41 @@ Remove a role from staff roles (and therefore from honeypot exemption).
 
 Prefer `/staff role remove` when you only mean to change the admin gate, so the intent is clear—both paths update the same table.
 
+### `/honeypot safety resume`
+
+**Admin (Manage Guild) only.** Clears the mass-ban safety valve after it has
+paused enforcement, re-arming honeypot bans and resetting the rolling ban
+window. See [Mass-ban safety valve](#mass-ban-safety-valve-440).
+
+```bash
+/honeypot safety resume
+```
+
+## Mass-ban safety valve (#440)
+
+Honeypot bans are **irreversible**, and any staff-tier member can arm a
+channel. To bound the blast radius of a mis-click (or a race between an arm
+and a busy channel), enforcement carries a rolling **ban breaker**:
+
+- Honeypot **ban attempts** are counted per community in a **5-minute
+  window**.
+- The first **10** bans in a window run normally. The **11th** attempt does
+  **not** ban: it trips the breaker instead, so at most 10 bans ever land
+  per window.
+- Tripping **persists** a pause (`guild_settings.honeypot_paused_at`) — a
+  process restart can **never** silently re-arm enforcement — and posts a
+  staff-channel alert + an audit row (`honeypot.breaker_trip`).
+- **While paused**, honeypot channels keep **suppressing** messages (they
+  are still deleted / consumed, XP still blocked); only the ban step is
+  withheld. The same posture holds on the Fluxer arm.
+- Recovery is deliberate: an **administrator** reviews the bans and the
+  arming, then runs `/honeypot safety resume` to re-arm (which also clears
+  the window).
+
+The window is a process-memory heuristic; the **pause is the durable
+control**. On a settings-read error the state is treated as paused (fail
+safe on the irreversible path).
+
 ## Enforcement Details
 
 | Case | Result |
@@ -206,6 +241,7 @@ Prefer `/staff role remove` when you only mean to change the admin gate, so the 
 | DM closed / blocked | Ban still proceeds; failure logged |
 | Bot lacks Ban Members / role hierarchy | Ban fails; error logged; message may still be deleted |
 | Rapid multiple messages | In-flight de-dupe (~10s) avoids repeated ban attempts |
+| 11th ban attempt within 5 minutes | No ban; the **mass-ban breaker trips**: enforcement paused (persisted) + staff alert + audit row; messages stay suppressed until an admin runs `/honeypot safety resume` |
 
 Ban audit reason: `Honeypot: Posted in a honeypot channel`.
 
@@ -264,7 +300,7 @@ When an **audit log channel** is set (`/setlog audit`), each honeypot enforcemen
 | DM | Sent, or failed/closed |
 | Reason | Short ban reason |
 
-Config changes (`/honeypot channel|banrole|exempt add|del`) also appear as purple configuration embeds. See [Audit Log](audit-log.md).
+Config changes (`/honeypot channel|banrole|exempt add|del`) also appear as purple configuration embeds. A breaker trip posts a dedicated **Honeypot enforcement PAUSED** embed (with the resume instructions), is recorded as `honeypot.breaker_trip` in the admin audit, and the admin's `/honeypot safety resume` records `honeypot.safety_resume`. See [Audit Log](audit-log.md).
 
 ## Related
 

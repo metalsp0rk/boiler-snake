@@ -22,6 +22,8 @@ const {
   removeHoneypotBanRole,
   listHoneypotBanRoles,
   isHoneypotBanRole,
+  getGuildSettings,
+  updateGuildSettings,
 } = require("../../db");
 const { key } = require("../../core/cooldowns");
 const {
@@ -56,6 +58,105 @@ const staffPerms = PermissionFlagsBits.ManageGuild;
 
 // In-flight honeypot bans to avoid double-processing rapid messages
 const honeypotBanning = new Set(); // key: guildId:userId
+
+// ── Mass-ban safety valve (#440, audit F2-4) ────────────────────────────────
+// The ban is honeypot's ONLY irreversible action, yet nothing bounded its
+// fan-out: arming a busy channel instantly bans every later poster (any
+// staff-tier member can arm it), and undo is a manual per-user unban AFTER
+// the DM already said "you have been banned". Count ban ATTEMPTS per
+// community in a rolling window; over the cap trip a PERSISTED pause —
+// a restart never silently re-arms enforcement — until an admin confirms
+// the situation with /honeypot safety resume. Suppression stays ON while
+// paused (channels keep draining, evidence keeps accumulating); only the
+// irreversible step waits.
+const BAN_WINDOW_MS = 5 * 60 * 1000;
+const BAN_WINDOW_MAX = 10;
+
+/** communityId → number[] attempt timestamps inside the rolling window. */
+const banAttempts = new Map();
+
+function noteBanAttempt(communityId, nowMs = Date.now()) {
+  const kept = (banAttempts.get(communityId) || []).filter(
+    (t) => nowMs - t < BAN_WINDOW_MS,
+  );
+  kept.push(nowMs);
+  banAttempts.set(communityId, kept);
+  return kept.length;
+}
+
+function clearBanWindow(communityId) {
+  banAttempts.delete(communityId);
+}
+
+function isEnforcementPaused(communityId) {
+  try {
+    return Number(getGuildSettings(communityId).honeypot_paused_at) > 0;
+  } catch (err) {
+    // Fail-safe: a settings read error must not clear the brake on the
+    // irreversible path — stay suppressed until state is readable again.
+    console.error(
+      `[honeypot] could not read the pause state for community ${communityId}: ${err?.message || err} — treating enforcement as PAUSED`,
+    );
+    return true;
+  }
+}
+
+/**
+ * Persist the pause, audit it, scream into the logs, and alert the staff
+ * audit channel (Discord arm only — the Fluxer community has no Discord
+ * staff channel; the system-audit row + logs are its record).
+ */
+async function tripBanBreaker(communityId, { cause, client = null, guild = null }) {
+  const pausedAt = Date.now();
+  clearBanWindow(communityId); // the pause is the control now; window resets
+  try {
+    updateGuildSettings(communityId, {
+      honeypot_paused_at: pausedAt,
+      honeypot_pause_reason: cause,
+    });
+  } catch (err) {
+    console.error(
+      `[honeypot] COULD NOT PERSIST the mass-ban pause for community ${communityId}: ${err?.message || err} — a restart WILL re-arm enforcement!`,
+    );
+  }
+  try {
+    recordSystemAudit({
+      communityId,
+      action: "honeypot.breaker_trip",
+      targetType: "guild",
+      targetId: String(guild?.id ?? communityId),
+      details: {
+        cause,
+        window_ms: BAN_WINDOW_MS,
+        max_bans: BAN_WINDOW_MAX,
+        paused_at: pausedAt,
+      },
+    });
+  } catch (err) {
+    console.error(
+      `[honeypot] breaker_trip audit write failed for community ${communityId}: ${err?.message || err}`,
+    );
+  }
+  console.error(
+    `[honeypot] MASS-BAN SAFETY VALVE tripped in community ${communityId}: ${cause} — enforcement PAUSED until an admin runs /honeypot safety resume`,
+  );
+  if (client && guild?.id) {
+    await logConfigChange(getDiscordOutbound(client), guild.id, {
+      title: "Honeypot enforcement PAUSED (mass-ban safety valve)",
+      command: "/honeypot safety resume",
+      actor: { tag: "Honeypot safety valve", id: null },
+      changes: [
+        cause,
+        "No further bans will be issued — messages in honeypot channels are still deleted/suppressed.",
+        "An admin must review the bans/arm and run `/honeypot safety resume` to re-arm enforcement.",
+      ],
+    }).catch((err) =>
+      console.warn(
+        `[honeypot] breaker alert to the staff channel failed for community ${communityId}: ${err?.message || err}`,
+      ),
+    );
+  }
+}
 
 const commands = [
   new SlashCommandBuilder()
@@ -161,6 +262,18 @@ const commands = [
                 .setName("role")
                 .setDescription("Role to remove from exempt list")
                 .setRequired(true),
+            ),
+        ),
+    )
+    .addSubcommandGroup((group) =>
+      group
+        .setName("safety")
+        .setDescription("Mass-ban safety valve controls (admin).")
+        .addSubcommand((sc) =>
+          sc
+            .setName("resume")
+            .setDescription(
+              "Resume honeypot bans after the mass-ban safety valve paused enforcement (#440).",
             ),
         ),
     ),
@@ -311,6 +424,26 @@ async function executeHoneypotBan(
     externalGuildId: guild.id,
   });
 
+  // #440 breaker: while paused, bans are REFUSED. Message suppression stays
+  // on (the channel keeps draining and evidence survives); only the
+  // irreversible step waits for admin confirmation.
+  if (isEnforcementPaused(communityId)) {
+    if (deleteMessage) {
+      try {
+        if (deleteMessage.deletable) await deleteMessage.delete();
+      } catch (e) {
+        console.warn(
+          `[honeypot] Could not delete message while enforcement is paused in ${guild.id}:`,
+          e?.message || e,
+        );
+      }
+    }
+    console.warn(
+      `[honeypot] Enforcement paused in community ${communityId} (mass-ban breaker) — ban suppressed for ${user.id}`,
+    );
+    return false;
+  }
+
   const banKey = key(communityId, user.id);
   if (honeypotBanning.has(banKey)) return true;
   honeypotBanning.add(banKey);
@@ -321,6 +454,34 @@ async function executeHoneypotBan(
   const shortReason = reason || "Honeypot trigger";
 
   try {
+    // Count the ATTEMPT, not the success: the fan-out itself is the storm.
+    // Over the cap this ban is NOT executed — at most BAN_WINDOW_MAX bans
+    // ever land per window, then the pause holds (persisted, #440).
+    const attempts = noteBanAttempt(communityId);
+    if (attempts > BAN_WINDOW_MAX) {
+      // Suppression stays on even here: the message is deleted, only the
+      // irreversible step is withheld.
+      if (deleteMessage) {
+        try {
+          if (deleteMessage.deletable) await deleteMessage.delete();
+        } catch (e) {
+          console.warn(
+            `[honeypot] Could not delete message while tripping the breaker in ${guild.id}:`,
+            e?.message || e,
+          );
+        }
+      }
+      await tripBanBreaker(communityId, {
+        cause:
+          `${BAN_WINDOW_MAX} honeypot bans within ` +
+          `${Math.round(BAN_WINDOW_MS / 60000)} minutes ` +
+          `(last trigger: ${trigger}${channelId ? ` in channel ${channelId}` : ""})`,
+        client: guild.client,
+        guild,
+      });
+      return false;
+    }
+
     const guildName = guild.name;
 
     // DM first — ban can prevent later contact via the guild
@@ -752,6 +913,15 @@ async function handleHoneypotFluxerMessage(outbound, message) {
   // Ban through the outbound (PR 9). K8 self-gates: flag 0 → elevated_disabled
   // with the specific reason and NO network; flag 1 issues the real PUT. The
   // in-flight dedupe mirrors executeHoneypotBan (rapid message storms ban once).
+  // #440 breaker (Fluxer twin): paused → no ban, the hit is still consumed
+  // exactly like the elevated_disabled arm; attempts count the same window.
+  if (isEnforcementPaused(communityId)) {
+    console.log(
+      `[fluxer] honeypot ban suppressed: enforcement paused (mass-ban breaker) for user ${message.authorId} in community ${communityId}`,
+    );
+    return true;
+  }
+
   const banKey = key(communityId, String(message.authorId));
   if (honeypotBanning.has(banKey)) {
     console.log(
@@ -768,6 +938,18 @@ async function handleHoneypotFluxerMessage(outbound, message) {
   let banned = false;
   let banError = null;
   try {
+    // #440 breaker count (shared window with the Discord arm's cap; over the
+    // cap the ban is NOT executed and the persisted pause takes hold).
+    const attempts = noteBanAttempt(communityId);
+    if (attempts > BAN_WINDOW_MAX) {
+      await tripBanBreaker(communityId, {
+        cause:
+          `${BAN_WINDOW_MAX} honeypot bans within ` +
+          `${Math.round(BAN_WINDOW_MS / 60000)} minutes (last trigger: fluxer channel hit)`,
+      });
+      return true; // hit still consumed — suppression unaffected by the pause
+    }
+
     let res;
     try {
       res = await outbound.banMember(
@@ -918,6 +1100,66 @@ async function handleHoneypot(commandCtx, featureCtx) {
 
   const group = commandCtx.subcommandGroup;
   const sub = commandCtx.subcommand;
+
+  // /honeypot safety resume — the persisted pause IS the mass-ban incident
+  // brake (#440); clearing it re-arms the irreversible path, so it is
+  // ManageGuild-only (same tier as the exempt arm). Nothing else lives in
+  // this group.
+  if (group === "safety") {
+    if (!isAdminOrModFromContext(commandCtx)) {
+      await commandCtx.reply({
+        content:
+          "Only server administrators can resume honeypot enforcement.",
+        sensitive: true,
+      });
+      return;
+    }
+    if (sub === "resume") {
+      const settings = getGuildSettings(communityId);
+      const pausedAt = Number(settings.honeypot_paused_at) || 0;
+      if (!pausedAt) {
+        await commandCtx.reply({
+          content: "Honeypot enforcement is not paused — nothing to resume.",
+          sensitive: true,
+        });
+        return;
+      }
+      updateGuildSettings(communityId, {
+        honeypot_paused_at: null,
+        honeypot_pause_reason: null,
+      });
+      clearBanWindow(communityId);
+      recordSlashAudit({
+        communityId,
+        actorUserId: commandCtx.userId,
+        action: "honeypot.safety_resume",
+        targetType: "guild",
+        targetId: String(guildId),
+      });
+      await logConfigChange(outbound, guildId, {
+        title: "Honeypot enforcement resumed",
+        command: "/honeypot safety resume",
+        actor: commandCtx.user,
+        changes: [
+          settings.honeypot_pause_reason
+            ? `Was paused: ${settings.honeypot_pause_reason}`
+            : `Was paused since ${new Date(pausedAt).toISOString()}`,
+          "Honeypot bans are live again.",
+        ],
+      }).catch(() => {});
+      await commandCtx.reply({
+        content:
+          "Honeypot enforcement resumed — bans are live again and the ban window was reset.",
+        sensitive: true,
+      });
+      return;
+    }
+    await commandCtx.reply({
+      content: `Unknown safety subcommand \`${sub}\`.`,
+      sensitive: true,
+    });
+    return;
+  }
 
   // exempt mutates staff_roles — ManageGuild only (same as /staff role)
   if (group === "exempt") {
@@ -1341,6 +1583,12 @@ module.exports = {
   handleHoneypotWarningReaction,
   handleHoneypotFluxerWarningReaction,
   handleHoneypotBanRole,
+  // #440 mass-ban breaker surface (window reset doubles as incident tooling;
+  // the constants are pinned by the tests).
+  clearBanWindow,
+  isEnforcementPaused,
+  BAN_WINDOW_MAX,
+  BAN_WINDOW_MS,
   postHoneypotWarning,
   executeHoneypotBan,
   sweepHoneypotWarningReactions,
