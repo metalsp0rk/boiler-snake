@@ -489,6 +489,60 @@ describe("integration: youtube", () => {
     env.db.removeYoutubeChannel(env.communityId, channelId);
   });
 
+  it("#379: runYoutubeTick gates sweeps by youtube_polling_interval_minutes", async () => {
+    const channelId = "UCgate00000000001";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_polling_interval_minutes: 60,
+    });
+    env.db.addYoutubeChannel(env.communityId, channelId, "GateChannel", `https://www.youtube.com/channel/${channelId}`, "");
+
+    let fetches = 0;
+    const deps = {
+      skipApiKeyCheck: true,
+      fetchYouTubeFeed: async (id) => {
+        if (id === channelId) fetches++;
+        return null; // feed down — cadence is about the SWEEP, not deliveries
+      },
+    };
+
+    // (a) Swept 30s ago with a 60-minute interval → NOT due: no API sweep.
+    // (The old ticker swept everything every 5 minutes regardless.)
+    env.db.markYoutubeChannelCheckedAt(env.communityId, channelId, Date.now() - 30_000);
+    await runYoutubeTick(fakeSupervisor(env.client), deps);
+    assert.equal(fetches, 0, "row is not swept before its interval elapses (#379)");
+
+    // (b) Stamp older than the interval → due: exactly one sweep, and the
+    // sweep STAMPS the wall-clock gate even though the feed was down.
+    env.db.markYoutubeChannelCheckedAt(env.communityId, channelId, Date.now() - 61 * 60_000);
+    await runYoutubeTick(fakeSupervisor(env.client), deps);
+    assert.equal(fetches, 1, "row swept once its interval elapsed");
+    let row = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.ok(
+      Math.abs((row.last_checked_at || 0) - Date.now()) < 60_000,
+      `sweep stamped last_checked_at with wall-clock time (got ${row.last_checked_at})`,
+    );
+
+    // A second immediate pass must NOT re-sweep (the stamp holds the quota).
+    await runYoutubeTick(fakeSupervisor(env.client), deps);
+    assert.equal(fetches, 1, "just-swept row stays gated");
+
+    // (c) Never swept (NULL stamp) → always due.
+    env.db.db.prepare(`UPDATE youtube_channels SET last_checked_at=NULL WHERE community_id=? AND id=?`).run(env.communityId, channelId);
+    await runYoutubeTick(fakeSupervisor(env.client), deps);
+    assert.equal(fetches, 2, "never-swept rows are always eligible");
+
+    // (d) The setting drives the gate: drop to 1 minute → the row stamped
+    // moments ago is due again.
+    env.db.updateGuildSettings(env.communityId, { youtube_polling_interval_minutes: 1 });
+    env.db.db.prepare(`UPDATE youtube_channels SET last_checked_at=? WHERE community_id=? AND id=?`)
+      .run(Date.now() - 70_000, env.communityId, channelId);
+    await runYoutubeTick(fakeSupervisor(env.client), deps);
+    assert.equal(fetches, 3, "1-minute interval sweeps a row stamped 70s ago");
+
+    env.db.removeYoutubeChannel(env.communityId, channelId);
+  });
+
   it("processChannel no-ops without notification channel", async () => {
     env.db.updateGuildSettings(env.communityId, {
       youtube_notification_channel_id: null,
