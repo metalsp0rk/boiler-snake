@@ -657,16 +657,6 @@ describe(
     const H = 3_600_000;
     const e3 = { ev: null };
     it("digest + auto-archive on; then one forced +4h tick delivers reminders, posts the digest and retires the skipped event", async () => {
-      const digest = await configSlash("settings", "digest", [
-        chanOpt("channel", feed()),
-        strOpt("frequency", "daily"),
-        intOpt("hour_utc", new Date().getUTCHours()),
-      ]);
-      assert.match(
-        await settledText(digest),
-        new RegExp(`Digest: \\*\\*daily\\*\\* at \\d{2}:00 UTC → <#${env.ids.channel2}>`),
-      );
-
       e3.ev = await createPosted("Quiz Night", {
         start: "in 1h",
         extra: [strOpt("duration", "2h")],
@@ -681,6 +671,23 @@ describe(
           .map((r) => Number(r.start_at)),
       );
       const future = latestStart + 3 * H;
+
+      // hour_utc MUST come from the FORCED tick's own clock, never the real
+      // clock (#382): digestDueBoundary (features/events/service.js) computes
+      // the daily boundary on the tick's UTC date, so a real-clock hour puts
+      // the boundary in the future whenever the forced tick crosses UTC
+      // midnight → the digest never fires and this suite fails
+      // deterministically in the UTC 20:00–23:59 run window.
+      const digest = await configSlash("settings", "digest", [
+        chanOpt("channel", feed()),
+        strOpt("frequency", "daily"),
+        intOpt("hour_utc", new Date(future).getUTCHours()),
+      ]);
+      assert.match(
+        await settledText(digest),
+        new RegExp(`Digest: \\*\\*daily\\*\\* at \\d{2}:00 UTC → <#${env.ids.channel2}>`),
+      );
+
       const out = await runEventsTick(future);
 
       // E1 (start +2h, 15-min default) + E3 (start +1h) delivered into general;
