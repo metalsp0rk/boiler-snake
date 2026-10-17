@@ -24,6 +24,7 @@ const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { replyEphemeral } = require("../../core/interaction");
 const tokenKeys = require("../../core/thirdPartyTokens");
 const { logConfigChange } = require("../logs/auditLog");
+const { recordSlashAudit } = require("../../core/auditTrail");
 const { discordCommunityId } = require("../../platform/community");
 const { fetchRepo } = require("./github");
 const { processWatch, startGithubReleaseTicker } = require("./ticker");
@@ -224,6 +225,22 @@ async function handleGithub(commandCtx, featureCtx) {
       return;
     }
 
+    // #443 (audit INT-8): durable admin_audit row for every mutating slash
+    // action — the embed below only reaches the staff channel when one is
+    // configured; this is the trail retention keeps 365 days.
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "github.watch_add",
+      targetType: "github_watch",
+      targetId: row.repo,
+      details: {
+        repo_display: row.repo_display,
+        replaces: existing ? 1 : 0,
+        channel_id: channel ? channel.id : null,
+      },
+    });
+
     await logConfigChange(commandCtx.outbound, guildId, {
       title: existing
         ? "GitHub watch updated"
@@ -299,6 +316,16 @@ async function handleGithub(commandCtx, featureCtx) {
     }
 
     removeGithubWatch(communityId, found.repo);
+    // #443 (audit INT-8): durable admin_audit trail.
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "github.watch_remove",
+      targetType: "github_watch",
+      targetId: found.repo,
+      details: { repo_display: found.repo_display },
+    });
+
     await logConfigChange(commandCtx.outbound, guildId, {
       title: "GitHub watch removed",
       command: "/github remove",
@@ -351,6 +378,16 @@ async function handleGithub(commandCtx, featureCtx) {
     }
     const ch = commandCtx.options.getChannel("channel", true);
     updateGithubWatch(communityId, found.repo, { channelId: ch.id });
+    // #443 (audit INT-8): durable admin_audit trail.
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "github.channel_set",
+      targetType: "github_watch",
+      targetId: found.repo,
+      details: { repo_display: found.repo_display, channel_id: ch.id },
+    });
+
     await logConfigChange(commandCtx.outbound, guildId, {
       title: "GitHub watch channel set",
       command: "/github channel",
@@ -386,6 +423,16 @@ async function handleGithub(commandCtx, featureCtx) {
     });
     const beforeLabel = found.role_id ? `<@&${found.role_id}>` : "*none*";
     const afterLabel = role ? `<@&${role.id}>` : "*none*";
+    // #443 (audit INT-8): durable admin_audit trail (role_id null = cleared).
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "github.role_set",
+      targetType: "github_watch",
+      targetId: found.repo,
+      details: { repo_display: found.repo_display, role_id: role ? role.id : null },
+    });
+
     await logConfigChange(commandCtx.outbound, guildId, {
       title: "GitHub watch ping role set",
       command: "/github role",
@@ -544,6 +591,17 @@ async function handleGithubTokenModal(interaction, ctx) {
       );
       return;
     }
+    // #443 (audit INT-8): durable admin_audit trail — token actions are
+    // recorded as EVENTS ONLY; no secret material ever enters the audit (#368).
+    recordSlashAudit({
+      communityId,
+      actorUserId: interaction.user.id,
+      action: "github.token_clear",
+      targetType: "github_watch",
+      targetId: existing.repo,
+      details: { repo_display: existing.repo_display },
+    });
+
     await logConfigChange(
       getDiscordOutbound(ctx?.client || interaction.client),
       interaction.guildId,
@@ -588,6 +646,17 @@ async function handleGithubTokenModal(interaction, ctx) {
     );
     return;
   }
+
+  // #443 (audit INT-8): durable admin_audit trail; created_watch marks the
+  // private-repo bootstrap (the modal minted the watch alongside the token).
+  recordSlashAudit({
+    communityId,
+    actorUserId: interaction.user.id,
+    action: "github.token_set",
+    targetType: "github_watch",
+    targetId: repo,
+    details: { repo_display: check.fullName, created_watch: existing ? 0 : 1 },
+  });
 
   await logConfigChange(
     getDiscordOutbound(ctx?.client || interaction.client),
