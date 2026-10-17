@@ -548,4 +548,125 @@ describe("integration: github releases", () => {
       assert.equal(tokenColumn(env.communityId, "gh444/gate"), null);
     });
   });
+
+  describe("#443 durable admin_audit for every /github mutation", () => {
+    const github = require("../../src/features/githubReleases");
+    const {
+      createModalSubmitInteraction,
+    } = require("../helpers/discord");
+
+    function stubOkFetch(fullName) {
+      const real = globalThis.fetch;
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ full_name: fullName }),
+        text: async () => "",
+      });
+      return () => (globalThis.fetch = real);
+    }
+
+    // Rows written AFTER the returned baseline id only (sibling tests in
+    // this file legitimately produce github.* audit rows of their own now).
+    function auditBaseline() {
+      return env.db.db
+        .prepare("SELECT COALESCE(MAX(id), 0) AS m FROM admin_audit")
+        .get().m;
+    }
+    function githubAuditRows(sinceId) {
+      return env.db.db
+        .prepare(
+          `SELECT action, actor_user_id, target_id, details_json
+             FROM admin_audit
+            WHERE community_id=? AND id>? AND action LIKE 'github.%'
+            ORDER BY id ASC`,
+        )
+        .all(env.communityId, sinceId);
+    }
+
+    it("watch/channel/role/remove + token set/clear each leave exactly one durable row", async () => {
+      const repo = "meta/repo443";
+      const baseline = auditBaseline();
+      const restore = stubOkFetch("Meta/Repo443");
+      try {
+        const watch = await env.runCommand({
+          commandName: "github",
+          subcommand: "watch",
+          admin: true,
+          options: { repo },
+        });
+        assertReplyContains(watch, /Now tracking/i);
+
+        await env.runCommand({
+          commandName: "github",
+          subcommand: "channel",
+          admin: true,
+          options: { repo, channel: env.channels.notify },
+        });
+        await env.runCommand({
+          commandName: "github",
+          subcommand: "role",
+          admin: true,
+          options: {
+            repo,
+            role: { id: "role-exempt", toString: () => "<@&role-exempt>" },
+          },
+        });
+
+        const mkModal = (fields) =>
+          createModalSubmitInteraction({
+            customId: `${github.MODAL_PREFIX_TOKEN}${repo}`,
+            guild: env.guild,
+            user: env.users.adminUser,
+            member: env.members.adminMember,
+            admin: true,
+            client: env.client,
+            fields,
+          });
+        await env.handleInteraction(
+          mkModal({ [github.MODAL_FIELD_TOKEN]: "ghp_fake_token_443" }),
+          env.ctx,
+        );
+        await env.handleInteraction(mkModal({}), env.ctx); // empty = clear
+
+        await env.runCommand({
+          commandName: "github",
+          subcommand: "remove",
+          admin: true,
+          options: { repo },
+        });
+      } finally {
+        restore();
+      }
+
+      const rows = githubAuditRows(baseline);
+      assert.deepEqual(
+        rows.map((r) => r.action),
+        [
+          "github.watch_add",
+          "github.channel_set",
+          "github.role_set",
+          "github.token_set",
+          "github.token_clear",
+          "github.watch_remove",
+        ],
+        "every mutating handler records its own durable row, in order",
+      );
+      for (const r of rows) {
+        assert.equal(r.actor_user_id, env.users.adminUser.id, `actor recorded on ${r.action}`);
+        assert.equal(r.target_id, repo, `target repo recorded on ${r.action}`);
+      }
+      // Token events carry NO secret material — ever (#368 redaction posture).
+      assert.ok(
+        !JSON.stringify(rows).includes("ghp_fake"),
+        "the PAT value must never reach admin_audit",
+      );
+      assert.equal(
+        JSON.parse(rows[3].details_json).created_watch,
+        0,
+        "token_set marks that the watch already existed",
+      );
+    });
+  });
 });
