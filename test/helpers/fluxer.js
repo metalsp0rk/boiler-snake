@@ -48,6 +48,7 @@ function makeFakeRest({ routes = {} } = {}) {
         method: String(method).toUpperCase(),
         path,
         body: options?.body,
+        files: options?.files,
         query: options?.query,
       });
       if (!Object.prototype.hasOwnProperty.call(routes, key)) {
