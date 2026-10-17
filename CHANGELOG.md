@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.33.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.33.0...v1.33.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **githubReleases:** PATs move to a private modal — the public slash option leaked them in-channel ([189a1d9](https://github.com/metalsp0rk/boiler-snake/commit/189a1d9308aef32d07d42138a04d3b7ebaf1f47f)), closes [#444](https://github.com/metalsp0rk/boiler-snake/issues/444)
+* **levelRoles:** daily grace-drop sweeper — XP-frozen users no longer keep level roles forever ([41bbae1](https://github.com/metalsp0rk/boiler-snake/commit/41bbae1aadd4d89d2daab64cd2f399e9f20fc4a1)), closes [#428](https://github.com/metalsp0rk/boiler-snake/issues/428)
+* **tickets:** a failed transcript write ABORTS the archive — retryable, channel kept ([ec56eb1](https://github.com/metalsp0rk/boiler-snake/commit/ec56eb1124e027fe2e17593ba681fc4a290b2f9c)), closes [#418](https://github.com/metalsp0rk/boiler-snake/issues/418)
+* **youtube:** removeYoutubeChannel reports the DELETE honestly; both count-diff hacks die ([462222c](https://github.com/metalsp0rk/boiler-snake/commit/462222c7979252c3d8c5330718307c9213eb6352)), closes [#442](https://github.com/metalsp0rk/boiler-snake/issues/442)
+
 ## [1.33.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.32.0...v1.33.0) (2026-10-17)
 
 
