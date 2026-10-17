@@ -9,6 +9,7 @@ const {
   addYoutubeChannel,
   updateYoutubeChannelLastChecked,
   markYoutubeLiveNotified,
+  markYoutubeChannelCheckedAt,
   updateGuildSettings,
 } = require("../../db");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
@@ -385,11 +386,21 @@ async function processChannel(
   );
 
   const feed = await fetchFeed(channelId);
+  // #379: book the wall-clock sweep time regardless of the outcome — a
+  // transient feed failure still counts as "checked this interval" so the
+  // quota stays exactly what the setting promises; notification state is
+  // untouched (retry is the watermark's business, #380).
+  markYoutubeChannelCheckedAt(communityId, channelId, Date.now());
+
   if (!feed) return;
 
   if (!feed.items || !feed.items.length) {
+    // Nothing to notify AND nothing to advance: the old unconditional
+    // last_checked=now here jumped the ORDINAL notification window past
+    // undelivered neighbours — the #380 burn class in disguise. Cadence
+    // lives in last_checked_at now; the notification floor only moves on
+    // deliveries.
     console.log(`[youtube] No videos found for ${channelName}`);
-    updateYoutubeChannelLastChecked(communityId, channelId, Date.now());
     return;
   }
 
@@ -720,26 +731,42 @@ async function runYoutubeTick(supervisor, deps = defaultDeps) {
     return;
   }
 
-  const channels = getAllYoutubeChannels();
-  console.log(channels);
+  // #379: honor each community's youtube_polling_interval_minutes — the
+  // setting `/setyoutube interval`, the web console, and the docs all
+  // advertise — exactly like twitch's eligibility filter. The job itself
+  // ticks once a minute (aligned) and rows are swept when DUE.
+  // `last_checked_at` is the wall-clock sweep stamp (migration 047);
+  // `last_checked` is the ordinal notification window (#380) and is NOT a
+  // timer. Never-checked rows (NULL) are always due.
+  const nowMs = Date.now();
+  const channels = getAllYoutubeChannels().filter((row) => {
+    try {
+      const settings = getGuildSettings(row.community_id);
+      const intervalMs =
+        (Number(settings.youtube_polling_interval_minutes) || 5) * 60_000;
+      if (
+        row.last_checked_at != null &&
+        nowMs - row.last_checked_at < intervalMs
+      ) {
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.error(
+        `[youtube] eligibility check failed for ${row.channel_name} (community ${row.community_id}); skipping row:`,
+        err?.message || err,
+      );
+      return false; // a bad row drops itself with a logged cause, never kills the tick (twitch #198 precedent)
+    }
+  });
 
   if (!channels.length) {
-    console.log(`[youtube] No channels to monitor`);
+    console.log(`[youtube] No channels due this pass`);
     return;
   }
 
-  // Deduplicate by normalized name per guild
-  // const seenPerGuild = new Map();
-  // const deduped = channels.filter(c => {
-  //   const normalizedName = normalizeYoutubeName(c.channel_name);
-  //   const key = `${c.guild_id}:${normalizedName}`;
-  //   if (seenPerGuild.has(key)) return false;
-  //   seenPerGuild.set(key, true);
-  //   return true;
-  // });
-
   console.log(
-    `[youtube] Checking ${channels.length} subscribed channels (after deduplication)`,
+    `[youtube] Checking ${channels.length} subscribed channels due this pass`,
   );
 
   for (const channel of channels) {
@@ -771,7 +798,10 @@ function startYoutubeTicker(supervisor) {
 
   registerJob({
     name: "youtube",
-    intervalMs: 5 * 60_000,
+    // Base cadence is 1 minute; per-row gating in runYoutubeTick enforces
+    // each community's youtube_polling_interval_minutes (#379, twitch's
+    // model). The old hardcoded 5-minute sweep ignored the setting entirely.
+    intervalMs: 60_000,
     align: true,
     runImmediately: true,
     run: () => runYoutubeTick(supervisor),
