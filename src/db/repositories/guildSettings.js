@@ -15,7 +15,7 @@ const GORK_MEMORY_CHARS_MAX = 64000;
 // (the db layer keeps its constants local — same pattern as BUDGET_MIN/MAX).
 const GORK_DEFAULT_SUMMARIZE_INPUT_TOKENS = 80000;
 const GORK_SUMMARIZE_INPUT_TOKENS_MIN = 8000;
-const GORK_SUMMARIZE_INPUT_TOKENS_MAX = 120000;
+const GORK_SUMMARIZE_INPUT_TOKENS_MAX = 200000;
 
 /** Clamp to an integer range; null/non-finite input falls back to the default. */
 function clampInt(value, min, max, fallback) {
@@ -79,7 +79,7 @@ function clampGorkMemoryChars(value) {
 
 /**
  * Normalize the per-community /gork summarize input token budget: integer clamped
- * to 8,000–120,000. Out-of-range numbers clamp to the nearest bound; null
+ * to 8,000–200,000. Out-of-range numbers clamp to the nearest bound; null
  * and non-numeric input fall back to the 80,000 default.
  */
 function clampGorkSummarizeInputTokens(value) {

@@ -405,7 +405,7 @@ describe("db layer", () => {
       assert.equal(s.gork_summarize_input_tokens, 80000);
     });
 
-    it("gork_summarize_input_tokens clamps to 8000-120000 (garbage -> 80000)", () => {
+    it("gork_summarize_input_tokens clamps to 8000-200000 (garbage -> 80000)", () => {
       const g = communityKey("g-gork-sumtok");
       const expectTokens = (value, expected) => {
         const s = api.updateGuildSettings(g, { gork_summarize_input_tokens: value });
@@ -420,8 +420,9 @@ describe("db layer", () => {
       expectTokens(120000, 120000);
       expectTokens(0, 8000);
       expectTokens(-100, 8000);
-      expectTokens(120001, 120000);
-      expectTokens(999999, 120000);
+      expectTokens(200000, 200000);
+      expectTokens(200001, 200000);
+      expectTokens(999999, 200000);
       expectTokens(45000.9, 45000);
       expectTokens("abc", 80000);
       expectTokens(null, 80000);

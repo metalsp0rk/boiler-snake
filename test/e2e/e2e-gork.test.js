@@ -598,7 +598,7 @@ describe(
       // summarize-budget: REJECTS out of range (no clamp path), stores + audits.
       assert.equal(
         await gork([sub("summarize-budget", [intOpt("tokens", 7999)])]),
-        "The summarize input token budget must be 8000-120000 tokens.",
+        "The summarize input token budget must be 8000-200000 tokens.",
       );
       assert.equal(
         await gork([sub("summarize-budget", [intOpt("tokens", 9000)])]),
