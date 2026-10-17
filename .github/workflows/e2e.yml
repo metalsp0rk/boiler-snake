@@ -12,9 +12,17 @@ on:
 permissions:
   contents: read
 
+# G2-5 (#450): the e2e mock Discord is HOST-GLOBAL (port 3100, shared data
+# dir, deterministic namespace ids) and every job lands on the single
+# self-hosted runner. A per-ref group let a PR run and a push-to-main run
+# execute concurrently, wiping each other's guilds via provision() — or
+# restarting the shared mock mid-suite when patch pins differed. Serialize
+# all e2e runs behind one fixed group (same pattern docker-publish.yml uses
+# for this exact shared-resource reason); the suite is ~4 min, so queueing
+# is cheap. No cancel: killing a run mid-suite would strand mock state.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: fauxcord-e2e
+  cancel-in-progress: false
 
 # CI policy: private self-hosted runner only (boiler-snake-runner-01 on the
 # docker host). Do not switch jobs to ubuntu-latest / public runners.
