@@ -361,6 +361,72 @@ describe("bridge edit/delete relay (PR 6)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 1b. Edits AFTER a `done` edit row keep queuing (#375 / BRG-1):
+  // UNIQUE(bridge, direction, src, kind) SPANS terminal states — without a
+  // terminal-row pre-delete (the delete path's §10.10 precedent), every
+  // edit after the first done row violated the constraint, got swallowed
+  // as a routine duplicate, and the destination copy froze forever.
+  // -------------------------------------------------------------------------
+
+  it("edits after an edit row reaches `done` keep queuing and keep landing (#375)", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-1b",
+    });
+
+    // Edit #1 enqueues and drains to `done` — the state that used to poison
+    // every future edit of this message.
+    const first = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "edit one" }),
+    );
+    assert.ok(first?.enqueued, "the first edit enqueues");
+    const f1b = scriptedApi("f1b");
+    const src1b = fakeSource({ content: "irrelevant-re-read" });
+    const workerDeps = {
+      getWebhookApi: (p) => (p === "fluxer" ? f1b : null),
+      getOutbound: (p) => (p === "discord" ? src1b : null),
+    };
+    let worker = makeWorker(workerDeps);
+    await worker.drainAll();
+    assert.equal(repo.getBridgeOutboxById(first.outboxId).state, "done");
+
+    // Edit #2 — the audit's lost-forever case. OLD CODE: returned null, the
+    // UNIQUE collision was caught as a routine duplicate, and the snapshot
+    // hash had already moved so NOTHING ever queued again.
+    const second = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "edit two" }),
+    );
+    assert.ok(second?.enqueued, "an edit AFTER a done edit row still queues (#375)");
+    assert.equal(outboxCount(bridge.id, "edit"), 1, "the terminal row is replaced, never stacked");
+    const pending = outboxRows(bridge.id, "edit")[0];
+    assert.equal(pending.state, "pending", "fresh row starts pending");
+    assert.equal(JSON.parse(pending.payload_json).text, "edit two", "carries the new content");
+
+    worker = makeWorker(workerDeps);
+    await worker.drainAll();
+    assert.equal(repo.getBridgeOutboxById(second.outboxId).state, "done");
+
+    // It stays fixed, not once-only: edit #3 queues after edit #2's done row.
+    const third = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "edit three" }),
+    );
+    assert.ok(third?.enqueued, "the Nth edit after N-1 done edits still queues");
+    worker = makeWorker(workerDeps);
+    await worker.drainAll();
+    assert.equal(
+      f1b.patchCalls.length,
+      3,
+      "all three edits reached the destination copy (it does not freeze at edit #1)",
+    );
+  });
+
+  // -------------------------------------------------------------------------
   // 2. Pin/flag noise: content-identical update enqueues NOTHING
   // -------------------------------------------------------------------------
 
@@ -401,7 +467,7 @@ describe("bridge edit/delete relay (PR 6)", () => {
   // -------------------------------------------------------------------------
 
   it("the PATCH body is neutralized: no raw <@/<#/role tokens, empty allow-pings", async () => {
-    const { bridge, channelA } = seedBridge("a_to_b");
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
     relay.clearRelayState();
     const msgId = snowflakeNow();
     repo.addBridgeMessageLink({
@@ -453,7 +519,7 @@ describe("bridge edit/delete relay (PR 6)", () => {
     );
     assert.equal(
       call.patch.nonce,
-      relay.relayNonce("b_1e000003", msgId, "edit", 0),
+      relay.relayNonce(publicId, msgId, "edit", 0),
       "the §10.6 nonce (kind edit) rides the PATCH",
     );
     // Drain MARKS the outbox row done — the outbox is an audit trail, rows
