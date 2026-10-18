@@ -688,3 +688,47 @@ describe("bridge media streamed per-file cap (#414)", () => {
     assert.ok(reads <= 6, `early stop (reads=${reads})`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #412 (BRG-6): the sweep's SECOND leg — terminal message dirs of KNOWN
+// bridges are reclaimed (parked rows used to pin the caps across restarts).
+// ---------------------------------------------------------------------------
+
+describe("bridge media terminal-spool sweep (#412)", () => {
+  it("reclaims message dirs with no live outbox work; live dirs stay", () => {
+    const root = media.spoolRootDir();
+    for (const prior of media.listSpoolPublicIds()) {
+      fs.rmSync(path.join(root, prior), { recursive: true, force: true });
+    }
+    const live = path.join(root, "b_live0001", "9001");
+    const dead = path.join(root, "b_live0001", "9002");
+    fs.mkdirSync(live, { recursive: true });
+    fs.mkdirSync(dead, { recursive: true });
+    fs.writeFileSync(path.join(live, "0"), "pending rows keep this");
+    fs.writeFileSync(path.join(dead, "0"), "parked row — dead weight");
+
+    const { removed } = media.sweepOrphanSpools({
+      isKnownPublicId: (id) => id === "b_live0001",
+      hasLiveOutbox: (_publicId, srcMessageId) => srcMessageId === "9001",
+    });
+    assert.ok(removed.includes("b_live0001/9002"), "the terminal dir is named");
+    assert.equal(fs.existsSync(dead), false, "the parked row's bytes are finally reclaimable");
+    assert.ok(fs.existsSync(path.join(live, "0")), "live work keeps its dir");
+    assert.ok(fs.existsSync(path.join(root, "b_live0001")), "the bridge dir survives for its live work");
+  });
+
+  it("the default (no predicate) keeps every dir of known bridges — the pass stays publicId-scoped by contract", () => {
+    const root = media.spoolRootDir();
+    for (const prior of media.listSpoolPublicIds()) {
+      fs.rmSync(path.join(root, prior), { recursive: true, force: true });
+    }
+    const dir = path.join(root, "b_keep0001", "9100");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "0"), "kept");
+    const { removed } = media.sweepOrphanSpools({
+      isKnownPublicId: () => true,
+    });
+    assert.deepEqual(removed, []);
+    assert.ok(fs.existsSync(path.join(dir, "0")));
+  });
+});

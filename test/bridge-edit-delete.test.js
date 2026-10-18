@@ -1341,4 +1341,33 @@ describe("bridge edit/delete relay (PR 6)", () => {
     assert.match(worker.notices[0].content, /the other channel is gone/);
     assert.match(worker.notices[0].content, /\/bridge disconnect/);
   });
+
+  it("#412 supersession reclaims the spool dir a PARKED row stranded", () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex: 0, dstMessageId: "dst-412" });
+    const file = spoolBytes(publicId, msgId, 0, "stranded-bytes");
+    const created = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: msgId,
+      payload: createPayload(publicId, msgId, { srcChannelId: channelA }),
+    });
+    // The row POISON-PARKED earlier (terminal 'failed'): pre-#412,
+    // supersession only gated the dir delete on PENDING rows, so the takedown
+    // enqueued fine and the bytes stayed pinned on the caps forever.
+    db.db
+      .prepare("UPDATE bridge_outbox SET state = 'failed', attempts = 5 WHERE id = ?")
+      .run(created.id);
+    assert.ok(fs.existsSync(file));
+
+    const res = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(res?.enqueued, "the delete row lands");
+    assert.equal(
+      fs.existsSync(path.dirname(file)),
+      false,
+      "the parked row's stranded spool dir dies with the supersession (#412/BRG-6)",
+    );
+  });
 });
