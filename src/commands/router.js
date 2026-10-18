@@ -4,6 +4,53 @@ const { safeErrorReply, replyEphemeral } = require("../core/interaction");
 const { buildDiscordCommandContext } = require("../platform/discord/context");
 
 /**
+ * #391 (A2-5, error rule 2): the context line every router failure site
+ * logs. When the router surfaces a failure the handler is already dead —
+ * it never got the chance to log its own ids — so THIS log must be enough
+ * to reproduce from logs alone (guild, user, command, customId). Reads
+ * are defensive: interaction accessors vary by type and a dying path must
+ * not die harder while formatting its own report. customId is
+ * user-influenced and gets a length cap — a 10 KB button id must not
+ * become a 10 KB log line.
+ *
+ * @param {import("discord.js").Interaction} interaction
+ * @returns {string}
+ */
+function interactionLogContext(interaction) {
+  const safe = (read, fallback = "?") => {
+    try {
+      const value = read();
+      return value == null || value === "" ? fallback : String(value);
+    } catch {
+      return fallback;
+    }
+  };
+  const kind = safe(
+    () =>
+      interaction.isAutocomplete?.()
+        ? "autocomplete"
+        : interaction.isModalSubmit?.()
+          ? "modal"
+          : interaction.isButton?.()
+            ? "button"
+            : interaction.isChatInputCommand?.()
+              ? "chat"
+              : "interaction",
+    "interaction",
+  );
+  const bits = [
+    `kind=${kind}`,
+    `guild=${safe(() => interaction.guildId ?? interaction.guild?.id)}`,
+    `user=${safe(() => interaction.user?.id ?? interaction.member?.user?.id)}`,
+  ];
+  const command = safe(() => interaction.commandName, "");
+  if (command) bits.push(`command=/${command}`);
+  const customId = safe(() => interaction.customId, "");
+  if (customId) bits.push(`customId=${customId.slice(0, 120)}`);
+  return bits.join(" ");
+}
+
+/**
  * Dispatch a Discord interaction through the command registry.
  *
  * @param {import("discord.js").Interaction} interaction
@@ -25,7 +72,11 @@ async function handleInteraction(interaction, ctx) {
       }
       await fn(interaction, ctx);
     } catch (err) {
-      console.error("Autocomplete handler error:", err);
+      console.error(
+        "[router] autocomplete handler failed:",
+        interactionLogContext(interaction),
+        err?.message || err,
+      );
       try {
         await interaction.respond([]);
       } catch {
@@ -42,7 +93,11 @@ async function handleInteraction(interaction, ctx) {
       if (!fn) return;
       await fn(interaction, ctx);
     } catch (err) {
-      console.error("Modal submit handler error:", err);
+      console.error(
+        "[router] modal submit handler failed:",
+        interactionLogContext(interaction),
+        err?.message || err,
+      );
       await safeErrorReply(interaction);
     }
     return;
@@ -55,7 +110,11 @@ async function handleInteraction(interaction, ctx) {
       if (!fn) return;
       await fn(interaction, ctx);
     } catch (err) {
-      console.error("Button handler error:", err);
+      console.error(
+        "[router] button handler failed:",
+        interactionLogContext(interaction),
+        err?.message || err,
+      );
       await safeErrorReply(interaction);
     }
     return;
@@ -94,7 +153,11 @@ async function handleInteraction(interaction, ctx) {
       await handler(interaction, ctx);
     }
   } catch (err) {
-    console.error("Interaction handler error:", err);
+    console.error(
+      "[router] command handler failed:",
+      interactionLogContext(interaction),
+      err?.message || err,
+    );
     await safeErrorReply(interaction);
   }
 }
