@@ -154,9 +154,10 @@ async function executeRecallMemory(args, { communityId, onRecall, repo, linkExpa
     } else {
       const localRows = db.gorkMemoryListForSubject(communityId, subject) || [];
       // READ fan-out (account-linking T5): the linked counterpart's stored
-      // rows are the same person's memories. Expansion follows link
-      // EXISTENCE (the link's mirror_memory switch gates WRITE fan-out,
-      // not reads). Any expansion failure degrades to local-only rows —
+      // rows are the same person's memories — but ONLY while the link's
+      // mirror_memory switch is ON (#425: the switch used to gate writes
+      // only, so "memory mirroring: off" still leaked every row into the
+      // peer's recalls). Expansion failure degrades to local-only rows —
       // the recall itself never fails from this leg.
       const counterpartRows = [];
       try {
@@ -171,6 +172,7 @@ async function executeRecallMemory(args, { communityId, onRecall, repo, linkExpa
           if (!t || !Number.isInteger(t.targetCommunityId) || !String(t.targetUserId ?? "")) {
             continue;
           }
+          if (!t.mirrorMemory) continue; // #425: mirror off = read off
           const rows =
             db.gorkMemoryListForSubject(t.targetCommunityId, String(t.targetUserId)) || [];
           counterpartRows.push(...rows);

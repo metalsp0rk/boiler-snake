@@ -60,7 +60,7 @@ Every verb exists on both platforms — `/link …` on Discord, `!link …` on F
 | `/link connect <code>` · `!link connect <code>` | Redeem a code from the other platform's side. |
 | `/link status` · `!link status` | Show your link: the peer account, the date it was created, mirror percentages, memory-mirror state. On Fluxer the pairing is delivered by DM; the channel only gets an ack. |
 | `/link config <direction> <pct>` | Set one mirror direction. Direction is from the **source** side's point of view: `discord-to-fluxer` or `fluxer-to-discord`. Integer 0–100. |
-| `/link config memory on\|off` | Turn gork memory mirroring on/off for the link. |
+| `/link config memory on\|off` | Turn gork memory mirroring on/off for the link. Off = no new mirrored writes and neither side's gork reads the other's memories (#425); already-mirrored rows stay until pruned. |
 | `/link remove` · `!link remove` | Delete your link. Mirrored data already written stays (see Limitations). Unspent link codes on both sides are voided (#426). |
 
 Fluxer uses named-style plain arguments (`!link connect LNK-…`, `!link config fluxer-to-discord 50`); the Discord slash command offers the same as options.
@@ -91,6 +91,7 @@ Gork's memory extraction writes what it learns about a person into that communit
 - **Writes fan out.** Each memory stored about a linked user is also stored for their linked account in the paired community, with the same content, date, and importance.
 - **Mirror rows are separate rows.** They are keyed under an internal `lnk:` namespace, so a mirrored memory can never overwrite — or merge provenance with — a memory the linked account recorded for itself under the same title and date (#427). If both exist, both rows are simply visible. (Rows mirrored before that fix can share the local key space; they read fine, but their source-message provenance may be shared — prune via `/gork memory` in the target community if it matters.)
 - **Reads expand.** When gork answers in one community, the memory set it reads for a linked user includes the memories stored on the far side. Answers stay inside gork's normal memory budget — mirrored entries compete with local ones by importance and recency, they don't grow the budget.
+- **The switch governs both legs.** `/link config memory off` stops new mirrored writes AND stops either side's gork from reading the other's memories (#425). Rows already mirrored stay stored as history — `/link remove` plus pruning via `/gork memory` clears them. (Before that fix, "off" only stopped writes while reads quietly kept crossing whenever any link existed.)
 - **Staff tools stay local.** `/gork memory` (and `!gork memory`) shows and manages **this community's** rows only. Deleting or forgetting a memory on one side does **not** delete its mirror on the other (see Limitations).
 
 ## Limitations

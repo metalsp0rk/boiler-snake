@@ -485,9 +485,13 @@ function rankMergedMemoryRows(rows) {
 
 /**
  * Read fan-out (account-linking T5): expand the involved ids through their
- * links and load each counterpart's rows. Read fan-out follows link
- * EXISTENCE only — the link's `mirror_memory` switch gates WRITE fan-out,
- * not reads (expandLinkedIds carries the flag; we ignore it here).
+ * links and load each counterpart's rows. Since #425 the link's
+ * `mirror_memory` switch gates BOTH legs — with the switch off the peer's
+ * gork no longer pulls your rows into its context (pre-fix the reads
+ * followed link EXISTENCE only, so "memory mirroring: off" quietly kept
+ * every memory crossing platforms while the UI said it didn't).
+ * Already-mirrored rows stay as history (same as unlinking); sever with
+ * /link remove + prune if the stored copies themselves must go.
  *
  * Every failure degrades (AGENTS.md rules 2/5/6): a throwing/`{ok:false}`
  * expansion costs ALL mirror rows, a single throwing counterpart query
@@ -524,6 +528,12 @@ function expandLinkedMemoryRows({ db, communityId, involved, rosterEntries, expa
   for (const t of targets) {
     const sourceKey = String(t?.sourceUserId ?? "");
     if (!sourceKey) continue;
+    // #425 (audit LT-11): mirror_memory=0 must stop the READ leg too —
+    // the user-facing "memory mirroring: off" switch only ever gated
+    // writes, so off kept every local row visible to the peer's gork.
+    // The flag is now the honest both-legs switch (expandLinkedIds
+    // carries it; the write fan-out already honors the same value).
+    if (!t?.mirrorMemory) continue;
     // Repository shape: integer community id + non-empty string user id.
     if (!Number.isInteger(t?.targetCommunityId) || !String(t?.targetUserId ?? "")) continue;
     try {

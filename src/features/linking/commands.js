@@ -375,12 +375,16 @@ function connectSuccessText(peerDesc, surfaceCmd) {
 }
 
 function statusText(ctx, link, peerDesc) {
-  const memory = Number(link.mirror_memory) === 1 ? "on" : "off";
+  const on = Number(link.mirror_memory) === 1;
   return (
     `Linked: you (${platformLabel(ctx.platform)} user ${ctx.userId} in community ${ctx.communityId}) ↔ ${peerDesc}.\n` +
     `Linked since: ${isoUtc(link.created_at)} UTC.\n` +
     `XP mirror: Discord → Fluxer ${link.mirror_a_to_b_pct}%, Fluxer → Discord ${link.mirror_b_to_a_pct}%.\n` +
-    `gork memory mirroring: ${memory}.`
+    `gork memory mirroring: ${on ? "on" : "off"}. ` +
+    (on
+      ? "On: memories cross platforms in both directions (writes AND both sides' gork reads)."
+      : "Off: no new mirrored writes and neither side's gork reads the other's memories. " +
+        "Rows already mirrored stay as history — /link remove plus pruning clears the stored copies.")
   );
 }
 
@@ -592,7 +596,11 @@ async function handleConfig(ctx, surfaceCmd) {
     ctx,
     `Applied: ${result.applied.join(", ")}. ` +
       `(a_to_b = Discord → Fluxer, b_to_a = Fluxer → Discord, mirror_memory = gork memories.) ` +
-      `Now: Discord → Fluxer ${m.a_to_b_pct}%, Fluxer → Discord ${m.b_to_a_pct}%, memory ${memoryLabel}.`,
+      `Now: Discord → Fluxer ${m.a_to_b_pct}%, Fluxer → Discord ${m.b_to_a_pct}%, memory ${memoryLabel}.` +
+      (m.memory
+        ? ""
+        : // #425 (audit LT-11): the switch is honest now — say what off DOES.
+          " Memory off = no new mirrored writes AND neither side's gork reads the other's memories; rows already mirrored stay as history."),
   );
 }
 
