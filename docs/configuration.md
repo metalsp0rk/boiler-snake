@@ -251,8 +251,8 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `msg_xp` | 5 | XP per message |
 | `reaction_xp` | 2 | XP per reaction |
 | `voice_xp_per_min` | 1 | XP earned per minute in voice |
-| `msg_cooldown_sec` | 20 | Seconds between message XP awards |
-| `reaction_cooldown_sec` | 10 | Seconds between reaction XP awards |
+| `msg_cooldown_sec` | 20 | Seconds between message XP awards (0–86400; larger values clamp — windows past one day were never honored, #429) |
+| `reaction_cooldown_sec` | 10 | Seconds between reaction XP awards (0–86400, same clamp) |
 | `decay_enabled` | 1 (true) | Enable daily XP decay |
 | `decay_window_days` | 7 | Time window for activity check |
 | `decay_min_messages` | 20 | Minimum messages to avoid decay |

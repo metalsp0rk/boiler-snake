@@ -1,5 +1,6 @@
 const { db, now } = require("../connection");
 const { MAX_XP_AWARD } = require("../../core/constants");
+const { MAX_CONFIG_COOLDOWN_SEC } = require("../../core/cooldowns");
 
 // Lazy require: src/platform/community.js requires the db facade, so a
 // top-level require would be a load-time cycle. See src/db/repositories/users.js.
@@ -227,6 +228,27 @@ function updateGuildSettings(communityId, patch) {
   }
   if (safePatch.voice_xp_per_min !== undefined) {
     safePatch.voice_xp_per_min = clampAward(safePatch.voice_xp_per_min);
+  }
+  // #429 (audit XE-2): the XP cooldown windows back the in-memory award
+  // dedupe maps. Unbounded above, a >6h msgcooldown was silently TRUNCATED
+  // by the sweeper (entry evicted mid-window → last=0 → double award) while
+  // staff believed their setting worked. Clamped at the shared config max —
+  // the sweep constant (core/cooldowns) is defined past it on purpose.
+  if (safePatch.msg_cooldown_sec !== undefined) {
+    safePatch.msg_cooldown_sec = clampInt(
+      safePatch.msg_cooldown_sec,
+      0,
+      MAX_CONFIG_COOLDOWN_SEC,
+      20,
+    );
+  }
+  if (safePatch.reaction_cooldown_sec !== undefined) {
+    safePatch.reaction_cooldown_sec = clampInt(
+      safePatch.reaction_cooldown_sec,
+      0,
+      MAX_CONFIG_COOLDOWN_SEC,
+      10,
+    );
   }
   if (safePatch.gork_context_window !== undefined) {
     safePatch.gork_context_window = clampInt(
