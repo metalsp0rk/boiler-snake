@@ -458,6 +458,66 @@ describe("integration: tickets", () => {
     }
   });
 
+  // ── #419 (audit LT-2): a post-claim throw must not wedge the ticket ───────
+
+  it("#419 a finalize throw releases the claim — retry archives, no phantom rival", async () => {
+    const { ticket } = await closedTicketForArchiveRace("wedge-419");
+    const { archiveTicketPipeline } = require("../../src/features/tickets/close");
+    const base = {
+      client: env.client,
+      channel: env.guild.channels.cache.get(ticket.channel_id),
+      ticket: env.db.getTicketById(ticket.id),
+      archivedBy: IDS.admin,
+      guildName: env.guild.name,
+    };
+    const boom = () => {
+      throw new Error("SQLITE_BUSY: database is locked");
+    };
+
+    // (a) the throw still propagates to the boundary (which replies with the
+    //     cause) AND the claim is RELEASED. RED on old code: the claim
+    //     stayed set — the ticket became permanently un-archivable.
+    await assert.rejects(
+      () => archiveTicketPipeline({ ...base, finalize: boom }),
+      /SQLITE_BUSY/,
+    );
+    assert.equal(
+      env.db.getTicketById(ticket.id).archive_claimed_at,
+      null,
+      "post-claim throw releases the claim (RED pre-fix: sticky wedge)",
+    );
+
+    // (b) retry with the real finalize now ARCHIVES — pre-fix the retry got
+    //     the phantom "already being archived by another close".
+    const retry = await archiveTicketPipeline(base);
+    assert.equal(retry.skipped, undefined, `retry must work: ${retry.skipped}`);
+    assert.equal(env.db.getTicketById(ticket.id).archived, 1);
+  });
+
+  it("#419 a stale (crashed-holder) claim ages out — /ticket archive succeeds", async () => {
+    const { ticket } = await closedTicketForArchiveRace("stale-419");
+    // 90 min old — older than any lease inside the unit-pinned sane band
+    // (≤ 60 min), and deliberately a literal so the RED run (no facade
+    // constant) still stamps a REAL timestamp instead of NULL.
+    const aged = Date.now() - 90 * 60 * 1000;
+    env.db.db
+      .prepare("UPDATE tickets SET archive_claimed_at = ? WHERE id = ?")
+      .run(aged, ticket.id);
+
+    const res = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "archive",
+      admin: true,
+      channelId: ticket.channel_id,
+    });
+    const text = env.lastReplyContent(res);
+    // RED on old code: "…already being archived by another close — nothing
+    // was done here." forever, with no recovery surface.
+    assert.doesNotMatch(text, /already being archived/, text);
+    assert.match(text, /archived/i, text);
+    assert.equal(env.db.getTicketById(ticket.id).archived, 1);
+  });
+
   it("/ticket for adds staff opener as exclusive named owner + bypasses rate limit", async () => {
     env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
 

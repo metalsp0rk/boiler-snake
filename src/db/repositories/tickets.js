@@ -15,6 +15,16 @@ const assertCommunityId = (id) => require("../../platform/community").assertComm
 const MAX_TICKET_REASON = 1000;
 
 /**
+ * Archive-claim lease (#419, audit LT-2): a live archive run is minutes at
+ * worst (transcript + media download + a few posts); after this window a
+ * still-held claim means the holder DIED, and the next caller steals the
+ * claim instead of staring at "already being archived by another close"
+ * forever. Comfortably above any realistic healthy run, far below
+ * "permanent".
+ */
+const ARCHIVE_CLAIM_LEASE_MS = 30 * 60 * 1000;
+
+/**
  * @param {string|null|undefined} reason
  * @param {string} [label]
  * @param {object} [opts]
@@ -704,26 +714,34 @@ function closeTicketArchived(ticketId, opts) {
  * `archived` deliberately keeps its own meaning (content-archived marker at
  * finalize time, sensitive rows never set it, pinned by existing tests);
  * the claim is a separate internal column so no reader of `archived` /
- * `status` changes behavior. Crash semantics are sticky on purpose: if the
- * winner dies mid-archive the ticket stays claimed and re-archiving is
- * blocked — the requirement is concurrency-safety, not crash recovery. A
- * CLEAN abort before any destructive step releases the claim
- * ({@link releaseTicketArchiveClaim}, #418) so the retry path stays open.
+ * `status` changes behavior.
+ *
+ * LEASED (audit LT-2 #419): the original stickiness ("winner dies → ticket
+ * stays claimed forever") converted ONE transient throw into a permanently
+ * un-archivable ticket with no recovery surface. The claim now ages out: a
+ * holder older than ARCHIVE_CLAIM_LEASE_MS is stealable, and the normal
+ * pipeline releases its claim when it THROWS after claiming
+ * (archiveTicketPipeline, #419) — the wedge window is the lease, not
+ * forever. A CLEAN abort before any destructive step still releases
+ * immediately ({@link releaseTicketArchiveClaim}, #418).
  *
  * @param {number} ticketId
+ * @param {number} [at=now()] ms epoch (injectable clock, lease math)
  * @returns {{ won: boolean, ticket: object|null }} `won` true only for the
  *   caller that claimed; `ticket` is the LIVE row (so the loser can tell
  *   "already archived" from "mid-archive" and name the ticket).
  */
-function claimTicketArchive(ticketId) {
+function claimTicketArchive(ticketId, at = now()) {
+  const ts = Number(at);
   const info = db
     .prepare(
       `
     UPDATE tickets SET archive_claimed_at=?
-    WHERE id=? AND archived=0 AND archive_claimed_at IS NULL
+    WHERE id=? AND archived=0
+      AND (archive_claimed_at IS NULL OR archive_claimed_at <= ?)
   `
     )
-    .run(now(), ticketId);
+    .run(ts, ticketId, ts - ARCHIVE_CLAIM_LEASE_MS);
   return { won: info.changes === 1, ticket: getTicketById(ticketId) || null };
 }
 
@@ -1256,6 +1274,7 @@ function countArchivedTicketsForUser(userId, opts = {}) {
 
 module.exports = {
   MAX_TICKET_REASON,
+  ARCHIVE_CLAIM_LEASE_MS,
   normalizeTicketReason,
   nextTicketNumber,
   getTicketSettings,
