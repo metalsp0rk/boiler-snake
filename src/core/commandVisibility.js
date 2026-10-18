@@ -41,6 +41,14 @@ const COMMAND_VISIBILITY = Object.freeze({
 
   // Manage Server only (picker + handler)
   grantxp: TIERS.admin,
+  // #476 (F2-8): /staff's PICKER is admin-tier because most subcommands
+  // (role add/remove/setlevel, syncpermissions) are ManageGuild-gated;
+  // the staff-gated list/settings subcommands are therefore admin-visible
+  // ONLY — user-facing copy must not promise staff members a command
+  // Discord hides from them (test/staff-visibility-copy.test.js pins that
+  // alignment; handlers stay the security truth). Splitting list/settings
+  // into a staff-tier command needs live picker verification — filed as a
+  // follow-up, not paid here.
   staff: TIERS.admin,
   setcommandchannel: TIERS.admin,
 

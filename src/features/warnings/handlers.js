@@ -792,7 +792,7 @@ async function handleSettings(commandCtx, featureCtx) {
       `${logLine}\n` +
       `${expiryLine}\n` +
       `Max reason length: **${MAX_WARN_REASON}** characters\n` +
-      `\n**Access:** staff gate — Manage Server or any role in \`/staff role list\`.\n` +
+      `\n**Access:** staff gate — Manage Server, or a staff role chosen by a Manage Server holder (\`/staff\` is only shown to Manage Server holders).\n` +
       `**Members:** \`/warn mine\` to view their own warnings.\n` +
       `\n**Commands:** \`/warn add\` · \`list\` · \`info\` · \`void\` · \`count\` · \`export\` · \`mine\` · \`settings\`\n` +
       `Warnings are **permanent** — void only (never hard-deleted). Pair with \`/note\` for informal context.`,
