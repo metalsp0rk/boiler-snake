@@ -5,6 +5,7 @@ const {
   listLevelRoles,
 } = require("../../db");
 const { requireStaffFromContext } = require("../../core/permissions");
+const { joinCapped } = require("../../core/text");
 const { Color } = require("../../core/theme");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -31,8 +32,10 @@ async function handleSettings(commandCtx, featureCtx) {
   const settings = getGuildSettings(communityId);
 
   const chans = listAllowedCommandChannels(communityId);
+  // Embed fields die above 1024 chars — cap with an exact hidden count
+  // instead of letting Discord 400 the whole /settings reply (#446).
   const chanText = chans.length
-    ? chans.map((r) => `<#${r.channel_id}>`).join(", ")
+    ? joinCapped(chans.map((r) => `<#${r.channel_id}>`), 1024, ", ")
     : "All channels (no restriction set)";
 
   const roles = listLevelRoles(communityId);

@@ -25,6 +25,7 @@ const { replyEphemeral } = require("../../core/interaction");
 const tokenKeys = require("../../core/thirdPartyTokens");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { joinCapped } = require("../../core/text");
 const { discordCommunityId } = require("../../platform/community");
 const { fetchRepo } = require("./github");
 const { processWatch, startGithubReleaseTicker } = require("./ticker");
@@ -359,8 +360,10 @@ async function handleGithub(commandCtx, featureCtx) {
       return `• **${w.repo_display}** → ${ch}${role}${token}${latest}`;
     });
 
+    // 2000-char message cap with an honest hidden count (#446).
+    const header = `**GitHub release watches** (${watches.length})\n`;
     await commandCtx.reply({
-      content: `**GitHub release watches** (${watches.length})\n${lines.join("\n")}`,
+      content: header + joinCapped(lines, 2000 - header.length, "\n"),
       sensitive: true,
     });
     return;
