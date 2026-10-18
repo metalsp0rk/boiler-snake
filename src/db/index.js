@@ -143,6 +143,7 @@ module.exports = {
   removeTwitchChannel: twitch.removeTwitchChannel,
   updateTwitchChannelLiveState: twitch.updateTwitchChannelLiveState,
   claimTwitchStream: twitch.claimTwitchStream,
+  releaseTwitchStreamClaim: twitch.releaseTwitchStreamClaim,
   claimTwitchOffline: twitch.claimTwitchOffline,
   setTwitchChannelMediaFlags: twitch.setTwitchChannelMediaFlags,
   updateTwitchChannelClipState: twitch.updateTwitchChannelClipState,

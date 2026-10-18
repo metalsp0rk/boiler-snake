@@ -7,6 +7,7 @@ const {
   addTwitchChannel,
   removeTwitchChannel,
   claimTwitchStream,
+  releaseTwitchStreamClaim,
   claimTwitchOffline,
   updateTwitchChannelClipState,
   updateTwitchChannelVideoState,
@@ -128,7 +129,7 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
     console.log(
       `[twitch] No notification channel configured for community ${communityId}`,
     );
-    return;
+    return "no-channel";
   }
 
   const roleName = sub.display_name || sub.login;
@@ -155,16 +156,18 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
           result?.error || "no ready client"
         }`,
       );
-      return;
+      return "failed";
     }
     console.log(
       `[twitch] Sent go-live notification for ${sub.login} in community ${communityId}`,
     );
+    return "sent";
   } catch (err) {
     console.error(
       `[twitch] Failed to send go-live notification for ${sub.login}:`,
       err?.message || err,
     );
+    return "failed";
   }
 }
 
@@ -191,13 +194,31 @@ async function processSubscription(supervisor, communityId, sub, stream) {
     return;
   }
   if (stream) {
-    const isNewStream = claimTwitchStream(
+    const claim = claimTwitchStream(
       communityId,
       sub.broadcaster_id,
       stream.id,
     );
-    if (isNewStream) {
-      await sendGoLiveNotification(outbound, communityId, sub, stream);
+    if (claim.isNew) {
+      // #447 (audit INT-12): the claim used to be TERMINAL — any send
+      // failure (or a community with no notify channel yet) silently BURNED
+      // the go-live forever. Failures now release the claim (compare-and-
+      // release, so a newer EventSub/poller claim is never trampled) and
+      // the next tick retries while the stream is still live.
+      const outcome = await sendGoLiveNotification(outbound, communityId, sub, stream);
+      if (outcome !== "sent") {
+        const released = releaseTwitchStreamClaim(
+          communityId,
+          sub.broadcaster_id,
+          stream.id,
+          claim.previousStreamId,
+        );
+        console.log(
+          `[twitch] go-live ${sub.login} (${stream.id}) ${
+            outcome === "no-channel" ? "not sendable (no notify channel)" : "send failed"
+          } — claim ${released ? "released, will retry while live" : "superseded by a newer claim"}`,
+        );
+      }
     }
   } else {
     const wasLive = claimTwitchOffline(communityId, sub.broadcaster_id);
