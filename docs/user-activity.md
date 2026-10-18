@@ -14,6 +14,12 @@ This is **independent of XP**. Cooldowns do not apply; every human guild message
 
 Junior staff see the Activity button but get a clear denial if they click it.
 
+The Notes / Warnings / **Activity** drill is delivered by Discord **buttons**, so it
+is a **Discord** surface. Fluxer has no component ingestion yet: there the
+`/userinfo` reply is the overview card alone — no buttons, no Activity, no
+misleading silent click (#451). If Fluxer gains button dispatch, the senior gate
+must be carried to that path before the drill ships there.
+
 ## Viewing activity
 
 1. Run `/userinfo user:@member`

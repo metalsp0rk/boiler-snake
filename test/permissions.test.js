@@ -483,4 +483,26 @@ describe("permissions.js — requireStaff/requireSeniorStaff truth-table matrix"
       assert.equal(perms.commandsAllowed(interaction), true);
     });
   });
+
+  it("#451: dead CommandContext senior helpers stayed deleted", () => {
+    // requireSeniorStaffFromContext / isSeniorStaffFromContext had ZERO
+    // callers: the senior Activity gate (AGENTS.md item 4) lives only on the
+    // Discord button handler, and Fluxer has no component ingestion. They
+    // implied a wired ctx senior path that never existed. If a real ctx-path
+    // senior gate is ever needed (Fluxer component dispatch), re-add them
+    // alongside the wiring + a test — do not resurrect the dead export.
+    const surface = require("../src/core/permissions.js");
+    assert.equal(
+      surface.requireSeniorStaffFromContext,
+      undefined,
+      "requireSeniorStaffFromContext must not return",
+    );
+    assert.equal(
+      surface.isSeniorStaffFromContext,
+      undefined,
+      "isSeniorStaffFromContext must not return",
+    );
+    // The interaction senior gate stays (used by userinfo Activity buttons).
+    assert.equal(typeof surface.requireSeniorStaff, "function");
+  });
 });
