@@ -399,9 +399,22 @@ async function fetchPage(channel, fetcher, opts, progress) {
  */
 async function fetchAnchor(channel, fetcher, messageId, label) {
   let message = null;
+  const notFound = () => {
+    const wrapped = new Error(
+      `The ${label}: message ${messageId} in channel ${channel.id} could not be read (deleted or unknown id).`,
+    );
+    wrapped.failCode = "notfound";
+    return wrapped;
+  };
   try {
     message = await fetcher(channel, String(messageId));
   } catch (err) {
+    // #449 (audit G2-4): real discord.js REJECTS a missing message with
+    // DiscordAPIError 10008 "Unknown Message" — that IS the deleted/unknown
+    // case, not a generic fetch failure. The offline mock used to return
+    // null (making the notfound contract reachable); it now rejects like
+    // production, so both shapes must land on the same specific cause.
+    if (Number(err?.code) === 10008) throw notFound();
     const wrapped = new Error(
       `The ${label}: message ${messageId} in channel ${channel.id} could not be read: ${err?.message || err}`,
     );
@@ -409,11 +422,7 @@ async function fetchAnchor(channel, fetcher, messageId, label) {
     throw wrapped;
   }
   if (!message || !message.id) {
-    const wrapped = new Error(
-      `The ${label}: message ${messageId} in channel ${channel.id} could not be read (deleted or unknown id).`,
-    );
-    wrapped.failCode = "notfound";
-    throw wrapped;
+    throw notFound();
   }
   return message;
 }

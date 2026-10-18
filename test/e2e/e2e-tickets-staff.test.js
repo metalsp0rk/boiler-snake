@@ -467,10 +467,14 @@ describe(
         userId: env.ids.human,
         channelId: t1.chan,
       });
-      // The final confirmation reply is NOT asserted: the pipeline deletes
-      // the ticket channel (the interaction's channel) BEFORE editReply, so
-      // @original dies with the channel — on real Discord too. Tracked in
-      // issue #341; flip this back to awaitSettledReply when fixed.
+      // The confirmation reply CANNOT be asserted from here even though the
+      // order is now fixed (#341 via #449: editReply runs BEFORE the delete):
+      // an interaction response lives INSIDE its channel, so fauxcord (like
+      // real Discord) stops serving webhook @original once the ticket channel
+      // is gone — the poll below starts after the handler already deleted it.
+      // The write-before-delete ORDER itself is pinned offline by the faithful
+      // mock's ack lifecycle (test/helpers/discord.js + the tickets
+      // integration suite: reply asserted while the row+delete are verified).
       void inter;
 
       const row = await poll(
@@ -569,8 +573,9 @@ describe(
         userId: env.ids.human,
         channelId: t2chan,
       });
-      // Confirmation reply intentionally not asserted — see issue #341
-      // (channel deleted before editReply kills @original).
+      // Not assertable from e2e (see the non-sensitive archive above): the
+      // ephemeral dies with the channel by Discord design, even though the
+      // order is fixed (#341 via #449 — pinned offline, not here).
       void archive;
 
       const row = await poll(

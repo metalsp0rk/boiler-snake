@@ -171,7 +171,7 @@ Requires a **closed** ticket channel.
 6. Summarize (AI or fallback).
 7. Post embed to the archive channel (summary + link if `TICKET_PUBLIC_BASE_URL` set).
 8. **DM the requester** (creator only): ticket ref, close reason, and a **View transcript** link when `TICKET_PUBLIC_BASE_URL` is configured (ref + reason only otherwise). Best-effort: if the DM fails (closed DMs, blocked bot), the archive reply notes a warning — the archive itself never fails because of it.
-9. Delete the live ticket channel.
+9. Edit the ephemeral archive reply (warnings included), then delete the live ticket channel — **in that order** (#341): the deferred reply lives inside the channel, so deleting first kills the confirmation with a Discord `Unknown Message` error. A failed delete is reported as a warning on the still-editable reply; the archive itself is already complete.
 
 Transcript people lines look like `Cool Nick (@username) · 1234567890`. Mentions in message text become `@Cool Nick` (id kept in the author meta line). Images/videos/audio render inline in the HTML when mirrored.
 
