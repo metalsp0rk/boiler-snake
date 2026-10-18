@@ -1641,7 +1641,13 @@ function createRelayWorker(deps = {}) {
    * from an ALREADY-fetched message — the PR 6 edit path fetches once and
    * reuses the payload.
    */
-  async function resolveSpooledBytes(descriptor, payload, sourcePort, attachmentsOverride) {
+  async function resolveSpooledBytes(
+    descriptor,
+    payload,
+    sourcePort,
+    attachmentsOverride,
+    capPlatform = null,
+  ) {
     const spoolIndex = Number.isInteger(descriptor.spoolIndex)
       ? descriptor.spoolIndex
       : Number.parseInt(String(descriptor.spoolIndex ?? ""), 10);
@@ -1664,7 +1670,13 @@ function createRelayWorker(deps = {}) {
     if (!source || !source.url) {
       return { error: "spool missing and the source attachment no longer carries a url" };
     }
-    const dl = await media.downloadSignedUrl(source.url, mediaOpts);
+    // #414 (BRG-8/LT-7): cap the redownload at the DESTINATION's per-file
+    // ceiling — the bytes used to buffer whole before any cap saw them.
+    const cap = capPlatform ? media.FILE_SIZE_LIMITS[capPlatform] : null;
+    const dl = await media.downloadSignedUrl(source.url, {
+      ...mediaOpts,
+      ...(cap ? { maxBytes: cap } : {}),
+    });
     if (!dl.ok) return { error: `spool missing and re-download failed: ${dl.reason}` };
     return { bytes: dl.bytes };
   }
@@ -1982,7 +1994,14 @@ function createRelayWorker(deps = {}) {
         // the descriptor carries the skip, the body names it (§10.8 parity).
         merged.skipReason = d.skipReason;
       } else {
-        const resolved = await resolveSpooledBytes(d, payload, opCtx.sourcePort, srcAttachments);
+        const resolved = await resolveSpooledBytes(
+          d,
+          payload,
+          opCtx.sourcePort,
+          srcAttachments,
+          // #414: the redownload cap follows the destination platform.
+          opCtx.destPlatform,
+        );
         if (resolved.bytes != null) {
           merged.data = resolved.bytes;
           merged.bytes = resolved.bytes.length;
@@ -2009,7 +2028,14 @@ function createRelayWorker(deps = {}) {
     // and named in the body, §10.8 parity) — never a null-data file.
     for (const d of attached.values()) {
       if (d.data != null || d.skipReason != null) continue;
-      const resolved = await resolveSpooledBytes(d, payload, opCtx.sourcePort, srcAttachments);
+      const resolved = await resolveSpooledBytes(
+        d,
+        payload,
+        opCtx.sourcePort,
+        srcAttachments,
+        // #414: the redownload cap follows the destination platform.
+        opCtx.destPlatform,
+      );
       if (resolved.bytes != null) {
         d.data = resolved.bytes;
         d.bytes = resolved.bytes.length;
@@ -2292,7 +2318,7 @@ function createRelayWorker(deps = {}) {
       const resolveErrors = [];
       for (const d of descriptors) {
         if (!d || typeof d !== "object" || d.skipReason != null) continue;
-        const resolved = await resolveSpooledBytes(d, payload, sourcePort);
+        const resolved = await resolveSpooledBytes(d, payload, sourcePort, null, destPlatform);
         if (resolved.bytes != null) {
           d.bytes = resolved.bytes.length;
           d.data = resolved.bytes; // in-memory for this execution only

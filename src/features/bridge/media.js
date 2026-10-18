@@ -227,6 +227,8 @@ function applySpoilerForDestination(filename, spoiler, destPlatform) {
  *   resolveHost?: (host: string) => Promise<string[]>,
  *   timeoutMs?: number,
  *   maxRedirects?: number,
+ *   maxBytes?: number,  // #414: streamed cap — over-cap bytes are never
+ *                       // fully buffered before the refusal
  * }} [opts]
  * @returns {Promise<{ ok: true, bytes: Buffer }|{ ok: false, reason: string }>}
  */
@@ -518,6 +520,11 @@ async function spoolAttachments(args = {}) {
         fetchImpl: opts.fetchImpl,
         resolveHost: opts.resolveHost,
         timeoutMs: opts.downloadTimeoutMs,
+        // #414 (BRG-8): the transport stops AT the per-file ceiling. Before
+        // this, a lying attachment `size` defeated the declared-size
+        // reservation AND the whole oversized body was buffered in RAM
+        // before the post-hoc `actual > perFileCap` check rejected it.
+        maxBytes: perFileCap,
       });
     } catch (err) {
       // Defense in depth: downloadSignedUrl never throws; a seam that does
@@ -526,7 +533,11 @@ async function spoolAttachments(args = {}) {
     }
     if (!dl.ok) {
       if (reserve > 0) releaseSpoolBytes(publicId, reserve);
-      finish(`fetch-failed: ${dl.reason}`);
+      // #414: the transport stopping AT the per-file ceiling mid-stream is
+      // the spec's over-cap outcome (the fake that ignores maxBytes still
+      // lands on the post-download `actual > perFileCap` check below).
+      if (/^file too large/.test(String(dl.reason))) finish("over-cap");
+      else finish(`fetch-failed: ${dl.reason}`);
       continue;
     }
 

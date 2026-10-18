@@ -26,7 +26,11 @@
  *    resolution and the fetched connection are ONE lookup, not two —
  *    DNS-rebinding windows (0-TTL records flipping public→private between
  *    validation and connect) are closed per hop;
- *  - a per-attempt timeout aborts the request via AbortController.
+ *  - a per-attempt timeout aborts the request via AbortController and stays
+ *    armed through the BODY read (#414: a slow-drip host cannot outlive the
+ *    timeout by being nice about headers);
+ *  - `maxBytes` is enforced WHILE streaming when the transport exposes a
+ *    body stream — over-cap bytes are never fully buffered first;
  *
  * Seams (fetchImpl / resolveHost / setTimer / clearTimer) make the guard
  * testable with no sockets and no real timers — the production timeout is
@@ -444,6 +448,12 @@ async function downloadGuarded(url, opts = {}) {
     const controller = new AbortController();
     const timer = setTimer(() => controller.abort(), timeoutMs);
     if (timer && typeof timer.unref === "function") timer.unref();
+    // #414 (BRG-8/LT-7): the timer stays ARMED until this hop's BODY has
+    // been read (every early return and the redirect continue pass through
+    // the finally). The old code cleared it the moment headers arrived, so
+    // a host that trickled bytes after a friendly 200 + Content-Length held
+    // the "30 s timeout" promise hostage in the body phase forever.
+    try {
     let res;
     try {
       // No Authorization header, no bot credential: this is a plain fetch of
@@ -457,12 +467,8 @@ async function downloadGuarded(url, opts = {}) {
       // them as an extra argument and stay free to ignore it.
       res = await fetchImpl(current, init, check.addresses);
     } catch (err) {
-      clearTimer(timer);
-      const text = String(err?.message || err);
-      const reason = /abort/i.test(text) ? "download timed out" : `fetch failed: ${text}`;
-      return { ok: false, reason };
+      return { ok: false, reason: classifyDownloadError(err, "fetch failed") };
     }
-    clearTimer(timer);
 
     const status = Number(res?.status);
     if (Number.isFinite(status) && status >= 300 && status < 400) {
@@ -494,18 +500,78 @@ async function downloadGuarded(url, opts = {}) {
         return { ok: false, reason: `file too large (${declared} bytes)` };
       }
     }
-    try {
-      const ab = await res.arrayBuffer();
-      const bytes = Buffer.from(ab);
-      if (maxBytes != null && bytes.length > maxBytes) {
-        return { ok: false, reason: `file too large (${bytes.length} bytes)` };
+      let body;
+      try {
+        body = await readBodyWithinCap(res, maxBytes);
+      } catch (err) {
+        return { ok: false, reason: classifyDownloadError(err, "body read failed") };
       }
-      return { ok: true, bytes, contentType };
-    } catch (err) {
-      return { ok: false, reason: `body read failed: ${String(err?.message || err)}` };
+      if (body.tooLarge) {
+        return { ok: false, reason: `file too large (${body.actualBytes} bytes)` };
+      }
+      return { ok: true, bytes: body.bytes, contentType };
+    } finally {
+      clearTimer(timer);
     }
   }
   return { ok: false, reason: "too many redirects" };
+}
+
+/**
+ * Abort-shaped errors are the TIMER (the only thing that aborts mid-read);
+ * everything else carries the phase label. Rule 3: the reason must let the
+ * operator act — "timed out" and "fetch failed: <cause>" read differently.
+ */
+function classifyDownloadError(err, phaseLabel) {
+  const text = String(err?.message || err);
+  return /abort/i.test(text) ? "download timed out" : `${phaseLabel}: ${text}`;
+}
+
+/**
+ * Read the response body UNDER the byte cap (#414/LT-7): when the transport
+ * exposes a stream and a cap exists, read WITH a hard budget and CANCEL at
+ * the cap — a lying Content-Length or a chunked host can no longer buffer
+ * unbounded bytes into RAM before the post-hoc size check rejects them.
+ * Responses without a stream (older fakes, the pinned adapter without a
+ * cap) keep the buffered fallback with the same post-read string shape.
+ *
+ * @param {object} res
+ * @param {number|null} maxBytes
+ * @returns {Promise<{bytes: Buffer}|{tooLarge: true, actualBytes: number}>}
+ */
+async function readBodyWithinCap(res, maxBytes) {
+  const stream = res && res.body;
+  if (maxBytes != null && stream && typeof stream.getReader === "function") {
+    const reader = stream.getReader();
+    const chunks = [];
+    let received = 0;
+    try {
+      while (received <= maxBytes) {
+        const { done, value } = await reader.read();
+        if (done) return { bytes: Buffer.concat(chunks) };
+        if (value) {
+          chunks.push(Buffer.isBuffer(value) ? value : Buffer.from(value));
+          received += value.length ?? value.byteLength ?? 0;
+        }
+      }
+    } finally {
+      // Stop the transfer on EVERY exit — cap hit, done, or error (the
+      // real transport rejects an in-flight read() when the abort timer
+      // fires; the caller classifies that as the timeout).
+      try {
+        await reader.cancel();
+      } catch {
+        /* already closed */
+      }
+    }
+    return { tooLarge: true, actualBytes: received };
+  }
+  const ab = await res.arrayBuffer();
+  const bytes = Buffer.from(ab);
+  if (maxBytes != null && bytes.length > maxBytes) {
+    return { tooLarge: true, actualBytes: bytes.length };
+  }
+  return { bytes };
 }
 
 module.exports = {
