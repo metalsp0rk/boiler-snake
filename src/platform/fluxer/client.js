@@ -675,4 +675,11 @@ module.exports = {
   // The guarded @fluxerjs/rest load site (#381): multipart SDK-contract
   // tests exercise the REAL serialization module; null when absent (skip).
   loadFluxerRest,
+  // Package-name constants live here as the ONE source of truth (#448): the
+  // availability tripwire asserts these names stay in production
+  // `dependencies` and resolve through the guarded loaders — without an
+  // export, a guard test would need the literal, which the import guard
+  // (correctly) forbids outside this file.
+  SDK_PACKAGE_NAME,
+  REST_PACKAGE_NAME,
 };
