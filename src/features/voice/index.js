@@ -1,11 +1,25 @@
 const { getGuildSettings } = require("../../db");
 const { awardXp } = require("../../services/awardXp");
 const { registerJob } = require("../../core/scheduler");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { ensureCommunity, getCommunityById } = require("../../platform/community");
 // Ticker plumbing lister (PR 7): communities that can receive voice XP are
 // exactly the ones with tracked users.
 const { listCommunityIdsWithUsers } = require("../../db/repositories/users");
+
+const {
+  resolveDiscordClient: coreResolveDiscordClient,
+  resolveOutbound: coreResolveOutbound,
+} = require("../../core/outbound");
+
+// #462 (H1-3): ONE core implementation — the drifting per-ticker copies
+// and their unreachable raw-client legs are gone. This is just the label bind.
+function resolveDiscordClient(supervisor) {
+  return coreResolveDiscordClient(supervisor, { label: "voiceTicker" });
+}
+
+function resolveOutbound(supervisor, communityId) {
+  return coreResolveOutbound(supervisor, communityId, { label: "voiceTicker" });
+}
 
 function isMutedOrDeafened(voiceState) {
   return !!(
@@ -16,52 +30,9 @@ function isMutedOrDeafened(voiceState) {
   );
 }
 
-/**
- * Resolve the raw Discord client behind the supervisor (null when Discord is
- * unconfigured). A legacy raw client passed directly is honored (tests and
- * pre-cutover callers).
- * @param {object|null} supervisor
- * @returns {object|null}
- */
-function resolveDiscordClient(supervisor) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    return supervisor.discord ?? null;
-  }
-  if (supervisor.guilds) return supervisor; // legacy raw discord.js client
-  return null;
-}
 
-/**
- * Resolve the OutboundClient for one community (roadmap/fluxer.md § Scheduler
- * jobs: awardXp receives the OutboundClient, never a Discord Guild).
- * @param {object|null} supervisor
- * @param {number} communityId
- * @returns {object|null}
- */
-function resolveOutbound(supervisor, communityId) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    try {
-      return supervisor.clientForCommunity(communityId) ?? null;
-    } catch (err) {
-      console.error(
-        `[voiceTicker] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
-      );
-      return null;
-    }
-  }
-  if (typeof supervisor.sendChannel === "function") return supervisor;
-  const client = resolveDiscordClient(supervisor);
-  if (client) {
-    try {
-      return getDiscordOutbound(client);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
+
+
 
 async function runVoiceTick(supervisor) {
   const client = resolveDiscordClient(supervisor);

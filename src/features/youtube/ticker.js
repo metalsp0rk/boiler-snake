@@ -12,44 +12,16 @@ const {
   markYoutubeChannelCheckedAt,
   updateGuildSettings,
 } = require("../../db");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 
-/**
- * Resolve the OutboundClient that posts for one community row
- * (roadmap/fluxer.md § Scheduler jobs: "Row's communityId → client").
- *
- * Accepts the PR 7 supervisor `{ discord, fluxer, clientForCommunity }`, a
- * pre-resolved OutboundClient, or a legacy raw discord.js client (transitional
- * shim so pre-cutover call sites — e.g. the EventSub dispatcher — keep working).
- * Returns null when no ready client exists; callers log and skip the row.
- *
- * @param {object|null} supervisor
- * @param {number} communityId
- * @returns {object|null} OutboundClient
- */
+const {
+  resolveOutbound: coreResolveOutbound,
+} = require("../../core/outbound");
+
 function resolveOutbound(supervisor, communityId) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    try {
-      return supervisor.clientForCommunity(communityId) ?? null;
-    } catch (err) {
-      console.error(
-        `[youtube] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
-      );
-      return null;
-    }
-  }
-  if (typeof supervisor.sendChannel === "function") return supervisor;
-  if (supervisor.guilds || supervisor.channels || supervisor.users) {
-    // Legacy raw discord.js client (pre-PR 7 call site).
-    try {
-      return getDiscordOutbound(supervisor);
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  return coreResolveOutbound(supervisor, communityId, { label: "youtube" });
 }
+
+
 
 /**
  * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and
