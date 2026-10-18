@@ -277,6 +277,14 @@ function createWebApp(options = {}) {
   //      /auth/ mutations, and attaches req.requireCsrf for route-level
   //      opt-in elsewhere (createRequireCsrf() is the standalone factory).
   app.use("/auth", createAuthRateLimit());
+  // #406 (C1-12): /oauth/* (cmd_perms + gcal callbacks) are the same
+  // login-free OAuth shapes as /auth/* but mounted WITHOUT the limiter —
+  // §8.7's "OAuth surfaces get per-IP limits" doctrine held for two of
+  // the four flows. The signed, purpose-bound, single-use state is the
+  // AUTHENTICATION, not a brake: an attacker spraying junk states hits
+  // the HMAC + nonce-map path unthrottled. Same limiter, second mount
+  // (its OWN buckets — /auth exhaustion never DoSes the callbacks).
+  app.use("/oauth", createAuthRateLimit());
   app.use(createBodyCapMiddleware());
   app.use(createMutationRateLimit());
   app.use(createCsrfMiddleware());
