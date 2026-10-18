@@ -62,38 +62,116 @@ function toPlainEmbed(embed) {
   return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
 }
 
+/**
+ * #441 (audit INT-5): the ONE Google Data API transport. The four former
+ * call sites each JSON.parse'd the body with NO status-code check, so a
+ * 403 quotaExceeded / 400 invalid-key response parsed "fine" and every
+ * caller reported the WRONG cause ("No channel data found") while the
+ * whole fleet's notifications silently died until UTC midnight.
+ *
+ * Contract: never throws; returns { ok:true, data } or
+ * { ok:false, status, error } with a CAUSE string that never contains the
+ * API key. Callers surface or log that cause — never a bare null reason.
+ */
+const GOOGLE_API_HOST = "www.googleapis.com";
+
+/** Pure response interpreter — split out so the decision is unit-testable. */
+function interpretGoogleResponse(status, rawBody) {
+  let data = null;
+  try {
+    data = JSON.parse(rawBody);
+  } catch {
+    /* fall through */
+  }
+  if (status < 200 || status >= 300) {
+    const reason =
+      data?.error?.message || data?.error?.errors?.[0]?.reason || "api error";
+    return { ok: false, status, error: `${status} ${reason}` };
+  }
+  if (!data || typeof data !== "object") {
+    return { ok: false, status, error: `${status} non-JSON response` };
+  }
+  if (data.error) {
+    const reason =
+      data.error.message || data.error.errors?.[0]?.reason || "api error";
+    return { ok: false, status, error: `${status} ${reason}` };
+  }
+  return { ok: true, data };
+}
+
+/**
+ * Identical repeated API failures (quota dying for EVERY channel every
+ * tick) must not scream over the logs every 5 minutes — warn once per
+ * 30 min per distinct message, quieter lines in between.
+ */
+const apiIssueLastLogged = new Map();
+function logApiIssue(where, message) {
+  const k = `${where}|${message}`;
+  const nowMs = Date.now();
+  const last = apiIssueLastLogged.get(k) || 0;
+  if (nowMs - last >= 30 * 60 * 1000) {
+    apiIssueLastLogged.set(k, nowMs);
+    if (apiIssueLastLogged.size > 128) apiIssueLastLogged.clear();
+    console.warn(
+      `[youtube] Google API issue (${where}): ${message} — check YOUTUBE_API_KEY / quota (re-warns every 30 min)`,
+    );
+  } else {
+    console.log(`[youtube] Google API issue (${where}): ${message}`);
+  }
+}
+
+/**
+ * GET against the YouTube Data API. `pathname` MUST NOT contain the key —
+ * it is appended here and must not leak into any error string.
+ * Swappable for tests (setGoogleGetForTests), like lavalink's manager seam.
+ */
+let googleGet = (pathname) =>
+  new Promise((resolve) => {
+    const sep = pathname.includes("?") ? "&" : "?";
+    const req = https.request(
+      {
+        hostname: GOOGLE_API_HOST,
+        port: 443,
+        path: `${pathname}${sep}key=${encodeURIComponent(process.env.YOUTUBE_API_KEY || "")}`,
+        method: "GET",
+      },
+      (res) => {
+        let raw = "";
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          resolve(interpretGoogleResponse(res.statusCode || 0, raw));
+        });
+      },
+    );
+    req.on("error", (err) => {
+      resolve({ ok: false, status: 0, error: String(err?.message || err) });
+    });
+    req.end();
+  });
+
+function setGoogleGetForTests(fn) {
+  const previous = googleGet;
+  googleGet = fn || previous;
+  return previous;
+}
+
 async function lookupChannelByName(username) {
   if (!process.env.YOUTUBE_API_KEY) {
     return null;
   }
 
   try {
-    // Search for channels matching this username
-    const response = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: "www.googleapis.com",
-        port: 443,
-        path: `/youtube/v3/search?part=snippet&type=channel&q=${encodeURIComponent(username)}&maxResults=5&key=${process.env.YOUTUBE_API_KEY}`,
-        method: "GET",
-      };
-
-      const req = https.request(options, (res) => {
-        let data = "";
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (err) {
-            reject(err);
-          }
-        });
-      });
-
-      req.on("error", reject);
-      req.end();
-    });
+    // Search for channels matching this username (burns 100 quota units)
+    const res = await googleGet(
+      `/youtube/v3/search?part=snippet&type=channel&q=${encodeURIComponent(username)}&maxResults=5`,
+    );
+    if (!res.ok) {
+      logApiIssue(`channel search @${username}`, res.error);
+      return null;
+    }
+    const response = res.data;
 
     if (response.items && response.items.length > 0) {
       // Find exact or close match
@@ -157,45 +235,21 @@ async function fetchYouTubeFeed(channelId) {
 
   try {
     // Step 1: Get uploads playlist ID
-    const videosXml = require("rss-parser");
-
-    const channelResponse = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: "www.googleapis.com",
-        port: 443,
-        path: `/youtube/v3/channels?part=contentDetails&id=${channelId}&key=${process.env.YOUTUBE_API_KEY}`,
-        method: "GET",
-      };
-
-      const req = https.request(options, (res) => {
-        let data = "";
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (err) {
-            reject(err);
-          }
-        });
-      });
-
-      req.on("error", reject);
-      req.end();
-    });
+    const chRes = await googleGet(
+      `/youtube/v3/channels?part=contentDetails&id=${channelId}`,
+    );
+    if (!chRes.ok) {
+      // #441: quota/key/transport failures name THEMSELVES now — the old
+      // code parsed the 403 body and reported "no channel data" instead.
+      logApiIssue(`channel lookup ${channelId}`, chRes.error);
+      return { error: `YouTube API: ${chRes.error}` };
+    }
+    const channelResponse = chRes.data;
 
     if (!channelResponse.items || channelResponse.items.length === 0) {
-      // Google puts the real reason IN the body on a bad key / quota /
-      // deleted channel — surface it instead of dropping it on the floor.
-      const apiErr = channelResponse.error?.message;
-      console.log(
-        `[youtube] No channel data found for ${channelId}${apiErr ? `: ${apiErr}` : ""}`,
-      );
+      console.log(`[youtube] No channel data found for ${channelId}`);
       return {
-        error: apiErr
-          ? `YouTube API: ${apiErr}`
-          : `no channel data for ${channelId} (deleted channel or wrong id?)`,
+        error: `no channel data for ${channelId} (deleted channel or wrong id?)`,
       };
     }
 
@@ -207,31 +261,14 @@ async function fetchYouTubeFeed(channelId) {
     }
 
     // Step 2: Get videos from uploads playlist
-    const videoResponse = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: "www.googleapis.com",
-        port: 443,
-        path: `/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${uploadsPlaylistId}&key=${process.env.YOUTUBE_API_KEY}`,
-        method: "GET",
-      };
-
-      const req = https.request(options, (res) => {
-        let data = "";
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (err) {
-            reject(err);
-          }
-        });
-      });
-
-      req.on("error", reject);
-      req.end();
-    });
+    const plRes = await googleGet(
+      `/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${uploadsPlaylistId}`,
+    );
+    if (!plRes.ok) {
+      logApiIssue(`playlist items ${uploadsPlaylistId}`, plRes.error);
+      return { error: `YouTube API (playlist): ${plRes.error}` };
+    }
+    const videoResponse = plRes.data;
 
     // Convert to RSS feed format for compatibility
     // Include liveBroadcastContent if available for accurate live detection
@@ -833,31 +870,12 @@ async function fetchChannelInfo(channelId) {
   if (!process.env.YOUTUBE_API_KEY) return null;
 
   try {
-    const response = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: "www.googleapis.com",
-        port: 443,
-        path: `/youtube/v3/channels?part=snippet&id=${channelId}&key=${process.env.YOUTUBE_API_KEY}`,
-        method: "GET",
-      };
-
-      const req = https.request(options, (res) => {
-        let data = "";
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch (err) {
-            reject(err);
-          }
-        });
-      });
-
-      req.on("error", reject);
-      req.end();
-    });
+    const res = await googleGet(`/youtube/v3/channels?part=snippet&id=${channelId}`);
+    if (!res.ok) {
+      logApiIssue(`channel info ${channelId}`, res.error);
+      return null;
+    }
+    const response = res.data;
 
     if (response.items && response.items.length > 0) {
       const snippet = response.items[0].snippet;
@@ -901,4 +919,7 @@ module.exports = {
   processChannel,
   runYoutubeTick,
   defaultDeps,
+  // tests (#441): transport seam + pure response interpretation
+  interpretGoogleResponse,
+  setGoogleGetForTests,
 };
