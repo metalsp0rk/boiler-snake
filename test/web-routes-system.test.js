@@ -67,6 +67,10 @@ const USER_SENIOR = "428190112345678902";
 const USER_STAFF = "428190112345678903";
 const USER_PLAIN = "428190112345678904";
 const USER_ADMIN2 = "428190112345678905"; // fallback-secret probe
+// #405 (C1-6): the system-wide Web-sessions console is gated by a GLOBAL
+// allow-list; this harness's admin is the deployment operator.
+process.env.WEB_GLOBAL_ADMIN_IDS = `${USER_ADMIN},${USER_ADMIN2}`;
+
 
 const GUILD_A = "100000000000000001";
 const GUILD_B = "200000000000000002";
@@ -1189,5 +1193,46 @@ describe("System Web sessions — admin global list + revoke (Phase 4 component 
       assert.equal(res.status, 405, `${method} byte-405`);
       assert.equal(await res.text(), "Method not allowed");
     }
+  });
+
+  // ---- #405 (C1-6): the GLOBAL console needs a GLOBAL key ------------------
+
+  it("#405: an admin WITHOUT the global allow-list gets a fail-closed 403 that names the knob", async () => {
+    await withEnv({ WEB_GLOBAL_ADMIN_IDS: "777000777" }, async () => {
+      const r = await hit(SYS_SESS, { key: "admin" });
+      assert.equal(r.res.status, 403, "in-guild admin is no longer the key to the SYSTEM-WIDE console");
+      assert.ok(r.body.includes("WEB_GLOBAL_ADMIN_IDS"), "actionable refusal — the exact knob is named (rule 3)");
+      assert.ok(r.body.includes("Nothing was changed"));
+    });
+    await withEnv({ WEB_GLOBAL_ADMIN_IDS: undefined }, async () => {
+      const r = await hit(SYS_SESS, { key: "admin" });
+      assert.equal(r.res.status, 403, "unset allow-list = CLOSED, not legacy-open");
+    });
+    const staff = await hit(SYS_SESS, { key: "staff" });
+    assert.equal(staff.body, "Forbidden", "the tier ladder fires first and stays GENERIC — the new gate never leaks to under-tier callers");
+  });
+
+  it("#405: allow-list parsing filters garbage and trims — the listed admin still gets the page", async () => {
+    await withEnv({ WEB_GLOBAL_ADMIN_IDS: `not-a-user,  ${USER_ADMIN} ,7` }, async () => {
+      const r = await hit(SYS_SESS, { key: "admin" });
+      assert.equal(r.res.status, 200, "padded + junk-mixed list: the valid id still resolves (5–20-digit rule)");
+      assert.ok(r.body.includes("<h1>Web sessions"));
+    });
+  });
+
+  it("#405: the revoke POST flashes global_admin_required with ZERO writes when the caller is not global", async () => {
+    const target = seedTargetSession();
+    const before = revokeRows().length;
+    await withEnv({ WEB_GLOBAL_ADMIN_IDS: undefined }, async () => {
+      const out = await postForm("admin", {
+        _csrf: csrfFor("admin"),
+        target_user_id: USER_PLAIN,
+        created_at: String(target.createdAt),
+      });
+      assert.equal(out.res.status, 302);
+      assert.match(out.location, /error=global_admin_required/, "zero-write refusal rides the PRG flash vocabulary");
+    });
+    assert.equal(revokeRows().length, before, "the refusal audits nothing — no audit row, no revoke");
+    assert.ok(sessionPolicy.getSession(target.id), "the target session is untouched");
   });
 });
