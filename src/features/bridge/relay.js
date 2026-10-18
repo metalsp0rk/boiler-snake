@@ -1720,6 +1720,28 @@ function createRelayWorker(deps = {}) {
   }
 
   /**
+   * #411 (BRG-5): drop the links + snapshot rows of a source message whose
+   * copies are confirmed gone (delete relay drained). Pruning is exactly
+   * idempotent, so the empty-links drain calling it too is harmless; a
+   * failure here is cosmetic (rows are dead weight, not wrong behavior) —
+   * log with ids, never break the drain (partial-failure rule).
+   */
+  function pruneRelayRows(bridge, payload) {
+    try {
+      const { links, snapshots } = repo.pruneBridgeMessageRelay(bridge.id, payload.srcMessageId);
+      if (links + snapshots > 0) {
+        console.log(
+          `[bridge] worker: pruned ${links} link + ${snapshots} snapshot rows for ${bridge.public_id} msg ${payload.srcMessageId}`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[bridge] worker: relay-row prune failed for ${bridge.public_id} msg ${payload?.srcMessageId}: ${err?.message || err}`,
+      );
+    }
+  }
+
+  /**
    * Resolve spool bytes for one descriptor; a spool MISS refetches the
    * source message for fresh signed URLs (spec §10.10 Restart: "Missing
    * spool → fetchMessage fallback", best-effort — the source may be gone).
@@ -2269,8 +2291,11 @@ function createRelayWorker(deps = {}) {
     const links = repo.listBridgeMessageLinks(bridge.id, payload.srcMessageId);
     if (links.length === 0) {
       // Nothing was ever copied (or a race already cleaned the links): the
-      // delete has no destination work — drain the row.
+      // delete has no destination work — drain the row. #411: STILL prune —
+      // a snapshot may exist from an enqueue that never linked, and the
+      // source message is gone, so its edit-coalescing row is dead too.
       repo.markOutboxDone(row.id);
+      pruneRelayRows(bridge, payload);
       return;
     }
     for (const link of links) {
@@ -2304,14 +2329,23 @@ function createRelayWorker(deps = {}) {
       if (result.skipped) {
         // §10.10: a missing webhook means SKIP deletions — webhook removal
         // destroys its own messages on both platforms, so the copies are
-        // already gone. Record last_error and drain the row.
+        // already gone. Record last_error and drain the row. Gone copies
+        // mean dead links rows: prune them with the drain (#411).
         repo.setBridgeLastError(bridge.id, result.reason);
         repo.markOutboxDone(row.id);
+        pruneRelayRows(bridge, payload);
         return;
       }
     }
     const done = repo.markOutboxDone(row.id);
     if (done) repo.setBridgeLastError(bridge.id, null);
+    // #411 (BRG-5): the copies are deleted — the links + snapshot rows for
+    // this source message have NO future reader (edits for a deleted
+    // message never arrive; a repeat delete drains in the empty-links path
+    // above). Prune them or the echo-gate reload, supersession scans and
+    // the tables themselves grow one dead row-set per relayed message
+    // FOREVER (only disconnect ever cleared them).
+    pruneRelayRows(bridge, payload);
   }
 
   /**
