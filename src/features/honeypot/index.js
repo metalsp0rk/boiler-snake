@@ -1357,13 +1357,26 @@ async function handleHoneypot(commandCtx, featureCtx) {
         actor: commandCtx.user,
         changes: [`Role: <@&${role.id}> (\`${role.id}\`)`],
       }).catch(() => {});
+      // #439 (audit F2-3): the ban-role ENFORCEMENT leg listens on the
+      // Discord GuildMemberUpdate gateway event; the Fluxer gateway surface
+      // has no member-role-update dispatch at all, so a role grant bans
+      // nobody there. Never promise "banned immediately" on Fluxer — the
+      // row still saves (it arms the moment that dispatch lands, and on
+      // Discord servers).
       await commandCtx.reply({
         content:
-          `Marked <@&${role.id}> as a **honeypot ban role**.\n` +
-          `Anyone who is **granted** this role will be banned immediately ` +
-          `(except members with honeypot exempt roles).\n` +
-          `Tip: configure \`/staff role add\` (or \`/honeypot exempt add\`) for staff first. ` +
-          `Members who already have the role are not retroactively banned.`,
+          commandCtx.platform === "fluxer"
+            ? `Marked <@&${role.id}> as a **honeypot ban role**.\n` +
+              `⚠️ **Not enforced on Fluxer for now**: the gateway delivers no ` +
+              `member-role updates, so granting this role bans nobody here ` +
+              `(channel and warning-reaction honeypots DO still work). The ` +
+              `configuration is kept and arms automatically once member-role ` +
+              `events exist.`
+            : `Marked <@&${role.id}> as a **honeypot ban role**.\n` +
+              `Anyone who is **granted** this role will be banned immediately ` +
+              `(except members with honeypot exempt roles).\n` +
+              `Tip: configure \`/staff role add\` (or \`/honeypot exempt add\`) for staff first. ` +
+              `Members who already have the role are not retroactively banned.`,
         sensitive: true,
       });
       return;
@@ -1406,8 +1419,16 @@ async function handleHoneypot(commandCtx, featureCtx) {
         return;
       }
       const lines = rows.map((r) => `- <@&${r.role_id}>`);
+      // #439: name the dark enforcement arm instead of letting the list
+      // imply bans happen on Fluxer.
+      const darkNote =
+        commandCtx.platform === "fluxer"
+          ? "\n\n⚠️ Not enforced on Fluxer for now — the gateway delivers no " +
+            "member-role updates, so granting these roles bans nobody here. " +
+            "Channel and warning-reaction honeypots still work."
+          : "";
       await commandCtx.reply({
-        content: `**Honeypot ban roles** (granting these bans the member):\n${lines.join("\n")}`,
+        content: `**Honeypot ban roles** (granting these bans the member):\n${lines.join("\n")}${darkNote}`,
         sensitive: true,
       });
       return;
