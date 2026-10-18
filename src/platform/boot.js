@@ -384,23 +384,12 @@ async function boot({
    * login promise exactly once, so a later disconnect/reconnect loop can
    * never reach this path.
    */
-  async function markDiscordTerminal(cause, deadClient) {
+  function markDiscordTerminal(cause, deadClient) {
     console.error(
       `[boot] discord login failed: ${cause} — endpoint disabled for this process; ` +
         "features arm on the surviving endpoint(s)",
     );
     discordTerminal = true;
-    // Release the dead client best-effort so no internal timer/socket of
-    // the failed handshake keeps the process or the drain hostage.
-    try {
-      if (deadClient && typeof deadClient.destroy === "function") {
-        await deadClient.destroy();
-      }
-    } catch (err) {
-      console.error(
-        `[boot] discord cleanup after failed login: ${err?.message || err}`,
-      );
-    }
     // Back to "as if Discord were not configured" — every feature already
     // treats supervisor.discord === null as its degrade signal.
     degradedDiscordHold = false; // #392: terminal beats degraded (real null now)
@@ -408,6 +397,23 @@ async function boot({
     // The gate may now open: immediately when a surviving endpoint is
     // already ready, otherwise when that endpoint's ready path fires.
     startFeaturesOnce();
+    // #388 (A2-1): releasing the dead client runs DETACHED, after the gate
+    // opened — never before it. The awaited destroy used to serialize the
+    // only remaining gate trigger behind a socket teardown that discord.js
+    // may never finish (half-open gateway after a failed handshake): one
+    // hung destroy = features unarmed forever + a boot() parked on the
+    // same await — the C7 zombie re-invited through the cleanup door.
+    // Best-effort still means best-effort: the settle/failure is logged,
+    // and nothing awaits it.
+    if (deadClient && typeof deadClient.destroy === "function") {
+      Promise.resolve()
+        .then(() => deadClient.destroy())
+        .catch((err) => {
+          console.error(
+            `[boot] discord cleanup after failed login: ${err?.message || err}`,
+          );
+        });
+    }
   }
 
   /** One boolean promise per configured endpoint: true = that endpoint came up. */
