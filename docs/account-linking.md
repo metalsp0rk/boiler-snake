@@ -48,7 +48,7 @@ Check: /link status  ·  !link status
 
 A code is rejected with a specific reason if it is **expired, already used, malformed, posted on the same platform that created it, or redeemed in a community that has no active bridge to the creating community**. If either account is already linked, the private reply (ephemeral on Discord, DM on Fluxer) names the side that's linked and the date its existing link was made — `!link remove` (or `/link remove`) on that side clears it first. The channel-visible reply on Fluxer for those conflict cases only says the link already exists: it never names who holds it and never echoes the code.
 
-Fluxer has no ephemeral replies, so anything private rides the **DM path**: `!link create` sends the code to your DM (the channel never shows one), conflict details go by DM (the channel only says a link already exists), and the replies that name your linked peer — successful `connect`, `status`, `remove` — are **DM-first too** (issue #276): the channel gets a scrubbed ack that says what happened without publishing *your* pairing to everyone watching. If a DM can't be delivered the channel reply is just that delivery error (plus the bare outcome, e.g. "linked, code spent") — never the private body. Treat a minted code like a temporary ticket: it can be redeemed once, it dies in 15 minutes, and it is worthless on the platform it was created on.
+Fluxer has no ephemeral replies, so anything private rides the **DM path**: `!link create` sends the code to your DM (the channel never shows one), conflict details go by DM (the channel only says a link already exists), and the replies that name your linked peer — successful `connect`, `status`, `remove` — are **DM-first too** (issue #276): the channel gets a scrubbed ack that says what happened without publishing *your* pairing to everyone watching. If a DM can't be delivered the channel reply is just that delivery error (plus the bare outcome, e.g. "linked, code spent") — never the private body. Treat a minted code like a temporary ticket: it can be redeemed once, it dies in 15 minutes, and it is worthless on the platform it was created on. Codes also never stack up (#426): minting a new code **voids your previous unspent one** (one live code at a time), and `/link remove` voids any unspent codes on **both** sides. When someone redeems your code, the bot **DMs you** that it happened — naming the new peer and the defaults that start (XP mirroring 100% both ways, memory mirroring on). If that notice arrives as a surprise, run `/link remove` / `!link remove` and check your XP.
 
 ## Commands
 
@@ -56,12 +56,12 @@ Every verb exists on both platforms — `/link …` on Discord, `!link …` on F
 
 | Subcommand | What it does |
 |------------|--------------|
-| `/link create` · `!link create` | Mint a one-time link code for you. Shown once — ephemeral on Discord, by DM on Fluxer. |
+| `/link create` · `!link create` | Mint a one-time link code for you. Shown once — ephemeral on Discord, by DM on Fluxer. Replaces any unspent code you minted earlier (one live code at a time, #426). |
 | `/link connect <code>` · `!link connect <code>` | Redeem a code from the other platform's side. |
 | `/link status` · `!link status` | Show your link: the peer account, the date it was created, mirror percentages, memory-mirror state. On Fluxer the pairing is delivered by DM; the channel only gets an ack. |
 | `/link config <direction> <pct>` | Set one mirror direction. Direction is from the **source** side's point of view: `discord-to-fluxer` or `fluxer-to-discord`. Integer 0–100. |
 | `/link config memory on\|off` | Turn gork memory mirroring on/off for the link. |
-| `/link remove` · `!link remove` | Delete your link. Mirrored data already written stays (see Limitations). |
+| `/link remove` · `!link remove` | Delete your link. Mirrored data already written stays (see Limitations). Unspent link codes on both sides are voided (#426). |
 
 Fluxer uses named-style plain arguments (`!link connect LNK-…`, `!link config fluxer-to-discord 50`); the Discord slash command offers the same as options.
 
@@ -97,6 +97,7 @@ Gork's memory extraction writes what it learns about a person into that communit
 
 - **Unlinking is not retroactive.** `/link remove` stops all future mirroring immediately. XP rows and memories that were already mirrored stay where they are — they've been counted into leaderboards, role grants, and gork answers. Removing mirrored *data* has to be done per community (XP: staff XP adjustments; memories: `/gork memory` in that community).
 - **Memory deletes don't cross the link.** Forgetting a memory on one side leaves the far-side copy in place.
+- **The redemption notice is best-effort (#426).** If the bot cannot DM the code's creator (DMs closed, other side unreachable), the link still completes and the failure is only visible in the bot log — a missing notice does not prove nothing was redeemed. When in doubt, `/link status`.
 - **One link per account per community, Discord↔Fluxer only.** No Discord↔Discord or Fluxer↔Fluxer links, and a user can't have two links in the same community.
 - **Bridge teardown doesn't auto-revoke links.** The bridge is verified when the link is created. If the bridge is later disconnected, existing links keep mirroring until the users on both sides run `link remove`.
 - **Rounding drift** at non-round percentages, as above.
