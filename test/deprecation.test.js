@@ -86,3 +86,48 @@ describe("legacy shim end-to-end (src/xp.js)", () => {
     delete require.cache[shimPath];
   });
 });
+
+describe("commands/ stubs joined the regime (#461)", () => {
+  // Neither stub has ANY importer in src/test/scripts (audit H1-1 greps),
+  // so this file is the first to require them — the first-warn assertion is
+  // deterministic per test-file process.
+  const cases = [
+    {
+      file: "../src/commands/definitions.js",
+      expect:
+        "[deprecation] src/commands/definitions.js is deprecated and will be removed in v2 — use per-feature definitions under src/features (the registry collects them)",
+      shape: (mod) => {
+        assert.deepEqual(Object.keys(mod).sort(), ["commandBuilders", "commands", "residualBuilders"]);
+        assert.deepEqual(mod.commands, [], "the stub stays a non-breaking empty export");
+      },
+    },
+    {
+      file: "../src/commands/handlers.js",
+      expect:
+        "[deprecation] src/commands/handlers.js is deprecated and will be removed in v2 — use per-feature handlers under src/features (the registry dispatches them)",
+      shape: (mod) => {
+        assert.equal(typeof mod.registerResidualHandlers, "function");
+        assert.equal(mod.registerHandlers, mod.registerResidualHandlers);
+      },
+    },
+  ];
+
+  for (const { file, expect: expected, shape } of cases) {
+    const p = require.resolve(file);
+    it(`${p.includes("definitions") ? "commands/definitions.js" : "commands/handlers.js"} warns on first require and stays silent after`, () => {
+      const first = captureWarnings(() => require(p));
+      assert.deepEqual(
+        first.lines,
+        [expected],
+        "#461: a stub require must never be a silent success again",
+      );
+      shape(first.result);
+
+      delete require.cache[p];
+      const second = captureWarnings(() => require(p));
+      assert.deepEqual(second.lines, [], "once per process holds for the stubs too");
+      shape(second.result);
+      delete require.cache[p];
+    });
+  }
+});
