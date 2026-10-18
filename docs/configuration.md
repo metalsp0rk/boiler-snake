@@ -101,6 +101,11 @@ FLUXER_INSTANCES=
 FLUXER_COMMAND_PREFIX=!
 # Allow non-loopback http: origins (dev only):
 # FLUXER_ALLOW_INSECURE=1
+# Per-request deadline for ALL Fluxer REST traffic (default 15000 ms,
+# matching discord.js' requestTimeout; invalid/out-of-range values fall back,
+# no off-switch). A wedged instance surfaces as a named timeout error in
+# seconds instead of pinning callers at the ~300 s transport default (#436):
+# FLUXER_REQUEST_TIMEOUT_MS=15000
 ```
 
 `CLIENT_ID` / `CLIENT_SECRET` stay the **Discord** app's credentials. Each Fluxer instance carries its own OAuth `clientId`/`clientSecret` inside `FLUXER_INSTANCES` (used for the web-admin login button). A malformed `FLUXER_INSTANCES` value stops the bot at boot with the specific reason.
