@@ -47,6 +47,33 @@ function addStaffRole(communityId, roleId, level = "senior", addedBy = null) {
 }
 
 /**
+ * Create the staff-role row ONLY when missing — an existing role keeps its
+ * level (#438, audit F2-2). `/honeypot exempt add` used to call
+ * addStaffRole() without a level, which silently PROMOTED an existing
+ * junior staff role to senior (widening ticket-channel visibility and
+ * senior-only surfaces) as a side effect of a ban-exemption toggle.
+ *
+ * @param {number} communityId
+ * @param {string} roleId
+ * @param {string} level level applied ONLY on creation
+ * @param {string|null} [addedBy=null]
+ * @returns {{ created: boolean, row: object }} the row as it stands now
+ */
+function insertStaffRoleIfMissing(communityId, roleId, level, addedBy = null) {
+  assertCommunityId(communityId);
+  const lvl = normalizeStaffLevel(level);
+  const addedByValue = addedBy == null ? null : String(addedBy);
+  const info = db
+    .prepare(`
+    INSERT INTO staff_roles (community_id, role_id, level, created_at, added_by)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(community_id, role_id) DO NOTHING
+  `)
+    .run(communityId, String(roleId), lvl, now(), addedByValue);
+  return { created: info.changes === 1, row: getStaffRole(communityId, roleId) };
+}
+
+/**
  * Change the level of an existing staff role.
  * @param {number} communityId
  * @param {string} roleId
@@ -155,6 +182,7 @@ module.exports = {
   STAFF_LEVELS,
   normalizeStaffLevel,
   addStaffRole,
+  insertStaffRoleIfMissing,
   setStaffRoleLevel,
   removeStaffRole,
   listStaffRoles,

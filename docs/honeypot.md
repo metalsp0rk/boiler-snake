@@ -35,7 +35,10 @@ Ban-role checks are **fail-safe**: a ban fires only when the bot can see the mem
 
 Honeypot **exemption uses the same list as guild staff roles** (`staff_roles` table / `/staff`). There is no separate honeypot-only exempt table.
 
-- `/honeypot exempt add` is the **same operation** as `/staff role add` (documented in code as such)
+- `/honeypot exempt add` stores into the same `staff_roles` table as `/staff role add`,
+  **but it never changes staff level** (#438): an existing staff role keeps its level
+  (junior stays junior), and a brand-new exempt role is created as **junior** — promote
+  deliberately with `/staff role setlevel`
 - `/honeypot exempt del` removes the role from **staff roles** (and therefore from honeypot exemption)
 - `/honeypot exempt list` lists **staff roles** (with a note that they are also used for honeypot exemption)
 
