@@ -204,14 +204,14 @@ describe(
         "This needs Manage Server or a staff role (`/staff`).",
       );
 
-      // BUG #348: the picker copy of `/eventconfig reminders off|on` says
-      // "Stop event reminder pings FOR YOU everywhere" but the handler flips
-      // the GUILD-wide default reminder minutes behind a staff gate — pin the
-      // staff-denial; flip when the copy or the gate is corrected.
+      // #348 FIXED: off/on are now LABELED as the guild-default staff
+      // toggle they always were, and the denial names the mechanism that IS
+      // personal (/eventreminder optout) instead of dead-ending a member
+      // the old picker copy had advertised to.
       const off = await configSlash("reminders", "off", [], env.ids.outsider);
       assert.equal(
         await replyText(off),
-        "This needs Manage Server or a staff role (`/staff`).",
+        "This needs Manage Server or a staff role (`/staff`). To mute YOURSELF only, use `/eventreminder optout`.",
       );
     });
 

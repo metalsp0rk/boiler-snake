@@ -539,7 +539,15 @@ async function handleReminders(interaction, ctx) {
 
   if (sub === "off" || sub === "on") {
     const gate = staffGate(interaction, communityId);
-    if (!gate.ok) return fail(interaction, gate.error);
+    if (!gate.ok) {
+      // #348 (rule 3): these arms used to read as personal in the picker,
+      // so the staff denial dead-ended members who were told the command
+      // was THEIRS. It isn't — so point at the mechanism that is.
+      return fail(
+        interaction,
+        `${gate.error} To mute YOURSELF only, use \`/eventreminder optout\`.`
+      );
+    }
     const minutes = settings.default_reminder_minutes;
     const next = sub === "off" ? 0 : minutes === 0 ? 15 : minutes;
     repo.updateEventGuildSettings(communityId, { default_reminder_minutes: next });
