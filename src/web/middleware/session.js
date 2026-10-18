@@ -12,10 +12,16 @@
  *    guildScope re-points it at the community-matched session (PR 10).
  *  - req.user       — { userId, discordTag } from req.webSession or null.
  *
- * NEVER writes the response: login/logout (subtask 06, and the Fluxer login
- * in PR 10) own Set-Cookie; this middleware cannot perturb the Phase 0a
- * byte-parity surface — anonymous requests do zero DB work and identical
- * bytes flow through.
+ * Response writes: EXACTLY ONE kind — the renewal of a touched identity's
+ * OWN cookie (#401/C1-1). Login/logout (subtask 06 + PR 10) still own
+ * issuance and clearing; here a session whose row just slid re-declares its
+ * remaining life via Set-Cookie so the browser stops deleting a live cookie
+ * at login_time + TTL (§8.3 sliding expiry was unreachable client-side).
+ * A renewal rides ONLY when the touch fires (throttled below), the identity
+ * matched its slot, and the row is genuinely alive — anonymous and untou-
+ * ched requests stay byte-for-byte the Phase 0a parity surface. A later
+ * logout response REPLACES the renewal with the clear cookie (setHeader
+ * semantics), so logout can never be poisoned by an earlier renewal.
  *
  * Hardening (§8.7): malformed / tampered / expired / oversized cookie values
  * all resolve to anonymous; the oversized gate runs before any lookup; a
@@ -23,7 +29,7 @@
  *
  * Sliding bumps are throttled (TOUCH_MIN_INTERVAL_MS) so a busy page never
  * hammer-writes the SQLite file shared with the bot process. Each cookie's
- * session is touched under its OWN gate.
+ * session is touched under its OWN gate — and so is its renewal.
  */
 
 const {
@@ -34,6 +40,7 @@ const {
   getSession,
   touchSession,
   shouldTouch,
+  renewSessionCookie,
 } = require("../auth/sessions");
 
 /**
@@ -88,6 +95,9 @@ function createSessionMiddleware(options = {}) {
   const now = options.now || Date.now;
   const minTouchIntervalMs = options.touchIntervalMs ?? TOUCH_MIN_INTERVAL_MS;
   const sessions = options.sessions || { getSession, touchSession, shouldTouch };
+  // #401: seam-injectable for tests; the real renewer mirrors a row's
+  // remaining life into Max-Age.
+  const renewCookie = options.renewSessionCookie || renewSessionCookie;
 
   /**
    * Resolve one cookie into a live session, enforcing the cookie/platform
@@ -101,30 +111,47 @@ function createSessionMiddleware(options = {}) {
    * @param {string} expectedPlatform
    * @returns {object|null}
    */
-  function resolveCookieSession(id, expectedPlatform) {
-    if (!id) return null;
+  /**
+   * @returns {{session: object|null, renewed: string|null}} `renewed` is a
+   * Set-Cookie earned ONLY when the row was touched AND the identity was
+   * honored — a dropped slot (lookup failure, dead row, platform mismatch)
+   * never renews anything.
+   */
+  function resolveCookieSession(id, expectedPlatform, slotName) {
+    if (!id) return { session: null, renewed: null };
     let session = null;
+    let renewed = null;
     try {
       const at = now();
       session = sessions.getSession(id, at);
       if (session && sessions.shouldTouch(session, at, minTouchIntervalMs)) {
-        session = sessions.touchSession(session, at) || session;
+        const touched = sessions.touchSession(session, at);
+        if (touched) {
+          session = touched;
+          // #401: the row just slid — re-declare its remaining life on the
+          // SAME slot the identity arrived in (never the other platform's
+          // cookie). Emitted only if the identity below survives the gates.
+          renewed = renewCookie(touched, at, slotName);
+        }
       }
     } catch (err) {
       // Fail closed: a broken lookup must never authenticate a request, and
       // must not crash the handler chain either.
       console.warn("[web] session lookup failed:", err?.message || err);
-      return null;
+      return { session: null, renewed: null };
     }
-    if (!session) return null;
+    if (!session) return { session: null, renewed: null };
     const platform = session.platform ?? "discord";
     if (platform !== expectedPlatform) {
+      // A mismatch drops the identity — and its earned renewal with it: the
+      // cookie on this slot is not this row's cookie to keep alive.
+      renewed = null;
       console.warn(
         `[web] session cookie/platform mismatch: ${expectedPlatform} cookie carried a "${platform}" session — dropped`
       );
-      return null;
+      return { session: null, renewed: null };
     }
-    return session;
+    return { session, renewed };
   }
 
   return function sessionMiddleware(req, res, next) {
@@ -134,14 +161,10 @@ function createSessionMiddleware(options = {}) {
     req.user = null;
 
     const header = req.headers && req.headers.cookie;
-    req.discordSession = resolveCookieSession(
-      parseSessionCookie(header, cookieName),
-      "discord"
-    );
-    req.fluxerSession = resolveCookieSession(
-      parseSessionCookie(header, fxCookieName),
-      "fluxer"
-    );
+    const discord = resolveCookieSession(parseSessionCookie(header, cookieName), "discord", cookieName);
+    const fluxer = resolveCookieSession(parseSessionCookie(header, fxCookieName), "fluxer", fxCookieName);
+    req.discordSession = discord.session;
+    req.fluxerSession = fluxer.session;
 
     // Today's contract for every Discord-scoped surface (/, login, session
     // console, /auth/logout): req.webSession + req.user follow the DISCORD
@@ -153,6 +176,20 @@ function createSessionMiddleware(options = {}) {
         userId: req.discordSession.userId,
         discordTag: req.discordSession.discordTag,
       };
+    }
+
+    // #401 (C1-1): emit the renewals the slots EARNED above (touch fired and
+    // the identity was honored). appendHeader keeps any Set-Cookie a later
+    // handler adds; a logout's own setHeader clear still wins outright.
+    const earned = [discord.renewed, fluxer.renewed].filter(Boolean);
+    if (earned.length > 0 && res) {
+      if (typeof res.appendHeader === "function") {
+        for (const cookie of earned) res.appendHeader("Set-Cookie", cookie);
+      } else if (typeof res.setHeader === "function" && typeof res.getHeader === "function") {
+        const prev = res.getHeader("Set-Cookie");
+        const list = Array.isArray(prev) ? prev.slice() : prev ? [prev] : [];
+        res.setHeader("Set-Cookie", list.concat(earned));
+      }
     }
     return next();
   };
