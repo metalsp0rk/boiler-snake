@@ -647,8 +647,17 @@ async function tryAwardMessageXp(outbound, message, options = {}) {
   const communityId = Number.isSafeInteger(message.communityId)
     ? message.communityId
     : ensureCommunity({
-        platform: "discord",
-        instanceKey: "discord",
+        // #431 (audit XE-4): this fallback used to HARDCODE platform
+        // "discord". The pipeline resolves communityId for Fluxer at its own
+        // edge, but its catch DELIBERATELY continues on a transient failure
+        // — the Fluxer message then landed here and minted a phantom
+        // DISCORD communities row keyed by a Fluxer guild id (decay then
+        // hammering client.guilds.fetch on it forever). A
+        // platform-agnostic step must resolve through the message's OWN
+        // platform; a retry with the right platform is also the correct
+        // self-heal for the transient case.
+        platform: message.platform || "discord",
+        instanceKey: message.instanceKey || "discord",
         externalGuildId,
       });
   const settings = getGuildSettings(communityId);
