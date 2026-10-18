@@ -125,6 +125,15 @@ async function ensureBroadcasterSubs(broadcasterId, cfg, deps = {}) {
 /**
  * Delete + untrack a broadcaster's subs (call only when NO guild tracks it
  * anymore — the /twitch remove path checks that first).
+ *
+ * #477 (INT-13): a failed remote delete NO LONGER drops the local row. The
+ * row — subscription_id included — is the only record of the Twitch-side
+ * subscription; deleting it orphaned the sub on Twitch forever (a real
+ * quota bleed: the app quota is small, no later sweep could find the id to
+ * DELETE it, and every new broadcaster then failed create with quota
+ * errors "error"-marked hourly forever). Failure keeps the row as
+ * `prune_pending` and the hourly reconcile prune retries it; a 404 arrives
+ * as ok+gone from helix (already deleted elsewhere → untracking is right).
  */
 async function dropBroadcasterSubs(broadcasterId, deps = {}) {
   const del = deps.deleteEventsubSubscription || deleteEventsubSubscription;
@@ -132,9 +141,17 @@ async function dropBroadcasterSubs(broadcasterId, deps = {}) {
     if (row.subscription_id) {
       const res = await del(row.subscription_id);
       if (!res?.ok) {
+        const error = `delete failed (HTTP ${res?.status ?? "network"})`;
         console.error(
-          `[twitch] EventSub delete failed (${row.type}/${broadcasterId} id=${row.subscription_id}): HTTP ${res?.status ?? "network"}`,
+          `[twitch] EventSub delete failed (${row.type}/${broadcasterId} id=${row.subscription_id}): HTTP ${res?.status ?? "network"} — keeping the row as prune_pending for the next sweep`,
         );
+        db.markTwitchEventsubSubStatus(
+          row.type,
+          broadcasterId,
+          "prune_pending",
+          error.slice(0, 200),
+        );
+        continue;
       }
     }
     db.deleteTwitchEventsubSub(row.type, broadcasterId);
