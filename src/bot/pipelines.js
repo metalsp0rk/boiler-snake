@@ -118,17 +118,10 @@ async function onMessageCreate(outbound, message, opts = {}) {
     if (bridgeRelay.isBridgeCommandLine(message)) {
       // The dispatcher's permission step (and honeypot) read the INTEGER
       // community id — resolve it here exactly as step 2b does for chat.
-      if (message.platform === "fluxer" && message.externalGuildId && !Number.isSafeInteger(message.communityId)) {
-        try {
-          message.communityId = ensureCommunity({
-            platform: "fluxer",
-            instanceKey: message.instanceKey,
-            externalGuildId: message.externalGuildId,
-          });
-        } catch (e) {
-          console.error("[fluxer] community resolve failed:", e?.message || e);
-        }
-      }
+      // #467 (A2-9): the ONE helper (it owns the already-resolved skip +
+      // the log); the inline copy here was the drift the extraction aimed
+      // to prevent.
+      resolveFluxerCommunity(message);
       const hpHit =
         message.platform === "fluxer"
           ? await handleHoneypotFluxerMessage(outbound, message)
@@ -155,17 +148,10 @@ async function onMessageCreate(outbound, message, opts = {}) {
 
     // Fluxer (PR 6): resolve the communities row at this edge — repositories
     // take the integer id. Discord rows are untouched (platform "discord").
-    if (message.platform === "fluxer" && message.externalGuildId) {
-      try {
-        message.communityId = ensureCommunity({
-          platform: "fluxer",
-          instanceKey: message.instanceKey,
-          externalGuildId: message.externalGuildId,
-        });
-      } catch (e) {
-        console.error("[fluxer] community resolve failed:", e?.message || e);
-      }
-    }
+    // #467 (A2-9): through the shared helper — this copy used to re-run
+    // ensureCommunity even when the message already carried one (a fresh
+    // write txn per message, the A2-3 churn).
+    resolveFluxerCommunity(message);
 
     cacheMessage(message);
 
@@ -261,12 +247,23 @@ async function onMessageCreate(outbound, message, opts = {}) {
  * @param {import("discord.js").MessageReaction} reaction
  * @param {import("discord.js").User} user
  */
+/** Guild id for reaction logs when even the (partial) message lacks one. */
+function interactionGuildHint(reaction) {
+  return reaction.guildId ?? reaction.message?.guild?.id ?? null;
+}
+
 async function onMessageReactionAdd(client, reaction, user) {
   try {
     if (reaction.partial) {
       try {
         await reaction.fetch();
-      } catch {
+      } catch (err) {
+        // #467 (A2-12): the drop used to be silent — exactly where
+        // "role didn't get granted" dead-ends land. Log the identity +
+        // cause, then skip this reaction (nothing more we can do).
+        console.error(
+          `[reaction] partial fetch failed (message=${reaction.message?.id ?? "?"} guild=${reaction.message?.guildId ?? interactionGuildHint(reaction)} emoji=${reaction.emoji?.name ?? reaction.emoji?.id ?? "?"} user=${user?.id ?? "?"}): ${err?.message || err}`,
+        );
         return;
       }
     }
@@ -312,7 +309,13 @@ async function onMessageReactionRemove(client, reaction, user) {
     if (reaction.partial) {
       try {
         await reaction.fetch();
-      } catch {
+      } catch (err) {
+        // #467 (A2-12): the drop used to be silent — exactly where
+        // "role didn't get granted" dead-ends land. Log the identity +
+        // cause, then skip this reaction (nothing more we can do).
+        console.error(
+          `[reaction] partial fetch failed (message=${reaction.message?.id ?? "?"} guild=${reaction.message?.guildId ?? interactionGuildHint(reaction)} emoji=${reaction.emoji?.name ?? reaction.emoji?.id ?? "?"} user=${user?.id ?? "?"}): ${err?.message || err}`,
+        );
         return;
       }
     }

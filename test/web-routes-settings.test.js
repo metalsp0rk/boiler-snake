@@ -255,9 +255,8 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     it("anonymous ⇒ 302 to /auth/login?guild=…", async () => {
       const { res, body } = await req(`/g/${CID_A}/settings`);
       assert.equal(res.status, 302);
-      // integer community ids fail the 5–20-digit snowflake gate in
-      // loginRedirectTarget, so the anon redirect target is the bare login page
-      assert.equal(res.headers.get("location"), "/auth/login");
+      // #467 (C1-8): the short integer id rides ?guild= now (route-shaped gate)
+      assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal(body, "");
     });
@@ -639,9 +638,8 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           const { res, body } = await post(`/g/${CID_A}${suffix}`, { fields: {} });
           assert.notEqual(res.status, 405, `${suffix} must not be gated out`);
           assert.equal(res.status, 302, `anon ${suffix} ⇒ login redirect`);
-          // integer community ids fail the 5–20-digit snowflake gate in
-      // loginRedirectTarget, so the anon redirect target is the bare login page
-      assert.equal(res.headers.get("location"), "/auth/login");
+      // #467 (C1-8): the short integer id rides ?guild= now (route-shaped gate)
+      assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
           assert.equal(body, "");
         }
       });
@@ -684,7 +682,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           fields: { percent: "10" },
         });
         assert.equal(res.status, 302);
-        assert.equal(location, "/auth/login");
+        assert.equal(location, `/auth/login?guild=${CID_A}`);
       });
 
       it("missing _csrf ⇒ 403, nothing written, nothing audited", async () => {

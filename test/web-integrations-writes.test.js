@@ -351,7 +351,8 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         });
         assert.notEqual(res.status, 405, `${suffix} must not be gated out`);
         assert.equal(res.status, 302, `anon ${suffix} ⇒ login redirect`);
-        assert.equal(location, "/auth/login"); // integer id ⇒ no ?guild= echo
+        // #467 (C1-8): /g/<CID_A>/… — the integer id rides the login return target.
+        assert.equal(location, `/auth/login?guild=${CID_A}`);
         assert.equal(body, "");
       }
     });

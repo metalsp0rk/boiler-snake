@@ -1018,7 +1018,7 @@ describe("C. tier conformance sweep — final GET surface + mutation ladder evid
         base: baseMain,
         url,
         cookieId: null,
-        expect: harness.expectLoginRedirect("/auth/login"),
+        expect: harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`), // #467 (C1-8)
         label: `anon ${page.path}`,
       });
       await harness.runOutcome({

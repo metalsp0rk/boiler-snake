@@ -19,6 +19,9 @@
  */
 
 const { startWebServer, stopWebServer } = require("../../web/server");
+const { Events } = require("discord.js");
+const sessionsAuth = require("../../web/auth/sessions");
+const { getActiveGuildAccessResolver } = require("../../web/auth/guildAccess");
 const { setBotGuildsProvider } = require("../../web/auth/botGuilds");
 const { bindAuditClient } = require("../../web/middleware/audit");
 const { parseFluxerInstances } = require("../../config");
@@ -98,8 +101,42 @@ function buildFluxerWebInstancesProvider({ fetchImpl } = {}) {
   };
 }
 
+
+/**
+ * #467 (C1-7): bind the web tier caches to Discord member-role changes.
+ * On GuildMemberUpdate, drop the member's cached role ids for that guild
+ * AND the cached guild-access lists of their live sessions, so a revoked
+ * role stops serving the old tier on the NEXT request instead of after
+ * the cache TTL. Cache-only drops — every event is safe, worst case is a
+ * rebuild. Fluxer delivers no member-role updates (#439), so nothing to
+ * wire there; Fluxer revocation stays TTL-bounded (documented).
+ *
+ * Exported separately so tests drive the exact boot path with a fake
+ * client; start() calls it.
+ */
+function wireAccessInvalidation(client) {
+  if (!client || typeof client.on !== "function") return false;
+  client.on(Events.GuildMemberUpdate, (oldMember, newMember) => {
+    try {
+      const resolver = getActiveGuildAccessResolver();
+      if (!resolver) return;
+      const userId = newMember?.id ?? newMember?.user?.id;
+      if (!userId) return;
+      const guildId = newMember?.guild?.id ?? oldMember?.guild?.id;
+      resolver.invalidateUserGuild(userId, guildId ?? undefined);
+      for (const s of sessionsAuth.listLiveSessionsForUser(userId, Date.now())) {
+        if (s?.id) resolver.invalidateSession(s.id);
+      }
+    } catch (err) {
+      console.error("[web] GuildMemberUpdate access invalidation failed:", err?.message || err);
+    }
+  });
+  return true;
+}
+
 module.exports = {
   name: "web",
+  wireAccessInvalidation,
   /**
    * @param {import("../../platform/boot").Supervisor} supervisor
    * @param {object} [ctx]
@@ -108,6 +145,10 @@ module.exports = {
     // PR 7 (spec § Supervisor + § Boot): the Discord client comes from the
     // supervisor; null (no DISCORD_TOKEN) keeps the empty-cache fallback below.
     const client = supervisor?.discord ?? null;
+    // #467 (C1-7): role-change revocation — GuildMemberUpdate now invokes
+    // the web access invalidators the resolver factory always documented
+    // (they were dead: staleness rode WEB_TIER_CACHE_TTL_MS alone).
+    wireAccessInvalidation(client);
     // Production bot-guild provider (login guild intersection, §8.3): the
     // discord.js v14 guild cache, READ LIVE at every login. It is only
     // complete after READY — a login racing cold boot may briefly see a

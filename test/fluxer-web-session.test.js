@@ -209,6 +209,31 @@ describe("Fluxer cookie helpers (K11)", () => {
     assert.ok(cookie.startsWith(`web_session=${id}; `));
     assert.throws(() => sessions.buildFluxerSessionCookie("zz"), TypeError);
   });
+
+  it("#467 (C1-5): the revoked ROW's platform decides the teardown — one decision point", () => {
+    assert.ok(sessions.buildClearSessionCookieFor("fluxer").startsWith("web_session_fx=; "));
+    assert.ok(sessions.buildClearSessionCookieFor("discord").startsWith("web_session=; "));
+    assert.ok(
+      sessions.buildClearSessionCookieFor(undefined).startsWith("web_session=; "),
+      "platform-less rows are discord by definition"
+    );
+    // Both revocation sites ride this ONE decision — a second spelling of
+    // the platform branch is exactly how the wrong cookie got cleared.
+    const fs = require("node:fs");
+    const nodePath = require("node:path");
+    for (const rel of ["../src/web/routes/sessions.js", "../src/web/routes/system.js"]) {
+      const src = fs.readFileSync(nodePath.join(__dirname, rel), "utf8");
+      assert.match(
+        src,
+        /buildClearSessionCookieFor\(/,
+        `${rel}: revokes use the shared decision`
+      );
+      assert.ok(
+        !/===\s*"fluxer"[\s\S]{0,80}buildClearFluxerSessionCookie/.test(src),
+        `${rel}: no inlined platform branch`
+      );
+    }
+  });
 });
 
 // ===========================================================================
@@ -453,10 +478,10 @@ describe("guildScope + audit + CSRF over HTTP (C8/C9/C10)", () => {
     assert.equal(body.access.degraded, false);
   });
 
-  it("anonymous ⇒ 302 login redirect (today's byte-identical anon flow)", async () => {
+  it("anonymous ⇒ 302 login redirect (?guild= rides the integer id — #467 C1-8)", async () => {
     const r = await fetch(`${base}/g/${CID_FX}`, { redirect: "manual" });
     assert.equal(r.status, 302);
-    assert.equal(r.headers.get("location"), "/auth/login");
+    assert.equal(r.headers.get("location"), `/auth/login?guild=${CID_FX}`);
   });
 
   it("CSRF: a Discord-derived token on a Fluxer-community mutation is DENIED (spec: anonymous ⇒ generic 404)", async () => {

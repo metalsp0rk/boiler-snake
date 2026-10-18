@@ -91,7 +91,22 @@ async function handleInteraction(interaction, ctx) {
     if (!interaction.guild) return;
     try {
       const fn = registry.getModalHandler(interaction.customId);
-      if (!fn) return;
+      if (!fn) {
+        // #467 (A2-6): an unmatched customId used to be a SILENT drop —
+        // eternal client spinner, zero server trace (e.g. a button on an
+        // old panel message after a deploy renamed it). Log the identity
+        // and answer ephemerally; rule 4's invented-generic ban does not
+        // apply — this is not an error reply, it is the truth.
+        console.warn(
+          "[router] no modal handler for customId:",
+          interactionLogContext(interaction),
+        );
+        await replyEphemeral(
+          interaction,
+          "This control is from an older version and is no longer supported.",
+        ).catch(() => {});
+        return;
+      }
       await fn(interaction, ctx);
     } catch (err) {
       console.error(
@@ -108,7 +123,18 @@ async function handleInteraction(interaction, ctx) {
     if (!interaction.guild) return;
     try {
       const fn = registry.getButtonHandler(interaction.customId);
-      if (!fn) return;
+      if (!fn) {
+        // #467 (A2-6): see the modal arm — same silent-drop closure.
+        console.warn(
+          "[router] no button handler for customId:",
+          interactionLogContext(interaction),
+        );
+        await replyEphemeral(
+          interaction,
+          "This control is from an older version and is no longer supported.",
+        ).catch(() => {});
+        return;
+      }
       await fn(interaction, ctx);
     } catch (err) {
       console.error(

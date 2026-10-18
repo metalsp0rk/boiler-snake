@@ -698,7 +698,8 @@ describe("C. tier ladder — POST /g/:guildId/commands/sync", () => {
   it("anonymous ⇒ 302 /auth/login?guild=… — guildScope answers before anything runs", async () => {
     const { res, location } = await post(SYNC_CONCRETE, { fields: { _csrf: "irrelevant" } });
     assert.equal(res.status, 302);
-    assert.equal(location, "/auth/login"); // integer id ⇒ no ?guild= echo
+    // #467 (C1-8): SYNC_CONCRETE is /g/<CID_A>/… — the id rides along now.
+    assert.equal(location, `/auth/login?guild=${CID_A}`);
     assert.deepEqual(discord.log, [], "no Discord call for an anon");
   });
 

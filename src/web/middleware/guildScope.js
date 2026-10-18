@@ -41,6 +41,7 @@
  */
 const {
   URL_ID_RE: GUILD_ID_RE,
+  COMMUNITY_ID_RE,
   parseCommunityIdParam,
 } = require("../shared/snowflake");
 const { getCommunityById } = require("../../platform/community");
@@ -55,9 +56,23 @@ const { getCommunityById } = require("../../platform/community");
  * @returns {string}
  */
 function loginRedirectTarget(guildId, loginPath = "/auth/login") {
-  return typeof guildId === "string" && GUILD_ID_RE.test(guildId)
-    ? `${loginPath}?guild=${guildId}`
-    : loginPath;
+  // #467 (C1-8): the /g/-era target is the INTEGER community id — the gate
+  // is the ROUTE's own shape (COMMUNITY_ID_RE), not the 5-digit snowflake
+  // floor. Under URL_ID_RE a fresh deployment's ids 1–9999 silently lost
+  // their ?guild= hop (small deployments are exactly the ones with short
+  // ids) and the return-to-where-you-were loop degraded to the switcher.
+  // #467 (C1-8) fix-up: BOTH live route shapes ride along — the /g/-era
+  // integer id (numbers from the middleware included) AND the legacy
+  // snowflake-route compat path (GET /g/<snow> still resolves; the callback
+  // returns to it, see test/web-auth-login "guild id only when snowflake").
+  let s = null;
+  if (typeof guildId === "number") {
+    s = Number.isSafeInteger(guildId) && guildId >= 1 ? String(guildId) : null;
+  } else if (typeof guildId === "string") {
+    s = guildId;
+  }
+  const ok = s !== null && (COMMUNITY_ID_RE.test(s) || GUILD_ID_RE.test(s));
+  return ok ? `${loginPath}?guild=${s}` : loginPath;
 }
 
 /**

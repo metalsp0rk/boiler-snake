@@ -543,11 +543,14 @@ function registerSystemRoutes(app, options = {}) {
       // same clean-logout teardown as POST /auth/logout (row already gone),
       // same signed-out landing destination (parity with login.js +
       // routes/sessions.js).
+      // #467 (C1-5): platform-correct teardown, same as routes/sessions.js
+      // — the revoked row's platform owns the cookie.
       res.writeHead(302, {
         Location: SIGNED_OUT_TARGET,
         "Cache-Control": "no-store",
         "Referrer-Policy": "no-referrer",
-        "Set-Cookie": sessionPolicy.buildClearSessionCookie(),
+        // ONE decision point (auth/sessions) — no second spelling to drift.
+        "Set-Cookie": sessionPolicy.buildClearSessionCookieFor(target.platform),
       });
       res.end();
       return;

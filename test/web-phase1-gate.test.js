@@ -656,8 +656,10 @@ const BUDGET_URLS = [
 ];
 
 function outcomeFor(viewerKey, page) {
-  // Integer community ids fail the 5-20-digit snowflake gate ⇒ bare login redirect.
-  if (viewerKey === "anon") return harness.expectLoginRedirect("/auth/login");
+  // #467 (C1-8): every PAGES route lives under /g/<CID_A> — the short
+  // integer id rides the login redirect now (route-shaped gate).
+  if (viewerKey === "anon")
+    return harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`);
   const noTier = new Set(["stranger", "plain", "creator", "member", "tstaff", "author"]);
   if (noTier.has(viewerKey)) {
     return harness.expectGenericNotFound({ forbid: allSecrets });

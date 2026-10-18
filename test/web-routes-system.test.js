@@ -410,7 +410,7 @@ describe("access matrix — GET /g/:guildId/system and /audit are Admin-only", (
       assert.equal(res.status, 302);
       // Integer community ids fail the 5–20-digit snowflake gate in
       // loginRedirectTarget, so the anon redirect is the bare login page.
-      assert.equal(res.headers.get("location"), "/auth/login");
+      assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`); // #467 (C1-8)
     });
 
     it(`${label}: in-guild member WITHOUT staff role → generic 404 (never 403)`, async () => {
@@ -1022,8 +1022,8 @@ describe("System Web sessions — admin global list + revoke (Phase 4 component 
   it("GET access matrix — anon 302 · plain 404 · staff AND senior FIXED 403 · cross 404 · admin 200", async () => {
     const anon = await fetch(`${suite.base}${SYS_SESS}`, { redirect: "manual" });
     assert.equal(anon.status, 302);
-    // integer community id ⇒ bare login target (URL_ID_RE rejects short ids)
-    assert.equal(anon.headers.get("location"), "/auth/login");
+    // #467 (C1-8): the short integer id rides ?guild= now (route-shaped gate)
+    assert.equal(anon.headers.get("location"), `/auth/login?guild=${CID_A}`);
     await anon.text();
 
     const plain = await hit(SYS_SESS, { key: "plain" });
@@ -1173,7 +1173,7 @@ describe("System Web sessions — admin global list + revoke (Phase 4 component 
       redirect: "manual",
     });
     assert.equal(next.status, 302, "next request with the dead cookie redirects to login");
-    assert.equal(next.headers.get("location"), "/auth/login");
+    assert.equal(next.headers.get("location"), `/auth/login?guild=${CID_A}`); // #467 (C1-8)
     await next.text();
 
     const row = revokeRows().find((r) => JSON.parse(r.details_json).current === true);
