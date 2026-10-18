@@ -582,6 +582,7 @@ describe("db layer", () => {
       "BRIDGE_OUTBOX_MAX_ATTEMPTS",
       "LINK_MIRROR_DIRECTIONS",
       "USER_LINK_CODE_LIFETIME_MS",
+      "ARCHIVE_CLAIM_LEASE_MS",
     ]);
 
     it("exports no undefined value", () => {

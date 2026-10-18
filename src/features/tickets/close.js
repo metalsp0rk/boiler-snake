@@ -497,9 +497,11 @@ async function softCloseTicket(opts) {
  * (`claimTicketArchive`, atomic UPDATE) BEFORE doing any work. A loser —
  * concurrent `/ticket archive`, retry, or a stale row — returns immediately
  * with `skipped` set to a specific message naming the ticket (never a
- * generic reply); the winner does the work exactly once. The claim is
- * sticky by design: a winner that dies mid-archive leaves the ticket
- * claimed (re-archive blocked) — concurrency-safety, not crash recovery.
+ * generic reply); the winner does the work exactly once. The claim is a
+ * LEASE (#419, audit LT-2): a throw after the claim releases it (retry is
+ * safe, the lifecycle replies carry the cause), and a holder that DIED
+ * mid-archive ages out after ARCHIVE_CLAIM_LEASE_MS so the ticket is
+ * never permanently wedged by a stale claim.
  *
  * @param {object} opts
  * @param {import("discord.js").Client} opts.client
@@ -517,11 +519,8 @@ async function softCloseTicket(opts) {
  *   success-flavored reply.
  */
 async function archiveTicketPipeline(opts) {
-  const { client, channel, archivedBy } = opts;
-  let ticket = opts.ticket;
-  const warnings = [];
-  const sensitive = Number(ticket.is_sensitive) === 1;
-  const closeReason = ticket.close_reason || null;
+  const ticket = opts.ticket;
+  const { archivedBy } = opts;
 
   // CAS BEFORE WORK (#197): one atomic claim decides who archives. The old
   // in-memory `archived === 1` check let two concurrent closes both do the
@@ -541,6 +540,50 @@ async function archiveTicketPipeline(opts) {
     );
     return { ticket: live || ticket, warnings: [msg], skipped: msg };
   }
+
+  // #419 (audit LT-2): a THROW after the claim is a released claim, not a
+  // permanent wedge. Post-claim throws (finalize write, message-id stamp —
+  // e.g. the disk-full/busy class migration 034 hardened against) used to
+  // propagate with the claim stuck, so every retry blamed a phantom
+  // "another close" forever. Release exactly here and rethrow: the
+  // lifecycle boundary already answers with the specific cause (rule 3),
+  // and the lease self-heals even if this process dies mid-run. After a
+  // successful finalize the release is a no-op — its `archived=0` guard.
+  try {
+    return await archiveTicketWork(opts);
+  } catch (err) {
+    try {
+      releaseTicketArchiveClaim(ticket.id);
+    } catch (releaseErr) {
+      console.error(
+        `[tickets] could not release the archive claim for ticket #${ticket.ticket_number} after a throw:`,
+        releaseErr?.message || releaseErr,
+      );
+    }
+    console.error(
+      `[tickets] archive pipeline threw after claiming ticket #${ticket.ticket_number} — claim released, retry is safe:`,
+      err?.message || err,
+    );
+    throw err;
+  }
+}
+
+/**
+ * Post-claim archive work for {@link archiveTicketPipeline} (the claim is
+ * already won by the time this runs).
+ *
+ * @param {object} opts same as the pipeline; plus the optional
+ *   `finalize` override (test seam, same family as `summaryOpts`) swapping
+ *   the finalize write for failure injection.
+ * @returns {Promise<{ticket: object, warnings: string[], skipped?: string, error?: string}>}
+ */
+async function archiveTicketWork(opts) {
+  const { client, channel, archivedBy } = opts;
+  let ticket = opts.ticket;
+  const warnings = [];
+  const sensitive = Number(ticket.is_sensitive) === 1;
+  const closeReason = ticket.close_reason || null;
+
 
   if (sensitive) {
     // Spec §1.11: sensitive branch unchanged — the requester's only DM is the
@@ -711,7 +754,10 @@ async function archiveTicketPipeline(opts) {
 
   const publicUrl = relativePath ? transcriptPublicUrl(token) : null;
 
-  const archived = closeTicketArchived(ticket.id, {
+  // Test seam (same family as summaryOpts): the #419 release-on-throw path
+  // is pinned against the REAL finalize call site with a throwing stand-in.
+  const finalize = opts.finalize ?? closeTicketArchived;
+  const archived = finalize(ticket.id, {
     closedBy: archivedBy,
     closeReason,
     transcriptToken: relativePath ? token : null,
