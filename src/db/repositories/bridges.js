@@ -767,6 +767,48 @@ function requeueStaleOutbox() {
 }
 
 /**
+ * #399 (B2-7): retention primitive — delete SETTLED outbox rows (done or
+ * parked-failed) enqueued strictly before `cutoffMs`, one LIMIT-bounded
+ * batch. The outbox is the relay's audit trail; the sweep keeps a bounded
+ * window (retention config, default 30d) instead of letting every relayed
+ * message live forever. LIVE queue rows (pending/sending) are outside the
+ * state set entirely — the sweep can never eat queued work, and a parked
+ * row stays retryable via /bridge retry for the whole window (#416).
+ * Indexed by idx_bridge_outbox_settled (053) — no full scan, #396 doctrine.
+ *
+ * @param {number} cutoffMs rows with enqueued_at < cutoffMs die
+ * @param {number} limit batch bound
+ * @returns {number} rows deleted
+ */
+function deleteSettledBridgeOutboxOlderThan(cutoffMs, limit) {
+  return db
+    .prepare(
+      `DELETE FROM bridge_outbox
+       WHERE state IN ('done', 'failed') AND enqueued_at < ?
+       LIMIT ?`,
+    )
+    .run(cutoffMs, Math.max(1, Math.floor(Number(limit) || 1))).changes;
+}
+
+/**
+ * #399 (B2-7): retention primitive — delete message-link rows created
+ * strictly before `cutoffMs` (one bounded batch). Links drive edit/delete
+ * relays for ALREADY-COPIED messages; beyond the (long, default 90d)
+ * window a source edit of a months-old relayed message is rare enough to
+ * accept the documented consequence: the edit branch finds no link for a
+ * part and re-executes it as a fresh send. Indexed via 053.
+ *
+ * @param {number} cutoffMs
+ * @param {number} limit
+ * @returns {number} rows deleted
+ */
+function deleteBridgeMessageLinksOlderThan(cutoffMs, limit) {
+  return db
+    .prepare(`DELETE FROM bridge_message_links WHERE created_at < ? LIMIT ?`)
+    .run(cutoffMs, Math.max(1, Math.floor(Number(limit) || 1))).changes;
+}
+
+/**
  * Outbox depth per direction for status (queued rows only: pending + sending).
  * @param {number} bridgeId
  * @returns {{ a_to_b: number, b_to_a: number }}
@@ -1212,6 +1254,8 @@ module.exports = {
   markOutboxDone,
   recordOutboxFailure,
   requeueStaleOutbox,
+  deleteSettledBridgeOutboxOlderThan,
+  deleteBridgeMessageLinksOlderThan,
   countOutboxDepth,
   // links / snapshots
   addBridgeMessageLink,
