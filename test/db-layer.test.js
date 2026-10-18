@@ -58,6 +58,66 @@ describe("db layer", () => {
     assert.equal(updated.msg_xp, 10);
   });
 
+  it("#393 (DB-1): reading settings NEVER bumps updated_at — it is a change stamp again", () => {
+    const guildId = communityKey("g-settings-nw");
+    api.updateGuildSettings(guildId, { msg_xp: 7 });
+    api.db
+      .prepare(`UPDATE guild_settings SET updated_at = 1000 WHERE community_id=?`)
+      .run(guildId);
+    for (let i = 0; i < 5; i += 1) api.getGuildSettings(guildId);
+    const row = api.db
+      .prepare(`SELECT updated_at, msg_xp FROM guild_settings WHERE community_id=?`)
+      .get(guildId);
+    assert.equal(
+      row.updated_at,
+      1000,
+      "reads must not refresh updated_at (pre-#393 every read made the config look just-edited)",
+    );
+    assert.equal(row.msg_xp, 7);
+  });
+
+  it("#393 (DB-1): repeated reads on an existing row execute ZERO write statements", () => {
+    const guildId = communityKey("g-settings-zc");
+    api.getGuildSettings(guildId); // materialize once — after this the hot path is pure read
+    // Instrument the connection: better-sqlite3 flags every non-reader
+    // statement (stmt.reader === false), so any write on the read path
+    // is caught red-handed, not counted via side effects.
+    const realPrepare = api.db.prepare.bind(api.db);
+    const writes = [];
+    api.db.prepare = (sql) => {
+      const stmt = realPrepare(sql);
+      if (stmt.reader === false) writes.push(String(sql).replace(/\s+/g, " ").slice(0, 80));
+      return stmt;
+    };
+    try {
+      for (let i = 0; i < 10; i += 1) api.getGuildSettings(guildId);
+    } finally {
+      api.db.prepare = realPrepare;
+    }
+    assert.deepEqual(
+      writes,
+      [],
+      "the per-message read must not write (pre-#393 it was INSERT…DO UPDATE per call — WAL contention with the XP writer)",
+    );
+    const updated = api.updateGuildSettings(guildId, { msg_xp: 11 });
+    assert.equal(updated.msg_xp, 11, "real writes still write");
+  });
+
+  it("#393 (DB-1): updateGuildSettings still stamps updated_at (the signal stays alive)", () => {
+    const guildId = communityKey("g-settings-stamp");
+    api.getGuildSettings(guildId);
+    api.db
+      .prepare(`UPDATE guild_settings SET updated_at = 1000 WHERE community_id=?`)
+      .run(guildId);
+    api.updateGuildSettings(guildId, { msg_xp: 12 });
+    assert.ok(
+      api.db
+        .prepare(`SELECT updated_at FROM guild_settings WHERE community_id=?`)
+        .get(guildId).updated_at > 1000,
+      "a real config write must remain visible as an update",
+    );
+  });
+
   it("re-running migrations is safe (idempotent)", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
