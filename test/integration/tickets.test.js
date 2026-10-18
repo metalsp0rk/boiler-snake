@@ -283,6 +283,109 @@ describe("integration: tickets", () => {
     }
   });
 
+  // ── #420 (audit LT-3): the rate limit survives concurrent submits ─────────
+
+  it("#420 concurrent /ticket create opens ONE ticket; the loser is rate-limited", async () => {
+    env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
+    // Fresh member: no prior self-create rows (the window pre-check stays a
+    // green light — the CLAIM is what must decide the race).
+    const racer = env.createUser({ id: "user-race-420", username: "racer" });
+    const raceMem = env.createMember({ guild: env.guild, user: racer });
+    env.guild.addMember(raceMem);
+    const origCreate = env.guild.channels.create;
+    let releaseHold;
+    const gate = new Promise((r) => (releaseHold = r));
+    env.guild.channels.create = async (data) => {
+      const ch = await origCreate.call(env.guild.channels, data);
+      await gate; // hold BOTH arms inside the channel-create phase — the
+      // exact window the old check-then-act lost both submits through.
+      return ch;
+    };
+    try {
+      const p1 = env.runCommand({
+        commandName: "ticket",
+        subcommand: "create",
+        admin: false,
+        user: racer,
+        options: { reason: "race-a-420" },
+      });
+      const p2 = env.runCommand({
+        commandName: "ticket",
+        subcommand: "create",
+        admin: false,
+        user: racer,
+        options: { reason: "race-b-420" },
+      });
+      await new Promise((r) => setImmediate(r));
+      releaseHold();
+      const [i1, i2] = await Promise.all([p1, p2]);
+
+      const t1 = env.lastReplyContent(i1);
+      const t2 = env.lastReplyContent(i2);
+      const opened = [t1, t2].filter((t) => /opened/i.test(t));
+      const refused = [t1, t2].filter((t) => /too quickly|minute/i.test(t));
+      // RED on old code: BOTH replies said "opened" and TWO rows existed.
+      assert.equal(opened.length, 1, `exactly one opener: ${t1} || ${t2}`);
+      assert.equal(refused.length, 1, `exactly one refusal: ${t1} || ${t2}`);
+
+      const mine = env.db.listOpenTickets(env.communityId, {
+        userId: "user-race-420",
+        limit: 10,
+      });
+      assert.equal(
+        mine.filter((t) => t.reason === "race-a-420" || t.reason === "race-b-420").length,
+        1,
+        "exactly one ticket ROW for the double submit",
+      );
+    } finally {
+      env.guild.channels.create = origCreate;
+      env.db.db.prepare("DELETE FROM ticket_create_reservations").run();
+      env.db.db
+        .prepare("DELETE FROM tickets WHERE creator_user_id = ?")
+        .run("user-race-420");
+      env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 0 });
+    }
+  });
+
+  it("#420 a failed create releases the slot — immediate retry succeeds", async () => {
+    env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
+    const retryer = env.createUser({ id: "user-retry-420", username: "retryer" });
+    const retryMem = env.createMember({ guild: env.guild, user: retryer });
+    env.guild.addMember(retryMem);
+    const origCreate = env.guild.channels.create;
+    try {
+      env.guild.channels.create = async () => {
+        throw new Error("50013 Missing Permissions");
+      };
+      const failed = await env.runCommand({
+        commandName: "ticket",
+        subcommand: "create",
+        admin: false,
+        user: retryer,
+        options: { reason: "fail-then-retry-420" },
+      });
+      assert.doesNotMatch(env.lastReplyContent(failed), /opened/i);
+
+      env.guild.channels.create = origCreate;
+      const retry = await env.runCommand({
+        commandName: "ticket",
+        subcommand: "create",
+        admin: false,
+        user: retryer,
+        options: { reason: "fail-then-retry-420" },
+      });
+      // If the failed create kept the claimed slot, this reply is rate-limit.
+      assert.match(env.lastReplyContent(retry), /opened/i, env.lastReplyContent(retry));
+    } finally {
+      env.guild.channels.create = origCreate;
+      env.db.db.prepare("DELETE FROM ticket_create_reservations").run();
+      env.db.db
+        .prepare("DELETE FROM tickets WHERE creator_user_id = ?")
+        .run("user-retry-420");
+      env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 0 });
+    }
+  });
+
   it("/ticket for adds staff opener as exclusive named owner + bypasses rate limit", async () => {
     env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
 

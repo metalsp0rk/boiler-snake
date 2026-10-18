@@ -59,6 +59,7 @@ const migrations = [
   require("./migrations/049_honeypot_pause"),
   require("./migrations/050_xp_cooldown_clamp"),
   require("./migrations/051_reaction_role_claims"),
+  require("./migrations/052_ticket_create_reservations"),
 ];
 
 const helpers = {
