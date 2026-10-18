@@ -28,6 +28,7 @@ const db = require("../../../db");
 const { parseTwitchTimestamp, fetchStreams } = require("../helix");
 const { getEventsubConfig } = require("./config");
 const { processSubscription } = require("../ticker");
+const { getDiscordOutbound } = require("../../../platform/discord/outbound");
 
 const MESSAGE_ID_HEADER = "twitch-eventsub-message-id";
 const MESSAGE_TIMESTAMP_HEADER = "twitch-eventsub-message-timestamp";
@@ -149,10 +150,19 @@ async function dispatchEventsubNotification(client, payload, deps = {}) {
     return;
   }
 
+  // #462 (H1-3): ticker's resolveOutbound speaks supervisor only. The
+  // webhook path holds the live client (web mounts this route with
+  // getClient, never the boot supervisor) — adapt EXPLICITLY here instead
+  // of keeping a duck-typed raw-client leg inside every ticker.
+  const supervisor = {
+    discord: client,
+    clientForCommunity: () => getDiscordOutbound(client),
+  };
+
   const subs = db.getTwitchSubsByBroadcaster(broadcasterId);
   for (const sub of subs) {
     try {
-      await processSubscription(client, sub.community_id, sub, stream);
+      await processSubscription(supervisor, sub.community_id, sub, stream);
     } catch (err) {
       console.error(
         `[twitch] EventSub ${type} handling failed for community ${sub.community_id}/${sub.login}:`,

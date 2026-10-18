@@ -13,62 +13,31 @@ const {
 const { logWarnEvent } = require("../logs/auditLog");
 const { recordSystemAudit } = require("../../core/auditTrail");
 const { Color } = require("../../core/theme");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { getCommunityById } = require("../../platform/community");
+
+const {
+  resolveDiscordClient: coreResolveDiscordClient,
+  resolveOutbound: coreResolveOutbound,
+} = require("../../core/outbound");
+
+// #462 (H1-3): ONE core implementation — the drifting per-ticker copies
+// and their unreachable raw-client legs are gone. This is just the label bind.
+function resolveDiscordClient(supervisor) {
+  return coreResolveDiscordClient(supervisor, { label: "warnings" });
+}
+
+function resolveOutbound(supervisor, communityId) {
+  return coreResolveOutbound(supervisor, communityId, { label: "warnings" });
+}
 
 /** Every minute. */
 const EXPIRY_CRON = "* * * * *";
 
 const COLOR_VOID = Color.muted;
 
-/**
- * Resolve the OutboundClient for one warning row (roadmap/fluxer.md § Scheduler
- * jobs: clientForCommunity(warn.community_id) for the DM and the log channel).
- * Accepts the PR 7 supervisor, a raw OutboundClient, or a legacy raw discord.js
- * client (pre-cutover tests). Null = no ready client for the row.
- *
- * @param {object|null} supervisor
- * @param {number} communityId
- * @returns {object|null} OutboundClient
- */
-function resolveOutbound(supervisor, communityId) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    try {
-      return supervisor.clientForCommunity(communityId) ?? null;
-    } catch (err) {
-      console.error(
-        `[warnings] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
-      );
-      return null;
-    }
-  }
-  if (typeof supervisor.sendChannel === "function") return supervisor;
-  if (supervisor.guilds || supervisor.channels || supervisor.users) {
-    // Legacy raw discord.js client (pre-PR 7 call site).
-    try {
-      return getDiscordOutbound(supervisor);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
 
-/**
- * The raw Discord client behind the supervisor (null when Discord is
- * unconfigured). A legacy raw client passed directly is honored.
- * @param {object|null} supervisor
- * @returns {object|null}
- */
-function resolveDiscordClient(supervisor) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    return supervisor.discord ?? null;
-  }
-  if (supervisor.guilds) return supervisor; // legacy raw discord.js client
-  return null;
-}
+
+
 
 /**
  * Process due expirations.

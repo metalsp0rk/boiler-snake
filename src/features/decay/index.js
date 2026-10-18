@@ -26,9 +26,23 @@ const {
   recordSlashAudit,
   recordSystemAudit,
 } = require("../../core/auditTrail");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { getCommunityById } = require("../../platform/community");
 const { getDecayCron } = require("../../config");
+
+const {
+  resolveDiscordClient: coreResolveDiscordClient,
+  resolveOutbound: coreResolveOutbound,
+} = require("../../core/outbound");
+
+// #462 (H1-3): ONE core implementation — the drifting per-ticker copies
+// and their unreachable raw-client legs are gone. This is just the label bind.
+function resolveDiscordClient(supervisor) {
+  return coreResolveDiscordClient(supervisor, { label: "decay" });
+}
+
+function resolveOutbound(supervisor, communityId) {
+  return coreResolveOutbound(supervisor, communityId, { label: "decay" });
+}
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -165,52 +179,9 @@ async function handleSetDecay(commandCtx, featureCtx) {
   await commandCtx.reply({ embeds: [embed], sensitive: true });
 }
 
-/**
- * Resolve the raw Discord client behind the supervisor (null when Discord is
- * unconfigured). A legacy raw client passed directly is honored (tests and
- * pre-cutover callers).
- * @param {object|null} supervisor
- * @returns {object|null}
- */
-function resolveDiscordClient(supervisor) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    return supervisor.discord ?? null;
-  }
-  if (supervisor.guilds) return supervisor; // legacy raw discord.js client
-  return null;
-}
 
-/**
- * Resolve the OutboundClient for one community (roadmap/fluxer.md § Scheduler
- * jobs: "clientForCommunity for each community row that has users").
- * @param {object|null} supervisor
- * @param {number} communityId
- * @returns {object|null}
- */
-function resolveOutbound(supervisor, communityId) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    try {
-      return supervisor.clientForCommunity(communityId) ?? null;
-    } catch (err) {
-      console.error(
-        `[decay] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
-      );
-      return null;
-    }
-  }
-  if (typeof supervisor.sendChannel === "function") return supervisor;
-  const client = resolveDiscordClient(supervisor);
-  if (client) {
-    try {
-      return getDiscordOutbound(client);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
+
+
 
 /**
  * Run one decay pass for a community.
