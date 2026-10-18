@@ -418,6 +418,12 @@ function createVoiceData(options = {}) {
 
     return {
       guildId,
+      // #407 (C2-3): the INTEGER /g/:id route identity beside the external
+      // snowflake. Views minting /g/… links MUST take this, never guildId
+      // (guildScope: snowflake ids no longer route — parseCommunityIdParam
+      // miss ⇒ generic 404). Null for unregistered guilds (they have no
+      // /g/ page; views render no link rather than a dead one).
+      communityId,
       config,
       music: normalizeMusic(musicRaw),
       live: normalizeLive(liveRaw),
