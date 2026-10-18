@@ -596,8 +596,14 @@ async function handleTestNotification(commandCtx, featureCtx) {
   );
 
   if (!existingChannel || !existingChannel.id) {
+    // #456 (rule 3): the diagnostic command must say WHAT it ended up with.
+    const why =
+      `no subscription row for \`${channelId || channelName}\` after subscribing` +
+      (process.env.YOUTUBE_API_KEY
+        ? ""
+        : " and YOUTUBE_API_KEY is not set on this bot (channel lookup is impossible)");
     await commandCtx.reply({
-      content: "Could not find or subscribe to the channel.",
+      content: `Could not find or subscribe to the channel: ${why}.`,
       sensitive: true,
     });
     return;
@@ -605,8 +611,9 @@ async function handleTestNotification(commandCtx, featureCtx) {
 
   const feed = await fetchYouTubeFeed(existingChannel.id);
   if (!feed || !feed.items || !feed.items.length) {
+    const feedError = feed && feed.error ? String(feed.error) : "the feed came back empty";
     await commandCtx.reply({
-      content: "Could not fetch videos from this channel.",
+      content: `Could not fetch videos from this channel: ${feedError}.`,
       sensitive: true,
     });
     return;
@@ -616,8 +623,15 @@ async function handleTestNotification(commandCtx, featureCtx) {
   const videoInfo = extractVideoInfo(entry);
 
   if (!videoInfo || !videoInfo.videoId) {
+    const shape = JSON.stringify({
+      id: entry && entry.id,
+      hasSnippet: !!(entry && entry.snippet),
+      title: entry && entry.title ? String(entry.title).slice(0, 40) : undefined,
+    });
     await commandCtx.reply({
-      content: "Could not extract video information.",
+      content:
+        `Could not extract video information: the newest feed entry had no video id ` +
+        `(got \`${shape}\`).`,
       sensitive: true,
     });
     return;
@@ -631,8 +645,14 @@ async function handleTestNotification(commandCtx, featureCtx) {
     isLive = false;
     notificationType = "upload";
   } else {
+    const clue = String(
+      (entry && (entry.liveBroadcastContent || (entry.snippet && entry.snippet.liveBroadcastContent))) ||
+        "absent",
+    );
     await commandCtx.reply({
-      content: "Latest video entry type could not be determined.",
+      content:
+        `Latest video entry type could not be determined ` +
+        `(\`liveBroadcastContent\` was \`${clue}\`).`,
       sensitive: true,
     });
     return;
