@@ -263,7 +263,7 @@ function createWebApp(options = {}) {
   // at most an HMAC here, so the Phase 0a byte-parity contract is untouched;
   // everything below activates the moment a request survives methodGate —
   // today that includes POST /auth/logout, which CSRF-gates like every
-  // other mutation (the form/htmx call must send `X-CSRF-Token` or `_csrf`).
+  // other mutation (the request must send `X-CSRF-Token` or `_csrf`).
   //   1. auth-bucket limiter on /auth/* (per IP + per user) — counts GETs
   //      too, since login/callback are GET routes;
   //   2. body cap: generic 413 past WEB_MAX_BODY_BYTES, then the drained
@@ -273,7 +273,7 @@ function createWebApp(options = {}) {
   //      stream is already consumed here;
   //   3. mutation-bucket limiter (per user, IP fallback) on every non-GET —
   //      runs BEFORE CSRF so failed token attempts count against the actor;
-  //   4. CSRF: derives req.csrfToken for views/htmx, auto-enforces /g/ and
+  //   4. CSRF: derives req.csrfToken for views, auto-enforces /g/ and
   //      /auth/ mutations, and attaches req.requireCsrf for route-level
   //      opt-in elsewhere (createRequireCsrf() is the standalone factory).
   app.use("/auth", createAuthRateLimit());
@@ -288,7 +288,7 @@ function createWebApp(options = {}) {
   app.use(createBodyCapMiddleware());
   app.use(createMutationRateLimit());
   app.use(createCsrfMiddleware());
-  // Shell assets (vendored htmx, styles.css, app.js) — public, immutable-
+  // Shell assets (vendored libs, styles.css, app.js) — public, immutable-
   // cached, dotfiles ignored, traversal-gated (src/web/middleware/static.js).
   // Mounted after the method gate so POST /static/* still 405s like the rest
   // of the surface; nothing here carries user data, so login-free is safe.

@@ -11,7 +11,7 @@
  *    (../app is required lazily: app.js requires THIS module, so a top-level
  *    require would be a load-order cycle);
  *  - CSRF is automatic for every /g/ mutation (middleware/csrf.js): forms
- *    carry the hidden `_csrf` field, htmx sends X-CSRF-Token;
+ *    carry the hidden `_csrf` field (scripted requests may send X-CSRF-Token);
  *  - tier via requireTier on req.guildAccess (guildScope already 404s wrong
  *    guilds — cross-guild is a 404 long before the tier gate runs):
  *      staff  → every config mutation EXCEPT the honeypot exempt pair

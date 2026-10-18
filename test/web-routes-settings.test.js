@@ -712,7 +712,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         }
       });
 
-      it("valid X-CSRF-Token header (htmx path) is accepted", async () => {
+      it("valid X-CSRF-Token header (JS path) is accepted", async () => {
         const { res, location } = await post(`/g/${CID_A}/settings/decay`, {
           cookie: cookieOf.senior,
           fields: { enabled: "on" },

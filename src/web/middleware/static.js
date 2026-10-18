@@ -1,13 +1,13 @@
 /**
  * /static/* file serving for the shell assets (src/web/public/: vendored
- * htmx, styles.css, app.js — roadmap/web-admin.md §8.2/§8.7).
+ * Chart.js, styles.css, app.js — roadmap/web-admin.md §8.2/§8.7).
  *
  * Hand-rolled instead of express.static on purpose:
  *  - the whole app answers through raw `res.writeHead()/res.end()` only
  *    (Phase 0a byte-parity doctrine) — no send()/ETag/Last-Modified/
  *    redirect machinery touching responses;
  *  - the cache policy is deliberately aggressive (immutable) and uniform:
- *    these files are content-pinned by path (htmx is version-stamped;
+ *    these files are content-pinned by path (vendored libs are version-stamped;
  *    styles/app upgrades ride a redeploy), never per-user;
  *  - the gate is a few lines we can pin in tests: dotfile segments
  *    (anything starting with ".", incl. "." / "..") are ignored → 404, the

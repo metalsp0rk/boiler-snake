@@ -314,7 +314,7 @@ describe("csrf middleware (app-level, fake req/res)", () => {
   const mw = createCsrfMiddleware({ getSecret: () => SECRET });
   const token = deriveCsrfToken(SESSION_ID, SECRET);
 
-  it("GET with a session attaches req.csrfToken (views/htmx embed it)", async () => {
+  it("GET with a session attaches req.csrfToken (views embed it)", async () => {
     const req = makeReq({ url: "/g/42/settings", webSession: session() });
     const outcome = await dispatch(mw, req);
     assert.equal(outcome.passed, true);
@@ -329,7 +329,7 @@ describe("csrf middleware (app-level, fake req/res)", () => {
     assert.equal(req.csrfToken, null);
   });
 
-  it("POST under /g/ with X-CSRF-Token header (htmx) passes and compares timing-safely", async () => {
+  it("POST under /g/ with X-CSRF-Token header (JS channel) passes and compares timing-safely", async () => {
     const req = makeReq({
       method: "POST",
       url: "/g/42/settings",

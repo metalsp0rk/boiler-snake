@@ -10,7 +10,7 @@
  * test/web-views-layout.test.js).
  *
  * NO INLINE HANDLERS (§8.7 CSP): every <script> is an external, nonce'd
- * file under /static; interactivity (guild-switcher navigation, htmx CSRF
+ * file under /static; interactivity (guild-switcher navigation,
  * header wiring) lives in /static/app.js, never in on* attributes.
  *
  * ROUTE-AUTHOR API (Phase 1+):
@@ -37,16 +37,14 @@ const { tierBadge, degradedBanner } = require("./components");
  * no ETag/Last-Modified — the URL is the ONLY invalidation lever. UX v1.1
  * proved the doctrine bites: bare "/static/styles.css" pinned one-year-old
  * CSS against new markup (unstyled sidebar). The release version rides as
- * a query and changes on every release; htmx stays filename-stamped.
+ * a query and changes on every release.
  * (The static middleware ignores queries when resolving files.)
  */
 const ASSET_VERSION = require("../../../package.json").version;
 
-/** Vendored htmx — bump together with the file under public/vendor (§8.7). */
-const HTMX_SRC = "/static/vendor/htmx.2.0.10.min.js";
 /**
  * Vendored Chart.js UMD (Phase 4 charts, operator decision 2026-09-25) —
- * same §8.7 procedure as htmx: npm-tarball sha512-verified, version baked
+ * same §8.7 procedure: npm-tarball sha512-verified, version baked
  * into the FILENAME (the cache-buster, /static is immutable), MIT text in
  * public/vendor/LICENSE.md beside it. Classic <script src> from self:
  * CSP `script-src 'self'` admits it without a nonce; the nonce ATTRIBUTE
@@ -233,7 +231,6 @@ function renderLayout(opts) {
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>${title} · Boiler Snake</title>
 <link rel="stylesheet" href="${STYLES_SRC}"/>
-<script src="${HTMX_SRC}" defer${nonceAttr}></script>
 <script src="${CHART_SRC}" defer${nonceAttr}></script>
 <script src="${APP_SRC}" defer${nonceAttr}></script>
 </head>
@@ -352,7 +349,6 @@ module.exports = {
   renderSideNav,
   writeShellHtml,
   NAV_GROUPS,
-  HTMX_SRC,
   CHART_SRC,
   APP_SRC,
   STYLES_SRC,
