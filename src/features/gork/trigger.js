@@ -322,6 +322,65 @@ const QUEUE_FULL_REPLY =
 const LLM_FAILURE_REPLY = "*gork's brain went to lunch* — try again in a bit.";
 
 /**
+ * #475 (F1-6): ONE bounce sequence for a denied budget gate. The Discord
+ * enqueue / Discord dequeue / Fluxer enqueue sites carried near-identical
+ * copies — including the synthetic error-scope throttle key three times
+ * over. These are spec-locked bounce semantics (decisions 20/34): four
+ * copies meant four edits per change, and one missed copy silently changes
+ * WHO receives the locked reply.
+ *
+ * @param {object} gate            denied checkGorkBudget() gate
+ * @param {{
+ *   communityId: number, userId: string, guildId: string, day: string,
+ *   where?: string,                          // log placement ("at dequeue", "fluxer")
+ *   replyText: (text: string) => unknown,    // canned LLM_FAILURE_REPLY (string arg)
+ *   replyGate: (payload: object) => unknown, // locked gate copy (payload arg)
+ *   extra?: () => void,                      // site-local side effects (dbg line)
+ * }} ctx
+ */
+async function bounceBudgetGate(gate, ctx) {
+  const where = ctx.where ? ` ${ctx.where}` : "";
+  if (gate.kind === "error") {
+    // checkGorkBudget already console.error'd the cause. Fail closed: no
+    // LLM call, no count — but the user gets the sanctioned canned reply
+    // (unexplained silence reads as gork being broken/disabled). Throttled
+    // via the synthetic scope so repeated DB faults cannot turn every
+    // trigger into a reply.
+    ctx.extra?.();
+    console.error(
+      `[gork] budget gate error${where} in ${ctx.guildId}: user=${ctx.userId} day=${ctx.day} — failing closed`,
+    );
+    if (
+      shouldSendBudgetRejection({
+        communityId: ctx.communityId,
+        userId: ctx.userId,
+        scope: { scopeKind: "error", scopeId: "0" },
+      })
+    ) {
+      await Promise.resolve(ctx.replyText(LLM_FAILURE_REPLY)).catch(() => {});
+    }
+    return;
+  }
+  ctx.extra?.();
+  console.log(
+    `[gork] budget ${gate.kind}${where} in ${ctx.guildId}: user=${ctx.userId} scope=${
+      gate.scope ? `${gate.scope.scopeKind}/${gate.scope.scopeId}` : "?"
+    } day=${ctx.day}`,
+  );
+  if (
+    shouldSendBudgetRejection({
+      communityId: ctx.communityId,
+      userId: ctx.userId,
+      scope: gate.scope,
+    })
+  ) {
+    await Promise.resolve(
+      ctx.replyGate({ content: gate.reply, allowedMentions: NO_PING_MENTIONS })
+    ).catch(() => {});
+  }
+}
+
+/**
  * Reaction added to a trigger that hits the per-user cooldown: a visible
  * "rate-limited" signal replacing the old silent drop (still no reply and
  * no LLM call on a hit).
@@ -704,42 +763,16 @@ async function runGorkHook(client, message) {
       day: budgetDay,
     });
     if (!budgetGate.allowed) {
-      if (budgetGate.kind === "error") {
-        // checkGorkBudget already console.error'd the cause. Fail closed:
-        // no LLM call, no count — but the user gets the sanctioned canned
-        // reply (an unexplained silence would be indistinguishable from
-        // gork being broken/disabled). Throttled via a synthetic scope so
-        // repeated DB failures can't turn every trigger into a reply.
-        console.error(
-          `[gork] budget gate error in ${guildId}: user=${message.author.id} day=${budgetDay} — failing closed`,
-        );
-        if (
-          shouldSendBudgetRejection({
-            communityId,
-            userId: message.author.id,
-            scope: { scopeKind: "error", scopeId: "0" },
-          })
-        ) {
-          await message.reply(LLM_FAILURE_REPLY).catch(() => {});
-        }
-        return;
-      }
-      console.log(
-        `[gork] budget ${budgetGate.kind} in ${guildId}: user=${message.author.id} scope=${
-          budgetGate.scope ? `${budgetGate.scope.scopeKind}/${budgetGate.scope.scopeId}` : "?"
-        } day=${budgetDay}`,
-      );
-      if (
-        shouldSendBudgetRejection({
-          communityId,
-          userId: message.author.id,
-          scope: budgetGate.scope,
-        })
-      ) {
-        await message
-          .reply({ content: budgetGate.reply, allowedMentions: NO_PING_MENTIONS })
-          .catch(() => {});
-      }
+      // #475 (F1-6): the bounce sequence lives in bounceBudgetGate — this
+      // site used to carry the reference copy.
+      await bounceBudgetGate(budgetGate, {
+        communityId,
+        userId: message.author.id,
+        guildId,
+        day: budgetDay,
+        replyText: (text) => message.reply(text),
+        replyGate: (payload) => message.reply(payload),
+      });
       return;
     }
 
@@ -944,40 +977,17 @@ async function runGorkJob(deps) {
           day: budgetDay,
         });
         if (!dequeueGate.allowed) {
-          dbg(`budget dequeue bounce kind=${dequeueGate.kind}`);
-          if (dequeueGate.kind === "error") {
-            // Fail closed with the canned reply (same contract as the
-            // enqueue site): no LLM call, no count, never silence.
-            console.error(
-              `[gork] budget gate error at dequeue in ${guildId}: user=${message.author.id} day=${budgetDay} — failing closed`,
-            );
-            if (
-              shouldSendBudgetRejection({
-                communityId,
-                userId: message.author.id,
-                scope: { scopeKind: "error", scopeId: "0" },
-              })
-            ) {
-              await message.reply(LLM_FAILURE_REPLY).catch(() => {});
-            }
-            return; // finally still runs: typing stops, slot releases
-          }
-          console.log(
-            `[gork] budget ${dequeueGate.kind} at dequeue in ${guildId}: user=${message.author.id} scope=${
-              dequeueGate.scope ? `${dequeueGate.scope.scopeKind}/${dequeueGate.scope.scopeId}` : "?"
-            } day=${budgetDay}`,
-          );
-          if (
-            shouldSendBudgetRejection({
-              communityId,
-              userId: message.author.id,
-              scope: dequeueGate.scope,
-            })
-          ) {
-            await message
-              .reply({ content: dequeueGate.reply, allowedMentions: NO_PING_MENTIONS })
-              .catch(() => {});
-          }
+          // #475 (F1-6): shared bounce (dbg line rides via extra()).
+          await bounceBudgetGate(dequeueGate, {
+            communityId,
+            userId: message.author.id,
+            guildId,
+            day: budgetDay,
+            where: "at dequeue",
+            extra: () => dbg(`budget dequeue bounce kind=${dequeueGate.kind}`),
+            replyText: (text) => message.reply(text),
+            replyGate: (payload) => message.reply(payload),
+          });
           return; // finally still runs: typing stops, slot releases, no count
         }
         budgetScope = dequeueGate.scope;
@@ -1896,39 +1906,18 @@ async function runGorkHookFluxer(outbound, message) {
       day: budgetDay,
     });
     if (!budgetGate.allowed) {
-      if (budgetGate.kind === "error") {
-        // Fail closed with the canned reply (same contract as Discord):
-        // no LLM call, no count, never silence.
-        console.error(
-          `[gork] fluxer budget gate error in ${guildId}: user=${authorId} day=${budgetDay} — failing closed`,
-        );
-        if (
-          shouldSendBudgetRejection({
-            communityId,
-            userId: authorId,
-            scope: { scopeKind: "error", scopeId: "0" },
-          })
-        ) {
-          await msg.reply(LLM_FAILURE_REPLY).catch(() => {});
-        }
-        return;
-      }
-      console.log(
-        `[gork] fluxer budget ${budgetGate.kind} in ${guildId}: user=${authorId} scope=${
-          budgetGate.scope ? `${budgetGate.scope.scopeKind}/${budgetGate.scope.scopeId}` : "?"
-        } day=${budgetDay}`,
-      );
-      if (
-        shouldSendBudgetRejection({
-          communityId,
-          userId: authorId,
-          scope: budgetGate.scope,
-        })
-      ) {
-        await msg
-          .reply({ content: budgetGate.reply, allowedMentions: NO_PING_MENTIONS })
-          .catch(() => {});
-      }
+      // #475 (F1-6): shared bounce — Fluxer keeps the identical contract
+      // (canned error reply, locked over-limit copy, synthetic-scope
+      // throttle) via the same helper that replaced its Discord twins.
+      await bounceBudgetGate(budgetGate, {
+        communityId,
+        userId: authorId,
+        guildId,
+        day: budgetDay,
+        where: "fluxer",
+        replyText: (text) => msg.reply(text),
+        replyGate: (payload) => msg.reply(payload),
+      });
       return;
     }
 

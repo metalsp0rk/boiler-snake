@@ -298,9 +298,24 @@ async function fetchReadablePage(startUrl, deps) {
       );
 
       const status = Number(res?.status);
+      // #475 (F1-8): every early return below (and every redirect follow)
+      // drops THIS response unread. An unconsumed undici body keeps its
+      // socket checked out of the shared global agent until GC — redirect-
+      // heavy and error-heavy sites (404 is the most common) slowly pin the
+      // pool and stall every other fetcher in the process, LLM calls
+      // included. Cancel on every path that does not read the body.
+      const discardBody = (r) => {
+        try {
+          const p = r?.body?.cancel?.();
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        } catch {
+          // body already consumed / fake without cancel — nothing to do
+        }
+      };
       const location = REDIRECT_STATUSES.has(status)
         ? String(res?.headers?.get?.("location") || "")
         : "";
+      if (REDIRECT_STATUSES.has(status)) discardBody(res);
       if (location) {
         if (hops >= MAX_REDIRECTS) {
           return { ok: false, reason: REASON_REDIRECT_LIMIT };
@@ -320,7 +335,10 @@ async function fetchReadablePage(startUrl, deps) {
         continue;
       }
 
-      if (!res?.ok) return { ok: false, reason: `http ${status}` };
+      if (!res?.ok) {
+        discardBody(res); // #475 (F1-8): error statuses leak the same sockets
+        return { ok: false, reason: `http ${status}` };
+      }
 
       const contentType = String(
         res?.headers?.get?.("content-type") || "",
@@ -328,10 +346,12 @@ async function fetchReadablePage(startUrl, deps) {
         .toLowerCase()
         .trim();
       if (!isReadableContentType(contentType)) {
+        discardBody(res); // #475 (F1-8)
         return { ok: false, reason: REASON_CONTENT_TYPE };
       }
       const declared = Number(res?.headers?.get?.("content-length"));
       if (Number.isFinite(declared) && declared > MAX_BYTES) {
+        discardBody(res); // #475 (F1-8)
         return { ok: false, reason: REASON_FETCH_FAILED };
       }
 

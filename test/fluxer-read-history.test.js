@@ -131,6 +131,37 @@ function execArgs(outbound, repo = repoStub()) {
 
 /* ------------------------------- tool JSON -------------------------------- */
 
+describe("#475 (F1-6): the shared vocabulary is IMPORTED, not re-spelled", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const src = fs.readFileSync(
+    path.join(__dirname, "..", "src", "features", "gork", "tools", "readHistory.js"),
+    "utf8"
+  );
+  const requireBlock =
+    /const\s*\{[\s\S]*?\}\s*=\s*require\("\.\/readDiscord"\);/.exec(src);
+  it("imports targetLabel/failWith/sortOldestFirst/BARE_ID_RE from readDiscord", () => {
+    assert.ok(requireBlock, "no require of ./readDiscord found");
+    for (const name of ["targetLabel", "failWith", "sortOldestFirst", "BARE_ID_RE"]) {
+      assert.match(
+        requireBlock[0],
+        new RegExp(`\\b${name}\\b`),
+        `${name} must be IMPORTED — the local copies already drifted (raw slice vs sliceSafe)`
+      );
+    }
+  });
+  it("carries NO local re-declaration of the shared primitives", () => {
+    for (const decl of [
+      "function targetLabel(",
+      "function failWith(",
+      "function sortOldestFirst(",
+      "const BARE_ID_RE =",
+    ]) {
+      assert.ok(!src.includes(decl), `re-declaration "${decl}" would restart the drift`);
+    }
+  });
+});
+
 describe("READ_HISTORY_TOOL (schema)", () => {
   it("is the read_history function tool with one string arg", () => {
     assert.equal(rh.READ_HISTORY_TOOL.type, "function");
