@@ -759,6 +759,43 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       for (const s of [other, a, b, dead]) sessions.destroySession(s.id);
     });
 
+    it("listLiveSessionsForUser scopes by identity namespace (#404/C1-4)", () => {
+      const u = "u-clash-404";
+      const own = sessions.createSession({ userId: u, discordTag: "discord-self#1" });
+      const fxId = sessions.newSessionId();
+      api.createWebSession({
+        id: fxId,
+        userId: u, // the SAME bare id — a Fluxer sub colliding a Discord snowflake
+        discordTag: "clash#666",
+        expiresAt: Date.now() + 3 * DAY,
+        platform: "fluxer",
+        instanceKey: "fluxer.clash.example",
+      });
+
+      const d = sessions.listLiveSessionsForUser(u, Date.now(), {
+        platform: "discord",
+        instanceKey: "discord",
+      });
+      assert.deepEqual(d.map((x) => x.id), [own.id], "the discord namespace sees ONLY discord rows");
+
+      const f = sessions.listLiveSessionsForUser(u, Date.now(), {
+        platform: "fluxer",
+        instanceKey: "fluxer.clash.example",
+      });
+      assert.deepEqual(f.map((x) => x.id), [fxId], "the fluxer instance sees its own row");
+      const otherInstance = sessions.listLiveSessionsForUser(u, Date.now(), {
+        platform: "fluxer",
+        instanceKey: "some.other.host",
+      });
+      assert.equal(otherInstance.length, 0, "instances isolate WITHIN a platform too");
+
+      const all = sessions.listLiveSessionsForUser(u);
+      assert.equal(all.length, 2, "unscoped stays honest for the system-wide admin surface");
+
+      sessions.destroySession(own.id);
+      sessions.destroySession(fxId);
+    });
+
     it("bounded reads: a 102-row user still answers at most MAX_SESSION_LIST_LIMIT", () => {
       const u = "u-admin-bound";
       const ids = [];
@@ -1008,6 +1045,50 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       }
       assert.ok(!text.includes('name="session_id"') && !text.includes('name="id"'), "no id selector field");
       assert.equal((text.match(/name="created_at"/g) || []).length, 1, "one own row, one selector");
+    });
+
+    it("#404 a colliding id on ANOTHER platform can neither see nor kill this console's rows", async () => {
+      // Premise (audit C1-4): the FLUXER INSTANCE chooses its own `sub`. A
+      // configured instance issues sub === U_STAFF, a victim's Discord
+      // snowflake. Post-#404 the self-service list AND the revoke selector
+      // are scoped to the caller's identity namespace (req.webSession's
+      // platform+instance_key) — the clash sees nothing and revokes nothing.
+      const fxId = sessions.newSessionId();
+      const fxCreated = Date.now() + 777_777;
+      api.createWebSession({
+        id: fxId,
+        userId: U_STAFF,
+        discordTag: "clash#666",
+        expiresAt: Date.now() + 3 * DAY,
+        platform: "fluxer",
+        instanceKey: "fluxer.clash.example",
+      });
+      api.db
+        .prepare("UPDATE web_sessions SET created_at=?, last_seen_at=? WHERE id=?")
+        .run(fxCreated, fxCreated, fxId);
+
+      try {
+        const { text } = await getPage("staff");
+        assert.equal(
+          (text.match(/name="created_at"/g) || []).length,
+          1,
+          "the page still shows ONE row — the fluxer-namespaced row is invisible to a discord identity",
+        );
+        assert.ok(!text.includes("clash#666"), "the colliding row's tag never renders");
+
+        const { location } = await postRevoke("staff", {
+          _csrf: csrfOf.staff,
+          created_at: String(fxCreated),
+        });
+        assert.match(
+          location || "",
+          /error=session_gone/,
+          "a cross-platform created_at selector gets the honest session_gone — zero writes on refusal",
+        );
+        assert.ok(rawRow(fxId), "the victim row SURVIVES — the revocation did not happen");
+      } finally {
+        sessions.destroySession(fxId);
+      }
     });
 
     it("revoke ANOTHER own session kills it while the current cookie keeps working", async () => {
