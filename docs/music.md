@@ -79,8 +79,12 @@ Queues are **in memory**. A bot restart empties them.
 
 ## Idle leave
 
-- Queue empty: leave after **5 minutes**
-- Voice channel has no humans (only the bot): leave after **60 seconds**
+- The voice channel has no humans (only the bot): leave after **60 seconds**.
+- An **empty queue does not start any timer**: the bot stays until the last human
+  leaves (60 s rule) or someone runs `/music stop` or `/music leave`.
+  (This doc once promised a "queue empty → leave after 5 minutes" rule that has
+  never existed in the code — #463. A real queue-empty idle-leave is tracked as
+  a feature request, not a documented capability.)
 
 Voice XP is unchanged: the ticker already ignores bots; humans still earn XP while music plays (two eligible humans in the channel).
 
