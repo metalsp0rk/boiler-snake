@@ -19,12 +19,17 @@
  * `computeChannelPermissions` is PURE — no I/O, no cache. It may console.warn
  * the § Permissions rule-3 line; that is logging, not I/O. All network lives
  * in {@link resolveFluxerPermissions}, which follows the fail-closed sequence
- * (spec 559–564, rules 1–3) and surfaces specific user-facing copies.
+ * (spec 559–564, rules 1–3) and surfaces specific user-facing copies. Since
+ * #385 (FLX-4) that network is TUNNELED, not removed: guild/roles/channel
+ * reads ride ./permCache (FLUXER_PERMISSION_CACHE_MS, default 5000, 0
+ * disables) — successes only, so a failure is retried by the next call.
  */
 
 /** Unsigned decimal string only: rejects "", "1e10", "-32" (two's-complement
  *  BigInt &-tricks), garbage, and absurd lengths. Anything else ⇒ 0 bits.
  *  Same closed rule as src/web/auth/guildAccess.js (spec 516). */
+const permCache = require("./permCache");
+
 const PERMISSIONS_DECIMAL_RE = /^\d{1,20}$/;
 
 /** Concrete uint64 mask (spec 519): every bit of the 64-bit space set. */
@@ -295,41 +300,69 @@ async function resolveFluxerPermissions({
     };
   }
 
-  // Rule 2 (on demand): role OBJECTS are only needed to resolve masks for the
-  // ids the member actually carries. An empty id list contributes no role bits,
-  // so nothing is fetched and the mask stays the fail-closed value.
+  // #385 (FLX-4): the fan-out below runs through ./permCache — successes
+  // only, FLUXER_PERMISSION_CACHE_MS (default 5 s, 0 disables) — so the
+  // per-message guild/roles/channel GET storm collapses to ~one set per
+  // community per window. #386 keeps every read guild-scoped regardless.
+  //
+  // Rule 2 + the everyone base, always fetched: the spec pins
+  // "everyone base; union member role masks", and the @everyone role IS a
+  // role a zero-role member carries. The pre-#385 skip for
+  // memberRoleIds.length === 0 silently zeroed the base and lost genuine
+  // @everyone channel grants (the audit's spec-deviation tail) — the base
+  // is resolved from the role list for EVERY member now.
   let roles = [];
-  if (memberRoleIds.length > 0) {
+  const rolesKey = `roles:${communityId}`;
+  const rolesHit = permCache.read(outbound, rolesKey);
+  if (rolesHit) {
+    roles = rolesHit.value;
+  } else {
     try {
-      roles = (await outbound.fetchRoles(communityId)) ?? [];
+      const fetched = (await outbound.fetchRoles(communityId)) ?? [];
+      roles = fetched;
+      // A Fluxer guild always has @everyone: an empty list is the
+      // adapter's failure shape — honest for this call, never cacheable.
+      if (fetched.length > 0) permCache.store(outbound, rolesKey, fetched);
     } catch (err) {
       roles = [];
       console.error(
         `[fluxer] ${instanceKey} fetchRoles community ${communityId} threw: ${err?.message || err}`,
       );
     }
-    // Outbound swallows fetch failures to [] (spec: that is the failure shape);
-    // an empty list then yields the 0n base + role-less union, and the
+    // Outbound swallows fetch failures to [] (spec: that is the failure
+    // shape); the empty list then yields the 0n fail-closed base, and the
     // staff_roles table is still consulted from memberRoleIds by the gates.
   }
 
   let guild = null;
-  try {
-    guild = (await outbound.fetchGuild(communityId)) ?? null;
-  } catch (err) {
-    guild = null;
-    console.error(
-      `[fluxer] ${instanceKey} fetchGuild community ${communityId} threw: ${err?.message || err}`,
-    );
+  const guildKey = `guild:${communityId}`;
+  const guildHit = permCache.read(outbound, guildKey);
+  if (guildHit) {
+    guild = guildHit.value;
+  } else {
+    try {
+      guild = (await outbound.fetchGuild(communityId)) ?? null;
+      if (guild) permCache.store(outbound, guildKey, guild);
+    } catch (err) {
+      guild = null;
+      console.error(
+        `[fluxer] ${instanceKey} fetchGuild community ${communityId} threw: ${err?.message || err}`,
+      );
+    }
   }
 
-  // Overwrites only matter when there is a mask to modify (role bits or the
-  // everyone base were resolvable); with no role data the mask is 0n and every
-  // overwrite shape (role/member-scoped) is a no-op on it.
+  // Overwrites modify the (everyone ⊕ roles) mask — and with the everyone
+  // base now real for ZERO-role members too (above), the channel is read
+  // for EVERY member, not only members carrying role ids.
   let channel = null;
-  if (memberRoleIds.length > 0) {
+  const channelKey = `channel:${communityId}:${String(channelId)}`;
+  const channelHit = permCache.read(outbound, channelKey);
+  if (channelHit) {
+    channel = channelHit.value;
+  } else {
     try {
       channel = (await outbound.fetchChannel(communityId, channelId)) ?? null;
+      if (channel) permCache.store(outbound, channelKey, channel);
     } catch (err) {
       channel = null;
       console.error(

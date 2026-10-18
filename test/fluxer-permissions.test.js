@@ -256,23 +256,60 @@ describe("fluxer/permissions — resolveFluxerPermissions (fail-closed, spec 559
     externalGuildId: GUILD,
   });
 
-  it("a gateway member payload costs ZERO REST calls (instance-cache path)", async () => {
-    const rest = makeFakeRest({ routes: {} });
-    const { outbound } = makeFakeHandle({ rest });
-    const res = await resolveFluxerPermissions({
+  it("#385: a roleless member resolves the REAL @everyone base; rule 1 still skips fetchMember; the cache absorbs the rest", async () => {
+    // Pre-#385 this path skipped fetchRoles entirely ("an empty id list
+    // contributes no role bits") — silently zeroing the spec's
+    // "everyone base" and losing genuine @everyone channel grants.
+    // The fan-out's cost, the audit's actual worry, is what the cache
+    // now answers — in THIS test.
+    const rest = makeFakeRest({
+      routes: {
+        [`GET /v1/guilds/${GUILD}/roles`]: [{ id: GUILD, permissions: "32" }],
+        [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, permission_overwrites: [] },
+      },
+    });
+    const handle = makeFakeHandle({ rest });
+    // makeFakeHandle answers fetchGuild with null — test A needs the REAL
+    // guild so the @everyone role id (= guild id, Phase 0) can resolve.
+    handle.fetchGuild = async () => ({
+      id: GUILD,
+      name: "B",
+      ownerId: "someone-else",
+      afkChannelId: null,
+    });
+    const outbound = handle.outbound;
+    const args = {
       outbound,
       communityId: COMMUNITY_ID,
       userId: "5",
       channelId: CHANNEL,
       instanceKey: INSTANCE,
       member: { roleIds: [], bot: false, username: "tester" },
-    });
+    };
+
+    const res = await resolveFluxerPermissions(args);
+
     assert.equal(res.ok, true);
-    assert.equal(res.channelPermissions, 0n, "no role ids → fail-closed 0n mask");
+    assert.equal(
+      res.channelPermissions,
+      32n,
+      "the @everyone base is REAL for a zero-role member (pre-#385: fetchRoles skipped, base silently 0n)",
+    );
     assert.deepEqual(res.memberRoleIds, []);
-    assert.equal(res.memberBot, false);
     assert.deepEqual(res.author, { id: "5", username: "tester", bot: false });
-    assert.deepEqual(rest.calls, [], "a roleless gateway member must not fan out to the network");
+    assert.ok(
+      !rest.calls.some((c) => c.path.includes("/members/")),
+      "rule 1 stands: the gateway member payload IS the instance cache — no fetchMember GET",
+    );
+
+    const afterFirst = rest.calls.length;
+    const again = await resolveFluxerPermissions(args);
+    assert.equal(again.channelPermissions, 32n);
+    assert.equal(
+      rest.calls.length,
+      afterFirst,
+      "#385 cache: the second resolve on the same outbound pays ZERO structure GETs — the per-message storm is over",
+    );
   });
 
   it("issue #274 rule 1: payload WITHOUT a member (memberRoleIds null) takes the fetchMember fallback", async () => {
@@ -576,7 +613,7 @@ describe("fluxer/permissions — dispatch integration (step 2.5, fail closed)", 
     );
   });
 
-  it("a gateway member payload adds ZERO GET calls to a normal command run", async () => {
+  it("#385: a command run pays structure GETs once per cache window — never fetchMember", async () => {
     const rest = makeFakeRest({
       routes: {
         "POST /v1/users/@me/channels": { id: "dm-42", type: 1 },
@@ -591,13 +628,24 @@ describe("fluxer/permissions — dispatch integration (step 2.5, fail closed)", 
 
     await dispatchPrefixCommand(outbound, message, parsed, { registry, supervisor: null });
 
-    assert.equal(rest.calls[0].method, "POST", "permission resolution never precedes the reply path");
-    assert.equal(rest.calls[0].path, "/v1/users/@me/channels");
-    assert.equal(
-      rest.calls.filter((c) => c.method === "GET").length,
-      0,
-      "the member payload IS the instance cache — a roleless author costs no REST",
+    const gets = rest.calls.filter((c) => c.method === "GET");
+    assert.ok(
+      !gets.some((c) => c.path.includes("/members/")),
+      "rule 1 stands: the gateway member payload IS the instance cache",
     );
+    assert.ok(gets.length > 0, "#385 spec fix: even a roleless author resolves the @everyone base");
+
+    const before = rest.calls.length;
+    await dispatchPrefixCommand(outbound, fluxerMessage({ content: "!xp" }), parsed, {
+      registry,
+      supervisor: null,
+    });
+    assert.deepEqual(
+      rest.calls.slice(before).filter((c) => c.method === "GET").map((c) => c.path),
+      [],
+      "#385: the second command on the same outbound pays zero structure GETs (the fan-out was per-message; the cache makes it per-window)",
+    );
+    assert.ok(rest.calls.slice(before).some((c) => c.method === "POST"), "the second command still ran");
   });
 
   it("a member WITH roles resolves masks through the REST routes (staff admin path)", async () => {
@@ -683,5 +731,199 @@ describe("fluxer/permissions — dispatch integration (step 2.5, fail closed)", 
       (c) => c.method === "POST" && c.path === `/v1/channels/${CHANNEL}/messages`,
     );
     assert.equal(channelPosts.length, 0, "no fail-closed copy was posted in the channel");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #385 (FLX-4): the fan-out cache — per-window instead of per-message,
+// successes only, with the operator knob FLUXER_PERMISSION_CACHE_MS.
+// ---------------------------------------------------------------------------
+
+describe("fluxer/permissions — fan-out cache (#385/FLX-4)", () => {
+  const COMMUNITY_ID = ensureCommunity({
+    platform: "fluxer",
+    instanceKey: INSTANCE,
+    externalGuildId: GUILD,
+  });
+
+  function structureRoutes(over = {}) {
+    return {
+      [`GET /v1/guilds/${GUILD}/roles`]: [{ id: GUILD, permissions: "32" }],
+      [`GET /v1/channels/${CHANNEL}`]: {
+        id: CHANNEL,
+        type: 0,
+        community_id: GUILD,
+        permission_overwrites: [],
+      },
+      ...over,
+    };
+  }
+
+  function resolverFor(rest) {
+    const h = makeFakeHandle({ rest });
+    h.fetchGuild = async () => ({ id: GUILD, name: "B", ownerId: "someone-else", afkChannelId: null });
+    return {
+      outbound: h.outbound,
+      args: {
+        outbound: h.outbound,
+        communityId: COMMUNITY_ID,
+        userId: "5",
+        channelId: CHANNEL,
+        instanceKey: INSTANCE,
+        member: { roleIds: [], bot: false, username: "t" },
+      },
+    };
+  }
+
+  const gets = (rest, path) => rest.calls.filter((c) => c.method === "GET" && c.path === path);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function withEnv(value, fn) {
+    const prev = process.env.FLUXER_PERMISSION_CACHE_MS;
+    if (value === undefined) delete process.env.FLUXER_PERMISSION_CACHE_MS;
+    else process.env.FLUXER_PERMISSION_CACHE_MS = value;
+    return fn().finally(() => {
+      if (prev === undefined) delete process.env.FLUXER_PERMISSION_CACHE_MS;
+      else process.env.FLUXER_PERMISSION_CACHE_MS = prev;
+    });
+  }
+
+  it("default TTL: the second resolve pays ZERO structure GETs on the same outbound", async () => {
+    await withEnv(undefined, async () => {
+      const rest = makeFakeRest({ routes: structureRoutes() });
+      const { outbound, args } = resolverFor(rest);
+
+      const a = await resolveFluxerPermissions(args);
+      const b = await resolveFluxerPermissions(args);
+
+      assert.equal(a.channelPermissions, 32n);
+      assert.equal(b.channelPermissions, 32n, "the cached answer is the SAME answer, not a re-parse");
+      assert.equal(gets(rest, `/v1/guilds/${GUILD}/roles`).length, 1);
+      assert.equal(gets(rest, `/v1/channels/${CHANNEL}`).length, 1);
+    });
+  });
+
+  it("FLUXER_PERMISSION_CACHE_MS=0 is the honest off-switch — every resolve pays", async () => {
+    await withEnv("0", async () => {
+      const rest = makeFakeRest({ routes: structureRoutes() });
+      const { outbound, args } = resolverFor(rest);
+
+      await resolveFluxerPermissions(args);
+      await resolveFluxerPermissions(args);
+
+      assert.equal(gets(rest, `/v1/guilds/${GUILD}/roles`).length, 2, "0 = the pre-#385 per-call reality");
+      assert.equal(gets(rest, `/v1/channels/${CHANNEL}`).length, 2);
+    });
+  });
+
+  it("a garbage knob falls back to the default WITH one specific complaint — and still caches", async () => {
+    await withEnv("soon", async () => {
+      const rest = makeFakeRest({ routes: structureRoutes() });
+      const { outbound, args } = resolverFor(rest);
+
+      const orig = console.error;
+      const errs = [];
+      console.error = (...a) => errs.push(a.join(" "));
+      try {
+        await resolveFluxerPermissions(args);
+        await resolveFluxerPermissions(args);
+      } finally {
+        console.error = orig;
+      }
+      assert.equal(
+        gets(rest, `/v1/guilds/${GUILD}/roles`).length,
+        1,
+        "garbage → the 5000 default (caching ON), never 'anything goes'",
+      );
+      assert.ok(
+        errs.some((e) => e.includes("FLUXER_PERMISSION_CACHE_MS") && e.includes("soon")),
+        "the operator learns the knob was wrong and what was used instead",
+      );
+    });
+  });
+
+  it("entries EXPIRE: past the TTL the community is re-read", async () => {
+    await withEnv("20", async () => {
+      const rest = makeFakeRest({ routes: structureRoutes() });
+      const { outbound, args } = resolverFor(rest);
+
+      await resolveFluxerPermissions(args);
+      await sleep(40);
+      await resolveFluxerPermissions(args);
+
+      assert.equal(
+        gets(rest, `/v1/guilds/${GUILD}/roles`).length,
+        2,
+        "a few seconds of staleness is the deal — UNBOUNDED staleness is not",
+      );
+    });
+  });
+
+  it("FAILURES are never cached: the next call retries honestly", async () => {
+    await withEnv(undefined, async () => {
+      const rest = makeFakeRest({
+        routes: {
+          // roles unroutable (the adapter swallows to [] — the failure
+          // shape); the channel read succeeds and MUST cache.
+          [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, community_id: GUILD },
+        },
+      });
+      const { outbound, args } = resolverFor(rest);
+
+      const orig = console.error;
+      console.error = () => {};
+      try {
+        await resolveFluxerPermissions(args);
+        await resolveFluxerPermissions(args);
+      } finally {
+        console.error = orig;
+      }
+
+      assert.equal(
+        gets(rest, `/v1/guilds/${GUILD}/roles`).length,
+        2,
+        "the empty list is the adapter's failure shape — a transient error is not nailed down for the TTL",
+      );
+      assert.equal(gets(rest, `/v1/channels/${CHANNEL}`).length, 1, "successes still cache");
+    });
+  });
+
+  it("the bot's OWN overwrite write invalidates exactly the channel entry", async () => {
+    await withEnv(undefined, async () => {
+      const dbApi = require("../src/db");
+      dbApi.db
+        .prepare("UPDATE communities SET elevated_permissions=1 WHERE id=?")
+        .run(COMMUNITY_ID);
+      const rest = makeFakeRest({
+        routes: structureRoutes({ [`PUT /v1/channels/${CHANNEL}`]: null }),
+      });
+      const { outbound, args } = resolverFor(rest);
+      try {
+        await resolveFluxerPermissions(args);
+        const w = await outbound.setOverwrites(CHANNEL, [
+          { id: GUILD, type: 0, allow: "0", deny: "32" },
+        ]);
+        assert.equal(w.ok, true, w.error);
+        await resolveFluxerPermissions(args);
+
+        const putIdx = rest.calls.findIndex((c) => c.method === "PUT");
+        assert.ok(putIdx >= 0, "the overwrite write went out");
+        const after = rest.calls.slice(putIdx + 1);
+        assert.equal(
+          after.filter((c) => c.method === "GET" && c.path === `/v1/channels/${CHANNEL}`).length,
+          1,
+          "our own write beats the cache — exactly one re-read AFTER the write (the write's own ownership probe sits before it)",
+        );
+        assert.equal(
+          after.filter((c) => c.path === `/v1/guilds/${GUILD}/roles`).length,
+          0,
+          "and NOTHING else is re-fetched — the invalidation is surgical",
+        );
+      } finally {
+        dbApi.db
+          .prepare("UPDATE communities SET elevated_permissions=0 WHERE id=?")
+          .run(COMMUNITY_ID);
+      }
+    });
   });
 });
