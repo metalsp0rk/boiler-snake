@@ -622,6 +622,121 @@ describe("integration: youtube", () => {
     }
   });
 
+  // ── #441 (audit INT-5): Google API responses must be STATUS-CHECKED ──────
+  // 403 quotaExceeded / 400 invalid-key bodies parse as JSON, and the old
+  // no-status-code parse made every failure masquerade as "No channel data
+  // found" — fleet-wide silent notification death with the wrong cause.
+
+  it("interpretGoogleResponse reads the status code (#441)", () => {
+    const { interpretGoogleResponse } = require("../../src/features/youtube/ticker");
+    const quota = interpretGoogleResponse(
+      403,
+      JSON.stringify({
+        error: {
+          code: 403,
+          message: "The request cannot be completed because it has exceeded the project's quota.",
+          errors: [{ reason: "quotaExceeded" }],
+        },
+      }),
+    );
+    assert.equal(quota.ok, false);
+    assert.match(quota.error, /403/);
+    assert.match(quota.error, /quota/i, "the REAL reason survives");
+    const ok = interpretGoogleResponse(200, JSON.stringify({ items: [1] }));
+    assert.equal(ok.ok, true);
+    assert.equal(ok.data.items.length, 1);
+    // 200-but-garbage and 200-with-error-body are ALSO failures:
+    assert.equal(interpretGoogleResponse(200, "<html>rate limited</html>").ok, false);
+    const bodyErr = interpretGoogleResponse(
+      200,
+      JSON.stringify({ error: { message: "API key not valid" } }),
+    );
+    assert.equal(bodyErr.ok, false);
+    assert.match(bodyErr.error, /API key not valid/);
+  });
+
+  it("fetchYouTubeFeed threads a 403 quota error — never 'no channel data' (#441)", async () => {
+    const { fetchYouTubeFeed, setGoogleGetForTests } = require("../../src/features/youtube/ticker");
+    const prevKey = process.env.YOUTUBE_API_KEY;
+    process.env.YOUTUBE_API_KEY = "TESTKEY-441";
+    const restore = setGoogleGetForTests(async (pathname) => {
+      assert.ok(
+        !pathname.includes("key="),
+        "callers pass KEY-FREE paths — the transport appends it",
+      );
+      return { ok: false, status: 403, error: "403 quota exceeded" };
+    });
+    try {
+      const feed = await fetchYouTubeFeed("UCquota441");
+      assert.match(String(feed.error), /quota exceeded/, "the 403 reason reaches the caller");
+      assert.doesNotMatch(String(feed.error), /no channel data/, "not the misleading old copy");
+      assert.doesNotMatch(String(feed.error), /TESTKEY-441/, "the key never enters the cause");
+    } finally {
+      setGoogleGetForTests(restore);
+      if (prevKey == null) delete process.env.YOUTUBE_API_KEY;
+      else process.env.YOUTUBE_API_KEY = prevKey;
+    }
+  });
+
+  it("fetchYouTubeFeed success flows through the transport (no live network) (#441)", async () => {
+    const { fetchYouTubeFeed, setGoogleGetForTests } = require("../../src/features/youtube/ticker");
+    const prevKey = process.env.YOUTUBE_API_KEY;
+    process.env.YOUTUBE_API_KEY = "TESTKEY-441";
+    const seen = [];
+    const restore = setGoogleGetForTests(async (pathname) => {
+      seen.push(pathname);
+      if (pathname.startsWith("/youtube/v3/channels")) {
+        return {
+          ok: true,
+          data: { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU441" } } }] },
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          items: [
+            { snippet: { title: "v1", publishedAt: "2026-10-17T00:00:00Z", resourceId: { videoId: "vid1" }, liveBroadcastContent: "none" } },
+            { snippet: { title: "v2", publishedAt: "2026-10-17T01:00:00Z", resourceId: { videoId: "vid2" }, liveBroadcastContent: "live" } },
+          ],
+        },
+      };
+    });
+    try {
+      const feed = await fetchYouTubeFeed("UCgood441");
+      assert.equal(feed.items.length, 2, "success path intact");
+      assert.equal(feed.items[1].id, "vid2");
+      assert.equal(feed.items[1].liveBroadcastContent, "live");
+      assert.equal(seen.length, 2, "channels lookup then playlist items");
+    } finally {
+      setGoogleGetForTests(restore);
+      if (prevKey == null) delete process.env.YOUTUBE_API_KEY;
+      else process.env.YOUTUBE_API_KEY = prevKey;
+    }
+  });
+
+  it("search + channel-info degrade to null with a logged cause under quota (#441)", async () => {
+    const {
+      fetchChannelInfo,
+      lookupChannelByName,
+      setGoogleGetForTests,
+    } = require("../../src/features/youtube/ticker");
+    const prevKey = process.env.YOUTUBE_API_KEY;
+    process.env.YOUTUBE_API_KEY = "TESTKEY-441";
+    const restore = setGoogleGetForTests(async () => ({
+      ok: false,
+      status: 403,
+      error: "403 quota exceeded",
+    }));
+    try {
+      assert.equal(await fetchChannelInfo("UCx441"), null, "honest null, cause logged");
+      assert.equal(await lookupChannelByName("somechannel"), null);
+    } finally {
+      setGoogleGetForTests(restore);
+      if (prevKey == null) delete process.env.YOUTUBE_API_KEY;
+      else process.env.YOUTUBE_API_KEY = prevKey;
+    }
+  });
+
   it("denies non-staff /youtube", async () => {
     const interaction = await env.runCommand({
       commandName: "youtube",
