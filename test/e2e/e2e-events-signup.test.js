@@ -541,7 +541,7 @@ describe(
       assert.equal(signedUp(ev.optionIds.C), 1, "refusal changed nothing");
     });
 
-    it("options CLI: list table, add + cap refusal, edit-missing copy, remove CASCADES signups (#346 pin)", async () => {
+    it("options CLI: list table, add + cap refusal, edit-missing copy, remove REFUSES while rows exist (#346 fixed)", async () => {
       const ev = dinner.ev;
       const list = await env.mock.awaitReply(
         await signupSlash("options", "list", [intOpt("event", ev.row.id)]),
@@ -609,11 +609,72 @@ describe(
         "That option isn't on this event (see `/eventsignup options list`).",
       );
 
-      // BUG PIN (#346): the "has signups" guard checks counts.signed_up
-      // (the repo returns signedUp) → never fires; removing a SIGNED-OPT-IN
-      // option silently cascades its signup rows. Flip when fixed.
+      // #346 FIXED: the "has rows" guard reads the repo's CAMELCASE keys —
+      // signed-up members and waiters now BLOCK option removal instead of
+      // being cascaded away under a celebratory reply.
       await rsClick(ev, ev.optionIds.Guildwide, env.ids.target);
       assert.ok(rowFor(ev.row.id, env.ids.target, ev.optionIds.Guildwide));
+      assert.equal(
+        String(
+          (
+            await env.mock.awaitReply(
+              await signupSlash("options", "remove", [
+                intOpt("event", ev.row.id),
+                intOpt("option", ev.optionIds.Guildwide),
+              ]),
+            )
+          ).content,
+        ),
+        "**Guildwide** has 2 signup(s) — remove them first with `/eventsignup response remove`.", // fixture seeds outsider + target
+      );
+      assert.ok(
+        rowFor(ev.row.id, env.ids.target, ev.optionIds.Guildwide),
+        "#346: the signup SURVIVES the refused removal (it used to die with the option)",
+      );
+      assert.ok(env.dbmod.getEventOptionById(ev.optionIds.Guildwide), "the option survives too");
+
+      // Waiters block too: park the outsider on the full Dinner option and
+      // the refusal names BOTH populations.
+      assert.match(
+        await rsClick(ev, dinner.optionId, env.ids.outsider),
+        /waitlist for \*\*Dinner\*\*/,
+        "outsider parked as a waiter",
+      );
+      assert.match(
+        String(
+          (
+            await env.mock.awaitReply(
+              await signupSlash("options", "remove", [
+                intOpt("event", ev.row.id),
+                intOpt("option", dinner.optionId),
+              ]),
+            )
+          ).content,
+        ),
+        /\*\*Dinner\*\* has 1 signup\(s\) and 1 waiter\(s\) — remove them first/,
+      );
+      await rsClick(ev, dinner.optionId, env.ids.outsider); // toggle the waiter off again
+
+      // Free Guildwide — through the very arm the refusal copy recommends,
+      // whatever roster the earlier tests built — and land the removal.
+      const gwRows = env.dbmod
+        .listEventSignups(ev.row.id, {})
+        .filter(
+          (r) =>
+            Number(r.option_id) === Number(ev.optionIds.Guildwide) &&
+            r.state === "signed_up",
+        );
+      assert.ok(gwRows.length >= 1, "holders seeded for the release loop");
+      for (const r of gwRows) {
+        const out = await env.mock.awaitReply(
+          await signupSlash("response", "remove", [
+            intOpt("event", ev.row.id),
+            userOpt("member", r.user_id),
+            intOpt("option", ev.optionIds.Guildwide),
+          ]),
+        );
+        assert.match(String(out.content), /removed/i, `organizer released ${r.user_id}`);
+      }
       assert.match(
         String(
           (
@@ -627,11 +688,7 @@ describe(
         ),
         /Option \*\*Guildwide\*\* removed ✅/,
       );
-      assert.equal(
-        rowFor(ev.row.id, env.ids.target),
-        null,
-        "signups destroyed with the option (current behavior)",
-      );
+      assert.equal(env.dbmod.getEventOptionById(ev.optionIds.Guildwide), null, "free option removes cleanly");
     });
 
     it("whitelist COMMAND persists the role — the gate is live and clear:yes closes the loop (#344)", async () => {
