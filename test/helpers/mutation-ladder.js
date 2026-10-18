@@ -1897,7 +1897,8 @@ function buildLadderSteps(row, ctx) {
         url: path,
         method: "POST",
         cookieId: null,
-        expect: harness.expectLoginRedirect("/auth/login"),
+        // #467 (C1-8): the concrete path is /g/<COMMUNITY_A>/… — id rides along.
+        expect: harness.expectLoginRedirect(`/auth/login?guild=${FIX.COMMUNITY_A}`),
       });
       observe(row.template, "anon", 302);
     },

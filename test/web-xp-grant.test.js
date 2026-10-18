@@ -544,7 +544,7 @@ describe("B. GET /g/:guildId/xp/grant — admin-only form, whitelist-only flash"
     await harness.runOutcome({
       base: baseUrl,
       url: GRANT_PATH,
-      expect: harness.expectLoginRedirect("/auth/login"),
+      expect: harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`) /* #467 C1-8 */,
       label: "GET anon",
     });
     for (const key of ["plain", "stranger"]) {
@@ -595,7 +595,7 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross 404 · junior
       url: GRANT_PATH,
       method: "POST",
       cookieId: null,
-      expect: harness.expectLoginRedirect("/auth/login"),
+      expect: harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`) /* #467 C1-8 */,
       label: "anon POST",
     });
     assert.equal(xpOf(USER_T_POS), 0, "anon grant changed nothing");

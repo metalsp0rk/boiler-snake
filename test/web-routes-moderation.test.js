@@ -336,8 +336,8 @@ describe("access matrix — GET /g/:guildId/warnings and /notes (staff tier)", (
     it(`${label}: anonymous → 302 login redirect (guildScope)`, async () => {
       const { res } = await hit(url);
       assert.equal(res.status, 302);
-      // integer community id ⇒ bare login target (URL_ID_RE rejects short ids)
-      assert.equal(res.headers.get("location"), "/auth/login");
+      // #467 (C1-8): the short integer id rides ?guild= now (route-shaped gate)
+      assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
     });
 
     it(`${label}: in-guild member WITHOUT staff role → generic 404 (never 403)`, async () => {

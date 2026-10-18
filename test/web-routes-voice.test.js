@@ -235,9 +235,8 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
     it("anonymous ⇒ 302 to /auth/login", async () => {
       const { res, body } = await req(`/g/${CID_A}/voice`);
       assert.equal(res.status, 302);
-      // PR 2: integer community ids fail the 5–20-digit snowflake gate in
-      // loginRedirectTarget, so the anon target is the bare login page.
-      assert.equal(res.headers.get("location"), "/auth/login");
+      // #467 (C1-8): the short integer id rides ?guild= now (route-shaped gate)
+      assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal(body, "");
     });

@@ -412,7 +412,7 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
     assert.equal(res.status, 302);
     // Integer community id fails the 5–20-digit snowflake gate in the login
     // redirect target builder → the bare /auth/login (converted contract).
-    assert.equal(res.headers.get("location"), "/auth/login");
+    assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
     assert.equal(res.headers.get("cache-control"), "no-store");
     assert.equal(res.headers.get("referrer-policy"), "no-referrer");
     assert.equal(body, "");

@@ -192,15 +192,12 @@ function buildDefaultRegistry() {
   return registry;
 }
 
-function getRegisteredCommands() {
-  return buildDefaultRegistry().commands;
-}
-
+// #467 (A2-13): the module-level getRegisteredCommands() / `commands` getter
+// had ZERO importers (grep-proven) and every property access REBUILT the
+// entire default registry (re-applying 27 feature modules) — a dead
+// O(everything) footgun, not even a deprecated shim with warnDeprecated.
+// Deleted; the live path is buildDefaultRegistry().commands (instance).
 module.exports = {
   createRegistry,
   buildDefaultRegistry,
-  getRegisteredCommands,
-  get commands() {
-    return getRegisteredCommands();
-  },
 };

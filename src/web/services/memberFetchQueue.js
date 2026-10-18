@@ -147,14 +147,27 @@ function queueMissingMembersExternal(getClient, externalGuildId, userIds) {
 /** Shared enqueue: dedupe + cooldown + bounded per-key pending. */
 function enqueue(key, getClient, userIds) {
   let queued = 0;
+  let dropped = 0;
   const guildPending = pending.get(key) ?? new Map();
   for (const userId of userIds ?? []) {
     if (typeof userId !== "string" || !userId) continue;
-    if (guildPending.size >= MAX_PENDING_PER_GUILD) break; // bounded: drop the rest
+    if (guildPending.size >= MAX_PENDING_PER_GUILD) {
+      // #467 (C1-9): bounded drop, now COUNTED and LOGGED — the header
+      // promised "bounded, logged, never silent"; hostile 10k-id dumps
+      // used to vanish here with zero operator signal (names stay raw
+      // forever and nobody can tell why).
+      dropped += 1;
+      continue;
+    }
     if (guildPending.has(userId)) continue; // already queued = dedupe
     if (attemptBlockedUntil(key, userId) > now()) continue; // cooling down
     guildPending.set(userId, now());
     queued += 1;
+  }
+  if (dropped > 0) {
+    console.warn(
+      `[web] member-fetch queue: key=${key} dropped ${dropped} id(s) beyond the ${MAX_PENDING_PER_GUILD}-pending cap — those names stay raw`
+    );
   }
   if (guildPending.size > 0) {
     pending.set(key, guildPending);
@@ -262,12 +275,17 @@ async function flushMemberFetchQueue() {
         // OutboundClient logs REST failures itself and returns null — treat
         // null as a transient miss (retry on the next cooldown).
         const user = await outbound.fetchUser(cid, userId);
+        // #467 (C1-9): the branches used to be byte-identical work (same
+        // markAttempt either way) — plus Fluxer never got the discord side's
+        // long negative cache, so a permanently-deleted user re-fetched
+        // every cooldown forever. Unresolvable now rides the 24h negative
+        // cooldown (the fluxer OutboundClient null IS its UNKNOWN_MEMBER).
         if (user) {
           markAttempt(guildId, userId, RETRY_COOLDOWN_MS);
         } else {
-          markAttempt(guildId, userId, RETRY_COOLDOWN_MS);
+          markAttempt(guildId, userId, MISSING_MEMBER_COOLDOWN_MS);
           console.warn(
-            `[web] fluxer member fetch: user ${userId} community ${guildId} unresolvable — retry later`
+            `[web] fluxer member fetch: user ${userId} community ${guildId} unresolvable — id stays raw for ~24h`
           );
         }
       } else {

@@ -201,7 +201,15 @@ function discordCommunityId(externalGuildId) {
   if (externalGuildId == null) return null;
   try {
     return getCommunityByExternal("discord", "discord", String(externalGuildId));
-  } catch {
+  } catch (err) {
+    // #467 (A2-11): rule 2 — a swallowed read made every DB fault look
+    // like "no community row", which the command-channel gate reads as
+    // ALLOW (permissions.js null-community branch): fail-open with a
+    // silent cause. Callers still get null; the cause is now on the log.
+    console.error(
+      `[community] discordCommunityId(${externalGuildId}) lookup failed:`,
+      err?.message || err,
+    );
     return null;
   }
 }

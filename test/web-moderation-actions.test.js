@@ -578,7 +578,7 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross generic 404",
         cookieId: null,
         // PR 2: integer community ids fail the 5–20-digit snowflake gate in
         // loginRedirectTarget, so the anon target is the bare login page.
-        expect: harness.expectLoginRedirect("/auth/login"),
+        expect: harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`) /* #467 C1-8 */,
         label: `anon ${label} POST`,
       });
     });

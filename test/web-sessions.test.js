@@ -1125,7 +1125,11 @@ describe("web session core (auth/sessions, middleware, config)", () => {
     it("anon ⇒ 302 login; no-tier member ⇒ generic 404 (the shell floor applies)", async () => {
       const anon = await getPage(null);
       assert.equal(anon.res.status, 302);
-      assert.equal(anon.res.headers.get("location"), "/auth/login", "integer route id ⇒ bare login redirect");
+      assert.equal(
+        anon.res.headers.get("location"),
+        `/auth/login?guild=${CID_S}`,
+        "#467 (C1-8): the integer route id rides ?guild= now"
+      );
       const plain = await getPage("plain");
       assert.equal(plain.res.status, 404);
       assert.equal(plain.text, "Not found");
@@ -1272,7 +1276,8 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       // Next request with the (now dead) cookie redirects to login:
       const next = await getPage("staff");
       assert.equal(next.res.status, 302);
-      assert.equal(next.res.headers.get("location"), "/auth/login");
+      // #467 (C1-8): dead-cookie re-hit keeps the return target.
+      assert.equal(next.res.headers.get("location"), `/auth/login?guild=${CID_S}`);
 
       const rows = revokeAuditRows();
       const currentRow = rows.find((r) => JSON.parse(r.details_json).current === true);
