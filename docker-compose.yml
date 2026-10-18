@@ -7,7 +7,11 @@ services:
       _JAVA_OPTIONS: -Xmx512M
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
-      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+      # No public default (#455, audit H2-7): the old `:-<public default>`
+      # made the bot's #205 boot fail-fast unreachable under compose and left
+      # the node on Lavalink's most-published auth. Compose now ABORTS with
+      # this message when the variable is unset or empty.
+      LAVALINK_SERVER_PASSWORD: "${LAVALINK_PASSWORD:?LAVALINK_PASSWORD must be set in .env - any strong shared secret, must match the bot - no public default (audit 455)}"
     volumes:
       - ./deploy/lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - lavalink-plugins:/opt/Lavalink/plugins
@@ -29,7 +33,7 @@ services:
       TZ: ${TZ:-UTC}
       LAVALINK_HOST: lavalink
       LAVALINK_PORT: "2333"
-      LAVALINK_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+      LAVALINK_PASSWORD: "${LAVALINK_PASSWORD:?LAVALINK_PASSWORD must be set in .env - the bot refuses the node public default (audit 455); see docs/music.md}"
       # Optional: expose ticket transcripts (set TICKET_HTTP_PORT + TICKET_PUBLIC_BASE_URL in .env)
       # TICKET_HTTP_PORT: "8080"
     volumes:
