@@ -1654,4 +1654,94 @@ describe("bridge edit/delete relay (PR 6)", () => {
     );
     assert.equal(outboxRows(bridge.id, "edit")[0].state, "done");
   });
+  // -------------------------------------------------------------------------
+  // #383 (FLX-2): an embeds-only edit is a REAL change — part sig counts it
+  // -------------------------------------------------------------------------
+
+  it("#383 an embeds-only edit PATCHes the linked part (the sig counts embeds)", async () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-383",
+    });
+    // The original create rides DONE with the OLD embeds — it is the audit
+    // row the edit branch reads as its "before" (createPayload).
+    const createRow = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: msgId,
+      payload: createPayload(publicId, msgId, {
+        embeds: [{ title: "OLD", description: "same", url: null, color: null, fields: [] }],
+      }),
+    });
+    repo.markOutboxDone(createRow.id);
+
+    // Re-read source: SAME text, CHANGED embeds.
+    const src = fakeSource({
+      content: "hello world",
+      embeds: [{ title: "NEW", description: "changed", url: null, color: null, fields: [] }],
+    });
+    const f = scriptedApi("f383");
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? f : null),
+      getOutbound: (platform) => (platform === "discord" ? src : null),
+    });
+
+    const enq = await relay.enqueueBridgeEdit(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(enq?.enqueued, "the content-hash includes embeds — the edit enqueues");
+    await worker.drainAll();
+
+    assert.equal(
+      f.patchCalls.length,
+      1,
+      "embeds-only change PATCHes part 0 (before #383 the sig saw nothing and skipped)",
+    );
+    const call = f.patchCalls[0];
+    assert.equal(call.dstMessageId, "dst-383");
+    assert.deepEqual(
+      call.patch.embeds,
+      [{ title: "NEW", description: "changed", url: null, color: null, fields: [] }],
+      "the PATCH body carries the fresh embeds",
+    );
+  });
+
+  it("#383 embeds that did NOT change still skip the PATCH (the sig is not a rubber stamp)", async () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-383b",
+    });
+    const unchanged = [{ title: "SAME", description: "x", url: null, color: null, fields: [] }];
+    const createRow = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: msgId,
+      payload: createPayload(publicId, msgId, { embeds: unchanged }),
+    });
+    repo.markOutboxDone(createRow.id);
+
+    const src = fakeSource({ content: "hello world", embeds: unchanged });
+    const f = scriptedApi("f383b");
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? f : null),
+      getOutbound: (platform) => (platform === "discord" ? src : null),
+    });
+
+    const enq = await relay.enqueueBridgeEdit(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(enq?.enqueued);
+    await worker.drainAll();
+
+    assert.equal(f.patchCalls.length, 0, "nothing changed — no PATCH rides, per §10.7");
+  });
+
 });

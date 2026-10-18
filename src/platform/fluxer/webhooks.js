@@ -252,6 +252,41 @@ function createFluxerWebhooks(transport = {}) {
   }
 
   /** `/v1/webhooks/{id}/{token}` — token goes in the PATH, never a log. */
+  /** @see roadmap/bridge.md §10.8 "Embeds" — destination ceilings. */
+  const FLUXER_EMBED_CEILINGS = Object.freeze({
+    maxEmbeds: 10,
+    titleMax: 256,
+    descriptionMax: 4096,
+  });
+
+  /**
+   * #383: destination-side embed clamp. Drops non-object entries and
+   * everything past the count ceiling; truncates title/description to the
+   * ceilings with a visible ellipsis (a silent hard slice would itself be
+   * a quiet strip); drops NULL-valued keys — the same shape lesson the
+   * channel outbound learned ("the API rejects some null values"), and the
+   * relay's neutral shape stores absence as null.
+   */
+  function clampEmbedsForFluxer(embeds) {
+    return (Array.isArray(embeds) ? embeds : [])
+      .filter((e) => e && typeof e === "object")
+      .slice(0, FLUXER_EMBED_CEILINGS.maxEmbeds)
+      .map((e) => {
+        const out = {};
+        for (const [key, value] of Object.entries(e)) {
+          if (value != null) out[key] = value;
+        }
+        const clip = (key, max) => {
+          if (typeof out[key] === "string" && out[key].length > max) {
+            out[key] = `${out[key].slice(0, max - 1)}…`;
+          }
+        };
+        clip("title", FLUXER_EMBED_CEILINGS.titleMax);
+        clip("description", FLUXER_EMBED_CEILINGS.descriptionMax);
+        return out;
+      });
+  }
+
   function webhookPath(webhook, suffix = "") {
     return `/v1/webhooks/${encodeURIComponent(String(webhook.id))}/${encodeURIComponent(
       String(webhook.token),
@@ -267,6 +302,13 @@ function createFluxerWebhooks(transport = {}) {
   function buildBody(options, { forExecute }) {
     const body = {};
     if (options.content != null) body.content = String(options.content);
+    // #383 (FLX-2): relay embeds reach the wire — clamped HERE to Fluxer's
+    // §10.8 ceilings (10 embeds, title 256, description 4096) so an
+    // embed-heavy Discord source can never 400 an otherwise-valid send.
+    // Valid on both execute and patch.
+    if (Array.isArray(options.embeds) && options.embeds.length > 0) {
+      body.embeds = clampEmbedsForFluxer(options.embeds);
+    }
     if (forExecute) {
       if (options.username != null) body.username = String(options.username);
       if (options.avatarUrl != null) body.avatar_url = String(options.avatarUrl);

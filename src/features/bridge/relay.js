@@ -548,21 +548,42 @@ function buildRelayPayload(message, { bridge, direction, srcCommunityId, lookup 
     .filter((s) => s && s.name != null)
     .map((s) => ({ id: String(s.id), name: String(s.name) }));
 
+  // §10.8 (embed media): image/thumbnail URLs are NEVER fetched (SSRF rule)
+  // and media not covered by the attachment download rules must be NAMED,
+  // not silently stripped (#383/FLX-2). The membership test is the source
+  // message's OWN attachment URLs — nothing is fetched from an embed URL.
+  const attachmentUrlSet = new Set(
+    (Array.isArray(message.attachments) ? message.attachments : [])
+      .map((a) => String(a?.url ?? ""))
+      .filter((u) => u !== ""),
+  );
   const embeds = (Array.isArray(message.embeds) ? message.embeds : [])
     .filter((e) => e && typeof e === "object")
-    .map((e) => ({
-      title: e.title ?? null,
-      description: e.description ?? null,
-      url: e.url ?? null,
-      color: typeof e.color === "number" ? e.color : null,
-      fields: Array.isArray(e.fields)
-        ? e.fields.map((f) => ({
-            name: String(f?.name ?? ""),
-            value: String(f?.value ?? ""),
-            inline: Boolean(f?.inline),
-          }))
-        : [],
-    }));
+    .map((e) => {
+      let description = e.description ?? null;
+      const mediaUrls = [e.image?.url, e.thumbnail?.url]
+        .map((u) => (u == null ? "" : String(u)))
+        .filter((u) => u !== "");
+      const notCopied = mediaUrls.filter((u) => !attachmentUrlSet.has(u));
+      if (notCopied.length > 0) {
+        const named = e.image?.name || hostOf(notCopied[0]) || "unknown host";
+        const note = `Embed media not copied: ${named} is not a source attachment.`;
+        description = description ? `${description}\n${note}` : note;
+      }
+      return {
+        title: e.title ?? null,
+        description,
+        url: e.url ?? null,
+        color: typeof e.color === "number" ? e.color : null,
+        fields: Array.isArray(e.fields)
+          ? e.fields.map((f) => ({
+              name: String(f?.name ?? ""),
+              value: String(f?.value ?? ""),
+              inline: Boolean(f?.inline),
+            }))
+          : [],
+      };
+    });
 
   const reference = message.messageReference ?? message.message_reference ?? null;
   const referenced = message.referencedMessage ?? message.referenced_message ?? null;
@@ -601,6 +622,19 @@ function buildRelayPayload(message, { bridge, direction, srcCommunityId, lookup 
     embeds,
     attachments,
   };
+}
+
+/**
+ * Hostname of a URL for the §10.8 embed-media note — parse-only, NEVER a
+ * fetch (SSRF rule: embed URLs are named, never contacted). Unparseable
+ * input yields "" (the note then says "unknown host").
+ */
+function hostOf(url) {
+  try {
+    return new URL(String(url)).hostname;
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -1424,7 +1458,14 @@ function editPartChanged(part, oldPart) {
     (Array.isArray(list) ? list : [])
       .map((f) => `${f?.name ?? ""}:${f?.contentType ?? ""}:${f?.spoiler ? 1 : 0}`)
       .join("|");
-  return sig(part?.files) !== sig(oldPart?.files);
+  if (sig(part?.files) !== sig(oldPart?.files)) return true;
+  // #383: embeds changed while text/files sat still is a REAL change — the
+  // coalescing hash already enqueues it; without this the PATCH would skip
+  // the only part that differs and the destination would keep the stale
+  // embeds forever.
+  const embedSig = (p) =>
+    JSON.stringify((Array.isArray(p?.embeds) ? p.embeds : []).map((e) => e ?? null));
+  return embedSig(part) !== embedSig(oldPart);
 }
 
 /**
@@ -1538,6 +1579,19 @@ function buildSendParts(payload, destPlatform, resolveFile) {
       });
     }
     batchIndex += 1;
+  }
+
+  // #383 (FLX-2): rich embeds ride the LEAD part — a webhook execute carries
+  // embeds once per message, not once per chunk. An embeds-only message
+  // (no text, no attachments) gets a lead part too: before this, exactly
+  // those messages sent an EMPTY execute and the embed vanished silently —
+  // the strip §10.8's table forbids ("Rich embeds are not silently
+  // stripped"), and on Discord the empty send burned ladder attempts.
+  const embeds = (Array.isArray(payload.embeds) ? payload.embeds : [])
+    .filter((e) => e && typeof e === "object");
+  if (embeds.length > 0) {
+    if (parts.length === 0) parts.push({ content: null, files: [], partIndex: 0 });
+    parts[0] = { ...parts[0], embeds };
   }
   return { parts, skipLines };
 }
@@ -1839,6 +1893,10 @@ function createRelayWorker(deps = {}) {
       };
       if (typeof flags === "number") opts.flags = flags;
       if (avatarUrl != null && !avatarDropped) opts.avatarUrl = avatarUrl;
+      // #383 (FLX-2): the part's embeds (lead part only, by construction)
+      // ride execute AND patch opts; both adapters map them into the wire
+      // body (Fluxer clamps to its §10.8 ceilings at the seam).
+      if (Array.isArray(part.embeds) && part.embeds.length > 0) opts.embeds = part.embeds;
 
       let res;
       try {
@@ -1957,8 +2015,14 @@ function createRelayWorker(deps = {}) {
         // Degraded fallback: bot-authored, quote prefix first line (spec
         // §10.7). One message; last_error records the failure.
         const quote = `**${username}** (@${String(payload.author?.handle ?? "user")} on ${payload.srcPlatform ?? "source"})`;
+        // #383: the degraded bot post is text+files by shape — embeds it
+        // cannot carry are NAMED here, never silently stripped (§10.8).
+        const embedNote =
+          Array.isArray(part.embeds) && part.embeds.length > 0
+            ? "\n_Rich embeds not copied in degraded delivery_"
+            : "";
         const degradedBody = sliceSafe(
-          `${quote}\n${part.content == null || part.content === "" ? "[media attached]" : part.content}`,
+          `${quote}\n${part.content == null || part.content === "" ? "[media attached]" : part.content}${embedNote}`,
           contentLimitFor(destPlatform),
         );
         // BRG-11 (#417): the fallback must carry the part's FILES — both
