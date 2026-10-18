@@ -275,6 +275,15 @@ function createGuildAccessResolver(options = {}) {
     createDiscordApi({ apiBase: options.apiBase, fetchImpl: options.fetchImpl });
   const botGuilds = options.botGuilds || getBotGuildIds;
   const store = options.store || { getWebSessionAuth, setWebSessionAuth };
+  // #402 (C1-2): Fluxer refresh single-flight, keyed by web-session id —
+  // the session-scoped twin of oauthTokens.js refreshInFlight (#193).
+  // Fluxer CONSUMES the presented refresh token (fluxerApi.js spec note),
+  // so two concurrent resolves issuing the same grant race each other:
+  // the loser used to take fluxer_refresh_denied and get 302'd to login
+  // even though the winner had just persisted a valid pair. One POST per
+  // session; later callers JOIN it and ride the winner's row.
+  /** @type {Map<string, Promise<object>>} */
+  const fluxerRefreshInFlight = new Map();
   const tokenApi =
     options.tokenApi || { decryptAccessToken, encryptAccessToken };
   const staffRoleApi =
@@ -487,85 +496,127 @@ function createGuildAccessResolver(options = {}) {
       return { ok: false, result: { status: "reauth", reason: "token_revoked" } };
     }
 
-    let rotated = null;
-    try {
-      const api = fluxerApiFactory(entry.apiBase);
-      rotated = await api.refreshToken({
-        refreshToken,
-        clientId: entry.clientId,
-        clientSecret: entry.clientSecret,
-      });
-    } catch (err) {
-      // invalid_grant (err.code "fluxer_refresh_denied") and transport/shape
-      // failures share ONE outcome: the session must re-auth. Never retry the
-      // consumed token. ids + error code only.
-      console.warn(
-        `[web] fluxer token refresh failed (instance=${session.instanceKey}, user=${session.userId}): ${err?.code || err?.message || err}`
-      );
+    // #402: JOIN an in-flight rotation for this session instead of POSTing
+    // a doomed second copy of the same single-use grant.
+    const prior = fluxerRefreshInFlight.get(session.id);
+    if (prior) {
+      try {
+        await prior;
+      } catch {
+        /* the winner failed on its own path — fall through to the re-read */
+      }
+      // The winner persists BEFORE use, so a settled in-flight rotation has
+      // written the row. Continue on a CHANGED pair; anything else is the
+      // honest reauth the old loser got anyway — minus the wasted grant.
+      let fresh = null;
+      try {
+        fresh = store.getWebSessionAuth(session.id);
+      } catch {
+        fresh = null;
+      }
+      if (
+        fresh &&
+        fresh.access_token_enc &&
+        fresh.access_token_enc !== authRow.access_token_enc
+      ) {
+        const tok = readAccessToken(tokenApi, fresh, Date.now());
+        if (tok.ok) return { ok: true, token: tok.token, authRow: fresh };
+      }
       return { ok: false, result: { status: "reauth", reason: "token_revoked" } };
     }
 
-    let accessEnc = null;
-    let refreshEnc = null;
-    try {
-      accessEnc = tokenApi.encryptAccessToken(rotated.accessToken);
-      refreshEnc = rotated.refreshToken
-        ? tokenApi.encryptAccessToken(rotated.refreshToken)
-        : null;
-    } catch (err) {
-      console.warn(
-        "[web] fluxer token refresh: envelope encrypt failed — re-auth required:",
-        err?.message || err
-      );
-      return { ok: false, result: { status: "reauth", reason: "token_revoked" } };
-    }
-
-    // PERSIST BEFORE USE (spec): one UPDATE carrying the new pair + expiries,
-    // with the login guild snapshot passed through so rotation never blanks
-    // the switcher list.
-    try {
-      const persisted = store.setWebSessionAuth(session.id, {
-        accessTokenEnc: accessEnc,
-        tokenExpiresAt: Number.isInteger(rotated.expiresAt) ? rotated.expiresAt : null,
-        scopes: rotated.scopes ?? null,
-        guildSnapshot: authRow.guild_snapshot ?? null,
-        refreshTokenEnc: refreshEnc,
-        refreshExpiresAt: Number.isInteger(rotated.refreshExpiresAt)
-          ? rotated.refreshExpiresAt
-          : null,
-      });
-      if (!persisted) {
-        // Row vanished (logout/revocation mid-flight) — nothing to serve on.
+    const rotate = (async () => {
+      let rotated = null;
+      try {
+        const api = fluxerApiFactory(entry.apiBase);
+        rotated = await api.refreshToken({
+          refreshToken,
+          clientId: entry.clientId,
+          clientSecret: entry.clientSecret,
+        });
+      } catch (err) {
+        // invalid_grant (err.code "fluxer_refresh_denied") and transport/shape
+        // failures share ONE outcome: the session must re-auth. Never retry the
+        // consumed token. ids + error code only.
+        console.warn(
+          `[web] fluxer token refresh failed (instance=${session.instanceKey}, user=${session.userId}): ${err?.code || err?.message || err}`
+        );
         return { ok: false, result: { status: "reauth", reason: "token_revoked" } };
       }
-    } catch (err) {
+
+      let accessEnc = null;
+      let refreshEnc = null;
+      try {
+        accessEnc = tokenApi.encryptAccessToken(rotated.accessToken);
+        refreshEnc = rotated.refreshToken
+          ? tokenApi.encryptAccessToken(rotated.refreshToken)
+          : null;
+      } catch (err) {
+        console.warn(
+          "[web] fluxer token refresh: envelope encrypt failed — re-auth required:",
+          err?.message || err
+        );
+        return { ok: false, result: { status: "reauth", reason: "token_revoked" } };
+      }
+
+      // PERSIST BEFORE USE (spec): one UPDATE carrying the new pair + expiries,
+      // with the login guild snapshot passed through so rotation never blanks
+      // the switcher list.
+      try {
+        const persisted = store.setWebSessionAuth(session.id, {
+          accessTokenEnc: accessEnc,
+          tokenExpiresAt: Number.isInteger(rotated.expiresAt) ? rotated.expiresAt : null,
+          scopes: rotated.scopes ?? null,
+          guildSnapshot: authRow.guild_snapshot ?? null,
+          refreshTokenEnc: refreshEnc,
+          refreshExpiresAt: Number.isInteger(rotated.refreshExpiresAt)
+            ? rotated.refreshExpiresAt
+            : null,
+        });
+        if (!persisted) {
+          // Row vanished (logout/revocation mid-flight) — nothing to serve on.
+          return { ok: false, result: { status: "reauth", reason: "token_revoked" } };
+        }
+      } catch (err) {
+        console.warn(
+          "[web] fluxer token refresh persist failed:",
+          err?.code || err?.message || err
+        );
+        return {
+          ok: false,
+          result: { status: "deny", reason: "store_unavailable", retry: true },
+        };
+      }
+
       console.warn(
-        "[web] fluxer token refresh persist failed:",
-        err?.code || err?.message || err
+        `[web] fluxer token refreshed (instance=${session.instanceKey}, user=${session.userId})`
       );
       return {
-        ok: false,
-        result: { status: "deny", reason: "store_unavailable", retry: true },
+        ok: true,
+        token: rotated.accessToken,
+        authRow: {
+          ...authRow,
+          access_token_enc: accessEnc,
+          token_expires_at: Number.isInteger(rotated.expiresAt) ? rotated.expiresAt : null,
+          scopes: rotated.scopes ?? null,
+          refresh_token_enc: refreshEnc,
+          refresh_expires_at: Number.isInteger(rotated.refreshExpiresAt)
+            ? rotated.refreshExpiresAt
+            : null,
+        },
       };
-    }
 
-    console.warn(
-      `[web] fluxer token refreshed (instance=${session.instanceKey}, user=${session.userId})`
-    );
-    return {
-      ok: true,
-      token: rotated.accessToken,
-      authRow: {
-        ...authRow,
-        access_token_enc: accessEnc,
-        token_expires_at: Number.isInteger(rotated.expiresAt) ? rotated.expiresAt : null,
-        scopes: rotated.scopes ?? null,
-        refresh_token_enc: refreshEnc,
-        refresh_expires_at: Number.isInteger(rotated.refreshExpiresAt)
-          ? rotated.refreshExpiresAt
-          : null,
-      },
-    };
+    })();
+    fluxerRefreshInFlight.set(session.id, rotate);
+    try {
+      return await rotate;
+    } finally {
+      // Settle-cleanup on BOTH outcomes (never poison the next attempt) —
+      // the same discipline as oauthTokens refreshInFlight.
+      if (fluxerRefreshInFlight.get(session.id) === rotate) {
+        fluxerRefreshInFlight.delete(session.id);
+      }
+    }
   }
 
   /**

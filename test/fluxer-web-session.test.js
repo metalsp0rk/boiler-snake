@@ -839,6 +839,108 @@ describe("guildAccess fluxer token rotation (C10)", () => {
     assert.equal(res.status, "reauth");
     assert.equal(res.reason, "token_revoked");
   });
+
+  it("#402 concurrent resolves for one session issue ONE refresh — the joiner rides the winner", async () => {
+    const s = rotSession();
+    api.setWebSessionAuth(s.id, {
+      accessTokenEnc: tokens.encryptAccessToken("AT-1"),
+      tokenExpiresAt: Date.now() + 1 * HOUR, // inside the 24h refresh window
+      scopes: "identify guilds",
+      guildSnapshot: JSON.stringify([{ id: ROT_GUILD, name: "FX", icon: null, owner: true, permissions: "0" }]),
+      refreshTokenEnc: tokens.encryptAccessToken("RT-1"),
+      refreshExpiresAt: Date.now() + 30 * DAY,
+    });
+
+    const log = [];
+    let release;
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    const resolver = createGuildAccessResolver({
+      getFluxerWebInstances: () => [
+        { instanceKey: FX_ORIGIN, slug: "0", label: "FX", clientId: "cid", clientSecret: "secret", apiBase: FX_API },
+      ],
+      getCommunityClient: () => null,
+      fluxerTokenApi: () => ({
+        async refreshToken(args) {
+          log.push({ method: "refreshToken", refreshToken: args.refreshToken });
+          await gate; // hold the POST until BOTH concurrent resolves have arrived
+          return {
+            accessToken: "AT-2",
+            expiresAt: Date.now() + 7 * DAY,
+            refreshToken: "RT-2",
+            refreshExpiresAt: Date.now() + 30 * DAY,
+            scopes: "identify guilds",
+          };
+        },
+        async listCurrentUserGuilds(token) {
+          log.push({ method: "listCurrentUserGuilds", token });
+          return [{ id: ROT_GUILD, name: "FX", icon: null, owner: true, permissions: "0" }];
+        },
+      }),
+      ttlMs: 0,
+    });
+
+    const both = Promise.all([resolver.resolve(s, CID_FX), resolver.resolve(s, CID_FX)]);
+    await new Promise((r) => setTimeout(r, 25)); // let the joiner reach the gate
+    release();
+    const [a, b] = await both;
+
+    const posts = log.filter((e) => e.method === "refreshToken");
+    assert.equal(posts.length, 1, "ONE POST for two concurrent resolves — the rotating grant is single-use; pre-#402 the loser burned a second copy of it and got logged out");
+    assert.equal(a.status, "ok", "winner resolves normally");
+    assert.equal(b.status, "ok", "the JOINER rides the winner's persisted pair — no self-inflicted logout");
+    const lists = log.filter((e) => e.method === "listCurrentUserGuilds");
+    assert.equal(lists.length, 2, "both requests complete their own guild list");
+    assert.ok(lists.every((e) => e.token === "AT-2"), "both run on the NEW access token");
+  });
+
+  it("#402 a denied winner sends every joiner to reauth WITHOUT a second POST", async () => {
+    const s = rotSession();
+    api.setWebSessionAuth(s.id, {
+      accessTokenEnc: tokens.encryptAccessToken("AT-1"),
+      tokenExpiresAt: Date.now() + 1 * HOUR,
+      scopes: "identify guilds",
+      guildSnapshot: null,
+      refreshTokenEnc: tokens.encryptAccessToken("RT-1"),
+      refreshExpiresAt: Date.now() + 30 * DAY,
+    });
+
+    let posts = 0;
+    let release;
+    const gate = new Promise((r) => {
+      release = r;
+    });
+    const resolver = createGuildAccessResolver({
+      getFluxerWebInstances: () => [
+        { instanceKey: FX_ORIGIN, slug: "0", label: "FX", clientId: "cid", clientSecret: "secret", apiBase: FX_API },
+      ],
+      getCommunityClient: () => null,
+      fluxerTokenApi: () => ({
+        async refreshToken() {
+          posts += 1;
+          await gate;
+          const err = new Error("invalid_grant");
+          err.code = "fluxer_refresh_denied";
+          err.status = 400;
+          throw err;
+        },
+        async listCurrentUserGuilds() {
+          return [{ id: ROT_GUILD, name: "FX", icon: null, owner: true, permissions: "0" }];
+        },
+      }),
+      ttlMs: 0,
+    });
+
+    const both = Promise.all([resolver.resolve(s, CID_FX), resolver.resolve(s, CID_FX)]);
+    await new Promise((r) => setTimeout(r, 25));
+    release();
+    const [a, b] = await both;
+
+    assert.equal(posts, 1, "the denied grant is never POSTed twice");
+    assert.equal(a.status, "reauth");
+    assert.equal(b.status, "reauth", "row unchanged → honest reauth for everyone, never a doomed retry");
+  });
 });
 
 // ===========================================================================
