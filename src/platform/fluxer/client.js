@@ -33,6 +33,7 @@ const {
   normalizeFluxerReaction,
 } = require("./normalize");
 const { createFluxerOutbound } = require("./outbound");
+const { fluxerRequestTimeoutMs } = require("./restTimeout");
 const { discoverInstance } = require("./discovery");
 // NormalizedDmMessage contract (issue #279): the DM fan-out (emit) is the
 // single point where normalizeFluxerDmMessage output enters shared consumer
@@ -140,6 +141,24 @@ function buildRestFacade(client, instanceKey) {
       const rest = client && client.rest;
       const verb = REST_VERBS[String(method).toUpperCase()];
       const fn = verb && rest && typeof rest[verb] === "function" ? rest[verb] : null;
+      const useFallback =
+        !fn && rest && typeof rest.request === "function";
+      if (!fn && !useFallback) {
+        throw new Error(
+          `[fluxer] ${instanceKey} SDK client exposes no REST surface (get/post/patch/put/delete) — SDK surface mismatch`,
+        );
+      }
+
+      // #436 (audit F1-3): every Fluxer request is bounded. The controller's
+      // signal reaches the real socket for SDK builds (@fluxerjs/rest 3.x
+      // forwards options.signal to fetch, verified in node_modules); the
+      // hard race below ALSO bounds surfaces that ignore the signal (test
+      // fakes, odd SDK builds) so a wedged instance can never pin a caller
+      // — least of all gork's single per-community queue slot — past the
+      // deadline. Timeout errors name the instance, verb, path, and budget.
+      const timeoutMs = fluxerRequestTimeoutMs();
+      const controller = new AbortController();
+      let started;
       if (fn) {
         const route = String(path).replace(VERSION_PREFIX_RE, "");
         const opts = { ...options };
@@ -152,14 +171,49 @@ function buildRestFacade(client, instanceKey) {
           qs = params.toString();
           delete opts.query;
         }
-        return fn.call(rest, qs ? `${route}?${qs}` : route, opts);
+        if (opts.signal == null) opts.signal = controller.signal;
+        started = fn.call(rest, qs ? `${route}?${qs}` : route, opts);
+      } else {
+        const opts = { ...options };
+        if (opts.signal == null) opts.signal = controller.signal;
+        started = rest.request(method, path, opts);
       }
-      if (rest && typeof rest.request === "function") {
-        return rest.request(method, path, options);
-      }
-      throw new Error(
-        `[fluxer] ${instanceKey} SDK client exposes no REST surface (get/post/patch/put/delete) — SDK surface mismatch`,
+
+      const label = `${method} ${path}`;
+      const timeoutError = new Error(
+        `[fluxer] ${instanceKey} REST ${label} timed out after ${timeoutMs}ms — ` +
+          `the instance is wedged or unreachable (FLUXER_REQUEST_TIMEOUT_MS)`,
       );
+      timeoutError.name = "FluxerRequestTimeout";
+      let timer;
+      const p = Promise.resolve(started);
+      // If the race loses, a LATE rejection from the abandoned request must
+      // not surface as an unhandled rejection.
+      p.catch(() => {});
+      return Promise.race([
+        p,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            // Best-effort REAL cancel (kills the socket); never let abort()
+            // itself out-rank the deadline error on the way out.
+            try {
+              controller.abort(timeoutError);
+            } catch {
+              try {
+                controller.abort();
+              } catch {
+                /* already settled */
+              }
+            }
+            reject(timeoutError);
+          }, timeoutMs);
+          // Deliberately NOT unref'ed: while a request is in flight the
+          // deadline IS live work. An unref'ed timer let Node 22's test
+          // runner observe a drained loop with the race still pending
+          // ("Promise resolution is still pending but the event loop has
+          // already resolved") — the exact unboundedness #436 removes.
+        }),
+      ]).finally(() => clearTimeout(timer));
     },
   };
 }

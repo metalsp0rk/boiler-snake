@@ -30,6 +30,7 @@
  */
 
 const { assertCommunityId } = require("../community");
+const { fluxerRequestTimeoutMs } = require("./restTimeout");
 
 /**
  * Specific, human-readable cause for a thrown value (never a token: no
@@ -315,7 +316,13 @@ function createFluxerWebhooks(transport = {}) {
    * Never embeds the URL (it carries the token) into the error text.
    */
   async function tokenRequest(methodName, httpMethod, path, body, headers) {
-    const init = { method: httpMethod, headers: headers ?? {} };
+    const init = {
+      method: httpMethod,
+      headers: headers ?? {},
+      // #436: bound every token-endpoint round (the transport already
+      // classifies aborts as transient — now they actually arrive in time).
+      signal: AbortSignal.timeout(fluxerRequestTimeoutMs()),
+    };
     if (body !== undefined) init.body = body;
     // NOTE: no `Origin` header is ever set (INVALID_API_ORIGIN, spike B13).
     let res;
