@@ -26,6 +26,10 @@ const {
   DEFAULT_DAILY_AGGREGATES_DAYS,
   DEFAULT_BATCH_ROWS,
   DEFAULT_MAX_BATCHES_PER_TABLE,
+  DEFAULT_BRIDGE_OUTBOX_DAYS,
+  DEFAULT_BRIDGE_LINKS_DAYS,
+  DEFAULT_EVENT_ACTIVITY_DAYS,
+  DEFAULT_EVENT_NOTIFICATIONS_DAYS,
   ENV_KEYS,
 } = require("../src/features/retention/config");
 const { runRetentionSweeps, RETENTION_TABLES } = require("../src/features/retention/sweeps");
@@ -394,6 +398,215 @@ describe("fluxer_oauth_transactions sweep (the #192 bug fix)", () => {
       "freshly created row survives its own create-path prune"
     );
     clearAll();
+  });
+});
+
+
+// ===========================================================================
+// #399 (B2-7): the four forever-growth tables join the sweep
+// ===========================================================================
+
+let bridgeSeq = 0;
+function seedBridgeRow() {
+  bridgeSeq += 1;
+  return api.db
+    .prepare(
+      `INSERT INTO bridges (public_id, state, created_at, created_by_user_id)
+       VALUES (?, 'pending', ?, 'u-ret')`
+    )
+    .run(`ret399-${bridgeSeq}`, T).lastInsertRowid;
+}
+
+function seedOutbox(bridgeId, srcMessageId, state, enqueuedAt) {
+  api.db
+    .prepare(
+      `INSERT INTO bridge_outbox
+         (bridge_id, direction, kind, src_message_id, enqueued_at, state, payload_json)
+       VALUES (?, 'a_to_b', 'create', ?, ?, ?, '{}')`
+    )
+    .run(bridgeId, srcMessageId, enqueuedAt, state);
+}
+
+function seedLink(bridgeId, srcMessageId, createdAt) {
+  api.db
+    .prepare(
+      `INSERT INTO bridge_message_links
+         (bridge_id, src_community_id, src_message_id, part_index, dst_message_id, created_at)
+       VALUES (?, ?, ?, 0, 'dst-ret', ?)`
+    )
+    .run(bridgeId, cid, srcMessageId, createdAt);
+}
+
+function seedEventRow() {
+  const r = api.createEvent({
+    communityId: cid,
+    creatorId: "u-ret",
+    title: "ret399 event",
+    status: "draft",
+    startAt: T + 3_600_000,
+  });
+  assert.ok(r.ok, r.error);
+  return r.event.id;
+}
+
+function seedEventActivity(eventId, createdAt) {
+  api.db
+    .prepare(`INSERT INTO event_activity (event_id, action, created_at) VALUES (?, 'created', ?)`)
+    .run(eventId, createdAt);
+}
+
+function seedNotification(eventId, status, fireAt) {
+  api.db
+    .prepare(
+      `INSERT INTO event_notifications (event_id, offset_minutes, fire_at, status)
+       VALUES (?, 60, ?, ?)`
+    )
+    .run(eventId, fireAt, status);
+}
+
+describe("#399 (B2-7): queue/history tables are now bounded", () => {
+  it("defaults: outbox 30d, links/activity/notifications 90d — and the config carries them", () => {
+    const saved = ENV_KEYS.map((k) => [k, process.env[k]]);
+    for (const k of ENV_KEYS) delete process.env[k];
+    try {
+      const cfg = retentionConfig();
+      assert.equal(DEFAULT_BRIDGE_OUTBOX_DAYS, 30);
+      assert.equal(cfg.bridgeOutboxDays, 30);
+      assert.equal(DEFAULT_BRIDGE_LINKS_DAYS, 90);
+      assert.equal(cfg.bridgeLinksDays, 90);
+      assert.equal(DEFAULT_EVENT_ACTIVITY_DAYS, 90);
+      assert.equal(cfg.eventActivityDays, 90);
+      assert.equal(DEFAULT_EVENT_NOTIFICATIONS_DAYS, 90);
+      assert.equal(cfg.eventNotificationsDays, 90);
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("bridge_outbox: settled rows die past the window; live queue + young rows survive", () => {
+    clearAll();
+    const b = seedBridgeRow();
+    const cutoff = T - DEFAULT_BRIDGE_OUTBOX_DAYS * DAY;
+    seedOutbox(b, "o-old-done", "done", cutoff - 1);
+    seedOutbox(b, "o-old-failed", "failed", cutoff - 1);
+    seedOutbox(b, "o-edge-done", "done", cutoff); // strict < ⇒ survives
+    seedOutbox(b, "o-pending-old", "pending", cutoff - 9 * DAY); // live queue: never
+    seedOutbox(b, "o-sending-old", "sending", cutoff - 9 * DAY); // in the state set
+    seedOutbox(b, "o-young-done", "done", T - DAY); // inside the window
+
+    const row = runRetentionSweeps({
+      at: T,
+      overrides: { bridgeOutboxDays: DEFAULT_BRIDGE_OUTBOX_DAYS },
+    }).find((r) => r.table === "bridge_outbox");
+    assert.equal(row.error, null);
+    assert.equal(row.deleted, 2, "only the settled rows past the window die");
+
+    const counts = Object.fromEntries(
+      api.db
+        .prepare(`SELECT state, COUNT(*) AS c FROM bridge_outbox GROUP BY state`)
+        .all()
+        .map((r) => [r.state, r.c])
+    );
+    assert.equal(counts.pending, 1, "queued work is untouchable by retention");
+    assert.equal(counts.sending, 1);
+    assert.equal(counts.done, 2, "edge row + young row survive");
+    assert.equal(counts.failed, undefined, "the 30d-old PARKED row aged out (#416 retry window ends)");
+  });
+
+  it("bridge_message_links: strictly-older rows die; cutoff and young rows survive", () => {
+    clearAll();
+    const b = seedBridgeRow();
+    const cutoff = T - DEFAULT_BRIDGE_LINKS_DAYS * DAY;
+    seedLink(b, "l-old", cutoff - 1);
+    seedLink(b, "l-edge", cutoff);
+    seedLink(b, "l-young", cutoff + 1);
+
+    const row = runRetentionSweeps({
+      at: T,
+      overrides: { bridgeLinksDays: DEFAULT_BRIDGE_LINKS_DAYS },
+    }).find((r) => r.table === "bridge_message_links");
+    assert.equal(row.deleted, 1);
+    assert.equal(count("bridge_message_links"), 2);
+  });
+
+  it("event_activity: audit rows die on the created_at cutoff", () => {
+    clearAll();
+    const ev = seedEventRow();
+    const cutoff = T - DEFAULT_EVENT_ACTIVITY_DAYS * DAY;
+    seedEventActivity(ev, cutoff - 1);
+    seedEventActivity(ev, cutoff);
+    seedEventActivity(ev, T - DAY);
+
+    const row = runRetentionSweeps({
+      at: T,
+      overrides: { eventActivityDays: DEFAULT_EVENT_ACTIVITY_DAYS },
+    }).find((r) => r.table === "event_activity");
+    assert.equal(row.deleted, 1);
+    assert.equal(count("event_activity"), 2);
+  });
+
+  it("event_notifications: only SETTLED (sent/retired) rows past fire_at die", () => {
+    clearAll();
+    const ev = seedEventRow();
+    const cutoff = T - DEFAULT_EVENT_NOTIFICATIONS_DAYS * DAY;
+    seedNotification(ev, "sent", cutoff - 1); // dies
+    seedNotification(ev, "retired", cutoff - 1); // dies
+    seedNotification(ev, "pending", cutoff - 9 * DAY); // survives (not fired yet)
+    seedNotification(ev, "failed", cutoff - 9 * DAY); // survives (retry-eligible)
+    seedNotification(ev, "sending", cutoff - 9 * DAY); // survives (claimed mid-flight)
+    seedNotification(ev, "sent", cutoff + 1); // survives (inside the window)
+
+    const row = runRetentionSweeps({
+      at: T,
+      overrides: { eventNotificationsDays: DEFAULT_EVENT_NOTIFICATIONS_DAYS },
+    }).find((r) => r.table === "event_notifications");
+    assert.equal(row.deleted, 2);
+    assert.equal(count("event_notifications"), 4);
+  });
+
+  it("a disabled knob (0) keeps rows forever — same rule as the original four", () => {
+    clearAll();
+    const b = seedBridgeRow();
+    seedOutbox(b, "o-ancient", "done", T - 400 * DAY);
+    const row = runRetentionSweeps({
+      at: T,
+      overrides: { bridgeOutboxDays: 0 },
+    }).find((r) => r.table === "bridge_outbox");
+    assert.equal(row.deleted, 0);
+    assert.equal(row.skipped, "disabled");
+    assert.equal(count("bridge_outbox"), 1);
+  });
+
+  it("the age deletes ride the 053 indexes — no full scans (#396 doctrine)", () => {
+    const expected = {
+      bridge_outbox: [
+        `DELETE FROM bridge_outbox WHERE state IN ('done', 'failed') AND enqueued_at < 1`,
+        "idx_bridge_outbox_settled",
+      ],
+      bridge_message_links: [
+        `DELETE FROM bridge_message_links WHERE created_at < 1`,
+        "idx_bridge_message_links_created",
+      ],
+      event_activity: [
+        `DELETE FROM event_activity WHERE created_at < 1`,
+        "idx_event_activity_created",
+      ],
+      event_notifications: [
+        `DELETE FROM event_notifications WHERE status IN ('sent', 'retired') AND fire_at < 1`,
+        "idx_event_notifications_settled",
+      ],
+    };
+    for (const [table, [sql, index]] of Object.entries(expected)) {
+      const plan = api.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all();
+      const detail = plan.map((r) => r.detail).join(" | ");
+      assert.ok(
+        detail.includes(index),
+        `#${table} sweep must be index-seeked by ${index}, got: ${detail}`
+      );
+    }
   });
 });
 

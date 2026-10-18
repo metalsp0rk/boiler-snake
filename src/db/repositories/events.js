@@ -590,6 +590,42 @@ const OPTION_PATCH_COLUMNS = new Set([
   "role_whitelist",
 ]);
 
+/**
+ * #399 (B2-7): retention primitive — event_activity rows created strictly
+ * before `cutoffMs`, LIMIT-bounded. The event's own audit feed; events are
+ * archived, not deleted, so without this the table only ever grows.
+ * Indexed by idx_event_activity_created (053).
+ * @param {number} cutoffMs
+ * @param {number} limit
+ * @returns {number}
+ */
+function deleteEventActivityOlderThan(cutoffMs, limit) {
+  return db
+    .prepare(`DELETE FROM event_activity WHERE created_at < ? LIMIT ?`)
+    .run(cutoffMs, Math.max(1, Math.floor(Number(limit) || 1))).changes;
+}
+
+/**
+ * #399 (B2-7): retention primitive — SETTLED reminder rows (sent/retired)
+ * whose fire_at is strictly older than `cutoffMs`, LIMIT-bounded. Pending/
+ * sending/backoff rows are NEVER touched: only terminals die, and only
+ * long after their fire time. Indexed by idx_event_notifications_settled
+ * (053) — (status, fire_at); the due ticker's index leads next_attempt_at
+ * and would scan every sent row per sweep.
+ * @param {number} cutoffMs
+ * @param {number} limit
+ * @returns {number}
+ */
+function deleteEventNotificationsOlderThan(cutoffMs, limit) {
+  return db
+    .prepare(
+      `DELETE FROM event_notifications
+       WHERE status IN ('sent', 'retired') AND fire_at < ?
+       LIMIT ?`,
+    )
+    .run(cutoffMs, Math.max(1, Math.floor(Number(limit) || 1))).changes;
+}
+
 function createEventOption(eventId, opt = {}) {
   // #400 (B2-8): the cap check and the insert commit as ONE transaction —
   // outside it the count was a check-then-act race (two adds both saw n-1,
@@ -2001,6 +2037,8 @@ module.exports = {
   deleteEventOption,
   reorderEventOptions,
   replaceEventOptions,
+  deleteEventActivityOlderThan,
+  deleteEventNotificationsOlderThan,
 
   // signups
   getSignup,

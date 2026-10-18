@@ -1,7 +1,7 @@
 /**
  * Retention sweeps (audit-2026-10 §2 / §6 P1, issue #192).
  *
- * Bounded, per-table pruning for the four unbounded tables:
+ * Bounded, per-table pruning for every table that used to grow forever:
  *  - `activity_log`                 — rows older than RETENTION_ACTIVITY_DAYS
  *    (uses idx_activity_created_at, the index whose 001 schema comment
  *    already justified it as aiding "pruning");
@@ -10,7 +10,16 @@
  *    RETENTION_DAILY_AGGREGATES_DAYS cutoff day;
  *  - `fluxer_oauth_transactions`    — rows past their own `expires_at`
  *    (the #192 bug fix: the only other DELETE, consumeOAuthTransaction,
- *    filters UNexpired rows, so expired ones used to live forever).
+ *    filters UNexpired rows, so expired ones used to live forever);
+ *  - `bridge_outbox`                — SETTLED (done/failed) relay-audit rows
+ *    older than RETENTION_BRIDGE_OUTBOX_DAYS (live queue rows never qualify);
+ *  - `bridge_message_links`         — part-map rows older than
+ *    RETENTION_BRIDGE_LINKS_DAYS (long window; see the spec comment);
+ *  - `event_activity`               — audit-feed rows older than
+ *    RETENTION_EVENT_ACTIVITY_DAYS;
+ *  - `event_notifications`          — SETTLED (sent/retired) reminders past
+ *    RETENTION_EVENT_NOTIFICATIONS_DAYS after their fire time
+ *    (all four from #399/B2-7, indexed by migration 053).
  *
  * No-lockup discipline: every delete runs as a LIMIT-batched loop capped at
  * `maxBatchesPerTable` batches per table per sweep (config.js), so even the
@@ -59,6 +68,12 @@ const RETENTION_TABLES = Object.freeze([
   "admin_audit",
   "user_channel_message_daily",
   "fluxer_oauth_transactions",
+  // #399 (B2-7): the queue/history tables that grew forever outside the
+  // original four. Order = sweep order; each has its own knob + index.
+  "bridge_outbox",
+  "bridge_message_links",
+  "event_activity",
+  "event_notifications",
 ]);
 
 /**
@@ -95,6 +110,40 @@ const TABLE_SWEEPS = Object.freeze([
     oauthKnob: true, // disabled via oauthTxSweepEnabled
     cutoff: "expiry",
     remove: (atMs, limit) => db.deleteExpiredOAuthTransactions(atMs, limit),
+  },
+  // ---- #399 (B2-7): the forever-growth tables, now bounded ----------------
+  {
+    // Settled (done/failed) relay-audit rows only — live queue rows are
+    // outside the state filter entirely; parked rows stay /bridge-retryable
+    // for the whole window (#416).
+    table: "bridge_outbox",
+    daysKey: "bridgeOutboxDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteSettledBridgeOutboxOlderThan(cutoffMs, limit),
+  },
+  {
+    // Source→destination part map. Beyond the (long) window, a later edit
+    // of that old message re-executes the part as a fresh send — the
+    // documented trade for bounding a per-part-per-message table.
+    table: "bridge_message_links",
+    daysKey: "bridgeLinksDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteBridgeMessageLinksOlderThan(cutoffMs, limit),
+  },
+  {
+    // Per-event audit feed (events archive, never auto-delete).
+    table: "event_activity",
+    daysKey: "eventActivityDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteEventActivityOlderThan(cutoffMs, limit),
+  },
+  {
+    // SETTLED reminders only (sent/retired by fire_at); pending/backoff
+    // rows are outside the state filter.
+    table: "event_notifications",
+    daysKey: "eventNotificationsDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteEventNotificationsOlderThan(cutoffMs, limit),
   },
 ]);
 
