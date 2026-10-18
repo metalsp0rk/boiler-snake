@@ -62,6 +62,24 @@ function seedPanel(messageId, { emojiKey = EMOJI, roleId = ROLE, minLevel = 0, r
   dbApi.upsertReactionRoleOption(COMMUNITY_ID, messageId, emojiKey, emojiKey, roleId, minLevel, removable);
 }
 
+// #433: claims are durable rows — tests that model a SINGLE-panel claim
+// state must start from a clean slate (earlier add tests in this file leave
+// live claims for the same user/role, which the refcount correctly honors).
+function clearUserClaims() {
+  dbApi.db
+    .prepare("DELETE FROM reaction_role_claims WHERE community_id=? AND user_id=?")
+    .run(COMMUNITY_ID, USER);
+}
+
+const claimCount = (messageId) =>
+  Number(
+    dbApi.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM reaction_role_claims WHERE community_id=? AND user_id=? AND message_id=?",
+      )
+      .get(COMMUNITY_ID, USER, messageId).n,
+  );
+
 function normalized(overrides = {}) {
   return {
     platform: "fluxer",
@@ -197,6 +215,7 @@ describe("fluxer reaction roles — un-react (remove path)", () => {
   it("flag 1: DELETE role + DELETE the user's reaction", async () => {
     setElevatedFlag(1);
     seedPanel("503");
+    clearUserClaims();
     const rest = makeFakeRest({
       routes: {
         [`GET ${memberGetPath()}`]: { user: { id: USER, username: "u", bot: false }, roles: [ROLE] },
@@ -219,6 +238,7 @@ describe("fluxer reaction roles — un-react (remove path)", () => {
   it("flag 0: role call skipped (no DELETE on the wire); reaction cleanup still runs", async () => {
     setElevatedFlag(0);
     seedPanel("504");
+    clearUserClaims();
     const rest = makeFakeRest({
       routes: {
         [`GET ${memberGetPath()}`]: { user: { id: USER, username: "u", bot: false }, roles: [ROLE] },
@@ -259,6 +279,71 @@ describe("fluxer reaction roles — un-react (remove path)", () => {
 
     assert.equal(result.handled, true);
     assert.equal(rest.calls.length, 0, "permanent option: no member fetch, no role delete, no reaction delete");
+  });
+
+  // ── #433 (audit E2-09): cross-panel refcount on the remove leg ──────────
+
+  it("role survives while the SAME role is claimed on another panel; drops with the last claim (#433)", async () => {
+    setElevatedFlag(1);
+    clearUserClaims();
+    seedPanel("530"); // deploy-copy scenario: the SAME role on two panels
+    seedPanel("531");
+
+    const addRest = makeFakeRest({
+      routes: {
+        [`GET ${memberGetPath()}`]: { user: { id: USER, username: "u", bot: false }, roles: [ROLE] },
+        [`PUT ${reactPutPath("530")}`]: {},
+        [`PUT ${reactPutPath("531")}`]: {},
+      },
+    });
+    const { outbound: addOut } = makeFakeHandle({ rest: addRest });
+    await withConsole(() =>
+      service.handleReactionRoleAddFluxer(addOut, normalized({ messageId: "530" })),
+    );
+    await withConsole(() =>
+      service.handleReactionRoleAddFluxer(addOut, normalized({ messageId: "531" })),
+    );
+    assert.equal(claimCount("530"), 1, "an accepted option reaction records the claim");
+    assert.equal(claimCount("531"), 1);
+
+    // Un-react panel ONE. NO DELETE-role route is wired: any hit FAKE_NO_ROUTEs.
+    const firstRest = makeFakeRest({
+      routes: {
+        [`GET ${memberGetPath()}`]: { user: { id: USER, username: "u", bot: false }, roles: [ROLE] },
+        [`DELETE ${userReactDeletePath("530")}`]: {},
+      },
+    });
+    const { outbound: firstOut } = makeFakeHandle({ rest: firstRest });
+    const { result: first } = await withConsole(() =>
+      service.handleReactionRoleRemoveFluxer(firstOut, normalized({ messageId: "530" })),
+    );
+    assert.equal(first.ok, true);
+    assert.equal(
+      hits(firstRest, "DELETE", roleDeletePath()).length,
+      0,
+      "panel 531 still claims the role — un-reacting 530 must NOT strip it (RED: old code deleted it)",
+    );
+    assert.equal(claimCount("530"), 0, "the un-reacted panel's claim is released");
+
+    // Un-react the LAST panel: the strip runs normally.
+    const lastRest = makeFakeRest({
+      routes: {
+        [`GET ${memberGetPath()}`]: { user: { id: USER, username: "u", bot: false }, roles: [ROLE] },
+        [`DELETE ${roleDeletePath()}`]: {},
+        [`DELETE ${userReactDeletePath("531")}`]: {},
+      },
+    });
+    const { outbound: lastOut } = makeFakeHandle({ rest: lastRest });
+    const { result: last } = await withConsole(() =>
+      service.handleReactionRoleRemoveFluxer(lastOut, normalized({ messageId: "531" })),
+    );
+    assert.equal(last.ok, true);
+    assert.equal(
+      hits(lastRest, "DELETE", roleDeletePath()).length,
+      1,
+      "last claim released → the role drops",
+    );
+    assert.equal(claimCount("531"), 0);
   });
 });
 
@@ -776,6 +861,7 @@ const { normalizeFluxerMessage } = require("../src/platform/fluxer/normalize");
   it("onFluxerReactionRemove: runs the remove path and the PR 6 log stub is gone", async () => {
     setElevatedFlag(1);
     seedPanel("513");
+    clearUserClaims();
     const rest = makeFakeRest({
       routes: {
         [`GET ${memberGetPath()}`]: { user: { id: USER, username: "u", bot: false }, roles: [ROLE] },
