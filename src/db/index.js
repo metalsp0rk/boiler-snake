@@ -443,6 +443,7 @@ module.exports = {
   setBridgeEndWebhook: bridges.setBridgeEndWebhook,
   setBridgeEndFlags: bridges.setBridgeEndFlags,
   enqueueBridgeOutbox: bridges.enqueueBridgeOutbox,
+  enqueueBridgeDeleteOutbox: bridges.enqueueBridgeDeleteOutbox,
   getBridgeOutboxById: bridges.getBridgeOutboxById,
   claimNextOutboxRow: bridges.claimNextOutboxRow,
   markOutboxDone: bridges.markOutboxDone,

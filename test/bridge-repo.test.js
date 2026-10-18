@@ -773,5 +773,58 @@ describe("bridge repo (PR 2)", () => {
       assert.equal(api.getBridgeConnectState(community, { nowMs: T0 + window }).failures, 0);
       assert.throws(() => api.getBridgeConnectState("900000000000000099"), /community id required/);
     });
+
+  describe("enqueueBridgeDeleteOutbox supersede verdict (#398/B2-6)", () => {
+    it("counts deleted pending rows and reports the spool droppable when nothing stays live", () => {
+      const b = makeBridge();
+      const row = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "create",
+        srcMessageId: "3980",
+        payload: "{}",
+      });
+      const out = api.enqueueBridgeDeleteOutbox(b.id, {
+        direction: "a_to_b",
+        srcMessageId: "3980",
+        payload: "{}",
+      });
+      assert.equal(out.row.kind, "delete");
+      assert.equal(out.row.state, "pending");
+      assert.deepEqual(out.supersede, { pendingDeleted: 1, failedSeen: 0, liveRemaining: 0 });
+      const still = api.db
+        .prepare(`SELECT kind, state FROM bridge_outbox WHERE id = ?`)
+        .get(row.id);
+      assert.equal(
+        api.db
+          .prepare(`SELECT COUNT(*) AS n FROM bridge_outbox WHERE kind = 'create' AND bridge_id = ?`)
+          .get(b.id).n,
+        0,
+        "the pending create row is gone (superseded)",
+      );
+      assert.equal(still.kind, "delete", "any surviving row at that id is the delete itself");
+    });
+
+    it("an in-flight (sending) create row is NOT deleted and OWNS the spool dir", () => {
+      const b = makeBridge({ endAChannelId: "200000000000003981" });
+      const create = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "create",
+        srcMessageId: "3981",
+        payload: "{}",
+      });
+      api.db.prepare(`UPDATE bridge_outbox SET state = 'sending' WHERE id = ?`).run(create.id);
+      const out = api.enqueueBridgeDeleteOutbox(b.id, {
+        direction: "a_to_b",
+        srcMessageId: "3981",
+        payload: "{}",
+      });
+      assert.deepEqual(out.supersede, { pendingDeleted: 0, failedSeen: 0, liveRemaining: 1 });
+      assert.equal(
+        api.db.prepare(`SELECT state FROM bridge_outbox WHERE id = ?`).get(create.id).state,
+        "sending",
+        "the in-flight row rides on — the delete cannot eat it",
+      );
+    });
+  });
   });
 });

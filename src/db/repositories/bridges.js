@@ -690,6 +690,101 @@ function enqueueBridgeOutbox(bridgeId, { direction, kind = "create", srcMessageI
 }
 
 /**
+ * #398 (B2-6): enqueue a takedown row AND compute the supersession
+ * bookkeeping in ONE transaction. The split it replaces — relay's
+ * supersession SELECT, then this enqueue, then an unconditional spool wipe
+ * — let the worker CLAIM the create row between the read and the act: the
+ * state filter spared the row (already 'sending') while relay wiped the
+ * spool bytes that in-flight send was about to read (parked failure).
+ * Inside one transaction on the synchronous connection nothing can
+ * interleave, so the returned counts are the HONEST supersession verdict:
+ *   pendingDeleted — create/edit rows this delete actually removed;
+ *   failedSeen     — parked create/edit rows (their stranded dir dies
+ *                    too, the #412 reclaim);
+ *   liveRemaining  — OTHER rows still pending/sending for this source
+ *                    message (the new delete row excluded; delete rows
+ *                    carry no attachment bytes). >0 ⇒ a live row still
+ *                    OWNS the spool dir — the caller must keep it.
+ * Terminal ('done'/'failed') delete rows for the id are replaced by the
+ * re-queue (404=ok idempotence, §10.7) — that cleanup moved inside too.
+ *
+ * @param {number} bridgeId
+ * @param {{direction: string, srcMessageId: string, payload?: object|string,
+ *          enqueuedAt?: number|null}} opts
+ * @returns {{row: object, supersede: {pendingDeleted: number, failedSeen: number, liveRemaining: number}}}
+ */
+function enqueueBridgeDeleteOutbox(bridgeId, { direction, srcMessageId, payload = "{}", enqueuedAt = null } = {}) {
+  requireBridgeId(bridgeId);
+  requireRelayDirection(direction);
+  const srcId = requireText(srcMessageId, "srcMessageId");
+  const body = typeof payload === "string" ? payload : JSON.stringify(payload ?? {});
+  const ts = enqueuedAt == null ? now() : Number(enqueuedAt);
+  if (!Number.isSafeInteger(ts)) {
+    throw new TypeError(`bridges: enqueuedAt must be an integer ms epoch, got ${String(enqueuedAt)}`);
+  }
+  if (!getBridgeById(bridgeId)) {
+    throw new Error(`bridges: enqueue refused — bridge ${bridgeId} does not exist`);
+  }
+
+  const tx = db.transaction(() => {
+    // A terminal (done/failed) delete row for this source id is replaced by
+    // the re-queue — the second takedown enqueues cleanly (idempotent 404=ok).
+    db.prepare(`
+      DELETE FROM bridge_outbox
+      WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'delete'
+        AND state IN ('done', 'failed')
+    `).run(bridgeId, direction, srcId);
+
+    const verdict = db
+      .prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END), 0) AS pendingDeleted,
+          COALESCE(SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END), 0) AS failedSeen
+        FROM bridge_outbox
+        WHERE bridge_id = ? AND direction = ? AND src_message_id = ?
+          AND kind IN ('create', 'edit') AND state IN ('pending', 'failed')
+      `)
+      .get(bridgeId, direction, srcId);
+
+    db.prepare(`
+      DELETE FROM bridge_outbox
+      WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind IN ('create', 'edit') AND state = 'pending'
+    `).run(bridgeId, direction, srcId);
+
+    const info = db
+      .prepare(`
+        INSERT INTO bridge_outbox (bridge_id, direction, kind, src_message_id, enqueued_at, state, payload_json)
+        VALUES (?, ?, 'delete', ?, ?, 'pending', ?)
+      `)
+      .run(bridgeId, direction, srcId, ts, body);
+    const row = getBridgeOutboxById(Number(info.lastInsertRowid));
+
+    const live = db
+      .prepare(`
+        SELECT COUNT(*) AS c FROM bridge_outbox
+        WHERE bridge_id = ? AND direction = ? AND src_message_id = ?
+          AND state IN ('pending', 'sending') AND id <> ?
+      `)
+      .get(bridgeId, direction, srcId, row.id);
+
+    return {
+      row,
+      supersede: {
+        pendingDeleted: Number(verdict.pendingDeleted),
+        failedSeen: Number(verdict.failedSeen),
+        liveRemaining: Number(live.c),
+      },
+    };
+  });
+
+  try {
+    return tx();
+  } catch (err) {
+    translateBridgeConstraint(err, `enqueueBridgeDeleteOutbox(bridge=${bridgeId}, src=${srcId})`);
+  }
+}
+
+/**
  * Claim the oldest pending row for one direction and move it to 'sending'
  * in a single transaction (one in-flight send per direction, KD 14).
  * A concurrent claim that loses the CAS returns null.
@@ -1208,6 +1303,7 @@ module.exports = {
   // outbox
   getBridgeOutboxById,
   enqueueBridgeOutbox,
+  enqueueBridgeDeleteOutbox,
   claimNextOutboxRow,
   markOutboxDone,
   recordOutboxFailure,
