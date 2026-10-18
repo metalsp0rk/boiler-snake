@@ -6,43 +6,19 @@ const {
   updateGithubWatchReleaseState,
 } = require("../../db");
 const { fetchReleases } = require("./github");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
+
+const {
+  resolveOutbound: coreResolveOutbound,
+} = require("../../core/outbound");
+
+function resolveOutbound(supervisor, communityId) {
+  return coreResolveOutbound(supervisor, communityId, { label: "github" });
+}
 
 /** @type {{ fetchReleases: Function }} */
 const defaultDeps = { fetchReleases };
 
-/**
- * Resolve the OutboundClient for one watch row (roadmap/fluxer.md § Scheduler
- * jobs: watch row's clientForCommunity). Accepts the PR 7 supervisor, a raw
- * OutboundClient, or a legacy raw discord.js client. Null = no ready client.
- *
- * @param {object|null} supervisor
- * @param {number} communityId
- * @returns {object|null} OutboundClient
- */
-function resolveOutbound(supervisor, communityId) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    try {
-      return supervisor.clientForCommunity(communityId) ?? null;
-    } catch (err) {
-      console.error(
-        `[github] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
-      );
-      return null;
-    }
-  }
-  if (typeof supervisor.sendChannel === "function") return supervisor;
-  if (supervisor.guilds || supervisor.channels || supervisor.users) {
-    // Legacy raw discord.js client (pre-PR 7 call site).
-    try {
-      return getDiscordOutbound(supervisor);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
+
 
 /**
  * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and

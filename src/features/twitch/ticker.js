@@ -20,45 +20,19 @@ const {
   expandThumbnailUrl,
   parseTwitchTimestamp,
 } = require("./helix");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
+
+const {
+  resolveOutbound: coreResolveOutbound,
+} = require("../../core/outbound");
+
+function resolveOutbound(supervisor, communityId) {
+  return coreResolveOutbound(supervisor, communityId, { label: "twitch" });
+}
 
 /** @type {{ resolveUser: Function, fetchStreams: Function }} */
 const defaultDeps = { resolveUser: resolveTwitchUser, fetchStreams };
 
-/**
- * Resolve the OutboundClient that posts for one community row
- * (roadmap/fluxer.md § Scheduler jobs: "Same, twitch_notification_channel_id"
- * with the row's clientForCommunity). Accepts the PR 7 supervisor, a raw
- * OutboundClient, or a legacy raw discord.js client (EventSub dispatcher and
- * existing tests pass raw clients). Returns null when no client is ready.
- *
- * @param {object|null} supervisor
- * @param {number} communityId
- * @returns {object|null} OutboundClient
- */
-function resolveOutbound(supervisor, communityId) {
-  if (!supervisor) return null;
-  if (typeof supervisor.clientForCommunity === "function") {
-    try {
-      return supervisor.clientForCommunity(communityId) ?? null;
-    } catch (err) {
-      console.error(
-        `[twitch] clientForCommunity(${communityId}) threw: ${err?.message || err}`,
-      );
-      return null;
-    }
-  }
-  if (typeof supervisor.sendChannel === "function") return supervisor;
-  if (supervisor.guilds || supervisor.channels || supervisor.users) {
-    // Legacy raw discord.js client (pre-PR 7 call site).
-    try {
-      return getDiscordOutbound(supervisor);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
+
 
 /**
  * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and
@@ -179,7 +153,8 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
  * EventSub fast path can never both announce the same stream id (Twitch
  * also redelivers, at-least-once).
  *
- * @param {object|null} supervisor PR 7 supervisor (raw client accepted)
+ * @param {object|null} supervisor PR 7 supervisor (the EventSub fast path
+ *   adapts its live client into this shape at the callback boundary — #462)
  * @param {number} communityId internal community id (row's `community_id`)
  * @param {object} sub stored twitch_channels row
  * @param {object|undefined} stream matching Helix stream (if any)
