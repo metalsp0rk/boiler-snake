@@ -372,8 +372,11 @@ async function handleList(interaction, ctx) {
   for (const e of events) {
     const counts = repo.countEventSignups(e.id);
     countsByEvent[e.id] = {
+      // #346 (same dead-key class): the repo's groups are camelCase —
+      // g.signed_up was always 0, so /eventsignup list undercounted every
+      // signed-up member and showed only waiters as "total".
       total: Object.values(counts).reduce(
-        (acc, g) => acc + (g.signed_up || 0) + (g.waitlisted || 0),
+        (acc, g) => acc + (g.signedUp || 0) + (g.waitlisted || 0),
         0
       ),
     };
@@ -886,11 +889,19 @@ async function handleOptions(interaction, ctx) {
   if (sub === "remove") {
     const opt = options.resolveOption(ev.event.id, o.getInteger("option"));
     if (!opt) return fail(interaction, "That option isn't on this event.");
+    // #346: countEventSignups groups CAMELCASE ({ signedUp, waitlisted }) —
+    // this guard read counts.signed_up, could NEVER trip, and the delete
+    // CASCADEd every member row while the reply celebrated the removal.
+    // Any member row — signed up or waiting — blocks the removal: those are
+    // people, not debris.
     const counts = repo.countEventSignups(ev.event.id)[opt.id] || {};
-    if ((counts.signed_up || 0) > 0) {
+    if ((counts.signedUp || 0) > 0 || (counts.waitlisted || 0) > 0) {
+      const parts = [];
+      if ((counts.signedUp || 0) > 0) parts.push(`${counts.signedUp} signup(s)`);
+      if ((counts.waitlisted || 0) > 0) parts.push(`${counts.waitlisted} waiter(s)`);
       return fail(
         interaction,
-        `**${opt.label}** has ${counts.signed_up} signup(s) — remove them first with \`/eventsignup response remove\`.`
+        `**${opt.label}** has ${parts.join(" and ")} — remove them first with \`/eventsignup response remove\`.`
       );
     }
     repo.deleteEventOption(opt.id);
