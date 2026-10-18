@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.34.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.34.0...v1.34.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **e2e:** the multipart flake settles on the ATTACHMENT, not just the message row ([f88a9fa](https://github.com/metalsp0rk/boiler-snake/commit/f88a9fa92a9178e7f21415c9bffea4438ac17b51)), closes [#519](https://github.com/metalsp0rk/boiler-snake/issues/519)
+
 ## [1.34.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.33.0...v1.34.0) (2026-10-18)
 
 
