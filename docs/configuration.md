@@ -116,8 +116,9 @@ FLUXER_COMMAND_PREFIX=!
 |----------|---------|
 | `TICKET_HTTP_PORT` | Serve HTML transcripts + media (`GET /t`, `/t/{uuid}`, `/t/{uuid}/assets/…`) |
 | `TICKET_PUBLIC_BASE_URL` | Public origin for archive embed links |
-| `TICKET_MAX_ASSET_BYTES` | Max size per mirrored file (default 50 MiB) |
+| `TICKET_MAX_ASSET_BYTES` | Max size per mirrored file (default 50 MiB) |
 | `TICKET_MAX_ASSETS` | Max media files downloaded per ticket (default 100) |
+| `TICKET_ASSET_TREE_MAX_BYTES` | Aggregate byte budget for the whole `ticket-transcripts` tree across all communities (default 2 GiB; `0`/`off` = unlimited). Checked before each archive's media mirror; over budget skips media (the transcript itself completes). Members steer the download list via embed/attachment URLs — this is the aggregate bound they can't inflate (audit #424) |
 | `AI_API_KEY` | Optional OpenAI-compatible key for non-sensitive close summaries (and [Gork](gork.md) — live whenever set) |
 | `AI_BASE_URL` | API base URL (default OpenAI) |
 | `AI_MODEL` | Model name |
@@ -184,6 +185,7 @@ default rather than silently disabling.
 | `RETENTION_ADMIN_AUDIT_DAYS` | **365** | `admin_audit` rows older than N days | `admin_audit` IS the durable staff trail (web-admin §8.1-7); a full annual cycle keeps "when did staff change this?" answerable while bounding a per-mutation table |
 | `RETENTION_DAILY_AGGREGATES_DAYS` | **400** | `user_channel_message_daily` UTC days before the cutoff day | 400 days ≥ 13 full calendar months, so monthly rollups stay continuous for a year-plus of staff activity summaries (dashboard windows are 30 days) |
 | `RETENTION_OAUTH_TX_SWEEP` | **1** | `fluxer_oauth_transactions` rows past their own `expires_at` (≤10 min old) | Expired PKCE login rows used to be undeletable (unauthenticated growth — audit #192). `0`/`off` freezes only the sweep; the bounded lazy prune when a transaction is *created* always runs |
+| `RETENTION_TICKET_TRANSCRIPT_ORPHAN_DAYS` | **7** | `{DATA_DIR}/ticket-transcripts/{community}/` entries whose token matches **no** `tickets` row (not a table — the on-disk archive tree) | A crashed archive leaves a `{uuid}/` directory with no DB reference: never served, never linked, never reclaimed. `0`/`off` keeps everything (audit #424) |
 
 Boundary semantics: rows at exactly the cutoff instant/day **survive** (strict
 older-than); expired oauth rows at exactly *now* die (the exact complement of

@@ -1080,6 +1080,29 @@ function countArchivedTicketsForGuilds(communityIds, q) {
 /**
  * @returns {string} UUID v4
  */
+/**
+ * Every transcript token still REFERENCED by a tickets row (#424, audit
+ * LT-10). The retention sweeper compares the on-disk
+ * {DATA_DIR}/ticket-transcripts tree against this set: an entry whose token
+ * is absent AND whose mtime is past the orphan window is crash garbage and
+ * gets removed. Rows with a token — closed, archived, sensitive — keep
+ * their transcript forever; this is the reachability truth, not a heuristic.
+ *
+ * @returns {string[]} distinct non-null transcript tokens
+ */
+function listTicketTranscriptTokens() {
+  return db
+    .prepare(
+      `
+    SELECT DISTINCT transcript_token AS token
+    FROM tickets
+    WHERE transcript_token IS NOT NULL
+  `
+    )
+    .all()
+    .map((r) => r.token);
+}
+
 function generateTranscriptToken() {
   return crypto.randomUUID();
 }
@@ -1316,6 +1339,7 @@ module.exports = {
   saveTicketMessages,
   listTicketMessages,
   generateTranscriptToken,
+  listTicketTranscriptTokens,
   setTicketArchiveMessageId,
 
   // panel registry
