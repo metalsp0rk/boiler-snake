@@ -15,6 +15,34 @@
 
 const { db, now } = require("../db");
 
+/**
+ * #389 (A2-3): first-sight memo, platform\0instance\0externalId -> community id.
+ *
+ * ensureCommunity used to run INSERT OR IGNORE + SELECT on EVERY call — the
+ * MessageCreate/MessageUpdate/MessageDelete normalizers and every
+ * context-arm interaction therefore opened a write transaction per chat
+ * event, and with journal_mode=WAL + synchronous=FULL that is one fsync per
+ * message on a row that never changes after first sight (the second
+ * getGuildSettings-class finding from the prior audit's hot-path list).
+ *
+ * Why the memo can never go stale: the id is a pure function of the
+ * UNIQUE identity, and NOTHING in src/ deletes a communities row —
+ * pinned structurally by test/platform-community.test.js (source scan).
+ * If a delete path ever ships, it must call resetCommunityMemoForTests()
+ * (or the narrower forgetCommunity()) at the delete site.
+ *
+ * Bounded by the number of (deployment, guild) pairs this process serves.
+ * Test isolation rides the house contract: loadDb() resets the require
+ * cache per test file, so each file gets a fresh map; in-file cases that
+ * need a clean slate call resetCommunityMemoForTests().
+ */
+const firstSight = new Map();
+
+/** Drop every memoized identity (test seam; production callers have none). */
+function resetCommunityMemoForTests() {
+  firstSight.clear();
+}
+
 /** Inclusive upper bound for community ids: 2^31 − 1 (spec § Repository boundary). */
 const MAX_COMMUNITY_ID = 2_147_483_647;
 
@@ -132,6 +160,10 @@ function ensureCommunity({ platform, instanceKey, externalGuildId } = {}) {
     );
   }
 
+  const key = `${platformKey}\u0000${instance}\u0000${externalId}`;
+  const seen = firstSight.get(key);
+  if (seen !== undefined) return seen; // warm path: ZERO statements (#389)
+
   insertIgnore.run(platformKey, instance, externalId, now());
 
   const id = getCommunityByExternal(platformKey, instance, externalId);
@@ -142,6 +174,7 @@ function ensureCommunity({ platform, instanceKey, externalGuildId } = {}) {
       `ensureCommunity: insert did not produce a row for platform=${platformKey}, instance_key=${instance}, external_guild_id=${externalId}`,
     );
   }
+  firstSight.set(key, id);
   return id;
 }
 
@@ -151,6 +184,7 @@ module.exports = {
   getCommunityById,
   ensureCommunity,
   discordCommunityId,
+  resetCommunityMemoForTests,
 };
 
 /**
