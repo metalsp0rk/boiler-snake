@@ -224,4 +224,95 @@ describe("platform/community", () => {
       );
     });
   });
+
+
+    const A = { platform: "discord", instanceKey: "discord", externalGuildId: "389000000000000001" };
+
+    // LAZY on purpose: the require cache is reset by loadDb() in the main
+    // before() hook — requiring at describe-registration time (file load,
+    // before hooks) would bind THIS module to the pre-loadDb connection
+    // (the real project DB!) instead of the temp one. Inside a test it is
+    // the adapter's own instance.
+    const community = () => require("../src/platform/community");
+
+    it("a WARM ensure is served entirely by the memo — it does not touch the table", () => {
+      community().resetCommunityMemoForTests();
+      const id = community().ensureCommunity(A); // first sight: row + memo
+      assert.ok(id > 0, "first sight creates the row");
+
+      // Surgical, test-only removal of the row (the src-side invariant below
+      // forbids deletes in production code): a warm ensure that still READS
+      // or WRITE-ENSURES the table would re-insert (new id) or throw.
+      require("../src/db").db
+        .prepare("DELETE FROM communities WHERE id = ?")
+        .run(id);
+
+      const again = community().ensureCommunity(A);
+      assert.equal(
+        again,
+        id,
+        "the memo answers with the same id WITHOUT the row — pre-#389 the INSERT OR IGNORE re-created it (a fresh write tx + fsync per chat message)",
+      );
+      const againAgain = community().ensureCommunity(A);
+      assert.equal(againAgain, id, "and keeps answering warm");
+
+      // Put the world back for the remaining tests: cold memo, fresh row.
+      community().resetCommunityMemoForTests();
+      const rebuilt = community().ensureCommunity(A);
+      assert.ok(rebuilt > 0, "cold path re-creates the row honestly");
+    });
+
+    it("resetCommunityMemoForTests is a real seam: cold memo means table access again", () => {
+      community().resetCommunityMemoForTests();
+      const id = community().ensureCommunity(A);
+      community().resetCommunityMemoForTests(); // forget while the row lives
+      require("../src/db").db
+        .prepare("DELETE FROM communities WHERE id = ?")
+        .run(id);
+      const cold = community().ensureCommunity(A);
+      assert.ok(
+        api.db.prepare("SELECT id FROM communities WHERE id = ?").get(cold),
+        "cold path re-runs INSERT OR IGNORE — the row EXISTS because the table was consulted (a memo hit skips it; rowids may be reused, so existence is the honest proof)",
+      );
+      community().resetCommunityMemoForTests();
+    });
+
+    it("validation still throws before anything is memoized", () => {
+      assert.throws(
+        () => community().ensureCommunity({ platform: "telegram", instanceKey: "x", externalGuildId: "1" }),
+        /unsupported community platform "telegram"/,
+      );
+    });
+
+    it("the memo's staleness-free invariant is structural: nothing DELETES communities rows", () => {
+      // The memo is only sound while a communities row, once created, lives
+      // for the process's whole life. If a delete/unlink path ever ships,
+      // it MUST call resetCommunityMemoForTests()/a narrower invalidator at
+      // the delete site — and this pin says so in the failing assertion.
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const srcDir = path.join(__dirname, "..", "src");
+      const offenders = [];
+      const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else if (entry.name.endsWith(".js")) {
+            const code = fs
+              .readFileSync(full, "utf8")
+              .replace(/\/\*[\s\S]*?\*\//g, "")
+              .replace(/(^|[^:"'\\])\/\/.*$/gm, "$1");
+            if (/delete\s+from\s+communities/i.test(code)) {
+              offenders.push(path.relative(srcDir, full));
+            }
+          }
+        }
+      };
+      walk(srcDir);
+      assert.deepEqual(
+        offenders,
+        [],
+        "a communities-row DELETE appeared: the firstSight memo (src/platform/community.js) must be invalidated at that site (issue #389)",
+      );
+    });
 });
