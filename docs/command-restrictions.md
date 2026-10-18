@@ -207,7 +207,7 @@ Use your own bot's `/xp` and `/leaderboard` outputs to show current status.
 
 Command restriction is purely cosmetic/user-experience:
 - Does not lock out administrators with `ManageGuild`
-- Does not prevent direct message usage (DMs bypass guild restrictions)
+- Does nothing in direct messages either way: the router **drops guild-less interactions entirely** (`if (!interaction.guild) return`), so a DM neither runs a command nor bypasses anything (H2-6/#465 fixed this claim — the old copy said DMs bypass guild restrictions, which was never true)
 - Does not affect command registration in Developer Portal
 
 ## Resetting Settings
