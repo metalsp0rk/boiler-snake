@@ -662,6 +662,8 @@ describe("fluxer/outbound — fetch mappers", () => {
   it("fetchMessage GETs /v1/channels/{c}/messages/{m} and returns the §10.3 fetch shape", async () => {
     const rest = makeFakeRest({
       routes: {
+        // #386: the guild-scope probe resolves channel 444 IN-community.
+        "GET /v1/channels/444": { id: "444", type: 0, community_id: GUILD },
         "GET /v1/channels/444/messages/50": {
           id: "50",
           channel_id: "444",
@@ -693,9 +695,10 @@ describe("fluxer/outbound — fetch mappers", () => {
 
     const res = await outbound.fetchMessage(COMMUNITY_ID, "444", "50");
 
-    assert.equal(rest.calls.length, 1);
-    assert.equal(rest.calls[0].method, "GET");
-    assert.equal(rest.calls[0].path, "/v1/channels/444/messages/50");
+    assert.equal(rest.calls.length, 2, "#386: the guild-scope probe runs BEFORE the message is read");
+    assert.equal(rest.calls[0].path, "/v1/channels/444", "probe first — foreign-owned channels are never message-read");
+    assert.equal(rest.calls[1].method, "GET");
+    assert.equal(rest.calls[1].path, "/v1/channels/444/messages/50");
     assert.equal(res.ok, true);
     const m = res.message;
     assert.equal(m.platform, "fluxer");
@@ -1032,5 +1035,138 @@ describe("fluxer/context — defer()/editReply() Discord idiom parity", () => {
     assert.ok(patch, "expected the second editReply to PATCH");
     assert.equal(patch.path, "/v1/channels/dm-99/messages/m-99");
     assert.deepEqual(patch.body, { content: "final" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #386 (FLX-5): guild scope — the Fluxer adapter enforces what Discord's
+// guild resolution gives for free: a channel provably owned by ANOTHER
+// community is "not found", never metadata-read or history-read.
+// ---------------------------------------------------------------------------
+
+describe("fluxer/outbound — guild-scope enforcement (#386)", () => {
+  const FOREIGN = "1777777777777777777";
+
+  it("fetchChannel: a channel owned by a foreign guild is 'not found' (null) — with ZERO extra REST", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/555": { id: "555", type: 0, community_id: FOREIGN },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const logs = [];
+    const orig = console.warn;
+    console.warn = (...a) => logs.push(a.join(" "));
+    try {
+      assert.equal(await outbound.fetchChannel(COMMUNITY_ID, "555"), null);
+    } finally {
+      console.warn = orig;
+    }
+    assert.equal(rest.calls.length, 1, "the check rides the payload already fetched — no second GET");
+    assert.ok(
+      logs.some((l) => l.includes("fetchChannel") && l.includes(FOREIGN)),
+      "the refusal names the channel and the foreign owner",
+    );
+  });
+
+  it("fetchChannel: own-guild and hint-less payloads stay visible (fail-open only for the UNPROVABLE)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/556": { id: "556", type: 0, community_id: GUILD },
+        "GET /v1/channels/557": { id: "557", type: 1 }, // guildless/DM-ish: unprovable
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    assert.ok(await outbound.fetchChannel(COMMUNITY_ID, "556"), "ours");
+    assert.ok(await outbound.fetchChannel(COMMUNITY_ID, "557"), "unknown owner = Discord-parity visibility");
+  });
+
+  it("fetchMessage: foreign-owned channel is refused BEFORE the message is read", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/555": { id: "555", guild_id: FOREIGN }, // alias field too
+        "GET /v1/channels/555/messages/60": { id: "60", channel_id: "555", content: "secret history" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.fetchMessage(COMMUNITY_ID, "555", "60");
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /channel 555 not found in community/, "the Discord adapter's EXACT guild-scope shape");
+    const paths = rest.calls.map((c) => c.path);
+    assert.deepEqual(paths, ["/v1/channels/555"], "the message endpoint was NEVER touched — refusal precedes disclosure");
+  });
+
+  it("fetchMessage: an unreadable probe fails OPEN into the real read (its own error words win)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        // /v1/channels/444 unroutable → probe 404s; the message route exists.
+        "GET /v1/channels/444/messages/61": { id: "61", channel_id: "444", content: "ok" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const orig = console.error;
+    const errs = [];
+    console.error = (...a) => errs.push(a.join(" "));
+    try {
+      const res = await outbound.fetchMessage(COMMUNITY_ID, "444", "61");
+      assert.equal(res.ok, true, "unprovable ≠ refused");
+      assert.deepEqual(
+        errs,
+        [],
+        "the probe never double-logs what the PRIMARY read already carries — a guarded probe stays quiet when the read it guards speaks",
+      );
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it("fetchMessages: query.communityId refuses a foreign channel before any history moves", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/777": { id: "777", community_id: FOREIGN },
+        "GET /v1/channels/777/messages": [{ id: "1" }],
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.fetchMessages("777", { limit: 10, communityId: COMMUNITY_ID });
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /channel 777 not found in community/);
+    assert.deepEqual(rest.calls.map((c) => c.path), ["/v1/channels/777"], "the history endpoint was never called");
+  });
+
+  it("fetchMessages: without a communityId the path is untouched (no probe, no new cost)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/778/messages": [{ id: "2", timestamp: "t", content: "c" }],
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.fetchMessages("778", { limit: 10 });
+
+    assert.equal(res.ok, true);
+    assert.deepEqual(rest.calls.map((c) => c.path), ["/v1/channels/778/messages"], "exactly the old one-call shape");
+  });
+
+  it("fetchMessages: communityId never leaks onto the wire query", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "GET /v1/channels/556": { id: "556", community_id: GUILD },
+        "GET /v1/channels/556/messages": [],
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    await outbound.fetchMessages("556", { limit: 50, communityId: COMMUNITY_ID });
+
+    const hist = rest.calls.find((c) => c.path === "/v1/channels/556/messages");
+    assert.deepEqual(hist.query, { limit: 50 }, "rebuilt-from-known-keys: the internal scope hint stays internal");
   });
 });

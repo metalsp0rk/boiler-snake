@@ -316,6 +316,25 @@ async function executeReadHistory(link, options = {}) {
     if (resolved && resolved.id != null) {
       labeled = { ok: true, kind: "channel", channelId: String(resolved.id), channelType: resolved.type };
     } else {
+      // #386 (FLX-5) parity: the adapter's guild scope answers "not found"
+      // for a FOREIGN-owned channel too. Before degrading the id into a
+      // message id, ask ownership directly — a foreign channel must get
+      // decision 46's specific refusal, never a misleading message-missing
+      // story. (An id that is not a channel at all: the owner probe 404s,
+      // null, and the message path proceeds exactly as before.)
+      let foreignOwner = null;
+      try {
+        foreignOwner = await outbound.communityIdForChannel(parsed.id);
+      } catch {
+        foreignOwner = null;
+      }
+      if (foreignOwner != null && foreignOwner !== communityId) {
+        return failWith(
+          { kind: "channel", channelId: String(parsed.id) },
+          link,
+          "that channel belongs to a different community",
+        );
+      }
       if (!currentChannelId) {
         return failWith(parsed, link, "no channel to read that message id from");
       }
