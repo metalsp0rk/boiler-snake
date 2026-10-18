@@ -25,6 +25,7 @@ const {
   requireStaffFromContext,
 } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
+const { sliceSafe } = require("../../core/text");
 const { Color } = require("../../core/theme");
 const { awardXp } = require("../../services/awardXp");
 const { renderLeaderboardPng } = require("../../render/leaderboard");
@@ -566,7 +567,7 @@ async function handleGrantXp(commandCtx, featureCtx) {
   const settings = getGuildSettings(commandCtx.communityId);
   const beforeXp = getXp(commandCtx.communityId, target.id);
 
-  const { newXp, level } = await awardXp(commandCtx.outbound, {
+  const { newXp, level, changes } = await awardXp(commandCtx.outbound, {
     communityId: commandCtx.communityId,
     externalGuildId: commandCtx.externalGuildId,
     userId: target.id,
@@ -606,11 +607,26 @@ async function handleGrantXp(commandCtx, featureCtx) {
     ].filter(Boolean),
   }).catch(() => {});
 
+  // #430 (audit XE-3): XP landed but a role may NOT have — surface the
+  // partial failure (rule 5) instead of replying a clean success while the
+  // bot silently sits below the managed role.
+  const roleSyncWarning = changes?.failed?.length
+    ? `\n⚠️ **Role sync incomplete**: ${sliceSafe(
+        changes.failed
+          .map(
+            (f) => `couldn't ${f.action} role <@&${f.roleId}> (${f.error})`,
+          )
+          .join("; "),
+        900,
+      )}`
+    : "";
+
   await commandCtx.reply({
     content:
       `Granted **${amount.toLocaleString()}** XP to **${target.username}**.\n` +
       `Now **${newXp.toLocaleString()} XP** (Level **${levelText}**)` +
-      (reasonText ? `\nReason: ${reasonText}` : ""),
+      (reasonText ? `\nReason: ${reasonText}` : "") +
+      roleSyncWarning,
     sensitive: true,
   });
 }

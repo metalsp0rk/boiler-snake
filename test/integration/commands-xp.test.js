@@ -469,4 +469,35 @@ describe("integration: leaderboard page option", () => {
     });
     assertEphemeralReply(interaction, /No leaderboard data/);
   });
+
+  // ── #430 (audit XE-3): /grantxp never claims a clean success when the
+  // role layer partially failed (rule 5 — AGENTS item 5's named failure) ──
+
+  it("/grantxp surfaces a failed role sync in the reply", async () => {
+    env.db.updateGuildSettings(env.communityId, { level_xp_factor: 100 });
+    env.db.upsertLevelRole(env.communityId, "role-xp430", 1, 0);
+    const mem = env.members.member2;
+    const origAdd = mem.roles.add;
+    // The bot sits below the managed role — the classic silent killer.
+    mem.roles.add = async () => {
+      throw new Error("Missing Permissions");
+    };
+    const before = env.db.getXp(env.communityId, IDS.member2);
+    try {
+      const interaction = await env.runCommand({
+        commandName: "grantxp",
+        admin: true,
+        options: { user: env.users.member2User, amount: 400 },
+      });
+      // RED on old code: reply claimed pure success regardless.
+      assertReplyContains(interaction, /Role sync incomplete/);
+      assertReplyContains(interaction, /role-xp430/);
+      assertReplyContains(interaction, /Missing Permissions/);
+      // Partial failure must NOT abort the XP award itself.
+      assert.equal(env.db.getXp(env.communityId, IDS.member2), before + 400);
+    } finally {
+      mem.roles.add = origAdd;
+      env.db.deleteLevelRole(env.communityId, "role-xp430");
+    }
+  });
 });
