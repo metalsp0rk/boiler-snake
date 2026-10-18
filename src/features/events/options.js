@@ -9,21 +9,6 @@
 const repo = require("../../db/repositories/events");
 
 /**
- * Counts per option for one event: { [optionId]: {signedUp, waitlisted} }.
- * @param {number} eventId
- */
-function countsFor(eventId) {
-  const rows = repo.listEventSignups(eventId, {});
-  const out = {};
-  for (const row of rows) {
-    const c = (out[row.option_id] ||= { signedUp: 0, waitlisted: 0 });
-    if (row.state === "signed_up") c.signedUp += 1;
-    else if (row.state === "waitlisted") c.waitlisted += 1;
-  }
-  return out;
-}
-
-/**
  * Options for an event with `_attendees` (ordered user ids, attending only)
  * preloaded — the shape `ui.buildEventMessage` renders.
  * @param {number} eventId
@@ -127,7 +112,10 @@ function reorder(eventId, orderText) {
 function renderOptionTable(eventId) {
   const options = repo.listEventOptions(eventId);
   if (!options.length) return "_No options yet._";
-  const counts = countsFor(eventId);
+  // #473 (B2-11): the SQL GROUP BY aggregate — this used to re-implement it
+  // in JS over an unbounded listEventSignups row fetch (same output shape,
+  // second implementation: exactly how B2-2's key mismatch stayed invisible).
+  const counts = repo.countEventSignups(eventId);
   return options
     .map((o) => {
       const c = counts[o.id] || { signedUp: 0, waitlisted: 0 };
@@ -146,7 +134,6 @@ function renderOptionTable(eventId) {
 }
 
 module.exports = {
-  countsFor,
   optionsWithAttendees,
   resolveOption,
   replaceOptions,
