@@ -668,3 +668,86 @@ describe("executeReadPage — streaming byte cap (#435)", () => {
     assert.equal(cancelled, true, "the remainder of the 1.4 MB body was never downloaded");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #415 (BRG-9): the fetch pins to the addresses validation JUST cleared.
+// readPage threads them as the transport's third argument; the production
+// default (ssrfGuard.defaultGuardedFetch) connects to the validated IP so
+// the checked resolution and the connected socket are ONE lookup.
+// ---------------------------------------------------------------------------
+
+describe("read_page DNS pin threading (#415)", () => {
+  function pinCapturingFetch(response) {
+    const calls = [];
+    const impl = async (url, init, addresses) => {
+      calls.push({ url, init, addresses });
+      return response ?? fakeRes({ body: "<html><body>pinned</body></html>" });
+    };
+    impl.calls = calls;
+    return impl;
+  }
+
+  it("a DNS-name page hop hands the validated addresses to the transport", async () => {
+    const impl = pinCapturingFetch();
+    const { resolver } = resolverFor({ "docs.example.test": [{ address: PUBLIC_V4, family: 4 }] });
+    const out = await rp.executeReadPage(
+      { urls: ["https://docs.example.test/a"] },
+      { resolver, fetchImpl: impl },
+    );
+    assert.match(out, /pinned/);
+    assert.deepEqual(
+      impl.calls[0].addresses,
+      [PUBLIC_V4],
+      "the JUST-CHECKED addresses ride to the socket — no window for the " +
+        "record to flip between validation and connect",
+    );
+  });
+
+  it("an IP-literal page URL pins NOTHING ([]): no lookup happens, so nothing can rebind", async () => {
+    const impl = pinCapturingFetch();
+    const { resolver } = resolverFor({});
+    const out = await rp.executeReadPage(
+      { urls: [`http://${PUBLIC_V4}/x`] },
+      { resolver, fetchImpl: impl },
+    );
+    assert.match(out, /pinned/);
+    assert.deepEqual(impl.calls[0].addresses, []);
+  });
+
+  it("a redirect hop RE-PINS to the redirect target's fresh resolution", async () => {
+    let resolverCalls = 0;
+    const resolver = async () => {
+      resolverCalls += 1;
+      return resolverCalls === 1
+        ? [{ address: PUBLIC_V4, family: 4 }]
+        : [{ address: "8.8.8.8", family: 4 }];
+    };
+    const impl = pinCapturingFetch();
+    // same-host redirect /a → /b: second fetch must ride the SECOND answer
+    const capturing = async (url, init, addresses) => {
+      impl.calls.push({ url, addresses });
+      if (impl.calls.length === 1) {
+        return fakeRes({ status: 301, location: "/b" });
+      }
+      return fakeRes({ body: "<html><body>pinned2</body></html>" });
+    };
+    const out = await rp.executeReadPage({ urls: ["https://roundrobin.test/a"] }, { resolver, fetchImpl: capturing });
+    assert.match(out, /pinned2/);
+    assert.equal(resolverCalls, 2, "the redirect re-resolved");
+    assert.deepEqual(
+      impl.calls.map((c) => c.addresses),
+      [[PUBLIC_V4], ["8.8.8.8"]],
+      "each hop pins to ITS OWN validated addresses (mid-chain flips die here)",
+    );
+  });
+
+  it("the default transport is the guard's PINNING router (not raw globalThis.fetch)", () => {
+    // Static shape proof: the module wires ssrfGuard.defaultGuardedFetch as
+    // the default — a future refactor back to globalThis.fetch goes RED here.
+    const src = require("node:fs").readFileSync(
+      require.resolve("../src/features/gork/tools/readPage"),
+      "utf8",
+    );
+    assert.match(src, /ssrfGuard\.defaultGuardedFetch/);
+  });
+});

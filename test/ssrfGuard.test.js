@@ -467,3 +467,316 @@ describe("ssrfGuard.downloadGuarded", () => {
     assert.deepEqual(seenInit.headers, { "User-Agent": "UA/1.0" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #415 (BRG-9): the checked resolution and the connected socket are ONE
+// lookup. The pins below lock the whole chain: checkHost hands out the
+// validated addresses, downloadGuarded/readPage thread them to the
+// transport, and pinnedCoreFetch connects to the IP with SNI/Host on the
+// original name (fake core modules — still zero sockets).
+// ---------------------------------------------------------------------------
+
+describe("ssrfGuard DNS pin (#415/BRG-9)", () => {
+  /** Minimal ok-200 fetch stub that records the addresses argument. */
+  function recordingFetch() {
+    const calls = [];
+    const fn = async (url, init, addresses) => {
+      calls.push({ url, init, addresses });
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]),
+      };
+    };
+    fn.calls = calls;
+    return fn;
+  }
+
+  // --- checkHost: addresses leave WITH the verdict -------------------------
+
+  it("checkHost returns the validated addresses alongside a clear verdict", async () => {
+    const res = await guard.checkHost("cdn.example.test", async () => [
+      PUBLIC_IP,
+      "2606:4700:4700::1111",
+    ]);
+    assert.equal(res.refusal, null);
+    assert.deepEqual(res.addresses, [PUBLIC_IP, "2606:4700:4700::1111"]);
+  });
+
+  it("checkHost: an IP literal carries NO pin (no lookup happens → nothing to rebind)", async () => {
+    const res = await guard.checkHost(PUBLIC_IP, async () => {
+      throw new Error("literal hosts must not hit the resolver");
+    });
+    assert.equal(res.refusal, null);
+    assert.deepEqual(res.addresses, []);
+  });
+
+  it("checkHost: a refused answer hands out NOTHING to pin", async () => {
+    const res = await guard.checkHost("evil.test", async () => ["169.254.169.254"]);
+    assert.match(res.refusal, /refused address range/);
+    assert.deepEqual(res.addresses, []);
+  });
+
+  it("hostRefusalReason stays the string wrapper (bridge/gork pre-checks)", async () => {
+    assert.equal(await guard.hostRefusalReason("ok.example.test", publicResolve), null);
+    assert.match(
+      await guard.hostRefusalReason("evil.test", async () => ["10.0.0.1"]),
+      /refused address range/,
+    );
+  });
+
+  // --- downloadGuarded threads the pin per hop ------------------------------
+
+  it("downloadGuarded hands the transport EXACTLY the addresses validated for the hop", async () => {
+    const fetchImpl = recordingFetch();
+    const res = await guard.downloadGuarded("https://cdn.example.test/a.png", {
+      resolveHost: async () => [PUBLIC_IP],
+      fetchImpl,
+    });
+    assert.equal(res.ok, true);
+    assert.deepEqual(
+      fetchImpl.calls[0].addresses,
+      [PUBLIC_IP],
+      "the JUST-CHECKED list rides to the socket — a rebinding window can no " +
+        "longer open between the check and a second resolution",
+    );
+  });
+
+  it("downloadGuarded: an IP-literal URL pins nothing ([] rides the transport)", async () => {
+    const fetchImpl = recordingFetch();
+    const res = await guard.downloadGuarded(`https://${PUBLIC_IP}/a.png`, {
+      resolveHost: async () => {
+        throw new Error("must not resolve a literal");
+      },
+      fetchImpl,
+    });
+    assert.equal(res.ok, true);
+    assert.deepEqual(fetchImpl.calls[0].addresses, []);
+  });
+
+  it("a mid-chain record flip is PINNED per hop, not fetched blind", async () => {
+    const seen = [];
+    let resolverCalls = 0;
+    const fetchImpl = async (url, init, addresses) => {
+      seen.push(addresses);
+      const first = seen.length === 1;
+      return {
+        ok: true,
+        status: first ? 302 : 200,
+        headers: { get: (n) => (first && n === "location" ? "/b.png" : null) },
+        arrayBuffer: async () => new Uint8Array([7]),
+      };
+    };
+    const res = await guard.downloadGuarded("https://cdn.example.test/a.png", {
+      resolveHost: async () => (++resolverCalls === 1 ? [PUBLIC_IP] : ["8.8.8.8"]),
+      fetchImpl,
+    });
+    assert.equal(res.ok, true, "the flipped answer still passes the CLASS check — and is now the pinned target");
+    assert.equal(resolverCalls, 2, "the guard re-resolved on the redirect hop");
+    // The second hop must ride the SECOND resolution — the old code handed
+    // the socket nothing and undici re-resolved whatever the record said at
+    // connect time (the rebinding window).
+    assert.deepEqual(
+      seen,
+      [[PUBLIC_IP], ["8.8.8.8"]],
+      "each hop rides ITS OWN validated list",
+    );
+  });
+
+  // --- default transport routing --------------------------------------------
+
+  it("defaultGuardedFetch: empty pin list (IP-literal hop) goes to globalThis.fetch", async () => {
+    const real = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (u) => {
+      calls.push(u);
+      return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => new Uint8Array() };
+    };
+    try {
+      const res = await guard.defaultGuardedFetch(`https://${PUBLIC_IP}/a.png`, {}, []);
+      assert.equal(res.ok, true);
+      assert.equal(calls.length, 1, "no DNS for a literal → no pinning needed → global fetch is provably safe");
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  it("defaultGuardedFetch: name hops route THROUGH the pinned core fetch", async () => {
+    const reqOpts = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("global fetch must NOT run for a pinned name hop");
+    };
+    try {
+      await guard.defaultGuardedFetch("https://cdn.example.test/a.png", {}, [PUBLIC_IP], {
+        httpsImpl: fakeCoreTransport(reqOpts),
+      });
+      assert.equal(reqOpts.length, 1);
+      assert.equal(reqOpts[0].host, PUBLIC_IP);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  // --- pinnedCoreFetch: the socket IS the check ------------------------------
+
+  /**
+   * Fake node:https/http module: records request options, answers with a
+   * scripted body, tracks destroy(). Zero sockets.
+   * @param {object[]} reqOpts capture sink
+   */
+  function fakeCoreTransport(
+    reqOpts,
+    {
+      chunks = [Buffer.from("ok")],
+      status = 200,
+      headers = {},
+      onDestroy = null,
+      error = null,
+    } = {},
+  ) {
+    return {
+      request(options, cb) {
+        reqOpts.push(options);
+        const req = {
+          destroyed: false,
+          on() {
+            return this;
+          },
+          destroy() {
+            req.destroyed = true;
+            if (onDestroy) onDestroy();
+          },
+          end() {
+            if (error != null) {
+              Promise.resolve().then(() => req.emitError(error));
+              return;
+            }
+            const coreRes = {
+              statusCode: status,
+              headers,
+              [Symbol.asyncIterator]: async function* () {
+                for (const c of chunks) yield c;
+              },
+            };
+            Promise.resolve().then(() => cb(coreRes));
+          },
+          emitError(err) {
+            if (errorListeners.length) for (const h of errorListeners) h(err);
+          },
+        };
+        const errorListeners = [];
+        req.on = (ev, h) => {
+          if (ev === "error") errorListeners.push(h);
+          return req;
+        };
+        return req;
+      },
+    };
+  }
+
+  it("pinnedCoreFetch: socket on the validated IP, SNI + Host on the ORIGINAL name", async () => {
+    const reqOpts = [];
+    const res = await guard.pinnedCoreFetch(
+      "https://cdn.example.test:8443/img.png?v=2",
+      { headers: { "user-agent": "bot/1", host: "attacker.evil.test" } },
+      ["203.0.113.7"],
+      { httpsImpl: fakeCoreTransport(reqOpts) },
+    );
+    const o = reqOpts[0];
+    assert.equal(o.host, "203.0.113.7", "connect target is the CHECKED IP — the name never reaches the resolver");
+    assert.equal(o.servername, "cdn.example.test", "TLS identity (SNI + cert verification) stays on the name");
+    assert.equal(o.port, 8443);
+    assert.equal(o.path, "/img.png?v=2");
+    assert.equal(o.headers.host, "cdn.example.test:8443", "a caller/attacker Host header is REPLACED");
+    assert.equal(o.headers["user-agent"], "bot/1", "other headers ride normally");
+    assert.equal(o.lookup, undefined, "no resolver hook at all: the literal connects directly");
+    assert.equal(res.ok, true);
+    assert.equal(await res.text(), "ok");
+  });
+
+  it("pinnedCoreFetch: prefers a validated IPv4, accepts an all-v6 pin list", async () => {
+    const reqOpts = [];
+    await guard.pinnedCoreFetch("https://v6.test/", {}, ["2606:4700:4700::1111", PUBLIC_IP], {
+      httpsImpl: fakeCoreTransport(reqOpts),
+    });
+    assert.equal(reqOpts[0].host, PUBLIC_IP);
+    await guard.pinnedCoreFetch("https://v6.test/", {}, ["2606:4700:4700::1111"], {
+      httpsImpl: fakeCoreTransport(reqOpts),
+    });
+    assert.equal(reqOpts[1].host, "2606:4700:4700::1111");
+  });
+
+  it("pinnedCoreFetch fails CLOSED: no validated address → no request, ever", async () => {
+    const reqOpts = [];
+    await assert.rejects(
+      () => guard.pinnedCoreFetch("https://x.test/", {}, [], { httpsImpl: fakeCoreTransport(reqOpts) }),
+      /no validated address/,
+    );
+    await assert.rejects(
+      () => guard.pinnedCoreFetch("https://x.test/", {}, ["rebound.example"], { httpsImpl: fakeCoreTransport(reqOpts) }),
+      /no validated address/,
+      "an UNVALIDATED string in the pin list is rejected, not connected to",
+    );
+    assert.equal(reqOpts.length, 0);
+  });
+
+  it("pinnedCoreFetch: transport errors reject; a pre-aborted signal rejects without connecting", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const reqOpts = [];
+    await assert.rejects(
+      () => guard.pinnedCoreFetch("https://x.test/", { signal: ac.signal }, ["1.2.3.4"], {
+        httpsImpl: fakeCoreTransport(reqOpts),
+      }),
+      /abort/i,
+    );
+    assert.equal(reqOpts.length, 0, "aborted BEFORE the request was made");
+
+    const badOpts = [];
+    await assert.rejects(
+      () =>
+        guard.pinnedCoreFetch("https://x.test/", {}, ["1.2.3.4"], {
+          httpsImpl: fakeCoreTransport(badOpts, { error: new Error("ECONNREFUSED 1.2.3.4:443") }),
+        }),
+      /ECONNREFUSED/,
+      "a transport failure REJECTS with the cause — the guard reports it",
+    );
+  });
+
+  it("the response adapter: joined headers, buffered bytes, reader.cancel DESTROYS the request", async () => {
+    const reqOpts = [];
+    let sawDestroy = null;
+    const res = await guard.pinnedCoreFetch("https://x.test/a", {}, ["1.2.3.4"], {
+      httpsImpl: fakeCoreTransport(reqOpts, {
+        chunks: [Buffer.from("ab"), Buffer.from("cd")],
+        status: 200,
+        headers: { "content-type": ["text/plain", "x/y"] },
+        onDestroy: () => (sawDestroy = true),
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "text/plain, x/y");
+    assert.equal(res.headers.get("missing"), null);
+    const buf = await res.arrayBuffer();
+    assert.deepEqual(Buffer.from(buf).toString(), "abcd");
+
+    // Second call: drive the reader to done, then cancel — cancel must
+    // destroy (readPage's byte budget depends on stopping the transfer).
+    const res2 = await guard.pinnedCoreFetch("https://x.test/b", {}, ["1.2.3.4"], {
+      httpsImpl: fakeCoreTransport(reqOpts, {
+        chunks: [Buffer.from("zz")],
+        onDestroy: () => (sawDestroy = true),
+      }),
+    });
+    const reader = res2.body.getReader();
+    const first = await reader.read();
+    assert.equal(first.done, false);
+    assert.equal(first.value.toString(), "zz");
+    const second = await reader.read();
+    assert.equal(second.done, true);
+    await reader.cancel();
+    assert.equal(sawDestroy, true, "cancel tears the socket down — no silent buffering beyond the cap");
+  });
+});
