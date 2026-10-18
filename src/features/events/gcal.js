@@ -275,10 +275,26 @@ function disconnect(communityId, userId) {
  */
 function autoset(communityId, callerId, { memberId = null, off = false } = {}) {
   const target = off ? null : String(memberId || callerId);
-  return repo.updateEventGuildSettings(communityId, {
+  if (!off) {
+    // #349: this persisted UNCONDITIONALLY — pointing auto-sync at a member
+    // with no connected link made `settings show` advertise an impossible
+    // promise and made EVERY later post carry a calendar warning the poster
+    // never asked for and only staff could fix. The toggle now requires the
+    // target to actually hold an enabled link (later disconnects were
+    // always handled gracefully by autoSyncOnPost; the gap was only here).
+    const st = status(communityId, target);
+    if (!st.connected) {
+      return {
+        ok: false,
+        error: `<@${target}> has no connected calendar — they must run \`/eventconfig google connect\` first.`,
+      };
+    }
+  }
+  const settings = repo.updateEventGuildSettings(communityId, {
     google_auto_user_id: target,
     google_auto_enabled: off ? 0 : 1,
   });
+  return { ok: true, settings };
 }
 
 module.exports = {
