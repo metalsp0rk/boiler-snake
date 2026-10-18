@@ -147,7 +147,9 @@ Show current channel, ping role, interval, subscription count, and whether bot c
 - **Embed**: purple (`#9146FF`), stream title, game/category, viewer count, watch link, broadcaster thumbnail
 - **Mention**: the `/settwitch role` role only, via `allowedMentions`
 - **Dedup**: while the same stream id is live, no repeat alerts; a new stream session re-notifies
+- **Delivery**: a send failure (or no notify channel configured yet) **releases the claim** — the next tick retries while the stream is live, and configuring the channel mid-stream still delivers the ping (#447). A process crash in the claim→send window stays at-most-once (one miss, no double alert on restart).
 - **Offline**: state is cleared silently (no go-offline message in the MVP)
+- **Clips/VODs**: the media watermark intentionally advances past every fresh item even when a send fails — flood control wins over completeness there (#447, deliberate)
 
 ## Examples
 

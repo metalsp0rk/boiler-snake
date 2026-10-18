@@ -255,10 +255,11 @@ function updateTwitchChannelVideoState(
  * (better-sqlite3 is sync + Node is single-threaded, so no other callback —
  * e.g. the EventSub webhook vs. the poller — can interleave between them).
  * Always refreshes is_live/last_checked; returns whether this CALLER observed
- * a NEW stream id (so exactly one caller notifies).
+ * a NEW stream id (so exactly one caller notifies) PLUS the previous
+ * watermark, so a failed send can release the claim (#447).
  *
  * @param {number} communityId
- * @returns {boolean} true when last_stream_id actually changed to `streamId`
+ * @returns {{ isNew: boolean, previousStreamId: string|null }}
  */
 function claimTwitchStream(communityId, broadcasterId, streamId) {
   assertCommunityId(communityId);
@@ -269,12 +270,41 @@ function claimTwitchStream(communityId, broadcasterId, streamId) {
     )
     .get(communityId, broadcasterId);
   const isNew = !!row && row.last_stream_id !== streamId;
+  const previousStreamId = row ? row.last_stream_id : null;
   db.prepare(`
   UPDATE twitch_channels
   SET is_live=1, last_stream_id=?, last_checked=?, updated_at=?
   WHERE community_id=? AND broadcaster_id=?
   `).run(streamId ?? null, t, t, communityId, broadcasterId);
-  return isNew;
+  return { isNew, previousStreamId };
+}
+
+/**
+ * #447 (audit INT-12): release a go-live claim whose notification send
+ * FAILED (or was impossible — no notify channel configured), so the next
+ * tick re-claims and retries instead of silently burning the stream
+ * forever. Compare-and-release: it only restores when the watermark is
+ * STILL the claimed id, so a concurrent EventSub/poller claim for a newer
+ * stream is never trampled.
+ *
+ * @returns {boolean} true when the claim was actually released
+ */
+function releaseTwitchStreamClaim(
+  communityId,
+  broadcasterId,
+  claimedStreamId,
+  restoreStreamId,
+) {
+  assertCommunityId(communityId);
+  if (!claimedStreamId) return false;
+  const info = db
+    .prepare(
+      `UPDATE twitch_channels
+          SET last_stream_id=?, updated_at=?
+        WHERE community_id=? AND broadcaster_id=? AND last_stream_id=?`,
+    )
+    .run(restoreStreamId ?? null, now(), communityId, broadcasterId, claimedStreamId);
+  return info.changes > 0;
 }
 
 /**
@@ -304,6 +334,7 @@ module.exports = {
   getTwitchChannels,
   getAllTwitchChannels,
   getTwitchChannel,
+  releaseTwitchStreamClaim,
   getTwitchSubsByBroadcaster,
   addTwitchChannel,
   removeTwitchChannel,

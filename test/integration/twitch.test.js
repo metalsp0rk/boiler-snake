@@ -305,6 +305,104 @@ describe("integration: twitch", () => {
     assert.equal(env.channels.notify.sent.length, 0);
   });
 
+  // ── #447 (audit INT-12): a failed send must NOT burn the go-live ─────────
+
+  it("send failure releases the claim — retry while live lands exactly one ping (#447)", async () => {
+    // Point the notify channel at a channel that cannot receive (unknown id
+    // → honest send failure), then hit go-live.
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: "channel-nonexistent-447",
+      twitch_notify_role_id: null,
+    });
+    env.channels.notify.sent.length = 0;
+    const sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
+    const stream = {
+      id: "stream-447fail",
+      user_id: "333000",
+      user_login: "livestreamer",
+      title: "Broken send",
+      started_at: new Date().toISOString(),
+    };
+
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
+    assert.equal(env.channels.notify.sent.length, 0, "send failed (unknown channel)");
+    assert.notEqual(
+      env.db.getTwitchChannel(env.communityId, "livestreamer").last_stream_id,
+      "stream-447fail",
+      "the watermark is NOT burned by a failed send (RED: old code burned it)",
+    );
+
+    // Staff fixed the config; the stream is still live → next tick retries.
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+    });
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
+    assert.equal(env.channels.notify.sent.length, 1, "retry delivers the ping");
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "livestreamer").last_stream_id,
+      "stream-447fail",
+      "sent = burned",
+    );
+
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
+    assert.equal(env.channels.notify.sent.length, 1, "no double announce after success");
+  });
+
+  it("an unconfigured notify channel never burns the stream — self-heals (#447)", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: null,
+    });
+    env.channels.notify.sent.length = 0;
+    const sub = env.db.getTwitchChannel(env.communityId, "livestreamer");
+    const stream = {
+      id: "stream-447misconfig",
+      user_id: "333000",
+      title: "During outage",
+      started_at: new Date().toISOString(),
+    };
+
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
+    assert.notEqual(
+      env.db.getTwitchChannel(env.communityId, "livestreamer").last_stream_id,
+      "stream-447misconfig",
+      "misconfiguration must not consume the go-live (RED: old code burned it)",
+    );
+
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+    });
+    await processSubscription(fakeSupervisor(env.client), env.communityId, sub, stream);
+    assert.equal(env.channels.notify.sent.length, 1, "self-heals once configured");
+  });
+
+  it("releaseTwitchStreamClaim compare-and-restores — never tramples newer claims (#447)", () => {
+    const c1 = env.db.claimTwitchStream(env.communityId, "333000", "cas-1");
+    assert.equal(c1.isNew, true);
+    const c2 = env.db.claimTwitchStream(env.communityId, "333000", "cas-2");
+    assert.equal(c2.isNew, true);
+    assert.equal(c2.previousStreamId, "cas-1", "claim hands back the prior watermark");
+
+    // Stale release (the claim it belongs to is already gone) must NOT touch cas-2.
+    assert.equal(
+      env.db.releaseTwitchStreamClaim(env.communityId, "333000", "cas-1", c1.previousStreamId),
+      false,
+      "compare-and-release: claimed id no longer current",
+    );
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "333000").last_stream_id,
+      "cas-2",
+      "newer claim intact",
+    );
+    assert.equal(
+      env.db.releaseTwitchStreamClaim(env.communityId, "333000", "cas-2", "cas-1"),
+      true,
+    );
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "333000").last_stream_id,
+      "cas-1",
+    );
+  });
+
   it("runTwitchTick no-ops without credentials (default)", async () => {
     const prevId = process.env.TWITCH_CLIENT_ID;
     const prevSecret = process.env.TWITCH_CLIENT_SECRET;
