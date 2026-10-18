@@ -276,3 +276,100 @@ describe("migration registry integrity (audit #278)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #394 (DB-2): the applied-migrations ledger — a COUNT cannot record a SET
+// ---------------------------------------------------------------------------
+
+describe("applied-migrations ledger (#394/DB-2)", () => {
+  let api;
+  let cleanup;
+
+  before(() => {
+    ({ api, cleanup } = loadDb());
+  });
+
+  after(() => cleanup?.());
+
+  const version = () => Number(api.db.pragma("user_version", { simple: true }));
+
+  it("a complete pass stamps the ledger with EVERY registry id, in order", () => {
+    const { migrations, readLedgerIds } = require("../src/db/migrate");
+    const ledger = readLedgerIds();
+    assert.deepEqual(
+      ledger,
+      migrations.map((m) => m.id),
+      "the ledger is the ordered mirror of the registry that ran — nothing more, nothing less",
+    );
+    assert.equal(ledger.length, 55);
+  });
+
+  it("legacy DB (version current, NO ledger): converges in exactly one extra slow boot", () => {
+    const { runMigrations, readLedgerIds, migrations } = require("../src/db/migrate");
+    // Simulate a DB stamped by pre-#394 code: version 55, ledger table gone.
+    api.db.exec("DROP TABLE applied_migrations");
+    assert.equal(version(), 55, "the count still claims done");
+
+    const first = runMigrations();
+    assert.equal(first.skipped, false, "#394: user_version alone no longer earns the fast-skip — the missing ledger forces the idempotent replay");
+
+    assert.deepEqual(
+      readLedgerIds(),
+      migrations.map((m) => m.id),
+      "the replay re-records the full ordered set",
+    );
+
+    const second = runMigrations();
+    assert.equal(second.skipped, true, "…and the convergence cost is paid EXACTLY once");
+  });
+
+  it("a LENGTH-PRESERVING registry change (reorder) is detected — old code fast-skipped it", () => {
+    const { runMigrations, readLedgerIds } = require("../src/db/migrate");
+    // What a swapped registry looks like to the ledger: same COUNT, same
+    // SET, different ORDER. The count guard saw nothing; the ordered
+    // ledger sees the whole story.
+    const ids = readLedgerIds();
+    const a = ids.findIndex((id) => id === "020_twitch");
+    const b = ids.findIndex((id) => id === "021_gork");
+    assert.ok(a >= 0 && b >= 0 && a !== b);
+    api.db.transaction(() => {
+      const sw = api.db.prepare("UPDATE applied_migrations SET seq=? WHERE id=?");
+      sw.run(-1, ids[a]); // temp slot — seq is the PK, direct swap collides
+      sw.run(a + 1, ids[b]);
+      sw.run(b + 1, ids[a]);
+    })();
+
+    const result = runMigrations();
+    assert.equal(
+      result.skipped,
+      false,
+      "same count, same set, different order — the fast-skip must NOT be honored (this is the exact class user_version is blind to)",
+    );
+    assert.equal(version(), 55);
+    assert.deepEqual(readLedgerIds().length, 55, "the replay re-aligned the ledger");
+  });
+
+  it("the ledger rebuild is all-or-nothing: a failed pass leaves NO partial stamp", () => {
+    const { runMigrations, migrations } = require("../src/db/migrate");
+    // Wipe the ledger + rewind the version so the replay path runs, then
+    // poison an EARLY migration: the pass dies mid-way — user_version must
+    // stay low AND the ledger must not describe a pass that never finished.
+    const savedVersion = version();
+    api.db.exec("DELETE FROM applied_migrations");
+    api.db.pragma("user_version = 40");
+    const idx = migrations.findIndex((m) => m.id === "005_clamp_bad_xp");
+    const original = migrations[idx];
+    assert.ok(original, "005 must be registered");
+    migrations[idx] = { ...original, up: () => { throw new Error("poisoned mid-pass"); } };
+    try {
+      assert.throws(() => runMigrations(), /poisoned mid-pass/);
+      assert.equal(version(), 40, "the version stamp stays honest");
+      const { readLedgerIds } = require("../src/db/migrate");
+      assert.deepEqual(readLedgerIds(), [], "a crashed pass records NOTHING as applied — the next boot re-runs the whole idempotent set");
+    } finally {
+      migrations[idx] = original;
+      api.db.pragma(`user_version = ${savedVersion}`);
+      runMigrations(); // converge again for whoever runs after us
+    }
+  });
+});
