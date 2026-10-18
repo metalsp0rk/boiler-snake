@@ -33,20 +33,12 @@
 class SafeString extends String {}
 
 /**
- * Escape the five HTML-significant characters. Chain of literal replaces —
- * no regex/class tricks to get wrong, & first so its own escape is not
- * double-encoded.
- * @param {unknown} value
- * @returns {string}
+ * escapeHtml lives in core (#452) — one escaper for web views AND feature
+ * HTML generators (transcripts, gcal, OAuth callback, login pages).
+ * Re-exported here so the template helpers below and every `views/escape`
+ * caller keep the same import path.
  */
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+const { escapeHtml } = require("../../core/escapeHtml");
 
 /** True when `value` is marked safe (html/raw/esc output), false otherwise. */
 function isSafe(value) {
