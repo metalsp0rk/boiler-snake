@@ -56,6 +56,15 @@ Clear a stream (disable it):
 /setlog message clear:true
 ```
 
+**Delivery is verified, not assumed (#445).** When you set a channel, the bot
+posts the config-change embed onto that stream **first**. If it can't deliver —
+missing **View Channel** / **Send Messages**, the channel is a category, or it
+was race-deleted — the setting is **not saved**, and the reply carries the
+specific cause instead of a false success. Previously a stream pointed at a
+channel the bot couldn't post to died silently forever, and `/setlog` confirmed
+it anyway. Every resolve/send failure is now logged with community + channel
+context, so a dead stream is visible from the logs alone.
+
 Also shown under **Logs** in `/settings`. Warning log target is listed in `/warn settings`.
 
 Re-register slash commands after updating the bot:

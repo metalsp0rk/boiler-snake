@@ -211,10 +211,21 @@ function memberLabel(member) {
  * @param {"audit"|"message"|"warn"|"gork"} kind
  * @returns {Promise<{ id: string }|null>}  channel handle for sendToLogChannel
  */
-async function resolveLogChannel(outbound, guildId, kind) {
+/**
+ * #445 (audit INT-10): failures here used to become silent nulls — an audit
+ * stream pointed at a deleted channel, a category, or a raw client instead of
+ * an OutboundClient died with ZERO log lines (the catch→null hole was the
+ * enabling defect for the whole class). Every failure now returns a SPECIFIC
+ * cause and logs it at warn with community + channel context (rule 2:
+ * reproducible from logs alone).
+ * @returns {Promise<{channel: object}|{error: string}>}
+ */
+async function resolveLogChannelResult(outbound, guildId, kind) {
   const communityId =
     typeof guildId === "number" ? guildId : discordCommunityId(guildId);
-  if (communityId == null) return null;
+  if (communityId == null) {
+    return { error: `unresolvable community for guild ${guildId}` };
+  }
   const settings = getGuildSettings(communityId);
   let channelId = null;
   if (kind === "message") {
@@ -228,39 +239,66 @@ async function resolveLogChannel(outbound, guildId, kind) {
   } else {
     channelId = settings.audit_log_channel_id;
   }
-  if (!channelId) return null;
+  if (!channelId) return { error: "no channel configured" }; // stream simply off — not an incident
+
+  if (!outbound || typeof outbound.fetchChannel !== "function") {
+    // #356 class (reactionRoles passed message.client): name it, don't null it.
+    const why =
+      "outbound is not an OutboundClient (no fetchChannel — a raw client was passed?)";
+    console.warn(`[auditLog] ${kind} log in community ${communityId}: ${why}`);
+    return { error: why };
+  }
 
   try {
     const channel = await outbound.fetchChannel(communityId, String(channelId));
-    if (!channel) return null;
-    if (typeof channel.isTextBased === "function" && !channel.isTextBased())
-      return null;
-    return channel;
-  } catch {
-    return null;
+    if (!channel) {
+      const why = `channel ${channelId} is gone or invisible to the bot (deleted? no View Channel?)`;
+      console.warn(`[auditLog] ${kind} log in community ${communityId}: ${why}`);
+      return { error: why };
+    }
+    if (typeof channel.isTextBased === "function" && !channel.isTextBased()) {
+      const why = `channel ${channelId} is not text-based`;
+      console.warn(`[auditLog] ${kind} log in community ${communityId}: ${why}`);
+      return { error: why };
+    }
+    return { channel };
+  } catch (err) {
+    const why = `channel ${channelId} lookup threw: ${err?.message || err}`;
+    console.warn(`[auditLog] ${kind} log in community ${communityId}: ${why}`);
+    return { error: why };
   }
 }
 
-async function sendToLogChannel(outbound, guildId, kind, payload) {
-  const channel = await resolveLogChannel(outbound, guildId, kind);
-  if (!channel) return false;
+/**
+ * Deliver a payload to a log stream, returning { ok } | { ok:false, error }
+ * with the specific cause (already console.warn'ed with context). Boolean
+ * consumers keep sendToLogChannel below.
+ */
+async function deliverLogPayload(outbound, guildId, kind, payload) {
+  const resolved = await resolveLogChannelResult(outbound, guildId, kind);
+  if (!resolved.channel) return { ok: false, error: resolved.error };
 
   try {
-    const res = await outbound.sendChannel(channel.id, payload);
+    const res = await outbound.sendChannel(resolved.channel.id, payload);
     if (res && res.ok === false) {
       console.warn(
         `[auditLog] Failed to send ${kind} log in guild ${guildId}: ${res.error}`,
       );
-      return false;
+      return { ok: false, error: `send rejected: ${res.error}` };
     }
-    return true;
+    return { ok: true };
   } catch (err) {
     console.warn(
       `[auditLog] Failed to send ${kind} log in guild ${guildId}:`,
       err?.message || err,
     );
-    return false;
+    return { ok: false, error: `send threw: ${err?.message || err}` };
   }
+}
+
+async function sendToLogChannel(outbound, guildId, kind, payload) {
+  const result = await deliverLogPayload(outbound, guildId, kind, payload);
+  return result.ok === true;
 }
 
 async function sendAuditLog(outbound, guildId, payload) {
@@ -1036,10 +1074,34 @@ function buildConfigChangeEmbed({ title, command, actor, changes, details }) {
  * @param {string} guildId
  * @param {object} opts Same as buildConfigChangeEmbed
  */
+/**
+ * #445: deliver the config-change embed onto a SPECIFIC log stream kind.
+ * /setlog uses this to prove the stream it is ABOUT TO CONFIGURE can
+ * actually deliver — logConfigChange always rides the audit stream, which
+ * is not necessarily the one being set.
+ */
+async function logConfigChangeToStream(outbound, guildId, kind, opts) {
+  if (!outbound || !guildId) {
+    return { ok: false, error: "no outbound client or guild" };
+  }
+  let embed;
+  try {
+    embed = buildConfigChangeEmbed(opts);
+  } catch (err) {
+    const why = `config-change embed build failed: ${err?.message || err}`;
+    console.warn(`[auditLog] ${why} (guild ${guildId})`);
+    return { ok: false, error: why };
+  }
+  return deliverLogPayload(outbound, guildId, kind, { embeds: [embed] });
+}
+
 async function logConfigChange(outbound, guildId, opts) {
-  if (!outbound || !guildId) return;
-  const embed = buildConfigChangeEmbed(opts);
-  await sendAuditLog(outbound, guildId, { embeds: [embed] });
+  // #445: returns { ok } | { ok:false, error } so /setlog can VERIFY the
+  // stream actually delivers before promising it (other 90+ call sites
+  // ignore the value — fire-and-forget decoration). Never rejects: the
+  // embed build is inside the guard, which is what makes the widespread
+  // `.catch(() => {})` on these calls provably-dead belt, not a lifeline.
+  return logConfigChangeToStream(outbound, guildId, "audit", opts);
 }
 
 /**
@@ -1082,6 +1144,7 @@ module.exports = {
   logReactionRoleChange,
   logLevelRoleChanges,
   logConfigChange,
+  logConfigChangeToStream,
   logWarnEvent,
   startMessageCacheSweep,
   AuditLogEvent,
