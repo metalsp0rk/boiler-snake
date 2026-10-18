@@ -329,6 +329,8 @@ function mkSession(userKey, userId) {
   csrfOf[userKey] = csrfMod.deriveCsrfToken(id, SESSION_SECRET);
 }
 
+// #405: the harness admin is the deployment operator for the global console.
+process.env.WEB_GLOBAL_ADMIN_IDS = USER_ADMIN;
 mkSession("admin", USER_ADMIN);
 mkSession("staff", USER_STAFF);
 mkSession("senior", USER_SENIOR);

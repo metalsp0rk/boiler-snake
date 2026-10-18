@@ -27,6 +27,10 @@ const ROLE_JUNIOR = "ux11-role-junior";
 const ROLE_SENIOR = "ux11-role-senior";
 
 const USER_ADMIN = "800000000000000021"; // owner ⇒ admin
+// #405 (C1-6): the system-wide Web-sessions console is gated by a GLOBAL
+// allow-list; this harness's admin is the deployment operator.
+process.env.WEB_GLOBAL_ADMIN_IDS = USER_ADMIN;
+
 const USER_STAFF = "800000000000000022"; // junior staff ⇒ staff
 const USER_SENIOR = "800000000000000023"; // senior staff ⇒ senior
 const USER_NOWHERE = "800000000000000024"; // in NO bot guild ⇒ empty state
