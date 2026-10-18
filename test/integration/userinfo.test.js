@@ -134,4 +134,53 @@ describe("integration: userinfo", () => {
     });
     assertEphemeralReply(btn, /permission/i);
   });
+
+  // ── #451: the Fluxer ctx path must ship NO inert drill buttons ──────────
+  // Fluxer has no component ingestion, so the notes/warnings/Activity
+  // buttons are silently dropped there — and the senior Activity gate lives
+  // only on the Discord button handler. The ctx reply is now Discord-gated.
+
+  function fakeCtx(platform) {
+    const replies = [];
+    return {
+      replies,
+      ctx: {
+        platform,
+        communityId: env.communityId,
+        // ManageGuild bit (1<<5) → isAdminOrModFromContext passes the gate.
+        channelPermissions: "32",
+        memberRoleIds: [],
+        options: { getUser: () => ({ id: IDS.member, username: "member" }) },
+        outbound: { fetchMember: async () => null },
+        rawInteraction: undefined,
+        async reply(payload) {
+          replies.push(payload);
+        },
+      },
+    };
+  }
+
+  it("Fluxer ctx reply is button-free — Activity drill is Discord-only (#451)", async () => {
+    const ui = require("../../src/features/userinfo");
+    const { ctx, replies } = fakeCtx("fluxer");
+    await ui.handlers.userinfo(ctx);
+    assert.equal(replies.length, 1);
+    assert.equal(
+      replies[0].components,
+      undefined,
+      "no inert components shipped on a platform that cannot dispatch them",
+    );
+    assert.ok(replies[0].embeds?.length >= 1, "the overview card still ships");
+  });
+
+  it("Discord ctx reply keeps the drill-down buttons (#451 regression guard)", async () => {
+    const ui = require("../../src/features/userinfo");
+    const { ctx, replies } = fakeCtx("discord");
+    await ui.handlers.userinfo(ctx);
+    assert.equal(replies.length, 1);
+    assert.ok(
+      Array.isArray(replies[0].components) && replies[0].components.length >= 1,
+      "Discord still gets the notes/warnings/Activity buttons",
+    );
+  });
 });

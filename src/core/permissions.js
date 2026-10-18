@@ -179,17 +179,6 @@ function isStaffFromContext(ctx) {
 }
 
 /**
- * CommandContext variant of {@link isSeniorStaff}: Manage Guild **or** a
- * senior-level `staff_roles` role.
- * @param {import("../platform/context").CommandContext} ctx
- * @returns {boolean}
- */
-function isSeniorStaffFromContext(ctx) {
-  if (isAdminOrModFromContext(ctx)) return true;
-  return memberHasSeniorStaffRole(ctx.communityId, ctx.memberRoleIds ?? []);
-}
-
-/**
  * CommandContext variant of {@link requireAdmin}. Denials reply privately via
  * the context's own reply channel (`sensitive: true` ≙ interaction ephemeral).
  * @param {import("../platform/context").CommandContext} ctx
@@ -212,22 +201,6 @@ async function requireStaffFromContext(ctx) {
   return false;
 }
 
-/**
- * CommandContext variant of {@link requireSeniorStaff}. Same denial copy as
- * the interaction variant (AGENTS.md: users must be able to act on it).
- * @param {import("../platform/context").CommandContext} ctx
- * @returns {Promise<boolean>} true if the caller may proceed
- */
-async function requireSeniorStaffFromContext(ctx) {
-  if (isSeniorStaffFromContext(ctx)) return true;
-  await ctx.reply({
-    content:
-      "Activity requires **senior** staff (or Manage Server). Ask an admin to set your role with `/staff role setlevel`.",
-    sensitive: true,
-  });
-  return false;
-}
-
 module.exports = {
   isAdminOrMod,
   isStaff,
@@ -239,9 +212,7 @@ module.exports = {
   requireSeniorStaff,
   isAdminOrModFromContext,
   isStaffFromContext,
-  isSeniorStaffFromContext,
   commandsAllowedFromContext,
   requireAdminFromContext,
   requireStaffFromContext,
-  requireSeniorStaffFromContext,
 };
