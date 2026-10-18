@@ -191,4 +191,15 @@ describe("gorkBudget rules + usage repository (real temp SQLite)", () => {
     assert.ok(days.includes(yesterday), "yesterday must survive one more day");
     assert.ok(days.includes(day), "today is current");
   });
-});
+
+  it("#395 (DB-3): the lazy prune rides idx_gork_usage_day — no full scan per answer", () => {
+    const plan = api.db
+      .prepare(`EXPLAIN QUERY PLAN DELETE FROM gork_usage WHERE day < '2026-01-01'`)
+      .all();
+    const detail = plan.map((r) => r.detail).join(" | ");
+    assert.ok(
+      detail.includes("idx_gork_usage_day"),
+      `incrementGorkUsage's prune must be index-seeked, got: ${detail}`,
+    );
+  });
+  });
