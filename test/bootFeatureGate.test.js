@@ -711,3 +711,63 @@ describe("boot() degraded feature report (#390/A2-4)", () => {
     }
   });
 });
+
+describe("boot() terminal path never waits on the dead client (#388/A2-1)", () => {
+  /** Reject after ms so a parked boot() FAILS the test instead of parking
+   *  the runner — with the awaited-destroy code the race is the RED pin. */
+  const within = (promise, ms, what) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`TIMEOUT: ${what}`)), ms),
+      ),
+    ]);
+
+  it("a HUNG deadClient.destroy cannot keep features unarmed or park boot()", async () => {
+    setEnv({ DISCORD_TOKEN: FAKE_DISCORD_TOKEN, FLUXER_INSTANCES: FAKE_FLUXER_JSON });
+    endpoints.fluxerImpl = async () => makeFakeFluxerHandle();
+
+    const run = withCaptured(() => boot({ registry: {} }));
+    await flush(); // fluxer ready, gate held while discord login is in flight
+
+    // The pathological teardown: a destroy() that NEVER settles (the
+    // half-open-gateway case discord.js can hand you after a failed
+    // handshake). Pre-#388 the terminal path AWAITED it before nulling
+    // the client and opening the gate — the only remaining trigger.
+    endpoints.client.destroy = () => new Promise(() => {});
+    endpoints.client.rejectLogin(new Error("YOUR_FAKE_TOKEN is invalid"));
+
+    const { result, logs } = await within(run, 3000, "boot() parked on the hung destroy");
+    assert.equal(result.ok, true, "the surviving endpoint carries the boot");
+    assert.ok(
+      featureCalls.start.map((c) => c.name).includes("fluxer-side"),
+      "the gate opened WITHOUT waiting for cleanup — features are not teardown's hostage",
+    );
+    assert.ok(logs.some((l) => l.includes("discord login failed")));
+  });
+
+  it("the DETACHED release still runs — slow destroy lands after the boot resolved", async () => {
+    setEnv({ DISCORD_TOKEN: FAKE_DISCORD_TOKEN, FLUXER_INSTANCES: FAKE_FLUXER_JSON });
+    endpoints.fluxerImpl = async () => makeFakeFluxerHandle();
+
+    let releaseDestroy;
+    const run = withCaptured(() => boot({ registry: {} }));
+    await flush();
+    endpoints.client.destroy = () =>
+      new Promise((resolve) => {
+        releaseDestroy = async () => {
+          endpoints.client.destroyCount += 1;
+          resolve();
+        };
+      });
+    endpoints.client.rejectLogin(new Error("YOUR_FAKE_TOKEN is invalid"));
+
+    const { result } = await within(run, 3000, "boot() waited on the slow destroy");
+    assert.equal(result.ok, true);
+
+    // The release was queued detached — it still lands and is counted.
+    await releaseDestroy();
+    await flush();
+    assert.equal(endpoints.client.destroyCount, 1, "best-effort release is deferred, never skipped");
+  });
+});
