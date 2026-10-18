@@ -606,6 +606,12 @@ describe("bridge repo (PR 2)", () => {
 
       assert.deepEqual(api.pruneBridgeMessageRelay(bridge.id, "m-gone"), { links: 0, snapshots: 0 }, "exactly idempotent");
 
+      const other = makeBridge({ endAChannelId: "400000000000000008" });
+      api.addBridgeMessageLink({ bridgeId: other.id, srcCommunityId: guildA, srcMessageId: "m-gone", partIndex: 0, dstMessageId: "d-other" });
+      api.pruneBridgeMessageRelay(bridge.id, "m-gone");
+      assert.equal(api.listBridgeMessageLinks(other.id, "m-gone").length, 1, "scoped to THIS bridge — same src id elsewhere survives");
+    });
+
     it("countOutboxFailed sees parked rows; retryBridgeOutbox re-queues them (#416/BRG-10)", () => {
       const bridge = makeBridge({ endAChannelId: "400000000000000010" });
       api.db.prepare(`UPDATE bridges SET state='active', connected_at=? WHERE id=?`).run(T0, bridge.id);
@@ -638,12 +644,6 @@ describe("bridge repo (PR 2)", () => {
       assert.equal(api.deleteBridgeMessageLink(scoped.id, "m-p", 1), false, "exactly idempotent");
       assert.deepEqual(api.listBridgeMessageLinks(scoped.id, "m-p").map((l) => Number(l.part_index)), [0], "the survivor is untouched");
       assert.throws(() => api.deleteBridgeMessageLink(scoped.id, "m-p", -1), /part_index/, "invalid part_index refuses");
-    });
-
-      const other = makeBridge({ endAChannelId: "400000000000000008" });
-      api.addBridgeMessageLink({ bridgeId: other.id, srcCommunityId: guildA, srcMessageId: "m-gone", partIndex: 0, dstMessageId: "d-other" });
-      api.pruneBridgeMessageRelay(bridge.id, "m-gone");
-      assert.equal(api.listBridgeMessageLinks(other.id, "m-gone").length, 1, "scoped to THIS bridge — same src id elsewhere survives");
     });
 
     it("markBridgeBroken only fires on active rows; last_error round-trips", () => {
