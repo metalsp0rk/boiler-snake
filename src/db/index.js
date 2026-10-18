@@ -452,6 +452,7 @@ module.exports = {
   addBridgeMessageLink: bridges.addBridgeMessageLink,
   listBridgeMessageLinks: bridges.listBridgeMessageLinks,
   // #411 (BRG-5): delete-relay prune (links + snapshot of a gone message)
+  deleteBridgeMessageLink: bridges.deleteBridgeMessageLink,
   pruneBridgeMessageRelay: bridges.pruneBridgeMessageRelay,
   getBridgeLinkByDestination: bridges.getBridgeLinkByDestination,
   upsertBridgeSrcSnapshot: bridges.upsertBridgeSrcSnapshot,

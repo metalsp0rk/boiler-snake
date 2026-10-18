@@ -1499,4 +1499,159 @@ describe("bridge edit/delete relay (PR 6)", () => {
     assert.match(repo.getBridgeById(bridge.id).last_error, /createRelayWebhook threw/, "the cause is RECORDED, not swallowed");
     assert.equal(repo.listBridgeMessageLinks(bridge.id, msgId).length, 0, "skip = gone copies → #411 prune applies");
   });
+
+  // -------------------------------------------------------------------------
+  // #409 (BRG-3): edits must ERASE the destination's stale tail parts, and
+  // a same-id spoiler flip must actually PATCH (not silently desync).
+  // -------------------------------------------------------------------------
+
+  it("#409 a shrunk edit DELETES the destination\u2019s stale tail parts, last-first", async () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    const createRow = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: msgId,
+      payload: createPayload(publicId, msgId, { srcChannelId: channelA, text: "a".repeat(6500) }),
+    });
+    db.db.prepare("UPDATE bridge_outbox SET state = 'done' WHERE id = ?").run(createRow.id);
+    for (const [partIndex, dst] of [
+      [0, "dst-t0"],
+      [1, "dst-t1"],
+      [2, "dst-t2"],
+    ]) {
+      repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex, dstMessageId: dst });
+    }
+
+    const src = fakeSource({ content: "short now" });
+    const api = scriptedApi("f409a");
+    const worker = makeWorker({
+      getWebhookApi: (p) => (p === "fluxer" ? api : null),
+      getOutbound: (p) => (p === "discord" ? src : null),
+    });
+    const enq = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "short now" }),
+    );
+    assert.ok(enq?.enqueued);
+    await worker.drainAll();
+
+    assert.equal(api.patchCalls.length, 1, "the surviving part 0 is PATCHed");
+    assert.deepEqual(
+      api.deleteCalls.map((c) => c.dstMessageId),
+      ["dst-t2", "dst-t1"],
+      "#409: stale tails are deleted LAST-FIRST (visual continuity) — pre-fix they were never touched",
+    );
+    assert.deepEqual(
+      repo.listBridgeMessageLinks(bridge.id, msgId).map((l) => Number(l.part_index)),
+      [0],
+      "removed parts\u2019 links rows go with the successful deletes",
+    );
+    assert.equal(outboxRows(bridge.id, "edit")[0].state, "done");
+    assert.equal(worker.notices.length, 0, "a clean shrink is silent");
+  });
+
+  it("#409 a PARKED tail delete keeps its links row and names the partial failure", async () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    const createRow = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: msgId,
+      payload: createPayload(publicId, msgId, { srcChannelId: channelA, text: "a".repeat(6500) }),
+    });
+    db.db.prepare("UPDATE bridge_outbox SET state = 'done' WHERE id = ?").run(createRow.id);
+    repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex: 0, dstMessageId: "dst-t0" });
+    repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex: 1, dstMessageId: "dst-t1" });
+
+    const src = fakeSource({ content: "short now" });
+    const api = scriptedApi("f409b", {
+      del: Array.from({ length: 5 }, () => ({ ok: false, error: "HTTP 500 boom" })),
+    });
+    const worker = makeWorker({
+      getWebhookApi: (p) => (p === "fluxer" ? api : null),
+      getOutbound: (p) => (p === "discord" ? src : null),
+    });
+    const enq = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "short now" }),
+    );
+    assert.ok(enq?.enqueued);
+    await worker.drainAll();
+
+    assert.equal(outboxRows(bridge.id, "edit")[0].state, "failed", "the tail delete parked (5 attempts)");
+    assert.equal(
+      repo.listBridgeMessageLinks(bridge.id, msgId).filter((l) => Number(l.part_index) === 1).length,
+      1,
+      "the still-ALIVE stale copy keeps its links row (parked \u2260 gone)",
+    );
+    assert.match(repo.getBridgeById(bridge.id).last_error, /stale tail part 1/, "the partial gap is NAMED");
+    assert.equal(worker.notices.length, 1, "staff hear about the partial shrink");
+  });
+
+  it("#409 a same-id spoiler flip PATCHES instead of silently desyncing the snapshot", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    const attachment = {
+      id: "att-sp",
+      name: "chart.png",
+      size: 6,
+      url: "https://cdn.example.test/chart.png",
+      contentType: "image/png",
+      flags: 0,
+    };
+    const mediaSeam = {
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5, 6]).buffer,
+      }),
+      resolveHost: async () => ["93.184.216.34"],
+    };
+
+    // CREATE lands with the unflagged file (spool, send, link, ack).
+    const enqCreate = await relay.enqueueBridgeMessage(
+      srcMessage(msgId, { channelId: channelA, content: "with file", attachments: [attachment] }),
+      { media: mediaSeam },
+    );
+    assert.ok(enqCreate?.enqueued);
+    const f409c = scriptedApi("f409c");
+    let worker = makeWorker({
+      getWebhookApi: (p) => (p === "fluxer" ? f409c : null),
+      getOutbound: (p) => (p === "discord" ? fakeSource({ content: "with file", attachments: [attachment] }) : null),
+      fetchImpl: mediaSeam.fetchImpl,
+      resolveHost: mediaSeam.resolveHost,
+    });
+    await worker.drainAll();
+    assert.ok(repo.listBridgeMessageLinks(bridge.id, msgId).length >= 1, "create landed + linked");
+
+    // The ONLY change: the same attachment id flips its spoiler flag. The
+    // coalescing hash counts it (the row IS enqueued), and the worker\u2019s
+    // fresh source read must carry the flag into the PATCH decision —
+    // pre-#409 the merged descriptor kept the create-era flag and NOTHING
+    // was sent while the snapshot said it was.
+    const flipped = { ...attachment, flags: 8 };
+    const enq = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "with file", attachments: [flipped] }),
+    );
+    assert.ok(enq?.enqueued, "the spoiler flip changes the canonical hash (already true pre-fix)");
+
+    const src2 = fakeSource({ content: "with file", attachments: [flipped] });
+    worker = makeWorker({
+      getWebhookApi: (p) => (p === "fluxer" ? f409c : null),
+      getOutbound: (p) => (p === "discord" ? src2 : null),
+      fetchImpl: mediaSeam.fetchImpl,
+      resolveHost: mediaSeam.resolveHost,
+    });
+    await worker.drainAll();
+
+    assert.equal(
+      f409c.patchCalls.length,
+      1,
+      "#409: the PATCH rides — pre-fix editPartChanged saw no change and skipped the send",
+    );
+    assert.equal(outboxRows(bridge.id, "edit")[0].state, "done");
+  });
 });

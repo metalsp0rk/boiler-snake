@@ -606,6 +606,16 @@ describe("bridge repo (PR 2)", () => {
 
       assert.deepEqual(api.pruneBridgeMessageRelay(bridge.id, "m-gone"), { links: 0, snapshots: 0 }, "exactly idempotent");
 
+    it("deleteBridgeMessageLink targets exactly ONE part (#409)", () => {
+      const scoped = makeBridge({ endAChannelId: "400000000000000009" });
+      api.addBridgeMessageLink({ bridgeId: scoped.id, srcCommunityId: guildA, srcMessageId: "m-p", partIndex: 0, dstMessageId: "d-p0" });
+      api.addBridgeMessageLink({ bridgeId: scoped.id, srcCommunityId: guildA, srcMessageId: "m-p", partIndex: 1, dstMessageId: "d-p1" });
+      assert.equal(api.deleteBridgeMessageLink(scoped.id, "m-p", 1), true, "the named part goes");
+      assert.equal(api.deleteBridgeMessageLink(scoped.id, "m-p", 1), false, "exactly idempotent");
+      assert.deepEqual(api.listBridgeMessageLinks(scoped.id, "m-p").map((l) => Number(l.part_index)), [0], "the survivor is untouched");
+      assert.throws(() => api.deleteBridgeMessageLink(scoped.id, "m-p", -1), /part_index/, "invalid part_index refuses");
+    });
+
       const other = makeBridge({ endAChannelId: "400000000000000008" });
       api.addBridgeMessageLink({ bridgeId: other.id, srcCommunityId: guildA, srcMessageId: "m-gone", partIndex: 0, dstMessageId: "d-other" });
       api.pruneBridgeMessageRelay(bridge.id, "m-gone");
