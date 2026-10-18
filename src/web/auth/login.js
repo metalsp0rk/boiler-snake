@@ -47,6 +47,10 @@ const { createDiscordApi } = require("./discordApi");
 const { getBotGuildIds } = require("./botGuilds");
 const { encryptAccessToken } = require("./tokens");
 const sessionPolicy = require("./sessions");
+// #403 (C1-3): the per-user auth bucket is charged mid-exchange via the
+// limiter's req.rateLimitAdoptUser seam; the 429 reply uses the limiter's
+// own plain-text shape (Retry-After rides, zero identifiers — §8.7).
+const { sendTooManyRequests } = require("../middleware/rateLimit");
 const { setWebSessionAuth } = require("../../db");
 // Fluxer web login (roadmap/fluxer.md § PKCE and state / PR 10) — additive:
 // every Discord function below is untouched. The transactions repo opens the
@@ -289,8 +293,10 @@ function createLoginHandlers(options = {}) {
    */
   function startLogin(req, res) {
     // RATE LIMIT: supplied by middleware/rateLimit.js via app.js's
-    // app.use("/auth", createAuthRateLimit()) — per-IP + per-user buckets
-    // over every /auth/* request (§8.7). Handlers stay limiter-agnostic.
+    // app.use("/auth", createAuthRateLimit()) — per-IP bucket (plus the
+    // session's user bucket when already logged in) over every /auth/*
+    // request (§8.7). Anonymous exchange traffic gets its user bucket
+    // charged mid-flight by the callback (rateLimitAdoptUser, #403).
     const cfg = getWebLoginConfig();
 
     // E2E fix (2026-10-02): the Fluxer sign-in links must be computed BEFORE
@@ -409,8 +415,10 @@ function createLoginHandlers(options = {}) {
    * @returns {Promise<void>}
    */
   async function handleLoginCallback(req, res) {
-    // RATE LIMIT: same /auth/* limiter as startLogin (subtask 08); the
-    // per-user slot activates once we publish req.rateLimitUserHint below.
+    // RATE LIMIT: same /auth/* limiter as startLogin (subtask 08). The
+    // mount-phase gates can only see IP + session; the per-user slot is
+    // charged when the exchange REVEALS the id — the callback adopts it
+    // via the limiter's req.rateLimitAdoptUser seam (#403/C1-3).
     const url = new URL(req.url || "/", "http://web.local");
 
     const errorParam = url.searchParams.get("error");
@@ -476,9 +484,21 @@ function createLoginHandlers(options = {}) {
         err.code = "discord_user_shape";
         throw err;
       }
-      // Contract with middleware/rateLimit.js userKey(): publish the id now
-      // that the exchange revealed it (per-user login bucket, §8.7).
+      // #403 (C1-3): publish the id AND pay the auth_user slot NOW. The
+      // mounted limiter ran before the exchange existed, so publishing the
+      // hint alone never reached the user gate — adoption is what makes the
+      // §8.7 per-user login bucket real. Over-budget aborts BEFORE any
+      // session row/rotation happens (the consumed code costs the attacker
+      // a fresh authorize round-trip; honest users land here once per
+      // window at most).
       req.rateLimitUserHint = userId;
+      if (typeof req.rateLimitAdoptUser === "function") {
+        const adopted = req.rateLimitAdoptUser(userId);
+        if (adopted && adopted.allowed === false) {
+          sendTooManyRequests(res, adopted.retryAfterSec);
+          return;
+        }
+      }
 
       const userGuilds = await discord.getUserGuilds(tok.accessToken);
       const botGuildIds = new Set(await botGuilds());
@@ -910,9 +930,21 @@ function createFluxerLoginHandlers(options = {}) {
         err.code = "fluxer_user_shape";
         throw err;
       }
-      // Contract with middleware/rateLimit.js userKey(): publish the id now
-      // that the exchange revealed it (per-user login bucket, §8.7).
+      // #403 (C1-3): publish the id AND pay the auth_user slot NOW. The
+      // mounted limiter ran before the exchange existed, so publishing the
+      // hint alone never reached the user gate — adoption is what makes the
+      // §8.7 per-user login bucket real. Over-budget aborts BEFORE any
+      // session row/rotation happens (the consumed code costs the attacker
+      // a fresh authorize round-trip; honest users land here once per
+      // window at most).
       req.rateLimitUserHint = userId;
+      if (typeof req.rateLimitAdoptUser === "function") {
+        const adopted = req.rateLimitAdoptUser(userId);
+        if (adopted && adopted.allowed === false) {
+          sendTooManyRequests(res, adopted.retryAfterSec);
+          return;
+        }
+      }
 
       // Guild snapshot (spec § Guild intersection): keep ONLY rows that map
       // to a communities row for THIS instance, then confirm bot visibility

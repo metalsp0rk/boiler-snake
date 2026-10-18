@@ -646,6 +646,61 @@ describe("rate limit middleware (fake req/res, fake clock)", () => {
     });
   });
 
+  it("auth: identity revealed AFTER the gate ran pays the user bucket via adoptUser (#403)", async () => {
+    await withEnvAsync(cleanEnv, async () => {
+      const clock = makeClock(0);
+      const auth = createAuthRateLimit({
+        now: clock.now,
+        windowMs: 1000,
+        ipMax: 1000,
+        userMax: 2,
+      });
+      const reqs = [];
+      const outcomes = [];
+      for (let i = 0; i < 3; i++) {
+        const req = makeReq({ url: "/auth/login/callback", ip: "7.7.7.7" });
+        const r = await dispatch(auth, req);
+        assert.equal(r.passed, true, "the anonymous mount-phase always passes — nothing is known yet");
+        assert.ok(!req.rateLimitUserHint, "no identity BEFORE the exchange (this is exactly what made the old hint contract dead)");
+        outcomes.push(req.rateLimitAdoptUser("u-revealed"));
+        reqs.push(req);
+      }
+      assert.equal(outcomes[0].allowed, true, "first login for the revealed id");
+      assert.equal(outcomes[1].allowed, true, "second still inside the budget");
+      assert.equal(outcomes[2].allowed, false, "the THIRD exchange trips auth_user POST-REVEAL — the bucket the §8.7 docs promised");
+      assert.ok(Number(outcomes[2].retryAfterSec) >= 1, "Retry-After rides the handler's 429");
+      assert.equal(reqs[2].rateLimitUserHint, "u-revealed", "adoption publishes the hint even while refusing");
+
+      clock.advance(10_000);
+      const recovered = makeReq({ url: "/auth/login/callback", ip: "7.7.7.7" });
+      await dispatch(auth, recovered);
+      assert.equal(recovered.rateLimitAdoptUser("u-revealed").allowed, true, "window rolls → recovered");
+    });
+  });
+
+  it("auth: adoptUser never double-bills a live session the mount gate already counted (#403)", async () => {
+    await withEnvAsync(cleanEnv, async () => {
+      const clock = makeClock(0);
+      const auth = createAuthRateLimit({
+        now: clock.now,
+        windowMs: 1000,
+        ipMax: 1000,
+        userMax: 2,
+      });
+      const live = makeReq({ url: "/auth/login/callback", ip: "8.8.8.8" });
+      live.user = { userId: "u-same" };
+      assert.equal((await dispatch(auth, live)).passed, true, "the mount gate charges the live session as always");
+      assert.equal(live.rateLimitAdoptUser("u-same"), null, "adoption of the SAME identity the gate just charged pays NOTHING again");
+
+      const anon = makeReq({ url: "/auth/login/callback", ip: "8.8.8.8" });
+      await dispatch(auth, anon); // the seam is mounted by the limiter itself — every real /auth req passes through
+      assert.equal(anon.rateLimitAdoptUser("u-same").allowed, true, "one anonymous exchange still fits (count 2 of 2)");
+      const third = makeReq({ url: "/auth/login/callback", ip: "8.8.8.8" });
+      await dispatch(auth, third);
+      assert.equal(third.rateLimitAdoptUser("u-same").allowed, false, "budget 2 is spent — the live re-auth did NOT waste a slot");
+    });
+  });
+
   it("auth: per-user bucket isolates users behind one IP (rateLimitUserHint honored)", async () => {
     await withEnvAsync(cleanEnv, async () => {
       const clock = makeClock(0);
