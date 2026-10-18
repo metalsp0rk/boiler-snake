@@ -223,6 +223,7 @@ unless a port is set. Full console guide: [Web Admin Console](web-admin.md).
 | `WEB_RATE_LIMIT_AUTH_USER_MAX` | `10` | Login + OAuth-callback hits per resolved user per window |
 | `WEB_RATE_LIMIT_MUTATION_MAX` | `120` | Mutations per user per window |
 | `WEB_DASHBOARD_CACHE_TTL_MS` | `30000` | Dashboard snapshot cache (30 s floor — lower values clamp up with a warning) |
+| `WEB_GLOBAL_ADMIN_IDS` | *(unset = closed)* | Comma-separated user ids allowed to open the **system-wide** web sessions console (list + revoke). Guild admin alone no longer unlocks it — the surface has no guild axis (#405). Personal sessions stay manageable on the self Sessions page regardless |
 | `WEB_LOGIN_PROMPT` | `consent` | Discord OAuth prompt: `consent` or `none` (silent re-auth) |
 | `WEB_LOGIN_REDIRECT_URI` | derived | Explicit web-login redirect override |
 

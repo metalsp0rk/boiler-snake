@@ -398,10 +398,12 @@ function registerSystemRoutes(app, options = {}) {
   // app.js itself is still loading; register only runs from createWebApp().
   const { registerWebMutation } = require("../app");
 
-  /** Registry entry + Express route minted from ONE template constant. */
-  const postSystemMutation = (template, handler) => {
+  /** Registry entry + Express route minted from ONE template constant.
+   *  The one mutation so far (sessions revoke) is global-state, so the #405
+   *  global-operator key guards it between the tier check and the handler. */
+  const postSystemMutation = (template, handler, ...gates) => {
     registerWebMutation(app, "POST", template);
-    app.post(template, requireTier("admin"), handler);
+    app.post(template, requireTier("admin"), ...gates, handler);
   };
 
   const systemSessionsPageOf = (communityId) =>
@@ -413,8 +415,48 @@ function registerSystemRoutes(app, options = {}) {
     errorTable: FLASH_ERROR_SESSIONS,
   });
 
-  // ---- admin: global live-session list (System area) -----------------------
-  app.get("/g/:guildId/system/sessions", requireTier("admin"), async (req, res) => {
+  // #405 (C1-6): the sessions surface is GLOBAL (web_sessions has no guild
+  // axis) but rides a PER-GUILD admin tier — a premise that held for one
+  // operator and became a cross-tenant escalation with multi-community +
+  // Fluxer: ManageGuild in community A silently meant "enumerate every
+  // console user and log out every other community's staff". A second,
+  // GLOBAL key now guards the global page: WEB_GLOBAL_ADMIN_IDS (comma-
+  // separated user ids). Unset or missing-the-caller ⇒ the surface is
+  // closed (fail-closed) — the self-service surface /g/:id/sessions is
+  // untouched, so nobody is ever locked out of their OWN sessions, and the
+  // refusal names the exact knob (rule 3: an error you can act on).
+  const globalAdminIds = () =>
+    String(process.env.WEB_GLOBAL_ADMIN_IDS ?? "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter((id) => /^[0-9]{5,20}$/.test(id));
+
+  const requireGlobalSessionsAdmin = async (req, res, next) => {
+    const caller =
+      req.webSession && req.webSession.userId != null
+        ? String(req.webSession.userId)
+        : "";
+    if (caller && globalAdminIds().includes(caller)) return next();
+    if (req.method === "GET") {
+      const document = renderShellPage(req, {
+        title: "Web sessions",
+        heading: "Web sessions",
+        subheading: "Reserved for the deployment's global operators.",
+        content:
+          "<p>You hold admin in this guild, but the session console is SYSTEM-WIDE, so it is " +
+          "gated by the global allow-list: add your user id to <code>WEB_GLOBAL_ADMIN_IDS</code> " +
+          "in the deployment's environment to open it. Nothing was changed. Your own sessions " +
+          "remain manageable on the Sessions page in the sidebar.</p>",
+        guilds: await shellGuilds(resolver, req),
+      });
+      return writeShellHtml(req, res, { status: 403, document });
+    }
+    flashSessions(res, req.guildAccess.communityId, "error", "global_admin_required");
+    return undefined;
+  };
+
+  // ---- global-operator: live-session list (System area, #405) --------------
+  app.get("/g/:guildId/system/sessions", requireTier("admin"), requireGlobalSessionsAdmin, async (req, res) => {
     const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
     const communityId = req.guildAccess.communityId; // view link id (PR 2: integer)
     const sessions = sessionPolicy.listLiveSessions();
@@ -511,7 +553,7 @@ function registerSystemRoutes(app, options = {}) {
       return;
     }
     flashSessions(res, guildId, "done", "session_revoked");
-  });
+  }, requireGlobalSessionsAdmin);
 }
 
 module.exports = {

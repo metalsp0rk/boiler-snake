@@ -43,6 +43,10 @@ const FLASH_ERROR = Object.freeze({
     "That session could not be selected — use a Revoke button on a listed row. Nothing was changed.",
   session_gone:
     "That session was already revoked or expired — nothing more to do. Nothing else was changed.",
+  // #405 (C1-6): the GLOBAL console behind the per-guild admin tier — the
+  // refusal names the exact env key so the guild admin knows what to ask.
+  global_admin_required:
+    "The system-wide session console is reserved for the deployment's global operators (WEB_GLOBAL_ADMIN_IDS). Your user id is not on that list. Nothing was changed.",
 });
 
 /**

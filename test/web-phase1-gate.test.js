@@ -96,6 +96,10 @@ const CID_A = communityKey(GUILD_A);
 const CID_B = communityKey(GUILD_B);
 
 const USER_ADMIN = "428190112345678901"; // owner snapshot ⇒ admin fast path
+// #405 (C1-6): the system-wide Web-sessions console is gated by a GLOBAL
+// allow-list; this harness's admin is the deployment operator.
+process.env.WEB_GLOBAL_ADMIN_IDS = USER_ADMIN;
+
 const USER_SENIOR = "428190112345678902";
 const USER_JUNIOR = "428190112345678903";
 const USER_PLAIN = "428190112345678904"; // guild-A member, no staff role

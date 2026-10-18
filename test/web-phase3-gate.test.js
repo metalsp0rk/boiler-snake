@@ -322,6 +322,9 @@ function mkSession(userKey, userId) {
 }
 
 mkSession("admin", USER_ADMIN);
+// #405: the harness admin is the deployment operator for the global console.
+process.env.WEB_GLOBAL_ADMIN_IDS = USER_ADMIN;
+
 mkSession("staff", USER_STAFF);
 mkSession("senior", USER_SENIOR);
 mkSession("plain", USER_PLAIN);
