@@ -30,6 +30,7 @@ const {
   normalizeFluxerMessage,
   normalizeFluxerDmMessage,
   normalizeFluxerMessageDelete,
+  normalizeFluxerMessageDeleteBulk,
   normalizeFluxerReaction,
 } = require("./normalize");
 const { createFluxerOutbound } = require("./outbound");
@@ -623,6 +624,15 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
     const normalized = normalizeFluxerMessageDelete(payload, { instanceKey });
     if (!normalized) return;
     await pipelines.onFluxerMessageDelete(handle.outbound, normalized);
+  });
+
+  // #275: purge relay. Unlike discord.js (cached subset only), the payload
+  // lists EVERY purged id — the shared pipeline entry echo-gates per id and
+  // relay.enqueueBridgeBulkDelete skips ids with no links row.
+  onEvent(eventName("MessageDeleteBulk", "messageDeleteBulk"), "messageDeleteBulk", async (payload) => {
+    const normalized = normalizeFluxerMessageDeleteBulk(payload, { instanceKey });
+    if (!normalized) return;
+    await pipelines.onMessageDeleteBulk(handle.outbound, normalized);
   });
 
   onEvent(eventName("MessageReactionAdd", "messageReactionAdd"), "messageReactionAdd", async (payload) => {

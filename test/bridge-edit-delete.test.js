@@ -51,6 +51,7 @@ const pipelines = require("../src/bot/pipelines");
 const {
   normalizeFluxerMessage,
   normalizeFluxerMessageDelete,
+  normalizeFluxerMessageDeleteBulk,
 } = require("../src/platform/fluxer/normalize");
 const { getCommunityById } = require("../src/platform/community");
 
@@ -930,6 +931,221 @@ describe("bridge edit/delete relay (PR 6)", () => {
         .get(bridge.id).c,
       2,
       "still exactly one queued delete per linked id",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #275 — MESSAGE_DELETE_BULK adapter ingestion. Both adapters (discord.js
+  // Events.MessageBulkDelete cached-subset; fluxer payload ids list) fan out
+  // through ONE pipeline entry: community resolution + per-id echo gate live
+  // in pipelines.onMessageDeleteBulk, the link skip in relay. The issue's
+  // verification: purge of bridged messages → peer copies DELETEd, link rows
+  // retired, no echo ping-pong.
+  // -------------------------------------------------------------------------
+
+  it("#275 discord purge fans out per LINKED id; echo + unlinked ids stay inert", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const ids = [snowflakeNow(), snowflakeNow(), snowflakeNow(), snowflakeNow()];
+    for (const id of [ids[0], ids[1], ids[3]]) {
+      repo.addBridgeMessageLink({
+        bridgeId: bridge.id,
+        srcCommunityId: rowA.id,
+        srcMessageId: id,
+        partIndex: 0,
+        dstMessageId: `dst-${id}`,
+      });
+    }
+    // ids[2] is unlinked. ids[3] HAS a link but is a destination-side copy
+    // this process relayed (echo, KD 10) — the gate must spare it even
+    // though the links table would happily enqueue.
+    relay.noteRelayedDestination("discord", "discord", ids[3]);
+
+    await pipelines.onMessageDeleteBulk(
+      {},
+      {
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: rowA.externalGuildId,
+        communityId: null, // the pipeline resolves it via ensureCommunity
+        channelId: channelA,
+        ids: [...ids, "", null], // junk entries dropped
+      },
+    );
+
+    const rows = outboxRows(bridge.id, "delete");
+    assert.deepEqual(
+      rows.map((r) => r.src_message_id).sort(),
+      [ids[0], ids[1]].sort(),
+      "one kind-delete row per LINKED, non-echo id — the echo id was gated, the unlinked id inert",
+    );
+  });
+
+  it("#275 the purge drains: both peer copies DELETEd, links retired, a redelivered purge is inert", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const ids = [snowflakeNow(), snowflakeNow()];
+    for (const [i, id] of ids.entries()) {
+      repo.addBridgeMessageLink({
+        bridgeId: bridge.id,
+        srcCommunityId: rowA.id,
+        srcMessageId: id,
+        partIndex: 0,
+        dstMessageId: `dst-${i}`,
+      });
+    }
+
+    await pipelines.onMessageDeleteBulk(
+      {},
+      {
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: rowA.externalGuildId,
+        communityId: null,
+        channelId: channelA,
+        ids,
+      },
+    );
+
+    const f9 = scriptedApi("f9");
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? f9 : null) });
+    await worker.drainAll();
+
+    assert.deepEqual(
+      f9.deleteCalls.map((c) => c.dstMessageId).sort(),
+      ["dst-0", "dst-1"],
+      "both peer copies DELETEd — the purge is no longer invisible to the peer",
+    );
+    assert.equal(
+      outboxRows(bridge.id, "delete").every((r) => r.state === "done"),
+      true,
+      "both rows terminal",
+    );
+    for (const id of ids) {
+      assert.equal(linkRows(bridge.id, id).length, 0, `links retired for ${id} (#411 pruning)`);
+    }
+
+    // Gateway redelivery of the same purge: links are gone → nothing queues
+    // (the same at-the-gate inertness #411 established for single deletes).
+    await pipelines.onMessageDeleteBulk(
+      {},
+      {
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: rowA.externalGuildId,
+        communityId: null,
+        channelId: channelA,
+        ids,
+      },
+    );
+    assert.equal(outboxRows(bridge.id, "delete").length, 2, "no second wave");
+    assert.equal(f9.deleteCalls.length, 2, "the transport is never re-targeted");
+  });
+
+  it("#275 fluxer purge: the bulk normalizer feeds the SAME entry (ids win, DMs drop, cache-null ids survive)", () => {
+    const { bridge, channelB } = seedBridge("both");
+    relay.clearRelayState();
+    const ids = [snowflakeNow(), snowflakeNow()];
+    for (const id of ids) {
+      repo.addBridgeMessageLink({
+        bridgeId: bridge.id,
+        srcCommunityId: rowB.id,
+        srcMessageId: id,
+        partIndex: 0,
+        dstMessageId: `dc-${id}`,
+      });
+    }
+
+    // SDK payload shape (camelCase, ids present even for cache-NULL messages
+    // — the fluxer side does NOT share discord.js' cached-subset horizon).
+    const bulk = normalizeFluxerMessageDeleteBulk(
+      { ids: [...ids, ids[0], ""], channelId: channelB, guildId: rowB.externalGuildId },
+      { instanceKey: rowB.instanceKey },
+    );
+    assert.ok(bulk, "camel payload normalizes");
+    assert.deepEqual(bulk.ids, ids, "ids deduped + junk dropped");
+    assert.equal(bulk.platform, "fluxer");
+    assert.equal(bulk.communityId, null, "community stays the pipeline's job");
+
+    // snake_case gateway shape + messages[] fallback (no ids field).
+    const snake = normalizeFluxerMessageDeleteBulk({
+      channel_id: channelB,
+      guild_id: rowB.externalGuildId,
+      messages: [{ id: ids[0] }, { id: null }],
+    });
+    assert.deepEqual(snake.ids, [ids[0]], "PartialMessage[] fallback, nulls dropped");
+
+    // DM purge: no bridge end.
+    assert.equal(
+      normalizeFluxerMessageDeleteBulk({ ids: [ids[0]], channelId: channelB, guildId: null }),
+      null,
+      "guildId-less (DM) purges normalize away",
+    );
+    // Unusable payloads.
+    assert.equal(normalizeFluxerMessageDeleteBulk({ ids: [], channelId: channelB, guildId: "1" }), null);
+    assert.equal(normalizeFluxerMessageDeleteBulk(null), null);
+
+    return null;
+  });
+
+  it("#275 a fluxer purge relays to Discord: pipeline intake → DELETEs of the discord copies", async () => {
+    const { bridge, channelB } = seedBridge("both");
+    relay.clearRelayState();
+    const ids = [snowflakeNow(), snowflakeNow()];
+    for (const id of ids) {
+      repo.addBridgeMessageLink({
+        bridgeId: bridge.id,
+        srcCommunityId: rowB.id,
+        srcMessageId: id,
+        partIndex: 0,
+        dstMessageId: `dc-copy-${id}`,
+      });
+    }
+
+    await pipelines.onMessageDeleteBulk(
+      {},
+      normalizeFluxerMessageDeleteBulk(
+        { ids, channelId: channelB, guildId: rowB.externalGuildId },
+        { instanceKey: rowB.instanceKey },
+      ),
+    );
+    const rows = outboxRows(bridge.id, "delete");
+    assert.equal(rows.length, 2, "both linked ids enqueued b_to_a deletes");
+    assert.ok(rows.every((r) => r.direction === "b_to_a"));
+
+    const dG = scriptedApi("dG");
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "discord" ? dG : null) });
+    await worker.drainAll();
+    assert.deepEqual(
+      dG.deleteCalls.map((c) => c.dstMessageId).sort(),
+      ids.map((id) => `dc-copy-${id}`).sort(),
+    );
+  });
+
+  it("#275 an echo-marked purge id is spared even with a link, and unknown scopes resolve to nothing", async () => {
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    relay.noteRelayedDestination("discord", "discord", msgId);
+    // No bridge seeded at all — even a resolvable community must produce
+    // nothing (unlinked); and a bulk with NO guild scope returns before
+    // touching the relay.
+    await pipelines.onMessageDeleteBulk(
+      {},
+      {
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: null,
+        communityId: null,
+        channelId: "999-not-bridged",
+        ids: [msgId],
+      },
+    );
+    await pipelines.onMessageDeleteBulk({}, null);
+    await pipelines.onMessageDeleteBulk({}, { platform: "discord", instanceKey: "discord", channelId: "x", ids: [] });
+    assert.equal(
+      db.db.prepare("SELECT COUNT(*) AS c FROM bridge_outbox").get().c,
+      0,
+      "no bulk shape conjures outbox rows out of thin air",
     );
   });
 
