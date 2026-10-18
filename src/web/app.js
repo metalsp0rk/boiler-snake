@@ -374,7 +374,21 @@ function createWebApp(options = {}) {
   // Settings surface (Phase 1, subtask 18): read-only guild settings view
   // (§8.6 Staff row). Also AFTER the guild shell so /g/:guildId guildScope
   // gates it; same shared resolver instance keeps tier math undivided.
-  registerSettingsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, settingsData: options.settingsData });
+  registerSettingsRoutes(app, {
+    guildAccess: options.guildAccess,
+    apiBase: options.apiBase,
+    fetchImpl: options.fetchImpl,
+    botGuilds: options.botGuilds,
+    getClient: options.getClient,
+    settingsData: options.settingsData,
+    // #457: live accessor — registerVoiceRoutes (mounted later) publishes
+    // the shared voiceData onto the SAME options object; settings writes
+    // invalidate its guild snapshot through the very instance the voice
+    // page reads. A static key here would freeze to undefined at mount.
+    get voiceData() {
+      return options.voiceData;
+    },
+  });
   // Leaderboard surface (Phase 1, subtask 16): paginated top-XP board +
   // per-user rank/level page (§8.6 XP row, staff tier). AFTER the guild
   // shell so /g/:guildId guildScope gates first; same shared resolver
@@ -394,7 +408,13 @@ function createWebApp(options = {}) {
   // out of scope §8.9 — GET-only module, zero control routes). AFTER the
   // guild shell so /g/:guildId guildScope gates first; same shared resolver
   // instance keeps tier math undivided.
-  registerVoiceRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, getPlayerState: options.getPlayerState, getLiveVoice: options.getLiveVoice, voiceData: options.voiceData });
+  // #457: publish the resolved voiceData handle onto the LIVE options —
+  // the settings registrar (mounted earlier) reaches this exact instance
+  // through its lazy getter, so staff writes drop the voice page's cache.
+  const voiceHandle = registerVoiceRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, getPlayerState: options.getPlayerState, getLiveVoice: options.getLiveVoice, voiceData: options.voiceData });
+  if (voiceHandle) {
+    options.voiceData = voiceHandle;
+  }
   // System page + admin_audit viewer (Phase 1, subtask 22): process health,
   // ticker registry, web-surface state, command-permission OAuth summary +
   // the read-only admin_audit trail (§8.6 System row = ADMIN tier; cross-
@@ -417,7 +437,18 @@ function createWebApp(options = {}) {
   // calls (award + activity + level→role sync), audit origin 'web'. AFTER the
   // guild shell so /g/:guildId guildScope gates first; same shared resolver
   // instance keeps tier math undivided; getClient stays the cache-only seam.
-  registerXpActionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, services: options.services });
+  registerXpActionsRoutes(app, {
+    guildAccess: options.guildAccess,
+    apiBase: options.apiBase,
+    fetchImpl: options.fetchImpl,
+    botGuilds: options.botGuilds,
+    getClient: options.getClient,
+    services: options.services,
+    // #457: dashboardData was RESOLVED+PUBLISHED by registerDashboardRoutes
+    // (mounts earlier) — grants made here invalidate the community's
+    // cached XP-leader/activity snapshot instead of rotting it for 30 s.
+    dashboardData: options.dashboardData,
+  });
   // Ticket actions (Phase 3, subtask 30): senior-only claim/close/summary-
   // regen forms + POSTs (§8.6 Tickets row "Senior: claim/close/summary
   // regen"). Mutations flow EXCLUSIVELY through the tickets feature's own

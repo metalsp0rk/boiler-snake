@@ -484,3 +484,83 @@ describe("fluxer/dispatch — !leaderboard is a public channel command", () => {
     );
   });
 });
+
+describe("fluxer/dispatch — #457 boundary guard (assertCommandContext is wired)", () => {
+  // Spy wrapper around the REAL registry: records every handler that
+  // actually RAN. The guard must fire before that — old code handed the
+  // handler whatever the builder produced (communityId null on an
+  // unlinked channel included) and died deeper.
+  const inner = buildDefaultRegistry();
+  let ranHandlers = [];
+  const spyRegistry = {
+    commands: inner.commands,
+    getHandlerApi: (name) => inner.getHandlerApi(name),
+    getHandler: (name) => {
+      const h = inner.getHandler(name);
+      if (!h) return h;
+      return (...args) => {
+        ranHandlers.push(name);
+        return h(...args);
+      };
+    },
+  };
+
+  async function captureErrors(fn) {
+    const errs = [];
+    const orig = console.error;
+    console.error = (...args) => errs.push(args.map(String).join(" "));
+    try {
+      await fn();
+    } finally {
+      console.error = orig;
+    }
+    return errs;
+  }
+
+  it("an unlinked channel (communityId null) fails closed AT THE BOUNDARY — the handler never runs", async () => {
+    ranHandlers = [];
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/users/@me/channels": { id: "dm-9", type: 1 },
+        "POST /v1/channels/dm-9/messages": { id: "r-gone" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const message = fluxerMessage({ content: "!xp" });
+    message.communityId = null; // pipeline could not resolve a community
+    const parsed = parsePrefix("!xp", P);
+    assert.ok(parsed && !parsed.usageError);
+
+    const errs = await captureErrors(() =>
+      dispatchPrefixCommand(outbound, message, parsed, { registry: spyRegistry, supervisor: null }),
+    );
+
+    assert.deepEqual(ranHandlers, [], "the guard fires BEFORE the handler — no deep duck-death");
+    assert.ok(
+      errs.some((e) => /CommandContext: communityId required/.test(e)),
+      `the [fluxer] log names the contract clause; saw: ${JSON.stringify(errs)}`,
+    );
+    const bodies = postCalls(rest).map((c) => JSON.stringify(c.body));
+    assert.ok(
+      bodies.some((b) => b.includes(MSG_GENERIC_ERROR)),
+      "the author still gets the sanctioned generic copy (K2 path intact)",
+    );
+  });
+
+  it("a community-resolved dispatch sails through the guard into the handler (no gatekeeping)", async () => {
+    ranHandlers = [];
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/users/@me/channels": { id: "dm-42", type: 1 },
+        "POST /v1/channels/dm-42/messages": { id: "r-1" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const message = fluxerMessage({ content: "!xp" }); // communityId = COMMUNITY_ID
+    const parsed = parsePrefix("!xp", P);
+
+    await dispatchPrefixCommand(outbound, message, parsed, { registry: spyRegistry, supervisor: null });
+
+    assert.deepEqual(ranHandlers, ["xp"], "valid context passes the guard into the handler");
+  });
+});

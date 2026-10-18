@@ -377,6 +377,12 @@ function registerXpActionsRoutes(app, options = {}) {
       source: "admin_grant",
     });
 
+    // #457 (H1-9): this write just moved the XP totals and activity points
+    // the dashboard caches (30 s+ per community) — drop the snapshot so the
+    // next dashboard read is this write's truth, same rule the settings
+    // writes follow for their own snapshot.
+    options.dashboardData?.invalidate?.(communityId);
+
     // Audit mirror of the slash recordSlashAudit call EXACTLY — action,
     // target, and detail shape (origin stays the 'web' default, §8.6).
     const levelText =

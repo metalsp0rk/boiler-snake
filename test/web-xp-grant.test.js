@@ -1060,3 +1060,54 @@ describe("K. parity: equal XP totals + same-shaped audit rows (slash = source of
     assert.deepEqual(s.details, { amount: 250, before_xp: 100, after_xp: 350, reason: "parity twin" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// L. #457 (H1-9) — the dashboard read-model cache learns about web grants
+// ---------------------------------------------------------------------------
+
+describe("L. accepted grants invalidate the cached dashboard snapshot (#457)", () => {
+  const invalidations = [];
+  const { server } = bootApp({
+    dashboardData: {
+      getDashboard: async () => ({}) /* page read never happens here */,
+      // The dashboard JSON API validates this shape on mount and shares
+      // the SAME instance (app.js publishes the resolved one onto options).
+      getDailyActivitySeries: async () => ({ days: [] }),
+      invalidate: (communityId) => invalidations.push(communityId),
+    },
+  });
+  let url = "";
+
+  before(async () => {
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    url = `http://127.0.0.1:${server.address().port}`;
+  });
+  after(() => {
+    server.closeAllConnections?.();
+    server.close();
+  });
+
+  it("an accepted grant drops the community's dashboard snapshot with the integer id", async () => {
+    const { res, location } = await post(url, GRANT_PATH, {
+      cookie: cookieOf.admin,
+      fields: { user_id: USER_T_UNKNOWN, amount: "40", _csrf: csrfOf.admin },
+    });
+    assert.equal(res.status, 302);
+    assert.equal(location, `${GRANT_PATH}?done=xp_granted`);
+    assert.deepEqual(
+      invalidations,
+      [CID_A],
+      "dashboardData.invalidate(communityId integer) fired exactly once — dashboardData.invalidate had ZERO production callers before #457",
+    );
+  });
+
+  it("a refused grant invalidates nothing (the write never happened)", async () => {
+    const { res } = await post(url, GRANT_PATH, {
+      cookie: cookieOf.admin,
+      fields: { user_id: USER_T_UNKNOWN, amount: "0", _csrf: csrfOf.admin },
+    });
+    assert.equal(res.status, 302);
+    assert.equal(invalidations.length, 1, "still exactly the earlier accepted grant");
+  });
+});

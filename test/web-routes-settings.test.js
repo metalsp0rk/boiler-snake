@@ -1208,6 +1208,40 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         assert.ok(fresh.body.includes("21 days"), "view shows the just-written value");
       });
 
+      it("#457: accepted writes ALSO drop the VOICE page snapshot (shared instance)", async () => {
+        // The voice page caches a guild snapshot whose DB section mirrors
+        // THESE guild_settings rows (voice-XP config). Before #457 that
+        // snapshot rotted up to 30 s after a staff member's OWN write —
+        // voiceData.invalidate had zero callers anywhere.
+        const voiceInvalidations = [];
+        await mountApp({
+          voiceData: {
+            getVoice: async () => ({ sections: {} }),
+            invalidate: (guildId) => voiceInvalidations.push(guildId),
+          },
+        });
+
+        // Rejected write: NOTHING invalidates (same honesty rule settingsData follows).
+        await post(`/g/${CID_A}/settings/decay`, {
+          cookie: cookieOf.staff,
+          fields: { percent: "400" },
+          token: tokenFor("staff"),
+        });
+        assert.deepEqual(voiceInvalidations, [], "a rejected write invalidates nothing");
+
+        const { res } = await post(`/g/${CID_A}/settings/decay`, {
+          cookie: cookieOf.staff,
+          fields: { days: "14" },
+          token: tokenFor("staff"),
+        });
+        assert.equal(res.status, 302);
+        assert.deepEqual(
+          voiceInvalidations,
+          [GUILD_A],
+          "dropped under the SAME external id the voice route caches with (req.guildAccess.guildId)",
+        );
+      });
+
       it("routes call the shared facade helpers (service-layer spy), never SQL", async () => {
         await mountApp();
         const origUpdate = api.updateGuildSettings;
@@ -1334,6 +1368,28 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           "identical guild_settings state (slash parity — decay cluster)"
         );
       });
+    });
+
+    it("#457: createWebApp publishes the RESOLVED voiceData handle onto its options", () => {
+      // The settings mutation route reaches the voice cache through a
+      // lazy getter over the LIVE options — app.js must therefore publish
+      // the handle registerVoiceRoutes resolves (the wrapper with
+      // invalidate), not just hold it in a call-site literal.
+      const { createGuildAccessResolver } = require("../src/web/auth/guildAccess");
+      const opts = {
+        guildAccess: createGuildAccessResolver({
+          discord: fakeDiscord,
+          botGuilds: async () => BOT_GUILDS,
+          now: Date.now,
+          ttlMs: 60_000,
+        }),
+        botGuilds: async () => BOT_GUILDS,
+      };
+      appMod.createWebApp(opts);
+      assert.equal(typeof opts.voiceData?.invalidate, "function",
+        "the published handle carries invalidate — settings writes can drop it (#457: zero callers before)");
+      assert.equal(typeof opts.voiceData?.getVoice, "function", "and the very page reader");
+      opts.voiceData.invalidate("710000000000000001"); // must not throw (wrapper over the lazy default)
     });
   });
 });
