@@ -195,7 +195,7 @@ Independent events (message delete, ban, kick, honeypot ban-role, tickers) regis
 ## Database Layer (`db/`)
 
 - **connection.js** — SQLite open (`DB_PATH` / `DATA_DIR`), explicit pragmas: WAL, `foreign_keys=ON`, `synchronous=FULL`, `busy_timeout=5000` (single-writer contract: one process per DB file — see [database.md](database.md))
-- **migrate.js** + **migrations/** — idempotent ordered steps; `PRAGMA user_version` records a completed pass and fast-skips replay when current; any mismatch re-runs the full idempotent set and re-stamps; a version newer than the registry fails boot loudly
+- **migrate.js** + **migrations/** — idempotent ordered steps; `PRAGMA user_version` + the ordered `applied_migrations` ledger (#394) jointly record a completed pass and fast-skip replay only when BOTH agree with the registry; any mismatch re-runs the full idempotent set and re-stamps; a version newer than the registry fails boot loudly
 - **repositories/** — users, guildSettings, activity, youtube, twitch, honeypot, reactionRoles, staff notes/roles, warnings, tickets, user activity, events (events/options/signups/series/presets/channels/gcal/crossposts), …
 - **index.js** — public facade (same API as legacy single-file `db.js`)
 
@@ -249,7 +249,7 @@ Migrations on load:
 | `044_event_channels_wizards` | `event_channels` (per-channel event config incl. create-role narrowing) + `event_wizards` (DM create-wizard state) |
 | `045_event_integrations` | `event_google_links` (per-user gcal OAuth tokens, `v1.` envelope) + `event_crossposts` / `event_crosspost_messages` (cross-post pipeline) |
 
-Current registry: **45** migrations (`PRAGMA user_version` = 45 on a current DB). The authoritative per-migration table with full column/DDL notes lives in [database.md](database.md).
+Current registry: **55** migrations (`PRAGMA user_version` = 55 on a current DB). The authoritative per-migration table with full column/DDL notes lives in [database.md](database.md).
 
 ### Core XP API
 

@@ -91,6 +91,14 @@ const helpers = {
 //     "those steps ran cleanly"; we re-run the idempotent steps and re-stamp.
 //   * A version HIGHER than this build knows means old code against a newer
 //     DB — refuse to touch it and fail loudly with both numbers.
+//   * #394 (DB-2): a COUNT cannot record a SET. user_version alone is blind
+//     to length-preserving registry changes (reorder, swap-in) which would
+//     fast-skip an edited registry forever. The applied_migrations ledger
+//     records the ordered id-list of the last COMPLETE pass; the fast-skip
+//     is only honored when user_version AND the ledger agree with this
+//     build's registry. Any disagreement runs the idempotent replay and
+//     re-stamps both — legacy DBs (no ledger yet) pay exactly one extra
+//     slow boot, which is the design's whole convergence story.
 const LATEST_VERSION = migrations.length;
 
 // ── Registry integrity (#278) ──
@@ -125,6 +133,59 @@ function readUserVersion() {
   return Number(db.pragma("user_version", { simple: true }));
 }
 
+// ── Applied-migrations ledger (#394 / audit DB-2) ──
+// user_version records a COUNT; it cannot answer WHICH migrations ran. A
+// registry edit that preserves the length (reorder, swap one entry for
+// another) leaves current === LATEST_VERSION and fast-skips a replay that
+// the changed registry actually needs — existing installs then diverge
+// from every fresh DB on the same build. The ledger records the ORDERED id
+// list of the last complete pass; the fast-skip needs BOTH to agree.
+// It is guard infrastructure, not a migration: created idempotently here,
+// never dropped, rebuilt wholesale (one transaction) after every complete
+// pass so it can only ever describe a full, successful run.
+const LEDGER_TABLE = "applied_migrations";
+
+function ensureLedgerTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${LEDGER_TABLE} (
+      seq INTEGER PRIMARY KEY,
+      id TEXT NOT NULL UNIQUE,
+      applied_at INTEGER NOT NULL
+    )
+  `);
+}
+
+/** The ledger's recorded ids, pass order first. */
+function readLedgerIds() {
+  return db
+    .prepare(`SELECT id FROM ${LEDGER_TABLE} ORDER BY seq ASC`)
+    .all()
+    .map((row) => row.id);
+}
+
+/** True only when the ledger equals the CURRENT registry, id for id, in order. */
+function ledgerMatchesRegistry() {
+  const recorded = readLedgerIds();
+  if (recorded.length !== migrations.length) return false;
+  for (let i = 0; i < migrations.length; i += 1) {
+    if (recorded[i] !== migrations[i].id) return false;
+  }
+  return true;
+}
+
+/** Rebuild the ledger for a COMPLETE pass (transactional with the caller's stamp). */
+function stampLedger() {
+  const del = db.prepare(`DELETE FROM ${LEDGER_TABLE}`);
+  const ins = db.prepare(
+    `INSERT INTO ${LEDGER_TABLE} (seq, id, applied_at) VALUES (?, ?, ?)`,
+  );
+  const at = Date.now();
+  db.transaction(() => {
+    del.run();
+    migrations.forEach((migration, i) => ins.run(i + 1, migration.id, at));
+  })();
+}
+
 /**
  * Run all migrations in order, recording the applied schema version.
  * Migrations are written to be idempotent (IF NOT EXISTS / addColumnIfMissing / gated rebuilds).
@@ -135,6 +196,7 @@ function readUserVersion() {
  */
 function runMigrations() {
   assertRegistryIntegrity();
+  ensureLedgerTable();
   const current = readUserVersion();
 
   if (current > LATEST_VERSION) {
@@ -146,11 +208,20 @@ function runMigrations() {
     );
   }
 
-  if (current === LATEST_VERSION) {
+  if (current === LATEST_VERSION && ledgerMatchesRegistry()) {
     console.log(
-      `[db] Schema at version ${current}/${LATEST_VERSION} (user_version guard) — skipping migration replay`
+      `[db] Schema at version ${current}/${LATEST_VERSION} (user_version + ledger agree) — skipping migration replay`
     );
     return { skipped: true, version: current, latest: LATEST_VERSION };
+  }
+  if (current === LATEST_VERSION) {
+    // #394: the count claims "done" but the recorded id SET does not match
+    // this build's registry (a length-preserving change, or a legacy DB
+    // predating the ledger). The idempotent replay converges both — and
+    // re-stamps the ledger below.
+    console.log(
+      "[db] user_version claims the latest version but the applied-migrations ledger disagrees — running the idempotent replay to converge (#394)"
+    );
   }
 
   for (const migration of migrations) {
@@ -166,8 +237,12 @@ function runMigrations() {
   // (lower) version recorded, so the next boot replays the idempotent set
   // again instead of trusting a half-applied state.
   db.pragma(`user_version = ${LATEST_VERSION}`);
+  // #394: the ledger records WHAT this complete pass covered — read back by
+  // the fast-skip on the next boot. Same side of the "whole pass succeeded"
+  // line as the version stamp: a crash mid-pass leaves neither honest.
+  stampLedger();
   console.log(
-    `[db] Migrations applied (user_version ${current} -> ${LATEST_VERSION})`
+    `[db] Migrations applied (user_version ${current} -> ${LATEST_VERSION}, ledger ${LATEST_VERSION} ids)`
   );
   return { skipped: false, version: LATEST_VERSION, latest: LATEST_VERSION };
 }
@@ -176,6 +251,7 @@ module.exports = {
   runMigrations,
   readUserVersion,
   assertRegistryIntegrity,
+  readLedgerIds,
   LATEST_VERSION,
   migrations,
 };
