@@ -583,6 +583,45 @@ describe("integration: youtube", () => {
     }
   });
 
+  // #456 (audit H2-14): /testnotification is THE wiring-verification command
+  // — a cause-less "Could not fetch videos" told a staffer debugging a bad
+  // YOUTUBE_API_KEY nothing. The fetch failure must reach the reply.
+  it("/testnotification without API key names the cause in the reply (#456)", async () => {
+    const prev = process.env.YOUTUBE_API_KEY;
+    delete process.env.YOUTUBE_API_KEY;
+    try {
+      const ix = await env.runCommand({
+        commandName: "testnotification",
+        admin: true,
+        options: { channel: "UCcanary456nokey" },
+      });
+      const text = ix.replies.map((r) => r.content || "").join("\n");
+      assert.match(text, /Could not fetch videos/i, "still the honest fetch arm");
+      assert.match(
+        text,
+        /YOUTUBE_API_KEY is not set/,
+        "the ACTUAL cause reaches the staff reply (RED on the old cause-less copy)",
+      );
+      assert.doesNotMatch(text, /check (bot )?logs|unknown error/i, "never a hand-off");
+    } finally {
+      if (prev != null) process.env.YOUTUBE_API_KEY = prev;
+    }
+  });
+
+  it("fetchYouTubeFeed returns {error} (not null) so causes survive (#456)", async () => {
+    const { fetchYouTubeFeed } = require("../../src/features/youtube/ticker");
+    const prev = process.env.YOUTUBE_API_KEY;
+    delete process.env.YOUTUBE_API_KEY;
+    try {
+      const feed = await fetchYouTubeFeed("UCwhatever");
+      assert.ok(feed && typeof feed === "object", "never a bare null again");
+      assert.match(String(feed.error), /YOUTUBE_API_KEY/);
+      assert.ok(!feed.items, "no items on failure");
+    } finally {
+      if (prev != null) process.env.YOUTUBE_API_KEY = prev;
+    }
+  });
+
   it("denies non-staff /youtube", async () => {
     const interaction = await env.runCommand({
       commandName: "youtube",

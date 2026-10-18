@@ -139,12 +139,20 @@ async function lookupChannelByName(username) {
 
 // --- YouTube Data API v3 Integration ---
 
+/**
+ * #456 (audit H2-14): failures return `{ error: "<cause>" }` instead of a bare
+ * null so the DIAGNOSTIC command (/testnotification) can show the staff what
+ * actually broke — the cause used to die in a console line. Callers must treat
+ * a feed without `items` as "nothing to do" (the tick path already does).
+ */
 async function fetchYouTubeFeed(channelId) {
   if (!process.env.YOUTUBE_API_KEY) {
     console.warn(
       "[youtube] YOUTUBE_API_KEY not set in environment - YouTube notifications disabled",
     );
-    return null;
+    return {
+      error: "YOUTUBE_API_KEY is not set on this bot — add it to .env and restart",
+    };
   }
 
   try {
@@ -178,15 +186,24 @@ async function fetchYouTubeFeed(channelId) {
     });
 
     if (!channelResponse.items || channelResponse.items.length === 0) {
-      console.log(`[youtube] No channel data found for ${channelId}`);
-      return null;
+      // Google puts the real reason IN the body on a bad key / quota /
+      // deleted channel — surface it instead of dropping it on the floor.
+      const apiErr = channelResponse.error?.message;
+      console.log(
+        `[youtube] No channel data found for ${channelId}${apiErr ? `: ${apiErr}` : ""}`,
+      );
+      return {
+        error: apiErr
+          ? `YouTube API: ${apiErr}`
+          : `no channel data for ${channelId} (deleted channel or wrong id?)`,
+      };
     }
 
     const uploadsPlaylistId =
       channelResponse.items[0].contentDetails?.relatedPlaylists?.uploads;
     if (!uploadsPlaylistId) {
       console.log(`[youtube] Channel ${channelId} has no uploads playlist`);
-      return null;
+      return { error: `channel ${channelId} has no uploads playlist` };
     }
 
     // Step 2: Get videos from uploads playlist
@@ -236,7 +253,7 @@ async function fetchYouTubeFeed(channelId) {
       `[youtube] Failed to fetch feed for channel ${channelId}:`,
       err?.message || err,
     );
-    return null;
+    return { error: String(err?.message || err) };
   }
 }
 
@@ -293,6 +310,8 @@ function extractVideoInfo(entry) {
  * Optional deps for tests (network stubs). Production uses default implementations.
  * @typedef {object} YoutubeTickerDeps
  * @property {(channelId: string) => Promise<object|null>} [fetchYouTubeFeed]
+ *   failure shape: `{ error: string }` (see fetchYouTubeFeed, #456); a feed
+ *   without `items` means "nothing to do" on the tick path.
  * @property {(username: string) => Promise<object|null>} [lookupChannelByName]
  * @property {(channelId: string) => Promise<object|null>} [fetchChannelInfo]
  */
@@ -400,7 +419,9 @@ async function processChannel(
     // undelivered neighbours — the #380 burn class in disguise. Cadence
     // lives in last_checked_at now; the notification floor only moves on
     // deliveries.
-    console.log(`[youtube] No videos found for ${channelName}`);
+    console.log(
+      `[youtube] No videos found for ${channelName}${feed.error ? ` (${feed.error})` : ""}`,
+    );
     return;
   }
 
