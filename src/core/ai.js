@@ -350,7 +350,51 @@ async function chatCompletion(cfg, opts = {}) {
 }
 
 /**
- * Execute all tool calls from one assistant message and append the
+ * #434 (audit F1-1): one assistant message used to be able to enqueue an
+ * ARBITRARY number of tool calls — every one executed serially, OUTSIDE
+ * every gork deadline. Round execution is now capped (default 8) and each
+ * call races the loop's shared abort (fed by GORK_LLM_TIMEOUT_MS via the
+ * loop's timeoutMs). Protocol integrity is kept either way: EVERY
+ * tool_call id gets a tool message (skipped/aborted ones carry an
+ * explanatory stub), so the next wire round never 400s on an unanswered
+ * tool_call_id.
+ */
+const MAX_TOOL_CALLS_PER_ROUND = 8;
+
+/**
+ * Execute one tool call, rejecting as soon as `signal` aborts. The tool's
+ * own promise may keep running (the gork tools self-bound and never throw);
+ * the LOOP moves on the moment the budget dies — that is the fix.
+ */
+function runToolCall(name, args, executeTool, signal) {
+  const p = Promise.resolve().then(() => executeTool(name, args));
+  if (!signal) return p;
+  if (signal.aborted) return Promise.reject(new Error("aborted: tool budget exhausted"));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("aborted: tool budget exhausted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (value) => {
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Execute the tool calls from one assistant message and append the
  * `tool` results to the conversation (immutably).
  * @param {object[]} conversation
  * @param {object[]} calls assistant message tool_calls
@@ -359,12 +403,20 @@ async function chatCompletion(cfg, opts = {}) {
  *   `{type:"tool", name, args, output, ok, durationMs}` per execution;
  *   `ok:false` when executeTool threw (the failure string still feeds the
  *   model, exactly as before).
+ * @param {{signal?: AbortSignal|null, maxCalls?: number}} [opts] #434:
+ *   shared deadline signal + per-round execution cap (stubs stay protocol-valid).
  * @returns {Promise<{ conversation: object[], count: number }>}
  */
-async function applyToolCalls(conversation, calls, executeTool, onEvent = null) {
+async function applyToolCalls(conversation, calls, executeTool, onEvent = null, opts = {}) {
+  const signal = opts.signal || null;
+  const maxCalls =
+    Number.isFinite(opts.maxCalls) && opts.maxCalls > 0
+      ? Math.trunc(opts.maxCalls)
+      : MAX_TOOL_CALLS_PER_ROUND;
   let count = 0;
   let next = conversation;
-  for (const call of calls) {
+  for (let i = 0; i < calls.length; i += 1) {
+    const call = calls[i];
     count += 1;
     const name = call?.function?.name || "unknown";
     let args = {};
@@ -376,11 +428,20 @@ async function applyToolCalls(conversation, calls, executeTool, onEvent = null) 
     let output;
     let ok = true;
     const toolStartedAt = Date.now();
-    try {
-      output = await executeTool(name, args);
-    } catch (err) {
-      output = `tool "${name}" failed: ${err?.message || String(err)}`;
+    if (i >= maxCalls) {
+      output = `[not executed: per-round tool-call budget (${maxCalls}) exhausted]`;
       ok = false;
+    } else if (signal && signal.aborted) {
+      // The budget died mid-round: do NOT keep hammering tools past it.
+      output = "[aborted: tool budget exhausted before this call]";
+      ok = false;
+    } else {
+      try {
+        output = await runToolCall(name, args, executeTool, signal);
+      } catch (err) {
+        output = `tool "${name}" failed: ${err?.message || String(err)}`;
+        ok = false;
+      }
     }
     const content = output == null ? "" : String(output);
     emitEvent(onEvent, {
@@ -414,6 +475,9 @@ async function applyToolCalls(conversation, calls, executeTool, onEvent = null) 
  *   Thrown errors are reported to the model as a failure string.
  * @param {number} [opts.maxToolRounds=3] Max rounds in which the model
  *   may call tools.
+ * @param {number} [opts.maxToolCallsPerRound=8] #434: tool CALLS executed
+ *   per round — a model spewing hundreds of calls in one message gets the
+ *   first N executed; the rest still get protocol-valid tool answers.
  * @param {number} [opts.temperature]
  * @param {number} [opts.maxTokens]
  * @param {number} [opts.thinkingTokenBudget] Reasoning cap passthrough
@@ -501,7 +565,12 @@ async function chatWithTools(cfg, opts) {
           usage: res.usage ?? null,
         };
       }
-      const applied = await applyToolCalls(conversation, calls, opts.executeTool, child);
+      const applied = await applyToolCalls(conversation, calls, opts.executeTool, child, {
+        // #434: tools share the loop's deadline (GORK_LLM_TIMEOUT_MS) and
+        // the per-round call cap instead of running unbounded/off-budget.
+        signal: controller.signal,
+        maxCalls: opts.maxToolCallsPerRound,
+      });
       conversation = applied.conversation;
       toolCalls += applied.count;
       armDeadline();
