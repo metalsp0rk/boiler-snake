@@ -697,6 +697,43 @@ describe("fluxer web login (mocked instance, PKCE + SQLite transactions)", () =>
       assert.equal(out.statusCode, 302);
       assert.equal(req.rateLimitUserHint, FX_USER_ID);
     });
+
+    it("#403 the THIRD exchange for one user meets 429 BEFORE session state is written", async () => {
+      // The real limiter, mounted the way app.js mounts it: at the request
+      // START, before the exchange reveals anyone. Pre-#403 the per-user
+      // bucket could never see these logins (the hint was published after
+      // the gate had already run) — three exchanges sailed through any
+      // user budget. Now the callback adopts the identity mid-flight.
+      const { createAuthRateLimit } = require("../src/web/middleware/rateLimit");
+      const limiter = createAuthRateLimit({ windowMs: 600_000, ipMax: 1000, userMax: 2 });
+
+      const statuses = [];
+      for (let i = 0; i < 3; i++) {
+        const { authorizeUrl } = await fluxLoginStart();
+        const state = authorizeUrl.searchParams.get("state");
+        const req = {
+          url: `/auth/fluxer/${SLUG}/callback?code=code-403-${i}&state=${encodeURIComponent(state)}`,
+          params: { slug: SLUG },
+        };
+        let reachedHandler = false;
+        limiter(req, captureRes().res, () => {
+          reachedHandler = true;
+        });
+        assert.ok(reachedHandler, `mount-phase allows request ${i + 1} (anonymous — the gate cannot know the user yet)`);
+        const { res, out } = captureRes();
+        await testHandlers.handleFluxerLoginCallback(req, res);
+        statuses.push(out.statusCode);
+        if (out.statusCode === 429) {
+          assert.ok(out.headers["Retry-After"], "Retry-After rides (§8.7 429 shape)");
+          assert.ok(!out.headers["Set-Cookie"], "refused AFTER reveal, BEFORE any session rotation/cookie");
+        }
+      }
+      assert.deepEqual(
+        statuses,
+        [302, 302, 429],
+        "budget of 2 per user: the third exchange for the SAME sub is refused — post-reveal, pre-session",
+      );
+    });
   });
 
   // -------------------------------------------------------------------------
