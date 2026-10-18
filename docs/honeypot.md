@@ -31,6 +31,8 @@ Members who **already** hold the role when you run `/honeypot banrole add` are *
 
 Ban-role checks are **fail-safe**: a ban fires only when the bot can see the member's **previous** role state and the ban role is *newly* present. If a `GuildMemberUpdate` arrives without cached previous member state (e.g. right after a bot restart or gateway resume), the role diff is unknown and the bot logs a skip instead of banning — existing roles are never treated as newly granted.
 
+> **Fluxer limitation (#439):** ban roles are enforced through `GuildMemberUpdate`, a Discord gateway event. The Fluxer gateway surface has no member-role update, so on Fluxer communities the configuration is **stored but not enforced** — granting the role bans nobody. `/honeypot banrole add` and `/honeypot banrole list` say so in their replies, and the rows arm automatically if member-role events ever land. Channel and warning-reaction honeypots DO work on Fluxer.
+
 ### Exempt roles = staff roles
 
 Honeypot **exemption uses the same list as guild staff roles** (`staff_roles` table / `/staff`). There is no separate honeypot-only exempt table.
