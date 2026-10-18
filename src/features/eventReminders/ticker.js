@@ -52,7 +52,14 @@ const REMINDER_CRON = "* * * * *";
  * retries with backoff — it must never retire or discard the reminder.
  */
 const GONE_CHANNEL_CODES = new Set([10003, 10004]);
-const GONE_EVENT_CODES = new Set([10008]);
+// #350: 10008 is Unknown MESSAGE — an event fetch NEVER answers it. A
+// deleted scheduled event is 10066 (Unknown Guild Scheduled Event); with
+// the message-shaped code here both designed terminal branches (config
+// cleanup, persistent RETIRE) were dead on the delivery path: vanished
+// events churned pending→retry→backoff and persistent configs died as
+// `failed` instead of retiring. 10003/10004 (channel-shaped) live in
+// GONE_CHANNEL_CODES; nothing here owns 10008.
+const GONE_EVENT_CODES = new Set([10066]);
 
 /**
  * Ticker-side cleanup is an automated state mutation (config + role removal)

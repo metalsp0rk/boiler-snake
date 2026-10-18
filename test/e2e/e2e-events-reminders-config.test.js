@@ -1218,13 +1218,14 @@ describe(
       env.dbmod.clearEventReminderConfigById(cfg.id);
     });
 
-    it("scheduled event gone: non-persistent config is cleaned up; persistent KEEPS retrying (BUG #350)", async () => {
-      // BUG #350: deliverOne classifies a missing scheduled event via
-      // GONE_EVENT_CODES=[10008] (Unknown MESSAGE) — the real code for
-      // scheduled events is 10066, so the delivery path never takes the
-      // cleanup/retire branch. Configs with a vanished event survive only by
-      // SAFETY CLEANUP (non-persistent) or retry toward 'failed' (persistent,
-      // designed RETIRE never fires). Flip these pins with the fix.
+    it("scheduled event gone: non-persistent config is cleaned up; persistent RETIRES (#350 fixed)", async () => {
+      // #350 FIXED: GONE_EVENT_CODES now carries 10066 (Unknown Guild
+      // Scheduled Event — what real Discord AND the mock answer for a
+      // vanished event). Both designed terminal branches are alive on the
+      // delivery path: non-persistent config is cleaned up by DELIVERY
+      // (not only safetyCleanup), and the persistent config KEEPS while
+      // its offset RETIRES (never fires again) instead of retrying toward
+      // 'failed'.
       const gone = {
         communityId: env.communityId,
         scheduledEventId: "900000000000000777",
@@ -1258,16 +1259,24 @@ describe(
         env.dbmod.getEventReminderConfigById(cfgC.id) ? null : true,
       );
 
-      // Persistent: safetyCleanup skips; delivery RETRIED (attempts≥1)
-      // instead of retiring — the current (wrong-but-bounded) behavior.
+      // Persistent: safetyCleanup skips, and delivery now RETIRES the
+      // offset (10066 classified as gone) — config kept, row terminal,
+      // never fires again. The old bug retried pending→failed forever.
       const d = await poll(async () => {
         const row = env.dbmod
           .getEventReminderConfigById(cfgD.id)
           ?.offsets.find((o) => o.offset_minutes === 15);
-        return (row?.attempts ?? 0) >= 1 ? row : null;
-      });
-      assert.equal(d.status, "pending");
-      assert.match(String(d.last_error), /fetch failed|not found/);
+        return row?.status === "retired" ? row : null;
+      }, { timeoutMs: 8000, label: "persistent offset RETIRED (#350)" });
+      assert.match(
+        String(d.retire_reason ?? d.last_error ?? ""),
+        /not found.*persistent config kept|persistent config kept/,
+        "the retire names the cause and the kept config",
+      );
+      assert.ok(
+        env.dbmod.getEventReminderConfigById(cfgD.id),
+        "the persistent config SURVIVES — kept for future events of the series",
+      );
 
       env.dbmod.clearEventReminderConfigById(cfgD.id);
 
