@@ -186,6 +186,10 @@ function createDiscordBridgeOutbound(seams = {}) {
           error: res?.error ?? "executeRelay: webhook api returned no result",
           retryable: res?.retryable === true,
           ...(res?.code != null ? { code: res.code } : {}),
+          // #387 (FLX-6): the DECLARED wait survives this seam too — the
+          // port whitelist used to rebuild failures without it, so even a
+          // producer that parsed retry_after reached the worker as 60 s.
+          ...(res?.retryAfterMs != null ? { retryAfterMs: res.retryAfterMs } : {}),
         };
       }
       // Discord has no idempotency token: a success with no message id is
@@ -203,6 +207,10 @@ function createDiscordBridgeOutbound(seams = {}) {
           ok: false,
           error: res?.error ?? "patchRelayMessage: webhook api returned no result",
           ...(res?.code != null ? { code: res.code } : {}),
+          // #387 (FLX-6): the DECLARED wait survives this seam too — the
+          // port whitelist used to rebuild failures without it, so even a
+          // producer that parsed retry_after reached the worker as 60 s.
+          ...(res?.retryAfterMs != null ? { retryAfterMs: res.retryAfterMs } : {}),
         };
       }
       return { ok: true };

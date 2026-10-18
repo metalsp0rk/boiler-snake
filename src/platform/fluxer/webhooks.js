@@ -104,6 +104,31 @@ async function readJsonSafe(res) {
 }
 
 /**
+ * #387 (FLX-6): the DECLARED wait from a failed response — 429 bodies carry
+ * `retry_after` (a positive number of SECONDS in the REST convention Fluxer
+ * inherits; the live 429 body shape is field-unverified per #211, so this
+ * parses defensively), with the `Retry-After` header (seconds) as fallback.
+ * Returns finite non-negative MILLISECONDS, or undefined when nothing sane
+ * was declared — the consumer's bounded default (relay: the 60 s cap) is
+ * then and only then the authority.
+ *
+ * @param {any} res fetch-Response-shaped
+ * @param {any} payload parsed body (or null)
+ * @returns {number|undefined}
+ */
+function parseRetryAfterMs(res, payload) {
+  const candidates = [
+    payload?.retry_after,
+    typeof res?.headers?.get === "function" ? res.headers.get("retry-after") : null,
+  ];
+  for (const raw of candidates) {
+    const secs = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
+    if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+  }
+  return undefined;
+}
+
+/**
  * Normalize one `files` entry to { name, data, contentType } — the same
  * descriptor shape the OutboundClient send paths accept (spec § Embeds and
  * attachments vocabulary), mirrored here so the webhook module stands alone.
@@ -390,12 +415,19 @@ function createFluxerWebhooks(transport = {}) {
     if (typeof payload?.message === "string" && payload.message !== "") {
       bits.push(payload.message);
     }
+    // #387 (FLX-6): a declared 429 wait must REACH the relay — the worker's
+    // rate-limit branch has always read `res.retryAfterMs` (see relay's
+    // 60 s-capped head-of-queue wait), but this producer never produced the
+    // field, so Fluxer's stated wait was discarded at the seam and every
+    // 429 got the fixed 60 s guess instead.
+    const retryAfterMs = parseRetryAfterMs(res, payload);
     return {
       ok: false,
       error: `${methodName}: request failed: ${bits.length ? bits.join(" ") : "no HTTP status"}`,
       status,
       code,
       retryable: isRetryableStatus(status),
+      ...(retryAfterMs != null ? { retryAfterMs } : {}),
     };
   }
 
@@ -503,6 +535,9 @@ function createFluxerWebhooks(transport = {}) {
           // endpoints answer 404 for a gone webhook (channel deletion
           // cascades webhooks), and only the status says so.
           ...(res.status != null ? { status: res.status } : {}),
+          // #387: so does the declared rate-limit wait (#211's consumer sat
+          // here waiting for a producer).
+          ...(res.retryAfterMs != null ? { retryAfterMs: res.retryAfterMs } : {}),
         };
       }
       // wait=true: the response body is the created message. A body without
@@ -557,6 +592,8 @@ function createFluxerWebhooks(transport = {}) {
           error: res.error,
           ...(res.code != null ? { code: res.code } : {}),
           ...(res.status != null ? { status: res.status } : {}),
+          // #387: edits ride the same 429 ladder as sends.
+          ...(res.retryAfterMs != null ? { retryAfterMs: res.retryAfterMs } : {}),
         };
       }
       return { ok: true };
@@ -585,7 +622,14 @@ function createFluxerWebhooks(transport = {}) {
       );
       if (!res.ok) {
         if (res.status === 404) return { ok: true }; // idempotent delete
-        return { ok: false, error: res.error, ...(res.code != null ? { code: res.code } : {}) };
+        return {
+          ok: false,
+          error: res.error,
+          ...(res.code != null ? { code: res.code } : {}),
+          // #387: a 429 on DELETE is still a 429 — the worker's head-of-queue
+          // ladder treats every op alike, so the declared wait rides.
+          ...(res.retryAfterMs != null ? { retryAfterMs: res.retryAfterMs } : {}),
+        };
       }
       return { ok: true };
     },
