@@ -1316,7 +1316,8 @@ async function handleGoogle(interaction, ctx) {
     if (!gate.ok) return fail(interaction, gate.error);
     const off = interaction.options.getBoolean("off");
     const member = interaction.options.getMember("member");
-    gcal.autoset(communityId, interaction.user.id, { memberId: member?.id || null, off: Boolean(off) });
+    const res = gcal.autoset(communityId, interaction.user.id, { memberId: member?.id || null, off: Boolean(off) });
+    if (res && res.ok === false) return fail(interaction, res.error); // #349
     return replyEphemeral(
       interaction,
       off

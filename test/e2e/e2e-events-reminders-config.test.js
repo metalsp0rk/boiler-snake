@@ -482,16 +482,33 @@ describe(
         /Not connected — `\/eventconfig google connect` links your calendar\./,
       );
 
-      // BUG #349: autoset NEVER checks the target member has a connected
-      // calendar (connect is dark) — the promise below can never hold. Pin
-      // current behavior; flip when autoset validates the link.
+      // #349 FIXED: autoset REQUIRES the target to hold an enabled link —
+      // with connect dark nobody has one, so the impossible promise is
+      // refused with the actionable copy and NOTHING is persisted.
       const auto = await configSlash("google", "autoset", [userOpt("member", env.ids.target)]);
-      assert.match(
+      assert.equal(
         await settledText(auto),
+        `<@${env.ids.target}> has no connected calendar — they must run \`/eventconfig google connect\` first.`,
+      );
+      assert.notEqual(settings().google_auto_enabled, 1, "the toggle never flipped for an unconnected target");
+
+      // Seed a real link for the target (what `connect` would leave behind)
+      // and autoset lands.
+      env.dbmod.upsertEventGoogleLink({
+        communityId: env.communityId,
+        userId: env.ids.target,
+        email: "target@example.invalid",
+        calendarId: "primary",
+        accessTokenEnc: "x",
+      });
+      const auto2 = await configSlash("google", "autoset", [userOpt("member", env.ids.target)]);
+      assert.match(
+        await settledText(auto2),
         new RegExp(`Posted events now auto-add to <@${env.ids.target}>'s connected calendar\\.`),
       );
       assert.equal(settings().google_auto_enabled, 1);
       assert.equal(String(settings().google_auto_user_id), String(env.ids.target));
+      env.dbmod.deleteEventGoogleLink(env.communityId, env.ids.target);
 
       const off = await configSlash("google", "autoset", [boolOpt("off", true)]);
       assert.match(await settledText(off), /Community-calendar auto-sync \*\*off\*\*\./);
