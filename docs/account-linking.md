@@ -89,6 +89,7 @@ Fluxer uses named-style plain arguments (`!link connect LNK-…`, `!link config 
 Gork's memory extraction writes what it learns about a person into that community's memory ([Gork](gork.md)). With memory mirroring on:
 
 - **Writes fan out.** Each memory stored about a linked user is also stored for their linked account in the paired community, with the same content, date, and importance.
+- **Mirror rows are separate rows.** They are keyed under an internal `lnk:` namespace, so a mirrored memory can never overwrite — or merge provenance with — a memory the linked account recorded for itself under the same title and date (#427). If both exist, both rows are simply visible. (Rows mirrored before that fix can share the local key space; they read fine, but their source-message provenance may be shared — prune via `/gork memory` in the target community if it matters.)
 - **Reads expand.** When gork answers in one community, the memory set it reads for a linked user includes the memories stored on the far side. Answers stay inside gork's normal memory budget — mirrored entries compete with local ones by importance and recency, they don't grow the budget.
 - **Staff tools stay local.** `/gork memory` (and `!gork memory`) shows and manages **this community's** rows only. Deleting or forgetting a memory on one side does **not** delete its mirror on the other (see Limitations).
 
