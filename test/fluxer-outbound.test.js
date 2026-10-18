@@ -1170,3 +1170,111 @@ describe("fluxer/outbound — guild-scope enforcement (#386)", () => {
     assert.deepEqual(hist.query, { limit: 50 }, "rebuilt-from-known-keys: the internal scope hint stays internal");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #384 (FLX-3): a partial presigned upload never lies about its state
+// ---------------------------------------------------------------------------
+
+describe("fluxer/outbound — presigned partial-failure honesty (#384)", () => {
+  const planItem = (i, over = {}) => ({
+    id: i,
+    filename: `f${i}.bin`,
+    file_size: 1,
+    content_type: "application/octet-stream",
+    upload_mode: "singlepart",
+    upload_url: `https://media.test/u/${i}?grant=SIGNED`,
+    upload_filename: `stored-${i}`,
+    ...over,
+  });
+
+  function twoFileHarness({ planOf = (i) => planItem(i), failPutOn = null, claimRoute = { id: "never" } } = {}) {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/7/attachments": { attachments: [planOf(0), planOf(1)] },
+        "POST /v1/channels/7/messages": claimRoute,
+      },
+    });
+    const puts = [];
+    const outbound = createFluxerOutbound(
+      { instanceKey: INSTANCE, userId: "bot-1", rest, features: { presignedAttachmentUploads: true } },
+      {
+        fetch: async (url) => {
+          puts.push(url);
+          if (failPutOn != null && url.includes(failPutOn)) return { ok: false, status: 413 };
+          return { ok: true };
+        },
+      },
+    );
+    const files = [
+      { name: "first.bin", data: Buffer.from("A"), contentType: "application/octet-stream" },
+      { name: "second.bin", data: Buffer.from("B"), contentType: "application/octet-stream" },
+    ];
+    return { rest, puts, outbound, files };
+  }
+
+  const claimed = (rest) =>
+    rest.calls.some((c) => c.method === "POST" && c.path === "/v1/channels/7/messages");
+
+  it("a LATER item missing upload_url is caught BEFORE the first PUT (the lie dies here)", async () => {
+    const { rest, puts, outbound, files } = twoFileHarness({
+      planOf: (i) => (i === 1 ? { ...planItem(1), upload_url: undefined } : planItem(i)),
+    });
+
+    const res = await outbound.sendChannel("7", { files });
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /no upload_url for files\[1\] \("second\.bin"\)/);
+    assert.equal(puts.length, 0, "#384: the pre-pass refuses the WHOLE plan up front — pre-fix, files[0] was PUT and then the error claimed nothing was uploaded");
+    assert.equal(claimed(rest), false);
+    assert.ok(res.error.includes("nothing was uploaded"), "the sentence is finally TRUE");
+  });
+
+  it("an item missing upload_filename is refused up front (no bytes, no doomed claim)", async () => {
+    const { rest, puts, outbound, files } = twoFileHarness({
+      planOf: (i) => (i === 0 ? { ...planItem(0), upload_filename: "" } : planItem(i)),
+    });
+
+    const res = await outbound.sendChannel("7", { files });
+
+    assert.equal(res.ok, false);
+    assert.match(res.error, /no upload_filename for files\[0\]/);
+    assert.equal(puts.length, 0, "the live claim schema REQUIRES upload_filename — discovering that at CLAIM time meant both files had already been PUT");
+    assert.equal(claimed(rest), false, "a claim that the API must reject is never sent");
+  });
+
+  it("a mid-loop PUT failure names the files ALREADY uploaded", async () => {
+    const { rest, puts, outbound, files } = twoFileHarness({ failPutOn: "/u/1?" });
+
+    const res = await outbound.sendChannel("7", { files });
+
+    assert.equal(res.ok, false);
+    assert.equal(puts.length, 2, "file 0 was PUT, file 1 failed");
+    assert.match(res.error, /presigned upload 1/);
+    assert.match(res.error, /HTTP 413/);
+    assert.match(
+      res.error,
+      /1 of 2 file\(s\) were ALREADY uploaded.*files\[0\.\.0\].*first\.bin/,
+      "#384 rule 5: the operator learns bytes moved and WHICH objects are now orphaned — not 'nothing failed quietly'",
+    );
+    assert.ok(!res.error.includes("SIGNED"), "the signed grant still never rides the error");
+  });
+
+  it("a failed CLAIM after all uploads says so — with the orphan list", async () => {
+    const { puts, outbound, files } = twoFileHarness({
+      claimRoute: () => {
+        throw new Error("400 CLAIM_REJECTED: stored set expired");
+      },
+    });
+
+    const res = await outbound.sendChannel("7", { files });
+
+    assert.equal(res.ok, false);
+    assert.equal(puts.length, 2);
+    assert.match(
+      res.error,
+      /All 2 file\(s\) uploaded before the claim failed \(first\.bin, second\.bin\).*orphaned/,
+      "the message references the real state: bytes moved, message never came",
+    );
+    assert.match(res.error, /CLAIM_REJECTED/, "the specific server cause still leads");
+  });
+});
