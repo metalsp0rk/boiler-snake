@@ -171,15 +171,26 @@ describe("gork memory fan-out across linked accounts (T5 integration)", () => {
     assert.equal(still.length, 2, "mirror_memory=0 fully stops write fan-out");
     assert.ok(!still.some((r) => r.title === "Hates Meetings"), "no target row for the third memory");
 
-    // Read fan-out is NOT gated by mirror_memory (existence rule): the
-    // "Hates Meetings" row was written LOCALLY on the Fluxer side (primary
-    // writes always land) and must still be visible to the Discord side.
+    // #425 (audit LT-11): the switch now gates the READ leg too. The
+    // "Hates Meetings" row exists ONLY on the Fluxer side (primary writes
+    // always land, the mirror write was refused) — with the switch OFF the
+    // Discord gork must NOT see it. Pre-fix, reads followed mere link
+    // existence and "memory mirroring: off" quietly leaked every row.
     const roster = { entries: new Map([["disc-1", { id: "disc-1", handle: "alice", display: "Alice" }]]) };
-    const out = mem.loadMemoryContext({ communityId: dcCid, roster, budgetChars: 12000, botId: null });
-    assert.ok(out.block.includes('"Loves Rust"'), "read fan-out spans the link");
-    assert.ok(out.block.includes("Hates Meetings"), "read fan-out ignores mirror_memory (existence, not the switch)");
+    const outOff = mem.loadMemoryContext({ communityId: dcCid, roster, budgetChars: 12000, botId: null });
+    assert.ok(
+      !outOff.block.includes("Hates Meetings"),
+      "#425: read fan-out STOPS with mirror_memory=0 (RED pre-fix: it always crossed)",
+    );
 
+    // Back on = the read leg spans the link again (the switch is the whole
+    // story in both directions, no hidden existence rule left).
     api.setUserLinkMirrorMemory(dcCid, "disc-1", true); // restore for later suites
+    const outOn = mem.loadMemoryContext({ communityId: dcCid, roster, budgetChars: 12000, botId: null });
+    assert.ok(
+      outOn.block.includes("Hates Meetings"),
+      "read fan-out spans the link again once the switch is on",
+    );
   });
 
   it("loadMemoryContext in the Discord community reads the Fluxer-side memory (budget applies)", () => {
@@ -240,6 +251,26 @@ describe("gork memory fan-out across linked accounts (T5 integration)", () => {
       [...localRows, ...remoteRows].map((r) => r.id),
       "found ids: local rows first, then the counterpart's (cap 15, shared)",
     );
+
+    // #425 (audit LT-11): with mirror_memory OFF the recall must drop every
+    // counterpart row — the switch governs this leg too now. (RED pre-fix:
+    // the list always crossed, whatever the switch said.)
+    api.setUserLinkMirrorMemory(dcCid, "disc-1", false);
+    const offText = await recallTool.executeRecallMemory(
+      { subject_user_id: "disc-1" },
+      { communityId: dcCid },
+    );
+    assert.ok(!offText.startsWith("Memory recall unavailable"), offText);
+    for (const r of remoteRows) {
+      assert.ok(
+        !offText.includes(`#${r.id} — `),
+        `#${r.id} stays on its own side with the switch off:\n${offText}`,
+      );
+    }
+    for (const r of localRows) {
+      assert.ok(offText.includes(`#${r.id} — `), `local rows must remain:\n${offText}`);
+    }
+    api.setUserLinkMirrorMemory(dcCid, "disc-1", true); // restore for later suites
 
     // getById path: a Fluxer-side row id is NOT fetchable from the Discord
     // community — #id handles stay community-scoped by design.
