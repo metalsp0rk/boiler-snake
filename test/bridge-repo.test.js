@@ -590,6 +590,28 @@ describe("bridge repo (PR 2)", () => {
       assert.throws(() => api.upsertBridgeSrcSnapshot(bridge.id, "m", ""), /contentHash/);
     });
 
+    it("pruneBridgeMessageRelay deletes ONLY that message's rows, counted (#411/BRG-5)", () => {
+      const bridge = makeBridge({ endAChannelId: "400000000000000007" });
+      api.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: guildA, srcMessageId: "m-keep", partIndex: 0, dstMessageId: "d-keep" });
+      api.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: guildA, srcMessageId: "m-gone", partIndex: 0, dstMessageId: "d-gone-0" });
+      api.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: guildA, srcMessageId: "m-gone", partIndex: 1, dstMessageId: "d-gone-1" });
+      api.upsertBridgeSrcSnapshot(bridge.id, "m-gone", "h-gone");
+      api.upsertBridgeSrcSnapshot(bridge.id, "m-keep", "h-keep");
+
+      assert.deepEqual(api.pruneBridgeMessageRelay(bridge.id, "m-gone"), { links: 2, snapshots: 1 });
+      assert.equal(api.listBridgeMessageLinks(bridge.id, "m-gone").length, 0, "gone message's links are gone");
+      assert.equal(api.getBridgeSrcSnapshot(bridge.id, "m-gone"), null, "the edit-coalescing snapshot goes too");
+      assert.equal(api.listBridgeMessageLinks(bridge.id, "m-keep").length, 1, "the neighbour keeps its copy rows");
+      assert.ok(api.getBridgeSrcSnapshot(bridge.id, "m-keep"), "and its snapshot");
+
+      assert.deepEqual(api.pruneBridgeMessageRelay(bridge.id, "m-gone"), { links: 0, snapshots: 0 }, "exactly idempotent");
+
+      const other = makeBridge({ endAChannelId: "400000000000000008" });
+      api.addBridgeMessageLink({ bridgeId: other.id, srcCommunityId: guildA, srcMessageId: "m-gone", partIndex: 0, dstMessageId: "d-other" });
+      api.pruneBridgeMessageRelay(bridge.id, "m-gone");
+      assert.equal(api.listBridgeMessageLinks(other.id, "m-gone").length, 1, "scoped to THIS bridge — same src id elsewhere survives");
+    });
+
     it("markBridgeBroken only fires on active rows; last_error round-trips", () => {
       const bridge = makeBridge({ endAChannelId: "400000000000000006" });
       assert.equal(api.markBridgeBroken(bridge.id, "channel gone"), false, "pending never becomes broken");

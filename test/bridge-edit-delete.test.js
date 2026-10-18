@@ -972,7 +972,7 @@ describe("bridge edit/delete relay (PR 6)", () => {
   // 9. A second delete after `done` enqueues cleanly (idempotent 404 = ok)
   // -------------------------------------------------------------------------
 
-  it("a second delete after `done` enqueues cleanly and re-runs idempotently", async () => {
+  it("a second delete after `done` enqueues cleanly and drains with no work (#411 pruning)", async () => {
     const { bridge, channelA } = seedBridge("a_to_b");
     relay.clearRelayState();
     const msgId = snowflakeNow();
@@ -991,27 +991,17 @@ describe("bridge edit/delete relay (PR 6)", () => {
     assert.equal(f10.deleteCalls.length, 1);
     assert.equal(repo.getBridgeById(bridge.id).last_error, null, "a clean delete clears last_error");
 
-    // The source deletes the (already-removed) message again: enqueues cleanly.
+    // #411 changed the repeat: the first delete's completion PRUNED the
+    // links rows (copies gone = no future reader), and the enqueue gate
+    // refuses deletes with NO linked copy — so a re-delivered delete event
+    // is now a total no-op AT THE GATE (previously it queued a row whose
+    // transport leg could only 404 into success). Same final state, no
+    // work, no row churn.
+    assert.equal(repo.listBridgeMessageLinks(bridge.id, msgId).length, 0, "#411: links pruned with the first delete");
     const second = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
-    assert.ok(second?.enqueued, "a repeat delete after done enqueues cleanly");
-    // The terminal row is replaced in place: UNIQUE(bridge, direction, src,
-    // kind) allows exactly ONE delete row per source id, and SQLite reuses
-    // the freed rowid (no AUTOINCREMENT), so the id may repeat — the count
-    // is what must not grow.
-    assert.equal(
-      outboxCount(bridge.id, "delete"),
-      1,
-      "the re-queue replaces the done row, it never stacks a second one",
-    );
-    worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? f10 : null) });
-    await worker.drainAll();
-    assert.equal(repo.getBridgeOutboxById(second.outboxId).state, "done", "404 on a part is success");
-    assert.equal(f10.deleteCalls.length, 2, "the copy is re-targeted by id (idempotent)");
-    assert.equal(
-      outboxCount(bridge.id, "delete"),
-      1,
-      "the terminal (done) row is replaced by the fresh one — one row per queued delete",
-    );
+    assert.equal(second, null, "a repeat delete with pruned links enqueues NOTHING — there is no copy left to remove");
+    assert.equal(outboxCount(bridge.id, "delete"), 1, "the terminal (done) row stays as history until disconnect");
+    assert.equal(f10.deleteCalls.length, 1, "the transport is never re-targeted at dead ids");
   });
 
   // -------------------------------------------------------------------------
@@ -1369,5 +1359,74 @@ describe("bridge edit/delete relay (PR 6)", () => {
       false,
       "the parked row's stranded spool dir dies with the supersession (#412/BRG-6)",
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // #411 (BRG-5): delete-relay drains PRUNE the links + snapshot rows —
+  // they had no future reader and grew the echo-gate reload forever.
+  // -------------------------------------------------------------------------
+
+  it("#411 delete-relay done prunes the source message's links AND snapshot", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex: 0, dstMessageId: "dst-411a" });
+    repo.upsertBridgeSrcSnapshot(bridge.id, msgId, "hash-411");
+    const del = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(del?.enqueued);
+
+    const api = scriptedApi("f411a");
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? api : null) });
+    await worker.drainAll();
+
+    assert.equal(repo.getBridgeOutboxById(del.outboxId).state, "done");
+    assert.equal(repo.listBridgeMessageLinks(bridge.id, msgId).length, 0, "the copy is gone — its links row must not outlive it");
+    assert.equal(repo.getBridgeSrcSnapshot(bridge.id, msgId), null, "the source message is gone — its edit-coalescing row is dead weight");
+    assert.equal(worker.notices.length, 0, "a clean delete+prune is silent");
+  });
+
+  it("#411 a PARKED delete KEEPS its links — the copy may still be alive", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex: 0, dstMessageId: "dst-411b" });
+    const del = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(del?.enqueued);
+
+    const api = scriptedApi("f411b", {
+      del: Array.from({ length: 5 }, () => ({ ok: false, error: "HTTP 500 boom" })),
+    });
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? api : null) });
+    await worker.drainAll();
+
+    assert.equal(repo.getBridgeOutboxById(del.outboxId).state, "failed", "the delete parked (existing contract)");
+    assert.equal(repo.listBridgeMessageLinks(bridge.id, msgId).length, 1, "parked ≠ gone — a staff re-run still needs the destination id");
+    assert.equal(repo.getBridgeById(bridge.id).state, "active");
+  });
+
+  it("#411 the webhook-gone skip-drain prunes too (copies died WITH the webhook)", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex: 0, dstMessageId: "dst-411c" });
+    const del = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(del?.enqueued);
+
+    // Delete → UNKNOWN_WEBHOOK → recreate REFUSED (no channel gone) → §10.10
+    // SKIP drain: webhook deletion cascade-killed the copies, so the links
+    // rows point at nothing — pruned with the drain.
+    const api = {
+      async deleteRelayMessage() {
+        return { ok: false, error: "Unknown Webhook (status 404, code 10015)", code: "10015" };
+      },
+      async createRelayWebhook() {
+        return { ok: false, error: "createRelayWebhook: Missing Permissions (code 50013)" };
+      },
+    };
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? api : null) });
+    await worker.drainAll();
+
+    assert.equal(repo.getBridgeOutboxById(del.outboxId).state, "done", "skipped = drained (existing §10.10 contract)");
+    assert.equal(repo.listBridgeMessageLinks(bridge.id, msgId).length, 0, "#411: the skip means GONE copies — dead links go with them");
   });
 });
