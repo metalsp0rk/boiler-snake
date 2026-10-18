@@ -17,9 +17,10 @@ const { api: dbApi, cleanup } = loadDb();
 const pipelines = require("../src/bot/pipelines");
 const { buildDefaultRegistry } = require("../src/commands/registry");
 const { normalizeFluxerMessage } = require("../src/platform/fluxer/normalize");
-const { ensureCommunity } = require("../src/platform/community");
+const { ensureCommunity, getCommunityByExternal } = require("../src/platform/community");
 const users = require("../src/db/repositories/users");
 const { getGuildSettings } = require("../src/db/repositories/guildSettings");
+const xpFeature = require("../src/features/xp");
 const { makeFakeRest, makeFakeHandle, gatewayMessage } = require("./helpers/fluxer");
 
 after(cleanup);
@@ -64,6 +65,45 @@ describe("fluxer pipeline — message XP awarding", () => {
       xp,
       gain,
       `expected exactly one msg_xp award (${gain}) for the Fluxer author`,
+    );
+  });
+
+  // ── #431 (audit XE-4): the communityId fallback must honor the PLATFORM ──
+  it("an unresolved Fluxer communityId mints a FLUXER row, never a phantom discord one (#431)", async () => {
+    const GUILD2 = "1554590611015729153";
+    const message = normalizeFluxerMessage(
+      {
+        t: "MESSAGE_CREATE",
+        d: gatewayMessage({
+          content: "fallback chatter for 431",
+          channel_id: CHANNEL,
+          guild_id: GUILD2,
+        }),
+      },
+      { instanceKey: INSTANCE },
+    );
+    // Simulate the pipeline's community-resolve catch firing: it logs and
+    // DELIBERATELY continues (pipelines.js), so the shared XP step receives
+    // a fluxer-platform message with NO communityId.
+    assert.ok(message.communityId == null, "normalized shape starts without communityId");
+    assert.equal(message.platform, "fluxer");
+
+    const { outbound } = makeFakeHandle({ rest: makeFakeRest({ routes: {} }) });
+    await xpFeature.tryAwardMessageXp(outbound, message, {});
+
+    const fluxerId = getCommunityByExternal("fluxer", INSTANCE, GUILD2);
+    assert.ok(fluxerId, "the fallback resolves the FLUXER community for the message's platform");
+    assert.equal(
+      getCommunityByExternal("discord", "discord", GUILD2),
+      null,
+      "NO phantom discord row keyed by a Fluxer guild id (RED: the old hardcoded fallback minted exactly that)",
+    );
+    const gain = Number(getGuildSettings(fluxerId).msg_xp) || 0;
+    assert.ok(gain > 0);
+    assert.equal(
+      users.getXp(fluxerId, message.authorId),
+      gain,
+      "the award lands under the FLUXER community, not the phantom discord one",
     );
   });
 });
