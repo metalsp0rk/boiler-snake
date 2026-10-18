@@ -16,7 +16,7 @@
  *    ⇒ STAFF tier (slash /leveltorole gates on isStaff — handler parity,
  *    NOT the ManageGuild picker default);
  *  - CSRF auto-enforcement on /g/ mutations (missing/bad _csrf ⇒ 403 with
- *    zero db/audit side effects; X-CSRF-Token header accepted — htmx path);
+ *    zero db/audit side effects; X-CSRF-Token header accepted — JS path);
  *  - happy paths: 302 → /g/:guildId/staff (POST-Redirect-GET), correct
  *    staff_roles / level_roles rows via the SAME db helpers the slash calls
  *    (addStaffRole upsert parity, setStaffRoleLevel row-required + same-
@@ -505,7 +505,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
       assert.equal(api.getStaffRole(CID_A, ROLE_NEW).level, "senior", "then applied");
     });
 
-    it("X-CSRF-Token header instead of the form field works (htmx path)", async () => {
+    it("X-CSRF-Token header instead of the form field works (JS path)", async () => {
       const { res } = await post(`/g/${CID_A}/staff/role/remove`, {
         cookie: cookieOf.admin,
         headers: { "X-CSRF-Token": csrfOf.admin },

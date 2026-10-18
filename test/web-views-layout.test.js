@@ -20,8 +20,8 @@
  *     traversal/dotfile gates, /t + /health untouched;
  *  D. guildAccess.listGuilds — switcher source (sorted, id-fallback names,
  *     degraded fallback keeps names, anon reauth flag);
- *  E. vendored htmx — version banner first bytes, size floor; app.js
- *     hx-headers wiring present.
+ *  E. vendored assets — chart.js artifact + license; and the #459 PURGE
+ *     guard: the dead htmx library stays OUT (no file, no tag, no wiring).
  */
 
 const { describe, it, before, after } = require("node:test");
@@ -94,7 +94,6 @@ let savedEnv;
 
 const PUBLIC_DIR = path.join(__dirname, "..", "src", "web", "public");
 const VENDOR_DIR = path.join(PUBLIC_DIR, "vendor");
-const VENDOR_FILE = path.join(VENDOR_DIR, "htmx.2.0.10.min.js");
 const CHART_VENDOR_FILE = path.join(VENDOR_DIR, "chart.4.5.1.min.js");
 const CHART_LICENSE_FILE = path.join(VENDOR_DIR, "LICENSE.md");
 
@@ -221,7 +220,7 @@ describe("layout (shell chrome)", () => {
   it("every <script> tag carries the per-response nonce", () => {
     const doc = String(renderShellPage(fakeReq(), { title: "Console" }));
     const scripts = doc.match(/<script[^>]*>/g);
-    assert.ok(scripts && scripts.length >= 2, "htmx + app.js");
+    assert.ok(scripts && scripts.length >= 2, "Chart.js + app.js");
     for (const tag of scripts) {
       assert.ok(tag.includes(`nonce="TESTNONCE123"`), tag);
       assert.ok(tag.includes('src="/static/'), "external files only");
@@ -557,12 +556,13 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
       }
     });
 
-    it("serves the vendored htmx (banner is the first byte, lib intact)", async () => {
+    it("#459: the purged htmx build 404s and no view references it", async () => {
+      // htmx processed ZERO elements (no hx-* attribute existed anywhere) yet
+      // every page shipped its 48 KB + an XSS-typed API. Gone for good:
       const res = await fetch(`${base}/static/vendor/htmx.2.0.10.min.js`);
-      assert.equal(res.status, 200);
-      const text = await res.text();
-      assert.ok(text.startsWith("/*! htmx.org v2.0.10"), "version-stamped banner first");
-      assert.ok(text.includes("var htmx=function", "library bytes follow verbatim"));
+      assert.equal(res.status, 404, "the dead library is not served");
+      const doc = String(renderShellPage(fakeReq(), { title: "Console" }));
+      assert.ok(!doc.includes("htmx"), "no shell page loads it");
     });
 
     it("serves the vendored chart.js UMD (banner first, immutable cache)", async () => {
@@ -744,22 +744,18 @@ describe("guildAccess.listGuilds", () => {
 // ===========================================================================
 // E. vendored assets on disk (§8.1-2)
 // ===========================================================================
-describe("vendored htmx + app.js wiring", () => {
-  it("vendor file is version-stamped and intact (no CDN, no build step)", () => {
-    const text = fs.readFileSync(VENDOR_FILE, "utf8");
-    assert.match(text, /^\/\*! htmx\.org v2\.0\.10 /, "banner first bytes with version");
-    assert.ok(text.includes("MIT"));
-    assert.ok(text.includes("var htmx=function", "library follows the banner"));
-    assert.ok(text.length > 50_000, "full minified build");
+describe("vendored assets + app.js wiring (#459 purge guard)", () => {
+  it("vendor dir holds EXACTLY the live artifacts — htmx stays dead", () => {
     const dir = fs.readdirSync(VENDOR_DIR).sort();
     assert.deepEqual(
       dir,
-      ["LICENSE.md", "chart.4.5.1.min.js", "htmx.2.0.10.min.js"],
-      "exactly the pinned artifacts committed (§8.7: one LICENSE.md beside the vendored chart.js)"
+      ["LICENSE.md", "chart.4.5.1.min.js"],
+      "#459: exactly the pinned artifacts committed (§8.7) — re-adding htmx needs a real hx-* consumer, not a vibe"
     );
+    assert.equal(fs.existsSync(path.join(VENDOR_DIR, "htmx.2.0.10.min.js")), false);
   });
 
-  // Vendored Chart.js (Phase 4 charts, §8.7 procedure mirrored from htmx):
+  // Vendored Chart.js (Phase 4 charts, §8.7 procedure):
   // the artifact is the npm tarball's package/dist/chart.umd.min.js byte for
   // byte — sha512 GIjfiT9dbmHRiYi6Nl2yFCq7kkwdkp1W/lp2J99rX0yo9tgJGn3lKQAT
   // ztIjb5tVtevcBtIdICNWqlq5+E8/Pw== of chart.js-4.5.1.tgz (verified 2026-09-25
@@ -797,11 +793,10 @@ describe("vendored htmx + app.js wiring", () => {
     assert.equal(CHART_SRC, "/static/vendor/chart.4.5.1.min.js", "version in the FILENAME (§8.7 cache-buster)");
     assert.doesNotMatch(CHART_SRC, /\?v=/, "filename is the buster — no query needed");
     const doc = String(renderShellPage(fakeReq(), { title: "Console" }));
-    const h = doc.indexOf("htmx.2.0.10.min.js");
     const c = doc.indexOf("chart.4.5.1.min.js");
     const a = doc.indexOf("app.js?v=");
-    assert.ok(h !== -1 && c !== -1 && a !== -1, "all three scripts present");
-    assert.ok(h < c && c < a, "defer order: htmx → Chart.js → app.js (Chart exists before use)");
+    assert.ok(c !== -1 && a !== -1, "both scripts present");
+    assert.ok(c < a, "defer order: Chart.js → app.js (Chart exists before use)");
     const tag = /<script[^>]*chart\.4\.5\.1\.min\.js[^>]*>/.exec(doc)[0];
     assert.ok(tag.includes(`nonce="TESTNONCE123"`), "nonce attribute rides every script tag");
     assert.ok(tag.includes("defer"), "deferred classic script from self");
@@ -824,17 +819,17 @@ describe("vendored htmx + app.js wiring", () => {
     assert.ok(fs.existsSync(path.join(PUBLIC_DIR, "app.js")));
   });
 
-  it("app.js wires htmx's X-CSRF-Token header from the body's csrf attribute", () => {
+  it("#459: app.js carries NO htmx wiring but keeps the csrf token source", () => {
     const src = fs.readFileSync(path.join(PUBLIC_DIR, "app.js"), "utf8");
-    assert.ok(src.includes("htmx:configRequest"), "hx-headers wiring via configRequest");
-    assert.ok(src.includes("X-CSRF-Token"), "the header csrf.js reads");
-    assert.ok(src.includes('getAttribute("data-csrf-token")'), "reads data-csrf-token");
+    assert.ok(!src.match(/\bhtmx:configRequest|window\.htmx\b/), "the dead library's wiring is gone for good");
+    assert.ok(src.includes('getAttribute("data-csrf-token")'), "the token source for any scripted request remains");
     assert.ok(!/\son[a-z]+\s*=/.test(src), "no inline handlers in the shell JS either");
   });
 
   it("layout references resolve to files that exist under public/", () => {
-    const { HTMX_SRC, CHART_SRC, APP_SRC, STYLES_SRC } = require("../src/web/views/layout");
-    for (const srcPath of [HTMX_SRC, CHART_SRC, APP_SRC, STYLES_SRC]) {
+    const { CHART_SRC, APP_SRC, STYLES_SRC } = require("../src/web/views/layout");
+    // #459: HTMX_SRC is no longer exported — every reference must resolve.
+    for (const srcPath of [CHART_SRC, APP_SRC, STYLES_SRC]) {
       assert.ok(srcPath.startsWith("/static/"), srcPath);
       const abs = path.join(PUBLIC_DIR, srcPath.replace("/static/", "").split("?")[0]);
       assert.ok(fs.existsSync(abs), `${srcPath} → ${abs} missing`);
@@ -844,7 +839,7 @@ describe("vendored htmx + app.js wiring", () => {
   it("app.js chart client is progressive enhancement with destroy hygiene", () => {
     const src = fs.readFileSync(path.join(PUBLIC_DIR, "app.js"), "utf8");
     assert.ok(src.includes('querySelectorAll("[data-chart-src]")'), "detects SSR chart hooks");
-    assert.ok(src.includes("getChart"), "Chart.getChart destroy guard before instantiate (htmx-swap safety)");
+    assert.ok(src.includes("getChart"), "Chart.getChart destroy guard before instantiate (no canvas double-instantiation)");
     assert.ok(src.includes(".destroy()"), "previous instance destroyed, never leaked");
     assert.ok(
       src.includes("maintainAspectRatio: false"),

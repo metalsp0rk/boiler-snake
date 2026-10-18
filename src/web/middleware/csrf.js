@@ -11,7 +11,7 @@
  *    there are two cookies (`web_session`, `web_session_fx`) and the token
  *    derives from the session that MATCHES the community the request targets
  *    (see communityMatchedSessionId) — never "whichever cookie parsed first";
- *  - the SUBMITTED side is read from the `X-CSRF-Token` header (htmx) or the
+ *  - the SUBMITTED side is read from the `X-CSRF-Token` header (JS requests) or the
  *    `_csrf` form field and must equal the derived token;
  *  - equality is compared with crypto.timingSafeEqual over fixed-length hex
  *    (§8.7: no timing-unsafe comparisons for tokens).
@@ -38,7 +38,8 @@ const { getSessionSecret, getRateLimitConfig } = require("../config");
 const { parseCommunityIdParam } = require("../shared/snowflake");
 const { getCommunityById } = require("../../platform/community");
 
-/** Header the htmx front end sends (§8.7: "form + X-CSRF-Token for htmx"). */
+/** Header a scripted request may send (#459: forms use `_csrf`; no page sends
+ *  the header today — kept as the documented JS channel, same token). */
 const CSRF_HEADER = "x-csrf-token";
 /** Hidden form field name for plain <form method=post> posts. */
 const CSRF_FORM_FIELD = "_csrf";
@@ -356,7 +357,7 @@ function createCsrfGuard({ getSecret, getSessionId, maxBodyBytes }) {
  * App-level CSRF middleware factory (pure: all deps injectable, standalone
  * testable). Mount globally AFTER the session middleware (which sets
  * req.webSession). On every request it attaches:
- *  - `req.csrfToken` — the token views/htmx must embed (null for anonymous
+ *  - `req.csrfToken` — the token views must embed (null for anonymous
  *    or unconfigured secret), and
  *  - `req.requireCsrf` — the same guard, for per-route opt-in outside the
  *    automatic /g/ + /auth/ scope.

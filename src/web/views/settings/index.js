@@ -11,7 +11,7 @@
  *
  * FORM CONTRACT (Phase 2, §8.6/§8.7):
  *  - every form embeds the session CSRF token as a hidden `_csrf` field
- *    (the app-level CSRF middleware enforces it on /g/ mutations; htmx gets
+ *    (the app-level CSRF middleware enforces it on /g/ mutations; JS gets
  *    the same token via the shell's data-csrf-token attribute);
  *  - no inline JS, no on* handlers — plain progressive forms, PRG responses
  *    (302 → ?ok|err=<cluster>) whose whitelisted flag re-renders as one of

@@ -457,7 +457,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       }
     });
 
-    it("X-CSRF-Token header (htmx path) works without the form field", async () => {
+    it("X-CSRF-Token header (JS path) works without the form field", async () => {
       const { res, location } = await post(`${INTEG_BASE()}/youtube/interval`, {
         fields: { minutes: "9" },
         token: null, // NO form field at all — header only
