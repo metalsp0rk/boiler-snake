@@ -110,9 +110,16 @@ describe("gork memory fan-out across linked accounts (T5 integration)", () => {
     assert.equal(mirror.length, 1, "mirror row lands on the linked (community, user) tuple");
 
     // Identical content fields (upsert stamps fresh created_at/updated_at).
-    for (const key of ["mem_date", "title", "title_key", "body", "kind", "importance", "source_message_ids"]) {
+    // #427: title_key is NAMESPACE-PREFIXED on the mirror — everything
+    // else still rides over byte-identically.
+    for (const key of ["mem_date", "title", "body", "kind", "importance", "source_message_ids"]) {
       assert.equal(mirror[0][key], local[0][key], `${key} must ride over byte-identically`);
     }
+    assert.equal(
+      mirror[0].title_key,
+      `lnk:${local[0].title_key}`,
+      "#427: mirror keys are namespaced away from the peer's own local rows",
+    );
     assert.equal(mirror[0].subject_user_id, "disc-1");
     assert.equal(mirror[0].community_id, dcCid);
     assert.notEqual(mirror[0].id, local[0].id, "mirror is a NEW row, not a re-key");
@@ -281,5 +288,96 @@ describe("gork memory fan-out across linked accounts (T5 integration)", () => {
     assert.equal(res.stored, 1, "unlinked communities store locally with zero fan-out");
     assert.equal(res.warnings, undefined);
     assert.equal(api.gorkMemoryListForSubject(solo, "solo-user").length, 1);
+  });
+
+  // ── #427 (audit LT-13): the mirror key space NEVER touches local rows ──────
+
+  it("#427 a mirror write cannot overwrite the peer's own local memory row", () => {
+    const memDate = new Date().toISOString().slice(0, 10);
+    // B's own local row, same (subject, date, titleKey) the mirror wants.
+    api.gorkMemoryUpsert(
+      {
+        communityId: dcCid,
+        subjectUserId: "disc-1",
+        memDate,
+        title: "Preferred Name",
+        titleKey: "preferred name",
+        body: "B records for themselves: Dot",
+        kind: "profile",
+        importance: 5,
+        sourceMessageIds: ["own-1"],
+      },
+      25,
+    );
+    const warnings = [];
+    mem.fanOutMemoryWrite(api, {
+      communityId: fxCid,
+      entry: {
+        communityId: fxCid,
+        subjectUserId: "flux-1",
+        memDate,
+        title: "Preferred Name",
+        titleKey: "preferred name",
+        body: "A's gork says: prefers Dot",
+        kind: "profile",
+        importance: 4,
+        sourceMessageIds: ["a-msg-1"],
+      },
+      warnings,
+      expand: () => ({
+        targets: [
+          { targetCommunityId: dcCid, targetUserId: "disc-1", mirrorMemory: true },
+        ],
+      }),
+    });
+    assert.deepEqual(warnings, [], "clean fan-out");
+
+    const rows = api.gorkMemoryListForSubject(dcCid, "disc-1");
+    const own = rows.find((r) => r.title_key === "preferred name");
+    const mirror = rows.find((r) => r.title_key === "lnk:preferred name");
+
+    // RED on old code: the mirror's upsert key EQUALLED the local one —
+    // own.body got replaced and own.source_message_ids merged with A's.
+    assert.equal(own.body, "B records for themselves: Dot", "local body survives");
+    assert.deepEqual(JSON.parse(own.source_message_ids), ["own-1"], "local provenance untouched");
+    assert.ok(mirror, "the mirror lands as its OWN row");
+    assert.equal(mirror.body, "A's gork says: prefers Dot");
+    assert.deepEqual(JSON.parse(mirror.source_message_ids), ["a-msg-1"]);
+  });
+
+  it("#427 re-mirroring updates the lnk row idempotently (never grows a duplicate, never B's row)", () => {
+    const memDate = new Date().toISOString().slice(0, 10);
+    const fan = (body) =>
+      mem.fanOutMemoryWrite(api, {
+        communityId: fxCid,
+        entry: {
+          communityId: fxCid,
+          subjectUserId: "flux-1",
+          memDate,
+          title: "Preferred Name",
+          titleKey: "preferred name",
+          body,
+          kind: "profile",
+          importance: 4,
+          sourceMessageIds: ["a-msg-2"],
+        },
+        warnings: [],
+        expand: () => ({
+          targets: [
+            { targetCommunityId: dcCid, targetUserId: "disc-1", mirrorMemory: true },
+          ],
+        }),
+      });
+    fan("A updated: prefers Dod");
+
+    const rows = api.gorkMemoryListForSubject(dcCid, "disc-1");
+    const lnkRows = rows.filter((r) => r.title_key === "lnk:preferred name");
+    assert.equal(lnkRows.length, 1, "one mirror row, updated in place");
+    assert.equal(lnkRows[0].body, "A updated: prefers Dod");
+    assert.equal(
+      rows.find((r) => r.title_key === "preferred name").body,
+      "B records for themselves: Dot",
+      "B's row STILL untouched",
+    );
   });
 });
