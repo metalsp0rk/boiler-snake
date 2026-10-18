@@ -25,6 +25,30 @@ const { ensureCommunity } = require("../../platform/community");
 const { applyTicketOverwrites } = require("./overwrites");
 const { softCloseTicket, archiveTicketPipeline } = require("./close");
 const { formatTicketRef, MSG_DENIED } = require("../../core/theme");
+
+/**
+ * #422 (audit LT-5): run a lifecycle overwrite push and turn a failure into a
+ * STAFF-VISIBLE warning line instead of a console-only secret. The DB state is
+ * already committed when this runs — the reply must not claim a completeness
+ * the API call did not deliver (rule 5; the close.js warnings pattern).
+ *
+ * @param {string} label handler label for the operator log line
+ * @param {() => Promise<unknown>} run the applyTicketOverwrites invocation
+ * @returns {Promise<string|null>} the user-facing warning, or null on success
+ */
+async function runOverwritesWithWarning(label, run) {
+  try {
+    await run();
+    return null;
+  } catch (err) {
+    console.warn(`[tickets] ${label} overwrites:`, err?.message || err);
+    return (
+      "\u26a0\ufe0f Recorded, but channel permissions could NOT be updated " +
+      `(${err?.message || err}) — visibility may not match the command yet. ` +
+      "Re-run it, or check the bot's access to this ticket channel."
+    );
+  }
+}
 const {
   COLOR_SENSITIVE,
   BTN_STAFF_NOTE_PREFIX,
@@ -413,7 +437,7 @@ async function handleClaim(commandCtx, ctx) {
       staff_owner_id: updated?.staff_owner_id ?? commandCtx.userId,
     },
   });
-  try {
+  const permWarning = await runOverwritesWithWarning("claim", async () => {
     if (channel) {
       await applyTicketOverwrites(channel, {
         guildId: commandCtx.externalGuildId,
@@ -422,12 +446,12 @@ async function handleClaim(commandCtx, ctx) {
         ticket: updated,
       });
     }
-  } catch (err) {
-    console.warn("[tickets] claim overwrites:", err?.message || err);
-  }
+  });
 
   await commandCtx.reply({
-    content: `You claimed ticket **${formatTicketRef(ticket.ticket_number)}**.`,
+    content: (
+        `You claimed ticket **${formatTicketRef(ticket.ticket_number)}**.`
+      ) + (permWarning ? "\n" + permWarning : ""),
     sensitive: true,
   });
   // In-channel notice via outbound (spec § Outbound client): failures are
@@ -479,7 +503,7 @@ async function handleTransfer(commandCtx, ctx) {
       staff_owner_id: updated?.staff_owner_id ?? staff.id,
     },
   });
-  try {
+  const permWarning = await runOverwritesWithWarning("transfer", async () => {
     if (channel) {
       await applyTicketOverwrites(channel, {
         guildId: commandCtx.externalGuildId,
@@ -488,12 +512,12 @@ async function handleTransfer(commandCtx, ctx) {
         ticket: updated,
       });
     }
-  } catch (err) {
-    console.warn("[tickets] transfer overwrites:", err?.message || err);
-  }
+  });
 
   await commandCtx.reply({
-    content: `Transferred ticket **${formatTicketRef(ticket.ticket_number)}** to <@${staff.id}>.`,
+    content: (
+        `Transferred ticket **${formatTicketRef(ticket.ticket_number)}** to <@${staff.id}>.`
+      ) + (permWarning ? "\n" + permWarning : ""),
     sensitive: true,
   });
   // Plain-string notice — byte-identical to the pre-seam channel.send and
@@ -542,7 +566,7 @@ async function handleAddUser(commandCtx, ctx) {
     });
   }
   const updated = getTicketById(ticket.id);
-  try {
+  const permWarning = await runOverwritesWithWarning("adduser", async () => {
     if (channel) {
       await applyTicketOverwrites(channel, {
         guildId: commandCtx.externalGuildId,
@@ -551,14 +575,14 @@ async function handleAddUser(commandCtx, ctx) {
         ticket: updated,
       });
     }
-  } catch (err) {
-    console.warn("[tickets] adduser overwrites:", err?.message || err);
-  }
+  });
 
   await commandCtx.reply({
-    content: added
+    content: (
+        added
       ? `Added <@${user.id}> to ticket **${formatTicketRef(ticket.ticket_number)}**.`
-      : `<@${user.id}> is already a member of this ticket.`,
+      : `<@${user.id}> is already a member of this ticket.`
+      ) + (permWarning ? "\n" + permWarning : ""),
     sensitive: true,
   });
 }
@@ -598,7 +622,7 @@ async function handleRemoveUser(commandCtx, ctx) {
   }
 
   const updated = getTicketById(ticket.id);
-  try {
+  const permWarning = await runOverwritesWithWarning("removeuser", async () => {
     if (channel) {
       await applyTicketOverwrites(channel, {
         guildId: commandCtx.externalGuildId,
@@ -607,12 +631,12 @@ async function handleRemoveUser(commandCtx, ctx) {
         ticket: updated,
       });
     }
-  } catch (err) {
-    console.warn("[tickets] removeuser overwrites:", err?.message || err);
-  }
+  });
 
   await commandCtx.reply({
-    content: `Removed <@${user.id}> from ticket **${formatTicketRef(ticket.ticket_number)}**.`,
+    content: (
+        `Removed <@${user.id}> from ticket **${formatTicketRef(ticket.ticket_number)}**.`
+      ) + (permWarning ? "\n" + permWarning : ""),
     sensitive: true,
   });
 }
@@ -652,7 +676,7 @@ async function handleAddStaff(commandCtx, ctx) {
     });
   }
   const updated = getTicketById(ticket.id);
-  try {
+  const permWarning = await runOverwritesWithWarning("addstaff", async () => {
     if (channel) {
       await applyTicketOverwrites(channel, {
         guildId: commandCtx.externalGuildId,
@@ -661,14 +685,14 @@ async function handleAddStaff(commandCtx, ctx) {
         ticket: updated,
       });
     }
-  } catch (err) {
-    console.warn("[tickets] addstaff overwrites:", err?.message || err);
-  }
+  });
 
   await commandCtx.reply({
-    content: added
+    content: (
+        added
       ? `Added <@${user.id}> to the staff allow-list for **${formatTicketRef(ticket.ticket_number)}**.`
-      : `<@${user.id}> is already on the staff allow-list.`,
+      : `<@${user.id}> is already on the staff allow-list.`
+      ) + (permWarning ? "\n" + permWarning : ""),
     sensitive: true,
   });
 }
@@ -708,7 +732,7 @@ async function handleRemoveStaff(commandCtx, ctx) {
   }
 
   const updated = getTicketById(ticket.id);
-  try {
+  const permWarning = await runOverwritesWithWarning("removestaff", async () => {
     if (channel) {
       await applyTicketOverwrites(channel, {
         guildId: commandCtx.externalGuildId,
@@ -717,12 +741,12 @@ async function handleRemoveStaff(commandCtx, ctx) {
         ticket: updated,
       });
     }
-  } catch (err) {
-    console.warn("[tickets] removestaff overwrites:", err?.message || err);
-  }
+  });
 
   await commandCtx.reply({
-    content: `Removed <@${user.id}> from the staff allow-list.`,
+    content: (
+        `Removed <@${user.id}> from the staff allow-list.`
+      ) + (permWarning ? "\n" + permWarning : ""),
     sensitive: true,
   });
 }
@@ -769,7 +793,7 @@ async function handleSensitive(commandCtx, ctx) {
     },
   });
 
-  try {
+  const permWarning = await runOverwritesWithWarning("sensitive", async () => {
     if (channel) {
       await applyTicketOverwrites(channel, {
         guildId: commandCtx.externalGuildId,
@@ -779,14 +803,13 @@ async function handleSensitive(commandCtx, ctx) {
         sensitive: true,
       });
     }
-  } catch (err) {
-    console.warn("[tickets] sensitive overwrites:", err?.message || err);
-  }
+  });
 
   await commandCtx.reply({
-    content:
-      `Ticket **${formatTicketRef(ticket.ticket_number)}** is now **sensitive**. ` +
-      `Only the owner, named staff, and members can see it. Close will **not** archive content.`,
+    content: (
+        `Ticket **${formatTicketRef(ticket.ticket_number)}** is now **sensitive**. ` +
+      `Only the owner, named staff, and members can see it. Close will **not** archive content.`
+      ) + (permWarning ? "\n" + permWarning : ""),
     sensitive: true,
   });
   // In-channel notice via outbound with a plain NormalizedEmbed (same visible
@@ -838,7 +861,7 @@ async function handleUnsensitive(commandCtx, ctx) {
       was_sensitive: Number(ticket.is_sensitive) ? 1 : 0,
     },
   });
-  try {
+  const permWarning = await runOverwritesWithWarning("unsensitive", async () => {
     if (channel) {
       await applyTicketOverwrites(channel, {
         guildId: commandCtx.externalGuildId,
@@ -848,12 +871,12 @@ async function handleUnsensitive(commandCtx, ctx) {
         sensitive: false,
       });
     }
-  } catch (err) {
-    console.warn("[tickets] unsensitive overwrites:", err?.message || err);
-  }
+  });
 
   await commandCtx.reply({
-    content: `Ticket **${formatTicketRef(ticket.ticket_number)}** is no longer sensitive. Staff roles can see it again.`,
+    content: (
+        `Ticket **${formatTicketRef(ticket.ticket_number)}** is no longer sensitive. Staff roles can see it again.`
+      ) + (permWarning ? "\n" + permWarning : ""),
     sensitive: true,
   });
 }
