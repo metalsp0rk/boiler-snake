@@ -615,7 +615,13 @@ describe(
     // the product migrates to fetchWebhook: this arm becomes the real
     // live-copy assertion (outbox row `done` + `RELAY LIVE COPY` in the
     // destination tape — the webhook infrastructure on the mock side works,
-    // verified by this arm's POST /channels/:id/webhooks step).
+    // verified by this arm's POST /channels/:id/webhooks step). #460 (G2-3)
+    // EXTENDS that flip-back list: seed the injected message with a rich
+    // EMBED and assert the persisted copy's embeds[0].title — content-only
+    // tape assertions would let an embed-stripping relay pass green, which
+    // is exactly how FLX-2 stayed invisible at all four tiers. The mock
+    // persists embeds; the fluxer-side equivalent is already pinned in
+    // test/bridge-relay.test.js (the #460 real-adapter arm).
     it("live Discord relay is DEAD on the pinned SDK: ladder burns, row poison-parks, staff get the notice", async () => {
       const hook = await api(`/channels/${ids.channel2}/webhooks`, {
         method: "POST",
