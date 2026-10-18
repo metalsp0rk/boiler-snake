@@ -22,7 +22,7 @@ The bot needs **Connect** and **Speak** (and **View Channel**) on voice channels
 
 ### 2. Lavalink node (required)
 
-**Docker Compose** (recommended): `docker compose up -d --build` starts a `lavalink` sidecar next to the bot. The bot gets `LAVALINK_HOST=lavalink` automatically. Do not publish port 2333 on the host.
+**Docker Compose** (recommended): `docker compose up -d --build` starts a `lavalink` sidecar next to the bot. The bot gets `LAVALINK_HOST=lavalink` automatically. **`LAVALINK_PASSWORD` must be set in `.env`** (any strong secret — compose forwards it to both sides and **aborts** when it is missing; the public `youshallnotpass` default was removed in #455 so the boot fail-fast actually fires). Do not publish port 2333 on the host.
 
 **Local Node**: run [Lavalink 4.2+](https://github.com/lavalink-devs/Lavalink/releases) with the repo `application.yml`, then:
 

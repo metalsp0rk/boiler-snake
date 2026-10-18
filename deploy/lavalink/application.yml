@@ -44,7 +44,11 @@ lavalink:
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       snapshot: false
   server:
-    password: "${LAVALINK_SERVER_PASSWORD:youshallnotpass}"
+    # No Spring `:-default` fallback (#455, audit H2-7): under compose the
+    # variable is REQUIRED (docker-compose.yml `:?` gate); standalone, Spring
+    # fails the node loudly on the missing placeholder instead of shipping
+    # Lavalink's most-public auth. Empty is never acceptable.
+    password: "${LAVALINK_SERVER_PASSWORD}"
     sources:
       youtube: false
       bandcamp: true
