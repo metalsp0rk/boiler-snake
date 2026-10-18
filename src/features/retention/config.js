@@ -43,6 +43,15 @@ const DEFAULT_ACTIVITY_DAYS = 90;
 const DEFAULT_ADMIN_AUDIT_DAYS = 365;
 /** Default daily-aggregate retention (days; 13 months of rollups). */
 const DEFAULT_DAILY_AGGREGATES_DAYS = 400;
+/**
+ * Default age before an UNREFERENCED transcript entry under
+ * {DATA_DIR}/ticket-transcripts/ is swept (#424, audit LT-10). A healthy
+ * archive run takes minutes; 7 days is a >1000x margin over any in-flight
+ * run, so a dir with NO tickets row older than this is only ever
+ * crash/failure garbage. REFERENCED transcripts (any tickets row) are
+ * permanent — the sweep never touches them.
+ */
+const DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS = 7;
 
 /**
  * Rows per delete batch. A sweep deletes in LIMIT-batched passes so one
@@ -63,6 +72,7 @@ const ENV_KEYS = Object.freeze([
   "RETENTION_ADMIN_AUDIT_DAYS",
   "RETENTION_DAILY_AGGREGATES_DAYS",
   "RETENTION_OAUTH_TX_SWEEP",
+  "RETENTION_TICKET_TRANSCRIPT_ORPHAN_DAYS",
 ]);
 
 /** config field ← env name (the mapping pick() needs to stay honest). */
@@ -71,6 +81,7 @@ const ENV_BY_FIELD = Object.freeze({
   adminAuditDays: "RETENTION_ADMIN_AUDIT_DAYS",
   dailyAggregatesDays: "RETENTION_DAILY_AGGREGATES_DAYS",
   oauthTxSweepEnabled: "RETENTION_OAUTH_TX_SWEEP",
+  ticketTranscriptOrphanDays: "RETENTION_TICKET_TRANSCRIPT_ORPHAN_DAYS",
 });
 
 /**
@@ -135,6 +146,12 @@ function retentionConfig(overrides = {}) {
         if (text === "") return true;
         return !(text === "0" || text === "off" || text === "false" || text === "disabled");
       }) !== false,
+    // #424: orphan transcript-tree sweep age (null = sweep disabled —
+    // garbage dirs then survive forever, the explicit pre-fix behaviour).
+    ticketTranscriptOrphanDays: pick(
+      "ticketTranscriptOrphanDays",
+      (v) => parseDaysKnob(v, DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS)
+    ),
     batchRows,
     maxBatchesPerTable,
   };
@@ -142,6 +159,7 @@ function retentionConfig(overrides = {}) {
 
 module.exports = {
   DEFAULT_ACTIVITY_DAYS,
+  DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS,
   DEFAULT_ADMIN_AUDIT_DAYS,
   DEFAULT_DAILY_AGGREGATES_DAYS,
   DEFAULT_BATCH_ROWS,

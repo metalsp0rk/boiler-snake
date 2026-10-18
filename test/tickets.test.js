@@ -314,6 +314,58 @@ describe("tickets repository", () => {
     assert.equal(closed.channel_id, null);
   });
 
+  // #424 (audit LT-10): the retention tree sweep needs the reachability set
+  // of transcript tokens — anything absent is garbage it may delete.
+  it("listTicketTranscriptTokens returns the distinct non-null tokens only", () => {
+    const cid = communityKey("g-tokens-424");
+    const mk = (n) =>
+      db.createTicket({
+        communityId: cid,
+        creatorUserId: "u",
+        channelId: `ch-tokens-${n}`,
+      });
+    const archived = mk("archived");
+    const bare = mk("bare");
+    db.markTicketClosed(archived.id, { closedBy: "mod", closeReason: "done" });
+    db.markTicketClosed(bare.id, { closedBy: "mod", closeReason: "done" });
+
+    // Before any archive: no tokens at all (NULLs never leak in).
+    const base = db.listTicketTranscriptTokens();
+    assert.ok(Array.isArray(base));
+    assert.equal(
+      base.includes(null),
+      false,
+      "NULL transcript_token rows must not appear",
+    );
+
+    const token = db.generateTranscriptToken();
+    db.closeTicketArchived(archived.id, {
+      closedBy: "mod",
+      closeReason: "done",
+      transcriptToken: token,
+      transcriptPath: `ticket-transcripts/${cid}/${token}/index.html`,
+    });
+
+    const tokens = db.listTicketTranscriptTokens();
+    assert.ok(tokens.includes(token), "the archived token is reported");
+    assert.equal(
+      tokens.filter((t) => t === token).length,
+      1,
+      "distinct — one row per token",
+    );
+    assert.equal(
+      tokens.length,
+      new Set(tokens).size,
+      "the whole set is distinct",
+    );
+    // The transcriptless archive (archived=0, token NULL) contributes nothing.
+    assert.equal(
+      db.getTicketById(bare.id).transcript_token,
+      null,
+      "sanity: the bare row really is tokenless",
+    );
+  });
+
   // audit-2026-10 #197: the archive pipeline must CAS a claim BEFORE doing
   // work. The claim lives in tickets.archive_claimed_at (migration 037);
   // `archived` keeps its finalize-time meaning untouched.

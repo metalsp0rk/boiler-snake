@@ -155,7 +155,12 @@ Requires a **closed** ticket channel.
 2. Resolve display names (guild nickname → global name → username) for requester, staff owner, message authors, and `<@id>` mentions in content.
 3. **Download media** (attachments, embed images/thumbnails/videos, stickers) into  
    `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/assets/`, rewrite links to  
-   `/t/{uuid}/assets/…` (served by the bot). Caps: 50 MiB/file, 100 files/ticket (env overrides below).
+   `/t/{uuid}/assets/…` (served by the bot). Caps: 50 MiB/file, 100 files/ticket, and an aggregate
+   **2 GiB budget for the whole `ticket-transcripts` tree** (`TICKET_ASSET_TREE_MAX_BYTES`, `0`/`off`
+   disables) — members steer which URLs an archive downloads (embed images are enough), so without the
+   tree cap one staff archive of a media-spammed ticket could write gigabytes beside the SQLite DB.
+   Tree already at budget → media is skipped outright (no directory created, transcript still completes);
+   crossing budget mid-run → remaining files skipped; both land as warnings in the archive reply (#424).
    Every download runs through the shared SSRF guard (`src/core/ssrfGuard.js`, same guard the bridge
    uses): https-only, and each redirect hop's hostname is resolved and refused when it maps to
    loopback, RFC1918, CGNAT, link-local (cloud-metadata), or the other non-public classes
@@ -177,7 +182,10 @@ Optional env for media mirroring:
 ```bash
 # TICKET_MAX_ASSET_BYTES=52428800   # default 50 MiB per file
 # TICKET_MAX_ASSETS=100            # default max files per ticket
+# TICKET_ASSET_TREE_MAX_BYTES=2147483648  # 2 GiB budget for the whole tree; 0 = unlimited
 ```
+
+Archive storage is bounded in both directions (#424): the budget above caps what a run may write, and the retention sweep removes `{uuid}/` directories and legacy `{uuid}.html` files under `ticket-transcripts/` whose token matches no `tickets` row and whose mtime is older than `RETENTION_TICKET_TRANSCRIPT_ORPHAN_DAYS` (default 7 days). Referenced transcripts are permanent; the sweep only clears garbage left by archives that died before they could be recorded.
 
 ## Not in MVP
 
