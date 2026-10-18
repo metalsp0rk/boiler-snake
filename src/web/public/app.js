@@ -1,22 +1,22 @@
 /**
- * Shell front-end behavior (roadmap/web-admin.md §8.1-2: vendored htmx +
- * a SMALL nonce'd vanilla module — no Alpine/React/build step).
+ * Shell front-end behavior (roadmap/web-admin.md §8.1-2: a SMALL nonce'd
+ * vanilla module — no Alpine/React/build step).
  *
  * Served from /static/app.js with the per-response CSP nonce attached by
  * views/layout.js. NO inline scripts, NO inline handlers: everything is
  * wired through addEventListener in this external file (§8.7).
  *
  * Responsibilities (kept deliberately tiny):
- *  1. htmx CSRF wiring — read `data-csrf-token` off <body> (rendered by
- *     views/layout.js from req.csrfToken) and attach it as the
- *     `X-CSRF-Token` request header to EVERY htmx request via the
- *     `htmx:configRequest` event — the hx-headers equivalent, but with the
- *     per-session token injected at request time instead of baked into an
- *     hx-headers JSON attribute. middleware/csrf.js accepts exactly this
- *     header (and `_csrf` form fields for JS-free posts).
- *  2. Guild switcher — navigate on <select data-guild-switcher> change.
+ *  1. Guild switcher — navigate on <select data-guild-switcher> change.
  *     Every page works without this file (links + plain forms); the shell
  *     only enhances, never depends (§8.2 SSR-first).
+ *
+ * #459: the htmx CSRF wiring this file used to open with was wiring for a
+ * library NO page ever activated (zero hx-* attributes existed) — it and
+ * the vendored library are gone. Mutations are plain <form method="post">
+ * with hidden `_csrf` fields; middleware/csrf.js still accepts the
+ * X-CSRF-Token header as a JS-request channel should scripted POSTs ever
+ * ship, fed by <body data-csrf-token>.
  */
 (function () {
   "use strict";
@@ -26,26 +26,9 @@
     return body ? body.getAttribute("data-csrf-token") || "" : "";
   }
 
-  // Our CSP never grants 'unsafe-eval', so htmx's JS-expression attributes
-  // (hx-on:, javascript: URLs) cannot run anyway — turn them off at the
-  // library too, so the failure is a clean htmx error instead of a CSP
-  // violation report (§8.7 "no inline handlers" made two-fold).
-  if (window.htmx && window.htmx.config) {
-    window.htmx.config.allowEval = false;
-  }
-
-  // 1. htmx request headers (X-CSRF-Token) — hx-headers wiring from the
-  //    body's data-csrf-token attribute. Verified against the vendored
-  //    2.0.10 build: configRequest detail carries a mutable `headers`
-  //    object and the request consumes whatever the handler leaves there.
-  document.body.addEventListener("htmx:configRequest", function (evt) {
-    var token = csrfToken();
-    if (token && evt && evt.detail && evt.detail.headers) {
-      evt.detail.headers["X-CSRF-Token"] = token;
-    }
-  });
-
-  // 2. Guild switcher navigation (CSP-safe replacement for inline onchange).
+  // Guild switcher navigation (CSP-safe replacement for inline onchange).
+  // #459 removed the dead htmx wiring above; csrfToken() stays as the
+  // documented token source for any future scripted request (§ csrf.js).
   document.addEventListener("change", function (evt) {
     var el = evt.target;
     if (
@@ -422,8 +405,8 @@
     });
   }
 
-  // htmx-safety per the vendored-build notes: never double-instantiate on a
-  // canvas that already carries a live chart — destroy first, then create.
+  // Chart hygiene: never double-instantiate on a canvas that already
+  // carries a live chart — destroy first, then create.
   function mountChart(canvas, config) {
     if (ChartLib.getChart(canvas)) ChartLib.getChart(canvas).destroy();
     return new ChartLib(canvas, config);

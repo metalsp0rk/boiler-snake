@@ -639,7 +639,7 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       assert.ok(main.length > 0, "main content present");
       assert.ok(!main.includes("<form"), "no forms in page body");
       assert.ok(!main.includes("<button"), "no buttons in page body");
-      assert.ok(!main.includes("htmx:post"), "no htmx mutation verbs");
+      assert.ok(!/htmx/i.test(main), "no JS-framework mutation verbs (#459: htmx is gone entirely)");
     });
   });
 
