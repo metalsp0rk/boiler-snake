@@ -332,6 +332,7 @@ module.exports = {
   closeTicketArchived: tickets.closeTicketArchived,
   claimTicketArchive: tickets.claimTicketArchive,
   releaseTicketArchiveClaim: tickets.releaseTicketArchiveClaim,
+  ARCHIVE_CLAIM_LEASE_MS: tickets.ARCHIVE_CLAIM_LEASE_MS,
   markTicketClosedByChannelDelete: tickets.markTicketClosedByChannelDelete,
   saveTicketMessages: tickets.saveTicketMessages,
   listTicketMessages: tickets.listTicketMessages,

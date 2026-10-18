@@ -33,6 +33,7 @@ Configure: `/staff role add role level`, `/staff role setlevel`, `/staff role li
 | Staff access | Guild [staff roles](staff-roles.md) + Manage Server. **Ticket channel visibility** is **senior** staff roles only; junior staff pass the command gate but do not get automatic channel overwrites. |
 | Rate limit | Self-create only; `/ticket for` is unlimited. Enforced by an atomic slot claim taken before the ticket channel is created — concurrent double-submits (double-click, slash + panel modal) open exactly ONE ticket; a create that fails before the channel opens hands the slot back, so the retry is instant |
 | Concurrent opens | No cap per user |
+| Archive claim | Archiving is claimed atomically before work starts — exactly one run does the work. A run that **throws** releases the claim (fix the cause, run `/ticket archive` again), and a claim whose holder **died** mid-run ages out after 30 minutes (lease) instead of wedging the ticket forever (#419) |
 | Transcript URL | Staff archive embed **plus** a best-effort DM to the **requester** (ticket ref + close reason + `[View transcript]` link when `TICKET_PUBLIC_BASE_URL` is set) on archive. Non-sensitive only — **sensitive tickets never receive any URL**, and no one but the requester is DMed |
 | Sensitive | No message fetch, no HTML, no AI; channel delete is disposal |
 

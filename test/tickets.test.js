@@ -357,6 +357,39 @@ describe("tickets repository", () => {
     assert.equal(missing.ticket, null);
   });
 
+  // #419 (audit LT-2): the claim is a LEASE, not a life sentence.
+  it("claimTicketArchive lease: a holder older than the lease is stealable", () => {
+    const t = db.createTicket({
+      communityId: communityKey("g-lease-419"),
+      creatorUserId: "u",
+      channelId: "ch-lease-419",
+    });
+    db.markTicketClosed(t.id, { closedBy: "mod", closeReason: "done" });
+
+    const LEASE = db.ARCHIVE_CLAIM_LEASE_MS;
+    assert.ok(
+      Number.isFinite(LEASE) && LEASE >= 5 * 60_000 && LEASE <= 60 * 60_000,
+      `lease is a minutes-scale window, got ${LEASE}`,
+    );
+
+    const t0 = 1_800_000_000_000;
+    assert.equal(db.claimTicketArchive(t.id, t0).won, true);
+    assert.equal(db.claimTicketArchive(t.id, t0 + 1000).won, false, "live holder keeps the claim");
+
+    // One ms before the lease matures: still held. At maturity the holder is
+    // DEAD (crashed mid-archive) — the next caller must win, not wedge.
+    assert.equal(db.claimTicketArchive(t.id, t0 + LEASE - 1).won, false);
+    assert.equal(
+      db.claimTicketArchive(t.id, t0 + LEASE).won,
+      true,
+      "RED on old code: sticky forever — the ticket was un-archivable permanently",
+    );
+    // The steal re-stamps: an immediate follow-up loses to the NEW holder.
+    assert.equal(db.claimTicketArchive(t.id, t0 + LEASE + 1).won, false);
+    // …and ages out the same way (the lease is uniform, not a one-shot).
+    assert.equal(db.claimTicketArchive(t.id, t0 + 2 * LEASE).won, true);
+  });
+
   it("claimTicketArchive stays sticky after a transcriptless archive", () => {
     // closeTicketArchived with no transcript leaves archived=0 (pinned
     // behavior) — WITHOUT the claim such a ticket could be archived twice.
