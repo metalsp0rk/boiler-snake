@@ -381,6 +381,58 @@ describe("bridge relay worker (PR 5)", () => {
     assert.deepEqual(worker.sleeps, [60_000], "Retry-After falls back to the 60 s cap");
   });
 
+  it("#387: a DECLARED wait (res.retryAfterMs) replaces the 60 s guess", async () => {
+    const { bridge } = seedBridge("a_to_b");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9310",
+      payload: createPayload("b_00000022", "9310", { publicId: "b_00000022" }),
+    });
+    const fluxer = scriptedApi("f3b", [
+      {
+        ok: false,
+        error: "executeRelayWebhook: request failed: HTTP 429 limited",
+        retryable: true,
+        code: "RATE_LIMITED",
+        status: 429,
+        retryAfterMs: 7_000, // what the FLUXER body declared (seconds → ms at the seam)
+      },
+      { ok: true, messageId: "dst-1" },
+    ]);
+    const worker = makeWorker({ getWebhookApi: () => fluxer });
+    await worker.drainAll();
+
+    assert.deepEqual(worker.sleeps, [7_000], "the server's stated wait is honored, not the fixed fallback (the field existed in relay since #211 — this pins the whole path)");
+    assert.equal(rowState(row.id).state, "done");
+  });
+
+  it("#387: a declared wait beyond 60 s is still capped at the ceiling", async () => {
+    const { bridge } = seedBridge("a_to_b");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9311",
+      payload: createPayload("b_00000023", "9311", { publicId: "b_00000023" }),
+    });
+    const fluxer = scriptedApi("f3c", [
+      {
+        ok: false,
+        error: "executeRelayWebhook: request failed: HTTP 429 storm",
+        retryable: true,
+        code: "RATE_LIMITED",
+        status: 429,
+        retryAfterMs: 3_600_000, // one hour declared — the worker must not leave its head-of-queue hostage
+      },
+      { ok: true, messageId: "dst-1" },
+    ]);
+    const worker = makeWorker({ getWebhookApi: () => fluxer });
+    await worker.drainAll();
+
+    assert.deepEqual(worker.sleeps, [60_000], "declared is a wish, the cap is the law (§10.10 bounded storm rule)");
+    assert.equal(rowState(row.id).state, "done");
+  });
+
   it("5 generic failures park the row with last_error + the verbatim source notice", async () => {
     const { bridge, publicId } = seedBridge("a_to_b");
     const row = repo.enqueueBridgeOutbox(bridge.id, {

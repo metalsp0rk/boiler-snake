@@ -555,3 +555,80 @@ describe("platform/fluxer/webhooks — #383 embeds cross the wire", () => {
     assert.ok(!("embeds" in body), "an empty embeds list sends no key — PATCH stays minimal");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #387 (FLX-6): the DECLARED rate-limit wait survives the seam
+// ---------------------------------------------------------------------------
+
+describe("platform/fluxer/webhooks — declared retry_after reaches the caller (#387)", () => {
+  /** Response double WITH headers (the plain jsonResponse lacks them). */
+  function responseWithHeaders(status, body, headers = {}) {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+      headers: { get: (name) => headers[String(name).toLowerCase()] ?? null },
+    };
+  }
+
+  it("429 body retry_after (seconds, float) lands as retryAfterMs (ms) on the send result", async () => {
+    const fetchStub = makeFakeFetch({
+      [`POST ${apiPath("?wait=true")}`]: jsonResponse(429, {
+        code: "RATE_LIMITED",
+        message: "slow down",
+        retry_after: 1.25,
+      }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+
+    const res = await api.executeRelayWebhook(WH, { content: "hi" });
+
+    assert.equal(res.ok, false);
+    assert.equal(res.retryAfterMs, 1250, "the declared wait (REST convention: SECONDS) rides to the worker — pre-#387 it was parsed for code/message and thrown away");
+  });
+
+  it("Retry-After HEADER is the fallback when the body says nothing", async () => {
+    const fetchStub = makeFakeFetch({
+      [`POST ${apiPath("?wait=true")}`]: responseWithHeaders(429, { message: "limited" }, { "retry-after": "3" }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+
+    const res = await api.executeRelayWebhook(WH, { content: "hi" });
+    assert.equal(res.retryAfterMs, 3000);
+  });
+
+  it("garbage/negative declared waits are IGNORED — the consumer's capped default stays the authority", async () => {
+    const fetchStub = makeFakeFetch({
+      [`POST ${apiPath("?wait=true")}`]: responseWithHeaders(
+        429,
+        { retry_after: -5 },
+        { "retry-after": "soon" },
+      ),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+
+    const res = await api.executeRelayWebhook(WH, { content: "hi" });
+    assert.equal("retryAfterMs" in res, false, "no sane declaration → no field, so relay keeps its 60 s fallback rather than inventing 0 or NaN");
+  });
+
+  it("patch failures carry it too (edits ride the same 429 ladder)", async () => {
+    const fetchStub = makeFakeFetch({
+      [`PATCH ${apiPath("/messages/m-42")}`]: jsonResponse(429, { message: "slow", retry_after: 2 }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+
+    const res = await api.patchRelayMessage(WH, "m-42", { content: "edit" });
+    assert.equal(res.retryAfterMs, 2000);
+  });
+
+  it("retry_after: 0 is a REAL declaration (immediate), not 'nothing declared'", async () => {
+    const fetchStub = makeFakeFetch({
+      [`POST ${apiPath("?wait=true")}`]: jsonResponse(429, { message: "burst over", retry_after: 0 }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+
+    const res = await api.executeRelayWebhook(WH, { content: "hi" });
+    assert.equal(res.retryAfterMs, 0, "0 ms declared ≠ missing — the worker sleeps 0, not the 60 s guess");
+    assert.ok(!res.error.includes(TOKEN), "and the token never rides the error text");
+  });
+});

@@ -193,6 +193,10 @@ function createFluxerBridgeOutbound(seams = {}) {
           retryable: res?.retryable === true,
           ...(res?.code != null ? { code: res.code } : {}),
           ...(res?.status != null ? { status: res.status } : {}),
+          // #387 (FLX-6): the DECLARED wait survives this seam too — the
+          // port whitelist used to rebuild failures without it, so even a
+          // producer that parsed retry_after reached the worker as 60 s.
+          ...(res?.retryAfterMs != null ? { retryAfterMs: res.retryAfterMs } : {}),
         };
       }
       // Fluxer's nonce absorbs a timeout retry: a success that carries no id
@@ -211,6 +215,10 @@ function createFluxerBridgeOutbound(seams = {}) {
           error: res?.error ?? "patchRelayMessage: webhook api returned no result",
           ...(res?.code != null ? { code: res.code } : {}),
           ...(res?.status != null ? { status: res.status } : {}),
+          // #387 (FLX-6): the DECLARED wait survives this seam too — the
+          // port whitelist used to rebuild failures without it, so even a
+          // producer that parsed retry_after reached the worker as 60 s.
+          ...(res?.retryAfterMs != null ? { retryAfterMs: res.retryAfterMs } : {}),
         };
       }
       return { ok: true };
@@ -226,6 +234,10 @@ function createFluxerBridgeOutbound(seams = {}) {
           ok: false,
           error: res?.error ?? "deleteRelayMessage: webhook api returned no result",
           ...(res?.code != null ? { code: res.code } : {}),
+          // #387 (FLX-6): the DECLARED wait survives this seam too — the
+          // port whitelist used to rebuild failures without it, so even a
+          // producer that parsed retry_after reached the worker as 60 s.
+          ...(res?.retryAfterMs != null ? { retryAfterMs: res.retryAfterMs } : {}),
         };
       }
       return { ok: true };
