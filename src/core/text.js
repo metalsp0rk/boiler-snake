@@ -103,10 +103,52 @@ function normalizeTitle(raw) {
   return sliceSafe(stripped, TITLE_KEY_MAX_LEN);
 }
 
+/**
+ * Join list lines under a HARD character limit with a "(+N more)" suffix —
+ * the shared answer for staff-facing list surfaces whose size grows with
+ * per-guild data (#446, audit INT-11). Discord rejects embed field values
+ * over 1024 chars and messages over 2000 with a generic 400
+ * ("Invalid Form Body") → the router's last-resort generic error → staff
+ * cannot even open the list to prune it. Every list site joins through
+ * this so the cap semantics (order preserved, exact hidden count, the
+ * suffix itself always fits, pathological single lines sliced code-point
+ * safe) live in ONE place.
+ *
+ * @param {Array<string|{toString(): string}>} lines rendered list items
+ * @param {number} limit max code units of the RESULT (caller subtracts any
+ *   fixed header/footer it adds around this text)
+ * @param {string} [sep] separator (", " for embed fields, "\n" for messages)
+ * @returns {string} joined text, guaranteed length <= max(limit, longest-single-slice)
+ */
+function joinCapped(lines, limit, sep = ", ") {
+  const all = (Array.isArray(lines) ? lines : []).map(String);
+  const joined = all.join(sep);
+  if (joined.length <= limit) return joined;
+
+  const suffixFor = (n) => `${sep}(+${n} more)`;
+  const kept = [];
+  let used = 0;
+  for (const line of all) {
+    const add = (kept.length ? sep.length : 0) + line.length;
+    // Reserve the suffix this step would end up needing; when nothing
+    // further is hidden the last item may use the full budget.
+    const reserve = suffixFor(all.length - kept.length - 1).length;
+    if (kept.length > 0 && used + add + reserve > limit) break;
+    kept.push(line);
+    used += add;
+  }
+  const hidden = all.length - kept.length;
+  const out = kept.join(sep) + (hidden > 0 ? suffixFor(hidden) : "");
+  // A single pathological item still busts the budget: slice rather than
+  // let Discord 400 the whole reply (code-point safe — no lone surrogates).
+  return out.length <= limit ? out : sliceSafe(out, limit);
+}
+
 module.exports = {
   isHighSurrogateAt,
   isLowSurrogateAt,
   safeCutIndex,
   sliceSafe,
+  joinCapped,
   normalizeTitle,
 };

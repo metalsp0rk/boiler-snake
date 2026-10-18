@@ -669,4 +669,26 @@ describe("integration: github releases", () => {
       );
     });
   });
+
+  // #446 (audit INT-11): the watch list never dies on message size.
+  it("/github list caps a watch flood under 2000 chars", async () => {
+    const repos = Array.from({ length: 150 }, (_, i) => `acme/big-repo-number-${i}`);
+    for (const r of repos) {
+      env.db.addGithubWatch(env.communityId, `https://github.com/${r}`, r);
+    }
+    try {
+      const interaction = await env.runCommand({
+        commandName: "github",
+        subcommand: "list",
+        admin: true,
+        options: {},
+      });
+      const reply = interaction.replies[interaction.replies.length - 1];
+      const content = typeof reply === "string" ? reply : reply?.content || "";
+      assert.ok(content.length <= 2000, `content ${content.length} chars`);
+      assert.match(content, /\(\+\d+ more\)$/, "hidden count stays honest");
+    } finally {
+      for (const r of repos) env.db.removeGithubWatch(env.communityId, r);
+    }
+  });
 });

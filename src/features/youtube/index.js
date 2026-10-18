@@ -10,6 +10,7 @@ const {
 const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { joinCapped } = require("../../core/text");
 const { discordCommunityId } = require("../../platform/community");
 const {
   startYoutubeTicker,
@@ -365,11 +366,12 @@ async function handleYoutube(commandCtx, featureCtx) {
       return info;
     });
 
+    // 2000-char message cap with an honest hidden count (#446).
+    const header =
+      `**YouTube subscriptions** (${channels.length})\n` +
+      `Notification channel: ${notificationChannel}\n\n`;
     await commandCtx.reply({
-      content:
-        `**YouTube subscriptions** (${channels.length})\n` +
-        `Notification channel: ${notificationChannel}\n\n` +
-        lines.join("\n"),
+      content: header + joinCapped(lines, 2000 - header.length, "\n"),
       sensitive: true,
     });
     return;
