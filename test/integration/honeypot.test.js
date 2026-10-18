@@ -81,6 +81,56 @@ describe("integration: honeypot", () => {
     assertEphemeralReply(interaction, /administrators|permission/i);
   });
 
+  // ── #438 (audit F2-2): the exempt toggle must never move staff LEVEL ────
+
+  it("/honeypot exempt add keeps an existing junior role's level (#438)", async () => {
+    const ROLE = "role-exempt-junior-438";
+    env.db.addStaffRole(env.communityId, ROLE, "junior");
+
+    const ix = await env.runCommand({
+      commandName: "honeypot",
+      subcommandGroup: "exempt",
+      subcommand: "add",
+      admin: true,
+      options: { role: { id: ROLE, toString: () => `<@&${ROLE}>` } },
+    });
+    assertReplyContains(ix, /already a staff role/i);
+    assertReplyContains(ix, /junior/i);
+    assert.equal(
+      env.db.getStaffRole(env.communityId, ROLE).level,
+      "junior",
+      "a BAN exemption NEVER promotes junior → senior (ticket visibility stays put)",
+    );
+  });
+
+  it("/honeypot exempt add creates NEW exempt roles as junior and audits the level (#438)", async () => {
+    const ROLE = "role-exempt-new-438";
+
+    const ix = await env.runCommand({
+      commandName: "honeypot",
+      subcommandGroup: "exempt",
+      subcommand: "add",
+      admin: true,
+      options: { role: { id: ROLE, toString: () => `<@&${ROLE}>` } },
+    });
+    assertReplyContains(ix, /junior/i);
+
+    const row = env.db.getStaffRole(env.communityId, ROLE);
+    assert.equal(row?.level, "junior", "least-privilege create for exempt intent");
+
+    const audits = env.db.db
+      .prepare(
+        `SELECT details_json FROM admin_audit
+          WHERE community_id=? AND action='staff.role_add' AND target_id=?`,
+      )
+      .all(env.communityId, ROLE);
+    assert.equal(audits.length, 1, "one durable row, same vocabulary as /staff role add");
+    const details = JSON.parse(audits[0].details_json);
+    assert.equal(details.via, "honeypot.exempt");
+    assert.equal(details.level, "junior");
+    assert.equal(details.previous_level, null, "level forensics like /staff role add");
+  });
+
   it("ban-role grant triggers ban", async () => {
     env.db.addHoneypotBanRole(env.communityId, IDS.roleBan);
     const user = env.createUser({ id: "user-banrole-1", username: "raider" });

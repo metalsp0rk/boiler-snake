@@ -172,6 +172,7 @@ module.exports = {
   STAFF_LEVELS: staffRoles.STAFF_LEVELS,
   normalizeStaffLevel: staffRoles.normalizeStaffLevel,
   addStaffRole: staffRoles.addStaffRole,
+  insertStaffRoleIfMissing: staffRoles.insertStaffRoleIfMissing,
   setStaffRoleLevel: staffRoles.setStaffRoleLevel,
   removeStaffRole: staffRoles.removeStaffRole,
   listStaffRoles: staffRoles.listStaffRoles,

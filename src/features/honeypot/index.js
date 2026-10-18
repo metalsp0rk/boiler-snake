@@ -15,7 +15,7 @@ const {
   addHoneypotChannel,
   removeHoneypotChannel,
   listHoneypotChannels,
-  addStaffRole,
+  insertStaffRoleIfMissing,
   removeStaffRole,
   listStaffRoles,
   addHoneypotBanRole,
@@ -239,7 +239,7 @@ const commands = [
           sc
             .setName("add")
             .setDescription(
-              "Add a role that is exempt from honeypot bans (same as /staff role add).",
+              "Exempt a role from honeypot bans (new staff roles join as junior; existing levels kept).",
             )
             .addRoleOption((opt) =>
               opt
@@ -1418,26 +1418,53 @@ async function handleHoneypot(commandCtx, featureCtx) {
   if (group === "exempt") {
     if (sub === "add") {
       const role = commandCtx.options.getRole("role", true);
-      addStaffRole(communityId, role.id);
-      // Same underlying table as /staff role add — keep the action vocabulary.
+      // #438 (audit F2-2): a ban-exemption toggle must NOT change staff
+      // POWER. addStaffRole() used to run without a level, silently
+      // PROMOTING an existing junior staff role to senior (ticket-channel
+      // visibility + senior-only surfaces widen as a side effect). Existing
+      // rows now keep their level; new exemptions are created JUNIOR —
+      // exemption needs membership in staff_roles, not elevation. An admin
+      // promotes deliberately with /staff role setlevel.
+      const { created, row } = insertStaffRoleIfMissing(
+        communityId,
+        role.id,
+        "junior",
+        commandCtx.userId,
+      );
+      // Same underlying table as /staff role add — keep the action vocabulary
+      // AND its level-forensics (previous_level), per #438.
       recordSlashAudit({
         communityId,
         actorUserId: commandCtx.userId,
         action: "staff.role_add",
         targetType: "role",
         targetId: role.id,
-        details: { via: "honeypot.exempt" },
+        details: {
+          via: "honeypot.exempt",
+          level: row?.level ?? "junior",
+          previous_level: created ? null : row?.level ?? null,
+        },
       });
       await logConfigChange(outbound, guildId, {
-        title: "Honeypot exempt role added",
+        title: created
+          ? "Honeypot exempt role added (junior staff)"
+          : "Honeypot exemption confirmed (level unchanged)",
         command: "/honeypot exempt add",
         actor: commandCtx.user,
-        changes: [`Role: <@&${role.id}> (\`${role.id}\`)`],
+        changes: [
+          `Role: <@&${role.id}> (\`${role.id}\`)`,
+          created
+            ? "Staff level: **junior** (use /staff role setlevel to promote)"
+            : `Staff level: **${row?.level ?? "unknown"}** — unchanged`,
+        ],
       }).catch(() => {});
       await commandCtx.reply({
-        content:
-          `Added <@&${role.id}> as a staff role (also used for honeypot exemption). ` +
-          `Members with this role will not be banned for posting in honeypot channels or receiving honeypot ban roles.`,
+        content: created
+          ? `Added <@&${role.id}> as a **junior** staff role (honeypot-exempt). ` +
+            `Members with this role will not be banned for posting in honeypot channels or receiving honeypot ban roles. ` +
+            `Change staff level with \`/staff role setlevel\`.`
+          : `<@&${role.id}> was already a staff role (**${row?.level ?? "unknown"}**, kept as-is) — it is now honeypot-exempt. ` +
+            `Exemption never changes a role's staff level (#438).`,
         sensitive: true,
       });
       return;
