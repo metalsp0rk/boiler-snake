@@ -207,6 +207,53 @@ describe("linking service (account-linking T2)", () => {
       assert.equal(codeRowFor(res.code).expires_at, fixed + LIFETIME_MS);
     });
 
+    // #426 (audit LT-12): stacked live codes were the squat amplifier.
+    it("re-minting voids the previous code — one live code per (community, user)", async () => {
+      const first = await service.createLinkCode(dcMain, "disc-void-426");
+      assert.equal(first.ok, true);
+      assert.equal(first.voidedPriorCodes, 0, "first mint has nothing to void");
+
+      const second = await service.createLinkCode(dcMain, "disc-void-426");
+      assert.equal(second.ok, true);
+      assert.equal(second.voidedPriorCodes, 1, "the stale code was voided by the re-mint");
+
+      const stale = await service.redeemLinkCode(fxMain, "flux-void-426", first.code);
+      assert.equal(stale.ok, false);
+      assert.match(
+        stale.error,
+        /never created|was purged/i,
+        "the old plaintext no longer resolves (RED on old code: it stacked)",
+      );
+
+      const fresh = await service.redeemLinkCode(fxMain, "flux-void-426", second.code);
+      assert.equal(fresh.ok, true, fresh.error || "");
+    });
+
+    it("removeLink voids pending codes on BOTH sides; a stale code cannot re-link", async () => {
+      const dcCode = await service.createLinkCode(dcMain, "disc-rm-426");
+      const fxCode = await service.createLinkCode(fxMain, "flux-rm-426");
+      const linked = await service.redeemLinkCode(fxMain, "flux-rm-426", dcCode.code);
+      assert.equal(linked.ok, true, linked.error || "");
+      assert.deepEqual(
+        linked.codeCreator,
+        { communityId: dcMain, userId: "disc-rm-426" },
+        "#426: the success payload names who must be notified",
+      );
+
+      const removed = service.removeLink(dcMain, "disc-rm-426");
+      assert.equal(removed.ok, true, removed.error || "");
+      assert.ok(
+        removed.voidedPendingCodes >= 1,
+        "the peer's pending code dies with the link (RED: it survived)",
+      );
+
+      // RED on old code: that stale Fluxer-side code could still link an
+      // entirely new Discord account into the victim's identity.
+      const after = await service.redeemLinkCode(dcMain, "disc-rm-victim-426", fxCode.code);
+      assert.equal(after.ok, false, "voided code cannot (re-)link");
+      assert.match(after.error, /never created|was purged/i);
+    });
+
     it("answers an unregistered community with a specific, actionable sentence", async () => {
       const res = await service.createLinkCode(MISSING_COMMUNITY, "disc-none");
       assert.equal(res.ok, false);

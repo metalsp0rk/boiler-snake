@@ -473,6 +473,7 @@ module.exports = {
   getLinkCodeByHash: userLinks.getLinkCodeByHash,
   consumeLinkCode: userLinks.consumeLinkCode,
   purgeExpiredLinkCodes: userLinks.purgeExpiredLinkCodes,
+  deletePendingLinkCodesFor: userLinks.deletePendingLinkCodesFor,
   hasActiveBridgeBetween: userLinks.hasActiveBridgeBetween,
   setUserLinkMirrorPct: userLinks.setMirrorPct,
   setUserLinkMirrorMemory: userLinks.setMirrorMemory,
