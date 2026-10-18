@@ -62,7 +62,7 @@ Every event can grant a role to confirmed attendees: a temporary `event-<slug>` 
 ## Reminders
 
 - Reminders are a **property of the event**, not a separate product. A default reminder arms at the guild interval when the event is created; `/eventconfig reminders default 60` changes the interval, `add`/`remove` stack extra offsets (optional custom message + ping role).
-- Delivery audience: signed up on an option with reminders on → minus personal opt-out (`/eventconfig reminders off`, shared with `/eventreminder optout`) → minus per-event mute.
+- Delivery audience: signed up on an option with reminders on → minus personal opt-out (`/eventreminder optout`) → minus per-event mute (`/eventconfig reminders mute`). Staff-only `reminders off|on` is the **guild default** toggle for new events — never a personal setting (#348 fixed the picker copy that advertised it as one).
 - Changing the start time **moves unsent reminders**. Thread delivery (posts the reminder in the event thread) is opt-in: `/eventconfig settings thread-reminders`.
 - Reminder delivery has states (`sent`, `retry`, `retired`) — a failed send retries with backoff and says so rather than vanishing.
 

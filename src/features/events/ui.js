@@ -376,16 +376,23 @@ function responseGroup(g) {
 function remindersGroup(g) {
   return g
     .setName("reminders")
-    .setDescription("Reminder controls: personal opt-out, per-event mute, custom reminders.")
+    // #348: off/on toggled the GUILD default reminder behind a staff gate
+    // while the picker copy sold them as a personal opt-out ("for you
+    // everywhere", "shared with /eventreminder opt-out"). A staff member
+    // muting themselves silently disabled defaults for every future event;
+    // members got a staff denial for a command the picker described to
+    // them. The copy now says what the arms do; the personal mechanism is
+    // /eventreminder and stays there.
+    .setDescription("Reminder controls: guild defaults (staff), per-event mute, custom reminders.")
     .addSubcommand((sc) =>
       sc
         .setName("off")
-        .setDescription("Stop event reminder pings for you everywhere in this server (shared with /eventreminder opt-out)."),
+        .setDescription("Staff: default reminders OFF for NEW events guild-wide. Personal opt-out: /eventreminder."),
     )
     .addSubcommand((sc) =>
       sc
         .setName("on")
-        .setDescription("Resume event reminder pings for you in this server."),
+        .setDescription("Staff: default reminders back ON (15 min or previous value) for NEW events."),
     )
     .addSubcommand((sc) =>
       withEvent(
