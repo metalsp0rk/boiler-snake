@@ -550,6 +550,109 @@ describe("web session core (auth/sessions, middleware, config)", () => {
       assert.equal(warns.length, 1);
       assert.ok(warns[0].includes("session lookup failed"));
     });
+
+    // ---- #401 (C1-1): a touched session renews its OWN cookie --------------
+
+    /** Like invoke(), but capturing appended Set-Cookie strings. */
+    const dispatchCapture = (mw, cookieHeader) => {
+      const req = { headers: { cookie: cookieHeader } };
+      const cookies = [];
+      const res = {
+        appendHeader(k, v) {
+          if (k === "Set-Cookie") cookies.push(v);
+        },
+      };
+      mw(req, res, () => {});
+      return { req, cookies };
+    };
+
+    it("#401 a touched session re-declares its cookie with the row's REMAINING life", () => {
+      const s = sessions.createSession({ userId: "u-renew-401", discordTag: "live#401" });
+      api.db
+        .prepare("UPDATE web_sessions SET last_seen_at=? WHERE id=?")
+        .run(Date.now() - 10 * 60_000, s.id);
+      const mw = createSessionMiddleware({ touchIntervalMs: 0 });
+      const { req, cookies } = dispatchCapture(mw, `web_session=${s.id}`);
+      assert.ok(req.webSession, "identity resolved");
+      assert.equal(cookies.length, 1, "one renewed cookie rides Set-Cookie");
+      assert.ok(
+        cookies[0].startsWith(`web_session=${s.id}; `),
+        "same id + name — only the lifetime is re-declared",
+      );
+      assert.ok(
+        /HttpOnly/.test(cookies[0]) && /Path=\//.test(cookies[0]) && /SameSite=Lax/.test(cookies[0]),
+        "the attribute set matches the login-issued cookie",
+      );
+      const m = /Max-Age=(\d+)/.exec(cookies[0]);
+      assert.ok(m, "Max-Age present");
+      const maxAge = Number(m[1]);
+      const row = sessions.getSession(s.id); // post-touch view
+      const remaining = Math.ceil((row.expiresAt - Date.now()) / 1000);
+      assert.ok(
+        Math.abs(maxAge - remaining) <= 5,
+        `Max-Age mirrors the row's remaining life (${maxAge}s vs ${remaining}s)`,
+      );
+    });
+
+    it("#401 renewal obeys the ABSOLUTE cap: a near-cap row gets the REMAINING time, not the idle TTL", () => {
+      const s = sessions.createSession({ userId: "u-cap-401", discordTag: "edge#401" });
+      const longAgo = Date.now() - (6 * 24 + 20) * HOUR; // created 6d20h ago
+      api.db
+        .prepare("UPDATE web_sessions SET created_at=?, last_seen_at=?, expires_at=? WHERE id=?")
+        .run(longAgo, longAgo, Date.now() + 2 * DAY, s.id);
+      const mw = createSessionMiddleware({ touchIntervalMs: 0 });
+      const { cookies } = dispatchCapture(mw, `web_session=${s.id}`);
+      assert.equal(cookies.length, 1);
+      const maxAge = Number(/Max-Age=(\d+)/.exec(cookies[0])[1]);
+      // §8.3: touch slid the row to created+cap (4 h out), NOT the seeded
+      // 2-day expiry and NOT the 12 h idle TTL.
+      assert.ok(
+        maxAge < (6 * HOUR) / 1000,
+        `Max-Age follows created+cap (got ${maxAge}s), never minting life past the cap`,
+      );
+      assert.ok(maxAge > 0, "still a live cookie");
+    });
+
+    it("#401 fluxer identities renew THEIR cookie slot — never the discord one", () => {
+      const s = sessions.createSession({
+        userId: "u-fx-401",
+        platform: "fluxer",
+        instanceKey: "renew.example",
+        refreshExpiresAt: Date.now() + 30 * DAY,
+      });
+      api.db
+        .prepare("UPDATE web_sessions SET last_seen_at=? WHERE id=?")
+        .run(Date.now() - 10 * 60_000, s.id);
+      const mw = createSessionMiddleware({ touchIntervalMs: 0 });
+      const { cookies } = dispatchCapture(mw, `web_session_fx=${s.id}`);
+      assert.equal(cookies.length, 1);
+      assert.ok(
+        cookies[0].startsWith("web_session_fx="),
+        `the fluxer slot renews its own name, got: ${cookies[0].slice(0, 40)}`,
+      );
+    });
+
+    it("#401 untouched and dropped slots renew NOTHING (no churn, no poisoned renewal)", () => {
+      const fresh = sessions.createSession({ userId: "u-fresh-401" });
+      const a = dispatchCapture(createSessionMiddleware(), `web_session=${fresh.id}`);
+      assert.equal(a.cookies.length, 0, "inside the touch throttle: zero Set-Cookie churn");
+
+      const s = sessions.createSession({
+        userId: "u-mis-401",
+        platform: "fluxer",
+        instanceKey: "mismatch.401",
+      });
+      api.db
+        .prepare("UPDATE web_sessions SET last_seen_at=? WHERE id=?")
+        .run(Date.now() - 10 * 60_000, s.id);
+      const b = dispatchCapture(createSessionMiddleware({ touchIntervalMs: 0 }), `web_session=${s.id}`);
+      assert.equal(b.req.webSession, null, "the mismatch is dropped");
+      assert.equal(
+        b.cookies.length,
+        0,
+        "and its earned renewal dies with it — the discord slot never renews a foreign row",
+      );
+    });
   });
 
   // -------------------------------------------------------------------------
