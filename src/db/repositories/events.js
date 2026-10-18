@@ -591,7 +591,11 @@ const OPTION_PATCH_COLUMNS = new Set([
 ]);
 
 function createEventOption(eventId, opt = {}) {
-  try {
+  // #400 (B2-8): the cap check and the insert commit as ONE transaction —
+  // outside it the count was a check-then-act race (two adds both saw n-1,
+  // both inserted past the cap). One writer connection makes the txn the
+  // honest serialization point.
+  const run = db.transaction(() => {
     if (countEventOptions(eventId) >= MAX_OPTIONS_PER_EVENT) {
       return { ok: false, error: `At most ${MAX_OPTIONS_PER_EVENT} options per event.` };
     }
@@ -614,6 +618,9 @@ function createEventOption(eventId, opt = {}) {
         toJsonArray(opt.role_whitelist),
       );
     return { ok: true, option: getEventOptionById(info.lastInsertRowid) };
+  });
+  try {
+    return run();
   } catch (err) {
     return { ok: false, error: `database error: ${err?.message || err}` };
   }
@@ -644,6 +651,60 @@ function deleteEventOption(optionId) {
     return db.prepare(`DELETE FROM event_options WHERE id = ?`).run(optionId).changes > 0;
   });
   return { ok: true, deleted: run() };
+}
+
+/**
+ * #400 (B2-8): replace EVERY option of an event atomically — deletes and
+ * inserts commit as one unit. The feature-layer loop this replaces committed
+ * each delete on its own, so a mid-swap failure left a published event with
+ * ZERO options while its message kept pointing at dead option ids. The cap
+ * lives inside the same transaction (checked before any delete — a refusal
+ * changes nothing). Signups of removed options cascade away exactly as
+ * deleteEventOption always did; only the ATOMICITY is new.
+ * Positions are assigned 1..n in spec order.
+ *
+ * @param {number} eventId
+ * @param {Array<object>} specs createEventOption-shaped specs
+ * @returns {{ok: true, options: object[]}|{ok: false, error: string}}
+ */
+function replaceEventOptions(eventId, specs = []) {
+  const run = db.transaction(() => {
+    if (!Array.isArray(specs) || specs.length > MAX_OPTIONS_PER_EVENT) {
+      return { ok: false, error: `At most ${MAX_OPTIONS_PER_EVENT} options per event.` };
+    }
+    for (const row of db
+      .prepare(`SELECT id FROM event_options WHERE event_id = ?`)
+      .all(eventId)) {
+      db.prepare(`DELETE FROM event_signups WHERE option_id = ?`).run(row.id);
+      db.prepare(`DELETE FROM event_options WHERE id = ?`).run(row.id);
+    }
+    let pos = 1;
+    for (const spec of specs) {
+      const info = db
+        .prepare(
+          `INSERT INTO event_options
+             (event_id, label, emoji, position, capacity, waitlist_on, reminders_on, role_whitelist)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          eventId,
+          String(spec?.label ?? "").trim(),
+          spec?.emoji ?? null,
+          pos++,
+          Math.max(0, Math.trunc(Number(spec?.capacity) || 0)),
+          bool(spec?.waitlist_on !== false),
+          bool(Boolean(spec?.reminders_on)),
+          toJsonArray(spec?.role_whitelist),
+        );
+      void info;
+    }
+    return { ok: true, options: listEventOptions(eventId) };
+  });
+  try {
+    return run();
+  } catch (err) {
+    return { ok: false, error: `database error: ${err?.message || err}` };
+  }
 }
 
 /** Reorder by the given id sequence; ids not listed keep their tail order. */
@@ -1939,6 +2000,7 @@ module.exports = {
   updateEventOption,
   deleteEventOption,
   reorderEventOptions,
+  replaceEventOptions,
 
   // signups
   getSignup,
