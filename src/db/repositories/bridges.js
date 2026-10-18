@@ -890,6 +890,37 @@ function upsertBridgeSrcSnapshot(bridgeId, srcMessageId, contentHash) {
 }
 
 /**
+ * Prune the relay bookkeeping of ONE source message once its copies are
+ * gone (delete relay drained — audit #411/BRG-5). Without this, links +
+ * snapshots grow one row-set per relayed message FOREVER: the echo-gate
+ * reload joins the whole table at every boot (unbounded), supersession
+ * scans dead rows, and status can never show anything but noise. One
+ * transaction; the counts come back for logging.
+ *
+ * @param {number} bridgeId
+ * @param {string} srcMessageId
+ * @returns {{ links: number, snapshots: number }} deleted row counts
+ */
+function pruneBridgeMessageRelay(bridgeId, srcMessageId) {
+  requireBridgeId(bridgeId);
+  const srcId = requireText(srcMessageId, "srcMessageId");
+  const prune = db.transaction(() => {
+    const links = db
+      .prepare(
+        `DELETE FROM bridge_message_links WHERE bridge_id = ? AND src_message_id = ?`,
+      )
+      .run(bridgeId, srcId).changes;
+    const snapshots = db
+      .prepare(
+        `DELETE FROM bridge_src_snapshots WHERE bridge_id = ? AND src_message_id = ?`,
+      )
+      .run(bridgeId, srcId).changes;
+    return { links, snapshots };
+  });
+  return prune();
+}
+
+/**
  * @param {number} bridgeId
  * @param {string} srcMessageId
  * @returns {object|null}
@@ -1111,6 +1142,7 @@ module.exports = {
   // links / snapshots
   addBridgeMessageLink,
   listBridgeMessageLinks,
+  pruneBridgeMessageRelay,
   getBridgeLinkByDestination,
   upsertBridgeSrcSnapshot,
   getBridgeSrcSnapshot,
