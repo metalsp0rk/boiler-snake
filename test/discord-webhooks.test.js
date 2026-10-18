@@ -262,6 +262,29 @@ describe("platform/discord/webhooks", () => {
       assert.match(res.error, /files\[0\] needs a non-empty string name/);
       assert.equal(wh.calls.send.length, 0, "the send never fired with a bad descriptor");
     });
+    it("#383 raw APIEmbeds ride webhook send (execute AND editMessage)", async () => {
+      const { api, wh } = wired();
+      await api.executeRelayWebhook(WH, {
+        content: "e",
+        embeds: [{ title: "T", description: "D", color: 255, fields: [] }],
+      });
+      assert.deepEqual(
+        wh.calls.send[0].embeds,
+        [{ title: "T", description: "D", color: 255, fields: [] }],
+        "the neutral relay shape IS Discord's APIEmbed — it rides send verbatim",
+      );
+
+      await api.patchRelayMessage(WH, "msg-9", { content: "e2", embeds: [{ title: "T2" }] });
+      assert.deepEqual(
+        wh.calls.editMessage[0].payload.embeds,
+        [{ title: "T2" }],
+        "edits carry embeds too",
+      );
+
+      const { api: api2, wh: wh2 } = wired();
+      await api2.executeRelayWebhook(WH, { content: "plain", embeds: [] });
+      assert.ok(!("embeds" in wh2.calls.send[0]), "an empty list sends no embeds key");
+    });
   });
 
   describe("patch / delete lifecycle", () => {

@@ -498,3 +498,60 @@ describe("platform/fluxer/webhooks — status rides the failure results (#413)",
     assert.match(res.error, /status 404/);
   });
 });
+
+// ===========================================================================
+// #383 (FLX-2): relay embeds reach the wire, clamped to the §10.8 ceilings
+// ===========================================================================
+describe("platform/fluxer/webhooks — #383 embeds cross the wire", () => {
+  it("execute bodies carry embeds, clamped to 10 with ellipsised clips", async () => {
+    const fetchStub = makeFakeFetch({
+      [`POST ${apiPath("?wait=true")}`]: jsonResponse(200, { id: "m-clamp" }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+    const embeds = Array.from({ length: 12 }, (_, i) => ({
+      title: i === 0 ? "T".repeat(300) : `T${i}`,
+      description: "d".repeat(5000),
+      url: null,
+      color: 16711680,
+      fields: [{ name: "f", value: "v", inline: true }],
+    }));
+
+    const res = await api.executeRelayWebhook(WH, { content: "with embeds", embeds });
+    assert.deepEqual(res, { ok: true, messageId: "m-clamp" });
+    const body = JSON.parse(fetchStub.calls[0].init.body);
+    assert.equal(body.embeds.length, 10, "the 10-embed destination ceiling holds");
+    assert.equal(body.embeds[0].title.length, 256, "titles clip at 256");
+    assert.ok(body.embeds[0].title.endsWith("…"), "a clipped title shows the ellipsis, not a silent slice");
+    assert.equal(body.embeds[0].description.length, 4096, "descriptions clip at 4096");
+    assert.deepEqual(
+      body.embeds[1].fields,
+      [{ name: "f", value: "v", inline: true }],
+      "fields ride unchanged",
+    );
+    assert.ok(!("url" in body.embeds[1]), "null-valued keys are dropped (the API rejects some nulls)");
+  });
+
+  it("PATCH bodies carry embeds too (an embed-only edit updates the copy)", async () => {
+    const fetchStub = makeFakeFetch({
+      [`PATCH ${apiPath("/messages/m-383")}`]: jsonResponse(200, { id: "m-383" }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+    const res = await api.patchRelayMessage(WH, "m-383", {
+      content: "edited",
+      embeds: [{ title: "NEW", description: "changed" }],
+    });
+    assert.deepEqual(res, { ok: true });
+    const body = JSON.parse(fetchStub.calls[0].init.body);
+    assert.deepEqual(body.embeds, [{ title: "NEW", description: "changed" }]);
+  });
+
+  it("no embeds key is ever sent when there are none (patch semantics untouched)", async () => {
+    const fetchStub = makeFakeFetch({
+      [`PATCH ${apiPath("/messages/m-383c")}`]: jsonResponse(200, { id: "m-383c" }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+    await api.patchRelayMessage(WH, "m-383c", { content: "edited", embeds: [] });
+    const body = JSON.parse(fetchStub.calls[0].init.body);
+    assert.ok(!("embeds" in body), "an empty embeds list sends no key — PATCH stays minimal");
+  });
+});
