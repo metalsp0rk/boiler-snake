@@ -580,7 +580,7 @@ describe("#399 (B2-7): queue/history tables are now bounded", () => {
     assert.equal(count("bridge_outbox"), 1);
   });
 
-  it("the age deletes ride the 053 indexes — no full scans (#396 doctrine)", () => {
+  it("the age deletes ride the sweep indexes — no full scans (#396/DB-4)", () => {
     const expected = {
       bridge_outbox: [
         `DELETE FROM bridge_outbox WHERE state IN ('done', 'failed') AND enqueued_at < 1`,
@@ -597,6 +597,13 @@ describe("#399 (B2-7): queue/history tables are now bounded", () => {
       event_notifications: [
         `DELETE FROM event_notifications WHERE status IN ('sent', 'retired') AND fire_at < 1`,
         "idx_event_notifications_settled",
+      ],
+      // #396 (DB-4): the original four were not exempt from this doctrine —
+      // the daily-aggregate prune ran hourly against the LARGEST table with
+      // no day-lead index (PK + both secondaries lead community_id).
+      user_channel_message_daily: [
+        `DELETE FROM user_channel_message_daily WHERE day < '2026-01-01'`,
+        "idx_ucmd_day",
       ],
     };
     for (const [table, [sql, index]] of Object.entries(expected)) {
