@@ -19,8 +19,13 @@
  *    the #273 union with gork's locked read-page policy — shared so every
  *    download surface gets the strictest posture ("share it, don't fork");
  *  - redirects are followed MANUALLY, capped, same-host only, and the full
- *    address check RE-RUNS on every hop (a DNS record that flips to a private
- *    address mid-chain is caught on the hop where it is used);
+ *    address check RE-RUNS on every hop;
+ *  - THE SOCKET IS THE CHECK (#415/BRG-9): the addresses cleared by
+ *    checkHost are PINNED into the request itself (pinnedCoreFetch connects
+ *    to the validated IP; SNI/Host stay the original name), so the checked
+ *    resolution and the fetched connection are ONE lookup, not two —
+ *    DNS-rebinding windows (0-TTL records flipping public→private between
+ *    validation and connect) are closed per hop;
  *  - a per-attempt timeout aborts the request via AbortController.
  *
  * Seams (fetchImpl / resolveHost / setTimer / clearTimer) make the guard
@@ -157,29 +162,227 @@ async function defaultResolveHost(hostname) {
 /**
  * Resolve a hostname and refuse dangerous address classes. A name that fails
  * to resolve is refused too — the signed URL host must be real and public.
- * @returns {Promise<string|null>} a refusal reason, null when the host is OK.
+ *
+ * BRG-9 (#415): returns the VALIDATED ADDRESSES alongside the verdict so the
+ * transport can PIN the socket to exactly what was just checked. Returning
+ * only a yes/no (the old shape) left the check and the connection as two
+ * separate DNS lookups — a 0-TTL record flipping public→private between them
+ * (classic rebinding) sailed through the gap.
+ *
+ * @param {string} hostname
+ * @param {(host: string) => Promise<string[]>} resolveHost
+ * @returns {Promise<{ refusal: string|null, addresses: string[] }>}
+ *   `addresses` is the validated list for DNS names, [] for IP literals
+ *   (a literal involves no lookup at all — nothing to rebind on).
  */
-async function hostRefusalReason(hostname, resolveHost) {
+async function checkHost(hostname, resolveHost) {
   const strip = String(hostname ?? "").replace(/^\[|\]$/g, "");
-  if (strip === "") return "empty hostname";
+  if (strip === "") return { refusal: "empty hostname", addresses: [] };
   if (isIPv4Literal(strip) || net.isIPv6(strip)) {
-    return isDisallowedAddress(strip) ? `refused address range for ${strip}` : null;
+    return {
+      refusal: isDisallowedAddress(strip) ? `refused address range for ${strip}` : null,
+      addresses: [],
+    };
   }
   if (!HOSTNAME_RE.test(strip)) {
-    return `unparseable hostname: ${strip}`;
+    return { refusal: `unparseable hostname: ${strip}`, addresses: [] };
   }
   let addresses;
   try {
     addresses = await resolveHost(strip);
   } catch (err) {
-    return `dns lookup failed for ${strip}: ${String(err?.message || err)}`;
+    return {
+      refusal: `dns lookup failed for ${strip}: ${String(err?.message || err)}`,
+      addresses: [],
+    };
   }
   const list = Array.isArray(addresses) ? addresses.filter(Boolean) : [];
-  if (list.length === 0) return `no address resolved for ${strip}`;
+  if (list.length === 0) return { refusal: `no address resolved for ${strip}`, addresses: [] };
   for (const addr of list) {
-    if (isDisallowedAddress(addr)) return `refused address range for ${addr}`;
+    if (isDisallowedAddress(addr)) {
+      return { refusal: `refused address range for ${addr}`, addresses: [] };
+    }
   }
-  return null;
+  return { refusal: null, addresses: list };
+}
+
+/**
+ * Back-compat wrapper (bridge media pre-check, gork read-page classification):
+ * the refusal string only. New callers that also fetch should use
+ * {@link checkHost} and pin the returned addresses.
+ * @returns {Promise<string|null>}
+ */
+async function hostRefusalReason(hostname, resolveHost) {
+  return (await checkHost(hostname, resolveHost)).refusal;
+}
+
+/**
+ * THE PINNED TRANSPORT (BRG-9 #415): fetches a validated URL by connecting
+ * DIRECTLY to one of the addresses checkHost just cleared. No `lookup`, no
+ * resolver, no system DNS on this request at all — the socket target IS the
+ * checked value, so there is no second resolution to rebind into.
+ *
+ * TLS identity is NOT weakened: `servername` stays the ORIGINAL hostname, so
+ * SNI and certificate verification are against the name the URL carried
+ * (verified against a live node:https pair: SNI + Host header carry the name,
+ * the socket lands on the pinned IP).
+ *
+ * Node's global fetch cannot do this: the dispatcher/Agent route requires the
+ * SAME undici copy as the fetch implementation, and a userland undici Agent
+ * handed to the built-in fetch fails cross-copy ("invalid onError method",
+ * verified on Node 26; the 6.x/7.x split makes any pinned npm-undici version
+ * wrong for one of the supported Node lines). The core http/https modules
+ * can, dependency-free.
+ *
+ * @param {string} url
+ * @param {{ headers?: object, signal?: AbortSignal }} [init]
+ * @param {string[]} addresses validated addresses from checkHost (non-empty)
+ * @param {{ httpImpl?: object, httpsImpl?: object }} [seams] module stubs
+ *   (tests prove the request options offline; production uses node core)
+ * @returns {Promise<object>} a fetch-shaped Response-lite
+ */
+function pinnedCoreFetch(url, init = {}, addresses = [], seams = {}) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try {
+      parsed = new URL(String(url));
+    } catch {
+      reject(new Error("pinned fetch: invalid url"));
+      return;
+    }
+    const secure = parsed.protocol === "https:";
+    if (!secure && parsed.protocol !== "http:") {
+      reject(new Error(`pinned fetch: unsupported protocol (${parsed.protocol})`));
+      return;
+    }
+    const list = (Array.isArray(addresses) ? addresses : []).filter(
+      (a) => net.isIPv4(a) || net.isIPv6(a),
+    );
+    if (list.length === 0) {
+      reject(new Error("pinned fetch: no validated address to pin to"));
+      return;
+    }
+    // Deterministic pick: prefer IPv4 (bidi-routing reality), else the first
+    // validated v6. Never anything but a CHECKED address.
+    const target = list.find((a) => net.isIPv4(a)) ?? list[0];
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+    const hostHeader = hostname.includes(":") ? `[${hostname}]` : hostname;
+
+    const headers = {};
+    for (const [k, v] of Object.entries(init.headers || {})) {
+      if (/^host$/i.test(k)) continue; // the Host header is ours to own
+      headers[k] = v;
+    }
+    headers.host = parsed.port ? `${hostHeader}:${parsed.port}` : hostHeader;
+
+    const httpMod = seams.httpImpl || require("node:http");
+    const httpsMod = seams.httpsImpl || require("node:https");
+    const transport = secure ? httpsMod : httpMod;
+    const options = {
+      host: target, // ← THE PIN: a literal validated IP, never a name
+      port: Number(parsed.port) || (secure ? 443 : 80),
+      path: parsed.pathname + parsed.search || "/",
+      method: "GET",
+      headers,
+      // SNI + cert verification stay on the ORIGINAL name (https only).
+      ...(secure ? { servername: hostname } : {}),
+    };
+
+    const signal = init && init.signal;
+    if (signal && signal.aborted) {
+      // Aborted BEFORE any socket work — never build the request at all.
+      reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+      return;
+    }
+    let settled = false;
+    const finish = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      if (signal) signal.removeEventListener("abort", onAbort);
+      fn(arg);
+    };
+    const req = transport.request(options, (coreRes) => {
+      finish(resolve, makeCoreResponse(coreRes, req));
+    });
+    function onAbort() {
+      req.destroy(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+    }
+    req.on("error", (err) => finish(reject, err));
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    req.end();
+  });
+}
+
+/**
+ * fetch-shaped adapter over a node-core ClientResponse. Only the surface the
+ * guard and read-page actually consume: ok/status, headers.get, arrayBuffer,
+ * text, and a cancellable body reader (read-page's byte budget depends on
+ * cancel() actually stopping the transfer — it destroys the request).
+ */
+function makeCoreResponse(coreRes, req) {
+  const status = Number(coreRes.statusCode);
+  const raw = coreRes.headers || {};
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get(name) {
+        const v = raw[String(name).toLowerCase()];
+        if (v === undefined) return null;
+        return Array.isArray(v) ? v.join(", ") : String(v);
+      },
+    },
+    body: {
+      getReader() {
+        const it = coreRes[Symbol.asyncIterator]();
+        return {
+          async read() {
+            const r = await it.next();
+            return r.done ? { done: true, value: undefined } : { done: false, value: r.value };
+          },
+          async cancel() {
+            try {
+              await it.return?.();
+            } catch {
+              /* already closed */
+            }
+            try {
+              req.destroy();
+            } catch {
+              /* already destroyed */
+            }
+          },
+        };
+      },
+    },
+    async arrayBuffer() {
+      const chunks = [];
+      for await (const chunk of coreRes) chunks.push(chunk);
+      return Buffer.concat(chunks);
+    },
+    async text() {
+      return (await this.arrayBuffer()).toString("utf8");
+    },
+  };
+}
+
+/**
+ * The guard's DEFAULT transport. Name-based hops (attacker-chosen hosts —
+ * the ONLY ones with a second DNS lookup to rebind) go through the pinned
+ * core fetch; IP-literal hops (addresses.length === 0: no DNS anywhere in
+ * the request, so no TOCTOU can exist) keep globalThis.fetch.
+ *
+ * @param {string} url
+ * @param {object} [init]
+ * @param {string[]} [addresses] what checkHost validated for THIS hop
+ * @param {{ httpImpl?: object, httpsImpl?: object }} [seams] core-module
+ *   stubs (tests); production omits them
+ */
+async function defaultGuardedFetch(url, init, addresses, seams = {}) {
+  if (Array.isArray(addresses) && addresses.length > 0) {
+    return pinnedCoreFetch(url, init, addresses, seams);
+  }
+  return globalThis.fetch(url, init);
 }
 
 /**
@@ -204,9 +407,7 @@ async function hostRefusalReason(hostname, resolveHost) {
  */
 async function downloadGuarded(url, opts = {}) {
   const fetchImpl =
-    typeof opts.fetchImpl === "function"
-      ? opts.fetchImpl
-      : (u, init) => globalThis.fetch(u, init);
+    typeof opts.fetchImpl === "function" ? opts.fetchImpl : defaultGuardedFetch;
   const resolveHost = typeof opts.resolveHost === "function" ? opts.resolveHost : defaultResolveHost;
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : DOWNLOAD_TIMEOUT_MS;
   const maxRedirects = Number.isInteger(opts.maxRedirects) && opts.maxRedirects >= 0
@@ -237,8 +438,8 @@ async function downloadGuarded(url, opts = {}) {
     if (parsed.protocol !== "https:") {
       return { ok: false, reason: `non-https url (${parsed.protocol})` };
     }
-    const refusal = await hostRefusalReason(parsed.hostname, resolveHost);
-    if (refusal) return { ok: false, reason: refusal };
+    const check = await checkHost(parsed.hostname, resolveHost);
+    if (check.refusal) return { ok: false, reason: check.refusal };
 
     const controller = new AbortController();
     const timer = setTimer(() => controller.abort(), timeoutMs);
@@ -251,7 +452,10 @@ async function downloadGuarded(url, opts = {}) {
       if (opts.headers && Object.keys(opts.headers).length > 0) {
         init.headers = { ...opts.headers };
       }
-      res = await fetchImpl(current, init);
+      // #415: the validated addresses ride to the transport — the default
+      // (defaultGuardedFetch) PINS the socket to them; injected fakes get
+      // them as an extra argument and stay free to ignore it.
+      res = await fetchImpl(current, init, check.addresses);
     } catch (err) {
       clearTimer(timer);
       const text = String(err?.message || err);
@@ -311,6 +515,9 @@ module.exports = {
   isIpLiteralHost,
   isDisallowedAddress,
   defaultResolveHost,
+  checkHost,
   hostRefusalReason,
+  pinnedCoreFetch,
+  defaultGuardedFetch,
   downloadGuarded,
 };

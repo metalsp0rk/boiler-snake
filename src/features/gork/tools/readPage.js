@@ -19,8 +19,11 @@
  *   IPv6 ::/::1/fc00::/7/fe80::/10/c000::/2, IPv4-mapped IPv6 in every
  *   notation). `localhost` and the `.local`/`.internal`/`.localhost`
  *   suffixes are blocked pre-resolution (read-page hostname policy).
- *   Known limitation: DNS-rebinding between validation and fetch is not
- *   mitigated beyond the redirect re-validation below.
+ * #415 (BRG-9): the addresses cleared by validation are PINNED into the
+ *   fetch itself (shared guard's defaultGuardedFetch connects to the
+ *   validated IP with SNI/Host kept on the name), so validation and
+ *   connection share ONE resolution — the DNS-rebinding window between
+ *   the check and the socket is closed, per hop.
  * - Fetch uses `redirect: "manual"` with at most 2 redirects, and each
  *   hop's URL is fully re-validated (protocol + host + DNS) before it is
  *   fetched.
@@ -184,8 +187,10 @@ async function validateTargetUrl(rawUrl, resolver) {
   if (!host) return { ok: false, reason: REASON_BLOCKED };
 
   if (ssrfGuard.isIpLiteralHost(host)) {
+    // IP literal: NO resolution happens for this host at all, so there is
+    // nothing to rebind — pin nothing ([]), the transport needs no pin.
     return isPublicAddress(host)
-      ? { ok: true, url: parsed }
+      ? { ok: true, url: parsed, addresses: [] }
       : { ok: false, reason: REASON_BLOCKED };
   }
   if (isBlockedHostname(host)) {
@@ -203,7 +208,9 @@ async function validateTargetUrl(rawUrl, resolver) {
   if (!addresses.every(isPublicAddress)) {
     return { ok: false, reason: REASON_BLOCKED };
   }
-  return { ok: true, url: parsed };
+  // #415: hand the JUST-VALIDATED addresses to the caller so the fetch pins
+  // its socket to them — checked resolution == connected resolution.
+  return { ok: true, url: parsed, addresses };
 }
 
 /* ------------------------------- fetching ------------------------------ */
@@ -275,12 +282,20 @@ async function fetchReadablePage(startUrl, deps) {
     const first = await validateTargetUrl(startUrl, deps.resolver);
     if (!first.ok) return first;
     let current = first.url;
+    let pinnedAddresses = Array.isArray(first.addresses) ? first.addresses : [];
 
     for (let hops = 0; ; hops += 1) {
-      const res = await deps.fetchImpl(current.href, {
-        redirect: "manual",
-        signal: controller.signal,
-      });
+      const res = await deps.fetchImpl(
+        current.href,
+        {
+          redirect: "manual",
+          signal: controller.signal,
+        },
+        // #415: the addresses validated for THIS hop. The default transport
+        // (ssrfGuard.defaultGuardedFetch) pins the connection to them;
+        // injected fakes ignore the extra argument.
+        pinnedAddresses,
+      );
 
       const status = Number(res?.status);
       const location = REDIRECT_STATUSES.has(status)
@@ -299,6 +314,9 @@ async function fetchReadablePage(startUrl, deps) {
         const next = await validateTargetUrl(nextHref, deps.resolver);
         if (!next.ok) return next;
         current = next.url;
+        // Re-pin per hop: the redirect target re-resolved, the socket follows
+        // the FRESH validated addresses (mid-chain record flips die here).
+        pinnedAddresses = Array.isArray(next.addresses) ? next.addresses : [];
         continue;
       }
 
@@ -577,8 +595,9 @@ async function readOneUrl(rawUrl, deps) {
  * @param {object} [options]
  * @param {Function} [options.resolver] name-resolution stub; defaults to
  *   the shared guard's resolver (`ssrfGuard.defaultResolveHost`)
- * @param {Function} [options.fetchImpl] fetch stub; defaults to
- *   `globalThis.fetch`
+ * @param {Function} [options.fetchImpl] fetch stub; defaults to the shared
+ *   guard's pinning router (`ssrfGuard.defaultGuardedFetch` — name hops pin
+ *   the validated IP, IP literals fall through to `globalThis.fetch`)
  * @param {number} [options.timeoutMs] per-page timeout; default
  *   DEFAULT_TIMEOUT_MS
  * @returns {Promise<string>} combined text block for the model
@@ -595,8 +614,14 @@ async function executeReadPage(args, options = {}) {
         typeof opts.resolver === "function"
           ? opts.resolver
           : ssrfGuard.defaultResolveHost,
+      // #415: default is the shared guard's PINNING router — name-based hops
+      // fetch the validated IP (no second lookup to rebind into); IP-literal
+      // hops delegate to globalThis.fetch inside it (no DNS involved there,
+      // so nothing can rebind and the scripted test fakes stay in charge).
       fetchImpl:
-        typeof opts.fetchImpl === "function" ? opts.fetchImpl : globalThis.fetch,
+        typeof opts.fetchImpl === "function"
+          ? opts.fetchImpl
+          : ssrfGuard.defaultGuardedFetch,
       timeoutMs:
         Number.isFinite(rawTimeout) && rawTimeout > 0
           ? rawTimeout
