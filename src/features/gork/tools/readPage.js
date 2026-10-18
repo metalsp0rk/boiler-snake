@@ -25,8 +25,9 @@
  *   hop's URL is fully re-validated (protocol + host + DNS) before it is
  *   fetched.
  * - content-type must start with `text/html` or `text/plain`; bodies are
- *   capped at MAX_BYTES (declared length checked up front, slice after
- *   read).
+ *   HARD-CAPPED at MAX_BYTES: streaming read stops at the budget and the
+ *   response body is cancelled, so the download itself is bounded — not
+ *   just the visible string (chunked responses included, #435).
  *
  * Like webSearch.js, this module NEVER throws: every per-page failure
  * resolves to an inline `Could not read: <reason>` block (reasons:
@@ -213,6 +214,53 @@ function isReadableContentType(contentType) {
 }
 
 /**
+ * #435 (audit F1-2): read AT MOST maxBytes — then cancel the body so the
+ * transfer actually stops. The declared-length guard is blind to chunked
+ * responses (no Content-Length → `Number(null) === 0` passes), and
+ * `res.text()` decodes the WHOLE body before any slice: a prompt-injected
+ * URL could pin hundreds of MB of decoded string per chain. Streaming with
+ * a hard byte budget + cancel caps REAL bandwidth, not just the visible
+ * string. Responses without a stream (older fakes, non-web bodies) keep
+ * the text() fallback — its slice stays byte-cap semantics.
+ *
+ * @param {Response} res
+ * @param {number} maxBytes
+ * @returns {Promise<string>}
+ */
+async function readBodyCapped(res, maxBytes) {
+  const stream = res && res.body;
+  if (!stream || typeof stream.getReader !== "function") {
+    return String(await res.text()).slice(0, maxBytes);
+  }
+  const reader = stream.getReader();
+  const chunks = [];
+  let received = 0;
+  try {
+    while (received < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(
+          Buffer.isBuffer(value)
+            ? value
+            : Buffer.from(value.buffer, value.byteOffset, value.byteLength),
+        );
+        received += value.byteLength || 0;
+      }
+    }
+  } finally {
+    // Always stop the transfer — on the cap, on `done`, and on any read
+    // error (the caller's catch classifies that one).
+    try {
+      await reader.cancel();
+    } catch {
+      /* stream already done/cancelled */
+    }
+  }
+  return Buffer.concat(chunks).subarray(0, maxBytes).toString("utf8");
+}
+
+/**
  * Fetch one URL chain under the manual-redirect policy: initial +
  * revalidated hops, aborting the whole chain after `timeoutMs`.
  * @param {string} startUrl
@@ -269,7 +317,9 @@ async function fetchReadablePage(startUrl, deps) {
         return { ok: false, reason: REASON_FETCH_FAILED };
       }
 
-      const body = String(await res.text()).slice(0, MAX_BYTES);
+      // #435: stream-capped read (see readBodyCapped) — replaces the
+      // post-buffer slice that only LOOKED like a download limit.
+      const body = await readBodyCapped(res, MAX_BYTES);
       return { ok: true, finalUrl: current.href, contentType, body };
     }
   } catch {
