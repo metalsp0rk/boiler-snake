@@ -41,6 +41,7 @@ const relay = require("../src/features/bridge/relay");
 const media = require("../src/features/bridge/media");
 const repo = require("../src/db/repositories/bridges");
 const tokenCrypto = require("../src/features/bridge/tokenCrypto");
+const { createFluxerWebhooks } = require("../src/platform/fluxer/webhooks");
 const { getCommunityById } = require("../src/platform/community");
 
 after(() => cleanup?.());
@@ -1480,6 +1481,68 @@ describe("bridge relay worker (PR 5)", () => {
       "media covered by the source attachments stays quiet (and was never fetched)",
     );
     assert.equal(payload.embeds[0].image, undefined, "image objects never ride the payload");
+  });
+
+
+  // -------------------------------------------------------------------------
+  // #460 (G2-3): the embed journey gets REAL witnesses. Before this, the
+  // relay unit tier scripted the whole adapter away (embeds: [] fixtures),
+  // the adapter unit tier key-asserted a body that never listed embeds,
+  // the integration tier stopped at the ENQUEUE side, and the #365 pin
+  // killed the live e2e arm — FLX-2 (rich embeds stripped on both
+  // platforms) was structurally invisible at ALL FOUR tiers. This arm runs
+  // the production adapter (createFluxerWebhooks) against the injected
+  // fetch transport: enqueue → worker → wire body, embeds intact.
+  // -------------------------------------------------------------------------
+
+  it("#460 rich embeds survive ENQUEUE → worker → the REAL fluxer webhook adapter", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    const wid = db.db
+      .prepare("SELECT webhook_id FROM bridge_ends WHERE bridge_id = ? AND position = 'b'")
+      .get(bridge.id).webhook_id;
+
+    const sends = [];
+    const fetchImpl = async (url, init = {}) => {
+      sends.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      return { ok: true, status: 200, json: async () => ({ id: `fx-copy-${sends.length}` }) };
+    };
+
+    // The production adapter — same builder supervisorOutboundSeams mounts
+    // in prod; only the transport is injected (no network).
+    const realApi = createFluxerWebhooks({
+      rest: { request: async () => ({}) },
+      apiOrigin: "https://relay.example",
+      fetch: fetchImpl,
+    });
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? realApi : null) });
+
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9500",
+      payload: createPayload(publicId, "9500", {
+        embeds: [{ title: "FLX-2 rides the lead part", description: "not silently stripped", url: null }],
+      }),
+    });
+
+    await worker.drainAll();
+
+    assert.equal(sends.length, 1, "exactly one wire POST through the injected transport");
+    const send = sends[0];
+    assert.ok(
+      send.url.startsWith("https://relay.example/v1/webhooks/"),
+      `absolute token URL (audit C1 shape; got: ${send.url})`,
+    );
+    assert.ok(send.url.includes(`${wid}/`), "the end's webhook id routes the send");
+    assert.ok(send.url.includes("?wait=true"), "wait=true idempotent execute");
+    assert.equal(
+      send.body.embeds?.[0]?.title,
+      "FLX-2 rides the lead part",
+      "#460: the embed SURVIVES the full enqueue→wire journey — the old tiers never watched this leg",
+    );
+    assert.equal(send.body.embeds[0].url, undefined, "NULL-valued keys are dropped, not shipped");
+    assert.equal(send.body.username, "Alice (@alice)", "the author identity rides the same body");
+    assert.equal(repo.getBridgeOutboxById(row.id).state, "done", "row terminal on the adapter's ack");
   });
 
 });
