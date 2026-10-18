@@ -1721,6 +1721,13 @@ function fluxerGorkAdapter(outbound, message) {
         query.limit = Number.isSafeInteger(limit) && limit > 0 ? limit : 100;
         if (opts?.before != null) query.before = String(opts.before);
         if (opts?.after != null) query.after = String(opts.after);
+        // #386 (FLX-5): scope the history read to THIS message's community
+        // — the Fluxer adapter refuses provably-foreign channels. (The
+        // normalized message carries the resolved integer id; Discord's
+        // adapter builds its own options and ignores the hint.)
+        if (Number.isSafeInteger(message?.communityId)) {
+          query.communityId = message.communityId;
+        }
         const res = await outbound.fetchMessages(channelId, query);
         if (!res || res.ok !== true) {
           throw new Error(

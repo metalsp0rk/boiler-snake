@@ -161,10 +161,11 @@ async function handleInfo(commandCtx, ctx) {
  * — same shape close.js's normalizeDiscordMessage produces, so summaries read
  * identically. Pages walk backwards (100/page, 5000 max) like fetchAllMessages.
  * @param {object} outbound OutboundClient
+ * @param {number} communityId scope hint for the platform adapter (#386)
  * @param {string} channelId
  * @returns {Promise<object[]>} archive-shaped rows, oldest → newest
  */
-async function fetchHistoryRows(outbound, channelId) {
+async function fetchHistoryRows(outbound, communityId, channelId) {
   const rows = [];
   let before;
   const MAX = 5000;
@@ -173,6 +174,10 @@ async function fetchHistoryRows(outbound, channelId) {
   while (rows.length < MAX) {
     const res = await outbound.fetchMessages(channelId, {
       limit: PAGE,
+      // #386 (FLX-5): the archive reads ONE community's channel — saying so
+      // lets the Fluxer adapter refuse a provably-foreign channel id (the
+      // Discord adapter assembles its own options and is unaffected).
+      ...(Number.isSafeInteger(communityId) ? { communityId } : {}),
       ...(before ? { before } : {}),
     });
     if (!res.ok) {
@@ -243,7 +248,7 @@ async function handleSummarize(commandCtx, ctx) {
   if (!messages.length) {
     try {
       // History via outbound.fetchMessages (roadmap § Outbound client).
-      messages = await fetchHistoryRows(commandCtx.outbound, commandCtx.channelId);
+      messages = await fetchHistoryRows(commandCtx.outbound, commandCtx.communityId, commandCtx.channelId);
       const ids = collectTicketUserIds(ticket, messages);
       const userMap = await resolveUsers(client, raw.guild, ids);
       messages = enrichMessagesForArchive(messages, userMap);
