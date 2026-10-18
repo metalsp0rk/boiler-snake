@@ -25,7 +25,15 @@ const { parseEventTime, parseDuration } = require("./timeParse");
 
 const REMINDER_DEFAULT_BODY =
   "⏰ **{event}** starts {starts_in} {role}";
-const GONE_CODES = [10003, 10004, 10008, 10060];
+// Terminal "the target is gone" API codes for the event feature's
+// message/channel fan-out (#432): UnknownChannel / UnknownGuildChannel /
+// UnknownMessage. 10060 used to ride along — per discord-api-types v10 it
+// is UnknownSticker, which event code can NEVER legitimately hit (we post
+// no stickers). Consumers (refresh skip, reminder retire, crosspost drop)
+// treat these as terminal, so a sticker-coded failure — API drift or a mock
+// bug — used to silently delete work. If scheduled-event API paths ever
+// need gone-codes, the right ones are 10070/10071, NOT 10060.
+const GONE_CODES = [10003, 10004, 10008];
 
 const isGoneError = (err) => GONE_CODES.includes(err?.code ?? err?.rawError?.code);
 
