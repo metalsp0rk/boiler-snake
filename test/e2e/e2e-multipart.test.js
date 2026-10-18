@@ -138,15 +138,22 @@ describe(
       });
       assert.equal(res.status, 204, "no wait → 204");
 
-      const onTape = await poll(
+      // Settle on the ATTACHMENT, not just the message row (#519): the mock's
+      // fire-and-forget branch inserts the message synchronously and applies
+      // files a few ms later (writeFile → INSERT), so polling for existence
+      // alone handed us a message whose attachments array was still empty.
+      // The file bytes are on disk before the attachment row is visible, so
+      // a settled attachment also pins the background WRITE.
+      const settled = await poll(
         async () =>
           (await env.mock.messages(env.ids.general)).find(
-            (m) => String(m.content) === "fire and forget",
+            (m) =>
+              String(m.content) === "fire and forget" &&
+              (m.attachments ?? []).length > 0,
           ) ?? null,
-        { timeoutMs: 8000, label: "background webhook message" },
+        { timeoutMs: 8000, label: "background webhook message WITH persisted attachment" },
       );
-      const att = (onTape.attachments ?? [])[0];
-      assert.ok(att, "attachment persisted by the background branch");
+      const att = settled.attachments[0];
       assert.equal(att.filename, "ff.png");
       assert.deepEqual(await bytesOf(att.url), PNG, "background branch wrote the file");
     });
