@@ -391,6 +391,9 @@ function createFluxerWebhooks(transport = {}) {
           ok: false,
           error: failureText("createRelayWebhook", `webhook create in channel ${channelId}`, err),
           ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+          // #413: a 404 HERE is channel-scoped and unambiguous — the
+          // recreate ladder's gone-channel check reads exactly this.
+          ...(statusOf(err) != null ? { status: statusOf(err) } : {}),
         };
       }
       // The create response returns the webhook FULLY, token included
@@ -454,6 +457,10 @@ function createFluxerWebhooks(transport = {}) {
           error: res.error,
           retryable: res.retryable,
           ...(res.code != null ? { code: res.code } : {}),
+          // #413: the HTTP status rides to the worker — Fluxer's token
+          // endpoints answer 404 for a gone webhook (channel deletion
+          // cascades webhooks), and only the status says so.
+          ...(res.status != null ? { status: res.status } : {}),
         };
       }
       // wait=true: the response body is the created message. A body without
@@ -503,7 +510,12 @@ function createFluxerWebhooks(transport = {}) {
         headers,
       );
       if (!res.ok) {
-        return { ok: false, error: res.error, ...(res.code != null ? { code: res.code } : {}) };
+        return {
+          ok: false,
+          error: res.error,
+          ...(res.code != null ? { code: res.code } : {}),
+          ...(res.status != null ? { status: res.status } : {}),
+        };
       }
       return { ok: true };
     },
