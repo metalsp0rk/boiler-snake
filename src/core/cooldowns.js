@@ -45,8 +45,18 @@ function isOnCooldown(map, mapKey, cooldownSec, nowMs = Date.now()) {
   return false;
 }
 
+// #429 (audit XE-2): cooldown windows are ADMIN-CONFIGURABLE — the memory
+// sweeper must never evict an entry that could still sit inside a legitimate
+// window. The configurable max is ONE DAY (message/reaction XP cooldowns);
+// every sweeper must evict only past that plus an hour of slack. If you
+// raise the config max, raise this with it (and the DB clamp/migration).
+const MAX_CONFIG_COOLDOWN_SEC = 86_400;
+const COOLDOWN_SWEEP_MAX_AGE_MS = MAX_CONFIG_COOLDOWN_SEC * 1000 + 60 * 60 * 1000;
+
 module.exports = {
   key,
   sweepCooldownMap,
   isOnCooldown,
+  MAX_CONFIG_COOLDOWN_SEC,
+  COOLDOWN_SWEEP_MAX_AGE_MS,
 };

@@ -62,7 +62,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 49);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 50);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -128,6 +128,37 @@ describe("db layer", () => {
       expectCooldown(90.5, 90);
       expectCooldown("soon", 180);
       expectCooldown(null, 180);
+    });
+
+    // #429 (audit XE-2): the XP cooldown windows backed unbounded admin
+    // config while the award-dedupe maps swept at 6h — msgcooldown 86400
+    // silently BEHAVED as 6h (entry evicted mid-window → double award).
+    // The write path now clamps at the shared config max; the sweep
+    // constant (core/cooldowns) is defined past it on purpose.
+    it("msg_cooldown_sec clamps to 0-86400 (invalid -> 20) (#429)", () => {
+      const g = communityKey("g-xp-msg-cooldown");
+      const expectCd = (value, expected) => {
+        const s = api.updateGuildSettings(g, { msg_cooldown_sec: value });
+        assert.equal(s.msg_cooldown_sec, expected, `msgcooldown ${value} -> ${expected}`);
+      };
+      expectCd(-1, 0);
+      expectCd(20, 20);
+      expectCd(86_400, 86_400);
+      expectCd(86_401, 86_400);
+      expectCd(99_999_999, 86_400);
+      expectCd("abc", 20);
+    });
+
+    it("reaction_cooldown_sec clamps to 0-86400 (invalid -> 10) (#429)", () => {
+      const g = communityKey("g-xp-reaction-cooldown");
+      const expectCd = (value, expected) => {
+        const s = api.updateGuildSettings(g, { reaction_cooldown_sec: value });
+        assert.equal(s.reaction_cooldown_sec, expected, `reactioncooldown ${value} -> ${expected}`);
+      };
+      expectCd(-1, 0);
+      expectCd(10, 10);
+      expectCd(100_000, 86_400);
+      expectCd(null, 10);
     });
 
     it("gork_extra_rules is truncated at 500 chars", () => {

@@ -13,7 +13,13 @@ const {
   topUsers,
 } = require("../../db");
 const { levelFromXp, validateXpValue, MAX_XP_AWARD } = require("../../core/xpMath");
-const { key, isOnCooldown, sweepCooldownMap } = require("../../core/cooldowns");
+const {
+  key,
+  isOnCooldown,
+  sweepCooldownMap,
+  MAX_CONFIG_COOLDOWN_SEC,
+  COOLDOWN_SWEEP_MAX_AGE_MS,
+} = require("../../core/cooldowns");
 const {
   requireAdminFromContext,
   requireStaffFromContext,
@@ -91,6 +97,9 @@ const commands = [
         .setName("msgcooldown")
         .setDescription("Message XP cooldown seconds")
         .setMinValue(0)
+        // #429: bounded at the sweep-safe max (core/cooldowns) — beyond it
+        // the in-memory windows could be evicted early = double awards.
+        .setMaxValue(MAX_CONFIG_COOLDOWN_SEC)
         .setRequired(false),
     )
     .addIntegerOption((opt) =>
@@ -98,6 +107,7 @@ const commands = [
         .setName("reactioncooldown")
         .setDescription("Reaction XP cooldown seconds")
         .setMinValue(0)
+        .setMaxValue(MAX_CONFIG_COOLDOWN_SEC)
         .setRequired(false),
     )
     .addIntegerOption((opt) =>
@@ -754,8 +764,13 @@ function start(_client) {
     name: "xpCooldownSweep",
     intervalMs: 10 * 60 * 1000,
     run: () => {
-      sweepCooldownMap(msgCooldown, 6 * 60 * 60 * 1000);
-      sweepCooldownMap(reactionCooldown, 6 * 60 * 60 * 1000);
+      // #429 (audit XE-2): the OLD 6h maxAge silently TRUNCATED any
+      // configured cooldown above 6h — msgcooldown 86400 ("once a day")
+      // evicted the entry at 6h, last=0, and awarded up to 4×/day while
+      // staff believed the setting worked. Evict only past the max
+      // CONFIGURABLE window (+1h slack) so an entry can never expire early.
+      sweepCooldownMap(msgCooldown, COOLDOWN_SWEEP_MAX_AGE_MS);
+      sweepCooldownMap(reactionCooldown, COOLDOWN_SWEEP_MAX_AGE_MS);
     },
   });
 }
