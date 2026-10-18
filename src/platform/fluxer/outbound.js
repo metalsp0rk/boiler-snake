@@ -26,6 +26,7 @@
  */
 
 const { assertCommunityId, getCommunityById, getCommunityByExternal } = require("../community");
+const { fluxerRequestTimeoutMs } = require("./restTimeout");
 
 /**
  * Specific, human-readable cause for a thrown value (never a token: transports
@@ -510,6 +511,10 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
             method: "PUT",
             body: new Uint8Array(files[i].data),
             headers: { "content-type": files[i].contentType },
+            // #436: this presigned PUT bypasses the REST façade (auth lives
+            // in the signed URL) — bound it the same way, or it inherits the
+            // undici ~300 s default on a wedged instance.
+            signal: AbortSignal.timeout(fluxerRequestTimeoutMs()),
           });
           if (put && put.ok === false) {
             return {

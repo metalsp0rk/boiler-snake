@@ -50,8 +50,15 @@ describe("platform/fluxer/client — buildRestFacade (SDK REST verbs)", () => {
       ],
       "version prefix stripped, leading slash kept (SDK Routes convention)",
     );
-    assert.deepEqual(calls[1].options, { body: { content: "hi" } });
-    assert.deepEqual(calls[4].options, { body: { content: "edit" } });
+    // #436: every facade call carries an AbortSignal — strip it before
+    // comparing payloads (its presence is pinned separately, right here).
+    const payloadOf = (o) => {
+      const { signal, ...rest } = o;
+      assert.ok(signal instanceof AbortSignal, "facade must pass an AbortSignal (#436)");
+      return rest;
+    };
+    assert.deepEqual(payloadOf(calls[1].options), { body: { content: "hi" } });
+    assert.deepEqual(payloadOf(calls[4].options), { body: { content: "edit" } });
   });
 
   it("serializes options.query into the route string (SDK ignores options.query)", async () => {
@@ -87,7 +94,15 @@ describe("platform/fluxer/client — buildRestFacade (SDK REST verbs)", () => {
     const out = await facade.request("GET", "/v1/guilds/5", { body: { x: 1 } });
 
     assert.equal(out, "via-request");
-    assert.deepEqual(seen, [["GET", "/v1/guilds/5", { body: { x: 1 } }]]);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0][0], "GET");
+    assert.equal(seen[0][1], "/v1/guilds/5", "law path verbatim through the fallback");
+    const { signal: fallbackSignal, ...seenOptions } = seen[0][2];
+    assert.ok(
+      fallbackSignal instanceof AbortSignal,
+      "the fallback surface is bounded too (#436)",
+    );
+    assert.deepEqual(seenOptions, { body: { x: 1 } });
   });
 
   it("throws a specific surface-mismatch error when the SDK exposes neither surface", async () => {
@@ -103,5 +118,111 @@ describe("platform/fluxer/client — buildRestFacade (SDK REST verbs)", () => {
       () => noRest.request("GET", "/v1/guilds/5"),
       /SDK surface mismatch/,
     );
+  });
+});
+
+// ── #436 (audit F1-3): every Fluxer request is bounded ─────────────────────
+
+describe("platform/fluxer/client — request timeout (#436)", () => {
+  const savedEnv = process.env.FLUXER_REQUEST_TIMEOUT_MS;
+  const restore = () => {
+    if (savedEnv === undefined) delete process.env.FLUXER_REQUEST_TIMEOUT_MS;
+    else process.env.FLUXER_REQUEST_TIMEOUT_MS = savedEnv;
+  };
+
+  it("a hung request rejects with FluxerRequestTimeout naming instance + verb + path", async () => {
+    process.env.FLUXER_REQUEST_TIMEOUT_MS = "25";
+    try {
+      let capturedSignal = null;
+      const facade = buildRestFacade(
+        {
+          rest: {
+            // Wedged instance: never settles, IGNORES the signal — the
+            // hard race must bound the caller regardless.
+            request: (_m, _p, o) => {
+              capturedSignal = o.signal;
+              return new Promise(() => {});
+            },
+          },
+        },
+        "wedged.test",
+      );
+
+      await assert.rejects(
+        () => facade.request("GET", "/v1/guilds/9"),
+        (err) => {
+          assert.equal(err.name, "FluxerRequestTimeout");
+          assert.match(
+            err.message,
+            /\[fluxer\] wedged\.test REST GET \/v1\/guilds\/9 timed out after 25ms/,
+            "the error names instance, verb, path, and the budget",
+          );
+          return true;
+        },
+      );
+      assert.ok(
+        capturedSignal && capturedSignal.aborted,
+        "the transport signal is aborted at the deadline (real socket cancel)",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("a LATE rejection from the abandoned request stays contained", async () => {
+    process.env.FLUXER_REQUEST_TIMEOUT_MS = "20";
+    try {
+      let rejectLate;
+      const facade = buildRestFacade(
+        {
+          rest: {
+            request: () =>
+              new Promise((_res, rej) => {
+                rejectLate = rej;
+              }),
+          },
+        },
+        "late.test",
+      );
+      await assert.rejects(() => facade.request("GET", "/v1/x"), /timed out/);
+      rejectLate(new Error("socket died late"));
+      // Give the abandoned promise a chance to surface unhandled — node --test
+      // fails the run on unhandled rejections, so a green suite is the pin.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+    } finally {
+      restore();
+    }
+  });
+
+  it("responses arriving before the deadline are unaffected ", async () => {
+    process.env.FLUXER_REQUEST_TIMEOUT_MS = "5000";
+    try {
+      const facade = buildRestFacade(
+        { rest: { request: () => Promise.resolve({ ok: true }) } },
+        "fast.test",
+      );
+      assert.deepEqual(await facade.request("GET", "/v1/guilds/1"), { ok: true });
+    } finally {
+      restore();
+    }
+  });
+
+  it("env parsing: only sane values stick; the transport is ALWAYS bounded", () => {
+    const { fluxerRequestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS } = require("../src/platform/fluxer/restTimeout");
+    for (const bad of ["", "abc", "0", "-5", "1e999", "600001", "3.5x"]) {
+      process.env.FLUXER_REQUEST_TIMEOUT_MS = bad;
+      assert.equal(
+        fluxerRequestTimeoutMs(),
+        DEFAULT_REQUEST_TIMEOUT_MS,
+        `env "${bad}" must fall back to the default (no off-switch)`,
+      );
+    }
+    assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 15000, "parity with discord.js requestTimeout");
+    process.env.FLUXER_REQUEST_TIMEOUT_MS = "30000";
+    assert.equal(fluxerRequestTimeoutMs(), 30000);
+    process.env.FLUXER_REQUEST_TIMEOUT_MS = "2500.9";
+    assert.equal(fluxerRequestTimeoutMs(), 2500, "fractional values floor");
+    restore();
   });
 });
