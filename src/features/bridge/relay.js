@@ -130,25 +130,10 @@ function parseBridgeLine(content) {
  * @returns {{ webhooks: number, echoes: number }} loaded entry counts
  */
 function reloadRelayMaps(deps = {}) {
-  const db = deps.db ?? require("../../db/connection").db;
-  const rows = db
-    .prepare(
-      `SELECT c.platform AS platform, c.instance_key AS instance_key, e.webhook_id AS webhook_id
-       FROM bridge_ends e
-       JOIN communities c ON c.id = e.community_id
-       JOIN bridges b ON b.id = e.bridge_id
-       WHERE b.state = 'active' AND e.webhook_id IS NOT NULL`,
-    )
-    .all();
-  const echoRows = db
-    .prepare(
-      `SELECT c.platform AS platform, c.instance_key AS instance_key, l.dst_message_id AS dst_message_id
-       FROM bridge_message_links l
-       JOIN bridge_ends src ON src.bridge_id = l.bridge_id AND src.community_id = l.src_community_id
-       JOIN bridge_ends dst ON dst.bridge_id = l.bridge_id AND dst.community_id <> l.src_community_id
-       JOIN communities c ON c.id = dst.community_id`,
-    )
-    .all();
+  // #397: the map-feed queries live in the bridges repo (sole owner).
+  const repo = deps.repo ?? require("../../db/repositories/bridges");
+  const rows = repo.listActiveEndWebhookRows();
+  const echoRows = repo.listEchoDestinationRows();
 
   const nextWebhooks = new Map();
   for (const row of rows) {
@@ -806,7 +791,7 @@ function withinConnectedWindow(messageId, platform, bridge) {
  * Never rejects; every fault logs `[bridge] enqueue failed:` with ids.
  *
  * @param {object} message NormalizedMessage (post-update state)
- * @param {object} [deps] { repo, db, mentionLookup, media } seams (tests)
+ * @param {object} [deps] { repo, mentionLookup, media } seams (tests)
  * @returns {Promise<{ enqueued: true, outboxId: number }|null>}
  */
 async function enqueueBridgeEdit(message, deps = {}) {
@@ -849,18 +834,16 @@ async function enqueueBridgeEdit(message, deps = {}) {
 
     // The create row's payload (any state) defines the attachment ids the
     // destination already has; an edit only spools/sends NEW ids (§10.7).
-    const db = deps.db ?? require("../../db/connection").db;
-    const createRow = db
-      .prepare(
-        `SELECT payload_json FROM bridge_outbox
-         WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'create'
-         ORDER BY id DESC LIMIT 1`,
-      )
-      .get(bridge.id, direction, messageId);
+    const createPayloadJson = repo.getLatestOutboxPayloadJson(
+      bridge.id,
+      direction,
+      messageId,
+      "create",
+    );
     let createPayload = null;
-    if (createRow) {
+    if (createPayloadJson != null) {
       try {
-        createPayload = JSON.parse(createRow.payload_json);
+        createPayload = JSON.parse(createPayloadJson);
       } catch {
         console.error(
           `[bridge] enqueue: create payload for message ${messageId} is not parseable — treating all attachments as new`,
@@ -876,15 +859,7 @@ async function enqueueBridgeEdit(message, deps = {}) {
 
     // Delete supersedes (§10.10): a pending/in-flight delete for this source
     // id means the copy is being taken down — the edit is moot, drop it.
-    const pendingDelete = db
-      .prepare(
-        `SELECT id FROM bridge_outbox
-         WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'delete'
-           AND state IN ('pending', 'sending')
-         LIMIT 1`,
-      )
-      .get(bridge.id, direction, messageId);
-    if (pendingDelete) return null;
+    if (repo.hasBlockingDeleteRow(bridge.id, direction, messageId)) return null;
 
     // BRG-1 (#375): UNIQUE(bridge_id, direction, src_message_id, kind) spans
     // the TERMINAL states, so with a `done`/`failed` edit row for this source
@@ -893,11 +868,7 @@ async function enqueueBridgeEdit(message, deps = {}) {
     // FOREVER (the snapshot hash has already moved — every later edit hits
     // the same wall). Mirror the delete path's terminal-row pre-delete
     // (§10.10 "second takedown enqueues cleanly") so re-edits always queue.
-    db.prepare(
-      `DELETE FROM bridge_outbox
-       WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'edit'
-         AND state IN ('done', 'failed')`,
-    ).run(bridge.id, direction, messageId);
+    repo.clearTerminalEditRows(bridge.id, direction, messageId);
 
     // Snapshot updated BEFORE the enqueue (spec §10.7/§10.10): the second of
     // two rapid edits hashes against the first edit's hash, so a content-
@@ -924,7 +895,7 @@ async function enqueueBridgeEdit(message, deps = {}) {
       srcMessageId: messageId,
       payload,
     });
-    ctx = { repo, db, bridge, messageId, payload, row, newRawAttachments, direction };
+    ctx = { repo, bridge, messageId, payload, row, newRawAttachments, direction };
   } catch (err) {
     if (err?.code === "bridge_outbox_duplicate") {
       // Only a concurrent PENDING/SENDING row can still collide (terminal
@@ -938,7 +909,7 @@ async function enqueueBridgeEdit(message, deps = {}) {
 
   // Phase 2 — spool bytes for the NEW attachment ids (spec §10.8 rules,
   // media only, no bot credential). Mirrors enqueueBridgeMessage.
-  const { repo, db, bridge, messageId, payload, row, newRawAttachments, direction } = ctx;
+  const { repo, bridge, messageId, payload, row, newRawAttachments, direction } = ctx;
   try {
     if (newRawAttachments.length > 0) {
       const seams = deps.media ?? {};
@@ -962,10 +933,8 @@ async function enqueueBridgeEdit(message, deps = {}) {
         });
         payload.attachments = descriptors;
         if (notices.length > 0) payload.spoolNotices = notices;
-        const updated = db
-          .prepare("UPDATE bridge_outbox SET payload_json = ? WHERE id = ? AND state = 'pending'")
-          .run(JSON.stringify(payload), row.id);
-        if (!updated || updated.changes === 0) {
+        const updated = repo.updateOutboxPayloadIfPending(row.id, JSON.stringify(payload));
+        if (updated === 0) {
           // The row left 'pending' mid-spool: that execution owns the payload;
           // the freshly written bytes are unowned → delete the spool dir.
           media.deleteSpoolDir(bridge.public_id, messageId);
@@ -997,7 +966,7 @@ async function enqueueBridgeEdit(message, deps = {}) {
  * Never throws.
  *
  * @param {object} message NormalizedMessage (partial allowed: id + channel)
- * @param {object} [deps] { repo, db } seams (tests)
+ * @param {object} [deps] { repo } seams (tests)
  * @returns {{ enqueued: true, outboxId: number }|null}
  */
 function enqueueBridgeDelete(message, deps = {}) {
@@ -1006,7 +975,6 @@ function enqueueBridgeDelete(message, deps = {}) {
     // BRIDGE_ENABLED=0: no new rows while paused (see enqueueBridgeMessage).
     if (!isBridgeEnabled()) return null;
     const repo = deps.repo ?? require("../../db/repositories/bridges");
-    const db = deps.db ?? require("../../db/connection").db;
 
     const resolved = resolveSourceContext(message, repo);
     if (!resolved) return null;
@@ -1066,7 +1034,7 @@ function enqueueBridgeDelete(message, deps = {}) {
  * @param {number} communityId the source community
  * @param {string} channelId the channel the ids were purged from
  * @param {string[]} messageIds the deleted source message ids
- * @param {object} [opts] { platform, instanceKey, repo, db } seams
+ * @param {object} [opts] { platform, instanceKey, repo } seams
  * @returns {{ enqueued: number }} rows created (one per LINKED id)
  */
 function enqueueBridgeBulkDelete(communityId, channelId, messageIds, opts = {}) {
@@ -1221,11 +1189,8 @@ async function enqueueBridgeMessage(message, deps = {}) {
       });
       payload.attachments = descriptors;
       if (notices.length > 0) payload.spoolNotices = notices;
-      const db = deps.db ?? require("../../db/connection").db;
-      const updated = db
-        .prepare("UPDATE bridge_outbox SET payload_json = ? WHERE id = ? AND state = 'pending'")
-        .run(JSON.stringify(payload), row.id);
-      if (!updated || updated.changes === 0) {
+      const updated = repo.updateOutboxPayloadIfPending(row.id, JSON.stringify(payload));
+      if (updated === 0) {
         // The row left 'pending' mid-spool (worker claim / supersession):
         // that execution's payload is frozen — the spool is unowned, delete.
         media.deleteSpoolDir(bridge.public_id, messageId);
@@ -1587,7 +1552,7 @@ function buildSendParts(payload, destPlatform, resolveFile) {
 
 /**
  * The relay worker (spec §10.10). Pure-ish and fully seam-injected:
- *   repo, db, getWebhookApi(platform, instanceKey), getOutbound(platform,
+ *   repo, getWebhookApi(platform, instanceKey), getOutbound(platform,
  *   instanceKey), keyGetter, sendMessage, sleep(ms), fetchImpl, resolveHost,
  *   downloadTimeoutMs.
  *
@@ -1609,7 +1574,6 @@ function buildSendParts(payload, destPlatform, resolveFile) {
  */
 function createRelayWorker(deps = {}) {
   const repo = deps.repo ?? require("../../db/repositories/bridges");
-  const db = deps.db ?? require("../../db/connection").db;
   const getWebhookApi =
     typeof deps.getWebhookApi === "function" ? deps.getWebhookApi : () => null;
   const getOutbound = typeof deps.getOutbound === "function" ? deps.getOutbound : () => null;
@@ -2149,17 +2113,16 @@ function createRelayWorker(deps = {}) {
     // The original create payload defines the destination's CURRENT part
     // layout: the "content changed" filter compares new chunks against the
     // chunks the create actually sent.
-    const createRow = db
-      .prepare(
-        `SELECT payload_json FROM bridge_outbox
-         WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'create'
-         ORDER BY id DESC LIMIT 1`,
-      )
-      .get(bridge.id, payload.direction, payload.srcMessageId);
+    const createPayloadJson = repo.getLatestOutboxPayloadJson(
+      bridge.id,
+      payload.direction,
+      payload.srcMessageId,
+      "create",
+    );
     let createPayload = null;
-    if (createRow) {
+    if (createPayloadJson != null) {
       try {
-        createPayload = JSON.parse(createRow.payload_json);
+        createPayload = JSON.parse(createPayloadJson);
       } catch {
         console.error(
           `[bridge] worker: create payload for edit row ${row.id} is not parseable — treating every part as changed`,
@@ -2413,10 +2376,7 @@ function createRelayWorker(deps = {}) {
 
     if (resolveErrors.length > 0) {
       // Partial media failure names itself on the row (partial-failure rule).
-      db.prepare("UPDATE bridge_outbox SET last_error = ? WHERE id = ?").run(
-        sliceSafe(`partial: ${resolveErrors.join("; ")}`, 480),
-        row.id,
-      );
+      repo.annotateOutboxError(row.id, sliceSafe(`partial: ${resolveErrors.join("; ")}`, 480));
     }
     const done = repo.markOutboxDone(row.id);
     if (done && resolveErrors.length === 0) repo.setBridgeLastError(bridge.id, null);
@@ -2723,10 +2683,7 @@ function createRelayWorker(deps = {}) {
           if (createdIds.length === 0) {
             // The row names its first copy immediately (partial-failure
             // rule: a later park still shows what was actually delivered).
-            db.prepare("UPDATE bridge_outbox SET dest_message_id = ? WHERE id = ?").run(
-              committedId,
-              row.id,
-            );
+            repo.setOutboxDestMessageId(row.id, committedId);
           }
           createdIds.push({ partIndex: part.partIndex, messageId: committedId });
         }
@@ -2737,10 +2694,7 @@ function createRelayWorker(deps = {}) {
       // by the Fluxer nonce; links rows committed per part above).
       if (resolveErrors.length > 0) {
         // Names what the body named (partial-failure report on the row).
-        db.prepare("UPDATE bridge_outbox SET last_error = ? WHERE id = ?").run(
-          sliceSafe(`partial: ${resolveErrors.join("; ")}`, 480),
-          row.id,
-        );
+        repo.annotateOutboxError(row.id, sliceSafe(`partial: ${resolveErrors.join("; ")}`, 480));
       }
       const done = repo.markOutboxDone(row.id);
       if (done && resolveErrors.length === 0) repo.setBridgeLastError(bridge.id, null);
@@ -2794,14 +2748,7 @@ function createRelayWorker(deps = {}) {
     // is asked for; STOPPING is this chooser's job. A VANISHED bridge row
     // stays claimable: runRow drains such rows to done (disconnect
     // cascade race — the existing orphan path).
-    return db
-      .prepare(
-        `SELECT DISTINCT o.bridge_id, o.direction FROM bridge_outbox o
-         LEFT JOIN bridges b ON b.id = o.bridge_id
-         WHERE o.state = 'pending' AND (b.id IS NULL OR b.state = 'active')
-         ORDER BY o.bridge_id ASC, o.direction ASC`,
-      )
-      .all();
+    return repo.listPendingOutboxPairs();
   }
 
   /**
@@ -2895,7 +2842,7 @@ function createRelayWorker(deps = {}) {
  *
  * @param {object} [supervisor] platform supervisor { discord, fluxer, clientForCommunity }
  *   (the seams below take precedence when provided)
- * @param {object} [opts] worker seams (repo, db, getWebhookApi, getOutbound,
+ * @param {object} [opts] worker seams (repo, getWebhookApi, getOutbound,
  *   keyGetter, sendMessage, sleep, fetchImpl, resolveHost, scheduler, ...)
  * @returns {{ stop: () => void, worker: object }|null} loop handle
  */
@@ -2931,16 +2878,7 @@ function startBridgeLoops(supervisor = null, opts = {}) {
       // short of disconnect; live work (pending/sending) keeps the dir.
       hasLiveOutbox:
         opts.hasLiveOutbox ??
-        ((publicId, srcMessageId) =>
-          (opts.db ?? require("../../db/connection").db)
-            .prepare(
-              `SELECT 1 FROM bridge_outbox o
-               JOIN bridges b ON b.id = o.bridge_id
-               WHERE b.public_id = ? AND o.src_message_id = ?
-                 AND o.state IN ('pending', 'sending')
-               LIMIT 1`,
-            )
-            .get(publicId, srcMessageId) != null),
+        ((publicId, srcMessageId) => repo.hasLiveOutboxRows(publicId, srcMessageId)),
     });
     if (removed.length > 0) {
       console.log(`[bridge] removed ${removed.length} orphan spool director${removed.length === 1 ? "y" : "ies"}`);

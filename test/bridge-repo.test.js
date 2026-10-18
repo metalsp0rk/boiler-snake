@@ -826,5 +826,189 @@ describe("bridge repo (PR 2)", () => {
       );
     });
   });
+
+  describe("#397: relay's raw-SQL statements, homed (bridges primitives)", () => {
+    let seq = 0;
+    const mkBridge = () =>
+      makeBridge({ endAChannelId: `2000000000000${3970 + (seq += 1)}` });
+
+    it("getLatestOutboxPayloadJson: null when absent; the payload ANY state", () => {
+      const b = mkBridge();
+      assert.equal(api.getLatestOutboxPayloadJson(b.id, "a_to_b", "none-397", "create"), null);
+      const row = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "create",
+        srcMessageId: "3971",
+        payload: { marker: "payload-3971" },
+      });
+      assert.match(
+        api.getLatestOutboxPayloadJson(b.id, "a_to_b", "3971", "create"),
+        /payload-3971/,
+      );
+      api.db.prepare(`UPDATE bridge_outbox SET state = 'done' WHERE id = ?`).run(row.id);
+      assert.match(
+        api.getLatestOutboxPayloadJson(b.id, "a_to_b", "3971", "create"),
+        /payload-3971/,
+        "terminal rows stay readable — they are the edit intake's audit view",
+      );
+    });
+
+    it("hasBlockingDeleteRow follows the delete row's life; clearTerminalEditRows spares pending", () => {
+      const b = mkBridge();
+      assert.equal(api.hasBlockingDeleteRow(b.id, "a_to_b", "3972a"), false);
+      const del = api.enqueueBridgeDeleteOutbox(b.id, {
+        direction: "a_to_b",
+        srcMessageId: "3972a",
+        payload: "{}",
+      });
+      assert.equal(api.hasBlockingDeleteRow(b.id, "a_to_b", "3972a"), true);
+      api.markOutboxDone(del.row.id);
+      assert.equal(
+        api.hasBlockingDeleteRow(b.id, "a_to_b", "3972a"),
+        false,
+        "a DONE delete stops blocking edits",
+      );
+
+      const edit = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "edit",
+        srcMessageId: "3972a",
+        payload: "{}",
+      });
+      assert.equal(
+        api.clearTerminalEditRows(b.id, "a_to_b", "3972a"),
+        0,
+        "BRG-1 clears TERMINAL rows only — queued edits are work",
+      );
+      api.markOutboxDone(edit.id);
+      assert.equal(api.clearTerminalEditRows(b.id, "a_to_b", "3972a"), 1);
+    });
+
+    it("updateOutboxPayloadIfPending: pending rows only; 0 means the claim owns the payload", () => {
+      const b = mkBridge();
+      const row = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "create",
+        srcMessageId: "3973",
+        payload: { v: 1 },
+      });
+      assert.equal(api.updateOutboxPayloadIfPending(row.id, JSON.stringify({ v: 2 })), 1);
+      assert.match(api.getLatestOutboxPayloadJson(b.id, "a_to_b", "3973", "create"), /"v":2/);
+      api.db.prepare(`UPDATE bridge_outbox SET state = 'sending' WHERE id = ?`).run(row.id);
+      assert.equal(
+        api.updateOutboxPayloadIfPending(row.id, JSON.stringify({ v: 3 })),
+        0,
+        "the claimed execution OWNS the payload (caller drops the fresh spool)",
+      );
+      assert.match(api.getLatestOutboxPayloadJson(b.id, "a_to_b", "3973", "create"), /"v":2/);
+    });
+
+    it("annotateOutboxError annotates — state and attempts untouched (recordOutboxFailure's job)", () => {
+      const b = mkBridge();
+      const row = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "create",
+        srcMessageId: "3974",
+        payload: "{}",
+      });
+      api.db.prepare(`UPDATE bridge_outbox SET state = 'sending' WHERE id = ?`).run(row.id);
+      assert.equal(api.annotateOutboxError(row.id, "partial: one failed"), 1);
+      const after = api.getBridgeOutboxById(row.id);
+      assert.equal(after.last_error, "partial: one failed");
+      assert.equal(after.state, "sending", "an annotation never parks or advances the ladder");
+      assert.equal(after.attempts, 0);
+    });
+
+    it("setOutboxDestMessageId names the first copy on the row", () => {
+      const b = mkBridge();
+      const row = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "create",
+        srcMessageId: "3975",
+        payload: "{}",
+      });
+      assert.equal(api.setOutboxDestMessageId(row.id, "1554600000000009999"), 1);
+      assert.equal(
+        api.getBridgeOutboxById(row.id).dest_message_id,
+        "1554600000000009999",
+      );
+    });
+
+    it("listPendingOutboxPairs: active pairs ride, broken backlogs wait for staff (#413)", () => {
+      const live = mkBridge();
+      api.db
+        .prepare(`UPDATE bridges SET state = 'active', connected_at = ? WHERE id = ?`)
+        .run(Date.now(), live.id);
+      api.enqueueBridgeOutbox(live.id, {
+        direction: "b_to_a",
+        kind: "create",
+        srcMessageId: "3976",
+        payload: "{}",
+      });
+      const broken = mkBridge();
+      api.db.prepare(`UPDATE bridges SET state = 'broken' WHERE id = ?`).run(broken.id);
+      api.enqueueBridgeOutbox(broken.id, {
+        direction: "a_to_b",
+        kind: "create",
+        srcMessageId: "3977",
+        payload: "{}",
+      });
+      const pairs = api.listPendingOutboxPairs();
+      assert.ok(
+        pairs.some((x) => x.bridge_id === live.id && x.direction === "b_to_a"),
+        "active bridge's pair is claimable",
+      );
+      assert.equal(
+        pairs.some((x) => x.bridge_id === broken.id),
+        false,
+        "a broken bridge's backlog is NOT claimed and failed one at a time",
+      );
+    });
+
+    it("hasLiveOutboxRows: live work owns its bytes; terminal-only dirs are reclaimable (#412)", () => {
+      const b = mkBridge();
+      api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "create",
+        srcMessageId: "3978",
+        payload: "{}",
+      });
+      assert.equal(api.hasLiveOutboxRows(b.public_id, "3978"), true);
+      api.db.prepare(`UPDATE bridge_outbox SET state = 'done' WHERE src_message_id = '3978'`).run();
+      assert.equal(api.hasLiveOutboxRows(b.public_id, "3978"), false);
+      assert.equal(api.hasLiveOutboxRows("b_nosuchbrdg", "3978"), false);
+    });
+
+    it("the reload feeds read ACTIVE ends and DESTINATION deployments (maps #397)", () => {
+      const b = mkBridge();
+      api.addBridgeEnd({
+        bridgeId: b.id,
+        position: "b",
+        communityId: guildB,
+        channelId: `3979-b-${seq}`,
+      });
+      api.db
+        .prepare(`UPDATE bridges SET state = 'active', connected_at = ? WHERE id = ?`)
+        .run(Date.now(), b.id);
+      api.setBridgeEndWebhook(b.id, "a", { webhookId: "wh-397", tokenEnc: "tok" });
+      const rows = api.listActiveEndWebhookRows().filter((x) => x.webhook_id === "wh-397");
+      assert.equal(rows.length, 1, "active ends with a webhook feed the relay map");
+      assert.equal(rows[0].platform, "discord", "end A lives on the discord community");
+
+      api.addBridgeMessageLink({
+        bridgeId: b.id,
+        srcCommunityId: guildA,
+        srcMessageId: "3979",
+        partIndex: 0,
+        dstMessageId: "dst-397",
+      });
+      const echoes = api
+        .listEchoDestinationRows()
+        .filter((x) => x.dst_message_id === "dst-397");
+      assert.equal(echoes.length, 1);
+      assert.equal(echoes[0].platform, "fluxer", "echoes read on the DESTINATION deployment");
+      assert.equal(echoes[0].instance_key, "fluxer.example:8443");
+    });
+  });
   });
 });
