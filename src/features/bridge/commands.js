@@ -79,6 +79,24 @@ const commands = [
     )
     .addSubcommand((sc) =>
       sc
+        .setName("retry")
+        .setDescription("Re-queue a bridge's parked (failed) copies (staff).")
+        .addStringOption((opt) =>
+          opt
+            .setName("bridge")
+            .setDescription("Bridge handle (b_…). Wins over channel.")
+            .setRequired(false)
+            .setMaxLength(64),
+        )
+        .addChannelOption((opt) =>
+          opt
+            .setName("channel")
+            .setDescription("A channel in the bridge (default: this channel)")
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
         .setName("status")
         .setDescription("Bridge status: state, direction, queue depth (staff).")
         .addStringOption((opt) =>

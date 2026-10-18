@@ -1228,6 +1228,83 @@ describe("bridge service (PR 4)", () => {
     assert.equal(item.brokenReason, "destination channel gone: HTTP 404");
   });
 
+  it("#416 retryBridge re-queues parked rows; gates hard on staff and state", () => {
+    const pair = mintPending("A-24");
+    const bridge = pair.bridge;
+    db.db.prepare("UPDATE bridges SET state = 'active', connected_at = ? WHERE id = ?").run(T0, bridge.id);
+    const parkedA = repo.enqueueBridgeOutbox(bridge.id, { direction: "a_to_b", srcMessageId: "r-240", enqueuedAt: T0 + 1 });
+    const parkedB = repo.enqueueBridgeOutbox(bridge.id, { direction: "b_to_a", srcMessageId: "r-241", enqueuedAt: T0 + 2 });
+    db.db
+      .prepare("UPDATE bridge_outbox SET state = 'failed', attempts = 5, last_error = 'boom' WHERE id IN (?, ?)")
+      .run(parkedA.id, parkedB.id);
+
+    const denied = service.retryBridge({
+      community: rowA,
+      invocationChannelId: "900",
+      publicId: pair.publicId,
+      staff: NOT_STAFF,
+      deps: baseDeps(),
+    });
+    assert.equal(denied.ok, false, "staff gate first");
+
+    const done = service.retryBridge({
+      community: rowA,
+      invocationChannelId: "900",
+      publicId: pair.publicId,
+      staff: STAFF,
+      deps: baseDeps(),
+    });
+    assert.equal(done.ok, true);
+    assert.equal(done.requeued, 2, "both parked rows ride again");
+    for (const id of [parkedA.id, parkedB.id]) {
+      const r = repo.getBridgeOutboxById(id);
+      assert.equal(r.state, "pending");
+      assert.equal(r.attempts, 0);
+      assert.equal(r.last_error, null);
+    }
+
+    const again = service.retryBridge({
+      community: rowA,
+      invocationChannelId: "900",
+      publicId: pair.publicId,
+      staff: STAFF,
+      deps: baseDeps(),
+    });
+    assert.equal(again.ok, true);
+    assert.equal(again.requeued, 0, "zero is a count, not an error");
+
+    // A BROKEN bridge refuses: its rows wait for disconnect (#413) — a
+    // flip would strand rows the gated worker can never claim.
+    repo.markBridgeBroken(bridge.id, "destination channel gone: 10003");
+    const broken = service.retryBridge({
+      community: rowA,
+      invocationChannelId: "900",
+      publicId: pair.publicId,
+      staff: STAFF,
+      deps: baseDeps(),
+    });
+    assert.equal(broken.ok, false);
+    assert.match(broken.error, /is broken/);
+    assert.match(broken.error, /disconnect/);
+  });
+
+  it("#416 the status item exposes the parked count beside the queue", () => {
+    const pair = mintPending("A-25");
+    db.db.prepare("UPDATE bridges SET state = 'active', connected_at = ? WHERE id = ?").run(T0, pair.bridge.id);
+    const parked = repo.enqueueBridgeOutbox(pair.bridge.id, { direction: "a_to_b", srcMessageId: "r-250", enqueuedAt: T0 });
+    db.db.prepare("UPDATE bridge_outbox SET state = 'failed', attempts = 5 WHERE id = ?").run(parked.id);
+
+    const status = service.statusBridge({
+      community: rowA,
+      invocationChannelId: "900",
+      staff: STAFF,
+      deps: baseDeps(),
+    });
+    const item = status.items.find((i) => i.publicId === pair.publicId);
+    assert.deepEqual(item.outboxFailed, { a_to_b: 1, b_to_a: 0 }, "parked rows are VISIBLE now");
+    assert.deepEqual(item.outboxDepth, { a_to_b: 0, b_to_a: 0 }, "queue-empty and parked-nonzero are distinct numbers, not one blended 'depth'");
+  });
+
   it("status by an unknown handle is specific; non-staff is denied", () => {
     const unknown = service.statusBridge({
       community: rowA,

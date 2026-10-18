@@ -2273,7 +2273,7 @@ function createRelayWorker(deps = {}) {
         await sendNoticeSafe(
           payload.srcCommunityId,
           payload.srcChannelId,
-          `Bridge ${bridge.public_id} could not copy message ${payload.srcMessageId} after 5 attempts: ${result.reason}. Later messages are still being copied.`,
+          `Bridge ${bridge.public_id} could not copy message ${payload.srcMessageId} after 5 attempts: ${result.reason}. Later messages are still being copied. Parked copies wait for a staff retry: /bridge retry.`,
           "edit park",
         );
         return;
@@ -2341,7 +2341,7 @@ function createRelayWorker(deps = {}) {
         await sendNoticeSafe(
           payload.srcCommunityId,
           payload.srcChannelId,
-          `Bridge ${bridge.public_id} could not remove the stale copy of message ${payload.srcMessageId} part ${link.part_index} after 5 attempts: ${result.reason}.`,
+          `Bridge ${bridge.public_id} could not remove the stale copy of message ${payload.srcMessageId} part ${link.part_index} after 5 attempts: ${result.reason}. Retry with /bridge retry.`,
           "edit tail park",
         );
         return;
@@ -2424,7 +2424,7 @@ function createRelayWorker(deps = {}) {
         await sendNoticeSafe(
           payload.srcCommunityId,
           payload.srcChannelId,
-          `Bridge ${bridge.public_id} could not remove the copy of message ${payload.srcMessageId} after 5 attempts: ${result.reason}.`,
+          `Bridge ${bridge.public_id} could not remove the copy of message ${payload.srcMessageId} after 5 attempts: ${result.reason}. Retry with /bridge retry.`,
           "delete park",
         );
         return;
@@ -2644,7 +2644,7 @@ function createRelayWorker(deps = {}) {
           await sendNoticeSafe(
             payload.srcCommunityId,
             payload.srcChannelId,
-            `Bridge ${publicId} could not copy message ${payload.srcMessageId} after 5 attempts: ${result.reason}. Later messages are still being copied.`,
+            `Bridge ${publicId} could not copy message ${payload.srcMessageId} after 5 attempts: ${result.reason}. Later messages are still being copied. Parked copies wait for a staff retry: /bridge retry.`,
             "poison park",
           );
           return;

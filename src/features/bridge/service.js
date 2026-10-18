@@ -1276,6 +1276,9 @@ function describeBridge(bridge, ends) {
     connectedAt: bridge.connected_at ?? null,
     expiresAt: bridge.expires_at ?? null,
     outboxDepth: { a_to_b: 0, b_to_a: 0 },
+    // #416 (BRG-10): parked rows were invisible — status said "queue 0"
+    // while copies sat failed forever. Show them; retry makes them move.
+    outboxFailed: { a_to_b: 0, b_to_a: 0 },
     // Spool bytes on disk for this bridge (spec § Observability; media's
     // in-process accounting, refreshed from disk at start).
     spoolBytes: 0,
@@ -1295,6 +1298,11 @@ function describeBridge(bridge, ends) {
   } catch (err) {
     console.error(`[bridge] outbox depth for ${bridge.public_id} failed:`, causeOf(err));
   }
+  try {
+    items.outboxFailed = repo.countOutboxFailed(bridge.id);
+  } catch (err) {
+    console.error(`[bridge] outbox failed-count for ${bridge.public_id} failed:`, causeOf(err));
+  }
   // Spool bytes: media's process accounting (pure read — the bridge public
   // id is the accounting key, spec §10.8 caps are per bridge).
   items.spoolBytes = media.spoolUsageSnapshot(bridge.public_id).bridgeBytes ?? 0;
@@ -1302,6 +1310,75 @@ function describeBridge(bridge, ends) {
   const pb = items.ends.find((e) => e.position === "b")?.platform;
   items.directionLabel = directionLabel(bridge.direction, pa, pb);
   return items;
+}
+
+/**
+ * Re-queue a bridge's PARKED rows (#416/BRG-10). Staff verdict: the cause
+ * is gone (outage over, bad file replaced). Same staff + command-channel
+ * gates and the same handle/channel scoping as disconnect — but where
+ * disconnect DESTROYS the bridge, retry keeps it: the rows ride the queue
+ * again with a fresh 5-attempt ladder and bytes re-fetched from the source
+ * (the park reclaimed the spool dir — the spool-missing re-sign path
+ * covers it). Broken bridges refuse: their rows wait for staff to
+ * disconnect (a retry would flip rows a gated worker can never claim).
+ *
+ * @param {object} args see disconnectBridge for the resolution fields
+ * @returns {{ ok: boolean, error?: string, publicId?: string, requeued?: number }}
+ */
+function retryBridge({
+  community,
+  invocationChannelId = null,
+  targetChannelId = null,
+  publicId = null,
+  surfaceCmd = "/bridge",
+  staff = null,
+  deps: depsIn = {},
+} = {}) {
+  const deps = defaultDeps(depsIn);
+  try {
+    if (!isCommunityRow(community)) {
+      throw new TypeError("retryBridge: community must be a communities row");
+    }
+    if (!staffPermits(community.id, staff)) return { ok: false, error: MSG_DENIED };
+    if (!commandChannelsPermit(community.id, invocationChannelId)) {
+      return { ok: false, error: "Commands aren't enabled in this channel." };
+    }
+
+    const handle = publicId != null ? codes.normalizeHandle(publicId) : "";
+    let bridge = null;
+    if (handle !== "") {
+      bridge = repo.getBridgeByPublicId(handle);
+      if (bridge) {
+        const endsForHandle = repo.listBridgeEnds(bridge.id);
+        if (!endsForHandle.some((e) => e.community_id === community.id)) bridge = null;
+      }
+    } else if (targetChannelId != null && String(targetChannelId).trim() !== "") {
+      const pair = repo.getBridgeForChannel(community.id, String(targetChannelId).trim());
+      bridge = pair ? pair.bridge : null;
+    }
+
+    if (!bridge) {
+      return { ok: false, error: BRIDGE_MESSAGES.disconnectNone(surfaceCmd) };
+    }
+    if (bridge.state === "broken") {
+      return {
+        ok: false,
+        error: `Bridge ${bridge.public_id} is broken (${bridge.broken_reason ?? "destination gone"}) — retry waits until staff disconnect it.`,
+      };
+    }
+    if (bridge.state !== "active") {
+      return {
+        ok: false,
+        error: `Bridge ${bridge.public_id} is not connected yet (state: ${bridge.state}) — nothing is being copied, so nothing can be retried.`,
+      };
+    }
+
+    const { requeued } = repo.retryBridgeOutbox(bridge.id);
+    return { ok: true, publicId: bridge.public_id, requeued };
+  } catch (err) {
+    console.error("[bridge] retry failed:", causeOf(err));
+    return { ok: false, error: `Could not retry: ${err?.message || err}` };
+  }
 }
 
 /**
@@ -1431,6 +1508,7 @@ module.exports = {
   connectBridge,
   disconnectBridge,
   statusBridge,
+  retryBridge,
   listBridges,
   commandChannelsPermit,
   // exported for tests (real §10.7 step-8 activator) and the PR 7 wiring:
