@@ -452,6 +452,35 @@ describe("executeReadDiscord — asker parity (decision 46)", () => {
     const out = await executeReadDiscord("<#2000000000000000002>", opts({ guild }));
     assert.match(out, /the bot cannot view that channel/);
   });
+
+  // #475 (F1-4): a MISSING perm surface is not consent. Pre-fix permsAllow
+  // returned TRUE for null — decision-46 fail-closed semantics waved the
+  // parity gate through on any perm-shape drift.
+  it("#475 a NULL asker perm surface fails CLOSED (was: waved through)", async () => {
+    const channel = makeChannel({
+      id: "2000000000000000002",
+      messages: [makeMessage(501, "alice", "SECRET PLANNING")],
+    });
+    channel.permissionsFor = () => null; // ducked/partial surface
+    const guild = makeGuild({ channels: [channel], members: [{ id: ASKER }] });
+    const out = await executeReadDiscord("<#2000000000000000002>", opts({ guild }));
+    assert.match(out, /the asking user cannot view that channel/);
+    assert.ok(!out.includes("SECRET PLANNING"), "no leak on the unverifiable path");
+    assert.equal(channel._fetchCalls.length, 0, "refused before any message fetch");
+  });
+
+  it("#475 bot-side probe throwing (→ null perms) fails CLOSED", async () => {
+    const channel = makeChannel({
+      id: "2000000000000000002",
+      messages: [makeMessage(502, "alice", "SECRET PLANNING")],
+    });
+    channel.permissionsFor = (member) =>
+      member && member.id === BOT ? null : { has: () => true };
+    const guild = makeGuild({ channels: [channel], members: [{ id: ASKER }] });
+    const out = await executeReadDiscord("<#2000000000000000002>", opts({ guild }));
+    assert.match(out, /the bot cannot view that channel/);
+    assert.equal(channel._fetchCalls.length, 0, "refused before any message fetch");
+  });
 });
 
 describe("executeReadDiscord — open-ticket blackout (decision 46)", () => {

@@ -57,7 +57,14 @@ const {
   READ_DISCORD_BEFORE_WINDOW,
   READ_DISCORD_AFTER_WINDOW,
 } = require("../constants");
-const { formatReadLine, formatReadOutput } = require("./readDiscord");
+const {
+  formatReadLine,
+  formatReadOutput,
+  targetLabel,
+  failWith,
+  sortOldestFirst,
+  BARE_ID_RE,
+} = require("./readDiscord");
 
 /**
  * Max distinct author ids resolved to display names per read. Bounds the
@@ -119,7 +126,7 @@ const DISCORD_URL_RE = /discord(?:app)?\.com\/channels\//i;
  * message id" is the same contract on both platforms; the range stays in
  * lockstep with the Discord tool so a real id never parses on one side only.
  */
-const BARE_ID_RE = /^\d{5,25}$/;
+/** BARE_ID_RE: shared with readDiscord (#475 F1-6 — one id grammar). */
 
 /**
  * Parse the raw `link` tool arg into a read target (pure).
@@ -158,40 +165,14 @@ function parseHistoryTarget(raw) {
   };
 }
 
-/**
- * Compact human-readable target label for failure strings (decision 47:
- * `Could not read <target>: <reason>`; same shape as readDiscord's).
- * @param {{ kind?: string, channelId?: string, messageId?: string }|null} parsed
- * @param {unknown} raw original arg (garbage fallback)
- * @returns {string}
- */
-function targetLabel(parsed, raw) {
-  if (parsed?.kind === "message") return `message ${parsed.messageId}`;
-  if (parsed?.kind === "channel") return `channel ${parsed.channelId}`;
-  const text = typeof raw === "string" ? raw.trim().slice(0, 60) : "";
-  return text ? `that link ("${text}")` : "that link";
-}
-
-/** Locked failure string shape. Never throws. */
-function failWith(parsed, raw, reason) {
-  return `Could not read ${targetLabel(parsed, raw)}: ${reason}`;
-}
+/* #475 (F1-6): targetLabel/failWith IMPORTED from readDiscord now — the
+ * local copies had already drifted (raw slice(0,60) vs code-point-safe
+ * sliceSafe: the "byte-identical line shapes" header promise held only
+ * for the imported half). */
 
 /* --------------------------- duck-typed helpers --------------------------- */
 
-/**
- * Sort ids/rows oldest → newest. Snowflake ids are fixed-width digits, so
- * lexicographic order matches chronological order (the same contract
- * readDiscord's sortOldestFirst documents).
- */
-function sortOldestFirst(rows) {
-  return [...rows].sort((a, b) => {
-    const left = String(a?.id ?? "");
-    const right = String(b?.id ?? "");
-    if (left === right) return 0;
-    return left < right ? -1 : 1;
-  });
-}
+/* sortOldestFirst: IMPORTED from readDiscord (#475 F1-6 — identical contract). */
 
 /**
  * Normalize a bare id (drops leading zeros) so the `after: id − 1` anchor
