@@ -518,6 +518,98 @@ describe("integration: tickets", () => {
     assert.equal(env.db.getTicketById(ticket.id).archived, 1);
   });
 
+  // ── #423 (audit LT-6): a partial transcript must LOOK partial ─────────────
+
+  it("#423 archive caps the transcript at 5000 and SAYS so", async () => {
+    env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 0 });
+    await env.runCommand({
+      commandName: "ticket",
+      subcommand: "create",
+      admin: false,
+      user: env.users.memberUser,
+      options: { reason: "cap-423" },
+    });
+    const row = env.db
+      .listOpenTickets(env.communityId, { userId: IDS.member, limit: 20 })
+      .find((t) => t.reason === "cap-423");
+    assert.ok(row);
+    const ch = env.guild.channels.cache.get(row.channel_id);
+    const proto = await ch.send({ content: "seed" });
+    // Flood past the cap. Ids: FIXED-WIDTH numeric, lexicographically ABOVE
+    // every harness seed/sent id ("9..." > "msg-..." > "zz..."), so the
+    // fetch's string-descending walk and BigInt oldest-cursor both stay
+    // inside this range and paginate cleanly down to the cap.
+    const base = 9223370000000000000n;
+    for (let i = 0; i < 5100; i++) {
+      const id = String(base + BigInt(i));
+      ch.messages.cache.set(id, { ...proto, id });
+    }
+
+    await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: row.channel_id,
+    });
+    const archive = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "archive",
+      admin: true,
+      channelId: row.channel_id,
+    });
+    const text = env.lastReplyContent(archive);
+    // RED on old code: the archive looked COMPLETE — the oldest ~100+
+    // messages were simply gone from the transcript with zero signal.
+    assert.match(text, /archived/i, text);
+    assert.match(text, /capped at 5000/i, text);
+    assert.ok(
+      env.db.listTicketMessages(row.id).length <= 5100,
+      "persisted rows respect the cap zone",
+    );
+  });
+
+  it("#423 a failed transcript fetch names the cause in the warning (rule 3)", async () => {
+    env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 0 });
+    await env.runCommand({
+      commandName: "ticket",
+      subcommand: "create",
+      admin: false,
+      user: env.users.memberUser,
+      options: { reason: "cause-423" },
+    });
+    const row = env.db
+      .listOpenTickets(env.communityId, { userId: IDS.member, limit: 20 })
+      .find((t) => t.reason === "cause-423");
+    assert.ok(row);
+    const ch = env.guild.channels.cache.get(row.channel_id);
+    await ch.send({ content: "hello" });
+    const origFetch = ch.messages.fetch;
+    ch.messages.fetch = async () => {
+      throw new Error("429 too many requests");
+    };
+    try {
+      await env.runCommand({
+        commandName: "ticket",
+        subcommand: "close",
+        admin: true,
+        channelId: row.channel_id,
+      });
+      const archive = await env.runCommand({
+        commandName: "ticket",
+        subcommand: "archive",
+        admin: true,
+        channelId: row.channel_id,
+      });
+      const text = env.lastReplyContent(archive);
+      assert.match(text, /archived/i, "the archive still completes (warning-only)");
+      // RED on old code: bare "Failed to fetch some messages for archive."
+      // — the archiver could not act on it.
+      assert.match(text, /Failed to fetch some messages for archive: 429 too many requests/, text);
+    } finally {
+      ch.messages.fetch = origFetch;
+    }
+  });
+
   it("/ticket for adds staff opener as exclusive named owner + bypasses rate limit", async () => {
     env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
 
