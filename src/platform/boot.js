@@ -94,6 +94,39 @@ const DEFAULT_FEATURE_GATE_WATCHDOG_MS = 120_000;
  * @param {unknown} explicit boot({ featureGateWatchdogMs }) value
  * @returns {number} milliseconds (>= 0; 0 = watchdog disabled)
  */
+/**
+ * Default cap on how long the feature gate may hold a READY endpoint back
+ * for an UNSETTLED Discord login (audit A2-8, issue #392): 0 = never force
+ * (the C7 contract — wait as long as it takes; the re-arming heartbeat now
+ * tells that story every window). A positive value opens the gate
+ * DEGRADED once the cap elapses with the in-flight login as the SOLE
+ * blocker: features then read supervisor.discord as null — the proven
+ * Fluxer-only degrade signal — and the live endpoint(s) carry the layer.
+ * Override with FEATURE_GATE_MAX_HOLD_MS.
+ */
+const DEFAULT_FEATURE_GATE_MAX_HOLD_MS = 0;
+
+/**
+ * Resolve the max-hold cap: boot option first, then FEATURE_GATE_MAX_HOLD_MS,
+ * then the default (0 = disabled). Unparseable values fall back to the
+ * default with a specific complaint; 0 means "hold as long as it takes".
+ *
+ * @param {unknown} explicit boot({ featureGateMaxHoldMs }) value
+ * @returns {number} milliseconds (>= 0; 0 = never force-open)
+ */
+function resolveFeatureGateMaxHoldMs(explicit) {
+  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  const raw = process.env.FEATURE_GATE_MAX_HOLD_MS;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+    console.error(
+      `[boot] FEATURE_GATE_MAX_HOLD_MS "${raw}" is not a number >= 0 — using the ${DEFAULT_FEATURE_GATE_MAX_HOLD_MS} (disabled) default`,
+    );
+  }
+  return DEFAULT_FEATURE_GATE_MAX_HOLD_MS;
+}
+
 function resolveFeatureGateWatchdogMs(explicit) {
   if (Number.isFinite(explicit) && explicit >= 0) return explicit;
   const raw = process.env.FEATURE_GATE_WATCHDOG_MS;
@@ -129,7 +162,8 @@ function registerFeatureEventsOnce(supervisor, featureList, ctx) {
  * @param {{ registry?: object,
  *   setTimeoutFn?: (fn: Function, ms: number) => unknown,
  *   clearTimeoutFn?: (id: unknown) => void,
- *   featureGateWatchdogMs?: number }} [options] registry to share with
+ *   featureGateWatchdogMs?: number,
+ *   featureGateMaxHoldMs?: number }} [options] registry to share with
  *   features and prefix dispatch (defaults to buildDefaultRegistry());
  *   the timer seams + window control the feature-gate watchdog (tests
  *   inject fakes; house pattern from core/lifecycle)
@@ -140,6 +174,7 @@ async function boot({
   setTimeoutFn = (fn, ms) => setTimeout(fn, ms),
   clearTimeoutFn = (id) => clearTimeout(id),
   featureGateWatchdogMs,
+  featureGateMaxHoldMs,
 } = {}) {
   // Fail loudly on a bad seam: silently keeping the real timers here would
   // turn a test typo into a wall-clock race (same policy as lifecycle).
@@ -158,9 +193,24 @@ async function boot({
   const entries = readFluxerEntries();
   const discordToken = process.env.DISCORD_TOKEN;
 
+  // #392 (A2-8): the FEATURES view of the Discord client and the REAL
+  // client are split. While a max-hold degraded open is in effect, the
+  // view reads null — the same degrade signal every feature already trusts
+  // (Fluxer-only boot, C7 terminal path) — while the in-flight client
+  // rides on in `discordHandle` (shutdown drains it; a late ClientReady
+  // lifts the hold). Declared before the supervisor because its getter
+  // closes over these.
+  let discordHandle = null;
+  let degradedDiscordHold = false;
+
   /** @type {Supervisor} */
   const supervisor = {
-    discord: null,
+    get discord() {
+      return degradedDiscordHold ? null : discordHandle;
+    },
+    set discord(value) {
+      discordHandle = value;
+    },
     fluxer: new Map(),
     clientForCommunity,
   };
@@ -191,7 +241,9 @@ async function boot({
     }
   });
   registerShutdownHandle("discord", async () => {
-    const client = supervisor.discord;
+    // The REAL client (#392): a degraded gate open hides it from features,
+    // but a hidden socket must never escape the drain.
+    const client = discordHandle;
     if (client && typeof client.destroy === "function") await client.destroy();
   });
 
@@ -239,17 +291,25 @@ async function boot({
   let fluxerPending = entries.length;
   /** @type {unknown} pending feature-gate watchdog timer (fake-timer seam) */
   let featureGateTimer = null;
+  /** @type {unknown} pending max-hold (degraded-open) timer (#392) */
+  let featureGateMaxHoldTimer = null;
+  /** Count of heartbeat reports the watchdog has logged (issue #392). */
+  let gateWaitsReports = 0;
 
   function clearFeatureGateWatchdog() {
-    if (featureGateTimer == null) return;
-    const timer = featureGateTimer;
-    featureGateTimer = null;
-    try {
-      clearTimeoutFn(timer);
-    } catch (err) {
-      console.error(
-        `[boot] feature-gate watchdog clear failed: ${err?.message || err}`,
-      );
+    // Covers BOTH gate timers (issue #392): once the gate opens or a fatal
+    // owns the outcome, neither the heartbeat nor the degraded-open may
+    // fire afterwards.
+    for (const which of ["featureGateTimer", "featureGateMaxHoldTimer"]) {
+      const timer = which === "featureGateTimer" ? featureGateTimer : featureGateMaxHoldTimer;
+      if (timer == null) continue;
+      if (which === "featureGateTimer") featureGateTimer = null;
+      else featureGateMaxHoldTimer = null;
+      try {
+        clearTimeoutFn(timer);
+      } catch (err) {
+        console.error(`[boot] feature-gate ${which} clear failed: ${err?.message || err}`);
+      }
     }
   }
 
@@ -336,6 +396,7 @@ async function boot({
     }
     // Back to "as if Discord were not configured" — every feature already
     // treats supervisor.discord === null as its degrade signal.
+    degradedDiscordHold = false; // #392: terminal beats degraded (real null now)
     supervisor.discord = null;
     // The gate may now open: immediately when a surviving endpoint is
     // already ready, otherwise when that endpoint's ready path fires.
@@ -358,6 +419,20 @@ async function boot({
         // Console parity with the pre-Fluxer entry point (PR 6 bundle).
         console.log(`Boiler Snake logged in as ${client.user.tag}`);
         discordReady = true;
+        if (degradedDiscordHold) {
+          // #392: the login settled after a capped (degraded) gate open.
+          // Lift the hold so anything that READS supervisor.discord at call
+          // time (pipelines, tickers, outbound) picks the live client up;
+          // features that SKIPPED at start keep their fluxer-only shape
+          // until a restart — say so instead of leaving staff to find it.
+          degradedDiscordHold = false;
+          if (featuresStarted) {
+            console.warn(
+              "[boot] discord READY after the degraded gate open — supervisor.discord is live again; " +
+                "Discord-tier features that skipped stay skipped until restart (issue #392)",
+            );
+          }
+        }
         startFeaturesOnce();
       });
       client.on(Events.InteractionCreate, (interaction) => {
@@ -379,6 +454,7 @@ async function boot({
       // endpoints (if any) keep running; the gate re-evaluates now that
       // supervisor.discord is null.
       console.error(`[discord] client setup failed: ${err?.message || err}`);
+      degradedDiscordHold = false; // #392: terminal beats degraded
       supervisor.discord = null;
       discordTerminal = true;
       startFeaturesOnce();
@@ -449,28 +525,90 @@ async function boot({
   // all-endpoints-failed fatal (which owns that outcome) logs.
   const watchdogMs = resolveFeatureGateWatchdogMs(featureGateWatchdogMs);
   if (watchdogMs > 0 && endpointJobs.length > 0) {
-    try {
-      featureGateTimer = setTimeoutFn(() => {
-        featureGateTimer = null;
-        const waiting = featureGateWaitsOn();
-        if (featuresStarted || waiting.length === 0) return;
-        console.warn(
-          `[boot] watchdog: feature layer has not started after ${watchdogMs}ms — still waiting on: ${waiting.join("; ")}`,
+    // #392 (A2-8): the heartbeat RE-ARMS. A one-shot warning made the
+    // second hour of a stuck login silent — "C7 zombie with one warning
+    // line". Every window now says, in specific words, what is still
+    // being waited on and how many times that has been said.
+    const armHeartbeat = () => {
+      try {
+        featureGateTimer = setTimeoutFn(() => {
+          featureGateTimer = null;
+          const waiting = featureGateWaitsOn();
+          if (featuresStarted || waiting.length === 0) return;
+          gateWaitsReports += 1;
+          console.warn(
+            `[boot] watchdog: feature layer has not started after ${watchdogMs}ms — still waiting on: ${waiting.join("; ")}` +
+              (gateWaitsReports > 1
+                ? ` (wait report ${gateWaitsReports}; the boot is NOT dead, the endpoints are still settling)`
+                : ""),
+          );
+          armHeartbeat();
+        }, watchdogMs);
+        if (
+          featureGateTimer &&
+          typeof featureGateTimer.unref === "function"
+        ) {
+          featureGateTimer.unref();
+        }
+      } catch (err) {
+        // A broken timer seam must not take the boot down; the endpoints and
+        // the gate itself are already wired — only the safety net is lost.
+        console.error(
+          `[boot] could not arm feature-gate watchdog: ${err?.message || err}`,
         );
-      }, watchdogMs);
-      if (
-        featureGateTimer &&
-        typeof featureGateTimer.unref === "function"
-      ) {
-        featureGateTimer.unref();
       }
-    } catch (err) {
-      // A broken timer seam must not take the boot down; the endpoints and
-      // the gate itself are already wired — only the safety net is lost.
-      console.error(
-        `[boot] could not arm feature-gate watchdog: ${err?.message || err}`,
-      );
-    }
+    };
+    armHeartbeat();
+  }
+
+  // #392 (A2-8) max-hold: a bounded cap on holding a READY endpoint hostage
+  // to an unsettled Discord login. Default 0 (env FEATURE_GATE_MAX_HOLD_MS)
+  // keeps the C7 contract — wait forever, loudly. With a cap: when it
+  // elapses and the SOLE blocker is the in-flight Discord login (at least
+  // one Fluxer handle live, none still connecting), the gate opens
+  // DEGRADED — supervisor.discord reads null (the proven Fluxer-only view),
+  // features arm on the live endpoint. Never forced through "nothing is
+  // live" (that outcome belongs to the all-failed report, per C7), and
+  // never through Fluxer handles still mid-login (their ready-flush
+  // ordering is load-bearing for the bridge DM wiring).
+  const maxHoldMs = resolveFeatureGateMaxHoldMs(featureGateMaxHoldMs);
+  if (maxHoldMs > 0 && endpointJobs.length > 0) {
+    const armMaxHold = () => {
+      try {
+        featureGateMaxHoldTimer = setTimeoutFn(() => {
+          featureGateMaxHoldTimer = null;
+          if (featuresStarted) return;
+          // NOT-YET condition: retry next window instead of forfeiting the
+          // bound. The classic miss: the cap elapses while the Fluxer
+          // handle is still CONNECTING — the moment it lands (still under
+          // the in-flight Discord block), the retry opens the gate on the
+          // next window instead of waiting for the next hour of heartbeat.
+          if (!discordHandle || discordReady || fluxerPending > 0) {
+            armMaxHold();
+            return;
+          }
+          degradedDiscordHold = true;
+        console.warn(
+          `[boot] DEGRADED gate open after ${maxHoldMs}ms: the discord login is still in flight — ` +
+            "supervisor.discord now reads as null and the feature layer arms on the live endpoint(s). " +
+            "A late ClientReady restores the client view, but Discord-tier features that skipped need " +
+            "a restart to re-arm (issue #392; cap via FEATURE_GATE_MAX_HOLD_MS).",
+        );
+          startFeaturesOnce();
+        }, maxHoldMs);
+        if (
+          featureGateMaxHoldTimer &&
+          typeof featureGateMaxHoldTimer.unref === "function"
+        ) {
+          featureGateMaxHoldTimer.unref();
+        }
+      } catch (err) {
+        console.error(
+          `[boot] could not arm feature-gate max-hold timer: ${err?.message || err}`,
+        );
+      }
+    };
+    armMaxHold();
   }
 
   const results = await Promise.all(endpointJobs);

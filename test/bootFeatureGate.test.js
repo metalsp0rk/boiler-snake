@@ -41,7 +41,12 @@ const FEATURES_PATH = require.resolve("../src/features");
 // Clearly-fake placeholders only (AGENTS.md: never realistic tokens).
 const FAKE_DISCORD_TOKEN = "YOUR_FAKE_DISCORD_TOKEN";
 const FAKE_FLUXER_JSON = '[{"origin":"https://fluxer.test","token":"YOUR_FAKE_FLUXER_TOKEN"}]';
-const CREDENTIAL_VARS = ["DISCORD_TOKEN", "FLUXER_INSTANCES", "FEATURE_GATE_WATCHDOG_MS"];
+const CREDENTIAL_VARS = [
+  "DISCORD_TOKEN",
+  "FLUXER_INSTANCES",
+  "FEATURE_GATE_WATCHDOG_MS",
+  "FEATURE_GATE_MAX_HOLD_MS",
+];
 
 // --------------------------------------------------------------------------
 // Scripted stubs (installed into the require cache BEFORE boot is required)
@@ -506,5 +511,162 @@ describe("boot() watchdog window resolution", () => {
     }
     assert.ok(junkLogs.some((l) => l.includes('FEATURE_GATE_WATCHDOG_MS "not-a-number"')));
     delete process.env.FEATURE_GATE_WATCHDOG_MS;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #392 (A2-8): the heartbeat re-arms, and a capped boot opens DEGRADED
+// ---------------------------------------------------------------------------
+
+describe("boot() heartbeat re-arm + max-hold degraded gate (#392/A2-8)", () => {
+  it("a stuck boot KEEPS reporting: the second window is not silent anymore", async () => {
+    setEnv({ FLUXER_INSTANCES: FAKE_FLUXER_JSON });
+    let releaseFluxer;
+    endpoints.fluxerImpl = () => new Promise((resolve) => { releaseFluxer = resolve; });
+    const clock = makeFakeClock();
+
+    const run = withCaptured(() =>
+      boot({
+        registry: {},
+        setTimeoutFn: clock.setTimeoutFn,
+        clearTimeoutFn: clock.clearTimeoutFn,
+        featureGateWatchdogMs: 60_000,
+      }),
+    );
+
+    clock.advance(60_000);
+    clock.advance(60_000);
+    clock.advance(60_000);
+    await flush();
+    releaseFluxer(makeFakeFluxerHandle());
+    const { logs } = await run;
+
+    const reports = logs.filter((l) => l.includes("[boot] watchdog"));
+    assert.equal(
+      reports.length,
+      3,
+      `every window must re-report while the gate is shut (one-shot watchdog logged 1 — the "silent second hour" of issue #392), got: ${JSON.stringify(reports)}`,
+    );
+    assert.ok(
+      reports[0].includes("fluxer handles (0/1 ready, 1 still connecting)"),
+      "the first report keeps the exact #190 shape (pin compatibility)",
+    );
+    assert.ok(
+      reports[1].includes("wait report 2") && reports[2].includes("wait report 3"),
+      "escalated reports say how many times the wait has been said",
+    );
+  });
+
+  it("the cap opens the gate DEGRADED: features see the proven null-discard view while the login crawls", async () => {
+    setEnv({ DISCORD_TOKEN: FAKE_DISCORD_TOKEN, FLUXER_INSTANCES: FAKE_FLUXER_JSON });
+    endpoints.fluxerImpl = async () => makeFakeFluxerHandle();
+    const clock = makeFakeClock();
+
+    const run = withCaptured(() =>
+      boot({
+        registry: {},
+        setTimeoutFn: clock.setTimeoutFn,
+        clearTimeoutFn: clock.clearTimeoutFn,
+        featureGateWatchdogMs: 60_000,
+        featureGateMaxHoldMs: 120_000,
+      }),
+    );
+    await flush(); // fluxer ready, discord in flight — the pin's holding still applies
+    assert.equal(featureCalls.start.length, 0, "below the cap the C7 hold is intact");
+
+    clock.advance(120_000); // cap elapses (heartbeat already reported once at 60s)
+    await flush();
+
+    const started = featureCalls.start.map((c) => c.name);
+    assert.ok(
+      started.includes("fluxer-side"),
+      "the live endpoint's features arm AT the cap — web/tickers/bridge are no longer hostages",
+    );
+    assert.equal(
+      started.includes("discord-tier"),
+      false,
+      "under the hold the client reads as NULL — the discord-tier feature skips on the proven Fluxer-only path",
+    );
+    assert.equal(featureCalls.start.find((c) => c.name === "fluxer-side").discord, null);
+    assert.equal(
+      endpoints.client.destroyCount,
+      0,
+      "the in-flight login is NOT cancelled — it may still land and restore the view",
+    );
+
+    endpoints.client.emit(Events.ClientReady, endpoints.client);
+    endpoints.client.resolveLogin();
+    const { logs } = await run;
+
+    assert.ok(
+      logs.some((l) => l.includes("DEGRADED gate open after 120000ms")),
+      `expected the DEGRADED notice, got: ${JSON.stringify(logs)}`,
+    );
+    assert.ok(
+      logs.some((l) => l.includes("discord READY after the degraded gate open")),
+      "the late arrival is announced, never silently absorbed",
+    );
+    assert.ok(!logs.some((l) => l.includes("discord login failed")));
+  });
+
+  it("the cap retries while handles are connecting — the bound lands one window after they do", async () => {
+    setEnv({ DISCORD_TOKEN: FAKE_DISCORD_TOKEN, FLUXER_INSTANCES: FAKE_FLUXER_JSON });
+    let releaseFluxer;
+    endpoints.fluxerImpl = () => new Promise((resolve) => { releaseFluxer = resolve; });
+    const clock = makeFakeClock();
+
+    const run = withCaptured(() =>
+      boot({
+        registry: {},
+        setTimeoutFn: clock.setTimeoutFn,
+        clearTimeoutFn: clock.clearTimeoutFn,
+        featureGateWatchdogMs: 60_000,
+        featureGateMaxHoldMs: 60_000,
+      }),
+    );
+
+    clock.advance(60_000); // cap elapses mid-CONNECT — must NOT force with nothing live
+    await flush();
+    assert.equal(featureCalls.start.length, 0, "nothing live yet: the zombie contract outranks the cap");
+
+    releaseFluxer(makeFakeFluxerHandle());
+    await flush();
+    assert.equal(featureCalls.start.length, 0, "fluxer lands but the in-flight discord still holds");
+
+    clock.advance(60_000); // next cap window: retry sees the ready handle → degraded open
+    await flush();
+    assert.ok(
+      featureCalls.start.map((c) => c.name).includes("fluxer-side"),
+      "the retry armed the degraded open after the handle landed",
+    );
+
+    endpoints.client.rejectLogin(new Error("YOUR_FAKE_TOKEN is invalid"));
+    const { logs } = await run;
+    assert.ok(logs.some((l) => l.includes("DEGRADED gate open after 60000ms")));
+    assert.ok(logs.some((l) => l.includes("[boot] watchdog")), "the heartbeat ran alongside the cap");
+  });
+
+  it("FEATURE_GATE_MAX_HOLD_MS garbage falls back to the disabled default with a complaint", async () => {
+    setEnv({ FLUXER_INSTANCES: FAKE_FLUXER_JSON, FEATURE_GATE_MAX_HOLD_MS: "soon" });
+    let releaseFluxer;
+    endpoints.fluxerImpl = () => new Promise((resolve) => { releaseFluxer = resolve; });
+    const clock = makeFakeClock();
+
+    const run = withCaptured(() =>
+      boot({
+        registry: {},
+        setTimeoutFn: clock.setTimeoutFn,
+        clearTimeoutFn: clock.clearTimeoutFn,
+        featureGateWatchdogMs: 60_000,
+      }),
+    );
+    // Only the heartbeat is armed (garbage cap → default 0 → no second timer).
+    assert.equal(clock.pendingCount(), 1, "the garbage cap did not arm a second timer");
+    releaseFluxer(makeFakeFluxerHandle());
+    const { logs } = await run;
+    assert.ok(
+      logs.some((l) => l.includes('FEATURE_GATE_MAX_HOLD_MS "soon" is not a number >= 0')),
+      `expected the specific resolver complaint, got: ${JSON.stringify(logs)}`,
+    );
   });
 });
