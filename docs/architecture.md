@@ -387,6 +387,8 @@ Root files that re-export features (for older requires / external scripts):
 | `renderLeaderboard.js` | `render/leaderboard` |
 | `renderHoneypotWarning.js` | `features/honeypot/renderWarning` |
 | `register-commands.js` | `commands/register` |
+| `commands/definitions.js` | per-feature definitions under `src/features` (empty stub) |
+| `commands/handlers.js` | per-feature handlers under `src/features` (no-op stub) |
 
 Prefer importing feature/canonical paths in new code.
 
