@@ -245,6 +245,44 @@ describe("integration: tickets", () => {
     }
   });
 
+  // #421 (audit LT-4): the channel + row already exist when the open notice
+  // sends — a transient send failure must NOT report a failed create.
+  it("/ticket create still reports SUCCESS when the open-notice send fails", async () => {
+    env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 0 });
+    const origCreate = env.guild.channels.create;
+    env.guild.channels.create = async (data) => {
+      const ch = await origCreate.call(env.guild.channels, data);
+      // Transient transport failure on the notice only (the channel opened).
+      ch.send = async () => {
+        throw new Error("global rate limit: retryable");
+      };
+      return ch;
+    };
+    try {
+      const create = await env.runCommand({
+        commandName: "ticket",
+        subcommand: "create",
+        admin: false,
+        user: env.users.memberUser,
+        options: { reason: "voice invite missing" },
+      });
+      const text = env.lastReplyContent(create);
+      // RED on old code: "Failed to open ticket: global rate limit…" for a
+      // ticket that DID open — the member retries into a false rate limit.
+      assert.doesNotMatch(text, /failed to open ticket/i, `reply: ${text}`);
+      assert.match(text, /Ticket|#|opened/i);
+
+      const row = env.db
+        .listOpenTickets(env.communityId, { userId: IDS.member, limit: 10 })
+        .find((t) => t.reason === "voice invite missing");
+      assert.ok(row, "the ticket row exists despite the notice failure");
+      assert.ok(env.guild.channels.cache.get(row.channel_id), "channel exists");
+    } finally {
+      env.guild.channels.create = origCreate;
+      env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 0 });
+    }
+  });
+
   it("/ticket for adds staff opener as exclusive named owner + bypasses rate limit", async () => {
     env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
 
