@@ -310,6 +310,34 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       assert.ok(body.includes("ignores AFK"), "AFK-ignoring rule noted");
       assert.ok(body.includes(`href="/g/${CID_A}/settings"`), "settings cross-link");
     });
+
+    it("#407 the settings link rides the INTEGER route id — never the display snowflake", async () => {
+      await mountApp({ voiceData: frozenClockData() });
+      const { body } = await req(`/g/${CID_A}/voice`, { cookie: cookieOf.senior });
+      assert.ok(
+        !body.includes(`href="/g/${GUILD_A}/settings"`),
+        "the snowflake settings href is GONE — /g/:id parses integer community ids only (guildScope), so it was a guaranteed 404",
+      );
+
+      const snap = await voiceDataMod
+        .createVoiceData({ now: () => FIXED_NOW })
+        .getVoice(GUILD_A);
+      assert.equal(snap.guildId, GUILD_A, "the snowflake STAYS for providers + display");
+      assert.equal(
+        Number(snap.communityId),
+        Number(CID_A),
+        "the snapshot carries BOTH identities side by side — the view mints links from the integer",
+      );
+
+      const dark = await voiceDataMod
+        .createVoiceData({ now: () => FIXED_NOW })
+        .getVoice("999000000000000099");
+      assert.equal(
+        dark.communityId,
+        null,
+        "unregistered guild ⇒ no route id — the view renders NO link rather than a dead one (§8.6)",
+      );
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -239,11 +239,18 @@ function liveSection(live, resolveChannelName) {
 // Voice XP config (read-only)
 // ---------------------------------------------------------------------------
 
-function configSection(config, guildId) {
+function configSection(config, communityId) {
   if (!config.available) {
     return section("Voice XP config", emptyState(READ_FAILED));
   }
-  const settingsHref = `/g/${encodeURIComponent(String(guildId || ""))}/settings`;
+  // #407 (C2-3): /g/:id is the INTEGER communities.id — the external
+  // snowflake 404s there 100% of the time (guildScope: snowflakes no longer
+  // route). No integer id (unregistered guild) ⇒ NO anchor: §8.6 zero dead
+  // links beats a decorative "settings page" that always 404s.
+  const settingsHref =
+    communityId != null && String(communityId) !== ""
+      ? `/g/${encodeURIComponent(String(communityId))}/settings`
+      : null;
   return section(
     "Voice XP config",
     html`
@@ -259,7 +266,11 @@ function configSection(config, guildId) {
         The voice ticker ignores AFK-channel members and muted/deafened
         members and awards nothing below 2 eligible humans per channel
         (AGENTS.md voice rules; handler code stays the source of truth).
-        Full settings live on the <a href="${settingsHref}">settings page</a>.
+        ${
+          settingsHref
+            ? html`Full settings live on the <a href="${settingsHref}">settings page</a>.`
+            : html`Full settings live on the settings page.`
+        }
       </p>`
   );
 }
@@ -284,6 +295,8 @@ function formatAge(ms) {
  * @returns {import("../escape").SafeString}
  */
 function renderVoiceBody({ snapshot, resolveChannelName }) {
+  // #407: configSection takes the ROUTE identity (integer), not the
+  // display snowflake — the snapshot carries both side by side.
   const s = snapshot || {};
   const emptyCluster = { available: false };
   const config = s.config || emptyCluster;
@@ -298,7 +311,7 @@ function renderVoiceBody({ snapshot, resolveChannelName }) {
     <div class="settings-grid voice-grid">
       ${musicSection(music, resolveChannelName)}
       ${liveSection(live, resolveChannelName)}
-      ${configSection(config, s.guildId)}
+      ${configSection(config, s.communityId ?? null)}
       <p class="subheading settings-stamp">
         Read-only view — music CONTROL (skip/pause/stop) is out of v1 scope
         (§8.9); values cached at least 30&nbsp;s per guild (§8.6 query
