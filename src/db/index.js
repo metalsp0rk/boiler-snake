@@ -300,6 +300,8 @@ module.exports = {
   normalizeTicketReason: tickets.normalizeTicketReason,
   getTicketSettings: tickets.getTicketSettings,
   canUserCreateTicket: tickets.canUserCreateTicket,
+  claimTicketCreateSlot: tickets.claimTicketCreateSlot,
+  releaseTicketCreateSlot: tickets.releaseTicketCreateSlot,
   createTicket: tickets.createTicket,
   getTicketById: tickets.getTicketById,
   getTicketByChannel: tickets.getTicketByChannel,

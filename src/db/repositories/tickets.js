@@ -119,6 +119,81 @@ function canUserCreateTicket(communityId, userId) {
 }
 
 /**
+ * Atomically claim the self-create slot (#420, audit LT-3) — the race-proof
+ * sibling of canUserCreateTicket. The window check is a READ; between it and
+ * the insert sits a whole channel-create REST call, so concurrent submits
+ * both passed. This claim is one statement: insert, or refresh the row only
+ * when the previous reservation already fell outside the window. Take it
+ * synchronously before the first await; release with releaseTicketCreateSlot
+ * ONLY the exact stamp returned here, and only when the create failed.
+ *
+ * `ticket_rate_limit_minutes <= 0` skips the table entirely ({ok:true,
+ * stamp:null}) — the off switch stays a true no-op.
+ *
+ * @param {number} communityId
+ * @param {string} userId
+ * @param {number} [at=now()] ms epoch (injectable clock)
+ * @returns {{ ok: true, stamp: number|null }
+ *          | { ok: false, retryAfterMs: number, minutes: number }}
+ */
+function claimTicketCreateSlot(communityId, userId, at = now()) {
+  assertCommunityId(communityId);
+  const uid = String(userId);
+  const settings = getTicketSettings(communityId);
+  const minutes = Number(settings.ticket_rate_limit_minutes);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return { ok: true, stamp: null };
+  }
+
+  const windowMs = minutes * 60 * 1000;
+  const stamp = Number(at);
+  const claimed = db
+    .prepare(
+      `INSERT INTO ticket_create_reservations (community_id, user_id, reserved_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(community_id, user_id) DO UPDATE
+         SET reserved_at = excluded.reserved_at
+        WHERE ticket_create_reservations.reserved_at <= excluded.reserved_at - ?`
+    )
+    .run(communityId, uid, stamp, windowMs);
+  if (claimed.changes === 1) return { ok: true, stamp };
+
+  const row = db
+    .prepare(
+      `SELECT reserved_at FROM ticket_create_reservations
+       WHERE community_id = ? AND user_id = ?`
+    )
+    .get(communityId, uid);
+  const retryAfterMs = Math.max(
+    0,
+    Number(row?.reserved_at ?? stamp) + windowMs - stamp,
+  );
+  return { ok: false, retryAfterMs, minutes };
+}
+
+/**
+ * Give the slot back after a FAILED create (#420): deletes the reservation
+ * only when it still carries THIS stamp — a newer claim is never clobbered.
+ * A successful create never releases: the row simply ages out (the next
+ * claim replaces it).
+ *
+ * @param {number} communityId
+ * @param {string} userId
+ * @param {number|null} stamp the exact stamp from a successful claim
+ * @returns {number} deleted row count (0 for a stamp-less skip)
+ */
+function releaseTicketCreateSlot(communityId, userId, stamp) {
+  assertCommunityId(communityId);
+  if (stamp == null) return 0;
+  return db
+    .prepare(
+      `DELETE FROM ticket_create_reservations
+       WHERE community_id = ? AND user_id = ? AND reserved_at = ?`
+    )
+    .run(communityId, String(userId), Number(stamp)).changes;
+}
+
+/**
  * @param {object} opts
  * @param {number} opts.communityId
  * @param {string} opts.creatorUserId
@@ -1186,6 +1261,8 @@ module.exports = {
   getTicketSettings,
   getLastSelfCreatedTicket,
   canUserCreateTicket,
+  claimTicketCreateSlot,
+  releaseTicketCreateSlot,
   createTicket,
   getTicketById,
   getTicketByChannel,
