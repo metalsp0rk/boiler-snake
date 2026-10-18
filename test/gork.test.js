@@ -642,6 +642,89 @@ describe("chatWithTools (core/ai)", () => {
     assert.equal(calls.length, 4, "4th response triggers the cap");
   });
 
+  // ── #434 (audit F1-1): per-round call cap + the deadline owns tools ─────
+
+  it("#434 caps tool CALLS per round while keeping every tool_call answered", async () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => ({
+      id: `call_${i}`,
+      type: "function",
+      function: { name: "web_search", arguments: `{"query":"q${i}"}` },
+    }));
+    const { impl, calls } = makeAiFetch([{ tool_calls: twenty }, { content: "done" }]);
+    let executed = 0;
+    const r = await chatWithTools(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [ws.WEB_SEARCH_TOOL],
+      executeTool: async () => {
+        executed += 1;
+        return "ok";
+      },
+      maxToolRounds: 3,
+      fetchImpl: impl,
+    });
+    assert.ok(r.ok);
+    assert.equal(executed, 8, "default per-round budget executes 8 (RED: old executed all 20)");
+    const toolMsgs = calls[1].body.messages.filter((m) => m.role === "tool");
+    assert.equal(toolMsgs.length, 20, "EVERY tool_call_id gets a tool message — protocol stays valid");
+    assert.deepEqual(
+      toolMsgs.map((m) => m.tool_call_id),
+      twenty.map((c) => c.id),
+      "answers align by id (a provider 400s otherwise)",
+    );
+    assert.match(toolMsgs[19].content, /budget/, "skipped calls explain themselves to the model");
+  });
+
+  it("#434 honors the maxToolCallsPerRound override", async () => {
+    const four = Array.from({ length: 4 }, (_, i) => ({
+      id: `c${i}`,
+      type: "function",
+      function: { name: "web_search", arguments: "{}" },
+    }));
+    const { impl } = makeAiFetch([{ tool_calls: four }, { content: "ok" }]);
+    let executed = 0;
+    const r = await chatWithTools(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [ws.WEB_SEARCH_TOOL],
+      executeTool: async () => {
+        executed += 1;
+        return "r";
+      },
+      maxToolCallsPerRound: 2,
+      maxToolRounds: 3,
+      fetchImpl: impl,
+    });
+    assert.ok(r.ok);
+    assert.equal(executed, 2);
+  });
+
+  it("#434: a tool that outlives the loop deadline aborts the tool phase with reason timeout", async () => {
+    const { impl } = makeAiFetch([
+      {
+        tool_calls: [
+          { id: "c1", type: "function", function: { name: "web_search", arguments: "{}" } },
+          { id: "c2", type: "function", function: { name: "web_search", arguments: "{}" } },
+        ],
+      },
+    ]);
+    let executions = 0;
+    const started = Date.now();
+    const r = await chatWithTools(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [ws.WEB_SEARCH_TOOL],
+      executeTool: async () => {
+        executions += 1;
+        return new Promise(() => {}); // hangs past every budget (RED: old code hung HERE forever)
+      },
+      maxToolRounds: 3,
+      timeoutMs: 120,
+      fetchImpl: impl,
+    });
+    assert.ok(!r.ok, "the loop reports failure");
+    assert.equal(r.reason, "timeout", "the GORK_LLM_TIMEOUT_MS budget now owns the tool phase");
+    assert.ok(Date.now() - started < 3000, "resolved in bounded time");
+    assert.equal(executions, 1, "the second call was stubbed after abort, never executed");
+  });
+
   it("a failing search inside the tool still completes with an answer", async () => {
     const { impl } = makeAiFetch([
       { tool_calls: [{ id: "c1", type: "function", function: { name: "web_search", arguments: '{"query":"q"}' } }] },
