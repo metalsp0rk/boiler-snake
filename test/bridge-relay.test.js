@@ -1322,6 +1322,114 @@ describe("bridge relay worker (PR 5)", () => {
     );
     assert.equal(worker.notices.length, 1, "the poison notice itself is unchanged");
   });
+
+  // -------------------------------------------------------------------------
+  // #383 (FLX-2): rich embeds cross the relay (§10.8 "not silently stripped")
+  // -------------------------------------------------------------------------
+
+  it("#383 embeds ride ONLY the lead part of a multi-chunk create", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9383",
+      payload: createPayload(publicId, "9383", {
+        text: "word ".repeat(900), // > FLUXER_CONTENT_LIMIT → at least two chunks
+        embeds: [
+          {
+            title: "Field report",
+            description: "see below",
+            url: null,
+            color: 0xff0000,
+            fields: [{ name: "f", value: "v", inline: true }],
+          },
+        ],
+      }),
+    });
+    const fluxer = scriptedApi("fx383");
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? fluxer : null),
+      getOutbound: () => fakeOutbound(),
+    });
+    await worker.drainAll();
+
+    assert.ok(fluxer.calls.length >= 2, "the long body chunks into multiple executes");
+    assert.deepEqual(
+      fluxer.calls[0].opts.embeds,
+      [
+        {
+          title: "Field report",
+          description: "see below",
+          url: null,
+          color: 0xff0000,
+          fields: [{ name: "f", value: "v", inline: true }],
+        },
+      ],
+      "embeds reach the transport on the LEAD part (once per message, not per chunk)",
+    );
+    for (const call of fluxer.calls.slice(1)) {
+      assert.equal(call.opts.embeds, undefined, "follow-up chunks never duplicate embeds");
+    }
+  });
+
+  it("#383 an embeds-only message is RELAYED — no empty execute, no silent strip", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9384",
+      payload: createPayload(publicId, "9384", {
+        text: "",
+        embeds: [{ title: "Deploy complete", description: "no notes" }],
+      }),
+    });
+    const fluxer = scriptedApi("fx383b");
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? fluxer : null),
+      getOutbound: () => fakeOutbound(),
+    });
+    await worker.drainAll();
+
+    assert.equal(fluxer.calls.length, 1, "the embeds-only message produces exactly one execute");
+    const opts = fluxer.calls[0].opts;
+    assert.deepEqual(opts.embeds, [{ title: "Deploy complete", description: "no notes" }]);
+    assert.ok(!opts.content, "no fake text was fabricated to hide the strip");
+    assert.equal(rowState(row).state, "done", "the row rides to done — embeds are a sendable body");
+  });
+
+  it("#383 buildRelayPayload NAMES non-attachment embed media instead of stripping it (§10.8)", () => {
+    const { bridge } = seedBridge("a_to_b");
+    const payload = relay.buildRelayPayload(
+      {
+        id: "m-embed",
+        content: "look at this",
+        attachments: [
+          { id: "att-1", url: "https://cdn.discord.test/real.png", name: "real.png" },
+        ],
+        embeds: [
+          {
+            title: "foreign image",
+            description: "desc",
+            image: { url: "https://elsewhere.test/x.png" },
+          },
+          { title: "attachment-backed", image: { url: "https://cdn.discord.test/real.png" } },
+        ],
+      },
+      { bridge, direction: "a_to_b", srcCommunityId: rowA.id, lookup: {} },
+    );
+    assert.match(
+      payload.embeds[0].description,
+      /^desc\nEmbed media not copied: elsewhere\.test is not a source attachment\.$/,
+      "the §10.8 sentence names the host, appended under the description",
+    );
+    assert.equal(
+      payload.embeds[1].description,
+      null,
+      "media covered by the source attachments stays quiet (and was never fetched)",
+    );
+    assert.equal(payload.embeds[0].image, undefined, "image objects never ride the payload");
+  });
+
 });
 
   // -------------------------------------------------------------------------

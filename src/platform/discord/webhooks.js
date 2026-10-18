@@ -331,6 +331,13 @@ function createDiscordWebhooks(client) {
       if (options.allowedMentions !== undefined) payload.allowedMentions = options.allowedMentions;
       if (typeof options.flags === "number") payload.flags = options.flags;
       if (options.nonce != null) payload.nonce = String(options.nonce);
+      // #383 (FLX-2): the relay's neutral embed shape {title, description,
+      // url, color, fields} IS Discord's APIEmbed — discord.js accepts raw
+      // APIEmbeds on send/editMessage. Source embeds are already Discord-
+      // capped by Discord itself; no clamp needed on the way back in.
+      if (Array.isArray(options.embeds) && options.embeds.length > 0) {
+        payload.embeds = options.embeds.filter((e) => e && typeof e === "object");
+      }
 
       const filesPrep = prepareFiles(options.files, "executeRelayWebhook");
       if (!filesPrep.ok) return { ok: false, error: filesPrep.error, retryable: false };
@@ -370,6 +377,11 @@ function createDiscordWebhooks(client) {
       }
       const payload = {};
       if (options.content != null) payload.content = String(options.content);
+      // #383: edits carry embeds too — an embed-only source edit must
+      // update the destination copy, not just its text.
+      if (Array.isArray(options.embeds) && options.embeds.length > 0) {
+        payload.embeds = options.embeds.filter((e) => e && typeof e === "object");
+      }
       const filesPrep = prepareFiles(options.files, "patchRelayMessage");
       if (!filesPrep.ok) return { ok: false, error: filesPrep.error };
       if (filesPrep.files.length > 0) payload.files = filesPrep.files;
