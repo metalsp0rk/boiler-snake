@@ -279,6 +279,20 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
       return;
     }
 
+    // Step 5 (executed FIRST among the gates since #385/FLX-4): only
+    // context-API handlers are Fluxer-capable in PR 5's cutover — a pure
+    // registry lookup. Running it before step 2.5 means a Discord-only
+    // command never pays the permission fan-out it can possibly use.
+    // (Labels keep their numbers: specs and test names cite them.)
+    const api = registry.getHandlerApi(parsed.commandName);
+    if (api !== "context") {
+      await outbound.sendChannel(message.channelId, {
+        content: NOT_ON_FLUXER,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
     // Step 2.5 (PR 8, spec § Permissions): compute the caller's channel
     // permission mask BEFORE the command-channel gate. The gateway member
     // payload IS the instance cache (spec "Cache misses, fail closed" rule 1:
@@ -317,18 +331,9 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
       authorOverride = resolvedPerms.author ?? null;
     }
 
-    // Step 3: resolve option references against the payload (K10) with the
-    // one-shot fetch fallbacks (spec § Prefix grammar step 7).
-    const { resolved, reply } = await resolveOptions(parsed, message, outbound);
-    if (reply) {
-      await outbound.sendChannel(message.channelId, {
-        content: reply,
-        allowedMentions: { parse: [] },
-      });
-      return;
-    }
-
-    // Step 4: command-channel allow-list (spec § Command-channel allow-list).
+    // Step 4 (moved ahead of step 3 by #385): command-channel allow-list
+    // (spec § Command-channel allow-list). A command rejected HERE must not
+    // have paid the option-resolution REST fallbacks for nothing.
     // PR 8: the computed mask is real now, so admins (MANAGE_GUILD bit, owner
     // and administrator included — both arrive as ALL) keep the Discord-parity
     // exemption: setcommandchannel runs from any channel for them.
@@ -350,11 +355,13 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
       return;
     }
 
-    // Step 5: only context-API handlers are Fluxer-capable in PR 5's cutover.
-    const api = registry.getHandlerApi(parsed.commandName);
-    if (api !== "context") {
+    // Step 3 (now after the channel gate, #385): resolve option references
+    // against the payload (K10) with the
+    // one-shot fetch fallbacks (spec § Prefix grammar step 7).
+    const { resolved, reply } = await resolveOptions(parsed, message, outbound);
+    if (reply) {
       await outbound.sendChannel(message.channelId, {
-        content: NOT_ON_FLUXER,
+        content: reply,
         allowedMentions: { parse: [] },
       });
       return;
