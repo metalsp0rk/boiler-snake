@@ -890,6 +890,30 @@ function upsertBridgeSrcSnapshot(bridgeId, srcMessageId, contentHash) {
 }
 
 /**
+ * Delete ONE links row: a shrunk edit removed that destination part
+ * (#409/BRG-3). Returns true when a row actually went.
+ *
+ * @param {number} bridgeId
+ * @param {string} srcMessageId
+ * @param {number} partIndex
+ * @returns {boolean}
+ */
+function deleteBridgeMessageLink(bridgeId, srcMessageId, partIndex) {
+  requireBridgeId(bridgeId);
+  const srcId = requireText(srcMessageId, "srcMessageId");
+  if (!Number.isInteger(partIndex) || partIndex < 0) {
+    throw new Error("deleteBridgeMessageLink: part_index must be a non-negative integer");
+  }
+  return (
+    db
+      .prepare(
+        `DELETE FROM bridge_message_links WHERE bridge_id = ? AND src_message_id = ? AND part_index = ?`,
+      )
+      .run(bridgeId, srcId, partIndex).changes > 0
+  );
+}
+
+/**
  * Prune the relay bookkeeping of ONE source message once its copies are
  * gone (delete relay drained — audit #411/BRG-5). Without this, links +
  * snapshots grow one row-set per relayed message FOREVER: the echo-gate
@@ -1142,6 +1166,7 @@ module.exports = {
   // links / snapshots
   addBridgeMessageLink,
   listBridgeMessageLinks,
+  deleteBridgeMessageLink,
   pruneBridgeMessageRelay,
   getBridgeLinkByDestination,
   upsertBridgeSrcSnapshot,

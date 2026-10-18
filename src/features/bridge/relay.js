@@ -1422,7 +1422,7 @@ function editPartChanged(part, oldPart) {
   if (String(part?.content ?? "") !== String(oldPart?.content ?? "")) return true;
   const sig = (list) =>
     (Array.isArray(list) ? list : [])
-      .map((f) => `${f?.name ?? ""}:${f?.contentType ?? ""}`)
+      .map((f) => `${f?.name ?? ""}:${f?.contentType ?? ""}:${f?.spoiler ? 1 : 0}`)
       .join("|");
   return sig(part?.files) !== sig(oldPart?.files);
 }
@@ -1481,6 +1481,11 @@ function buildSendParts(payload, destPlatform, resolveFile) {
       ),
       data: resolveFile(d),
       contentType: d.contentType ?? "application/octet-stream",
+      // #409 (BRG-3): the flag rides the FILE entry so editPartChanged can
+      // see a spoiler flip — at Fluxer destinations the NAME cannot carry
+      // it (no SPOILER_ prefix there). Adapters read name/data/contentType
+      // only; the extra key never reaches a wire body.
+      spoiler: Boolean(d.spoiler),
     });
   }
 
@@ -2155,6 +2160,20 @@ function createRelayWorker(deps = {}) {
       attached.set(String(d.sourceAttachmentId), merged);
     }
 
+    // #409 (BRG-3): the worker's FRESH source read owns the current spoiler
+    // flag. A same-id flip never reaches payload.attachments (enqueue keeps
+    // NEW ids only), so without this overlay the merged descriptor keeps
+    // the create-era flag, editPartChanged sees no change, and the PATCH
+    // silently skips what the coalescing hash already counted — the copy
+    // shows the old spoiler state while the snapshot says it was relayed.
+    for (const d of attached.values()) {
+      const srcAtt = srcAttachments.find((a) => String(a?.id) === String(d.sourceAttachmentId));
+      if (!srcAtt) continue;
+      if (srcAtt.spoiler !== undefined || srcAtt.flags !== undefined) {
+        d.spoiler = srcAtt.spoiler === true || (Number(srcAtt.flags ?? 0) & 8) === 8;
+      }
+    }
+
     // BRG-2 (#376): the create-era descriptors ride the PATCH too (PATCH
     // re-sends the attachment set), so EVERY one of them needs bytes. The
     // old code resolved only the NEW ids — unchanged create-era files came
@@ -2280,6 +2299,65 @@ function createRelayWorker(deps = {}) {
         );
       }
     }
+    // #409 (BRG-3): a SHRUNK edit must also erase the destination's tail
+    // parts. Iterating only newParts left the long version's "(continued)"
+    // chunks stranded forever — moderation-visible stale content, the exact
+    // class KD 9 exists to prevent. Descending order (the tail goes first);
+    // the delete op's 404=success covers already-removed parts; a removed
+    // part's links row goes with the success (#411's per-part counterpart).
+    const keptIndexes = new Set(newParts.map((p) => Number(p.partIndex)));
+    const staleLinks = links
+      .filter((l) => !keptIndexes.has(Number(l.part_index)))
+      .sort((a, b) => Number(b.part_index) - Number(a.part_index));
+    for (const link of staleLinks) {
+      const result = await sendPartWithLadder({
+        port: opCtx.port,
+        webhookRef: opCtx.webhookRef,
+        payload: sendCtx,
+        part: { content: null, files: [], partIndex: Number(link.part_index) },
+        row,
+        destPlatform: opCtx.destPlatform,
+        username: "",
+        flags: undefined,
+        avatarUrl: null,
+        maxAttempts: repo.BRIDGE_OUTBOX_MAX_ATTEMPTS,
+        onWebhookRecreated: opCtx.onWebhookRecreated,
+        op: "delete",
+        dstMessageId: String(link.dst_message_id),
+        allowDegraded: false,
+      });
+      if (result.channelGone) {
+        // §10.10: the destination died mid-shrink — the broken notice
+        // covers the tail too.
+        await handleChannelGone(bridge, payload, row, result.reason);
+        return;
+      }
+      if (result.parked) {
+        // Partial failure, named (rules 5/6): the FIRST parts already
+        // shrank at the destination, this one could not; last_error + the
+        // edit-park notice make the gap visible. Its links row STAYS —
+        // the copy is still alive there.
+        repo.setBridgeLastError(bridge.id, `stale tail part ${link.part_index}: ${result.reason}`);
+        await sendNoticeSafe(
+          payload.srcCommunityId,
+          payload.srcChannelId,
+          `Bridge ${bridge.public_id} could not remove the stale copy of message ${payload.srcMessageId} part ${link.part_index} after 5 attempts: ${result.reason}.`,
+          "edit tail park",
+        );
+        return;
+      }
+      if (result.skipped) {
+        // §10.10 missing webhook → skip deletions: the cascade already
+        // killed every copy. Drain as the main loop does.
+        repo.setBridgeLastError(bridge.id, result.reason);
+        repo.markOutboxDone(row.id);
+        return;
+      }
+      // Gone at the destination (ok or 404=ok): the links row has no
+      // future reader — prune it.
+      repo.deleteBridgeMessageLink(bridge.id, payload.srcMessageId, Number(link.part_index));
+    }
+
     if (resolveErrors.length > 0) {
       // Partial media failure names itself on the row (partial-failure rule).
       db.prepare("UPDATE bridge_outbox SET last_error = ? WHERE id = ?").run(
