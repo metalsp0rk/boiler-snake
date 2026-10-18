@@ -328,10 +328,13 @@ function updateGuildSettings(communityId, patch) {
   WHERE community_id=@community_id
  `).run({ community_id: communityId, updated_at: now(), ...safePatch });
 
-  // Side effect retained for parity with pre-split db.js
-  const { cleanupMalformedYoutubeChannels } = require("./youtube");
-  cleanupMalformedYoutubeChannels();
-
+  // #360: this used to end with cleanupMalformedYoutubeChannels() — a
+  // pre-split one-time migration firing on EVERY settings write from EVERY
+  // feature. Its predicate (id not UC/HC-shaped) is the by-design storage
+  // shape of a PENDING @handle youtube subscription, so one /setcommandchannel
+  // quietly unsubscribed every user whose /youtube add had not resolved yet
+  // — no reply, no audit, no error. A settings write has no business
+  // touching another feature's subscriptions; the cleanup is gone.
   return getGuildSettings(communityId);
 }
 

@@ -147,22 +147,19 @@ function markYoutubeChannelCheckedAt(communityId, channelId, checkedAtMs = now()
 
 /** Cleanup malformed channel entries (non-UC/HC IDs from before normalization fix). */
 function cleanupMalformedYoutubeChannels() {
-  const rows = db
-    .prepare(
-      "SELECT community_id, channel_name FROM youtube_channels WHERE NOT id LIKE 'UC%' AND NOT id LIKE 'HC%'"
-    )
-    .all();
-
-  if (!rows.length) return;
-
-  console.log(`[youtube] Cleaning up ${rows.length} malformed channel entries...`);
-
-  for (const row of rows) {
-    db.prepare("DELETE FROM youtube_channels WHERE community_id=? AND channel_name=?").run(
-      row.community_id,
-      row.channel_name
-    );
-  }
+  // #360 (DB-3): this used to DELETE every row whose id was not UC/HC —
+  // exactly the storage shape of a pending @handle subscription, a
+  // by-design product of `/youtube add` when the API cannot resolve. It
+  // also ran as a hidden side effect of EVERY updateGuildSettings call, so
+  // an unrelated /setcommandchannel silently unsubscribed users (no reply,
+  // no audit). That call site is gone, and a sweep has nothing left to
+  // legitimately delete: youtube_channels keeps ONE row per
+  // (community, channel_name) — addYoutubeChannel REPLACES — so a
+  // "superseded twin" of the same name cannot exist, a resolved row under a
+  // different name is a DIFFERENT subscription, and unresolvable pending
+  // rows are retried by the ticker (needsResolution), not debris.
+  // Kept as an INERT export for facade parity (schema-hygiene-040 pins the
+  // function); do NOT resurrect a predicate against non-UC ids.
 }
 
 module.exports = {
