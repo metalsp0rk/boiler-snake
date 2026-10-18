@@ -52,6 +52,26 @@ const DEFAULT_DAILY_AGGREGATES_DAYS = 400;
  * permanent — the sweep never touches them.
  */
 const DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS = 7;
+/**
+ * #399 (B2-7) defaults. Rationale each:
+ *  - RETENTION_BRIDGE_OUTBOX_DAYS=30: the outbox is the relay's audit
+ *    trail; 30d keeps incident forensics and leaves every parked row
+ *    /bridge-retryable (#416) for a month past its park.
+ *  - RETENTION_BRIDGE_LINKS_DAYS=90: links map source→destination parts
+ *    for edit/delete relays. Pruning a link means a LATER edit of that
+ *    (90-day-old) message re-executes the part as a fresh send — the
+ *    accepted, documented trade for bounding a per-part-per-message table;
+ *    90 days is far past ordinary edit horizons.
+ *  - RETENTION_EVENT_ACTIVITY_DAYS=90 / RETENTION_EVENT_NOTIFICATIONS_DAYS=90:
+ *    per-event audit feed and settled reminder rows; events archive but
+ *    are never auto-deleted, so 90d matches the activity_log window while
+ *    staying past every reminder's operational relevance (fires are
+ *    minutes before start; rows stay 90d after THAT).
+ */
+const DEFAULT_BRIDGE_OUTBOX_DAYS = 30;
+const DEFAULT_BRIDGE_LINKS_DAYS = 90;
+const DEFAULT_EVENT_ACTIVITY_DAYS = 90;
+const DEFAULT_EVENT_NOTIFICATIONS_DAYS = 90;
 
 /**
  * Rows per delete batch. A sweep deletes in LIMIT-batched passes so one
@@ -73,6 +93,10 @@ const ENV_KEYS = Object.freeze([
   "RETENTION_DAILY_AGGREGATES_DAYS",
   "RETENTION_OAUTH_TX_SWEEP",
   "RETENTION_TICKET_TRANSCRIPT_ORPHAN_DAYS",
+  "RETENTION_BRIDGE_OUTBOX_DAYS",
+  "RETENTION_BRIDGE_LINKS_DAYS",
+  "RETENTION_EVENT_ACTIVITY_DAYS",
+  "RETENTION_EVENT_NOTIFICATIONS_DAYS",
 ]);
 
 /** config field ← env name (the mapping pick() needs to stay honest). */
@@ -82,6 +106,10 @@ const ENV_BY_FIELD = Object.freeze({
   dailyAggregatesDays: "RETENTION_DAILY_AGGREGATES_DAYS",
   oauthTxSweepEnabled: "RETENTION_OAUTH_TX_SWEEP",
   ticketTranscriptOrphanDays: "RETENTION_TICKET_TRANSCRIPT_ORPHAN_DAYS",
+  bridgeOutboxDays: "RETENTION_BRIDGE_OUTBOX_DAYS",
+  bridgeLinksDays: "RETENTION_BRIDGE_LINKS_DAYS",
+  eventActivityDays: "RETENTION_EVENT_ACTIVITY_DAYS",
+  eventNotificationsDays: "RETENTION_EVENT_NOTIFICATIONS_DAYS",
 });
 
 /**
@@ -152,6 +180,15 @@ function retentionConfig(overrides = {}) {
       "ticketTranscriptOrphanDays",
       (v) => parseDaysKnob(v, DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS)
     ),
+    // #399 (B2-7): the four tables the sweep did NOT cover. Same knob
+    // rules (unset ⇒ default, 0/off ⇒ keep forever, garbage ⇒ default).
+    bridgeOutboxDays: pick("bridgeOutboxDays", (v) => parseDaysKnob(v, DEFAULT_BRIDGE_OUTBOX_DAYS)),
+    bridgeLinksDays: pick("bridgeLinksDays", (v) => parseDaysKnob(v, DEFAULT_BRIDGE_LINKS_DAYS)),
+    eventActivityDays: pick("eventActivityDays", (v) => parseDaysKnob(v, DEFAULT_EVENT_ACTIVITY_DAYS)),
+    eventNotificationsDays: pick(
+      "eventNotificationsDays",
+      (v) => parseDaysKnob(v, DEFAULT_EVENT_NOTIFICATIONS_DAYS)
+    ),
     batchRows,
     maxBatchesPerTable,
   };
@@ -159,6 +196,10 @@ function retentionConfig(overrides = {}) {
 
 module.exports = {
   DEFAULT_ACTIVITY_DAYS,
+  DEFAULT_BRIDGE_OUTBOX_DAYS,
+  DEFAULT_BRIDGE_LINKS_DAYS,
+  DEFAULT_EVENT_ACTIVITY_DAYS,
+  DEFAULT_EVENT_NOTIFICATIONS_DAYS,
   DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS,
   DEFAULT_ADMIN_AUDIT_DAYS,
   DEFAULT_DAILY_AGGREGATES_DAYS,

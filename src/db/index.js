@@ -448,6 +448,8 @@ module.exports = {
   markOutboxDone: bridges.markOutboxDone,
   recordOutboxFailure: bridges.recordOutboxFailure,
   requeueStaleOutbox: bridges.requeueStaleOutbox,
+  deleteSettledBridgeOutboxOlderThan: bridges.deleteSettledBridgeOutboxOlderThan,
+  deleteBridgeMessageLinksOlderThan: bridges.deleteBridgeMessageLinksOlderThan,
   countOutboxDepth: bridges.countOutboxDepth,
   addBridgeMessageLink: bridges.addBridgeMessageLink,
   listBridgeMessageLinks: bridges.listBridgeMessageLinks,
@@ -517,6 +519,8 @@ module.exports = {
   updateEventOption: events.updateEventOption,
   deleteEventOption: events.deleteEventOption,
   reorderEventOptions: events.reorderEventOptions,
+  deleteEventActivityOlderThan: events.deleteEventActivityOlderThan,
+  deleteEventNotificationsOlderThan: events.deleteEventNotificationsOlderThan,
 
   getEventSignup: events.getSignup,
   listEventUserSignups: events.listUserSignups,
