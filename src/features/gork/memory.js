@@ -552,7 +552,9 @@ function expandLinkedMemoryRows({ db, communityId, involved, rosterEntries, expa
 /**
  * Write fan-out (account-linking T5): mirror ONE validated entry to the
  * linked counterpart tuple (targetCommunityId, targetUserId) with identical
- * memDate/title/titleKey/body/kind/importance/source_message_ids. The
+ * memDate/title/body/kind/importance/source_message_ids. The TITLE KEY IS
+ * NAMESPACED (`lnk:` prefix, #427) so mirror rows collide only with other
+ * mirror writes — never with the peer's own local memories. The
  * repository stamps fresh created_at/updated_at on the mirror row; the
  * per-person cap applies on the target side exactly like the source side.
  *
@@ -584,15 +586,22 @@ function fanOutMemoryWrite(db, { communityId, entry, warnings, expand }) {
     target = Array.isArray(res?.targets) ? res.targets[0] ?? null : null;
     if (!target) return; // no link — the everyday no-op
     if (!target.mirrorMemory) return; // link exists; memory mirroring is OFF
-    // The mirrored row keys the TARGET tuple; content fields ride over
-    // byte-identically (titleKey included — it is part of the row key).
+    // #427 (audit LT-13): mirror rows get the TARGET tuple with a
+    // NAMESPACED title key. Byte-identical titleKeys collided with the
+    // peer's OWN local upsert key (community, subject, date, title_key +
+    // UNIQUE index): an A-sourced mirror silently REPLACED B's local row
+    // body and stitched A's cross-platform message ids into it —
+    // cross-user data destruction. `lnk:` rows collide only with other
+    // mirror writes; the peer's local writes keep the bare key. (Rows
+    // mirrored before this fix keep their bare keys — historical note in
+    // docs/linking.md; they read fine, just share the pre-fix key space.)
     db.gorkMemoryUpsert(
       {
         communityId: target.targetCommunityId,
         subjectUserId: String(target.targetUserId),
         memDate: entry.memDate,
         title: entry.title,
-        titleKey: entry.titleKey,
+        titleKey: `lnk:${entry.titleKey}`,
         body: entry.body,
         kind: entry.kind,
         importance: entry.importance,
@@ -857,6 +866,9 @@ module.exports = {
   // orchestrators (deps injectable, never throw)
   loadMemoryContext,
   runMemoryTurn,
+  // write fan-out seam (#427: pinned directly — the db + expand args are
+  // injectable so the collision semantics are unit-testable)
+  fanOutMemoryWrite,
   // locked constants
   DEFAULT_MEMORY_CHARS,
   MEMORY_CHARS_MAX,
