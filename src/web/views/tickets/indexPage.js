@@ -233,6 +233,7 @@ function renderTicketIndexContent({
         <tr>
           <th>Ticket</th>
           <th>Guild</th>
+          <th>People</th>
           <th>Closed</th>
           <th>Subject</th>
           <th>Close reason</th>
