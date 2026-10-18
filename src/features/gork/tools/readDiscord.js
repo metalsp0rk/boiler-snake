@@ -270,9 +270,16 @@ function defaultFetcher(channel, opts) {
   return channel.messages.fetch(opts);
 }
 
-/** `.has(flag)` probe that tolerates missing/garbage perm surfaces (true = proceed). */
+/**
+ * #475 (F1-4): FAILS CLOSED. A missing/garbage permission surface is NOT
+ * consent — this used to `return true` on null, which waved the asker-parity
+ * gate (decision 46: fetch/verify failures fail closed) through on any
+ * perm-shape drift (partials, ducked fakes, platform changes). Callers
+ * already fail closed on a THROWING `permissionsFor`; the null result gets
+ * the same posture now.
+ */
 function permsAllow(perms, flag) {
-  if (!perms || typeof perms.has !== "function") return true;
+  if (!perms || typeof perms.has !== "function") return false;
   try {
     return perms.has(flag) === true;
   } catch {
@@ -472,4 +479,10 @@ module.exports = Object.freeze({
   formatReadLine,
   formatReadOutput,
   ANCHOR_MARKER,
+  // #475 (F1-6): the shared vocabulary readHistory re-implemented (and
+  // drifted from — raw slice vs sliceSafe). Single source, imported now.
+  targetLabel,
+  failWith,
+  sortOldestFirst,
+  BARE_ID_RE,
 });

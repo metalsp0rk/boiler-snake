@@ -296,8 +296,26 @@ async function deliverLogPayload(outbound, guildId, kind, payload) {
   }
 }
 
+/**
+ * #475 (F1-5): log channels receive USER-AUTHORED text (gork Q&A, warnings,
+ * note bodies). An embed-only payload was Discord-safe only by platform
+ * accident (embeds don't notify) — the Fluxer send path parses mention
+ * markup with DEFAULT rules whenever the field is absent, so the staff
+ * channel was one hostile question away from being a ping cannon. Stamp
+ * parse-off at the ONE choke every log send passes; an explicit caller
+ * value is respected (never widened, never replaced).
+ */
+function stampNoMentions(payload) {
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    if (payload.allowedMentions === undefined && payload.allowed_mentions === undefined) {
+      return { ...payload, allowedMentions: { parse: [] } };
+    }
+  }
+  return payload;
+}
+
 async function sendToLogChannel(outbound, guildId, kind, payload) {
-  const result = await deliverLogPayload(outbound, guildId, kind, payload);
+  const result = await deliverLogPayload(outbound, guildId, kind, stampNoMentions(payload));
   return result.ok === true;
 }
 

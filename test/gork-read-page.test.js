@@ -308,6 +308,68 @@ describe("executeReadPage SSRF matrix (no network)", () => {
   });
 });
 
+// ---------- #475 (F1-8): unconsumed bodies are CANCELLED ----------
+
+describe("#475 (F1-8): redirect + error bodies cancel their stream (no socket pinning)", () => {
+  const { resolver } = resolverFor({});
+  /** Attach a recording body (no getReader → the text() fallback reads it). */
+  const tracked = (res) => {
+    const r = { ...res };
+    r.body = {
+      cancelled: false,
+      cancel() {
+        this.cancelled = true;
+      },
+    };
+    return r;
+  };
+
+  it("every redirect hop body is cancelled before following Location", async () => {
+    const A = "http://hop-a.test/x";
+    const B = "http://hop-b.test/y";
+    const C = "http://hop-c.test/z";
+    const hopA = tracked(fakeRes({ status: 302, location: B }));
+    const hopB = tracked(fakeRes({ status: 302, location: C }));
+    const final = tracked(fakeRes({ status: 200, body: "<html><body>FINALPAGE ok</body></html>" }));
+    const { impl } = fetchFor({ [A]: hopA, [B]: hopB, [C]: final });
+    const out = await rp.executeReadPage({ urls: [A] }, { resolver, fetchImpl: impl });
+    assert.ok(out.includes("FINALPAGE"), `final page read (got: ${out.slice(0, 80)})`);
+    assert.ok(hopA.body.cancelled, "hop 1's body returns its socket to the shared agent");
+    assert.ok(hopB.body.cancelled, "hop 2's body likewise");
+    assert.ok(!final.body.cancelled, "the body that WAS read must not be cancelled");
+  });
+
+  it("the most common leaks — 404 and unread content-type — cancel too", async () => {
+    const nf = tracked(fakeRes({ status: 404 }));
+    await rp.executeReadPage(
+      { urls: ["http://err-475.test/"] },
+      { resolver, fetchImpl: fetchFor({ "http://err-475.test/": nf }).impl }
+    );
+    assert.ok(nf.body.cancelled, "404 body cancelled");
+
+    const img = tracked(fakeRes({ status: 200, contentType: "image/png", body: "PNG..." }));
+    await rp.executeReadPage(
+      { urls: ["http://img-475.test/"] },
+      { resolver, fetchImpl: fetchFor({ "http://img-475.test/": img }).impl }
+    );
+    assert.ok(img.body.cancelled, "rejected content-type body cancelled");
+  });
+
+  it("redirect-limit exits cancel the giving-up hop", async () => {
+    const A = "http://l1.test/";
+    const B = "http://l2.test/";
+    const C = "http://l3.test/";
+    const D = "http://l4.test/";
+    const hop = tracked(fakeRes({ status: 302, location: B }));
+    const hop2 = tracked(fakeRes({ status: 302, location: C }));
+    const hop3 = tracked(fakeRes({ status: 302, location: D }));
+    const { impl } = fetchFor({ [A]: hop, [B]: hop2, [C]: hop3 });
+    const out = await rp.executeReadPage({ urls: [A] }, { resolver, fetchImpl: impl });
+    assert.match(out, /redirect limit/);
+    assert.ok(hop.body.cancelled && hop2.body.cancelled && hop3.body.cancelled, "no hop leaks");
+  });
+});
+
 // ---------- redirects ----------
 
 describe("redirect policy (manual, ≤2, revalidated per hop)", () => {
