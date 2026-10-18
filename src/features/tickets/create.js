@@ -2,7 +2,11 @@
  * Self-create, staff-for, panel button, and create modal.
  */
 const { MessageFlags } = require("discord.js");
-const { canUserCreateTicket } = require("../../db");
+const {
+  canUserCreateTicket,
+  claimTicketCreateSlot,
+  releaseTicketCreateSlot,
+} = require("../../db");
 const { replyEphemeral } = require("../../core/interaction");
 const { recordSlashAudit } = require("../../core/auditTrail");
 // Discord edge: (platform, instanceKey, snowflake) → integer community id,
@@ -30,10 +34,20 @@ const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
  * @param {import("discord.js").ChatInputCommandInteraction|import("discord.js").ModalSubmitInteraction} interaction
  * @param {object} ctx
  * @param {string|null} reason
- * @param {number} [communityId] integer community id resolved at the entry point;
- *   openTicketChannel/audit fall back to the Discord-identity lookup when omitted.
+ * @param {number} communityId integer community id resolved at the entry point
+ *   (openTicketChannel/audit take it from here).
  */
 async function completeSelfCreate(interaction, ctx, reason, communityId) {
+  // #420 (audit LT-3): take the ATOMIC create slot before any REST call.
+  // The window pre-checks upstream are reads — two concurrent submits (a
+  // double-click, slash + panel modal) both passed them and double-opened.
+  // The claim is one SQL statement; the loser gets the rate-limit reply,
+  // and a failed create hands the slot straight back.
+  const claim = claimTicketCreateSlot(communityId, interaction.user.id);
+  if (!claim.ok) {
+    await interaction.editReply({ content: formatRateLimitMessage(claim) });
+    return;
+  }
   try {
     const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
       guild: interaction.guild,
@@ -65,6 +79,10 @@ async function completeSelfCreate(interaction, ctx, reason, communityId) {
     }
     await interaction.editReply({ content: msg });
   } catch (err) {
+    // Failed create → hand the claimed slot back immediately: the user never
+    // got a ticket and must not pay a window they did not use (a SUCCESSFUL
+    // create keeps the slot; the real row guards the re-entry from then on).
+    releaseTicketCreateSlot(communityId, interaction.user.id, claim.stamp);
     console.error("[tickets] create failed:", err);
     await interaction.editReply({
       content:
@@ -146,6 +164,18 @@ async function handleCreate(commandCtx, ctx) {
     return;
   }
 
+  // #420 (audit LT-3): the ATOMIC create slot — same gate as the Discord arm's
+  // completeSelfCreate. Refusal is the rate-limit sentence; a failed create
+  // below hands the slot back.
+  const claim = claimTicketCreateSlot(communityId, commandCtx.userId);
+  if (!claim.ok) {
+    await commandCtx.reply({
+      content: formatRateLimitMessage(claim),
+      sensitive: true,
+    });
+    return;
+  }
+
   // Sensitive create → K2 DM (mirrors the Discord ephemeral reply).
   await commandCtx.defer({ sensitive: true });
   try {
@@ -183,6 +213,7 @@ async function handleCreate(commandCtx, ctx) {
   } catch (err) {
     // The cause IS the reply (elevated_disabled carries the K8 gate's own
     // reason verbatim — AGENTS.md rule 3, no generic strings).
+    releaseTicketCreateSlot(communityId, commandCtx.userId, claim.stamp);
     console.error("[tickets] fluxer create failed:", err?.message || err);
     await commandCtx.reply({ content: err?.message || String(err) });
   }

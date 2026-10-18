@@ -72,6 +72,61 @@ describe("tickets repository", () => {
     assert.equal(ok.ok, true);
   });
 
+  // ── #420 (audit LT-3): the ATOMIC create-slot claim ───────────────────────
+
+  it("claimTicketCreateSlot: one winner per window, injectable clock ages it out", () => {
+    const cid = communityKey("g-claim-420");
+    db.updateGuildSettings(cid, { ticket_rate_limit_minutes: 10 });
+    const t0 = 1_800_000_000_000;
+
+    const first = db.claimTicketCreateSlot(cid, "u", t0);
+    assert.equal(first.ok, true);
+    assert.equal(first.stamp, t0, "the winner gets the release stamp");
+
+    // The concurrent double-submit: the second claim LOSES immediately.
+    const second = db.claimTicketCreateSlot(cid, "u", t0 + 10);
+    assert.equal(second.ok, false, "RED on old code: both submits passed");
+    assert.ok(
+      second.retryAfterMs > 9 * 60_000 && second.retryAfterMs <= 10 * 60_000,
+      `retryAfter ≈ window: ${second.retryAfterMs}`,
+    );
+    assert.equal(second.minutes, 10);
+
+    // Window edge: one ms early still held, at-the-edge replaces.
+    assert.equal(db.claimTicketCreateSlot(cid, "u", t0 + 10 * 60_000 - 1).ok, false);
+    assert.equal(db.claimTicketCreateSlot(cid, "u", t0 + 10 * 60_000).ok, true);
+
+    // release only ever removes the CALLER'S OWN stamp:
+    const held = db.claimTicketCreateSlot(cid, "other-user", t0 + 10 * 60_000 + 5);
+    assert.equal(held.ok, true);
+    assert.equal(
+      db.releaseTicketCreateSlot(cid, "other-user", held.stamp + 999),
+      0,
+      "a stamp that is not the live one releases nothing",
+    );
+    assert.equal(
+      db.claimTicketCreateSlot(cid, "other-user", t0 + 10 * 60_000 + 6).ok,
+      false,
+      "still held",
+    );
+    assert.equal(db.releaseTicketCreateSlot(cid, "other-user", held.stamp), 1);
+    assert.equal(
+      db.claimTicketCreateSlot(cid, "other-user", t0 + 10 * 60_000 + 7).ok,
+      true,
+      "released slot is immediately claimable again (failed creates cost nothing)",
+    );
+  });
+
+  it("claimTicketCreateSlot is a true no-op when the limit is 0", () => {
+    const cid = communityKey("g-claim-0");
+    db.updateGuildSettings(cid, { ticket_rate_limit_minutes: 0 });
+    const a = db.claimTicketCreateSlot(cid, "u", 1);
+    assert.equal(a.ok, true);
+    assert.equal(a.stamp, null, "no row is held when unlimited");
+    assert.equal(db.claimTicketCreateSlot(cid, "u", 2).ok, true);
+    assert.equal(db.releaseTicketCreateSlot(cid, "u", null), 0);
+  });
+
   it("normalizes ticket reasons", () => {
     const empty = db.normalizeTicketReason("   ", "Reason");
     assert.equal(empty.ok, false);
