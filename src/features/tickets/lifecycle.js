@@ -350,6 +350,11 @@ async function handleArchive(commandCtx, ctx) {
       ticket,
       archivedBy: commandCtx.userId,
       guildName: raw.guild?.name,
+      // #341/#449: write the confirmation BEFORE the channel goes. The
+      // deferred response is a message INSIDE this channel — deleting the
+      // channel first made every archive confirmation die with a real-Discord
+      // 10008 (and the always-OK offline mock hid it for three tiers).
+      deferChannelDelete: true,
     });
 
     // CAS claim loser (#197): another close holds the archive — reply with
@@ -394,11 +399,37 @@ async function handleArchive(commandCtx, ctx) {
       `Ticket **${formatTicketRef(ticket.ticket_number)}** archived` +
       (Number(ticket.is_sensitive)
         ? " (sensitive — no content transcript)."
-        : " — transcript saved and channel deleted.");
-    if (result.warnings?.length) {
-      msg += `\n\n_Warnings:_\n- ${result.warnings.join("\n- ")}`;
+        : " — transcript saved; closing the channel now.");
+    const warnings = Array.isArray(result.warnings) ? [...result.warnings] : [];
+    const render = (list) =>
+      list.length
+        ? `${msg}\n\n_Warnings:_\n- ${list.join("\n- ")}`
+        : msg;
+    await commandCtx.editReply({ content: render(warnings), sensitive: true });
+
+    // The destructive half runs LAST (#341/#449): the confirmation above is
+    // already delivered, so a slow or failed delete can never silence it.
+    try {
+      if (channel?.delete) {
+        await channel.delete(`Ticket #${ticket.ticket_number} archived`);
+      }
+    } catch (err) {
+      console.error(
+        `[tickets] channel delete failed after archiving ticket #${ticket.ticket_number}:`,
+        err?.message || err,
+      );
+      // The channel survived, so the reply is still editable — grow the
+      // SAME warning list (one _Warnings:_ block, no duplicated header).
+      await commandCtx
+        .editReply({
+          content: render([
+            ...warnings,
+            `Could not delete the channel (${err?.message || err}) — the archive itself is complete.`,
+          ]),
+          sensitive: true,
+        })
+        .catch(() => {});
     }
-    await commandCtx.editReply({ content: msg, sensitive: true });
   } catch (err) {
     console.error("[tickets] archive failed:", err);
     await commandCtx.editReply({

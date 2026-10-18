@@ -350,10 +350,17 @@ function createTextChannel(opts = {}) {
     messages: {
       cache: messages,
       fetch: async (arg) => {
-        // fetch(messageId) single
+        // fetch(messageId) single — real discord.js REJECTS with
+        // DiscordAPIError 10008 "Unknown Message" for a missing id (#449
+        // fidelity; consumers already wrap in .catch(() => null) or check
+        // isGoneError — code that FORGOT gone-handling must fail here, not
+        // silently in production).
         if (typeof arg === "string") {
           if (messages.has(arg)) return messages.get(arg);
-          return null;
+          throw Object.assign(
+            new Error("DiscordAPIError[10008]: Unknown Message"),
+            { code: 10008 },
+          );
         }
         // fetch({ limit, before|after }) collection-like. Selection follows
         // the Discord REST contract: `before` → the limit messages NEAREST
@@ -409,7 +416,29 @@ function createTextChannel(opts = {}) {
       return channel;
     },
     _wasDeleted: () => deleted,
+    /**
+     * #449 failure-injection seam (family of `__failThreads`): a queued
+     * Error or `{message, code}` rejects the next send(s) in order — the audit
+     * called `channel.send` the one method that "can never fail", leaving
+     * send-failure handling (50013/429/revoked access) untestable offline.
+     * The queue DRAINS: after the armed entries, sends succeed again.
+     */
+    __failSends: [],
     send: async (payload) => {
+      // #449 fidelity: a deleted channel is gone for REST too (10003).
+      if (deleted) {
+        throw Object.assign(new Error("DiscordAPIError[10003]: Unknown Channel"), {
+          code: 10003,
+        });
+      }
+      if (channel.__failSends.length > 0) {
+        const armed = channel.__failSends.shift();
+        throw armed instanceof Error
+          ? armed
+          : Object.assign(new Error(armed?.message || "Missing Permissions"), {
+              code: armed?.code ?? 50013,
+            });
+      }
       const msgId = `msg-sent-${sent.length + 1}-${id}`;
       const msg = createFakeMessage({
         id: msgId,
@@ -877,6 +906,20 @@ function createChatInputInteraction(opts) {
     guild?.channels?.cache?.get?.(channelId) ||
     null;
 
+  // Response messages (deferred stub, replies, follow-ups) ALL live inside
+  // the interaction's channel: when it is deleted, every later write to the
+  // response dies with it. #449: model that so "delete first, confirm
+  // second" cannot pass offline.
+  function assertChannelAlive(op) {
+    if (channel && (channel.deleted || channel._wasDeleted?.())) {
+      const err = new Error(
+        `DiscordAPIError[10008]: Unknown Message — the interaction response was lost with channel ${channel.id} before ${op}`,
+      );
+      err.code = 10008;
+      throw err;
+    }
+  }
+
   const interaction = {
     commandName: opts.commandName,
     guild,
@@ -955,19 +998,54 @@ function createChatInputInteraction(opts) {
         return value;
       },
     },
+    // ── Ack-lifecycle fidelity (audit G2-4 / #449) ─────────────────────────
+    // The old chat-input mock was an ALWAYS-OK world: editReply could never
+    // throw, so the #341/#354 class (destructive action deletes THIS channel,
+    // the confirmation reply dies with it — real Discord: 10008 Unknown
+    // Message) was structurally uncatchable at tiers 1-3. These rules mirror
+    // what discord.js does against real Discord (the button mock below has
+    // modeled InteractionAlreadyReplied for ages — same shape, same codes):
+    //   • reply/defer after an ack           → InteractionAlreadyReplied
+    //   • editReply with no ack              → 40060 not acknowledged
+    //   • any response write while the interaction's channel is deleted → 10008
     reply: async (payload) => {
+      if (interaction.replied || interaction.deferred) {
+        const err = new Error(
+          "InteractionAlreadyReplied: cannot reply after the interaction was acknowledged",
+        );
+        err.code = "InteractionAlreadyReplied";
+        throw err;
+      }
+      assertChannelAlive("reply");
       interaction.replied = true;
       replies.push(payload);
       return payload;
     },
     followUp: async (payload) => {
+      assertChannelAlive("followUp");
       followUps.push(payload);
       return payload;
     },
-    deferReply: async () => {
+    deferReply: async (payload) => {
+      if (interaction.replied || interaction.deferred) {
+        const err = new Error(
+          "InteractionAlreadyReplied: cannot defer an acknowledged interaction",
+        );
+        err.code = "InteractionAlreadyReplied";
+        throw err;
+      }
       interaction.deferred = true;
+      return payload;
     },
     editReply: async (payload) => {
+      if (!interaction.replied && !interaction.deferred) {
+        const err = new Error(
+          "DiscordAPIError[40060]: Interaction has not been acknowledged yet",
+        );
+        err.code = 40060;
+        throw err;
+      }
+      assertChannelAlive("editReply");
       // discord.js accepts a plain string; normalize it to a payload object
       const obj = typeof payload === "string" ? { content: payload } : { ...payload };
       replies.push({ ...obj, _edited: true });

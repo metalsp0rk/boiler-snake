@@ -516,6 +516,10 @@ async function softCloseTicket(opts) {
  * @param {object} opts.ticket
  * @param {string} opts.archivedBy
  * @param {string} [opts.guildName]
+ * @param {boolean} [opts.deferChannelDelete] Slash handler runs the channel
+ *   delete AFTER its confirmation reply (#341/#449 — the deferred response
+ *   lives in THIS channel; deleting first kills the reply with 10008).
+ *   Callers that reply inside the ticket channel MUST set this.
  * @param {object} [opts.summaryOpts] Seam forwarded to summarizeTicket
  *   (chatImpl / fetchImpl / setTimer / clearTimer / timeoutMs; tests).
  * @returns {Promise<{ ticket: object, warnings: string[], skipped?: string, error?: string }>}
@@ -614,10 +618,17 @@ async function archiveTicketWork(opts) {
       setTicketArchiveMessageId(closed.id, archiveMsgId);
     }
 
-    try {
-      if (channel?.delete) await channel.delete("Ticket archived (sensitive)");
-    } catch (err) {
-      warnings.push(`Could not delete channel: ${err?.message || err}`);
+    // #341/#449: `deferChannelDelete` lets the SLASH handler run the delete
+    // AFTER it has written its confirmation — the deferred response lives in
+    // THIS channel, so deleting first always kills the reply (real Discord
+    // answered 10008; the offline mock used to make that uncatchable).
+    if (!opts.deferChannelDelete) {
+      try {
+        if (channel?.delete)
+          await channel.delete("Ticket archived (sensitive)");
+      } catch (err) {
+        warnings.push(`Could not delete channel: ${err?.message || err}`);
+      }
     }
 
     return { ticket: closed || getTicketById(ticket.id) || ticket, warnings };
@@ -830,10 +841,12 @@ async function archiveTicketWork(opts) {
     }
   }
 
-  try {
-    if (channel?.delete) await channel.delete("Ticket archived");
-  } catch (err) {
-    warnings.push(`Could not delete channel: ${err?.message || err}`);
+  if (!opts.deferChannelDelete) {
+    try {
+      if (channel?.delete) await channel.delete("Ticket archived");
+    } catch (err) {
+      warnings.push(`Could not delete channel: ${err?.message || err}`);
+    }
   }
 
   return {
