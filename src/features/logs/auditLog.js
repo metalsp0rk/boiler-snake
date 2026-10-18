@@ -706,11 +706,13 @@ function buildLevelRoleChangeEmbed({
   member,
   granted = [],
   removed = [],
+  failed = [],
   level,
   source,
 }) {
   const hasGrant = granted.length > 0;
   const hasRemove = removed.length > 0;
+  const hasFailed = failed.length > 0;
   let color = COLOR_ROLE_MIXED;
   let title = "Level roles updated";
   if (hasGrant && !hasRemove) {
@@ -719,6 +721,9 @@ function buildLevelRoleChangeEmbed({
   } else if (hasRemove && !hasGrant) {
     color = COLOR_ROLE_REMOVE;
     title = "Level role removed";
+  } else if (hasFailed && !hasGrant && !hasRemove) {
+    // #430 (audit XE-3): a fully-failed sync must be LOUD, not invisible.
+    title = "Level role sync FAILED";
   }
 
   const embed = new EmbedBuilder()
@@ -749,6 +754,22 @@ function buildLevelRoleChangeEmbed({
       name: "Removed",
       value: truncate(
         removed.map((id) => `<@&${id}> (\`${id}\`)`).join("\n"),
+        FIELD_TRUNCATE,
+      ),
+    });
+  }
+  if (hasFailed) {
+    // #430: per-item failures in the audit channel — staff see WHICH role
+    // and WHY without grepping bot console logs.
+    embed.addFields({
+      name: "Failed",
+      value: truncate(
+        failed
+          .map(
+            (f) =>
+              `⚠ ${f.action} <@&${f.roleId}> (\`${f.roleId}\`): ${f.error}`,
+          )
+          .join("\n"),
         FIELD_TRUNCATE,
       ),
     });
@@ -968,17 +989,20 @@ async function logLevelRoleChanges(
   outbound,
   communityId,
   member,
-  { granted = [], removed = [] },
+  { granted = [], removed = [], failed = [] } = {},
   level,
   source,
 ) {
   if (communityId == null || !outbound) return;
-  if (!granted.length && !removed.length) return;
+  // #430 (audit XE-3): an all-failed sync is EXACTLY what staff need to
+  // see — "nothing happened" must not equal "nothing posted".
+  if (!granted.length && !removed.length && !failed.length) return;
 
   const embed = buildLevelRoleChangeEmbed({
     member,
     granted,
     removed,
+    failed,
     level,
     source,
   });

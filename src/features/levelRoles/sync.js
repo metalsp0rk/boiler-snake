@@ -31,15 +31,31 @@ function logRoleError(action, result, { communityId, userId, roleId }) {
  * @param {number} communityId  internal communities.id (asserted)
  * @param {{ id: string, roleIds?: string[] }} member  GuildMember or MemberHandle
  * @param {number} level
- * @returns {Promise<{ granted: string[], removed: string[] }>}
+ * @returns {Promise<{ granted: string[], removed: string[], failed: {roleId: string, action: "add"|"remove", error: string}[] }>}
+ *
+ * #430 (audit XE-3): failed ops are REPORTED, not just logged — every failed
+ * add/remove lands in `failed` so callers can surface partial failure
+ * (rule 5). The classic cause: the bot's highest role is below the role it
+ * manages (AGENTS item 5).
  */
 async function syncMemberRoles(outbound, communityId, member, level) {
   assertCommunityId(communityId);
   const granted = [];
   const removed = [];
-  if (!member?.id) return { granted, removed };
+  const failed = [];
+  if (!member?.id) return { granted, removed, failed };
 
   const userId = member.id;
+  // #430: one funnel for every failed op — console (self-hosters) AND the
+  // structured `failed` list (replies + audit embeds).
+  const fail = (action, roleId, res) => {
+    logRoleError(action, res, { communityId, userId, roleId });
+    failed.push({
+      roleId,
+      action,
+      error: String(res?.error || res?.code || res),
+    });
+  };
   const hasDiscordRoles = Boolean(member.roles?.cache);
   let roleIds;
   if (Array.isArray(member.roleIds)) {
@@ -50,11 +66,11 @@ async function syncMemberRoles(outbound, communityId, member, level) {
     console.warn(
       `[roles] syncMemberRoles: member ${userId} in community ${communityId} has neither roleIds nor roles.cache; skipping role sync`,
     );
-    return { granted, removed };
+    return { granted, removed, failed };
   }
 
   const mappings = listLevelRoles(communityId);
-  if (!mappings.length) return { granted, removed };
+  if (!mappings.length) return { granted, removed, failed };
 
   // One role mutation path for both member shapes; never throws (AGENTS.md
   // rule 6 at the service boundary — failures come back as { ok:false }).
@@ -86,7 +102,7 @@ async function syncMemberRoles(outbound, communityId, member, level) {
       if (!hasRole) {
         const res = await setRole("add", roleId);
         if (res && res.ok) granted.push(roleId);
-        else logRoleError("add", res, { communityId, userId, roleId });
+        else fail("add", roleId, res);
       }
       // clear drop timer regardless
       try {
@@ -112,12 +128,12 @@ async function syncMemberRoles(outbound, communityId, member, level) {
     if (hasRole && (now() - belowSince) > graceMs) {
       const res = await setRole("remove", roleId);
       if (res && res.ok) removed.push(roleId);
-      else logRoleError("remove", res, { communityId, userId, roleId });
+      else fail("remove", roleId, res);
       setRoleBelowSince(communityId, userId, roleId, null);
     }
   }
 
-  return { granted, removed };
+  return { granted, removed, failed };
 }
 
 module.exports = { syncMemberRoles };

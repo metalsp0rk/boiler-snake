@@ -123,7 +123,8 @@ async function runDropSweepForCommunity(supervisor, communityId, opts = {}) {
 
       const changes = await syncMemberRoles(outbound, communityId, member, level);
       removed += changes.removed?.length || 0;
-      if (changes.granted?.length || changes.removed?.length) {
+      // #430: failed role ops post too (the embed names them).
+      if (changes.granted?.length || changes.removed?.length || changes.failed?.length) {
         await logLevelRoleChanges(
           outbound,
           communityId,

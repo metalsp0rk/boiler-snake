@@ -46,7 +46,7 @@ async function fanOutXpMirror(communityId, userId, delta, activityKind) {
  *
  * @param {import("../platform/discord/outbound")} outbound OutboundClient
  * @param {object} opts see awardXp (everything except fanOut)
- * @returns {Promise<{ newXp: number, level: number|null, changes: { granted: string[], removed: string[] }|null }>}
+ * @returns {Promise<{ newXp: number, level: number|null, changes: { granted: string[], removed: string[], failed: {roleId: string, action: string, error: string}[] }|null }>}
  */
 async function awardXpPrimary(outbound, {
   communityId,
@@ -141,7 +141,7 @@ async function awardXpPrimary(outbound, {
  * @param {boolean} [opts.fanOut=true] mirror to the linked account (T4). THE
  *   LOOP GUARD: the mirror-issued award (source "link_mirror") passes
  *   fanOut:false, so a mirror never fans out again.
- * @returns {Promise<{ newXp: number, level: number|null, changes: { granted: string[], removed: string[] }|null, linkMirror?: { awarded: number|null, warnings: string[] } }>}
+ * @returns {Promise<{ newXp: number, level: number|null, changes: { granted: string[], removed: string[], failed: {roleId: string, action: string, error: string}[] }|null, linkMirror?: { awarded: number|null, warnings: string[] } }>}
  */
 async function awardXp(outbound, {
   communityId,
