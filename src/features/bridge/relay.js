@@ -1907,10 +1907,23 @@ function createRelayWorker(deps = {}) {
       // degraded bot-authored send for THIS part (creates only).
       if (isUnknownWebhookResult(res, { tokenEndpoint404: op === "execute" }) && !recreateTried) {
         recreateTried = true;
-        const recreated = await port.createRelayWebhook(
-          payload.dstCommunityId,
-          payload.dstChannelId,
-        );
+        // #410 (BRG-4): the platform ports VALIDATE their args by THROWING
+        // (assertCommunityId) — a failed recreate must arrive as a RESULT
+        // so the branches below (gone-channel → broken, else degrade/skip)
+        // decide. A throw escaping here once burned 5 attempts and posted
+        // a poison notice per message; never again by construction.
+        let recreated;
+        try {
+          recreated = await port.createRelayWebhook(
+            payload.dstCommunityId,
+            payload.dstChannelId,
+          );
+        } catch (err) {
+          recreated = {
+            ok: false,
+            error: `createRelayWebhook threw: ${err?.message || err}`,
+          };
+        }
         if (recreated.ok) {
           webhookRef.current = recreated.webhook;
           onWebhookRecreated(recreated);
@@ -2298,11 +2311,23 @@ function createRelayWorker(deps = {}) {
       pruneRelayRows(bridge, payload);
       return;
     }
+    // #410 (BRG-4): the SAME sendCtx shape the edit branch builds. The raw
+    // delete payload carries only src fields — the ladder's webhook
+    // recreate reads dstCommunityId/dstChannelId from it, and undefined
+    // ids hit the port's assertCommunityId THROW (outside any try), which
+    // escaped to the generic burn loop: 5 attempts against a guaranteed
+    // TypeError, park, nonsense notice… instead of §10.10's silent skip.
+    const sendCtx = {
+      ...payload,
+      dstCommunityId: opCtx.ends.dstEnd.community_id,
+      dstChannelId: opCtx.ends.dstEnd.channel_id,
+      srcPlatform: opCtx.srcPlatform,
+    };
     for (const link of links) {
       const result = await sendPartWithLadder({
         port: opCtx.port,
         webhookRef: opCtx.webhookRef,
-        payload,
+        payload: sendCtx,
         part: { content: null, files: [], partIndex: Number(link.part_index) },
         row,
         destPlatform: opCtx.destPlatform,

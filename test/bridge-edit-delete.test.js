@@ -1429,4 +1429,74 @@ describe("bridge edit/delete relay (PR 6)", () => {
     assert.equal(repo.getBridgeOutboxById(del.outboxId).state, "done", "skipped = drained (existing §10.10 contract)");
     assert.equal(repo.listBridgeMessageLinks(bridge.id, msgId).length, 0, "#411: the skip means GONE copies — dead links go with them");
   });
+
+  // -------------------------------------------------------------------------
+  // #410 (BRG-4): the delete branch must build the SAME sendCtx the edit
+  // branch does — its raw payload had no dst ids, so the webhook recreate
+  // called createRelayWebhook(undefined, undefined) into the port's
+  // assertCommunityId THROW, which escaped the ladder into the generic
+  // burn loop (5 attempts, park, nonsense notice) instead of §10.10 skip.
+  // -------------------------------------------------------------------------
+
+  it("#410 a delete-row recreate gets the REAL destination end ids", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex: 0, dstMessageId: "dst-410a" });
+    const del = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(del?.enqueued);
+
+    const seen = [];
+    const api = {
+      async deleteRelayMessage() {
+        return { ok: false, error: "Unknown Webhook (code 10015)", code: "UNKNOWN_WEBHOOK" };
+      },
+      async createRelayWebhook(communityId, channelId) {
+        seen.push([communityId, channelId]);
+        return { ok: false, error: "Missing Permissions (code 50013)" };
+      },
+    };
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? api : null) });
+    await worker.drainAll();
+
+    const endB = repo.listBridgeEnds(bridge.id).find((e) => e.position === "b");
+    assert.deepEqual(
+      seen,
+      [[endB.community_id, endB.channel_id]],
+      "#410: the recreate targets the ACTUAL destination end — pre-fix it received undefined, undefined",
+    );
+    assert.equal(repo.getBridgeOutboxById(del.outboxId).state, "done", "refused recreate → §10.10 SKIP drain (existing contract, now reachable)");
+    assert.match(repo.getBridgeById(bridge.id).last_error, /Missing Permissions/, "the skip reason rides last_error");
+  });
+
+  it("#410 a THROWING recreate is a failed recreate — never a ladder burn", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({ bridgeId: bridge.id, srcCommunityId: rowA.id, srcMessageId: msgId, partIndex: 0, dstMessageId: "dst-410b" });
+    const del = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(del?.enqueued);
+
+    // The port's arg validation throws (assertCommunityId sits OUTSIDE the
+    // adapters' internal try — production shape). Even with correct ids in
+    // place, NO throw may escape the ladder: it becomes the failed-recreate
+    // RESULT the spec branches decide on.
+    const api = {
+      async deleteRelayMessage() {
+        return { ok: false, error: "Unknown Webhook (code 10015)", code: "UNKNOWN_WEBHOOK" };
+      },
+      async createRelayWebhook() {
+        throw new TypeError("community id required");
+      },
+    };
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? api : null) });
+    await worker.drainAll();
+
+    const row = repo.getBridgeOutboxById(del.outboxId);
+    assert.equal(row.state, "done", "the throw lands in the SKIP drain — not a 5-attempt park machine");
+    assert.equal(row.attempts, 0, "zero ladder burn for what §10.10 wants silently skipped");
+    assert.equal(worker.notices.length, 0, "silent skip: the copies died with the webhook anyway");
+    assert.match(repo.getBridgeById(bridge.id).last_error, /createRelayWebhook threw/, "the cause is RECORDED, not swallowed");
+    assert.equal(repo.listBridgeMessageLinks(bridge.id, msgId).length, 0, "skip = gone copies → #411 prune applies");
+  });
 });
