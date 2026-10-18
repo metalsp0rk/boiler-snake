@@ -670,3 +670,44 @@ describe("boot() heartbeat re-arm + max-hold degraded gate (#392/A2-8)", () => {
     );
   });
 });
+
+describe("boot() degraded feature report (#390/A2-4)", () => {
+  it("the boot report NAMES the degraded feature layer, not just the console", async () => {
+    setEnv({ FLUXER_INSTANCES: FAKE_FLUXER_JSON });
+    endpoints.fluxerImpl = async () => makeFakeFluxerHandle();
+
+    const { result, logs } = await withCaptured(() => boot({ registry: {} }));
+
+    assert.equal(result.ok, true, "a skipped discord-tier feature is a degraded boot, not a failed one");
+    assert.deepEqual(
+      result.degradedFeatures,
+      ["discord-tier.start"],
+      "the isolated feature is NAMED in the report (pre-#390 the boot reported ok:true with the degradation console-only)",
+    );
+    assert.ok(
+      logs.some((l) => l.includes("[boot] feature layer degraded")),
+      "and once as a warning line with the same list",
+    );
+  });
+
+  it("a healthy feature layer reports an empty degraded list", async () => {
+    setEnv({ FLUXER_INSTANCES: FAKE_FLUXER_JSON });
+    endpoints.fluxerImpl = async () => makeFakeFluxerHandle();
+    // The array boot() holds is module-level and shared by identity — drop
+    // the discord-tier feature (the only one that needs a client) for this
+    // boot only.
+    const i = fakeFeatures.findIndex((f) => f.name === "discord-tier");
+    const [discordTier] = fakeFeatures.splice(i, 1);
+    try {
+      const { result } = await withCaptured(() => boot({ registry: {} }));
+      assert.equal(result.ok, true);
+      assert.deepEqual(
+        result.degradedFeatures,
+        [],
+        "no isolated hooks → an honestly EMPTY list, not undefined/lies",
+      );
+    } finally {
+      fakeFeatures.splice(i, 0, discordTier);
+    }
+  });
+});
