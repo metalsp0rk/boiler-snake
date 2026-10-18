@@ -32,7 +32,7 @@ const { j, poll, namespaceIds } = require("./helpers/mockenv");
  * Reaction XP + cooldown + remove semantics are ALREADY pinned by ns23
  * (e2e-mockgaps gap-3 proof) — not repeated.
  *
- * Real bug pinned here: #356 — live claim/revoke never posts the audit
+ * #356 FIXED and pinned here: live claim/revoke POST the audit
  * embed (raw Client passed where OutboundClient required; silent catch).
  *
  * Documented dark arms (todos at the bottom): member-side DM copies (mock
@@ -440,17 +440,20 @@ describe(
         "reaction stored meanwhile",
       );
 
-      // BUG #356 (pinned): the grant/revoke audit embed NEVER reaches the
-      // audit channel — service.js:811/883 pass the raw discord.js Client to
-      // logReactionRoleChange, which needs an OutboundClient; the resulting
-      // TypeError is swallowed by the call site's catch(() => {}).
-      // FLIP-BACK: after #356 lands, poll for the "Reaction role granted"
-      // embed here (Role field value contains the raw role id) instead.
-      await new Promise((r) => setTimeout(r, 600));
-      const titles = await embedTitles();
+      // #356 FIXED: the live-claim path was handing logReactionRoleChange a
+      // raw discord.js Client (needs an OutboundClient) — sendChannel was
+      // undefined, the TypeError died in catch(() => {}), and the embed
+      // NEVER posted. The claim embed now reaches the audit channel:
+      const granted = await poll(async () => {
+        const msgs = (await env.mock.messages(logs())) ?? [];
+        return msgs.find((m) => m.embeds?.[0]?.title === "Reaction role granted") ?? null;
+      }, { timeoutMs: 8000, label: "#356 grant audit embed posted" });
+      const grantFields = Object.fromEntries(
+        (granted.embeds[0].fields ?? []).map((f) => [String(f.name), String(f.value)]),
+      );
       assert.ok(
-        !titles.some((t) => /reaction role/i.test(String(t))),
-        `BUG #356 pin: claim embed must be ABSENT (got: ${JSON.stringify(titles)})`,
+        String(grantFields["Role"] ?? "").includes(roles.color.id),
+        `embed names the granted role (fields: ${JSON.stringify(grantFields)})`,
       );
 
       await env.mock.unreact({ messageId: st.panel, emoji: "🎉", userId: env.ids.outsider });
@@ -458,6 +461,11 @@ describe(
         timeoutMs: 8000,
         label: "role revoked on unreact",
       });
+      // The remove leg had the SAME raw-Client bug — pinned fixed too.
+      await poll(async () => {
+        const msgs = (await env.mock.messages(logs())) ?? [];
+        return msgs.find((m) => m.embeds?.[0]?.title === "Reaction role removed") ?? null;
+      }, { timeoutMs: 8000, label: "#356 revoke audit embed posted" });
 
       // Unconfigured emoji on a MANAGED panel → strip (reactor removed).
       await env.mock.react({ messageId: st.panel, emoji: "🚫", userId: env.ids.outsider });
