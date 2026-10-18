@@ -550,3 +550,121 @@ describe("args coercion (trigger dispatch tolerance)", () => {
     }
   });
 });
+
+// ── #435 (audit F1-2): MAX_BYTES is a REAL download cap ────────────────────
+
+describe("executeReadPage — streaming byte cap (#435)", () => {
+  /**
+   * A response that NEVER ends: 64 KiB of "a" forever, no Content-Length
+   * (chunked). `text()` throws — the fixed code must STREAM this, and if it
+   * still buffered via text() the error surfaces as a read failure (RED).
+   */
+  function endlessResponse() {
+    const value = new Uint8Array(64 * 1024).fill(0x61);
+    let reads = 0;
+    let cancelled = false;
+    const headers = new Map([["content-type", "text/html"]]);
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (n) => headers.get(String(n).toLowerCase()) ?? null },
+      text: async () => {
+        throw new Error("buffered the WHOLE endless body (the #435 defect)");
+      },
+      body: {
+        getReader() {
+          return {
+            read: async () => {
+              reads += 1;
+              return { done: false, value };
+            },
+            cancel: async () => {
+              cancelled = true;
+            },
+          };
+        },
+      },
+      stats: () => ({ reads, cancelled }),
+    };
+  }
+
+  it("caps a chunked endless body at MAX_BYTES and CANCELS the transfer (#435)", async () => {
+    const res = endlessResponse();
+    const { resolver } = resolverFor({});
+    const { impl, calls } = fetchFor({ "http://endless.test/": res });
+
+    const out = await rp.executeReadPage(
+      { urls: ["http://endless.test/"] },
+      { resolver, fetchImpl: impl },
+    );
+
+    assert.doesNotMatch(out, /Could not read/, "the capped read succeeds (RED: old code buffered / errored)");
+    const { reads, cancelled } = res.stats();
+    // 1 MB cap ÷ 64 KiB chunks = 16 reads; anything larger means the cap
+    // was not consulted while reading (RED: old code never read at all —
+    // it buffered via text(), which threw → "Could not read" above).
+    assert.ok(reads > 0 && reads <= 17, `stopped reading at the cap (observed ${reads} reads)`);
+    assert.equal(cancelled, true, "the response body is cancelled — bandwidth stops at the cap");
+    assert.equal(calls.length, 1);
+    // The visible text honors the cap too (extraction can only shrink it).
+    assert.ok(out.length < 1_200_000, `capped output (${out.length} chars)`);
+  });
+
+  it("a real web-stream Response (closed normally) reads fully through the cap path (#435)", async () => {
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("<p>SMALLSTREAMOK</p>"));
+        c.close();
+      },
+    });
+    const res = new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+    const { resolver } = resolverFor({});
+    const { impl } = fetchFor({ "http://realstream.test/": res });
+
+    const out = await rp.executeReadPage(
+      { urls: ["http://realstream.test/"] },
+      { resolver, fetchImpl: impl },
+    );
+    assert.match(out, /SMALLSTREAMOK/, "normal streamed reads survive the cap path");
+  });
+
+  it("multi-byte UTF-8 split at the cap boundary decodes without throwing (#435)", async () => {
+    const payload = Buffer.from("é".repeat(700_000), "utf8"); // 1.4 MB, cap lands mid-char
+    let offset = 0;
+    let cancelled = false;
+    const headers = new Map([["content-type", "text/plain; charset=utf-8"]]);
+    const res = {
+      ok: true,
+      status: 200,
+      headers: { get: (n) => headers.get(String(n).toLowerCase()) ?? null },
+      body: {
+        getReader() {
+          return {
+            read: async () => {
+              if (offset >= payload.length) return { done: true, value: undefined };
+              const slice = payload.subarray(offset, offset + 100_003); // odd size: guarantees a split
+              offset += slice.length;
+              return { done: false, value: new Uint8Array(slice) };
+            },
+            cancel: async () => {
+              cancelled = true;
+            },
+          };
+        },
+      },
+    };
+    const { resolver } = resolverFor({});
+    const { impl } = fetchFor({ "http://utf8cap.test/": res });
+
+    const out = await rp.executeReadPage(
+      { urls: ["http://utf8cap.test/"] },
+      { resolver, fetchImpl: impl },
+    );
+    assert.doesNotMatch(out, /Could not read/);
+    assert.match(out, /é/, "content decoded");
+    assert.equal(cancelled, true, "the remainder of the 1.4 MB body was never downloaded");
+  });
+});
