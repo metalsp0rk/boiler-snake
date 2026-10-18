@@ -132,7 +132,7 @@ async function stepAutoArchive(client, nowMs) {
 async function stepCleanup(client, nowMs) {
   let drafts = 0;
   try {
-    for (const draft of repo.listExpiredPendingConfirmDrafts(nowMs)) {
+    for (const draft of repo.listExpiredDrafts(nowMs)) {
       const res = await service.deleteEvent(client, draft, { removeDiscord: false });
       if (res && res.ok === false) {
         console.error(`[events] draft cleanup event=${draft.id}: ${res.error}`);

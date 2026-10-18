@@ -490,7 +490,7 @@ module.exports = {
   claimDueScheduledPosts: events.claimDueScheduledPosts,
   recordEventPostFailure: events.recordEventPostFailure,
   deleteEventCascade: events.deleteEventCascade,
-  listExpiredPendingConfirmDrafts: events.listExpiredPendingConfirmDrafts,
+  listExpiredDrafts: events.listExpiredDrafts,
   listEventsToAutoArchive: events.listEventsToAutoArchive,
   listDigestSettings: events.listDigestSettings,
   setEventDigestLastSent: events.setEventDigestLastSent,

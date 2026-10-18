@@ -96,7 +96,7 @@ Staff get the same data on the [Web Admin](web-admin.md) calendar: month view, d
 ## Limits & gotchas
 
 - Max 25 signup options per event; options need unique labels.
-- Drafts that are never posted are cleaned up after 24 h; posted events auto-archive (default 120 min after end, configurable, opt-in for the *auto* part).
+- Drafts that are never posted are cleaned up after 24 h — both abandoned `/event create` previews and duplicate/adopt/series drafts. A draft with a **post time set** is yours to keep; it is never swept. Posted events auto-archive (default 120 min after end, configurable, opt-in for the *auto* part).
 - Global slash-command propagation is slow — set `DEV_GUILD_ID` while testing.
 - Message edits use Discord timestamps; there is no per-viewer setting for 12/24 h — the client decides.
 
