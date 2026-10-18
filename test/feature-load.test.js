@@ -5,6 +5,7 @@ const {
   registerAllFeatureEvents,
   startAllFeatures,
 } = require("../src/features/load");
+const lifecycle = require("../src/core/lifecycle");
 
 /** Run fn with console.error captured; returns { result, logs }. */
 function withCapturedErrors(fn) {
@@ -84,5 +85,123 @@ describe("feature boot hook isolation", () => {
 
     assert.deepEqual(result, ["ticker.start"]);
     assert.ok(logs.some((l) => l.includes("ticker.start failed:") && l.includes("no port")));
+  });
+});
+
+describe("#390 (A2-4): partial-start cleanup + honest handle keys", () => {
+  it("a hook that throws after registerStop releases exactly what it took (LIFO)", () => {
+    lifecycle.resetForTests();
+    const stops = [];
+    const features = [
+      {
+        name: "halfway",
+        start: (_sup, _ctx, registerStop) => {
+          registerStop(() => stops.push("first"));
+          registerStop(() => stops.push("second"));
+          throw new Error("blew up after binding");
+        },
+      },
+    ];
+
+    const { logs } = withCapturedErrors(() => startAllFeatures({}, features, {}));
+
+    assert.deepEqual(
+      stops,
+      ["second", "first"],
+      "uncommitted resources are stopped LIFO by load.js (pre-#390: they leaked un-stopped)",
+    );
+    assert.deepEqual(
+      lifecycle.shutdownHandleNames(),
+      [],
+      "nothing un-stopped lingers in the drain (drain complete no longer lies)",
+    );
+    assert.ok(
+      logs.some((l) => l.includes("blew up after binding")),
+      "the ORIGINAL error still lands first",
+    );
+    lifecycle.resetForTests();
+  });
+
+  it("a failing partial-stop is logged per item and never masks the hook error", () => {
+    lifecycle.resetForTests();
+    const stops = [];
+    const features = [
+      {
+        name: "stubby",
+        start: (_sup, _ctx, registerStop) => {
+          registerStop(() => stops.push("first"));
+          registerStop(() => {
+            throw new Error("stuck socket");
+          });
+          throw new Error("hook boom");
+        },
+      },
+    ];
+
+    const { logs } = withCapturedErrors(() => startAllFeatures({}, features, {}));
+
+    assert.deepEqual(stops, ["first"], "the rest of the teardown runs despite one stuck stop");
+    assert.ok(
+      logs.some((l) => l.includes("partial-stop failed") && l.includes("stuck socket")),
+      "the stuck resource is named, not swallowed",
+    );
+    assert.ok(logs.some((l) => l.includes("hook boom")), "the hook error still leads");
+    lifecycle.resetForTests();
+  });
+
+  it("seam handles commit on a clean return; keys carry feature+index+hook", () => {
+    lifecycle.resetForTests();
+    const features = [
+      {
+        name: "loop",
+        start: (_s, _c, registerStop) => {
+          registerStop(() => {});
+          return { stop: () => {} };
+        },
+      },
+      { start: () => ({ stop: () => {} }) }, // no name at all
+    ];
+
+    startAllFeatures({}, features, {});
+
+    assert.deepEqual(
+      lifecycle.shutdownHandleNames(),
+      ["feature:loop#0:start", "feature:loop#0:start#1", "feature:unknown#1:start"],
+      "seam slot + returned handle under a hook-scoped key; the nameless feature gets its OWN key (index)",
+    );
+    lifecycle.resetForTests();
+  });
+
+  it("a start handle can no longer REPLACE the same feature's registerEvents handle", () => {
+    lifecycle.resetForTests();
+    const features = [
+      {
+        name: "dual",
+        registerEvents: () => ({ stop: () => {} }),
+        start: () => ({ stop: () => {} }),
+      },
+    ];
+
+    registerAllFeatureEvents({}, features, {});
+    startAllFeatures({}, features, {});
+
+    assert.deepEqual(
+      lifecycle.shutdownHandleNames(),
+      ["feature:dual#0:registerEvents", "feature:dual#0:start"],
+      "both handles drain (pre-#390 the shared key silently delete-then-set away the events one)",
+    );
+    lifecycle.resetForTests();
+  });
+
+  it("registerStop rejects a non-function with a named complaint", () => {
+    lifecycle.resetForTests();
+    const features = [{ name: "careless", start: (_s, _c, registerStop) => registerStop(42) }];
+    const { result, logs } = withCapturedErrors(() => startAllFeatures({}, features, {}));
+    assert.deepEqual(result, ["careless.start"]);
+    assert.ok(
+      logs.some((l) => l.includes("registerStop(careless.start): stop function required")),
+      "the misuse names feature + hook",
+    );
+    lifecycle.resetForTests();
   });
 });

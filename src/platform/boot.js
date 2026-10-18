@@ -141,9 +141,9 @@ function resolveFeatureGateWatchdogMs(explicit) {
 }
 
 function registerFeatureEventsOnce(supervisor, featureList, ctx) {
-  if (eventsRegistered.has(supervisor)) return;
+  if (eventsRegistered.has(supervisor)) return [];
   eventsRegistered.add(supervisor);
-  registerAllFeatureEvents(supervisor, featureList, ctx);
+  return registerAllFeatureEvents(supervisor, featureList, ctx);
 }
 
 /**
@@ -167,7 +167,10 @@ function registerFeatureEventsOnce(supervisor, featureList, ctx) {
  *   features and prefix dispatch (defaults to buildDefaultRegistry());
  *   the timer seams + window control the feature-gate watchdog (tests
  *   inject fakes; house pattern from core/lifecycle)
- * @returns {Promise<{ ok: boolean, exitCode: number, supervisor: Supervisor }>}
+ * @returns {Promise<{ ok: boolean, exitCode: number, supervisor: Supervisor,
+ *   degradedFeatures: string[] }>} degradedFeatures (#390) lists every
+ *   `feature.hook` load.js isolated this boot — empty on a fully healthy
+ *   feature layer; ok stays true for a degraded-but-running boot.
  */
 async function boot({
   registry,
@@ -282,6 +285,10 @@ async function boot({
 
   let featuresStarted = false;
   let discordReady = false;
+  /** #390 (A2-4): every hook load.js isolated as DEGRADED this boot
+   *  (["web.start", ...]) — surfaced in the boot report so a degraded
+   *  feature layer is never a console-line-only story. */
+  const degradedFeatures = [];
   /** True once the Discord endpoint failed TERMINALLY for this process
    *  (initial login rejection / client construction failure — audit C7).
    *  A gateway reconnect loop after a successful login is NOT terminal. */
@@ -350,14 +357,14 @@ async function boot({
     clearFeatureGateWatchdog();
     // A Fluxer-only boot registers feature events HERE (no Discord branch ran):
     // the bridge DM consumer must exist even when Discord never logs in.
-    registerFeatureEventsOnce(supervisor, features, featureCtx);
+    degradedFeatures.push(...registerFeatureEventsOnce(supervisor, features, featureCtx));
     // PR 7 cutover (spec § Supervisor): the FIRST argument is the supervisor;
     // features read the Discord client from supervisor.discord themselves.
     // Where Discord went terminal mid-boot, supervisor.discord is null and
     // load.js isolates each feature: a Discord-hard feature throws on the
     // missing client and is logged + skipped (`[features] <name>.start
     // failed:`), Fluxer-tier features arm normally.
-    startAllFeatures(supervisor, features, featureCtx);
+    degradedFeatures.push(...startAllFeatures(supervisor, features, featureCtx));
     // C9: periodic work drains BEFORE the endpoints — registered AFTER the
     // feature-start handles (which self-register their `{ stop }` loops via
     // load.js) so LIFO drains member-fetch-queue → scheduler → feature loops
@@ -413,7 +420,7 @@ async function boot({
     try {
       client = createClient();
       supervisor.discord = client;
-      registerFeatureEventsOnce(supervisor, features, featureCtx);
+      degradedFeatures.push(...registerFeatureEventsOnce(supervisor, features, featureCtx));
       registerOrderedPipelines(client);
       client.once(Events.ClientReady, () => {
         // Console parity with the pre-Fluxer entry point (PR 6 bundle).
@@ -629,10 +636,21 @@ async function boot({
     );
   }
 
+  // #390: ok stays true for a DEGRADED-but-running boot (a skipped feature
+  // is a logged decision, not a failed boot — same doctrine as per-feature
+  // isolation), but the report now SAYS which layer is degraded instead of
+  // leaving that to the console scrollback.
+  if (degradedFeatures.length > 0) {
+    console.warn(
+      `[boot] feature layer degraded (isolated, boot continuing): ${degradedFeatures.join(", ")}`,
+    );
+  }
+
   return {
     ok: anyReady,
     exitCode: anyReady ? 0 : 1,
     supervisor,
+    degradedFeatures,
   };
 }
 
