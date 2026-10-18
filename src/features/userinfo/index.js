@@ -29,7 +29,7 @@ const { ensureCommunity } = require("../../platform/community");
 // Pre-existing latent bug (present at PR-4 base): the button arm references
 // replyEphemeral without importing it, so the "unknown control" and
 // backfill-failure paths threw ReferenceError. Restored with the seam.
-const { replyEphemeral } = require("../../core/interaction");
+const { replyEphemeral, replyOrFollowUpEphemeral } = require("../../core/interaction");
 
 /**
  * Fluxer PR 2 Discord edge: external snowflake → internal INTEGER community id
@@ -538,12 +538,17 @@ async function handleUserinfoButton(interaction, ctx) {
 
     if (typeof interaction.update === "function") {
       await interaction.update(updatePayload);
+      // #354: update() marks the interaction answered — replyEphemeral
+      // (interaction.reply) threw InteractionAlreadyReplied on EVERY click
+      // and the promised confirmation never reached staff (the router just
+      // logged the throw). followUp is the only honest delivery after an
+      // update — replyOrFollowUpEphemeral switches on interaction state.
       if (!result.started) {
-        await replyEphemeral(interaction, {
+        await replyOrFollowUpEphemeral(interaction, {
           content: result.reason || "Could not start backfill.",
         });
       } else {
-        await replyEphemeral(interaction, {
+        await replyOrFollowUpEphemeral(interaction, {
           content:
             "Backfill started. History older than live tracking is scanned rate-limited; re-open Activity later for progress.",
         });

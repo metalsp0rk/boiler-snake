@@ -355,23 +355,25 @@ describe(
       assert.equal(runningBtn.disabled, true, "backfill button disabled while running");
       assert.match(runningBtn.label, /^Backfill… \d+\/(\d|\?)/, "progress label (total may still be '?')");
 
-      // BUG (filed this cycle): after interaction.update() consumes the
-      // interaction, handleUserinfoButton calls replyEphemeral (= .reply)
-      // for the "Backfill started…" confirmation → discord.js throws
-      // InteractionAlreadyReplied on EVERY click (router logs it; the copy
-      // is lost for staff on real Discord too). Pinned CURRENT behavior:
-      // the stored interaction response is the view UPDATE with no
-      // content — no confirmation reply exists to read. Flip this pin to
-      // assert the followUp copy once the handler uses followUp().
+      // #354 FIXED: update() consumes the interaction, and the handler now
+      // follows up (replyOrFollowUpEphemeral) instead of replying into
+      // InteractionAlreadyReplied. The stored response stays the activity
+      // UPDATE, and the confirmation lands as a followup message.
       const resp = await poll(async () => {
         const s = await env.mock.interactionState(click.id);
         return s.response_json ? s.response_json : null;
       }, { timeoutMs: 8000, label: "ui:b interaction response stored" });
       assert.ok(resp.data?.embeds?.length, "response is the activity-view UPDATE");
-      assert.equal(
-        String(resp.data?.content ?? "").includes("Backfill started"),
-        false,
-        "confirmation lost to InteractionAlreadyReplied (BUG pin)",
+      const follow = await poll(async () => {
+        const msgs = await env.mock.messages(env.ids.general);
+        return (
+          msgs.find((m) => String(m.content ?? "").includes("Backfill started")) ?? null
+        );
+      }, { timeoutMs: 8000, label: "ui:b followup confirmation delivered" });
+      assert.match(
+        String(follow.content),
+        /Backfill started\. History older than live tracking/,
+        "#354: staff finally SEE the backfill confirmation (was silently thrown away)",
       );
 
       // Terminal state: done with every non-ignored text channel scanned.
