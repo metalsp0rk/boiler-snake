@@ -467,6 +467,8 @@ describe("linking command surface (account-linking T3/T6)", () => {
     assert.ok(dcContent.includes(`Linked since: ${isoNoZ(link.created_at)} UTC.`));
     assert.ok(dcContent.includes("XP mirror: Discord → Fluxer 100%, Fluxer → Discord 100%."));
     assert.ok(dcContent.includes("gork memory mirroring: on."));
+    // #425 (audit LT-11): the copy states what the switch actually governs.
+    assert.ok(dcContent.includes("writes AND both sides' gork reads"), dcContent);
 
     const fx = await runFluxer("!link status", FX_1);
     // (#276): the pairing arrives by DM; the channel ack is scrubbed.
@@ -563,11 +565,18 @@ describe("linking command surface (account-linking T3/T6)", () => {
     const mem = await runFluxer("!link config memory off", FX_1);
     assert.ok(mem.body.content.includes("Applied: mirror_memory=0"), mem.body.content);
     assert.ok(mem.body.content.includes("memory off"), mem.body.content);
+    // #425 (audit LT-11): turning OFF spells out what stops (both legs).
+    assert.ok(
+      mem.body.content.includes("no new mirrored writes AND neither side's gork reads"),
+      mem.body.content,
+    );
     assert.equal(Number(api.getUserLinkFor(fxId, FX_1).mirror_memory), 0);
 
     const status = await runFluxer("!link status", FX_1);
     // (#276): the status detail (incl. the memory switch) rides the DM.
     assert.ok(status.dmBody.content.includes("gork memory mirroring: off."), status.dmBody.content);
+    // #425: off copy names the retained-history caveat (honest surface).
+    assert.ok(status.dmBody.content.includes("Rows already mirrored stay as history"), status.dmBody.content);
   });
 
   it("config refusals are the service's own sentences (nothing-to-set, pct-without-direction, no-link)", async () => {
