@@ -1275,4 +1275,70 @@ describe("bridge edit/delete relay (PR 6)", () => {
     );
     assert.equal(outboxCount(bridge.id, "edit"), 1, "unchanged content enqueues NOTHING");
   });
+
+  // -------------------------------------------------------------------------
+  // #413 (BRG-7): gone-destination handling on the PR 6 verbs.
+  // -------------------------------------------------------------------------
+
+  it("#413 deleting a copy in an already-gone channel is still SUCCESS — no break", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-9003",
+    });
+    const del = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(del?.enqueued);
+    const api = scriptedApi("f9003", {
+      del: [{ ok: false, error: "deleteRelayMessage: request failed: HTTP 404", code: "10003" }],
+    });
+    const worker = makeWorker({ getWebhookApi: (p) => (p === "fluxer" ? api : null) });
+    await worker.drainAll();
+    assert.equal(repo.getBridgeOutboxById(del.outboxId).state, "done", "channel gone = the desired end state for a DELETE");
+    assert.equal(repo.getBridgeById(bridge.id).state, "active", "a delete is never broken by the gone — its work is already done");
+    assert.equal(worker.notices.length, 0);
+  });
+
+  it("#413 an edit into a gone channel breaks the bridge with the once notice", async () => {
+    const { bridge, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-9004",
+    });
+    const edit = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "edited while gone" }),
+    );
+    assert.ok(edit?.enqueued);
+    const api = scriptedApi("f9004", {
+      patch: [
+        {
+          ok: false,
+          error: "patchRelayMessage: Unknown Channel (status 404, code 10003)",
+          code: "10003",
+        },
+      ],
+    });
+    const src = fakeSource({ content: "edited while gone" });
+    const worker = makeWorker({
+      getWebhookApi: (p) => (p === "fluxer" ? api : null),
+      getOutbound: (p) => (p === "discord" ? src : null),
+    });
+    await worker.drainAll();
+    const b = repo.getBridgeById(bridge.id);
+    assert.equal(b.state, "broken", "§10.10: the edit ladder names the gone channel → the bridge breaks");
+    assert.match(b.broken_reason, /destination channel gone/);
+    assert.equal(repo.getBridgeOutboxById(edit.outboxId).state, "failed");
+    assert.equal(worker.notices.length, 1, "the ONCE notice replaces the per-message poison noise");
+    assert.match(worker.notices[0].content, /the other channel is gone/);
+    assert.match(worker.notices[0].content, /\/bridge disconnect/);
+  });
 });

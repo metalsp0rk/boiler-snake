@@ -1100,6 +1100,179 @@ describe("bridge relay worker (PR 5)", () => {
     // The named retry delivered — the row settles like a normal send.
     assert.equal(rowState(row.id).state, "done");
   });
+
+  // -------------------------------------------------------------------------
+  // §10.10 "Deleted channel" (#413/BRG-7): a gone destination BREAKS the
+  // bridge with a once-notice — it is never a 5-attempt-per-message ladder.
+  // Production shapes only ("10015"/"10003"/HTTP 404), not just the spike
+  // strings that used to be the only matches.
+  // -------------------------------------------------------------------------
+
+  /** Custom transport: scripted execute + scripted createRelayWebhook. */
+  function apiWithRecreate({ execute, recreate }) {
+    const calls = { execute: 0, recreate: 0 };
+    return {
+      calls,
+      async executeRelayWebhook(webhook, opts) {
+        calls.execute += 1;
+        return execute(calls.execute, webhook, opts);
+      },
+      async createRelayWebhook() {
+        calls.recreate += 1;
+        return recreate(calls.recreate);
+      },
+    };
+  }
+
+  function bridgeState(bridge) {
+    return db.db
+      .prepare("SELECT state, broken_reason FROM bridges WHERE id = ?")
+      .get(bridge.id);
+  }
+
+  it("#413 a Fluxer 404 execute RECREATES first — a live channel swaps the webhook and the send rides", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9413",
+      payload: createPayload(publicId, "9413"),
+    });
+    // Webhook deleted (channel alive): 404 on the token endpoint, the
+    // recreate SUCCEEDS, the retry sends. The bridge must stay active.
+    const api = apiWithRecreate({
+      execute: (n) =>
+        n === 1
+          ? { ok: false, error: "executeRelayWebhook: request failed: HTTP 404 no such webhook", status: 404, retryable: false }
+          : { ok: true, messageId: "f-new-1" },
+      recreate: () => ({ ok: true, webhook: { id: "f-recreated", token: "tok-r" }, tokenEnc: enc("tok-r") }),
+    });
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? api : null),
+      getOutbound: () => fakeOutbound(),
+    });
+    await worker.drainAll();
+
+    assert.equal(api.calls.recreate, 1, "the token-endpoint 404 entered the recreate ladder (production shape, not just the spike string)");
+    assert.equal(rowState(row.id).state, "done");
+    assert.equal(bridgeState(bridge).state, "active", "a webhook recreate does NOT break the bridge");
+    assert.equal(worker.notices.length, 0, "no notice for a resolved webhook loss");
+  });
+
+  it("#413 recreate into a gone channel: bridge broken, ONCE notice, row failed — the queue stops", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9414",
+      payload: createPayload(publicId, "9414"),
+    });
+    const row2 = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9415",
+      payload: createPayload(publicId, "9415"),
+    });
+    // Fluxer: token 404 → recreate → the CHANNEL-scoped REST call ALSO 404s
+    // — that resolves the ambiguity: the channel itself is gone.
+    const api = apiWithRecreate({
+      execute: () => ({ ok: false, error: "executeRelayWebhook: request failed: HTTP 404", status: 404, retryable: false }),
+      recreate: () => ({
+        ok: false,
+        error: "createRelayWebhook: webhook create in channel 7 failed: gone (status 404)",
+        status: 404,
+      }),
+    });
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? api : null),
+      getOutbound: () => fakeOutbound(),
+    });
+    await worker.drainAll();
+
+    const st = bridgeState(bridge);
+    assert.equal(st.state, "broken", "spec §10.10: a gone destination channel breaks the bridge");
+    assert.match(st.broken_reason, /destination channel gone/);
+    assert.match(st.broken_reason, /status 404/);
+
+    const settled = rowState(row.id);
+    assert.equal(settled.state, "failed", "the undeliverable row is settled — NOT parked through 5 attempts");
+    assert.equal(settled.attempts, 1, "zero ladder burn for a terminal condition");
+    assert.match(settled.last_error, /destination channel gone/);
+
+    assert.equal(worker.notices.length, 1, "the ONCE notice — one per bridge, not one per message");
+    assert.match(worker.notices[0].content, /Bridge \w+ stopped: the other channel is gone/);
+    assert.match(worker.notices[0].content, /\/bridge disconnect/);
+    assert.equal(worker.notices[0].communityId, rowA.id, "the notice lands in the SURVIVING end");
+
+    // The second queued row is never claimed: the claim gates on active.
+    assert.equal(rowState(row2.id).state, "pending", "broken stops the worker — rows wait for staff, not for the next attempt");
+    assert.equal(worker.notices.length, 1, "still exactly one notice");
+  });
+
+  it("#413 the Discord production chain: 10015 execute → recreate hits 10003 → broken", async () => {
+    // b_to_a so the DESTINATION is the Discord end (production codes are
+    // DECIMAL STRINGS via codeOf — the shapes the spike-era matcher missed).
+    const { bridge, publicId } = seedBridge("b_to_a");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "b_to_a",
+      kind: "create",
+      srcMessageId: "9416",
+      payload: createPayload(publicId, "9416", {
+        direction: "b_to_a",
+        srcCommunityId: rowB.id,
+        srcChannelId: "RB-9",
+      }),
+    });
+    // Discord cascades webhook deletion with the channel: execute says
+    // 10015, and the recreate INTO THE GONE CHANNEL answers 10003.
+    const api = apiWithRecreate({
+      execute: () => ({ ok: false, error: "executeRelayWebhook: Unknown Webhook (status 404, code 10015)", code: "10015", retryable: false }),
+      recreate: () => ({ ok: false, error: "createRelayWebhook: Unknown Channel (status 404, code 10003)", code: "10003" }),
+    });
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "discord" ? api : null),
+      getOutbound: () => fakeOutbound(),
+    });
+    await worker.drainAll();
+
+    assert.equal(api.calls.recreate, 1, "the production code '10015' entered the recreate ladder (was spike-string-only)");
+    assert.equal(bridgeState(bridge).state, "broken");
+    const settled = rowState(row.id);
+    assert.equal(settled.state, "failed");
+    assert.equal(settled.attempts, 1);
+    assert.equal(worker.notices.length, 1);
+    assert.match(worker.notices[0].content, /the other channel is gone/);
+    assert.equal(worker.notices[0].communityId, rowB.id, "notice stays in the surviving (Fluxer) end");
+  });
+
+  it("#413 a DIRECT 10003 on the send is terminal — no recreate attempt", async () => {
+    const { bridge, publicId } = seedBridge("b_to_a");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "b_to_a",
+      kind: "create",
+      srcMessageId: "9417",
+      payload: createPayload(publicId, "9417", {
+        direction: "b_to_a",
+        srcCommunityId: rowB.id,
+        srcChannelId: "RB-9",
+      }),
+    });
+    const api = apiWithRecreate({
+      execute: () => ({ ok: false, error: "executeRelayWebhook: Unknown Channel (status 404, code 10003)", code: "10003", retryable: false }),
+      recreate: () => ({ ok: true, webhook: { id: "never", token: "never" }, tokenEnc: enc("never") }),
+    });
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "discord" ? api : null),
+      getOutbound: () => fakeOutbound(),
+    });
+    await worker.drainAll();
+
+    assert.equal(api.calls.recreate, 0, "an explicitly-named gone channel skips the recreate ladder — nothing to recreate into");
+    assert.equal(bridgeState(bridge).state, "broken");
+    assert.match(bridgeState(bridge).broken_reason, /10003|Unknown Channel/);
+    assert.equal(rowState(row.id).state, "failed");
+    assert.equal(worker.notices.length, 1);
+  });
 });
 
   // -------------------------------------------------------------------------

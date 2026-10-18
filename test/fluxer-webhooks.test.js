@@ -454,3 +454,47 @@ describe("platform/fluxer/webhooks — absolute apiOrigin required at constructi
     assert.equal(rest.calls.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #413 (BRG-7): gone-channel detection upstream needs the STATUS to ride
+// the failure results — Fluxer names neither 10015 nor 10003 on the token
+// endpoints; only the HTTP status says the webhook/channel is gone.
+// ---------------------------------------------------------------------------
+
+describe("platform/fluxer/webhooks — status rides the failure results (#413)", () => {
+  it("execute 404: status + retryable:false reach the caller (the worker reads both)", async () => {
+    const fetchStub = makeFakeFetch({
+      [`POST ${apiPath("?wait=true")}`]: jsonResponse(404, { message: "no such webhook" }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+    const res = await api.executeRelayWebhook(WH, { content: "hi" });
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 404, "the bare-404 webhook-gone rule is a FIELD, not a string scrape");
+    assert.equal(res.retryable, false);
+  });
+
+  it("patch 404: status rides too (the edit ladder reads it)", async () => {
+    const fetchStub = makeFakeFetch({
+      [`PATCH ${apiPath("/messages/m-9")}`]: jsonResponse(404, { message: "gone" }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+    const res = await api.patchRelayMessage(WH, "m-9", { content: "edit" });
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 404);
+  });
+
+  it("createRelayWebhook failure: the facade error's status lands on the result", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/channels/444/webhooks": () => {
+          throw new FluxerRestError("404 gone", { status: 404, code: null });
+        },
+      },
+    });
+    const api = createFluxerWebhooks({ rest, apiOrigin: API, fetch: makeFakeFetch() });
+    const res = await api.createRelayWebhook(1, "444", { name: "Bridge Relay" });
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 404, "the recreate ladder's gone-channel check reads exactly this");
+    assert.match(res.error, /status 404/);
+  });
+});

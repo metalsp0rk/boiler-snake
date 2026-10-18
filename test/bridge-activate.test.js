@@ -1211,6 +1211,23 @@ describe("bridge service (PR 4)", () => {
     assert.deepEqual(empty.items, []);
   });
 
+  it("#413 the status item carries the broken cause (broken_reason reaches staff)", () => {
+    const pair = mintPending("A-22B");
+    db.db.prepare("UPDATE bridges SET state = 'active' WHERE id = ?").run(pair.bridge.id);
+    assert.equal(repo.markBridgeBroken(pair.bridge.id, "destination channel gone: HTTP 404"), true);
+
+    const status = service.statusBridge({
+      community: rowA,
+      invocationChannelId: "900",
+      staff: STAFF,
+      deps: baseDeps(),
+    });
+    const item = status.items.find((i) => i.publicId === pair.publicId);
+    assert.ok(item, "broken bridges STAY in the listing until staff disconnect (§10.10)");
+    assert.equal(item.state, "broken");
+    assert.equal(item.brokenReason, "destination channel gone: HTTP 404");
+  });
+
   it("status by an unknown handle is specific; non-staff is denied", () => {
     const unknown = service.statusBridge({
       community: rowA,
