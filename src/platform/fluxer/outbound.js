@@ -495,16 +495,41 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
         }
         uploads.push(item);
       }
+      // #384 (FLX-3): validate the WHOLE plan before a single byte leaves.
+      // The upload_url check used to live INSIDE the PUT loop — for files
+      // i > 0 the earlier files had already been PUT (grants consumed,
+      // objects orphaned) while the error still claimed "nothing was
+      // uploaded". upload_filename belongs to the same pass: the live
+      // claim schema REQUIRES it, so a missing one was an opaque 400
+      // arriving only AFTER every byte had been uploaded.
       for (let i = 0; i < files.length; i += 1) {
-        const upload = uploads[i] ?? {};
+        const upload = uploads[i];
+        const missing = [];
         if (typeof upload.upload_url !== "string" || upload.upload_url.trim() === "") {
+          missing.push("upload_url");
+        }
+        if (typeof upload.upload_filename !== "string" || upload.upload_filename.trim() === "") {
+          missing.push("upload_filename");
+        }
+        if (missing.length > 0) {
           return {
             ok: false,
             error:
-              `${method}: attachment plan for ${target} has no upload_url for files[${i}] ` +
+              `${method}: attachment plan for ${target} has no ${missing.join(" and ")} for files[${i}] ` +
               `("${files[i].name}") — nothing was uploaded.`,
           };
         }
+      }
+      // Rule 5 (#384): a mid-loop failure is a PARTIAL reality — name what
+      // is already uploaded instead of implying a clean slate.
+      const uploadedSoFarWarning = (i) =>
+        i > 0
+          ? ` WARNING: ${i} of ${files.length} file(s) were ALREADY uploaded (files[0..${i - 1}]: ` +
+            `${files.slice(0, i).map((f) => f.name).join(", ")}) — they now sit on the instance ` +
+            `unreferenced by any message.`
+          : "";
+      for (let i = 0; i < files.length; i += 1) {
+        const upload = uploads[i];
         try {
           // PUT the bytes with NO auth (Phase 0 law — the grant lives in the
           // signed URL, so it never enters a header, a log, or an error text).
@@ -522,13 +547,17 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
               ok: false,
               error:
                 `${method}: presigned upload ${i} for ${target} failed: HTTP ${put.status} ` +
-                `(PUT ${urlForLog(upload.upload_url)})`,
+                `(PUT ${urlForLog(upload.upload_url)})` +
+                uploadedSoFarWarning(i),
             };
           }
         } catch (err) {
           return {
             ok: false,
-            error: `${method}: presigned upload ${i} for ${target} failed: ${causeOf(err)} (PUT ${urlForLog(upload.upload_url)})`,
+            error:
+              `${method}: presigned upload ${i} for ${target} failed: ${causeOf(err)} ` +
+              `(PUT ${urlForLog(upload.upload_url)})` +
+              uploadedSoFarWarning(i),
           };
         }
       }
@@ -552,7 +581,14 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
       } catch (err) {
         return {
           ok: false,
-          error: failureText(method, `send to ${target}`, err),
+          // #384: every byte uploaded but the CLAIM failed — the honest
+          // shape is "N files uploaded, the message never referenced
+          // them", not a silent equivalence with a clean failure.
+          error:
+            failureText(method, `send to ${target}`, err) +
+            ` All ${files.length} file(s) uploaded before the claim failed (${files
+              .map((f) => f.name)
+              .join(", ")}); they are now orphaned on the instance.`,
           ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
         };
       }
