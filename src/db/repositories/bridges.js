@@ -784,6 +784,180 @@ function enqueueBridgeDeleteOutbox(bridgeId, { direction, srcMessageId, payload 
   }
 }
 
+// ---------------------------------------------------------------------------
+// #397 (B2-5): the relay's raw-SQL read/acts, homed. relay.js held its own
+// connection and wrote these bridge tables directly — against this module's
+// header ("the only module that reads/writes the six bridge tables") and
+// AGENTS.md ("features don't do raw SQL"). Behavior is a byte-for-byte
+// transfer of the statements; relay now calls these.
+// ---------------------------------------------------------------------------
+
+/**
+ * Active-end webhook identities for the relay/echo maps (the reload query
+ * relay.js used to hold). One row per active end carrying a webhook id.
+ * @returns {Array<{platform: string, instance_key: string, webhook_id: string}>}
+ */
+function listActiveEndWebhookRows() {
+  return db
+    .prepare(
+      `SELECT c.platform AS platform, c.instance_key AS instance_key, e.webhook_id AS webhook_id
+       FROM bridge_ends e
+       JOIN communities c ON c.id = e.community_id
+       JOIN bridges b ON b.id = e.bridge_id
+       WHERE b.state = 'active' AND e.webhook_id IS NOT NULL`,
+    )
+    .all();
+}
+
+/**
+ * Destination ids of every linked copy, tagged with the DESTINATION
+ * deployment — the echo-gate feed. The src/dst self-join pins the DST
+ * community (echoes are read on the destination's deployment key).
+ * @returns {Array<{platform: string, instance_key: string, dst_message_id: string}>}
+ */
+function listEchoDestinationRows() {
+  return db
+    .prepare(
+      `SELECT c.platform AS platform, c.instance_key AS instance_key, l.dst_message_id AS dst_message_id
+       FROM bridge_message_links l
+       JOIN bridge_ends src ON src.bridge_id = l.bridge_id AND src.community_id = l.src_community_id
+       JOIN bridge_ends dst ON dst.bridge_id = l.bridge_id AND dst.community_id <> l.src_community_id
+       JOIN communities c ON c.id = dst.community_id`,
+    )
+    .all();
+}
+
+/**
+ * payload_json of the NEWEST row of (bridge, direction, message, kind) —
+ * ANY state (terminal rows are the audit trail the edit intake reads:
+ * "what the create actually sent"). Null when no such row exists.
+ * @returns {string|null}
+ */
+function getLatestOutboxPayloadJson(bridgeId, direction, srcMessageId, kind = "create") {
+  const row = db
+    .prepare(
+      `SELECT payload_json FROM bridge_outbox
+       WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(bridgeId, direction, srcMessageId, kind);
+  return row ? row.payload_json : null;
+}
+
+/**
+ * True while a 'delete' row for this source message is still LIVE
+ * (pending/sending): an edit enqueued behind an in-flight takedown would
+ * PATCH corpses — the intake refuses (§10.7 "delete wins").
+ * @returns {boolean}
+ */
+function hasBlockingDeleteRow(bridgeId, direction, srcMessageId) {
+  return (
+    db
+      .prepare(
+        `SELECT 1 FROM bridge_outbox
+         WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'delete'
+           AND state IN ('pending', 'sending')
+         LIMIT 1`,
+      )
+      .get(bridgeId, direction, srcMessageId) != null
+  );
+}
+
+/**
+ * BRG-1 (#375): drop the TERMINAL ('done'/'failed') edit rows for this
+ * source message so the next edit's INSERT cannot violate
+ * UNIQUE(bridge_id, direction, src_message_id, kind) forever (the snapshot
+ * hash already moved — without this, every later edit hits the same wall).
+ * @returns {number} rows removed
+ */
+function clearTerminalEditRows(bridgeId, direction, srcMessageId) {
+  return db
+    .prepare(
+      `DELETE FROM bridge_outbox
+       WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'edit'
+         AND state IN ('done', 'failed')`,
+    )
+    .run(bridgeId, direction, srcMessageId).changes;
+}
+
+/**
+ * Persist the re-spooled payload onto the row — ONLY while still
+ * 'pending'. 0 changes means the row left pending mid-spool: that
+ * execution's payload is frozen and the freshly written bytes are
+ * unowned (the caller drops the spool dir).
+ * @returns {number} 0 or 1
+ */
+function updateOutboxPayloadIfPending(outboxId, payloadJson) {
+  return db
+    .prepare(`UPDATE bridge_outbox SET payload_json = ? WHERE id = ? AND state = 'pending'`)
+    .run(String(payloadJson), Number(outboxId)).changes;
+}
+
+/**
+ * ERROR ANNOTATION ONLY: record a partial-failure report on the row
+ * without touching state or attempts — distinct from recordOutboxFailure,
+ * which runs the attempt/park state machine. A row this annotates rode to
+ * 'done': the note names what the body could not carry (partial-failure
+ * rule), it is not a failure count.
+ * @returns {number} 0 or 1
+ */
+function annotateOutboxError(outboxId, lastError) {
+  return db
+    .prepare(`UPDATE bridge_outbox SET last_error = ? WHERE id = ?`)
+    .run(String(lastError ?? ""), Number(outboxId)).changes;
+}
+
+/**
+ * Record the first destination copy's id on the row (partial-failure rule:
+ * a later park still shows what was actually delivered). Full per-part
+ * mapping lives in bridge_message_links — this is the row's own summary.
+ * @returns {number} 0 or 1
+ */
+function setOutboxDestMessageId(outboxId, destMessageId) {
+  return db
+    .prepare(`UPDATE bridge_outbox SET dest_message_id = ? WHERE id = ?`)
+    .run(String(destMessageId ?? ""), Number(outboxId)).changes;
+}
+
+/**
+ * Worker pair-chooser feed: pending rows grouped to (bridge_id, direction),
+ * gated on the BRIDGE state — a broken bridge's backlog waits for staff
+ * instead of being claimed and failed one message at a time; a VANISHED
+ * bridge row stays claimable (runRow drains orphans to done). Order is the
+ * claim schedule; the claim primitive itself stays honest.
+ * @returns {Array<{bridge_id: number, direction: string}>}
+ */
+function listPendingOutboxPairs() {
+  return db
+    .prepare(
+      `SELECT DISTINCT o.bridge_id, o.direction FROM bridge_outbox o
+       LEFT JOIN bridges b ON b.id = o.bridge_id
+       WHERE o.state = 'pending' AND (b.id IS NULL OR b.state = 'active')
+       ORDER BY o.bridge_id ASC, o.direction ASC`,
+    )
+    .all();
+}
+
+/**
+ * True while ANY pending/sending outbox row still exists for the source
+ * message on a KNOWN bridge (public id) — the spool-reclaimer's safety
+ * gate: live work owns its bytes; terminal-only dirs are reclaimable.
+ * @returns {boolean}
+ */
+function hasLiveOutboxRows(publicId, srcMessageId) {
+  return (
+    db
+      .prepare(
+        `SELECT 1 FROM bridge_outbox o
+         JOIN bridges b ON b.id = o.bridge_id
+         WHERE b.public_id = ? AND o.src_message_id = ?
+           AND o.state IN ('pending', 'sending')
+         LIMIT 1`,
+      )
+      .get(String(publicId), String(srcMessageId)) != null
+  );
+}
+
 /**
  * Claim the oldest pending row for one direction and move it to 'sending'
  * in a single transaction (one in-flight send per direction, KD 14).
@@ -1346,6 +1520,16 @@ module.exports = {
   getBridgeOutboxById,
   enqueueBridgeOutbox,
   enqueueBridgeDeleteOutbox,
+  listActiveEndWebhookRows,
+  listEchoDestinationRows,
+  getLatestOutboxPayloadJson,
+  hasBlockingDeleteRow,
+  clearTerminalEditRows,
+  updateOutboxPayloadIfPending,
+  annotateOutboxError,
+  setOutboxDestMessageId,
+  listPendingOutboxPairs,
+  hasLiveOutboxRows,
   claimNextOutboxRow,
   markOutboxDone,
   recordOutboxFailure,
