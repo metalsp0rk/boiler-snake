@@ -415,6 +415,37 @@ function buildSessionCookie(id) {
 }
 
 /**
+ * #401 (C1-1): renew the cookie for a session the middleware just TOUCHED.
+ * The DB row slides (min(now+TTL, created+cap)) but a browser only ever got
+ * the Max-Age minted AT login — so it deleted the cookie 12 h after login
+ * no matter how active the user was, and the entire §8.3 sliding-expiry
+ * design (cap, refresh windows, persist-before-use rotation) was
+ * unreachable client-side. This mirrors the ROW's remaining life into a
+ * fresh Max-Age — it can mint no extra lifetime, only re-declare the
+ * existing one, on the identity's OWN cookie slot.
+ * Returns null when there is nothing honest to renew (bad id, dead/expired
+ * row, non-finite expiry).
+ * @param {WebSession} session the post-touch session
+ * @param {number} [now]
+ * @param {string} [name] cookie slot (defaults to the session's platform)
+ * @returns {string|null}
+ */
+function renewSessionCookie(session, now = Date.now(), name) {
+  if (!session || !isSessionId(session.id)) return null;
+  const remainingMs = Number(session.expiresAt) - Number(now);
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return null;
+  return serializeSessionCookie(session.id, {
+    secure: isSecureBaseUrl(),
+    maxAgeSec: Math.max(1, Math.floor(remainingMs / 1000)),
+    name:
+      name ??
+      ((session.platform ?? "discord") === "fluxer"
+        ? FLUXER_SESSION_COOKIE_NAME
+        : SESSION_COOKIE_NAME),
+  });
+}
+
+/**
  * Set-Cookie value that clears the browser's copy on logout (empty value,
  * Max-Age=0; attribute set mirrors buildSessionCookie so the browser
  * replaces the original cookie).
@@ -463,6 +494,7 @@ function buildClearFluxerSessionCookie() {
 module.exports = {
   SESSION_COOKIE_NAME,
   FLUXER_SESSION_COOKIE_NAME,
+  renewSessionCookie,
   SESSION_ID_BYTES,
   MAX_SESSION_COOKIE_VALUE_LENGTH,
   ABSOLUTE_CAP_MS,
