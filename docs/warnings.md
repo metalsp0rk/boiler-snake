@@ -166,28 +166,30 @@ Ephemeral reply with a `.md` attachment (`staff-record-{userId}-{date}.md`) cont
 ## Database
 
 ```sql
--- guild_settings.warn_dm_members INTEGER NOT NULL DEFAULT 1
--- guild_settings.warn_log_channel_id TEXT  -- NULL → fall back to audit_log_channel_id
--- guild_settings.warn_expiry_days INTEGER NOT NULL DEFAULT 0  -- 0 = never
-
-CREATE TABLE warnings (
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "warnings" (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  guild_id TEXT NOT NULL,
+  community_id INTEGER NOT NULL,
   warning_number INTEGER NOT NULL,   -- sequential per guild (W-12)
-  user_id TEXT NOT NULL,            -- subject
-  issuer_id TEXT NOT NULL,          -- staff who issued
+  user_id TEXT NOT NULL,
+  issuer_id TEXT NOT NULL,
   reason TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   voided_at INTEGER,
   voided_by TEXT,
   void_reason TEXT,
-  related_note_id INTEGER REFERENCES staff_notes(id) ON DELETE SET NULL,
-  expires_at INTEGER,              -- NULL = never; auto-void when reached
-  evidence_message_url TEXT,       -- Discord jump link (staff-only)
-  evidence_text TEXT,              -- freeform evidence (staff-only)
-  UNIQUE (guild_id, warning_number)
+  related_note_id INTEGER REFERENCES staff_notes(id) ON DELETE SET NULL, expires_at INTEGER, evidence_message_url TEXT, evidence_text TEXT,
+  UNIQUE (community_id, warning_number)
 );
 ```
+
+Migration `034_communities` re-keyed this table from `guild_id TEXT` to
+`community_id INTEGER` — `UNIQUE (community_id, warning_number)` scopes the W-n
+sequence per community; resolve snowflakes via
+`communities.external_guild_id`. The warn settings live on `guild_settings`:
+`warn_dm_members` (`INTEGER NOT NULL DEFAULT 1`), `warn_log_channel_id`
+(`TEXT`, NULL → fall back to `audit_log_channel_id`) and `warn_expiry_days`
+(`INTEGER NOT NULL DEFAULT 0`, 0 = never).
 
 See [Database Schema](database.md) for indexes and migrations `009_warnings`, `012_warn_log_channel`, `018_warn_post_mvp`.
 

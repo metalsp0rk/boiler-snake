@@ -6,6 +6,14 @@ Deep dive into Boiler Snake's SQLite database structure and how data is organize
 
 The bot uses **SQLite** with **WAL mode** for reliable single-writer/multi-reader access. All data is stored in a single file: `xpbot.sqlite` (located in the project root by default). Override with `DATA_DIR` (directory) or `DB_PATH` (full file path). Docker Compose uses `DATA_DIR=/data` with a named volume. Exactly **one bot process may own a given database file** — see [Single-Writer Contract](#single-writer-contract).
 
+Since migration `034_communities` every formerly guild-scoped table keys on
+`communities.id` (`community_id INTEGER`), not the raw platform id: a Discord
+snowflake (or Fluxer id) is only ever stored in `communities.external_guild_id`
+and resolved to the integer key first — see the `communities` section below and
+[id resolution for ad-hoc queries](#common-queries-for-self-hosters). Every DDL
+block below is the **live (post-migration) `sqlite_master` text**, not the
+original per-migration `CREATE TABLE`.
+
 ## Database Location
 
 ```
@@ -19,6 +27,7 @@ boiler-snake/
 
 | Table | Purpose |
 |-------|---------|
+| `communities` | One row per Discord guild / Fluxer community; owns the external snowflake, `id` is the `community_id` every other table keys on |
 | `users` | Per-guild XP totals for each user |
 | `activity_log` | Historical XP activity tracking for decay analysis |
 | `guild_settings` | Per-guild configuration settings |
@@ -59,47 +68,78 @@ boiler-snake/
 
 ## Detailed Table Specifications
 
+### 0. `communities`
+
+Root identity row per deployment-visible community, added by migration
+`034_communities` (Discord guild or Fluxer server). Every table that used to
+carry `guild_id TEXT` now carries `community_id INTEGER NOT NULL` pointing
+here, and raw platform ids live **only** in `external_guild_id`.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE communities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL CHECK (platform IN ('discord', 'fluxer')),
+  instance_key TEXT NOT NULL,          -- 'discord', or the normalized Fluxer origin
+  external_guild_id TEXT NOT NULL,     -- snowflake that deployment issued
+  elevated_permissions INTEGER NOT NULL DEFAULT 0,  -- Phase 0 MFA result, per instance, copied onto rows
+  voice_states_complete INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  UNIQUE (platform, instance_key, external_guild_id)
+);
+```
+
+Resolve a snowflake to the integer key with:
+
+```sql
+SELECT id FROM communities WHERE platform='discord' AND external_guild_id='123456789';
+```
+
+---
+
 ### 1. `users`
 
 Stores XP totals for each user in each guild.
 
 ```sql
-CREATE TABLE users (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "users" (
+  community_id INTEGER NOT NULL,
   user_id  TEXT NOT NULL,
-  xp       INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL,   -- ms epoch when first XP awarded
-  updated_at INTEGER NOT NULL,   -- ms epoch of last XP change
-  PRIMARY KEY (guild_id, user_id)
+  xp       INTEGER NOT NULL DEFAULT 0 CHECK (xp BETWEEN 0 AND 9007199254740991),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (community_id, user_id)
 );
 ```
 
-Since migration `040_schema_hygiene` the live table also carries
-`CHECK (xp BETWEEN 0 AND 9007199254740991)` (post-034 the column is
-`community_id INTEGER`) — the documented `clampXpTotal` domain, so TEXT/
-`Infinity` poisoned cells and out-of-range totals are rejected by SQLite
-itself, not just by the JS clamps. Migration `034_communities` re-keys
-`guild_id TEXT` to `community_id INTEGER` on migrated databases.
+Since migration `040_schema_hygiene` the live table carries
+`CHECK (xp BETWEEN 0 AND 9007199254740991)` — the documented `clampXpTotal`
+domain, so TEXT/`Infinity` poisoned cells and out-of-range totals are rejected
+by SQLite itself, not just by the JS clamps. Migration `034_communities`
+re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve
+snowflakes via `communities.external_guild_id`.
 
-**Query patterns**:
+**Query patterns** (`?` for `community_id` is the integer id, not a snowflake):
 ```javascript
 // Get a user's XP
-SELECT xp FROM users WHERE guild_id=? AND user_id=?
+SELECT xp FROM users WHERE community_id=? AND user_id=?
 
 // Add XP (atomic via transaction)
 UPDATE users SET xp = MIN(?, MAX(0, xp + ?)), updated_at = ?
-WHERE guild_id=? AND user_id=?
+WHERE community_id=? AND user_id=?
 
 // Top 10 users
 SELECT user_id, xp FROM users
-WHERE guild_id=? ORDER BY xp DESC LIMIT ?
+WHERE community_id=? ORDER BY xp DESC LIMIT ?
 ```
 
 **Indices**:
-- Primary key on `(guild_id, user_id)`
+- Primary key on `(community_id, user_id)`
 - `idx_users_guild_xp` on `(community_id, xp DESC, user_id)` — added by
   migration `040`: serves the slash and web leaderboard sorts without a
-  temp B-tree
+  temp B-tree (the name keeps "guild" for compatibility; the column is
+  `community_id`)
 
 ---
 
@@ -108,31 +148,35 @@ WHERE guild_id=? ORDER BY xp DESC LIMIT ?
 Tracks every XP-earning activity for decay analysis and future features.
 
 ```sql
-CREATE TABLE activity_log (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "activity_log" (
+  community_id INTEGER NOT NULL,
   user_id  TEXT NOT NULL,
-  kind     TEXT NOT NULL,         -- 'message'|'reaction'|'voice_minute'
+  kind     TEXT NOT NULL, -- message|reaction|voice_minute
   amount   INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL    -- ms epoch when activity occurred
+  created_at INTEGER NOT NULL
 );
 
 CREATE INDEX idx_activity_recent
-ON activity_log (guild_id, user_id, kind, created_at);
+ON activity_log (community_id, user_id, kind, created_at);
 
 CREATE INDEX idx_activity_created_at
 ON activity_log (created_at);
 ```
 
+Migration `034_communities` re-keyed this table from `guild_id TEXT` to
+`community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
+
 **Query patterns**:
 ```javascript
 // Log a new activity
-INSERT INTO activity_log (guild_id, user_id, kind, amount, created_at)
+INSERT INTO activity_log (community_id, user_id, kind, amount, created_at)
 VALUES (?, ?, ?, ?, ?)
 
 // Count messages in time window (decay calculation)
 SELECT COALESCE(SUM(amount), 0) AS c
 FROM activity_log
-WHERE guild_id=? AND user_id=? AND kind='message' AND created_at >= ?
+WHERE community_id=? AND user_id=? AND kind='message' AND created_at >= ?
 
 // Get recent voice XP
 SELECT * FROM activity_log
@@ -158,58 +202,30 @@ Connected voice users are read live from the bot's voice-state cache
 
 ### 4. `guild_settings`
 
-One row per guild storing all configuration options. Base columns come from migration `001`; later migrations add columns via `addColumnIfMissing`.
+One row per guild storing all configuration options. Base columns come from migration `001`; later migrations add columns via `addColumnIfMissing`. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`. The live DDL below is `sqlite_master` text as rebuilt by `034`: post-`001` columns were appended by later migrations, so SQLite records them after `updated_at` in ALTER order — that trailing comma is real, not a typo.
 
 ```sql
-CREATE TABLE guild_settings (
-  guild_id TEXT PRIMARY KEY,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "guild_settings" (
+  community_id INTEGER NOT NULL PRIMARY KEY,
 
   msg_xp INTEGER NOT NULL DEFAULT 5,
-  reaction_xp INTEGER NOT NULL DEFAULT 2,
   voice_xp_per_min INTEGER NOT NULL DEFAULT 1,
-
   msg_cooldown_sec INTEGER NOT NULL DEFAULT 20,
-  reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10,
 
-  decay_enabled INTEGER NOT NULL DEFAULT 1,      -- 0 or 1
+  decay_enabled INTEGER NOT NULL DEFAULT 1,
   decay_window_days INTEGER NOT NULL DEFAULT 7,
   decay_min_messages INTEGER NOT NULL DEFAULT 20,
-  decay_percent REAL NOT NULL DEFAULT 0.10,     -- 0.0 to 0.95
+  decay_percent REAL NOT NULL DEFAULT 0.10,
 
   level_xp_factor INTEGER NOT NULL DEFAULT 100,
 
-  youtube_notification_channel_id TEXT,          -- NULL when not configured
+  youtube_notification_channel_id TEXT,
   youtube_polling_interval_minutes INTEGER NOT NULL DEFAULT 5,
-  youtube_upload_role_id TEXT,                   -- optional role pinged on new uploads
-
-  twitch_notification_channel_id TEXT,           -- NULL when not configured
-  twitch_notify_role_id TEXT,                    -- optional role pinged on go-live
-  twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2,
-
-  gork_enabled INTEGER NOT NULL DEFAULT 1,       -- master switch; 0 = triggers ignored entirely
-  gork_keyword TEXT DEFAULT '@gork',             -- trigger keyword; NULL = disabled
-  gork_context_window INTEGER NOT NULL DEFAULT 10,   -- prior messages sent as context
-  gork_extra_rules TEXT NOT NULL DEFAULT '',     -- staff rules appended to the answer prompt
-  gork_search_enabled INTEGER NOT NULL DEFAULT 1,    -- web-search tool toggle per guild
-  gork_cooldown_sec INTEGER NOT NULL DEFAULT 180,    -- seconds between answers per user; 0 = off
-  gork_memory_enabled INTEGER NOT NULL DEFAULT 0,    -- community memory switch (default off)
-  gork_memory_chars INTEGER NOT NULL DEFAULT 12000,  -- memory-block char budget; 0 = unlimited
-  gork_daily_limit INTEGER NOT NULL DEFAULT 0,       -- guild-default daily budget; -1 blocked | 0 unlimited | 1..1000
-  gork_log_channel_id TEXT,                          -- Gork Q&A embeds channel; NULL → fall back to audit log
-
-  audit_log_channel_id TEXT,                     -- NULL when not configured
-  message_log_channel_id TEXT,                   -- NULL when not configured
-  event_reminder_channel_id TEXT,                -- default channel for event reminders
-  warn_log_channel_id TEXT,                      -- NULL → warn issue/void fall back to audit log
-  warn_dm_members INTEGER NOT NULL DEFAULT 1,
-  warn_expiry_days INTEGER NOT NULL DEFAULT 0,   -- 0 = new warnings never expire by default
-
-  ticket_category_id TEXT,                       -- parent category for open tickets
-  ticket_archive_channel_id TEXT,                -- staff channel for close summaries
-  ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60,
+  youtube_upload_role_id TEXT,
 
   updated_at INTEGER NOT NULL
-);
+, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT);
 ```
 
 **Default Values**:
@@ -240,6 +256,11 @@ CREATE TABLE guild_settings (
 | `gork_memory_chars` | 12000 | Memory-block char budget (`0` = unlimited) |
 | `gork_daily_limit` | 0 | Guild-default gork daily budget: `-1` blocked, `0` unlimited, `1–1000` (clamped on write) |
 | `gork_log_channel_id` | NULL | Dedicated gork Q&A log channel (`/gork logchannel`; NULL → fall back to audit log) |
+| `gork_interaction_log_enabled` | 1 | Per-guild gork interaction-log switch (`/gork log on\|off`) |
+| `gork_ste_enabled` | 0 | STE anti-slop answer-style toggle (`031`) |
+| `gork_summarize_input_tokens` | 80000 | Per-guild `/gork summarize` input token budget (`033`) |
+| `honeypot_paused_at` | NULL | Mass-ban safety-valve pause timestamp (`049`) |
+| `honeypot_pause_reason` | NULL | Why the honeypot ban pipeline is paused (`049`) |
 | `audit_log_channel_id` | NULL | Staff audit log channel |
 | `message_log_channel_id` | NULL | Deleted-message log channel |
 | `event_reminder_channel_id` | NULL | Default event-reminder notify channel |
@@ -253,16 +274,16 @@ CREATE TABLE guild_settings (
 **Query patterns**:
 ```javascript
 // Ensure settings exist for guild (insert if missing)
-INSERT INTO guild_settings (guild_id, updated_at)
-VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET updated_at=excluded.updated_at
+INSERT INTO guild_settings (community_id, updated_at)
+VALUES (?, ?) ON CONFLICT(community_id) DO UPDATE SET updated_at=excluded.updated_at
 
 // Get all settings for guild
-SELECT * FROM guild_settings WHERE guild_id=?
+SELECT * FROM guild_settings WHERE community_id=?
 
 // Update specific settings
 UPDATE guild_settings
 SET msg_xp=@new_msg_xp, reaction_xp=@new_reaction_xp, updated_at=@now
-WHERE guild_id=@guild_id
+WHERE community_id=@community_id
 ```
 
 See also [Configuration](configuration.md), [Tickets](tickets.md), [Warnings](warnings.md).
@@ -271,22 +292,24 @@ See also [Configuration](configuration.md), [Tickets](tickets.md), [Warnings](wa
 
 ### 5. `level_roles`
 
-Stores role→level mappings with drop grace periods.
+Stores role→level mappings with drop grace periods. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE level_roles (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "level_roles" (
+  community_id INTEGER NOT NULL,
   role_id TEXT NOT NULL,
-  level_required INTEGER NOT NULL,          -- Minimum level to keep role
-  drop_grace_days INTEGER NOT NULL DEFAULT 3, -- Days before revoking
+  level_required INTEGER NOT NULL,
+  drop_grace_days INTEGER NOT NULL DEFAULT 3,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, role_id)
+  PRIMARY KEY (community_id, role_id)
 );
 ```
 
-**Example Data**:
+**Example Data** (first column is now the integer `community_id`):
 ```sql
+-- columns: community_id, role_id, level_required, drop_grace_days, created_at, updated_at
 INSERT INTO level_roles VALUES
 (123456789, 987654321, 5, 3, 1700000000000, 1700000000000),
 (123456789, 555666777, 20, 7, 1700000000000, 1700000000000);
@@ -296,30 +319,31 @@ INSERT INTO level_roles VALUES
 ```javascript
 // Get all role mappings for guild
 SELECT role_id, level_required, drop_grace_days
-FROM level_roles WHERE guild_id=? ORDER BY level_required ASC
+FROM level_roles WHERE community_id=? ORDER BY level_required ASC
 
 // Insert or update mapping
-INSERT INTO level_roles (guild_id, role_id, level_required, drop_grace_days, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(guild_id, role_id) DO UPDATE SET ...
+INSERT INTO level_roles (community_id, role_id, level_required, drop_grace_days, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(community_id, role_id) DO UPDATE SET ...
 
 // Delete mapping
-DELETE FROM level_roles WHERE guild_id=? AND role_id=?
+DELETE FROM level_roles WHERE community_id=? AND role_id=?
 ```
 
 ---
 
 ### 6. `role_drop_state`
 
-Tracks when users first dropped below a role's threshold (for grace period).
+Tracks when users first dropped below a role's threshold (for grace period). Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE role_drop_state (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "role_drop_state" (
+  community_id INTEGER NOT NULL,
   user_id TEXT NOT NULL,
   role_id TEXT NOT NULL,
-  below_since INTEGER,        -- ms epoch when user dropped below; NULL if currently meets requirement
+  below_since INTEGER, -- ms epoch, NULL when not below
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, user_id, role_id)
+  PRIMARY KEY (community_id, user_id, role_id)
 );
 ```
 
@@ -338,10 +362,10 @@ INSERT INTO role_drop_state VALUES
 ```javascript
 // Check if user is below threshold for role
 SELECT below_since FROM role_drop_state
-WHERE guild_id=? AND user_id=? AND role_id=?
+WHERE community_id=? AND user_id=? AND role_id=?
 
 // Mark user as dropped (start timer)
-INSERT INTO role_drop_state (guild_id, user_id, role_id, below_since, updated_at)
+INSERT INTO role_drop_state (community_id, user_id, role_id, below_since, updated_at)
 VALUES (?, ?, ?, ?, ?) ON CONFLICT(...) DO UPDATE SET ...
 
 // Clear drop state (user promoted back)
@@ -352,33 +376,34 @@ UPDATE role_drop_state SET below_since=NULL WHERE ...
 
 ### 7. `allowed_command_channels`
 
-Command channel restrictions per guild.
+Command channel restrictions per guild. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE allowed_command_channels (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "allowed_command_channels" (
+  community_id INTEGER NOT NULL,
   channel_id TEXT NOT NULL,
-  created_at INTEGER NOT NULL,   -- ms epoch when added to allowed list
-  PRIMARY KEY (guild_id, channel_id)
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (community_id, channel_id)
 );
 ```
 
 **Query patterns**:
 ```javascript
 // Add allowed channel
-INSERT OR IGNORE INTO allowed_command_channels (guild_id, channel_id, created_at)
+INSERT OR IGNORE INTO allowed_command_channels (community_id, channel_id, created_at)
 VALUES (?, ?, ?)
 
 // Check if channel is allowed
 SELECT EXISTS(SELECT 1 FROM allowed_command_channels
-WHERE guild_id=? AND channel_id=?)
+WHERE community_id=? AND channel_id=?)
 
 // List all allowed channels
-SELECT channel_id FROM allowed_command_channels WHERE guild_id=?
+SELECT channel_id FROM allowed_command_channels WHERE community_id=?
 ORDER BY created_at ASC
 
 // Remove from allowed list
-DELETE FROM allowed_command_channels WHERE guild_id=? AND channel_id=?
+DELETE FROM allowed_command_channels WHERE community_id=? AND channel_id=?
 ```
 
 Empty allow-list means commands are allowed everywhere. See [Command Restrictions](command-restrictions.md).
@@ -387,33 +412,34 @@ Empty allow-list means commands are allowed everywhere. See [Command Restriction
 
 ### 8. `youtube_channels`
 
-YouTube channel subscriptions and metadata.
+YouTube channel subscriptions and metadata. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`. `last_live_id` / `last_checked_at` arrive with `046` / `047`.
 
 ```sql
-CREATE TABLE youtube_channels (
-  guild_id TEXT NOT NULL,
-  id TEXT NOT NULL,                      -- Channel ID (numeric or @username)
-  channel_name TEXT NOT NULL,            -- Normalized name (no @ prefix)
-  channel_url TEXT NOT NULL,             -- Full YouTube URL
-  thumbnail_url TEXT,                    -- Optional thumbnail path
-  last_video_id TEXT,                    -- Most recent video's ID
-  last_checked INTEGER,                  -- ms epoch of last API check
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "youtube_channels" (
+  community_id INTEGER NOT NULL,
+  id TEXT NOT NULL,
+  channel_name TEXT NOT NULL,
+  channel_url TEXT NOT NULL,
+  thumbnail_url TEXT,
+  last_video_id TEXT,
+  last_checked INTEGER,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, id),
-  UNIQUE(guild_id, channel_name)         -- Prevent duplicates in same guild
+  updated_at INTEGER NOT NULL, last_live_id TEXT, last_checked_at INTEGER,
+  PRIMARY KEY (community_id, id),
+  UNIQUE(community_id, channel_name)
 );
 ```
 
 **Query patterns**:
 ```javascript
 // Get all subscriptions for guild
-SELECT id, guild_id, channel_name, channel_url, thumbnail_url,
+SELECT id, community_id, channel_name, channel_url, thumbnail_url,
        last_video_id, last_checked
-FROM youtube_channels WHERE guild_id=?
+FROM youtube_channels WHERE community_id=?
 
 // Add or update subscription
-INSERT INTO youtube_channels (id, guild_id, channel_name, channel_url,
+INSERT INTO youtube_channels (id, community_id, channel_name, channel_url,
                               thumbnail_url, last_video_id, last_checked, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?) ON CONFLICT(...) DO UPDATE SET ...
 
@@ -428,36 +454,39 @@ See [YouTube Notifications](youtube-notifications.md).
 
 ### 8b. `twitch_channels`
 
-Twitch broadcaster subscriptions and live-state dedup.
+Twitch broadcaster subscriptions and live-state dedup. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`. Clip/VOD alert columns arrive with `032_twitch_eventsub_media`.
 
 ```sql
-CREATE TABLE twitch_channels (
-  guild_id          TEXT NOT NULL,
-  broadcaster_id    TEXT NOT NULL,     -- Twitch user id (stable)
-  login             TEXT NOT NULL,     -- lowercase login
-  display_name      TEXT NOT NULL,
-  profile_image_url TEXT,
-  is_live           INTEGER NOT NULL DEFAULT 0,
-  last_stream_id    TEXT,              -- Helix stream id; dedup go-live
-  last_checked      INTEGER,
-  created_at        INTEGER NOT NULL,
-  updated_at        INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, broadcaster_id),
-  UNIQUE (guild_id, login)
-);
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "twitch_channels" (
+    community_id INTEGER NOT NULL,
+    broadcaster_id    TEXT NOT NULL,
+    login             TEXT NOT NULL,
+    display_name      TEXT NOT NULL,
+    profile_image_url TEXT,
+    is_live           INTEGER NOT NULL DEFAULT 0,
+    last_stream_id    TEXT,
+    last_checked      INTEGER,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL, notify_clips INTEGER NOT NULL DEFAULT 0, notify_vods INTEGER NOT NULL DEFAULT 0, last_clip_id TEXT, last_clip_created_at INTEGER, last_video_id TEXT, last_video_created_at INTEGER,
+    PRIMARY KEY (community_id, broadcaster_id),
+    UNIQUE (community_id, login)
+  );
+CREATE INDEX idx_twitch_channels_broadcaster
+    ON twitch_channels(broadcaster_id);
 ```
 
 **Query patterns**:
 ```javascript
 // All subscriptions for the poller
-SELECT guild_id, broadcaster_id, login, display_name, profile_image_url,
+SELECT community_id, broadcaster_id, login, display_name, profile_image_url,
        is_live, last_stream_id, last_checked
 FROM twitch_channels ORDER BY created_at ASC
 
 // Update live state after a poll
 UPDATE twitch_channels
 SET is_live=?, last_stream_id=?, last_checked=?, updated_at=?
-WHERE guild_id=? AND broadcaster_id=?
+WHERE community_id=? AND broadcaster_id=?
 ```
 
 See [Twitch Stream Notifications](twitch-notifications.md).
@@ -472,22 +501,27 @@ at rest** (`v1.…` envelope, `TOKEN_ENCRYPTION_KEY` — audit C6, migration
 039 back-encrypts pre-existing plaintext rows and fails boot loudly if the
 key is missing while rows exist). It is never surfaced by display queries —
 the ticker reads the decrypted value via `getAllGithubWatches()` only.
+Migration `034_communities` re-keyed this table from `guild_id TEXT` to
+`community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE github_watches (
-  guild_id                  TEXT NOT NULL,
-  repo                      TEXT NOT NULL,     -- normalized lowercase owner/name
-  repo_display              TEXT NOT NULL,     -- GitHub canonical full_name
-  channel_id                TEXT,              -- NULL until /github channel
-  role_id                   TEXT,              -- optional ping role
-  token                     TEXT,              -- optional per-repo API token (v1 AES-GCM envelope)
-  last_release_id           INTEGER,           -- newest announced release (pointer)
-  last_release_published_at INTEGER,
-  last_checked              INTEGER,
-  created_at                INTEGER NOT NULL,
-  updated_at                INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, repo)
-);
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "github_watches" (
+    community_id INTEGER NOT NULL,
+    repo                      TEXT NOT NULL,
+    repo_display              TEXT NOT NULL,
+    channel_id                TEXT,
+    role_id                   TEXT,
+    token                     TEXT,
+    last_release_id           INTEGER,
+    last_release_published_at INTEGER,
+    last_checked              INTEGER,
+    created_at                INTEGER NOT NULL,
+    updated_at                INTEGER NOT NULL,
+    PRIMARY KEY (community_id, repo)
+  );
+CREATE INDEX idx_github_watches_channel
+    ON github_watches(channel_id);
 ```
 
 See [GitHub Release Notifications](github-releases.md).
@@ -496,36 +530,37 @@ See [GitHub Release Notifications](github-releases.md).
 
 ### 9. `honeypot_channels`
 
-Channels configured as honeypots. Non-exempt users who post are banned.
+Channels configured as honeypots. Non-exempt users who post are banned. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE honeypot_channels (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "honeypot_channels" (
+  community_id INTEGER NOT NULL,
   channel_id TEXT NOT NULL,
-  warning_message_id TEXT,       -- bot-posted warning message in the channel
-  created_at INTEGER NOT NULL,   -- ms epoch when marked as honeypot
-  PRIMARY KEY (guild_id, channel_id)
+  warning_message_id TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (community_id, channel_id)
 );
 ```
 
 **Query patterns**:
 ```javascript
 // Add honeypot channel
-INSERT OR IGNORE INTO honeypot_channels (guild_id, channel_id, created_at)
+INSERT OR IGNORE INTO honeypot_channels (community_id, channel_id, created_at)
 VALUES (?, ?, ?)
 
 // Store / update warning message id
-UPDATE honeypot_channels SET warning_message_id=? WHERE guild_id=? AND channel_id=?
+UPDATE honeypot_channels SET warning_message_id=? WHERE community_id=? AND channel_id=?
 
 // Check if channel is a honeypot
-SELECT 1 FROM honeypot_channels WHERE guild_id=? AND channel_id=?
+SELECT 1 FROM honeypot_channels WHERE community_id=? AND channel_id=?
 
 // List honeypot channels
-SELECT channel_id, warning_message_id FROM honeypot_channels WHERE guild_id=?
+SELECT channel_id, warning_message_id FROM honeypot_channels WHERE community_id=?
 ORDER BY created_at ASC
 
 // Remove honeypot
-DELETE FROM honeypot_channels WHERE guild_id=? AND channel_id=?
+DELETE FROM honeypot_channels WHERE community_id=? AND channel_id=?
 ```
 
 See [Honeypot](honeypot.md). Exemption is driven by [`staff_roles`](#10-staff_roles), not a separate table.
@@ -536,23 +571,24 @@ See [Honeypot](honeypot.md). Exemption is driven by [`staff_roles`](#10-staff_ro
 
 Guild-wide staff role allow-list. Powers the admin gate (`isStaff` / `requireStaff`), honeypot exemption, ticket channel overwrites (senior only), and related staff features.
 
-Formerly `honeypot_exempt_roles`; migration `008_staff_roles` renames/merges legacy rows. Migration `011_staff_role_levels` adds `level`.
+Formerly `honeypot_exempt_roles`; migration `008_staff_roles` renames/merges legacy rows. Migration `011_staff_role_levels` adds `level`, `024_staff_roles_added_by` adds `added_by`. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE staff_roles (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "staff_roles" (
+  community_id INTEGER NOT NULL,
   role_id TEXT NOT NULL,
-  level TEXT NOT NULL DEFAULT 'senior',  -- 'junior' | 'senior' (011)
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, role_id)
+  created_at INTEGER NOT NULL, level TEXT NOT NULL DEFAULT 'senior', added_by TEXT,
+  PRIMARY KEY (community_id, role_id)
 );
 ```
 
 | Column | Description |
 |--------|-------------|
-| `guild_id` | Discord guild snowflake |
+| `community_id` | Internal `communities.id` (INTEGER) — resolves the Discord/Fluxer guild via `communities.external_guild_id` |
 | `role_id` | Discord role snowflake |
 | `level` | `junior` or `senior` (default `senior` for existing rows) |
+| `added_by` | Staff who added the role (`024`); `NULL` = unknown |
 | `created_at` | ms epoch when the row was first added |
 
 **Level semantics**:
@@ -567,17 +603,17 @@ Manage Server alone grants staff **commands** but is not honeypot-exempt and doe
 **Query patterns**:
 ```javascript
 // Add / upsert staff role with level
-INSERT INTO staff_roles (guild_id, role_id, level, created_at)
+INSERT INTO staff_roles (community_id, role_id, level, created_at)
 VALUES (?, ?, ?, ?)
-ON CONFLICT(guild_id, role_id) DO UPDATE SET level=excluded.level
+ON CONFLICT(community_id, role_id) DO UPDATE SET level=excluded.level
 
 // List all staff roles for guild
 SELECT role_id, level, created_at FROM staff_roles
-WHERE guild_id=?
+WHERE community_id=?
 ORDER BY CASE level WHEN 'senior' THEN 0 ELSE 1 END, created_at ASC
 
 // Remove staff role
-DELETE FROM staff_roles WHERE guild_id=? AND role_id=?
+DELETE FROM staff_roles WHERE community_id=? AND role_id=?
 ```
 
 **Notes**:
@@ -592,29 +628,30 @@ See [Staff Roles](staff-roles.md), [Honeypot](honeypot.md), [Tickets](tickets.md
 
 ### 11. `honeypot_ban_roles`
 
-Roles that ban a non-exempt member when **granted** (not retroactive for existing holders).
+Roles that ban a non-exempt member when **granted** (not retroactive for existing holders). Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE honeypot_ban_roles (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "honeypot_ban_roles" (
+  community_id INTEGER NOT NULL,
   role_id TEXT NOT NULL,
-  created_at INTEGER NOT NULL,   -- ms epoch when added
-  PRIMARY KEY (guild_id, role_id)
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (community_id, role_id)
 );
 ```
 
 **Query patterns**:
 ```javascript
 // Add ban role
-INSERT OR IGNORE INTO honeypot_ban_roles (guild_id, role_id, created_at)
+INSERT OR IGNORE INTO honeypot_ban_roles (community_id, role_id, created_at)
 VALUES (?, ?, ?)
 
 // List ban roles
-SELECT role_id FROM honeypot_ban_roles WHERE guild_id=?
+SELECT role_id FROM honeypot_ban_roles WHERE community_id=?
 ORDER BY created_at ASC
 
 // Remove ban role
-DELETE FROM honeypot_ban_roles WHERE guild_id=? AND role_id=?
+DELETE FROM honeypot_ban_roles WHERE community_id=? AND role_id=?
 ```
 
 See [Honeypot](honeypot.md).
@@ -623,18 +660,19 @@ See [Honeypot](honeypot.md).
 
 ### 12. `reaction_role_panels`
 
-Bot-owned panel messages for self-serve reaction roles.
+Bot-owned panel messages for self-serve reaction roles. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE reaction_role_panels (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "reaction_role_panels" (
+  community_id INTEGER NOT NULL,
   channel_id TEXT NOT NULL,
   message_id TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT 'Reaction Roles',
   description TEXT NOT NULL DEFAULT 'React to get a role. Remove your reaction to drop it (if allowed).',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, message_id)
+  PRIMARY KEY (community_id, message_id)
 );
 ```
 
@@ -642,20 +680,21 @@ CREATE TABLE reaction_role_panels (
 
 ### 13. `reaction_role_options`
 
-Emoji → role mappings on a panel.
+Emoji → role mappings on a panel. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE reaction_role_options (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "reaction_role_options" (
+  community_id INTEGER NOT NULL,
   message_id TEXT NOT NULL,
-  emoji_key TEXT NOT NULL,       -- unicode string, or custom emoji id
-  emoji_display TEXT NOT NULL,   -- unicode or <:name:id> for embed/react
+  emoji_key TEXT NOT NULL,
+  emoji_display TEXT NOT NULL,
   role_id TEXT NOT NULL,
   min_level INTEGER NOT NULL DEFAULT 0,
-  removable INTEGER NOT NULL DEFAULT 1,  -- 1 = remove role when reaction removed
+  removable INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, message_id, emoji_key)
+  PRIMARY KEY (community_id, message_id, emoji_key)
 );
 ```
 
@@ -663,11 +702,11 @@ CREATE TABLE reaction_role_options (
 ```javascript
 // Look up option for a reaction
 SELECT * FROM reaction_role_options
-WHERE guild_id=? AND message_id=? AND emoji_key=?
+WHERE community_id=? AND message_id=? AND emoji_key=?
 
 // List options for panel refresh
 SELECT * FROM reaction_role_options
-WHERE guild_id=? AND message_id=?
+WHERE community_id=? AND message_id=?
 ORDER BY created_at ASC
 ```
 
@@ -681,16 +720,17 @@ See [Reaction Roles](reaction-roles.md).
 
 ### 14. Event reminder tables
 
-Created by migration `006_event_reminders`. Also adds `guild_settings.event_reminder_channel_id`.
+Created by migration `006_event_reminders`. Also adds `guild_settings.event_reminder_channel_id`. Migration `034_communities` re-keyed `event_reminder_configs`, `event_reminder_optouts`, and `event_reminder_event_optouts` from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id` (`event_reminder_offsets` hangs off `config_id` and has no community column of its own).
 
 #### `event_reminder_configs`
 
 One config per Discord scheduled event (and unique shortname per guild).
 
 ```sql
-CREATE TABLE event_reminder_configs (
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "event_reminder_configs" (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  guild_id TEXT NOT NULL,
+  community_id INTEGER NOT NULL,
   scheduled_event_id TEXT NOT NULL,
   shortname TEXT NOT NULL,
   role_id TEXT NOT NULL,
@@ -698,17 +738,18 @@ CREATE TABLE event_reminder_configs (
   message_template TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
-  created_by TEXT NOT NULL,
-  UNIQUE (guild_id, scheduled_event_id),
-  UNIQUE (guild_id, shortname)
+  created_by TEXT NOT NULL, persistent INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (community_id, scheduled_event_id),
+  UNIQUE (community_id, shortname)
 );
 ```
 
 #### `event_reminder_offsets`
 
-Scheduled fire times for a config; `sent_at` set when the reminder posts.
+Scheduled fire times for a config; `sent_at` set when the reminder posts. The delivery state machine (`status` / `attempts` / `next_attempt_at` / `claimed_at` / `last_error`) arrives with `038_event_reminder_claim_state`.
 
 ```sql
+-- Live DDL (migrated schema, from sqlite_master)
 CREATE TABLE event_reminder_offsets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   config_id INTEGER NOT NULL REFERENCES event_reminder_configs(id) ON DELETE CASCADE,
@@ -716,7 +757,11 @@ CREATE TABLE event_reminder_offsets (
   fire_at INTEGER NOT NULL,
   sent_at INTEGER,
   message_id TEXT
-);
+, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER, claimed_at INTEGER, last_error TEXT);
+CREATE INDEX idx_event_reminder_claimable
+      ON event_reminder_offsets(status, next_attempt_at, fire_at)
+      WHERE status IN ('pending','sending')
+  ;
 CREATE INDEX idx_event_reminder_due
   ON event_reminder_offsets(fire_at) WHERE sent_at IS NULL;
 CREATE INDEX idx_event_reminder_offsets_config
@@ -728,11 +773,12 @@ CREATE INDEX idx_event_reminder_offsets_config
 Users who opted out of all event reminder role pings in a guild.
 
 ```sql
-CREATE TABLE event_reminder_optouts (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "event_reminder_optouts" (
+  community_id INTEGER NOT NULL,
   user_id TEXT NOT NULL,
   opted_out_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, user_id)
+  PRIMARY KEY (community_id, user_id)
 );
 ```
 
@@ -741,17 +787,18 @@ CREATE TABLE event_reminder_optouts (
 Per-event mute rows (independent of guild-wide opt-out). Created by migration `015_event_reminder_event_optouts`. Purged when the matching reminder config is cleared.
 
 ```sql
-CREATE TABLE event_reminder_event_optouts (
-  guild_id TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "event_reminder_event_optouts" (
+  community_id INTEGER NOT NULL,
   user_id TEXT NOT NULL,
   scheduled_event_id TEXT NOT NULL,
   muted_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, user_id, scheduled_event_id)
+  PRIMARY KEY (community_id, user_id, scheduled_event_id)
 );
 CREATE INDEX idx_er_event_optouts_user
-  ON event_reminder_event_optouts(guild_id, user_id);
+  ON event_reminder_event_optouts(community_id, user_id);
 CREATE INDEX idx_er_event_optouts_event
-  ON event_reminder_event_optouts(guild_id, scheduled_event_id);
+  ON event_reminder_event_optouts(community_id, scheduled_event_id);
 ```
 
 See [Event Reminders](event-reminders.md).
@@ -760,12 +807,13 @@ See [Event Reminders](event-reminders.md).
 
 ### 15. `staff_notes`
 
-Private staff-only notes about guild members. Soft-delete only; sequential `note_number` per guild (refs like N-12).
+Private staff-only notes about guild members. Soft-delete only; sequential `note_number` per guild (refs like N-12). Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE staff_notes (
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "staff_notes" (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  guild_id TEXT NOT NULL,
+  community_id INTEGER NOT NULL,
   note_number INTEGER NOT NULL,
   user_id TEXT NOT NULL,
   author_id TEXT NOT NULL,
@@ -775,14 +823,14 @@ CREATE TABLE staff_notes (
   edited_by TEXT,
   deleted_at INTEGER,
   deleted_by TEXT,
-  UNIQUE (guild_id, note_number)
+  UNIQUE (community_id, note_number)
 );
 CREATE INDEX idx_staff_notes_user
-  ON staff_notes(guild_id, user_id, created_at DESC);
+  ON staff_notes(community_id, user_id, created_at DESC);
 CREATE INDEX idx_staff_notes_active
-  ON staff_notes(guild_id, user_id) WHERE deleted_at IS NULL;
+  ON staff_notes(community_id, user_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_staff_notes_guild_recent
-  ON staff_notes(guild_id, created_at DESC);
+  ON staff_notes(community_id, created_at DESC);
 ```
 
 | Column | Description |
@@ -799,12 +847,13 @@ See [Staff Notes](staff-notes.md).
 
 ### 16. `warnings`
 
-Formal permanent disciplinary records. Void only (no hard delete); sequential `warning_number` per guild (refs like W-12). Optional link to a staff note.
+Formal permanent disciplinary records. Void only (no hard delete); sequential `warning_number` per guild (refs like W-12). Optional link to a staff note. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 ```sql
-CREATE TABLE warnings (
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "warnings" (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  guild_id TEXT NOT NULL,
+  community_id INTEGER NOT NULL,
   warning_number INTEGER NOT NULL,
   user_id TEXT NOT NULL,
   issuer_id TEXT NOT NULL,
@@ -813,18 +862,16 @@ CREATE TABLE warnings (
   voided_at INTEGER,
   voided_by TEXT,
   void_reason TEXT,
-  related_note_id INTEGER REFERENCES staff_notes(id) ON DELETE SET NULL,
-  expires_at INTEGER,
-  evidence_message_url TEXT,
-  evidence_text TEXT,
-  UNIQUE (guild_id, warning_number)
+  related_note_id INTEGER REFERENCES staff_notes(id) ON DELETE SET NULL, expires_at INTEGER, evidence_message_url TEXT, evidence_text TEXT,
+  UNIQUE (community_id, warning_number)
 );
 CREATE INDEX idx_warnings_user
-  ON warnings(guild_id, user_id, created_at DESC);
+  ON warnings(community_id, user_id, created_at DESC);
 CREATE INDEX idx_warnings_active
-  ON warnings(guild_id, user_id) WHERE voided_at IS NULL;
+  ON warnings(community_id, user_id) WHERE voided_at IS NULL;
 CREATE INDEX idx_warnings_expires
-  ON warnings(expires_at) WHERE voided_at IS NULL AND expires_at IS NOT NULL;
+      ON warnings(expires_at)
+      WHERE voided_at IS NULL AND expires_at IS NOT NULL;
 ```
 
 | Column | Description |
@@ -851,14 +898,15 @@ Created by migration `010_tickets`, which also adds `ticket_category_id`, `ticke
 
 #### `tickets`
 
-Support ticket lifecycle, sensitive flag, and archive metadata.
+Support ticket lifecycle, sensitive flag, and archive metadata (`archive_claimed_at` from `037_ticket_archive_claim`). Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`. The same cutover retired the legacy **global** `channel_id UNIQUE` (two communities could never share a ticket channel row) in favour of `UNIQUE (community_id, channel_id)`.
 
 ```sql
-CREATE TABLE tickets (
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "tickets" (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  guild_id TEXT NOT NULL,
+  community_id INTEGER NOT NULL,
   ticket_number INTEGER NOT NULL,
-  channel_id TEXT UNIQUE,
+  channel_id TEXT,
   creator_user_id TEXT NOT NULL,
   staff_owner_id TEXT,
   status TEXT NOT NULL DEFAULT 'open',
@@ -873,15 +921,17 @@ CREATE TABLE tickets (
   transcript_path TEXT,
   archive_message_id TEXT,
   ai_summary_json TEXT,
-  archived INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (guild_id, ticket_number)
+  archived INTEGER NOT NULL DEFAULT 0, archive_claimed_at INTEGER,
+  UNIQUE (community_id, ticket_number)
+,
+  UNIQUE (community_id, channel_id)
 );
 CREATE INDEX idx_tickets_guild_status
-  ON tickets(guild_id, status);
+  ON tickets(community_id, status);
 CREATE INDEX idx_tickets_creator
-  ON tickets(guild_id, creator_user_id);
+  ON tickets(community_id, creator_user_id);
 CREATE INDEX idx_tickets_creator_created
-  ON tickets(guild_id, creator_user_id, created_at);
+  ON tickets(community_id, creator_user_id, created_at);
 CREATE INDEX idx_tickets_channel
   ON tickets(channel_id);
 ```
@@ -891,9 +941,11 @@ listing — it matches the exact filter every archived read uses and the
 community-scoped ORDER BY, so open tickets never touch it:
 
 ```sql
+-- Live DDL (migrated schema, from sqlite_master)
 CREATE INDEX idx_tickets_archived
-  ON tickets (community_id, closed_at DESC, ticket_number DESC)
-  WHERE archived = 1 AND transcript_token IS NOT NULL;
+          ON tickets (community_id, closed_at DESC, ticket_number DESC)
+          WHERE archived = 1 AND transcript_token IS NOT NULL
+      ;
 ```
 
 #### `ticket_members`
@@ -901,6 +953,7 @@ CREATE INDEX idx_tickets_archived
 Extra member participants on a ticket (beyond the creator).
 
 ```sql
+-- Live DDL (migrated schema, from sqlite_master)
 CREATE TABLE ticket_members (
   ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL,
@@ -915,6 +968,7 @@ CREATE TABLE ticket_members (
 Named staff allow-list (sensitive tickets / extras beyond senior staff role overwrites).
 
 ```sql
+-- Live DDL (migrated schema, from sqlite_master)
 CREATE TABLE ticket_staff (
   ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL,
@@ -930,6 +984,7 @@ CREATE TABLE ticket_staff (
 Archived messages for non-sensitive closed tickets (transcript source).
 
 ```sql
+-- Live DDL (migrated schema, from sqlite_master)
 CREATE TABLE ticket_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
@@ -952,25 +1007,28 @@ See [Help Ticket System](tickets.md).
 
 ### 18. User activity tables
 
-Staff activity stats (independent of XP / `activity_log`). Created by migrations `013_user_channel_activity` and `014_guild_activity_backfill`.
+Staff activity stats (independent of XP / `activity_log`). Created by migrations `013_user_channel_activity` and `014_guild_activity_backfill`. Migration `034_communities` re-keyed all six tables below from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 #### `user_channel_message_daily`
 
 Per-user per-channel daily message counts. Counts every human guild message (no XP cooldown).
 
 ```sql
-CREATE TABLE user_channel_message_daily (
-  guild_id   TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "user_channel_message_daily" (
+  community_id INTEGER NOT NULL,
   user_id    TEXT NOT NULL,
   channel_id TEXT NOT NULL,
-  day        TEXT NOT NULL,          -- calendar day key used by the app
+  day        TEXT NOT NULL,
   count      INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (guild_id, user_id, channel_id, day)
+  PRIMARY KEY (community_id, user_id, channel_id, day)
 );
+CREATE INDEX idx_ucmd_day
+  ON user_channel_message_daily (day);
 CREATE INDEX idx_ucmd_user_day
-  ON user_channel_message_daily (guild_id, user_id, day);
+  ON user_channel_message_daily (community_id, user_id, day);
 CREATE INDEX idx_ucmd_user_channel
-  ON user_channel_message_daily (guild_id, user_id, channel_id);
+  ON user_channel_message_daily (community_id, user_id, channel_id);
 ```
 
 #### `activity_ignore`
@@ -978,15 +1036,16 @@ CREATE INDEX idx_ucmd_user_channel
 Channels or categories excluded from activity stats (`kind` is `channel` or `category`).
 
 ```sql
-CREATE TABLE activity_ignore (
-  guild_id   TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "activity_ignore" (
+  community_id INTEGER NOT NULL,
   target_id  TEXT NOT NULL,
-  kind       TEXT NOT NULL,           -- 'channel' | 'category'
+  kind       TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, target_id)
+  PRIMARY KEY (community_id, target_id)
 );
 CREATE INDEX idx_activity_ignore_guild
-  ON activity_ignore (guild_id);
+  ON activity_ignore (community_id);
 ```
 
 #### `guild_activity_settings`
@@ -994,19 +1053,12 @@ CREATE INDEX idx_activity_ignore_guild
 Live watermark (`collect_from_ms`) plus guild-wide backfill progress columns (added in `014`).
 
 ```sql
-CREATE TABLE guild_activity_settings (
-  guild_id        TEXT PRIMARY KEY,
-  collect_from_ms INTEGER NOT NULL,  -- live ingest only counts messages at/after this ms
-  created_at      INTEGER NOT NULL,
-  -- 014:
-  guild_backfill_status TEXT NOT NULL DEFAULT 'none',
-  guild_backfill_started_at INTEGER,
-  guild_backfill_finished_at INTEGER,
-  guild_backfill_error TEXT,
-  guild_backfill_channels_done INTEGER NOT NULL DEFAULT 0,
-  guild_backfill_channels_total INTEGER NOT NULL DEFAULT 0,
-  guild_backfill_messages_counted INTEGER NOT NULL DEFAULT 0
-);
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "guild_activity_settings" (
+  community_id INTEGER NOT NULL PRIMARY KEY,
+  collect_from_ms INTEGER NOT NULL,
+  created_at      INTEGER NOT NULL
+, guild_backfill_status TEXT NOT NULL DEFAULT 'none', guild_backfill_started_at INTEGER, guild_backfill_finished_at INTEGER, guild_backfill_error TEXT, guild_backfill_channels_done INTEGER NOT NULL DEFAULT 0, guild_backfill_channels_total INTEGER NOT NULL DEFAULT 0, guild_backfill_messages_counted INTEGER NOT NULL DEFAULT 0);
 ```
 
 #### `user_activity_meta`
@@ -1014,8 +1066,9 @@ CREATE TABLE guild_activity_settings (
 Per-user backfill status for optional history scans.
 
 ```sql
-CREATE TABLE user_activity_meta (
-  guild_id                 TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "user_activity_meta" (
+  community_id INTEGER NOT NULL,
   user_id                  TEXT NOT NULL,
   tracking_since_ms        INTEGER,
   backfill_status          TEXT NOT NULL DEFAULT 'none',
@@ -1024,7 +1077,7 @@ CREATE TABLE user_activity_meta (
   backfill_error           TEXT,
   backfill_channels_done   INTEGER NOT NULL DEFAULT 0,
   backfill_channels_total  INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (guild_id, user_id)
+  PRIMARY KEY (community_id, user_id)
 );
 ```
 
@@ -1033,13 +1086,14 @@ CREATE TABLE user_activity_meta (
 Per-user per-channel history scan progress.
 
 ```sql
-CREATE TABLE user_channel_backfill_cursor (
-  guild_id          TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "user_channel_backfill_cursor" (
+  community_id INTEGER NOT NULL,
   user_id           TEXT NOT NULL,
   channel_id        TEXT NOT NULL,
   oldest_message_id TEXT,
   complete          INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (guild_id, user_id, channel_id)
+  PRIMARY KEY (community_id, user_id, channel_id)
 );
 ```
 
@@ -1048,12 +1102,13 @@ CREATE TABLE user_channel_backfill_cursor (
 Guild-wide per-channel history scan progress (single-pass all users).
 
 ```sql
-CREATE TABLE guild_channel_backfill_cursor (
-  guild_id          TEXT NOT NULL,
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "guild_channel_backfill_cursor" (
+  community_id INTEGER NOT NULL,
   channel_id        TEXT NOT NULL,
   oldest_message_id TEXT,
   complete          INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (guild_id, channel_id)
+  PRIMARY KEY (community_id, channel_id)
 );
 ```
 
@@ -1063,62 +1118,64 @@ See [User Activity Summary](user-activity.md).
 
 ### 19. Gork tables
 
-Access control, community memory, daily usage budgets, and the interaction log for [Gork](gork.md) (AI keyword Q&A). Created by migrations `022_gork_access`, `023_gork_memory`, `026_gork_budget`, and `027_gork_interaction_log`; all gork configuration lives as `gork_*` columns on [`guild_settings`](#4-guild_settings) (added by migrations `021`–`023`, `026`, `027`).
+Access control, community memory, daily usage budgets, and the interaction log for [Gork](gork.md) (AI keyword Q&A). Created by migrations `022_gork_access`, `023_gork_memory`, `026_gork_budget`, and `027_gork_interaction_log`; all gork configuration lives as `gork_*` columns on [`guild_settings`](#4-guild_settings) (added by migrations `021`–`027`, `031`, `033`, `048`). Migration `034_communities` re-keyed all five tables in this section from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
 
 #### `gork_user_blocks`
 
 Users a guild has banned from using gork. Unlike the per-user cooldown, a block binds staff too (no bypass). Blocks are invisible to the blocked user (they get the locked LLM-failure canned reply), so this table is the only record.
 
 ```sql
-CREATE TABLE gork_user_blocks (
-  guild_id   TEXT NOT NULL,
-  user_id    TEXT NOT NULL,
-  created_by TEXT,                    -- staff user id who issued the block (audit)
-  created_at INTEGER NOT NULL,        -- ms epoch when blocked
-  PRIMARY KEY (guild_id, user_id)
-);
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "gork_user_blocks" (
+    community_id INTEGER NOT NULL,
+    user_id    TEXT NOT NULL,
+    created_by TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (community_id, user_id)
+  );
 ```
 
 **Query patterns**:
 ```javascript
 // Block a user (idempotent, same membership-table pattern as honeypot_ban_roles)
-INSERT OR IGNORE INTO gork_user_blocks (guild_id, user_id, created_by, created_at)
+INSERT OR IGNORE INTO gork_user_blocks (community_id, user_id, created_by, created_at)
 VALUES (?, ?, ?, ?)
 
 // Check before answering
-SELECT 1 AS ok FROM gork_user_blocks WHERE guild_id=? AND user_id=?
+SELECT 1 AS ok FROM gork_user_blocks WHERE community_id=? AND user_id=?
 
 // List blocked users for the guild (oldest first)
 SELECT user_id, created_by, created_at FROM gork_user_blocks
-WHERE guild_id=? ORDER BY created_at ASC, user_id ASC
+WHERE community_id=? ORDER BY created_at ASC, user_id ASC
 
 // Unblock (reports whether a row existed)
-DELETE FROM gork_user_blocks WHERE guild_id=? AND user_id=?
+DELETE FROM gork_user_blocks WHERE community_id=? AND user_id=?
 ```
 
 #### `gork_memories`
 
-Community memory (roadmap §7.16): one row per (guild, person, UTC day, normalized title). Memory stays fully inert until staff turn on `gork_memory_enabled` (default off).
+Community memory (roadmap §7.16): one row per (community, person, UTC day, normalized title). Memory stays fully inert until staff turn on `gork_memory_enabled` (default off).
 
 ```sql
-CREATE TABLE gork_memories (
-  id INTEGER PRIMARY KEY,                 -- rowid alias = the /gork memory "#id" handle
-  guild_id TEXT NOT NULL,
-  subject_user_id TEXT NOT NULL,          -- person the memory is about
-  mem_date TEXT NOT NULL,                 -- YYYY-MM-DD UTC, server-stamped
-  title TEXT NOT NULL,                    -- display title (model casing)
-  title_key TEXT NOT NULL,                -- normalizeTitle() output (collision key half)
-  body TEXT NOT NULL,
-  kind TEXT NOT NULL DEFAULT 'profile',   -- profile|preference|project|relationship|event
-  importance INTEGER NOT NULL DEFAULT 3,  -- 1..5
-  source_message_ids TEXT NOT NULL DEFAULT '[]', -- JSON array (merged, 20 newest kept)
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  last_used_at INTEGER,                   -- recall stamp (eviction tie-break)
-  UNIQUE (guild_id, subject_user_id, mem_date, title_key)
-);
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "gork_memories" (
+    id INTEGER PRIMARY KEY,                 -- rowid alias = the /gork memory "#id" handle
+    community_id INTEGER NOT NULL,
+    subject_user_id TEXT NOT NULL,
+    mem_date TEXT NOT NULL,                 -- YYYY-MM-DD UTC, server-stamped
+    title TEXT NOT NULL,                    -- display (model casing)
+    title_key TEXT NOT NULL,                -- normalizeTitle() output (key half)
+    body TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'profile',   -- profile|preference|project|relationship|event
+    importance INTEGER NOT NULL DEFAULT 3,  -- 1..5
+    source_message_ids TEXT NOT NULL DEFAULT '[]', -- JSON array
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    last_used_at INTEGER,
+    UNIQUE(community_id, subject_user_id, mem_date, title_key)
+  );
 CREATE INDEX idx_gork_memories_subject
-  ON gork_memories(guild_id, subject_user_id);
+    ON gork_memories(community_id, subject_user_id);
 ```
 
 | Column | Description |
@@ -1135,22 +1192,22 @@ CREATE INDEX idx_gork_memories_subject
 **Query patterns**:
 ```javascript
 // Same day+title_key updates in place (created_at / last_used_at survive)
-INSERT INTO gork_memories (guild_id, subject_user_id, mem_date, title_key, title,
+INSERT INTO gork_memories (community_id, subject_user_id, mem_date, title_key, title,
                            body, kind, importance, source_message_ids, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(guild_id, subject_user_id, mem_date, title_key) DO UPDATE SET ...
+ON CONFLICT(community_id, subject_user_id, mem_date, title_key) DO UPDATE SET ...
 
 // One person's memories, newest first
 SELECT * FROM gork_memories
-WHERE guild_id=? AND subject_user_id=? ORDER BY updated_at DESC, id DESC
+WHERE community_id=? AND subject_user_id=? ORDER BY updated_at DESC, id DESC
 
 // Guild-scoped fetch / delete by the "#id" handle
-SELECT * FROM gork_memories WHERE guild_id=? AND id=?
-DELETE FROM gork_memories WHERE guild_id=? AND id=?
+SELECT * FROM gork_memories WHERE community_id=? AND id=?
+DELETE FROM gork_memories WHERE community_id=? AND id=?
 
 // Wipe one person's memories, or the whole guild's
-DELETE FROM gork_memories WHERE guild_id=? AND subject_user_id=?
-DELETE FROM gork_memories WHERE guild_id=?
+DELETE FROM gork_memories WHERE community_id=? AND subject_user_id=?
+DELETE FROM gork_memories WHERE community_id=?
 ```
 
 **Eviction**: each person's rows are capped (25 by default); overflow is deleted ranked by `importance DESC, COALESCE(last_used_at, updated_at) DESC, mem_date DESC, id DESC` — so recalling a memory (stamping `last_used_at`) protects it from eviction.
@@ -1160,15 +1217,16 @@ DELETE FROM gork_memories WHERE guild_id=?
 Per-scope daily-limit overrides for the gork usage budget (roadmap §7.17). Resolution is **channel → category → guild default** (`guild_settings.gork_daily_limit`); the most specific rule wins and owns the single counter. Limits are tri-state and clamped on write — and since migration `040_schema_hygiene` enforced by the schema itself: `CHECK (daily_limit BETWEEN -1 AND 1000)`.
 
 ```sql
-CREATE TABLE gork_budget_rules (
-  guild_id    TEXT NOT NULL,
-  scope_kind  TEXT NOT NULL,                -- 'channel' | 'category'
-  target_id   TEXT NOT NULL,                -- channel/thread or category id
-  daily_limit INTEGER NOT NULL,             -- -1 blocked | 0 unlimited | 1..1000
-  created_by  TEXT,                         -- staff provenance (/gork budget list)
-  created_at  INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, scope_kind, target_id)
-);
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "gork_budget_rules" (
+    community_id INTEGER NOT NULL,
+    scope_kind  TEXT NOT NULL,                -- 'channel' | 'category'
+    target_id   TEXT NOT NULL,
+    daily_limit INTEGER NOT NULL CHECK (daily_limit BETWEEN -1 AND 1000),             -- -1 blocked | 0 unlimited | 1..1000
+    created_by  TEXT,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (community_id, scope_kind, target_id)
+  );
 ```
 
 #### `gork_usage`
@@ -1176,29 +1234,30 @@ CREATE TABLE gork_budget_rules (
 Daily success counters: one row per (user, **winning** scope, UTC day). DB-backed on purpose — a restart must not refund budgets. `day` is the trigger message's UTC calendar date (`YYYY-MM-DD`, reset 00:00 UTC); guild-default scope rows store `scope_id='0'`. Days older than yesterday are pruned lazily on the increment path (no ticker).
 
 ```sql
-CREATE TABLE gork_usage (
-  guild_id   TEXT NOT NULL,
-  user_id    TEXT NOT NULL,
-  scope_kind TEXT NOT NULL,                 -- 'channel' | 'category' | 'guild'
-  scope_id   TEXT NOT NULL,                 -- channel/category id; '0' = guild default
-  day        TEXT NOT NULL,                 -- UTC date 'YYYY-MM-DD'
-  count      INTEGER NOT NULL DEFAULT 0,    -- successful (fully-delivered) answers
-  PRIMARY KEY (guild_id, user_id, scope_kind, scope_id, day)
-);
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "gork_usage" (
+    community_id INTEGER NOT NULL,
+    user_id    TEXT NOT NULL,
+    scope_kind TEXT NOT NULL,                 -- 'channel' | 'category' | 'guild'
+    scope_id   TEXT NOT NULL,                 -- channel/category id; '0' = guild default
+    day        TEXT NOT NULL,                 -- UTC date 'YYYY-MM-DD'
+    count      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (community_id, user_id, scope_kind, scope_id, day)
+  );
 ```
 
 **Query patterns**:
 ```javascript
 // Count one success (upsert +1) — called once per trigger after every reply
 // chunk landed, before the guild queue slot is released
-INSERT INTO gork_usage (guild_id, user_id, scope_kind, scope_id, day, count)
+INSERT INTO gork_usage (community_id, user_id, scope_kind, scope_id, day, count)
 VALUES (?, ?, ?, ?, ?, 1)
 ON CONFLICT(...) DO UPDATE SET count = count + 1;
 DELETE FROM gork_usage WHERE day < ?;   -- lazy prune (< yesterday), same write path
 
 // Budget check (enqueue AND dequeue): used >= limit → bounce
 SELECT count FROM gork_usage
-WHERE guild_id=? AND user_id=? AND scope_kind=? AND scope_id=? AND day=?
+WHERE community_id=? AND user_id=? AND scope_kind=? AND scope_id=? AND day=?
 ```
 
 #### `gork_interactions`
@@ -1213,44 +1272,44 @@ is the process-wide kill-switch. Rows export as replay fixtures via
 `scripts/export-gork-log.js`. See [Gork Interaction Logging](gork-logging.md).
 
 ```sql
-CREATE TABLE gork_interactions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  uid TEXT NOT NULL UNIQUE,               -- crypto.randomUUID handle (export CLI)
-  kind TEXT NOT NULL DEFAULT 'qa',        -- qa | memory_turn
-  parent_uid TEXT,                        -- memory_turn → qa uid
-  guild_id TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
-  message_id TEXT NOT NULL,               -- trigger message
-  user_id TEXT NOT NULL,                  -- asker
-  status TEXT NOT NULL,                   -- shipped | partial | failure | error
-  started_at INTEGER NOT NULL,            -- job start (epoch ms)
-  duration_ms INTEGER,
-  model TEXT,
-  params TEXT,                            -- JSON: camelCase sampling params as sent
-  tools TEXT,                             -- JSON: tool schemas array actually sent (or null)
-  settings TEXT,                          -- JSON: relevant guild_settings snapshot
-  system_prompt TEXT,                     -- exact system prompt as sent
-  user_prompt TEXT,                       -- exact composed user content as sent
-  trigger_content TEXT,                   -- RAW trigger message content (with keyword)
-  reply_to_message_id TEXT,               -- message.reference?.messageId ?? null
-  context_meta TEXT,                      -- JSON: {mode, collected, chars}
-  context_messages TEXT,                  -- JSON: [{id,authorId,content,timestamp}]
-  roster_meta TEXT,                       -- JSON: {entries, truncated}
-  roster_block TEXT,                      -- roster block text as sent
-  roster_entries TEXT,                    -- JSON: [{id,display,handle,nickname}] for replay
-  memory_meta TEXT,                       -- JSON: {mode,indexed,selectedIds,blockChars} or null
-  transcript TEXT,                        -- JSON: {events:[...], truncated} — wire capture
-  answer_raw TEXT,                        -- raw model answer
-  answer_shipped TEXT,                    -- post sanitize+cap, exactly what was posted
-  finish_reason TEXT,
-  usage TEXT,                             -- JSON provider usage
-  tool_call_count INTEGER NOT NULL DEFAULT 0,
-  error TEXT,                             -- specific failure cause
-  created_at INTEGER NOT NULL);           -- epoch ms (retention prune column)
-CREATE INDEX idx_gork_interactions_guild   ON gork_interactions (guild_id, created_at);
-CREATE INDEX idx_gork_interactions_msg     ON gork_interactions (guild_id, message_id);
-CREATE INDEX idx_gork_interactions_kind    ON gork_interactions (kind, created_at);
-CREATE INDEX idx_gork_interactions_uid     ON gork_interactions (uid);
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "gork_interactions" (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uid TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL DEFAULT 'qa',          -- qa | memory_turn
+    parent_uid TEXT,                          -- memory_turn → qa uid
+    community_id INTEGER NOT NULL,
+    channel_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,                 -- trigger message
+    user_id TEXT NOT NULL,                    -- asker
+    status TEXT NOT NULL,                     -- shipped | partial | failure | error
+    started_at INTEGER NOT NULL,
+    duration_ms INTEGER,
+    model TEXT,
+    params TEXT,                              -- JSON: temperature,max_tokens,thinking_token_budget,max_tool_rounds,timeout_ms
+    tools TEXT,                               -- JSON: tool schemas array actually sent (or null)
+    settings TEXT,                            -- JSON: relevant guild_settings snapshot (keyword, context_window, cooldown, rules present?, search/memory flags)
+    system_prompt TEXT,
+    user_prompt TEXT,                         -- exact composed user content as sent
+    trigger_content TEXT,                     -- RAW trigger message content (with keyword) for replay
+    reply_to_message_id TEXT,                 -- message.reference?.messageId ?? null
+    context_meta TEXT,                        -- JSON: {mode, collected, chars}
+    context_messages TEXT,                    -- JSON: [{id,authorId,content,timestamp}] as buildContext collected
+    roster_meta TEXT,                         -- JSON: {entries:n, truncated:n}
+    roster_block TEXT,                        -- formatRosterBlock output as sent
+    roster_entries TEXT,                      -- JSON: [{id,display,handle,nickname,roles?}] for replay member stubs
+    memory_meta TEXT,                         -- JSON: {mode,indexed,selectedIds,blockChars} or null
+    transcript TEXT,                          -- JSON: {events:[...], truncated:bool} — see event contract
+    answer_raw TEXT,
+    answer_shipped TEXT,                      -- post sanitize+cap, exactly what was posted
+    finish_reason TEXT,
+    usage TEXT,                               -- JSON provider usage
+    tool_call_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at INTEGER NOT NULL);
+CREATE INDEX idx_gork_interactions_msg ON gork_interactions (community_id, message_id);
+CREATE INDEX idx_gork_interactions_kind ON gork_interactions (kind, created_at);
+CREATE INDEX idx_gork_interactions_uid ON gork_interactions (uid);
 CREATE INDEX idx_gork_interactions_created ON gork_interactions (created_at); -- retention-prune scan
 ```
 
@@ -1271,19 +1330,19 @@ CREATE INDEX idx_gork_interactions_created ON gork_interactions (created_at); --
 ```javascript
 // Insert (recorder finalize) — JSON columns arrive already-stringified;
 // a successful insert lazily prunes the retention window in the same call
-INSERT INTO gork_interactions (uid, kind, parent_uid, guild_id, ...) VALUES (?, ?, ?, ?, ...)
+INSERT INTO gork_interactions (uid, kind, parent_uid, community_id, ...) VALUES (?, ?, ?, ?, ...)
 
 // Staff listing: summaries ONLY (no prompt/transcript blobs), newest first
 SELECT id, uid, kind, status, model, user_id, channel_id, message_id,
        duration_ms, tool_call_count, created_at, error
-FROM gork_interactions WHERE guild_id=? ORDER BY id DESC LIMIT ?
+FROM gork_interactions WHERE community_id=? ORDER BY id DESC LIMIT ?
 
 // Full row (incl. transcript) for export/replay — by the uid handle
 SELECT * FROM gork_interactions WHERE uid=?
 
 // /gork status / /gork log row counts; wipe one guild's log
-SELECT COUNT(*) FROM gork_interactions WHERE guild_id=?
-DELETE FROM gork_interactions WHERE guild_id=?
+SELECT COUNT(*) FROM gork_interactions WHERE community_id=?
+DELETE FROM gork_interactions WHERE community_id=?
 ```
 
 See [Gork (AI Keyword Q&A)](gork.md) and [Gork Interaction Logging](gork-logging.md).
@@ -1296,19 +1355,19 @@ Bot-owned events with button RSVPs (migrations `042`–`045`; feature guide: [Co
 
 | Table | Purpose — notable columns |
 |---|---|
-| `events` | The event: `community_id`, `creator_id`, `title`, `status` (`draft` / `pending_confirm` / `scheduled` / `posted` / `archived` / `post_failed`), `start_at`, `end_at`, `duration_minutes`, `channel_id`, `message_id`, `thread_id`, `post_at` (scheduled post), `cutoff_at`, `location`, `image_url`, `color`, `announce_role_ids` (JSON), `attendee_role_id` + `attendee_role_existing` (0/1 flag; the role id lives in `attendee_role_id` in both modes), `role_whitelist`, `multiple_signups`, `thread_enabled`, `thread_private`, `series_id`, `occurrence_index`, `auto_archive_at`, post-retry bookkeeping (`post_attempts`, `next_attempt_at`, `last_post_error`), `digest_last_sent_at`. |
-| `event_options` | Signup options per event (`label`, `emoji`, `position`, `capacity`, `waitlist_on`, `reminders_on`, `role_whitelist` JSON). Unique `(event_id, label)`. |
-| `event_signups` | One row per (event, option, user): `state` (`attending` / `waitlist` / `refused`), `optout` (per-event reminder mute), `position` for waitlist order. |
-| `event_notifications` | Queued reminder deliveries: `event_id`, `option_id`, `fire_at`, `state` (`pending` / `sent` / `retry` / `retired`), `attempts`, `last_error`, `delivered_at`, `message_id`. The claim/retire state machine mirrors feature 2's delivery states. |
-| `event_mutes` | Per-user, per-event reminder mute `(event_id, user_id)` — the "don't ping me for this event" switch on the RSVP card. |
-| `event_guild_settings` | One row per community: `time_zone` (IANA), `default_reminder_minutes`, `default_thread_enabled`, `show_attendees`, `thread_reminders`, `auto_archive` + `auto_archive_delay_minutes`, `reminder_channel_id`, `digest_channel_id` + `digest_frequency` + `digest_hour_utc` + `digest_weekday`, `create_role_id`, `edit_role_id`, `delete_role_id`, `attendee_role_id`, `gcal_auto_community_member_id` + `gcal_auto_disabled_reason`. |
+| `events` | The event: `community_id`, `creator_id`, `title`, `status` (`draft` / `pending_confirm` / `posted` / `archived` / `skipped` — `skipped` = a series occurrence the organizer skipped), `start_at`, `end_at`, `duration_minutes`, `channel_id`, `message_id`, `thread_id`, `post_at` (scheduled post), `cutoff_at`, `location`, `image_url`, `color`, `announce_role_ids` (JSON), `attendee_role_id` + `attendee_role_existing`, `role_mode` (`none` / `temp` / `existing`), `role_whitelist`, `multiple_signups`, `thread_enabled`, `thread_private`, `series_id` (set on series occurrences), post-retry bookkeeping (`post_attempts`, `next_attempt_at`, `last_post_error`). |
+| `event_options` | Signup options per event (`label`, `emoji`, `position`, `capacity` — 0 unlimited, `waitlist_on`, `reminders_on`, `role_whitelist` JSON). `position` orders the buttons. |
+| `event_signups` | One row per (event, option, user) — `UNIQUE (event_id, option_id, user_id)` — with `state` (`signed_up` / `waitlisted`) and `updated_by` (who flipped the row). |
+| `event_notifications` | Queued reminder deliveries: `event_id`, `offset_minutes`, `fire_at`, `message`, `target` (`attendees` / `role` + `role_id`), `status` (`pending` / `sending` / `sent` / `failed` / `retired`), `attempts`, `next_attempt_at` (backoff), `claimed_at` (claim TTL anchor), `sent_at`, `message_id`, `last_error`. |
+| `event_mutes` | Per-user, per-event reminder mute, PK `(community_id, event_id, user_id)` — the "don't ping me for this event" switch on the RSVP card. |
+| `event_guild_settings` | One row per community (`community_id` PK): `time_zone` (IANA), `default_reminder_minutes`, `show_attendees`, `thread_reminders`, `auto_archive` + `auto_archive_delay_minutes`, `reminder_channel_id`, `digest_channel_id` + `digest_frequency` (`none` / `daily` / `weekly`) + `digest_hour_utc` + `digest_weekday` + `digest_last_sent_at`, role gates `create_role_id` / `edit_role_id` / `delete_role_id` / `channels_role_id` / `options_role_id`, Google auto-sync `google_auto_user_id` + `google_auto_enabled`, `updated_at`. |
 | `event_activity` | Append-only event log (`event_id`, `actor_id`, `action`, `detail`, `created_at`) — backs the web calendar activity feed. |
-| `event_series` | Recurrence: `template_event_id`, `recurrence` (`weekly` / `monthly`), `weekdays` JSON, `month_day`, `end_mode` (`never` / `on_date` / `after_count`), `end_at`, `end_count`, `next_occurrence_at` cursor, `occurrences_created`, `status` (`active` / `stopped` / `finished`). |
-| `event_presets` + `event_preset_options` | Saved signup-option groups per community (`name` unique per community; options carry label/emoji/capacity/waitlist/reminders/whitelist). |
-| `event_channels` | Marked event channels per community `(community_id, channel_id)` with `purge` opt-in flag (E7). |
-| `event_wizards` | DM creation-wizard state, one row per `(community_id, user_id)`: current `step`, partial answers JSON, message context. |
-| `event_google_links` | Per-user Google OAuth: `refresh_token_ciphertext` (envelope-encrypted, `TOKEN_ENCRYPTION_KEY`), `email`, `calendar_id`, `auto_sync` flag (the guild's auto-sync calendar is the member row with `auto_sync=1`). |
-| `event_crossposts` + `event_crosspost_messages` | Cross-guild pairs: `code`, `source_community_id` / `destination_community_id` + channels, `state` (`invited` / `approved` / `revoked`), per-destination `role_whitelist` (signup gate), `mention_role_ids`, `post_offset_minutes`; message rows map destination copies to the source event (`dest_message_id=''` marks an undelivered delayed copy). |
+| `event_series` | Recurrence: `template_event_id` (the occurrence that seeded the series), `cadence` (`daily` / `weekly` / `monthly`), `weekdays` JSON (0=Sun…6=Sat), `month_day`, `time_of_day_min`, `end_mode` (`never` / `count` / `until`) + `end_count` / `end_at`, `next_occurrence_at` cursor, `occurrences_created`, `status` (`active` / `stopped`). |
+| `event_presets` + `event_preset_options` | Saved signup-option groups per community (`name` unique per community, `COLLATE NOCASE`; options carry label/emoji/capacity/waitlist/reminders/whitelist). |
+| `event_channels` | Marked event channels per community, PK `(community_id, channel_id)`, with `purge` opt-in flag (E7). |
+| `event_wizards` | DM creation-wizard state, one row per `(community_id, user_id)`: current `step`, partial answers JSON (`draft`), optional `event_id` for edit mode, `started_at` / `updated_at`. |
+| `event_google_links` | Per-user Google OAuth, `UNIQUE (community_id, user_id)`: `access_token_enc` / `refresh_token_enc` (AES-256-GCM envelope, `TOKEN_ENCRYPTION_KEY`; refresh NULL for manual grants), `email`, `calendar_id` (default `primary`), `expiry`, `enabled`. The guild's auto-sync calendar is the `event_guild_settings` pair `google_auto_user_id` + `google_auto_enabled`. |
+| `event_crossposts` + `event_crosspost_messages` | Cross-community pairs: `invite_code` (UNIQUE — the destination approves with it), `source_community_id` / `dest_community_id` + `dest_channel_id`, `state` (`pending` / `active` / `revoked`), `mentions` (per-destination announce role ids, JSON), per-destination `role_whitelist` (signup gate), `post_offset_minutes`, `created_by` / `approved_by` / timestamps, `UNIQUE (source_community_id, dest_community_id)`; message rows (PK `(crosspost_id, event_id)`) map destination copies to the source event via `dest_message_id`. |
 
 The personal reminder opt-out is one row per user in feature 2's opt-outs table, written only by `/eventreminder optout`. `/eventconfig reminders off|on` is a different mechanism entirely: it toggles `event_guild_settings.default_reminder_minutes` for the whole guild (#348 corrected the command copy that conflated the two).
 
@@ -1401,6 +1460,20 @@ Concretely this means:
 | `039_encrypt_third_party_tokens` | One-time re-encryption of third-party credentials (Discord OAuth tokens, GitHub PATs) to the AES-256-GCM `v1.` envelope; loud boot gate when `TOKEN_ENCRYPTION_KEY` is missing while rows exist (audit C6, #189) |
 | `040_schema_hygiene` | CHECK constraints via DDL-derived table rebuilds (`users.xp BETWEEN 0 AND 9007199254740991`, `gork_budget_rules.daily_limit BETWEEN -1 AND 1000`; violating rows fail boot loudly by name), `idx_users_guild_xp` + partial `idx_tickets_archived`, drop the dead `voice_sessions` table (audit #204) |
 | `041_heal_partial_community_cutover` | Self-healing repair for DBs stuck in a **partial** 034 cutover (audit #285): detects every surviving `GUILD_SCOPED_TABLES` straggler (still `guild_id`, or missing `community_id`), backfills `communities` from its guild values and rebuilds it with 034's live-DDL derivation (data/PK/indexes preserved, FK-toggled transaction). Un-mappable rows (NULL guild_id etc.) fail boot loudly by name; healthy DB = pure no-op. Idempotent; the only convergence path for the historical partial state under #202's fast-skip |
+| `042_events_core` | Community events core schema (epic #218 phases 1–2): `events`, `event_options`, `event_signups`, `event_notifications`, `event_mutes`, `event_activity`, `event_guild_settings` |
+| `043_events_series_presets` | Recurring series + signup presets: `event_series`, `event_presets`, `event_preset_options`, `events.series_id` |
+| `044_event_channels_wizards` | `event_channels` registry + `event_wizards` DM creation-wizard drafts |
+| `045_event_integrations` | Phase 5 integrations: `event_google_links`, `event_crossposts`, `event_crosspost_messages`, Google auto-sync + digest columns |
+| `046_youtube_live_pointer` | `youtube_channels.last_live_id` — separate dedup pointer for live alerts (audit #378) |
+| `047_youtube_checked_at` | `youtube_channels.last_checked_at` — the polling-interval gate the poller actually reads (audit #379) |
+| `048_gork_log_channel` | `guild_settings.gork_log_channel_id` — dedicated Gork Q&A log channel (audit-log de-cluttering) |
+| `049_honeypot_pause` | `guild_settings.honeypot_paused_at` / `honeypot_pause_reason` — honeypot mass-ban safety valve (#440) |
+| `050_xp_cooldown_clamp` | Heals + clamps out-of-range `msg_cooldown_sec` / `reaction_cooldown_sec` values (#429) |
+| `051_reaction_role_claims` | `reaction_role_claims` — per-emoji claim ledger so removing one reaction can't strip a role another path granted (#433) |
+| `052_ticket_create_reservations` | `ticket_create_reservations` — atomic self-create rate-limit slot (#420) |
+| `053_retention_sweep_indexes` | Indexes for the retention sweep's settled-row scans (issue #399) |
+| `054_ucmd_day_index` | `idx_ucmd_day` — day-lead index for the daily-aggregate prune (issue #396) |
+| `055_gork_usage_day_index` | `idx_gork_usage_day` — day-lead index for the gork_usage lazy prune (issue #395) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
@@ -1408,18 +1481,33 @@ Public API remains available via `require("./db")` (facade over repositories).
 
 ## Common Queries for Self-Hosters
 
+Since migration `034_communities` the per-community tables key on the integer
+`communities.id`, **not** the Discord snowflake. Resolve the snowflake once and
+use that id in every query below (this is the only place a raw snowflake
+appears in ad-hoc SQL):
+
+```sql
+-- One-time id resolution for the guild you are asking about:
+SELECT id FROM communities
+WHERE platform='discord' AND external_guild_id='123456789';
+-- e.g. → 42; the examples below assume community_id = 42
+```
+
+For one-shot queries you can inline the lookup as a subquery instead:
+`WHERE community_id=(SELECT id FROM communities WHERE platform='discord' AND external_guild_id='123456789')`.
+
 ### Check Total XP in Guild
 
 ```sql
 SELECT SUM(xp) as total_xp, COUNT(*) as users
-FROM users WHERE guild_id='123456789';
+FROM users WHERE community_id=42;
 ```
 
 ### Find Top 100 XP Hogs
 
 ```sql
 SELECT user_id, xp FROM users
-WHERE guild_id='123456789' ORDER BY xp DESC LIMIT 100;
+WHERE community_id=42 ORDER BY xp DESC LIMIT 100;
 ```
 
 ### Count Users by Level (using factor=100)
@@ -1427,7 +1515,7 @@ WHERE guild_id='123456789' ORDER BY xp DESC LIMIT 100;
 ```sql
 -- SQLite doesn't have sqrt in UPDATE, so use a query:
 SELECT user_id, xp, CAST(SQRT(xp/100.0) AS INTEGER) as level
-FROM users WHERE guild_id='123456789' ORDER BY xp DESC;
+FROM users WHERE community_id=42 ORDER BY xp DESC;
 ```
 
 ### Export All XP Data (CSV)
@@ -1436,7 +1524,9 @@ FROM users WHERE guild_id='123456789' ORDER BY xp DESC;
 sqlite3 xpbot.sqlite "
 .mode csv
 .headers on
-SELECT guild_id, user_id, xp FROM users WHERE guild_id='123456789';
+SELECT u.community_id, u.user_id, u.xp FROM users u
+JOIN communities c ON c.id = u.community_id
+WHERE c.platform='discord' AND c.external_guild_id='123456789';
 " > xp_export.csv
 ```
 
@@ -1445,8 +1535,9 @@ SELECT guild_id, user_id, xp FROM users WHERE guild_id='123456789';
 ## Performance Optimizations
 
 ### Indices in Place:
-- `PRIMARY KEY` = automatic index
-- `idx_activity_recent`: `(guild_id, user_id, kind, created_at)`
+- `PRIMARY KEY` = automatic index (community-keyed tables: `(community_id, …)` composites — e.g. `users` PK is `(community_id, user_id)`)
+- `idx_users_guild_xp`: `(community_id, xp DESC, user_id)` — leaderboard sorts (the *name* predates the 034 rename; the columns are `community_id`)
+- `idx_activity_recent`: `(community_id, user_id, kind, created_at)`
 - `idx_activity_created_at`: `(created_at)`
 - Staff notes, warnings, tickets, event reminders, and activity tables add their own indexes (see detailed sections)
 
