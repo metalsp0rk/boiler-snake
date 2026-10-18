@@ -177,24 +177,37 @@ const MAX_SESSION_LIST_LIMIT = 100;
  * layer applies the live/expired decision so callers stay honest about what
  * the table actually holds).
  *
+ * #404 (C1-4): identity in web_sessions is namespaced by (platform,
+ * instance_key) — Discord snowflakes and Fluxer `sub`s are strings chosen
+ * by different authorities and MAY collide. Callers that know the requester's
+ * namespace (every self-service caller does) MUST pass platform+instanceKey
+ * so a colliding id on another platform can neither enumerate nor touch the
+ * victim's rows. Omitting the scope returns every namespace (system-wide
+ * admin surface + legacy callers) — an explicit choice, never an accident.
+ *
  * @param {string} userId
- * @param {{ limit?: number }} [opts]
+ * @param {{ limit?: number, platform?: string|null, instanceKey?: string|null }} [opts]
  * @returns {WebSessionRow[]}
  */
-function listWebSessionsByUser(userId, { limit = MAX_SESSION_LIST_LIMIT } = {}) {
+function listWebSessionsByUser(
+  userId,
+  { limit = MAX_SESSION_LIST_LIMIT, platform = null, instanceKey = null } = {},
+) {
   if (!userId || typeof userId !== "string") return [];
   const cap = Math.max(
     1,
     Math.min(Number.isInteger(limit) ? limit : MAX_SESSION_LIST_LIMIT, MAX_SESSION_LIST_LIMIT)
   );
+  const scoped = platform != null && instanceKey != null;
+  const params = scoped ? [userId, platform, instanceKey, cap] : [userId, cap];
   return db
     .prepare(
       `SELECT ${SESSION_COLUMNS} FROM web_sessions
-       WHERE user_id=?
+       WHERE user_id=?${scoped ? "\n       AND platform=? AND instance_key=?" : ""}
        ORDER BY last_seen_at DESC, created_at DESC, id ASC
        LIMIT ?`
     )
-    .all(userId, cap);
+    .all(...params);
 }
 
 /**
