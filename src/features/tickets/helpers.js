@@ -867,12 +867,22 @@ async function openTicketChannel(opts) {
       text: "Staff: /ticket claim · close · sensitive · adduser",
     });
 
-  await channel.send({
-    content: openedByStaffId
-      ? `Opened for <@${creatorUserId}> by <@${openedByStaffId}>.`
-      : `<@${creatorUserId}> — staff will be with you shortly.`,
-    embeds: [embed],
-  });
+  // #421 (audit LT-4): the channel AND the ticket row already exist at this
+  // point — a transient send failure (fresh-channel rate limit, momentary
+  // 5xx) must never surface as "Failed to open ticket" for a ticket that
+  // DID open. Same posture as the Fluxer arm: warn, keep the success.
+  try {
+    await channel.send({
+      content: openedByStaffId
+        ? `Opened for <@${creatorUserId}> by <@${openedByStaffId}>.`
+        : `<@${creatorUserId}> — staff will be with you shortly.`,
+      embeds: [embed],
+    });
+  } catch (err) {
+    console.warn(
+      `[tickets] open-notice send failed in channel ${channel.id} (ticket ${ticket.id}): ${err?.message || err}`,
+    );
+  }
 
   return { ticket, channel, skippedStaffRoles: skipped };
 }
