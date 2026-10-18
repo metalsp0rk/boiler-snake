@@ -228,6 +228,9 @@ module.exports = {
   getReactionRoleOption: reactionRoles.getReactionRoleOption,
   countReactionRoleOptions: reactionRoles.countReactionRoleOptions,
   listReactionRoleLevelRequirements: reactionRoles.listReactionRoleLevelRequirements,
+  recordReactionRoleClaim: reactionRoles.recordReactionRoleClaim,
+  deleteReactionRoleClaim: reactionRoles.deleteReactionRoleClaim,
+  countReactionRoleClaimsForRole: reactionRoles.countReactionRoleClaimsForRole,
 
   // scheduled event reminders
   getEventReminderSettings: eventReminders.getEventReminderSettings,

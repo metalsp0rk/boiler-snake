@@ -12,6 +12,9 @@ const {
   deleteReactionRoleOption,
   countReactionRoleOptions,
   listReactionRoleLevelRequirements,
+  recordReactionRoleClaim,
+  deleteReactionRoleClaim,
+  countReactionRoleClaimsForRole,
   getXp,
   getGuildSettings,
 } = require("../../db");
@@ -862,6 +865,19 @@ async function handleReactionRoleAdd(reaction, user) {
     }
   }
 
+  // #433 (audit E2-09): every ACCEPTED option reaction is a claim — recorded
+  // even when the role was already held (granted via another panel). The
+  // remove path refcounts these rows across panels before stripping, so
+  // un-reacting a deploy-copied panel no longer revokes a still-claimed role.
+  try {
+    recordReactionRoleClaim(communityId, user.id, messageId, emojiKey);
+  } catch (err) {
+    console.error(
+      `[reactionRoles] Failed to record claim (${option.role_id} via ${messageId}/${emojiKey}):`,
+      err?.message || err,
+    );
+  }
+
   return { handled: true };
 }
 
@@ -897,9 +913,40 @@ async function handleReactionRoleRemove(reaction, user) {
   const option = resolveReactionRoleOption(communityId, messageId, emojiKey);
   if (!option) return { handled: true };
 
+  // #433 (audit E2-09): a claim mirrors the user's reaction STANCE — release
+  // it on EVERY un-react, removable or not (a stale claim on a non-removable
+  // option would wrongly keep roles alive elsewhere).
+  try {
+    deleteReactionRoleClaim(communityId, user.id, messageId, emojiKey);
+  } catch (err) {
+    console.error(
+      `[reactionRoles] Claim release failed (${option.role_id} via ${messageId}/${emojiKey}):`,
+      err?.message || err,
+    );
+  }
+
   // Only strip role when removable is set
   if (Number(option.removable) === 0) {
     return { handled: true };
+  }
+
+  // Cross-panel refcount: if another live option still grants this role and
+  // the user's claim for it stands (deploy-copied panels are a supported
+  // config), the role stays.
+  try {
+    if (countReactionRoleClaimsForRole(communityId, user.id, option.role_id) > 0) {
+      console.log(
+        `[reactionRoles] Keeping role ${option.role_id} for ${user.id} in ${guildId} — ` +
+          `still claimed via another panel option (un-reacted ${messageId}/${emojiKey})`,
+      );
+      return { handled: true };
+    }
+  } catch (err) {
+    console.error(
+      `[reactionRoles] Claim refcount failed for ${option.role_id} (${messageId}/${emojiKey}) — ` +
+        `falling back to the pre-#433 strip:`,
+      err?.message || err,
+    );
   }
 
   const member = await guild.members.fetch(user.id).catch(() => null);
@@ -1376,6 +1423,20 @@ async function handleReactionRoleAddFluxer(outbound, normalizedReaction) {
     Array.isArray(member.roleIds) &&
     member.roleIds.map(String).includes(String(option.role_id));
 
+  // #433 (audit E2-09): accepted option reaction = claim, mirrored on every
+  // platform (Fluxer REST has no GET reactions, so the durable row is the
+  // only cross-panel refcount source). Recorded BEFORE the grant leg: the
+  // stance exists even while the K8 gate defers the grant; the grant-failure
+  // path below deletes it again together with the stripped reaction.
+  try {
+    recordReactionRoleClaim(communityId, userId, messageId, emojiKey);
+  } catch (err) {
+    console.error(
+      `[reactionRoles] Failed to record claim (${option.role_id} via ${messageId}/${emojiKey}):`,
+      err?.message || err,
+    );
+  }
+
   if (!hasRole) {
     let res;
     try {
@@ -1429,6 +1490,15 @@ async function handleReactionRoleAddFluxer(outbound, normalizedReaction) {
       userId,
       `I couldn't assign that role in **${guildName}**. Staff may need to fix the bot's role permissions.`,
     );
+    // The reaction was stripped above — the claim must not outlive it (#433).
+    try {
+      deleteReactionRoleClaim(communityId, userId, messageId, emojiKey);
+    } catch (err) {
+      console.error(
+        `[reactionRoles] Failed to drop claim after grant failure (${option.role_id} via ${messageId}/${emojiKey}):`,
+        err?.message || err,
+      );
+    }
     return { handled: true, ok: false, error: res.error };
   }
 
@@ -1465,6 +1535,17 @@ async function handleReactionRoleRemoveFluxer(outbound, normalizedReaction) {
   const option = resolveReactionRoleOption(communityId, messageId, emojiKey);
   if (!option) return { handled: true };
 
+  // #433 (audit E2-09): release the claim on EVERY un-react (removable or
+  // not) — claims mirror the reaction stance on both platforms.
+  try {
+    deleteReactionRoleClaim(communityId, userId, messageId, emojiKey);
+  } catch (err) {
+    console.error(
+      `[reactionRoles] Claim release failed (${option.role_id} via ${messageId}/${emojiKey}):`,
+      err?.message || err,
+    );
+  }
+
   // Only strip the role when removable is set (Discord parity).
   if (Number(option.removable) === 0) {
     return { handled: true };
@@ -1477,8 +1558,28 @@ async function handleReactionRoleRemoveFluxer(outbound, normalizedReaction) {
     Array.isArray(member.roleIds) &&
     member.roleIds.map(String).includes(String(option.role_id));
 
+  // Cross-panel refcount (Discord parity): the role survives while another
+  // live option still grants it and that claim stands.
+  let stillClaimed = false;
+  try {
+    stillClaimed =
+      countReactionRoleClaimsForRole(communityId, userId, option.role_id) > 0;
+    if (stillClaimed) {
+      console.log(
+        `[reactionRoles] Keeping role ${option.role_id} for ${userId} in community ${communityId} — ` +
+          `still claimed via another panel option (un-reacted ${messageId}/${emojiKey})`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[reactionRoles] Claim refcount failed for ${option.role_id} (${messageId}/${emojiKey}) — ` +
+        `falling back to the pre-#433 strip:`,
+      err?.message || err,
+    );
+  }
+
   let roleRes = { ok: true };
-  if (hasRole) {
+  if (hasRole && !stillClaimed) {
     try {
       roleRes = await outbound.removeRole(communityId, userId, option.role_id);
     } catch (err) {

@@ -58,6 +58,7 @@ const migrations = [
   require("./migrations/048_gork_log_channel"),
   require("./migrations/049_honeypot_pause"),
   require("./migrations/050_xp_cooldown_clamp"),
+  require("./migrations/051_reaction_role_claims"),
 ];
 
 const helpers = {
