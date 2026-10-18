@@ -80,14 +80,9 @@ function absoluteTranscriptPath(communityId, token) {
  * @param {string|null|undefined} s
  * @returns {string}
  */
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+// #452: shared core escaper (this file used to keep its own copy — same
+// five chars, `?? ""` semantics now live in core).
+const { escapeHtml } = require("../../core/escapeHtml");
 
 /**
  * @param {number|null|undefined} ms

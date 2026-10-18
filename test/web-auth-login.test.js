@@ -857,6 +857,21 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
       assert.equal(mock.state.tokenCalls.length, before);
     });
 
+    it("#452: ?error content with an apostrophe renders fully escaped", async () => {
+      // The error param reaches the page RAW from the query string; the
+      // login page's private 4-char escaper let `'` through — the exact
+      // payload that becomes attribute injection the day this value is
+      // embedded in a single-quoted attribute.
+      const res = await fetch(
+        `${appBase}/auth/login/callback?error=can%27t%20do%20that&state=x`,
+        { redirect: "manual" },
+      );
+      assert.equal(res.status, 400);
+      const html = await res.text();
+      assert.match(html, /can&#39;t do that/, "core escaper covers ' (#39;)");
+      assert.doesNotMatch(html, /can't do that/, "raw quote must not survive");
+    });
+
     it("missing code or state → 400", async () => {
       const noCode = await fetch(`${appBase}/auth/login/callback?state=x`, {
         redirect: "manual",

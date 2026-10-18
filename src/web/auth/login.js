@@ -71,13 +71,10 @@ const MAX_NAME_LEN = 100;
  * @param {string} s
  * @returns {string}
  */
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+// #452: shared core escaper — this copy escaped only 4 chars (no `&#39;`).
+// `?error=` content reaches these pages RAW from the query string, so the
+// drift was one "put it in an attribute" edit away from injection.
+const { escapeHtml } = require("../../core/escapeHtml");
 
 /**
  * Minimal auth-page shell (same visual family as the command-permissions

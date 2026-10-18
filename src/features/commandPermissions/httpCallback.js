@@ -206,13 +206,10 @@ async function handleCommandPermissionOAuthCallback(req, res, url) {
 /**
  * @param {string} s
  */
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+// #452: shared core escaper — this copy escaped only 4 chars (no `&#39;`),
+// an attribute-injection foothold the moment a value lands in a single-quoted
+// attribute. The core escaper handles all five.
+const { escapeHtml } = require("../../core/escapeHtml");
 
 module.exports = {
   handleCommandPermissionOAuthCallback,
