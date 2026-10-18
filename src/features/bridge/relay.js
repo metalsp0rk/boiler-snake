@@ -982,14 +982,17 @@ function enqueueBridgeDelete(message, deps = {}) {
     const links = repo.listBridgeMessageLinks(bridge.id, messageId);
     if (links.length === 0) return null;
 
-    // Capture the superseded pending create/edit payloads BEFORE the enqueue:
-    // the repo transaction deletes their rows; the spool dirs are the
-    // filesystem half of the supersession (§10.10, Data Model).
+    // Capture the superseded create/edit payloads BEFORE the enqueue: the
+    // repo transaction deletes their rows; the spool dirs are the
+    // filesystem half of the supersession (§10.10, Data Model). #412:
+    // PARKED (failed) rows count too — they used to leave their dir
+    // behind because only pending rows gated the delete (the rows
+    // themselves keep their old supersession semantics).
     const superseded = db
       .prepare(
         `SELECT id FROM bridge_outbox
          WHERE bridge_id = ? AND direction = ? AND src_message_id = ?
-           AND kind IN ('create', 'edit') AND state = 'pending'`,
+           AND kind IN ('create', 'edit') AND state IN ('pending', 'failed')`,
       )
       .all(bridge.id, direction, messageId);
 
@@ -1699,6 +1702,8 @@ function createRelayWorker(deps = {}) {
     // 5-attempt ladder, no poison notice (the broken notice is the message).
     repo.recordOutboxFailure(row.id, text, { maxAttempts: 1 });
     repo.setBridgeLastError(bridge.id, text);
+    // #412 (BRG-6): settled terminal — reclaim the spool like a park.
+    media.deleteSpoolDir(payload.publicId, payload.srcMessageId);
     if (brokeNow) {
       await sendNoticeSafe(
         payload.srcCommunityId,
@@ -2208,6 +2213,9 @@ function createRelayWorker(deps = {}) {
         // §10.7: the copy KEEPS its old content; last_error records the
         // platform code; the SOURCE gets the poison notice (5-attempt text).
         repo.setBridgeLastError(bridge.id, result.reason);
+        // #412 (BRG-6): terminal row → its spool bytes are dead weight on
+        // caps that are PROCESS-wide. Reclaim them with the park.
+        media.deleteSpoolDir(payload.publicId, payload.srcMessageId);
         await sendNoticeSafe(
           payload.srcCommunityId,
           payload.srcChannelId,
@@ -2489,6 +2497,13 @@ function createRelayWorker(deps = {}) {
           // shows it) + the source-channel notice. Continue with the next
           // message — the ladder already burned the 5 attempts.
           repo.setBridgeLastError(bridge.id, result.reason);
+          // #412 (BRG-6): the row is TERMINAL — no code path will ever read
+          // those spool bytes again, yet they used to pin the per-bridge
+          // and process caps until disconnect (and across restarts: the
+          // boot scan re-counted them). Drop them now; a later edit of the
+          // same message re-signs through the spool-missing refetch path
+          // that restart already relies on.
+          media.deleteSpoolDir(payload.publicId, payload.srcMessageId);
           await sendNoticeSafe(
             payload.srcCommunityId,
             payload.srcChannelId,
@@ -2720,6 +2735,22 @@ function startBridgeLoops(supervisor = null, opts = {}) {
   try {
     const { removed } = media.sweepOrphanSpools({
       isKnownPublicId: opts.isKnownPublicId ?? ((id) => !!repo.getBridgeByPublicId(id)),
+      // #412 (BRG-6): the second leg — message dirs of KNOWN bridges are
+      // reclaimed once every outbox row for THAT source message is
+      // terminal. A parked row's bytes had no reader and no reclaimer
+      // short of disconnect; live work (pending/sending) keeps the dir.
+      hasLiveOutbox:
+        opts.hasLiveOutbox ??
+        ((publicId, srcMessageId) =>
+          (opts.db ?? require("../../db/connection").db)
+            .prepare(
+              `SELECT 1 FROM bridge_outbox o
+               JOIN bridges b ON b.id = o.bridge_id
+               WHERE b.public_id = ? AND o.src_message_id = ?
+                 AND o.state IN ('pending', 'sending')
+               LIMIT 1`,
+            )
+            .get(publicId, srcMessageId) != null),
     });
     if (removed.length > 0) {
       console.log(`[bridge] removed ${removed.length} orphan spool director${removed.length === 1 ? "y" : "ies"}`);

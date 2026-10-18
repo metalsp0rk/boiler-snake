@@ -1273,6 +1273,55 @@ describe("bridge relay worker (PR 5)", () => {
     assert.equal(rowState(row.id).state, "failed");
     assert.equal(worker.notices.length, 1);
   });
+
+  // -------------------------------------------------------------------------
+  // #412 (BRG-6): a poison-parked row is TERMINAL — its spool bytes must not
+  // keep pinning the per-bridge/process caps (the boot scan re-counted them,
+  // so they survived even restarts).
+  // -------------------------------------------------------------------------
+
+  it("#412 a poison-parked row with spooled files reclaims the dir at park time", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    const file = spoolBytes(publicId, "9500", 0, "bytes-no-one-will-read-again");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9500",
+      payload: createPayload(publicId, "9500", {
+        attachments: [
+          {
+            sourceAttachmentId: "a1",
+            filename: "dead.bin",
+            contentType: "application/octet-stream",
+            spoiler: false,
+            explicitMedia: false,
+            bytes: 30,
+            declaredBytes: 30,
+            skipReason: null,
+            spoolIndex: 0,
+          },
+        ],
+      }),
+    });
+    // Five generic failures → the classic poison park.
+    const api = scriptedApi(
+      "f412",
+      Array.from({ length: 5 }, () => ({ ok: false, error: "HTTP 500 boom" })),
+    );
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? api : null),
+      getOutbound: () => fakeOutbound(),
+    });
+    await worker.drainAll();
+
+    assert.equal(rowState(row.id).state, "failed", "the row parked (existing contract)");
+    assert.equal(
+      fs.existsSync(path.dirname(file)),
+      false,
+      "the terminal row's spool dir is deleted WITH the park — no more cap-pinning until disconnect",
+    );
+    assert.equal(worker.notices.length, 1, "the poison notice itself is unchanged");
+  });
 });
 
   // -------------------------------------------------------------------------
