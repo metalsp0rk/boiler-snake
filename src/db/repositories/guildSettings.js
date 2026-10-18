@@ -88,18 +88,24 @@ function clampGorkSummarizeInputTokens(value) {
 }
 
 /**
- * Ensure a settings row exists for a community.
- * This also ensures defaults are present for all columns (including migrated ones).
+ * Ensure a settings row exists for a community — and ONLY that.
+ *
+ * #393 (DB-1): the previous `DO UPDATE SET updated_at=excluded.updated_at`
+ * made every ensure (and every getGuildSettings, which ensured first — the
+ * hot path of every incoming message) a WRITE: WAL traffic contending with
+ * the XP/audit writers, and a liar of an `updated_at` — the staff-facing
+ * "when did config change" timestamp refreshed itself on every read.
+ * Conflict now means "exists, done": DO NOTHING. updateGuildSettings
+ * stamps updated_at on REAL writes, where the signal means what it says.
  * @param {number} communityId
  */
 function ensureGuildSettings(communityId) {
   assertCommunityId(communityId);
-  const t = now();
   db.prepare(`
   INSERT INTO guild_settings (community_id, updated_at)
   VALUES (?, ?)
-  ON CONFLICT(community_id) DO UPDATE SET updated_at=excluded.updated_at
-  `).run(communityId, t);
+  ON CONFLICT(community_id) DO NOTHING
+  `).run(communityId, now());
 }
 
 /**
@@ -108,10 +114,19 @@ function ensureGuildSettings(communityId) {
  */
 function getGuildSettings(communityId) {
   assertCommunityId(communityId);
+  // #393 (DB-1): the hot path must not write. The row exists for every
+  // community after its first read/setting-save, so READ FIRST and return;
+  // materializing defaults runs only on genuine absence. (Even the
+  // DO NOTHING ensure takes the write lock when it runs — so the existing
+  // row must not pay for it.)
+  const read = db.prepare(`SELECT * FROM guild_settings WHERE community_id=?`);
+  const row = read.get(communityId);
+  if (row) return row;
   ensureGuildSettings(communityId);
-  const row = db.prepare(`SELECT * FROM guild_settings WHERE community_id=?`).get(communityId);
+  const created = read.get(communityId);
+  if (created) return created;
 
-  if (!row) {
+  {
     return {
       community_id: communityId,
       msg_xp: 5,
