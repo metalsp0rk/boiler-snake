@@ -840,7 +840,12 @@ async function handleReactionRoleAdd(reaction, user) {
     try {
       await member.roles.add(option.role_id);
       const panel = getReactionRolePanel(communityId, messageId);
-      await logReactionRoleChange(reaction.client, {
+      // #356 (FLX/logs): a RAW Client was passed where an OutboundClient
+      // is required — sendAuditLog → sendToLogChannel calls
+      // outbound.sendChannel(), undefined on a raw Client → TypeError →
+      // swallowed whole by the old .catch(() => {}). The live claim/revoke
+      // audit embed NEVER posted, anywhere, silently.
+      await logReactionRoleChange(getDiscordOutbound(reaction.client), {
         member,
         user,
         roleId: option.role_id,
@@ -850,7 +855,12 @@ async function handleReactionRoleAdd(reaction, user) {
         panelChannelId: panel?.channel_id || reaction.message.channelId,
         minLevel,
         removable: option.removable,
-      }).catch(() => {});
+      }).catch((err) =>
+        console.error(
+          `[reactionRoles] grant audit embed failed (guild=${guildId} user=${user.id} role=${option.role_id}):`,
+          err?.message || err,
+        ),
+      );
     } catch (err) {
       logRoleError("add", err, {
         guildId,
@@ -956,7 +966,9 @@ async function handleReactionRoleRemove(reaction, user) {
     try {
       await member.roles.remove(option.role_id);
       const panel = getReactionRolePanel(communityId, messageId);
-      await logReactionRoleChange(reaction.client, {
+      // #356: same raw-Client→outbound fix + a cause on the catch (the
+      // silent-embed class this file kept until now).
+      await logReactionRoleChange(getDiscordOutbound(reaction.client), {
         member,
         user,
         roleId: option.role_id,
@@ -966,7 +978,12 @@ async function handleReactionRoleRemove(reaction, user) {
         panelChannelId: panel?.channel_id || reaction.message.channelId,
         minLevel: option.min_level,
         removable: option.removable,
-      }).catch(() => {});
+      }).catch((err) =>
+        console.error(
+          `[reactionRoles] revoke audit embed failed (guild=${guildId} user=${user.id} role=${option.role_id}):`,
+          err?.message || err,
+        ),
+      );
     } catch (err) {
       logRoleError("remove", err, {
         guildId,
