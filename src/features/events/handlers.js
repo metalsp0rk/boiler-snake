@@ -856,7 +856,10 @@ async function handleOptions(interaction, ctx) {
       capacity: o.getInteger("capacity") ?? 0,
       waitlist_on: o.getBoolean("waitlist") ?? true,
       reminders_on: o.getBoolean("reminders") ?? false,
-      role_whitelist: o.getRole("only_role") ? JSON.stringify([o.getRole("only_role").id]) : "[]",
+      // #344: the repo normalizes ARRAYS (toJsonArray) — a pre-stringified
+      //      value is a non-array and flattens to "[]": the option looked gated,
+      //      every member could still sign up.
+      role_whitelist: o.getRole("only_role") ? [o.getRole("only_role").id] : [],
     });
     if (!res.ok) return fail(interaction, res.error);
     return replyEphemeral(interaction, `Option **${res.option.label}** added (\`${res.option.id}\`) — refresh the event message with \`/event post\`… it syncs automatically on the next edit.`);
@@ -871,8 +874,8 @@ async function handleOptions(interaction, ctx) {
     if (o.getInteger("capacity") != null) patch.capacity = o.getInteger("capacity");
     if (o.getBoolean("waitlist") != null) patch.waitlist_on = o.getBoolean("waitlist");
     if (o.getBoolean("reminders") != null) patch.reminders_on = o.getBoolean("reminders");
-    if (o.getBoolean("clear_role")) patch.role_whitelist = "[]";
-    else if (o.getRole("only_role")) patch.role_whitelist = JSON.stringify([o.getRole("only_role").id]);
+    if (o.getBoolean("clear_role")) patch.role_whitelist = [];
+    else if (o.getRole("only_role")) patch.role_whitelist = [o.getRole("only_role").id]; // #344: array in, see options add
     if (!Object.keys(patch).length) return fail(interaction, "Nothing to change.");
     const res = repo.updateEventOption(opt.id, patch);
     if (res && res.ok === false) return fail(interaction, res.error);
@@ -906,8 +909,12 @@ async function handleOptions(interaction, ctx) {
     const clear = o.getBoolean("clear");
     const role = o.getRole("role");
     if (!clear && !role) return fail(interaction, "Pick a `role` or `clear: yes`.");
+    // #344 (the e2e-pinned lie): JSON.stringify([role.id]) is a STRING —
+    // toJsonArray() maps non-arrays to "[]", so the event stored an EMPTY
+    // whitelist while the reply promised "limited to <@&role> and staff".
+    // The repo stringifies arrays itself; hand it one.
     const res = repo.updateEvent(ev.event.id, {
-      role_whitelist: clear ? "[]" : JSON.stringify([role.id]),
+      role_whitelist: clear ? [] : [role.id],
     });
     if (!res.ok) return fail(interaction, res.error);
     const sync = await optionsTouchMessage(interaction, ctx, ev.event);

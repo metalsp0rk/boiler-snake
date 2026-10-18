@@ -9,6 +9,26 @@ const repo = require("../../db/repositories/events");
 const options = require("./options");
 const { DEFAULT_OPTIONS } = require("./ui");
 
+/**
+ * #344 (same class as the handlers' options arms): the repo's toJsonArray
+ * stringifies ARRAYS but maps non-arrays — including pre-stringified JSON —
+ * to "[]". A stringified whitelist here therefore silently DELETED every
+ * gate when a preset was applied or used at create time. Specs carry real
+ * arrays; strings (legacy blobs / stored column form) are parsed, junk is [].
+ */
+function normalizeWhitelist(value) {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" && value.trim() !== "") {
+    try {
+      const v = JSON.parse(value);
+      if (Array.isArray(v)) return v.map(String);
+    } catch {
+      // fall through — a non-JSON string carries no whitelist
+    }
+  }
+  return [];
+}
+
 /** Preset options (DB rows 0/1 or ui DEFAULT_OPTIONS booleans) → specs. */
 function toSpecs(presetOptions = []) {
   return presetOptions.map((o) => ({
@@ -17,9 +37,7 @@ function toSpecs(presetOptions = []) {
     capacity: o.capacity ?? 0,
     waitlist_on: o.waitlist_on !== 0 && o.waitlist_on !== false,
     reminders_on: o.reminders_on === 1 || o.reminders_on === true,
-    role_whitelist: Array.isArray(o.role_whitelist)
-      ? JSON.stringify(o.role_whitelist)
-      : (o.role_whitelist ?? "[]"),
+    role_whitelist: normalizeWhitelist(o.role_whitelist),
   }));
 }
 

@@ -322,8 +322,8 @@ describe(
         strOpt("signup_options", "Door"),
       ]);
       // Staff/organizers BYPASS whitelists — every gate click below is the
-      // plain OUTSIDER. Seed via the facade (arrays); the whitelist COMMAND
-      // currently persists an empty list (JSON-string bug; pinned later).
+      // plain OUTSIDER. Seeded via the facade; the whitelist COMMAND's own
+      // persistence is pinned fixed under #344 below.
       env.dbmod.updateEvent(ev.row.id, { role_whitelist: [staffRole2] });
 
       assert.equal(
@@ -536,9 +536,9 @@ describe(
         new RegExp(
           "\\*\\*0\\. Dinner\\*\\* — 1/1 \\(waitlist 1\\) · id `" +
             dinner.optionId +
-            "`, pos 0, cap 1, role-gated",
+            "`, pos 0, cap 1(?!, role-gated)",
         ),
-        "table row (0-based positions) + always-role-gated quirk (empty array truthy — see issue #344)",
+        "table row (0-based positions); #344 FIXED: an EMPTY whitelist no longer renders 'role-gated' (parsed [] is length-checked, not truthy)",
       );
 
       const add = await env.mock.awaitReply(
@@ -617,7 +617,7 @@ describe(
       );
     });
 
-    it("whitelist COMMAND persists an empty list while claiming success (BUG #344 pin)", async () => {
+    it("whitelist COMMAND persists the role — the gate is live and clear:yes closes the loop (#344)", async () => {
       const ev = await createPosted("Whitelist Command Night", [
         strOpt("signup_options", "Seat"),
       ]);
@@ -634,18 +634,33 @@ describe(
         // <@&id> the button-path gate copies persist.
         new RegExp(`\\*\\*Whitelist Command Night\\*\\* is now limited to <&${staffRole2}> and staff\\.`),
       );
-      // …but the row stores NO roles: the handler hands updateEvent a JSON
-      // STRING and toJsonArray() flattens non-arrays to "[]" — issue #344.
+      // #344 FIXED: the handler hands updateEvent a real ARRAY (toJsonArray
+      // stringifies arrays; it flattened the pre-stringified value to "[]").
       assert.deepEqual(
         JSON.parse(env.dbmod.getEventById(ev.row.id).role_whitelist),
-        [],
-        "BUG: whitelist persisted as [] while the reply promised the role",
+        [staffRole2],
+        "the row stores the role the reply promised",
       );
-      // And the gate is therefore NOT in force:
+      // The gate is now actually IN FORCE for a non-holder:
+      assert.equal(
+        await rsClick(ev, ev.optionIds.Seat, env.ids.outsider),
+        `This event is restricted to: <@&${staffRole2}>.`,
+        "the promise and the state finally agree",
+      );
+      // clear: yes clears for real (the string "[]" it used to send flattened
+      // to "[]" by accident — same bytes, different honesty).
+      const cleared = await env.mock.awaitReply(
+        await signupSlash("options", "whitelist", [
+          intOpt("event", ev.row.id),
+          boolOpt("clear", true),
+        ]),
+      );
+      assert.match(String(cleared.content), /whitelist cleared/i);
+      assert.deepEqual(JSON.parse(env.dbmod.getEventById(ev.row.id).role_whitelist), []);
       assert.match(
         await rsClick(ev, ev.optionIds.Seat, env.ids.outsider),
         /signed up/,
-        "no gate in force despite the success copy",
+        "after clear the outsider passes again",
       );
     });
 
