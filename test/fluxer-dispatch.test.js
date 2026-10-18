@@ -85,15 +85,19 @@ describe("fluxer/dispatch — K2: /xp replies by DM, never in channel", () => {
     await dispatchPrefixCommand(outbound, message, parsed, { registry, supervisor: null });
 
     const paths = rest.calls.map((c) => c.path);
-    assert.equal(rest.calls[0].method, "POST");
-    assert.equal(rest.calls[0].path, "/v1/users/@me/channels");
+    // #385 flipped this fixture's reality: a roleless author now resolves
+    // the @everyone base (structure GETs precede the reply path — and the
+    // cache collapses them per window). The DM CONTRACT lives in the POSTs.
+    const posts = rest.calls.filter((c) => c.method === "POST");
+    assert.equal(posts.length, 2, "exactly the two DM posts — the guild channel gets none");
+    assert.equal(posts[0].path, "/v1/users/@me/channels");
     // Target ids/usernames are read from the fixture payload itself so the
     // assertions survive fixture evolution (they must match what the bot
     // received, not hard-coded literals).
-    assert.deepEqual(rest.calls[0].body, { recipient_id: message.authorId });
-    assert.equal(rest.calls[1].path, "/v1/channels/dm-42/messages");
+    assert.deepEqual(posts[0].body, { recipient_id: message.authorId });
+    assert.equal(posts[1].path, "/v1/channels/dm-42/messages");
 
-    const body = rest.calls[1].body;
+    const body = posts[1].body;
     const username = message.authorRaw?.username ?? "sparky";
     assert.ok(body.content.includes(username), `expected "${username}" in: ${body.content}`);
     assert.match(body.content, /XP/);

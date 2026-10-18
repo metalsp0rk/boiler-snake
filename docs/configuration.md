@@ -106,6 +106,13 @@ FLUXER_COMMAND_PREFIX=!
 # no off-switch). A wedged instance surfaces as a named timeout error in
 # seconds instead of pinning callers at the ~300 s transport default (#436):
 # FLUXER_REQUEST_TIMEOUT_MS=15000
+# Short TTL (ms) of the permission fan-out cache behind Fluxer prefix
+# commands (guild/roles/channel reads, successes only; the bot's own
+# overwrite writes invalidate immediately). The fan-out then costs one set
+# per community per window instead of per message (#385). 0 disables —
+# every command pays the full fan-out; invalid values fall back to 5000
+# with one complaint.
+# FLUXER_PERMISSION_CACHE_MS=5000
 ```
 
 `CLIENT_ID` / `CLIENT_SECRET` stay the **Discord** app's credentials. Each Fluxer instance carries its own OAuth `clientId`/`clientSecret` inside `FLUXER_INSTANCES` (used for the web-admin login button). A malformed `FLUXER_INSTANCES` value stops the bot at boot with the specific reason.

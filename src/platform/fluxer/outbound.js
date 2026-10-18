@@ -26,6 +26,7 @@
  */
 
 const { assertCommunityId, getCommunityById, getCommunityByExternal } = require("../community");
+const permCache = require("./permCache");
 const { fluxerRequestTimeoutMs } = require("./restTimeout");
 
 /**
@@ -1151,6 +1152,10 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
         await rest.request("PUT", `/v1/channels/${String(channelId)}`, {
           body: { permission_overwrites: list },
         });
+        // #385 (FLX-4): our OWN write beats the permission fan-out cache —
+        // the next resolve must see this channel's overwrites, not the
+        // pre-write payload still inside the TTL window.
+        permCache.invalidateChannel(this, cid, channelId);
         return { ok: true };
       } catch (err) {
         const reason = failureText("setOverwrites", `applying ${list.length} overwrite(s) to channel ${channelId}`, err);
