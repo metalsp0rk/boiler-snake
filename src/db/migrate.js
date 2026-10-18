@@ -61,6 +61,7 @@ const migrations = [
   require("./migrations/051_reaction_role_claims"),
   require("./migrations/052_ticket_create_reservations"),
   require("./migrations/053_retention_sweep_indexes"),
+  require("./migrations/054_ucmd_day_index"),
 ];
 
 const helpers = {
