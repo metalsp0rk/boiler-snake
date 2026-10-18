@@ -153,11 +153,8 @@ async function handleCallback(req, res, params) {
   }
 }
 
-function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
+// #452: shared core escaper (this file used to keep its own map-form copy).
+const { escapeHtml } = require("../../core/escapeHtml");
 
 async function fetchPrimaryEmail(accessToken) {
   try {
