@@ -513,6 +513,7 @@ module.exports = {
   getEventOptionById: events.getEventOptionById,
   countEventOptions: events.countEventOptions,
   createEventOption: events.createEventOption,
+  replaceEventOptions: events.replaceEventOptions,
   updateEventOption: events.updateEventOption,
   deleteEventOption: events.deleteEventOption,
   reorderEventOptions: events.reorderEventOptions,
