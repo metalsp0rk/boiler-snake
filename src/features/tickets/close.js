@@ -37,6 +37,14 @@ const COLOR_SENSITIVE = Color.danger;
 const COLOR_CLOSED = Color.muted;
 
 /**
+ * Hard ceiling on one archived transcript (audit #423/LT-6): fetching walks
+ * backwards from the NEWEST message, so on cap the OLDEST context is what
+ * falls off. Reaching the cap must be loud (rule 5) — the archive is
+ * partial by construction there, and the reply says so.
+ */
+const TRANSCRIPT_MAX_MESSAGES = 5000;
+
+/**
  * Fetch all messages from a channel (oldest → newest).
  * @param {import("discord.js").TextChannel} channel
  * @returns {Promise<object[]>} normalized message rows
@@ -44,9 +52,8 @@ const COLOR_CLOSED = Color.muted;
 async function fetchAllMessages(channel) {
   const collected = [];
   let before = undefined;
-  const MAX = 5000;
 
-  while (collected.length < MAX) {
+  while (collected.length < TRANSCRIPT_MAX_MESSAGES) {
     const batch = await channel.messages.fetch({
       limit: 100,
       ...(before ? { before } : {}),
@@ -630,9 +637,22 @@ async function archiveTicketWork(opts) {
   let messages = [];
   try {
     messages = await fetchAllMessages(channel);
+    // #423 (audit LT-6): the cap used to be silent — a >5k-message ticket
+    // got a transcript PRESENTED AS COMPLETE with the oldest (often most
+    // relevant) context quietly missing. Partial archive = surfaced partial
+    // result (rule 5).
+    if (messages.length >= TRANSCRIPT_MAX_MESSAGES) {
+      warnings.push(
+        `Transcript capped at ${TRANSCRIPT_MAX_MESSAGES} messages — the older messages were NOT archived (the ${TRANSCRIPT_MAX_MESSAGES} newest were kept).`,
+      );
+    }
   } catch (err) {
     console.error("[tickets] message fetch failed:", err);
-    warnings.push("Failed to fetch some messages for archive.");
+    // Rule 3: the archiver must be able to ACT on the warning — name the
+    // cause instead of "Failed to fetch some messages for archive."
+    warnings.push(
+      `Failed to fetch some messages for archive: ${err?.message || err}`,
+    );
   }
 
   // Resolve display names for authors, mentions, requester, staff owner
@@ -824,6 +844,7 @@ async function archiveTicketWork(opts) {
 
 module.exports = {
   fetchAllMessages,
+  TRANSCRIPT_MAX_MESSAGES,
   normalizeDiscordMessage,
   softCloseTicket,
   archiveTicketPipeline,
