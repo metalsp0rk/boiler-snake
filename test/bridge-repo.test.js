@@ -606,6 +606,30 @@ describe("bridge repo (PR 2)", () => {
 
       assert.deepEqual(api.pruneBridgeMessageRelay(bridge.id, "m-gone"), { links: 0, snapshots: 0 }, "exactly idempotent");
 
+    it("countOutboxFailed sees parked rows; retryBridgeOutbox re-queues them (#416/BRG-10)", () => {
+      const bridge = makeBridge({ endAChannelId: "400000000000000010" });
+      api.db.prepare(`UPDATE bridges SET state='active', connected_at=? WHERE id=?`).run(T0, bridge.id);
+      const parkedA = api.enqueueBridgeOutbox(bridge.id, { direction: "a_to_b", srcMessageId: "r-1", enqueuedAt: T0 + 1 });
+      const parkedB = api.enqueueBridgeOutbox(bridge.id, { direction: "b_to_a", kind: "edit", srcMessageId: "r-2", enqueuedAt: T0 + 2 });
+      api.enqueueBridgeOutbox(bridge.id, { direction: "a_to_b", srcMessageId: "r-3", enqueuedAt: T0 + 3 });
+      api.db.prepare("UPDATE bridge_outbox SET state='failed', attempts=5, last_error='boom' WHERE id IN (?, ?)").run(parkedA.id, parkedB.id);
+
+      assert.deepEqual(api.countOutboxFailed(bridge.id), { a_to_b: 1, b_to_a: 1 }, "parked rows counted per direction");
+      assert.deepEqual(api.countOutboxDepth(bridge.id), { a_to_b: 1, b_to_a: 0 }, "depth still counts ONLY the live queue");
+
+      const res = api.retryBridgeOutbox(bridge.id);
+      assert.deepEqual(res, { requeued: 2 });
+      const row = api.getBridgeOutboxById(parkedA.id);
+      assert.equal(row.state, "pending", "the parked row rides again");
+      assert.equal(row.attempts, 0, "a fresh §10.10 ladder");
+      assert.equal(row.last_error, null, "the old row-scoped cause is cleared");
+      assert.equal(row.enqueued_at >= T0 + 3, true, "retried work rides AFTER already-queued work (no line-jumping)");
+      assert.deepEqual(api.countOutboxFailed(bridge.id), { a_to_b: 0, b_to_a: 0 });
+
+      const again = api.retryBridgeOutbox(bridge.id);
+      assert.deepEqual(again, { requeued: 0 }, "exactly honest at zero");
+    });
+
     it("deleteBridgeMessageLink targets exactly ONE part (#409)", () => {
       const scoped = makeBridge({ endAChannelId: "400000000000000009" });
       api.addBridgeMessageLink({ bridgeId: scoped.id, srcCommunityId: guildA, srcMessageId: "m-p", partIndex: 0, dstMessageId: "d-p0" });

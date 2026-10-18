@@ -562,10 +562,19 @@ function withWarnings(content, warnings) {
 }
 
 function formatStatusItem(item) {
+  const failed = item.outboxFailed ?? { a_to_b: 0, b_to_a: 0 };
+  const failedTotal = failed.a_to_b + failed.b_to_a;
   const lines = [
     `Bridge ${item.publicId} — state: ${item.state}, direction: ${item.directionLabel}.`,
     `  outbox: a→b ${item.outboxDepth.a_to_b}, b→a ${item.outboxDepth.b_to_a}; spool: ${item.spoolBytes} bytes`,
   ];
+  if (failedTotal > 0) {
+    // #416 (BRG-10): parked rows used to be invisible here — queue 0 next
+    // to stuck spool was a mixed signal with no action. Now: count + verb.
+    lines.push(
+      `  parked (failed): a→b ${failed.a_to_b}, b→a ${failed.b_to_a} — retry with /bridge retry.`,
+    );
+  }
   for (const end of item.ends) {
     lines.push(`  end ${end.position}: ${end.platform} (${end.instanceKey}) channel ${end.channelId}`);
   }
@@ -717,6 +726,36 @@ async function handleDisconnect(ctx, featureCtx, surfaceCmd) {
       `Disconnected bridge ${result.publicId}. Both channels are released.`,
       result.warnings,
     ),
+    sensitive: true,
+  });
+}
+
+async function handleRetry(ctx, featureCtx, surfaceCmd) {
+  const handle = ctx.options.getString("bridge");
+  const channelOpt = ctx.options.getChannel("channel");
+  const targetChannelId =
+    handle != null ? null : channelOpt?.id ?? ctx.channelId ?? null;
+
+  const result = service.retryBridge({
+    community: getCommunityById(ctx.communityId),
+    invocationChannelId: ctx.channelId || null,
+    targetChannelId,
+    publicId: handle,
+    surfaceCmd,
+    staff: staffFacts(ctx),
+    deps: buildDeps(ctx, featureCtx),
+  });
+  if (!result.ok) return ctx.reply({ content: result.error, sensitive: true });
+  if (result.requeued === 0) {
+    return ctx.reply({
+      content: `Bridge ${result.publicId} has no parked copies to retry.`,
+      sensitive: true,
+    });
+  }
+  return ctx.reply({
+    content:
+      `Re-queued ${result.requeued} parked cop${result.requeued === 1 ? "y" : "ies"} for Bridge ${result.publicId}. ` +
+      "They ride the queue again with a fresh attempt ladder; file bytes are re-fetched from the source.",
     sensitive: true,
   });
 }
@@ -1036,6 +1075,7 @@ async function handleBridge(commandCtx, featureCtx) {
   if (sub === "create") return handleCreate(commandCtx, featureCtx, surfaceCmd);
   if (sub === "connect") return handleConnect(commandCtx, featureCtx, surfaceCmd);
   if (sub === "disconnect") return handleDisconnect(commandCtx, featureCtx, surfaceCmd);
+  if (sub === "retry") return handleRetry(commandCtx, featureCtx, surfaceCmd);
   if (sub === "status") return handleStatus(commandCtx, featureCtx, surfaceCmd);
   if (sub === "list") return handleList(commandCtx, featureCtx, surfaceCmd);
 

@@ -771,6 +771,56 @@ function requeueStaleOutbox() {
  * @param {number} bridgeId
  * @returns {{ a_to_b: number, b_to_a: number }}
  */
+/**
+ * PARKED (failed) rows per direction — the retry/repair surface
+ * (#416/BRG-10). Kept OUT of countOutboxDepth deliberately: depth is the
+ * live queue ("later messages are still being copied"), while failed rows
+ * are terminal UNLESS staff re-queue them — the two numbers answer
+ * different staff questions and must not be blended.
+ *
+ * @param {number} bridgeId
+ * @returns {{ a_to_b: number, b_to_a: number }}
+ */
+function countOutboxFailed(bridgeId) {
+  requireBridgeId(bridgeId);
+  const failed = { a_to_b: 0, b_to_a: 0 };
+  for (const row of db
+    .prepare(`
+      SELECT direction, COUNT(*) AS depth FROM bridge_outbox
+      WHERE bridge_id = ? AND state = 'failed'
+      GROUP BY direction
+    `)
+    .all(bridgeId)) {
+    if (row.direction in failed) failed[row.direction] = Number(row.depth);
+  }
+  return failed;
+}
+
+/**
+ * Re-queue this bridge's PARKED rows (staff verdict: the cause is gone —
+ * #416/BRG-10). attempts reset to 0 (fresh §10.10 ladder), enqueued_at
+ * moves to NOW (retried work rides AFTER anything already queued), and the
+ * row's last_error is cleared for the next attempt's truth.
+ *
+ * The queue's UNIQUE (bridge, direction, src, kind) key spans ALL states,
+ * so a parked row can never coexist with live work for the same message —
+ * a plain flip is collision-free by constraint, no supersession pass needed.
+ *
+ * @param {number} bridgeId
+ * @returns {{ requeued: number }}
+ */
+function retryBridgeOutbox(bridgeId) {
+  requireBridgeId(bridgeId);
+  const requeued = db
+    .prepare(
+      `UPDATE bridge_outbox
+       SET state = 'pending', attempts = 0, last_error = NULL, enqueued_at = ?
+       WHERE bridge_id = ? AND state = 'failed'`,
+    )
+    .run(now(), bridgeId).changes;
+  return { requeued };
+}
+
 function countOutboxDepth(bridgeId) {
   requireBridgeId(bridgeId);
   const depth = { a_to_b: 0, b_to_a: 0 };
@@ -1166,6 +1216,8 @@ module.exports = {
   // links / snapshots
   addBridgeMessageLink,
   listBridgeMessageLinks,
+  countOutboxFailed,
+  retryBridgeOutbox,
   deleteBridgeMessageLink,
   pruneBridgeMessageRelay,
   getBridgeLinkByDestination,

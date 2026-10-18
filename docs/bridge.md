@@ -10,8 +10,9 @@ Feature design and locked decisions live in the repo roadmap ([`roadmap/bridge.m
 2. **Set `BRIDGE_TOKEN_KEY`** in `.env` (see Environment). `create` works without it; `connect` refuses until it's set.
 3. **Create on one side.** Staff run `/bridge create` in the Discord channel (Fluxer side: `!bridge create` in the Fluxer channel). The reply is a `BRG-…` connect credential, **shown once**, plus the bridge handle `b_…`.
 4. **Connect from the far side.** A staff member of the *other* platform consumes the code: `/bridge connect <code> [channel]` on Discord, or a **DM to the bot** on Fluxer: `!bridge connect <code> <channel>`. The pairing is 1:1 — a channel already in a bridge is rejected. The connect reply spells out the privacy consequence: `People in the receiving channel will be able to read what the source side posts, including edits and deletions.` A short notice (handle + direction, never the far channel id) is posted in the bridged channel.
-5. **Verify.** `/bridge status` (Fluxer: `!bridge status`, results come back by DM) shows state, direction, queue depth, and the last error.
-6. **Tear down** with `… disconnect` — by handle `b_…` or from a local channel. Both channels are released for new bridges; copied messages are **not** deleted.
+5. **Verify.** `/bridge status` (Fluxer: `!bridge status`, results come back by DM) shows state, direction, queue depth, parked (failed) copies, and the last error.
+6. **Repair.** A copy that fails five attempts **parks**: status counts it under `parked (failed)` and the source-channel notice names the cause. When the cause is gone (outage over, bad file removed), `/bridge retry` re-queues the parked copies — fresh attempt ladder, file bytes re-fetched from the source. A **broken** bridge (the other channel is gone) refuses retry until staff disconnect it.
+7. **Tear down** with `… disconnect` — by handle `b_…` or from a local channel. Both channels are released for new bridges; copied messages are **not** deleted.
 
 Pairing one direction, start to finish:
 
@@ -33,7 +34,8 @@ Staff-tier on Discord (Manage Server, or a configured staff role): the slash pic
 | `/bridge create [channel] [direction]` | Create a pending bridge for a channel (default: this one). Direction: `both` (default), `to-fluxer`, `from-fluxer` |
 | `/bridge connect <code> [channel]` | Consume a BRG- connect credential for a channel. Default channel: this one |
 | `/bridge disconnect [bridge] [channel]` | Destroy a bridge by handle or by a local channel. Handle wins |
-| `/bridge status [bridge] [channel]` | Bridge status: state, direction, queue depth |
+| `/bridge retry [bridge] [channel]` | Re-queue a bridge's parked (failed) copies — fresh attempts, bytes re-fetched. Handle wins |
+| `/bridge status [bridge] [channel]` | Bridge status: state, direction, queue depth, parked counts |
 | `/bridge list` | List every bridge touching this community |
 
 Fluxer runs the same verbs with the text prefix (`!bridge create`, `!bridge connect`, …; prefix from `FLUXER_COMMAND_PREFIX`). Two Fluxer specifics:
