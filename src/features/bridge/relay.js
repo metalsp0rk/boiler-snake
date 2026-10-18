@@ -1016,28 +1016,13 @@ function enqueueBridgeDelete(message, deps = {}) {
     const links = repo.listBridgeMessageLinks(bridge.id, messageId);
     if (links.length === 0) return null;
 
-    // Capture the superseded create/edit payloads BEFORE the enqueue: the
-    // repo transaction deletes their rows; the spool dirs are the
-    // filesystem half of the supersession (§10.10, Data Model). #412:
-    // PARKED (failed) rows count too — they used to leave their dir
-    // behind because only pending rows gated the delete (the rows
-    // themselves keep their old supersession semantics).
-    const superseded = db
-      .prepare(
-        `SELECT id FROM bridge_outbox
-         WHERE bridge_id = ? AND direction = ? AND src_message_id = ?
-           AND kind IN ('create', 'edit') AND state IN ('pending', 'failed')`,
-      )
-      .all(bridge.id, direction, messageId);
-
-    // A terminal (done/failed) delete row for this source id is replaced by
-    // the re-queue — the second takedown enqueues cleanly (idempotent 404=ok).
-    db.prepare(
-      `DELETE FROM bridge_outbox
-       WHERE bridge_id = ? AND direction = ? AND src_message_id = ? AND kind = 'delete'
-         AND state IN ('done', 'failed')`,
-    ).run(bridge.id, direction, messageId);
-
+    // #398 (B2-6): the supersession read + act is ONE repo transaction.
+    // The split it replaces (SELECT pending/failed ids, enqueue whose txn
+    // deletes only still-'pending' rows, then an unconditional spool wipe)
+    // raced the worker's claim: a create row claimed between the SELECT and
+    // the txn SURVIVED the state filter while its spool bytes were wiped
+    // out from under the in-flight send — a permanent park. The txn now
+    // returns the honest verdict (who it deleted, who is still alive).
     const payload = {
       schemaVersion: 1,
       publicId: bridge.public_id,
@@ -1047,19 +1032,23 @@ function enqueueBridgeDelete(message, deps = {}) {
       srcMessageId: messageId,
       enqueuedAt: Date.now(),
     };
-    const row = repo.enqueueBridgeOutbox(bridge.id, {
+    const enq = repo.enqueueBridgeDeleteOutbox(bridge.id, {
       direction,
-      kind: "delete",
       srcMessageId: messageId,
       payload,
     });
 
-    // Filesystem half of supersession: drop the spool bytes of the rows the
-    // transaction just deleted (a missing dir is not an error).
-    if (superseded.length > 0) {
+    // Filesystem half of supersession, GATED on the transaction's verdict
+    // (#398): drop the spool dir only when the delete removed (or, #412,
+    // was preceded by parked rows with) superseded create/edit rows AND
+    // nothing live still owns those bytes — a claimed ('sending') row is
+    // mid-read; a fresh pending one is next in line. A missing dir is not
+    // an error; a live row's dir survives to its own ack/park cleanup.
+    const { pendingDeleted, failedSeen, liveRemaining } = enq.supersede;
+    if ((pendingDeleted > 0 || failedSeen > 0) && liveRemaining === 0) {
       media.deleteSpoolDir(bridge.public_id, messageId);
     }
-    return { enqueued: true, outboxId: Number(row.id) };
+    return { enqueued: true, outboxId: Number(enq.row.id) };
   } catch (err) {
     if (err?.code === "bridge_outbox_duplicate") return null;
     console.error("[bridge] enqueue failed:", err?.message || err);

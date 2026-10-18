@@ -1744,4 +1744,92 @@ describe("bridge edit/delete relay (PR 6)", () => {
     assert.equal(f.patchCalls.length, 0, "nothing changed — no PATCH rides, per §10.7");
   });
 
+  // -------------------------------------------------------------------------
+  // #398 (B2-6): a delete racing the worker's claim must not eat the
+  // in-flight send's spool bytes (read→act supersession race)
+  // -------------------------------------------------------------------------
+
+  it("#398 a delete racing the worker's claim does NOT wipe the in-flight send's bytes", () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-398",
+    });
+    const file = spoolBytes(publicId, msgId, 0, "bytes the send is about to read");
+    const createRow = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: msgId,
+      payload: createPayload(publicId, msgId),
+    });
+
+    // THE RACE, injected: the claim fires between the intake's read of the
+    // supersession set and its enqueue transaction (in-process this is the
+    // claim landing BEFORE the txn — strictly harder than the historical
+    // SELECT-then-claim window, and the split code lost BOTH). The repo
+    // seam wraps whichever enqueue the intake uses.
+    const realRepo = require("../src/db/repositories/bridges");
+    const claimMidFlight = () =>
+      db.db.prepare("UPDATE bridge_outbox SET state = 'sending' WHERE id = ?").run(createRow.id);
+    const racingRepo = {
+      ...realRepo,
+      enqueueBridgeOutbox: (b, o) => {
+        claimMidFlight();
+        return realRepo.enqueueBridgeOutbox(b, o);
+      },
+      enqueueBridgeDeleteOutbox: (b, o) => {
+        claimMidFlight();
+        return realRepo.enqueueBridgeDeleteOutbox(b, o);
+      },
+    };
+
+    const enq = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }), {
+      repo: racingRepo,
+      db: db.db,
+    });
+    assert.ok(enq?.enqueued, "the takedown still enqueues");
+    assert.equal(
+      db.db.prepare(`SELECT state FROM bridge_outbox WHERE id = ?`).get(createRow.id).state,
+      "sending",
+      "the claimed row was not deleted out from under the worker",
+    );
+    assert.ok(
+      fs.existsSync(file),
+      "the in-flight send's spool bytes SURVIVE the supersession (pre-#398 the dir was wiped by the blind gate)",
+    );
+  });
+
+  it("#398 an already-sending row keeps its spool dir even with nothing else in flight (ownership)", () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    relay.clearRelayState();
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-398b",
+    });
+    const file = spoolBytes(publicId, msgId, 0, "still owned by the send");
+    const createRow = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: msgId,
+      payload: createPayload(publicId, msgId),
+    });
+    db.db.prepare("UPDATE bridge_outbox SET state = 'sending' WHERE id = ?").run(createRow.id);
+
+    const enq = relay.enqueueBridgeDelete(srcMessage(msgId, { channelId: channelA }));
+    assert.ok(enq?.enqueued);
+    assert.ok(
+      fs.existsSync(file),
+      "the sending row OWNS its bytes — a later takedown cannot strand the send",
+    );
+  });
+
 });
