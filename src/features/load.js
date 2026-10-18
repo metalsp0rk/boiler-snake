@@ -62,10 +62,19 @@ function applyFeaturesToRegistry(features, registry) {
  * feature is logged (with feature + hook context) and skipped instead of
  * killing the boot loop / login. See AGENTS.md → Error Handling.
  *
- * Graceful-shutdown contract (audit C9): a hook that returns a loop handle —
- * an object with a `stop()` function (e.g. the bridge relay worker) — gets it
- * registered with `core/lifecycle`, so the SIGTERM/SIGINT drain stops exactly
- * what boot started. Features that return nothing contribute nothing.
+ * Graceful-shutdown contract (audit C9 + A2-4/#390):
+ *  - a hook that RETURNS a loop handle ({ stop() }, e.g. the bridge relay
+ *    worker) gets it registered with `core/lifecycle`;
+ *  - a hook that acquires resources BEFORE it can return registers them
+ *    through the third-argument seam `registerStop(fn)` — on a clean return
+ *    they join the drain; if the hook then THROWS, load.js stops them
+ *    itself, LIFO, before moving on. Registration-before-return used to be
+ *    the blind spot: the drain skipped exactly the resource the failed hook
+ *    created, and "drain complete" lied about degraded boots;
+ *  - handles are keyed feature:index:hook — a feature's start handle can
+ *    no longer silently REPLACE its registerEvents handle (lifecycle is
+ *    delete-then-set), and two features without a `name` can no longer
+ *    collide on `feature:unknown`.
  *
  * @param {import("../platform/boot").Supervisor} supervisor
  * @param {object[]} features
@@ -75,22 +84,55 @@ function applyFeaturesToRegistry(features, registry) {
  */
 function runFeatureHook(supervisor, features, ctx, hookName) {
   const failed = [];
-  for (const feature of features) {
+  for (const [index, feature] of features.entries()) {
     if (typeof feature?.[hookName] !== "function") continue;
+    // Display identity stays the human one (pins + logs); the handle key
+    // additionally carries the index and the hook (#390).
+    const display = `${feature.name || "unknown"}.${hookName}`;
+    const handleKey = (slot) =>
+      `feature:${feature.name || "unknown"}#${index}:${hookName}` +
+      (slot === 0 ? "" : `#${slot}`);
+    /** @type {Array<() => (void|Promise<void>)>} resources owned by THIS
+     *  hook since its call — committed to the drain only on a clean return. */
+    const owned = [];
+    const registerStop = (fn) => {
+      if (typeof fn !== "function") {
+        throw new TypeError(`registerStop(${display}): stop function required`);
+      }
+      owned.push(fn);
+    };
     try {
-      const result = feature[hookName](supervisor, ctx);
+      const result = feature[hookName](supervisor, ctx, registerStop);
+      for (let i = 0; i < owned.length; i += 1) {
+        registerShutdownHandle(handleKey(i), owned[i]);
+      }
       if (result && typeof result.stop === "function") {
-        registerShutdownHandle(
-          `feature:${feature.name || "unknown"}`,
-          () => result.stop(),
-        );
+        registerShutdownHandle(handleKey(owned.length), () => result.stop());
       }
     } catch (err) {
-      console.error(
-        `[features] ${feature.name || "unknown"}.${hookName} failed:`,
-        err?.message || err
-      );
-      failed.push(`${feature.name || "unknown"}.${hookName}`);
+      console.error(`[features] ${display} failed:`, err?.message || err);
+      // #390 (A2-4): resources this hook took but never committed are
+      // load.js's to release — LIFO, each failure logged, and a broken
+      // cleanup never masks the original error.
+      for (let i = owned.length - 1; i >= 0; i -= 1) {
+        try {
+          const stopResult = owned[i]();
+          if (stopResult && typeof stopResult.catch === "function") {
+            stopResult.catch((stopErr) =>
+              console.error(
+                `[features] ${display} partial-stop failed:`,
+                stopErr?.message || stopErr,
+              ),
+            );
+          }
+        } catch (stopErr) {
+          console.error(
+            `[features] ${display} partial-stop failed:`,
+            stopErr?.message || stopErr,
+          );
+        }
+      }
+      failed.push(display);
     }
   }
   if (failed.length) {
