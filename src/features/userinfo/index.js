@@ -478,13 +478,24 @@ async function handleUserinfo(commandCtx, featureCtx) {
 
   const counts = loadCounts(commandCtx.communityId, target.id);
   const embed = buildOverviewEmbed(commandCtx.communityId, user, member);
-  await commandCtx.reply({
-    embeds: [embed],
-    components: [
+
+  // #451 (audit): the drill-down buttons (notes / warnings / **Activity**) are
+  // delivered by the DISCORD button handler, and the senior-staff gate for
+  // Activity (AGENTS.md item 4) lives there — `handleUserinfoButton`. Fluxer
+  // has no component ingestion (no INTERACTION dispatch) and its outbound
+  // never serializes `components`, so attaching them there advertised a drill
+  // that could never fire — and silently swallowed the Activity path with no
+  // refusal. Ship the buttons only on the platform that dispatches them; on
+  // Fluxer the reply is the honest overview card (roadmap: userinfo is Fluxer
+  // v1 without Discord decorations). If Fluxer gains component dispatch, gate
+  // on that capability AND carry the senior check to the ctx path.
+  const payload = { embeds: [embed], sensitive: true };
+  if (commandCtx.platform === "discord") {
+    payload.components = [
       buildPrimaryButtons(counts, "o", target.id, normalizeWindow("a")),
-    ],
-    sensitive: true,
-  });
+    ];
+  }
+  await commandCtx.reply(payload);
 }
 
 /**
