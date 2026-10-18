@@ -278,14 +278,53 @@ function createAuthRateLimit(options = {}) {
     max: options.ipMax ?? cfg.authMax,
     keyFor: (req) => ipKey(req),
   });
+  // #403 (C1-3): the user bucket is built EXPLICITLY so it can be hit
+  // after the fact. The middleware below runs at the mount — BEFORE the
+  // callback learns who is logging in — so userKey() can never see an
+  // identity on the exchange path, and the §8.7 "per-user login bucket"
+  // was structurally dead there (the hint published mid-handler, the gate
+  // had already run). The adopt seam under this closure restores the
+  // documented semantics: identity, once revealed, pays into auth_user.
+  const userStore = createRateBucketStore({
+    name: "auth_user",
+    windowMs,
+    max: options.userMax ?? cfg.authUserMax,
+    now,
+    sweepIntervalMs: options.sweepIntervalMs,
+  });
   const userGate = createRateLimitMiddleware({
     ...shared,
+    store: userStore,
     name: "auth_user",
     max: options.userMax ?? cfg.authUserMax,
     keyFor: (req) => userKey(req),
   });
 
   return function authRateLimit(req, res, next) {
+    // #403 seam: called by a login/callback handler the moment the token
+    // exchange reveals the user id. Publishes the hint (logs + later
+    // requests keep keying on it) and consumes ONE auth_user slot for the
+    // resolved identity BEFORE any session state is written — the handler
+    // must abort with 429 when the outcome says allowed:false. Returns
+    // null when nothing new is counted (empty id; or the LIVE session was
+    // already charged by the gate at the mount — never double-bill an
+    // already-authenticated re-auth), or the bucket outcome otherwise.
+    req.rateLimitAdoptUser = (userId) => {
+      const id = userId == null ? "" : String(userId);
+      if (id === "") return null;
+      req.rateLimitUserHint = id;
+      if (req.rateLimitAdoptedUser === id) {
+        return { allowed: true, remaining: 0, retryAfterSec: 0 };
+      }
+      if (req.user && String(req.user.userId) === id) {
+        // The mount-time userGate already charged this session's identity
+        // for this exact request — adopting is bookkeeping only.
+        req.rateLimitAdoptedUser = id;
+        return null;
+      }
+      req.rateLimitAdoptedUser = id;
+      return userStore.hit(`u:${id}`);
+    };
     ipGate(req, res, () => userGate(req, res, next));
   };
 }
