@@ -71,6 +71,12 @@ function deleteReactionRolePanel(communityId, messageId) {
   DELETE FROM reaction_role_options
   WHERE community_id=? AND message_id=?
   `).run(communityId, messageId);
+  // #433: dead options cannot hold claims — prune before the refcount can
+  // ever see them (the join already guards, this keeps the table honest).
+  db.prepare(`
+  DELETE FROM reaction_role_claims
+  WHERE community_id=? AND message_id=?
+  `).run(communityId, messageId);
   const result = db.prepare(`
   DELETE FROM reaction_role_panels
   WHERE community_id=? AND message_id=?
@@ -132,6 +138,11 @@ function deleteReactionRoleOption(communityId, messageId, emojiKey) {
   DELETE FROM reaction_role_options
   WHERE community_id=? AND message_id=? AND emoji_key=?
   `).run(communityId, messageId, emojiKey);
+  // #433: prune the option's claims (see panel delete).
+  db.prepare(`
+  DELETE FROM reaction_role_claims
+  WHERE community_id=? AND message_id=? AND emoji_key=?
+  `).run(communityId, messageId, emojiKey);
   return result.changes > 0;
 }
 
@@ -180,6 +191,57 @@ function listReactionRoleLevelRequirements(communityId) {
   `).all(communityId);
 }
 
+// ── Claims (#433, audit E2-09) ─────────────────────────────────────────────
+// A claim row exists while the user's accepted option reaction stands. The
+// strip path refcounts claims JOINed against LIVE options: an option deleted
+// mid-claim can never keep a role alive (the join drops its claims too).
+
+/**
+ * Record (or refresh) one accepted option reaction as a claim.
+ */
+function recordReactionRoleClaim(communityId, userId, messageId, emojiKey) {
+  assertCommunityId(communityId);
+  db.prepare(`
+  INSERT INTO reaction_role_claims (community_id, user_id, message_id, emoji_key, claimed_at)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT (community_id, user_id, message_id, emoji_key)
+  DO UPDATE SET claimed_at = excluded.claimed_at
+  `).run(communityId, String(userId), String(messageId), String(emojiKey), now());
+}
+
+/**
+ * Forget one claim (the reaction was removed — or the option/panel died;
+ * the delete paths prune in bulk).
+ */
+function deleteReactionRoleClaim(communityId, userId, messageId, emojiKey) {
+  assertCommunityId(communityId);
+  const result = db.prepare(`
+  DELETE FROM reaction_role_claims
+  WHERE community_id=? AND user_id=? AND message_id=? AND emoji_key=?
+  `).run(communityId, String(userId), String(messageId), String(emojiKey));
+  return result.changes > 0;
+}
+
+/**
+ * Cross-panel refcount: how many claim options for THIS user still grant
+ * roleId (claims JOIN live options, so deleted options stop counting).
+ * Call AFTER deleting the current reaction's claim — the answer then means
+ * "still claimed somewhere else".
+ */
+function countReactionRoleClaimsForRole(communityId, userId, roleId) {
+  assertCommunityId(communityId);
+  const row = db.prepare(`
+  SELECT COUNT(*) AS n
+  FROM reaction_role_claims c
+  JOIN reaction_role_options o
+    ON o.community_id = c.community_id
+   AND o.message_id = c.message_id
+   AND o.emoji_key = c.emoji_key
+  WHERE c.community_id=? AND c.user_id=? AND o.role_id=?
+  `).get(communityId, String(userId), String(roleId));
+  return Number(row?.n) || 0;
+}
+
 module.exports = {
   createReactionRolePanel,
   getReactionRolePanel,
@@ -193,4 +255,7 @@ module.exports = {
   getReactionRoleOption,
   countReactionRoleOptions,
   listReactionRoleLevelRequirements,
+  recordReactionRoleClaim,
+  deleteReactionRoleClaim,
+  countReactionRoleClaimsForRole,
 };

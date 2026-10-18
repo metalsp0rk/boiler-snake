@@ -11,7 +11,10 @@ Bot-owned **panel messages** where members claim roles by reacting with configur
    - **Configured emoji** + level met → role granted
    - **Configured emoji** + level too low → reaction removed; bot tries to DM the requirement
    - **Unconfigured emoji** → reaction is stripped from the panel (requires **Manage Messages**)
-5. When a member removes a reaction on a **removable** option → role removed
+5. When a member removes a reaction on a **removable** option → role removed — **but only if no
+   other option (on any panel in the server) still grants that same role and is still reacted to**.
+   Panels deployed as copies share options, so un-reacting one copy never strips a role another
+   copy still claims (#433); the role drops with the **last** claim.
 
 `/reactionrole sync` and panel refresh also wipe any leftover unconfigured reactions from the message.
 
