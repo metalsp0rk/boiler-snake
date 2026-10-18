@@ -20,7 +20,11 @@ function getLavalinkConfig() {
   return {
     host,
     port: Number.isFinite(port) && port > 0 ? port : 2333,
-    authorization: String(process.env.LAVALINK_PASSWORD || "youshallnotpass"),
+    // No public default (#455, audit H2-7): config rule 2 already blocks
+    // host-set/password-missing at boot; reaching this line with no password
+    // means the gate was bypassed — auth stays empty (an honest 401), never
+    // Lavalink's most-published credential.
+    authorization: String(process.env.LAVALINK_PASSWORD || ""),
     secure: process.env.LAVALINK_SECURE === "true",
   };
 }

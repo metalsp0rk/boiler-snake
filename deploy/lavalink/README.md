@@ -20,7 +20,10 @@ The `lavalink` service reads `deploy/lavalink/application.yml` and downloads plu
 ```env
 LAVALINK_HOST=127.0.0.1
 LAVALINK_PORT=2333
-LAVALINK_PASSWORD=youshallnotpass
+# Any strong secret, matching lavalink's server.password below — the public
+# "youshallnotpass" default is rejected by design (#455): the node needs
+# LAVALINK_SERVER_PASSWORD set or Spring fails it at startup.
+LAVALINK_PASSWORD=REPLACE_ME_SHARED_WITH_THE_BOT
 SPOTIFY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID
 SPOTIFY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET
 ```

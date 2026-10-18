@@ -16,6 +16,7 @@ docker compose run --rm bot node src/commands/register.js
 ## Critical Setup Notes
 
 - **Database**: SQLite (`xpbot.sqlite`). Default: project root. Override with `DATA_DIR` (dir) or `DB_PATH` (full file path). Docker compose uses `DATA_DIR=/data` + named volume.
+- **Lavalink under compose**: `LAVALINK_PASSWORD` is **required in `.env`** (#455) — compose always runs the sidecar and aborts when the variable is unset (no more `youshallnotpass` defaults; this is what makes the #205 boot fail-fast reachable).
 - **Environment**: `.env` is ignored. Boot gate (`assertRuntimeEnv`): at least one platform credential — `DISCORD_TOKEN` **or** `FLUXER_INSTANCES` (a malformed Fluxer block throws even when a token is set). `CLIENT_ID` is optional for login but boot `[config] WARN`s without it and registration/OAuth/web-sign-in stay dark; `npm run register` itself requires **both** `DISCORD_TOKEN` and `CLIENT_ID`. Optional: `DEV_GUILD_ID` for instant command registration.
 - **Never commit secrets**: Do not put real or realistic-looking API keys, tokens, passwords, or credentials in the repo — including docs, examples, tests, comments, or commit messages. Use clearly fake placeholders (e.g. `YOUR_YOUTUBE_API_KEY`, `YOUR_BOT_TOKEN`). Real secrets belong only in `.env` (gitignored) or a secret manager. Patterns like Google `AIza…` keys trigger GitHub secret scanning even in documentation.
 - **Discord Intents**: Enable "Message Content Intent" in Developer Portal for reliable message tracking.

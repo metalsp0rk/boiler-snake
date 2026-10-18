@@ -60,10 +60,15 @@ npm start
 ### Option B: Docker Compose
 
 ```bash
-cp .env.example .env   # set DISCORD_TOKEN (+ CLIENT_ID for the register step)
+cp .env.example .env   # set DISCORD_TOKEN, CLIENT_ID, and LAVALINK_PASSWORD
 docker compose up -d --build
 docker compose run --rm bot node src/commands/register.js
 ```
+
+> **LAVALINK_PASSWORD is required** under Compose (#455): the shipped file always
+> runs a Lavalink sidecar, and both containers must share a password. It no longer
+> defaults to the public `youshallnotpass` — Compose aborts with a specific message
+> when it is unset (the #205 boot fail-fast, previously unreachable under Compose).
 
 Or pull a published image (after a release):
 
