@@ -645,6 +645,58 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
     return { externalGuildId: String(row.externalGuildId) };
   }
 
+  /**
+   * #386 (FLX-5): the guild-scope verdict from an ALREADY-IN-HAND channel
+   * payload. The Discord adapter is guild-scoped wherever it takes a
+   * community (fetchMessage resolves THROUGH the guild — a channel
+   * outside it is "not found"); this is the Fluxer-side mirror, computed
+   * from the Phase-0-recorded ownership fields (`community_id`,
+   * `guild_id` alias tolerated — the same order communityIdForChannel
+   * uses):
+   *   true  — provably the community's channel,
+   *   false — provably a FOREIGN one → callers refuse the read,
+   *   null  — unprovable (community row gone, payload without an
+   *           ownership hint e.g. DM) → callers fail open: exactly
+   *           Discord's bot-wide-channel visibility for THAT subset,
+   *           never for a provably foreign id.
+   *
+   * @param {{ externalGuildId: string }|null} row community row
+   * @param {any} d parsed channel payload
+   * @returns {boolean|null}
+   */
+  function scopeVerdictFromPayload(row, d) {
+    if (!row || !d || typeof d !== "object") return null;
+    const external = d.community_id ?? d.guild_id;
+    if (external == null) return null;
+    return String(external) === String(row.externalGuildId);
+  }
+
+  /**
+   * Same verdict from a fresh channel GET. An UNREADABLE channel yields
+   * null (fail-open): the caller's primary read surfaces the real
+   * outcome (404/permission) with the platform's own words.
+   *
+   * @param {number} communityId
+   * @param {string} channelId
+   * @returns {Promise<boolean|null>}
+   */
+  async function channelScopeVerdict(communityId, channelId) {
+    const row = getCommunityById(communityId);
+    if (!row) return null;
+    let d = null;
+    try {
+      d = await rest.request("GET", `/v1/channels/${String(channelId)}`);
+    } catch {
+      // QUIET by design, and not a silent drop (AGENTS.md rule 2 holds):
+      // an unreadable channel's REAL failure is carried, with the
+      // platform's own words, by the primary read this probe guards —
+      // logging the same cause twice would only teach people to ignore
+      // it (the reaction-roles "no degraded legs" doctrine).
+      return null;
+    }
+    return scopeVerdictFromPayload(row, d);
+  }
+
   const outbound = {
     platform: "fluxer",
     instanceKey,
@@ -679,6 +731,7 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
       }
     },
 
+
     /**
      * @param {number} communityId
      * @param {string} channelId
@@ -689,6 +742,15 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
       try {
         const d = await rest.request("GET", `/v1/channels/${String(channelId)}`);
         if (!d || typeof d !== "object") return null;
+        // #386 (FLX-5): a channel provably owned by ANOTHER community is
+        // "not found" — the Discord adapter's guild semantics, enforced
+        // with zero extra REST (the payload already says who owns it).
+        if (scopeVerdictFromPayload(getCommunityById(communityId), d) === false) {
+          console.warn(
+            `[fluxer] fetchChannel: channel ${channelId} refused for community ${communityId} — owned by external guild ${d.community_id ?? d.guild_id}`,
+          );
+          return null;
+        }
         return {
           id: String(d.id ?? channelId),
           type: typeof d.type === "number" ? d.type : (d.type ?? null),
@@ -1131,6 +1193,24 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
      * @returns {Promise<{ ok: true, messages: Array<{ id: string, authorId: string|null, authorBot: boolean, content: string, createdAt: string|null }> }|{ ok: false, error: string, code?: string }>}
      */
     async fetchMessages(channelId, query = {}) {
+      // #386 (FLX-5): callers that KNOW the community (the trigger history
+      // shim, the ticket archive) pass it as query.communityId; a provably
+      // foreign channel is refused BEFORE any history crosses the seam.
+      // The wire query is rebuilt from known keys below — communityId never
+      // leaves the process. read_history self-enforces upstream via
+      // communityIdForChannel (decision 46) and needs no change.
+      const scopedCommunityId = Number.isSafeInteger(query?.communityId)
+        ? query.communityId
+        : null;
+      if (
+        scopedCommunityId != null &&
+        (await channelScopeVerdict(scopedCommunityId, channelId)) === false
+      ) {
+        return {
+          ok: false,
+          error: `fetchMessages: channel ${channelId} not found in community ${scopedCommunityId}`,
+        };
+      }
       const limit = Number.isSafeInteger(query?.limit) ? query.limit : 100;
       const q = { limit };
       if (query?.before) q.before = String(query.before);
@@ -1180,6 +1260,17 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
       assertCommunityId(communityId);
       if (messageId == null || String(messageId) === "") {
         return { ok: false, error: "fetchMessage: a messageId is required" };
+      }
+      // #386 (FLX-5): the guild-scope gate runs BEFORE the message is read
+      // (one channel GET — the same total REST cost as verifying after,
+      // with nothing fetched-but-hidden in the middle). Mismatch answers in
+      // the Discord adapter's EXACT guild-scope shape, so callers'
+      // "not found" paths cover both platforms verbatim.
+      if ((await channelScopeVerdict(communityId, channelId)) === false) {
+        return {
+          ok: false,
+          error: `fetchMessage: channel ${channelId} not found in community ${communityId}`,
+        };
       }
       let d;
       try {
