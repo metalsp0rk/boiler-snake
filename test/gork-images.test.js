@@ -337,7 +337,7 @@ describe("prepareVisionImages (data URLs + degradation)", () => {
       { fetchImpl: impl, resolveHost: publicResolver, ids, limits: { maxImageBytes: 64 } },
     );
     assert.equal(out.sent, 0);
-    assert.match(out.notes[0], /downloaded \d+ bytes exceed/);
+    assert.match(out.notes[0], /downloaded bytes exceed the 64-byte cap/);
   });
 
   it("applies the per-request image count cap with a note", async () => {
@@ -515,5 +515,49 @@ describe("visionLimits (env knobs)", () => {
     process.env.GORK_VISION_MAX_TOTAL_BYTES = "5678";
     assert.equal(im.visionLimits().maxImageBytes, 1234);
     assert.equal(im.visionLimits().maxTotalBytes, 5678);
+  });
+});
+
+// #414 (LT-7): the vision download stops AT maxImageBytes mid-stream —
+// a lying declared size can no longer buffer the whole giant body first.
+describe("vision streamed image cap (#414)", () => {
+  const ids = { guildId: "g1", userId: "u1", messageId: "m1" };
+
+  it("stops the drip AT the image cap, names the cap, cancels the transfer", async () => {
+    let reads = 0;
+    let cancelled = 0;
+    const impl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        getReader() {
+          let sent = 0;
+          return {
+            read: async () => {
+              reads += 1;
+              if (sent >= 10) return { done: true, value: undefined };
+              sent += 1;
+              return { done: false, value: Buffer.alloc(16, 1) };
+            },
+            cancel: async () => {
+              cancelled += 1;
+            },
+          };
+        },
+      },
+      arrayBuffer: async () => {
+        reads = 10;
+        return Buffer.alloc(160);
+      },
+    });
+    const out = await im.prepareVisionImages(
+      [{ url: "https://x/drip.png", name: "drip.png", contentType: "image/png", size: 4, origin: "trigger" }],
+      { fetchImpl: impl, resolveHost: publicResolver, ids, limits: { maxImageBytes: 64 } },
+    );
+    assert.equal(out.sent, 0);
+    assert.match(out.notes[0], /bytes exceed the 64-byte cap \(stopped mid-stream\)/);
+    assert.ok(reads <= 6, `the transport stopped at the cap (reads=${reads}; whole-buffer path = 10)`);
+    assert.equal(cancelled, 1, "the drip transfer is cancelled — not left trickling");
   });
 });

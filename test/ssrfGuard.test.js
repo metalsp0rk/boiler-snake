@@ -780,3 +780,181 @@ describe("ssrfGuard DNS pin (#415/BRG-9)", () => {
     assert.equal(sawDestroy, true, "cancel tears the socket down — no silent buffering beyond the cap");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #414 (BRG-8/LT-7): the timeout covers the BODY too, and maxBytes is
+// enforced WHILE streaming — never "buffer everything, then check".
+// ---------------------------------------------------------------------------
+
+describe("ssrfGuard body-phase timeout + streamed cap (#414)", () => {
+  /** Fake timer seam: arm captures the abort cb; clears are recorded. */
+  function fakeTimers() {
+    const armed = [];
+    const cleared = [];
+    return {
+      armed,
+      cleared,
+      setTimer: (fn) => {
+        armed.push(fn);
+        return { id: armed.length };
+      },
+      clearTimer: (handle) => cleared.push(handle),
+      /** Fire the live timer the way the real one would. */
+      fire: () => armed.forEach((fn) => fn()),
+    };
+  }
+
+  /** Response whose body streams scripted chunks with observability. */
+  function streamingRes(chunks, { signal = null } = {}) {
+    const state = { reads: 0, cancelled: 0 };
+    let i = 0;
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null }, // chunked: NO content-length
+      body: {
+        getReader() {
+          return {
+            read: async () => {
+              state.reads += 1;
+              if (signal) {
+                // A slow-drip host: this read only finishes if someone
+                // aborts — the real transport rejects the stream then.
+                await new Promise((resolve, reject) => {
+                  if (signal.aborted) return reject(new Error("This operation was aborted"));
+                  signal.addEventListener("abort", () => reject(new Error("This operation was aborted")), { once: true });
+                  if (!signal) resolve();
+                });
+              }
+              if (i >= chunks.length) return { done: true, value: undefined };
+              return { done: false, value: chunks[i++] };
+            },
+            cancel: async () => {
+              state.cancelled += 1;
+            },
+          };
+        },
+      },
+      // Buffered fallback the OLD code path used — kept so a regression to
+      // "buffer everything" still completes the download (and reads all).
+      arrayBuffer: async () => {
+        const all = Buffer.concat(chunks);
+        state.reads = chunks.length;
+        return all;
+      },
+      state,
+    };
+  }
+
+  it("the timer STAYS ARMED through the body read (cleared only after)", async () => {
+    const t = fakeTimers();
+    const res = streamingRes([Buffer.from("hello")]);
+    const out = await guard.downloadGuarded("https://slow.test/a.png", {
+      resolveHost: publicResolve,
+      fetchImpl: async () => res,
+      maxBytes: 1 << 20,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    assert.equal(out.ok, true);
+    assert.equal(t.armed.length, 1, "one timer per hop");
+    assert.equal(t.cleared.length, 1, "cleared exactly once, AFTER the body settled");
+  });
+
+  it("a slow-drip body that outlives the timeout is a TIMEOUT, not a hang", async () => {
+    const t = fakeTimers();
+    let capturedSignal = null;
+    let reads = 0;
+    const res = {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: {
+        getReader() {
+          return {
+            read: async () => {
+              reads += 1;
+              if (reads === 1) return { done: false, value: Buffer.from("first") };
+              // the drip stops here — only the abort timer ends this read
+              return await new Promise((_resolve, reject) => {
+                capturedSignal.addEventListener("abort", () =>
+                  reject(new Error("This operation was aborted")),
+                );
+              });
+            },
+            cancel: async () => {},
+          };
+        },
+      },
+      // the pre-#414 buffered path — if a regression buffers instead of
+      // streaming, this throws and the failure reason says so.
+      arrayBuffer: async () => {
+        throw new Error("buffered read of a drip body (timer would be cleared!)");
+      },
+    };
+    const pending = guard.downloadGuarded("https://drip.test/a.png", {
+      resolveHost: publicResolve,
+      fetchImpl: async (_u, init) => {
+        capturedSignal = init.signal;
+        return res;
+      },
+      maxBytes: 1 << 20,
+      setTimer: t.setTimer,
+      clearTimer: t.clearTimer,
+    });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(t.cleared.length, 0, "the timer is STILL ARMED while the body is mid-read");
+    t.fire(); // the per-attempt timeout expiring — NOW it still has teeth
+    const out = await pending;
+    assert.equal(out.ok, false);
+    assert.equal(
+      out.reason,
+      "download timed out",
+      "a stalled BODY is the same named failure as a stalled header phase",
+    );
+  });
+
+  it("over-cap chunked bodies are stopped AT the cap and CANCELLED — never buffered whole", async () => {
+    const chunk = Buffer.alloc(1024, 7);
+    const res = streamingRes(Array.from({ length: 20 }, () => chunk), {});
+    const out = await guard.downloadGuarded("https://giant.test/a.bin", {
+      resolveHost: publicResolve,
+      fetchImpl: async () => res,
+      maxBytes: 4096,
+    });
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, "file too large (5120 bytes)",
+      "refuses the moment the STREAM crosses the cap (5×1KiB > 4096) — the old code buffered all 20 KiB and named THAT size");
+    assert.ok(res.state.reads <= 6, `reads stopped at the cap, saw ${res.state.reads}`);
+    assert.equal(res.state.cancelled >= 1, true, "the transfer is cancelled, not abandoned open");
+  });
+
+  it("within-cap streamed bodies land whole", async () => {
+    const res = streamingRes([Buffer.from("ab"), Buffer.from("cd")], {});
+    const out = await guard.downloadGuarded("https://fine.test/a.bin", {
+      resolveHost: publicResolve,
+      fetchImpl: async () => res,
+      maxBytes: 4096,
+    });
+    assert.equal(out.ok, true);
+    assert.equal(out.bytes.toString(), "abcd");
+  });
+
+  it("the declared content-length pre-check still refuses BEFORE reading", async () => {
+    let touched = false;
+    const out = await guard.downloadGuarded("https://liar.test/a.png", {
+      resolveHost: publicResolve,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: (n) => (n === "content-length" ? "999999" : null) },
+        body: { getReader: () => { touched = true; throw new Error("unread"); } },
+        arrayBuffer: async () => { touched = true; return new Uint8Array(); },
+      }),
+      maxBytes: 4096,
+    });
+    assert.equal(out.ok, false);
+    assert.match(out.reason, /file too large \(999999 bytes\)/);
+    assert.equal(touched, false, "the body must not be touched for a lying declared size");
+  });
+});
