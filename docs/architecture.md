@@ -133,8 +133,10 @@ const supervisor = { discord, fluxer, clientForCommunity };  // N endpoints, one
 
 // Feature gate: arms when >=1 endpoint is READY (Discord ClientReady, or a
 //   Fluxer handle whenever Discord is not live — including after a terminal
-//   Discord failure). Never armed on a dead process. Watchdog logs what it is
-//   waiting on after FEATURE_GATE_WATCHDOG_MS (default 120000, 0 disables).
+//   Discord failure). Never armed on a dead process. The watchdog RE-ARMS:
+//   every FEATURE_GATE_WATCHDOG_MS window (default 120000, 0 disables)
+//   re-logs what it waits on (#392); FEATURE_GATE_MAX_HOLD_MS (default 0 =
+//   never) caps the hold with a documented DEGRADED open.
 
 // startAllFeatures runs load.js hooks per feature with failure isolation
 //   ([features] <name>.start failed: logged, skipped) and registers any
@@ -157,7 +159,8 @@ The **web** feature's `start()` wires the Discord seams (`setBotGuildsProvider`,
 
 - **Discord login rejected/failed** → one specific fatal (`[boot] discord login failed: … — endpoint disabled for this process`), the dead client is released, and `supervisor.discord` returns to `null` — exactly the state a Fluxer-only boot has — so the feature layer arms on the surviving Fluxer endpoint(s). Discord-hard features are isolated by the per-feature boot hooks (`[features] <name>.start failed:` logged, skipped). A bad `DISCORD_TOKEN` degrades; it does not zombie-boot or kill the process.
 - **No endpoint ever ready** → the feature gate stays shut (no tickers/web console/relay on a dead process); `boot()` reports `{ ok:false, exitCode:1 }` and `src/index.js` exits **through the lifecycle drain** (`core/lifecycle.drainAndExit`).
-- **Watchdog** → if the gate has not opened within `FEATURE_GATE_WATCHDOG_MS` (default 120000, `0` disables), boot logs `[boot] watchdog: feature layer has not started after …ms — still waiting on: …` naming the endpoint(s) still pending. One-shot, unref'd, cleared when the gate opens or the all-endpoints-failed fatal owns the outcome.
+- **Watchdog** → if the gate has not opened within `FEATURE_GATE_WATCHDOG_MS` (default 120000, `0` disables), boot logs `[boot] watchdog: feature layer has not started after …ms — still waiting on: …` naming the endpoint(s) still pending — and **re-arms**: every window re-reports while the gate is shut (#392; the old one-shot made the second hour silent). Unref'd, cleared when the gate opens or the all-endpoints-failed fatal owns the outcome.
+- **Max-hold (degraded open)** → `FEATURE_GATE_MAX_HOLD_MS` (default `0` = never force, the C7 contract) bounds how long a READY Fluxer endpoint waits on an unsettled Discord login. When the cap elapses and the in-flight login is the SOLE blocker (≥1 Fluxer handle live, none still connecting — else it retries next window), boot logs `[boot] DEGRADED gate open …`, features arm on the live endpoint, and `supervisor.discord` **reads null** while the login crawls — the same degrade signal a Fluxer-only boot and the C7 terminal path already use. A late `ClientReady` lifts the hold and logs a notice; features that skipped need a restart (their sockets were never cancelled).
 
 ### Feature module contract
 
