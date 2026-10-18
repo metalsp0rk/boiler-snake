@@ -58,6 +58,7 @@ describe("userLinks repo (account-linking T1)", () => {
         "getLinkCodeByHash",
         "consumeLinkCode",
         "purgeExpiredLinkCodes",
+        "deletePendingLinkCodesFor",
         "hasActiveBridgeBetween",
         "setUserLinkMirrorPct",
         "setUserLinkMirrorMemory",
@@ -328,6 +329,48 @@ describe("userLinks repo (account-linking T1)", () => {
       // The used row remains readable (used_at set) so connect can report
       // "already used" on replays, like bridges keep code_hash on active rows.
       assert.equal(api.getLinkCodeByHash(hash).used_at, consumed.used_at);
+    });
+
+    // #426 (audit LT-12): void UNSPENT codes per tuple — single live code
+    // on re-mint, and unlink hygiene.
+    it("deletePendingLinkCodesFor deletes ONLY unspent codes of the exact tuple", () => {
+      const h = (n) => digestFor(`code-426-${n}`);
+      const mk = (cid, uid, n) =>
+        api.createLinkCode({ communityId: cid, userId: uid, codeHash: h(n) });
+
+      mk(dcGuild, "void-u-1", "pending");
+      mk(dcGuild, "void-u-1", "used");
+      mk(dcGuild, "void-u-2", "other-user");
+      api.consumeLinkCode(h("used"));
+
+      const deleted = api.deletePendingLinkCodesFor(dcGuild, "void-u-1");
+      assert.equal(deleted, 1, "only the unspent row of that tuple");
+      assert.equal(api.getLinkCodeByHash(h("pending")), null, "the pending code is gone");
+      assert.ok(api.getLinkCodeByHash(h("used")), "the USED row survives for replay reporting");
+      assert.ok(api.getLinkCodeByHash(h("other-user")), "other tuples untouched");
+
+      // Second void: nothing pending left → 0 (used rows are never touched).
+      assert.equal(api.deletePendingLinkCodesFor(dcGuild, "void-u-1"), 0);
+      // Unknown tuple → 0, not a throw.
+      assert.equal(api.deletePendingLinkCodesFor(dcGuild, "nobody"), 0);
+
+      // VOID SCOPE = LIVE unspent only. An EXPIRED unspent row of the same
+      // tuple is unredeemable and belongs to the purge sweeper — voiding it
+      // here silently ate the sweeper's fixture in the live e2e suite
+      // (re-minting same-tuple cleared the seeded expired code before the
+      // purge test ever saw it).
+      api.createLinkCode({
+        communityId: dcGuild,
+        userId: "void-u-3",
+        codeHash: h("expired"),
+        expiresAt: Date.now() - 1000,
+      });
+      mk(dcGuild, "void-u-3", "alive");
+      assert.equal(api.deletePendingLinkCodesFor(dcGuild, "void-u-3"), 1, "only the live row");
+      assert.ok(api.getLinkCodeByHash(h("expired")), "expired row survives void for the sweeper");
+      assert.equal(api.getLinkCodeByHash(h("alive")), null);
+      assert.ok(api.purgeExpiredLinkCodes(Date.now()) >= 1, "purge still reaps it");
+      assert.equal(api.getLinkCodeByHash(h("expired")), null, "purged");
     });
 
     it("consume honors the expiry clock: expired codes never redeem", () => {

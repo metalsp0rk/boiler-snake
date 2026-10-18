@@ -297,6 +297,20 @@ async function createLinkCode(communityId, userId, opts = {}) {
 
     const lifetimeMs = linkRepo.LINK_CODE_LIFETIME_MS ?? repo.LINK_CODE_LIFETIME_MS;
     const expiresAt = clock() + lifetimeMs;
+    // #426 (audit LT-12): ONE live code per (community, user). Prior unspent
+    // codes are voided BEFORE minting — stale plaintexts (forwarded DMs,
+    // shoulder-surfed codes) must not stack alongside the fresh one. If the
+    // mint then fails the safe state is "no codes": the user just runs it
+    // again. Used rows survive for "already used" replay reporting.
+    let voidedPriorCodes = 0;
+    try {
+      voidedPriorCodes = linkRepo.deletePendingLinkCodesFor(cid, uid);
+    } catch (err) {
+      console.error(
+        `[linking] createLinkCode: could not void prior codes for community ${cid} user ${uid}:`,
+        causeOf(err),
+      );
+    }
     let created = null;
     let lastError = null;
     // Collision-retry: a minted digest already in the table (astronomically
@@ -340,6 +354,8 @@ async function createLinkCode(communityId, userId, opts = {}) {
       platform: community.platform,
       lifetimeMs,
       surfaceCmd,
+      // #426: how many stale unspent codes this mint superseded (0 = first).
+      voidedPriorCodes,
     };
   } catch (err) {
     // Programmer errors (bad community id / user id) surface as a specific
@@ -551,6 +567,12 @@ async function redeemLinkCode(communityId, userId, rawCode, opts = {}) {
       // The peer seen from the caller's side (the code's owner).
       peer: describePeer(created.link, callerIsA ? "a" : "b"),
       codeBurned: true,
+      // #426 (audit LT-12): the code's creator must LEARN their code was
+      // redeemed — the handler DMs this tuple (the squat was silent before).
+      codeCreator: {
+        communityId: codeRow.community_id,
+        userId: codeRow.user_id,
+      },
     };
   } catch (err) {
     console.error(
@@ -616,9 +638,29 @@ function removeLink(communityId, userId, opts = {}) {
     const uid = requireUserId(userId, "userId");
     const res = linkRepo.removeLink(cid, uid);
     if (!res.ok) return { ok: false, error: res.error };
+    // #426 (audit LT-12): removing the link voids BOTH sides' unspent codes
+    // — stale plaintexts must not (re-)link or squat after the unlink.
+    // Best-effort: the unlink itself already succeeded (rule 5: report the
+    // partial leg, never undo the truth).
+    const link = res.link;
+    let voidedPendingCodes = 0;
+    for (const [cc, uu] of [
+      [link.community_id_a, link.user_id_a],
+      [link.community_id_b, link.user_id_b],
+    ]) {
+      try {
+        voidedPendingCodes += linkRepo.deletePendingLinkCodesFor(cc, uu);
+      } catch (err) {
+        console.error(
+          `[linking] removeLink: could not void pending codes for community ${cc} user ${uu}:`,
+          causeOf(err),
+        );
+      }
+    }
     return {
       ok: true,
-      link: res.link,
+      link,
+      voidedPendingCodes,
       note:
         "XP and memories already mirrored on the other platform stay in place; " +
         "mirroring stops from now on.",

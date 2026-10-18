@@ -524,6 +524,35 @@ function purgeExpiredLinkCodes(at = now()) {
   return db.prepare(`DELETE FROM user_link_codes WHERE expires_at <= ?`).run(ts).changes;
 }
 
+/**
+ * Void the LIVE UNSPENT codes for one (community, user) tuple (#426):
+ * minting a new code or removing a link must not leave earlier plaintexts
+ * alive in someone else's DM history — stacked codes were the squat
+ * amplifier. Already-expired rows stay for {@link purgeExpiredLinkCodes}
+ * (they are unredeemable; stealing them here would mute the sweeper's
+ * signal), and used rows stay until the expiry sweep so replay attempts
+ * keep reporting "already used".
+ *
+ * @param {number} communityId
+ * @param {string} userId
+ * @returns {number} deleted row count
+ */
+function deletePendingLinkCodesFor(communityId, userId) {
+  const cid = assertCommunityId(communityId);
+  const uid = requireUserId(userId, "userId");
+  // Void scope = LIVE unspent codes of this tuple. Already-EXPIRED rows are
+  // unreachable for redemption and belong to {@link purgeExpiredLinkCodes};
+  // sweeping them here would steal the sweeper's signal (a purge test seeds
+  // an expired row and asserts it survives until the purge runs).
+  return db
+    .prepare(
+      `DELETE FROM user_link_codes
+       WHERE community_id = ? AND user_id = ? AND used_at IS NULL
+         AND expires_at > ?`,
+    )
+    .run(cid, uid, Date.now()).changes;
+}
+
 // ---------------------------------------------------------------------------
 // Bridge-pair gate (design bundle: links only live between bridge-paired
 // communities)
@@ -573,6 +602,7 @@ module.exports = {
   getLinkCodeByHash,
   consumeLinkCode,
   purgeExpiredLinkCodes,
+  deletePendingLinkCodesFor,
   // pairing gate
   hasActiveBridgeBetween,
 };

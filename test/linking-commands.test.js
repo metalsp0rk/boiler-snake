@@ -137,6 +137,14 @@ const discordClient = createClient();
  * through supervisor.clientForCommunity(peerCommunityId).fetchMember — the
  * same accessor bridge/handlers use. Fakes supply names for both platforms.
  */
+/**
+ * #426 (audit LT-12): DMs delivered through supervisor.clientForCommunity
+ * (the code-creator redeem notice) are captured here. dmFailNext arms the
+ * dcId client's next sendDm with a value-shaped failure.
+ */
+const dmLog = [];
+let dmFailNext = false;
+
 const nameSupervisor = {
   clientForCommunity(id) {
     if (id === fxId) {
@@ -145,6 +153,10 @@ const nameSupervisor = {
         async fetchMember() {
           return { user: { username: "flux-name" } };
         },
+        async sendDm(userId, payload) {
+          dmLog.push({ communityId: id, userId, content: String(payload?.content ?? "") });
+          return { ok: true };
+        },
       };
     }
     if (id === dcId) {
@@ -152,6 +164,14 @@ const nameSupervisor = {
         platform: "discord",
         async fetchMember() {
           return { user: { username: "disc-name" } };
+        },
+        async sendDm(userId, payload) {
+          if (dmFailNext) {
+            dmFailNext = false;
+            return { ok: false, error: "user disabled DMs" };
+          }
+          dmLog.push({ communityId: id, userId, content: String(payload?.content ?? "") });
+          return { ok: true };
         },
       };
     }
@@ -877,5 +897,68 @@ describe("linking command surface (account-linking T3/T6)", () => {
       ),
       out.body.content,
     );
+  });
+
+  // ── #426 (audit LT-12): redeeming SIGNALS the creator; codes never stack ──
+
+  it("#426 connect DMs the code's creator — redeemed, peer named, defaults spelled out", async () => {
+    const { interaction, ctx } = makeDiscordCtx({
+      userId: "disc-cmd-426a",
+      subcommand: "create",
+    });
+    await handleLink(ctx, discordFeatureCtx);
+    const code = lastReplyContent(interaction).match(CODE_RE)?.[0];
+    assert.ok(code, "creator minted a code");
+    const before = dmLog.length;
+
+    const out = await runFluxer(`!link connect code ${code}`, "flux-cmd-426a");
+    assert.match(out.body.content, /^Linked/, out.body.content);
+
+    const notice = dmLog
+      .slice(before)
+      .find((d) => d.communityId === dcId && d.userId === "disc-cmd-426a");
+    assert.ok(
+      notice,
+      `creator DM notice expected (RED on old code: redemption was silent) — got ${JSON.stringify(dmLog.slice(before))}`,
+    );
+    assert.match(notice.content, /redeemed/i);
+    assert.match(notice.content, /flux-cmd-426a/, "names the redeemer");
+    assert.match(notice.content, /100%/, "spells out the mirror defaults");
+    // The creator lives on Discord → THEIR command spelling is /link.
+    assert.match(notice.content, /\/link (status|config|remove)/);
+  });
+
+  it("#426 a failed creator notice never disturbs the link", async () => {
+    const { interaction, ctx } = makeDiscordCtx({
+      userId: "disc-cmd-426b",
+      subcommand: "create",
+    });
+    await handleLink(ctx, discordFeatureCtx);
+    const code = lastReplyContent(interaction).match(CODE_RE)[0];
+    dmFailNext = true;
+
+    const out = await runFluxer(`!link connect code ${code}`, "flux-cmd-426b");
+    assert.match(out.body.content, /^Linked/, "link still completes — the notice is decoration");
+    const { link } = service.getLinkFor(dcId, "disc-cmd-426b");
+    assert.ok(link, "the link row exists despite the failed DM");
+  });
+
+  it("#426 /link create twice leaves ONE live code — the stale plaintext is dead", async () => {
+    const m1 = makeDiscordCtx({ userId: "disc-cmd-426c", subcommand: "create" });
+    await handleLink(m1.ctx, discordFeatureCtx);
+    const first = lastReplyContent(m1.interaction).match(CODE_RE)[0];
+
+    const m2 = makeDiscordCtx({ userId: "disc-cmd-426c", subcommand: "create" });
+    await handleLink(m2.ctx, discordFeatureCtx);
+    const second = lastReplyContent(m2.interaction).match(CODE_RE)[0];
+    assert.notEqual(first, second);
+
+    const stale = await runFluxer(`!link connect code ${first}`, "flux-cmd-426c");
+    // RED on old code: BOTH codes were live — the old plaintext linked fine.
+    assert.doesNotMatch(stale.body.content, /^Linked/, `stale code must NOT link: ${stale.body.content}`);
+    assert.match(stale.body.content, /never created|was purged|typed wrong/i, stale.body.content);
+
+    const fresh = await runFluxer(`!link connect code ${second}`, "flux-cmd-426c");
+    assert.match(fresh.body.content, /^Linked/, fresh.body.content);
   });
 });

@@ -457,11 +457,60 @@ async function handleConnect(ctx, featureCtx, surfaceCmd) {
   const code = ctx.options.getString("code");
   const result = await service.redeemLinkCode(ctx.communityId, ctx.userId, code, { surfaceCmd });
   if (!result.ok) return replyRefusal(ctx, result);
+  // #426 (audit LT-12): the code's OWNER must learn their code was redeemed —
+  // silent 15-minute squats were the whole exposure. Best-effort DM first.
+  await notifyCodeCreatorRedeemed(ctx, featureCtx, result);
   const peerDesc = await describePeer(ctx, featureCtx, result.peer);
   return replyPeerDetail(ctx, connectSuccessText(peerDesc, surfaceCmd), connectDmSentinelText(surfaceCmd), {
     failureLead: "Linked — that link code is spent.",
     logTag: "connect pairing",
   });
+}
+
+/**
+ * #426: DM the code's creator that their minted code was just redeemed.
+ * The creator always lives in the OTHER community (cross-platform rule), so
+ * the transport is `supervisor.clientForCommunity(creatorCommunityId)` — the
+ * same resolution `resolvePeerName` uses for fetchMember; both OutboundClient
+ * arms ship `sendDm(userId, payload)` resolving failures as VALUES.
+ *
+ * NEVER affects the link (the pairing is the truth — the notice is the
+ * signal): a missing transport or failed DM logs with full ids and moves on
+ * (AGENTS.md rules 2/5), and the redeemer's own reply still completes.
+ */
+async function notifyCodeCreatorRedeemed(ctx, featureCtx, result) {
+  const creator = result.codeCreator;
+  if (!creator) return;
+  const tag = `redeem notice → community ${creator.communityId} user ${creator.userId}`;
+  try {
+    const outbound = featureCtx?.supervisor?.clientForCommunity?.(creator.communityId);
+    if (!outbound || typeof outbound.sendDm !== "function") {
+      console.warn(
+        `[linking] ${tag}: no DM transport on that community's client — link created, creator NOT notified`,
+      );
+      return;
+    }
+    // The command name on the CREATOR's side (they are the other platform here).
+    const theirCmd = otherSideCmdFor(ctx);
+    // The redeemer IS the caller — the result's `peer` field points the other
+    // way (it is the creator seen from the caller's side), never use it here.
+    const res = await outbound.sendDm(creator.userId, {
+      content:
+        `Heads up: the account-link code you created was just redeemed. ` +
+        `Your new linked peer is user ${ctx.userId} on ${platformLabel(ctx.platform)} ` +
+        `(community ${ctx.communityId}). XP mirroring starts at 100% in both directions and ` +
+        `gork memory mirroring starts ON — review with ${theirCmd} status, stop a direction with ` +
+        `${theirCmd} config, or unlink with ${theirCmd} remove if this was not you.`,
+      allowedMentions: NO_PING,
+    });
+    if (!res || res.ok !== true) {
+      console.warn(
+        `[linking] ${tag}: DM send failed: ${(res && res.error) || "unknown send failure"} — link created, creator NOT notified`,
+      );
+    }
+  } catch (err) {
+    console.error(`[linking] ${tag} failed:`, err?.message || err);
+  }
 }
 
 /** `link status` — the caller's link, party-only. The pairing itself is the
