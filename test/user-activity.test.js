@@ -452,4 +452,99 @@ describe("recordUserChannelMessage — platform-neutral live counting (#200)", (
       .get(cid).c;
     assert.equal(Number(total), 1);
   });
+
+  // ── #437 (audit F2-1): system lines are excluded on BOTH paths ──────────
+
+  it("isSystemMessageType keeps human non-zero types, excludes system ones (#437)", () => {
+    const { isSystemMessageType } = require("../src/platform/normalizedMessageContract");
+    // Default + human-authored non-zero types stay counted:
+    for (const t of [null, undefined, 0, 18, 19, 20, 21, 23]) {
+      assert.equal(isSystemMessageType(t), false, `type ${t} is human content`);
+    }
+    // Auto-generated lines (author = the celebrated human) are excluded:
+    for (const t of [6, 7, 8, 12, 22, 24, 25, 46]) {
+      assert.equal(isSystemMessageType(t), true, `type ${t} is a system line`);
+    }
+    // Unknown future types fail toward the documented exclusion:
+    assert.equal(isSystemMessageType(999), true);
+  });
+
+  it("live ingest skips a human-authored system line (#437)", () => {
+    const cid = communityKey("900000000000000437");
+    assert.equal(
+      recordUserChannelMessage({
+        guild: { id: "900000000000000437" },
+        author: { id: "u-joiner", bot: false },
+        channelId: "940",
+        type: 7, // UserJoin (GuildMemberJoin) — author IS the joiner
+        createdTimestamp: Date.now(),
+      }),
+      false,
+      "a join notification must not count as the new member posting (RED: old gate read a field nothing set)",
+    );
+    assert.equal(
+      recordUserChannelMessage({
+        guild: { id: "900000000000000437" },
+        author: { id: "u-replyer", bot: false },
+        channelId: "940",
+        type: 19, // Reply — real human content stays counted
+        createdTimestamp: Date.now(),
+      }),
+      true,
+    );
+    const rows = dbApi.db
+      .prepare("SELECT user_id, count FROM user_channel_message_daily WHERE community_id = ?")
+      .all(cid);
+    assert.deepEqual(
+      rows.map((r) => [r.user_id, Number(r.count)]).sort(),
+      [["u-replyer", 1]],
+      "only the human reply reached the daily table",
+    );
+  });
+
+  it("backfill skips the same system lines — one truth for live and history (#437)", async () => {
+    const { backfillChannel } = require("../src/features/userActivity/backfill");
+    const { ensureCommunity } = require("../src/platform/community");
+    const gid = "990000000000000437";
+    const day = Date.UTC(2026, 0, 10);
+    const mk = (id, type, userId) => ({
+      id: String(id),
+      type,
+      author: { id: userId, bot: false },
+      createdTimestamp: day + Number(id),
+    });
+    const all = [
+      mk(50, 0, "a"), // chatter — counted
+      mk(49, 7, "b"), // join notice — EXCLUDED (author = joiner)
+      mk(48, 19, "a"), // reply — counted
+      mk(47, 6, "c"), // pin notification — EXCLUDED
+    ];
+    const channel = {
+      id: "ch-welcome-437",
+      guildId: gid,
+      messages: {
+        fetch: async (opts = {}) => {
+          const picked = all.filter((m) => !opts.before || Number(m.id) < Number(opts.before));
+          return new Map(picked.map((m) => [m.id, m]));
+        },
+      },
+    };
+
+    const res = await backfillChannel(channel, null, day + 1000);
+    assert.equal(res.counted, 2, "two human lines, two system lines skipped (RED: old counted 4)");
+
+    const cid = ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: gid,
+    });
+    const rows = dbApi.db
+      .prepare("SELECT user_id, count FROM user_channel_message_daily WHERE community_id = ? ORDER BY user_id")
+      .all(cid);
+    assert.deepEqual(
+      rows.map((r) => [r.user_id, Number(r.count)]),
+      [["a", 2]],
+      "no phantom rows for the celebrated users b/c (RED: old inflated both)",
+    );
+  });
 });

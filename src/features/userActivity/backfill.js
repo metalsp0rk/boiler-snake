@@ -11,6 +11,7 @@
  */
 
 const { ChannelType } = require("discord.js");
+const { isSystemMessageType } = require("../../platform/normalizedMessageContract");
 const {
   ensureGuildActivitySettings,
   getGuildActivitySettings,
@@ -241,6 +242,12 @@ async function backfillChannelHistory(opts) {
       const ts = msg.createdTimestamp || 0;
       if (ts >= watermarkMs) continue;
       if (msg.author?.bot) continue;
+      // #437 (audit F2-1): mirror the live ingest gate. channel.messages.fetch
+      // returns system lines (join/pin/boost/…) whose `author` is the HUMAN
+      // they celebrate — without this gate every welcome channel inflated
+      // per-user counts, and totals depended on whether backfill was ever run
+      // (docs/user-activity.md: system messages are NOT counted).
+      if (msg.system || isSystemMessageType(msg.type)) continue;
       const authorId = msg.author?.id;
       if (!authorId) continue;
       if (onlyUserId && authorId !== onlyUserId) continue;

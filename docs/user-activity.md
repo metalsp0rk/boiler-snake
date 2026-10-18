@@ -70,6 +70,14 @@ Category rankings use the **current** parent category of each channel (or **Unca
 
 Live tracking starts when the guild first records activity (watermark stored in `guild_activity_settings.collect_from_ms`). **All-time is not “since the user joined Discord”** unless you run backfill.
 
+> **Historical note (#437).** Before this fix the exclusion above was not
+> actually enforced: system lines whose author is a human (member-join
+> notices, pins, boosts, poll results…) were counted — live **and** by
+> backfill. If this guild ran `/activityconfig backfill` or simply sits in
+> welcome channels with join notices, pre-fix per-user counts can be
+> inflated. Daily rows are aggregates with no event-level history to rewrite;
+> counts are exact from the fix onward.
+
 ## Ignore list
 
 ```bash

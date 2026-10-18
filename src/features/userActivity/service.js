@@ -16,6 +16,7 @@ const {
   listHoneypotChannels,
 } = require("../../db");
 const { ensureCommunity } = require("../../platform/community");
+const { isSystemMessageType } = require("../../platform/normalizedMessageContract");
 
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 const TOP_CHANNELS = 15;
@@ -172,7 +173,9 @@ function recordUserChannelMessage(message) {
   try {
     if (!message?.author && message?.authorId == null) return false;
     if (message.authorBot || message.author?.bot) return false;
-    if (message.system) return false;
+    // #437: `system` is set by the discord normalizer; a raw discord.js
+    // message (fallback path) carries only `type` — gate both.
+    if (message.system || isSystemMessageType(message.type)) return false;
 
     // Community: the resolved integer id rides on the normalized message
     // (both adapters); raw shapes keep the Discord guild resolve. A Fluxer
