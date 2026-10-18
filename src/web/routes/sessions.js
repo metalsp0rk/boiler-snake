@@ -143,10 +143,27 @@ function registerSessionsRoutes(app, options = {}) {
     res.end();
   };
 
+  /**
+   * #404 (C1-4): the requester's identity NAMESPACE. guildScope (PR 10)
+   * binds req.webSession to a row whose (platform, instance_key) matches the
+   * COMMUNITY's platform, so the bound row IS the honest scope: a hostile or
+   * buggy Fluxer instance handing out a sub that equals a victim's Discord
+   * snowflake sees and revokes only its OWN platform's rows. Rows predating
+   * the platform columns read as discord/discord (same defaults the store
+   * and toSession use), so legacy users keep their history.
+   */
+  const identityScope = (req) => {
+    const s = req.webSession || null;
+    return {
+      platform: (s && s.platform) || "discord",
+      instanceKey: (s && s.instanceKey) || "discord",
+    };
+  };
+
   // ---- staff (shell floor): YOUR sessions — own live rows only ------------
   app.get(SESSIONS_PAGE, requireTier("staff"), async (req, res) => {
     const guildId = req.guildAccess.communityId; // view link id (PR 2: integer)
-    const mine = sessions.listLiveSessionsForUser(req.user.userId);
+    const mine = sessions.listLiveSessionsForUser(req.user.userId, Date.now(), identityScope(req));
     const document = renderShellPage(req, {
       title: "Your sessions",
       heading: "Your sessions",
@@ -182,10 +199,11 @@ function registerSessionsRoutes(app, options = {}) {
     }
 
     // Selection is scoped to the VIEWER'S OWN live rows by construction —
-    // the list key is req.user.userId, never a body field. A selector that
-    // matches nothing there is "already revoked or expired" (also the honest
-    // answer for another user's id, which can never match here anyway).
-    const mine = sessions.listLiveSessionsForUser(req.user.userId);
+    // the list key is req.user.userId + the caller's identity namespace
+    // (#404), never a body field. A selector that matches nothing there is
+    // "already revoked or expired" (also the honest answer for another
+    // user's — or another platform's — id, which can never match here).
+    const mine = sessions.listLiveSessionsForUser(req.user.userId, Date.now(), identityScope(req));
     const target = sessions.pickSessionByCreatedAt(mine, parsed.createdAt, current);
     if (!target) {
       flash(res, guildId, "error", "session_gone");

@@ -264,9 +264,14 @@ function pruneExpiredSessions(now = Date.now()) {
  * filtered HERE (the policy layer owns the live/expired decision): the
  * console never presents a dead session as revocable, and "already revoked
  * or expired" stays the single honest answer for both states.
+ * #404 (C1-4): opts.platform + opts.instanceKey scope the list to one
+ * identity NAMESPACE. "Your sessions" means sessions from THIS console
+ * (platform+instance), not every row whose bare user_id string collides
+ * across platforms.
+ *
  * @param {string} userId
  * @param {number} [now]
- * @param {{ limit?: number }} [opts]
+ * @param {{ limit?: number, platform?: string|null, instanceKey?: string|null }} [opts]
  * @returns {WebSession[]}
  */
 function listLiveSessionsForUser(userId, now = Date.now(), opts = {}) {
