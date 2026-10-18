@@ -293,6 +293,15 @@ async function lookupMessage(channel, messageId, method) {
     try {
       message = (await channel.messages?.fetch?.(id)) ?? null;
     } catch (err) {
+      // #449 (audit G2-4): real discord.js REJECTS with 10008 "Unknown
+      // Message" for a missing id — that is the NOT-FOUND contract the
+      // callers below already answer with a specific sentence, not a
+      // "fetch failed". Only true transport faults keep that shape.
+      if (Number(err?.code) === 10008) {
+        return {
+          error: `${method}: message ${id} in channel ${channel.id} not found`,
+        };
+      }
       return {
         error: `${method}: message ${id} in channel ${channel.id} fetch failed: ${causeOf(err)}`,
         code: codeOf(err),
@@ -842,6 +851,15 @@ function createDiscordOutbound(client) {
         try {
           message = (await channel.messages?.fetch?.(String(messageId))) ?? null;
         } catch (err) {
+          // #449 (audit G2-4): 10008 "Unknown Message" IS the missing-message
+          // contract in real discord.js (the same mapping lookupMessage makes)
+          // — callers already answer "not found" with a specific sentence.
+          if (Number(err?.code) === 10008) {
+            return {
+              ok: false,
+              error: `fetchMessage: message ${messageId} in channel ${channelId} not found`,
+            };
+          }
           return {
             ok: false,
             error: `fetchMessage: message ${messageId} in channel ${channelId} fetch failed: ${causeOf(err)}`,

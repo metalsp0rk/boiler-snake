@@ -610,6 +610,54 @@ describe("integration: tickets", () => {
     }
   });
 
+  // ── #449 (audit G2-4 / #341): confirmation-before-delete; a failed delete
+  // keeps the channel alive, so the reply can still grow the warning ────────
+
+  it("#449 archive with a failing channel delete keeps the archive and reports the cause", async () => {
+    env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 0 });
+    await env.runCommand({
+      commandName: "ticket",
+      subcommand: "create",
+      admin: false,
+      user: env.users.memberUser,
+      options: { reason: "del-449" },
+    });
+    const row = env.db
+      .listOpenTickets(env.communityId, { userId: IDS.member, limit: 20 })
+      .find((t) => t.reason === "del-449");
+    assert.ok(row);
+    await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: row.channel_id,
+    });
+    const ch = env.guild.channels.cache.get(row.channel_id);
+    const origDelete = ch.delete.bind(ch);
+    ch.delete = async () => {
+      throw Object.assign(new Error("delete denied 50013"), { code: 50013 });
+    };
+    try {
+      const archive = await env.runCommand({
+        commandName: "ticket",
+        subcommand: "archive",
+        admin: true,
+        channelId: row.channel_id,
+      });
+      const text = env.lastReplyContent(archive);
+      // RED on the old order + faithful mock: the reply died with the (never
+      // deleted here, but ALWAYS deleted before) channel — the warning had no
+      // surface and the reply nothing.
+      assert.match(text, /archived/i, text);
+      assert.match(text, /Could not delete the channel/, text);
+      assert.match(text, /delete denied 50013/, "names the cause (rule 3)");
+      assert.equal(env.db.getTicketById(row.id).archived, 1, "archive completed anyway");
+    } finally {
+      ch.delete = origDelete;
+      await ch.delete("test cleanup").catch(() => {});
+    }
+  });
+
   it("/ticket for adds staff opener as exclusive named owner + bypasses rate limit", async () => {
     env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
 
