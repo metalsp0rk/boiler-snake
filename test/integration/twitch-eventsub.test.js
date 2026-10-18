@@ -774,4 +774,83 @@ describe("integration: twitch-eventsub", () => {
       `cause missing in: ${lines[0]}`,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // #477 (INT-13): a failed prune delete must NOT drop the local row — the
+  // row (subscription_id included) is the only record of the Twitch-side
+  // sub; dropping it orphaned the sub forever (quota bleed + no later
+  // sweep could find the id). Failure keeps the row prune_pending and the
+  // hourly sweep retries.
+  // -------------------------------------------------------------------------
+
+  it("#477 failed prune delete keeps the row as prune_pending for retry", async () => {
+    const cfg = {
+      enabled: true,
+      secret: SECRET,
+      callbackUrl: "https://bot.example.com/hooks/twitch",
+      maxChannels: 50,
+      missing: [],
+    };
+    // Untracked broadcaster with a live-looking sub.
+    env.db.upsertTwitchEventsubSub({
+      type: "stream.online",
+      broadcasterId: "8880077",
+      subscriptionId: "quota-bleed-sub",
+      status: "enabled",
+    });
+    const deleteResults = [
+      { ok: false, status: 0 }, // network blip — must NOT swallow the id
+      { ok: true, status: 204 }, // next sweep succeeds
+    ];
+    const attempted = [];
+    const deps = {
+      getConfig: () => cfg,
+      createEventsubSubscription: async () => ({ ok: true, subscription: { id: "x", status: "verification_pending" } }),
+      deleteEventsubSubscription: async (id) => {
+        attempted.push(id);
+        return deleteResults.shift();
+      },
+      listEventsubSubscriptions: async () => [],
+    };
+
+    // Sweep 1: prune hits the delete failure.
+    await subs.reconcileEventsubSubscriptions(deps);
+    const kept = env.db.getTwitchEventsubSub("stream.online", "8880077");
+    assert.ok(kept, "#477: the local row SURVIVES a failed remote delete");
+    assert.equal(kept.subscription_id, "quota-bleed-sub", "the id needed to retry is intact");
+    assert.equal(kept.status, "prune_pending", "the row names its retry state");
+    assert.match(kept.last_error, /delete failed/);
+
+    // Sweep 2: the SAME sweep pass picks the untracked prune_pending row up
+    // again (no status filter on the prune scan) and the successful delete
+    // finally untracks it.
+    await subs.reconcileEventsubSubscriptions(deps);
+    assert.equal(
+      env.db.getTwitchEventsubSub("stream.online", "8880077"),
+      null,
+      "successful retry untracks — quota returned",
+    );
+    assert.deepEqual(attempted, ["quota-bleed-sub", "quota-bleed-sub"], "delete retried once per sweep");
+  });
+
+  it("#477 successful prune deletes rows as before (behavior pin)", async () => {
+    env.db.upsertTwitchEventsubSub({
+      type: "stream.offline",
+      broadcasterId: "8880078",
+      subscriptionId: "clean-sub",
+      status: "enabled",
+    });
+    const cfg = {
+      enabled: true,
+      secret: SECRET,
+      callbackUrl: "https://bot.example.com/hooks/twitch",
+      maxChannels: 50,
+      missing: [],
+    };
+    await subs.pruneBroadcasterIfUntracked("8880078", {
+      getConfig: () => cfg,
+      deleteEventsubSubscription: async () => ({ ok: true, status: 204, gone: undefined }),
+    });
+    assert.equal(env.db.getTwitchEventsubSub("stream.offline", "8880078"), null);
+  });
 });
