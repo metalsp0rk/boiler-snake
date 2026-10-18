@@ -537,6 +537,11 @@ test("the prefix path replies the kill-switch sentence (via DM — K2)", async (
     { t: "MESSAGE_CREATE", d: gatewayMessage({ content: "!bridge create" }) },
     { instanceKey: INSTANCE },
   );
+  // The pipeline ALWAYS fills communityId (create-or-get) before dispatch
+  // reaches a prefix command; #457's boundary guard (assertCommandContext)
+  // now fails that hand-rolled hole closed. Any integer will do — the kill
+  // switch is proven to fire BEFORE any community use, which is the point.
+  message.communityId = 99999;
   const parsed = parsePrefix("!bridge create", P);
 
   await dispatchPrefixCommand(handle.outbound, message, parsed, { registry, supervisor });

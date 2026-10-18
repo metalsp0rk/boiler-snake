@@ -28,6 +28,7 @@
  */
 
 const { buildFluxerCommandContext } = require("./context");
+const { assertCommandContext } = require("../context");
 const {
   resolveFluxerPermissions,
   hasBit,
@@ -384,6 +385,11 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
       ensureHoneypotWarning: null,
     };
     try {
+      // #457 (A2-2/H1-9): same boundary guard as the Discord router — the
+      // fluxer builder is the exact duck-typed shape class this guards.
+      // A violation lands in the router-parity catch below (log + generic
+      // copy through the context), never as a mid-handler TypeError.
+      assertCommandContext(commandCtx);
       await handler(commandCtx, featureCtx);
     } catch (err) {
       // Router-parity: log with the cause, reply the sanctioned generic copy
@@ -391,7 +397,16 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
       console.error(
         `[fluxer] /${parsed.commandName} failed: ${err?.message || err}`,
       );
-      await commandCtx.reply({ content: MSG_GENERIC_ERROR, sensitive: true });
+      // #457: the guard fires BEFORE the handler — if it also names a dead
+      // `reply`, replying through the context would lose the cause in a
+      // second TypeError. Log what we have and let the pipeline wrap.
+      if (typeof commandCtx.reply === "function") {
+        await commandCtx.reply({ content: MSG_GENERIC_ERROR, sensitive: true });
+      } else {
+        console.error(
+          `[fluxer] /${parsed.commandName}: CommandContext has no reply() — copy not deliverable`,
+        );
+      }
     }
   } catch (err) {
     // Dispatch's own boundary: a reply-send failure must not kill the pipeline.

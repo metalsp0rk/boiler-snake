@@ -102,6 +102,11 @@ function makeMutationHandler(spec, deps) {
       // Accepted write: drop the cached snapshot FIRST so even a fail-closed
       // audit 500 leaves the next GET reading fresh truth (never stale).
       deps.settingsData.invalidate?.(communityId);
+      // #457 (H1-9): the voice page's snapshot mirrors these very
+      // guild_settings rows (voice-XP config section) — it used to rot for
+      // up to 30 s after a staff member's OWN write. Key is the external
+      // snowflake: the voice route caches under req.guildAccess.guildId.
+      deps.voiceData?.invalidate?.(guildId);
       // Fail-closed (§8.1-7): a throwing req.audit propagates → generic 500.
       req.audit(spec.auditOf(outcome, guildId));
       redirectSettings(res, communityId, "ok", spec.key);
@@ -375,7 +380,18 @@ function registerSettingsRoutes(app, options = {}) {
     invalidate: (communityId) => getData().invalidate(communityId),
   };
 
-  const deps = { db: options.db || require("../../db"), settingsData };
+  const deps = {
+    db: options.db || require("../../db"),
+    settingsData,
+    // #457: voiceData is published onto shared options by
+    // registerVoiceRoutes, which mounts AFTER this registrar — a lazy
+    // getter resolves the same instance on first mutation without
+    // reordering mounts (the getter rides the object literal app.js
+    // passes, so it reads the LIVE options too).
+    get voiceData() {
+      return options.voiceData;
+    },
+  };
 
   app.get("/g/:guildId/settings", requireTier("staff"), async (req, res) => {
     const communityId = req.guildAccess.communityId; // data + view link id (PR 2)

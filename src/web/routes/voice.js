@@ -86,7 +86,15 @@ function registerVoiceRoutes(app, options = {}) {
   };
   const voiceData = options.voiceData || {
     getVoice: (guildId) => getData().getVoice(guildId),
+    // #457: mutation routes (settings writes touch the voice-XP config
+    // rows this snapshot mirrors) need THIS instance — invalidate the
+    // per-guild cache instead of letting staff read up to 30 s of stale
+    // truth after their own write.
+    invalidate: (guildId) => getData().invalidate(guildId),
   };
+  // #457 NOTE: publishing happens in app.js onto the LIVE options —
+  // registerVoiceRoutes receives a fresh call-site literal, so an in-place
+  // publish here would evaporate with it. The handle rides the return.
 
   app.get(
     "/g/:guildId/voice",
@@ -111,6 +119,11 @@ function registerVoiceRoutes(app, options = {}) {
       writeShellHtml(req, res, { status: 200, document });
     }
   );
+
+  // #457: return the RESOLVED handle so app.js can publish it onto the
+  // live options — the settings mutation route drops the very cache the
+  // voice page reads after writing the rows it mirrors.
+  return voiceData;
 }
 
 module.exports = {

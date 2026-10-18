@@ -2,6 +2,7 @@ const { MessageFlags } = require("discord.js");
 const { commandsAllowed } = require("../core/permissions");
 const { safeErrorReply, replyEphemeral } = require("../core/interaction");
 const { buildDiscordCommandContext } = require("../platform/discord/context");
+const { assertCommandContext } = require("../platform/context");
 
 /**
  * #391 (A2-5, error rule 2): the context line every router failure site
@@ -148,6 +149,11 @@ async function handleInteraction(interaction, ctx) {
     const api = registry.getHandlerApi(interaction.commandName);
     if (api === "context") {
       const commandCtx = buildDiscordCommandContext(interaction, ctx);
+      // #457 (A2-2/H1-9): the boundary guard — built, unit-tested, and
+      // wired HERE at last. A builder field rename/omission fails HERE
+      // with a named contract error (this router's log + safeErrorReply),
+      // not as a confusing TypeError three frames deep inside a handler.
+      assertCommandContext(commandCtx);
       await handler(commandCtx, ctx);
     } else {
       await handler(interaction, ctx);
