@@ -277,4 +277,60 @@ describe("integration: config commands", () => {
     });
     assertEphemeralReply(setcmd, /administrators|permission/i);
   });
+
+  // ── #446 (audit INT-11): staff list surfaces never die on size ──────────
+
+  it("/settings embed caps the channel field at 1024 on channel floods", async () => {
+    // Fresh start, then a flood that INCLUDES the running channel (the
+    // allow-list gate applies to /settings itself — admins only have an
+    // override for /setcommandchannel).
+    for (const row of env.db.listAllowedCommandChannels(env.communityId)) {
+      env.db.removeAllowedCommandChannel(env.communityId, row.channel_id);
+    }
+    const ids = Array.from({ length: 80 }, (_, i) => `chan-446-s-${i}`);
+    ids.push(IDS.channelGeneral);
+    for (const id of ids) env.db.addAllowedCommandChannel(env.communityId, id);
+    try {
+      const interaction = await env.runCommand({
+        commandName: "settings",
+        admin: true,
+      });
+      const reply = interaction.replies[interaction.replies.length - 1];
+      const rawEmbed = reply?.embeds?.[0];
+      assert.ok(rawEmbed, "/settings replies with an embed");
+      const embedData =
+        typeof rawEmbed.toJSON === "function"
+          ? rawEmbed.toJSON()
+          : rawEmbed.data || rawEmbed;
+      const field = (embedData.fields || []).find(
+        (f) => f.name === "Commands allowed in",
+      );
+      assert.ok(field, "channel field present");
+      // RED on old code: 80 mentions ≈ 1.6 KB — Discord rejects the whole
+      // embed with "Invalid Form Body" (the router's generic dead-end).
+      assert.ok(field.value.length <= 1024, `field value ${field.value.length} chars`);
+      assert.match(field.value, /\(\+\d+ more\)$/, "hidden count stays honest");
+    } finally {
+      for (const id of ids) env.db.removeAllowedCommandChannel(env.communityId, id);
+    }
+  });
+
+  it("/setcommandchannel list caps a channel flood under 2000 chars", async () => {
+    const ids = Array.from({ length: 300 }, (_, i) => `chan-446-l-${i}`);
+    for (const id of ids) env.db.addAllowedCommandChannel(env.communityId, id);
+    try {
+      const interaction = await env.runCommand({
+        commandName: "setcommandchannel",
+        subcommand: "list",
+        admin: true,
+      });
+      const reply = interaction.replies[interaction.replies.length - 1];
+      const content = typeof reply === "string" ? reply : reply?.content || "";
+      assert.ok(content.length <= 2000, `content ${content.length} chars`);
+      assert.match(content, /\(\+\d+ more\)$/, "hidden count stays honest");
+      assert.match(content, /^• <#chan-446-l-0>/m, "first entries shown");
+    } finally {
+      for (const id of ids) env.db.removeAllowedCommandChannel(env.communityId, id);
+    }
+  });
 });

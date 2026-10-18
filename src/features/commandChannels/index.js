@@ -7,6 +7,7 @@ const {
 const { isAdminOrModFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { joinCapped } = require("../../core/text");
 
 const adminPerms = PermissionFlagsBits.ManageGuild;
 
@@ -144,8 +145,11 @@ async function handleSetCommandChannel(commandCtx, featureCtx) {
       return;
     }
     const lines = rows.map((r) => `• <#${r.channel_id}>`);
+    // Messages die above 2000 chars; cap the list itself, keep the count
+    // honest with "(+N more)" (#446).
+    const header = "**Allowed command channels**\n";
     await commandCtx.reply({
-      content: `**Allowed command channels**\n${lines.join("\n")}`,
+      content: header + joinCapped(lines, 2000 - header.length, "\n"),
       sensitive: true,
     });
   }

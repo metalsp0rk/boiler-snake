@@ -13,6 +13,7 @@ const {
 const { requireStaffFromContext } = require("../../core/permissions");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { joinCapped } = require("../../core/text");
 const { discordCommunityId } = require("../../platform/community");
 const { resolveTwitchUser } = require("./helix");
 const { startTwitchTicker } = require("./ticker");
@@ -306,13 +307,17 @@ async function handleTwitch(commandCtx, featureCtx) {
       return `• **${c.display_name}** (\`${c.login}\`)${live}${flagText}`;
     });
 
+    // 2000-char message cap with an honest hidden count; the footer is
+    // fixed so its length comes off the budget too (#446).
+    const header =
+      `**Twitch subscriptions** (${channels.length})\n` +
+      `Notification channel: ${notifyChannel}\n` +
+      `Ping role: ${notifyRole}\n\n`;
+    const footer =
+      "\n\n_Toggle clip/VOD alerts with `/twitch clips` / `/twitch vod`._";
     await commandCtx.reply({
       content:
-        `**Twitch subscriptions** (${channels.length})\n` +
-        `Notification channel: ${notifyChannel}\n` +
-        `Ping role: ${notifyRole}\n\n` +
-        lines.join("\n") +
-        `\n\n_Toggle clip/VOD alerts with \`/twitch clips\` / \`/twitch vod\`._`,
+        header + joinCapped(lines, 2000 - header.length - footer.length, "\n") + footer,
       sensitive: true,
     });
     return;
