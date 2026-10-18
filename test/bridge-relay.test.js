@@ -412,7 +412,7 @@ describe("bridge relay worker (PR 5)", () => {
     assert.equal(worker.notices[0].channelId, "RA-1");
     assert.equal(
       worker.notices[0].content,
-      `Bridge ${publicId} could not copy message 9400 after 5 attempts: HTTP 500: boom. Later messages are still being copied.`,
+      `Bridge ${publicId} could not copy message 9400 after 5 attempts: HTTP 500: boom. Later messages are still being copied. Parked copies wait for a staff retry: /bridge retry.`,
     );
 
     // The bridge keeps working: last_error rides the row for status.

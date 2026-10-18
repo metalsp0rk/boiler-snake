@@ -889,7 +889,7 @@ describe("bridge edit/delete relay (PR 6)", () => {
     assert.equal(worker.notices[0].channelId, channelA);
     assert.equal(
       worker.notices[0].content,
-      `Bridge ${publicId} could not copy message ${msgId} after 5 attempts: HTTP 500: server exploded. Later messages are still being copied.`,
+      `Bridge ${publicId} could not copy message ${msgId} after 5 attempts: HTTP 500: server exploded. Later messages are still being copied. Parked copies wait for a staff retry: /bridge retry.`,
       "the §10.10 poison sentence, verbatim",
     );
 
