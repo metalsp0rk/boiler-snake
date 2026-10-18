@@ -701,8 +701,35 @@ function assertNormalizedDm(dm, { boundary = "onDmMessage" } = {}) {
   return assertShapeContract(DM_SHAPE, DM_CONTRACT_FIELDS, dm, boundary);
 }
 
+/**
+ * #437 (audit F2-1): which discord.js message `type` values are SYSTEM
+ * messages (auto-generated lines whose author is a human — join notices,
+ * pins, boosts, poll results…). docs/user-activity.md promises these are
+ * NOT counted; this was the single source of truth for BOTH the live
+ * ingest gate and the historical backfill (before it, the live check read
+ * a `system` field no adapter set — dead code — and backfill had no gate
+ * at all, so welcome channels inflated per-user counts both ways).
+ *
+ * Non-zero types with HUMAN-authored content stay counted:
+ * 18 ThreadCreated / 21 ThreadStarterMessage (real first posts),
+ * 19 Reply, 20 ChatInputCommand / 23 ContextMenuCommand (real responses).
+ * Unknown future types are treated as system (fail toward the documented
+ * exclusion list; a human type appearing would be a visible missing-count,
+ * not invisible inflation).
+ *
+ * @param {number|null|undefined} type discord.js MessageType (raw) — null/undefined for normalized shapes that dropped it
+ */
+const HUMAN_NONZERO_MESSAGE_TYPES = Object.freeze(
+  new Set([18, 19, 20, 21, 23]),
+);
+function isSystemMessageType(type) {
+  if (type == null || type === 0) return false;
+  return !HUMAN_NONZERO_MESSAGE_TYPES.has(type);
+}
+
 module.exports = {
   assertNormalizedMessage,
+  isSystemMessageType,
   assertNormalizedReaction,
   assertNormalizedDelete,
   assertNormalizedDm,

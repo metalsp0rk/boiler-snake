@@ -13,6 +13,7 @@
  */
 
 const { ensureCommunity } = require("../community");
+const { isSystemMessageType } = require("../normalizedMessageContract");
 
 /**
  * Snowflake → string at the boundary; absent stays null.
@@ -120,6 +121,11 @@ function normalizeDiscordMessage(message) {
   message.authorId =
     message.author?.id != null ? String(message.author.id) : null;
   message.authorBot = Boolean(message.author?.bot);
+  // #437 (audit F2-1): the userActivity live gate reads `system`; until now
+  // NO adapter ever set it (dead check — join/pin/boost lines with a human
+  // author were counted). Truth source = discord.js MessageType via the
+  // shared contract helper; backfill gates raw messages with the same one.
+  message.system = isSystemMessageType(message.type);
   message.content = message.content ?? "";
   message.mentions = {
     users: collectIds(message.mentions?.users),
