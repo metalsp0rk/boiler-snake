@@ -69,7 +69,7 @@ Every unit of functionality must be wrapped so a failure produces a **logged, sp
 
 ## Intentions & Constraints
 
-1. **Cooldowns**: message (default 20s), reaction (default 10s) — configurable per guild
+1. **Cooldowns**: message (default 20s), reaction (default 10s) — configurable per guild, clamped to 24h (#429: the award-dedupe sweep horizon is defined past this max — never below a configurable window)
 2. **Voice XP**: ignore AFK; ≥2 eligible humans; no XP if muted/deafened
 3. **Command channels**: empty allow-list → everywhere; `/setcommandchannel` always for admins
 4. **Admin gate**: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create`, `/play`, `/music` public; staff/config commands use `requireStaff` (ManageGuild **or** any `staff_roles` level). **ManageGuild-only:** `/grantxp`, staff-role mutations (`/staff role add|remove|setlevel`), `/setcommandchannel`, `/honeypot exempt`, and `/staff syncpermissions`. **Slash picker visibility:** staff-tier commands use ManageGuild `defaultMemberPermissions`; after admin OAuth via `/staff syncpermissions`, Discord overwrites allow each `staff_roles` role to see those commands (requires `CLIENT_SECRET` + public HTTP). Handlers remain the security source of truth. **Ticket channel overwrites** and **`/userinfo` Activity** use **senior** staff; junior = command gate without auto ticket view / without Activity

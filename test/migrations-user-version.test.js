@@ -44,11 +44,11 @@ describe("user_version migration guard (audit #202)", () => {
   it("fresh DB: load-time migrate() stamps user_version with the full registry", () => {
     const { migrations, LATEST_VERSION } = require("../src/db/migrate");
     // Tripwire pinned per the issue's verification: the current registry is
-    // 001–049. When a new migration lands, bump this number AND the registry
+    // 001–050. When a new migration lands, bump this number AND the registry
     // rule (versions are registry size; migrations are append-only).
-    assert.equal(migrations.length, 49);
-    assert.equal(LATEST_VERSION, 49);
-    assert.equal(version(), 49, "load-time migrate() must stamp the version");
+    assert.equal(migrations.length, 50);
+    assert.equal(LATEST_VERSION, 50);
+    assert.equal(version(), 50, "load-time migrate() must stamp the version");
   });
 
   it("re-run on an applied DB is a recorded no-op skip", () => {
@@ -66,11 +66,11 @@ describe("user_version migration guard (audit #202)", () => {
     };
     try {
       const result = runMigrations();
-      assert.deepEqual(result, { skipped: true, version: 49, latest: 49 });
+      assert.deepEqual(result, { skipped: true, version: 50, latest: 50 });
     } finally {
       migrations[idx] = original;
     }
-    assert.equal(version(), 49, "skip path must not touch the recorded version");
+    assert.equal(version(), 50, "skip path must not touch the recorded version");
   });
 
   it("legacy DB (user_version=0): full replay runs, is safe on applied schema, re-stamps", () => {
@@ -84,7 +84,7 @@ describe("user_version migration guard (audit #202)", () => {
     try {
       const result = runMigrations();
       assert.equal(result.skipped, false, "version 0 must take the full replay path");
-      assert.equal(result.version, 49);
+      assert.equal(result.version, 50);
       assert.equal(
         probe.calls.count,
         1,
@@ -93,7 +93,7 @@ describe("user_version migration guard (audit #202)", () => {
     } finally {
       probe.restore();
     }
-    assert.equal(version(), 49, "successful replay re-stamps the version");
+    assert.equal(version(), 50, "successful replay re-stamps the version");
     assert.equal(api.getXp(g, "u-keep"), 42, "replay must not disturb data");
   });
 
@@ -117,7 +117,7 @@ describe("user_version migration guard (audit #202)", () => {
       const result = runMigrations();
       assert.equal(result.skipped, false);
       assert.ok(earlyRan, "steps BELOW the recorded version must still replay");
-      assert.equal(version(), 49);
+      assert.equal(version(), 50);
     } finally {
       migrations[4] = original;
     }
@@ -131,13 +131,13 @@ describe("user_version migration guard (audit #202)", () => {
       (err) =>
         /user_version=999/.test(err.message) &&
         /NEWER/.test(err.message) &&
-        /version 49/.test(err.message) &&
-        /049_honeypot_pause/.test(err.message),
+        /version 50/.test(err.message) &&
+        /050_xp_cooldown_clamp/.test(err.message),
       "error must name both the DB version and the newest known migration"
     );
     // The guard refuses to mutate: version stays exactly as found.
     assert.equal(version(), 999);
-    api.db.pragma("user_version = 49"); // leave the DB usable for later tests
+    api.db.pragma("user_version = 50"); // leave the DB usable for later tests
   });
 
   it("a failing migration does NOT stamp the version (next boot replays)", () => {
@@ -154,12 +154,12 @@ describe("user_version migration guard (audit #202)", () => {
     // Recovery: the replay is idempotent, so the next boot finishes and stamps.
     const result = runMigrations();
     assert.equal(result.skipped, false);
-    assert.equal(version(), 49);
+    assert.equal(version(), 50);
   });
 
   it("a second skip path after recovery reports the stamped version", () => {
     const { runMigrations } = require("../src/db/migrate");
-    assert.deepEqual(runMigrations(), { skipped: true, version: 49, latest: 49 });
+    assert.deepEqual(runMigrations(), { skipped: true, version: 50, latest: 50 });
   });
 });
 
@@ -263,7 +263,7 @@ describe("migration registry integrity (audit #278)", () => {
     // DB is already stamped (skip path) — the registry check must still run.
     assert.deepEqual(
       runMigrations(),
-      { skipped: true, version: 49, latest: 49 },
+      { skipped: true, version: 50, latest: 50 },
       "sanity: healthy registry takes the skip path"
     );
     const { migrations } = require("../src/db/migrate");
