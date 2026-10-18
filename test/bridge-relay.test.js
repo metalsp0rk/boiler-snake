@@ -966,4 +966,138 @@ describe("bridge relay worker (PR 5)", () => {
     }
     assert.equal(jobs.size, 0, "the loop stop removes every job, TTL sweep included");
   });
+
+  // -------------------------------------------------------------------------
+  // §10.7 degraded fallback — BRG-11 (#417): files attached + mention pin,
+  // or an honest named retry. This whole block ran DARK offline before the
+  // audit: no test ever reached the degraded send.
+  // -------------------------------------------------------------------------
+
+  it("#417 degraded fallback attaches the part's files and pins mentions off", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    spoolBytes(publicId, "9710", 0, "spooled!");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9710",
+      payload: createPayload(publicId, "9710", {
+        text: null, // file-only part — the "[media attached]" copy case
+        attachments: [
+          {
+            sourceAttachmentId: "a1",
+            filename: "note.txt",
+            contentType: "text/plain",
+            spoiler: false,
+            explicitMedia: true,
+            bytes: 8,
+            declaredBytes: 8,
+            skipReason: null,
+            spoolIndex: 0,
+          },
+        ],
+      }),
+    });
+
+    const fluxer = scriptedApi("dg1", [
+      { ok: false, code: "UNKNOWN_WEBHOOK", error: "Unknown Webhook" },
+    ]);
+    fluxer.createRelayWebhook = async () => ({ ok: false, error: "missing permissions" });
+
+    const captured = [];
+    const outbound = {
+      fetchMessage: async () => ({ ok: true, message: { attachments: [] } }),
+      sendChannel: async (channelId, payload) => {
+        captured.push([channelId, payload]);
+        return { id: "degraded-1" };
+      },
+    };
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? fluxer : null),
+      getOutbound: () => outbound,
+    });
+    await worker.drainAll();
+
+    assert.equal(captured.length, 1, "one degraded bot message");
+    const [channelId, payload] = captured[0];
+    assert.match(String(channelId), /^RB-/, "lands in the DESTINATION channel");
+    assert.match(payload.content, /\[media attached\]/, "the file-only copy line");
+    assert.deepEqual(
+      payload.allowedMentions,
+      { parse: [] },
+      "KD 13's second disarm layer — the degraded send is the ONE bot-authored " +
+        "regular message built from relay content and used to omit the pin",
+    );
+    // RED pre-#417: sendNotice was content-only — "[media attached]" over
+    // nothing was the wire lie BRG-11 names.
+    assert.equal(payload.files?.length, 1, "the resolved bytes ride the fallback");
+    assert.equal(payload.files[0].name, "note.txt");
+    assert.deepEqual(payload.files[0].data, Buffer.from("spooled!"));
+
+    // Degraded IS the delivery (spec §10.7): the row completes, and a
+    // completing row clears the bridge's last_error by design.
+    assert.equal(rowState(row.id).state, "done");
+  });
+
+  it("#417 files failing the degraded send retries without them and NAMES them", async () => {
+    const { bridge, publicId } = seedBridge("a_to_b");
+    spoolBytes(publicId, "9720", 0, "spooled!");
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9720",
+      payload: createPayload(publicId, "9720", {
+        text: null,
+        attachments: [
+          {
+            sourceAttachmentId: "a1",
+            filename: "note.txt",
+            contentType: "text/plain",
+            spoiler: false,
+            explicitMedia: true,
+            bytes: 8,
+            declaredBytes: 8,
+            skipReason: null,
+            spoolIndex: 0,
+          },
+        ],
+      }),
+    });
+
+    const fluxer = scriptedApi("dg2", [
+      { ok: false, code: "UNKNOWN_WEBHOOK", error: "Unknown Webhook" },
+    ]);
+    fluxer.createRelayWebhook = async () => ({ ok: false, error: "missing permissions" });
+
+    const captured = [];
+    const outbound = {
+      fetchMessage: async () => ({ ok: true, message: { attachments: [] } }),
+      sendChannel: async (channelId, payload) => {
+        captured.push([channelId, payload]);
+        if (payload.files?.length) {
+          throw new Error("upload rejected: file too large for this channel");
+        }
+        return { id: "degraded-2" };
+      },
+    };
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? fluxer : null),
+      getOutbound: () => outbound,
+    });
+    await worker.drainAll();
+
+    assert.equal(captured.length, 2, "with-files send failed → named retry ran");
+    const first = captured[0][1];
+    assert.equal(first.files?.length, 1, "the retry-probe really carried the bytes");
+    const retry = captured[1][1];
+    assert.equal(
+      "files" in retry,
+      false,
+      "the retry is files-free — the suspect leaves the second attempt",
+    );
+    assert.match(retry.content, /Attachments not copied/, "rule 5: partial delivery says what is missing");
+    assert.match(retry.content, /note\.txt/, "names the dropped attachment");
+    assert.match(retry.content, /file too large/, "carries the failed cause (rule 3)");
+    // The named retry delivered — the row settles like a normal send.
+    assert.equal(rowState(row.id).state, "done");
+  });
 });

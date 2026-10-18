@@ -22,6 +22,7 @@
 
 const { encryptWebhookToken, decryptWebhookToken } = require("./tokenCrypto");
 const { sanitizeOutboundFilename } = require("./media");
+const { NO_PING } = require("./mentions");
 
 /** Webhook name for both ends (spec §10.7 step 6; ≤ 80 chars). */
 const WEBHOOK_NAME = "Boiler Snake Bridge";
@@ -252,14 +253,31 @@ function createDiscordBridgeOutbound(seams = {}) {
     },
 
     /**
-     * Bot-authored channel send (notices: poison park, spool-full, paused).
+     * Bot-authored channel send (notices: poison park, spool-full, paused —
+     * and the §10.7 degraded relay fallback).
      * Never the relay webhook — notices die at the loop gate (spec §10.4).
+     *
+     * BRG-11 (#417), two convention gaps on the ONE bot-authored send of
+     * relay content:
+     *  • mention disarm — KD 13 / §10.11 mandate it twice (rewritten body
+     *    tokens + empty allowed_mentions). Body neutralization is upstream;
+     *    this layer was silently missing while every other bot send pins it
+     *    (handlers' sendMessage, the webhook ladder).
+     *  • `opts.files` — the degraded fallback must actually deliver the
+     *    part's resolved bytes; a bare "[media attached]" with nothing
+     *    attached is a lie on the wire. Entries are the standard
+     *    {name, data, contentType} shape both outbound ports normalize.
      */
-    async sendNotice(communityId, channelId, content) {
+    async sendNotice(communityId, channelId, content, opts = {}) {
       const built = outboundResult("sendChannel");
       if (built.error) return { ok: false, error: built.error };
+      const files = Array.isArray(opts.files) ? opts.files : [];
       try {
-        const res = await built.outbound.sendChannel(String(channelId), { content });
+        const res = await built.outbound.sendChannel(String(channelId), {
+          content,
+          allowedMentions: NO_PING,
+          ...(files.length > 0 ? { files } : {}),
+        });
         return { ok: true, messageId: res?.id != null ? String(res.id) : null };
       } catch (err) {
         return {
