@@ -588,3 +588,103 @@ describe("bridge media (PR 5)", () => {
     assert.match(second.notices[0].detail, /process cap 10 bytes/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #414 (BRG-8): the spool download stops AT the destination per-file ceiling.
+// A lying declared size used to reserve small, buffer the whole giant body
+// in RAM, and only THEN be rejected — with the memory already spent.
+// ---------------------------------------------------------------------------
+
+describe("bridge media streamed per-file cap (#414)", () => {
+  it("a lying declared size is stopped AT the ceiling mid-stream and labeled over-cap", async () => {
+    const chunk = Buffer.alloc(512 * 1024, 1); // 512 KiB
+    const totalChunks = 44; // 22 MiB if fully buffered (cap: 20 MiB)
+    let reads = 0;
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null }, // chunked — no declared length to trust
+      body: {
+        getReader() {
+          let i = 0;
+          return {
+            read: async () => {
+              reads += 1;
+              if (i >= totalChunks) return { done: true, value: undefined };
+              i += 1;
+              return { done: false, value: chunk };
+            },
+            cancel: async () => {},
+          };
+        },
+      },
+      // the pre-#414 buffered path (kept so the old code still "works" —
+      // it just reads ALL 44 chunks before refusing)
+      arrayBuffer: async () => {
+        reads = totalChunks;
+        return Buffer.concat(Array.from({ length: totalChunks }, () => chunk));
+      },
+    });
+    const result = await media.spoolAttachments({
+      publicId: "b_lie00001",
+      srcMessageId: "5010",
+      attachments: [
+        { id: "a1", filename: "tiny-lie.bin", size: 8, url: "https://cdn.example.test/tiny-lie.bin" },
+      ],
+      destinationPlatform: "discord",
+      direction: "a_to_b",
+      opts: { fetchImpl, resolveHost: publicResolve },
+    });
+    assert.equal(
+      result.descriptors[0].skipReason,
+      "over-cap",
+      "a transport-stopped ceiling lands the spec's over-cap outcome — NOT a generic fetch-failed",
+    );
+    assert.ok(
+      reads <= 42,
+      `the stream stops near the 20 MiB ceiling (reads=${reads}; full buffering would read all ${totalChunks})`,
+    );
+    assert.equal(
+      fs.existsSync(path.join(tmpDir, "bridge-spool", "b_lie00001", "5010")),
+      false,
+      "a refused download writes no spool bytes",
+    );
+  });
+
+  it("downloadSignedUrl forwards maxBytes to the guard (cap passthrough)", async () => {
+    // The wrapper is a thin passthrough — prove the opts ride through by
+    // exercising it end-to-end against a streaming fake over the cap.
+    const chunk = Buffer.alloc(1024, 2);
+    let reads = 0;
+    const dl = await media.downloadSignedUrl("https://cdn.example.test/big.bin", {
+      resolveHost: publicResolve,
+      maxBytes: 4096,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        body: {
+          getReader() {
+            let i = 0;
+            return {
+              read: async () => {
+                reads += 1;
+                if (i >= 20) return { done: true, value: undefined };
+                i += 1;
+                return { done: false, value: chunk };
+              },
+              cancel: async () => {},
+            };
+          },
+        },
+        arrayBuffer: async () => {
+          reads = 20;
+          return Buffer.concat(Array.from({ length: 20 }, () => chunk));
+        },
+      }),
+    });
+    assert.equal(dl.ok, false);
+    assert.match(dl.reason, /^file too large \(5120 bytes\)$/, "refused the moment the stream crossed the cap");
+    assert.ok(reads <= 6, `early stop (reads=${reads})`);
+  });
+});

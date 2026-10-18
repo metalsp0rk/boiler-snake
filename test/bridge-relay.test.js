@@ -1101,3 +1101,32 @@ describe("bridge relay worker (PR 5)", () => {
     assert.equal(rowState(row.id).state, "done");
   });
 });
+
+  // -------------------------------------------------------------------------
+  // #414 (BRG-8): the spool-missing redownload must carry the DESTINATION's
+  // per-file ceiling (bytes used to buffer whole before any cap saw them).
+  // Behavior of the cap itself is pinned in bridge-media (#414 block); this
+  // pins the WIRING at the worker's resolve site.
+  // -------------------------------------------------------------------------
+
+  it("#414 the spool-missing redownload is capped at the destination per-file ceiling", () => {
+    const src = require("node:fs").readFileSync(
+      require.resolve("../src/features/bridge/relay"),
+      "utf8",
+    );
+    assert.match(
+      src,
+      /const cap = capPlatform \? media\.FILE_SIZE_LIMITS\[capPlatform\] : null;/,
+      "resolveSpooledBytes derives the maxBytes from the destination platform",
+    );
+    assert.match(
+      src,
+      /resolveSpooledBytes\(d, payload, sourcePort, null, destPlatform\)/,
+      "the CREATE path passes the destination platform down",
+    );
+    assert.match(
+      src,
+      /opCtx\s*\n?\s*\.destPlatform|opCtx\.destPlatform,/,
+      "the EDIT path passes opCtx.destPlatform down",
+    );
+  });

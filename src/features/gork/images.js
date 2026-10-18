@@ -402,13 +402,27 @@ async function prepareVisionImages(candidates, opts = {}) {
           fetchImpl: opts.fetchImpl,
           resolveHost: opts.resolveHost,
           timeoutMs: limits.downloadTimeoutMs,
+          // #414 (LT-7): stream-stop at the image cap — a lying declared
+          // size used to buffer the whole body before the post-read check.
+          maxBytes: limits.maxImageBytes,
         });
       } catch (err) {
         // Defense in depth: downloadSignedUrl never throws; a throwing
         // seam (test fetch) is a fetch failure, not a crash.
         dl = { ok: false, reason: `fetch failed: ${String(err?.message || err)}` };
       }
-      if (!dl.ok) return { att, fail: `download failed (${dl.reason})` };
+      if (!dl.ok) {
+        // #414: the transport now stops AT the cap mid-stream — map that
+        // refusal to the same cap-naming copy the post-buffer check used,
+        // so the vision note keeps pointing at the limit (rule 3).
+        if (/^file too large/.test(String(dl.reason))) {
+          return {
+            att,
+            fail: `downloaded bytes exceed the ${limits.maxImageBytes}-byte cap (stopped mid-stream)`,
+          };
+        }
+        return { att, fail: `download failed (${dl.reason})` };
+      }
       if (dl.bytes.length > limits.maxImageBytes) {
         return {
           att,
