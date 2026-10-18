@@ -597,11 +597,24 @@ async function organizerMove(client, { guild, event, userId, fromOptionId, toOpt
     return { ok: false, error: "Both options must belong to this event." };
   const held = db.getEventSignup(event.id, fromOptionId, userId);
   if (!held) return { ok: false, error: `<@${userId}> is not on **${from.label}**.` };
+  // #345: the same-option move used to delete the held row (promoting a
+  // waiter) and re-add it a moment later — pure oversell machinery for an
+  // order that changes nothing. Refuse it up front.
+  if (from.id === to.id) {
+    return { ok: false, error: "Pick a DIFFERENT destination option." };
+  }
   // Capacity-check the target first (organizer bypass still must not oversell:
   // capacity is a property of the option, not a restriction on the member).
+  // The old exclusion — `userId !== String(held.user_id)` — was DEAD CODE:
+  // `held` is fetched BY (fromOptionId, userId), so the sides were always
+  // equal, the refusal could never fire, and moves into full options
+  // force-added straight past capacity. The exclusion that makes sense is
+  // the member's OWN TARGET row: a member already counted there occupies
+  // one of those slots, so moving them "into" it adds nobody.
   const counts = db.countEventSignups(event.id);
   const inTarget = counts[to.id]?.signedUp || 0;
-  if (to.capacity > 0 && inTarget >= to.capacity && userId !== String(held.user_id)) {
+  const alreadyInTarget = !!db.getEventSignup(event.id, to.id, userId);
+  if (to.capacity > 0 && inTarget >= to.capacity && !alreadyInTarget) {
     return { ok: false, error: `**${to.label}** is full (capacity ${to.capacity}).` };
   }
   const removed = await organizerRemove(client, { guild, event, userId, optionId: fromOptionId, actorId });

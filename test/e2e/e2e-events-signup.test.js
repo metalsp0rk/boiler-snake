@@ -479,9 +479,9 @@ describe(
       );
     });
 
-    it("options move can OVERSELL capacity (dead guard — pinned until fixed)", async () => {
-      const ev = await createPosted("Oversell Night", [
-        strOpt("signup_options", "A|1,B|1"),
+    it("move into a FULL option refuses; the mover's own target row is the only exclusion (#345)", async () => {
+      const ev = await createPosted("Capacity Move Night", [
+        strOpt("signup_options", "A|1,B|1,C,D|1"),
       ]);
       const move = async (member, from, to) =>
         env.mock.awaitReply(
@@ -492,36 +492,53 @@ describe(
             intOpt("to_option", to),
           ]),
         );
-
-      // Seed the rosters: target on A (fills cap 1), outsider on B.
-      for (const [member, optionId] of [
-        [env.ids.target, ev.optionIds.A],
-        [env.ids.outsider, ev.optionIds.B],
-      ]) {
-        const added = await env.mock.awaitReply(
+      const addTo = async (member, optionId) =>
+        env.mock.awaitReply(
           await signupSlash("response", "add", [
             intOpt("event", ev.row.id),
             userOpt("member", member),
             intOpt("option", optionId),
           ]),
         );
-        assert.match(String(added.content), /^Added <@\d+>/);
-      }
+      const signedUp = (optionId) => {
+        const counts = env.dbmod.countEventSignups(ev.row.id);
+        return (counts[optionId] ?? counts[String(optionId)] ?? { signedUp: 0 }).signedUp;
+      };
 
-      // A is at cap 1 (target). Moving OUTSIDER B→A: the capacity guard
-      // compares the mover against the row it just read for that same
-      // mover (always equal) → never fires → A oversells to 2/1.
-      const moved = await move(env.ids.outsider, ev.optionIds.B, ev.optionIds.A);
-      assert.equal(
-        String(moved.content),
-        `Moved <@${env.ids.outsider}>: **B** → **A**.`,
-      );
-      const counts = env.dbmod.countEventSignups(ev.row.id);
-      assert.equal(
-        (counts[ev.optionIds.A] ?? counts[String(ev.optionIds.A)]).signedUp,
-        2,
-        "A holds 2 of capacity 1 — oversell confirmed (BUG #345: dead guard in organizerMove)",
-      );
+      // Seed: target fills A (cap 1), outsider fills B.
+      assert.match(String((await addTo(env.ids.target, ev.optionIds.A)).content), /^Added <@\d+>/);
+      assert.match(String((await addTo(env.ids.outsider, ev.optionIds.B)).content), /^Added <@\d+>/);
+
+      // #345 FIXED: A is at cap 1 with a MOVER WHO DOES NOT HOLD it — the
+      // guard's dead third condition (`userId !== held.user_id`, always
+      // false) used to skip the refusal and force-add straight to 2/1.
+      const refused = await move(env.ids.outsider, ev.optionIds.B, ev.optionIds.A);
+      assert.equal(String(refused.content), `**A** is full (capacity 1).`);
+      assert.equal(signedUp(ev.optionIds.A), 1, "the full option stays at capacity — refusal first, writes never started");
+      assert.equal(signedUp(ev.optionIds.B), 1, "the mover kept the row it was moving FROM");
+
+      // A non-full destination still moves normally.
+      const moved = await move(env.ids.outsider, ev.optionIds.B, ev.optionIds.C);
+      assert.equal(String(moved.content), `Moved <@${env.ids.outsider}>: **B** → **C**.`);
+      assert.equal(signedUp(ev.optionIds.B), 0);
+      assert.equal(signedUp(ev.optionIds.C), 1);
+
+      // The exclusion that DOES exist: D (cap 1) holds ONLY the mover —
+      // moving target A→D lands on a "full" option whose only occupant is
+      // the mover THEMSELVES: adds nobody, so it passes (the dead guard's
+      // intended exclusion, moved to the TARGET side where it belongs).
+      assert.match(String((await addTo(env.ids.target, ev.optionIds.D)).content), /^Added <@\d+>/);
+      assert.equal(signedUp(ev.optionIds.D), 1, "D is at cap — held by target alone");
+      const betweenHeld = await move(env.ids.target, ev.optionIds.A, ev.optionIds.D);
+      assert.equal(String(betweenHeld.content), `Moved <@${env.ids.target}>: **A** → **D**.`);
+      assert.equal(signedUp(ev.optionIds.D), 1, "D never exceeded capacity — the held row was REUSED, not doubled");
+      assert.equal(signedUp(ev.optionIds.A), 0);
+
+      // Same-option moves are refused up front (the old code deleted the
+      // held row — promoting a waiter — then re-added it a beat later).
+      const selfMove = await move(env.ids.outsider, ev.optionIds.C, ev.optionIds.C);
+      assert.match(String(selfMove.content), /different destination/i);
+      assert.equal(signedUp(ev.optionIds.C), 1, "refusal changed nothing");
     });
 
     it("options CLI: list table, add + cap refusal, edit-missing copy, remove CASCADES signups (#346 pin)", async () => {
