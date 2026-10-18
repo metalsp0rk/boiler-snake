@@ -329,8 +329,11 @@ describe("auditLog high-level helpers under misconfiguration", () => {
       changes: ["msg_xp: 5 → **10**"],
     });
 
-    // Assert — void helper, no crash, nothing posted.
-    assert.equal(result, undefined);
+    // Assert — never rejects: since #445 it returns a failure RECEIPT
+    // ({ ok:false, error }) so /setlog can verify streams; fire-and-forget
+    // callers keep ignoring it. Nothing posted.
+    assert.equal(result.ok, false);
+    assert.match(result.error, /unresolvable community/);
     assert.equal(stray.sent.length, 0);
   });
 

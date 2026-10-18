@@ -15,6 +15,7 @@ const {
   logBan,
   logKickIfApplicable,
   logConfigChange,
+  logConfigChangeToStream,
   logHoneypotTrigger,
   logLevelRoleChanges,
   diffConfigLines,
@@ -171,15 +172,15 @@ async function handleSetlog(commandCtx, featureCtx) {
     }
 
     updateGuildSettings(communityId, { [field]: ch.id });
-    recordSlashAudit({
-      communityId,
-      actorUserId: commandCtx.userId,
-      action: "logs.channel_set",
-      targetType: "channel",
-      targetId: ch.id,
-      details: { stream: sub, previous_channel_id: beforeId ?? null },
-    });
-    await logConfigChange(commandCtx.outbound, guildId, {
+    // #445 (audit INT-10): the old code validated only VISIBILITY then replied
+    // success while the stream itself could be undeliverable (no Send
+    // Messages, category, race-deleted) — a confirmation that LIED, and the
+    // entire staff audit stream then died silently forever. The config-change
+    // embed we were about to post anyway IS the functional test: deliver it
+    // onto THE STREAM BEING SET first; on any failure roll the setting back
+    // and say why. (logConfigChange's audit-stream copy stays as the
+    // cross-stream notification the other config commands follow.)
+    const changeNote = {
       title: `${label} channel set`,
       command: `/setlog ${sub}`,
       actor: commandCtx.user,
@@ -188,7 +189,49 @@ async function handleSetlog(commandCtx, featureCtx) {
           ? `${label}: <#${beforeId}> → <#${ch.id}>`
           : `${label}: *none* → <#${ch.id}>`,
       ],
-    }).catch(() => {});
+    };
+    const delivery = await logConfigChangeToStream(
+      commandCtx.outbound,
+      guildId,
+      sub,
+      changeNote,
+    );
+    if (!delivery.ok) {
+      updateGuildSettings(communityId, { [field]: beforeId ?? null });
+      recordSlashAudit({
+        communityId,
+        actorUserId: commandCtx.userId,
+        action: "logs.channel_set",
+        targetType: "channel",
+        targetId: ch.id,
+        details: {
+          stream: sub,
+          previous_channel_id: beforeId ?? null,
+          rejected: true,
+          error: delivery.error,
+        },
+      });
+      await commandCtx.reply({
+        content:
+          `I can't post to <#${ch.id}> — pointing the ${label.toLowerCase()} there would kill every entry silently, so **the setting was not changed**.\n` +
+          `Specific cause: \`${delivery.error}\` (usually missing **View Channel** / **Send Messages** for the bot in that channel). Fix access and run this again.`,
+        sensitive: true,
+      });
+      return;
+    }
+    if (sub !== "audit") {
+      // Convention trail: the audit stream also hears about the change when
+      // it is configured (no-op when it is not; never rejects).
+      await logConfigChange(commandCtx.outbound, guildId, changeNote);
+    }
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "logs.channel_set",
+      targetType: "channel",
+      targetId: ch.id,
+      details: { stream: sub, previous_channel_id: beforeId ?? null },
+    });
     await commandCtx.reply({
       content: `${label} will be sent to <#${ch.id}>.`,
       sensitive: true,

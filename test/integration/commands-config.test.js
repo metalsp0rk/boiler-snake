@@ -130,6 +130,106 @@ describe("integration: config commands", () => {
     assertReplyContains(interaction, IDS.channelLog);
   });
 
+  // ── #445 (audit INT-10): /setlog must VERIFY the stream delivers ─────────
+  // The old code checked only VISIBILITY, then LIED ("Audit will be sent
+  // to <#…>") while an undeliverable stream (no Send Messages, category,
+  // race-deleted) died silently forever.
+
+  it("/setlog refuses + rolls back when the channel cannot receive (#445)", async () => {
+    const before = env.db.getGuildSettings(env.communityId).audit_log_channel_id;
+    assert.equal(before, IDS.channelLog, "baseline from the previous /setlog test");
+    const broken = env.channels.notify;
+    const originalSend = broken.send;
+    broken.send = async () => {
+      const err = new Error("Missing Permissions");
+      err.code = 50013;
+      throw err;
+    };
+    try {
+      const interaction = await env.runCommand({
+        commandName: "setlog",
+        subcommand: "audit",
+        admin: true,
+        options: { channel: broken },
+      });
+      assertReplyContains(interaction, /can't post|not changed/i);
+      assertReplyContains(
+        interaction,
+        /Missing Permissions|Send Messages/,
+        "the reply carries the SPECIFIC cause, never a dead end",
+      );
+      assert.equal(
+        env.db.getGuildSettings(env.communityId).audit_log_channel_id,
+        before,
+        "the undeliverable channel was NOT persisted (RED: old code persisted + lied)",
+      );
+    } finally {
+      broken.send = originalSend;
+    }
+  });
+
+  it("/setlog rejects a non-text channel with the specific cause (#445)", async () => {
+    const before = env.db.getGuildSettings(env.communityId).message_log_channel_id;
+    const fakeCategory = env.channels.honeypot;
+    const original = fakeCategory.isTextBased;
+    fakeCategory.isTextBased = () => false;
+    try {
+      const interaction = await env.runCommand({
+        commandName: "setlog",
+        subcommand: "message",
+        admin: true,
+        options: { channel: fakeCategory },
+      });
+      assertReplyContains(interaction, /not text-based/, "cause names the real defect");
+      assert.equal(
+        env.db.getGuildSettings(env.communityId).message_log_channel_id,
+        before,
+        "setting rolled back (RED: old code persisted it)",
+      );
+    } finally {
+      fakeCategory.isTextBased = original;
+    }
+  });
+
+  it("undeliverable log streams log their cause instead of dying silent (#445)", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      audit_log_channel_id: IDS.channelLog,
+    });
+    const auditLog = require("../../src/features/logs/auditLog");
+    const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+    const warns = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => warns.push(args.join(" "));
+    try {
+      // Wrong-shape outbound (raw client — the exact reactionRoles
+      // logConfigChange(message.client, …) class): used to be a COMPLETE
+      // no-op with zero log lines.
+      const r1 = await auditLog.sendAuditLog({ user: {} }, env.communityId, {
+        content: "x",
+      });
+      assert.equal(r1, false, "boolean contract kept for existing consumers");
+      assert.ok(
+        warns.some((w) => /not an OutboundClient/.test(w)),
+        `raw-client no-op must be VISIBLE in the log (got: ${JSON.stringify(warns)})`,
+      );
+
+      // Healthy path now hands back a delivery receipt (RED on old: undefined).
+      const receipt = await auditLog.logConfigChange(
+        getDiscordOutbound(env.client),
+        env.communityId,
+        {
+          title: "T",
+          command: "/t",
+          actor: env.users.adminUser,
+          changes: ["a → b"],
+        },
+      );
+      assert.equal(receipt.ok, true, "delivery receipt on success");
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
   it("config commands deny non-staff", async () => {
     for (const commandName of [
       "setcommandchannel",
