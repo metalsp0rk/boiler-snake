@@ -40,9 +40,19 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   // Last-resort net for a rejection that escaped boot (e.g. a malformed
   // FLUXER_INSTANCES block that assertRuntimeEnv's twin in boot re-threw).
   console.error("[boot] fatal startup error:", err?.message || err);
-  process.exit(1);
+  // #467 (A2-7): a boot rejection AFTER endpoints were wired (late login
+  // chain fault, construction-catch body throw) used to hard-cut exactly
+  // what C9 exists to prevent — sockets and the WAL. Exit THROUGH the
+  // drain when handles exist (it exits itself); process.exit only as the
+  // drain's own failure fallback.
+  try {
+    await drainAndExit({ reason: "boot: fatal startup error", exitCode: 1 });
+  } catch (drainErr) {
+    console.error("[boot] drain after fatal error failed:", drainErr?.message || drainErr);
+    process.exit(1);
+  }
 });

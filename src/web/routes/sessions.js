@@ -131,14 +131,23 @@ function registerSessionsRoutes(app, options = {}) {
    * buildClearSessionCookie) — the row is already destroyed by the caller;
    * this only tears the cookie down and sends the browser to the signed-out
    * landing (same destination as logout, per Exit C).
+   *
+   * #467 (C1-5): the cleared cookie follows the REVOKED ROW's platform
+   * (K11: each cookie owns its platform). guildScope re-points
+   * req.webSession at the community-matched Fluxer row, so a Fluxer
+   * community used to clear the DISCORD cookie (half-logging the user out
+   * of the Discord console — row alive, cookie gone) while the dead
+   * `web_session_fx` lingered until Max-Age.
    * @param {import("http").ServerResponse} res
+   * @param {{platform?: string}|null} [target] the revoked session row
    */
-  const respondLoggedOut = (res) => {
+  const respondLoggedOut = (res, target = null) => {
+    const clear = sessions.buildClearSessionCookieFor(target?.platform ?? null);
     res.writeHead(302, {
       Location: SIGNED_OUT_TARGET,
       "Cache-Control": "no-store",
       "Referrer-Policy": "no-referrer",
-      "Set-Cookie": sessions.buildClearSessionCookie(),
+      "Set-Cookie": clear,
     });
     res.end();
   };
@@ -240,7 +249,7 @@ function registerSessionsRoutes(app, options = {}) {
     });
 
     if (isCurrent) {
-      respondLoggedOut(res);
+      respondLoggedOut(res, target);
       return;
     }
     flash(res, guildId, "done", "session_revoked");

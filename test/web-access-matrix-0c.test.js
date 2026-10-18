@@ -640,7 +640,7 @@ describe("C | login-mandatory sweep (§8.1-3)", () => {
       await harness.runOutcome({
         base,
         url,
-        expect: harness.expectLoginRedirect("/auth/login"),
+        expect: harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`) /* #467 C1-8 */,
         label: `anon ${url}`,
       });
     }
@@ -683,7 +683,7 @@ describe("C | login-mandatory sweep (§8.1-3)", () => {
         base,
         url,
         cookieId: cookies.broken,
-        expect: harness.expectLoginRedirect("/auth/login"),
+        expect: harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`) /* #467 C1-8 */,
         label: `reauth ${url}`,
       });
     }

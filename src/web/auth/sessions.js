@@ -483,6 +483,20 @@ function buildFluxerSessionCookie(id) {
  * the browser replaces the original cookie). Never touches `web_session`.
  * @returns {string}
  */
+/**
+ * #467 (C1-5): THE platform→cookie teardown decision, in one place. Each
+ * cookie owns its platform (K11): clearing `web_session` for a revoked
+ * FLUXER row half-logged the user out of the Discord console (row alive,
+ * cookie gone) while the dead `web_session_fx` lingered until Max-Age.
+ * @param {string|null|undefined} platform session row's platform (NULL ⇒ discord)
+ * @returns {string} Set-Cookie value clearing exactly that platform's cookie
+ */
+function buildClearSessionCookieFor(platform) {
+  return (platform ?? "discord") === "fluxer"
+    ? buildClearFluxerSessionCookie()
+    : buildClearSessionCookie();
+}
+
 function buildClearFluxerSessionCookie() {
   return serializeSessionCookie("", {
     secure: isSecureBaseUrl(),
@@ -521,6 +535,7 @@ module.exports = {
   sessionCookieMaxAgeSec,
   buildSessionCookie,
   buildClearSessionCookie,
+  buildClearSessionCookieFor,
   buildFluxerSessionCookie,
   buildClearFluxerSessionCookie,
 };

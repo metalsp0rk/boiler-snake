@@ -601,7 +601,7 @@ describe("B. GET actions page — senior-only forms + whitelisted-only flash", (
       cookieId: null,
       // PR 2: integer community ids fail the 5–20-digit snowflake gate in
       // loginRedirectTarget, so the anon target is the bare login page.
-      expect: harness.expectLoginRedirect("/auth/login"),
+      expect: harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`) /* #467 C1-8 */,
       label: "anon actions page",
     });
   });
@@ -704,7 +704,7 @@ describe("C. POST tier ladder — anon 302 · stranger/plain/cross 404 · junior
         method: "POST",
         cookieId: null,
         // PR 2: integer route id ⇒ bare /auth/login (snowflake gate not matched).
-        expect: harness.expectLoginRedirect("/auth/login"),
+        expect: harness.expectLoginRedirect(`/auth/login?guild=${CID_A}`) /* #467 C1-8 */,
         label: `anon ${label} POST`,
       });
     });

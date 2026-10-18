@@ -326,9 +326,8 @@ describe("GET /g/:guildId/users/:userId — unified profile", () => {
   it("anonymous → 302 login redirect (guildScope contract)", async () => {
     const { res } = await hit(url);
     assert.equal(res.status, 302);
-    // PR 2: integer community ids fail the 5–20-digit snowflake gate in
-    // loginRedirectTarget, so the anon target is the bare login page.
-    assert.equal(res.headers.get("location"), "/auth/login");
+    // #467 (C1-8): the short integer id rides ?guild= now (route-shaped gate)
+    assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
   });
 
   it("in-guild member WITHOUT staff role → generic 404 (never 403)", async () => {

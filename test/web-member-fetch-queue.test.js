@@ -176,4 +176,80 @@ describe("memberFetchQueue (§8.15 option C)", () => {
     assert.equal(attempted, 0);
     assert.deepEqual(queue.queueStats(), {}, "stale queue cleaned up");
   });
+
+  // -------------------------------------------------------------------------
+  // #467 (C1-9): the header always promised "bounded, LOGGED, never silent" —
+  // cap drops now COUNT and WARN; the Fluxer lane got the long negative
+  // cooldown the Discord UNKNOWN_MEMBER path always had (both branches used
+  // to be identical 10-min retries — permanently-deleted users re-fetched
+  // forever).
+  // -------------------------------------------------------------------------
+
+  test("#467 cap drops are counted and warned, not silent", () => {
+    const fake = { guilds: { cache: new Map() } };
+    const ids = Array.from({ length: 1200 }, (_, i) => `cap9-${i}`);
+    const added = queue.queueMissingMembersExternal(() => fake, "cap-drop-guild", ids);
+    assert.equal(added, 1000, "cap holds");
+    assert.ok(
+      warnLines.some(
+        (l) => l.includes("cap-drop-guild") && l.includes("dropped 200 id(s)")
+      ),
+      `the drop is loud with count + key (warns: ${JSON.stringify(warnLines)})`
+    );
+  });
+
+  test("#467 unresolvable fluxer user parks ~24h, not forever-retry", async () => {
+    const { loadDb } = require("./helpers/env");
+    const loaded = loadDb();
+    try {
+      const { ensureCommunity } = require("../src/platform/community");
+      const cid = ensureCommunity({
+        platform: "fluxer",
+        instanceKey: "fluxer",
+        externalGuildId: "940000000000000077",
+      });
+      const cacheSeam = require("../src/web/routes/shared/discord-cache");
+      const origClient = cacheSeam.communityClient;
+      let fetchCalls = 0;
+      cacheSeam.communityClient = (id) =>
+        id === cid
+          ? {
+              fetchUser: async () => {
+                fetchCalls += 1;
+                return null; // OutboundClient null = unresolvable
+              },
+            }
+          : null;
+      try {
+        queue.queueMissingMembers(() => null, String(cid), ["gone-user"]);
+        await queue.flushMemberFetchQueue();
+        assert.equal(fetchCalls, 1, "one REST attempt");
+        assert.ok(
+          warnLines.some(
+            (l) => l.includes("gone-user") && l.includes("stays raw for ~24h")
+          ),
+          `honest warn naming the ~24h park (warns: ${JSON.stringify(warnLines)})`
+        );
+
+        // The RED discriminator: 30 minutes later the OLD identical 10-min
+        // retry cooldown has expired (id re-queues, re-fetch forever); the
+        // negative park must still hold.
+        const realNow = Date.now;
+        try {
+          Date.now = () => realNow() + 30 * 60 * 1000;
+          assert.equal(
+            queue.queueMissingMembers(() => null, String(cid), ["gone-user"]),
+            0,
+            "30 min later the 24h park still holds (old code: 10-min retry re-queued)"
+          );
+        } finally {
+          Date.now = realNow;
+        }
+      } finally {
+        cacheSeam.communityClient = origClient;
+      }
+    } finally {
+      loaded.cleanup?.();
+    }
+  });
 });

@@ -28,6 +28,24 @@ const { registerShutdownHandle } = require("../core/lifecycle");
  * @param {import("../commands/registry").CommandRegistry} registry
  */
 function applyFeaturesToRegistry(features, registry) {
+  // #467 (A2-10): command BUILDERS are duplicate-guarded (addCommand
+  // throws), but handler/autocomplete/modal/button key collisions across
+  // features were silent last-writer-wins — a feature exporting a key that
+  // shadows another's (easy with Fluxer-only prefix handlers, which have no
+  // builder companion) executed the WRONG handler tree with zero
+  // diagnostics. Boot now fails loudly naming both owners.
+  const owners = new Map(); // "kind:key" -> feature name
+  const claim = (kind, key, featureName) => {
+    const id = `${kind}:${key}`;
+    const prev = owners.get(id);
+    if (prev !== undefined && prev !== featureName) {
+      throw new Error(
+        `applyFeaturesToRegistry: ${kind} "${key}" is registered by both "${prev}" and "${featureName}" — refusing to silently shadow (A2-10/#467)`,
+      );
+    }
+    owners.set(id, featureName);
+  };
+
   for (const feature of features) {
     if (!feature?.name) {
       throw new Error("Feature module missing name");
@@ -38,20 +56,24 @@ function applyFeaturesToRegistry(features, registry) {
     }
 
     for (const [name, fn] of Object.entries(feature.handlers || {})) {
+      claim("handler", name, feature.name);
       registry.registerHandler(name, fn, {
         api: feature.handlerApi?.[name] ?? "interaction",
       });
     }
 
     for (const [name, fn] of Object.entries(feature.autocomplete || {})) {
+      claim("autocomplete", name, feature.name);
       registry.registerAutocomplete(name, fn);
     }
 
     for (const [prefix, fn] of Object.entries(feature.modalHandlers || {})) {
+      claim("modalHandler", prefix, feature.name);
       registry.registerModalHandler(prefix, fn);
     }
 
     for (const [prefix, fn] of Object.entries(feature.buttonHandlers || {})) {
+      claim("buttonHandler", prefix, feature.name);
       registry.registerButtonHandler(prefix, fn);
     }
   }

@@ -271,9 +271,9 @@ describe("access matrix — leaderboard + per-user XP", () => {
     it(`${label}: anonymous → 302 login redirect (guildScope contract)`, async () => {
       const { res, body } = await hit(path);
       assert.equal(res.status, 302);
-      // PR 2: integer community ids fail the 5–20-digit snowflake gate in
-      // loginRedirectTarget, so the anon target is the bare login page.
-      assert.equal(res.headers.get("location"), "/auth/login");
+        // #467 (C1-8): the /g/-era integer id IS the login-return target
+        // — gate is the route's own shape now, so short ids ride along.
+      assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
       assert.equal(body, "");
     });
 

@@ -348,8 +348,8 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_NEW, level: "junior" }, // no _csrf: anon passes CSRF, guildScope answers
       });
       assert.equal(res.status, 302);
-      // integer community id ⇒ bare login target (URL_ID_RE rejects short ids)
-      assert.equal(res.headers.get("location"), "/auth/login");
+      // #467 (C1-8): the short integer id rides ?guild= now (route-shaped gate)
+      assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
       assert.equal(body, "");
     });
 
@@ -455,7 +455,7 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
         fields: { role_id: ROLE_MAPPED, level: "1", drop_days: "0" },
       });
       assert.equal(anon.res.status, 302);
-      assert.equal(anon.res.headers.get("location"), "/auth/login");
+      assert.equal(anon.res.headers.get("location"), `/auth/login?guild=${CID_A}`);
     });
 
     it("cross-guild ⇒ 404 for the staff cookie too", async () => {

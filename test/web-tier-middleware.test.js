@@ -716,9 +716,12 @@ describe("guildScope + requireTier over HTTP", () => {
   }
 
   it("anonymous /g/* redirect is byte-identical to the /g shell placeholder", () => {
-    // Integer community ids are too short for the 5-20-digit snowflake gate,
-    // so the login redirect carries no ?guild= (same as junk input).
-    assert.equal(loginRedirectTarget(CID_A), "/auth/login");
+    // #467 (C1-8): BOTH route shapes ride along now — /g/-era integer
+    // ids (numbers too; the 5-digit floor dropped them) and legacy
+    // snowflakes. Junk + path traversal still never echo.
+    assert.equal(loginRedirectTarget(CID_A), `/auth/login?guild=${CID_A}`);
+    assert.equal(loginRedirectTarget(String(CID_A)), `/auth/login?guild=${CID_A}`);
+    assert.equal(loginRedirectTarget("0"), "/auth/login", "leading-zero-proof: 0 is not a community id");
     assert.equal(loginRedirectTarget("oops"), "/auth/login");
     assert.equal(loginRedirectTarget(`${GUILD_A}/../../x`), "/auth/login");
   });
@@ -726,7 +729,8 @@ describe("guildScope + requireTier over HTTP", () => {
   it("anonymous → 302 /auth/login (community id never echoes; junk never echoes)", async () => {
     const good = await get(`/g/${CID_A}`);
     assert.equal(good.res.status, 302);
-    assert.equal(good.res.headers.get("location"), "/auth/login");
+    // #467 (C1-8): the return target survives the short-id gate now.
+    assert.equal(good.res.headers.get("location"), `/auth/login?guild=${CID_A}`);
     assert.equal(good.res.headers.get("cache-control"), "no-store");
 
     const weird = await get("/g/oops");
@@ -797,7 +801,9 @@ describe("guildScope + requireTier over HTTP", () => {
     for (const key of ["corrupt", "expired"]) {
       const r = await get(`/g/${CID_A}`, { id: cookieIds[key] });
       assert.equal(r.res.status, 302, `${key} ⇒ login redirect, not 403/500`);
-      assert.equal(r.res.headers.get("location"), "/auth/login");
+      // #467 (C1-8): the re-auth target keeps the ?guild= hop for integer
+      // ids now (numeric-only gate; login.js never echoes junk).
+      assert.equal(r.res.headers.get("location"), `/auth/login?guild=${CID_A}`);
     }
   });
 

@@ -263,8 +263,8 @@ describe("web integrations page (GET /g/:guildId/integrations, staff tier, read-
     it("anonymous ⇒ 302 to /auth/login?guild=…", async () => {
       const { res, body } = await req(`/g/${CID_A}/integrations`);
       assert.equal(res.status, 302);
-      // integer community id ⇒ bare login target (URL_ID_RE rejects short ids)
-      assert.equal(res.headers.get("location"), "/auth/login");
+      // #467 (C1-8): the short integer id rides ?guild= now (route-shaped gate)
+      assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal(body, "");
     });

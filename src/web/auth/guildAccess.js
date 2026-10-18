@@ -269,6 +269,12 @@ function parseStoredSnapshot(authRow) {
  *   _clearCachesForTests: () => void,
  * }}
  */
+/** The most recently built resolver (the one the production app gates with). */
+let lastResolver = null;
+function getActiveGuildAccessResolver() {
+  return lastResolver;
+}
+
 function createGuildAccessResolver(options = {}) {
   const discord =
     options.discord ||
@@ -929,7 +935,10 @@ function createGuildAccessResolver(options = {}) {
     }
   }
 
-  /** Drop a session's cached guild list (logout / member-left events). */
+  /** Drop a session's cached guild list — wired to GuildMemberUpdate at
+   * boot (features/web/wireAccessInvalidation, #467 C1-7: the invalidators
+   * used to be DEAD code, revocation rode the TTL alone; Fluxer has no
+   * member-role gateway dispatch (#439), so Fluxer stays TTL-bounded). */
   function invalidateSession(sessionId) {
     if (sessionId) accessLists.delete(sessionId);
   }
@@ -973,7 +982,13 @@ function createGuildAccessResolver(options = {}) {
     memberRoles.clear();
   }
 
-  return { resolve, listGuilds, invalidateSession, invalidateUserGuild, _clearCachesForTests };
+  const handle = { resolve, listGuilds, invalidateSession, invalidateUserGuild, _clearCachesForTests };
+  // #467 (C1-7): the factory remembers the LATEST resolver so the boot-time
+  // GuildMemberUpdate wiring (features/web) reaches the very instance the
+  // mounted app gates with — one production web app per process, so
+  // "latest built" IS the live one.
+  lastResolver = handle;
+  return handle;
 }
 
 module.exports = {
@@ -987,4 +1002,5 @@ module.exports = {
   resolveTier,
   staffRoleTierFor,
   createGuildAccessResolver,
+  getActiveGuildAccessResolver,
 };

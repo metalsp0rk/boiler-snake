@@ -260,9 +260,9 @@ describe("dashboard JSON API (activity.json + xp-leaders.json, staff tier, no-st
       it(`${label}: anonymous ⇒ login redirect, empty body, no-store`, async () => {
         const { res, body } = await req(url());
         assert.equal(res.status, 302);
-        // PR 2: integer community ids fail the 5–20-digit snowflake gate in
-        // loginRedirectTarget, so the anon target is the bare login page.
-        assert.equal(res.headers.get("location"), "/auth/login");
+        // #467 (C1-8): the /g/-era integer id IS the login-return target
+        // — gate is the route's own shape now, so short ids ride along.
+        assert.equal(res.headers.get("location"), `/auth/login?guild=${CID_A}`);
         assert.equal(res.headers.get("cache-control"), "no-store");
         assert.equal(body, "");
       });
