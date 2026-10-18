@@ -589,9 +589,59 @@ function normalizeFluxerMessageDelete(raw, { instanceKey = "fluxer" } = {}) {
   };
 }
 
+/**
+ * Normalize one Fluxer MESSAGE_DELETE_BULK gateway event (issue #275).
+ *
+ * The fluxer SDK emits `messageDeleteBulk` with
+ * { ids: string[], channelId, guildId|null, channel, messages: PartialMessage[] }
+ * (snake_case gateway shapes accepted too). Like the single delete this is an
+ * IDENTITY object — the bridge intake adds links/echo checks; DM purges
+ * (guildId null) have no v1 consumer and normalize to null.
+ *
+ * @param {object} raw gateway payload (`{t,d}` or bare `d`)
+ * @param {{instanceKey?: string}} [opts]
+ * @returns {{platform:string, instanceKey:string, communityId:null,
+ *   externalGuildId:string, channelId:string, ids:string[]}|null}
+ */
+function normalizeFluxerMessageDeleteBulk(raw, { instanceKey = "fluxer" } = {}) {
+  const d = raw && typeof raw === "object" && "d" in raw ? raw.d : raw;
+  if (!d || typeof d !== "object") return null;
+
+  const guildId = d.guild_id ?? d.guildId;
+  const channelId = d.channel_id ?? d.channelId;
+  if (guildId == null || guildId === "") return null; // DM purge: no bridge end
+  if (channelId == null || channelId === "") return null;
+
+  // ids win outright; the PartialMessage[] is the fallback the SDK fills
+  // cache-null entries for (id always present on both).
+  const rawIds = Array.isArray(d.ids)
+    ? d.ids
+    : Array.isArray(d.messages)
+      ? d.messages.map((m) => (m && typeof m === "object" ? (m.id ?? m.messageId) : m))
+      : [];
+  const ids = [
+    ...new Set(
+      rawIds
+        .map((id) => (id == null ? "" : String(id).trim()))
+        .filter((id) => id !== "")
+    ),
+  ];
+  if (ids.length === 0) return null;
+
+  return {
+    platform: "fluxer",
+    instanceKey,
+    communityId: null, // resolved by the pipeline via ensureCommunity
+    externalGuildId: String(guildId),
+    channelId: String(channelId),
+    ids,
+  };
+}
+
 module.exports = {
   normalizeFluxerMessage,
   normalizeFluxerDmMessage,
   normalizeFluxerMessageDelete,
+  normalizeFluxerMessageDeleteBulk,
   normalizeFluxerReaction,
 };

@@ -527,6 +527,56 @@ async function onMessageDelete(outbound, message) {
 }
 
 /**
+ * MESSAGE_DELETE_BULK intake (issue #275, roadmap/bridge.md §10.4 "BULK:
+ * one kind-\`delete\` row per id with a link"). Both adapters deliver here
+ * with an identity-shaped bulk object:
+ *   { platform, instanceKey, externalGuildId|null, communityId|null,
+ *     channelId, ids: string[] }
+ * Community resolution mirrors the delete contract (guild-scoped, DMs have
+ * no bridge consumer); the per-id echo gate mirrors the single-delete
+ * pipeline, and relay.enqueueBridgeBulkDelete already skips unlinked ids
+ * and never stacks. Never throws.
+ *
+ * @param {object} outbound OutboundClient (unused at intake, same as delete)
+ * @param {object} bulk normalized bulk-delete identity
+ */
+async function onMessageDeleteBulk(outbound, bulk) {
+  try {
+    if (!bulk) return;
+    void outbound;
+    const ids = (Array.isArray(bulk.ids) ? bulk.ids : [])
+      .map((id) => (id == null ? "" : String(id).trim()))
+      .filter((id) => id !== "");
+    if (ids.length === 0) return;
+
+    let communityId = Number.isSafeInteger(bulk.communityId) ? bulk.communityId : null;
+    if (communityId == null && bulk.externalGuildId) {
+      communityId = ensureCommunity({
+        platform: bulk.platform,
+        instanceKey: bulk.instanceKey,
+        externalGuildId: String(bulk.externalGuildId),
+      });
+    }
+    if (communityId == null) return; // DM purge or unresolvable scope: no bridge end
+
+    // Echo gate per id (KD 10): purges that include OUR OWN relayed copies
+    // must not fan out deletes back to the peer — the single-delete
+    // pipeline's first check, applied to every id.
+    const mine = ids.filter(
+      (id) => !bridgeRelay.isRelayedEcho(bulk.platform, bulk.instanceKey, id),
+    );
+    if (mine.length === 0) return;
+
+    bridgeRelay.enqueueBridgeBulkDelete(communityId, String(bulk.channelId), mine, {
+      platform: bulk.platform,
+      instanceKey: bulk.instanceKey,
+    });
+  } catch (e) {
+    console.error("[MessageDeleteBulk] error:", e?.message || e);
+  }
+}
+
+/**
  * Fluxer MessageUpdate pipeline (audit #195 item 5 — Fluxer→Discord edit
  * relay). The mirror of the Discord MessageUpdate listener, minus its
  * normalizer's inline community resolve: normalizeFluxerMessage leaves
@@ -696,6 +746,23 @@ function registerOrderedPipelines(client) {
       console.error("[MessageDelete] pipeline rejected:", e?.message || e)
     );
   });
+  // #275: purge relay. discord.js hands the event ONLY the cached subset
+  // (uncached ids never surface here — the same cache horizon the single
+  // messageDelete has); purges of cached bridged copies are the exact case
+  // that used to leave peer copies + link rows alive forever.
+  client.on(Events.MessageBulkDelete, (messages, channel) => {
+    const guildId = channel?.guild?.id ?? null;
+    if (guildId == null) return;
+    onMessageDeleteBulk(outbound, {
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: String(guildId),
+      channelId: String(channel?.id ?? ""),
+      ids: [...messages.keys()],
+    }).catch((e) =>
+      console.error("[MessageDeleteBulk] pipeline rejected:", e?.message || e)
+    );
+  });
 }
 
 module.exports = {
@@ -703,6 +770,7 @@ module.exports = {
   onMessageCreate,
   onMessageUpdate,
   onMessageDelete,
+  onMessageDeleteBulk,
   onMessageReactionAdd,
   onMessageReactionRemove,
   onFluxerReactionAdd,
