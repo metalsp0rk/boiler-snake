@@ -1803,11 +1803,33 @@ function createRelayWorker(deps = {}) {
           `${quote}\n${part.content == null || part.content === "" ? "[media attached]" : part.content}`,
           contentLimitFor(destPlatform),
         );
-        const sent = await port.sendNotice(
+        // BRG-11 (#417): the fallback must carry the part's FILES — both
+        // ports' sendNotice now accept the resolved {name,data,contentType}
+        // bytes (sendChannel supports them; dropping them made "[media
+        // attached]" a lie) — and the send is mention-pinned at the port
+        // (KD 13's second disarm layer).
+        const partFiles = Array.isArray(part.files) ? part.files : [];
+        let sent = await port.sendNotice(
           payload.dstCommunityId,
           payload.dstChannelId,
           degradedBody,
+          { files: partFiles },
         );
+        if (!sent.ok && partFiles.length > 0) {
+          // Bytes were the failure's suspect: retry content-free of files
+          // and NAME them (rule 5 — a partial delivery states what is
+          // missing instead of claiming "[media attached]" over nothing).
+          const names = partFiles.map((f) => f?.name || "attachment").join(", ");
+          const retryBody = sliceSafe(
+            `${degradedBody}\n_Attachments not copied (${sent.error}): ${names}_`,
+            contentLimitFor(destPlatform),
+          );
+          sent = await port.sendNotice(
+            payload.dstCommunityId,
+            payload.dstChannelId,
+            retryBody,
+          );
+        }
         const reasonText = `${reason} | webhook recreate failed: ${recreated?.error ?? "unknown"} | degraded send ${sent.ok ? "delivered" : `failed: ${sent.error}`}`;
         return { degraded: true, reason: reasonText };
       }
