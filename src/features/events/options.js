@@ -66,8 +66,13 @@ function resolveOption(eventId, ref) {
 function replaceOptions(eventId, specs) {
   const existing = repo.listEventOptions(eventId);
   const signups = repo.countEventSignups(eventId);
+  // countEventSignups groups by option id with CAMELCASE counters — the
+  // old snake_case read here made hasSignups structurally false, so the
+  // "one at a time while people signed up" guard NEVER fired (found while
+  // test-pinning #400/B2-8; the guard protects exactly the swap this fix
+  // makes atomic). Accept both shapes so the gate is honest either way.
   const hasSignups = Object.values(signups).some(
-    (g) => (g.signed_up || 0) + (g.waitlisted || 0) > 0
+    (g) => (g?.signedUp ?? g?.signed_up ?? 0) + (g?.waitlisted ?? 0) > 0
   );
   if (hasSignups && existing.length !== specs.length) {
     // Keep option ids stable for existing rows when the count matches;
@@ -83,15 +88,11 @@ function replaceOptions(eventId, specs) {
     return { ok: false, error: `At most ${repo.MAX_OPTIONS_PER_EVENT} options.` };
   }
   try {
-    for (const opt of existing) repo.deleteEventOption(opt.id);
-    const created = [];
-    let pos = 1;
-    for (const spec of specs) {
-      const res = repo.createEventOption(eventId, { ...spec, position: pos++ });
-      if (!res.ok) return res;
-      created.push(res.option ?? res);
-    }
-    return { ok: true, options: repo.listEventOptions(eventId) };
+    // #400 (B2-8): the swap is ONE repo transaction. The loop this replaces
+    // committed each delete immediately, so a rejected/failed insert mid-way
+    // returned AFTER the deletes were durable — a posted event with zero
+    // signup options and a message full of dead buttons.
+    return repo.replaceEventOptions(eventId, specs);
   } catch (err) {
     return { ok: false, error: `Could not replace options: ${err?.message || err}` };
   }
