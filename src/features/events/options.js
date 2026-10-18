@@ -135,7 +135,9 @@ function renderOptionTable(eventId) {
       if (o.capacity > 0) bits.push(`cap ${o.capacity}`);
       if (o.waitlist_on === 0) bits.push("no waitlist");
       if (o.reminders_on === 0) bits.push("no reminders");
-      if (o.role_whitelist) bits.push("role-gated");
+      // #344: listEventOptions parses the JSON — [] (open) was TRUTHY and
+      // every row claimed "role-gated". Length is the honest test.
+      if (o.role_whitelist.length > 0) bits.push("role-gated");
       return `**${o.position}. ${o.emoji ? `${o.emoji} ` : ""}${o.label}** — ${c.signedUp}${
         o.capacity ? `/${o.capacity}` : ""
       }${c.waitlisted ? ` (waitlist ${c.waitlisted})` : ""} · ${bits.join(", ")}`;
