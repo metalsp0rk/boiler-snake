@@ -126,6 +126,7 @@ function createFluxerBridgeOutbound(seams = {}) {
           ok: false,
           error: created?.error ?? "createRelayWebhook: webhook api returned no result",
           ...(created?.code != null ? { code: created.code } : {}),
+          ...(created?.status != null ? { status: created.status } : {}),
         };
       }
       const tokenEnc = encryptWebhookToken(created.webhook.token, {
@@ -191,6 +192,7 @@ function createFluxerBridgeOutbound(seams = {}) {
           error: res?.error ?? "executeRelay: webhook api returned no result",
           retryable: res?.retryable === true,
           ...(res?.code != null ? { code: res.code } : {}),
+          ...(res?.status != null ? { status: res.status } : {}),
         };
       }
       // Fluxer's nonce absorbs a timeout retry: a success that carries no id
@@ -208,6 +210,7 @@ function createFluxerBridgeOutbound(seams = {}) {
           ok: false,
           error: res?.error ?? "patchRelayMessage: webhook api returned no result",
           ...(res?.code != null ? { code: res.code } : {}),
+          ...(res?.status != null ? { status: res.status } : {}),
         };
       }
       return { ok: true };

@@ -1329,8 +1329,48 @@ function isRateLimitedResult(res) {
   return /\bHTTP 429\b|\bstatus 429\b|slowmode/i.test(text);
 }
 
-function isUnknownWebhookResult(res) {
-  return String(res?.code ?? "").toUpperCase() === "UNKNOWN_WEBHOOK";
+function isUnknownWebhookResult(res, { tokenEndpoint404 = false } = {}) {
+  const code = String(res?.code ?? "").toUpperCase();
+  // Production adapters stringify the Discord API code as a DECIMAL string
+  // ("10015" from codeOf) — matching only the spike shape made the whole
+  // recreate/degrade ladder dead outside tests (#413's investigation).
+  if (code === "UNKNOWN_WEBHOOK" || code === "10015") return true;
+  // Fluxer's webhook TOKEN endpoints answer 404 when the webhook is gone —
+  // and channel deletion CASCADES webhooks, so a dead destination looks
+  // identical here. The recreate resolves the ambiguity: recreate into a
+  // gone channel trips isChannelGoneResult (channel-scoped 404) and breaks
+  // the bridge; recreate into a live one replaces the webhook and rides.
+  // Executes ONLY: a PATCH/DELETE 404 names the COPY, not the webhook.
+  if (!tokenEndpoint404) return false;
+  if (Number(res?.status) === 404) return true;
+  return /\bHTTP 404\b|\bstatus 404\b/i.test(String(res?.error ?? ""));
+}
+
+/**
+ * True when a failed send/patch/recreate names the DESTINATION CHANNEL as
+ * gone (§10.10 "Deleted channel"): Discord's 10003, the spike-shaped
+ * UNKNOWN_CHANNEL string, or an error text that says "unknown channel".
+ *
+ * `includeStatus404` is ONLY for channel-scoped REST calls (webhook
+ * RECREATE posts to /channels/{id}/webhooks — a 404 there can only mean
+ * the channel). On the webhook TOKEN endpoints a bare 404 is AMBIGUOUS on
+ * Fluxer (deleted webhook and deleted channel look identical), where the
+ * recreate-failure path resolves the ambiguity instead.
+ *
+ * Delete-relay keeps its OWN handling of these codes (already-gone =
+ * SUCCESS), so this classifier serves every OTHER op.
+ */
+function isChannelGoneResult(res, { includeStatus404 = false } = {}) {
+  if (!res || res.ok === true) return false;
+  const code = String(res.code ?? "").toUpperCase();
+  if (code === "UNKNOWN_CHANNEL" || code === "10003") return true;
+  if (includeStatus404) {
+    if (Number(res.status) === 404) return true;
+    // createRelayWebhook's failureText embeds "(status 404…" — the shape
+    // the facade catch carries when no structured status survived.
+    if (/\bstatus 404\b|\bHTTP 404\b/i.test(String(res.error ?? ""))) return true;
+  }
+  return /unknown channel/i.test(String(res.error ?? ""));
 }
 
 /**
@@ -1342,7 +1382,17 @@ function isUnknownWebhookResult(res) {
  */
 function isMissingMessageResult(res) {
   const code = String(res?.code ?? "").toUpperCase();
-  if (code === "UNKNOWN_MESSAGE" || code === "10008" || code === "UNKNOWN_CHANNEL") return true;
+  // "10003" is production's shape for deleting into a gone CHANNEL — also
+  // success (§10.7: the desired end state is reached).
+  if (
+    code === "UNKNOWN_MESSAGE" ||
+    code === "10008" ||
+    code === "UNKNOWN_CHANNEL" ||
+    code === "10003"
+  ) {
+    return true;
+  }
+  if (Number(res?.status) === 404) return true;
   return /\bHTTP 404\b|\bstatus 404\b/i.test(String(res?.error ?? ""));
 }
 
@@ -1634,6 +1684,37 @@ function createRelayWorker(deps = {}) {
   }
 
   /**
+   * §10.10 "Deleted channel" (BRG-7 #413): the destination channel is gone.
+   * markBridgeBroken flips active→broken with a CAS update, so ONLY the
+   * winning transition returns true — the surviving end gets the spec's
+   * ONCE notice, every later gone-send of the queued rows just settles its
+   * row. Breaking also stops the worker: claimOutbox gates on
+   * state='active', so no further rows are claimed until staff disconnect
+   * (and status shows why via broken_reason + last_error).
+   */
+  async function handleChannelGone(bridge, payload, row, reason) {
+    const text = sliceSafe(`destination channel gone: ${reason}`, 480);
+    const brokeNow = repo.markBridgeBroken(bridge.id, text);
+    // The row can NEVER deliver: settle it failed with the cause — no
+    // 5-attempt ladder, no poison notice (the broken notice is the message).
+    repo.recordOutboxFailure(row.id, text, { maxAttempts: 1 });
+    repo.setBridgeLastError(bridge.id, text);
+    if (brokeNow) {
+      await sendNoticeSafe(
+        payload.srcCommunityId,
+        payload.srcChannelId,
+        `Bridge ${bridge.public_id} stopped: the other channel is gone (${reason}). ` +
+          "Disconnect it with /bridge disconnect.",
+        "bridge broken",
+      );
+    } else {
+      console.log(
+        `[bridge] worker: bridge ${bridge.public_id} already broken — once-notice already posted`,
+      );
+    }
+  }
+
+  /**
    * Resolve spool bytes for one descriptor; a spool MISS refetches the
    * source message for fresh signed URLs (spec §10.10 Restart: "Missing
    * spool → fetchMessage fallback", best-effort — the source may be gone).
@@ -1778,6 +1859,16 @@ function createRelayWorker(deps = {}) {
       // the desired end state is reached, no attempt is burned.
       if (op === "delete" && isMissingMessageResult(res)) return { ok: true };
 
+      // §10.10 "Deleted channel" (#413/BRG-7): the DESTINATION channel is
+      // gone. This is not a transient fault — burning 5 attempts and a
+      // per-message poison notice for EVERY message turned a moderator's
+      // single channel-delete into notice spam at message rate. Zero
+      // attempts: the caller marks the bridge broken and posts the ONCE
+      // notice.
+      if (isChannelGoneResult(res)) {
+        return { channelGone: true, reason: res.error ?? "unknown channel" };
+      }
+
       // §10.7 avatar rule: a 400 whose only suspect is avatar_url — retry
       // once with no avatar (no attempt burn).
       if (avatarUrl != null && !avatarDropped && isAvatarSuspect(res)) {
@@ -1787,7 +1878,7 @@ function createRelayWorker(deps = {}) {
 
       // §10.10 "Webhook deleted by a moderator": one recreate attempt, then
       // degraded bot-authored send for THIS part (creates only).
-      if (isUnknownWebhookResult(res) && !recreateTried) {
+      if (isUnknownWebhookResult(res, { tokenEndpoint404: op === "execute" }) && !recreateTried) {
         recreateTried = true;
         const recreated = await port.createRelayWebhook(
           payload.dstCommunityId,
@@ -1797,6 +1888,16 @@ function createRelayWorker(deps = {}) {
           webhookRef.current = recreated.webhook;
           onWebhookRecreated(recreated);
           continue;
+        }
+        // #413: the recreate itself failing into a GONE channel (Discord
+        // cascades webhook deletion with the channel, so a deleted
+        // destination FIRST surfaces as 10015-then-10003) is the broken
+        // signal — not the moderator-deleted-webhook skip.
+        if (isChannelGoneResult(recreated, { includeStatus404: true })) {
+          return {
+            channelGone: true,
+            reason: `${recreated.error ?? "unknown channel"} (webhook recreate into a gone channel)`,
+          };
         }
         // §10.7 "Degraded fallback" is create-only. For edits/deletes there
         // is NO degraded re-post: skip the op, record last_error (the caller
@@ -2096,6 +2197,13 @@ function createRelayWorker(deps = {}) {
         dstMessageId: link ? String(link.dst_message_id) : null,
         allowDegraded: false,
       });
+      if (result.channelGone) {
+        // §10.10 "Deleted channel" (#413): same treatment as create — the
+        // edit had no chance to deliver; the broken notice replaces the
+        // per-row noise.
+        await handleChannelGone(bridge, payload, row, result.reason);
+        return;
+      }
       if (result.parked) {
         // §10.7: the copy KEEPS its old content; last_error records the
         // platform code; the SOURCE gets the poison notice (5-attempt text).
@@ -2369,6 +2477,13 @@ function createRelayWorker(deps = {}) {
           onWebhookRecreated,
         });
 
+        if (result.channelGone) {
+          // §10.10 "Deleted channel": break the bridge, post the ONCE
+          // notice, settle this row. Later rows stay claimed-free (the
+          // claim gates on state='active').
+          await handleChannelGone(bridge, payload, row, result.reason);
+          return;
+        }
         if (result.parked) {
           // Poison park (spec §10.10): state 'failed' + last_error (status
           // shows it) + the source-channel notice. Continue with the next
@@ -2466,11 +2581,20 @@ function createRelayWorker(deps = {}) {
 
   /** Distinct (bridge, direction) pairs that have pending rows (FIFO heads). */
   function queuedPairs() {
+    // #413 (§10.10 "Deleted channel … stop that bridge's workers"): the
+    // pair enumeration gates on the BRIDGE state, so a broken bridge's
+    // backlog simply waits for staff (disconnect cascades the rows away)
+    // instead of being claimed, executed, and failed one message at a
+    // time. The claim primitive itself stays honest — it claims what it
+    // is asked for; STOPPING is this chooser's job. A VANISHED bridge row
+    // stays claimable: runRow drains such rows to done (disconnect
+    // cascade race — the existing orphan path).
     return db
       .prepare(
-        `SELECT DISTINCT bridge_id, direction FROM bridge_outbox
-         WHERE state = 'pending'
-         ORDER BY bridge_id ASC, direction ASC`,
+        `SELECT DISTINCT o.bridge_id, o.direction FROM bridge_outbox o
+         LEFT JOIN bridges b ON b.id = o.bridge_id
+         WHERE o.state = 'pending' AND (b.id IS NULL OR b.state = 'active')
+         ORDER BY o.bridge_id ASC, o.direction ASC`,
       )
       .all();
   }

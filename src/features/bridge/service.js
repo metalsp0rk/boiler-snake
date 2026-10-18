@@ -1270,6 +1270,9 @@ function describeBridge(bridge, ends) {
     state: bridge.state,
     direction: bridge.direction,
     lastError: bridge.last_error ?? null,
+    // #413 (BRG-7): the broken leg's cause — status must explain WHY a
+    // bridge stopped, not just that it did.
+    brokenReason: bridge.broken_reason ?? null,
     connectedAt: bridge.connected_at ?? null,
     expiresAt: bridge.expires_at ?? null,
     outboxDepth: { a_to_b: 0, b_to_a: 0 },

@@ -569,6 +569,10 @@ function formatStatusItem(item) {
   for (const end of item.ends) {
     lines.push(`  end ${end.position}: ${end.platform} (${end.instanceKey}) channel ${end.channelId}`);
   }
+  if (item.state === "broken" && item.brokenReason) {
+    lines.push(`  broken: ${item.brokenReason}`);
+    lines.push("  the other end keeps copying until a staff member runs /bridge disconnect.");
+  }
   if (item.lastError) lines.push(`  last error: ${item.lastError}`);
   if (item.state === "pending" && item.expiresAt != null) {
     lines.push(`  pairing expires: ${isoUtc(item.expiresAt)} UTC`);
