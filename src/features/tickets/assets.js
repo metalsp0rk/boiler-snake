@@ -41,6 +41,78 @@ const MAX_ASSET_BYTES = Number(process.env.TICKET_MAX_ASSET_BYTES) || 50 * 1024 
 /** Cap how many files we attempt per ticket. */
 const MAX_ASSETS_PER_TICKET = Number(process.env.TICKET_MAX_ASSETS) || 100;
 
+/** Default aggregate byte budget for the whole transcript asset tree (#424). */
+const DEFAULT_ASSET_TREE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB, bridge-spool scale
+
+/**
+ * Parse TICKET_ASSET_TREE_MAX_BYTES. Unset/garbage → 2 GiB; "0"/"off"/
+ * "unlimited" → NO cap (the explicit, documented pre-#424 behaviour).
+ * Rationale (audit LT-10): per-file (50 MiB) and per-ticket (100 files)
+ * caps left the AGGREGATE member-influenced — a staff archive of a
+ * media-spammed ticket could write gigabytes to the volume that also holds
+ * the SQLite DB, and nothing on disk was ever swept. The retention feature's
+ * orphan sweep removes unreachable dirs; this bounds what a live run may
+ * write across ALL communities.
+ * @param {unknown} raw
+ * @returns {number} bytes, 0 = unlimited
+ */
+function parseAssetTreeBudget(raw) {
+  const text = String(raw ?? "").trim().toLowerCase();
+  if (text === "") return DEFAULT_ASSET_TREE_BYTES;
+  if (text === "0" || text === "off" || text === "unlimited") return 0;
+  const n = Number(text);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_ASSET_TREE_BYTES;
+}
+
+const MAX_ASSET_TREE_BYTES = parseAssetTreeBudget(
+  process.env.TICKET_ASSET_TREE_MAX_BYTES
+);
+
+/**
+ * Sum regular-file bytes under a directory tree, stopping the count as soon
+ * as it passes `stopAfter` (the tree may legitimately be huge — we only ever
+ * ask "is it over budget yet"). Unreadable entries count as zero, never
+ * throw.
+ *
+ * @param {string} dir
+ * @param {number} [stopAfter=Infinity]
+ * @returns {number} bytes (possibly a bit past stopAfter)
+ */
+function treeBytes(dir, stopAfter = Infinity) {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch {
+      continue; // unreadable dir — no information, keep walking
+    }
+    for (const ent of entries) {
+      const full = path.join(cur, ent.name);
+      try {
+        if (ent.isDirectory()) {
+          stack.push(full);
+          continue;
+        }
+        if (ent.isFile()) total += fs.statSync(full).size;
+      } catch {
+        /* unreadable entry — treat as nothing */
+      }
+      if (total > stopAfter) return total; // early abort
+    }
+  }
+  return total;
+}
+
+/** Compact byte copy for warnings ("2.0 GiB", "512 MiB", "8 KiB"). */
+function formatBytes(n) {
+  if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  if (n >= 1024 * 1024) return `${Math.round(n / (1024 * 1024))} MiB`;
+  return `${Math.max(1, Math.round(n / 1024))} KiB`;
+}
+
 const IMAGE_EXT = new Set([
   ".png",
   ".jpg",
@@ -235,6 +307,8 @@ async function downloadUrlToFile(url, destPath, opts = {}) {
  * @param {(url: string, init?: object) => Promise<any>} [opts.fetchImpl] SSRF-guard fetch seam (tests)
  * @param {(host: string) => Promise<string[]>} [opts.resolveHost] DNS seam for the guard (tests)
  * @param {number} [opts.downloadTimeoutMs] per-attempt download timeout override
+ * @param {number} [opts.treeBudgetBytes] tree-budget override (tests; #424)
+ * @param {string} [opts.treeRoot] transcript tree root override (tests; #424)
  * @returns {Promise<{
  *   messages: object[],
  *   downloaded: number,
@@ -251,7 +325,38 @@ async function mirrorTicketAssets(messages, opts) {
     timeoutMs: opts.downloadTimeoutMs,
   };
   const assetsDir = absoluteAssetsDir(communityId, token);
+
+  // #424 (audit LT-10): AGGREGATE cap. Per-file/per-ticket caps never saw
+  // the tree — members steer the download list (embed image URLs are
+  // enough), so one staff archive could write gigabytes next to the DB.
+  // Budget covers the whole ticket-transcripts tree; the walk early-aborts
+  // past the limit so a fat tree is cheap to check. Over budget NOW =
+  // mirror nothing (and create NO dir — empty dirs are the garbage LT-10
+  // complained about); the transcript itself still completes.
+  const budget =
+    Number.isFinite(opts.treeBudgetBytes) && opts.treeBudgetBytes >= 0
+      ? opts.treeBudgetBytes
+      : MAX_ASSET_TREE_BYTES;
+  const treeRoot =
+    opts.treeRoot ?? path.join(dataDir, "ticket-transcripts");
+  const treeBase = budget > 0 ? treeBytes(treeRoot, budget) : 0;
+  if (budget > 0 && treeBase >= budget) {
+    const warning = `Media skipped: the transcript asset tree is at its ${formatBytes(
+      budget
+    )} budget — the transcript itself is complete.`;
+    console.warn(
+      `[tickets] asset tree budget (${formatBytes(budget)}) exhausted — skipping media mirror (community ${communityId}, token ${token})`
+    );
+    return {
+      messages: messages || [],
+      downloaded: 0,
+      failed: 0,
+      assetsDir,
+      warnings: [warning],
+    };
+  }
   fs.mkdirSync(assetsDir, { recursive: true });
+  let writtenBytes = 0;
 
   /** @type {Map<string, { href: string, localName: string, contentType: string|null, kind: string }>} */
   const urlMap = new Map();
@@ -284,6 +389,20 @@ async function mirrorTicketAssets(messages, opts) {
   }
 
   for (const item of toFetch) {
+    // Budget check per file: the walk-based base plus what THIS run has
+    // written. Overrun stops the mirror with a warning naming the count
+    // (rule 5 — partial results reported, archive proceeds).
+    if (budget > 0 && treeBase + writtenBytes >= budget) {
+      warnings.push(
+        `Asset tree budget (${formatBytes(
+          budget
+        )}) reached after ${downloaded} media file(s) — remaining media not mirrored.`
+      );
+      console.warn(
+        `[tickets] asset tree budget hit mid-archive (token ${token}) — ${toFetch.length - index} file(s) skipped`
+      );
+      break;
+    }
     index += 1;
     const baseName = filenameFromUrl(item.url, item.name);
     const localName = `${String(index).padStart(3, "0")}_${baseName}`;
@@ -303,6 +422,11 @@ async function mirrorTicketAssets(messages, opts) {
       // Prefer clean path without over-encoding safe names
       urlMap.get(item.url).href = `/t/${token}/assets/${localName}`;
       downloaded += 1;
+      try {
+        writtenBytes += fs.statSync(dest).size;
+      } catch {
+        /* budget tracking is best-effort; a vanished file breaks nothing */
+      }
     } catch (err) {
       failed += 1;
       // Specific cause per file (AGENTS.md error rules): the archive records
@@ -442,6 +566,9 @@ function contentTypeForFilename(filename) {
 module.exports = {
   MAX_ASSET_BYTES,
   MAX_ASSETS_PER_TICKET,
+  MAX_ASSET_TREE_BYTES,
+  parseAssetTreeBudget,
+  treeBytes,
   sanitizeFilename,
   mediaKind,
   filenameFromUrl,

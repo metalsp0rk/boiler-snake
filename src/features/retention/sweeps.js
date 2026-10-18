@@ -49,6 +49,9 @@ const db = require("../../db");
 const { utcDayKey } = require("../../db/repositories/userChannelActivity");
 
 const { retentionConfig } = require("./config");
+const fs = require("node:fs");
+const path = require("node:path");
+const { dataDir } = require("../../db/connection");
 
 /** Table names in sweep order (the poison-isolation test iterates these). */
 const RETENTION_TABLES = Object.freeze([
@@ -188,6 +191,127 @@ function sweepOneTable(spec, at, config, { batchRows, maxBatchesPerTable }) {
  *                  cutoff: number|string|null, error: string|null}>}
  *   one row per table, in RETENTION_TABLES order.
  */
+/**
+ * Transcript token shape: generateTranscriptToken() is crypto.randomUUID(),
+ * so an entry name outside this shape is NOT ours to judge — left alone.
+ */
+const TRANSCRIPT_TOKEN_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Sweep ORPHAN transcript entries under {DATA_DIR}/ticket-transcripts/
+ * (#424, audit LT-10): `{token}/` dirs (nested transcript + assets) and
+ * legacy `{token}.html` files whose token matches NO tickets row and whose
+ * mtime is past the orphan window. Referenced tokens survive forever
+ * (the DB is the reachability truth); young orphans survive (a run may be
+ * in flight). This is the tree counterpart of the table sweeps — the
+ * archive dirs had NO cleanup at all, so every crashed archive left a
+ * permanent tenant on the DB volume.
+ *
+ * Never throws: one unreadable dir or stuck file logs and moves on
+ * (per-entry isolation, same posture as the table sweeps).
+ *
+ * @param {number} at ms epoch (injected clock)
+ * @param {{ticketTranscriptOrphanDays: number|null}} config
+ * @param {object} [options]
+ * @param {string} [options.root] tree root override (tests)
+ * @param {Set<string>} [options.referencedTokens] override for the DB read (tests)
+ * @returns {{table: string, deleted: number, batches: number, capped: boolean,
+ *   skipped: string|null, cutoff: number|null, error: string|null}}
+ */
+function sweepOrphanTicketTranscripts(at, config, options = {}) {
+  const row = {
+    table: "ticket-transcripts",
+    deleted: 0,
+    batches: 0,
+    capped: false,
+    skipped: null,
+    cutoff: null,
+    error: null,
+  };
+  const days = config?.ticketTranscriptOrphanDays;
+  if (days === null || days === undefined) {
+    row.skipped = "disabled";
+    return row;
+  }
+  const root = options.root ?? path.join(dataDir, "ticket-transcripts");
+  let referenced;
+  try {
+    referenced =
+      options.referencedTokens instanceof Set
+        ? options.referencedTokens
+        : new Set(db.listTicketTranscriptTokens());
+  } catch (err) {
+    row.error = err?.message || String(err);
+    console.error("[retention] ticket-transcripts: token read failed:", row.error);
+    return row;
+  }
+  const cutoff = at - days * DAY_MS;
+  row.cutoff = cutoff;
+
+  let communityDirs;
+  try {
+    if (!fs.existsSync(root)) return row;
+    communityDirs = fs
+      .readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+  } catch (err) {
+    row.error = err?.message || String(err);
+    console.error("[retention] ticket-transcripts: tree walk failed:", row.error);
+    return row;
+  }
+
+  for (const cidDir of communityDirs) {
+    const cdir = path.join(root, cidDir);
+    let entries;
+    try {
+      entries = fs.readdirSync(cdir, { withFileTypes: true });
+    } catch (err) {
+      console.error(
+        `[retention] ticket-transcripts: cannot read ${cdir}:`,
+        err?.message || err
+      );
+      continue;
+    }
+    for (const ent of entries) {
+      let token = null;
+      if (ent.isDirectory() && TRANSCRIPT_TOKEN_RE.test(ent.name)) {
+        token = ent.name;
+      } else if (
+        ent.isFile() &&
+        ent.name.endsWith(".html") &&
+        TRANSCRIPT_TOKEN_RE.test(ent.name.slice(0, -".html".length))
+      ) {
+        token = ent.name.slice(0, -".html".length);
+      }
+      if (!token) continue; // not ours (foreign files survive)
+      if (referenced.has(token)) continue; // reachable — permanent
+      const target = path.join(cdir, ent.name);
+      try {
+        // Boundary rule mirrors the table sweeps: an entry AT exactly the
+        // cutoff instant SURVIVES (strict aging-out only past it).
+        if (fs.statSync(target).mtimeMs >= cutoff) continue; // in-flight window
+        fs.rmSync(target, { recursive: true, force: true });
+        row.deleted += 1;
+      } catch (err) {
+        console.error(
+          `[retention] ticket-transcripts: could not remove ${target}:`,
+          err?.message || err
+        );
+        if (!row.error) row.error = err?.message || String(err);
+      }
+    }
+  }
+
+  if (row.deleted > 0) {
+    console.log(
+      `[retention] ticket-transcripts: swept ${row.deleted} orphan entr(ies) older than ${days} day(s)`
+    );
+  }
+  return row;
+}
+
 function runRetentionSweeps(options = {}) {
   const at = options.at ?? Date.now();
   if (!Number.isSafeInteger(at)) {
@@ -236,6 +360,28 @@ function runRetentionSweeps(options = {}) {
       });
     }
   }
+
+  // #424 (audit LT-10): the transcript TREE beside the DB had no sweep at
+  // all — orphan dirs from failed archives lived forever on the DB volume.
+  // Own row in the results (tests find() by table name), own never-throw
+  // guard (the tree must not be able to kill the ticker, #241 posture).
+  try {
+    results.push(
+      sweepOrphanTicketTranscripts(at, config, options.treeSweep || {})
+    );
+  } catch (err) {
+    const message = err?.message || String(err);
+    console.error("[retention] ticket-transcripts sweep failed:", message);
+    results.push({
+      table: "ticket-transcripts",
+      deleted: 0,
+      batches: 0,
+      capped: false,
+      skipped: null,
+      cutoff: null,
+      error: message,
+    });
+  }
   return results;
 }
 
@@ -245,4 +391,6 @@ module.exports = {
   cutoffFor,
   sweepOneTable,
   runRetentionSweeps,
+  sweepOrphanTicketTranscripts,
+  TRANSCRIPT_TOKEN_RE,
 };
