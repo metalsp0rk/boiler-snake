@@ -386,6 +386,78 @@ describe("integration: tickets", () => {
     }
   });
 
+  // ── #422 (audit LT-5): a swallowed overwrite failure must surface in the
+  // reply (rule 5) — the DB record is the truth, but so is the permission lie ──
+
+  async function openTicketForPermFail(reason) {
+    env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 0 });
+    await env.runCommand({
+      commandName: "ticket",
+      subcommand: "create",
+      admin: false,
+      user: env.users.memberUser,
+      options: { reason },
+    });
+    const row = env.db
+      .listOpenTickets(env.communityId, { userId: IDS.member, limit: 20 })
+      .find((t) => t.reason === reason);
+    assert.ok(row, `ticket row for ${reason}`);
+    return row;
+  }
+
+  it("#422 claim warns in the reply when the permission rewrite fails", async () => {
+    const row = await openTicketForPermFail("perm-fail-claim-422");
+    const ch = env.guild.channels.cache.get(row.channel_id);
+    const po = ch.permissionOverwrites;
+    const origSet = po.set;
+    po.set = async () => {
+      throw new Error("50013 Missing Permissions");
+    };
+    try {
+      const claim = await env.runCommand({
+        commandName: "ticket",
+        subcommand: "claim",
+        admin: true,
+        channelId: row.channel_id,
+      });
+      const text = env.lastReplyContent(claim);
+      assert.match(text, /claimed/i, "the claim itself still lands");
+      // RED on old code: the reply asserted full success; only the console
+      // knew the overwrites never arrived.
+      assert.match(text, /channel permissions could NOT be updated/i, text);
+      assert.match(text, /Missing Permissions/, "the specific cause rides along");
+    } finally {
+      po.set = origSet;
+    }
+  });
+
+  it("#422 sensitive warns in the reply when the permission rewrite fails", async () => {
+    const row = await openTicketForPermFail("perm-fail-sensitive-422");
+    const ch = env.guild.channels.cache.get(row.channel_id);
+    const po = ch.permissionOverwrites;
+    const origSet = po.set;
+    po.set = async () => {
+      throw new Error("Missing Access");
+    };
+    try {
+      const flip = await env.runCommand({
+        commandName: "ticket",
+        subcommand: "sensitive",
+        admin: true,
+        channelId: row.channel_id,
+      });
+      const text = env.lastReplyContent(flip);
+      assert.match(text, /sensitive/i, "the flag itself flipped");
+      assert.match(text, /channel permissions could NOT be updated/i, text);
+      assert.match(text, /Missing Access/);
+      // The DB half must still have applied.
+      const t = env.db.getTicketByChannel(env.communityId, row.channel_id);
+      assert.equal(t.is_sensitive, 1);
+    } finally {
+      po.set = origSet;
+    }
+  });
+
   it("/ticket for adds staff opener as exclusive named owner + bypasses rate limit", async () => {
     env.db.updateGuildSettings(env.communityId, { ticket_rate_limit_minutes: 60 });
 
