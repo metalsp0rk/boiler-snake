@@ -207,12 +207,14 @@ describe(
       );
     });
 
-    it("BUG #360 pin: ANY guild-settings write silently DELETES @handle youtube subscriptions", async () => {
-      // cleanupMalformedYoutubeChannels() runs at the tail of every
-      // updateGuildSettings call (src/db/repositories/guildSettings.js:289)
-      // and deletes every row WHERE id NOT LIKE 'UC%'/'HC%' — i.e. exactly
-      // the by-design @handle storage shape from `/youtube add`.
-      // FLIP-BACK: once #360 lands, assert the @handle row SURVIVES.
+    it("@handle youtube subscriptions SURVIVE every guild-settings write (#360 fixed)", async () => {
+      // #360 (DB-3): updateGuildSettings used to end with
+      // cleanupMalformedYoutubeChannels() — sweeping every non-UC/HC row,
+      // which is the by-design @handle storage shape from `/youtube add`
+      // while resolution is pending. Any /set* in ANY feature quietly
+      // unsubscribed the user. The side effect is gone and the cleanup is
+      // INERT: one row per (community, name) is REPLACE-enforced, so a
+      // sweep of non-UC ids could only ever kill live pending subs.
       env.dbmod.addYoutubeChannel(
         env.communityId,
         "e2edataloss",
@@ -226,8 +228,15 @@ describe(
         assert.equal(env.dbmod.getYoutubeChannels(env.communityId).length, 2, "both rows seeded");
         env.dbmod.updateGuildSettings(env.communityId, { youtube_polling_interval_minutes: 7 });
         const ids = env.dbmod.getYoutubeChannels(env.communityId).map((r) => r.id);
-        assert.ok(!ids.includes("e2edataloss"), "BUG #360: @handle row silently deleted by settings write");
-        assert.ok(ids.includes(ucSurvivor), "UC-shaped rows survive the cleanup");
+        assert.ok(ids.includes("e2edataloss"), "#360: the pending @handle row SURVIVES the settings write");
+        assert.ok(ids.includes(ucSurvivor), "UC-shaped rows survive too");
+
+        // The (now inert) cleanup itself never resurrects a name sweep.
+        env.dbmod.cleanupMalformedYoutubeChannels();
+        assert.ok(
+          env.dbmod.getYoutubeChannels(env.communityId).some((r) => r.id === "e2edataloss"),
+          "a pending row is a subscription, not debris — no sweep, ever",
+        );
       } finally {
         env.dbmod.removeYoutubeChannel(env.communityId, "e2edataloss");
         env.dbmod.removeYoutubeChannel(env.communityId, ucSurvivor);
