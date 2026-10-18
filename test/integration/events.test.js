@@ -852,6 +852,37 @@ describe("integration: community events", () => {
     assert.equal(getEvent(stale.event.id), null, "stale preview cleaned");
   });
 
+  it("cleanup prunes abandoned duplicate/adopt drafts but keeps scheduled + young ones (#454)", async () => {
+    const seed = (title, extra = {}) => {
+      const r = repo.createEvent({
+        communityId: cid(),
+        creatorId: env.users.adminUser.id,
+        title,
+        status: "draft",
+        startAt: now() + 86_400_000 * 30,
+        ...extra,
+      });
+      assert.ok(r.ok, r.error);
+      return r.event.id;
+    };
+    // duplicate/adopt/series all create draft rows with NO post time —
+    // the old sweep ignored them and they orphaned forever.
+    const abandoned = seed("Ancient Duplicate");
+    const scheduled = seed("Draft With Post Time", { postAt: now() + 7 * 86_400_000 });
+    for (const id of [abandoned, scheduled]) {
+      env.db.db
+        .prepare(`UPDATE events SET created_at = ? WHERE id = ?`)
+        .run(now() - 31 * 86_400_000, id);
+    }
+    const young = seed("Fresh Draft");
+
+    await runEventsTick(env.client);
+
+    assert.equal(getEvent(abandoned), null, "24h-old draft with no post time is swept");
+    assert.ok(getEvent(scheduled), "post time set = deliberate adoption — never swept");
+    assert.ok(getEvent(young), "young draft inside the TTL stays");
+  });
+
   it("reposts when the posted message was deleted; refuses while it lives", async () => {
     const created = env.db.createEvent({
       communityId: cid(),

@@ -523,12 +523,20 @@ function deleteEventCascade(eventId) {
   return { ok: true, deleted: run() };
 }
 
-/** Drafts from abandoned /event create previews. */
-function listExpiredPendingConfirmDrafts(nowMs, ageMs = 24 * 3_600_000) {
+/**
+ * Abandoned drafts older than the TTL: /event create previews
+ * (`pending_confirm`) AND duplicate/adopt/series drafts (`draft` with no
+ * post time). A draft WITH a post_at was adopted deliberately (a schedule
+ * was set) — it is never treated as abandoned (#454: docs promise "drafts
+ * never posted are cleaned up after 24 h", so ALL abandonables must sweep).
+ */
+function listExpiredDrafts(nowMs, ageMs = 24 * 3_600_000) {
   return db
     .prepare(
       `SELECT * FROM events
-       WHERE status = 'pending_confirm' AND created_at < ?
+       WHERE (status = 'pending_confirm'
+              OR (status = 'draft' AND post_at IS NULL))
+         AND created_at < ?
        ORDER BY id ASC LIMIT 50`,
     )
     .all(nowMs - ageMs);
@@ -1918,7 +1926,7 @@ module.exports = {
   claimDueScheduledPosts,
   recordEventPostFailure,
   deleteEventCascade,
-  listExpiredPendingConfirmDrafts,
+  listExpiredDrafts,
   listEventsToAutoArchive,
   listDigestSettings,
   setEventDigestLastSent,
