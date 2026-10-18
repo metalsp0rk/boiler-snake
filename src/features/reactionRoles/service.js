@@ -1791,7 +1791,7 @@ async function handlePendingOptionEmojiMessage(message) {
       targetId: session.messageId,
       details: { emoji: removed.display },
     });
-    await logConfigChange(message.client, guildId, {
+    await logConfigChange(getDiscordOutbound(message.client), guildId, {
       title: "Reaction-role option removed",
       command: "/reactionrole option remove",
       actor: message.author,
@@ -1854,7 +1854,7 @@ async function handlePendingOptionEmojiMessage(message) {
       removable: session.removable ? 1 : 0,
     },
   });
-  await logConfigChange(message.client, guildId, {
+  await logConfigChange(getDiscordOutbound(message.client), guildId, {
     title: "Reaction-role option added",
     command: "/reactionrole option add",
     actor: message.author,
