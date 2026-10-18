@@ -364,24 +364,51 @@ function listSpoolPublicIds() {
 function sweepOrphanSpools(opts = {}) {
   const isKnown =
     typeof opts.isKnownPublicId === "function" ? opts.isKnownPublicId : () => true;
+  // #412 (BRG-6) second leg: PER-MESSAGE reclaim for KNOWN bridges whose
+  // outbox rows for that source message are all terminal. A parked
+  // (failed) row never reads its spool again, yet the dir pinned the
+  // per-bridge AND process caps — across restarts, since the boot scan
+  // re-counted it. Live work (pending/sending) keeps the dir; the
+  // default (no predicate) keeps everything, preserving the pass's
+  // original publicId-only contract.
+  const hasLiveOutbox =
+    typeof opts.hasLiveOutbox === "function" ? opts.hasLiveOutbox : () => true;
   const root = spoolRootDir();
   const removed = [];
+  let removedAny = false;
   for (const entry of safeReaddir(root)) {
     const dir = path.join(root, entry);
     const keep = isSafeSpoolId(entry) && isKnown(entry);
-    if (keep) continue;
+    if (keep) {
+      for (const msgDir of safeReaddir(dir)) {
+        if (hasLiveOutbox(entry, msgDir)) continue;
+        try {
+          fs.rmSync(path.join(dir, msgDir), { recursive: true, force: true });
+          removed.push(`${entry}/${msgDir}`);
+          removedAny = true;
+        } catch (err) {
+          console.error(
+            `[bridge] terminal-spool cleanup: could not remove ${entry}/${msgDir}: ${err?.message || err}`,
+          );
+        }
+      }
+      continue;
+    }
     try {
       fs.rmSync(dir, { recursive: true, force: true });
       removed.push(entry);
       spoolUsage.byBridge.delete(entry);
-      const scan = initSpoolAccountingScanOnce();
-      spoolUsage.total = scan.totalBytes;
-      spoolUsage.byBridge = scan.byBridge;
+      removedAny = true;
     } catch (err) {
       console.error(
         `[bridge] orphan spool cleanup: could not remove ${entry}: ${err?.message || err}`,
       );
     }
+  }
+  if (removedAny) {
+    const scan = initSpoolAccountingScanOnce();
+    spoolUsage.total = scan.totalBytes;
+    spoolUsage.byBridge = scan.byBridge;
   }
   return { removed };
 }
