@@ -29,6 +29,22 @@ const {
 const { logConfigChange, logWarnEvent } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { buildStaffRecordMarkdown, exportFilename } = require("./exportRecord");
+
+/**
+ * #469 (F2-9): who voided a warning, rendered HONESTLY. voided_by carries
+ * an actor id — or NULL/legacy junk (the pre-fix ticker wrote the string
+ * "system:expiry" into an id column, and `<@system:expiry>` rendered as a
+ * broken mention). Only a snowflake-shaped value earns a mention.
+ * @param {string|null|undefined} voidedBy
+ * @returns {string}
+ */
+function voidedByLabel(voidedBy) {
+  if (voidedBy == null || voidedBy === "") return "auto-expiry";
+  const raw = String(voidedBy);
+  if (/^[0-9]{5,20}$/.test(raw)) return `<@${raw}>`;
+  if (raw === "system:expiry") return "auto-expiry";
+  return raw;
+}
 const {
   formatWarnRef,
   formatNoteRef,
@@ -404,7 +420,7 @@ async function handleInfo(commandCtx, featureCtx) {
     fields.push(
       {
         name: "Voided",
-        value: `${fullTs(warn.voided_at)} by <@${warn.voided_by}>`,
+        value: `${fullTs(warn.voided_at)} by ${voidedByLabel(warn.voided_by)}`,
         inline: false,
       },
       {
@@ -560,7 +576,7 @@ async function handleVoid(commandCtx, featureCtx) {
         color: COLOR_VOID,
         fields: [
           { name: "Subject", value: `<@${warn.user_id}>`, inline: true },
-          { name: "Voided by", value: `<@${warn.voided_by}>`, inline: true },
+          { name: "Voided by", value: voidedByLabel(warn.voided_by), inline: true },
           {
             name: "Active remaining",
             value: String(activeCount),
@@ -975,6 +991,7 @@ async function handleSetExpiry(commandCtx, featureCtx) {
 }
 
 module.exports = {
+  voidedByLabel, // #469 (F2-9): exported for the render-contract pin
   handleAdd,
   handleList,
   handleInfo,

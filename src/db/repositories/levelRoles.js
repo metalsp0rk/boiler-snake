@@ -19,8 +19,15 @@ function upsertLevelRole(communityId, roleId, levelRequired, dropGraceDays) {
 
 function deleteLevelRole(communityId, roleId) {
   assertCommunityId(communityId);
-  db.prepare(`DELETE FROM level_roles WHERE community_id=? AND role_id=?`).run(communityId, roleId);
-  db.prepare(`DELETE FROM role_drop_state WHERE community_id=? AND role_id=?`).run(communityId, roleId);
+  // #469 (DB-10): the PAIR is the invariant — a level_roles row gone with a
+  // stranded drop-state row was exactly the DB-10 orphan class. One
+  // transaction (belt) and the 057 composite FK ... ON DELETE CASCADE
+  // (suspenders): either both deletes stand or neither does, and the
+  // database itself now refuses to keep drop-state without its role.
+  db.transaction(() => {
+    db.prepare(`DELETE FROM level_roles WHERE community_id=? AND role_id=?`).run(communityId, roleId);
+    db.prepare(`DELETE FROM role_drop_state WHERE community_id=? AND role_id=?`).run(communityId, roleId);
+  })();
 }
 
 function listLevelRoles(communityId) {

@@ -6,6 +6,7 @@ const {
 } = require("../features/xp");
 const { cacheMessage } = require("../features/logs");
 const {
+  handleHoneypotBotMessage,
   handleHoneypotMessage,
   handleHoneypotWarningReaction,
   handleHoneypotFluxerMessage,
@@ -107,7 +108,23 @@ async function onMessageCreate(outbound, message, opts = {}) {
     // Bridge loop gate (KD 10, spec §10.4): FIRST pipeline line — relay
     // copies, bot traffic, and destination echoes never reach the cache,
     // gork, activity counters, XP, or the enqueue below.
-    if (bridgeRelay.createLoopGate(message)) return;
+    if (bridgeRelay.createLoopGate(message)) {
+      // #469 (F2-5): ONE exception to the bot blackout — the honeypot
+      // trap. An outside bot posting into a honeypot channel used to be
+      // silent NOTHING (no delete, no ban, no log), so a bot-built raid
+      // littered the trap forever. Relay copies, echoes and our own
+      // notices still die here untouched (they are copies and warnings,
+      // not intruders — the trap's self-post guard is the second lock).
+      if (
+        message.platform === "discord" &&
+        (message.authorBot === true || message.author?.bot === true)
+      ) {
+        await handleHoneypotBotMessage(message, {
+          selfId: opts.gorkClient?.user?.id ?? null,
+        });
+      }
+      return;
+    }
 
     // Bridge command lines (Fluxer guild, human author): command traffic, not
     // chat (spec §10.4, KD 17). Dispatched EXACTLY ONCE through the shipped
@@ -144,7 +161,7 @@ async function onMessageCreate(outbound, message, opts = {}) {
     // `!message.guild && !message.externalGuildId` duck disjunct is gone:
     // the adapter boundary already proved this key exists (issue #201).
     if (message.externalGuildId == null) return;
-    if (message.authorBot) return;
+    if (message.authorBot) return; // (bots already died at the loop gate above; #469 F2-5 trap exception lives there)
 
     // Fluxer (PR 6): resolve the communities row at this edge — repositories
     // take the integer id. Discord rows are untouched (platform "discord").

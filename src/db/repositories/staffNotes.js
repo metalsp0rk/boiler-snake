@@ -279,6 +279,16 @@ function updateStaffNote(communityId, noteNumber, opts) {
  * @param {string} deletedBy
  * @returns {object|null} row after soft-delete, or null if not found
  */
+/**
+ * #469 (F2-11): the tombstone replacing note content on delete. A soft
+ * delete used to keep the FULL text forever — and the staff-record export
+ * includes deleted notes by default — so "delete" erased nothing: no
+ * GDPR path existed. Erasure keeps the AUDIT CHAIN (number, author,
+ * deleted_at/by stay) and destroys the CONTENT — a warning that links to
+ * an erased note still resolves its stub instead of dangling.
+ */
+const ERASED_NOTE_CONTENT = "[erased — staff note deleted]";
+
 function softDeleteStaffNote(communityId, noteNumber, deletedBy) {
   assertCommunityId(communityId);
   const existing = getStaffNote(communityId, noteNumber);
@@ -289,16 +299,45 @@ function softDeleteStaffNote(communityId, noteNumber, deletedBy) {
   db.prepare(
     `
     UPDATE staff_notes
-    SET deleted_at=?, deleted_by=?
+    SET deleted_at=?, deleted_by=?, content=?
     WHERE community_id=? AND note_number=? AND deleted_at IS NULL
   `
-  ).run(t, deletedBy, communityId, Number(noteNumber));
+  ).run(t, deletedBy, ERASED_NOTE_CONTENT, communityId, Number(noteNumber));
 
   return getStaffNote(communityId, noteNumber);
 }
 
+/**
+ * #469 (F2-11): retention primitive — erase-TOMBSTONES older than the
+ * cutoff leave the table entirely (content was already destroyed at
+ * delete time; the stub's remaining value decays). Opt-in via
+ * RETENTION_ERASED_NOTES_DAYS.
+ * @param {number} cutoffMs rows deleted strictly before (epoch ms)
+ * @param {number} [limit]
+ * @returns {number} rows deleted
+ */
+function deleteErasedNotesOlderThan(cutoffMs, limit = 500) {
+  if (!Number.isSafeInteger(cutoffMs)) {
+    throw new TypeError(
+      `deleteErasedNotesOlderThan: cutoffMs must be an integer ms epoch, got ${String(cutoffMs)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteErasedNotesOlderThan: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(
+      `DELETE FROM staff_notes WHERE deleted_at IS NOT NULL AND deleted_at < ? LIMIT ?`,
+    )
+    .run(cutoffMs, limit).changes;
+}
+
 module.exports = {
   MAX_NOTE_CONTENT,
+  ERASED_NOTE_CONTENT,
+  deleteErasedNotesOlderThan,
   normalizeNoteContent,
   createStaffNote,
   getStaffNoteById,

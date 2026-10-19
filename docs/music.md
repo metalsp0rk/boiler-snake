@@ -8,6 +8,18 @@ The Spotify Web API **cannot stream full tracks** into Discord. Spotify is a **c
 
 Audio is **not** a Spotify stream. Matches can be wrong (covers, lyrics videos, region blocks). YouTube extraction also violates YouTube’s terms and breaks when Google changes InnerTube — that risk lives in the Lavalink YouTube plugin, not in the Node bot.
 
+## Queue bound & node resilience
+
+The queue has a **total bound of 500 tracks** (#469 E2-07): a `/play` whose tracks
+would cross it is refused whole (no half playlist), with the number and the remedy
+in the refusal - wait it out, or trim with `/music remove position:`. Playlists
+were always capped per batch (100); the aggregate never was.
+
+A Lavalink node has a finite boot connect budget (10 retries). If the node stays
+down past it, a **readiness heartbeat** now keeps asking (#469 E2-06): every tick a
+ready node costs one check, a sustained outage re-issues `node.connect()` until the
+node answers again — no bot restart required.
+
 ## Why older bots were silent
 
 Discord requires **DAVE** (end-to-end encrypted voice) for guild voice. Lavalink added DAVE in **4.2.0**. A bot that joins, looks connected, and produces no sound is almost always on a pre-DAVE stack. Boiler Snake pins **Lavalink 4.2+**.

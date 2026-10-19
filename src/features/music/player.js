@@ -9,6 +9,13 @@ const { trackTitle, trackAuthor } = require("./render");
 
 const DEFAULT_VOLUME = 80;
 const EMPTY_LEAVE_MS = 60_000;
+// #469 (E2-07): TOTAL queue bound. PLAYLIST_CAP (resolve.js) only ever
+// limited one playlist batch to 100 - nothing bounded the AGGREGATE: any
+// member of the voice channel could grow lavalink-client's in-process
+// queue without limit (/play x N), and the queue embed cheerfully
+// rendered "...and N more" with unbounded N. A bounded queue is also the
+// honest UX: nobody queues a real 5000-track listening session.
+const MAX_QUEUE_TOTAL = 500;
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const emptyLeaveTimers = new Map();
@@ -27,6 +34,9 @@ const ERRORS = {
   spotify_unconfigured:
     "Spotify links need `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` on the Lavalink node.",
   empty: "Give me a song name, Spotify/YouTube/SoundCloud URL, or search query.",
+  queue_full:
+    `Queue is full (${MAX_QUEUE_TOTAL} tracks max). Wait for some to finish, ` +
+    "or trim it with /music remove position:.",
   search_failed: "Search failed. Try a different query.",
 };
 
@@ -108,6 +118,16 @@ function requireSameVoice(interaction, player) {
 }
 
 /**
+ * #469 (E2-07): pending queue depth - current track + waiting. One
+ * oracle for every bound check so the paths cannot drift.
+ * @param {object|null} player
+ * @returns {number}
+ */
+function queueDepth(player) {
+  return (player?.queue?.current ? 1 : 0) + (player?.queue?.tracks?.length || 0);
+}
+
+/**
  * @param {object} manager
  * @param {string} guildId
  */
@@ -171,6 +191,12 @@ async function playQuery(client, interaction, rawQuery) {
 
   cancelEmptyLeave(interaction.guildId);
 
+  // #469 (E2-07): already at the bound? Refuse BEFORE paying the search
+  // round-trip (and before any add) - specific error, actionable copy.
+  if (queueDepth(player) >= MAX_QUEUE_TOTAL) {
+    return { ok: false, error: "queue_full" };
+  }
+
   let result;
   try {
     const searchArg = resolved.source
@@ -195,6 +221,11 @@ async function playQuery(client, interaction, rawQuery) {
 
   if (isPlaylist) {
     const capped = capTracks(result.tracks);
+    // Batch that would cross the bound is refused WHOLE (no partial
+    // playlist: half a playlist is nobody's intent).
+    if (queueDepth(player) + capped.tracks.length > MAX_QUEUE_TOTAL) {
+      return { ok: false, error: "queue_full" };
+    }
     await player.queue.add(capped.tracks);
     if (!wasPlaying) {
       player._fromCommand = true;
@@ -213,6 +244,10 @@ async function playQuery(client, interaction, rawQuery) {
   }
 
   const track = result.tracks[0];
+  // #469 (E2-07): the aggregate check the single-track path never had.
+  if (queueDepth(player) + 1 > MAX_QUEUE_TOTAL) {
+    return { ok: false, error: "queue_full" };
+  }
   await player.queue.add(track);
   if (!wasPlaying) {
     player._fromCommand = true;
@@ -387,6 +422,8 @@ function queuedSummary(result) {
 module.exports = {
   DEFAULT_VOLUME,
   EMPTY_LEAVE_MS,
+  MAX_QUEUE_TOTAL,
+  queueDepth,
   ERRORS,
   requireReady,
   getCallerVoice,

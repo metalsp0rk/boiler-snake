@@ -19,10 +19,15 @@ describe("youtube malformed cleanup is no longer a settings side effect (#360)",
   /** @type {object} */
   let api;
   let cleanup;
-  const CID = communityKey("790000000000000060");
+  let CID;
 
   before(() => {
     ({ api, cleanup } = loadDb());
+    // #469 (DB-9): communityKey must run AFTER loadDb — against the module
+    // instance bound to the temp DB. The old module-load order registered the
+    // community in the wrong database and left a phantom id; the
+    // guild_settings FK (migration 057) now refuses exactly that.
+    CID = communityKey("790000000000000060");
   });
   after(() => cleanup?.());
 

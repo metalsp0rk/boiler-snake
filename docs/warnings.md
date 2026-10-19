@@ -145,6 +145,11 @@ When `expires_at` is reached, a **minute ticker** voids the row with reason `Aut
 
 Existing warnings are **not** rewritten when you change the guild default.
 
+Voided rows are **not deleted** by expiry — they stay in history. Deployments that
+need an erasure path can opt in with `RETENTION_VOIDED_WARNINGS_DAYS` (#469 F2-11):
+the hourly retention sweep then removes warnings VOIDED longer than the window.
+Active and un-voided warnings are outside that sweep's reach by construction.
+
 ## Evidence (staff-only)
 
 On `/warn add`:
