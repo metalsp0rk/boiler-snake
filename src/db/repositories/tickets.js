@@ -585,7 +585,8 @@ function markTicketClosed(ticketId, opts) {
   `
     )
     .run(t, opts.closedBy, reasonNorm.reason, ticketId);
-  if (info.changes === 0) return getTicketById(ticketId);
+  // #472 (LT-16.1): both arms returned the identical thing — the changes
+  // check here never changed the outcome; the caller re-reads either way.
   return getTicketById(ticketId);
 }
 
