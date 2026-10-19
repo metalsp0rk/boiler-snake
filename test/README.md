@@ -41,6 +41,7 @@ npm test
 3. Mock only Discord side effects; assert on SQLite + captured `interaction.replies` / channel `sent` arrays.
 4. Do not call `client.login` or feature `start()` timers in tests — invoke ticks (`runVoiceTick`, `runDecayForGuild`, `processChannel`) explicitly. Named jobs live in `src/core/scheduler.js`; unit-test the scheduler with `createScheduler({ setTimeoutFn, … })` rather than real clocks.
 5. Never mix real-clock CONFIG with forced/injected EXECUTION clocks: if a test forces `nowMs` into a tick, every clock-derived setup value (hour_utc, weekday, day boundary…) MUST derive from that same forced instant — `test/e2e/helpers/time.js#forcedHourFor` (#382 failed only at UTC 20:00–23:59: schedule luck, not determinism; `test/test-determinism-scan.test.js` pins the rule).
+6. A test file may not LOAD `src/db`-bound code before binding its OWN temp DB: call `loadDb()` / `createIntegrationEnv()` / `createE2eEnv()` **before the first `src/**` require** — `connection.js` opens (and migrates) `DB_PATH` at REQUIRE time, so two concurrent `node --test` files sharing an ambient `DB_PATH` race mid-migration and the loser sees `database is locked` / `no such column` in an unrelated assertion (the #470 G2-6 gork flake class; `test/db-binding-discipline.test.js` pins the corpus — a file either uses a sanctioned binder or its load-time graph never resolves `src/db`).
 
 ### Production test seams
 

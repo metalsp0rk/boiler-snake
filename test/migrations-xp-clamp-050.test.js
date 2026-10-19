@@ -1,5 +1,14 @@
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
+
+// #609: this file LOADS src modules whose require chain reaches src/db —
+// connection.js opens DB_PATH at REQUIRE time, so bind a private temp DB
+// BEFORE anything else loads. Concurrent node --test files sharing one
+// ambient DB_PATH race mid-migration (the #470 G2-6 gork flake class).
+const { loadDb } = require("./helpers/env");
+const { cleanup: cleanupTempDb } = loadDb();
+after(cleanupTempDb);
+
 const Database = require("better-sqlite3");
 
 // #429 (audit XE-2): rows written BEFORE the clamp could carry cooldowns far

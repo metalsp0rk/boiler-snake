@@ -10,8 +10,17 @@
  * every send. The SDK ignores options.query, so the façade must serialize it.
  * These tests pin all three behaviors. No network, no SDK import.
  */
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
+
+// #609: this file LOADS src modules whose require chain reaches src/db —
+// connection.js opens DB_PATH at REQUIRE time, so bind a private temp DB
+// BEFORE anything else loads. Concurrent node --test files sharing one
+// ambient DB_PATH race mid-migration (the #470 G2-6 gork flake class).
+const { loadDb } = require("./helpers/env");
+const { cleanup: cleanupTempDb } = loadDb();
+after(cleanupTempDb);
+
 
 const { buildRestFacade } = require("../src/platform/fluxer/client");
 
