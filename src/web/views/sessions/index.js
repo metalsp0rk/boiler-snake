@@ -124,7 +124,8 @@ function renderSelfRow({ session, guildId, csrfToken, isCurrent }) {
  * guildScope denies tier-less visitors with the generic 404 upstream).
  *
  * @param {object} input
- * @param {string} input.guildId server-derived (guildScope snowflake)
+ * @param {number} input.guildId ROUTE identity — integer communities.id (post-Fluxer PR2;
+ *   NOT a platform snowflake — the guildScope layer resolves it, see #468 C2-9)
  * @param {object[]} input.sessions the VIEWER's own live sessions only
  * @param {string|null} input.currentId id matching the request cookie (compare-only)
  * @param {string|null} input.csrfToken

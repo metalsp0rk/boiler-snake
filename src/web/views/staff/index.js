@@ -25,8 +25,9 @@
  *
  * COMPOSED ENTIRELY with the escaped-by-default `html` helper: role ids,
  * cached role names, the stored last_sync_error string, the derived
- * redirect URI and every env-var NAME interpolate through it — raw()
- * appears ONLY around static markup constants. The XSS probe lives in
+ * redirect URI and every env-var NAME interpolate through it; #468 (C2-10)
+ * removed the unused raw import — nothing here bypasses the escaper at all.
+ * The XSS probe lives in
  * test/web-routes-staff.test.js.
  *
  * Secrets (§8.7): the panel renders env-variable NAMES (from
@@ -35,7 +36,7 @@
  * functions at all (the route sanitizes its env reads before calling).
  */
 
-const { html, raw } = require("../escape");
+const { html } = require("../escape");
 const { emptyState, banner } = require("../components");
 const { formatWhen } = require("../users");
 const {
@@ -354,9 +355,6 @@ function renderSyncStatusPanel({ oauth, envConfig, trigger, flash }) {
       ${syncFlashBanner(flash)}
       <p class="sync-state-row">Authorization ${authBadge} · ${envBadge}</p>
       ${authorizedMeta} ${errorBlock} ${envBlock} ${triggerBlock}
-      <p class="subheading">
-       
-      </p>
     </section>`;
 }
 
@@ -438,5 +436,4 @@ module.exports = {
   renderSyncStatusPanel,
   renderStaffBody,
   renderCommandsBody,
-  raw,
 };

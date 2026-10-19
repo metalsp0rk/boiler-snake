@@ -187,8 +187,12 @@ function renderTicketIndexContent({
     // interpolated values stay escaped, the separators stay literal
     // (same byte trick as before; q rides every pager/filter link).
     const parts = [];
-    if (guildId && !inShell) parts.push(html`guild=${guildId}`);
-    if (q) parts.push(html`q=${q}`);
+    // #466 (C2-5): VALUES are URL-encoded, not just HTML-escaped. A search
+    // term containing & = or + used to be re-emitted raw — clicking
+    // prev/next then silently re-shaped the query (q=fix & run → q=fix +
+    // junk params). Escaping stays on top; the separators stay literal.
+    if (guildId && !inShell) parts.push(html`guild=${encodeURIComponent(String(guildId))}`);
+    if (q) parts.push(html`q=${encodeURIComponent(q)}`);
     if (p > 1) parts.push(html`page=${p}`);
     if (parts.length === 0) return html`${baseUrl}`;
     return html`${baseUrl}?${parts.reduce((acc, seg) => (acc ? html`${acc}&${seg}` : seg))}`;

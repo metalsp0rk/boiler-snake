@@ -57,7 +57,7 @@ function banner(kind, message) {
   return html`<div class="banner banner-${safeKind}" role="status">${message}</div>`;
 }
 
-/** Re-export for view authors composing tables/forms in one import. */
+/** A platform user id as text: 5–20 digits (never free-form markup input). */
 const USER_ID_OK = /^[0-9]{5,20}$/;
 
 /**

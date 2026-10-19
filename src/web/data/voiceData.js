@@ -458,7 +458,11 @@ function createVoiceData(options = {}) {
     return data;
   }
 
-  /** Drop one guild's (or all) cached snapshots — future write hooks/tests. */
+  /**
+   * Drop one guild's (or all) cached snapshots. WIRED (#457 H1-9 + #466
+   * C2-7 audit trail): the settings writes call it — the page mirrors the
+   * very guild_settings rows those writes change.
+   */
   function invalidate(guildId) {
     if (guildId === undefined) cache.clear();
     else cache.delete(guildId);

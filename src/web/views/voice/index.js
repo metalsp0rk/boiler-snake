@@ -290,7 +290,10 @@ function formatAge(ms) {
 /**
  * Full voice & music body (goes into the shell via renderShellPage).
  * @param {object} input
- * @param {object} input.snapshot from data/voiceData.js getVoice()
+ * @param {object} input.snapshot from data/voiceData.js getVoice() — carries BOTH
+ *   identities side by side: `communityId` (integer ROUTE identity, used for every
+ *   href) and the display snowflake (#468 C2-9: the missing doc here is what
+ *   produced the C2-3 wrong-link bug — voice was wired in #407, documented now)
  * @param {(id: string) => string|null} [input.resolveChannelName] cache-only (getClient seam)
  * @returns {import("../escape").SafeString}
  */
