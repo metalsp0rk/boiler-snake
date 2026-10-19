@@ -147,7 +147,11 @@ async function handleSetDecay(commandCtx, featureCtx) {
       command: "/setdecay",
       actor: commandCtx.user,
       changes: lines,
-    }).catch(() => {});
+    }).catch((err) =>
+      // #472 (XE-9): never swallow blind — the inner send guard owns send
+      // failures; this catch only exists to LOG the throws it cannot absorb.
+      console.error("[decay] /setdecay audit mirror failed:", err?.message || err),
+    );
   }
 
   const decayPct = Math.round((Number(updated.decay_percent) || 0) * 100);
@@ -304,7 +308,12 @@ async function runDecayForGuild(supervisor, communityId, opts = {}) {
             levelChanges,
             lvl,
             "decay",
-          ).catch(() => {});
+          ).catch((err) =>
+          console.error(
+            `[decay] level-change audit mirror failed (member ${member?.id ?? "?"}):`,
+            err?.message || err,
+          ),
+        );
 
           await syncMemberReactionRoles(member, lvl, {
             client,
@@ -331,7 +340,12 @@ async function runDecayForGuild(supervisor, communityId, opts = {}) {
             levelChanges,
             lvl,
             "decay",
-          ).catch(() => {});
+          ).catch((err) =>
+          console.error(
+            `[decay] level-change audit mirror failed (member ${member?.id ?? "?"}):`,
+            err?.message || err,
+          ),
+        );
 
           if (lvl < oldLvl) {
             console.log(

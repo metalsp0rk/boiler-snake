@@ -68,18 +68,6 @@ function addXp(communityId, userId, delta) {
   return tx(communityId, userId, delta);
 }
 
-function setXp(communityId, userId, xp) {
-  assertCommunityId(communityId);
-  ensureUser(communityId, userId);
-  const safe = clampXpTotal(xp);
-
-  db.prepare(`
-  UPDATE users
-  SET xp=?, updated_at=?
-  WHERE community_id=? AND user_id=?
-  `).run(safe, now(), communityId, userId);
-}
-
 /**
  * Relative XP decay for ONE user (audit H10, #191): the UPDATE computes the
  * new total from the CURRENT stored column value inside a transaction —
@@ -280,7 +268,6 @@ function listCommunityIdsWithUsers() {
 module.exports = {
   ensureUser,
   addXp,
-  setXp,
   applyDecay,
   getXp,
   getUser,

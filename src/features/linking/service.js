@@ -929,7 +929,7 @@ async function fanOutLinkedXp(sourceCommunityId, userId, delta, activityKind, op
         : require("../../services/awardXp").awardXp;
 
     try {
-      await awardXpFn(targetOutbound, {
+      const mirrorRes = await awardXpFn(targetOutbound, {
         communityId: mirror.targetCommunityId,
         userId: mirror.targetUserId,
         delta: mirrored,
@@ -938,10 +938,21 @@ async function fanOutLinkedXp(sourceCommunityId, userId, delta, activityKind, op
         source: "link_mirror",
         fanOut: false, // LOOP GUARD: a mirror never fans out again
       });
+      if (mirrorRes && mirrorRes.ok === false) {
+        // #472 (XE-11): awardXp reports {ok:false,error} instead of throwing.
+        // A failed target award is a PARTIAL failure: report it, keep the
+        // primary award (rules 5/6).
+        const msg =
+          `mirror award of ${mirrored} XP to community ${mirror.targetCommunityId} ` +
+          `user ${mirror.targetUserId} failed: ${mirrorRes.error}`;
+        console.error(`[linking] ${msg}`);
+        warnings.push(msg);
+        return { awarded: null, warnings };
+      }
     } catch (err) {
-      // awardXp validates ids and can throw on a broken row (e.g. the peer
-      // community vanished). A failed target award is a PARTIAL failure:
-      // report it, keep the primary award (rules 5/6).
+      // A THROW from the seam itself (an injected legacy awardXp, or a
+      // broken row under the real service's pre-flight checks) stays a
+      // PARTIAL failure with the same reporting (rules 5/6).
       const msg =
         `mirror award of ${mirrored} XP to community ${mirror.targetCommunityId} ` +
         `user ${mirror.targetUserId} failed: ${causeOf(err)}`;

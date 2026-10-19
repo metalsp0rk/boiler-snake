@@ -15,6 +15,7 @@
  * panel by INTEGER communityId + messageId, exactly like the Discord handlers.
  */
 const { describe, it, after } = require("node:test");
+const { seedXp } = require("./helpers/xpSeed");
 const assert = require("node:assert/strict");
 
 const { loadDb } = require("./helpers/env");
@@ -351,7 +352,7 @@ describe("fluxer reaction roles — min-level gate", () => {
   it("level below option min_level: reaction stripped + DM with the specific cause, no role grant", async () => {
     setElevatedFlag(1);
     seedPanel("507", { minLevel: 5 });
-    dbApi.setXp(COMMUNITY_ID, USER, 0); // level 0 < 5 (floor(sqrt(xp/100)))
+    seedXp(dbApi, COMMUNITY_ID, USER, 0); // level 0 < 5 (floor(sqrt(xp/100)))
     const rest = makeFakeRest({
       routes: {
         [`GET ${memberGetPath()}`]: { user: { id: USER, username: "u", bot: false }, roles: [] },

@@ -35,14 +35,28 @@ function sweepCooldownMap(map, maxAgeMs) {
  */
 function isOnCooldown(map, mapKey, cooldownSec, nowMs = Date.now()) {
   const cdSec = Math.max(0, Number(cooldownSec) || 0);
-  if (cdSec <= 0) {
-    map.set(mapKey, nowMs);
-    return false;
-  }
+  if (cdSec <= 0) return false;
   const last = map.get(mapKey) || 0;
-  if (nowMs - last < cdSec * 1000) return true;
+  return nowMs - last < cdSec * 1000;
+}
+
+/**
+ * Stamp the window for mapKey (#472 XE-7): check and stamp were once one
+ * function, so a check that LED TO a failed unit of work still consumed the
+ * window — a transient DB fault during an XP award silently skipped the
+ * user's next message even though nothing had been awarded. The stamp now
+ * belongs to the caller, executed only after the work actually succeeded:
+ *
+ *   if (isOnCooldown(map, k, sec)) return;
+ *   await doTheThing();          // throwing here leaves the window free
+ *   markCooldown(map, k);
+ *
+ * @param {Map<string, number>} map
+ * @param {string} mapKey
+ * @param {number} [nowMs]
+ */
+function markCooldown(map, mapKey, nowMs = Date.now()) {
   map.set(mapKey, nowMs);
-  return false;
 }
 
 // #429 (audit XE-2): cooldown windows are ADMIN-CONFIGURABLE — the memory
@@ -57,6 +71,7 @@ module.exports = {
   key,
   sweepCooldownMap,
   isOnCooldown,
+  markCooldown,
   MAX_CONFIG_COOLDOWN_SEC,
   COOLDOWN_SWEEP_MAX_AGE_MS,
 };

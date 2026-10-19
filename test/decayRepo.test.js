@@ -1,4 +1,6 @@
 const { describe, it, before, after } = require("node:test");
+// Aliased: this suite keeps its own two-arg seedXp wrapper (community scoped).
+const { seedXp: seedAbs } = require("./helpers/xpSeed");
 const assert = require("node:assert/strict");
 
 const { loadDb, communityKey } = require("./helpers/env");
@@ -23,7 +25,7 @@ describe("users.applyDecay (relative XP decay, #191)", () => {
   after(() => cleanup?.());
 
   const seedXp = (userId, xp) => {
-    api.setXp(communityId, userId, xp);
+    seedAbs(api, communityId, userId, xp);
     return api.getXp(communityId, userId);
   };
 

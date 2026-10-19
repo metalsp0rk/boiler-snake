@@ -77,6 +77,7 @@
  */
 
 const { describe, it, before, after } = require("node:test");
+const { seedXp } = require("./helpers/xpSeed");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
@@ -347,7 +348,7 @@ api.updateGuildSettings(CID_A, { warn_log_channel_id: CH_WARN });
 // The leaderboard USER page 404s for users WITHOUT data (unknown-user
 // doctrine, not a tier signal) — the C sweep's :userId subject needs a
 // seeded XP row (phase-1 precedent: the tracked-user fixture).
-api.setXp(CID_A, USER_WARN_SUBJECT, 1234);
+seedXp(api, CID_A, USER_WARN_SUBJECT, 1234);
 
 const settingsData = createSettingsData();
 const resolver = guildAccessMod.createGuildAccessResolver({
@@ -1374,7 +1375,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
   describe("F-X1 /grantxp ⇆ POST xp/grant", () => {
     let xSlash; // captured run
     it("slash run: grant 250 through the REAL awardXp service", async () => {
-      api.setXp(CID_A, USER_P_SUB, 0);
+      seedXp(api, CID_A, USER_P_SUB, 0);
       resetChannelCapture();
       const before = auditCount("slash");
       const interaction = slashInteraction({
@@ -1405,7 +1406,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
     });
 
     it("web twin run: identical DB end-state, identical audit (origin aside), identical channel embed (timestamp aside)", async () => {
-      api.setXp(CID_A, USER_P_SUB, 0); // same baseline as the slash run
+      seedXp(api, CID_A, USER_P_SUB, 0); // same baseline as the slash run
       resetChannelCapture();
       const before = auditCount("web");
       const { res, location } = await post(`/g/${CID_A}/xp/grant`, {
@@ -1443,7 +1444,7 @@ describe("F. slash↔web two-transport parity — same inputs, same DB end-state
     });
 
     it("rejection-class parity: amount < 1 ⇒ slash reply refusal / web invalid_amount slug — zero writes, zero audits on BOTH", async () => {
-      api.setXp(CID_A, USER_P_SUB, 0);
+      seedXp(api, CID_A, USER_P_SUB, 0);
       const before = { s: auditCount("slash"), w: auditCount("web") };
       const interaction = slashInteraction({
         userId: USER_ADMIN,
