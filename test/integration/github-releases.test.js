@@ -1,6 +1,15 @@
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
+
+// #620: the nested "#444 private token entry" describe REQUIRES src modules
+// DURING node:test's COLLECTION pass — before any before() hook runs — so
+// DB_PATH must already be PRIVATE at module load. createIntegrationEnv
+// (outer before()) rebinds to its own env exactly as before; this binding
+// only keeps collection-time requires off the ambient sqlite (the file that
+// created the shared root xpbot.sqlite mid-suite).
+const { cleanup: cleanupTempDb } = require("../helpers/env").loadDb();
+after(cleanupTempDb);
 const {
   assertReplyContains,
   assertEphemeralReply,
