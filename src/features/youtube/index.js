@@ -150,14 +150,12 @@ async function handleYoutube(commandCtx, featureCtx) {
         // Normalize to just the username
         channelId = match[1];
         channelName = "@" + match[1];
-        fullUrl = `https://www.youtube.com/@${channelId}`;
 
         // Resolve @username to numeric ID immediately
         const resolved = await lookupChannelByName(channelId);
         if (resolved) {
           channelId = resolved.id;
           channelName = normalizeYoutubeName(resolved.name); // Store without @ prefix
-          fullUrl = `https://www.youtube.com/channel/${channelId}`;
         }
       }
     } else if (url.startsWith("@")) {
@@ -165,15 +163,12 @@ async function handleYoutube(commandCtx, featureCtx) {
       const username = url.substring(1);
       channelId = username;
       channelName = "@" + username;
-      fullUrl = `https://www.youtube.com/@${username}`;
 
       // Resolve @username to numeric ID immediately
       const resolved = await lookupChannelByName(username);
-      console.log(resolved);
       if (resolved) {
         channelId = resolved.id;
         channelName = normalizeYoutubeName(resolved.name); // Store without @ prefix
-        fullUrl = `https://www.youtube.com/channel/${channelId}`;
       }
     } else if (url.includes("youtube.com/channel/")) {
       const match = url.match(/youtube\.com\/channel\/([^/?]+)/);
@@ -184,7 +179,6 @@ async function handleYoutube(commandCtx, featureCtx) {
     } else if (url.startsWith("UC") || url.startsWith("HC")) {
       channelId = url;
       channelName = `Channel ID: ${url}`;
-      fullUrl = `https://www.youtube.com/channel/${url}`;
     } else {
       await commandCtx.reply({
         content:
@@ -198,16 +192,10 @@ async function handleYoutube(commandCtx, featureCtx) {
     let thumbnail = "";
     if (channelId && !channelId.startsWith("@")) {
       const channelInfo = await fetchChannelInfo(channelId);
-      console.log(
-        `[youtube] /youtube add - fetchChannelInfo result for ${channelId}:`,
-        JSON.stringify(channelInfo, null, 2),
-      );
       if (channelInfo && channelInfo.thumbnail_url) {
         thumbnail = channelInfo.thumbnail_url;
-        console.log(`[youtube] Using API thumbnail: ${thumbnail}`);
       } else {
         thumbnail = `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
-        console.log(`[youtube] Using fallback thumbnail: ${thumbnail}`);
       }
     }
 
@@ -288,13 +276,6 @@ async function handleYoutube(commandCtx, featureCtx) {
     let removeErr = null;
     try {
       removed = removeYoutubeChannel(communityId, channelId);
-      console.log(`[youtube] Remove debug:`, {
-        guildId,
-        channelId,
-        foundChannel: foundChannel?.channel_name,
-        removed,
-        error: null,
-      });
     } catch (err) {
       removeErr = err;
       console.error("[youtube] Remove error:", err);
@@ -565,16 +546,10 @@ async function handleTestNotification(commandCtx, featureCtx) {
     let thumbnail = "";
     if (channelId && !channelId.startsWith("@")) {
       const channelInfo = await fetchChannelInfo(channelId);
-      console.log(
-        `[youtube] /testnotification add - fetchChannelInfo result for ${channelId}:`,
-        JSON.stringify(channelInfo, null, 2),
-      );
       if (channelInfo && channelInfo.thumbnail_url) {
         thumbnail = channelInfo.thumbnail_url;
-        console.log(`[youtube] Using API thumbnail: ${thumbnail}`);
       } else {
         thumbnail = `https://i.ytimg.com/vi/${channelId}/maxresdefault.jpg`;
-        console.log(`[youtube] Using fallback thumbnail: ${thumbnail}`);
       }
     }
     addYoutubeChannel(
@@ -591,11 +566,6 @@ async function handleTestNotification(commandCtx, featureCtx) {
         normalizeYoutubeName(channelName),
     );
   }
-
-  console.log(
-    `[testnotification] Channel data from DB:`,
-    JSON.stringify(existingChannel, null, 2),
-  );
 
   if (!existingChannel || !existingChannel.id) {
     // #456 (rule 3): the diagnostic command must say WHAT it ended up with.
@@ -659,11 +629,6 @@ async function handleTestNotification(commandCtx, featureCtx) {
     });
     return;
   }
-
-  console.log(
-    `[testnotification] Channel thumbnail URL:`,
-    existingChannel.thumbnail_url,
-  );
 
   const useSimpleEmbed = commandCtx.options.getBoolean("simple") || false;
 

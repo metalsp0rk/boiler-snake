@@ -801,7 +801,10 @@ function buildLevelRoleChangeEmbed({
 async function logMessageDelete(outbound, message) {
   if (!message?.guild) return;
 
-  const cached = takeCachedMessage(message) || getCachedMessage(message);
+  // takeCachedMessage already consults (and clears) getCachedMessage under the
+// identical key — the old `|| getCachedMessage(...)` fallback could never hit
+// (#471 INT-15).
+  const cached = takeCachedMessage(message);
 
   const authorId = message.author?.id || cached?.authorId || "unknown";
   const authorTag =
@@ -893,7 +896,7 @@ async function logMessageBulkDelete(outbound, messages, channel) {
 
   for (const msg of list) {
     if (samples.length >= BULK_SAMPLE_LIMIT) break;
-    const cached = takeCachedMessage(msg) || getCachedMessage(msg);
+    const cached = takeCachedMessage(msg); // INT-15: dead fallback dropped
     samples.push({
       authorId: msg.author?.id || cached?.authorId,
       authorTag: msg.author?.tag || msg.author?.username || cached?.authorTag,
@@ -902,9 +905,6 @@ async function logMessageBulkDelete(outbound, messages, channel) {
   }
 
   // Also sample pure cache entries for this channel if collection was empty of content
-  if (samples.length < BULK_SAMPLE_LIMIT) {
-    // nothing more without channel-indexed cache
-  }
 
   const embed = buildMessageBulkDeleteEmbed(channel, samples, count);
   await sendMessageLog(outbound, guild.id, { embeds: [embed] });

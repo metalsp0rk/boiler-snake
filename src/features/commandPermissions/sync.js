@@ -158,8 +158,12 @@ async function applyGuildCommandPermissions(communityId, opts = {}) {
   const updated = [];
   const failed = [];
   const missingCommands = [];
+  // #471 (INT-16): an abort left the never-attempted remainder invisible in
+  // every ledger — a 3-of-40 sync rendered as "Updated 3… Some commands
+  // failed". Rule 5: partial results surface AS partial.
+  const skippedAfterAbort = [];
 
-  for (const name of targets) {
+  for (const [index, name] of targets.entries()) {
     const commandId = idMap.get(name);
     if (!commandId) {
       missingCommands.push(name);
@@ -182,15 +186,27 @@ async function applyGuildCommandPermissions(communityId, opts = {}) {
         error: err?.message || String(err),
       });
       if (err.status === 401 || err.status === 403) {
-        // abort remaining — token / permission problem
+        // Abort remaining — token / permission problem — but ACCOUNT for
+        // it: every untried target rides the ledger as skipped (#471 INT-16).
+        for (const skippedName of targets.slice(index + 1)) {
+          skippedAfterAbort.push(skippedName);
+        }
         break;
       }
     }
   }
 
   const errorSummary =
-    failed.length > 0
-      ? failed.map((f) => `${f.name}: ${f.error}`).join("; ").slice(0, 500)
+    failed.length > 0 || skippedAfterAbort.length > 0
+      ? [
+          ...failed.map((f) => `${f.name}: ${f.error}`),
+          skippedAfterAbort.length > 0
+            ? `aborted after auth failure — ${skippedAfterAbort.length} command(s) never attempted`
+            : null,
+        ]
+          .filter(Boolean)
+          .join("; ")
+          .slice(0, 500)
       : null;
 
   if (hasCommandPermissionOauth(communityId)) {
@@ -204,6 +220,7 @@ async function applyGuildCommandPermissions(communityId, opts = {}) {
     updated,
     failed,
     missingCommands,
+    skippedAfterAbort,
     roleCount: roleIds.length,
   };
 }
