@@ -55,79 +55,36 @@ const BRIDGE_OUTBOX_MAX_ATTEMPTS = 5;
 // Pairing credential format (roadmap/bridge.md §10.1)
 // ---------------------------------------------------------------------------
 
-/** Crockford base32 alphabet (excludes I, L, O, U). */
-const CROCKFORD_UPPER = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const CROCKFORD_LOWER = CROCKFORD_UPPER.toLowerCase();
+// #472 (LT-15): the pairing-code FORMAT engine (Crockford table + encoder,
+// display grouping, canonicalization, hashing, digest compare, input
+// classification) lives in core/pairingCodes — shared with account linking
+// ("LNK-") so a format fix lands once instead of twice ("share it, don't
+// fork", the ssrfGuard precedent). This repository stays the single §10.1
+// implementation site FOR BRIDGES: it owns the BRG prefix and the handle
+// branches (b_… ids are NOT credentials) and delegates the format math.
+const {
+  CROCKFORD_LOWER,
+  encodeCrockford,
+  formatDisplayCode,
+  digestsEqual,
+  createPairingCodes,
+} = require("../../core/pairingCodes");
 
-/** Canonical (upper, stripped) pairing code length: 22 chars, 128 bits of seed. */
-const CODE_SEED_BYTES = 16;
-const CODE_CANONICAL_LEN = 22;
+const connectCodes = createPairingCodes({ prefix: "BRG" });
 
 /** Handle shape (safe to post): b_ + 8 lowercase Crockford chars. */
 const HANDLE_PREFIX = "b_";
 const HANDLE_BODY_LEN = 8;
 const HANDLE_RE = /^b_[0-9a-hjkmnp-tv-z]{8}$/;
 
-/** Canonical codes contain only Crockford characters (uppercase form). */
-const CROCKFORD_UPPER_RE = /^[0-9A-HJ-KM-NP-TV-Z]+$/;
-
 /** Collision-retry budget for generatePublicId (2^40 space; this is paranoia). */
 const MAX_HANDLE_ATTEMPTS = 16;
 
 /**
- * Base32-encode bytes with a Crockford-style alphabet, MSB first, trailing
- * bits zero-padded (spec §10.1: "128 bits from crypto.randomBytes, Crockford
- * base32"). Returns exactly `charCount` characters.
- *
- * @param {Buffer|Uint8Array} bytes
- * @param {number} charCount
- * @param {string} alphabet 32-character alphabet
- * @returns {string}
- */
-function encodeCrockford(bytes, charCount, alphabet) {
-  let out = "";
-  let acc = 0;
-  let bits = 0;
-  for (const byte of bytes) {
-    acc = ((acc << 8) | byte) & 0xffffffff;
-    bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      out += alphabet[(acc >>> bits) & 31];
-    }
-  }
-  if (bits > 0) out += alphabet[(acc << (5 - bits)) & 31];
-  return out.slice(0, charCount);
-}
-
-/**
- * Group a canonical code for display: BRG-XXXX-XXXX-XXXX-XXXX-XXXX-XX.
- * Canonical strings whose length is not 22 pass through untouched — display
- * formatting never validates, classification does.
- *
- * @param {string} canonical
- * @returns {string}
- */
-function formatDisplayCode(canonical) {
-  return canonical.replace(
-    /^(.{4})(.{4})(.{4})(.{4})(.{4})(.*)$/,
-    "$1-$2-$3-$4-$5-$6",
-  );
-}
-
-/**
  * Canonical storage/comparison form (spec §10.1): uppercase, hyphens and
  * spaces stripped, a leading BRG prefix stripped.
- *
- * @param {string} raw
- * @returns {string} canonical form ('' for non-strings / empty input)
  */
-function canonicalizeConnectCode(raw) {
-  if (typeof raw !== "string") return "";
-  let s = raw.trim().toUpperCase().replace(/[-\s]/g, "");
-  if (s.startsWith("BRG")) s = s.slice(3);
-  return s;
-}
+const canonicalizeConnectCode = connectCodes.canonicalize;
 
 /** Handle inputs are trimmed + lowercased before validation (spec §10.1). */
 function normalizeHandle(raw) {
@@ -143,26 +100,19 @@ function isBridgeHandle(raw) {
 }
 
 /**
- * Mint a one-time connect credential: 128 random bits → Crockford base32 →
- * the canonical 22-char form, its display form, and the at-rest SHA-256
- * digest (32 bytes). The raw code exists only in create's delivery; only the
- * digest is ever stored.
+ * Mint a one-time connect credential (shared engine): 128 random bits →
+ * Crockford base32 → the canonical 22-char form, its display form ("BRG-"
+ * grouped), and the at-rest SHA-256 digest (32 bytes). The raw code exists
+ * only in create's delivery; only the digest is ever stored.
+ *
+ * #472 (LT-15) inherits one small upgrade from the shared engine: a minted
+ * body starting with "BRG" is re-minted — canonicalize strips a leading
+ * prefix, so such a code could never be typed back in.
  *
  * @returns {{ displayCode: string, canonical: string, digest: Buffer }}
  */
 function generateConnectCode() {
-  const canonical = encodeCrockford(
-    crypto.randomBytes(CODE_SEED_BYTES),
-    CODE_CANONICAL_LEN,
-    CROCKFORD_UPPER,
-  );
-  return {
-    // Spec §10.1: the user-facing display form carries the BRG- prefix; the
-    // canonical storage form never does (canonicalizeConnectCode strips it).
-    displayCode: "BRG-" + formatDisplayCode(canonical),
-    canonical,
-    digest: hashConnectCode(canonical),
-  };
+  return connectCodes.mint();
 }
 
 /**
@@ -198,24 +148,7 @@ function hashConnectCode(raw) {
   if (isBridgeHandle(raw)) {
     throw new TypeError("hashConnectCode: bridge handles are never run through the code hasher");
   }
-  return crypto.createHash("sha256").update(canonicalizeConnectCode(raw), "utf8").digest();
-}
-
-/**
- * Constant-time compare of two stored digests. Length/type mismatches are
- * false, never a throw (timingSafeEqual throws on length mismatch).
- *
- * @param {Buffer|Uint8Array|null|undefined} a
- * @param {Buffer|Uint8Array|null|undefined} b
- * @returns {boolean}
- */
-function digestsEqual(a, b) {
-  const toBuf = (v) => (Buffer.isBuffer(v) ? v : v instanceof Uint8Array ? Buffer.from(v) : null);
-  const ba = toBuf(a);
-  const bb = toBuf(b);
-  if (!ba || !bb) return false;
-  if (ba.length !== 32 || bb.length !== 32) return false;
-  return crypto.timingSafeEqual(ba, bb);
+  return connectCodes.hash(raw);
 }
 
 /**
@@ -237,10 +170,7 @@ function classifyConnectInput(raw) {
   if (typeof raw !== "string" || raw.trim() === "") return { kind: "empty" };
   const handle = normalizeHandle(raw);
   if (HANDLE_RE.test(handle)) return { kind: "handle", publicId: handle };
-  const canonical = canonicalizeConnectCode(raw);
-  if (canonical === "") return { kind: "empty" };
-  if (!CROCKFORD_UPPER_RE.test(canonical)) return { kind: "garbage", canonical };
-  return { kind: "code", canonical };
+  return connectCodes.classify(raw);
 }
 
 // ---------------------------------------------------------------------------
