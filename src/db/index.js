@@ -209,6 +209,10 @@ module.exports = {
   removeHoneypotExemptRole: staffRoles.removeStaffRole,
   listHoneypotExemptRoles: staffRoles.listStaffRoles,
   memberHasHoneypotExemptRole: staffRoles.memberHasStaffRole,
+  // #469 (F2-11): moderation-PII erasure primitives
+  deleteVoidedWarningsOlderThan: warnings.deleteVoidedWarningsOlderThan,
+  deleteErasedNotesOlderThan: staffNotes.deleteErasedNotesOlderThan,
+  ERASED_NOTE_CONTENT: staffNotes.ERASED_NOTE_CONTENT,
   addHoneypotBanRole: honeypot.addHoneypotBanRole,
   removeHoneypotBanRole: honeypot.removeHoneypotBanRole,
   listHoneypotBanRoles: honeypot.listHoneypotBanRoles,

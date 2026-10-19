@@ -793,6 +793,7 @@ function createClient(opts = {}) {
       },
     },
     on: emitter.on.bind(emitter),
+    listenerCount: emitter.listenerCount.bind(emitter), // #469 (F2-6) pin helper
     once: emitter.once.bind(emitter),
     emit: emitter.emit.bind(emitter),
     off: emitter.off.bind(emitter),

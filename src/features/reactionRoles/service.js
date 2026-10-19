@@ -862,6 +862,51 @@ function guildFromReaction(reaction) {
   return null;
 }
 
+// #469 (E2-10): per-(community:user:role) serial queue for claim
+// mutations. A react and an un-react fired back-to-back (or the gateway
+// reordering the pair) used to RACE: the remove arm read
+// member.roles.cache WHILE the add arm's roles.add() was still in
+// flight, saw "no role", skipped the removal — and the member kept a
+// role they had un-claimed, with nothing ever reconciling it (the
+// min-level sweep only removes, never re-adds). The cache is not the
+// bug; the concurrency around it is: every accepted claim/revoke for
+// one (user, role) now runs strictly after the previous one COMMITTED,
+// so each arm reads the state its predecessor wrote. Chains self-heal
+// (a rejection never poisons the queue) and the map prunes itself when
+// a key drains, so there is no unbounded growth.
+/** @type {Map<string, Promise<void>>} */
+const roleClaimLocks = new Map();
+
+/**
+ * Serialize one mutation per (community, user, role).
+ * @param {number} communityId
+ * @param {string} userId
+ * @param {string} roleId
+ * @param {() => Promise<unknown>} run
+ * @returns {Promise<unknown>} whatever run resolves to
+ */
+function withRoleClaimLock(communityId, userId, roleId, run) {
+  const key = `${communityId}:${userId}:${roleId}`;
+  const prev = roleClaimLocks.get(key) ?? Promise.resolve();
+  // prev.then(run, run): the PREVIOUS caller's outcome must never
+  // strand this one — the queue drains through failures.
+  const tail = prev.then(run, run);
+  const keepAlive = tail.then(
+    () => undefined,
+    () => undefined,
+  );
+  roleClaimLocks.set(key, keepAlive);
+  keepAlive.then(() => {
+    if (roleClaimLocks.get(key) === keepAlive) roleClaimLocks.delete(key);
+  });
+  return tail;
+}
+
+/** @private test seam: queued-lock keys (0 when every chain drained) */
+function _roleClaimLockCount() {
+  return roleClaimLocks.size;
+}
+
 /**
  * Handle MessageReactionAdd for reaction-role panels.
  * @returns {Promise<{ handled: boolean }>} handled=true means skip reaction XP
@@ -902,79 +947,85 @@ async function handleReactionRoleAdd(reaction, user) {
     return { handled: true };
   }
 
-  const member = await guild.members.fetch(user.id).catch(() => null);
-  if (!member) {
-    await removeUserReaction(reaction, user.id);
-    return { handled: true };
-  }
-
-  const settings = getGuildSettings(communityId);
-  const xp = getXp(communityId, user.id);
-  const level = levelFromXp(xp, settings.level_xp_factor);
-  const minLevel = Number(option.min_level) || 0;
-
-  if (level < minLevel) {
-    await removeUserReaction(reaction, user.id);
-    const roleLabel = await roleNameForDm(guild, option.role_id);
-    await tryDmUser(
-      user,
-      `You need **Level ${minLevel}** to claim ${roleLabel} in **${guild.name}**. ` +
-        `(You are currently Level ${level}.)`,
-    );
-    return { handled: true };
-  }
-
-  if (!member.roles.cache.has(option.role_id)) {
-    try {
-      await member.roles.add(option.role_id);
-      const panel = getReactionRolePanel(communityId, messageId);
-      // #356 (FLX/logs): a RAW Client was passed where an OutboundClient
-      // is required — sendAuditLog → sendToLogChannel calls
-      // outbound.sendChannel(), undefined on a raw Client → TypeError →
-      // swallowed whole by the old .catch(() => {}). The live claim/revoke
-      // audit embed NEVER posted, anywhere, silently.
-      await logReactionRoleChange(getDiscordOutbound(reaction.client), {
-        member,
-        user,
-        roleId: option.role_id,
-        emoji: option.emoji_display || emojiKey,
-        action: "add",
-        panelMessageId: messageId,
-        panelChannelId: panel?.channel_id || reaction.message.channelId,
-        minLevel,
-        removable: option.removable,
-      }).catch((err) =>
-        console.error(
-          `[reactionRoles] grant audit embed failed (guild=${guildId} user=${user.id} role=${option.role_id}):`,
-          err?.message || err,
-        ),
-      );
-    } catch (err) {
-      logRoleError("add", err, {
-        guildId,
-        userId: user.id,
-        roleId: option.role_id,
-      });
+  // #469 (E2-10): the member read, the level gate, the grant AND the claim
+  // record run SERIALIZED per (user, role) — both arms enter the queue at
+  // the same await-free point, so queue order == event order.
+  await withRoleClaimLock(communityId, user.id, option.role_id, async () => {
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    if (!member) {
       await removeUserReaction(reaction, user.id);
+      return { handled: true };
+    }
+
+    const settings = getGuildSettings(communityId);
+    const xp = getXp(communityId, user.id);
+    const level = levelFromXp(xp, settings.level_xp_factor);
+    const minLevel = Number(option.min_level) || 0;
+
+    if (level < minLevel) {
+      await removeUserReaction(reaction, user.id);
+      const roleLabel = await roleNameForDm(guild, option.role_id);
       await tryDmUser(
         user,
-        `I couldn't assign that role in **${guild.name}**. Staff may need to fix the bot's role permissions.`,
+        `You need **Level ${minLevel}** to claim ${roleLabel} in **${guild.name}**. ` +
+          `(You are currently Level ${level}.)`,
+      );
+      return { handled: true };
+    }
+
+    if (!member.roles.cache.has(option.role_id)) {
+      try {
+        await member.roles.add(option.role_id);
+        const panel = getReactionRolePanel(communityId, messageId);
+        // #356 (FLX/logs): a RAW Client was passed where an OutboundClient
+        // is required — sendAuditLog → sendToLogChannel calls
+        // outbound.sendChannel(), undefined on a raw Client → TypeError →
+        // swallowed whole by the old .catch(() => {}). The live claim/revoke
+        // audit embed NEVER posted, anywhere, silently.
+        await logReactionRoleChange(getDiscordOutbound(reaction.client), {
+          member,
+          user,
+          roleId: option.role_id,
+          emoji: option.emoji_display || emojiKey,
+          action: "add",
+          panelMessageId: messageId,
+          panelChannelId: panel?.channel_id || reaction.message.channelId,
+          minLevel,
+          removable: option.removable,
+        }).catch((err) =>
+          console.error(
+            `[reactionRoles] grant audit embed failed (guild=${guildId} user=${user.id} role=${option.role_id}):`,
+            err?.message || err,
+          ),
+        );
+      } catch (err) {
+        logRoleError("add", err, {
+          guildId,
+          userId: user.id,
+          roleId: option.role_id,
+        });
+        await removeUserReaction(reaction, user.id);
+        await tryDmUser(
+          user,
+          `I couldn't assign that role in **${guild.name}**. Staff may need to fix the bot's role permissions.`,
+        );
+      }
+    }
+
+    // #433 (audit E2-09): every ACCEPTED option reaction is a claim — recorded
+    // even when the role was already held (granted via another panel). The
+    // remove path refcounts these rows across panels before stripping, so
+    // un-reacting a deploy-copied panel no longer revokes a still-claimed role.
+    try {
+      recordReactionRoleClaim(communityId, user.id, messageId, emojiKey);
+    } catch (err) {
+      console.error(
+        `[reactionRoles] Failed to record claim (${option.role_id} via ${messageId}/${emojiKey}):`,
+        err?.message || err,
       );
     }
-  }
+  });
 
-  // #433 (audit E2-09): every ACCEPTED option reaction is a claim — recorded
-  // even when the role was already held (granted via another panel). The
-  // remove path refcounts these rows across panels before stripping, so
-  // un-reacting a deploy-copied panel no longer revokes a still-claimed role.
-  try {
-    recordReactionRoleClaim(communityId, user.id, messageId, emojiKey);
-  } catch (err) {
-    console.error(
-      `[reactionRoles] Failed to record claim (${option.role_id} via ${messageId}/${emojiKey}):`,
-      err?.message || err,
-    );
-  }
 
   return { handled: true };
 }
@@ -1011,75 +1062,81 @@ async function handleReactionRoleRemove(reaction, user) {
   const option = resolveReactionRoleOption(communityId, messageId, emojiKey);
   if (!option) return { handled: true };
 
-  // #433 (audit E2-09): a claim mirrors the user's reaction STANCE — release
-  // it on EVERY un-react, removable or not (a stale claim on a non-removable
-  // option would wrongly keep roles alive elsewhere).
-  try {
-    deleteReactionRoleClaim(communityId, user.id, messageId, emojiKey);
-  } catch (err) {
-    console.error(
-      `[reactionRoles] Claim release failed (${option.role_id} via ${messageId}/${emojiKey}):`,
-      err?.message || err,
-    );
-  }
-
-  // Only strip role when removable is set
-  if (Number(option.removable) === 0) {
-    return { handled: true };
-  }
-
-  // Cross-panel refcount: if another live option still grants this role and
-  // the user's claim for it stands (deploy-copied panels are a supported
-  // config), the role stays.
-  try {
-    if (countReactionRoleClaimsForRole(communityId, user.id, option.role_id) > 0) {
-      console.log(
-        `[reactionRoles] Keeping role ${option.role_id} for ${user.id} in ${guildId} — ` +
-          `still claimed via another panel option (un-reacted ${messageId}/${emojiKey})`,
+  // #469 (E2-10): release + refcount + revoke run SERIALIZED per
+  // (user, role) — the remove arm now always reads the member state the
+  // matching add arm COMMITTED (the in-flight stale-cache skip is gone).
+  await withRoleClaimLock(communityId, user.id, option.role_id, async () => {
+    // #433 (audit E2-09): a claim mirrors the user's reaction STANCE — release
+    // it on EVERY un-react, removable or not (a stale claim on a non-removable
+    // option would wrongly keep roles alive elsewhere).
+    try {
+      deleteReactionRoleClaim(communityId, user.id, messageId, emojiKey);
+    } catch (err) {
+      console.error(
+        `[reactionRoles] Claim release failed (${option.role_id} via ${messageId}/${emojiKey}):`,
+        err?.message || err,
       );
+    }
+
+    // Only strip role when removable is set
+    if (Number(option.removable) === 0) {
       return { handled: true };
     }
-  } catch (err) {
-    console.error(
-      `[reactionRoles] Claim refcount failed for ${option.role_id} (${messageId}/${emojiKey}) — ` +
-        `falling back to the pre-#433 strip:`,
-      err?.message || err,
-    );
-  }
 
-  const member = await guild.members.fetch(user.id).catch(() => null);
-  if (!member) return { handled: true };
-
-  if (member.roles.cache.has(option.role_id)) {
+    // Cross-panel refcount: if another live option still grants this role and
+    // the user's claim for it stands (deploy-copied panels are a supported
+    // config), the role stays.
     try {
-      await member.roles.remove(option.role_id);
-      const panel = getReactionRolePanel(communityId, messageId);
-      // #356: same raw-Client→outbound fix + a cause on the catch (the
-      // silent-embed class this file kept until now).
-      await logReactionRoleChange(getDiscordOutbound(reaction.client), {
-        member,
-        user,
-        roleId: option.role_id,
-        emoji: option.emoji_display || emojiKey,
-        action: "remove",
-        panelMessageId: messageId,
-        panelChannelId: panel?.channel_id || reaction.message.channelId,
-        minLevel: option.min_level,
-        removable: option.removable,
-      }).catch((err) =>
-        console.error(
-          `[reactionRoles] revoke audit embed failed (guild=${guildId} user=${user.id} role=${option.role_id}):`,
-          err?.message || err,
-        ),
-      );
+      if (countReactionRoleClaimsForRole(communityId, user.id, option.role_id) > 0) {
+        console.log(
+          `[reactionRoles] Keeping role ${option.role_id} for ${user.id} in ${guildId} — ` +
+            `still claimed via another panel option (un-reacted ${messageId}/${emojiKey})`,
+        );
+        return { handled: true };
+      }
     } catch (err) {
-      logRoleError("remove", err, {
-        guildId,
-        userId: user.id,
-        roleId: option.role_id,
-      });
+      console.error(
+        `[reactionRoles] Claim refcount failed for ${option.role_id} (${messageId}/${emojiKey}) — ` +
+          `falling back to the pre-#433 strip:`,
+        err?.message || err,
+      );
     }
-  }
+
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    if (!member) return { handled: true };
+
+    if (member.roles.cache.has(option.role_id)) {
+      try {
+        await member.roles.remove(option.role_id);
+        const panel = getReactionRolePanel(communityId, messageId);
+        // #356: same raw-Client→outbound fix + a cause on the catch (the
+        // silent-embed class this file kept until now).
+        await logReactionRoleChange(getDiscordOutbound(reaction.client), {
+          member,
+          user,
+          roleId: option.role_id,
+          emoji: option.emoji_display || emojiKey,
+          action: "remove",
+          panelMessageId: messageId,
+          panelChannelId: panel?.channel_id || reaction.message.channelId,
+          minLevel: option.min_level,
+          removable: option.removable,
+        }).catch((err) =>
+          console.error(
+            `[reactionRoles] revoke audit embed failed (guild=${guildId} user=${user.id} role=${option.role_id}):`,
+            err?.message || err,
+          ),
+        );
+      } catch (err) {
+        logRoleError("remove", err, {
+          guildId,
+          userId: user.id,
+          roleId: option.role_id,
+        });
+      }
+    }
+  });
+
 
   return { handled: true };
 }
@@ -2445,6 +2502,7 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
 const handlePendingOptionAddMessage = handlePendingOptionEmojiMessage;
 
 module.exports = {
+  _roleClaimLockCount, // #469 (E2-10): drain-observation seam
   // #466 (E2-11): the K8 deferred-grant resume (service + boot sweep).
   resumeDeferredRoleGrantsFluxer,
   sweepDeferredRoleGrantsAll,

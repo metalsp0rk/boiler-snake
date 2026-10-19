@@ -515,10 +515,14 @@ describe("GET /g/:guildId/notes — soft-delete visibility mirrors /note list", 
     );
   });
 
-  it("state=all reveals deleted notes BADGED with deleted_by (mirror include_deleted:true)", async () => {
+  it("state=all badges deleted notes with deleted_by — content is ERASED (#469 F2-11)", async () => {
     const { res, body } = await hit(`${N}?state=all`, { key: "senior" });
     assert.equal(res.status, 200);
-    assert.ok(body.includes("deleted note body alpha"));
+    assert.ok(
+      !body.includes("deleted note body alpha"),
+      "deletion destroyed the content — the staff view cannot show what no longer exists",
+    );
+    assert.match(body, /erased/i, "the tombstone stub renders in its place");
     assert.ok(body.includes("state-pill-deleted"), "deleted badge class");
     assert.ok(body.includes(USER_SENIOR), "deleted_by id rendered");
     assert.ok(

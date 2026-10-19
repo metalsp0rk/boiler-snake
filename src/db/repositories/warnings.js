@@ -493,7 +493,8 @@ function listExpiredActiveWarnings(nowMs = now(), limit = 50) {
  * @param {number} communityId
  * @param {number} warningNumber
  * @param {object} opts
- * @param {string} opts.voidedBy
+ * @param {string|null} opts.voidedBy actor id; NULL = automatic expiry
+ *   (#469 F2-9 — never write a pseudo-id like "system:expiry" here)
  * @param {string} opts.voidReason
  * @returns {object|null} updated row, or null if not found
  * @throws {{ code: string }} INVALID_REASON | ALREADY_VOIDED
@@ -536,7 +537,37 @@ function voidWarning(communityId, warningNumber, opts) {
   return getWarning(communityId, warningNumber);
 }
 
+/**
+ * #469 (F2-11): retention primitive — VOIDED warnings older than the
+ * cutoff are erased. A voided warning carries no enforcement power (the
+ * record documents that it was WITHDRAWN); past the window the row is
+ * pure retained PII. ACTIVE and un-voided warnings are never touched —
+ * deleting enforcement history without a knob would be its own audit
+ * hazard. Opt-in via RETENTION_VOIDED_WARNINGS_DAYS.
+ * @param {number} cutoffMs voided strictly before (epoch ms)
+ * @param {number} [limit]
+ * @returns {number} rows deleted
+ */
+function deleteVoidedWarningsOlderThan(cutoffMs, limit = 500) {
+  if (!Number.isSafeInteger(cutoffMs)) {
+    throw new TypeError(
+      `deleteVoidedWarningsOlderThan: cutoffMs must be an integer ms epoch, got ${String(cutoffMs)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteVoidedWarningsOlderThan: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(
+      `DELETE FROM warnings WHERE voided_at IS NOT NULL AND voided_at < ? LIMIT ?`,
+    )
+    .run(cutoffMs, limit).changes;
+}
+
 module.exports = {
+  deleteVoidedWarningsOlderThan,
   MAX_WARN_REASON,
   MAX_EVIDENCE_TEXT,
   MAX_EXPIRY_DAYS,

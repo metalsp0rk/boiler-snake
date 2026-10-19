@@ -53,7 +53,11 @@ async function runWarnExpiryTick(supervisor, opts = {}) {
   let errors = 0;
 
   const client = resolveDiscordClient(supervisor);
-  const botId = client?.user?.id || "system:expiry";
+  // #469 (F2-9): voided_by is a USER-ID column — the old fallback wrote the
+  // non-snowflake "system:expiry" into it, and every `<@…>` renderer turns
+  // that into a broken mention. Auto-expiry now means NULL: absent actor,
+  // honest fact (the renderers say "auto-expiry" for it).
+  const botId = client?.user?.id ?? null;
 
   for (const row of due) {
     try {

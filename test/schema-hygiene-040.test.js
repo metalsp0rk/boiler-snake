@@ -274,7 +274,7 @@ describe("migration 040_schema_hygiene (fresh DB: constraints, indexes, drops)",
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // force the replay path (#202 guard model)
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 56);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 57);
     // End-of-pass convergence: even though frozen 001 re-creates an empty
     // voice_sessions shell mid-pass, 040 drops it again (see migration header).
     assert.equal(api.db.prepare("SELECT name FROM sqlite_master WHERE name='voice_sessions'").get(), undefined);

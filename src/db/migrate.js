@@ -64,6 +64,7 @@ const migrations = [
   require("./migrations/054_ucmd_day_index"),
   require("./migrations/055_gork_usage_day_index"),
   require("./migrations/056_admin_audit_created_at_index"),
+  require("./migrations/057_level_role_fk"),
 ];
 
 const helpers = {
