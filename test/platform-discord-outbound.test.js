@@ -346,13 +346,12 @@ describe("platform/discord/outbound", () => {
       }
     });
 
-    it("reactions: add, remove-user, remove-emoji", async () => {
+    it("reactions: add, remove-user (no bot side effect), remove-emoji", async () => {
       const msg = textChannel.addMessage({ id: "msg-react-1" });
       const reacted = [];
       const usersRemoved = [];
       let emojiRemoved = 0;
-      msg.react = async (emojiKey) => {
-        reacted.push(emojiKey);
+      const seedReaction = (emojiKey) => {
         const reaction = {
           emojiKey,
           users: { remove: async (userId) => usersRemoved.push(userId) },
@@ -367,20 +366,69 @@ describe("platform/discord/outbound", () => {
         };
         return reaction;
       };
+      msg.react = async (emojiKey) => {
+        reacted.push(emojiKey); // ONLY addReaction may POST the bot reaction
+        return seedReaction(emojiKey);
+      };
 
       assert.deepEqual(await outbound.addReaction(IDS.channelGeneral, "msg-react-1", "👍"), {
         ok: true,
       });
+      assert.deepEqual(reacted, ["👍"], "addReaction POSTs the bot reaction");
+
+      // #470 (FLX-12): removing a USER must never acquire the manager via
+      // react() — pre-fix every call ADDED the bot to the reaction (panel
+      // residue) and a non-reacting user 400'd after the bot self-added.
       assert.deepEqual(
-        await outbound.removeUserReaction(IDS.channelGeneral, "msg-react-1", "👍", IDS.bot),
+        await outbound.removeUserReaction(IDS.channelGeneral, "msg-react-1", "👍", IDS.member),
         { ok: true },
       );
+      assert.deepEqual(usersRemoved, [IDS.member]);
+      assert.deepEqual(reacted, ["👍"], "no bot-reaction side effect on user removal");
+
+      // An emoji that is not on the message is a no-op success (fluxer twin
+      // parity) — and it must not CREATE one either.
+      assert.deepEqual(
+        await outbound.removeUserReaction(IDS.channelGeneral, "msg-react-1", "🎃", IDS.member),
+        { ok: true },
+      );
+      assert.deepEqual(usersRemoved, [IDS.member], "nothing was removed for an absent emoji");
+      assert.deepEqual(reacted, ["👍"], "an absent emoji must not be created by the removal");
+
+      // The user's reaction already vanished (404 / unknown-reaction) — the
+      // deletion is complete by definition: idempotent success, not a lie.
+      msg.reactions.cache.get("👍").users.remove = async () => {
+        const gone = new Error("Unknown Reaction");
+        gone.code = 10004;
+        gone.httpStatus = 404;
+        throw gone;
+      };
+      assert.deepEqual(
+        await outbound.removeUserReaction(IDS.channelGeneral, "msg-react-1", "👍", IDS.member),
+        { ok: true },
+        "already-gone reacts are idempotent",
+      );
+
+      // A REAL failure still reports the cause (rule 3).
+      msg.reactions.cache.get("👍").users.remove = async () => {
+        const boom = new Error("Missing Permissions");
+        boom.code = 50013;
+        boom.httpStatus = 403;
+        throw boom;
+      };
+      const denied = await outbound.removeUserReaction(
+        IDS.channelGeneral,
+        "msg-react-1",
+        "👍",
+        IDS.member,
+      );
+      assert.equal(denied.ok, false);
+      assert.match(denied.error, /Missing Permissions/);
+
       assert.deepEqual(
         await outbound.removeEmojiReaction(IDS.channelGeneral, "msg-react-1", "👍"),
         { ok: true },
       );
-      assert.deepEqual(reacted, ["👍", "👍"]);
-      assert.deepEqual(usersRemoved, [IDS.bot]);
       assert.equal(emojiRemoved, 1);
     });
 
