@@ -374,7 +374,10 @@ function registerModerationRoutes(app, options = {}) {
       content: renderWarningsBody(req, {
         page,
         names,
-        flash: flashFromQuery(rawFlashQuery(req.url), WARN_FLASH_DONE, WARN_FLASH_ERROR),
+        flash: flashFromQuery(rawFlashQuery(req.url), {
+          doneTable: WARN_FLASH_DONE,
+          errorTable: WARN_FLASH_ERROR,
+        }),
         csrfToken: req.csrfToken || null,
         bounds: { maxReason: MAX_WARN_REASON, maxEvidence: MAX_EVIDENCE_TEXT, maxExpiryDays: MAX_EXPIRY_DAYS },
       }),
@@ -406,7 +409,10 @@ function registerModerationRoutes(app, options = {}) {
       content: renderNotesBody(req, {
         page,
         names,
-        flash: flashFromQuery(rawFlashQuery(req.url), NOTE_FLASH_DONE, NOTE_FLASH_ERROR),
+        flash: flashFromQuery(rawFlashQuery(req.url), {
+          doneTable: NOTE_FLASH_DONE,
+          errorTable: NOTE_FLASH_ERROR,
+        }),
         csrfToken: req.csrfToken || null,
         bounds: { maxContent: MAX_NOTE_CONTENT },
       }),

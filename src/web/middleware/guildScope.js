@@ -45,6 +45,9 @@ const {
   parseCommunityIdParam,
 } = require("../shared/snowflake");
 const { getCommunityById } = require("../../platform/community");
+const {
+  respondGenericNotFound,
+} = require("../shared/genericNotFound"); // #470 H1-8
 
 /**
  * Login target for the anonymous/reauth redirect — mirrors the shell's
@@ -89,15 +92,6 @@ function respondLoginRedirect(res, target) {
   res.end();
 }
 
-/**
- * The generic 404 — body and framing IDENTICAL to app.js's handleNotFound
- * catch-all, so scoped/nonexistent/cross-guild are indistinguishable.
- * @param {import("http").ServerResponse} res
- */
-function respondGenericNotFound(res) {
-  res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end("Not found");
-}
 
 /**
  * The session the client PRESENTED for a community (PR 10): the slot of the

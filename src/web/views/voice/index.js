@@ -23,6 +23,10 @@
  */
 
 const { html } = require("../escape");
+// #470 (H1-8): num/formatAge shared with the other console views (#470 census:
+// identical private copies). The {kind,key} flash variant below is a
+// DIFFERENT contract from the done/error-slug family and stays as-is.
+const { num, formatAge } = require("../_helpers");
 const { emptyState, banner } = require("../components");
 const { DEFAULTS: SETTINGS_DEFAULTS } = require("../../data/settingsData");
 const { QUEUE_DISPLAY_CAP } = require("../../data/voiceData");
@@ -48,9 +52,6 @@ const MUSIC_PILL = Object.freeze({
 });
 
 /** Integer-ish display that never invents a number for null. */
-function num(value, suffix = "") {
-  return value == null ? html`<em class="muted">unset</em>` : html`${value}${suffix}`;
-}
 
 /** ms → "m:ss" / "h:mm:ss" (music/resolve.js formatDuration parity). */
 function formatDuration(ms) {
@@ -280,12 +281,6 @@ function configSection(config, communityId) {
 // ---------------------------------------------------------------------------
 
 /** Compact age for the freshness stamp (settings-page twin). */
-function formatAge(ms) {
-  const s = Math.max(0, Math.floor(Number(ms) || 0) / 1000);
-  if (s < 60) return `${Math.round(s)}s`;
-  const m = Math.floor(s / 60);
-  return m < 60 ? `${m}m ${Math.floor(s % 60)}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
-}
 
 /**
  * Full voice & music body (goes into the shell via renderShellPage).

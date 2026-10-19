@@ -25,6 +25,13 @@
  */
 
 const { html, raw } = require("../escape");
+// #470 (H1-8): moderation's (query, doneTable, errorTable) pair was the
+// canonical contract already — it now LIVES in views/_helpers.js and the
+// callers pass an opts object (routes/moderation.js + the two renders below).
+const {
+  flashFromQuery,
+  flashBanner,
+} = require("../_helpers");
 const { emptyState, banner, userRef } = require("../components");
 const { formatWarnRef, formatNoteRef } = require("../../../core/theme");
 const { formatWhen, snippet } = require("../users");
@@ -69,38 +76,7 @@ const NOTE_FLASH_ERROR = Object.freeze({
   content_too_long: "Note content is too long (max 2000 characters). Nothing was changed.",
 });
 
-/**
- * Whitelist one page's PRG query against its OWN frozen tables: each value
- * is a KNOWN slug or null. Junk/hostile/foreign values are dropped.
- * @param {{done?: unknown, error?: unknown}} query
- * @param {Readonly<Record<string,string>>} doneTable
- * @param {Readonly<Record<string,string>>} errorTable
- */
-function flashFromQuery(query, doneTable, errorTable) {
-  const done =
-    typeof query?.done === "string" && doneTable[query.done] ? query.done : null;
-  const error =
-    typeof query?.error === "string" && errorTable[query.error] ? query.error : null;
-  return { done, error };
-}
 
-/**
- * Flash banner for the PRG round-trip (frozen message chosen by slug —
- * never the raw query value, §8.7).
- * @param {{done: string|null, error: string|null}|null} flash
- * @param {Readonly<Record<string,string>>} doneTable
- * @param {Readonly<Record<string,string>>} errorTable
- */
-function flashBanner(flash, doneTable, errorTable) {
-  if (!flash) return html``;
-  if (flash.error && errorTable[flash.error]) {
-    return banner("warn", errorTable[flash.error]);
-  }
-  if (flash.done && doneTable[flash.done]) {
-    return banner("info", doneTable[flash.done]);
-  }
-  return html``;
-}
 
 /* ---------------------------------------------------------- mutation forms -- */
 
@@ -363,7 +339,7 @@ function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds 
     : emptyState(emptyMessage);
 
   return html`<div class="moderation">
-    ${flashBanner(flash, WARN_FLASH_DONE, WARN_FLASH_ERROR)}
+    ${flashBanner(flash, { doneTable: WARN_FLASH_DONE, errorTable: WARN_FLASH_ERROR })}
     ${page.invalidUser
       ? banner("warn", "Invalid user filter ignored — the user filter needs a numeric Discord user id.")
       : html``}
@@ -425,7 +401,7 @@ function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {
     : emptyState(emptyMessage);
 
   return html`<div class="moderation">
-    ${flashBanner(flash, NOTE_FLASH_DONE, NOTE_FLASH_ERROR)}
+    ${flashBanner(flash, { doneTable: NOTE_FLASH_DONE, errorTable: NOTE_FLASH_ERROR })}
     ${page.invalidUser
       ? banner("warn", "Invalid user filter ignored — the user filter needs a numeric Discord user id.")
       : html``}
