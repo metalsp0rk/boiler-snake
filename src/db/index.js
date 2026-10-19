@@ -53,7 +53,6 @@ module.exports = {
 
   // users / XP
   addXp: users.addXp,
-  setXp: users.setXp,
   applyDecay: users.applyDecay,
   getXp: users.getXp,
   getUser: users.getUser,

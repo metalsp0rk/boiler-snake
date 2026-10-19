@@ -107,7 +107,10 @@ async function handleLevelToRole(commandCtx, featureCtx) {
         `Level required: **${level}**`,
         `Drop grace: **${dropdays}** day(s)`,
       ],
-    }).catch(() => {});
+    }).catch((err) =>
+      // #472 (XE-9): logged, never silent (rule 2) — audit-line loss must be visible.
+      console.error("[levelroles] /leveltorole add audit mirror failed:", err?.message || err),
+    );
 
     await commandCtx.reply({
       content: `Mapped <@&${role.id}> to **Lvl ${level}** (remove after **${dropdays}** day(s) below).`,
@@ -131,7 +134,9 @@ async function handleLevelToRole(commandCtx, featureCtx) {
       command: "/leveltorole remove",
       actor: commandCtx.user,
       changes: [`Role: <@&${role.id}> (\`${role.id}\`)`],
-    }).catch(() => {});
+    }).catch((err) =>
+      console.error("[levelroles] /leveltorole remove audit mirror failed:", err?.message || err),
+    );
 
     await commandCtx.reply({
       content: `Removed mapping for <@&${role.id}>.`,

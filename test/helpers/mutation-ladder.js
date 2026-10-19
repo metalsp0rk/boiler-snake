@@ -33,6 +33,7 @@
  */
 
 const assert = require("node:assert/strict");
+const { seedXp } = require("./xpSeed");
 const { communityKey } = require("./env");
 
 // ---------------------------------------------------------------------------
@@ -1343,7 +1344,7 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       mirror: true, // the slash posts logConfigChange "XP granted" (index.js:473)
       fields: { user_id: F.USER_GRANT, amount: "250", reason: "gate parity" },
       // Deterministic baseline: XP 0 → the audit's before/after is static.
-      prepare: () => api.setXp(F.COMMUNITY_A, F.USER_GRANT, 0),
+      prepare: () => seedXp(api, F.COMMUNITY_A, F.USER_GRANT, 0),
       details: D({ amount: 250, before_xp: 0, after_xp: 250, reason: "gate parity" }),
       okLocation: `/g/${F.COMMUNITY_A}/xp/grant?done=xp_granted`,
       reject: {

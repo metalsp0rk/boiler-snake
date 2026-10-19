@@ -23,8 +23,9 @@
  *  E. SERVICE PARITY — a counting proxy on the shared src/db facade proves
  *     the grant runs THROUGH awardXp (addXp + logActivity recorded INSIDE
  *     the service, insertAdminAudit exactly once) and NEVER touches the
- *     direct-write helpers (setXp / updateGuildSettings / role-mapping
- *     writes) from the route. An activity_log kind='admin_grant' row is the
+ *     direct-write helpers (updateGuildSettings / role-mapping writes —
+ *     setXp joined this list only to vanish with #472 XE-8) from the route.
+ *     An activity_log kind='admin_grant' row is the
  *     service's own fingerprint.
  *     A second app with a call-through services.awardXp spy proves the
  *     service receives EXACTLY the slash's argument object
@@ -58,6 +59,7 @@
  */
 
 const { describe, it, before, after } = require("node:test");
+const { seedXp } = require("./helpers/xpSeed");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
@@ -234,10 +236,11 @@ function makeMember(userId, { bot = false } = {}) {
 // helpers: every service-internal XP write lands in this recorder.
 // ---------------------------------------------------------------------------
 
+// "setXp" was listed here until #472 (XE-8) deleted the absolute XP write
+// from the facade entirely — there is now nothing to wrap or forbid.
 const WATCH = new Set([
   "addXp",
   "logActivity",
-  "setXp",
   "updateGuildSettings",
   "upsertLevelRole",
   "deleteLevelRole",
@@ -248,7 +251,6 @@ const WATCH = new Set([
 
 /** Writes the DIRECT-DB tripwire refuses on ANY path of this route. */
 const FORBIDDEN_WRITES = new Set([
-  "setXp",
   "updateGuildSettings",
   "upsertLevelRole",
   "deleteLevelRole",
@@ -674,7 +676,7 @@ describe("D. CSRF — missing/tampered ⇒ 403 with ZERO XP change and ZERO serv
   });
 
   it("the IDENTICAL body passes with the valid token (replay doctrine)", async () => {
-    api.setXp(CID_A, USER_T_REPLAY, 0);
+    seedXp(api, CID_A, USER_T_REPLAY, 0);
     const { res, location, body } = await grantPost({
       user_id: USER_T_REPLAY,
       amount: "250",
@@ -693,7 +695,7 @@ describe("D. CSRF — missing/tampered ⇒ 403 with ZERO XP change and ZERO serv
 // ===========================================================================
 describe("E. service parity — write helpers intercepted INSIDE the service", () => {
   it("admin positive: exact XP delta + service helpers + exactly ONE web audit row", async () => {
-    api.setXp(CID_A, USER_T_POS, 100);
+    seedXp(api, CID_A, USER_T_POS, 100);
     const before = webAuditCount();
     mirrorSpy.log.length = 0;
     startWindow();
@@ -748,7 +750,7 @@ describe("E. service parity — write helpers intercepted INSIDE the service", (
   });
 
   it("service spy: the EXACT slash argument object reaches awardXp (index.js:448–455)", async () => {
-    api.setXp(CID_A, USER_T_SPY, 0);
+    seedXp(api, CID_A, USER_T_SPY, 0);
     serviceSpies.length = 0;
     const { res, location } = await grantPost(
       { user_id: USER_T_SPY, amount: "250", reason: "spy args" },
@@ -830,7 +832,7 @@ describe("E. service parity — write helpers intercepted INSIDE the service", (
     api.upsertLevelRole(CID_A, ROLE_LEVEL_SYNC, 3, 0);
     const member = makeMember(USER_T_SYNC);
     membersCache.set(USER_T_SYNC, member);
-    api.setXp(CID_A, USER_T_SYNC, 0);
+    seedXp(api, CID_A, USER_T_SYNC, 0);
 
     const { res } = await grantPost({ user_id: USER_T_SYNC, amount: "900" });
     assert.equal(res.status, 302);
@@ -947,7 +949,7 @@ describe("G. validation mirrors /grantxp — slugs only, zero writes, zero audit
 // ===========================================================================
 describe("H. audit-fail injection ⇒ generic 500, no claim, no row, no mirror", () => {
   it("insertAdminAudit throwing: 500 'Internal error', zero audit rows, NO mirror", async () => {
-    api.setXp(CID_A, USER_T_AUDITFAIL, 0);
+    seedXp(api, CID_A, USER_T_AUDITFAIL, 0);
     const before = webAuditCount();
     mirrorSpy.log.length = 0;
     recorder.auditThrow = true;
@@ -975,8 +977,8 @@ describe("H. audit-fail injection ⇒ generic 500, no claim, no row, no mirror",
 describe("K. parity: equal XP totals + same-shaped audit rows (slash = source of truth)", () => {
   it("the SAME grant via the real /grantxp handler and via the web POST is indistinguishable at the DB boundary", async () => {
     // The web side first (real HTTP through the full stack).
-    api.setXp(CID_A, USER_T_WEBPARITY, 100);
-    api.setXp(CID_A, USER_T_SLASH, 100);
+    seedXp(api, CID_A, USER_T_WEBPARITY, 100);
+    seedXp(api, CID_A, USER_T_SLASH, 100);
 
     const web = await grantPost({
       user_id: USER_T_WEBPARITY,

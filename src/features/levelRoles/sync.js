@@ -107,8 +107,13 @@ async function syncMemberRoles(outbound, communityId, member, level) {
       // clear drop timer regardless
       try {
         setRoleBelowSince(communityId, userId, roleId, null);
-      } catch {
-        // DB errors should be rare; let them bubble in caller if needed
+      } catch (err) {
+        // #472 (XE-10): the old comment claimed bubbling while the code
+        // swallowed silently — the lost clear left stale drop state that
+        // could strip a later manual re-grant instantly. Log with ids.
+        console.error(
+          `[levelroles] drop-timer clear failed (community ${communityId} user ${userId} role ${roleId}): ${err?.message || err}`,
+        );
       }
       continue;
     }
@@ -116,6 +121,23 @@ async function syncMemberRoles(outbound, communityId, member, level) {
     // below threshold
     const st = getRoleDropState(communityId, userId, roleId);
     const belowSince = st?.below_since ?? null;
+
+    if (!hasRole && belowSince != null) {
+      // #472 (XE-10): the user lost the role by some path OUTSIDE this sync
+      // (manual moderation, kick/rejoin). Nothing is timing out anymore, and
+      // keeping the timer poisons the future: a manual re-grant while still
+      // below level would inherit the stale below_since and be stripped on
+      // the very next sync (a "moderation bug" that was really dead state).
+      // Drop it — a future re-acquire re-arms grace from scratch.
+      try {
+        setRoleBelowSince(communityId, userId, roleId, null);
+      } catch (err) {
+        console.error(
+          `[levelroles] stale drop-state clear failed (community ${communityId} user ${userId} role ${roleId}): ${err?.message || err}`,
+        );
+      }
+      continue;
+    }
 
     if (!belowSince) {
       // Start timer only if they currently have the role.

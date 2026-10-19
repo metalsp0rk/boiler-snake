@@ -14,7 +14,7 @@
  *    builds via getDiscordOutbound), with fetchMember swapped for a
  *    CACHE-ONLY resolver — see makeCacheOnlyOutbound. NO re-implementation,
  *    NO direct SQL, NO
- *    addXp/setXp/updateGuildSettings call from this route (the XP write is the
+ *    addXp/updateGuildSettings call from this route (the XP write is the
  *    service's; the Phase-2 gate proxy proves it).
  *  - Validation mirrors /grantxp: amount is a whole number in 1…MAX_XP_AWARD
  *    (slash IntegerOption min:1 max:MAX_XP_AWARD + validateXpValue + the
@@ -367,7 +367,7 @@ function registerXpActionsRoutes(app, options = {}) {
     const settings = facade.getGuildSettings(communityId);
     const beforeXp = facade.getXp(communityId, userId);
 
-    const { newXp, level } = await awardXp(makeCacheOnlyOutbound(client, guildId), {
+    const grant = await awardXp(makeCacheOnlyOutbound(client, guildId), {
       communityId,
       externalGuildId: guildId,
       userId,
@@ -376,6 +376,15 @@ function registerXpActionsRoutes(app, options = {}) {
       levelXpFactor: settings.level_xp_factor,
       source: "admin_grant",
     });
+    if (grant.ok === false) {
+      // #472 (XE-11): the service reports failures instead of throwing. The
+      // web surface keeps its documented fail-closed posture (sanctioned
+      // generic 500 for unauthenticated callers, AGENTS rule 4) but the
+      // cause is carried into the Error — the log keeps the specifics while
+      // the response never leaks them.
+      throw new Error(`xp grant failed: ${grant.error}`);
+    }
+    const { newXp, level } = grant;
 
     // #457 (H1-9): this write just moved the XP totals and activity points
     // the dashboard caches (30 s+ per community) — drop the snapshot so the

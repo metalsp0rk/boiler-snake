@@ -1,4 +1,5 @@
 const { describe, it, before, after } = require("node:test");
+const { seedXp } = require("../helpers/xpSeed");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
 const { assertXp } = require("../helpers/assert");
@@ -40,7 +41,7 @@ describe("integration: decay", () => {
       decay_min_messages: 10,
       decay_window_days: 7,
     });
-    env.db.setXp(env.communityId, IDS.member, 1000);
+    seedXp(env.db, env.communityId, IDS.member, 1000);
     await runDecayForGuild(fakeSupervisor(env.client), env.communityId);
     assertXp(env.db, env.communityId, IDS.member, 1000);
   });
@@ -52,7 +53,7 @@ describe("integration: decay", () => {
       decay_min_messages: 5,
       decay_window_days: 7,
     });
-    env.db.setXp(env.communityId, IDS.member, 1000);
+    seedXp(env.db, env.communityId, IDS.member, 1000);
     // no activity rows → count 0 < 5
     await runDecayForGuild(fakeSupervisor(env.client), env.communityId);
     assertXp(env.db, env.communityId, IDS.member, 900);
@@ -65,7 +66,7 @@ describe("integration: decay", () => {
       decay_min_messages: 3,
       decay_window_days: 7,
     });
-    env.db.setXp(env.communityId, IDS.member2, 800);
+    seedXp(env.db, env.communityId, IDS.member2, 800);
     for (let i = 0; i < 3; i++) {
       env.db.logActivity(env.communityId, IDS.member2, "message", 1);
     }
@@ -90,8 +91,8 @@ describe("integration: decay", () => {
       decay_min_messages: 5,
       decay_window_days: 7,
     });
-    env.db.setXp(env.communityId, IDS.member, 1000);
-    env.db.setXp(env.communityId, IDS.member2, 1000);
+    seedXp(env.db, env.communityId, IDS.member, 1000);
+    seedXp(env.db, env.communityId, IDS.member2, 1000);
 
     // Real unified award path; required AFTER loadDb (harness contract).
     const { awardXp } = require("../../src/services/awardXp");
@@ -146,8 +147,8 @@ describe("integration: decay", () => {
       decay_min_messages: 5,
       decay_window_days: 7,
     });
-    env.db.setXp(env.communityId, IDS.member, 1000);
-    env.db.setXp(env.communityId, IDS.member2, 1000);
+    seedXp(env.db, env.communityId, IDS.member, 1000);
+    seedXp(env.db, env.communityId, IDS.member2, 1000);
 
     // Poison the FIRST member fetch: a member object without `.guild`
     // passes the (caught) fetch, tolerates syncMemberRoles, then throws
@@ -201,8 +202,8 @@ describe("integration: decay", () => {
       decay_min_messages: 5,
       decay_window_days: 7,
     });
-    env.db.setXp(env.communityId, IDS.member, 0);
-    env.db.setXp(env.communityId, IDS.member2, 0);
+    seedXp(env.db, env.communityId, IDS.member, 0);
+    seedXp(env.db, env.communityId, IDS.member2, 0);
 
     const auditBefore = decayAuditRows().length;
     await runDecayForGuild(fakeSupervisor(env.client), env.communityId);
@@ -212,7 +213,7 @@ describe("integration: decay", () => {
 
     // pct 0 (e.g. season paused): rows untouched even with XP on them.
     env.db.updateGuildSettings(env.communityId, { decay_percent: 0 });
-    env.db.setXp(env.communityId, IDS.member, 1000);
+    seedXp(env.db, env.communityId, IDS.member, 1000);
     await runDecayForGuild(fakeSupervisor(env.client), env.communityId);
     assertXp(env.db, env.communityId, IDS.member, 1000);
     assert.equal(decayAuditRows().length, auditBefore);

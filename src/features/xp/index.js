@@ -16,6 +16,7 @@ const { levelFromXp, validateXpValue, MAX_XP_AWARD } = require("../../core/xpMat
 const {
   key,
   isOnCooldown,
+  markCooldown,
   sweepCooldownMap,
   MAX_CONFIG_COOLDOWN_SEC,
   COOLDOWN_SWEEP_MAX_AGE_MS,
@@ -368,7 +369,19 @@ async function handleLeaderboard(commandCtx, featureCtx) {
 async function handleLeaderboardButton(interaction, ctx) {
   void ctx;
   const parsed = parseLeaderboardButtonCustomId(interaction.customId);
-  if (!parsed) return;
+  if (!parsed) {
+    // #472 (XE-13): a malformed/stale lb: id (pre-cap messages can carry an
+    // out-of-range limit/page) used to vanish with no reply and no log — the
+    // press just hung in Discord's spinner forever (rule 1: never a silent
+    // drop). Name it, answer it, log it.
+    console.warn(
+      `[xp] ignoring malformed leaderboard button id: ${JSON.stringify(interaction.customId)}`,
+    );
+    await replyEphemeral(interaction, {
+      content: "This leaderboard page is stale — run **/leaderboard** again.",
+    });
+    return;
+  }
 
   if (parsed.requesterId !== interaction.user.id) {
     await replyEphemeral(interaction, {
@@ -487,7 +500,12 @@ async function handleSetXp(commandCtx, featureCtx) {
       command: "/setxp",
       actor: commandCtx.user,
       changes: lines,
-    }).catch(() => {});
+    }).catch((err) =>
+      // #472 (XE-9): the inner auditLog guard already absorbs platform-send
+      // failures; what used to be swallowed here were construction throws —
+      // rule 2 says name them, silently losing an audit line is not "best effort".
+      console.error("[xp] /setxp audit mirror failed:", err?.message || err),
+    );
   }
 
   // Plain-object embed (NormalizedEmbed): the Discord reply builder maps it
@@ -570,7 +588,7 @@ async function handleGrantXp(commandCtx, featureCtx) {
   const settings = getGuildSettings(commandCtx.communityId);
   const beforeXp = getXp(commandCtx.communityId, target.id);
 
-  const { newXp, level, changes } = await awardXp(commandCtx.outbound, {
+  const grant = await awardXp(commandCtx.outbound, {
     communityId: commandCtx.communityId,
     externalGuildId: commandCtx.externalGuildId,
     userId: target.id,
@@ -579,6 +597,17 @@ async function handleGrantXp(commandCtx, featureCtx) {
     levelXpFactor: settings.level_xp_factor,
     source: "admin_grant",
   });
+  // #472 (XE-11): the service returns its failure now — the handler had the
+  // specific cause in hand all along; say it (rule 3) instead of degrading
+  // to the router's generic fallback.
+  if (grant.ok === false) {
+    await commandCtx.reply({
+      content: `Failed to grant XP: ${grant.error}`,
+      sensitive: true,
+    });
+    return;
+  }
+  const { newXp, level, changes } = grant;
 
   const levelText = level != null ? String(level) : levelFromXp(newXp, settings.level_xp_factor);
   const reasonText = reason?.trim() ? reason.trim() : null;
@@ -608,7 +637,9 @@ async function handleGrantXp(commandCtx, featureCtx) {
       `Level: **${levelText}**`,
       reasonText ? `Reason: ${reasonText}` : null,
     ].filter(Boolean),
-  }).catch(() => {});
+  }).catch((err) =>
+      console.error("[xp] /grantxp audit mirror failed:", err?.message || err),
+    );
 
   // #430 (audit XE-3): XP landed but a role may NOT have — surface the
   // partial failure (rule 5) instead of replying a clean success while the
@@ -686,7 +717,7 @@ async function tryAwardMessageXp(outbound, message, options = {}) {
   const k = key(communityId, authorId);
   if (isOnCooldown(msgCooldown, k, settings.msg_cooldown_sec)) return;
 
-  await awardXp(outbound, {
+  const res = await awardXp(outbound, {
     communityId,
     externalGuildId,
     userId: authorId,
@@ -694,6 +725,10 @@ async function tryAwardMessageXp(outbound, message, options = {}) {
     activityKind: "message",
     levelXpFactor: settings.level_xp_factor,
   });
+  // #472 (XE-7 + XE-11): the award reports failures now; an un-paid user
+  // keeps their window (the service logged the cause for the logs alone).
+  if (res.ok === false) return;
+  markCooldown(msgCooldown, k);
 }
 
 /**
@@ -718,7 +753,7 @@ async function tryAwardReactionXp(outbound, guild, user) {
   const k = key(communityId, user.id);
   if (isOnCooldown(reactionCooldown, k, settings.reaction_cooldown_sec)) return;
 
-  await awardXp(outbound, {
+  const res = await awardXp(outbound, {
     communityId,
     externalGuildId: guild.id,
     userId: user.id,
@@ -726,6 +761,8 @@ async function tryAwardReactionXp(outbound, guild, user) {
     activityKind: "reaction",
     levelXpFactor: settings.level_xp_factor,
   });
+  if (res.ok === false) return; // #472 (XE-11); XE-7: no pay, no window
+  markCooldown(reactionCooldown, k);
 }
 
 /**
@@ -769,7 +806,7 @@ async function tryAwardReactionXpFluxer(outbound, normalizedReaction) {
   const k = key(communityId, normalizedReaction.userId);
   if (isOnCooldown(reactionCooldown, k, settings.reaction_cooldown_sec)) return;
 
-  await awardXp(outbound, {
+  const res = await awardXp(outbound, {
     communityId,
     externalGuildId: normalizedReaction.externalGuildId ?? null,
     userId: String(normalizedReaction.userId),
@@ -778,6 +815,8 @@ async function tryAwardReactionXpFluxer(outbound, normalizedReaction) {
     member: null,
     levelXpFactor: settings.level_xp_factor,
   });
+  if (res.ok === false) return; // #472 (XE-11); XE-7: no pay, no window
+  markCooldown(reactionCooldown, k);
 }
 
 function registerEvents(client, ctx) {

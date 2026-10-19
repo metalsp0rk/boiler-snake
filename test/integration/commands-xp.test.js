@@ -1,4 +1,5 @@
 const { describe, it, before, after } = require("node:test");
+const { seedXp } = require("../helpers/xpSeed");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
 const {
@@ -32,7 +33,7 @@ describe("integration: xp commands", () => {
   });
 
   it("/xp shows another user's XP", async () => {
-    env.db.setXp(env.communityId, IDS.member2, 250);
+    seedXp(env.db, env.communityId, IDS.member2, 250);
     const interaction = await env.runCommand({
       commandName: "xp",
       admin: false,
@@ -65,8 +66,8 @@ describe("integration: xp commands", () => {
   });
 
   it("/leaderboard with data returns PNG attachment", async () => {
-    env.db.setXp(env.communityId, IDS.member, 100);
-    env.db.setXp(env.communityId, IDS.member2, 200);
+    seedXp(env.db, env.communityId, IDS.member, 100);
+    seedXp(env.db, env.communityId, IDS.member2, 200);
     const interaction = await env.runCommand({
       commandName: "leaderboard",
       admin: false,
@@ -132,7 +133,7 @@ describe("integration: xp commands", () => {
   it("/xp reflects new factor (floor(sqrt(xp/factor)))", async () => {
     // Ensure factor is 400 from previous test.
     // xp=1600, factor=400 → floor(sqrt(1600/400)) = floor(sqrt(4)) = 2
-    env.db.setXp(env.communityId, IDS.member, 1600);
+    seedXp(env.db, env.communityId, IDS.member, 1600);
     const interaction = await env.runCommand({
       commandName: "xp",
       admin: false,
@@ -144,7 +145,7 @@ describe("integration: xp commands", () => {
 
   it("/xp level changes when factor changes", async () => {
     // With factor=400, xp=400 → floor(sqrt(400/400)) = 1
-    env.db.setXp(env.communityId, IDS.member2, 400);
+    seedXp(env.db, env.communityId, IDS.member2, 400);
     let interaction = await env.runCommand({
       commandName: "xp",
       admin: false,
@@ -192,7 +193,7 @@ describe("integration: xp commands", () => {
   });
 
   it("/grantxp grants XP for admin", async () => {
-    env.db.setXp(env.communityId, IDS.member2, 100);
+    seedXp(env.db, env.communityId, IDS.member2, 100);
     const interaction = await env.runCommand({
       commandName: "grantxp",
       admin: true,
@@ -255,7 +256,7 @@ describe("integration: leaderboard pagination", () => {
 
     // 12 users → 2 pages at default limit 10
     for (let i = 1; i <= 12; i++) {
-      env.db.setXp(env.communityId, `lb-user-${i}`, 120 - i);
+      seedXp(env.db, env.communityId, `lb-user-${i}`, 120 - i);
     }
   });
 
@@ -477,7 +478,7 @@ describe("integration: leaderboard page option", () => {
     ];
     for (const s of seeds) {
       env.createUser({ id: s.id, username: s.id });
-      env.db.setXp(env.communityId, s.id, s.xp);
+      seedXp(env.db, env.communityId, s.id, s.xp);
     }
   });
 
