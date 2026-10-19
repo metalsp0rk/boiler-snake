@@ -612,7 +612,21 @@ describe(
       assert.ok(auditRow("notes.update"));
 
       // Soft-delete lifecycle on N-3 (the outsider note).
-      const del = await contentOf(await slash("note", [sub("delete", [intOpt("id", 3)])]));
+      // #471 (H2-15): delete is confirm-once — without confirm:true it must
+      // ONLY preview (the not-found/already-deleted arms below stay instant:
+      // their guards run before the confirm check).
+      const previewDel = await contentOf(
+        await slash("note", [sub("delete", [intOpt("id", 3)])]),
+      );
+      assert.ok(
+        previewDel.startsWith(`Note **N-3** on <@${env.ids.outsider}> will be soft-deleted:`) &&
+          /re-run with `confirm: true`/i.test(previewDel),
+        `confirm-once preview expected (got: ${previewDel})`,
+      );
+      assert.ok(noteRow(3).deleted_at == null, "the preview must NOT delete the note");
+      const del = await contentOf(
+        await slash("note", [sub("delete", [intOpt("id", 3), boolOpt("confirm", true)])]),
+      );
       assert.ok(
         del.startsWith(`Soft-deleted **N-3** about <@${env.ids.outsider}>.`),
         `delete copy (got: ${del})`,
