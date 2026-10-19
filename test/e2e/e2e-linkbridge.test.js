@@ -625,22 +625,17 @@ describe(
       assert.ok(granted.includes("Granted"), `pipeline healthy: grantxp (got: ${granted})`);
     });
 
-    // BUG PIN (issue #365): the Discord relay outbound calls
-    // client.webhooks.create(id, token) — a manager that DOES NOT EXIST in
-    // the pinned discord.js (14.27: client.webhooks === undefined; the v14
-    // token-scoped handle is client.fetchWebhook). So every live Discord
-    // copy burns the full backoff ladder and poison-parks. FLIP-BACK once
-    // the product migrates to fetchWebhook: this arm becomes the real
-    // live-copy assertion (outbox row `done` + `RELAY LIVE COPY` in the
-    // destination tape — the webhook infrastructure on the mock side works,
-    // verified by this arm's POST /channels/:id/webhooks step). #460 (G2-3)
-    // EXTENDS that flip-back list: seed the injected message with a rich
-    // EMBED and assert the persisted copy's embeds[0].title — content-only
-    // tape assertions would let an embed-stripping relay pass green, which
-    // is exactly how FLX-2 stayed invisible at all four tiers. The mock
-    // persists embeds; the fluxer-side equivalent is already pinned in
-    // test/bridge-relay.test.js (the #460 real-adapter arm).
-    it("live Discord relay is DEAD on the pinned SDK: ladder burns, row poison-parks, staff get the notice", async () => {
+    // #365 FIXED: the Discord relay resolves its token-scoped webhook handle
+    // through client.fetchWebhook — the method the pinned discord.js 14.27
+    // ACTUALLY exports (the old client.webhooks.create manager does not
+    // exist there). This arm is the promised FLIP-BACK: a REAL end-to-end
+    // live copy — outbox row `done`, the copied message on the destination
+    // tape, and per #460 (G2-3) the rich EMBED riding the LEAD part
+    // survives the copy (a content-only assertion would let an
+    // embed-stripping relay pass green — exactly how FLX-2 hid at all four
+    // tiers). The poison-park machinery itself stays pinned in the unit
+    // tier (bridge-relay) for genuine failures.
+    it("live Discord relay copies through the webhook transport end to end (#365 flip)", async () => {
       const hook = await api(`/channels/${ids.channel2}/webhooks`, {
         method: "POST",
         body: JSON.stringify({ name: "Boiler Snake Bridge" }),
@@ -654,34 +649,47 @@ describe(
         tokenEnc: tokenCrypto.encryptWebhookToken(hook.token),
       });
 
-      const msg = await env.mock.inject("RELAY LIVE COPY", ids.human, ids.general);
-      // Full ladder budget: attempts at t0,+1s,+2s,+4s,+8s → park by ~+16s.
-      const parked = await poll(
+      const msg = await env.mock.inject("RELAY LIVE COPY", ids.human, ids.general, {
+        embeds: [
+          { title: "RELAY EMBED LIVES", description: "embeds ride the LEAD part (#383)" },
+        ],
+      });
+
+      // The ladder's happy path: fetchWebhook → send(?wait=true) → the mock
+      // persists the copy → the outbox row flips to `done`. (attempts counts
+      // RETRIES — a clean lead copy lands at 0; the poison path that used to
+      // pin this arm reached MAX_ATTEMPTS.)
+      const done = await poll(
         () => {
           const r = outboxRow(msg?.id);
-          return r && r.state === "failed" ? r : null;
+          return r && r.state === "done" ? r : null;
         },
-        { timeoutMs: 40000, label: "outbox row poison-parked" },
+        { timeoutMs: 40000, label: "outbox row copied (state done)" },
       );
-      assert.equal(parked.attempts, env.dbmod.BRIDGE_OUTBOX_MAX_ATTEMPTS, "full ladder burned");
+      assert.equal(done.state, "done");
+
+      // The copy lands on the DESTINATION channel…
+      const dest = (await env.mock.messages(ids.channel2)) ?? [];
+      const copy = dest.find((m) => String(m.content ?? "").includes("RELAY LIVE COPY"));
       assert.ok(
-        parked.last_error.startsWith(
-          "executeRelayWebhook: client exposes no webhooks manager (client.webhooks.create)",
-        ),
-        `SDK-surface last_error (got: ${parked.last_error})`,
+        copy,
+        `RELAY LIVE COPY reached the destination tape (got: ${JSON.stringify(
+          dest.map((m) => m.content).slice(-4),
+        )})`,
       );
+      // …and #460 (G2-3): an embed-stripping copy may NOT pass green.
+      assert.equal(
+        copy.embeds?.[0]?.title,
+        "RELAY EMBED LIVES",
+        `persisted copy carries the rich embed (got: ${JSON.stringify(copy.embeds)})`,
+      );
+
+      // No poison notice on the SOURCE channel — the dead-SDK copy of this
+      // arm asserted one on every message; the fixed transport must not.
       const tapeGen = ((await env.mock.messages(ids.general)) ?? []).map((m) => String(m.content));
       assert.ok(
-        tapeGen.some((c) =>
-          c.includes(
-            `Bridge ${st.relay.publicId} could not copy message ${msg.id} after 5 attempts:`,
-          ),
-        ),
-        `poison notice lands on the SOURCE channel (got: ${JSON.stringify(tapeGen.slice(-4))})`,
-      );
-      assert.ok(
-        tapeGen.some((c) => c.includes("Later messages are still being copied.")),
-        "poison notice names the continued-service promise",
+        !tapeGen.some((c) => c.includes(`Bridge ${st.relay.publicId} could not copy message`)),
+        "no poison notice on the source channel",
       );
     });
 

@@ -236,14 +236,18 @@ class MockEnv {
    * @param {string} content
    * @param {string} authorId
    * @param {string} [channelId]
-   * @param {{atMs?: number}} [opts]
+   * @param {{atMs?: number, embeds?: object[]}} [opts] `embeds` injects rich
+   *   embeds on the message (#365/#460: the relay flip asserts the COPIED
+   *   message carries them — content-only assertions let an embed-stripping
+   *   relay pass green).
    */
-  async inject(content, authorId, channelId = this.ids.general, { atMs } = {}) {
+  async inject(content, authorId, channelId = this.ids.general, { atMs, embeds } = {}) {
     return j(`${this.base}/_test/channels/${channelId}/messages`, {
       method: "POST",
       body: JSON.stringify({
         content,
         author: { id: authorId },
+        ...(Array.isArray(embeds) && embeds.length > 0 && { embeds }),
         ...(atMs != null && { created_timestamp: atMs }),
       }),
     });
