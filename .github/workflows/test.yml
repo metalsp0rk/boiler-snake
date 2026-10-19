@@ -35,6 +35,15 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      # #620 ambient-DB canary: every db-aware test must bind a PRIVATE temp
+      # DB (loadDb/createIntegrationEnv/createE2eEnv — test/README.md #6).
+      # Block the default path (project-root xpbot.sqlite) with a DIRECTORY:
+      # any process that opens sqlite WITHOUT binding env first crashes with
+      # SQLITE_CANTOPEN, and its require stack names the offending test file.
+      # Static pins (test/db-binding-discipline.test.js) cannot see requires
+      # evaluated at node:test COLLECTION time; this catches the class live.
+      - name: Ambient-DB canary (block default DB_PATH)
+        run: mkdir xpbot.sqlite
       # The Node 22 leg (engines floor) runs the full suite under the coverage
       # gate (audit issue #203): test:coverage executes the SAME files as
       # `npm test` (test/*.test.js + test/integration/*.test.js) plus the
@@ -46,6 +55,9 @@ jobs:
       - name: npm test
         if: matrix.node-version != '22.x'
         run: npm test
+      - name: Ambient-DB canary cleanup
+        if: always()
+        run: rm -rf xpbot.sqlite
 
   # Build the VitePress site on every PR (audit issue #203): docs.yml only
   # builds on push to main, so dead links previously surfaced at deploy time.
