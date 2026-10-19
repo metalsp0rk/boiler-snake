@@ -20,6 +20,7 @@ const {
 const { replyEphemeral } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { describeError } = require("../../core/errors"); // #471 LT-9
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { ensureCommunity } = require("../../platform/community");
 const { applyTicketOverwrites } = require("./overwrites");
@@ -190,7 +191,7 @@ async function handleClose(commandCtx, ctx) {
   } catch (err) {
     console.error("[tickets] close failed:", err);
     await commandCtx.editReply({
-      content: `Failed to close ticket: ${err?.message || "unknown error"}`,
+      content: `Failed to close ticket: ${describeError(err)}`,
     });
   }
 }
@@ -433,7 +434,7 @@ async function handleArchive(commandCtx, ctx) {
   } catch (err) {
     console.error("[tickets] archive failed:", err);
     await commandCtx.editReply({
-      content: `Failed to archive ticket: ${err?.message || "unknown error"}`,
+      content: `Failed to archive ticket: ${describeError(err)}`,
       sensitive: true,
     });
   }
