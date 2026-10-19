@@ -14,8 +14,8 @@
  *  - The user-facing display form carries an "LNK-" prefix; the canonical
  *    storage/comparison form never does (canonicalizeLinkCode strips it).
  *  - Storage is SHA-256 of the canonical form only. The plaintext exists in
- *    the minting reply and in the redeemer's message and nowhere else — it is
- *    never logged, never audited, never stored.
+ *    the minting reply (a DM on Fluxer since #194) and in the redeemer's
+ *    message and nowhere else — it is never logged, never audited, never stored.
  *  - Input is classified BEFORE hashing: alphabet garbage gets its own
  *    sentence, and a code-shaped string that matches no row is a plain miss.
  *

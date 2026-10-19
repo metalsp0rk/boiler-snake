@@ -260,9 +260,9 @@ function normalizeMirrorDirection(callerPlatform, raw) {
 /**
  * Mint a one-time link code for (community, user) — the `link create` half.
  *
- * The plaintext code is returned to the caller exactly once (T3 delivers it
- * ephemerally on Discord / in-channel on Fluxer); only its SHA-256 digest is
- * stored. The community pair is NOT checked here: the code's counterpart is
+ * The plaintext code is returned to the caller exactly once — delivered
+ * ephemerally on Discord and by DM on Fluxer (the K2 path since #194; the
+ * channel never carries the code); only its SHA-256 digest is stored. The community pair is NOT checked here: the code's counterpart is
  * chosen at redemption, and `redeemLinkCode` enforces the bridge-pair gate.
  *
  * @param {number} communityId integer community id (firewall-validated)
