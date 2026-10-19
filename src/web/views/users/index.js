@@ -50,8 +50,16 @@ function snippet(text) {
   return `${s.slice(0, SNIPPET_LEN - 1)}…`;
 }
 
-/** "showing X–Y of Z" + next link for a 10-row page. */
-function pager(baseHref, param, { offset, total, shown }) {
+/**
+ * "showing X–Y of Z" + next link for a 10-row page.
+ *
+ * #608 census: NOT a twin of the shared pagerFor engine — this one has no
+ * prev link, appends its offset param onto the raw baseHref, and tolerates
+ * a null total (unknown-count pages). Renamed pagerAppend so the shared
+ * `pager` name stays reserved for pagerFor-shaped pages; the scan in
+ * test/web-helpers-dedup.test.js pins that no view re-declares `pager`.
+ */
+function pagerAppend(baseHref, param, { offset, total, shown }) {
   const from = offset + 1;
   const to = offset + shown;
   const more = shown > 0 && (offset + shown < (total ?? offset + shown));
@@ -106,7 +114,7 @@ function warningsSection(profile, baseHref) {
             </tr>`)}
         </tbody>
       </table>
-      ${pager(baseHref, "w_off", { offset, total, shown: rows.length })}`
+      ${pagerAppend(baseHref, "w_off", { offset, total, shown: rows.length })}`
     : emptyState("No warnings on record.");
   return html`
     <section class="panel user-warnings">
@@ -127,7 +135,7 @@ function notesSection(profile, baseHref) {
             <blockquote class="note-content">${snippet(n.content)}</blockquote>
           </li>`)}
       </ul>
-      ${pager(baseHref, "n_off", { offset, total, shown: rows.length })}`
+      ${pagerAppend(baseHref, "n_off", { offset, total, shown: rows.length })}`
     : emptyState("No active staff notes.");
   return html`
     <section class="panel user-notes">
@@ -155,7 +163,7 @@ function ticketsSection(profile, baseHref) {
             </tr>`)}
         </tbody>
       </table>
-      ${pager(baseHref, "t_off", { offset, total: hasMore ? offset + rows.length + 1 : null, shown: rows.length })}`
+      ${pagerAppend(baseHref, "t_off", { offset, total: hasMore ? offset + rows.length + 1 : null, shown: rows.length })}`
     : emptyState("No tickets involving this user.");
   return html`
     <section class="panel user-tickets">

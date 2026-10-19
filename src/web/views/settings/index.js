@@ -31,7 +31,7 @@ const { html } = require("../escape");
 // #470 (H1-8): num/formatAge shared with the other console views (#470 census:
 // identical private copies). The {kind,key} flash variant below is a
 // DIFFERENT contract from the done/error-slug family and stays as-is.
-const { num, formatAge } = require("../_helpers");
+const { num, formatAge, section, channelRef } = require("../_helpers");
 const { emptyState, banner } = require("../components");
 const { visibilityTier } = require("../../../core/commandVisibility");
 const { DEFAULTS } = require("../../data/settingsData");
@@ -115,14 +115,7 @@ function settingRow(label, valueHtml, defaultHtml, governsHtml) {
   </div>`;
 }
 
-function section(title, bodyHtml, opts = {}) {
-  return html`
-    <section class="panel settings-panel">
-      <h2>${title}</h2>
-      ${opts.hint ? html`<p class="setting-admin-hint">${opts.hint}</p>` : html``}
-      ${bodyHtml}
-    </section>`;
-}
+// section: promoted to views/_helpers.js (#608) — imported above.
 
 /** Value rows behind one shared "row read failed" degradation. */
 function rowSection(title, available, rowsHtml) {
@@ -130,19 +123,7 @@ function rowSection(title, available, rowsHtml) {
   return section(title, html`<div class="settings-rows">${rowsHtml}</div>`);
 }
 
-/**
- * Channel reference: the ID is the source-of-truth value (no Discord
- * lookups required). An OPTIONAL cached name (bot member cache via the
- * getClient seam) is appended in parentheses when present — cache-only,
- * never fetched; absent ⇒ id alone (graceful fallback).
- */
-function channelRef(channelId, resolveName) {
-  if (!channelId) return html`<em class="muted">not configured</em>`;
-  const name = typeof resolveName === "function" ? resolveName(channelId) : null;
-  return html`<code class="channel-id">${channelId}</code>${name
-    ? html` <span class="channel-name">(${name})</span>`
-    : html``}`;
-}
+// channelRef: promoted to views/_helpers.js (#608) — imported above.
 
 // ---------------------------------------------------------------------------
 // Write-form helpers (Phase 2). Every attribute value interpolates through
