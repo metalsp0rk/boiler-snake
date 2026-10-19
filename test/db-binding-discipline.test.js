@@ -25,6 +25,11 @@
  * file that references one honest. Lazy requires OUTSIDE those binders are
  * invisible to static analysis — the blessed helpers exist precisely so new
  * code does not hand-roll them; audit any new dynamic style.
+ *
+ * The #609 ORDERING pin (added the day after #609 shipped, when the web
+ * tier caught files carrying the binder token while the binder RAN in a
+ * late before()): for a file whose load-time graph reaches src/db, an
+ * actual loadDb() CALL must PRECEDE the first db-bound column-0 require.
  */
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
@@ -162,6 +167,53 @@ describe("#609: every db-reaching test file binds its own temp DB", () => {
         "first load-time require of src/** (connection.js binds DB_PATH at require time; " +
         "concurrent node --test files sharing an ambient DB_PATH race mid-migration — the " +
         "#609 gork flake class). Allow-list additions need an audit note.",
+    );
+  });
+
+  it("the FIRST db-bound require is preceded by an actual loadDb() CALL (#609 ordering)", () => {
+    // The day after #609 merged, the web tier caught the residue of the
+    // containment-only rule: web-oauth-ratelimit / web-security-middleware /
+    // web-member-fetch-queue all CONTAINED a binder token, but the binder
+    // RAN in a late before()/test while the FIRST column-0 require of a
+    // db-bound module had already opened (and raced migrations on) the
+    // ambient DB_PATH at LOAD time. Token presence is not enough — for a
+    // file whose LOAD-TIME graph reaches src/db, the text preceding the
+    // first db-bound require must contain an actual loadDb() CALL.
+    // (createIntegrationEnv/createE2eEnv are async — they cannot bind the
+    // load order; such files keep src requires lazy, harness style, and
+    // stay in the load-time-db-free lane above.)
+    const offenders = [];
+    for (const file of corpus) {
+      if (ALLOWED.has(file)) continue;
+      const lines = read(file).split("\n");
+      let firstIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        const m = TOP_REQ.exec(lines[i]);
+        const spec = m && (m[1] || m[2] || m[3]);
+        if (!spec) continue;
+        const resolved = resolves(file, spec);
+        if (!resolved) continue;
+        if (isDbModule(resolved) || loadTimeReachesDb(resolved, new Set([resolved]))) {
+          firstIdx = i;
+          break;
+        }
+      }
+      if (firstIdx === -1) continue; // (b) load-time db-free — ordering vacuous
+      const before = lines.slice(0, firstIdx).join("\n");
+      if (!/loadDb\(\)/.test(before)) {
+        offenders.push(
+          `${path.relative(path.join(__dirname, ".."), file)} (line ${firstIdx + 1}: ${lines[firstIdx].trim().slice(0, 60)})`,
+        );
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      "a module-level loadDb() CALL must PRECEDE the first column-0 require whose graph " +
+        "reaches src/db — a binder buried in before()/a test body runs AFTER the ambient " +
+        "DB_PATH was already opened and migrated at LOAD time (the class that corrupted " +
+        "the shared dev DB the day #609 shipped). The inline `require(\"…/helpers/env\")" +
+        ".loadDb()` one-liner above the first db-bound require is the minimal fix.",
     );
   });
 });

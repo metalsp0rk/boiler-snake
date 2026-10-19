@@ -3,9 +3,18 @@
  * and get resolved OFF the request path, bounded + rate-cooled, so later
  * renders show names. No HTTP here — pure service + resolve-seam seams.
  */
-const { test, describe, beforeEach, afterEach } = require("node:test");
+const { test, describe, beforeEach, afterEach, after } = require("node:test");
 const assert = require("node:assert/strict");
 
+
+// #609: this file LOADS src/db-bound modules at require time (the first
+// such require is `../src/web/routes/shared/discord-cache` below) — connection.js opens AND migrates
+// DB_PATH at LOAD time, so two concurrent node --test files sharing an
+// ambient DB_PATH race mid-migration (the #470 G2-6 class). Bind a
+// private temp DB HERE; later env flows (createIntegrationEnv /
+// per-test loadDb) rebind to their own env exactly as before.
+const { cleanup: cleanupTempDb } = require("./helpers/env").loadDb();
+after(cleanupTempDb);
 const {
   resolveMemberNames,
 } = require("../src/web/routes/shared/discord-cache");

@@ -24,6 +24,15 @@ const {
 } = require("../helpers/assert");
 const { IDS, uniqueId } = require("../helpers/fixtures");
 
+
+// #609: this file LOADS src/db-bound modules at require time (the first
+// such require is `../../src/features/gork/trigger` below) — connection.js opens AND migrates
+// DB_PATH at LOAD time, so two concurrent node --test files sharing an
+// ambient DB_PATH race mid-migration (the #470 G2-6 class). Bind a
+// private temp DB HERE; later env flows (createIntegrationEnv /
+// per-test loadDb) rebind to their own env exactly as before.
+const { cleanup: cleanupTempDb } = require("../helpers/env").loadDb();
+after(cleanupTempDb);
 const { LLM_FAILURE_REPLY } = require("../../src/features/gork/trigger");
 const { GORK_BASE_PROMPT } = require("../../src/features/gork/prompt");
 const { ENV_KEYS: IL_ENV_KEYS } = require("../../src/features/gork/interactionLog");
