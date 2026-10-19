@@ -216,4 +216,52 @@ describe("#609: every db-reaching test file binds its own temp DB", () => {
         ".loadDb()` one-liner above the first db-bound require is the minimal fix.",
     );
   });
+
+  it("no test file lazy-requires src/db-bound code without ever binding env (#620 lazy reach)", () => {
+    // The walk above and the ordering pin judge COLUMN-0 lines. A require
+    // INSIDE a function body — the classic `require("../src/db/...")` in a
+    // test — binds sqlite at CALL time, and without any binder that is
+    // still the ambient DB_PATH (bridge-sole-owner loaded the bridges repo
+    // this way and created the root sqlite during a full npm test — the
+    // lazy class the containment scan could not see). This pin walks every
+    // require literal in the test file itself: for each NON-column-0
+    // require, follow only the target's LOAD-TIME graph (module internals
+    // stay a load-time verdict — helpers/env's own lazy `require("../../src/db")`
+    // inside loadDb is exactly why the full closure from shared helpers is
+    // NOT walked). Files with an audited private-DB mechanism (their own
+    // `process.env.DB_PATH =` assignment, the legacy migration-test idiom)
+    // satisfy the token rule.
+    const LAZY_TOKENS = [
+      ...TOKENS,
+      "process.env.DB_PATH =", // legacy manual private bind (mkdtemp idiom)
+    ];
+    const ANY_REQ = /require\(\s*["']([^"']+)["']\s*\)/g;
+    const offenders = [];
+    for (const file of corpus) {
+      if (ALLOWED.has(file)) continue;
+      const src = read(file);
+      if (LAZY_TOKENS.some((t) => src.includes(t))) continue;
+      const lines = src.split("\n");
+      const rel = path.relative(path.join(__dirname, ".."), file);
+      outer: for (let i = 0; i < lines.length; i++) {
+        if (TOP_REQ.test(lines[i])) continue; // column-0 lane (pins above)
+        for (const m of lines[i].matchAll(ANY_REQ)) {
+          const resolved = resolves(file, m[1]);
+          if (!resolved) continue;
+          if (isDbModule(resolved) || loadTimeReachesDb(resolved, new Set([resolved]))) {
+            offenders.push(`${rel} (line ${i + 1}: ${m[1]})`);
+            break outer; // one hit per file is proof enough
+          }
+        }
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      "a test file that lazy-requires src/db-bound code (inside a test body) must bind env " +
+        "too — the require binds sqlite at CALL time on whatever DB_PATH is ambient. " +
+        "Module-level loadDb() is the fix; migration-sandbox files may keep their own " +
+        "audited process.env.DB_PATH mechanism instead. (#620)"
+    );
+  });
 });

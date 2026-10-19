@@ -1,5 +1,13 @@
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
+
+// #620: the migration modules required below (lazily, per case) load
+// src/db/connection.js at THEIR load time — connection.js opens AND migrates
+// DB_PATH at that moment, and the ambient default is the shared dev sqlite.
+// The fixture sandbox builds its OWN Database; this binding only keeps the
+// facade/connection load side-effect private. (after is imported below.)
+const { cleanup: cleanupTempDb } = require("../helpers/env").loadDb();
+after(cleanupTempDb);
 const fs = require("fs");
 const path = require("path");
 const os = require("os");

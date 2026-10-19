@@ -6,10 +6,17 @@
  * of the move: relay.js contains no SQL at all, and every raw statement
  * it used to run has an owned, named replacement.
  */
-const { describe, it } = require("node:test");
+const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+
+// #620: this file lazy-requires src/db/repositories/bridges inside an it()
+// to pin its exported surface — loading a repository loads src/db, and
+// connection.js opens AND migrates DB_PATH at that moment. Bind a private
+// temp DB so the ambient file can never be opened (or raced) by this file.
+const { cleanup: cleanupTempDb } = require("./helpers/env").loadDb();
+after(cleanupTempDb);
 
 const RELAY_SRC = fs.readFileSync(
   path.join(__dirname, "..", "src", "features", "bridge", "relay.js"),
