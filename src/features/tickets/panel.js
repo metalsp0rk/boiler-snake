@@ -48,6 +48,7 @@ const {
   isStaff,
   isAdminOrMod,
 } = require("../../core/permissions");
+const { describeError } = require("../../core/errors"); // #471 LT-9
 const {
   replyDenied,
   replyEphemeral,
@@ -210,7 +211,7 @@ async function handlePanelCreate(interaction, ctx) {
   } catch (err) {
     console.error("[tickets] panel create failed:", err);
     await interaction.editReply({
-      content: `Failed to post panel: ${err?.message || "unknown error"}`,
+      content: `Failed to post panel: ${describeError(err)}`,
     });
   }
 }
