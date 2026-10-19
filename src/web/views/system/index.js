@@ -26,6 +26,7 @@
 
 const { html } = require("../escape");
 const { emptyState, banner, userRef } = require("../components");
+const { pagerFor } = require("../_helpers");
 const { formatWhen } = require("../users");
 // Shared sync-status panel from the staff surface (§8.6 "Command visibility"
 // row): imported so /system and /staff can never diverge on the OAuth read
@@ -254,21 +255,21 @@ function pageHref(base, q) {
   return `${base}?${params.toString()}`;
 }
 
-/** Pager with honest totals (the count helper ran for this exact filter). */
-function pager(base, page) {
-  const from = page.total === 0 ? 0 : page.offset + 1;
-  const to = page.offset + page.rows.length;
-  const common = { origin: page.origin, n: page.pageSize };
-  const prev =
-    page.offset > 0
-      ? html`<a class="pager-prev" href="${pageHref(base, { ...common, o: Math.max(0, page.offset - page.pageSize) })}">← prev</a>`
-      : html``;
-  const more = page.offset + page.rows.length < page.total;
-  const next = more
-    ? html` <a class="pager-next" href="${pageHref(base, { ...common, o: page.offset + page.rows.length })}">next →</a>`
-    : html``;
-  return html`<p class="pager">${prev}showing ${from}–${to} of ${page.total}${next}</p>`;
-}
+/**
+ * Pager with honest totals (the count helper ran for this exact filter).
+ * #608: engine is views/_helpers#pagerFor — the audit-page vocabulary
+ * (origin/n/o) stays page-side inside hrefFor, byte-identical to the old
+ * copy (system's page.pageSize is a REAL number here, so prev steps back
+ * one page exactly).
+ */
+const pager = (base, page) =>
+  pagerFor({
+    hrefFor: (o) => pageHref(base, { origin: page.origin, n: page.pageSize, o }),
+    offset: page.offset,
+    pageSize: page.pageSize,
+    total: page.total,
+    shown: page.rows.length,
+  });
 
 /**
  * Body for GET /g/:guildId/audit — the admin_audit viewer (newest first,

@@ -26,8 +26,13 @@ const { html } = require("../escape");
 // #470 (H1-8): num/formatAge shared with the other console views (#470 census:
 // identical private copies). The {kind,key} flash variant below is a
 // DIFFERENT contract from the done/error-slug family and stays as-is.
-const { num, formatAge } = require("../_helpers");
-const { emptyState, banner } = require("../components");
+const {
+  num,
+  formatAge,
+  channelRef: sharedChannelRef,
+  section: sharedSection,
+} = require("../_helpers");
+const { emptyState } = require("../components");
 const { DEFAULTS: SETTINGS_DEFAULTS } = require("../../data/settingsData");
 const { QUEUE_DISPLAY_CAP } = require("../../data/voiceData");
 
@@ -70,16 +75,12 @@ function durationCell(row) {
 }
 
 /**
- * Channel reference — settings/integrations twin (id is the source-of-truth
- * value; an OPTIONAL cache-only name decorates it; absent ⇒ id alone).
+ * Channel reference — #608 engine in views/_helpers. Voice keeps its own
+ * em-dash zero-state (a documented copy difference, not drift): it is
+ * passed in as the promoted helper's `missingHtml`.
  */
-function channelRef(channelId, resolveName) {
-  if (!channelId) return html`<em class="muted">—</em>`;
-  const name = typeof resolveName === "function" ? resolveName(channelId) : null;
-  return html`<code class="channel-id">${channelId}</code>${name
-    ? html` <span class="channel-name">(${name})</span>`
-    : html``}`;
-}
+const channelRef = (channelId, resolveName) =>
+  sharedChannelRef(channelId, resolveName, html`<em class="muted">—</em>`);
 
 /** Whitelisted state pill; kind comes from the frozen map, never from data. */
 function pill(status, label) {
@@ -98,14 +99,11 @@ function governsLine(key) {
     <span class="badge badge-tier badge-tier-${g.tier === "admin" ? "admin" : "staff"}">${g.tier}</span>`;
 }
 
-function section(title, bodyHtml, opts = {}) {
-  return html`
-    <section class="panel settings-panel voice-panel">
-      <h2>${title}</h2>
-      ${opts.notice ? banner("warn", opts.notice) : html``}
-      ${bodyHtml}
-    </section>`;
-}
+// #608: engine promoted to views/_helpers.js; voice binds its panel class.
+// (voice never passes `hint` — the unified engine renders an empty fragment
+// for it, exactly the hint-less bytes this page always produced.)
+const section = (title, bodyHtml, opts = {}) =>
+  sharedSection(title, bodyHtml, { ...opts, cls: "voice-panel" });
 
 // ---------------------------------------------------------------------------
 // Now playing + queue (music) — VIEW ONLY, §8.9

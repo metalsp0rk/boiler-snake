@@ -89,4 +89,80 @@ function formatTs(ms) {
   }
 }
 
-module.exports = { flashFromQuery, flashBanner, num, formatAge, formatTs };
+// ---------------------------------------------------------------------------
+// #608 promoted families (census first — see test/web-helpers-dedup.test.js).
+// TRUE twins are single-sourced HERE. Same-name-different-contract copies
+// stay page-side, documented: pill ×3 (state/integ/voice vocabularies),
+// pageHref ×3 (per-page query vocabularies), users' append-only pager (no
+// prev, optional total), tickets' <nav> pager (different markup).
+// ---------------------------------------------------------------------------
+
+/**
+ * Channel reference (§8.15 cache-only): the ID is the source-of-truth value
+ * (no Discord lookups required). An OPTIONAL cached name (bot member cache
+ * via the getClient seam) is appended in parentheses when present —
+ * cache-only, never fetched; absent ⇒ id alone (graceful fallback).
+ *
+ * The zero-state is a parameter because the pages differ DELIBERATELY:
+ * settings/integrations say "not configured", voice shows an em-dash.
+ * Pass `missingHtml` for a page-specific zero-state.
+ */
+function channelRef(channelId, resolveName, missingHtml = null) {
+  if (!channelId) return missingHtml || html`<em class="muted">not configured</em>`;
+  const name = typeof resolveName === "function" ? resolveName(channelId) : null;
+  return html`<code class="channel-id">${channelId}</code>${name
+    ? html` <span class="channel-name">(${name})</span>`
+    : html``}`;
+}
+
+/**
+ * Panel section promoted from the settings/integrations/voice copies
+ * (byte-exact for all three pages): a page that does not pass an option
+ * renders an EMPTY fragment there — exactly what its old private copy did —
+ * so the unified engine cannot shift a single byte. `cls` appends the
+ * page's own panel class to the shared "panel settings-panel" base.
+ */
+function section(title, bodyHtml, opts = {}) {
+  return html`
+    <section class="panel settings-panel${opts.cls ? ` ${opts.cls}` : ""}">
+      <h2>${title}</h2>
+      ${opts.hint ? html`<p class="setting-admin-hint">${opts.hint}</p>` : html``}
+      ${opts.notice ? banner("warn", opts.notice) : html``}
+      ${bodyHtml}
+    </section>`;
+}
+
+/**
+ * The moderation/system pager engine — markup byte-identical on both pages;
+ * the FILTER VOCABULARY stays page-side inside hrefFor (each page's pageHref
+ * composes the href from validated parts only, §8.7). users' append-only
+ * pager is a different contract (no prev, optional total) and stays local.
+ *
+ * @param {{ hrefFor: (offset: number) => string, offset: number,
+ *           pageSize: number, total: number, shown: number }} p
+ */
+function pagerFor({ hrefFor, offset, pageSize, total, shown }) {
+  const from = total === 0 ? 0 : offset + 1;
+  const to = offset + shown;
+  const prev =
+    offset > 0
+      ? html`<a class="pager-prev" href="${hrefFor(Math.max(0, offset - pageSize))}">← prev</a>`
+      : html``;
+  const more = offset + shown < total;
+  const next = more
+    ? html` <a class="pager-next" href="${hrefFor(offset + shown)}">next →</a>`
+    : html``;
+  return html`<p class="pager">${prev}showing ${from}–${to} of ${total}${next}</p>`;
+}
+
+module.exports = {
+  flashFromQuery,
+  flashBanner,
+  num,
+  formatAge,
+  formatTs,
+  channelRef,
+  section,
+  pagerFor,
+};
+
