@@ -377,7 +377,7 @@ index 99f69e6..c45426f 100644
  
        if (!result.ok) {
 diff --git a/src/routes/test.ts b/src/routes/test.ts
-index 543d9ef..22e1742 100644
+index 543d9ef..b2aaae0 100644
 --- a/src/routes/test.ts
 +++ b/src/routes/test.ts
 @@ -16,6 +16,7 @@ import {
@@ -388,15 +388,16 @@ index 543d9ef..22e1742 100644
  import { getChannelWebhooks } from '../services/webhooks'
  import { injectPollVote } from '../services/polls'
  
-@@ -127,6 +128,7 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -127,6 +128,8 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
      const payload = await c.req.json<{
        content?: string
        author?: { id?: string }
 +      created_timestamp?: number
++      embeds?: unknown[]
      }>()
  
      if (!payload.content || !payload.author?.id) {
-@@ -136,7 +138,14 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -136,7 +139,17 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
      const result = injectTestMessage(
        db,
        channelId,
@@ -404,6 +405,9 @@ index 543d9ef..22e1742 100644
 +      {
 +        content: payload.content,
 +        author: { id: payload.author.id },
++        ...(Array.isArray(payload.embeds) && payload.embeds.length > 0
++          ? { embeds: payload.embeds }
++          : {}),
 +        ...(typeof payload.created_timestamp === 'number' &&
 +        Number.isFinite(payload.created_timestamp)
 +          ? { created_timestamp: payload.created_timestamp }
@@ -412,7 +416,7 @@ index 543d9ef..22e1742 100644
        baseUrl
      )
  
-@@ -149,12 +158,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -149,12 +162,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
    // command, without a real Discord client.
    app.post('/_test/interactions', async (c) => {
      const body = await c.req.json<TestInteractionRequest>()
@@ -1602,7 +1606,7 @@ index ba966e1..7110695 100644
    if (payload.embeds !== undefined) {
      db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..e61cd31 100644
+index 000b187..a15631f 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
 @@ -10,7 +10,9 @@ import { generateSnowflake } from '../snowflake'
@@ -1615,10 +1619,18 @@ index 000b187..e61cd31 100644
  import {
    createMessage,
    getGuildIdForChannel,
-@@ -350,6 +352,13 @@ export function createTestUser(
+@@ -350,6 +352,21 @@ export function createTestUser(
  export interface InjectTestMessageRequest {
    content: string
    author: { id: string }
++  /**
++   * Optional rich embeds persisted on the injected message (boiler-snake
++   * e2e #365/#460 flip: the bridge relay copies embeds; asserting the
++   * COPIED message carries them is only possible if injection can seed
++   * them). createMessage persists them exactly like webhook-executed
++   * messages.
++   */
++  embeds?: unknown[]
 +  /**
 +   * Optional epoch-millis to embed in the message snowflake so the injected
 +   * message reads as OLD history (E2E-fidelity for history-reading flows,
@@ -1629,16 +1641,18 @@ index 000b187..e61cd31 100644
  }
  
  /**
-@@ -397,7 +406,7 @@ export function injectTestMessage(
+@@ -397,8 +414,9 @@ export function injectTestMessage(
        // Neither a real bot token nor the webhook sentinel value, so this
        // message resolves to a plain, non-bot, non-webhook author.
        authorToken: '',
 -      messageId: generateSnowflake(),
 +      messageId: generateSnowflake(request.created_timestamp),
        content: request.content,
++      ...(request.embeds ? { embeds: request.embeds } : {}),
      },
      baseUrl
-@@ -408,11 +417,29 @@ export function injectTestMessage(
+   )
+@@ -408,11 +426,29 @@ export function injectTestMessage(
  export interface TestInteractionRequest {
    application_id: string
    type?: number
@@ -1669,7 +1683,7 @@ index 000b187..e61cd31 100644
  }
  
  /** Result of a test-interaction creation attempt */
-@@ -425,19 +452,210 @@ interface CommandIdRow {
+@@ -425,19 +461,210 @@ interface CommandIdRow {
    id: string
  }
  
@@ -1881,7 +1895,7 @@ index 000b187..e61cd31 100644
    const guildCommand = request.guild_id
      ? (db
          .prepare(
-@@ -459,12 +677,10 @@ export function createTestInteraction(
+@@ -459,12 +686,10 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -1898,7 +1912,7 @@ index 000b187..e61cd31 100644
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,8 +690,9 @@ export function createTestInteraction(
+@@ -474,8 +699,9 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,

@@ -6,7 +6,8 @@
  * from the Fluxer module — same signatures, same { ok, ... } shapes:
  *   createRelayWebhook resolves the channel THROUGH the community's guild;
  *   execute/patch/delete authenticate with the STORED token via
- *   client.webhooks.create(id, token);
+ *   client.fetchWebhook(id, token) → Webhook
+ *     .send() / .editMessage() / .deleteMessage() / .delete()
  *   429/5xx/transport throws → retryable:true, 4xx → false;
  *   404-on-delete counts as ok;
  *   the webhook token never appears in an error string.
@@ -41,7 +42,7 @@ function apiError(message, { status, code } = {}) {
   return err;
 }
 
-/** Webhook double for client.webhooks.create(id, token). */
+/** Webhook double returned by client.fetchWebhook(id, token). */
 function fakeWebhook(overrides = {}) {
   const calls = { send: [], editMessage: [], deleteMessage: [], delete: 0 };
   return {
@@ -154,11 +155,11 @@ describe("platform/discord/webhooks", () => {
       const wh = fakeWebhook(overrides);
       const seen = [];
       const local = createClient();
-      local.webhooks = {
-        create: async (id, token) => {
-          seen.push({ id, token });
-          return wh;
-        },
+      // #365: the v14 token-scoped handle is client.fetchWebhook — the fake
+      // mirrors the REAL 14.27 surface (no client.webhooks manager exists).
+      local.fetchWebhook = async (id, token) => {
+        seen.push({ id, token });
+        return wh;
       };
       return { api: createDiscordWebhooks(local), wh, seen };
     }
@@ -227,10 +228,8 @@ describe("platform/discord/webhooks", () => {
 
     it("validates the RelayWebhook handle before any network", async () => {
       const local = createClient();
-      local.webhooks = {
-        create: async () => {
-          throw new Error("must not be called");
-        },
+      local.fetchWebhook = async () => {
+        throw new Error("must not be called");
       };
       const api = createDiscordWebhooks(local);
       const res = await api.executeRelayWebhook({ id: "11", token: "" }, { content: "hi" });
@@ -241,10 +240,8 @@ describe("platform/discord/webhooks", () => {
 
     it("reports token resolution failures with the specific cause", async () => {
       const local = createClient();
-      local.webhooks = {
-        create: async () => {
-          throw apiError("Invalid Webhook Token", { status: 404, code: 10015 });
-        },
+      local.fetchWebhook = async () => {
+        throw apiError("Invalid Webhook Token", { status: 404, code: 10015 });
       };
       const api = createDiscordWebhooks(local);
       const res = await api.executeRelayWebhook(WH, { content: "hi" });
@@ -253,6 +250,27 @@ describe("platform/discord/webhooks", () => {
       assert.equal(res.code, "10015");
       assert.match(res.error, /Invalid Webhook Token/);
       assert.ok(!res.error.includes(WH.token));
+    });
+
+    it("#365: authenticates via client.fetchWebhook, NOT the phantom webhooks manager", async () => {
+      // The regression this guards: the relay used to resolve the token
+      // handle through client.webhooks.create — a manager the pinned
+      // discord.js (14.27) DOES NOT EXPORT (verified: Client.prototype has
+      // fetchWebhook, no webhooks getter). A client exposing ONLY the old
+      // surface must be rejected with a specific error, proving the code
+      // no longer reaches for webhooks.create.
+      const local = createClient();
+      local.webhooks = {
+        create: async () => {
+          throw new Error("webhooks manager must NOT be consulted post-#365");
+        },
+      };
+      const api = createDiscordWebhooks(local);
+      const res = await api.executeRelayWebhook(WH, { content: "hi" });
+      assert.equal(res.ok, false);
+      assert.match(res.error, /fetchWebhook/, `error names the required method: ${res.error}`);
+      assert.match(res.error, /SDK surface mismatch/);
+      assert.equal(res.retryable, false, "a missing SDK method is not a transient fault");
     });
 
     it("rejects bad file descriptors before sending", async () => {
@@ -291,7 +309,7 @@ describe("platform/discord/webhooks", () => {
     function wired(overrides = {}) {
       const wh = fakeWebhook(overrides);
       const local = createClient();
-      local.webhooks = { create: async () => wh };
+      local.fetchWebhook = async () => wh;
       return { api: createDiscordWebhooks(local), wh };
     }
 

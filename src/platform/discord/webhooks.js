@@ -8,11 +8,14 @@
  *
  * Transport = the logged-in discord.js client (how src/platform/discord/
  * outbound.js accesses the platform — same lookup helpers, same error
- * vocabulary). Token-scoped operations resolve a partial Webhook through
- * `client.webhooks.create(id, token)` (the token-endpoint pattern: send /
- * editMessage / deleteMessage / delete all authenticate with the webhook
- * token, NOT the bot credential — so disconnect cleanup and relay sends keep
- * working after the bot loses Manage Webhooks).
+ * vocabulary). Token-scoped operations resolve a Webhook through
+ * `client.fetchWebhook(id, token)` — the ONLY token-scoped handle the pinned
+ * discord.js exports (v14.27 exposes `fetchWebhook`, NOT a `client.webhooks`
+ * manager; the old `client.webhooks.create` reference was #365 — every live
+ * Discord copy failed on a method that does not exist). send / editMessage /
+ * deleteMessage / delete authenticate with the webhook token, NOT the bot
+ * credential — so disconnect cleanup and relay sends keep working after the
+ * bot loses Manage Webhooks.
  *
  * Token hygiene (AGENTS.md): the webhook token appears only in module RETURN
  * values; error strings name the webhook by ID only.
@@ -108,20 +111,23 @@ function createDiscordWebhooks(client) {
   }
 
   /**
-   * Token-scoped Webhook handle (discord.js `client.webhooks.create(id, token)`
-   * fetches the webhook by its token — the execute/patch/delete transport).
+   * Token-scoped Webhook handle. discord.js v14.27 exposes the token-scoped
+   * handle ONLY as `client.fetchWebhook(id, token)` (GET /webhooks/:id/:token
+   * → Webhook whose send/editMessage/deleteMessage/delete authenticate with
+   * the webhook token). There is NO `client.webhooks` manager in this SDK
+   * line — resolving through the phantom one was #365.
    * @param {string} method caller name for specific failures
    */
   async function resolveWebhook(webhook, method) {
     const invalid = validateWebhook(webhook, method);
     if (invalid) return { error: invalid };
-    if (typeof client.webhooks?.create !== "function") {
+    if (typeof client.fetchWebhook !== "function") {
       return {
-        error: `${method}: client exposes no webhooks manager (client.webhooks.create) — SDK surface mismatch`,
+        error: `${method}: client exposes no fetchWebhook(id, token) — SDK surface mismatch`,
       };
     }
     try {
-      const wh = await client.webhooks.create(String(webhook.id), webhook.token);
+      const wh = await client.fetchWebhook(String(webhook.id), webhook.token);
       if (!wh) {
         return { error: `${method}: webhook ${String(webhook.id)} could not be resolved by token` };
       }
