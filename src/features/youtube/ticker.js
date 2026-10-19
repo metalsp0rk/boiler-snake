@@ -1,4 +1,5 @@
 const https = require("https");
+const { toPlainEmbed } = require("../../core/embeds"); // #470 (H1-7): shared copy
 const { Color } = require("../../core/theme");
 const { registerJob } = require("../../core/scheduler");
 const {
@@ -23,16 +24,6 @@ function resolveOutbound(supervisor, communityId) {
 
 
 
-/**
- * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and
- * attachments): EmbedBuilder instances are flattened with toJSON() so the
- * payload is platform-agnostic; visible content is unchanged.
- * @param {object} embed EmbedBuilder-like or plain object
- * @returns {object}
- */
-function toPlainEmbed(embed) {
-  return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
-}
 
 /**
  * #441 (audit INT-5): the ONE Google Data API transport. The four former

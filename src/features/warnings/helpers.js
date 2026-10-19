@@ -6,20 +6,8 @@ const {
   MAX_EXPIRY_DAYS,
 } = require("../../db");
 const { formatWarnRef, tsRelative } = require("../../core/theme");
-const { SNIPPET_LEN } = require("./constants");
+const { snippet } = require("../../core/text"); // #470 (H1-7): shared copy
 
-/**
- * @param {string} content
- * @param {number} [max]
- * @returns {string}
- */
-function snippet(content, max = SNIPPET_LEN) {
-  const s = String(content || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (s.length <= max) return s;
-  return `${s.slice(0, Math.max(0, max - 1))}…`;
-}
 
 /**
  * @param {object} warn
