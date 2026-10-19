@@ -256,7 +256,10 @@ async function buildLeaderboardPagePayload(resolveNames, communityId, requesterI
 
   const fetchCount = limit * page + 1;
   const rows = topUsers(communityId, fetchCount);
-  const hasMore = rows.length === fetchCount;
+  // #472 (XE-6): the parser clamps requested pages to LB_PAGE_MAX, so beyond
+  // the ceiling "more rows exist" only ever re-renders the same last page —
+  // Next must be honest about the cap, not a live-clicking dead button.
+  const hasMore = rows.length === fetchCount && page < LB_PAGE_MAX;
   const pageRows = rows.slice((page - 1) * limit, page * limit);
 
   if (!pageRows.length) {
