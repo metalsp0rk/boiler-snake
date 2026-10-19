@@ -46,7 +46,8 @@
 const { SlashCommandBuilder } = require("discord.js");
 
 const service = require("./service");
-const { getCommunityById } = require("../../platform/community");
+// #470 (H1-7): platformLabel now owned by the platform community module.
+const { getCommunityById, platformLabel } = require("../../platform/community");
 const { getFluxerCommandPrefix } = require("../../config");
 
 /** Replies must never ping (dispatch pins mentions on its own sends too). */
@@ -157,11 +158,6 @@ function otherSideCmdFor(ctx) {
   return ctx && ctx.platform === "fluxer" ? "/link" : `${getFluxerCommandPrefix()}link`;
 }
 
-function platformLabel(platform) {
-  if (platform === "discord") return "Discord";
-  if (platform === "fluxer") return "Fluxer";
-  return String(platform ?? "unknown");
-}
 
 /** ISO instant without the zone suffix, for "{iso} UTC" sentences (bridge style). */
 function isoUtc(ms) {

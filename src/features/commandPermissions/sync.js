@@ -9,6 +9,7 @@
  */
 
 const { REST, Routes } = require("discord.js");
+const { sleep } = require("../../core/timing"); // #470 (H1-7): shared copy
 const {
   listStaffRoles,
   setCommandPermissionSyncResult,
@@ -21,12 +22,6 @@ const { getValidAccessToken } = require("./oauthTokens");
 
 const API_BASE = "https://discord.com/api/v10";
 
-/**
- * @param {number} ms
- */
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 /**
  * @param {string} url

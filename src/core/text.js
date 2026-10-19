@@ -144,11 +144,32 @@ function joinCapped(lines, limit, sep = ", ") {
   return out.length <= limit ? out : sliceSafe(out, limit);
 }
 
+/**
+ * One-line preview: whitespace collapsed, hard-capped at `max` with a single
+ * ellipsis character when cut (#470 H1-7: byte-identical copies lived in
+ * staffNotes, userinfo and warnings — fix it HERE).
+ *
+ * NOTE: cuts in UTF-16 code units, exactly like every historical copy. The
+ * surrogate-pair-aware alternative (safeCutIndex above) changes bytes at
+ * mid-pair boundaries — a visible behavior change for emoji-heavy content,
+ * deliberately NOT folded in silently.
+ *
+ * @param {unknown} content
+ * @param {number} [max=80]
+ * @returns {string}
+ */
+function snippet(content, max = 80) {
+  const s = String(content || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (s.length <= max) return s;
+  return `${s.slice(0, Math.max(0, max - 1))}\u2026`;
+}
+
 module.exports = {
-  isHighSurrogateAt,
-  isLowSurrogateAt,
   safeCutIndex,
   sliceSafe,
   joinCapped,
   normalizeTitle,
+  snippet,
 };

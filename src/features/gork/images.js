@@ -36,23 +36,12 @@
  */
 
 const { downloadSignedUrl } = require("../bridge/media");
+const { envPositiveInt } = require("../../core/env"); // #470 (H1-7): shared copy
 
 // ---------------------------------------------------------------------------
 // Bounded constants (env-overridable; re-read per job by the trigger)
 // ---------------------------------------------------------------------------
 
-/**
- * Positive-integer env knob with a fallback (unset/invalid → default).
- * Same contract as the trigger module's private helper.
- *
- * @param {string} name env var name
- * @param {number} fallback default value
- * @returns {number}
- */
-function envPositiveInt(name, fallback) {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
 
 /**
  * Non-negative-integer env knob (0 is a valid, meaningful value —

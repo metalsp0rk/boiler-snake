@@ -107,16 +107,12 @@ const DYNAMIC_READ_FILES = new Map([
     "reads process.env[KEY_ENV] (TOKEN_ENCRYPTION_KEY) imported from thirdPartyTokens",
   ],
   [
-    "src/features/gork/summarize.js",
-    "envPositiveInt(name) helper; names captured at the helper call sites",
+    "src/core/env.js",
+    "#470 (H1-7): envPositiveInt(name) lives here now; names are still captured at every call site by the shared envPositiveInt/envNonNegInt pattern",
   ],
   [
     "src/features/gork/images.js",
-    "envPositiveInt/envNonNegInt(name) helpers; names captured at the call sites",
-  ],
-  [
-    "src/features/gork/trigger.js",
-    "envPositiveInt(name) helper; names captured at the call sites",
+    "LOCAL envNonNegInt(name) helper (envPositiveInt moved to core/env.js); names captured at the call sites",
   ],
   [
     "src/features/retention/config.js",

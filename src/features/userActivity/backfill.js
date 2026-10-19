@@ -11,6 +11,7 @@
  */
 
 const { ChannelType } = require("discord.js");
+const { sleep } = require("../../core/timing"); // #470 (H1-7): shared copy
 const { isSystemMessageType } = require("../../platform/normalizedMessageContract");
 const {
   ensureGuildActivitySettings,
@@ -55,9 +56,6 @@ const guildJobs = new Map();
  */
 let pageDelayMs = DELAY_MS;
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 /**
  * TEST SEAM: override the backfill loop's inter-page delay (ms >= 0).

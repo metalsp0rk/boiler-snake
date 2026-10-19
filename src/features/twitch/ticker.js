@@ -1,4 +1,5 @@
 const { EmbedBuilder } = require("discord.js");
+const { toPlainEmbed } = require("../../core/embeds"); // #470 (H1-7): shared copy
 const { Color } = require("../../core/theme");
 const { registerJob } = require("../../core/scheduler");
 const {
@@ -34,16 +35,6 @@ const defaultDeps = { resolveUser: resolveTwitchUser, fetchStreams };
 
 
 
-/**
- * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and
- * attachments). EmbedBuilder instances flatten via toJSON(); visible content
- * is byte-identical.
- * @param {object} embed
- * @returns {object}
- */
-function toPlainEmbed(embed) {
-  return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
-}
 
 /**
  * Build the go-live embed for a Twitch stream.

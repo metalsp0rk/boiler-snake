@@ -21,28 +21,13 @@
  */
 
 const { encryptWebhookToken, decryptWebhookToken } = require("./tokenCrypto");
+const { hideToken } = require("../../core/secrets"); // #470 (H1-7): shared copy
 const { sanitizeOutboundFilename } = require("./media");
 const { NO_PING } = require("./mentions");
 
 /** Webhook name for both ends (spec §10.7 step 6; ≤ 80 chars). */
 const WEBHOOK_NAME = "Boiler Snake Bridge";
 
-/**
- * Attach the plaintext token to a relay-webhook handle as a NON-ENUMERABLE
- * property: `webhook.token` works for the transport, JSON.stringify (logs,
- * fixtures) never serializes the credential.
- * @param {object} handle
- * @param {string} token
- * @returns {object} the same handle, for chaining
- */
-function hideToken(handle, token) {
-  Object.defineProperty(handle, "token", {
-    value: token,
-    enumerable: false,
-    writable: false,
-  });
-  return handle;
-}
 
 /**
  * Validate one bridge_ends row's webhook fields.

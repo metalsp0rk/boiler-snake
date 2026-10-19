@@ -25,6 +25,7 @@ const {
   listWarnings,
 } = require("../../db");
 const { levelFromXp } = require("../../core/xpMath");
+const { snippet } = require("../../core/text"); // #470 (H1-7): shared copy
 const { ensureCommunity } = require("../../platform/community");
 // Pre-existing latent bug (present at PR-4 base): the button arm references
 // replyEphemeral without importing it, so the "unknown control" and
@@ -75,7 +76,6 @@ const staffPerms = PermissionFlagsBits.ManageGuild;
 const BTN_PREFIX = "ui:";
 /** Max list lines when expanding notes/warnings */
 const LIST_LIMIT = 10;
-const SNIPPET_LEN = 80;
 
 const COLOR_CARD = Color.brand;
 const COLOR_NOTES = Color.config;
@@ -110,18 +110,6 @@ function parseButtonCustomId(customId) {
   return parseActivityButtonCustomId(customId);
 }
 
-/**
- * @param {string} content
- * @param {number} [max]
- * @returns {string}
- */
-function snippet(content, max = SNIPPET_LEN) {
-  const s = String(content || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (s.length <= max) return s;
-  return `${s.slice(0, Math.max(0, max - 1))}…`;
-}
 
 /**
  * @param {number} communityId internal communities.id (integer key; the

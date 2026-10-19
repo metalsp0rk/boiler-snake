@@ -47,6 +47,7 @@
  */
 
 const { getAiConfig, chatCompletion } = require("../../core/ai");
+const { envPositiveInt } = require("../../core/env"); // #470 (H1-7): shared copy
 const { sliceSafe } = require("../../core/text");
 const { sanitizeAnswer } = require("./sanitize");
 const { buildRoster, formatRosterBlock } = require("./roster");
@@ -96,19 +97,6 @@ function fail(code, error) {
   return { ok: false, code, error };
 }
 
-/**
- * Positive-integer env knob with a fallback (locally mirrored from
- * trigger.js — same rationale as memory.js: keep the dependency graph
- * small; env is read at CALL time).
- *
- * @param {string} name env var name
- * @param {number} fallback default value
- * @returns {number}
- */
-function envPositiveInt(name, fallback) {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
 
 /**
  * One-shot generation deadline, re-read at CALL time like every other

@@ -1,4 +1,5 @@
 const { EmbedBuilder } = require("discord.js");
+const { toPlainEmbed } = require("../../core/embeds"); // #470 (H1-7): shared copy
 const { Color } = require("../../core/theme");
 const { registerJob } = require("../../core/scheduler");
 const {
@@ -20,16 +21,6 @@ const defaultDeps = { fetchReleases };
 
 
 
-/**
- * NormalizedEmbed plain JSON at the send boundary (spec § Embeds and
- * attachments). EmbedBuilder instances flatten via toJSON(); visible content
- * is byte-identical.
- * @param {object} embed
- * @returns {object}
- */
-function toPlainEmbed(embed) {
-  return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
-}
 
 const EMBED_DESCRIPTION_LIMIT = 4096;
 const DESCRIPTION_BUDGET = 3800;
