@@ -18,7 +18,7 @@ const {
 } = require("../../db");
 const { writeTranscriptFile } = require("./transcript");
 const { summarizeTicket } = require("./summary");
-const { transcriptPublicUrl } = require("./httpServer");
+const { transcriptPublicUrl } = require("../../web/config"); // #472 (LT-16.5): shim retired
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -172,17 +172,27 @@ function normalizeDiscordMessage(msg) {
 }
 
 /**
- * Best-effort DM on close (no transcript URL).
+ * Best-effort DM on close (no transcript URL). Returns `{ ok, error }` like
+ * {@link notifyRequesterArchived} directly below — #472 (LT-16.4): the catch
+ * used to be a bare `// DMs closed — ignore`, hiding every non-DMs-closed
+ * cause; the close pipeline now surfaces the failure as a warning line and
+ * logs it with ids (rules 2 + 5, no more in-file asymmetry).
  * @param {import("discord.js").Client} client
  * @param {object} ticket
  * @param {string|null} closeReason
+ * @returns {Promise<{ ok: boolean, error?: string }>}
  */
 async function notifyRequesterClosed(client, ticket, closeReason) {
   try {
     const user =
       client?.users?.cache?.get?.(ticket.creator_user_id) ||
       (await client?.users?.fetch?.(ticket.creator_user_id).catch(() => null));
-    if (!user?.send) return;
+    if (!user?.send) {
+      return {
+        ok: false,
+        error: "requester not reachable (DMs closed or user unavailable)",
+      };
+    }
     const embed = new EmbedBuilder()
       .setColor(COLOR_CLOSED)
       .setTitle(`Ticket ${formatTicketRef(ticket.ticket_number)} closed`)
@@ -192,8 +202,9 @@ async function notifyRequesterClosed(client, ticket, closeReason) {
           : "Your support ticket was closed.",
       );
     await user.send({ embeds: [embed] });
-  } catch {
-    // DMs closed — ignore
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
   }
 }
 
@@ -491,7 +502,13 @@ async function softCloseTicket(opts) {
     warnings.push(`Could not post close notice: ${err?.message || err}`);
   }
 
-  await notifyRequesterClosed(client, ticket, closeReason);
+  const closeDm = await notifyRequesterClosed(client, ticket, closeReason);
+  if (!closeDm.ok) {
+    console.warn(
+      `[tickets] close DM to ${ticket.creator_user_id} (ticket ${ticket.ticket_number}) not delivered: ${closeDm.error}`,
+    );
+    warnings.push(`Close DM not delivered: ${closeDm.error}`);
+  }
   return { ticket, warnings };
 }
 
@@ -529,6 +546,26 @@ async function softCloseTicket(opts) {
  *   the channel was kept — callers must surface the cause, never a
  *   success-flavored reply.
  */
+/**
+ * Best-effort ticket-channel delete after archive (#472 LT-16.7: the
+ * sensitive and non-sensitive pipelines duplicated this try/catch verbatim).
+ * #341/#449: `deferChannelDelete` lets the SLASH handler run the delete AFTER
+ * it has written its confirmation — the deferred response lives in THIS
+ * channel, so deleting first always kills the reply (real Discord answered
+ * 10008; the offline mock used to make that uncatchable). Failures ride the
+ * warnings ledger (rule 5) — the archive itself already succeeded.
+ * @param {{ delete?: (reason: string) => Promise<unknown> }|null} channel
+ * @param {string} reason
+ * @param {string[]} warnings
+ */
+async function deleteTicketChannelBestEffort(channel, reason, warnings) {
+  try {
+    if (channel?.delete) await channel.delete(reason);
+  } catch (err) {
+    warnings.push(`Could not delete channel: ${err?.message || err}`);
+  }
+}
+
 async function archiveTicketPipeline(opts) {
   const ticket = opts.ticket;
   const { archivedBy } = opts;
@@ -618,17 +655,12 @@ async function archiveTicketWork(opts) {
       setTicketArchiveMessageId(closed.id, archiveMsgId);
     }
 
-    // #341/#449: `deferChannelDelete` lets the SLASH handler run the delete
-    // AFTER it has written its confirmation — the deferred response lives in
-    // THIS channel, so deleting first always kills the reply (real Discord
-    // answered 10008; the offline mock used to make that uncatchable).
     if (!opts.deferChannelDelete) {
-      try {
-        if (channel?.delete)
-          await channel.delete("Ticket archived (sensitive)");
-      } catch (err) {
-        warnings.push(`Could not delete channel: ${err?.message || err}`);
-      }
+      await deleteTicketChannelBestEffort(
+        channel,
+        "Ticket archived (sensitive)",
+        warnings,
+      );
     }
 
     return { ticket: closed || getTicketById(ticket.id) || ticket, warnings };
@@ -842,11 +874,7 @@ async function archiveTicketWork(opts) {
   }
 
   if (!opts.deferChannelDelete) {
-    try {
-      if (channel?.delete) await channel.delete("Ticket archived");
-    } catch (err) {
-      warnings.push(`Could not delete channel: ${err?.message || err}`);
-    }
+    await deleteTicketChannelBestEffort(channel, "Ticket archived", warnings);
   }
 
   return {

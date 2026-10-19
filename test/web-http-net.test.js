@@ -14,7 +14,7 @@
  * §8.4 (subtask 12) INTENTIONALLY changed the auth behavior of the ticket
  * surface — login is now mandatory (locked decision §8.1-3, no flag). This
  * net therefore runs TWO servers against the SAME SQLite + DATA_DIR:
- *  - the REAL production server (startTicketHttpServer): keeps every public
+ *  - the REAL production server (web/server startWebServer): keeps every public
  *    byte assertion (/health, method gate, OAuth callback, catch-all 404)
  *    and now asserts the ANONYMOUS ticket-surface redirect semantics (§8.4);
  *  - an authenticated mirror (createWebApp({guildAccess: fake}) + a staff
@@ -82,7 +82,7 @@ async function reserveEphemeralPort() {
 /**
  * Start the real server, retrying on a different port if the reserved one
  * got snipped between probe and listen (EADDRINUSE).
- * @param {typeof import("../src/features/tickets/httpServer")} mod
+ * @param {{ startTicketHttpServer: () => import("http").Server, stopTicketHttpServer: () => Promise<any> }} mod
  * @returns {Promise<import("http").Server>}
  */
 async function startServerOnFreePort(mod) {
@@ -111,7 +111,8 @@ describe("web http net (tickets + oauth callback)", () => {
   /** @type {ReturnType<typeof loadDb>["api"]} */
   let db;
   let tmpDir;
-  /** @type {typeof import("../src/features/tickets/httpServer")} */
+  /** Local lifecycle/lookup bindings onto the real web modules (#472 LT-16.5
+   *  retired the frozen tickets/httpServer.js shim). */
   let httpNet;
   /** @type {import("http").Server} */
   let server;
@@ -192,8 +193,19 @@ describe("web http net (tickets + oauth callback)", () => {
     GUILD_NAMES_BY_ID[String(CID_HTTP)] = guildHttp;
     GUILD_NAMES_BY_ID[String(CID_PAGED)] = guildPaged;
 
-    // Require AFTER loadDb so this module binds the fresh db + DATA_DIR.
-    httpNet = require("../src/features/tickets/httpServer");
+    // Require AFTER loadDb so these modules bind the fresh db + DATA_DIR.
+    // #472 (LT-16.5): the frozen tickets/httpServer.js shim is gone — the
+    // ticket-scoped aliases live here now, bound onto the real web surface.
+    const { startWebServer, stopWebServer } = require("../src/web/server");
+    const webConfig = require("../src/web/config");
+    const { PAGE_SIZE } = require("../src/web/routes/transcripts");
+    httpNet = {
+      startTicketHttpServer: startWebServer,
+      stopTicketHttpServer: stopWebServer,
+      getHttpConfig: webConfig.getHttpConfig,
+      transcriptPublicUrl: webConfig.transcriptPublicUrl,
+      PAGE_SIZE,
+    };
     const {
       writeTranscriptFile,
       absoluteAssetsDir,

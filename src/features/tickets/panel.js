@@ -164,13 +164,36 @@ async function handlePanelCreate(interaction, ctx) {
     });
 
     // Store panel in registry
-    createTicketPanel(
-      communityId,
-      targetChannel.id,
-      message.id,
-      title,
-      description,
-    );
+    try {
+      createTicketPanel(
+        communityId,
+        targetChannel.id,
+        message.id,
+        title,
+        description,
+      );
+    } catch (err) {
+      // #472 (LT-16.6): a rejected insert used to leave the POSTED message
+      // live but unregistered — invisible to panel list/edit, and every retry
+      // stacked another orphan. Compensate: best-effort delete the posted
+      // message, then rethrow with exactly what happened (rule 3: the user
+      // can act on the residue, and the partial state is never claimed as a
+      // plain "post failed").
+      let cleanupNote;
+      try {
+        await message.delete?.();
+        cleanupNote = "the unposted panel message was removed";
+      } catch (delErr) {
+        cleanupNote = `panel message ${message.id} IS LEFT LIVE in <#${targetChannel.id}> — delete it manually (cleanup failed: ${delErr?.message || delErr})`;
+        console.error(
+          "[tickets] panel-create orphan cleanup failed:",
+          delErr?.message || delErr,
+        );
+      }
+      throw new Error(
+        `panel posted but registry insert failed (${cleanupNote}): ${err?.message || err}`,
+      );
+    }
 
     recordSlashAudit({
       interaction,
