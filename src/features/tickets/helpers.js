@@ -3,7 +3,6 @@
  */
 const {
   PermissionFlagsBits,
-  MessageFlags,
   EmbedBuilder,
   ChannelType,
   ActionRowBuilder,
@@ -16,43 +15,14 @@ const {
 const {
   MAX_TICKET_REASON,
   getTicketSettings,
-  canUserCreateTicket,
   createTicket,
   getTicketByChannel,
-  getTicketById,
-  claimTicket,
-  transferTicket,
-  addTicketStaff,
-  removeTicketStaff,
-  setTicketSensitive,
-  setTicketUnsensitive,
-  addTicketMember,
-  removeTicketMember,
-  listTicketMembers,
-  listTicketStaff,
-  listTicketMessages,
-  listOpenTickets,
-  updateGuildSettings,
-  listStaffRoles,
   listSeniorStaffRoles,
-  normalizeStaffLevel,
   createStaffNote,
   MAX_NOTE_CONTENT,
-  createTicketPanel,
-  getTicketPanel,
-  listTicketPanels,
-  updateTicketPanelText,
-  deleteTicketPanel,
 } = require("../../db");
 const {
-  requireStaff,
-  isStaff,
-  isAdminOrMod,
-} = require("../../core/permissions");
-const {
-  replyDenied,
   replyEphemeral,
-  editEphemeral,
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 // Discord edge: snowflake → integer community id for repository calls.
@@ -71,34 +41,20 @@ const {
   STAFF_ALLOW,
   BOT_ALLOW,
 } = require("./overwrites");
-const {
-  softCloseTicket,
-  archiveTicketPipeline,
-  fetchAllMessages,
-} = require("./close");
-const {
-  collectTicketUserIds,
-  resolveUsers,
-  enrichMessagesForArchive,
-} = require("./users");
 const { summarizeTicket } = require("./summary");
 const {
   formatTicketRef,
   tsFull,
-  baseEmbed,
 } = require("../../core/theme");
 const {
   COLOR_OPEN,
   COLOR_INFO,
-  COLOR_SENSITIVE,
   BTN_OPEN,
   MODAL_CREATE,
   MODAL_FIELD_REASON,
   BTN_STAFF_NOTE_PREFIX,
   MODAL_STAFF_NOTE_PREFIX,
   MODAL_FIELD_STAFF_NOTE,
-  DEFAULT_PANEL_TITLE,
-  DEFAULT_PANEL_DESCRIPTION,
 } = require("./constants");
 
 

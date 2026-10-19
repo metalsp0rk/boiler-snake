@@ -3,56 +3,18 @@
  */
 const {
   MessageFlags,
-  EmbedBuilder,
   ChannelType,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
 } = require("discord.js");
 const {
-  MAX_TICKET_REASON,
-  getTicketSettings,
-  canUserCreateTicket,
-  createTicket,
-  getTicketByChannel,
-  getTicketById,
-  claimTicket,
-  transferTicket,
-  addTicketStaff,
-  removeTicketStaff,
-  setTicketSensitive,
-  setTicketUnsensitive,
-  addTicketMember,
-  removeTicketMember,
-  listTicketMembers,
-  listTicketStaff,
-  listTicketMessages,
-  listOpenTickets,
-  updateGuildSettings,
-  listStaffRoles,
-  listSeniorStaffRoles,
-  normalizeStaffLevel,
-  createStaffNote,
-  MAX_NOTE_CONTENT,
   createTicketPanel,
   getTicketPanel,
   listTicketPanels,
   updateTicketPanelText,
   deleteTicketPanel,
 } = require("../../db");
-const {
-  requireStaff,
-  isStaff,
-  isAdminOrMod,
-} = require("../../core/permissions");
 const { describeError } = require("../../core/errors"); // #471 LT-9
 const {
-  replyDenied,
   replyEphemeral,
-  editEphemeral,
 } = require("../../core/interaction");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
@@ -60,44 +22,8 @@ const { recordSlashAudit } = require("../../core/auditTrail");
 // cached OutboundClient for the logs feature (auditLog takes OutboundClient).
 const { ensureCommunity } = require("../../platform/community");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
-const {
-  applyTicketOverwrites,
-  getManageableStaffRoleIds,
-  formatStaffRoleAccessNote,
-  describeSkippedStaffRoles,
-  assertBotCanCreateTickets,
-  formatChannelCreateError,
-  MEMBER_ALLOW,
-  MEMBER_DENY,
-  STAFF_ALLOW,
-  BOT_ALLOW,
-} = require("./overwrites");
-const {
-  softCloseTicket,
-  archiveTicketPipeline,
-  fetchAllMessages,
-} = require("./close");
-const {
-  collectTicketUserIds,
-  resolveUsers,
-  enrichMessagesForArchive,
-} = require("./users");
 const { summarizeTicket } = require("./summary");
 const {
-  formatTicketRef,
-  tsFull,
-  baseEmbed,
-} = require("../../core/theme");
-const {
-  COLOR_OPEN,
-  COLOR_INFO,
-  COLOR_SENSITIVE,
-  BTN_OPEN,
-  MODAL_CREATE,
-  MODAL_FIELD_REASON,
-  BTN_STAFF_NOTE_PREFIX,
-  MODAL_STAFF_NOTE_PREFIX,
-  MODAL_FIELD_STAFF_NOTE,
   DEFAULT_PANEL_TITLE,
   DEFAULT_PANEL_DESCRIPTION,
 } = require("./constants");
