@@ -655,6 +655,38 @@ async function handleDisconnect(ctx, featureCtx, surfaceCmd) {
   const targetChannelId =
     handle != null ? null : channelOpt?.id ?? ctx.channelId ?? null;
 
+  // #471 (H2-15): destroying a bridge deletes BOTH relay webhooks and
+  // rebuilding needs a fresh code AND fresh credentials — confirm-once
+  // (the gork memory idiom, now the declared repo convention). Without
+  // confirm:true this only previews what would be destroyed; when there is
+  // nothing to destroy we fall through and the service answers with its
+  // canonical not-found copy.
+  if (
+    ctx.options.getBoolean("confirm") !== true &&
+    (handle != null || targetChannelId != null)
+  ) {
+    const preview = service.statusBridge({
+      community: getCommunityById(ctx.communityId),
+      invocationChannelId: ctx.channelId || null,
+      targetChannelId,
+      publicId: handle,
+      surfaceCmd,
+      staff: staffFacts(ctx),
+      deps: buildDeps(ctx, featureCtx),
+    });
+    if (preview.ok && (preview.items ?? []).length > 0) {
+      const items = preview.items;
+      return ctx.reply({
+        content:
+          `This will **destroy** ${items.length === 1 ? `bridge ${items[0].publicId}` : `${items.length} bridges (${items.map((i) => i.publicId).join(", ")})`} in this community:` +
+          "\n\n" +
+          items.map(formatStatusItem).join("\n\n") +
+          "\n\nBoth relay webhooks are deleted and reconnecting needs a fresh code AND fresh credentials. Re-run with `confirm: true` to proceed.",
+        sensitive: true,
+      });
+    }
+  }
+
   const result = await service.disconnectBridge({
     community: getCommunityById(ctx.communityId),
     invocationChannelId: ctx.channelId || null,
@@ -1009,7 +1041,7 @@ async function handleBridge(commandCtx, featureCtx) {
   if (!Number.isSafeInteger(commandCtx.communityId) || !getCommunityById(commandCtx.communityId)) {
     await commandCtx.reply({
       content:
-        "This guild is not registered as a community in this process, so bridges cannot be managed here.",
+        "This community is not registered with this bot process, so bridges cannot be managed here.",
       sensitive: true,
     });
     return;
