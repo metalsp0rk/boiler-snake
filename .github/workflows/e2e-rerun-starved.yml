@@ -1,0 +1,39 @@
+name: E2E starved-run rerun
+
+# #506 (option 2): the fauxcord-e2e concurrency group (e2e.yml) keeps only
+# ONE pending run, so a new PR's e2e DISPLACES (cancels) the previously
+# queued one — with several PRs in flight the oldest starves until pushes
+# pause (option 1, the merge queue, stays an admin decision; option 3, the
+# manual SOP, is documented in docs/e2e.md).
+#
+# Every 15 minutes this workflow re-runs e2e runs that were CANCELLED BY
+# DISPLACEMENT while their PR is still open at the same head sha and nothing
+# is queued/running for it. The concurrency group then rotates the shared
+# mock between starved PRs instead of freezing.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+
+# CI policy: private self-hosted runner pool only (see e2e.yml). This job is
+# API-only (a few HTTPS calls); it never touches the mock.
+jobs:
+  rerun:
+    runs-on: [self-hosted, linux, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node@v7.1.0
+        with:
+          node-version: 22.x
+      - name: Rerun starved e2e runs
+        # GITHUB_TOKEN cannot call the Actions rerun endpoint, so a PAT
+        # (classic, repo scope) is required here. Unset secret → the script
+        # logs that automated rerun is disabled and exits 0 (a daily red
+        # scheduled run is noise, not information).
+        env:
+          E2E_RERUN_PAT: ${{ secrets.E2E_RERUN_PAT }}
+        run: node scripts/ci/e2e-rerun-starved.js
