@@ -95,6 +95,7 @@ describe(
     const strOpt = (name, value) => ({ name, type: 3, value });
     const chanOpt = (name, id) => ({ name, type: 7, value: id });
     const intOpt = (name, value) => ({ name, type: 4, value });
+    const boolOpt = (name, value) => ({ name, type: 5, value });
     const userOpt = (name, id) => ({ name, type: 6, value: id });
 
     const slash = (command, options, who = env.ids.human) =>
@@ -531,8 +532,23 @@ describe(
 
       // Disconnect BOTH pending bridges (channel2 + general) — cascade copy +
       // row release + in-channel notices visible on the mock tape.
-      const disc = await contentOf(
+      // #471 (H2-15): without confirm:true the disconnect may ONLY preview.
+      const noConfirm = await contentOf(
         await slash("bridge", [sub("disconnect", [strOpt("bridge", st.bridgeHandle)])]),
+      );
+      assert.ok(
+        noConfirm.startsWith("This will **destroy** bridge") &&
+          /re-run with `confirm: true`/i.test(noConfirm),
+        `confirm-once preview expected (got: ${noConfirm})`,
+      );
+      assert.ok(
+        env.dbmod.getBridgeByPublicId(st.bridgeHandle) != null,
+        "the preview must NOT destroy the bridge",
+      );
+      const disc = await contentOf(
+        await slash("bridge", [
+          sub("disconnect", [strOpt("bridge", st.bridgeHandle), boolOpt("confirm", true)]),
+        ]),
       );
       assert.ok(
         disc.startsWith(`Disconnected bridge ${st.bridgeHandle}. Both channels are released.`),
@@ -541,7 +557,9 @@ describe(
       assert.equal(env.dbmod.getBridgeByPublicId(st.bridgeHandle), null, "cascade delete");
       assert.ok(auditRow("bridge.disconnect"), "slash audit row for disconnect");
       const genDisc = await contentOf(
-        await slash("bridge", [sub("disconnect", [chanOpt("channel", ids.general)])]),
+        await slash("bridge", [
+          sub("disconnect", [chanOpt("channel", ids.general), boolOpt("confirm", true)]),
+        ]),
       );
       assert.ok(genDisc.startsWith(`Disconnected bridge ${genHandle}.`), genDisc);
       const tapeCh2 = ((await env.mock.messages(ids.channel2)) ?? []).map((m) => String(m.content));
@@ -682,7 +700,9 @@ describe(
       }
 
       const disc = await contentOf(
-        await slash("bridge", [sub("disconnect", [strOpt("bridge", st.relay.publicId)])]),
+        await slash("bridge", [
+          sub("disconnect", [strOpt("bridge", st.relay.publicId), boolOpt("confirm", true)]),
+        ]),
       );
       assert.ok(
         disc.startsWith(`Disconnected bridge ${st.relay.publicId}. Both channels are released.`),

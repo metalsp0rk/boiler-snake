@@ -75,6 +75,14 @@ const commands = [
             .setName("channel")
             .setDescription("A channel in the bridge (default: this channel)")
             .setRequired(false),
+        )
+        .addBooleanOption((opt) =>
+          // #471 (H2-15): confirm-once (the gork memory idiom) — destroying a
+          // bridge deletes both relay webhooks and rebuilding needs fresh
+          // credentials. Without confirm:true this only previews.
+          opt
+            .setName("confirm")
+            .setDescription("Set true to actually destroy (without it this only previews)"),
         ),
     )
     .addSubcommand((sc) =>

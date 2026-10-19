@@ -81,11 +81,27 @@ describe("integration: staff notes", () => {
       "Updated context after review"
     );
 
-    const del = await env.runCommand({
+    // #471 (H2-15): /note delete is confirm-once — no restore command exists.
+    // Without confirm:true the note must only PREVIEW and stay undeleted.
+    const preview = await env.runCommand({
       commandName: "note",
       subcommand: "delete",
       admin: true,
       options: { id: 1 },
+    });
+    assertEphemeralReply(preview);
+    assertReplyContains(preview, /will be soft-deleted/i);
+    assertReplyContains(preview, /re-run with `confirm: true`/i);
+    assert.ok(
+      env.db.getStaffNote(env.communityId, 1).deleted_at == null,
+      "preview must NOT delete the note",
+    );
+
+    const del = await env.runCommand({
+      commandName: "note",
+      subcommand: "delete",
+      admin: true,
+      options: { id: 1, confirm: true },
     });
     assertEphemeralReply(del);
     assertReplyContains(del, /soft-deleted|N-1/i);
