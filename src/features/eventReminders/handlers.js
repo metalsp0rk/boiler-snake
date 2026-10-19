@@ -237,7 +237,7 @@ async function handleCreate(interaction, communityId) {
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
     await replyEphemeral(interaction, {
       content:
-        "You need **Manage Guild** or be the **creator** of this scheduled event.",
+        "You need **Manage Server** or be the **creator** of this scheduled event.",
     });
     return;
   }
@@ -290,7 +290,7 @@ async function handleEdit(interaction, communityId) {
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
     await replyEphemeral(interaction, {
       content:
-        "You need **Manage Guild** or be the **creator** of this scheduled event.",
+        "You need **Manage Server** or be the **creator** of this scheduled event.",
     });
     return;
   }
@@ -321,7 +321,7 @@ async function handleClear(interaction, communityId) {
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
     await replyEphemeral(interaction, {
       content:
-        "You need **Manage Guild** or be the **creator** of this scheduled event.",
+        "You need **Manage Server** or be the **creator** of this scheduled event.",
     });
     return;
   }
@@ -376,7 +376,7 @@ async function handleSync(interaction, communityId) {
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
     await replyEphemeral(interaction, {
       content:
-        "You need **Manage Guild** or be the **creator** of this scheduled event.",
+        "You need **Manage Server** or be the **creator** of this scheduled event.",
     });
     return;
   }
@@ -596,7 +596,7 @@ async function handleEventReminderModal(interaction, ctx) {
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
     await replyEphemeral(interaction, {
       content:
-        "You need **Manage Guild** or be the **creator** of this scheduled event.",
+        "You need **Manage Server** or be the **creator** of this scheduled event.",
     });
     return;
   }
@@ -931,7 +931,7 @@ async function handleRecurringButton(interaction) {
   if (!canConfigureEventReminder(interaction.member, scheduledEvent)) {
     await replyEphemeral(interaction, {
       content:
-        "You need **Manage Guild** or be the **creator** of this scheduled event.",
+        "You need **Manage Server** or be the **creator** of this scheduled event.",
     });
     return;
   }

@@ -3,6 +3,11 @@
 Staff-facing Discord channel logs for moderation and role activity.
 
 ## Overview
+> **Scope note (#471 INT-15):** the message-audit stream is **Discord-only by
+> construction** — `cacheMessage` gates Fluxer writes (per #277) and `logs/index.js`
+> binds delete/ban/kick to the Discord client. A future Fluxer consumer must add a
+> normalized-message contract assertion before wiring events here.
+
 
 Boiler Snake can post rich embeds to independently configured channels:
 

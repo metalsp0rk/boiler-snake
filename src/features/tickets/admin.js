@@ -450,7 +450,7 @@ async function handleSettings(commandCtx) {
       `**Junior** staff (commands only, no auto ticket view): ${juniorList}\n` +
       `\n**Members:** \`/ticket create [reason]\` or the **Open a ticket** panel button\n` +
       `**Staff:** \`for\` · \`claim\` · \`close\` · \`archive\` · \`sensitive\` · \`list\` · …\n` +
-      `**Admin:** \`panel\` · \`setcategory\` · \`setarchive\` · \`setratelimit\`\n` +
+      `**Staff (config):** \`panel\` · \`setcategory\` · \`setarchive\` · \`setratelimit\`\n` +
       `\n**Close** removes non-staff from the channel; **archive** saves the transcript and deletes it.`,
     sensitive: true,
   });

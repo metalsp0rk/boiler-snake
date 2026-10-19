@@ -171,7 +171,7 @@ sequenceDiagram
 
 | Action | Who |
 |--------|-----|
-| Create / edit / clear / sync for an event | **Manage Guild** **or** that scheduled event’s **creator** |
+| Create / edit / clear / sync for an event | **Manage Server** **or** that scheduled event’s **creator** |
 | Set default notify channel | **Staff gate** (Manage Server or any staff role) |
 | Opt out / opt in / mute / unmute / status | Everyone |
 

@@ -133,11 +133,39 @@ Join your voice channel (if needed) and play a song. See [Music player](../music
 
 Same voice-channel rule as `/play`.
 
+### `/link` - Cross-Platform Account Linking
+
+Link your Discord and Fluxer accounts so XP (and optionally gork memory)
+mirror between the two identities. **Self-service — no staff gate**; every
+caller can only ever act on their own pairing. Replies are **DM-first** (K2):
+the minted code and detail views arrive by DM, the channel keeps a neutral
+ack that never leaks link codes or peer identity.
+
+**Usage**:
+```bash
+/link create                      # Mint a one-time LNK- code (15 minutes, by DM)
+/link connect code:LNK-…          # Redeem the other platform's code in guild
+/link status                      # Peer, linked date, mirror rates (DM detail)
+/link remove                      # Unlink. History already mirrored stays mirrored
+/link config direction:<dir> pct:<0-100> [memory:on|off]  # XP mirror rate + memory toggle
+```
+
+| Subcommand | Effect |
+|------------|--------|
+| `create` | Mint a one-time link code (delivered by DM) |
+| `connect code:` | Redeem a peer's code against your account |
+| `status` | Peer + linked date + mirror rates (DM detail, channel ack) |
+| `remove` | Unlink the pair (mirrored history is not undone) |
+| `config direction: pct: [memory:]` | XP mirror direction + rate (0–100), gork memory mirroring on/off |
+
+See [Account Linking](../account-linking.md) for the pairing flow and what
+mirroring actually copies.
+
 ---
 
 ## Admin/Mod Commands
 
-Require the **Manage Guild** permission, or a configured **staff role** for staff-gated commands (`/note`, `/warn` staff ops, `/ticket` staff ops, etc.). All responses are ephemeral unless noted.
+Require the **Manage Server** permission, or a configured **staff role** for staff-gated commands (`/note`, `/warn` staff ops, `/ticket` staff ops, etc.). All responses are ephemeral unless noted.
 
 **Permission terms** (used below and in the [Permission Matrix](#permission-matrix)):
 
@@ -1173,6 +1201,34 @@ Precedence is **channel → category → guild default → unlimited**; the winn
 
 The **rundown itself posts publicly** in the channel (embed, never pings); its usage/cooldown/budget rejections are ephemeral. Every config change — including bans, memory edits, and budget rule changes — posts a config-change embed to the audit channel (`/setlog audit`). See [Gork](../gork.md) for trigger, memory, and moderation behavior.
 
+### `/bridge` - Cross-Platform Message Bridge
+
+Pair one Discord channel with one Fluxer channel; messages are copied with
+media, replies and provenance (staff gate: **Manage Server** or any staff
+role — the service re-checks on every call).
+
+**Usage**:
+```bash
+/bridge create [channel] [direction:both|to-fluxer|from-fluxer]   # mint a pending bridge + BRG- code
+/bridge connect code:BRG-… [channel]                              # consume a peer's credential here
+/bridge disconnect [bridge:b_] [channel] confirm:true             # destroy (confirm-once, see below)
+/bridge retry [bridge:b_] [channel]                               # re-queue parked (failed) copies
+/bridge status [bridge:b_] [channel]                              # state, direction, queue depth, ends
+/bridge list                                                      # every bridge touching this community
+```
+
+| Subcommand | Effect |
+|------------|--------|
+| `create` | Create a pending bridge for a channel (default: this one) |
+| `connect code:` | Pair this channel using a peer's BRG- credential |
+| `disconnect` | Destroy by handle or local channel — **confirm-once (#471 H2-15)**: without `confirm: true` this only previews what will be lost (both relay webhooks go; reconnect needs fresh credentials) |
+| `retry` | Re-queue a bridge's parked (failed) copies with a fresh attempt ladder |
+| `status` | State, direction, outbox depth, spool bytes, per-end detail |
+| `list` | Every bridge touching this community |
+
+`!bridge …` works identically from Fluxer (same option spec). See
+[Bridge](../bridge.md) for relay semantics, media handling, and failure modes.
+
 ---
 
 ## Permission Matrix
@@ -1199,7 +1255,9 @@ The **rundown itself posts publicly** in the channel (embed, never pings); its u
 | `/music skip\|pause\|resume\|stop\|leave\|volume\|shuffle\|remove\|seek` | Public (same VC) | Yes |
 | `/music queue` | Public (same VC) | Yes |
 | `/music nowplaying` | Public (same VC) | No |
+| `/link create\|connect\|status\|remove\|config` | Public (self-service; DM-first replies) | DM detail, channel ack |
 | `/note add\|list\|edit\|delete\|info\|settings` | Staff gate | Yes |
+| `/bridge create\|connect\|disconnect\|retry\|status\|list` | Staff gate | Yes |
 | `/warn add\|list\|info\|void\|count\|export\|settings` | Staff gate | Yes |
 | `/userinfo` | Staff gate | Yes |
 | `/userinfo` **Activity** tab | Senior staff | Yes |
@@ -1295,6 +1353,7 @@ PUBLIC:
 /eventchannels channel|crosspost   → Event channels + cross-posting (staff gate)
 /play query:                       → Play in your voice channel
 /music skip|pause|resume|stop|leave|queue|nowplaying|volume|shuffle|remove|seek
+/link create|connect|status|remove|config → Cross-platform account link (DM-first)
 
 STAFF GATE (Manage Server OR any staff role):
 /note add|list|edit|delete|info|settings
@@ -1306,6 +1365,7 @@ STAFF GATE (Manage Server OR any staff role):
 /ticket adduser|removeuser|addstaff|removestaff
 /ticket sensitive|unsensitive|close|archive
 /ticket panel create|list|edit|delete | setcategory|setarchive|setratelimit
+/bridge create|connect|disconnect|retry|status|list → Cross-platform channel bridge (staff)
 /staff role list | /staff settings
 /settings | /setxp | /setdecay | /setlog
 /leveltorole set|remove|list

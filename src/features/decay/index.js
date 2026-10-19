@@ -49,7 +49,7 @@ const staffPerms = PermissionFlagsBits.ManageGuild;
 const commands = [
   new SlashCommandBuilder()
     .setName("setdecay")
-    .setDescription("Configure decay for this guild.")
+    .setDescription("Configure decay for this server.")
     .setDefaultMemberPermissions(staffPerms)
     .addBooleanOption((opt) =>
       opt

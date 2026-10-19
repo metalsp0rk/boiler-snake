@@ -13,7 +13,7 @@ const staffPerms = PermissionFlagsBits.ManageGuild;
 const commands = [
   new SlashCommandBuilder()
     .setName("settings")
-    .setDescription("Show current guild settings.")
+    .setDescription("Show current server settings.")
     .setDefaultMemberPermissions(staffPerms),
 ];
 
