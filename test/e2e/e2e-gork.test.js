@@ -608,13 +608,14 @@ describe(
         "Gork summarize input budget set to **9000** tokens (default 80000).",
       );
       assert.equal(Number(settings().gork_summarize_input_tokens), 9000);
-      // BUG #368 PIN: generic redaction DROPS any details key matching
-      // /token|secret|password|cookie/ — `summarize_input_tokens` matches
-      // "token", so the audit row records NOTHING for the budget it exists
-      // to record. Pinning CURRENT (buggy) shape. FLIP-BACK once fixed
-      // (mask-not-delete or value-aware matching): restore
-      //   assert.deepEqual(details, { summarize_input_tokens: 9000 }).
-      assert.deepEqual(JSON.parse(auditRow("gork.summarize_budget_set").details_json), {});
+      // #368 FIXED (word-component redaction): the budget COUNT survives —
+      // it matched the old substring belt only because "tokens" contains
+      // "token". Genuine credential keys are MASKED ("[redacted]"), never
+      // silently dropped; the unit pin lives in
+      // test/admin-audit-slash-origin.test.js.
+      assert.deepEqual(JSON.parse(auditRow("gork.summarize_budget_set").details_json), {
+        summarize_input_tokens: 9000,
+      });
       assert.equal((await statusFields())["Summarize budget"], "9000 input tokens");
     });
 

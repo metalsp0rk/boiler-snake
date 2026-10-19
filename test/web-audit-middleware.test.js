@@ -258,7 +258,7 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
   });
 
   describe("details redaction (§8.7)", () => {
-    it("strips token/secret/password/cookie keys recursively; nothing persists", () => {
+    it("masks token/secret/password/cookie keys recursively; values never persist (#368)", () => {
       const guild = "g-web-audit-redact";
       const { req } = setup({ req: { params: { guildId: guild } } });
 
@@ -273,14 +273,18 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
       });
 
       assert.doesNotMatch(row.details_json, /SEKRIT/, "no secret value persists");
+      // #368 masking: credential keys stay VISIBLE (so the row shows
+      // something was hidden), their values never do.
       assert.deepEqual(JSON.parse(row.details_json), {
         keep: "keep-me",
-        nested: { keep: 1 },
-        list: [{ ok: true }],
+        api_token: "[redacted]",
+        nested: { clientSecret: "[redacted]", password: "[redacted]", session_cookie: "[redacted]", keep: 1 },
+        list: [{ Token: "[redacted]", ok: true }],
       });
 
       const stored = dbApi.getAdminAuditById(row.id);
-      assert.equal(stored.details_json.includes("api_token"), false);
+      assert.equal(stored.details_json.includes("api_token"), true, "key stays visible");
+      assert.equal(stored.details_json.includes("SEKRIT1"), false);
     });
 
     it("redacts already-serialized JSON strings too", () => {
@@ -289,7 +293,8 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
         action: "a.str",
         details: '{"refresh_token":"rt-value","ok":true}',
       });
-      assert.deepEqual(JSON.parse(row.details_json), { ok: true });
+      assert.deepEqual(JSON.parse(row.details_json), { refresh_token: "[redacted]", ok: true });
+      assert.ok(!row.details_json.includes("rt-value"), "value never persists");
     });
 
     it("unparseable string details still rejected by the repo guard, no row", () => {
@@ -303,8 +308,13 @@ describe("web audit middleware (req.audit — DB-first + best-effort mirror)", (
 
     it("redactSensitive: pure, arrays kept, Dates kept, cycles collapse to null", () => {
       const frozen = Object.freeze({ token: "t", keep: "k" });
-      assert.deepEqual(audit.redactSensitive(frozen), { keep: "k" });
-      assert.deepEqual(audit.redactSensitive([{ cookie: "c" }, "s", 1, null]), [{}, "s", 1, null]);
+      assert.deepEqual(audit.redactSensitive(frozen), { token: "[redacted]", keep: "k" });
+      assert.deepEqual(audit.redactSensitive([{ cookie: "c" }, "s", 1, null]), [
+        { cookie: "[redacted]" },
+        "s",
+        1,
+        null,
+      ]);
 
       const when = new Date(1700000000000);
       const kept = audit.redactSensitive({ when });
