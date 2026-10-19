@@ -34,6 +34,15 @@
  */
 
 const { html } = require("../escape");
+// #470 (H1-8): the flash pair, num and formatAge moved to the shared view
+// micro-framework (views/_helpers.js); the page keeps only the BINDING of
+// its frozen tables and its exported one-arg shapes (routes + tests pin them).
+const {
+  flashFromQuery: canonicalFlashFromQuery,
+  flashBanner: canonicalFlashBanner,
+  num,
+  formatAge,
+} = require("../_helpers");
 const { emptyState, banner } = require("../components");
 const { DEFAULTS, LIST_CAP, PANEL_CAP } = require("../../data/integrationsData");
 const { MAX_OPTIONS_PER_PANEL } = require("../../../features/reactionRoles/service");
@@ -149,9 +158,7 @@ const FLASH_ERROR = Object.freeze({
  * @param {{done?: unknown, error?: unknown}|undefined|null} query
  */
 function flashFromQuery(query) {
-  const done = typeof query?.done === "string" && FLASH_DONE[query.done] ? query.done : null;
-  const error = typeof query?.error === "string" && FLASH_ERROR[query.error] ? query.error : null;
-  return { done, error };
+  return canonicalFlashFromQuery(query, { doneTable: FLASH_DONE, errorTable: FLASH_ERROR });
 }
 
 /**
@@ -159,10 +166,7 @@ function flashFromQuery(query) {
  * @param {{done: string|null, error: string|null}|null} flash
  */
 function flashBanner(flash) {
-  if (!flash) return html``;
-  if (flash.error && FLASH_ERROR[flash.error]) return banner("warn", FLASH_ERROR[flash.error]);
-  if (flash.done && FLASH_DONE[flash.done]) return banner("info", FLASH_DONE[flash.done]);
-  return html``;
+  return canonicalFlashBanner(flash, { doneTable: FLASH_DONE, errorTable: FLASH_ERROR });
 }
 
 // ---------------------------------------------------------------------------
@@ -219,9 +223,6 @@ function roleRef(roleId, resolveName) {
 }
 
 /** Integer-ish display that never invents a number for null. */
-function num(value, suffix = "") {
-  return value == null ? html`<em class="muted">unset</em>` : html`${value}${suffix}`;
-}
 
 /**
  * Deterministic UTC stamp for stored epoch-ms values (no locale drift,
@@ -732,12 +733,6 @@ function honeypotSection(hp, ctx) {
 // ---------------------------------------------------------------------------
 
 /** Compact age for the freshness stamp (settings-page twin). */
-function formatAge(ms) {
-  const s = Math.max(0, Math.floor(Number(ms) || 0) / 1000);
-  if (s < 60) return `${Math.round(s)}s`;
-  const m = Math.floor(s / 60);
-  return m < 60 ? `${m}m ${Math.floor(s % 60)}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
-}
 
 /**
  * Full integrations body (goes into the shell via renderShellPage).

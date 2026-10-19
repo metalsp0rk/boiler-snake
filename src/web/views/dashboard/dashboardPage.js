@@ -12,6 +12,7 @@
  */
 
 const { html } = require("../escape");
+const { formatAge } = require("../_helpers"); // #470 H1-8 (output-identical to the deleted local copy)
 const { userRef } = require("../components");
 
 const UNKNOWN = "unknown";
@@ -41,14 +42,6 @@ function formatClock(ms) {
 }
 
 /** ms → compact "12s" / "4m 30s" / "2h 5m" age display. */
-function formatAge(ms) {
-  const s = Math.max(0, Math.floor(Number(ms) || 0) / 1000);
-  if (s < 60) return `${Math.round(s)}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${Math.floor(s % 60)}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
 
 /**
  * Friendly labels for registered background jobs (UX v1.1 §8.15). Raw

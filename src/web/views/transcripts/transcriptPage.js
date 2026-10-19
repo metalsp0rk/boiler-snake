@@ -22,6 +22,7 @@
  */
 
 const { html, raw } = require("../escape");
+const { formatTs } = require("../_helpers"); // #470 H1-8 (byte-identical copies unified)
 const { renderLayout } = require("../layout");
 const { userRef } = require("../components");
 const { escapeHtml } = require("../../../features/tickets/transcript");
@@ -29,14 +30,6 @@ const { parseAttachmentList, mediaKind } = require("../../../features/tickets/as
 const { safeHref } = require("../../../core/safeHref");
 
 /** "2026-09-17 00:25:11 UTC" (console house style). */
-function formatTs(ms) {
-  if (ms == null) return "—";
-  try {
-    return new Date(Number(ms)).toISOString().replace("T", " ").slice(0, 19) + " UTC";
-  } catch {
-    return "—";
-  }
-}
 
 /** Message body with the SAME escaping semantics as the frozen archive. */
 function bodyHtml(content) {
