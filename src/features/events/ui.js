@@ -383,11 +383,11 @@ function remindersGroup(g) {
     // members got a staff denial for a command the picker described to
     // them. The copy now says what the arms do; the personal mechanism is
     // /eventreminder and stays there.
-    .setDescription("Reminder controls: guild defaults (staff), per-event mute, custom reminders.")
+    .setDescription("Reminder controls: server defaults (staff), per-event mute, custom reminders.")
     .addSubcommand((sc) =>
       sc
         .setName("off")
-        .setDescription("Staff: default reminders OFF for NEW events guild-wide. Personal opt-out: /eventreminder."),
+        .setDescription("Staff: default reminders OFF for NEW events server-wide. Personal opt-out: /eventreminder."),
     )
     .addSubcommand((sc) =>
       sc
@@ -757,9 +757,9 @@ function crosspostGroup(g) {
     .addSubcommand((sc) =>
       sc
         .setName("invite")
-        .setDescription("Ask a destination guild to accept cross-posts (source admin).")
+        .setDescription("Ask a destination server to accept cross-posts (source admin).")
         .addStringOption((o) =>
-          o.setName("destination_guild_id").setDescription("Destination guild id").setRequired(true).setMaxLength(30),
+          o.setName("destination_guild_id").setDescription("Destination server id").setRequired(true).setMaxLength(30),
         )
         .addChannelOption((o) =>
           o.setName("destination_channel").setDescription("Where their admin should allow posts"),

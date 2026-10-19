@@ -22,7 +22,7 @@ node answers again — no bot restart required.
 
 ## Why older bots were silent
 
-Discord requires **DAVE** (end-to-end encrypted voice) for guild voice. Lavalink added DAVE in **4.2.0**. A bot that joins, looks connected, and produces no sound is almost always on a pre-DAVE stack. Boiler Snake pins **Lavalink 4.2+**.
+Discord requires **DAVE** (end-to-end encrypted voice) for guild voice. Lavalink added DAVE in 4.2.0, but **the supported minimum is 4.2.2** — 4.2.0/4.2.1 builds still produce the silent-join symptom. A bot that joins, looks connected, and produces no sound is almost always on a pre-DAVE (or sub-4.2.2) stack. Boiler Snake pins **Lavalink 4.2.2+** (docker-compose says the same).
 
 The Node process never encodes Opus. It forwards Discord voice state to Lavalink; Lavalink talks UDP to Discord.
 

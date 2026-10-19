@@ -70,7 +70,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("setxp")
-    .setDescription("Set XP values and cooldowns for this guild.")
+    .setDescription("Set XP values and cooldowns for this server.")
     .setDefaultMemberPermissions(staffPerms)
     .addIntegerOption((opt) =>
       opt

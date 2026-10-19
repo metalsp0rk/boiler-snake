@@ -97,7 +97,7 @@ const commands = [
     .addSubcommand((sc) =>
       sc
         .setName("search")
-        .setDescription("Toggle the SearXNG web_search tool for this guild.")
+        .setDescription("Toggle the SearXNG web_search tool for this server.")
         .addStringOption((opt) =>
           opt
             .setName("search")
@@ -196,7 +196,7 @@ const commands = [
         .addUserOption((opt) =>
           opt
             .setName("user")
-            .setDescription("Target user for show/clear (omit = whole guild)"),
+            .setDescription("Target user for show/clear (omit = whole server)"),
         )
         .addIntegerOption((opt) =>
           opt
@@ -379,7 +379,7 @@ const commands = [
     .addSubcommand((sc) =>
       sc
         .setName("status")
-        .setDescription("Show the current gork configuration for this guild."),
+        .setDescription("Show the current gork configuration for this server."),
     ),
 ];
 
