@@ -18,7 +18,8 @@ const {
 } = require("../../db");
 const { writeTranscriptFile } = require("./transcript");
 const { summarizeTicket } = require("./summary");
-const { transcriptPublicUrl } = require("../../web/config"); // #472 (LT-16.5): shim retired
+const { transcriptPublicUrl } = require("../../web/config");
+const { fetchHistoryWindow } = require("./messageWindow"); // #472 (LT-16.5): shim retired
 const {
   applyTicketOverwrites,
   getManageableStaffRoleIds,
@@ -50,37 +51,17 @@ const TRANSCRIPT_MAX_MESSAGES = 5000;
  * @returns {Promise<object[]>} normalized message rows
  */
 async function fetchAllMessages(channel) {
-  const collected = [];
-  let before = undefined;
-
-  while (collected.length < TRANSCRIPT_MAX_MESSAGES) {
-    const batch = await channel.messages.fetch({
-      limit: 100,
-      ...(before ? { before } : {}),
-    });
-    if (!batch || batch.size === 0) break;
-
-    const arr = [...batch.values()];
-    for (const msg of arr) {
-      collected.push(normalizeDiscordMessage(msg));
-    }
-
-    const oldest = arr.reduce((a, b) => {
-      try {
-        return BigInt(a.id) < BigInt(b.id) ? a : b;
-      } catch {
-        return String(a.id) < String(b.id) ? a : b;
-      }
-    });
-    before = oldest.id;
-    if (batch.size < 100) break;
-  }
-
-  collected.sort((a, b) => {
-    if (a.sent_at !== b.sent_at) return a.sent_at - b.sent_at;
-    return String(a.message_id).localeCompare(String(b.message_id));
+  // #472 (LT-16.2): the cursor/cap/sort arithmetic lives in
+  // messageWindow.fetchHistoryWindow — shared with admin.js's summary
+  // reader, which hand-wrote this same walk for the Fluxer surface.
+  return fetchHistoryWindow({
+    fetchPage: async (opts) => {
+      const batch = await channel.messages.fetch(opts);
+      return batch ? [...batch.values()] : [];
+    },
+    normalize: normalizeDiscordMessage,
+    max: TRANSCRIPT_MAX_MESSAGES,
   });
-  return collected;
 }
 
 /**
