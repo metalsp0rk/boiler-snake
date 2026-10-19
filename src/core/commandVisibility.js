@@ -108,14 +108,6 @@ function staffSyncCommandNames() {
 }
 
 /**
- * All known command names in the visibility map.
- * @returns {string[]}
- */
-function allVisibilityCommandNames() {
-  return Object.keys(COMMAND_VISIBILITY).sort();
-}
-
-/**
  * Assert every registered command name has a visibility tier.
  * @param {string[]} registeredNames
  * @throws {Error} if any name is missing or unknown extra (warn via extras)
@@ -139,10 +131,8 @@ function assertVisibilityCoversCommands(registeredNames) {
 
 module.exports = {
   TIERS,
-  COMMAND_VISIBILITY,
   visibilityTier,
   isStaffSyncCommand,
   staffSyncCommandNames,
-  allVisibilityCommandNames,
   assertVisibilityCoversCommands,
 };

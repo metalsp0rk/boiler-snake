@@ -571,7 +571,6 @@ module.exports = {
   MAX_WARN_REASON,
   MAX_EVIDENCE_TEXT,
   MAX_EXPIRY_DAYS,
-  DISCORD_MESSAGE_URL_RE,
   normalizeWarnReason,
   normalizeEvidenceText,
   normalizeEvidenceMessageUrl,

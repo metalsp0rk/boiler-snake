@@ -398,8 +398,6 @@ function triggerSignal(signal) {
 }
 
 module.exports = {
-  DEFAULT_SHUTDOWN_SIGNALS,
-  DEFAULT_DRAIN_DEADLINE_MS,
   installProcessGuards,
   disposeProcessGuards,
   isInstalled,

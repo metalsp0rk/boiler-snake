@@ -1992,19 +1992,12 @@ function deleteEventCrosspostMessagesForEvent(eventId) {
 }
 
 module.exports = {
-  // constants (require this module directly; the facade stays functions-only)
-  MAX_EVENT_REMINDER_ATTEMPTS,
-  EVENT_REMINDER_CLAIM_TTL_MS,
-  MAX_POST_ATTEMPTS,
-  POST_CLAIM_TTL_MS,
-  MAX_REMINDERS_PER_EVENT,
+  // constants that EXTERNAL consumers actually import (#470 H1-2 dropped the
+  // nine export-only-dead names; the definitions stay — they are load-bearing
+  // inside this module): the facade stays functions-only.
   MAX_OFFSET_MINUTES,
   MAX_OPTIONS_PER_EVENT,
-  MAX_PRESETS_PER_COMMUNITY,
   EVENT_ROLE_PREFIX,
-  EVENT_STATUSES,
-  REMINDER_STATUSES,
-  eventReminderRetryDelayMs,
 
   // settings
   getEventGuildSettings,

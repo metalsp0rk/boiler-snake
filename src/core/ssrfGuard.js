@@ -577,7 +577,6 @@ async function readBodyWithinCap(res, maxBytes) {
 module.exports = {
   DOWNLOAD_TIMEOUT_MS,
   MAX_REDIRECTS,
-  isIPv4Literal,
   isIpLiteralHost,
   isDisallowedAddress,
   defaultResolveHost,
