@@ -26,6 +26,7 @@ const {
   seekTo,
   destroyPlayer,
   onVoiceStateUpdate,
+  onQueueEnd,
   errorMessage,
   queuedSummary,
 } = require("./player");
@@ -336,6 +337,20 @@ function wirePlayerEvents(client, manager) {
       `[music] track error in ${player?.guildId}:`,
       error?.exception?.message || error?.message || error
     );
+  });
+
+  // #588: queue drained → arm the idle-leave window (see player.js). The
+  // handler itself is exception-guarded: a failed arm must never bubble
+  // into the library's event loop.
+  manager.on("queueEnd", (player) => {
+    try {
+      onQueueEnd(manager, player);
+    } catch (err) {
+      console.error(
+        `[music] queueEnd handling failed (guild ${player?.guildId ?? "?"}):`,
+        err?.message || err,
+      );
+    }
   });
 }
 
