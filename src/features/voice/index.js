@@ -109,19 +109,21 @@ async function runVoiceTick(supervisor) {
         if (members.length < 2) continue;
 
         for (const member of members) {
-          try {
-            await awardXp(outbound, {
-              communityId,
-              externalGuildId: guildId,
-              userId: member.id,
-              delta: xpPerMin,
-              activityKind: "voice_minute",
-              member,
-              levelXpFactor: settings.level_xp_factor,
-            });
-          } catch (err) {
+          // #472 (XE-11): awardXp reports {ok:false,error} instead of
+          // throwing — the per-member net is now a result check with the
+          // same loud, id-carrying line (rule 2).
+          const res = await awardXp(outbound, {
+            communityId,
+            externalGuildId: guildId,
+            userId: member.id,
+            delta: xpPerMin,
+            activityKind: "voice_minute",
+            member,
+            levelXpFactor: settings.level_xp_factor,
+          });
+          if (res.ok === false) {
             console.error(
-              `[voiceTicker] Failed awarding voice XP in guild ${guildId} for user ${member.id} in channel ${channelId}: ${err?.message || err}`
+              `[voiceTicker] Failed awarding voice XP in guild ${guildId} for user ${member.id} in channel ${channelId}: ${res.error}`
             );
           }
         }

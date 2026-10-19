@@ -106,7 +106,15 @@ async function awardXpPrimary(outbound, {
     changes,
     level,
     source,
-  ).catch(() => {});
+  ).catch((err) =>
+    // #472 (XE-9): the award already landed — the audit line missing must not
+    // be invisible (rule 2), and this catch must not pretend to own failures
+    // the inner send guard already logs.
+    console.error(
+      `[xp] role-change audit mirror failed (community ${communityId}):`,
+      err?.message || err,
+    ),
+  );
 
   return { newXp, level, changes };
 }
@@ -141,7 +149,7 @@ async function awardXpPrimary(outbound, {
  * @param {boolean} [opts.fanOut=true] mirror to the linked account (T4). THE
  *   LOOP GUARD: the mirror-issued award (source "link_mirror") passes
  *   fanOut:false, so a mirror never fans out again.
- * @returns {Promise<{ newXp: number, level: number|null, changes: { granted: string[], removed: string[], failed: {roleId: string, action: string, error: string}[] }|null, linkMirror?: { awarded: number|null, warnings: string[] } }>}
+ * @returns {Promise<{ ok: true, newXp: number, level: number|null, changes: { granted: string[], removed: string[], failed: {roleId: string, action: string, error: string}[] }|null, linkMirror?: { awarded: number|null, warnings: string[] } } | { ok: false, error: string }>}
  */
 async function awardXp(outbound, {
   communityId,
@@ -154,26 +162,42 @@ async function awardXp(outbound, {
   source = "xp_sync",
   fanOut = true,
 } = {}) {
-  const result = await awardXpPrimary(outbound, {
-    communityId,
-    externalGuildId,
-    userId,
-    delta,
-    activityKind,
-    member,
-    levelXpFactor,
-    source,
-  });
+  let result;
+  try {
+    result = await awardXpPrimary(outbound, {
+      communityId,
+      externalGuildId,
+      userId,
+      delta,
+      activityKind,
+      member,
+      levelXpFactor,
+      source,
+    });
+  } catch (err) {
+    // #472 (XE-11): AGENTS rule 6 — services return { ok:false, error },
+    // they never throw uncaught. assertCommunityId and addXp's better-sqlite3
+    // errors used to propagate and every caller kept its own safety net; a
+    // future unwrapped caller would crash on contact, and /grantxp answered
+    // with the router's GENERIC fallback while the specific cause sat in the
+    // throw. The cause is logged here (rule 2, with ids) so it survives even
+    // a quiet caller, and returned for the caller to surface (rule 3).
+    const reason = String(err?.message || err);
+    console.error(
+      `[xp] award failed (community ${communityId} user ${userId} delta ${delta} kind ${activityKind}): ${reason}`,
+    );
+    return { ok: false, error: reason };
+  }
 
   // Fan-out runs ONLY after the primary award fully succeeded. fanOut:false
   // is the loop guard (roadmap/account-linking.md T4): mirror-issued awards
   // carry source "link_mirror" and stop here, so a→b→a re-mirroring is
   // structurally impossible. linkMirror is additive: absent on fanOut:false
   // calls, so every existing caller's result shape is unchanged.
-  if (!fanOut) return result;
+  if (!fanOut) return { ok: true, ...result };
 
   result.linkMirror = await fanOutXpMirror(communityId, userId, delta, activityKind);
-  return result;
+  return { ok: true, ...result };
 }
 
 module.exports = { awardXp };

@@ -1,6 +1,11 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { key, sweepCooldownMap, isOnCooldown } = require("../src/core/cooldowns");
+const {
+  key,
+  sweepCooldownMap,
+  isOnCooldown,
+  markCooldown,
+} = require("../src/core/cooldowns");
 
 describe("key", () => {
   it("joins guild and user ids", () => {
@@ -20,23 +25,41 @@ describe("sweepCooldownMap", () => {
   });
 });
 
-describe("isOnCooldown", () => {
-  it("with zero cooldown always allows and stamps the map", () => {
+describe("isOnCooldown (check) + markCooldown (stamp) — #472 XE-7 split", () => {
+  it("with zero cooldown always allows and never stamps on its own", () => {
     const map = new Map();
     const now = 1_000_000;
     assert.equal(isOnCooldown(map, "a", 0, now), false);
+    assert.equal(map.has("a"), false, "the CHECK is pure — stamping is the caller's");
+    markCooldown(map, "a", now);
     assert.equal(map.get("a"), now);
-    assert.equal(isOnCooldown(map, "a", 0, now + 1), false);
-    assert.equal(map.get("a"), now + 1);
+    assert.equal(isOnCooldown(map, "a", 0, now + 1), false, "cd=0 never blocks");
   });
 
   it("blocks within the window and allows after", () => {
     const map = new Map();
     const t0 = 1_000_000;
     assert.equal(isOnCooldown(map, "u", 20, t0), false);
+    // The old combined isOnCooldown stamped HERE (on the check). The split
+    // contract: a call that ends in failed work must leave the window FREE.
+    assert.equal(map.has("u"), false, "a passed check alone stamps nothing (XE-7)");
+    markCooldown(map, "u", t0);
     assert.equal(isOnCooldown(map, "u", 20, t0 + 5_000), true);
     assert.equal(isOnCooldown(map, "u", 20, t0 + 20_000), false);
+    markCooldown(map, "u", t0 + 20_000);
     assert.equal(map.get("u"), t0 + 20_000);
+  });
+
+  it("a failed unit of work leaves the next attempt outside cooldown (XE-7 story)", () => {
+    const map = new Map();
+    const t0 = 1_000_000;
+    // attempt 1: check passes, work THROWS → no mark
+    assert.equal(isOnCooldown(map, "u", 20, t0), false);
+    // ... doTheThing() threw; the caller never reaches markCooldown ...
+    // attempt 2 (2 seconds later): still allowed — the window was never taken
+    assert.equal(isOnCooldown(map, "u", 20, t0 + 2_000), false, "failed award must not consume the window");
+    markCooldown(map, "u", t0 + 2_000);
+    assert.equal(isOnCooldown(map, "u", 20, t0 + 3_000), true, "success starts the window");
   });
 });
 

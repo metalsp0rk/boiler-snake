@@ -1,4 +1,5 @@
 const { describe, it, before, after } = require("node:test");
+const { seedXp } = require("../helpers/xpSeed");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
 const { assertXp, assertRoleGranted } = require("../helpers/assert");
@@ -77,7 +78,7 @@ describe("integration: awardXp + level roles", () => {
     const dropRole = "role-drop-grace";
     env.db.upsertLevelRole(env.communityId, dropRole, 5, 0); // need level 5, grace 0 days
     mem.roles.cache.set(dropRole, { id: dropRole });
-    env.db.setXp(env.communityId, uid, 50); // low XP → low level
+    seedXp(env.db, env.communityId, uid, 50); // low XP → low level
 
     // First pass: start below_since timer (grace 0 still waits one cycle)
     await syncMemberRoles(getDiscordOutbound(env.client), env.communityId, mem, 0);

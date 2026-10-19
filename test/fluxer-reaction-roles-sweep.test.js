@@ -13,6 +13,7 @@
  * qualification, and grants. Failures keep the claim for the next boot.
  */
 const { describe, it, after } = require("node:test");
+const { seedXp } = require("./helpers/xpSeed");
 const assert = require("node:assert/strict");
 
 const { loadDb } = require("./helpers/env");
@@ -79,7 +80,7 @@ describe("#466 (E2-11): resumeDeferredRoleGrantsFluxer — the backlog the flag 
     const msg = "701";
     seedPanel(msg, { minLevel: 0 });
     claim("u-1", msg);
-    dbApi.setXp(COMMUNITY_ID, "u-1", 900); // level 3 ≥ 0
+    seedXp(dbApi, COMMUNITY_ID, "u-1", 900); // level 3 ≥ 0
     const rest = makeFakeRest({
       routes: {
         [`GET ${memberGetPath("u-1")}`]: { id: "u-1", roles: [] },
@@ -103,7 +104,7 @@ describe("#466 (E2-11): resumeDeferredRoleGrantsFluxer — the backlog the flag 
     const msg = "702";
     seedPanel(msg, { minLevel: 5 }); // level from 100 xp = 1
     claim("u-2", msg);
-    dbApi.setXp(COMMUNITY_ID, "u-2", 100);
+    seedXp(dbApi, COMMUNITY_ID, "u-2", 100);
     const rest = makeFakeRest({
       routes: { [`GET ${memberGetPath("u-2")}`]: { id: "u-2", roles: [] } },
     });
@@ -127,7 +128,7 @@ describe("#466 (E2-11): resumeDeferredRoleGrantsFluxer — the backlog the flag 
     const msg = "703";
     seedPanel(msg);
     claim("u-3", msg);
-    dbApi.setXp(COMMUNITY_ID, "u-3", 900);
+    seedXp(dbApi, COMMUNITY_ID, "u-3", 900);
     const rest = makeFakeRest({
       routes: { [`GET ${memberGetPath("u-3")}`]: { id: "u-3", roles: [ROLE] } },
     });
@@ -160,7 +161,7 @@ describe("#466 (E2-11): resumeDeferredRoleGrantsFluxer — the backlog the flag 
     const msg = "705";
     seedPanel(msg);
     claim("u-5", msg);
-    dbApi.setXp(COMMUNITY_ID, "u-5", 900);
+    seedXp(dbApi, COMMUNITY_ID, "u-5", 900);
     // NO addRole route ⇒ the fake transport refuses the PUT (instance-down class).
     const rest = makeFakeRest({ routes: { [`GET ${memberGetPath("u-5")}`]: { id: "u-5", roles: [] } } });
     const { outbound } = makeFakeHandle({ rest });
@@ -190,7 +191,7 @@ describe("#466 (E2-11): sweepDeferredRoleGrantsAll — boot pass over elevated f
     const msg = "706";
     seedPanel(msg);
     claim("u-6", msg);
-    dbApi.setXp(COMMUNITY_ID, "u-6", 900);
+    seedXp(dbApi, COMMUNITY_ID, "u-6", 900);
     const rest = makeFakeRest({
       routes: {
         [`GET ${memberGetPath("u-6")}`]: { id: "u-6", roles: [] },

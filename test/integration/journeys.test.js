@@ -1,4 +1,5 @@
 const { describe, it, before, after } = require("node:test");
+const { seedXp } = require("../helpers/xpSeed");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
 const {
@@ -105,7 +106,7 @@ describe("integration: cross-feature journeys", () => {
   });
 
   it("journey 3: decay reduces idle XP", async () => {
-    env.db.setXp(env.communityId, IDS.member2, 500);
+    seedXp(env.db, env.communityId, IDS.member2, 500);
     env.db.updateGuildSettings(env.communityId, {
       decay_enabled: 1,
       decay_percent: 0.2,

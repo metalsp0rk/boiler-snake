@@ -1,4 +1,5 @@
 const { describe, it, before, after } = require("node:test");
+const { seedXp } = require("../helpers/xpSeed");
 const assert = require("node:assert/strict");
 const { createIntegrationEnv } = require("../helpers/harness");
 const { IDS } = require("../helpers/fixtures");
@@ -47,7 +48,7 @@ describe("integration: level-role drop sweeper (#428)", () => {
   it("drops the role after grace elapses with XP frozen at 0 (core XE-1)", async () => {
     const role = "role-level5-a";
     seedRole(role, 1);
-    env.db.setXp(env.communityId, IDS.member, 0); // frozen: no award, no decay write
+    seedXp(env.db, env.communityId, IDS.member, 0); // frozen: no award, no decay write
     const m = env.members.member;
     await m.roles.add(role);
     env.db.setRoleBelowSince(
@@ -76,7 +77,7 @@ describe("integration: level-role drop sweeper (#428)", () => {
   it("keeps the role while grace is still running", async () => {
     const role = "role-level5-b";
     seedRole(role, 3);
-    env.db.setXp(env.communityId, IDS.member, 0);
+    seedXp(env.db, env.communityId, IDS.member, 0);
     const m = env.members.member;
     await m.roles.add(role);
     env.db.setRoleBelowSince(
@@ -103,7 +104,7 @@ describe("integration: level-role drop sweeper (#428)", () => {
     const role = "role-level5-c";
     seedRole(role, 1);
     // Level 5 at default factor 100 needs xp >= 2500.
-    env.db.setXp(env.communityId, IDS.member, 3000);
+    seedXp(env.db, env.communityId, IDS.member, 3000);
     const m = env.members.member;
     await m.roles.add(role);
     env.db.setRoleBelowSince(
@@ -132,11 +133,11 @@ describe("integration: level-role drop sweeper (#428)", () => {
     seedRole(role, 1);
     const GHOST = "ghost-428-not-in-guild";
     const armed = Date.now() - 2 * DAY;
-    env.db.setXp(env.communityId, GHOST, 0);
+    seedXp(env.db, env.communityId, GHOST, 0);
     env.db.setRoleBelowSince(env.communityId, GHOST, role, armed);
 
     // Second user in the SAME sweep who IS fetchable and overdue.
-    env.db.setXp(env.communityId, IDS.member2, 0);
+    seedXp(env.db, env.communityId, IDS.member2, 0);
     const m2 = env.members.member2;
     await m2.roles.add(role);
     env.db.setRoleBelowSince(env.communityId, IDS.member2, role, armed);

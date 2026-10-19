@@ -256,7 +256,7 @@ Current registry: **55** migrations (`PRAGMA user_version` = 55 on a current DB)
 | Function | Purpose |
 |----------|---------|
 | `addXp` | Atomic XP add with clamps |
-| `getXp` / `setXp` | Read / write XP |
+| `getXp` | Read XP (the absolute `setXp` write is gone — #472 XE-8; XP changes flow through `awardXp`/`addXp`, and deterministic test seeding uses `test/helpers/xpSeed.js`) |
 | `topUsers` | Leaderboard rows |
 | `getGuildSettings` / `updateGuildSettings` | Per-guild config |
 
