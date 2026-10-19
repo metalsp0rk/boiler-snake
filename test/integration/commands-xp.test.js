@@ -418,6 +418,39 @@ describe("integration: leaderboard pagination", () => {
       { requesterId: "u1", limit: 10, page: 1 },
     );
   });
+
+  // #472 (XE-6): at the LB_PAGE_MAX ceiling a full fetch made hasMore true,
+  // so Next rendered ENABLED whose click clamps right back to the same page —
+  // an infinite dead-click loop on big communities. The fix clamps hasMore.
+  // Runs LAST: it seeds beyond this suite's 12 users; nothing after it
+  // depends on the row count.
+  it("/leaderboard disables Next at the 20-page ceiling even with more rows", async () => {
+    for (let i = 0; i < 21; i++) {
+      env.db.addXp(env.communityId, `xe6-user-${i}`, 1000 + i);
+    }
+
+    // limit=1 → fetchCount = 1*20+1 = 21: the 21 xe6 rows alone fill the
+    // fetch, so the OLD formula (rows.length === fetchCount) said hasMore.
+    const capped = await env.runCommand({
+      commandName: "leaderboard",
+      admin: false,
+      user: env.users.memberUser,
+      options: { limit: 1, page: 20 },
+    });
+    const next = buttonsOf(capped.replies[0]).find((b) => b.label === "Next ▶");
+    assert.ok(next, "the controls row carries the Next button");
+    assert.equal(next.disabled, true, "Next is disabled at the ceiling");
+
+    // One page below with the same data: Next stays honest.
+    const below = await env.runCommand({
+      commandName: "leaderboard",
+      admin: false,
+      user: env.users.memberUser,
+      options: { limit: 1, page: 19 },
+    });
+    const next19 = buttonsOf(below.replies[0]).find((b) => b.label === "Next ▶");
+    assert.equal(next19.disabled, false, "page 19 still advances");
+  });
 });
 
 describe("integration: leaderboard page option", () => {
@@ -500,4 +533,5 @@ describe("integration: leaderboard page option", () => {
       env.db.deleteLevelRole(env.communityId, "role-xp430");
     }
   });
+
 });
