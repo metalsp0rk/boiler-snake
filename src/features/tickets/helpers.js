@@ -501,7 +501,8 @@ async function openTicketChannelFluxer(opts) {
 
   const { nextTicketNumber } = require("../../db/repositories/tickets");
   const ticketNumber = nextTicketNumber(communityId);
-  const channelName = `ticket-${ticketNumber}`.slice(0, 100);
+  // #472 (LT-16.3): let — re-assigned by the post-insert name correction.
+  let channelName = `ticket-${ticketNumber}`.slice(0, 100);
 
   // SPEC-shaped overwrites (ChannelOverwrite: decimal STRING masks — the
   // boundary never goes through Number). @everyone's id is the external
@@ -590,12 +591,51 @@ async function openTicketChannelFluxer(opts) {
       openedByStaffId: openedByStaffId || null,
     });
   } catch (err) {
-    // The Discord path deletes the channel here. The OutboundClient has NO
-    // deleteChannel surface (PR 9 scope) — log the orphan loudly and rethrow.
+    // #472 (LT-17): the OutboundClient now HAS a deleteChannel surface —
+    // compensate like the Discord path does. When even the cleanup fails,
+    // the rethrow names the orphan (channel id + failing cause) so the
+    // failure is actionable, never a permanent invisible residue.
+    const removed = await outbound.deleteChannel({
+      communityId,
+      channelId,
+      reason: "ticket row create failed",
+    });
+    let cleanupNote;
+    if (removed?.ok) {
+      cleanupNote = `channel ${channelId} was removed again`;
+    } else {
+      cleanupNote =
+        `channel ${channelId} IS LEFT ORPHANED (cleanup failed: ${removed?.error || "unknown delete failure"}) — ` +
+        "it has member overwrites but no ticket row; delete it manually";
+    }
     console.error(
-      `[tickets] Ticket row create failed after channel ${channelId} was created in community ${communityId} — channel left in place (no OutboundClient.deleteChannel)`,
+      `[tickets] Ticket row create failed after channel ${channelId} was created in community ${communityId} — ${cleanupNote}`,
     );
-    throw err;
+    throw new Error(
+      `${err?.message || err} (ticket row failed; ${cleanupNote})`,
+      { cause: err },
+    );
+  }
+
+  // #472 (LT-16.3): the channel name was minted from a PRE-insert number
+  // guess; createTicket allocates the real one inside its transaction — under
+  // concurrency these differ. Discord renames after the insert (below in the
+  // Discord arm); Fluxer now does too. Best-effort, but never silent: the old
+  // no-rename arm made the skew PERMANENT with zero log.
+  if (ticket.ticket_number !== ticketNumber) {
+    const correctedName = `ticket-${ticket.ticket_number}`.slice(0, 100);
+    const renamed = await outbound.editChannelName({
+      communityId,
+      channelId,
+      name: correctedName,
+    });
+    if (renamed?.ok) {
+      channelName = correctedName;
+    } else {
+      console.warn(
+        `[tickets] Fluxer channel ${channelId} name correction ticket-${ticketNumber} → ${correctedName} failed: ${renamed?.error || "unknown edit failure"} — the channel keeps the number ${ticketNumber} while the ticket is #${ticket.ticket_number}`,
+      );
+    }
   }
 
   // Open notice: the Discord embed's text, plain JSON (Fluxer send paths never
