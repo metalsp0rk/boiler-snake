@@ -266,9 +266,42 @@ function releaseNoticeLatch(publicId, direction, kind) {
   return noticeLatches.delete(`${publicId}|${direction}|${kind}`);
 }
 
+// #475 (BRG-13): the spool-full latch's "under the cap again" edge belongs
+// to the ACCOUNTING, not to the spool success tail (which is only reached
+// when a write succeeded — an incident where EVERY attachment hit the cap
+// kept the latch armed through full drain/re-fill oscillation, silencing
+// every later incident). Caps are remembered from the last reserve so the
+// usage-decrease paths can evaluate the edge without threading config.
+let lastSpoolCaps = { bridge: BRIDGE_SPOOL_CAP_BYTES, process: PROCESS_SPOOL_CAP_BYTES };
+
+/** "publicId|direction" for every spool-full latch currently armed. The
+ * PROCESS cap is global: one bridge's drop can clear another bridge's
+ * incident, so every decrease re-evaluates the whole armed set. */
+const armedSpoolFull = new Set();
+
+function trackSpoolFullArmed(publicId, direction) {
+  armedSpoolFull.add(`${publicId}|${direction}`);
+}
+
+function releaseSpoolFullEdges() {
+  for (const key of [...armedSpoolFull]) {
+    const at = key.lastIndexOf("|");
+    const publicId = key.slice(0, at);
+    const direction = key.slice(at + 1);
+    if (
+      (spoolUsage.byBridge.get(publicId) ?? 0) < lastSpoolCaps.bridge &&
+      spoolUsage.total < lastSpoolCaps.process
+    ) {
+      releaseNoticeLatch(publicId, direction, "spool_full");
+      armedSpoolFull.delete(key);
+    }
+  }
+}
+
 /** Test/restart helper: drop every armed latch. */
 function resetNoticeLatches() {
   noticeLatches.clear();
+  armedSpoolFull.clear();
 }
 
 /**
@@ -279,6 +312,7 @@ function resetNoticeLatches() {
 function reserveSpoolBytes(publicId, bytes, caps) {
   const bridgeCap = Number.isFinite(caps?.bridge) ? caps.bridge : BRIDGE_SPOOL_CAP_BYTES;
   const processCap = Number.isFinite(caps?.process) ? caps.process : PROCESS_SPOOL_CAP_BYTES;
+  lastSpoolCaps = { bridge: bridgeCap, process: processCap };
   const used = spoolUsage.byBridge.get(publicId) ?? 0;
   if (used + bytes > bridgeCap) return false;
   if (spoolUsage.total + bytes > processCap) return false;
@@ -294,6 +328,29 @@ function releaseSpoolBytes(publicId, bytes) {
   spoolUsage.total = Math.max(0, spoolUsage.total - Math.min(bytes, used));
   if (next === 0) spoolUsage.byBridge.delete(publicId);
   else spoolUsage.byBridge.set(publicId, next);
+  // #475 (BRG-13): usage DROPPED — this is the real "under the cap again"
+  // edge the spool-full notice promises to honour (any armed bridge — the
+  // process cap is global).
+  releaseSpoolFullEdges();
+}
+
+/**
+ * #475 (BRG-12): reconcile the declared-size reservation with the bytes
+ * ACTUALLY spooled, so the ledger stays the truth instead of an estimate
+ * that a full-tree rescan must keep re-deriving. A source lying about
+ * `size` (up or down, BRG-8 class) adjusts the ledger without re-gating
+ * the cap — the file is already durable; refusing to count it would be
+ * the worse lie.
+ */
+function adjustSpoolLedger(publicId, delta) {
+  if (!Number.isFinite(delta) || delta === 0) return;
+  if (delta < 0) {
+    releaseSpoolBytes(publicId, -delta);
+    return;
+  }
+  const used = spoolUsage.byBridge.get(publicId) ?? 0;
+  spoolUsage.byBridge.set(publicId, used + delta);
+  spoolUsage.total += delta;
 }
 
 /** Current accounting snapshot (status surfaces spoolBytes; tests assert). */
@@ -349,6 +406,26 @@ function safeReaddir(dir) {
   }
 }
 
+/**
+ * Sum the bytes under ONE directory (depth ≤2: bridge → message dirs).
+ * #475 (BRG-12): deletes release the size of the directory they remove —
+ * O(that dir's files), not O(all-time parked bytes).
+ */
+function dirTotalBytes(dir) {
+  let size = 0;
+  for (const entry of safeReaddir(dir)) {
+    const p = path.join(dir, entry);
+    let st = null;
+    try {
+      st = fs.statSync(p);
+    } catch {
+      continue; // vanished mid-walk — unspooled bytes, not an error
+    }
+    size += st.isDirectory() ? dirTotalBytes(p) : st.size;
+  }
+  return size;
+}
+
 /** Public ids that currently have a spool directory. */
 function listSpoolPublicIds() {
   return safeReaddir(spoolRootDir());
@@ -382,9 +459,12 @@ function sweepOrphanSpools(opts = {}) {
     if (keep) {
       for (const msgDir of safeReaddir(dir)) {
         if (hasLiveOutbox(entry, msgDir)) continue;
+        const msgPath = path.join(dir, msgDir);
+        const bytes = dirTotalBytes(msgPath); // #475 (BRG-12): scoped release
         try {
-          fs.rmSync(path.join(dir, msgDir), { recursive: true, force: true });
+          fs.rmSync(msgPath, { recursive: true, force: true });
           removed.push(`${entry}/${msgDir}`);
+          releaseSpoolBytes(entry, bytes);
           removedAny = true;
         } catch (err) {
           console.error(
@@ -394,10 +474,11 @@ function sweepOrphanSpools(opts = {}) {
       }
       continue;
     }
+    const bytes = dirTotalBytes(dir);
     try {
       fs.rmSync(dir, { recursive: true, force: true });
       removed.push(entry);
-      spoolUsage.byBridge.delete(entry);
+      releaseSpoolBytes(entry, bytes); // clears the entry (clamped) + latch edge
       removedAny = true;
     } catch (err) {
       console.error(
@@ -405,38 +486,10 @@ function sweepOrphanSpools(opts = {}) {
       );
     }
   }
-  if (removedAny) {
-    const scan = initSpoolAccountingScanOnce();
-    spoolUsage.total = scan.totalBytes;
-    spoolUsage.byBridge = scan.byBridge;
-  }
+  void removedAny; // accounting is released per deletion (no tree rescan)
   return { removed };
 }
 
-/** Re-scan helper used by the orphan pass (kept private; full reset+scan). */
-function initSpoolAccountingScanOnce() {
-  resetSpoolAccounting();
-  const root = spoolRootDir();
-  for (const publicId of listSpoolPublicIds()) {
-    const bridgeDir = path.join(root, publicId);
-    let size = 0;
-    for (const msgDir of safeReaddir(bridgeDir)) {
-      const msgPath = path.join(bridgeDir, msgDir);
-      for (const file of safeReaddir(msgPath)) {
-        try {
-          size += fs.statSync(path.join(msgPath, file)).size;
-        } catch {
-          // ignore
-        }
-      }
-    }
-    if (size > 0) {
-      spoolUsage.byBridge.set(publicId, size);
-      spoolUsage.total += size;
-    }
-  }
-  return { totalBytes: spoolUsage.total, byBridge: spoolUsage.byBridge };
-}
 
 // ---------------------------------------------------------------------------
 // Spooling at enqueue
@@ -599,6 +652,13 @@ async function spoolAttachments(args = {}) {
       // one (that is the number the §10.8 named lines and status report); a
       // source with no declared size records the spooled byte count.
       descriptor.bytes = declaredBytes == null ? actual : declaredBytes;
+      // #475 (BRG-12): the LEDGER tracks the bytes that exist on disk, not
+      // the source's claim. Without this adjustment every delete could only
+      // "reconcile" by re-scanning the entire spool tree.
+      if (reserve !== actual) {
+        adjustSpoolLedger(publicId, actual - reserve);
+        reserve = actual;
+      }
     } catch (err) {
       releaseSpoolBytes(publicId, reserve);
       finish(`spool-write-failed: ${String(err?.message || err)}`);
@@ -612,6 +672,7 @@ async function spoolAttachments(args = {}) {
       spoolUsage.total < caps.process
     ) {
       releaseNoticeLatch(publicId, direction, "spool_full");
+      armedSpoolFull.delete(`${publicId}|${direction}`); // #475: keep the armed set honest
     }
   }
 
@@ -622,6 +683,7 @@ async function spoolAttachments(args = {}) {
   for (const n of notices) {
     if (kinds.has(n.kind)) continue;
     if (!fireNoticeLatchOnce(publicId, direction, n.kind)) continue;
+    if (n.kind === "spool_full") trackSpoolFullArmed(publicId, direction); // #475 (BRG-13)
     kinds.add(n.kind);
     keptNotices.push(n);
   }
@@ -673,6 +735,7 @@ function deleteSpoolPublicDir(publicId) {
     return { existed: false, error: "refused: spool path escaped the spool root" };
   }
   if (!fs.existsSync(dir)) return { existed: false, error: null };
+  const bytes = dirTotalBytes(dir); // #475 (BRG-12): one scan of THIS bridge's tree
   try {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch (err) {
@@ -681,9 +744,10 @@ function deleteSpoolPublicDir(publicId) {
     );
     return { existed: true, error: String(err?.message || err) };
   }
-  const scan = initSpoolAccountingScanOnce();
-  spoolUsage.total = scan.totalBytes;
-  spoolUsage.byBridge = scan.byBridge;
+  // Disconnect tears the whole per-bridge tree down — the full latch (both
+  // directions) is evaluated inside releaseSpoolBytes (BRG-13: the usage
+  // drop IS the "under the cap again" edge).
+  releaseSpoolBytes(publicId, bytes);
   return { existed: true, error: null };
 }
 
@@ -697,6 +761,12 @@ function deleteSpoolDir(publicId, srcMessageId) {
   const dir = spoolDirFor(publicId, srcMessageId);
   if (!dir) return false;
   let existed = true;
+  // #475 (BRG-12): the ledger is exact (declared→actual adjustment at
+  // write), so deleting THIS dir releases THIS dir's bytes. The old code
+  // re-scanned the ENTIRE spool tree (every bridge, every file, sync I/O)
+  // after every acked outbox row — an O(all-time-parked-bytes) stat storm
+  // on the relay hot path.
+  const bytes = dirTotalBytes(dir);
   try {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch (err) {
@@ -705,10 +775,7 @@ function deleteSpoolDir(publicId, srcMessageId) {
     );
     return false;
   }
-  // Refresh accounting from disk (best effort, same rules as the scan).
-  const scan = initSpoolAccountingScanOnce();
-  spoolUsage.total = scan.totalBytes;
-  spoolUsage.byBridge = scan.byBridge;
+  releaseSpoolBytes(publicId, bytes); // also evaluates the latch edge (BRG-13)
   return existed;
 }
 

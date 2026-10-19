@@ -670,6 +670,61 @@ describe("bridge relay worker (PR 5)", () => {
     assert.equal(rowState(row.id).state, "done", "partial success is a successful row");
   });
 
+  it("#475 (BRG-15): guard/IO skip causes fold to the public category — the channel never sees infra detail", async () => {
+    const { bridge, publicId } = seedBridge("both");
+    repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "b_to_a",
+      kind: "create",
+      srcMessageId: "9901",
+      payload: createPayload(publicId, "9901", {
+        direction: "b_to_a",
+        srcCommunityId: rowB.id,
+        srcChannelId: "RB-9",
+        text: "look at this",
+        attachments: [
+          {
+            sourceAttachmentId: "a1",
+            filename: "image.png",
+            contentType: "image/png",
+            spoiler: false,
+            explicitMedia: false,
+            bytes: null,
+            declaredBytes: 100,
+            // The real leak class: the SSRF guard's internal reason rode
+            // verbatim into the relayed body (address + infra shape).
+            skipReason: "fetch-failed: refused address range for 169.254.169.254",
+            spoolIndex: 0,
+          },
+        ],
+      }),
+    });
+    const discord = scriptedApi("dG");
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? null : discord),
+    });
+    const warns = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warns.push(a.join(" "));
+    try {
+      await worker.drainAll();
+    } finally {
+      console.warn = origWarn;
+    }
+    const content = discord.calls[0].opts.content;
+    assert.ok(
+      content.includes("Attachment not copied: image.png: could not be fetched."),
+      `honest category sentence in the body: ${content}`
+    );
+    assert.ok(
+      !content.includes("169.254") && !content.includes("address range"),
+      "the refused-address cause NEVER rides into the relayed channel text"
+    );
+    assert.ok(
+      warns.some((l) => l.includes("skip cause") && l.includes("169.254.169.254")),
+      `rule 2: the full cause is logged with context (warns: ${JSON.stringify(warns)})`
+    );
+  });
+
   it("spool-full notices ride the payload to the source channel verbatim", async () => {
     const { bridge, publicId } = seedBridge("a_to_b");
     repo.enqueueBridgeOutbox(bridge.id, {

@@ -992,6 +992,39 @@ describe("bridge service (PR 4)", () => {
     assert.equal(repo.listBridgeEnds(pair.bridge.id).length, 2);
   });
 
+  it("#475 (BRG-15): a LOST BURN race tells the truth — no invented bridge name in user copy", async () => {
+    const pair = mintPending("A-15r"); // valid code shape; the burn below reads the injected db
+    // burnPendingBridge's lost-race branch (deleteParent.changes !== 1 →
+    // state "racing") — deterministically injected via deps.db.
+    const racingDb = {
+      transaction: (fn) => fn,
+      prepare: () => ({
+        get: () => ({ id: 999, state: "pending", public_id: "b_race001" }),
+        run: () => ({ changes: 0 }),
+      }),
+    };
+    const paste = await service.connectBridge({
+      community: rowB,
+      invocationChannelId: "900",
+      targetChannelId: "B-17",
+      rawCode: pair.minted.displayCode,
+      actorUserId: "late-paster",
+      via: "guild",
+      clock: () => T0,
+      deps: baseDeps({ db: racingDb }),
+    });
+    assert.equal(paste.ok, false);
+    assert.ok(
+      !paste.error.includes("the raced bridge"),
+      `the old copy invented a pseudo-entity in user-facing text: ${paste.error}`
+    );
+    assert.match(
+      paste.error,
+      /just used by another connect/,
+      "the honest race sentence (spent, create a new code)"
+    );
+  });
+
   // -------------------------------------------------------------------------
   // disconnectBridge
   // -------------------------------------------------------------------------

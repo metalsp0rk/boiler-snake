@@ -73,6 +73,10 @@ const BRIDGE_MESSAGES = Object.freeze({
   expiredOrUnknown: (cmd) =>
     `That bridge code is expired or unknown. Codes last 30 minutes, work once, and cannot be shown again. Create a new one with ${cmd} create.`,
   alreadyUsed: (publicId) => `That bridge code was already used to connect bridge ${publicId}.`,
+  // #475 (BRG-15): a raced burn must not invent a pseudo-entity name in
+  // user copy ("…connect bridge the raced bridge.").
+  raceLost: () =>
+    "That bridge code was just used by another connect — it is spent now. Create a new code if you need another bridge.",
   samePlatform: (createdOn, cmd) =>
     `A bridge is one Discord channel and one Fluxer channel. This code was created on ${createdOn}; run ${cmd} connect on the other platform.`,
   destinationTaken: (publicId) =>
@@ -755,7 +759,7 @@ async function connectBridge({
       return {
         ok: false,
         error: outcome.state === "racing"
-          ? BRIDGE_MESSAGES.alreadyUsed("the raced bridge")
+          ? BRIDGE_MESSAGES.raceLost() // #475 (BRG-15): honest sentence, no invented name
           : BRIDGE_MESSAGES.expiredOrUnknown(surfaceCmd),
       };
     }
