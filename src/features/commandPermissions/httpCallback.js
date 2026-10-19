@@ -172,6 +172,16 @@ async function handleCommandPermissionOAuthCallback(req, res, url) {
             result.failed.map((f) => f.name).join(", ")
           )}. Check bot logs or re-run sync.</p>`
         : "";
+    const abortNote =
+      (result.skippedAfterAbort ?? []).length > 0
+        ? `<p><strong>Sync aborted after an auth failure</strong> — ${escapeHtml(
+            String(result.skippedAfterAbort.length)
+          )} command(s) were never attempted${
+            result.skippedAfterAbort.length <= 12
+              ? `: ${escapeHtml(result.skippedAfterAbort.join(", "))}`
+              : ""
+          }. Re-run <code>/staff syncpermissions</code> once the token/permission issue is fixed.</p>`
+        : "";
     const missNote =
       result.missingCommands.length > 0
         ? `<p>Not registered in this guild yet: ${escapeHtml(
@@ -186,7 +196,7 @@ async function handleCommandPermissionOAuthCallback(req, res, url) {
         `<p>Updated <strong>${result.updated.length}</strong> staff command(s) for <code>${escapeHtml(
           verified.guildId
         )}</code> with <strong>${result.roleCount}</strong> staff role(s).</p>
-         ${failNote}${missNote}
+         ${failNote}${abortNote}${missNote}
          <p>You can close this tab and return to Discord. Staff members may need a moment for the command list to refresh.</p>`,
         result.failed.length === 0
       )

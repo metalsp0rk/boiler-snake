@@ -94,4 +94,61 @@ describe("command permission OAuth storage + put", () => {
     assert.ok(dbApi.deleteCommandPermissionOauth(communityKey("guild-cp-del")));
     assert.equal(dbApi.getCommandPermissionOauth(communityKey("guild-cp-del")), null);
   });
+
+  // #471 (INT-16): an abort at the first 401 must ACCOUNT for every
+  // never-attempted command — before the fix they vanished from all three
+  // ledgers and a 1-of-N sync rendered as near-total success.
+  it("aborted auth failure accounts for never-attempted commands", async () => {
+    const prevEnv = {
+      CLIENT_ID: process.env.CLIENT_ID,
+      DISCORD_TOKEN: process.env.DISCORD_TOKEN,
+    };
+    process.env.CLIENT_ID = "app-1";
+    process.env.DISCORD_TOKEN = "dt";
+    const { applyGuildCommandPermissions } = require("../src/features/commandPermissions/sync");
+    const { staffSyncCommandNames } = require("../src/core/commandVisibility");
+    const names = staffSyncCommandNames();
+    const cid = communityKey("guild-cp-abort");
+
+    // The PUT path is plain global fetch (stubbed); discord.js REST binds
+    // its OWN undici fetch, so the id-map read is stubbed at the prototype.
+    const { REST } = require("discord.js");
+    const originalFetch = global.fetch;
+    const originalRequest = REST.prototype.request;
+    REST.prototype.request = async () =>
+      names.map((n) => ({ name: n, id: `cmd-${n}` }));
+    let putCount = 0;
+    global.fetch = async () => {
+      putCount += 1;
+      return new Response(JSON.stringify({ message: "Unauthorized" }), {
+        status: 401,
+        statusText: "Unauthorized",
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    try {
+      const result = await applyGuildCommandPermissions(cid, { accessToken: "at" });
+      assert.equal(putCount, 1, "the sync aborts at the first 401 — no further PUTs");
+      assert.deepEqual(
+        result.failed.map((f) => f.name),
+        [names[0]],
+        "the failed command itself is on the ledger"
+      );
+      assert.deepEqual(
+        result.skippedAfterAbort,
+        names.slice(1),
+        "EVERY untried command rides the ledger as skipped (rule 5)"
+      );
+      assert.deepEqual(result.updated, []);
+      assert.deepEqual(result.missingCommands, []);
+    } finally {
+      global.fetch = originalFetch;
+      REST.prototype.request = originalRequest;
+      for (const [k, v] of Object.entries(prevEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
 });

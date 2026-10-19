@@ -283,10 +283,9 @@ function isVideoUpload(entry) {
 function extractVideoInfo(entry) {
   if (!entry) return null;
 
-  const videoId =
-    entry["yt:videoId"] ||
-    entry.id?.split(":").pop() ||
-    entry.snippet?.resourceId?.videoId;
+  // INT-14: the yt:videoId (rss-parser era) branch is dead — fetchYouTubeFeed
+  // is Data-API-only and maps the bare videoId into entry.id.
+  const videoId = entry.id?.split(":").pop() || entry.snippet?.resourceId?.videoId;
   const title = entry.title || "Untitled Video";
   const published = entry.pubDate
     ? new Date(entry.pubDate).getTime()
