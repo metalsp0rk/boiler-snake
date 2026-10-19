@@ -1064,6 +1064,66 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
     },
 
     /**
+     * Delete a channel this client created (#472 LT-17: the compensating
+     * cleanup when the ticket-row insert fails after the channel went up —
+     * previously the orphan was log-only and permanent). K8 elevated gate
+     * parity with createChannel; 404 (already gone) counts as success.
+     * @param {{ communityId: number, channelId: string, reason?: string }} args
+     * @returns {Promise<{ ok: true } | { ok: false, error: string, code?: number }>}
+     */
+    async deleteChannel(args) {
+      const communityId = args?.communityId;
+      assertCommunityId(communityId);
+      const channelId = String(args?.channelId ?? "");
+      if (!channelId) {
+        return { ok: false, error: "deleteChannel: channelId required" };
+      }
+      const gate = await elevatedBlocked(communityId, "deleteChannel");
+      if (gate.blocked) return { ok: false, error: gate.error, code: "elevated_disabled" };
+      try {
+        await rest.request("DELETE", `/v1/channels/${channelId}`);
+        return { ok: true };
+      } catch (err) {
+        if (codeOf(err) === 404) return { ok: true }; // already gone — idempotent
+        return {
+          ok: false,
+          error: failureText("deleteChannel", `channel ${channelId} in community ${communityId}`, err),
+          ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+        };
+      }
+    },
+
+    /**
+     * Correct a channel's name (#472 LT-16.3: ticket channels are named from
+     * a pre-insert number guess while createTicket allocates the real number
+     * in its transaction — Discord renames afterwards, Fluxer now does too).
+     * K8 elevated gate parity with createChannel.
+     * @param {{ communityId: number, channelId: string, name: string }} args
+     * @returns {Promise<{ ok: true } | { ok: false, error: string, code?: number }>}
+     */
+    async editChannelName(args) {
+      const communityId = args?.communityId;
+      assertCommunityId(communityId);
+      const channelId = String(args?.channelId ?? "");
+      const name = String(args?.name ?? "");
+      if (!channelId || !name) {
+        return { ok: false, error: "editChannelName: channelId and name required" };
+      }
+      const gate = await elevatedBlocked(communityId, "editChannelName");
+      if (gate.blocked) return { ok: false, error: gate.error, code: "elevated_disabled" };
+      try {
+        await rest.request("PATCH", `/v1/channels/${channelId}`, { body: { name } });
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: failureText("editChannelName", `channel ${channelId} in community ${communityId}`, err),
+          ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+        };
+      }
+    },
+
+    /**
      * @param {string} channelId
      * @param {Array<{ id: string, kind: "role"|"member", allow: string, deny: string }>} overwrites ChannelOverwrite[]
      * @returns {Promise<{ ok: true }|{ ok: false, error: string, skipped: Array<{ id: string, reason: string }> }>}

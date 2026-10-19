@@ -395,6 +395,202 @@ describe("fluxer/tickets — !ticket create over the OutboundClient (PR 9)", () 
       "the panel arm never reaches the ticket-create path",
     );
   });
+
+  // #472 (LT-17): when the row insert fails AFTER the Fluxer channel went up,
+  // the create must compensate via OutboundClient.deleteChannel instead of
+  // leaving an invisible orphan with live member overwrites.
+  it("row-insert failure after channel create deletes the orphan channel", async () => {
+    setElevatedFlag(1);
+    // earlier suites already created a ticket by this author — window off
+    updateGuildSettings(COMMUNITY_ID, { ticket_rate_limit_minutes: 0 });
+    // earlier suites left the author's tc-42 ticket OPEN — the
+    // one-open-ticket firewall would refuse before anything else runs
+    dbApi.db
+      .prepare("UPDATE tickets SET status='closed' WHERE community_id=? AND status='open'")
+      .run(COMMUNITY_ID);
+    // Occupy channel_id (UNIQUE) out-of-band so the real insert must fail.
+    dbApi.createTicket({
+      communityId: COMMUNITY_ID,
+      creatorUserId: "pre-existing-row",
+      channelId: "tc-orphan",
+      reason: null,
+    });
+
+    const rest = makeFakeRest({
+      routes: {
+        ...roleReads(),
+        [`POST /v1/guilds/${GUILD}/channels`]: { id: "tc-orphan" },
+        "DELETE /v1/channels/tc-orphan": {},
+        "POST /v1/users/@me/channels": { id: "dm-5" },
+        "POST /v1/channels/dm-5/messages": { id: "reply-5" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const supervisor = { discord: null, fluxer: new Map(), clientForCommunity: () => outbound };
+
+    const content = '!ticket create reason "dup channel"';
+    const parsed = parsePrefix(content, P);
+    const origErr = console.error;
+    const errs = [];
+    console.error = (...a) => errs.push(a.join(" "));
+    try {
+      await dispatchPrefixCommand(
+        outbound,
+        fluxerMessage({ content }),
+        parsed,
+        { registry, supervisor },
+      );
+    } finally {
+      console.error = origErr;
+    }
+
+    const deletes = rest.calls.filter(
+      (c) => c.method === "DELETE" && c.path === "/v1/channels/tc-orphan",
+    );
+    assert.equal(deletes.length, 1, "the orphan channel was deleted (compensating cleanup)");
+    assert.ok(
+      errs.some(
+        (l) =>
+          l.includes("[tickets] Ticket row create failed after channel tc-orphan") &&
+          l.includes("was removed again"),
+      ),
+      `loud log names channel + cleanup outcome, got: ${JSON.stringify(errs)}`,
+    );
+
+    const dm = findPost(rest, "/v1/channels/dm-5/messages");
+    assert.ok(dm, "the failure answer arrives by DM (K2)");
+    assert.match(
+      dm.body.content,
+      /ticket row failed; channel tc-orphan was removed again/,
+      `reply is honest about the partial state, got: ${dm.body.content}`,
+    );
+  });
+
+  it("insert failure whose cleanup also fails names the live orphan", async () => {
+    setElevatedFlag(1);
+    updateGuildSettings(COMMUNITY_ID, { ticket_rate_limit_minutes: 0 });
+    // earlier suites left the author's tc-42 ticket OPEN — the
+    // one-open-ticket firewall would refuse before anything else runs
+    dbApi.db
+      .prepare("UPDATE tickets SET status='closed' WHERE community_id=? AND status='open'")
+      .run(COMMUNITY_ID);
+    dbApi.createTicket({
+      communityId: COMMUNITY_ID,
+      creatorUserId: "pre-existing-row-2",
+      channelId: "tc-orphan2",
+      reason: null,
+    });
+
+    const rest = makeFakeRest({
+      routes: {
+        ...roleReads(),
+        [`POST /v1/guilds/${GUILD}/channels`]: { id: "tc-orphan2" },
+        // NO DELETE route: the delete answers 404 FAKE_NO_ROUTE → cleanup fails.
+        "POST /v1/users/@me/channels": { id: "dm-6" },
+        "POST /v1/channels/dm-6/messages": { id: "reply-6" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+    const supervisor = { discord: null, fluxer: new Map(), clientForCommunity: () => outbound };
+
+    const content = '!ticket create reason "undeletable orphan"';
+    const parsed = parsePrefix(content, P);
+    await dispatchPrefixCommand(
+      outbound,
+      fluxerMessage({ content }),
+      parsed,
+      { registry, supervisor },
+    );
+
+    const dm = findPost(rest, "/v1/channels/dm-6/messages");
+    assert.ok(dm, "the failure answer arrives by DM (K2)");
+    assert.match(
+      dm.body.content,
+      /tc-orphan2 IS LEFT ORPHANED/,
+      `the reply names the residue the user must delete, got: ${dm.body.content}`,
+    );
+    assert.ok(
+      !/removed again/.test(dm.body.content),
+      "no false cleanup claim",
+    );
+  });
+
+  // #472 (LT-16.3): the channel name comes from a PRE-insert number while
+  // createTicket allocates the real one in its transaction. Discord renamed
+  // afterwards; Fluxer didn't — the skew was permanent and silent. It now
+  // PATCHes the corrected name (or logs exactly what stayed wrong).
+  it("number skew between channel name and ticket number triggers a rename PATCH", async () => {
+    setElevatedFlag(1);
+    updateGuildSettings(COMMUNITY_ID, { ticket_rate_limit_minutes: 0 });
+    // earlier suites left the author's tc-42 ticket OPEN — the
+    // one-open-ticket firewall would refuse before anything else runs
+    dbApi.db
+      .prepare("UPDATE tickets SET status='closed' WHERE community_id=? AND status='open'")
+      .run(COMMUNITY_ID);
+    const ticketsRepo = require("../src/db/repositories/tickets");
+    const origNext = ticketsRepo.nextTicketNumber;
+    let firstCall = true;
+    ticketsRepo.nextTicketNumber = (cid) => {
+      if (firstCall) {
+        firstCall = false;
+        return origNext(cid) + 7; // the naming guess races ahead of the real number
+      }
+      return origNext(cid);
+    };
+
+    const rest = makeFakeRest({
+      routes: {
+        ...roleReads(),
+        [`POST /v1/guilds/${GUILD}/channels`]: { id: "tc-skew" },
+        "PATCH /v1/channels/tc-skew": {},
+        "POST /v1/channels/tc-skew/messages": { id: "open-9" },
+        "POST /v1/users/@me/channels": { id: "dm-7" },
+        "POST /v1/channels/dm-7/messages": { id: "reply-7" },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const supervisor = { discord: null, fluxer: new Map(), clientForCommunity: () => outbound };
+
+    const content = '!ticket create reason "skew"';
+    const parsed = parsePrefix(content, P);
+    try {
+      await dispatchPrefixCommand(
+        outbound,
+        fluxerMessage({ content }),
+        parsed,
+        { registry, supervisor },
+      );
+    } finally {
+      ticketsRepo.nextTicketNumber = origNext;
+    }
+
+    const row = dbApi.db
+      .prepare(
+        "SELECT * FROM tickets WHERE community_id=? AND channel_id='tc-skew'",
+      )
+      .get(COMMUNITY_ID);
+    assert.ok(row, "the ticket row exists (create itself succeeded)");
+
+    const patch = rest.calls.find(
+      (c) => c.method === "PATCH" && c.path === "/v1/channels/tc-skew",
+    );
+    assert.ok(patch, "the skewed channel name was corrected via PATCH");
+    assert.equal(
+      patch.body.name,
+      `ticket-${row.ticket_number}`,
+      "the PATCH renames to the REAL ticket number, not the pre-insert guess",
+    );
+
+    const create = rest.calls.find(
+      (c) => c.method === "POST" && c.path === `/v1/guilds/${GUILD}/channels`,
+    );
+    assert.equal(
+      create.body.name,
+      `ticket-${row.ticket_number + 7}`,
+      "proof the skew was real at create time (guessed number +7)",
+    );
+  });
 });
 
 describe("fluxer/tickets — getManageableStaffRoleIdsFluxer", () => {
