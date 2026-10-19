@@ -33,8 +33,7 @@
 const service = require("./service");
 const { getCommunityById, getCommunityByExternal } = require("../../platform/community");
 const { NO_PING } = require("./mentions");
-const { createDiscordWebhooks } = require("../../platform/discord/webhooks");
-const { createFluxerWebhooks } = require("../../platform/fluxer/webhooks");
+const { buildSupervisorSeams } = require("./supervisorSeams");
 const { parsePrefix } = require("../../platform/fluxer/commands");
 const {
   computeChannelPermissions,
@@ -430,72 +429,17 @@ function surfaceCmdFor(ctx) {
   return ctx && ctx.platform === "fluxer" ? `${getFluxerCommandPrefix()}bridge` : "/bridge";
 }
 
-/**
- * deps.sendMessage: post a plain notice in one community channel through the
- * supervisor's OutboundClient (used by disconnect's in-channel notice and by
- * the DM connect path's target-channel notice). Mention-pinned: notices must
- * never ping.
- */
-function makeSendMessage(supervisor) {
-  return async function sendMessage(communityId, channelId, content) {
-    let outbound = null;
-    try {
-      outbound = supervisor?.clientForCommunity?.(communityId) ?? null;
-    } catch (err) {
-      return { ok: false, error: `outbound lookup failed: ${err?.message || err}` };
-    }
-    if (!outbound || typeof outbound.sendChannel !== "function") {
-      return { ok: false, error: `no outbound client for community ${communityId}` };
-    }
-    try {
-      return await outbound.sendChannel(String(channelId), { content, allowedMentions: NO_PING });
-    } catch (err) {
-      return { ok: false, error: `send to channel ${channelId} failed: ${err?.message || err}` };
-    }
-  };
-}
+// #475 (BRG-14): makeSendMessage + webhookApiFor were VERBATIM clones of
+// relay.js's supervisorOutboundSeams (they had already drifted their
+// failure logs). ONE builder now — ./supervisorSeams — used by both files.
 
 /**
- * deps.webhookApiFor: the webhook lifecycle pair for one community, built
- * from the supervisor (spec §10.3: adapter modules, bridge-free). Synchronous
- * by contract with the service (the connect path awaits the API object, never
- * a promise of one). The Fluxer adapter is built with the handle's discovered
- * API origin (handle.apiOrigin = discovery endpoints.api_public) so token
- * endpoints resolve to ABSOLUTE webhook URLs (audit C1). A handle whose
- * discovery never resolved api_public makes createFluxerWebhooks throw at
- * construction — caught here, logged with the instance key, surfaced as a
- * null api so the service fails connect closed with its own specific
- * sentence (never a silently relative webhook URL).
+ * deps.webhookApiFor: the webhook lifecycle pair for one community —
+ * DELEGATES to the one shared builder (#475 BRG-14). Kept as a named
+ * function (and module export) for the connect path + C1 tests.
  */
 function webhookApiFor(supervisor, platform, instanceKey) {
-  if (!supervisor) return null;
-  if (platform === "discord") {
-    if (!supervisor.discord) return null;
-    try {
-      return createDiscordWebhooks(supervisor.discord);
-    } catch (err) {
-      console.error("[bridge] Discord webhook api build failed:", err?.message || err);
-      return null;
-    }
-  }
-  if (platform === "fluxer") {
-    let handle = null;
-    try {
-      handle = supervisor.fluxer?.get?.(instanceKey) ?? null;
-    } catch {
-      handle = null;
-    }
-    if (!handle) return null;
-    try {
-      // Audit C1: the handle's discovered apiOrigin (endpoints.api_public) —
-      // null here throws at construction (handled by the catch below).
-      return createFluxerWebhooks({ rest: handle.rest, apiOrigin: handle.apiOrigin });
-    } catch (err) {
-      console.error(`[bridge] Fluxer webhook api build failed for ${instanceKey}:`, err?.message || err);
-      return null;
-    }
-  }
-  return null;
+  return buildSupervisorSeams(supervisor).getWebhookApi(platform, instanceKey);
 }
 
 /**
@@ -508,9 +452,10 @@ function buildDeps(ctx, featureCtx) {
   const supervisor = featureCtx?.supervisor ?? null;
   return {
     resolveChannel: makeResolveChannelAnyPlatform(ctx, supervisor),
-    sendMessage: makeSendMessage(supervisor),
+    // #475 (BRG-14): one seam builder (./supervisorSeams) for BOTH this
+    // path and the relay worker — sendMessage/keyGetter come from it now.
+    ...buildSupervisorSeams(supervisor),
     webhookApiFor: (platform, instanceKey) => webhookApiFor(supervisor, platform, instanceKey),
-    keyGetter: () => process.env.BRIDGE_TOKEN_KEY,
     // PR 7 (KD 22 lifted): the real §10.7 step-8 activator. Production
     // connect now flips pending → active; the service still refuses with the
     // relay-not-wired sentence when NO activator is injected (unit tests, and
