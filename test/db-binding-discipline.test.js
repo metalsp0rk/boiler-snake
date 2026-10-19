@@ -230,7 +230,11 @@ describe("#609: every db-reaching test file binds its own temp DB", () => {
     // inside loadDb is exactly why the full closure from shared helpers is
     // NOT walked). Files with an audited private-DB mechanism (their own
     // `process.env.DB_PATH =` assignment, the legacy migration-test idiom)
-    // satisfy the token rule.
+    // satisfy the token rule. KNOWN LIMIT: a require evaluated at
+    // node:test COLLECTION time inside a describe() callback (e.g. the
+    // #444 nested describe in github-releases) runs before every binder —
+    // no static rule can see it; the CI ambient-DB canary (test.yml blocks
+    // the default path with a directory) catches that class at runtime.
     const LAZY_TOKENS = [
       ...TOKENS,
       "process.env.DB_PATH =", // legacy manual private bind (mkdtemp idiom)
