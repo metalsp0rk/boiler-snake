@@ -9,6 +9,12 @@ const { trackTitle, trackAuthor } = require("./render");
 
 const DEFAULT_VOLUME = 80;
 const EMPTY_LEAVE_MS = 60_000;
+// #588: queue-drain idle-leave window. When the queue drains (TrackEnd with
+// nothing left), the bot leaves after this window unless something is played
+// first. App-side (not lavalink-client's playerOptions.onEmptyQueue) so ONE
+// "should we still be here" decision owns cancel-on-enqueue, the fire-time
+// re-check, and the logged-failure path the error doctrine demands.
+const IDLE_LEAVE_MS = 5 * 60_000;
 // #469 (E2-07): TOTAL queue bound. PLAYLIST_CAP (resolve.js) only ever
 // limited one playlist batch to 100 - nothing bounded the AGGREGATE: any
 // member of the voice channel could grow lavalink-client's in-process
@@ -19,6 +25,9 @@ const MAX_QUEUE_TOTAL = 500;
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} */
 const emptyLeaveTimers = new Map();
+
+/** @type {Map<string, ReturnType<typeof setTimeout>>} */
+const idleLeaveTimers = new Map();
 
 const ERRORS = {
   no_config:
@@ -190,6 +199,9 @@ async function playQuery(client, interaction, rawQuery) {
   }
 
   cancelEmptyLeave(interaction.guildId);
+  // #588: playable audio is landing on this player — any running
+  // queue-drain window is off.
+  cancelIdleLeave(interaction.guildId);
 
   // #469 (E2-07): already at the bound? Refuse BEFORE paying the search
   // round-trip (and before any add) - specific error, actionable copy.
@@ -340,6 +352,7 @@ async function seekTo(player, ms) {
 
 async function destroyPlayer(manager, guildId, reason = "stopped") {
   cancelEmptyLeave(guildId);
+  cancelIdleLeave(guildId);
   const player = getPlayer(manager, guildId);
   if (!player) return { ok: true, destroyed: false };
   if (typeof player.destroy === "function") {
@@ -369,6 +382,63 @@ function cancelEmptyLeave(guildId) {
     clearTimeout(t);
     emptyLeaveTimers.delete(guildId);
   }
+}
+
+/**
+ * #588: clear the queue-drain idle-leave window for a guild. Cancel points:
+ * anything that puts playable audio back on the player (/play enqueue — the
+ * playQuery path calls this next to cancelEmptyLeave) and every destroy, so
+ * a leaving/re-created player never inherits a stale window.
+ */
+function cancelIdleLeave(guildId) {
+  const t = idleLeaveTimers.get(guildId);
+  if (t) {
+    clearTimeout(t);
+    idleLeaveTimers.delete(guildId);
+  }
+}
+
+/**
+ * #588: the single "should we still be here" decision fired when the queue
+ * window elapses. Re-checks at fire time instead of trusting arm time: the
+ * player may be gone (already left) or the queue refilled (a fire-time miss
+ * would evict a live player). A failed leave is LOGGED with guild + channel
+ * ids (error doctrine — never a silent drop; the next queueEnd or human-
+ * departure re-arms).
+ */
+function idleLeaveFire(manager, guildId) {
+  idleLeaveTimers.delete(guildId);
+  const player = getPlayer(manager, guildId);
+  if (!player) return;
+  if (queueDepth(player) > 0) return;
+  const channelId = player.voiceChannelId;
+  destroyPlayer(manager, guildId, "queue_empty_idle").catch((err) => {
+    console.error(
+      `[music] queue-idle leave failed (guild ${guildId}, channel ${channelId ?? "?"}):`,
+      err?.message || err,
+    );
+  });
+}
+
+/**
+ * #588: manager "queueEnd" sink — the queue drained. Arm the idle-leave
+ * window (once; re-arming resets nothing, the window started with the first
+ * drain). NOT empty yet (autoplay filled it / race with an enqueue)? Treat
+ * it as activity and cancel any pending window instead.
+ *
+ * @param {object} manager
+ * @param {object|null} player
+ */
+function onQueueEnd(manager, player) {
+  const guildId = player?.guildId;
+  if (!guildId) return;
+  if (queueDepth(player) > 0) {
+    cancelIdleLeave(guildId);
+    return;
+  }
+  if (idleLeaveTimers.has(guildId)) return;
+  const timer = setTimeout(() => idleLeaveFire(manager, guildId), IDLE_LEAVE_MS);
+  idleLeaveTimers.set(guildId, timer);
 }
 
 /**
@@ -422,6 +492,7 @@ function queuedSummary(result) {
 module.exports = {
   DEFAULT_VOLUME,
   EMPTY_LEAVE_MS,
+  IDLE_LEAVE_MS,
   MAX_QUEUE_TOTAL,
   queueDepth,
   ERRORS,
@@ -442,6 +513,8 @@ module.exports = {
   countHumans,
   cancelEmptyLeave,
   onVoiceStateUpdate,
+  cancelIdleLeave,
+  onQueueEnd,
   errorMessage,
   queuedSummary,
 };
