@@ -42,8 +42,12 @@ const {
   flashBanner: canonicalFlashBanner,
   num,
   formatAge,
+  channelRef,
+  section: sharedSection,
 } = require("../_helpers");
-const { emptyState, banner } = require("../components");
+// banner left this file's imports with #608: only the promoted `section`
+// engine renders a notice now.
+const { emptyState } = require("../components");
 const { DEFAULTS, LIST_CAP, PANEL_CAP } = require("../../data/integrationsData");
 const { MAX_OPTIONS_PER_PANEL } = require("../../../features/reactionRoles/service");
 
@@ -201,17 +205,6 @@ function idSelect(name, rows, labelOf, placeholder) {
     : html``}${options}</select></label>`;
 }
 
-/**
- * Channel reference — settings.js twin (id is the source-of-truth value;
- * an OPTIONAL cache-only name decorates it; absent ⇒ id alone).
- */
-function channelRef(channelId, resolveName) {
-  if (!channelId) return html`<em class="muted">not configured</em>`;
-  const name = typeof resolveName === "function" ? resolveName(channelId) : null;
-  return html`<code class="channel-id">${channelId}</code>${name
-    ? html` <span class="channel-name">(${name})</span>`
-    : html``}`;
-}
 
 /** Role reference — same cache-only contract as channelRef. */
 function roleRef(roleId, resolveName) {
@@ -263,15 +256,10 @@ function settingRow(label, valueHtml, defaultHtml, governsHtml) {
   </div>`;
 }
 
-function section(title, bodyHtml, opts = {}) {
-  return html`
-    <section class="panel settings-panel integrations-panel">
-      <h2>${title}</h2>
-      ${opts.hint ? html`<p class="setting-admin-hint">${opts.hint}</p>` : html``}
-      ${opts.notice ? banner("warn", opts.notice) : html``}
-      ${bodyHtml}
-    </section>`;
-}
+// #608: engine promoted to views/_helpers.js — this binding only adds the
+// page's own panel class (shared section renders hint/notice when present).
+const section = (title, bodyHtml, opts = {}) =>
+  sharedSection(title, bodyHtml, { ...opts, cls: "integrations-panel" });
 
 /** Whitelisted state pill (live/off) — kind is a view constant. */
 function pill(kind, label) {

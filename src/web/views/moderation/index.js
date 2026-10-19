@@ -31,6 +31,7 @@ const { html, raw } = require("../escape");
 const {
   flashFromQuery,
   flashBanner,
+  pagerFor,
 } = require("../_helpers");
 const { emptyState, banner, userRef } = require("../components");
 const { formatWarnRef, formatNoteRef } = require("../../../core/theme");
@@ -215,28 +216,28 @@ function pageHref(base, q) {
 
 /**
  * Pager with honest totals (the count helper ran for this exact filter).
+ * #608: the engine is views/_helpers#pagerFor — the filter vocabulary stays
+ * page-side inside hrefFor, byte-identical to the old copy.
+ *
+ * Byte-exactness note (reproduced on purpose): BOTH call sites pass only
+ * { offset, total, shown } as `page`, so `page.pageSize` is undefined and
+ * prev computes Math.max(0, offset - undefined) = NaN — pageHref drops a
+ * non-positive o, so the prev link targets the FIRST page. Issue #621 owns
+ * that fix; a dedup must not smuggle behavior changes.
+ *
  * @param {string} base
  * @param {{ userId: string|null, state: string, pageSize: number }} filters
  * @param {{ offset: number, total: number, shown: number }} page
  */
-function pager(base, filters, page) {
-  const from = page.total === 0 ? 0 : page.offset + 1;
-  const to = page.offset + page.shown;
-  const common = {
-    u: filters.userId,
-    state: filters.state,
-    n: filters.pageSize,
-  };
-  const prev =
-    page.offset > 0
-      ? html`<a class="pager-prev" href="${pageHref(base, { ...common, o: Math.max(0, page.offset - page.pageSize) })}">← prev</a>`
-      : html``;
-  const more = page.offset + page.shown < page.total;
-  const next = more
-    ? html` <a class="pager-next" href="${pageHref(base, { ...common, o: page.offset + page.shown })}">next →</a>`
-    : html``;
-  return html`<p class="pager">${prev}showing ${from}–${to} of ${page.total}${next}</p>`;
-}
+const pager = (base, filters, page) =>
+  pagerFor({
+    hrefFor: (o) =>
+      pageHref(base, { u: filters.userId, state: filters.state, n: filters.pageSize, o }),
+    offset: page.offset,
+    pageSize: page.pageSize,
+    total: page.total,
+    shown: page.shown,
+  });
 
 /* ---------------------------------------------------------------- filter UI -- */
 
