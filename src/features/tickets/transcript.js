@@ -83,6 +83,7 @@ function absoluteTranscriptPath(communityId, token) {
 // #452: shared core escaper (this file used to keep its own copy — same
 // five chars, `?? ""` semantics now live in core).
 const { escapeHtml } = require("../../core/escapeHtml");
+const { safeHref } = require("../../core/safeHref");
 
 /**
  * @param {number|null|undefined} ms
@@ -105,10 +106,18 @@ function formatTs(ms) {
 function renderAttachmentsHtml(attachments) {
   if (!attachments?.length) return "";
   const parts = attachments.map((a) => {
-    const href = a.href || a.url || "";
-    const name = a.name || href || "attachment";
+    const rawHref = a.href || a.url || "";
+    const name = a.name || rawHref || "attachment";
     const kind = a.kind || mediaKind(name, a.contentType);
-    if (!href) return "";
+    if (!rawHref) return "";
+    // #466 (C2-2): scheme gate AT the render boundary (prior audit §3 Web,
+    // round-2 C2-2): stored attachment urls are member-influenced — the
+    // archive page renders http(s)/assets hrefs, and a poisoned scheme
+    // becomes a name-only line, never a javascript:/phishing link.
+    const href = safeHref(rawHref);
+    if (href == null) {
+      return `<div class="att file blocked"><span>${escapeHtml(name)}</span> <span class="att-note">(link scheme blocked)</span></div>`;
+    }
 
     if (kind === "image") {
       return `<figure class="att image">
@@ -288,6 +297,7 @@ module.exports = {
   relativeTranscriptPath,
   absoluteTranscriptPath,
   escapeHtml,
+  renderAttachmentsHtml, // #466 (C2-2): exported for the scheme-gate pin
   renderTranscriptHtml,
   writeTranscriptFile,
   resolveTranscriptAbsolutePath,

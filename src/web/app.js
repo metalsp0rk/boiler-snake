@@ -457,7 +457,13 @@ function createWebApp(options = {}) {
   // origin 'web'. AFTER the guild shell so /g/:guildId guildScope gates
   // first; same shared resolver instance keeps tier math undivided;
   // getClient stays the cache-only seam (never a fetch on a request path).
-  registerTicketActionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, services: options.services, ticketActions: options.ticketActions });
+  registerTicketActionsRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient, services: options.services, ticketActions: options.ticketActions,
+    // #466 (C2-7): claim/close change the dashboard's ticket inputs (open
+    // count, owner) — invalidate the SAME published instance the dashboard
+    // page reads, so an accepted mutation is the next read's truth (the
+    // doctrine settings.js and xpActions followed in #457; the exports the
+    // round-2 audit called "dead weight" are now fully wired).
+    dashboardData: options.dashboardData });
   registerGuildArchiveRoutes(app, { guildAccess: options.guildAccess, apiBase: options.apiBase, fetchImpl: options.fetchImpl, botGuilds: options.botGuilds, getClient: options.getClient });
   // Community Events calendar (#222, roadmap community-events.md §12.4):
   // month view, event pages, archive/presets/series/scheduled lists, and the

@@ -416,6 +416,11 @@ function registerTicketActionsRoutes(app, options = {}) {
     // already-claimed rejection exists on the slash path).
     const updated = facade.claimTicket(ticket.id, req.user.userId);
 
+    // #466 (C2-7): an accepted write drops the dashboard cache FIRST (the
+    // settings/xpActions doctrine) — even a fail-closed audit 500 leaves
+    // the next dashboard read fresh, never stale.
+    options.dashboardData?.invalidate?.(communityId);
+
     // Audit BEFORE the Discord niceties — the exact slash order
     // (claimTicket → recordSlashAudit → overwrites → channel notice).
     // Details shape = index.js:1651-1661; origin stays 'web'.
@@ -521,6 +526,11 @@ function registerTicketActionsRoutes(app, options = {}) {
       closeReason,
       botMember,
     });
+
+    // #466 (C2-7): the open-ticket count/rows the dashboard cached just
+    // changed — drop the snapshot before audit (write-first doctrine; the
+    // close transition committed regardless of the Discord niceties).
+    options.dashboardData?.invalidate?.(communityId);
 
     // Slash-exact vocabulary + detail shape (handleClose:1410-1420).
     req.audit({

@@ -712,6 +712,31 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
      * @param {string} userId
      * @returns {Promise<{ id: string, username: string, bot: boolean, roleIds: string[] }|null>} MemberHandle
      */
+    /**
+     * #466 (C1-11): bot-membership liveness as the WEB ACCESS layer needs it
+     * — something fetchGuild's resolve-nothing contract cannot answer: there
+     * `null` means BOTH "the instance refused" (403/404: the bot no longer
+     * sees this guild → the §8.3 matrix says deny) and "we could not ask"
+     * (transport hiccup → must not evict a community the bot may well sit
+     * in). This method classifies instead of swallowing; same bot credential
+     * the mutations would use, same GET the permissions resolve already pays.
+     * @param {number} communityId
+     * @returns {Promise<"present"|"absent"|"unknown">}
+     */
+    async probeGuildPresence(communityId) {
+      assertCommunityId(communityId);
+      const found = resolveGuild(communityId, "probeGuildPresence");
+      if (found.error) return "absent"; // no communities row: nothing to serve on
+      try {
+        await rest.request("GET", `/v1/guilds/${found.externalGuildId}`);
+        return "present";
+      } catch (err) {
+        const status = statusOf(err);
+        if (status === 404 || status === 403) return "absent";
+        return "unknown";
+      }
+    },
+
     async fetchMember(communityId, userId) {
       assertCommunityId(communityId);
       const found = resolveGuild(communityId, "fetchMember");

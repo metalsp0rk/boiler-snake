@@ -391,10 +391,23 @@ const resolver = guildAccessMod.createGuildAccessResolver({
   ttlMs: 3_600_000,
 });
 
+// #466 (C2-7): the SAME-instance dashboard cache the dashboard page +
+// dashboard API use, with invalidate() spied — claim/close must drop the
+// community's snapshot (the exports the round-2 audit called dead weight).
+const { createDashboardData } = require("../src/web/data/dashboardData");
+const sharedDashboardData = createDashboardData();
+const dashInvalidations = [];
+const dashInvalidateReal = sharedDashboardData.invalidate;
+sharedDashboardData.invalidate = (cid) => {
+  dashInvalidations.push(cid);
+  return dashInvalidateReal(cid);
+};
+
 const app = createWebApp({
   guildAccess: resolver,
   botGuilds: async () => [GUILD_A, GUILD_B],
   getClient: () => FAKE_CLIENT,
+  dashboardData: sharedDashboardData,
   services: {
     softCloseTicket: async (...args) => {
       softCloseCalls.push(args);
@@ -1558,5 +1571,62 @@ describe("K. slash ↔ web parity — REAL handlers, same actor, same outcome", 
     assert.equal(aS.details.message_count, 2);
     assert.equal(api.getTicketById(ts.id).ai_summary_json, null);
     assert.equal(api.getTicketById(tw.id).ai_summary_json, null, "neither transport persists on-demand summaries");
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #466 (C2-7): accepted ticket mutations invalidate the shared dashboard
+// cache — "Open tickets" used to rot for up to 30 s after a web claim or
+// close (the dashboardData.invalidate export existed but no caller used it
+// for tickets; the settings/xpActions writes proved the pattern).
+// ---------------------------------------------------------------------------
+
+describe("#466 (C2-7): ticket mutations drop the dashboard cache", () => {
+  it("an accepted claim invalidates the community's dashboard snapshot", async () => {
+    const t = mkTicket({ creator: USER_PLAIN, channelId: "710000000000000011", reason: "invalidate me" });
+    makeCacheChannel(t.channel_id);
+    dashInvalidations.length = 0;
+
+    const r = await claimPost({ ticket_id: String(t.id) });
+    assert.equal(r.res.status, 302);
+    assert.ok(
+      dashInvalidations.includes(CID_A),
+      `claim dropped the dashboard cache for the INTEGER route identity (got ${JSON.stringify(dashInvalidations)})`,
+    );
+  });
+
+  it("an accepted close invalidates too (the open-count just changed)", async () => {
+    const t = mkTicket({ creator: USER_PLAIN, channelId: "710000000000000012", reason: "close me" });
+    makeCacheChannel(t.channel_id);
+    dashInvalidations.length = 0;
+
+    const r = await closePost({ ticket_id: String(t.id), reason: "done" });
+    assert.equal(r.res.status, 302);
+    assert.ok(
+      dashInvalidations.includes(CID_A),
+      `close dropped the dashboard cache (got ${JSON.stringify(dashInvalidations)})`,
+    );
+  });
+
+  it("a refused mutation (ticket not open) invalidates NOTHING — no write, no churn", async () => {
+    const t = mkTicket({ creator: USER_PLAIN, channelId: "710000000000000013", reason: "closed already" });
+    makeCacheChannel(t.channel_id);
+    api.closeTicket ? api.closeTicket(t.id, "x") : null;
+    if (!api.closeTicket) {
+      api.db
+        .prepare("UPDATE tickets SET status='closed', closed_at=? WHERE id=?")
+        .run(Date.now(), t.id);
+    }
+    dashInvalidations.length = 0;
+
+    const r = await claimPost({ ticket_id: String(t.id) });
+    assert.equal(r.res.status, 302, "refusal flash-redirects");
+    assert.match(r.location || "", /error=/, "the refusal is an error flash");
+    assert.deepEqual(
+      dashInvalidations,
+      [],
+      "a refused claim must not touch the cache (zero writes, zero churn)",
+    );
   });
 });

@@ -138,7 +138,8 @@ function renderTicketRow({ ticket, guildId, csrfToken, maxReason, names = null }
  * soft-closed rows stay addressable without a second bounded list query).
  *
  * @param {object} input
- * @param {string} input.guildId server-derived (guildScope snowflake)
+ * @param {number} input.guildId ROUTE identity — integer communities.id (post-Fluxer PR2;
+ *   NOT a platform snowflake — the guildScope layer resolves it, see #468 C2-9)
  * @param {object[]} input.tickets open-ticket rows (bounded listOpenTickets read)
  * @param {string|null} input.csrfToken
  * @param {{done: string|null, error: string|null}|null} [input.flash]

@@ -3,8 +3,10 @@
  * Model Changes, § Cutover "exact, one PR, no dual-read", § PKCE and state).
  *
  * Everything below runs inside ONE db.transaction. Foreign keys are ON by
- * default (better-sqlite3 enables them; src/db/connection.js only sets WAL —
- * the spec's claim that they are off is a verified divergence, see § Cutover),
+ * default (better-sqlite3 enables them; src/db/connection.js sets
+ * `foreign_keys=ON` EXPLICITLY alongside WAL/synchronous/busy_timeout — added
+ * by audit-2026-10 #202, which closed the divergence this header used to cite;
+ * #468 DB-7),
  * so `up()` toggles PRAGMA foreign_keys OFF around the transaction: a
  * `DROP TABLE` under FK enforcement fires ON DELETE CASCADE/SET NULL on the
  * child tables (ticket_members, ticket_staff, ticket_messages,

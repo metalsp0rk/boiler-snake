@@ -63,6 +63,7 @@ const migrations = [
   require("./migrations/053_retention_sweep_indexes"),
   require("./migrations/054_ucmd_day_index"),
   require("./migrations/055_gork_usage_day_index"),
+  require("./migrations/056_admin_audit_created_at_index"),
 ];
 
 const helpers = {
@@ -85,10 +86,11 @@ const helpers = {
 //     APPENDED to the list above (same rule as numbered migration files).
 //   * Any other value runs the full replay: `0` is every pre-guard database
 //     (all steps already applied but never recorded — replay is safe by the
-//     idempotency contract above), and a partial version means a pass was
-//     interrupted mid-way (exactly the 003-style non-transactional data-move
-//     hazard 034 hardened against). We never trust a partial version to mean
-//     "those steps ran cleanly"; we re-run the idempotent steps and re-stamp.
+//     idempotency contract above), and a version BELOW this build's latest is
+//     simply an OLDER BUILD's completed-pass record (or a legacy never-stamped
+//     0) — the stamp is written only after a FULL pass, so no interrupted-pass
+//     value can exist here (#468 DB-7: this comment used to claim one could).
+//     We re-run the idempotent steps and re-stamp.
 //   * A version HIGHER than this build knows means old code against a newer
 //     DB — refuse to touch it and fail loudly with both numbers.
 //   * #394 (DB-2): a COUNT cannot record a SET. user_version alone is blind
