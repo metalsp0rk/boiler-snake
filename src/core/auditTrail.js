@@ -24,19 +24,62 @@
  * snake_case; do not rename once shipped — the Phase 1 audit viewer and the
  * slash↔web parity tests diff on this string.
  *
- * DETAILS: minimal before/after values only. Keys matching
- * /(token|secret|password|cookie)/i are stripped recursively before insert
- * (§8.7 redaction belt; the repo's size/circular guards are the backstop).
+ * DETAILS: minimal before/after values only. CREDENTIAL-SHAPED keys (a whole
+ * word component that IS token/secret/password/cookie — see isCredentialKey)
+ * have their VALUES masked to REDACTED recursively before insert (§8.7
+ * redaction belt; the repo's size/circular guards are the backstop).
+ *
+ * #368: this used to DELETE any key merely CONTAINING one of those words
+ * (substring match), so the numeric "summarize_input_tokens" budget vanished
+ * from gork.summarize_budget_set — the value the row exists to record. Two
+ * fixes: match whole word COMPONENTS (so the plural count "...tokens" stays),
+ * and MASK rather than drop (so a genuine redaction is visible in the audit
+ * row instead of silently missing).
  */
 
 const db = require("../db");
 const { ensureCommunity } = require("../platform/community");
 
-/** Details keys that smell like credentials never reach details_json. */
-const REDACT_KEY_PATTERN = /(token|secret|password|cookie)/i;
+/** Placeholder replacing the value of every credential-shaped key (#368). */
+const REDACTED = "[redacted]";
 
 /**
- * Recursively strip credential-like keys. Returns NEW structures; the input is
+ * Whole-word credential vocabulary. PLURAL credential words are included
+ * ("client_secrets", "cookies"); the DELIBERATE omission is "tokens" — the
+ * plural is the COUNT sense in this codebase's vocabulary
+ * (summarize_input_tokens, max_tokens): budgets, not secrets (#368).
+ */
+const CREDENTIAL_WORDS = new Set([
+  "token",
+  "secret",
+  "secrets",
+  "password",
+  "passwords",
+  "cookie",
+  "cookies",
+]);
+
+/**
+ * A details key is credential-shaped when one of its WORD COMPONENTS is a
+ * credential word: "bot_token", "accessToken", "clientSecret", "cookie" —
+ * but NOT longer/plural words that merely CONTAIN one ("..._tokens" counts,
+ * "tokenizer"). The old substring belt deleted those legitimate payloads
+ * too; that over-reach was #368.
+ * @param {string} key
+ * @returns {boolean}
+ */
+function isCredentialKey(key) {
+  const words = String(key)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2") // camelCase boundary → space
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean);
+  return words.some((word) => CREDENTIAL_WORDS.has(word.toLowerCase()));
+}
+
+/**
+ * Recursively MASK credential-shaped keys (value → REDACTED; the key stays
+ * visible so the audit row shows something was hidden rather than nothing
+ * being recorded). Returns NEW structures; the input is
  * never mutated. Cycles collapse to null so the walker can never spin.
  * @param {unknown} value
  * @param {WeakSet<object>} [seen]
@@ -54,8 +97,7 @@ function redactSensitive(value, seen = new WeakSet()) {
 
   const out = {};
   for (const key of Object.keys(value)) {
-    if (REDACT_KEY_PATTERN.test(key)) continue;
-    out[key] = redactSensitive(value[key], seen);
+    out[key] = isCredentialKey(key) ? REDACTED : redactSensitive(value[key], seen);
   }
   return out;
 }
@@ -191,7 +233,8 @@ function recordSystemAudit(entry, options = {}) {
 }
 
 module.exports = {
-  REDACT_KEY_PATTERN,
+  REDACTED,
+  isCredentialKey,
   redactSensitive,
   recordSlashAudit,
   recordSystemAudit,

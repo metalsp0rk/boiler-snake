@@ -48,8 +48,10 @@
  *   affect the response or the DB row.
  *
  * REDACTION (§8.7 belt, atop the repo's 4000-byte/circular guards): keys
- * matching /(token|secret|password|cookie)/i are stripped recursively from
- * `details` before serialization.
+ * whose WORD COMPONENTS spell a credential word (token/secret/password/
+ * cookie — never mere substrings like the "...tokens" budget counts, #368)
+ * get their VALUES masked to "[redacted]" recursively in `details` before
+ * serialization. ONE implementation for both transports — core/auditTrail.
  */
 
 const db = require("../../db");
@@ -57,7 +59,7 @@ const auditLog = require("../../features/logs/auditLog");
 // §8.7 redaction belt: ONE implementation for both transports (slash side:
 // core/auditTrail.js). A fix to one copy must never miss the other — the
 // two hand-rolled copies this replaced had already drifted in comments.
-const { REDACT_KEY_PATTERN, redactSensitive } = require("../../core/auditTrail");
+const { REDACTED, isCredentialKey, redactSensitive } = require("../../core/auditTrail");
 const { discordCommunityId } = require("../../platform/community");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
 
@@ -346,7 +348,8 @@ function countAudit(guildId, opts = {}, options = {}) {
 
 module.exports = {
   DEFAULT_AUDIT_ORIGIN,
-  REDACT_KEY_PATTERN,
+  REDACTED,
+  isCredentialKey,
   bindAuditClient,
   getBoundAuditClient,
   createAuditMiddleware,
