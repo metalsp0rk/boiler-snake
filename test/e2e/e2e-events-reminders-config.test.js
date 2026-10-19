@@ -964,7 +964,7 @@ describe(
       const denied = await erSlash("edit", [strOpt("event", String(se.event.id))], env.ids.outsider);
       assert.match(
         await settledText(denied),
-        /You need \*\*Manage Guild\*\* or be the \*\*creator\*\* of this scheduled event\./,
+        /You need \*\*Manage Server\*\* or be the \*\*creator\*\* of this scheduled event\./,
       );
 
       const inter = await erSlash("edit", [strOpt("event", String(se.event.id))]);
@@ -1035,7 +1035,7 @@ describe(
       const deniedState = await respondedState(denied, "outsider er-recur denial");
       assert.match(
         String(deniedState.response_json?.data?.content ?? ""),
-        /You need \*\*Manage Guild\*\* or be the \*\*creator\*\*/,
+        /You need \*\*Manage Server\*\* or be the \*\*creator\*\*/,
       );
 
       const click = await env.mock.click({

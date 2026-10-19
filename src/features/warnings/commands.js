@@ -188,7 +188,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("setwarn")
-    .setDescription("Configure warning system guild settings.")
+    .setDescription("Configure the warning system for this server.")
     .setDefaultMemberPermissions(staffPerms)
     .addSubcommand((sc) =>
       sc

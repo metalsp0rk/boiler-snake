@@ -179,7 +179,7 @@ const commands = [
       sc
         .setName("setchannel")
         .setDescription(
-          "Set the default channel for reminder posts (Manage Guild).",
+          "Set the default channel for reminder posts (Manage Server).",
         )
         .addChannelOption((opt) =>
           opt
@@ -353,7 +353,7 @@ function buildReminderModal(opts) {
         .setTextInputComponent(customOffsets),
       new LabelBuilder()
         .setLabel("Notify channel override (optional)")
-        .setDescription("Leave empty to use the guild default")
+        .setDescription("Leave empty to use the server default")
         .setChannelSelectMenuComponent(channelSelect),
       new LabelBuilder()
         .setLabel("Custom embed description (optional)")
