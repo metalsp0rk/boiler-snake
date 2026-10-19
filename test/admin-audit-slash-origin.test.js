@@ -215,22 +215,43 @@ describe("auditTrail helper contract (unit)", () => {
     assert.equal(inserts, 0);
   });
 
-  it("redacts credential-like detail keys recursively without mutating input", () => {
+  it("masks credential-SHAPED keys and PRESERVES count vocabulary (#368)", () => {
     const input = {
       keep: 1,
       bot_token: "nope",
+      // #368: a budget COUNT, not a credential — the old substring belt
+      // (/token|secret|password|cookie/) silently deleted this key.
+      summarize_input_tokens: 9000,
+      maxTokens: 500,
       nested: {
         clientSecret: "nope",
+        accessToken: "nope",
+        cookies: ["nope"],
         keep: 2,
         list: [{ password: "nope", cookie: "nope", ok: 3 }],
       },
     };
     const out = redactSensitive(input);
 
-    assert.deepEqual(out, { keep: 1, nested: { keep: 2, list: [{ ok: 3 }] } });
+    // Credential-shaped keys are MASKED (visible placeholder, never the
+    // value — and never silently vanished, which was the #368 blind spot).
+    assert.deepEqual(out, {
+      keep: 1,
+      bot_token: "[redacted]",
+      summarize_input_tokens: 9000,
+      maxTokens: 500,
+      nested: {
+        clientSecret: "[redacted]",
+        accessToken: "[redacted]",
+        cookies: "[redacted]",
+        keep: 2,
+        list: [{ password: "[redacted]", cookie: "[redacted]", ok: 3 }],
+      },
+    });
     // Original object untouched (handlers may keep using their details object).
     assert.ok("bot_token" in input);
     assert.ok("clientSecret" in input.nested);
+    assert.equal(input.nested.cookies[0], "nope");
   });
 
   it("redaction collapses cycles instead of looping forever", () => {
@@ -255,7 +276,10 @@ describe("auditTrail helper contract (unit)", () => {
     assert.equal(row.origin, "slash");
     const details = JSON.parse(row.details_json);
     assert.equal(details.kept, true);
-    assert.equal(details.bot_token, undefined);
+    // #368 masking: the credential key STAYS visible, its value does not —
+    // "[redacted]" in place of the secret, never the secret itself.
+    assert.equal(details.bot_token, "[redacted]");
+    assert.ok(!row.details_json.includes("nope"));
 
     const listed = unitDb.listAdminAudit(communityKey("guild-unit-audit-roundtrip"));
     assert.equal(listed.length, 1);
