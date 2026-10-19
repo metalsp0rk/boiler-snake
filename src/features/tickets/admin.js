@@ -23,6 +23,7 @@ const { summarizeTicket } = require("./summary");
 const { Color, formatTicketRef, tsFull } = require("../../core/theme");
 const { COLOR_INFO, COLOR_SENSITIVE } = require("./constants");
 const { requireLiveTicketChannel } = require("./helpers");
+const { fetchHistoryWindow } = require("./messageWindow");
 
 
 /**
@@ -165,57 +166,40 @@ async function handleInfo(commandCtx, ctx) {
  * @param {string} channelId
  * @returns {Promise<object[]>} archive-shaped rows, oldest → newest
  */
+// #472 (LT-16.2): same fetch cap the transcript pipeline uses; the walk
+// itself (100/page before-cursor, snowflake oldest, sort) is shared in
+// messageWindow.fetchHistoryWindow.
+const HISTORY_MAX_MESSAGES = 5000;
+
 async function fetchHistoryRows(outbound, communityId, channelId) {
-  const rows = [];
-  let before;
-  const MAX = 5000;
-  const PAGE = 100;
-
-  while (rows.length < MAX) {
-    const res = await outbound.fetchMessages(channelId, {
-      limit: PAGE,
-      // #386 (FLX-5): the archive reads ONE community's channel — saying so
-      // lets the Fluxer adapter refuse a provably-foreign channel id (the
-      // Discord adapter assembles its own options and is unaffected).
-      ...(Number.isSafeInteger(communityId) ? { communityId } : {}),
-      ...(before ? { before } : {}),
-    });
-    if (!res.ok) {
-      const err = new Error(res.error);
-      err.code = "HISTORY_FETCH";
-      throw err;
-    }
-    const page = res.messages || [];
-    for (const m of page) {
-      rows.push({
-        message_id: String(m.id),
-        author_id: String(m.authorId ?? "0"),
-        // Labels are resolved via resolveUsers/enrich below; the raw id is the
-        // fallback summarizeTicket renders when resolution is unavailable.
-        author_tag: null,
-        content: m.content ?? "",
-        sent_at: m.createdAt
-          ? new Date(m.createdAt).getTime()
-          : Date.now(),
+  return fetchHistoryWindow({
+    fetchPage: async ({ limit, before }) => {
+      const res = await outbound.fetchMessages(channelId, {
+        limit,
+        // #386 (FLX-5): the archive reads ONE community's channel — saying so
+        // lets the Fluxer adapter refuse a provably-foreign channel id (the
+        // Discord adapter assembles its own options and is unaffected).
+        ...(Number.isSafeInteger(communityId) ? { communityId } : {}),
+        ...(before ? { before } : {}),
       });
-    }
-    if (page.length < PAGE) break;
-    // Oldest id of the page (discord.js returns newest-first; snowflake compare)
-    const oldest = page.reduce((a, b) => {
-      try {
-        return BigInt(a.id) < BigInt(b.id) ? a : b;
-      } catch {
-        return String(a.id) < String(b.id) ? a : b;
+      if (!res.ok) {
+        const err = new Error(res.error);
+        err.code = "HISTORY_FETCH";
+        throw err;
       }
-    });
-    before = oldest.id;
-  }
-
-  rows.sort((a, b) => {
-    if (a.sent_at !== b.sent_at) return a.sent_at - b.sent_at;
-    return String(a.message_id).localeCompare(String(b.message_id));
+      return res.messages || [];
+    },
+    normalize: (m) => ({
+      message_id: String(m.id),
+      author_id: String(m.authorId ?? "0"),
+      // Labels are resolved via resolveUsers/enrich below; the raw id is the
+      // fallback summarizeTicket renders when resolution is unavailable.
+      author_tag: null,
+      content: m.content ?? "",
+      sent_at: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
+    }),
+    max: HISTORY_MAX_MESSAGES,
   });
-  return rows;
 }
 
 /**
