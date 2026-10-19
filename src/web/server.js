@@ -28,6 +28,9 @@ const {
 const {
   registerSchedulerJobHealthSources,
 } = require("./data/schedulerJobHealth");
+const {
+  registerBridgeRelayHealthSource,
+} = require("./data/bridgeRelayHealth");
 
 /** @type {import("http").Server|null} */
 let server = null;
@@ -73,6 +76,19 @@ function startWebServer(options = {}) {
   } catch (err) {
     console.error(
       "[web] scheduler job-health bridge failed:",
+      err?.message || err
+    );
+  }
+
+  // #217: the bridge RELAY backlog row — queue depth + poison-parked lanes
+  // the scheduler's bridge-relay liveness row cannot express. Reads the DB
+  // + the LIVE job at snapshot time; a dark bridge reads unknown (the
+  // getter returns null), never a fabricated green.
+  try {
+    registerBridgeRelayHealthSource();
+  } catch (err) {
+    console.error(
+      "[web] bridge relay health source failed:",
       err?.message || err
     );
   }

@@ -1077,6 +1077,44 @@ function countOutboxDepth(bridgeId) {
   return depth;
 }
 
+/**
+ * #217 (bridge observability): one web ticker-health read of the whole
+ * relay backlog across ACTIVE bridges — live queue (pending + sending) and
+ * poison-parked copies (state 'failed') per bridge, worst-first. Single
+ * grouped query (no N+1); clear bridges carry no backlog rows and are
+ * omitted — the caller renders the honest all-clear. This is the DB side
+ * of "queue depth + poison-park state"; worker liveness stays the
+ * scheduler's bridge-relay row (no last-relay timestamp exists in the
+ * outbox schema and this query will not fabricate one).
+ *
+ * @returns {{ bridges: Array<{publicId: string, queued: number, parked: number}>,
+ *             totals: { queued: number, parked: number } }}
+ */
+function relayHealthSummary() {
+  const rows = db
+    .prepare(`
+      SELECT b.public_id AS public_id,
+             SUM(CASE WHEN o.state IN ('pending', 'sending') THEN 1 ELSE 0 END) AS queued,
+             SUM(CASE WHEN o.state = 'failed' THEN 1 ELSE 0 END) AS parked
+      FROM bridge_outbox o
+      JOIN bridges b ON b.id = o.bridge_id
+      WHERE b.state = 'active' AND o.state IN ('pending', 'sending', 'failed')
+      GROUP BY b.id, b.public_id
+      ORDER BY parked DESC, queued DESC, b.public_id ASC
+    `)
+    .all();
+  const bridges = rows.map((r) => ({
+    publicId: String(r.public_id),
+    queued: Number(r.queued),
+    parked: Number(r.parked),
+  }));
+  const totals = bridges.reduce(
+    (t, b) => ({ queued: t.queued + b.queued, parked: t.parked + b.parked }),
+    { queued: 0, parked: 0 }
+  );
+  return { bridges, totals };
+}
+
 // ---------------------------------------------------------------------------
 // bridge_message_links + bridge_src_snapshots
 // ---------------------------------------------------------------------------
@@ -1467,6 +1505,7 @@ module.exports = {
   deleteSettledBridgeOutboxOlderThan,
   deleteBridgeMessageLinksOlderThan,
   countOutboxDepth,
+  relayHealthSummary,
   // links / snapshots
   addBridgeMessageLink,
   listBridgeMessageLinks,
