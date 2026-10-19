@@ -216,9 +216,7 @@ function incrementGorkUsage(communityId, userId, scopeKind, scopeId, day) {
 module.exports = {
   BUDGET_MIN,
   BUDGET_MAX,
-  GUILD_SCOPE_ID,
   clampDailyLimit,
-  normalizeScopeKind,
   resolveBudget,
   upsertGorkBudgetRule,
   deleteGorkBudgetRule,

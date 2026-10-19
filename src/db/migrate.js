@@ -252,7 +252,6 @@ function runMigrations() {
 
 module.exports = {
   runMigrations,
-  readUserVersion,
   assertRegistryIntegrity,
   readLedgerIds,
   LATEST_VERSION,

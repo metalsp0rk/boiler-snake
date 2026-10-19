@@ -279,8 +279,6 @@ module.exports = {
   AUDIT_ORIGINS,
   MAX_AUDIT_LIST_LIMIT,
   MAX_AUDIT_DETAILS_JSON,
-  MAX_AUDIT_ACTION,
-  MAX_AUDIT_TARGET,
   normalizeAuditOrigin,
   insertAdminAudit,
   getAdminAuditById,

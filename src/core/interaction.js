@@ -72,7 +72,6 @@ async function safeErrorReply(interaction, content = MSG_GENERIC_ERROR) {
 }
 
 module.exports = {
-  ephemeralPayload,
   replyEphemeral,
   editEphemeral,
   replyOrFollowUpEphemeral,

@@ -62,4 +62,5 @@ function createClient() {
   return client;
 }
 
-module.exports = { createClient, clientOptions };
+// #470 (H1-2): clientOptions is internal-only (the dead export was dropped).
+module.exports = { createClient };
