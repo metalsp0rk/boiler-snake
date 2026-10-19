@@ -765,6 +765,98 @@ async function deleteMessageWithoutBan(message, cause) {
 }
 
 /**
+ * #469 (F2-5): a BOT posting in a honeypot channel used to be a silent
+ * nothing. The pipeline's bot-author gate ran BEFORE the trap, so a
+ * bot-built raid littered the channel permanently: no delete, no ban,
+ * no log. The trap now sees bot traffic too:
+ *   - our OWN post (the trap warning) -> skipped (loop guard);
+ *   - an outside bot -> message deleted + admin-audit row
+ *     (honeypot.bot_post) + console warning naming every id.
+ *
+ * A BAN is deliberately NOT attempted: the human honeypot ban DMs the
+ * user and its staff embed answers a ban outcome, and nuking another
+ * server's integration is a staff decision - the audit row gives them
+ * the evidence. Message deletion alone keeps the trap channel clean.
+ *
+ * Returns true when the message was honeypot traffic (caller must not
+ * keep processing it).
+ */
+async function handleHoneypotBotMessage(message, { selfId = null } = {}) {
+  try {
+    if (!selfId) return false; // cannot prove it is not OURS -> old shape
+    if (message.author?.id === selfId) return false; // the trap's own warning
+    const communityId = communityIdFor(message.guild.id);
+    if (!isHoneypotChannel(communityId, message.channel.id)) return false;
+
+    console.warn(
+      `[honeypot] Bot-authored post in honeypot channel ${message.channel.id} ` +
+        `(guild ${message.guild.id}, bot ${message.author?.id}) - deleted, NO ban issued (#469 F2-5)`,
+    );
+    let deleted = false;
+    try {
+      if (message.deletable) {
+        await message.delete();
+        deleted = true;
+      }
+    } catch (e) {
+      console.error(
+        `[honeypot] Could not delete bot-authored post ${message.id} in ${message.guild.id}:`,
+        e?.message || e,
+      );
+    }
+    try {
+      recordSystemAudit({
+        communityId,
+        action: "honeypot.bot_post",
+        targetType: "user",
+        targetId: message.author?.id ?? null,
+        details: {
+          channel_id: message.channel?.id ?? message.channelId ?? null,
+          message_id: message.id ?? null,
+          deleted,
+          bot: true,
+        },
+      });
+    } catch (e) {
+      console.error(
+        "[honeypot] bot-post audit write failed:",
+        e?.message || e,
+      );
+    }
+    return true;
+  } catch (err) {
+    console.error("[honeypot] bot-post guard failed:", err?.message || err);
+    return false;
+  }
+}
+
+/**
+ * #469 (F2-7): the TRUTH about which roles a member holds.
+ *
+ * discord.js `member.roles.cache` is a FILTERED view: ids missing from the
+ * guild role store (partial payload after a gateway resume, big-guild role
+ * sync gaps) are INVISIBLE there. Every honeypot decision built on the
+ * filtered cache alone failed in the dangerous direction — an unknown-id
+ * ban-role grant was a ban-MISS, and an unknown-id staff role was an
+ * exemption-MISS that BANNED A MODERATOR. The gateway's raw `_roles` array
+ * carries the ids regardless of role-store completeness; the union is the
+ * honest set. Unknown ids stay unknown (they simply do not match the DB
+ * configuration) — what disappears is the silent SKIP of ids the checks
+ * are supposed to see.
+ *
+ * @param {object|null} member discord.js GuildMember (or mock twin)
+ * @returns {Set<string>} role ids, cache ∪ raw
+ */
+function memberRoleIdSet(member) {
+  const ids = new Set();
+  for (const id of member?.roles?.cache?.keys?.() ?? []) ids.add(id);
+  if (Array.isArray(member?._roles)) {
+    for (const id of member._roles) ids.add(String(id));
+  }
+  return ids;
+}
+
+/**
  * If the message is in a honeypot channel, delete it and ban the author (unless exempt).
  * Exempt users still have their message deleted, but are not banned.
  * When the author's member state cannot be resolved (uncached member + failed
@@ -799,7 +891,9 @@ async function handleHoneypotMessage(message) {
   }
 
   // Exempt roles (staff, etc.) — no ban, but still delete the message so the channel stays empty
-  const roleIds = [...member.roles.cache.keys()];
+  // #469 (F2-7): cache ∪ raw _roles — a staff role invisible to the filtered
+  // cache must not cost a moderator their ban immunity.
+  const roleIds = [...memberRoleIdSet(member)];
   // staffRoles repo is community-keyed (PR 2): reuse the resolved id.
   if (memberHasStaffRole(communityId, roleIds)) {
     try {
@@ -1014,6 +1108,51 @@ async function handleHoneypotFluxerMessage(outbound, message) {
  * would instantly ban members who already held a ban role (irreversible
  * action fired by a cache artifact). Unknown diff → logged skip, no ban.
  */
+/**
+ * #469 (F2-6): join-time grants used to NEVER reach the trap. When a
+ * role lands on a member this shard never cached (raid account joining
+ * WITH roles already applied, or a bot applying roles before the
+ * GUILD_MEMBER_ADD chunk), discord.js emits GuildMemberAvailable - no
+ * old state, and no subscriber existed. The Update path correctly
+ * refuses to guess on a missing diff (C3 guard), so the grant vanished
+ * silently. The Available payload is NOT a diff: it is the member's
+ * POSITIVE full state, so the role set is evaluated directly against
+ * the ban-role config and the same executeHoneypotBan runs (shared
+ * in-flight dedupe, shared mass-ban breaker, same exempt gate).
+ */
+async function handleHoneypotAvailableMember(member) {
+  if (!member?.guild) return;
+  if (member.user?.bot) return;
+
+  const guildId = member.guild.id;
+  const communityId = communityIdFor(guildId);
+  const roleIds = [...memberRoleIdSet(member)].filter((id) => id !== guildId);
+  const matched = findHoneypotBanRolesAmong(communityId, roleIds);
+  if (!matched.length) return;
+
+  if (memberHasStaffRole(communityId, roleIds)) {
+    console.log(
+      `[honeypot] Skip Available ban-role for exempt member ${member.id} in ${guildId} ` +
+        `(roles: ${matched.join(", ")})`,
+    );
+    return;
+  }
+
+  await executeHoneypotBan(member.guild, member.user, {
+    reason: `Held honeypot ban role on join/available (${matched.join(", ")})`,
+    dmText:
+      `You have been **banned** from **${member.guild.name}**.\n\n` +
+      `**Reason:** You were assigned a restricted role that is used to catch spam accounts and raids. ` +
+      `If you believe this was a mistake, contact the server staff through another channel.`,
+    trigger: "ban_role",
+    roleIds: matched,
+  });
+
+  console.log(
+    `[honeypot] Available ban-role trigger for ${member.id} in ${guildId}: ${matched.join(", ")}`,
+  );
+}
+
 async function handleHoneypotBanRole(oldMember, newMember) {
   if (!newMember?.guild) return;
   if (newMember.user?.bot) return;
@@ -1033,12 +1172,16 @@ async function handleHoneypotBanRole(oldMember, newMember) {
     return;
   }
 
-  const newRoles = newMember.roles?.cache ?? new Map();
+  // #469 (F2-7): both sides of the diff read cache ∪ raw. A ban-role whose
+  // role object the gateway never sent used to vanish from the cache view —
+  // the grant was invisible and the raid continued un-banned.
+  const newRoleIds = memberRoleIdSet(newMember);
+  const oldRoleIds = memberRoleIdSet(oldMember);
 
   const addedRoleIds = [];
-  for (const roleId of newRoles.keys()) {
+  for (const roleId of newRoleIds) {
     if (roleId === guildId) continue; // @everyone
-    if (!oldRoles.has(roleId)) addedRoleIds.push(roleId);
+    if (!oldRoleIds.has(roleId)) addedRoleIds.push(roleId);
   }
   if (!addedRoleIds.length) return;
 
@@ -1055,7 +1198,7 @@ async function handleHoneypotBanRole(oldMember, newMember) {
     externalGuildId: guildId,
   });
 
-  const allRoleIds = [...newRoles.keys()];
+  const allRoleIds = [...newRoleIds];
   if (memberHasStaffRole(communityId, allRoleIds)) {
     console.log(
       `[honeypot] Skip ban-role for exempt member ${newMember.id} in ${guildId} ` +
@@ -1566,6 +1709,18 @@ function registerEvents(supervisor, featureCtx) {
         : null;
   if (!client) return; // Discord unconfigured → no-op binds
 
+  // #469 (F2-6): the join-time-grant twin of the Update subscription.
+  client.on(Events.GuildMemberAvailable, async (member) => {
+    try {
+      await handleHoneypotAvailableMember(member);
+    } catch (e) {
+      console.error(
+        "[GuildMemberAvailable] honeypot banrole error:",
+        e?.message || e,
+      );
+    }
+  });
+
   client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     try {
       await handleHoneypotBanRole(oldMember, newMember);
@@ -1612,6 +1767,9 @@ function start(supervisor, featureCtx) {
 }
 
 module.exports = {
+  handleHoneypotBotMessage, // #469 (F2-5): bot traffic no longer blinds the trap
+  handleHoneypotAvailableMember, // #469 (F2-6): join-time grants reach the trap
+  memberRoleIdSet, // #469 (F2-7): the cache-union-raw role oracle
   name: "honeypot",
   commands,
   handlers: {

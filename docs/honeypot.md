@@ -14,6 +14,11 @@ When anyone posts in a honeypot channel, the bot **deletes** the message (if it 
 2. **Banned** from the guild
 3. **Skipped** for XP awards
 
+Posts by **other bots** are handled too (#469 F2-5): the message is deleted and an
+`honeypot.bot_post` admin-audit row records the author — no ban is attempted (the
+ban flow DMs a person, and disabling another server's integration is a staff
+decision the audit row supports). The bot's OWN trap warnings are never touched.
+
 ### Honeypot ban roles
 
 A **honeypot ban role** is a normal Discord role that, when **granted** to a member, causes an immediate ban. Typical uses:
@@ -27,7 +32,9 @@ When a non-exempt member **receives** a configured ban role, the bot:
 1. **DMs** them with the ban reason (if DMs are open)
 2. **Bans** them from the guild
 
-Members who **already** hold the role when you run `/honeypot banrole add` are **not** retroactively banned—only new grants (via `GuildMemberUpdate`) trigger the ban.
+Members who **already** hold the role when you run `/honeypot banrole add` are **not** retroactively banned—only new grants (via `GuildMemberUpdate`, and via `GuildMemberAvailable` for roles that land on members the bot never cached, e.g. a raid account joining **with** the role already applied — #469 F2-6) trigger the ban.
+
+Every role decision reads the member's role ids as **cache ∪ raw gateway payload** (#469 F2-7): `member.roles.cache` hides ids the role store never received a role object for, and those gaps used to fail in the dangerous direction (a missed ban, or a staff role invisible enough to lose its exemption). The raw ids close that; unknown ids simply match no configuration.
 
 Ban-role checks are **fail-safe**: a ban fires only when the bot can see the member's **previous** role state and the ban role is *newly* present. If a `GuildMemberUpdate` arrives without cached previous member state (e.g. right after a bot restart or gateway resume), the role diff is unknown and the bot logs a skip instead of banning — existing roles are never treated as newly granted.
 

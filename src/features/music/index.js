@@ -359,6 +359,105 @@ function registerEvents(supervisor, ctx) {
   });
 }
 
+// #469 (E2-06): the node connect budget is FINITE (retryAmount: 10).
+// A Lavalink outage longer than ~10 retries exhausts lavalink-client's
+// internal reconnect loop and NOTHING else ever asked the node again:
+// useable stayed false and every /play answered "not configured" until
+// the BOT PROCESS restarted. A slow readiness re-probe replaces the
+// one-shot budget with a permanent heartbeat — cheap (a useable check
+// per tick) and only reaching for the network when the node really is
+// down.
+const REPROBE_TICK_MS = 60_000;
+/** Give lavalink-client's OWN retry loop a couple of ticks first. */
+const REPROBE_STREAK = 2;
+
+/** @type {{ streak: number, timer: ReturnType<typeof setInterval>|null, client: object|null, manager: object|null }} */
+const reprobe = { streak: 0, timer: null, client: null, manager: null };
+
+/**
+ * One readiness tick. Extracted (and state-injectable) so tests drive
+ * the streak deterministically.
+ * @param {object} client
+ * @param {object} manager
+ * @param {{streak: number}} [state]
+ * @returns {Promise<"ready"|"waiting"|"attempted"|"connecting"|"no_node"|"failed">}
+ */
+async function reprobeLavalinkNode(client, manager, state = reprobe) {
+  if (manager?.useable) {
+    if (state.streak > 0) {
+      console.log("[music] Lavalink node back ONLINE (readiness re-probe).");
+    }
+    state.streak = 0;
+    return "ready";
+  }
+  state.streak += 1;
+  if (state.streak < REPROBE_STREAK) return "waiting";
+
+  let node = null;
+  try {
+    const nodes = manager?.nodeManager?.nodes ?? manager?.nodes ?? null;
+    node = nodes?.get?.("main") ?? null;
+    if (!node && nodes && typeof nodes.values === "function") {
+      node = nodes.values().next().value ?? null;
+    }
+  } catch (err) {
+    console.error("[music] re-probe node lookup failed:", err?.message || err);
+    return "no_node";
+  }
+  if (!node) {
+    console.warn("[music] Lavalink re-probe: no 'main' node exists to reconnect.");
+    return "no_node";
+  }
+  // Observed BEFORE the connectability check: an in-flight connect needs no
+  // second one, reconnectable or not.
+  if (node.connecting === true || node.connected === true) return "connecting";
+  if (typeof node.connect !== "function") {
+    console.warn("[music] Lavalink re-probe: the node exposes no connect() to call.");
+    return "no_node";
+  }
+
+  state.streak = 0;
+  try {
+    console.warn(
+      `[music] Lavalink node has been down for ${REPROBE_STREAK}+ probe tick(s) - issuing node.connect() (#469 E2-06: the boot retry budget is finite, this heartbeat is not)`,
+    );
+    await node.connect();
+    return "attempted";
+  } catch (err) {
+    console.error("[music] Lavalink re-probe connect failed:", err?.message || err);
+    return "failed";
+  }
+}
+
+/**
+ * Arm the heartbeat (idempotent). tickMs is a test seam.
+ */
+function startLavalinkReprobe(client, manager, { tickMs = REPROBE_TICK_MS } = {}) {
+  if (reprobe.timer) return reprobe.timer;
+  if (!manager) return null;
+  reprobe.client = client;
+  reprobe.manager = manager;
+  reprobe.streak = 0;
+  reprobe.timer = setInterval(() => {
+    // The timer callback MUST keep its own catch (rule 1): a rejecting
+    // probe may never kill the interval or ride the process net.
+    reprobeLavalinkNode(reprobe.client, reprobe.manager, reprobe).catch((err) =>
+      console.error("[music] Lavalink re-probe tick failed:", err?.message || err),
+    );
+  }, tickMs);
+  if (typeof reprobe.timer.unref === "function") reprobe.timer.unref();
+  return reprobe.timer;
+}
+
+/** Disarm (shutdown + tests). */
+function stopLavalinkReprobe() {
+  if (reprobe.timer) {
+    clearInterval(reprobe.timer);
+    reprobe.timer = null;
+  }
+  reprobe.streak = 0;
+}
+
 /**
  * Music is Discord-only (spec § Scheduler line 584): the Lavalink manager
  * streams voice on Discord guilds, so it is built from supervisor.discord and
@@ -398,6 +497,9 @@ function start(supervisor, ctx) {
     .catch((err) => {
       console.error("[music] Lavalink init failed:", err?.message || err);
     });
+  // #469 (E2-06): permanent readiness heartbeat - the boot-time
+  // retryAmount:10 budget used to be the END of reconnecting forever.
+  startLavalinkReprobe(client, manager);
 
   // Graceful-shutdown handle (audit C9): destroy live players so Lavalink
   // sessions and voice connections close cleanly instead of being hard-cut
@@ -405,6 +507,7 @@ function start(supervisor, ctx) {
   // the Discord client destroy: player.destroy sends its leave via the shard.
   return {
     stop() {
+      stopLavalinkReprobe(); // #469 (E2-06)
       const players = manager.players;
       if (!players || typeof players.values !== "function") return;
       const destroys = [];
@@ -433,6 +536,9 @@ function start(supervisor, ctx) {
 }
 
 module.exports = {
+  reprobeLavalinkNode, // #469 (E2-06): readiness heartbeat
+  startLavalinkReprobe,
+  stopLavalinkReprobe,
   name: "music",
   commands,
   handlers: {

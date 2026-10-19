@@ -247,6 +247,13 @@ describe("activity_log / admin_audit / daily aggregates via real writers (defaul
     const results = runRetentionSweeps();
     for (const row of results) {
       assert.equal(row.error, null, `${row.table} swept clean`);
+      if (row.table === "warnings" || row.table === "staff_notes") {
+        // #469 (F2-11): moderation-PII erasure is OPT-IN — unset knobs must
+        // report an honest "disabled" skip and touch nothing.
+        assert.equal(row.skipped, "disabled", `${row.table} is opt-in by default`);
+        assert.equal(row.deleted, 0, `${row.table} sweep deleted nothing while disabled`);
+        continue;
+      }
       assert.equal(row.skipped, null, `${row.table} enabled by default`);
     }
     assert.ok(

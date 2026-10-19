@@ -19,7 +19,7 @@ Staff adds a note on a user
 |------|--------|
 | Audience | Staff gate only |
 | Visibility | Never DMed; never exposed on member-facing commands |
-| Mutability | Editable and soft-deletable |
+| Mutability | Editable; deleting **erases the content** into a stub (#469 F2-11) — stubs optionally age out via `RETENTION_ERASED_NOTES_DAYS` |
 | Scope | Per guild + user |
 | Purpose | Context, history, “watch for X”—not a strike count |
 
@@ -34,7 +34,7 @@ Note: `/staff` — where that role list lives — is **shown only to `Manage Ser
 | `/note add user:<member> [content:<text>]` | Create a staff note (max 2000 characters). **Omit `content`** to open a modal for longer text. |
 | `/note list [user] [page] [include_deleted]` | List notes for a member (newest first), or recent guild-wide notes if `user` is omitted |
 | `/note edit id:<note_number> [content:<text>]` | Replace note body; records `edited_at` / `edited_by`. **Omit `content`** to open a prefilled modal. |
-| `/note delete id:<note_number>` | Soft-delete (`deleted_at`); row kept for audit |
+| `/note delete id:<note_number>` | Soft-delete (`deleted_at`) AND erase the body (#469 F2-11): the text is destroyed, the stub (number, author, timestamps, delete-by) stays for the audit chain and for warning links |
 | `/note info id:<note_number>` | Full note detail (author, timestamps, body) |
 | `/note settings` | Counts + access info |
 

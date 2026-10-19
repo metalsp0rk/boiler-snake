@@ -1383,7 +1383,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`055` registered the version is `55`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`057` registered the version is `57`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size AND the `applied_migrations` ledger agrees (below), the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **The `applied_migrations` ledger records WHAT ran (audit #394).** A count can never record a set: a length-preserving registry change (reorder, or a swap that keeps the list the same size) leaves `user_version` identical and would fast-skip a replay the changed registry needs. The ledger (`seq`/`id`/`applied_at`) stores the ORDERED id list of the last complete pass and is rebuilt transactionally with the version stamp — a crashed pass leaves neither honest. The fast-skip requires both records to agree; on disagreement (including legacy DBs with no ledger yet) the idempotent replay runs once and re-stamps both.
@@ -1474,6 +1474,8 @@ Concretely this means:
 | `053_retention_sweep_indexes` | Indexes for the retention sweep's settled-row scans (issue #399) |
 | `054_ucmd_day_index` | `idx_ucmd_day` — day-lead index for the daily-aggregate prune (issue #396) |
 | `055_gork_usage_day_index` | `idx_gork_usage_day` — day-lead index for the gork_usage lazy prune (issue #395) |
+| `056_admin_audit_created_at_index` | `idx_admin_audit_created_at` — retention-scan index for the yearly admin_audit prune (issue #468) |
+| `057_level_role_fk` | FK coverage for `role_drop_state` (→`communities` + composite →`level_roles` `ON DELETE CASCADE`, with an idempotent orphan pre-clean) and `guild_settings` (→`communities` on the PK) (issue #469) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

@@ -68,6 +68,23 @@ const DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS = 7;
  *    staying past every reminder's operational relevance (fires are
  *    minutes before start; rows stay 90d after THAT).
  */
+/**
+ * #469 (F2-11) moderation-PII erasure (GDPR-adjacent). Defaults are
+ * NULL — the sweeps are OPT-IN per guild deployment because moderation
+ * retention is a policy call the bot must not make silently:
+ *  - RETENTION_VOIDED_WARNINGS_DAYS: voided warnings (withdrawn,
+ *    enforcement-free) older than the window are erased. Active and
+ *    un-voided warnings are NEVER touched.
+ *  - RETENTION_ERASED_NOTES_DAYS: tombstones of DELETED staff notes
+ *    (content already destroyed at delete time since F2-11) older than
+ *    the window leave the table entirely.
+ * The third leg of the finding — daily counters — has been swept since
+ * #399 via RETENTION_DAILY_AGGREGATES_DAYS; the round-2 audit predates
+ * it (verified against this table list).
+ */
+const DEFAULT_VOIDED_WARNINGS_DAYS = null;
+const DEFAULT_ERASED_NOTES_DAYS = null;
+
 const DEFAULT_BRIDGE_OUTBOX_DAYS = 30;
 const DEFAULT_BRIDGE_LINKS_DAYS = 90;
 const DEFAULT_EVENT_ACTIVITY_DAYS = 90;
@@ -97,6 +114,8 @@ const ENV_KEYS = Object.freeze([
   "RETENTION_BRIDGE_LINKS_DAYS",
   "RETENTION_EVENT_ACTIVITY_DAYS",
   "RETENTION_EVENT_NOTIFICATIONS_DAYS",
+  "RETENTION_VOIDED_WARNINGS_DAYS",
+  "RETENTION_ERASED_NOTES_DAYS",
 ]);
 
 /** config field ← env name (the mapping pick() needs to stay honest). */
@@ -110,6 +129,8 @@ const ENV_BY_FIELD = Object.freeze({
   bridgeLinksDays: "RETENTION_BRIDGE_LINKS_DAYS",
   eventActivityDays: "RETENTION_EVENT_ACTIVITY_DAYS",
   eventNotificationsDays: "RETENTION_EVENT_NOTIFICATIONS_DAYS",
+  voidedWarningsDays: "RETENTION_VOIDED_WARNINGS_DAYS",
+  erasedNotesDays: "RETENTION_ERASED_NOTES_DAYS",
 });
 
 /**
@@ -189,6 +210,16 @@ function retentionConfig(overrides = {}) {
       "eventNotificationsDays",
       (v) => parseDaysKnob(v, DEFAULT_EVENT_NOTIFICATIONS_DAYS)
     ),
+    // #469 (F2-11): opt-in moderation erasure (unset ⇒ null ⇒ skip,
+    // reported as an honest "disabled" skip by the runner).
+    voidedWarningsDays: pick(
+      "voidedWarningsDays",
+      (v) => parseDaysKnob(v, DEFAULT_VOIDED_WARNINGS_DAYS)
+    ),
+    erasedNotesDays: pick(
+      "erasedNotesDays",
+      (v) => parseDaysKnob(v, DEFAULT_ERASED_NOTES_DAYS)
+    ),
     batchRows,
     maxBatchesPerTable,
   };
@@ -200,6 +231,8 @@ module.exports = {
   DEFAULT_BRIDGE_LINKS_DAYS,
   DEFAULT_EVENT_ACTIVITY_DAYS,
   DEFAULT_EVENT_NOTIFICATIONS_DAYS,
+  DEFAULT_VOIDED_WARNINGS_DAYS,
+  DEFAULT_ERASED_NOTES_DAYS,
   DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS,
   DEFAULT_ADMIN_AUDIT_DAYS,
   DEFAULT_DAILY_AGGREGATES_DAYS,

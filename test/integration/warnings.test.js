@@ -522,6 +522,46 @@ describe("integration: warnings", () => {
     assert.match(String(name), /staff-record-.*\.md/);
   });
 
+  it("#469 (F2-11): an export cannot resurrect a DELETED note's content", async () => {
+    // The leak: the export resolver re-pulls notes linked to warnings even
+    // when they are deleted (deleted notes ride the export by DEFAULT), and
+    // soft-delete kept the full text — so a "deleted" note text rode every
+    // staff-record export. Fix: deletion ERASES the content into a stub.
+    const note = env.db.createStaffNote({
+      communityId: env.communityId,
+      userId: IDS.member,
+      authorId: IDS.admin,
+      content: "SECRET NOTE BODY never for exports",
+    });
+    env.db.createWarning({
+      communityId: env.communityId,
+      userId: IDS.member,
+      issuerId: IDS.admin,
+      reason: "linked warning",
+      relatedNoteId: note.id,
+    });
+    env.db.softDeleteStaffNote(env.communityId, note.note_number, IDS.admin);
+
+    const exp = await env.runCommand({
+      commandName: "warn",
+      subcommand: "export",
+      admin: true,
+      options: { user: env.users.memberUser },
+    });
+    const last = exp.replies[exp.replies.length - 1];
+    assert.ok(Array.isArray(last.files) && last.files.length >= 1);
+    const file = last.files[0];
+    const raw = file.data ?? file.attachment ?? file.raw;
+    const body = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw ?? "");
+    assert.ok(body.length > 0, "the export attachment carries the markdown");
+
+    assert.ok(
+      !body.includes("SECRET NOTE BODY"),
+      "pre-fix: the erased note's TEXT rode the export via the linked-note resolver",
+    );
+    assert.match(body, /\[erased/, "the stub survives so the warning link does not dangle");
+  });
+
   it("expiry ticker auto-voids past-due warnings", async () => {
     const past = Date.now() - 5_000;
     const warn = env.db.createWarning({

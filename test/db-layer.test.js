@@ -122,7 +122,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 56);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 57);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -643,6 +643,7 @@ describe("db layer", () => {
       "LINK_MIRROR_DIRECTIONS",
       "USER_LINK_CODE_LIFETIME_MS",
       "ARCHIVE_CLAIM_LEASE_MS",
+      "ERASED_NOTE_CONTENT", // #469 (F2-11): the delete-tombstone marker string
     ]);
 
     it("exports no undefined value", () => {

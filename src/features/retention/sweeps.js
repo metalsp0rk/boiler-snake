@@ -6,6 +6,8 @@
  *    (uses idx_activity_created_at, the index whose 001 schema comment
  *    already justified it as aiding "pruning");
  *  - `admin_audit`                  — rows older than RETENTION_ADMIN_AUDIT_DAYS;
+ *  - `warnings` / `staff_notes`   — OPT-IN moderation erasure (#469
+ *      F2-11): voided warnings / erased-note tombstones only, per knob.
  *  - `user_channel_message_daily`   — UTC days before the
  *    RETENTION_DAILY_AGGREGATES_DAYS cutoff day;
  *  - `fluxer_oauth_transactions`    — rows past their own `expires_at`
@@ -74,6 +76,10 @@ const RETENTION_TABLES = Object.freeze([
   "bridge_message_links",
   "event_activity",
   "event_notifications",
+  // #469 (F2-11): moderation-PII erasure (opt-in; opt-out forever via
+  // the knob — both sweeps report "disabled" skips when unset).
+  "warnings",
+  "staff_notes",
 ]);
 
 /**
@@ -144,6 +150,24 @@ const TABLE_SWEEPS = Object.freeze([
     daysKey: "eventNotificationsDays",
     cutoff: "ms",
     remove: (cutoffMs, limit) => db.deleteEventNotificationsOlderThan(cutoffMs, limit),
+  },
+  // ---- #469 (F2-11): the GDPR path moderation used to not have -------
+  {
+    // VOIDED warnings only — voided_at is the withdrawal timestamp the
+    // cutoff filters on. Active enforcement history is untouchable by
+    // this sweep (the WHERE lives inside the primitive, not the spec).
+    table: "warnings",
+    daysKey: "voidedWarningsDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteVoidedWarningsOlderThan(cutoffMs, limit),
+  },
+  {
+    // Erase-TOMBSTONES only (deleted_at NOT NULL): note content was
+    // already destroyed at delete time, this retires the stub row.
+    table: "staff_notes",
+    daysKey: "erasedNotesDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteErasedNotesOlderThan(cutoffMs, limit),
   },
 ]);
 

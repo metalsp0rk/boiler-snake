@@ -133,7 +133,30 @@ async function requestCompletion(cfg, payload, opts = {}) {
         ...(errorBody ? { errorBody } : {}),
       };
     }
-    const data = await res.json();
+    let data;
+    try {
+      data = await res.json();
+    } catch (err) {
+      if (controller.signal.aborted) {
+        return {
+          ok: false,
+          reason: "timeout",
+          error: err?.message || String(err),
+          url,
+        };
+      }
+      // #469 (F1-7): a 200 whose body is not JSON is a PROVIDER problem,
+      // not a network one — a lying proxy used to be diagnosed as
+      // "network". webSearch.js already kept a "parse" class; ai.js now
+      // tells the same truth (operators and the interaction log read it).
+      return {
+        ok: false,
+        status: res.status,
+        reason: "parse",
+        error: `Response body is not JSON: ${err?.message || String(err)}`,
+        url,
+      };
+    }
     return { ok: true, data };
   } catch (err) {
     return {
@@ -515,15 +538,14 @@ async function chatWithTools(cfg, opts) {
   try {
     for (let round = 0; ; round += 1) {
       if (deadline && Date.now() >= deadline) {
-        return {
-          ok: false,
-          content: null,
-          status: null,
-          error: "timed out",
-          reason: "timeout",
-          durationMs: Date.now() - startedAt,
+        // #469 (F1-7): routed through failure() — the hand-rolled shape
+        // omitted url/errorBody/finishReason/usage that EVERY other failure
+        // path carries (the typedef promises one shape, not five).
+        return failure(
+          { error: "timed out", reason: "timeout" },
+          startedAt,
           toolCalls,
-        };
+        );
       }
       // Per-round capture wrapper (`let round` gives each iteration its own
       // binding); undefined stays fully inert in the sinks below.

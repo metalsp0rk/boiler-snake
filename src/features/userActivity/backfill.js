@@ -256,26 +256,34 @@ async function backfillChannelHistory(opts) {
       bucket.set(key, (bucket.get(key) || 0) + 1);
     }
 
-    for (const [key, n] of bucket) {
-      const [authorId, day] = key.split("\0");
-      incrementDaily(communityId, authorId, channel.id, day, n);
-      counted += n;
-    }
-
     const oldest = msgs[msgs.length - 1];
     before = oldest?.id;
 
-    if (cursorMode === "user" && onlyUserId) {
-      upsertBackfillCursor(communityId, onlyUserId, channel.id, {
-        oldest_message_id: before,
-        complete: false,
-      });
-    } else if (cursorMode === "guild") {
-      upsertGuildChannelBackfillCursor(communityId, channel.id, {
-        oldest_message_id: before,
-        complete: false,
-      });
-    }
+    // #469 (F2-10): the page's counts AND its cursor advance are ONE
+    // atomic unit. Counting before the cursor write was at-least-once:
+    // a crash between the two replays the page on resume (the cursor
+    // never moved) and, with no event-level dedup table, every message
+    // on that page is double-counted FOREVER. Inside the single-
+    // connection transaction either both stand or neither does — a
+    // replay re-processes a page exactly once.
+    db.transaction(() => {
+      for (const [key, n] of bucket) {
+        const [authorId, day] = key.split("\0");
+        incrementDaily(communityId, authorId, channel.id, day, n);
+      }
+      if (cursorMode === "user" && onlyUserId) {
+        upsertBackfillCursor(communityId, onlyUserId, channel.id, {
+          oldest_message_id: before,
+          complete: false,
+        });
+      } else if (cursorMode === "guild") {
+        upsertGuildChannelBackfillCursor(communityId, channel.id, {
+          oldest_message_id: before,
+          complete: false,
+        });
+      }
+    })();
+    for (const n of bucket.values()) counted += n;
 
     pages += 1;
     // Test seam: `pageDelayMs` is the shipped DELAY_MS unless a test
