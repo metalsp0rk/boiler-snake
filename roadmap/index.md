@@ -17,14 +17,16 @@
   | `P0 — audit criticals` | Small, verified critical fixes from the [2026-10-04 architecture audit](audit-2026-10.md) (§6 P0) |
   | `P1 — audit highs` | High-severity audit remediations (§6 P1) |
   | `P2 — structural paydown` | SDK-shaped tests, migration guard, CI, schema, config debt (§6 P2) |
+  | `P3 — post-audit findings` | Findings surfaced during post-audit verification runs (e.g. the 2026-10-16 fix run) — same severity discipline as P0–P2, lower blast radius |
   | `Gork next` | Gork feature work + open triage (design record: [gork.md](gork.md)) |
   | `Fluxer/Bridge live verification` | Live-verification items gating voice XP / elevated actions + bridge spike follow-ups (design records: [fluxer.md](fluxer.md), [bridge.md](bridge.md)) |
   | `Community Events v1` | Apollo-style events: epic + phases 1–5, DM wizard, `/eventreminder` retirement (design record: [community-events.md](community-events.md)) |
   | `Feature backlog` | Work-as-time-allows items from shipped features |
 
 - **Area labels** filter an issue list per feature: `gork`, `fluxer`, `bridge`,
-  `community-events`, `tickets`, `twitch`, `staff-roles`, `core-infra`, plus
-  `triage` (evidence needed) and `audit-finding` (from the 2026-10-04 audit).
+  `community-events`, `tickets`, `twitch`, `staff-roles`, `core-infra`, `music`,
+  `notifications` (feed watchers: RSS/YouTube/Twitch-family/GitHub releases), plus
+  `triage` (evidence needed) and `audit-finding` (from the 2026-10 audits).
 - **Status semantics:** an issue closes only with its verification bar met. The rule
   the audit forced (and fluxer/bridge invented): **no feature is "Shipped" without a
   dated live-verification record.** Merged-but-unverified stays an open issue.
@@ -103,4 +105,5 @@ Event reminders, staff notes, warnings, web admin console, Fluxer (`034`), bridg
 ### Migration-id reservation rule
 
 New tables reserve the **next free id when the PR is written** — never squat an id a
-draft does not own. Highest shipped id as of 2026-10-09: `036` (`user_links`).
+draft does not own. Ids move fast (highest shipped 2026-10-19: `057`); read
+`src/db/migrations/` at PR time instead of trusting any number in a doc.
