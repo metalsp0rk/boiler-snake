@@ -583,6 +583,18 @@ function createDiscordOutbound(client) {
     },
 
     /**
+     * Removes ONE user's reaction. #470 (FLX-12): the mirror used to ACQUIRE
+     * the reaction manager via `message.react(emojiKey)` — a POST that adds
+     * the BOT's own reaction on every single call. Every bot-initiated
+     * removal left a permanent bot reaction on the message (visible residue
+     * on reaction-role panels), and a user who was not reacting 400s AFTER
+     * the bot had already added itself. The twin on Fluxer issues a direct
+     * DELETE /reactions/:emoji/:user with no side effect; the mirror now
+     * resolves the EXISTING reaction (same shape as removeEmojiReaction
+     * below): an emoji that is not on the message is a no-op success, and a
+     * user whose reaction already vanished (404 / unknown-reaction codes)
+     * is an idempotent success — nothing to delete is a completed deletion.
+     *
      * @param {string} channelId
      * @param {string} messageId
      * @param {string} emojiKey
@@ -595,8 +607,25 @@ function createDiscordOutbound(client) {
         if (found.error) return { ok: false, error: found.error };
         const message = await lookupMessage(found.channel, messageId, "removeUserReaction");
         if (message.error) return { ok: false, error: message.error };
-        const reaction = await message.message.react(emojiKey);
-        await reaction.users.remove(String(userId));
+        const reactions = message.message.reactions;
+        const reaction =
+          reactions?.resolve?.(emojiKey) ?? reactions?.cache?.get?.(emojiKey) ?? null;
+        if (!reaction) return { ok: true }; // no such reaction — nothing to delete
+        try {
+          await reaction.users.remove(String(userId));
+        } catch (err) {
+          const status = err?.httpStatus ?? err?.status ?? null;
+          const discordCode = err?.code;
+          if (
+            status === 404 ||
+            discordCode === 10001 || // Unknown Emoji
+            discordCode === 10004 || // Unknown Reaction
+            discordCode === 50010 // Reaction was removed
+          ) {
+            return { ok: true }; // the user's reaction was already gone
+          }
+          throw err;
+        }
         return { ok: true };
       } catch (err) {
         return {
