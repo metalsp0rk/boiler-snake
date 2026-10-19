@@ -217,13 +217,14 @@ function pageHref(base, q) {
 /**
  * Pager with honest totals (the count helper ran for this exact filter).
  * #608: the engine is views/_helpers#pagerFor — the filter vocabulary stays
- * page-side inside hrefFor, byte-identical to the old copy.
+ * page-side inside hrefFor.
  *
- * Byte-exactness note (reproduced on purpose): BOTH call sites pass only
- * { offset, total, shown } as `page`, so `page.pageSize` is undefined and
- * prev computes Math.max(0, offset - undefined) = NaN — pageHref drops a
- * non-positive o, so the prev link targets the FIRST page. Issue #621 owns
- * that fix; a dedup must not smuggle behavior changes.
+ * #621 fix: the call sites pass the MERGED data-layer page as `filters` and
+ * a { offset, total, shown } projection as `page`. The pagination pageSize
+ * therefore comes from `filters` (the data layer's real number), never from
+ * the projection — the old `page.pageSize` read was undefined, prev computed
+ * Math.max(0, offset - undefined) = NaN, and pageHref silently dropped the
+ * offset, sending every prev link to the FIRST page.
  *
  * @param {string} base
  * @param {{ userId: string|null, state: string, pageSize: number }} filters
@@ -234,7 +235,7 @@ const pager = (base, filters, page) =>
     hrefFor: (o) =>
       pageHref(base, { u: filters.userId, state: filters.state, n: filters.pageSize, o }),
     offset: page.offset,
-    pageSize: page.pageSize,
+    pageSize: filters.pageSize,
     total: page.total,
     shown: page.shown,
   });
