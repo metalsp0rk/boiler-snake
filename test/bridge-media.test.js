@@ -167,7 +167,11 @@ describe("bridge media (PR 5)", () => {
       "https://cdn.example.test/one.bin",
       "https://cdn.example.test/two.png",
     ]);
-    assert.equal(media.spoolUsageSnapshot("b_spool001").bridgeBytes, 14);
+    // #475 (BRG-12): the LEDGER tracks the bytes that exist on disk (8+8),
+    // not the source's declared claim (7+7, the descriptor copy above).
+    // That exactness is what lets deletes release precisely instead of
+    // re-scanning the whole spool tree.
+    assert.equal(media.spoolUsageSnapshot("b_spool001").bridgeBytes, 16);
   });
 
   it("over-ceiling files skip with over-cap and never touch the network", async () => {
@@ -243,6 +247,153 @@ describe("bridge media (PR 5)", () => {
     assert.equal(third.descriptors[0].skipReason, null);
     assert.equal(third.descriptors[1].skipReason, "spool-full");
     assert.equal(third.notices.length, 1, "a fresh incident after clearing re-notices");
+  });
+
+  // ---------------------------------------------------------------------------
+  // #475 (BRG-12 / BRG-13): precise incremental accounting, latch edges on the
+  // usage-decrease paths. The full-tree rescan after every delete is dead.
+  // ---------------------------------------------------------------------------
+
+  it("#475 BRG-12: the ledger counts the ACTUAL spooled bytes, not the declared claim", async () => {
+    // A source lying about `size` (BRG-8 class) must not leave the ledger
+    // inflated: declared 4000, spooled 8.
+    const fetchImpl = recordingFetch("12345678");
+    await media.spoolAttachments({
+      publicId: "b_lie0001",
+      srcMessageId: "7001",
+      attachments: [
+        { id: "a1", filename: "liar.bin", size: 4000, url: "https://cdn.test/liar.bin" },
+      ],
+      destinationPlatform: "discord",
+      direction: "a_to_b",
+      opts: { fetchImpl, resolveHost: publicResolve },
+    });
+    assert.equal(
+      media.spoolUsageSnapshot("b_lie0001").bridgeBytes,
+      8,
+      "the ledger matches the disk (pre-#475: 4000, reconciled only by the next full rescan)"
+    );
+  });
+
+  it("#475 BRG-12: deleteSpoolDir scans ONLY its own dir (no full-tree stat storm)", () => {
+    // Two populated bridges — a full-tree rescan would walk BOTH. Count the
+    // readdir syscalls the delete performs: scoped = the msg dir itself, 1.
+    const fetchImpl = recordingFetch("12345678");
+    const opts = { fetchImpl, resolveHost: publicResolve };
+    const fill = (publicId, srcMessageId) =>
+      media.spoolAttachments({
+        publicId,
+        srcMessageId,
+        attachments: [
+          { id: "a1", filename: "x.bin", size: 8, url: "https://cdn.test/x.bin" },
+          { id: "a2", filename: "y.bin", size: 8, url: "https://cdn.test/y.bin" },
+        ],
+        destinationPlatform: "discord",
+        direction: "a_to_b",
+        opts,
+      });
+    return fill("b_perf0001", "8001")
+      .then(() => fill("b_perf0002", "8002"))
+      .then(() => {
+        const real = media.spoolUsageSnapshot("b_perf0001").totalBytes;
+        assert.ok(real >= 32, "sanity: two bridges hold bytes");
+
+        const realReaddir = fs.readdirSync;
+        let readdirs = 0;
+        fs.readdirSync = (...args) => {
+          readdirs += 1;
+          return realReaddir(...args);
+        };
+        try {
+          assert.equal(media.deleteSpoolDir("b_perf0001", "8001"), true);
+        } finally {
+          fs.readdirSync = realReaddir;
+        }
+        assert.ok(
+          readdirs <= 2,
+          `deleting ONE message dir may only list that dir (saw ${readdirs} readdirSync calls — a full-tree rescan returns here as O(all-time parked bytes))`
+        );
+        assert.equal(
+          media.spoolUsageSnapshot("b_perf0002").bridgeBytes,
+          16,
+          "the untouched bridge keeps its exact ledger"
+        );
+        assert.equal(
+          media.spoolUsageSnapshot("b_perf0001").bridgeBytes,
+          0,
+          "the deleted bridge's entry is released"
+        );
+      });
+  });
+
+  it("#475 BRG-13: the spool-full latch releases on the usage DROP — no spool success required", async () => {
+    media.resetSpoolAccounting(); // counter is process-global (same contract as the 2-GiB test)
+    const fetchImpl = recordingFetch("12345678");
+    const opts = {
+      fetchImpl,
+      resolveHost: publicResolve,
+      bridgeSpoolCapBytes: 10_000,
+      processSpoolCapBytes: 10,
+    };
+    const small = (id) => [{ id, filename: `${id}.bin`, size: 8, url: `https://cdn.test/${id}.bin` }];
+    // Declared 12 > the 10-byte process cap: refused AT the reservation, so
+    // no download, no write, no spool-success tail — ever.
+    const big = (id) => [{ id, filename: `${id}.bin`, size: 12, url: `https://cdn.test/${id}.bin` }];
+
+    // Bridge X fills most of the process budget (8 of 10).
+    const x = await media.spoolAttachments({
+      publicId: "b_latchX01",
+      srcMessageId: "9001",
+      attachments: small("x1"),
+      destinationPlatform: "discord",
+      direction: "a_to_b",
+      opts,
+    });
+    assert.equal(x.descriptors[0].skipReason, null);
+
+    // Bridge Y hits the cap: incident one fires…
+    const y1 = await media.spoolAttachments({
+      publicId: "b_latchY01",
+      srcMessageId: "9002",
+      attachments: big("y1"),
+      destinationPlatform: "discord",
+      direction: "a_to_b",
+      opts,
+    });
+    assert.equal(y1.descriptors[0].skipReason, "spool-full");
+    assert.equal(y1.notices.length, 1, "incident one latches");
+
+    // …incident two stays quiet (correctly latched)…
+    const y2 = await media.spoolAttachments({
+      publicId: "b_latchY01",
+      srcMessageId: "9003",
+      attachments: big("y2"),
+      destinationPlatform: "discord",
+      direction: "a_to_b",
+      opts,
+    });
+    assert.equal(y2.notices.length, 0);
+
+    // Usage DROPS (X acked + deleted): the promised "under the cap again"
+    // edge. Pre-#475 ONLY a spool-success tail could release the latch —
+    // Y never has one, so the latch was stuck armed and every FUTURE
+    // incident on Y went silently unannounced.
+    assert.equal(media.deleteSpoolDir("b_latchX01", "9001"), true);
+
+    const y3 = await media.spoolAttachments({
+      publicId: "b_latchY01",
+      srcMessageId: "9004",
+      attachments: big("y3"),
+      destinationPlatform: "discord",
+      direction: "a_to_b",
+      opts,
+    });
+    assert.equal(y3.descriptors[0].skipReason, "spool-full");
+    assert.equal(
+      y3.notices.length,
+      1,
+      "the drop re-armed the latch: the new incident announces again (old code: latch stuck, silence)"
+    );
   });
 
   it("download security: https-only, private-address refusal, redirect budget, timeouts", async () => {

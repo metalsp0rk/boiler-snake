@@ -13,7 +13,7 @@
  * (§10.10 Replay). Connect enforces expires_at itself; this sweeper is the
  * garbage collector, not the security check.
  *
- * NOT wired to boot (KD 22): PR 7's startBridgeLoops() passes
+ * WIRED to boot (KD 22 lifted at activation): startBridgeLoops() passes
  * createSweepJobSpec() to registerJob (src/core/scheduler.js). The 60-second
  * cadence is the spec's; the scheduler owns overlap skipping (overlap: 'skip'
  * is the scheduler default, so a slow sweep cannot stack).

@@ -40,6 +40,7 @@ const crypto = require("crypto");
 const { parsePrefix } = require("../../platform/fluxer/commands");
 const { snowflakeTimeMs } = require("../../platform/snowflake");
 const { neutralizeContent, NO_PING } = require("./mentions");
+const { buildSupervisorSeams } = require("./supervisorSeams");
 const { sliceSafe } = require("../../core/text");
 const media = require("./media");
 const { isBridgeEnabled, buildPausedNotice, createPauseLatch } = require("./config");
@@ -1248,7 +1249,7 @@ function resolveDirectionEnds(repo, bridge, direction) {
 }
 
 // ---------------------------------------------------------------------------
-// The at-least-once relay worker (spec §10.10) — NOT wired to boot (KD 22)
+// The at-least-once relay worker (spec §10.10) — wired to boot since the
 // ---------------------------------------------------------------------------
 
 /** Content ceilings by destination platform (spec §10.7 Chunking). */
@@ -1493,7 +1494,10 @@ function buildSendParts(payload, destPlatform, resolveFile) {
       const size = Number.isFinite(Number(d.declaredBytes)) ? Number(d.declaredBytes) : 0;
       skipLines.push(media.buildOverCapLine(d.filename, size, fileCap));
     } else {
-      skipLines.push(media.buildSkipLine(d.filename, d.skipReason));
+      // #475 (BRG-15): guard/IO causes ("refused address range for
+      // 169.254.169.254", fs error strings) are infra detail — the channel
+      // gets the honest category, the log keeps the full cause.
+      skipLines.push(media.buildSkipLine(d.filename, publicSkipReason(d.skipReason)));
     }
   }
 
@@ -2952,72 +2956,30 @@ let loopHandle = null;
  * the bot-authored sendMessage that dies at the loop gate.
  * @param {object} supervisor { discord, fluxer, clientForCommunity }
  */
+/**
+ * #475 (BRG-14): the seam BODY lives in ./supervisorSeams (one builder for
+ * handlers.js AND relay.js — the clones here had drifted their failure
+ * logs). This wrapper keeps the historical export name.
+ */
 function supervisorOutboundSeams(supervisor) {
-  const { createDiscordWebhooks } = require("../../platform/discord/webhooks");
-  const { createFluxerWebhooks } = require("../../platform/fluxer/webhooks");
-  const { getDiscordOutbound } = require("../../platform/discord/outbound");
-  const { createFluxerOutbound } = require("../../platform/fluxer/outbound");
-  return {
-    getWebhookApi: (platform, instanceKey) => {
-      try {
-        if (platform === "discord") {
-          return supervisor.discord ? createDiscordWebhooks(supervisor.discord) : null;
-        }
-        const handle = supervisor.fluxer?.get?.(instanceKey) ?? null;
-        // handle.apiOrigin is discovery's endpoints.api_public (audit C1):
-        // the ONLY authority for absolute webhook URLs. When discovery never
-        // resolved it (null), createFluxerWebhooks throws HERE — caught just
-        // below, logged with the instance key, and this seam returns null so
-        // the worker fails that end loudly instead of fetching relative
-        // /v1/webhooks/… URLs forever (the C1 outage).
-        return handle
-          ? createFluxerWebhooks({ rest: handle.rest, apiOrigin: handle.apiOrigin })
-          : null;
-      } catch (err) {
-        console.error(
-          `[bridge] webhook api build failed for ${platform}:${instanceKey}: ${err?.message || err}`,
-        );
-        return null;
-      }
-    },
-    getOutbound: (platform, instanceKey) => {
-      try {
-        if (platform === "discord") {
-          return supervisor.discord ? getDiscordOutbound(supervisor.discord) : null;
-        }
-        const handle = supervisor.fluxer?.get?.(instanceKey) ?? null;
-        if (!handle) return null;
-        // The client caches the OutboundClient on the handle (client.js:
-        // handle.outbound = createFluxerOutbound(handle)) — reuse it.
-        return handle.outbound ?? createFluxerOutbound(handle);
-      } catch (err) {
-        console.error(
-          `[bridge] outbound build failed for ${platform}:${instanceKey}: ${err?.message || err}`,
-        );
-        return null;
-      }
-    },
-    keyGetter: () => process.env.BRIDGE_TOKEN_KEY,
-    sendMessage: async (communityId, channelId, content) => {
-      let outbound = null;
-      try {
-        outbound = supervisor?.clientForCommunity?.(communityId) ?? null;
-      } catch (err) {
-        return { ok: false, error: `outbound lookup failed: ${err?.message || err}` };
-      }
-      if (!outbound || typeof outbound.sendChannel !== "function") {
-        return { ok: false, error: `no outbound client for community ${communityId}` };
-      }
-      try {
-        return await outbound.sendChannel(String(channelId), {
-          content,
-          allowedMentions: NO_PING,
-        });
-      } catch (err) {
-        return { ok: false, error: `send to channel ${channelId} failed: ${err?.message || err}` };
-      }
-    },
-  };
+  return buildSupervisorSeams(supervisor);
+}
+
+/**
+ * #475 (BRG-15): the §10.8 locked skip sentences ride verbatim; the two
+ * cause-carrying families are folded to their category word and the FULL
+ * cause is logged (never silently dropped — the cause is what staff debug
+ * from, but the RELAYED channel text is not the log).
+ */
+function publicSkipReason(reason) {
+  const r = String(reason);
+  const colon = r.indexOf(":");
+  const category = colon === -1 ? r : r.slice(0, colon);
+  if (category === "fetch-failed" || category === "spool-write-failed") {
+    console.warn(`[bridge] attachment skip cause: ${r}`);
+    return category === "fetch-failed" ? "could not be fetched" : "could not be stored";
+  }
+  return r;
 }
 
 module.exports = {
