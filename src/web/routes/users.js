@@ -28,6 +28,9 @@
  */
 
 const { createGuildAccessResolver, TIER_RANK } = require("../auth/guildAccess");
+const {
+  respondGenericNotFound,
+} = require("../shared/genericNotFound"); // #470 H1-8
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, renderShellError, writeShellHtml } = require("../views/layout");
 const { rawParams } = require("./shared/req.js");
@@ -49,15 +52,6 @@ const {
   searchGuildUsers,
 } = require("../data/userProfile");
 
-/**
- * The generic 404 — byte-identical to guildScope/app.js catch-alls so an
- * invalid :userId is indistinguishable from a nonexistent path (§8.6).
- * @param {import("http").ServerResponse} res
- */
-function respondGenericNotFound(res) {
-  res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end("Not found");
-}
 
 
 /**

@@ -18,6 +18,12 @@
  */
 
 const { html } = require("../escape");
+// #470 (H1-8): canonical PRG pair in views/_helpers.js; the page keeps only
+// the binding of its frozen tables (the exported one-arg shapes stay pinned).
+const {
+  flashFromQuery: canonicalFlashFromQuery,
+  flashBanner: canonicalFlashBanner,
+} = require("../_helpers");
 const { banner, userRef } = require("../components");
 const { formatTicketRef } = require("../../../core/theme");
 
@@ -62,13 +68,7 @@ const FLASH_ERROR = Object.freeze({
  * @param {{done?: unknown, error?: unknown}|undefined|null} query
  */
 function flashFromQuery(query) {
-  const done =
-    typeof query?.done === "string" && FLASH_DONE[query.done] ? query.done : null;
-  const error =
-    typeof query?.error === "string" && FLASH_ERROR[query.error]
-      ? query.error
-      : null;
-  return { done, error };
+  return canonicalFlashFromQuery(query, { doneTable: FLASH_DONE, errorTable: FLASH_ERROR });
 }
 
 /**
@@ -77,14 +77,7 @@ function flashFromQuery(query) {
  * @param {{done: string|null, error: string|null}|null} flash
  */
 function flashBanner(flash) {
-  if (!flash) return html``;
-  if (flash.error && FLASH_ERROR[flash.error]) {
-    return banner("warn", FLASH_ERROR[flash.error]);
-  }
-  if (flash.done && FLASH_DONE[flash.done]) {
-    return banner("info", FLASH_DONE[flash.done]);
-  }
-  return html``;
+  return canonicalFlashBanner(flash, { doneTable: FLASH_DONE, errorTable: FLASH_ERROR });
 }
 
 /**

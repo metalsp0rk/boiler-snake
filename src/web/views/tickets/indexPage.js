@@ -33,21 +33,10 @@
  */
 
 const { html } = require("../escape");
+const { formatTs } = require("../_helpers"); // #470 H1-8 (byte-identical copies unified)
 const { renderLayout } = require("../layout");
 const { userRef } = require("../components");
 
-/**
- * @param {number|null|undefined} ms
- * @returns {string}
- */
-function formatTs(ms) {
-  if (ms == null) return "—";
-  try {
-    return new Date(Number(ms)).toISOString().replace("T", " ").slice(0, 19) + " UTC";
-  } catch {
-    return "—";
-  }
-}
 
 /**
  * @param {string|null|undefined} s

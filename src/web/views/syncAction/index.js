@@ -14,6 +14,13 @@
  */
 
 const { html } = require("../escape");
+// #470 (H1-8): canonical PRG pair in views/_helpers.js; this page keeps its
+// exported shapes + the env-slug hook (staff view + staff/syncAction routes
+// consume flashFromQuery/syncFlashBanner).
+const {
+  flashFromQuery: canonicalFlashFromQuery,
+  flashBanner: canonicalFlashBanner,
+} = require("../_helpers");
 const { banner } = require("../components");
 
 /**
@@ -105,15 +112,12 @@ const FLASH_ERROR = Object.freeze({
  * @param {{done?: unknown, error?: unknown}|undefined|null} query
  */
 function flashFromQuery(query) {
-  const done =
-    typeof query?.done === "string" && FLASH_DONE[query.done] ? query.done : null;
-  let error = null;
-  const rawError = query?.error;
-  if (typeof rawError === "string") {
-    if (FLASH_ERROR[rawError]) error = rawError;
-    else if (parseEnvSlug(rawError)) error = rawError;
-  }
-  return { done, error };
+  return canonicalFlashFromQuery(query, {
+    doneTable: FLASH_DONE,
+    errorTable: FLASH_ERROR,
+    // The composite env slug is THIS page's vocabulary, not the core's:
+    extraError: (raw) => (parseEnvSlug(raw) ? raw : null),
+  });
 }
 
 /**
@@ -123,11 +127,14 @@ function flashFromQuery(query) {
  * @param {{done: string|null, error: string|null}|null} flash
  */
 function syncFlashBanner(flash) {
-  if (!flash) return html``;
-  if (flash.error) {
-    if (FLASH_ERROR[flash.error]) return banner("warn", FLASH_ERROR[flash.error]);
-    const tokens = parseEnvSlug(flash.error);
-    if (tokens) {
+  return canonicalFlashBanner(flash, {
+    doneTable: FLASH_DONE,
+    errorTable: FLASH_ERROR,
+    // Composite env slugs render NAMES re-derived from the frozen table —
+    // never the raw query value (values are never shown).
+    extraBanner: (raw) => {
+      const tokens = parseEnvSlug(raw);
+      if (!tokens) return html``;
       const names = tokens.map((t) => ENV_SLUG_NAMES[t]);
       return banner(
         "warn",
@@ -135,13 +142,8 @@ function syncFlashBanner(flash) {
           ", "
         )} (names only — values are never shown). Nothing was changed.`
       );
-    }
-    return html``;
-  }
-  if (flash.done && FLASH_DONE[flash.done]) {
-    return banner("info", FLASH_DONE[flash.done]);
-  }
-  return html``;
+    },
+  });
 }
 
 /**
