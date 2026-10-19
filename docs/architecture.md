@@ -309,7 +309,7 @@ Tickers (voice, youtube, twitch, twitch-eventsub, githubReleases, eventReminders
 
 ## Commands
 
-Slash builders and handlers are **co-located** on features. The registry exports **30** slash commands (unique names; see `test/registry.test.js`; every name has a tier in `core/commandVisibility.js` — see `test/command-visibility.test.js`). Registration:
+Slash builders and handlers are **co-located** on features. The registry exports the slash commands (unique names — the current count is asserted in `test/registry.test.js`; every name has a tier in `core/commandVisibility.js` — see `test/command-visibility.test.js`). Registration:
 
 ```bash
 npm run register   # node src/commands/register.js
@@ -353,7 +353,7 @@ npm run test:unit        # test/*.test.js
 npm run test:integration # test/integration/*.test.js
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (**30** commands, **26** features). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
+Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (commands × features — both counted, not hardcoded, in `test/registry.test.js`). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
 
 ---
 

@@ -40,6 +40,7 @@ npm test
 2. Use unique user/guild IDs when in-memory cooldowns or honeypot ban sets could collide.
 3. Mock only Discord side effects; assert on SQLite + captured `interaction.replies` / channel `sent` arrays.
 4. Do not call `client.login` or feature `start()` timers in tests — invoke ticks (`runVoiceTick`, `runDecayForGuild`, `processChannel`) explicitly. Named jobs live in `src/core/scheduler.js`; unit-test the scheduler with `createScheduler({ setTimeoutFn, … })` rather than real clocks.
+5. Never mix real-clock CONFIG with forced/injected EXECUTION clocks: if a test forces `nowMs` into a tick, every clock-derived setup value (hour_utc, weekday, day boundary…) MUST derive from that same forced instant — `test/e2e/helpers/time.js#forcedHourFor` (#382 failed only at UTC 20:00–23:59: schedule luck, not determinism; `test/test-determinism-scan.test.js` pins the rule).
 
 ### Production test seams
 

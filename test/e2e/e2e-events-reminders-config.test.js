@@ -3,6 +3,8 @@ const assert = require("node:assert/strict");
 const { PermissionFlagsBits } = require("discord.js");
 
 const { createE2eEnv } = require("./helpers/e2eEnv");
+// #470 (G2-7): the hour_utc anchor — never read the REAL clock next to a forced tick.
+const { forcedHourFor } = require("./helpers/time");
 const { j, poll, namespaceIds } = require("./helpers/mockenv");
 
 // NOTE: never require src/** at module top level here! src/db/connection.js
@@ -698,7 +700,7 @@ describe(
       const digest = await configSlash("settings", "digest", [
         chanOpt("channel", feed()),
         strOpt("frequency", "daily"),
-        intOpt("hour_utc", new Date(future).getUTCHours()),
+        intOpt("hour_utc", forcedHourFor(future)),
       ]);
       assert.match(
         await settledText(digest),

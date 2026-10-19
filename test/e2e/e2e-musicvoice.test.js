@@ -43,10 +43,9 @@ describe(
     const VC_A = "1561800000000000001";
     const VC_B = "1561800000000000002";
 
-    /** @type {null | { useable: boolean, _player: any }} */
+    /** @type {any} shared seam fake (test/helpers/lavalink.js) */
     let fake = null;
     let hostMsg = null; // existing message for button clicks
-    const calls = { seek: [], volume: [], skip: 0, destroyed: null };
 
     before(async () => {
       const ids = namespaceIds(18);
@@ -100,103 +99,42 @@ describe(
       });
     const clearVoice = () => guild.voiceStates.cache.delete(env.ids.human);
 
-    /** Duck-typed lavalink-client player — shape per src/features/music/player.js. */
-    const track = (title, extra = {}) => ({
-      info: {
+    /** Duck-typed lavalink player — THE shared seam fake (#470 G2-6: the
+     * inline copy here re-implemented the player/queue shape twice and
+     * drifted from the integration fake). Search answers ride the manager's
+     * documented searchOverride seam. */
+    const { makeTrack, createFakeLavalinkManager } = require("../helpers/lavalink");
+
+    const e2eTrack = (title, extra = {}) =>
+      makeTrack({
         title,
         author: "E2E Artist",
         duration: 210_000,
-        isStream: false,
         uri: "https://example/track",
         sourceName: "youtube",
+        requester: { id: env.ids.human },
         ...extra,
-      },
-      requester: { id: env.ids.human },
-    });
-
-    const makePlayer = (opts) => {
-      const p = {
-        guildId: opts.guildId,
-        voiceChannelId: opts.voiceChannelId,
-        textChannelId: opts.textChannelId,
-        connected: false,
-        playing: false,
-        paused: false,
-        volume: opts.volume ?? 80,
-        queue: {
-          current: null,
-          tracks: [],
-          async add(x) {
-            const arr = Array.isArray(x) ? x : [x];
-            this.tracks.push(...arr);
-          },
-          async shuffle() {
-            p._shuffled = true;
-          },
-          async remove(i) {
-            this.tracks.splice(i, 1);
-          },
-        },
-        async connect() {
-          p.connected = true;
-        },
-        async search(arg) {
-          const q = typeof arg === "string" ? arg : arg?.query || "";
-          if (/boom/.test(q)) throw new Error("node exploded");
-          if (/none/i.test(q)) return { loadType: "empty", tracks: [] };
-          if (/multi/i.test(q)) {
-            return {
-              loadType: "playlist",
-              playlist: { name: "E2E Playlist" },
-              tracks: [track("Song One"), track("Song Two"), track("Song Three")],
-            };
-          }
-          return { loadType: "tracks", tracks: [track(q)] };
-        },
-        async play() {
-          if (!p.queue.current) p.queue.current = p.queue.tracks.shift() ?? null;
-          p.playing = Boolean(p.queue.current);
-          p.paused = false;
-        },
-        async skip() {
-          calls.skip += 1;
-          p.queue.current = p.queue.tracks.shift() ?? null;
-          p.playing = Boolean(p.queue.current);
-        },
-        async pause() {
-          p.paused = true;
-        },
-        async resume() {
-          p.paused = false;
-        },
-        async setVolume(v) {
-          calls.volume.push(v);
-          p.volume = v;
-        },
-        async seek(ms) {
-          calls.seek.push(ms);
-        },
-        async destroy(reason) {
-          calls.destroyed = reason;
-        },
-      };
-      return p;
-    };
+      });
 
     const installFakeManager = () => {
-      fake = {
-        useable: true,
-        _player: null,
-        getPlayer(gid) {
-          return this._player && gid === env.ids.guild ? this._player : null;
-        },
-        createPlayer(opts) {
-          this._player = makePlayer(opts);
-          return this._player;
-        },
-        deletePlayer() {
-          this._player = null;
-        },
+      fake = createFakeLavalinkManager();
+      // Single-guild world: `_player` mirrors the old inline fake's slot.
+      Object.defineProperty(fake, "_player", {
+        get: () => fake.players.get(env.ids.guild) || null,
+        configurable: true,
+      });
+      fake.searchOverride = (query) => {
+        const q = typeof query === "string" ? query : (query?.query ?? "");
+        if (/boom/.test(q)) throw new Error("node exploded");
+        if (/none/i.test(q)) return { loadType: "empty", tracks: [] };
+        if (/multi/i.test(q)) {
+          return {
+            loadType: "playlist",
+            playlist: { name: "E2E Playlist" },
+            tracks: [e2eTrack("Song One"), e2eTrack("Song Two"), e2eTrack("Song Three")],
+          };
+        }
+        return { loadType: "tracks", tracks: [e2eTrack(q)] };
       };
       setManagerForTests(fake);
       return fake;
@@ -309,7 +247,7 @@ describe(
         await contentOf(await slash("music", [sub("volume", [intOpt("level", 150)])])),
         "Volume set to **100%**.",
       );
-      assert.equal(calls.volume.at(-1), 100);
+      assert.equal(fake._player.volume, 100);
 
       assert.equal(
         await contentOf(await slash("music", [sub("remove", [intOpt("position", 99)])])),
@@ -335,7 +273,7 @@ describe(
         "That timestamp is past the end of the track.",
       );
 
-      const live = track("E2E Stream", { isStream: true, duration: 0 });
+      const live = e2eTrack("E2E Stream", { isStream: true, duration: 0 });
       const restore = fake._player.queue.current;
       fake._player.queue.current = live;
       assert.equal(
@@ -348,7 +286,7 @@ describe(
         await contentOf(await slash("music", [sub("seek", [strOpt("timestamp", "1:23")])])),
         "Seeked to **1:23**.",
       );
-      assert.deepEqual(calls.seek, [83_000]);
+      assert.equal(fake._player.lastSeek, 83_000, "player.seek hit through the slash");
     });
 
     it("voice gates: wrong_channel, not_in_voice (slash AND /play), restored after", async () => {
@@ -404,15 +342,19 @@ describe(
         await env.mock.click({ customId: "music:skip", messageId: String(hostMsg.id) }),
       );
       assert.equal(skipMsg.content, "Skipped.");
-      assert.ok(calls.skip >= 1, "player.skip hit through the button");
+      assert.ok(
+        fake._player.queue.previous.length >= 1,
+        "player.skip hit through the button",
+      );
 
+      const preStopPlayer = fake._player;
       const stopData = await updateState(
         await env.mock.click({ customId: "music:stop", messageId: String(hostMsg.id) }),
         (d) => d.content === "Stopped playback.",
         "stop update payload",
       );
       assert.equal((stopData.components ?? []).length, 0, "controls cleared");
-      assert.equal(calls.destroyed, "button_stop");
+      assert.equal(preStopPlayer.destroyReason, "button_stop");
       assert.equal(fake._player, null, "manager.deletePlayer ran");
 
       assert.equal(
