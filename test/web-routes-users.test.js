@@ -89,16 +89,19 @@ let savedEnv;
 const suite = { server: null, base: "", cookies: {} };
 
 /**
- * Volatile per-response/per-session blobs in the shell HTML — the CSP
- * nonce and the random CSRF token (base64) embedded on <body> — legitimately
- * contain arbitrary digit runs. Negative substring-leak assertions must scan
- * only STABLE markup or they flake whenever a random blob happens to contain
- * the probe digits (this exact collision burned CI at B_XP=7331).
+ * The stable CONTENT region of the shell: <main class="shell-main"> — every
+ * volatile per-response blob (CSP nonce on script tags, the random CSRF
+ * token attribute on <body>) lives OUTSIDE it, so negative leak assertions
+ * scoped here need no strip-list (#470 G2-9). The old whole-document
+ * stableHtml() exclusion pattern inverted the burden: every future random
+ * attribute (session chips, request-ids, timing nonces) had to be remembered
+ * and added or the assert flaked — and it just did (coverage run
+ * 2026-10-19). Assert on what renders user data, not on the whole page.
  */
-function stableHtml(body) {
-  return body
-    .replace(/nonce="[^"]*"/g, "")
-    .replace(/data-csrf-token="[^"]*"/g, "");
+function mainRegion(body) {
+  const m = body.match(/<main\b[\s\S]*?<\/main>/);
+  assert.ok(m, "the shell renders a <main class=\"shell-main\"> region");
+  return m[0];
 }
 
 /** Count non-overlapping occurrences (cheap DOM-free row counting). */
@@ -542,7 +545,7 @@ describe("404 semantics", () => {
     assert.equal(res.status, 404);
     assert.ok(body.includes("No bot data exists"));
     assert.ok(
-      !stableHtml(body).includes(String(B_XP)),
+      !mainRegion(body).includes(String(B_XP)),
       "guild-B XP never visible under guild A",
     );
   });

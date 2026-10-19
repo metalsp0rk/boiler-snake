@@ -26,8 +26,9 @@ services:
       - lavalink
     environment:
       DATA_DIR: /data
-      # Fixed process clock (audit #206): the daily decay cron is the hardcoded
-      # `0 4 * * *` and node-cron evaluates it in the process timezone — an
+      # Fixed process clock (audit #206): the daily decay job runs 04:00 in the
+      # process timezone by default (`DECAY_CRON`, issue #282, overrides the
+      # schedule) and node-cron evaluates it in the process timezone — an
       # unset TZ makes "4 AM" drift with the host. UTC keeps decay at 04:00 UTC
       # on every deploy; override in .env only if you really want local time.
       TZ: ${TZ:-UTC}

@@ -137,8 +137,9 @@ function createFakePlayer(opts, manager) {
       player.paused = false;
       return player;
     },
-    async destroy() {
+    async destroy(reason) {
       player.destroyed = true;
+      player.destroyReason = reason ?? null; // lavalink-client passes one
       player.connected = false;
       player.playing = false;
       player.voiceChannelId = null;
