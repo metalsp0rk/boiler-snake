@@ -169,7 +169,7 @@ index 175d2c7..d14b1ee 100644
    Hello: 10,
    HeartbeatAck: 11,
 diff --git a/src/gateway/server.ts b/src/gateway/server.ts
-index dd89b8b..5bc7072 100644
+index dd89b8b..0db0b5f 100644
 --- a/src/gateway/server.ts
 +++ b/src/gateway/server.ts
 @@ -11,6 +11,8 @@ import type { GatewayReadyDispatchData } from 'discord-api-types/v10'
@@ -181,7 +181,7 @@ index dd89b8b..5bc7072 100644
  import { SessionManager, type Session } from './session'
  import { GatewayOp, GatewayCloseCode } from './opcodes'
  import { encodePayload, decodePayload } from './protocol'
-@@ -395,6 +397,73 @@ function handleResume(
+@@ -395,6 +397,81 @@ function handleResume(
   * @param sessionIdByWs - Map of WSContext to sessionId
   * @param ws - The connected WebSocket context
   */
@@ -213,8 +213,16 @@ index dd89b8b..5bc7072 100644
 +  if (!d || typeof d.guild_id !== 'string') return
 +
 +  let members = getGuildMembers(db, d.guild_id, 1000, '0')
++  // E2E-fidelity (#470 G2-10): requested user_ids unknown to the guild are
++  // echoed in not_found like the real gateway does — previously every id was
++  // silently filtered out of `members` with `not_found: []` always, so the
++  // "member missing" arm (ghost recipients, stale leaderboard ids) could
++  // never be exercised at tier 4.
++  let notFound: string[] = []
 +  if (Array.isArray(d.user_ids) && d.user_ids.length > 0) {
 +    const wanted = new Set(d.user_ids.map((id) => String(id)))
++    const known = new Set(members.map((m) => m.user.id))
++    notFound = [...wanted].filter((id) => !known.has(id))
 +    members = members.filter((m) => wanted.has(m.user.id))
 +  } else if (typeof d.query === 'string' && d.query.length > 0) {
 +    const q = d.query.toLowerCase()
@@ -233,7 +241,7 @@ index dd89b8b..5bc7072 100644
 +    members,
 +    chunk_index: 0,
 +    chunk_count: 1,
-+    not_found: [],
++    not_found: notFound,
 +    nonce: typeof d.nonce === 'string' ? d.nonce : null,
 +    presences: [],
 +  }
@@ -255,7 +263,7 @@ index dd89b8b..5bc7072 100644
  function handleHeartbeat(
    sessionManager: SessionManager,
    sessionIdByWs: WeakMap<WSContext, string>,
-@@ -475,6 +544,11 @@ export function createGatewayWebSocketHandler(
+@@ -475,6 +552,11 @@ export function createGatewayWebSocketHandler(
            handleHeartbeat(sessionManager, sessionIdByWs, ws)
            break
          }
