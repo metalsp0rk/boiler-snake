@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.35.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.34.1...v1.35.0) (2026-10-19)
+
+
+### Features
+
+* **ux:** confirm-once for the irreversible commands (H2-15) ([363f395](https://github.com/metalsp0rk/boiler-snake/commit/363f3954a0d08452a97f5c67ae96603d80fe8b3d)), closes [#471](https://github.com/metalsp0rk/boiler-snake/issues/471)
+
+
+### Bug Fixes
+
+* **audit:** redact by WORD COMPONENT and mask, never silently delete ([#368](https://github.com/metalsp0rk/boiler-snake/issues/368)) ([ee00a38](https://github.com/metalsp0rk/boiler-snake/commit/ee00a3812fa3e128990884e01b837a823f104f7b))
+* **bridge:** Discord relay resolves webhooks via client.fetchWebhook ([#365](https://github.com/metalsp0rk/boiler-snake/issues/365)) ([11329c9](https://github.com/metalsp0rk/boiler-snake/commit/11329c94ed63d69be7ffccf8140e87c746d8aebd))
+* **bridge:** exact spool accounting without the stat storm, latch edges on drops, one seam builder, channel copy goes public-safe ([5dde8d4](https://github.com/metalsp0rk/boiler-snake/commit/5dde8d4eaf9d3cba2ac775a55e52b31ce8c5f9ee)), closes [#474](https://github.com/metalsp0rk/boiler-snake/issues/474)
+* **bridge:** purges now reach the peer — MESSAGE_DELETE_BULK ingested on both adapters ([4f67b7b](https://github.com/metalsp0rk/boiler-snake/commit/4f67b7b930beb421dbccddb606d0b76e0fb2b205)), closes [#275](https://github.com/metalsp0rk/boiler-snake/issues/275)
+* **commands:** the two silent stubs join the deprecation regime they were excluded from ([75ed2c8](https://github.com/metalsp0rk/boiler-snake/commit/75ed2c8942bdf058c5336d96647524019101c47f)), closes [#461](https://github.com/metalsp0rk/boiler-snake/issues/461)
+* **core:** arm the CommandContext guard — and wake the two dead invalidators ([71d7577](https://github.com/metalsp0rk/boiler-snake/commit/71d7577cae2f57c29706cf51b8a3ad4e51dcf28c)), closes [#457](https://github.com/metalsp0rk/boiler-snake/issues/457)
+* **core:** structural paydown bundle 3/6 — DB FKs, AI taxonomy, honeypot, erasure ([#469](https://github.com/metalsp0rk/boiler-snake/issues/469)) ([de3fb58](https://github.com/metalsp0rk/boiler-snake/commit/de3fb58638b5cff10e1f7794f746a02af6158363))
+* **core:** twelve audit-r2 LOW items — silent drops die, dead code dies, short ids ride home ([b99565f](https://github.com/metalsp0rk/boiler-snake/commit/b99565fefb76e0c230a66a26930a6434dbd3323d)), closes [#467](https://github.com/metalsp0rk/boiler-snake/issues/467)
+* **db:** migration 003's crash window can no longer brick the boot ([cd3d06c](https://github.com/metalsp0rk/boiler-snake/commit/cd3d06c9c2a5e5464cdb3dee586c676e3080aef0)), closes [#458](https://github.com/metalsp0rk/boiler-snake/issues/458)
+* **discord:** make removeUserReaction a side-effect-free DELETE (FLX-12) ([4392ce7](https://github.com/metalsp0rk/boiler-snake/commit/4392ce782bfad4e584a982f47f27e03d0ee906c7)), closes [#470](https://github.com/metalsp0rk/boiler-snake/issues/470)
+* **eventReminders:** a vanished scheduled event is 10066, not 10008 ([4a5ed80](https://github.com/metalsp0rk/boiler-snake/commit/4a5ed80d7b620d514b966b8301682115c20b54df)), closes [#350](https://github.com/metalsp0rk/boiler-snake/issues/350)
+* **events:** google autoset refuses calendars that don't exist ([ccf4000](https://github.com/metalsp0rk/boiler-snake/commit/ccf400067b2980a93a181ded05a676c891aabbdb)), closes [#349](https://github.com/metalsp0rk/boiler-snake/issues/349)
+* **events:** options remove can no longer bury members under a ✅ ([26857dc](https://github.com/metalsp0rk/boiler-snake/commit/26857dcdf02f111ca48805aaa364aa44120521c3)), closes [#346](https://github.com/metalsp0rk/boiler-snake/issues/346)
+* **events:** organizerMove's full-option refusal finally fires (was dead code) ([224e8fb](https://github.com/metalsp0rk/boiler-snake/commit/224e8fb93f5ad04ee9b0fb5953668307f2620164)), closes [#345](https://github.com/metalsp0rk/boiler-snake/issues/345)
+* **events:** reminders off|on finally says WHOSE reminders it toggles ([ef666f0](https://github.com/metalsp0rk/boiler-snake/commit/ef666f0f04e912525797f144e910ecf75d8f318c)), closes [#348](https://github.com/metalsp0rk/boiler-snake/issues/348)
+* **events:** the whitelist command's promise now matches the row it stores ([fabc935](https://github.com/metalsp0rk/boiler-snake/commit/fabc935d2bcec7b6dd91c73b78da6982c5d88815)), closes [#344](https://github.com/metalsp0rk/boiler-snake/issues/344)
+* **fluxer:** real ownership, resolvable mentionables, permission-filtered help, the deferred-grant resume, one adapter-utils home ([fd4eecc](https://github.com/metalsp0rk/boiler-snake/commit/fd4eeccf0cda949e8d09d00901768f3f43b108ad)), closes [#466](https://github.com/metalsp0rk/boiler-snake/issues/466)
+* **gork:** parity gate fails closed, audit sends go mention-neutral, redirect bodies release, the budget bounce lives once ([eb79958](https://github.com/metalsp0rk/boiler-snake/commit/eb799580a9f626672490664047236f8f1b1a2aaf)), closes [#475](https://github.com/metalsp0rk/boiler-snake/issues/475)
+* **integrity:** dead fallbacks, youtube detritus, aborted-sync accounting (INT-14/15/16) ([341b088](https://github.com/metalsp0rk/boiler-snake/commit/341b0885ffa028deb41a9ce728d8bcf268fa9215)), closes [#471](https://github.com/metalsp0rk/boiler-snake/issues/471)
+* **reactionRoles:** the live claim/revoke audit embeds actually post now ([3bd0fa3](https://github.com/metalsp0rk/boiler-snake/commit/3bd0fa36c29d473611d64f8a4939b1764b0dd0b9)), closes [#356](https://github.com/metalsp0rk/boiler-snake/issues/356)
+* **staff-roles:** staff-gate copy stops pointing at a command staff can't see ([a6c5736](https://github.com/metalsp0rk/boiler-snake/commit/a6c5736b8e8e5e43ec8acbdb14855368f02374e6)), closes [#476](https://github.com/metalsp0rk/boiler-snake/issues/476)
+* **tickets:** close-pipeline hygiene bundle (LT-16.1/.4/.5/.6/.7) ([00c65d8](https://github.com/metalsp0rk/boiler-snake/commit/00c65d8250b28520fdaee8feaed75ad79d4a9a77)), closes [#472](https://github.com/metalsp0rk/boiler-snake/issues/472)
+* **tickets:** failure replies name the error instead of "unknown error" (LT-9) ([214abc8](https://github.com/metalsp0rk/boiler-snake/commit/214abc819f42f562259b402ece8d8b4bbf674b55)), closes [#471](https://github.com/metalsp0rk/boiler-snake/issues/471)
+* **tickets:** Fluxer gets the compensating delete and the rename Discord always had (LT-17, LT-16.3) ([180f811](https://github.com/metalsp0rk/boiler-snake/commit/180f8119005b8276028db45ceb442ce09585df9b)), closes [#472](https://github.com/metalsp0rk/boiler-snake/issues/472)
+* **twitch:** a failed EventSub prune delete keeps its row for retry ([7e83ce8](https://github.com/metalsp0rk/boiler-snake/commit/7e83ce87f6de5ac1c7f76765c5975e1583d9b487)), closes [#477](https://github.com/metalsp0rk/boiler-snake/issues/477)
+* **userinfo:** the backfill confirmation stops throwing itself away ([2f856ab](https://github.com/metalsp0rk/boiler-snake/commit/2f856abda1d8a0420c174f9929447153c2dc2561)), closes [#354](https://github.com/metalsp0rk/boiler-snake/issues/354)
+* **web:** scheme-gate transcript hrefs, encode pager values, concurrent tier fan-out, bot-presence pruning, one honest callback page — core-infra part 2/6 ([aab9e4a](https://github.com/metalsp0rk/boiler-snake/commit/aab9e4afb6a366ce4de891c88da88a93b999f9c4)), closes [#468](https://github.com/metalsp0rk/boiler-snake/issues/468)
+* **web:** the dead htmx library is gone — 48KB per page load for zero elements ([6b82302](https://github.com/metalsp0rk/boiler-snake/commit/6b82302e0ff9a0b22c4a61952185346fd5db0764)), closes [#459](https://github.com/metalsp0rk/boiler-snake/issues/459)
+* **xp:** the leaderboard Next button stops lying at the page ceiling (XE-6) ([c5ae060](https://github.com/metalsp0rk/boiler-snake/commit/c5ae060decda15243b30598ff293e06ca5723d92)), closes [#472](https://github.com/metalsp0rk/boiler-snake/issues/472)
+* **xp:** the XP path reports failures, logs them, and stops poisoning state (XE-7/8/9/10/11/13) ([3898454](https://github.com/metalsp0rk/boiler-snake/commit/3898454332a2bfed0b914d2e66e87e80ae681dce)), closes [#472](https://github.com/metalsp0rk/boiler-snake/issues/472)
+* **youtube:** a settings write can no longer silently unsubscribe anyone ([387aea6](https://github.com/metalsp0rk/boiler-snake/commit/387aea6c30a48dbc9efbeca4bb49f6e132a208ee)), closes [#360](https://github.com/metalsp0rk/boiler-snake/issues/360)
+
 ## [1.34.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.34.0...v1.34.1) (2026-10-18)
 
 
