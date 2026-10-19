@@ -95,9 +95,12 @@ function tryCreateManager(client) {
     playerOptions: {
       defaultSearchPlatform: hasSpotifyCreds() ? "spsearch" : "ytmsearch",
       volumeDecrementer: 1,
-      onEmptyQueue: {
-        destroyAfterMs: 5 * 60 * 1000,
-      },
+      // #588: queue-drain idle-leave is APP-side (player.js onQueueEnd).
+      // The library's onEmptyQueue.destroyAfterMs was configured since the
+      // first music commit but is untestable offline, cannot be cancelled
+      // on enqueue at the app layer, and destroys inside a bare setTimeout
+      // (an unwrapped rejection violates the fire-and-forget doctrine).
+      // The app timer owns the decision; do NOT re-add destroyAfterMs.
       onDisconnect: {
         autoReconnect: false,
         destroyPlayer: true,
