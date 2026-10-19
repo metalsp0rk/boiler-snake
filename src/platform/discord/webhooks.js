@@ -19,31 +19,11 @@
  */
 
 const { assertCommunityId, getCommunityById } = require("../community");
+// #466 (FLX-9): shared adapter utilities (one implementation, five consumers).
+const { causeOf, codeOf, statusOf, failureText, validateWebhook, toDiscordFile } = require("../adapterUtils");
 
-/**
- * Specific, human-readable cause for an unknown thrown value.
- * @param {unknown} err
- * @returns {string}
- */
-function causeOf(err) {
-  return String(err?.message || err);
-}
 
-/**
- * Discord API error code as a decimal string ("50013"), when present —
- * same boundary rule as src/platform/discord/outbound.js.
- * @param {unknown} err
- * @returns {string|undefined}
- */
-function codeOf(err) {
-  return err?.code != null ? String(err.code) : undefined;
-}
 
-/** HTTP status from a discord.js DiscordAPIError-shaped error. */
-function statusOf(err) {
-  const s = Number(err?.status ?? err?.statusCode);
-  return Number.isFinite(s) && s > 0 ? s : undefined;
-}
 
 /**
  * 429 and 5xx are transient; a throw with no HTTP status (network layer) is
@@ -58,79 +38,8 @@ function isRetryableError(err) {
   return status === 429 || (status >= 500 && status <= 599);
 }
 
-/**
- * "method: detail failed: cause (status N, code X)" — status + code ride
- * the message (AGENTS.md rule 2); the webhook token never does.
- */
-function failureText(method, detail, err) {
-  const bits = [];
-  const status = statusOf(err);
-  const code = codeOf(err);
-  if (status != null) bits.push(`status ${status}`);
-  if (code != null) bits.push(`code ${code}`);
-  const suffix = bits.length ? ` (${bits.join(", ")})` : "";
-  return `${method}: ${detail} failed: ${causeOf(err)}${suffix}`;
-}
 
-/**
- * Validate the RelayWebhook handle { id, token }. Error text names the
- * METHOD and webhook id — never the token.
- * @param {object} webhook
- * @param {string} method
- * @returns {string|null}
- */
-function validateWebhook(webhook, method) {
-  if (!webhook || typeof webhook !== "object") {
-    return `${method}: webhook must be { id, token }`;
-  }
-  if (webhook.id == null || String(webhook.id) === "") {
-    return `${method}: webhook.id is required`;
-  }
-  if (typeof webhook.token !== "string" || webhook.token === "") {
-    return `${method}: webhook ${String(webhook.id)} has no token`;
-  }
-  return null;
-}
 
-/**
- * ReplyPayload files → discord.js file entries. Accepts the same
- * { name, data, contentType? } descriptors the OutboundClient send paths
- * take (spec § Embeds and attachments vocabulary), including AttachmentBuilder
- * instances (data on `.attachment`).
- *
- * @param {unknown} file
- * @param {number} index
- * @param {string} method
- * @returns {{ ok: true, file: object } | { ok: false, error: string }}
- */
-function toDiscordFile(file, index, method) {
-  const name = typeof file?.name === "string" && file.name !== "" ? file.name : null;
-  if (name == null) {
-    return {
-      ok: false,
-      error: `${method}: files[${index}] needs a non-empty string name (files entries are { name, data, contentType? })`,
-    };
-  }
-  let attachment = null;
-  const raw = file?.data ?? file?.attachment;
-  if (Buffer.isBuffer(raw)) attachment = raw;
-  else if (typeof raw === "string") attachment = Buffer.from(raw, "utf8");
-  else if (raw instanceof ArrayBuffer) attachment = Buffer.from(new Uint8Array(raw));
-  else if (ArrayBuffer.isView(raw)) attachment = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
-  if (attachment == null) {
-    return {
-      ok: false,
-      error:
-        `${method}: files[${index}] ("${name}") needs Buffer data, got ` +
-        `${raw == null ? String(raw) : typeof raw}`,
-    };
-  }
-  const entry = { attachment, name };
-  if (typeof file.contentType === "string" && file.contentType !== "") {
-    entry.contentType = file.contentType;
-  }
-  return { ok: true, file: entry };
-}
 
 /**
  * Normalize+validate a files array → discord.js entries.

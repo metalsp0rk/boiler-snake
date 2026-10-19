@@ -89,6 +89,23 @@ const selectByExternal = db.prepare(
    WHERE platform = ? AND instance_key = ? AND external_guild_id = ?`,
 );
 
+// #466 (XE-12): the voice readiness logger's OWN question, answered in SQL
+// — which fluxer communities carry voice_states_complete=1. Scoping the
+// scan in the query (not in a per-minute JS loop over every community of
+// every platform) is the point: the old form re-read every row of every
+// platform each 60s tick purely to console.log.
+const selectElevatedFluxerIds = db.prepare(
+  `SELECT id FROM communities
+   WHERE platform = 'fluxer' AND elevated_permissions = 1
+   ORDER BY id ASC`,
+);
+
+const selectVoiceCompleteFluxerIds = db.prepare(
+  `SELECT id FROM communities
+   WHERE platform = 'fluxer' AND voice_states_complete = 1
+   ORDER BY id ASC`,
+);
+
 const selectById = db.prepare(
   `SELECT id,
           platform,
@@ -179,6 +196,10 @@ function ensureCommunity({ platform, instanceKey, externalGuildId } = {}) {
 }
 
 module.exports = {
+  listVoiceCompleteFluxerCommunityIds: () => selectVoiceCompleteFluxerIds.all().map((r) => r.id),
+  // #466 (E2-11): which fluxer communities run with elevated_permissions=1
+  // (the deferred reaction-role grant sweep's own question, answered in SQL).
+  listElevatedFluxerCommunityIds: () => selectElevatedFluxerIds.all().map((r) => r.id),
   assertCommunityId,
   getCommunityByExternal,
   getCommunityById,

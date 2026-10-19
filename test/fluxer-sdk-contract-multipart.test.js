@@ -14,8 +14,9 @@
  * green (roadmap/fluxer.md § Tests).
  *
  * buildBody/buildHeaders below are transcribed VERBATIM from the pinned
- * REST dist (3.1.0, dist/index.js lines 469-477 and 495-497) — cited to
- * their lines, not paraphrased. SdkFormData is the SDK's own form class,
+ * REST dist (3.3.0, dist/index.js lines 469-477 and 495-497 — ranges
+ * re-verified on the 3.1.0→3.3.0 bump, both still exact) — cited to their
+ * lines, not paraphrased. SdkFormData is the SDK's own form class,
  * recovered from buildFormData's output (the class is not exported):
  * exactly what buildBody's instanceof gates against.
  */

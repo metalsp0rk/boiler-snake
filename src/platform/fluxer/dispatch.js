@@ -34,6 +34,11 @@ const {
   hasBit,
   MANAGE_GUILD,
 } = require("./permissions");
+// #466 (FLX-13): !help is permission-filtered with the SAME tier map Discord
+// uses for slash-picker visibility (commandVisibility) + the same staff-role
+// table the handler gates consult.
+const { visibilityTier, TIERS } = require("../../core/commandVisibility");
+const { memberHasStaffRole } = require("../../db");
 const {
   OPTION_TYPE,
   K10_USER_COPY,
@@ -110,8 +115,41 @@ async function resolveOptions(parsed, message, outbound) {
   const resolved = new Map();
   const fetchCache = new Map();
 
-  for (const opt of parsed.options ?? []) {
+  for (const loopOpt of parsed.options ?? []) {
+    // #466 (FLX-11): a MENTIONABLE carries a rebindable copy — the
+    // <@id> token form is rewritten to its bare id before the USER path
+    // consumes it (the loop binding itself is const).
+    let opt = loopOpt;
     switch (opt.type) {
+      case OPTION_TYPE.MENTIONABLE: {
+        // #466 (FLX-11): the parser budgets MENTIONABLE (counter +
+        // mentionIndex) but the resolver had no arm — type 9 fell to the
+        // STRING default and handlers received RAW mention tokens
+        // ("<@&123>") where a USER/ROLE object belonged. Discord resolves a
+        // mentionable against users AND roles; mirror that: explicit
+        // <@&id> ⇒ role shape; explicit <@id>/bare id ⇒ the USER path below
+        // (mention or id, gateway profile first, fetch fallback); a
+        // positional target with no users mentions but roles ⇒ roles answer
+        // it (users first, then roles — the parity order).
+        const token = String(opt.value ?? "");
+        const roleTok = /^<@&(\d{1,25})>$/.exec(token);
+        const userTok = /^<@!?(\d{1,25})>$/.exec(token);
+        if (roleTok) {
+          resolved.set(opt.name, { id: roleTok[1] });
+          break;
+        }
+        const usersMentions = Array.isArray(message.mentions?.users) ? message.mentions.users : [];
+        const rolesMentions = Array.isArray(message.mentions?.roles) ? message.mentions.roles : [];
+        if (!/^\d+$/.test(token) && userTok == null && usersMentions.length === 0 && rolesMentions.length > 0) {
+          const ref = resolveReferenceId(opt, message, "roles");
+          if (ref.error) return { resolved, reply: ref.error };
+          resolved.set(opt.name, { id: ref.id });
+          break;
+        }
+        if (userTok != null) opt = { ...opt, value: userTok[1] };
+      }
+      // fallthrough: a MENTIONABLE that is not a role resolves as a user.
+      // eslint-disable-next-line no-fallthrough
       case OPTION_TYPE.USER: {
         const ref = resolveReferenceId(opt, message, "users");
         if (ref.error) return { resolved, reply: ref.error };
@@ -245,6 +283,88 @@ function renderHelp(registryCommands, tokens) {
  * @param {object|null} [deps.supervisor] platform supervisor (featureCtx parity)
  * @returns {Promise<void>}
  */
+/**
+ * #466 (FLX-13): ONE arg shape for the permission resolve — step 2.5 and
+ * the help filter must never drift (BRG-14's lesson, applied here first).
+ */
+function permissionResolveArgs(outbound, message) {
+  return {
+    outbound,
+    communityId: message.communityId,
+    userId: message.authorId,
+    channelId: message.channelId,
+    instanceKey: message.instanceKey ?? outbound.instanceKey ?? "fluxer",
+    member: Array.isArray(message.memberRoleIds)
+      ? {
+          roleIds: message.memberRoleIds,
+          bot: Boolean(message.authorBot),
+          username: message.authorRaw?.username ?? null,
+        }
+      : null,
+  };
+}
+
+/**
+ * The mask for permission-filtered help. Unlike step 2.5 a FAILED resolve
+ * never blocks help — it degrades the listing to what the message alone
+ * proves (no mask ⇒ non-admin), because help is public data and an
+ * instance hiccup must not swallow it.
+ */
+async function resolveHelpMask(outbound, message) {
+  if (!Number.isInteger(message.communityId)) return null;
+  try {
+    const r = await resolveFluxerPermissions(permissionResolveArgs(outbound, message));
+    return r.ok ? r.channelPermissions : null;
+  } catch (err) {
+    console.error(`[fluxer] help permission resolve failed: ${err?.message || err}`);
+    return null;
+  }
+}
+
+/**
+ * #466 (FLX-13): the commands THIS caller could actually run. The list used
+ * to be the whole registry (its own comment: "PR 6 has no permission mask")
+ * — a civilian was advertised `grantxp`/`staff`/`settings`, each a dead-end
+ * at the handler gate, and interaction-arm commands were advertised even
+ * though the dispatcher answers them NOT_ON_FLUXER before any handler runs
+ * (the map DISCORD_ONLY_COMMANDS hand-mirrored — an unsynced second source
+ * of truth). Visibility now DERIVES from: the arm gate (never advertise
+ * what the dispatcher refuses) + the commandVisibility tiers.
+ */
+function helpVisibility(registry, message, mask) {
+  const admin = mask != null && hasBit(mask, MANAGE_GUILD);
+  let staff = admin;
+  if (!staff && Number.isInteger(message.communityId)) {
+    try {
+      staff = memberHasStaffRole(message.communityId, message.memberRoleIds ?? []);
+    } catch (err) {
+      // A staff-table failure hides staff/admin entries only (fail closed
+      // for the LISTING, never a broken reply).
+      console.error(`[fluxer] help staff lookup failed: ${err?.message || err}`);
+    }
+  }
+  const tierOk = (name) => {
+    let tier;
+    try {
+      tier = visibilityTier(name);
+    } catch {
+      return true; // unknown ⇒ never HIDE a command over a tier-table gap
+    }
+    return tier === TIERS.admin ? admin : tier === TIERS.staff ? staff : true;
+  };
+  // Blocks keep tier-OK dead-ends (the § "Discord only (…)" note line is
+  // spec copy: asking about /music deserves the honest note, not "no such
+  // command"). The bare LIST drops them: advertising a command the
+  // dispatcher refuses with NOT_ON_FLUXER is the dead-end this item is
+  // about, and the list must not need a hand-synced Discord-only overlay.
+  const blocks = registry.commands.filter((cmd) => tierOk(cmd.name));
+  const list = blocks.filter(
+    (cmd) =>
+      cmd.name === "help" || registry.getHandlerApi(cmd.name) === "context",
+  );
+  return { list, blocks };
+}
+
 async function dispatchPrefixCommand(outbound, message, parsed, { registry, supervisor } = {}) {
   try {
     if (!parsed || typeof parsed.commandName !== "string") return;
@@ -256,20 +376,32 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
     }
 
     // Step 1: !help (public reply — help is not sensitive data).
+    // #466 (FLX-13): permission-filtered — only commands the caller could
+    // actually run are advertised.
     if (parsed.help) {
+      const helpMask = await resolveHelpMask(outbound, message);
+      const helpCmds = helpVisibility(registry, message, helpMask);
       await outbound.sendChannel(message.channelId, {
-        content: renderHelp(registry.commands, parsed.help.tokens),
+        content: renderHelp(
+          parsed.help.tokens && parsed.help.tokens.length > 0
+            ? helpCmds.blocks
+            : helpCmds.list,
+          parsed.help.tokens,
+        ),
         allowedMentions: { parse: [] },
       });
       return;
     }
 
-    // Step 2: usage error = reason line + the help block for the matched scope.
+    // Step 2: usage error = reason line + the help block for the matched
+    // scope. #466 (FLX-13): the block is permission-filtered like the list —
+    // a hidden command's usage block is not syntax intel a civilian needs.
     if (parsed.usageError) {
       const u = parsed.usageError;
       const scope = [u.commandName, u.group, u.sub].filter(Boolean);
+      const helpMask = await resolveHelpMask(outbound, message);
       const help = formatCommandHelpFromTree(
-        buildFluxerCommandTree(registry.commands),
+        buildFluxerCommandTree(helpVisibility(registry, message, helpMask).blocks),
         u.commandName,
         scope.map((s) => String(s).toLowerCase()),
       );
@@ -303,20 +435,9 @@ async function dispatchPrefixCommand(outbound, message, parsed, { registry, supe
     let permissions = null;
     let authorOverride = null;
     if (Number.isInteger(message.communityId)) {
-      const resolvedPerms = await resolveFluxerPermissions({
-        outbound,
-        communityId: message.communityId,
-        userId: message.authorId,
-        channelId: message.channelId,
-        instanceKey: message.instanceKey ?? outbound.instanceKey ?? "fluxer",
-        member: Array.isArray(message.memberRoleIds)
-          ? {
-              roleIds: message.memberRoleIds,
-              bot: Boolean(message.authorBot),
-              username: message.authorRaw?.username ?? null,
-            }
-          : null,
-      });
+      const resolvedPerms = await resolveFluxerPermissions(
+        permissionResolveArgs(outbound, message),
+      );
       if (!resolvedPerms.ok) {
         await outbound.sendChannel(message.channelId, {
           content: resolvedPerms.error,

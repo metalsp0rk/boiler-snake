@@ -12,6 +12,7 @@ const {
   deleteReactionRoleOption,
   countReactionRoleOptions,
   listReactionRoleLevelRequirements,
+  listResumableReactionRoleClaims,
   recordReactionRoleClaim,
   deleteReactionRoleClaim,
   countReactionRoleClaimsForRole,
@@ -702,6 +703,93 @@ async function roleNameForDm(guild, roleId) {
   }
   if (role?.name) return `**${role.name}**`;
   return `role \`${roleId}\``;
+}
+
+/**
+ * #466 (E2-11): resume the grants the K8 gate deferred.
+ *
+ * While `elevated_permissions` is 0 an accepted panel claim KEEPS its
+ * reaction and its durable row (E2-09) but the grant returns
+ * `elevated_disabled` — and nothing ever ran that backlog: the promise
+ * "the grant resumes when the flag flips to 1" was a lie, every deferred
+ * claim needed every user to re-react, and `/reactionrole sync` does not
+ * fix it (it validates the panel message, never the claim holders). This
+ * sweep IS the resume: one bounded pass over the community's claim rows
+ * (durable reactions are the source of truth — no GET-reactions fan-out),
+ * re-checking qualification and granting.
+ *
+ * Deliberately QUIET on holds: these users were DM'd at reaction time; a
+ * boot sweep that DMs a hundred people on the flag flip is its own bug.
+ * Failures KEEP the claim (disk is the ledger) — the next boot retries.
+ */
+async function resumeDeferredRoleGrantsFluxer(outbound, communityId) {
+  const claims = listResumableReactionRoleClaims(communityId);
+  const summary = { granted: 0, already: 0, belowLevel: 0, failed: 0 };
+  if (claims.length === 0) return summary;
+
+  for (const claim of claims) {
+    const minLevel = Number(claim.minLevel) || 0;
+    let member = null;
+    try {
+      member = await outbound.fetchMember(communityId, claim.userId);
+    } catch (err) {
+      console.error(
+        `[reactionRoles] deferred-grant sweep: member lookup failed (${claim.userId} via ${claim.messageId}): ${err?.message || err}`,
+      );
+      summary.failed += 1;
+      continue;
+    }
+    if (!member) {
+      summary.failed += 1; // leave the claim — the instance may simply be shy
+      continue;
+    }
+    if (Array.isArray(member.roleIds) && member.roleIds.map(String).includes(String(claim.roleId))) {
+      summary.already += 1;
+      continue;
+    }
+    const level = levelFromXp(getXp(communityId, claim.userId), getGuildSettings(communityId).level_xp_factor);
+    if (level < minLevel) {
+      summary.belowLevel += 1; // claim stands until they level (no re-reaction needed)
+      continue;
+    }
+    let res;
+    try {
+      res = await outbound.addRole(communityId, claim.userId, claim.roleId);
+    } catch (err) {
+      res = { ok: false, error: String(err?.message || err) };
+    }
+    if (res && res.ok) summary.granted += 1;
+    else {
+      summary.failed += 1;
+      console.warn(
+        `[reactionRoles] deferred-grant sweep: grant failed (${claim.roleId} → ${claim.userId}): ${res?.error || "unknown addRole failure"} — claim kept, retried next boot`,
+      );
+    }
+  }
+  console.log(
+    `[reactionRoles] deferred-grant sweep community ${communityId}: granted ${summary.granted}, already held ${summary.already}, below min level ${summary.belowLevel}, failed ${summary.failed}`,
+  );
+  return summary;
+}
+
+/**
+ * Boot sweep over EVERY fluxer community with elevated_permissions=1
+ * (feature `start`). Flag flipped at runtime? Restart re-runs this —
+ * documented in the sweep log. No supervisor / no client ⇒ nothing to do.
+ */
+async function sweepDeferredRoleGrantsAll(supervisor) {
+  const { listElevatedFluxerCommunityIds } = require("../../platform/community");
+  for (const communityId of listElevatedFluxerCommunityIds()) {
+    try {
+      const outbound = supervisor?.clientForCommunity?.(communityId) ?? null;
+      if (!outbound) continue;
+      await resumeDeferredRoleGrantsFluxer(outbound, communityId);
+    } catch (err) {
+      console.error(
+        `[reactionRoles] deferred-grant sweep failed for community ${communityId}; continuing: ${err?.message || err}`,
+      );
+    }
+  }
 }
 
 /**
@@ -2357,6 +2445,9 @@ async function handlePendingOptionEmojiMessageFluxer(outbound, message) {
 const handlePendingOptionAddMessage = handlePendingOptionEmojiMessage;
 
 module.exports = {
+  // #466 (E2-11): the K8 deferred-grant resume (service + boot sweep).
+  resumeDeferredRoleGrantsFluxer,
+  sweepDeferredRoleGrantsAll,
   MAX_OPTIONS_PER_PANEL,
   PENDING_EMOJI_TTL_MS,
   NO_PING_MENTIONS,

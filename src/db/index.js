@@ -231,6 +231,8 @@ module.exports = {
   recordReactionRoleClaim: reactionRoles.recordReactionRoleClaim,
   deleteReactionRoleClaim: reactionRoles.deleteReactionRoleClaim,
   countReactionRoleClaimsForRole: reactionRoles.countReactionRoleClaimsForRole,
+  // #466 (E2-11): the deferred-grant sweep's backlog query.
+  listResumableReactionRoleClaims: reactionRoles.listResumableReactionRoleClaims,
 
   // scheduled event reminders
   getEventReminderSettings: eventReminders.getEventReminderSettings,

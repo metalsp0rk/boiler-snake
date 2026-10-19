@@ -23,29 +23,13 @@
  */
 
 const { assertCommunityId, getCommunityById } = require("../community");
+// #466 (FLX-9): shared adapter utilities (one implementation, five consumers).
+const { causeOf, codeOf, toNumberOrNull, toIdOrNull, toIsoString, mapStickerList } = require("../adapterUtils");
 
 /** ChannelOverwrite.kind → discord.js OverwriteType (0 = role, 1 = member). */
 const OVERWRITE_KIND_TYPES = Object.freeze({ role: 0, member: 1 });
 
-/**
- * Specific, human-readable cause for an unknown thrown value.
- * @param {unknown} err
- * @returns {string}
- */
-function causeOf(err) {
-  return String(err?.message || err);
-}
 
-/**
- * Discord API error code as a decimal string ("50013"), when present.
- * The OutboundClient typedef types `code` as a string; discord.js exposes a
- * number on DiscordAPIError, so it is stringified at this boundary.
- * @param {unknown} err
- * @returns {string|undefined}
- */
-function codeOf(err) {
-  return err?.code != null ? String(err.code) : undefined;
-}
 
 /**
  * Allow/deny bit expressions arrive as decimal strings (spec § Outbound
@@ -122,42 +106,9 @@ function normalizeMessage(msg) {
   };
 }
 
-/** Numeric relay fields: finite numbers / bigint BitFields → number; else null. */
-function toNumberOrNull(value) {
-  if (typeof value === "bigint") return Number(value);
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  const raw =
-    value && typeof value === "object" && typeof value.valueOf === "function"
-      ? value.valueOf()
-      : null;
-  if (typeof raw === "bigint") return Number(raw);
-  return null;
-}
 
-/** id → string at the boundary; absent/null → null. */
-function toIdOrNull(value) {
-  return value != null ? String(value) : null;
-}
 
-/** Date / epoch ms / ISO string → ISO string; unparseable → null. */
-function toIsoString(value) {
-  if (value == null) return null;
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? new Date(value).toISOString() : null;
-  }
-  const ms = Date.parse(String(value));
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-}
 
-/** Collection/array of stickers → [{ id, name }]. */
-function mapStickerList(value) {
-  const list =
-    Array.isArray(value) ? value : typeof value?.values === "function" ? [...value.values()] : [];
-  return list
-    .filter((s) => s && typeof s === "object" && s.id != null)
-    .map((s) => ({ id: String(s.id), name: s.name ?? null }));
-}
 
 /**
  * discord.js Message → the §10.3 fetch shape (same field set the Fluxer

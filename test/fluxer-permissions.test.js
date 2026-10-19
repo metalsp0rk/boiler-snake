@@ -256,6 +256,36 @@ describe("fluxer/permissions — resolveFluxerPermissions (fail-closed, spec 559
     externalGuildId: GUILD,
   });
 
+  it("#466 (FLX-7): resolve reports REAL ownership — an admin is not the owner, a missing guild proves nothing", async () => {
+    const routes = {
+      [`GET /v1/guilds/${GUILD}/roles`]: [{ id: GUILD, permissions: "32" }],
+      [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, permission_overwrites: [] },
+    };
+    const outboundFor = (ownerId) => {
+      const handle = makeFakeHandle({ rest: makeFakeRest({ routes }) });
+      handle.fetchGuild = async () =>
+        ownerId === null ? null : { id: GUILD, name: "B", ownerId, afkChannelId: null };
+      return handle.outbound;
+    };
+    const argsFor = (outbound, userId) => ({
+      outbound,
+      communityId: COMMUNITY_ID,
+      userId,
+      channelId: CHANNEL,
+      instanceKey: INSTANCE,
+      member: { roleIds: [], bot: false, username: "tester" },
+    });
+
+    const other = await resolveFluxerPermissions(argsFor(outboundFor("someone-else"), "5"));
+    assert.equal(other.guildOwner, false, "the record names someone else — not the owner");
+
+    const owner = await resolveFluxerPermissions(argsFor(outboundFor("5"), "5"));
+    assert.equal(owner.guildOwner, true, "ownerId === member id ⇒ owner");
+
+    const dark = await resolveFluxerPermissions(argsFor(outboundFor(null), "5"));
+    assert.equal(dark.guildOwner, false, "no guild record ⇒ not provable ⇒ fail closed");
+  });
+
   it("#385: a roleless member resolves the REAL @everyone base; rule 1 still skips fetchMember; the cache absorbs the rest", async () => {
     // Pre-#385 this path skipped fetchRoles entirely ("an empty id list
     // contributes no role bits") — silently zeroing the spec's

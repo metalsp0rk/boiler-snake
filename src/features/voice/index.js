@@ -1,10 +1,14 @@
 const { getGuildSettings } = require("../../db");
 const { awardXp } = require("../../services/awardXp");
 const { registerJob } = require("../../core/scheduler");
-const { ensureCommunity, getCommunityById } = require("../../platform/community");
-// Ticker plumbing lister (PR 7): communities that can receive voice XP are
-// exactly the ones with tracked users.
-const { listCommunityIdsWithUsers } = require("../../db/repositories/users");
+const {
+  ensureCommunity,
+  listVoiceCompleteFluxerCommunityIds,
+} = require("../../platform/community");
+
+// #466 (XE-12): communities whose readiness line has ALREADY printed (the
+// log is a flag TRANSITION, not a per-tick heartbeat).
+const voiceReadyLogged = new Set();
 
 const {
   resolveDiscordClient: coreResolveDiscordClient,
@@ -129,27 +133,27 @@ async function runVoiceTick(supervisor) {
     }
   }
 
-  // Fluxer communities (spec 574): the voice tick runs ONLY when
-  // voice_states_complete is 1. The flag is 0 in every deployment today, so
-  // these rows are skipped silently (no per-row log spam). When an adapter
-  // flips the flag, the NormalizedVoiceGuild data source ships with the
-  // Fluxer gateway adapter; awarding from a guessed payload is forbidden,
-  // so we log the readiness signal instead of inventing states.
-  for (const communityId of listCommunityIdsWithUsers()) {
-    try {
-      const community = getCommunityById(communityId);
-      if (!community || community.platform !== "fluxer") continue;
-      if (Number(community.voiceStatesComplete) !== 1) continue;
+  // #466 (XE-12): the readiness signal used to be re-DERIVED every 60s tick
+  // by walking every community of every platform (per-row SQL) purely to
+  // repeat one console.log per flagged community — log spam arriving exactly
+  // when #208 verification flips the flag, for work the database can do in
+  // one scoped query. Now: one SQL-scoped read, and the line prints ONCE per
+  // flag transition (armed set re-arms if the flag ever drops and returns).
+  try {
+    const flagged = new Set(listVoiceCompleteFluxerCommunityIds());
+    for (const communityId of flagged) {
+      if (voiceReadyLogged.has(communityId)) continue;
+      voiceReadyLogged.add(communityId);
       console.log(
         `[voice] community ${communityId} has voice_states_complete=1: normalized voice states arrive with the Fluxer gateway adapter — no XP source in PR 7`,
       );
-    } catch (err) {
-      // #198: same per-item discipline — one unreadable community row must
-      // not cut the readiness scan short for the remaining rows.
-      console.error(
-        `[voice] fluxer voice-state readiness check failed for community ${communityId}; continuing: ${err?.message || err}`,
-      );
     }
+    for (const communityId of [...voiceReadyLogged]) {
+      if (!flagged.has(communityId)) voiceReadyLogged.delete(communityId); // flag dropped — re-arm
+    }
+  } catch (err) {
+    // #198 discipline kept: a scan failure never cuts the tick short.
+    console.error(`[voice] fluxer voice-state readiness scan failed: ${err?.message || err}`);
   }
 }
 

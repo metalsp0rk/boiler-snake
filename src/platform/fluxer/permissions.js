@@ -376,7 +376,15 @@ async function resolveFluxerPermissions({
     instanceKey,
   );
 
-  return { ok: true, channelPermissions, memberRoleIds, memberBot, author };
+  // #466 (FLX-7): REAL ownership, next to the mask it must stop proxying.
+  // ctx.guildOwner used to be (mask === ALL) — true for every ADMINISTRATOR
+  // and flipped by channel overwrites that never apply to ALL. Owner is the
+  // guild record's ownerId vs this member; no record ⇒ not provable ⇒ false
+  // (fail closed, matching every other fluxer permission default).
+  const guildOwner =
+    guild != null && guild.ownerId != null && String(guild.ownerId) === String(id);
+
+  return { ok: true, channelPermissions, memberRoleIds, memberBot, author, guildOwner };
 }
 
 module.exports = {
