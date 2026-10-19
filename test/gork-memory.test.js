@@ -11,6 +11,15 @@
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
 
+// #609: this file LOADS src modules whose require chain reaches src/db —
+// connection.js opens DB_PATH at REQUIRE time, so bind a private temp DB
+// BEFORE anything else loads. Concurrent node --test files sharing one
+// ambient DB_PATH race mid-migration (the #470 G2-6 gork flake class).
+const { loadDb } = require("./helpers/env");
+const { cleanup: cleanupTempDb } = loadDb();
+after(cleanupTempDb);
+
+
 const mem = require("../src/features/gork/memory");
 const {
   RECALL_MEMORIES_TOOL,
