@@ -143,7 +143,6 @@ function deleteExpiredOAuthTransactions(at = now(), limit = 500) {
 }
 
 module.exports = {
-  LAZY_EXPIRED_PRUNE_LIMIT,
   createOAuthTransaction,
   consumeOAuthTransaction,
   deleteExpiredOAuthTransactions,

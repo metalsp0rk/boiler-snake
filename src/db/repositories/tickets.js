@@ -1301,7 +1301,6 @@ module.exports = {
   normalizeTicketReason,
   nextTicketNumber,
   getTicketSettings,
-  getLastSelfCreatedTicket,
   canUserCreateTicket,
   claimTicketCreateSlot,
   releaseTicketCreateSlot,

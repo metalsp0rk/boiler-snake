@@ -90,18 +90,6 @@ function tsShort(ms) {
 }
 
 /**
- * Full + relative: `<t:…:F> (<t:…:R>)`
- * @param {number|null|undefined} ms
- * @returns {string}
- */
-function tsBoth(ms) {
-  if (ms == null) return "—";
-  const sec = Math.floor(Number(ms) / 1000);
-  if (!Number.isFinite(sec)) return "—";
-  return `<t:${sec}:F> (<t:${sec}:R>)`;
-}
-
-/**
  * Relative first, then full: `<t:…:R> · <t:…:F>`
  * @param {number|null|undefined} ms
  * @returns {string}
@@ -213,7 +201,6 @@ module.exports = {
   tsRelative,
   tsFull,
   tsShort,
-  tsBoth,
   tsRelativeFull,
   formatNoteRef,
   formatWarnRef,

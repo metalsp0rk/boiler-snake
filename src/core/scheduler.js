@@ -239,8 +239,6 @@ const defaultScheduler = createScheduler();
 module.exports = {
   createScheduler,
   msToNextBoundary,
-  OVERLAP_SKIP,
-  OVERLAP_ALLOW,
   registerJob: defaultScheduler.registerJob,
   stop: defaultScheduler.stop,
   runNow: defaultScheduler.runNow,
