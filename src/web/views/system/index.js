@@ -259,8 +259,8 @@ function pageHref(base, q) {
  * Pager with honest totals (the count helper ran for this exact filter).
  * #608: engine is views/_helpers#pagerFor — the audit-page vocabulary
  * (origin/n/o) stays page-side inside hrefFor, byte-identical to the old
- * copy (system's page.pageSize is a REAL number here, so prev steps back
- * one page exactly).
+ * copy. system's single page object carries a REAL pageSize, so prev always
+ * stepped back one page (moderation's projection shape was the #621 bug).
  */
 const pager = (base, page) =>
   pagerFor({

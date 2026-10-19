@@ -490,6 +490,18 @@ describe("GET /g/:guildId/warnings — pagination bounds on a 105-row subject", 
     assert.ok(body.includes("prev"), "prev link appears past the first page");
   });
 
+  it("#621 prev on a middle page steps back ONE real page (o=20 → o=15)", async () => {
+    const { res, body } = await hit(`${W}?u=${WARN_P}&n=5&o=20`, { key: "staff" });
+    assert.equal(res.status, 200);
+    const prev = body.match(/<a class="pager-prev" href="([^"]+)"/)?.[1];
+    assert.ok(prev, "prev link present past the first page");
+    // The fix (pageSize from the filters object): prev carries offset 15 and
+    // round-trips the filters. The old NaN path dropped `o` → first page.
+    // (hrefs in the rendered body carry HTML-escaped ampersands)
+    assert.match(prev, /(?:\?|&(?:amp;)?)o=15(?:&(?:amp;)?|$)/, `prev href steps back one page: ${prev}`);
+    assert.ok(prev.includes(`u=${WARN_P}`) && prev.includes("state=active"), "prev keeps filters");
+  });
+
   it("absurd offset clamps (200, bounded, empty state) — never deep-scans", async () => {
     const { res, body } = await hit(`${W}?u=${WARN_P}&o=999999999`, { key: "admin" });
     assert.equal(res.status, 200);

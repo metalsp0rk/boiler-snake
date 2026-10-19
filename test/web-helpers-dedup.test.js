@@ -241,9 +241,10 @@ describe("#608: promoted helper families", () => {
       .pagerFor({ hrefFor, offset: 0, pageSize: 10, total: 0, shown: 0 })
       .toString();
     assert.match(empty, /showing 0\u20130 of 0/);
-    // moderation byte-exactness quirk: pageSize undefined → prev href carries
-    // a NaN offset (the page's pageHref drops it) — the wrapper reproduces
-    // the historical copy exactly; issue #621 owns the real fix.
+    // #621: the moderation wrapper now feeds pageSize from the FILTERS object
+    // (the merged data-layer page), never from the {offset,total,shown}
+    // projection — prev steps back one REAL page. The old shape fed
+    // `pageSize: undefined` through here and the prev href lost its offset.
     const offsets = [];
     helpers.pagerFor({
       hrefFor: (o) => {
@@ -251,13 +252,14 @@ describe("#608: promoted helper families", () => {
         return "/x";
       },
       offset: 10,
-      pageSize: undefined,
+      pageSize: 10,
       total: 99,
       shown: 10,
     });
     assert.ok(
-      offsets.some((o) => Number.isNaN(o)),
-      `undefined pageSize feeds NaN through to the PREV href offset, as the old copy did (calls: ${JSON.stringify(offsets.map(String))})`,
+      !offsets.some((o) => Number.isNaN(o)),
+      `no NaN prev offset — moderation shape feeds a real pageSize (calls: ${JSON.stringify(offsets.map(String))})`,
     );
+    assert.deepEqual(offsets, [0, 20], "prev = offset - pageSize, next = offset + shown");
   });
 });
