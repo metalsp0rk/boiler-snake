@@ -1,30 +1,9 @@
 const { URL } = require("url");
+const { describeError } = require("../../core/errors"); // #470 (H1-7): shared copy
 
 const API_BASE = "https://api.github.com";
 const FETCH_TIMEOUT_MS = 15_000;
 
-/**
- * One-line error description for logging (fetch hides the real cause in
- * err.cause — same failure mode as the Twitch Helix client).
- * @param {unknown} err
- * @returns {string}
- */
-function describeError(err) {
-  if (!err) return String(err);
-  const name = err.name || "Error";
-  const message = err.message || String(err);
-  const ownCode = err.code && !message.includes(err.code) ? ` (${err.code})` : "";
-  let text = `${name}${ownCode}: ${message}`;
-  const cause = err.cause;
-  if (cause) {
-    let causeText = cause.message || "";
-    if (cause.code && !causeText.includes(cause.code)) {
-      causeText = `${cause.code} ${causeText}`.trim();
-    }
-    text += ` | cause: ${causeText || String(cause)}`;
-  }
-  return text;
-}
 
 /**
  * GET a GitHub REST endpoint. Returns the parsed JSON body on success, or

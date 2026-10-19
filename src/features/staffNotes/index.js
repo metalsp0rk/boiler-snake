@@ -30,6 +30,7 @@ const {
   requireStaffFromContext,
 } = require("../../core/permissions");
 const { replyEphemeral } = require("../../core/interaction");
+const { snippet } = require("../../core/text"); // #470 (H1-7): shared copy
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
@@ -64,7 +65,6 @@ const LIST_PAGE_SIZE = 10;
 /** Guild-wide recent feed cap when no user is given */
 const RECENT_GUILD_LIMIT = 15;
 /** Snippet length in list embeds */
-const SNIPPET_LEN = 80;
 
 /** Modal customId prefixes (registry matches longest prefix) */
 const MODAL_PREFIX_ADD = "note:add:";
@@ -175,18 +175,6 @@ const commands = [
     ),
 ];
 
-/**
- * @param {string} content
- * @param {number} [max]
- * @returns {string}
- */
-function snippet(content, max = SNIPPET_LEN) {
-  const s = String(content || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (s.length <= max) return s;
-  return `${s.slice(0, Math.max(0, max - 1))}…`;
-}
 
 /**
  * One list line for a note row.

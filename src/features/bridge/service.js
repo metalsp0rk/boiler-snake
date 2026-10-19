@@ -38,7 +38,12 @@ const crypto = require("crypto");
 
 const repo = require("../../db/repositories/bridges");
 const { db } = require("../../db/connection");
-const { getCommunityById, assertCommunityId } = require("../../platform/community");
+const {
+  getCommunityById,
+  assertCommunityId,
+  platformLabel, // #470 (H1-7): one owner for the bridge/linking pair
+  isCommunityRow,
+} = require("../../platform/community");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const codes = require("./codes");
 const media = require("./media");
@@ -189,19 +194,6 @@ function missingBotPermNames(mask) {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/**
- * @param {unknown} community a communities row
- * @returns {boolean}
- */
-function isCommunityRow(community) {
-  return (
-    community !== null &&
-    typeof community === "object" &&
-    Number.isSafeInteger(community.id) &&
-    typeof community.platform === "string" &&
-    typeof community.instanceKey === "string"
-  );
-}
 
 /**
  * Staff gate on data the handler supplies (the service cannot call
@@ -261,11 +253,6 @@ function normalizeCreateDirection(platform, raw) {
   return { ok: false };
 }
 
-function platformLabel(platform) {
-  if (platform === "discord") return "Discord";
-  if (platform === "fluxer") return "Fluxer";
-  return String(platform ?? "unknown");
-}
 
 /** Human rendering of a stored direction, from the create side's view. */
 function directionLabel(direction, endAPlatform, endBPlatform) {

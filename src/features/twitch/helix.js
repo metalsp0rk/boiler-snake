@@ -1,4 +1,5 @@
 const { URL } = require("url");
+const { describeError } = require("../../core/errors"); // #470 (H1-7): shared copy
 
 const HELIX_BASE = "https://api.twitch.tv/helix";
 const FETCH_TIMEOUT_MS = 15_000;
@@ -26,33 +27,6 @@ function expandThumbnailUrl(url, width = THUMBNAIL_WIDTH, height = THUMBNAIL_HEI
   return /[{}]/.test(expanded) ? null : expanded;
 }
 
-/**
- * One-line error description for logging.
- *
- * Node's global fetch wraps every network-level failure (DNS lookup failure,
- * TLS error, socket reset) in `TypeError: fetch failed` and buries the real
- * reason in `err.cause`. Logging only `err.name`/`err.message` therefore
- * shows a contentless "TypeError", so the cause is included when present.
- *
- * @param {unknown} err
- * @returns {string}
- */
-function describeError(err) {
-  if (!err) return String(err);
-  const name = err.name || "Error";
-  const message = err.message || String(err);
-  const ownCode = err.code && !message.includes(err.code) ? ` (${err.code})` : "";
-  let text = `${name}${ownCode}: ${message}`;
-  const cause = err.cause;
-  if (cause) {
-    let causeText = cause.message || "";
-    if (cause.code && !causeText.includes(cause.code)) {
-      causeText = `${cause.code} ${causeText}`.trim();
-    }
-    text += ` | cause: ${causeText || String(cause)}`;
-  }
-  return text;
-}
 
 /**
  * Fetch a Helix app access token (Client Credentials grant).

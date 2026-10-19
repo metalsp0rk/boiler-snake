@@ -38,7 +38,12 @@
  */
 
 const repo = require("../../db/repositories/userLinks");
-const { getCommunityById, assertCommunityId } = require("../../platform/community");
+const {
+  getCommunityById,
+  assertCommunityId,
+  platformLabel, // #470 (H1-7): one owner for the bridge/linking pair
+  isCommunityRow,
+} = require("../../platform/community");
 const codes = require("./codes");
 
 // ---------------------------------------------------------------------------
@@ -143,21 +148,7 @@ function requireUserId(value, name) {
 }
 
 /** @param {unknown} community @returns {boolean} true for a communities row. */
-function isCommunityRow(community) {
-  return (
-    community !== null &&
-    typeof community === "object" &&
-    Number.isSafeInteger(community.id) &&
-    typeof community.platform === "string" &&
-    typeof community.instanceKey === "string"
-  );
-}
 
-function platformLabel(platform) {
-  if (platform === "discord") return "Discord";
-  if (platform === "fluxer") return "Fluxer";
-  return String(platform ?? "unknown");
-}
 
 /** ISO instant for a stored ms epoch, rendered defensively. */
 function isoUtc(ms) {

@@ -2,6 +2,7 @@
 // Bot-managed reaction role panels: embed + emoji options with min level + removable flag.
 
 const { EmbedBuilder } = require("discord.js");
+const { toPlainEmbed } = require("../../core/embeds"); // #470 (H1-7): shared copy
 const {
   getReactionRolePanel,
   createReactionRolePanel,
@@ -1243,15 +1244,6 @@ async function tryDmFluxer(outbound, userId, content) {
   }
 }
 
-/**
- * Plain JSON embed for a Fluxer send site (no EmbedBuilder on the wire —
- * strip the class at the send site with toJSON(), PR 9 bundle).
- * @param {object} embed EmbedBuilder instance or plain NormalizedEmbed
- * @returns {object}
- */
-function toPlainEmbed(embed) {
-  return embed && typeof embed.toJSON === "function" ? embed.toJSON() : embed;
-}
 
 /**
  * Deploy a panel to a Fluxer channel: post the embed through sendChannel,

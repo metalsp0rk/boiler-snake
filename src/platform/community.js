@@ -195,7 +195,39 @@ function ensureCommunity({ platform, instanceKey, externalGuildId } = {}) {
   return id;
 }
 
+/**
+ * Human label for a platform key (#470 H1-7: byte-identical copies in the
+ * bridge service and both linking modules kept the pair from one owner).
+ *
+ * @param {string|null|undefined} platform
+ * @returns {string}
+ */
+function platformLabel(platform) {
+  if (platform === "discord") return "Discord";
+  if (platform === "fluxer") return "Fluxer";
+  return String(platform ?? "unknown");
+}
+
+/**
+ * Shape-gate: does this row look like a communities row (id + platform +
+ * instanceKey)? Guards cross-module helpers from half-loaded/foreign input.
+ *
+ * @param {unknown} community
+ * @returns {boolean}
+ */
+function isCommunityRow(community) {
+  return (
+    community !== null &&
+    typeof community === "object" &&
+    Number.isSafeInteger(community.id) &&
+    typeof community.platform === "string" &&
+    typeof community.instanceKey === "string"
+  );
+}
+
 module.exports = {
+  platformLabel,
+  isCommunityRow,
   listVoiceCompleteFluxerCommunityIds: () => selectVoiceCompleteFluxerIds.all().map((r) => r.id),
   // #466 (E2-11): which fluxer communities run with elevated_permissions=1
   // (the deferred reaction-role grant sweep's own question, answered in SQL).

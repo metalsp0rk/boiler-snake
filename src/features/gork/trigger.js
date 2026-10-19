@@ -34,6 +34,7 @@
  */
 
 const { PermissionFlagsBits } = require("discord.js");
+const { envPositiveInt } = require("../../core/env"); // #470 (H1-7): shared copy
 const {
   getGuildSettings,
   getTicketByChannel,
@@ -191,17 +192,6 @@ const DEFAULT_MAX_ANSWER_CHARS = 0;
 /** Marker appended by capAnswerChars when a visible answer gets truncated. */
 const ANSWER_TRUNCATE_MARKER = "…[truncated]";
 
-/**
- * Positive-integer env knob with a fallback (unset/invalid → default).
- *
- * @param {string} name env var name
- * @param {number} fallback default value
- * @returns {number}
- */
-function envPositiveInt(name, fallback) {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
 
 /**
  * Per-call LLM parameters, re-read every job so env overrides apply to
