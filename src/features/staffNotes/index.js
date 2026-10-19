@@ -154,6 +154,12 @@ const commands = [
             .setDescription("Note number (e.g. 12 from N-12)")
             .setRequired(true)
             .setMinValue(1),
+        )
+        .addBooleanOption((opt) =>
+          // #471 (H2-15): no restore command exists — confirm-once.
+          opt
+            .setName("confirm")
+            .setDescription("Set true to actually delete (without it this only previews)"),
         ),
     )
     .addSubcommand((sc) =>
@@ -786,6 +792,21 @@ async function handleDelete(commandCtx, featureCtx) {
         `Note **${formatNoteRef(noteNumber)}** is already soft-deleted` +
         (existing.deleted_by ? ` (by <@${existing.deleted_by}>)` : "") +
         `.`,
+      sensitive: true,
+    });
+    return;
+  }
+
+  // #471 (H2-15): a soft-deleted note has NO restore command in the bot and
+  // its content rides only the audit log / retention erasure — confirm-once
+  // (gork memory idiom, declared convention). Without confirm:true, preview.
+  if (commandCtx.options.getBoolean("confirm") !== true) {
+    await commandCtx.reply({
+      content:
+        `Note **${formatNoteRef(noteNumber)}** on <@${existing.user_id}> will be soft-deleted:` +
+        `\n> ${snippet(existing.content)}` +
+        "\n\nThe note leaves **/note list** immediately and the bot has no restore command. " +
+        "Re-run with `confirm: true` to proceed.",
       sensitive: true,
     });
     return;
