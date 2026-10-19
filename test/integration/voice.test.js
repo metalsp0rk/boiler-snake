@@ -237,4 +237,50 @@ describe("integration: voice tick", () => {
       clearVoice();
     }
   });
+
+  it("#466 (XE-12): the fluxer voice readiness line logs once per flag TRANSITION, not per tick", async () => {
+    const { ensureCommunity } = require("../../src/platform/community");
+    const fxId = ensureCommunity({
+      platform: "fluxer",
+      instanceKey: "fluxer",
+      externalGuildId: "940000000000000512",
+    });
+    const flip = (v) =>
+      env.db.db
+        .prepare("UPDATE communities SET voice_states_complete = ? WHERE id = ?")
+        .run(v, fxId);
+    const ready = (logs) =>
+      logs.filter((l) => l.includes("voice_states_complete=1") && l.includes(String(fxId)));
+
+    const logs = [];
+    const orig = console.log;
+    console.log = (...a) => {
+      const line = a.join(" ");
+      if (line.startsWith("[voice]")) logs.push(line);
+    };
+    try {
+      flip(0);
+      await runVoiceTick(fakeSupervisor(env.client));
+      assert.equal(ready(logs).length, 0, "flag off — silent");
+
+      flip(1);
+      await runVoiceTick(fakeSupervisor(env.client));
+      await runVoiceTick(fakeSupervisor(env.client));
+      await runVoiceTick(fakeSupervisor(env.client));
+      assert.equal(
+        ready(logs).length,
+        1,
+        "three flagged ticks, ONE transition line (pre-#466: a line per minute per community, forever)"
+      );
+
+      flip(0);
+      await runVoiceTick(fakeSupervisor(env.client));
+      flip(1);
+      await runVoiceTick(fakeSupervisor(env.client));
+      assert.equal(ready(logs).length, 2, "flag drops then returns ⇒ the line may print again");
+    } finally {
+      console.log = orig;
+      flip(0);
+    }
+  });
 });

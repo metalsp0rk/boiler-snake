@@ -394,7 +394,7 @@ async function createFluxerHandle(entry, { pipelineHooks = {} } = {}) {
   const eventName = (enumKey, fallback) => events[enumKey] ?? fallback;
 
   // fromDiscovery runs GET {origin}/.well-known/fluxer itself (the real
-  // static factory on the pinned @fluxerjs/core@3.1.0 surface — fromInstance
+  // static factory on the pinned @fluxerjs/core@3.3.0 surface — fromInstance
   // does not exist; caught by the boot smoke test).
   let client;
   try {

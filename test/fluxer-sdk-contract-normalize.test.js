@@ -11,7 +11,9 @@
  * rename under us fails the suite instead of shipping silent emptiness.
  *
  * What the gateway actually emits (read from the SDK dist, not the fixtures —
- * line refs into the pinned SDK build 3.1.0 bundle):
+ * line refs into the pinned SDK build 3.3.0 bundle — re-derived on the
+ * dependabot bump from 3.1.0; the assertions are the contract, the line
+ * numbers are signposts):
  *   MESSAGE_CREATE      → new Message(client, d) (+ indexMember when the
  *                         guild is cached: message.member is a GETTER reading
  *                         guild.members.get(author.id) — NOT the raw d.member)
@@ -453,7 +455,8 @@ describe("platform/fluxer — voice-state readiness contract (issue #200)", () =
     const sdk = await sdkModels();
     if (!sdk) return t.skip("real SDK not installed — guarded loader resolved to null");
 
-    // The pinned SDK build (3.1.0) passes VOICE_STATE_UPDATE through as the raw wire
+    // The pinned SDK build (3.3.0; also true on 3.1.0) passes VOICE_STATE_UPDATE
+    // through as the raw wire
     // object and VoiceStatesSync carries the raw `voice_states` array: there
     // is no model class to construct. If a future SDK ships one, THIS fails
     // — deliberately: the voice XP path (src/features/voice/index.js) must

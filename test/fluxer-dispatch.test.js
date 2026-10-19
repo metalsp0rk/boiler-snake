@@ -353,11 +353,16 @@ describe("fluxer/dispatch — !help rendering", () => {
     assert.match(content, /Commands/);
     assert.match(content, /- xp — /, "public commands are listed with descriptions");
     assert.match(content, /- leaderboard — /);
-    assert.match(content, /- music — Discord only/, "Discord-only line for music");
-    assert.match(content, /- play — Discord only/);
-    assert.match(content, /- eventreminder — Discord only/);
+    // #466 (FLX-13) pin flip: the Discord-only TRIO used to be listed with
+    // note lines even though dispatch answers every invocation of them
+    // NOT_ON_FLUXER — advertising a dead end. The notes still render in
+    // DETAIL blocks (`!help music`, pinned below); the LIST now only ever
+    // contains commands the dispatcher can actually route.
+    assert.doesNotMatch(content, /- music/, "dead-end commands leave the list");
+    assert.doesNotMatch(content, /- play/);
+    assert.doesNotMatch(content, /- eventreminder/);
     assert.match(content, /ticket panel — Discord only/, "ticket panel note rides on ticket");
-    assert.match(content, /- help — /, "the synthetic command is listed too");
+    assert.match(content, /- help — /, "help itself is always listed (dispatch answers it)");
   });
 
   it("!help warn shows the subcommand option line: user <user>, reason <string>, silent [boolean]", async () => {
@@ -421,10 +426,19 @@ describe("fluxer/dispatch — !help rendering", () => {
   });
 
   it("!help honeypot channel shows the group and its subcommands", async () => {
+    // #466 (FLX-13): honeypot is STAFF tier — the caller must now clear the
+    // tier to see it (that is the whole point of the change): @everyone
+    // carries ManageGuild, so the invoker is admin-visible.
     const rest = makeFakeRest({
-      routes: { "POST /v1/channels/555000111/messages": { id: "h-6" } },
+      routes: {
+        "POST /v1/channels/555000111/messages": { id: "h-6" },
+        [`GET /v1/guilds/${GUILD}/roles`]: [{ id: GUILD, permissions: "32" }],
+        [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, permission_overwrites: [] },
+      },
     });
-    const { outbound } = makeFakeHandle({ rest });
+    const handle = makeFakeHandle({ rest });
+    handle.fetchGuild = async () => ({ id: GUILD, name: "B", ownerId: "owner-1" });
+    const outbound = handle.outbound;
     const parsed = parsePrefix("!help honeypot channel", P);
     const message = fluxerMessage({ content: "!help honeypot channel" });
 
@@ -434,6 +448,67 @@ describe("fluxer/dispatch — !help rendering", () => {
     assert.match(content, /honeypot channel — /, "the group header line");
     assert.match(content, /honeypot channel add — /, "group subcommands listed");
     assert.match(content, /channel <channel>/, "options render for the group's subcommands");
+  });
+
+  // -------------------------------------------------------------------------
+  // #466 (FLX-13): the list is permission-filtered — tiers from the SAME
+  // commandVisibility map Discord uses for picker visibility; dead-end
+  // (NOT_ON_FLUXER) commands never advertised; detail blocks keep the spec'd
+  // "Discord only (…)" note for tier-visible commands.
+  // -------------------------------------------------------------------------
+
+  const helpRoutes = (extra = {}) => ({
+    "POST /v1/channels/555000111/messages": { id: "flx13" },
+    ...extra,
+  });
+
+  async function bareHelpBody(restRoutes, msgTweak = () => {}) {
+    const rest = makeFakeRest({ routes: helpRoutes(restRoutes) });
+    const handle = makeFakeHandle({ rest });
+    handle.fetchGuild = async () => ({ id: GUILD, name: "B", ownerId: "owner-1" });
+    const outbound = handle.outbound;
+    const message = fluxerMessage({ content: "!help" });
+    msgTweak(message);
+    await dispatchPrefixCommand(outbound, message, parsePrefix("!help", P), {
+      registry,
+      supervisor: null,
+    });
+    return lastPostBody(rest).content;
+  }
+
+  it("a civilian's !help hides staff-tier and admin-tier commands", async () => {
+    const content = await bareHelpBody({
+      [`GET /v1/guilds/${GUILD}/roles`]: [{ id: GUILD, permissions: "0" }],
+      [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, permission_overwrites: [] },
+    });
+    assert.match(content, /- xp — /, "public commands stay");
+    assert.doesNotMatch(content, /- settings/, "staff tier hidden from civilians (pre-fix: advertised, then MSG_DENIED)");
+    assert.doesNotMatch(content, /- grantxp/);
+    assert.doesNotMatch(content, /- honeypot/);
+  });
+
+  it("a staff_roles holder's !help shows staff tier but NOT admin tier", async () => {
+    dbApi.addStaffRole(COMMUNITY_ID, "role-777", "senior");
+    const content = await bareHelpBody(
+      {
+        [`GET /v1/guilds/${GUILD}/roles`]: [{ id: GUILD, permissions: "0" }],
+        [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, permission_overwrites: [] },
+      },
+      (m) => {
+        m.memberRoleIds = ["role-777"];
+      },
+    );
+    assert.match(content, /- settings — /, "staff tier visible to staff-role members");
+    assert.doesNotMatch(content, /- grantxp/, "admin tier still hidden (no ManageGuild)");
+  });
+
+  it("a ManageGuild caller's !help shows the admin tier too", async () => {
+    const content = await bareHelpBody({
+      [`GET /v1/guilds/${GUILD}/roles`]: [{ id: GUILD, permissions: "32" }],
+      [`GET /v1/channels/${CHANNEL}`]: { id: CHANNEL, type: 0, permission_overwrites: [] },
+    });
+    assert.match(content, /- grantxp — /, "admin tier visible to ManageGuild");
+    assert.match(content, /- settings — /);
   });
 
   it("!help music is JUST the Discord-only line", async () => {
@@ -562,5 +637,83 @@ describe("fluxer/dispatch — #457 boundary guard (assertCommandContext is wired
     await dispatchPrefixCommand(outbound, message, parsed, { registry: spyRegistry, supervisor: null });
 
     assert.deepEqual(ranHandlers, ["xp"], "valid context passes the guard into the handler");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #466 (FLX-11): MENTIONABLE (type 9) resolved like Discord — users first,
+// then roles — never a raw "<@&…>" token handed to the handler.
+// ---------------------------------------------------------------------------
+
+describe("#466 (FLX-11): MENTIONABLE options resolve to targets, not tokens", () => {
+  async function probeTarget({ options, msgOverrides = {}, routes = {} }) {
+    const rest = makeFakeRest({ routes });
+    const { outbound } = makeFakeHandle({ rest });
+    let seen = "NOT_CALLED";
+    const reg = createRegistry();
+    reg.registerHandler(
+      "probe",
+      async (ctx) => {
+        seen = ctx.options.getString("target");
+      },
+      { api: "context" },
+    );
+    const message = fluxerMessage({ content: "!probe target", ...msgOverrides });
+    const parsed = {
+      commandName: "probe",
+      subcommandGroup: null,
+      subcommand: null,
+      options,
+      help: null,
+      usageError: null,
+    };
+    await dispatchPrefixCommand(outbound, message, parsed, { registry: reg, supervisor: null });
+    return { seen, rest };
+  }
+
+  // mentionIndex is 0-based (the parser's positional cursor into the
+  // matching mention array) — #1 would point past a single mention.
+  const opt = (value, mentionIndex = 0) => [
+    { name: "target", type: 9, value, mentionIndex },
+  ];
+
+  it("an <@&id> role token resolves to the ROLE shape", async () => {
+    const { seen } = await probeTarget({ options: opt("<@&123456>") });
+    assert.deepEqual(
+      seen,
+      { id: "123456" },
+      'old code: the handler got the raw "<@&123456>" string (type 9 fell to the STRING default)'
+    );
+  });
+
+  it("a bare id resolves through the user fetch (USER path)", async () => {
+    const { seen } = await probeTarget({
+      options: opt("999"),
+      routes: { "GET /v1/users/999": { id: "999", username: "zed", bot: false } },
+    });
+    assert.deepEqual(seen, { id: "999", username: "zed", bot: false });
+  });
+
+  it("a <@id> user-mention token resolves as a user too", async () => {
+    const { seen } = await probeTarget({
+      options: opt("<@777>"),
+      routes: { "GET /v1/users/777": { id: "777", username: "mia", bot: false } },
+    });
+    assert.deepEqual(seen, { id: "777", username: "mia", bot: false });
+  });
+
+  it("a positional target with ONLY role mentions answers from the roles side", async () => {
+    const { seen } = await probeTarget({
+      options: opt("role"),
+      msgOverrides: { mention_roles: ["555"] },
+    });
+    assert.deepEqual(seen, { id: "555" }, "users first, THEN roles — nothing users-side, roles answer");
+  });
+
+  it("junk with no mentions never reaches the handler (USER-path copy answers)", async () => {
+    const { seen, rest } = await probeTarget({ options: opt("absolutely-not-a-target") });
+    assert.equal(seen, "NOT_CALLED", "the failed resolution replies INSTEAD of running the handler");
+    const posts = rest.calls.filter((c) => c.method === "POST" && c.path.includes("/messages"));
+    assert.ok(posts.length > 0, "a specific failure reply was posted (never a silent drop)");
   });
 });

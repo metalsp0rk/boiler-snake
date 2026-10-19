@@ -30,37 +30,12 @@
  */
 
 const { assertCommunityId } = require("../community");
+// #466 (FLX-9): shared adapter utilities (one implementation, five consumers).
+const { causeOf, codeOf, statusOf, failureText, normalizeSendFile, validateWebhook } = require("../adapterUtils");
 const { fluxerRequestTimeoutMs } = require("./restTimeout");
 
-/**
- * Specific, human-readable cause for a thrown value (never a token: no
- * message built here contains a URL).
- * @param {unknown} err
- * @returns {string}
- */
-function causeOf(err) {
-  return String(err?.message || err);
-}
 
-/**
- * API error code from a transport error, stringified at the boundary
- * (same posture as the outbound adapters).
- * @param {unknown} err
- * @returns {string|undefined}
- */
-function codeOf(err) {
-  return err?.code != null ? String(err.code) : undefined;
-}
 
-/**
- * HTTP status from a response/error, when it exposes one.
- * @param {unknown} value
- * @returns {number|undefined}
- */
-function statusOf(value) {
-  const s = Number(value?.status ?? value?.statusCode);
-  return Number.isFinite(s) && s > 0 ? s : undefined;
-}
 
 /**
  * 429 and 5xx are transient (retry the send); 4xx are terminal (the caller
@@ -72,20 +47,6 @@ function isRetryableStatus(status) {
   return status === 429 || (status >= 500 && status <= 599);
 }
 
-/**
- * "method: detail failed: cause (status N, code X)" — status and API code go
- * into the message (AGENTS.md rule 2); no URL is ever embedded, so the
- * webhook token can never reach a log through here.
- */
-function failureText(method, detail, err) {
-  const bits = [];
-  const status = statusOf(err);
-  const code = codeOf(err);
-  if (status != null) bits.push(`status ${status}`);
-  if (code != null) bits.push(`code ${code}`);
-  const suffix = bits.length ? ` (${bits.join(", ")})` : "";
-  return `${method}: ${detail} failed: ${causeOf(err)}${suffix}`;
-}
 
 /**
  * Read a JSON body from a Response-shaped object, best-effort: non-ok
@@ -128,65 +89,7 @@ function parseRetryAfterMs(res, payload) {
   return undefined;
 }
 
-/**
- * Normalize one `files` entry to { name, data, contentType } — the same
- * descriptor shape the OutboundClient send paths accept (spec § Embeds and
- * attachments vocabulary), mirrored here so the webhook module stands alone.
- *
- * @param {unknown} file
- * @param {number} index
- * @param {string} method
- * @returns {{ ok: true, file: { name: string, data: Buffer, contentType: string } }
- *   | { ok: false, error: string }}
- */
-function normalizeSendFile(file, index, method) {
-  const name = typeof file?.name === "string" && file.name !== "" ? file.name : null;
-  if (name == null) {
-    return {
-      ok: false,
-      error: `${method}: files[${index}] needs a non-empty string name (files entries are { name, data, contentType? })`,
-    };
-  }
-  let data = null;
-  const raw = file?.data ?? file?.attachment;
-  if (Buffer.isBuffer(raw)) data = raw;
-  else if (typeof raw === "string") data = Buffer.from(raw, "utf8");
-  else if (raw instanceof ArrayBuffer) data = Buffer.from(new Uint8Array(raw));
-  else if (ArrayBuffer.isView(raw)) data = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
-  if (data == null) {
-    return {
-      ok: false,
-      error:
-        `${method}: files[${index}] ("${name}") needs Buffer data, got ` +
-        `${raw == null ? String(raw) : typeof raw}`,
-    };
-  }
-  const contentType =
-    typeof file.contentType === "string" && file.contentType !== ""
-      ? file.contentType
-      : "application/octet-stream";
-  return { ok: true, file: { name, data, contentType } };
-}
 
-/**
- * Validate the RelayWebhook handle { id, token } (§10.3 typedef). Returns an
- * error string naming the METHOD and the webhook id — never the token.
- * @param {object} webhook
- * @param {string} method
- * @returns {string|null}
- */
-function validateWebhook(webhook, method) {
-  if (!webhook || typeof webhook !== "object") {
-    return `${method}: webhook must be { id, token }`;
-  }
-  if (webhook.id == null || String(webhook.id) === "") {
-    return `${method}: webhook.id is required`;
-  }
-  if (typeof webhook.token !== "string" || webhook.token === "") {
-    return `${method}: webhook ${String(webhook.id)} has no token`;
-  }
-  return null;
-}
 
 /**
  * Validate the webhook apiOrigin (audit C1) and return its canonical form

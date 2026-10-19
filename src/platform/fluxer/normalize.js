@@ -11,7 +11,9 @@
  *   MESSAGE_REACTION_ADD/REMOVE is ONE object:
  *   {user_id, channel_id, message_id, emoji{name, id?, animated?}, guild_id?, member?}
  *
- * The real Fluxer SDK (core package 3.1.0, verified in prod 2026-10-01) emits
+ * The real Fluxer SDK (pinned core package 3.3.0; the shapes below were
+ * observed on the 3.1.0 line in prod 2026-10-01 and stay contract-pinned
+ * against the current pin) emits
  * HYDRATED camelCase model instances for these events (Message: channelId,
  * guildId, createdAt, mentionRoles, attachments as a Collection; GuildMember:
  * `roles` is a GuildMemberRoleManager — the ids live behind its `roleIds`
