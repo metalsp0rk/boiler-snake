@@ -129,17 +129,23 @@ function registerDashboardRoutes(app, options = {}) {
         return;
       }
       const capped = listed.guilds.slice(0, MAX_ROOT_GUILDS);
-      const rows = [];
-      for (const g of capped) {
-        // Fluxer PR 2: resolve() and the console link key by the INTEGER
-        // community id the list entries carry (snowflakes deny at the gate).
-        const access = await resolver.resolve(req.webSession, g.communityId);
-        rows.push({
-          id: g.communityId,
-          name: g.name,
-          tier: access.status === "ok" ? access.tier : null,
-        });
-      }
+      // #466 (C2-8): CONCURRENT tier fan-out. The sequential loop paid up
+      // to MAX_ROOT_GUILDS networked member-reads one after another on
+      // exactly the page the user is waiting for (cold cache: nothing
+      // absorbed it yet). Promise.all keeps the cap AND the row order;
+      // a rejection still fails the route exactly as before.
+      const accesses = await Promise.all(
+        capped.map((g) =>
+          // Fluxer PR 2: resolve() and the console link key by the INTEGER
+          // community id the list entries carry (snowflakes deny at the gate).
+          resolver.resolve(req.webSession, g.communityId),
+        ),
+      );
+      const rows = capped.map((g, i) => ({
+        id: g.communityId,
+        name: g.name,
+        tier: accesses[i].status === "ok" ? accesses[i].tier : null,
+      }));
       const document = renderLayout({
         title: "Guilds",
         heading: "Your guilds",

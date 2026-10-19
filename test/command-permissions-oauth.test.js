@@ -961,14 +961,24 @@ describe("handleCommandPermissionOAuthCallback", () => {
     assert.equal(handled, true);
     assert.equal(res.statusCode, 500);
     assert.match(res.body, /Sync failed/);
+    // #466 (C1-10) pin flip: the OLD page quoted Discord's error_description
+    // verbatim to an UNAUTHENTICATED browser (redirect URIs, envelope
+    // material; the empty case printed the banned "Unknown error"). The page
+    // now carries the MAPPED actionable cause for err.code; the full cause
+    // stays in the log (asserted below) — error laws 3+4 from the caller's
+    // side: actionable, never internal.
     assert.match(
       res.body,
-      /Invalid &quot;code&quot; in OAuth2 RoC grant\./,
-      "page must carry the specific cause (HTML-escaped)"
+      /The authorization code expired or was already used\./,
+      "invalid_grant maps to its actionable sentence"
+    );
+    assert.ok(
+      !res.body.includes('Invalid "code"') && !res.body.includes("Invalid &quot;code&quot;"),
+      "the raw internal cause NEVER rides the unauthenticated page"
     );
     assert.ok(
       !res.body.includes("Unknown error"),
-      "page must not fall back to a generic message when a cause exists"
+      "the banned generic phrase is gone entirely"
     );
     assert.ok(
       logs.some(
@@ -1041,7 +1051,7 @@ describe("handleCommandPermissionOAuthCallback", () => {
   // Hardening (XSS): Discord-supplied error/error_description comes straight
   // from attacker-influenceable query params — it must be HTML-escaped while
   // still surfacing the specific cause (law #3 at the public HTTP edge).
-  it("HTML-escapes Discord error params instead of injecting markup", async () => {
+  it("refuses to render error_description — only the bounded token reaches the page (#466 C1-10)", async () => {
     // Act
     const res = makeRes();
     const handled = await handleCommandPermissionOAuthCallback(
@@ -1057,8 +1067,15 @@ describe("handleCommandPermissionOAuthCallback", () => {
     assert.equal(handled, true);
     assert.equal(res.statusCode, 400);
     assert.match(res.body, /Authorization cancelled/);
-    assert.match(res.body, /&lt;script&gt;alert\(&quot;xss&quot;\)/);
-    assert.ok(!res.body.includes('<script>alert("xss")'), "raw markup must not reach the page");
+    // #466 (C1-10) pin flip: escaping the free-text was the OLD contract.
+    // error_description now NEVER reaches the page — escaped or not (it is
+    // provider free text with envelope material; only the spec-bounded
+    // error token is echoed, and the full pair goes to the log).
+    assert.ok(
+      !res.body.includes("xss"),
+      `error_description must not reach the page at all: ${res.body}`
+    );
+    assert.match(res.body, /<code>access_denied<\/code>/, "the bounded token answers instead");
     assert.equal(exchangeCalls.length, 0);
   });
 

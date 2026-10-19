@@ -626,19 +626,24 @@ function createGuildAccessResolver(options = {}) {
   }
 
   /**
-   * User∩snapshot guild list for a Fluxer session. The login snapshot is
-   * already instance-scoped (login kept only communities that exist for this
-   * instance), so "intersect by external id" is user-list ∩ snapshot ids —
-   * the same shape the Discord degraded path builds. A fetch failure falls
-   * back to the stored snapshot (degraded:true), bounded by the next TTL
-   * (§8.3 row 3).
+   * User∩snapshot guild list for a Fluxer session, then PRUNED to bot
+   * presence (#466 C1-11 — the comment here used to argue the intersection
+   * with a live bot list was unnecessary because "the login snapshot is
+   * already instance-scoped": instance-scoped ≠ bot-still-present, and a
+   * snapshot-admin kept tiering communities the bot had LEFT until the
+   * token died). "intersect by external id" is user-list ∩ snapshot ids —
+   * then minus every community whose bot-presence probe says "absent"
+   * (§8.3 row: bot not in guild ⇒ deny, not listable). A user-list fetch
+   * failure still falls back to the stored snapshot (degraded:true) — and
+   * the prune runs there too, since the USER token happily lists guilds
+   * the BOT has left. All bounded by the next TTL (§8.3 row 3).
    */
   async function getFluxerAccessGuilds(session, accessToken, at, authRow) {
     const cached = accessLists.get(session.id);
     if (cached && at - cached.at < ttl()) {
       return { list: cached.guilds, degraded: false };
     }
-    const storedList = () => {
+    const storedList = async () => {
       const stored = parseStoredSnapshot(authRow)
         .filter((g) => g && typeof g.id === "string")
         .map((g) => ({
@@ -649,6 +654,7 @@ function createGuildAccessResolver(options = {}) {
           permissions: g.permissions,
         }));
       const list = new Map(stored.map((g) => [g.id, g]));
+      await pruneBotAbsentFluxer(list, session.instanceKey ?? "discord");
       cacheSet(accessLists, session.id, { guilds: list, at });
       return { list, degraded: true };
     };
@@ -657,7 +663,7 @@ function createGuildAccessResolver(options = {}) {
       console.warn(
         `[web] fluxer guildAccess: no api base for instance=${session.instanceKey}; using stored snapshot until next TTL`
       );
-      return storedList();
+      return await storedList();
     }
     try {
       const userGuilds = await api.listCurrentUserGuilds(accessToken);
@@ -670,6 +676,9 @@ function createGuildAccessResolver(options = {}) {
       );
       const fresh = buildGuildSnapshot(userGuilds, snapshotIds);
       const list = new Map(fresh.map((g) => [g.id, g]));
+      // #466 (C1-11): the USER token lists guilds the BOT has left — prune
+      // bot-absent entries before this list is cached AND tiered against.
+      await pruneBotAbsentFluxer(list, session.instanceKey ?? "discord");
       cacheSet(accessLists, session.id, { guilds: list, at });
       return { list, degraded: false };
     } catch (err) {
@@ -677,8 +686,91 @@ function createGuildAccessResolver(options = {}) {
       console.warn(
         "[web] fluxer guildAccess: guild-list refresh failed; using stored snapshot until next TTL"
       );
-      return storedList();
+      return await storedList();
     }
+  }
+
+  /**
+   * #466 (C1-11): bot-side liveness for ONE fluxer community, in the shape
+   * the access matrix needs. "absent" (the instance refuses the bot: its
+   * guild GET 403/404s, or the communities row is gone) DENIES; "unknown"
+   * (no client seam wired, or a transport hiccup could not ask) must NOT
+   * evict a community the bot may well still sit in. The Discord twin asks
+   * the gateway's guild cache (botGuilds()); the fluxer bot has no
+   * guild-list surface, so this is the per-community guild GET answered by
+   * the BOT's own outbound client — exactly the credential every mutation
+   * would need, so "the console lists it but every action 404s" cannot
+   * recur (the audit's undocumented third shape of the bot-membership rule).
+   * @param {number} cid
+   * @returns {Promise<"present"|"absent"|"unknown">}
+   */
+  async function probeFluxerBotPresence(cid) {
+    let outbound = null;
+    try {
+      outbound = getCommunityClient(cid);
+    } catch (err) {
+      console.warn(
+        `[web] fluxer bot-presence probe: no client for community ${cid} (treated unknown):`,
+        err?.message || err
+      );
+      return "unknown";
+    }
+    if (!outbound || typeof outbound.probeGuildPresence !== "function") return "unknown";
+    try {
+      const verdict = await outbound.probeGuildPresence(cid);
+      return verdict === "present" || verdict === "absent" ? verdict : "unknown";
+    } catch (err) {
+      console.warn(
+        `[web] fluxer bot-presence probe failed for community ${cid} (treated unknown):`,
+        err?.message || err
+      );
+      return "unknown";
+    }
+  }
+
+  /**
+   * Drop snapshot/list entries whose BOT presence is REFUSED (or whose
+   * community row vanished). Runs on every access-list rebuild (both the
+   * fresh and the degraded stored-snapshot path), concurrently, before the
+   * TTL cache — so `resolve` inherits it exactly like the Discord path
+   * inherits the botGuilds() intersection.
+   * @param {Map<string, object>} list
+   * @param {string} instanceKey
+   */
+  async function pruneBotAbsentFluxer(list, instanceKey) {
+    const entries = [...list.entries()];
+    if (entries.length === 0) return list;
+    const verdicts = await Promise.all(
+      entries.map(async ([externalId]) => {
+        let cid = null;
+        try {
+          // Returns the INTEGER id (or null) — the reverse-lookup contract
+          // of platform/community.js.
+          cid = getCommunityByExternal("fluxer", instanceKey, externalId);
+        } catch (err) {
+          // Store hiccup: a guess here must not mutate the list; resolve's
+          // own store_unavailable gate still stands.
+          console.warn(
+            "[web] fluxer guildAccess: community lookup during bot-presence prune failed:",
+            err?.code || err?.message || err
+          );
+          return { externalId, verdict: "unknown" };
+        }
+        if (!Number.isInteger(cid)) {
+          return { externalId, verdict: "absent" }; // community gone — resolve denies it anyway
+        }
+        return { externalId, verdict: await probeFluxerBotPresence(cid) };
+      }),
+    );
+    for (const { externalId, verdict } of verdicts) {
+      if (verdict === "absent") {
+        list.delete(externalId);
+        console.warn(
+          `[web] fluxer guildAccess: bot not present for guild ${externalId} (instance ${instanceKey}) — dropped from the access list (#466 C1-11)`,
+        );
+      }
+    }
+    return list;
   }
 
   /**

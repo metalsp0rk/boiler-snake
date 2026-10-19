@@ -11,7 +11,9 @@
  * Cadence: HOURLY with an immediate boot sweep (the web-session prune runs
  * boot + periodic for the same reason — a restart should do real pruning,
  * and an idle sweep is one cheap indexed statement per table). The batch
- * cap bounds a huge backlog; hourly cadence drains ≈80k rows/day/table,
+ * cap bounds a huge backlog; hourly cadence drains
+ * ≈480k rows/day/table (batchRows 500 × maxBatchesPerTable 40 = 20k per sweep
+ * × 24 — #468 DB-8: the old text said 80k, off by 6×),
  * far above any real steady-state rate.
  *
  * Dark-safe by construction: every table's sweep can be disabled by its own

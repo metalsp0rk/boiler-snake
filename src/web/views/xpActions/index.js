@@ -73,7 +73,8 @@ function flashBanner(flash) {
  * BROWSER hint only: the route re-validates every field independently.
  *
  * @param {object} input
- * @param {string} input.guildId server-derived (guildScope snowflake)
+ * @param {number} input.guildId ROUTE identity — integer communities.id (post-Fluxer PR2;
+ *   NOT a platform snowflake — the guildScope layer resolves it, see #468 C2-9)
  * @param {string|null} input.csrfToken req.csrfToken (null → empty, POST then 403s)
  * @param {{done: string|null, error: string|null}|null} [input.flash]
  * @param {number} input.maxAward MAX_XP_AWARD (rendered as a bound, never as data)

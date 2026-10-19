@@ -65,12 +65,19 @@ async function handleCommandPermissionOAuthCallback(req, res, url) {
 
   const errParam = url.searchParams.get("error");
   if (errParam) {
-    const desc = url.searchParams.get("error_description") || errParam;
+    // #466 (C1-10): the browser sees the BOUNDED OAuth error token only —
+    // never error_description. The provider's free-text is envelope material
+    // (it has echoed redirect URIs): logged (rule 2), not rendered (§8.7
+    // codes-only doctrine, same as the web login callbacks).
+    console.warn(
+      `[commandPermissions] OAuth callback refused: ${errParam} ${url.searchParams.get("error_description") || ""}`,
+    );
+    const token = /^[a-z0-9_]{1,64}$/.test(errParam) ? errParam : "unknown_error";
     res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
     res.end(
       htmlPage(
         "Authorization cancelled",
-        `<p>${escapeHtml(desc)}</p><p>You can close this tab and return to Discord.</p>`,
+        `<p>Discord reported <code>${escapeHtml(token)}</code> — no permissions were changed. You can close this tab and return to Discord.</p>`,
         false
       )
     );
@@ -189,12 +196,27 @@ async function handleCommandPermissionOAuthCallback(req, res, url) {
       "[commandPermissions] OAuth callback error:",
       err?.message || err
     );
+    // #466 (C1-10): err.message here is built from Discord's
+    // error_description (oauthTokens.js) — internal plumbing text reaching
+    // an UNAUTHENTICATED browser page, and the empty-message fallback
+    // printed exactly the banned phrase "Unknown error" (rules 3+4). The
+    // page now shows a mapped, actionable cause; the full error stays in
+    // the log line above.
+    const code = typeof err?.code === "string" ? err.code : "";
+    const reason =
+      code === "invalid_grant"
+        ? "The authorization code expired or was already used."
+        : code === "invalid_client"
+          ? "The bot's OAuth credentials were rejected — check CLIENT_ID/CLIENT_SECRET."
+          : code === "redirect_uri_mismatch"
+            ? "The redirect URI does not match the Discord application settings."
+            : "The token exchange or the role sync failed.";
     res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
     res.end(
       htmlPage(
         "Sync failed",
-        `<p>${escapeHtml(err?.message || "Unknown error")}</p>
-         <p>Run <code>/staff syncpermissions</code> again or check server logs.</p>`,
+        `<p>${escapeHtml(reason)}</p>
+         <p>Run <code>/staff syncpermissions</code> again — the specific cause is in the server log under <code>[commandPermissions] OAuth callback error</code>.</p>`,
         false
       )
     );

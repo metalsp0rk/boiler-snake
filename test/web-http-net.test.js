@@ -618,7 +618,10 @@ describe("web http net (tickets + oauth callback)", () => {
     assert.match(res.headers.get("content-type") || "", /^text\/html/);
     const body = await res.text();
     assert.match(body, /Authorization cancelled/);
-    assert.match(body, /user cancelled/);
+    // #466 (C1-10): error_description ("user cancelled") stays OUT of the
+    // page — the bounded token is the whole story the browser needs.
+    assert.match(body, /<code>access_denied<\/code>/);
+    assert.ok(!body.includes("user cancelled"), "provider free text never rides the page");
   });
 
   it("oauth callback: missing code/state → 400 invalid callback (alias too)", async () => {

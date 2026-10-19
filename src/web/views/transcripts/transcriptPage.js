@@ -26,6 +26,7 @@ const { renderLayout } = require("../layout");
 const { userRef } = require("../components");
 const { escapeHtml } = require("../../../features/tickets/transcript");
 const { parseAttachmentList, mediaKind } = require("../../../features/tickets/assets");
+const { safeHref } = require("../../../core/safeHref");
 
 /** "2026-09-17 00:25:11 UTC" (console house style). */
 function formatTs(ms) {
@@ -53,9 +54,15 @@ function renderAttachments(m) {
   const parts = attachments
     .filter((a) => a && (a.href || a.url))
     .map((a) => {
-      const href = a.href || a.url;
-      const name = a.name || href || "attachment";
+      const rawHref = a.href || a.url;
+      const name = a.name || rawHref || "attachment";
       const kind = mediaKind(name, a.contentType);
+      // #466 (C2-2): the SAME scheme gate as the frozen archive (one rule,
+      // both renderers — §4.1 render-time validation at the HTML boundary).
+      const href = safeHref(rawHref);
+      if (href == null) {
+        return html`<div class="att att-file att-blocked"><span>${name}</span> <span class="att-note">(link scheme blocked)</span></div>`;
+      }
       if (kind === "image") {
         return html`<figure class="att att-image">
           <a href="${href}" target="_blank" rel="noopener"><img src="${href}" alt="${name}" loading="lazy"/></a>
@@ -226,5 +233,6 @@ function renderTranscriptPage({
 
 module.exports = {
   renderTranscriptPage,
+  renderAttachments, // #466 (C2-2): exported for the scheme-gate pin
   formatTs,
 };

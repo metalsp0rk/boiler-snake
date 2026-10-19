@@ -126,53 +126,14 @@ function getGuildSettings(communityId) {
   const created = read.get(communityId);
   if (created) return created;
 
-  {
-    return {
-      community_id: communityId,
-      msg_xp: 5,
-      reaction_xp: 2,
-      voice_xp_per_min: 1,
-      msg_cooldown_sec: 20,
-      reaction_cooldown_sec: 10,
-      decay_enabled: 1,
-      decay_window_days: 7,
-      decay_min_messages: 20,
-      decay_percent: 0.1,
-      level_xp_factor: 100,
-      youtube_notification_channel_id: null,
-      youtube_polling_interval_minutes: 5,
-      youtube_upload_role_id: null,
-      audit_log_channel_id: null,
-      message_log_channel_id: null,
-      event_reminder_channel_id: null,
-      warn_dm_members: 1,
-      warn_log_channel_id: null,
-      warn_expiry_days: 0,
-      ticket_category_id: null,
-      ticket_archive_channel_id: null,
-      ticket_rate_limit_minutes: 60,
-      twitch_notification_channel_id: null,
-      twitch_notify_role_id: null,
-      twitch_polling_interval_minutes: 2,
-      gork_keyword: "@gork",
-      gork_context_window: 10,
-      gork_extra_rules: "",
-      gork_search_enabled: 1,
-      gork_cooldown_sec: 180,
-      gork_enabled: 1,
-      gork_memory_enabled: 0,
-      gork_memory_chars: 12000,
-      gork_daily_limit: 0,
-      gork_interaction_log_enabled: 1,
-      gork_summarize_input_tokens: 80000,
-      gork_ste_enabled: 0,
-      gork_log_channel_id: null,
-      honeypot_paused_at: null,
-      honeypot_pause_reason: null,
-      updated_at: now(),
-    };
-  }
-  return row;
+  // #466 (DB-6): the 40 hand-written defaults that lived here were
+  // UNREACHABLE (same synchronous connection — ensure above always leaves
+  // a row) while silently competing with the schema's DEFAULT clauses as a
+  // second, drift-prone source of truth. The invariant failing deserves to
+  // be NAMED, not papered over with copied constants.
+  throw new Error(
+    `getGuildSettings: row absent immediately after ensure for community ${communityId} — schema invariant broken`,
+  );
 }
 
 /**
