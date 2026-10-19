@@ -41,6 +41,25 @@ applies to local runs on the runner's host machine: don't run
 `npm run test:e2e` while an e2e CI job is in flight
 (`gh run ls --workflow e2e.yml`).
 
+### Queue displacement and the starved-run SOP (#506)
+
+A serialized concurrency group holds only **one pending run**: every new
+PR's e2e *displaces* (cancels) the previously queued one. With 2–3 PRs in
+flight the oldest PR's e2e may never run until pushes pause. Automatic
+recovery: the **E2E starved-run rerun** workflow
+(`.github/workflows/e2e-rerun-starved.yml`) runs every 15 minutes and
+re-runs e2e runs cancelled by displacement while the PR is still open at the
+same head sha and nothing is queued for it. It requires the `E2E_RERUN_PAT`
+repo secret (a classic PAT with `repo` scope — `GITHUB_TOKEN` cannot call
+the Actions rerun endpoint); without it the workflow logs "disabled" and
+exits green.
+
+Manual SOP while displacement is visible (`gh run ls --workflow e2e.yml`):
+merge **oldest-first**, re-run the starved run of the PR whose turn it is
+(`gh run rerun <id>`), and push no new branches until the queue drains. The
+proper long-term fix — a GitHub merge queue on `main` — is an admin
+repo-setting decision tracked in #506 (option 1).
+
 ## What the suite covers
 
 | Suite | Namespace | Covers |
