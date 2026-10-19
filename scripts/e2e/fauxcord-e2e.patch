@@ -1,3 +1,28 @@
+diff --git a/spec/manifest.ts b/spec/manifest.ts
+index 29ac2c1..92aa8e3 100644
+--- a/spec/manifest.ts
++++ b/spec/manifest.ts
+@@ -3418,13 +3418,18 @@ function mutationEffectFor(
+       )
+     }
+     case 'post /interactions/{interaction_id}/{interaction_token}/callback 204': {
++      // SPIKE PATCH (boiler-snake e2e): a DEFERRED (type 5) callback creates
++      // the real-Discord placeholder message (id == interaction id, flags
++      // honored) so the follow-up editReply (PATCH webhook @original) has a
++      // target. The unpatched mock left initial_response_message_id NULL and
++      // every defer→editReply flow 404'd.
+       return rowEffect(
+         f,
+-        'target interaction to be marked responded without a response message',
++        'target interaction to be marked responded with a deferred placeholder message',
+         `SELECT responded, initial_response_message_id FROM interactions
+          WHERE id = ? AND token = ?`,
+         [f.interactionId, f.interactionToken],
+-        { responded: 1, initial_response_message_id: null }
++        { responded: 1, initial_response_message_id: f.interactionId }
+       )
+     }
+     case 'post /channels/{channel_id}/threads 201': {
 diff --git a/src/app.ts b/src/app.ts
 index fda0398..1ff7d3f 100644
 --- a/src/app.ts
@@ -1147,10 +1172,27 @@ index b16fa10..15553c0 100644
            id: userRow.id,
            username: userRow.username,
 diff --git a/src/services/interactions.test.ts b/src/services/interactions.test.ts
-index 489c642..6a84d16 100644
+index 489c642..99675cf 100644
 --- a/src/services/interactions.test.ts
 +++ b/src/services/interactions.test.ts
-@@ -74,7 +74,7 @@ describe('interactions service', () => {
+@@ -65,7 +65,15 @@ describe('interactions service', () => {
+       userId,
+     })
+     const target = getInteractionFollowupTarget(db, applicationId, 'token2')
+-    expect(target).toEqual({ channelId, initialResponseMessageId: null })
++    // SPIKE PATCH (boiler-snake e2e): the resolver additionally exposes the
++    // host message (@original semantics for deferUpdate()+editReply on a
++    // component interaction) — exposed as null until the interaction is
++    // ANSWERED (responded=1), so pre-callback polls still see 404.
++    expect(target).toEqual({
++      channelId,
++      initialResponseMessageId: null,
++      messageId: null,
++    })
+   })
+ 
+   it('returns null for an unknown followup token', () => {
+@@ -74,7 +82,7 @@ describe('interactions service', () => {
      ).toBeNull()
    })
  
@@ -1159,7 +1201,7 @@ index 489c642..6a84d16 100644
      createInteraction(db, {
        interactionId: 'int3',
        applicationId,
-@@ -84,7 +84,7 @@ describe('interactions service', () => {
+@@ -84,7 +92,7 @@ describe('interactions service', () => {
        userId,
      })
  
@@ -1168,7 +1210,7 @@ index 489c642..6a84d16 100644
        db,
        'int3',
        'token3',
-@@ -103,8 +103,8 @@ describe('interactions service', () => {
+@@ -103,8 +111,8 @@ describe('interactions service', () => {
      expect(target?.initialResponseMessageId).not.toBeNull()
    })
  
@@ -1179,7 +1221,7 @@ index 489c642..6a84d16 100644
        db,
        'missing',
        'missing',
-@@ -114,7 +114,7 @@ describe('interactions service', () => {
+@@ -114,7 +122,7 @@ describe('interactions service', () => {
      expect(result).toEqual({ ok: false, reason: 'not_found' })
    })
  
@@ -1188,7 +1230,7 @@ index 489c642..6a84d16 100644
      createInteraction(db, {
        interactionId: 'int4',
        applicationId,
-@@ -123,8 +123,8 @@ describe('interactions service', () => {
+@@ -123,8 +131,8 @@ describe('interactions service', () => {
        channelId,
        userId,
      })
