@@ -850,6 +850,18 @@ async function onFluxerReactionRemove(outbound, normalizedReaction) {
 module.exports = {
   name: "reactionRoles",
   commands,
+  // #466 (E2-11): boot-time resume of the K8-deferred grants. Detached on
+  // purpose (never delays login) with its own catch (AGENTS.md rule 1);
+  // per-community failures are logged inside and never abort the pass.
+  start(supervisor) {
+    const { sweepDeferredRoleGrantsAll } = require("./service");
+    void sweepDeferredRoleGrantsAll(supervisor).catch((err) =>
+      console.error(
+        `[reactionRoles] deferred-grant sweep failed: ${err?.message || err}`,
+      ),
+    );
+  },
+  // (kept export order stable below for the service surface)
   handlers: {
     reactionrole: handleReactionrole,
   },

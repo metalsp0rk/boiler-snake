@@ -242,7 +242,34 @@ function countReactionRoleClaimsForRole(communityId, userId, roleId) {
   return Number(row?.n) || 0;
 }
 
+/**
+ * #466 (E2-11): the resumable backlog. Claims whose option AND panel still
+ * exist (JOINs drop deleted options/panels — the refcount's proven shape),
+ * carrying what the deferred-grant sweep needs per row: role id, min level.
+ */
+function listResumableReactionRoleClaims(communityId) {
+  assertCommunityId(communityId);
+  return db.prepare(`
+  SELECT c.user_id     AS userId,
+         c.message_id  AS messageId,
+         c.emoji_key   AS emojiKey,
+         o.role_id     AS roleId,
+         o.min_level   AS minLevel
+  FROM reaction_role_claims c
+  JOIN reaction_role_options o
+    ON o.community_id = c.community_id
+   AND o.message_id = c.message_id
+   AND o.emoji_key = c.emoji_key
+  JOIN reaction_role_panels p
+    ON p.community_id = c.community_id
+   AND p.message_id = c.message_id
+  WHERE c.community_id=?
+  ORDER BY c.message_id ASC, c.emoji_key ASC, c.user_id ASC
+  `).all(communityId);
+}
+
 module.exports = {
+  listResumableReactionRoleClaims,
   createReactionRolePanel,
   getReactionRolePanel,
   listReactionRolePanels,

@@ -28,16 +28,19 @@
 const { assertCommunityId, getCommunityById, getCommunityByExternal } = require("../community");
 const permCache = require("./permCache");
 const { fluxerRequestTimeoutMs } = require("./restTimeout");
+// #466 (FLX-9): shared adapter utilities — one implementation, five consumers.
+const {
+  causeOf,
+  codeOf,
+  statusOf,
+  failureText,
+  toNumberOrNull,
+  toIdOrNull,
+  toIsoString,
+  mapStickerList,
+  normalizeSendFile,
+} = require("../adapterUtils");
 
-/**
- * Specific, human-readable cause for a thrown value (never a token: transports
- * carry auth in headers, and no caller stringifies headers here).
- * @param {unknown} err
- * @returns {string}
- */
-function causeOf(err) {
-  return String(err?.message || err);
-}
 
 /**
  * attachments array (wire) / Collection (SDK Map) → entries array. Same duck
@@ -51,50 +54,9 @@ function attachmentEntries(value) {
   return [];
 }
 
-/** Numeric relay fields: finite numbers / bigint BitFields → number; else null. */
-function toNumberOrNull(value) {
-  if (typeof value === "bigint") return Number(value);
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  const raw =
-    value && typeof value === "object" && typeof value.valueOf === "function"
-      ? value.valueOf()
-      : null;
-  if (typeof raw === "bigint") return Number(raw);
-  return null;
-}
 
-/** id → string at the boundary; absent/null → null. */
-function toIdOrNull(value) {
-  return value != null ? String(value) : null;
-}
 
-/**
- * Date / epoch ms / ISO string → ISO string (fetch shapes carry ISO, same as
- * fetchMessages history). Unparseable input is null, never "Invalid Date".
- * @param {unknown} value
- * @returns {string|null}
- */
-function toIsoString(value) {
-  if (value == null) return null;
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? new Date(value).toISOString() : null;
-  }
-  const ms = Date.parse(String(value));
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-}
 
-/**
- * Stickers array/Collection → [{ id, name }] (§10.3 item 2).
- * @param {unknown} value
- * @returns {Array<{ id: string, name: string|null }>}
- */
-function mapStickerList(value) {
-  const list = Array.isArray(value) ? value : value instanceof Map ? [...value.values()] : [];
-  return list
-    .filter((s) => s && typeof s === "object" && s.id != null)
-    .map((s) => ({ id: String(s.id), name: s.name ?? null }));
-}
 
 /**
  * REST-fetched Fluxer message (raw wire shape) → the §10.3 fetch shape:
@@ -161,43 +123,8 @@ function normalizeFetchedMessage(d, { instanceKey, communityId }) {
 }
 
 
-/**
- * API error code from a transport error (Fluxer codes are strings like
- * "RATE_LIMITED"; numeric codes stringify as such).
- * @param {unknown} err
- * @returns {string|undefined}
- */
-function codeOf(err) {
-  return err?.code != null ? String(err.code) : undefined;
-}
 
-/**
- * HTTP status from a transport error, when it exposes one.
- * @param {unknown} err
- * @returns {number|undefined}
- */
-function statusOf(err) {
-  const s = Number(err?.status ?? err?.statusCode);
-  return Number.isFinite(s) && s > 0 ? s : undefined;
-}
 
-/**
- * "method: detail failed: cause (status N, code X)" — status and API code go
- * into the message per spec 404/630 so callers can act on the response.
- * @param {string} method
- * @param {string} detail
- * @param {unknown} err
- * @returns {string}
- */
-function failureText(method, detail, err) {
-  const bits = [];
-  const status = statusOf(err);
-  const code = codeOf(err);
-  if (status != null) bits.push(`status ${status}`);
-  if (code != null) bits.push(`code ${code}`);
-  const suffix = bits.length ? ` (${bits.join(", ")})` : "";
-  return `${method}: ${detail} failed: ${causeOf(err)}${suffix}`;
-}
 
 /**
  * Map the platform-neutral allowedMentions onto the wire `allowed_mentions`
@@ -244,50 +171,6 @@ function buildMessageBody(payload, method) {
   return { ok: true, body };
 }
 
-/**
- * Normalize one ReplyPayload `files` entry to { name, data, contentType } —
- * the shape src/platform/discord/outbound.js accepts (plain
- * { name, data: Buffer|string, contentType? } descriptors; the Discord adapter
- * wraps the same entries in AttachmentBuilder, Fluxer has no builder class).
- *
- * @param {unknown} file raw entry
- * @param {number} index position in the files array (named in rejections)
- * @param {string} method caller name for specific failures
- * @returns {{ ok: true, file: { name: string, data: Buffer, contentType: string } }
- *   | { ok: false, error: string }}
- */
-function normalizeSendFile(file, index, method) {
-  const name = typeof file?.name === "string" && file.name !== "" ? file.name : null;
-  if (name == null) {
-    return {
-      ok: false,
-      error: `${method}: files[${index}] needs a non-empty string name (files entries are { name, data, contentType? })`,
-    };
-  }
-  // Data sources: { name, data } plain payloads (string tolerated) AND
-  // discord.js AttachmentBuilder instances, which handlers pass through
-  // (handleLeaderboard's PNG file). AttachmentBuilder stores bytes on
-  // `.attachment` (Buffer from canvas.toBuffer; typed arrays tolerated).
-  let data = null;
-  const raw = file?.data ?? file?.attachment;
-  if (Buffer.isBuffer(raw)) data = raw;
-  else if (typeof raw === "string") data = Buffer.from(raw, "utf8");
-  else if (raw instanceof ArrayBuffer) data = Buffer.from(new Uint8Array(raw));
-  else if (ArrayBuffer.isView(raw)) data = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
-  if (data == null) {
-    return {
-      ok: false,
-      error:
-        `${method}: files[${index}] ("${name}") needs Buffer data, got ` +
-        `${raw == null ? String(raw) : typeof raw}`,
-    };
-  }
-  const contentType =
-    typeof file.contentType === "string" && file.contentType !== ""
-      ? file.contentType
-      : "application/octet-stream";
-  return { ok: true, file: { name, data, contentType } };
-}
 
 /**
  * Map a URL to origin+pathname for LOGGING. A presigned upload_url carries its
@@ -926,12 +809,14 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
         message_reference: p.message_reference ?? p.messageReference,
       });
       if (!sent.ok) {
-        // Keep the PR 6 error identity: a failing DM post names sendDm, not
-        // the generic send label (context.js's K2 fallback surfaces this
-        // string verbatim to the channel, AGENTS.md rule 3).
         return {
           ok: false,
-          error: sent.error.replace("sendChannel:", "sendDm:"),
+          // #466 (FLX-8): no relabel shim — sendFluxerMessage already
+          // labels its OWN method (dmUserId set ⇒ every error already
+          // reads "sendDm:"), and the only "sendChannel:" literal lives on
+          // the dmUserId==null branch. The old .replace() could never
+          // match: dead code masquerading as an invariant.
+          error: sent.error,
           ...(sent.code != null ? { code: sent.code } : {}),
         };
       }

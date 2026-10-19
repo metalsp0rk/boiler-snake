@@ -23,7 +23,8 @@ const {
   missingOptionError,
   normalizeReplyPayload,
 } = require("../context");
-const { ALL_PERMISSIONS } = require("./permissions");
+// (ALL_PERMISSIONS import died with the FLX-7 mask-inference — ownership is
+// a resolved fact now, never a mask comparison.)
 
 /**
  * Build the Fluxer CommandContext for one parsed prefix command.
@@ -36,7 +37,7 @@ const { ALL_PERMISSIONS } = require("./permissions");
  * @param {Map<string, *>} [deps.resolved] option name → resolved value
  *   (user ResolvedUser / {id,type} / number / boolean / string). Falls back to
  *   string values from `parsed.options` for options dispatch did not transform.
- * @param {{ channelPermissions: bigint, memberRoleIds: string[], user?: {id:string,username:string|null,bot:boolean} }|null} [deps.permissions]
+ * @param {{ channelPermissions: bigint, memberRoleIds: string[], guildOwner?: boolean, user?: {id:string,username:string|null,bot:boolean} }|null} [deps.permissions]
  *   mask bundle from dispatch step 2.5 (bundle contract 3). Absent → 0n /
  *   message role ids (PR 6 defaults — unit tests keep passing).
  * @param {{ id: string, username?: string|null, bot?: boolean }|null} [deps.authorOverride]
@@ -238,9 +239,15 @@ function buildFluxerCommandContext(
     // future memberPermissions reader see the same mask.
     memberPermissions: channelPermissions,
     memberRoleIds,
-    // Owner and ADMINISTRATOR both collapse to ALL inside the pure algorithm
-    // (spec 548: no second sentinel) — ALL is the strongest claim we can make.
-    guildOwner: channelPermissions === ALL_PERMISSIONS,
+    // #466 (FLX-7): ownership is a FACT from the resolved guild record
+    // (ownerId vs this user), not an inference from the ALL mask — the old
+    // derivation said true for every ADMINISTRATOR and contradicted
+    // Discord's builder (discord/context.js) wherever an admin was not the
+    // owner. Consumers today: none — which is exactly why it ships correct
+    // BEFORE the first consumer arrives.
+    guildOwner: permissions && typeof permissions.guildOwner === "boolean"
+      ? permissions.guildOwner
+      : false,
     // State getters mirror the Discord builder's live view of the interaction.
     get deferred() {
       return state.deferred;

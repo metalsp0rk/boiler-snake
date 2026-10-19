@@ -13,6 +13,8 @@
  */
 
 const { ensureCommunity } = require("../community");
+// #466 (FLX-9): shared adapter utilities (one implementation, five consumers).
+const { toNumberOrNull, mapStickerList } = require("../adapterUtils");
 const { isSystemMessageType } = require("../normalizedMessageContract");
 
 /**
@@ -36,36 +38,7 @@ function collectIds(collection) {
   return [...(collection?.keys?.() ?? [])].map(String);
 }
 
-/**
- * Numeric relay fields (`size`, `flags`): finite numbers and bigint BitFields
- * → number; anything else → null (never a lossy 0). Idempotent: a second pass
- * sees the normalized number and keeps it.
- * @param {unknown} value
- * @returns {number|null}
- */
-function toNumberOrNull(value) {
-  if (typeof value === "bigint") return Number(value);
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  const raw =
-    value && typeof value === "object" && typeof value.valueOf === "function"
-      ? value.valueOf()
-      : null;
-  if (typeof raw === "bigint") return Number(raw);
-  return null;
-}
 
-/**
- * Stickers Collection/array → [{ id, name }]. Idempotent on its own output.
- * @param {unknown} value
- * @returns {Array<{ id: string, name: string|null }>}
- */
-function mapStickerList(value) {
-  const list =
-    Array.isArray(value) ? value : typeof value?.values === "function" ? [...value.values()] : [];
-  return list
-    .filter((s) => s && typeof s === "object" && s.id != null)
-    .map((s) => ({ id: String(s.id), name: s.name ?? null }));
-}
 
 /**
  * Overlay the NormalizedMessage fields on a Discord message, in place.

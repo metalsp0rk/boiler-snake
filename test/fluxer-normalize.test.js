@@ -427,7 +427,8 @@ describe("platform/fluxer/normalize — normalizeFluxerReaction", () => {
   });
 });
 
-// The real Fluxer SDK (core package 3.1.0, verified against prod 2026-10-01)
+// The real Fluxer SDK (pinned 3.3.0; shapes observed on the 3.1.0 line in
+// prod 2026-10-01, contract-tested against the current pin)
 // emits HYDRATED camelCase model instances, not raw wire payloads: Message
 // uses channelId/guildId/createdAt/mentionRoles with attachments as a
 // Collection (Map subclass); reactions arrive as
