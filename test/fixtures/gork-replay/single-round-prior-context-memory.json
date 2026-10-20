@@ -14,6 +14,7 @@
   },
   "settings": {
     "gork_keyword": "gork",
+    "gork_role_id": null,
     "gork_context_window": 10,
     "gork_cooldown_sec": 0,
     "gork_search_enabled": 1,

@@ -4,8 +4,8 @@
  *
  * The pipeline hook runs only fast checks inline, in order:
  * guild + author + non-bot, text-based channel, guild enable switch +
- * keyword enabled, open-ticket channel skip, AI key present, keyword
- * match, keyword-alone rule, per-scope daily budget (§7.17: blocked or
+ * keyword enabled, open-ticket channel skip, AI key present, keyword /
+ * role-mention match (§7.1 + issue #174), keyword-alone rule, per-scope daily budget (§7.17: blocked or
  * over-budget bounces with a terse deduped reply, staff included),
  * per-user cooldown (staff bypass; a hit reacts to the trigger with a
  * clock emoji), guild ban list (banned users get the LLM-failure reply,
@@ -407,6 +407,66 @@ function matchKeyword(content, keyword) {
 }
 
 /**
+ * Match a message against the guild's configured gork invocation role
+ * (issue #174, pure).
+ *
+ * The configured role (guild_settings.gork_role_id, set via `/gork role`)
+ * triggers when it is MENTIONED ANYWHERE in the message — membership in the
+ * parsed mention set (discord.js `message.mentions.roles`), not a text
+ * search. The question is the content with every literal `<@&roleId>` token
+ * for the configured role stripped (literal split — the id is data, never a
+ * regex), whitespace collapsed, then the same one-optional-leading-separator
+ * strip the keyword path applies (spec §7.1).
+ *
+ * A configured role absent from the mentions never triggers — including a
+ * DELETED role: discord.js cannot resolve a mention of it, so its id is
+ * simply missing from the mention set (no extra lookup needed).
+ *
+ * @param {unknown} content raw message content
+ * @param {unknown} mentionedRoleIds iterable of role ids the message mentions
+ *   (e.g. `message.mentions.roles.keys()`); absent/garbage = no mentions
+ * @param {unknown} configuredRoleId guild `gork_role_id` (null/empty = role path off)
+ * @returns {{ triggered: boolean, question: string }}
+ */
+function matchRoleMention(content, mentionedRoleIds, configuredRoleId) {
+  const cfg =
+    typeof configuredRoleId === "string" ? configuredRoleId.trim() : "";
+  if (!cfg) return { triggered: false, question: "" };
+  let ids = [];
+  if (mentionedRoleIds && typeof mentionedRoleIds[Symbol.iterator] === "function") {
+    ids = [...mentionedRoleIds].map(String);
+  }
+  if (!ids.includes(cfg)) return { triggered: false, question: "" };
+  // Non-string content is an impossible trigger shape (a real mention is a
+  // token INSIDE the content) — stay silent instead of firing question-less.
+  if (typeof content !== "string") return { triggered: false, question: "" };
+  const token = `<@&${cfg}>`;
+  let question = content.split(token).join(" ").replace(/[ \t]+/g, " ").trim();
+  if (question && SEPARATORS.has(question[0])) {
+    question = question.slice(1).trim();
+  }
+  return { triggered: true, question };
+}
+
+/**
+ * Mentioned role ids of a message, tolerating BOTH shapes the Discord
+ * surface legitimately carries: the discord.js Collection/Map BEFORE the
+ * message normalizer ran (its keys are the ids), and the normalized
+ * string[] AFTER it (normalizeDiscordMessage replaces `mentions` with id
+ * arrays — Array#keys() would yield INDICES, so arrays are read as the ids
+ * themselves; same rule as collectIds in src/platform/discord/normalize.js).
+ *
+ * @param {unknown} message duck-typed message
+ * @returns {string[]}
+ */
+function mentionedRoleIds(message) {
+  const roles = message?.mentions?.roles;
+  if (roles == null) return [];
+  if (Array.isArray(roles)) return roles.map(String);
+  return [...(roles.keys?.() ?? [])].map(String);
+}
+
+/**
  * Pull a candidate cut index back so it never splits a surrogate pair, a
  * `<…>` Discord token (mention/custom-emoji/timestamp), a `||` spoiler
  * span, or a ``` fenced code block (§7.15 Fix 4). Cutting earlier than
@@ -711,7 +771,12 @@ async function runGorkHook(client, message) {
 
     // 3. Guild must have gork enabled: the `/gork enable` master switch
     //    (off = fully silent; keyword + all other settings are preserved)
-    //    and a non-blank keyword (null/blank = gork disabled).
+    //    and a non-blank keyword (null/blank = gork disabled). Issue #174
+    //    locks the disabled-state semantics for the role path here too:
+    //    the keyword stays the master trigger-surface switch — a blank
+    //    keyword keeps gork fully silent even with `gork_role_id` set.
+    //    (`/gork keyword clear` replies "Gork is now disabled"; the role
+    //    path following the same switch keeps that copy true.)
     const settings = getGuildSettings(communityId);
     if (Number(settings?.gork_enabled ?? 1) !== 1) return;
     const keyword = settings?.gork_keyword;
@@ -725,11 +790,24 @@ async function runGorkHook(client, message) {
     const cfg = getAiConfig();
     if (!cfg.apiKey) return;
 
-    // 6. Keyword must be a prefix of the trimmed content (decision 1).
-    const { triggered, question } = matchKeyword(message.content, keyword);
+    // 6. Trigger: keyword must be a prefix of the trimmed content
+    //    (decision 1) OR the message must mention the guild's configured
+    //    gork role anywhere (issue #174; role path needs `gork_role_id`).
+    //    The keyword wins when both are present. Role-mention triggering is
+    //    Discord-surface only — the Fluxer path keeps its own grammar.
+    let { triggered, question } = matchKeyword(message.content, keyword);
+    if (!triggered) {
+      ({ triggered, question } = matchRoleMention(
+        message.content,
+        mentionedRoleIds(message),
+        settings?.gork_role_id,
+      ));
+    }
     if (!triggered) return;
 
-    // 7. Keyword alone: answer from reply-chain context only when the
+    // 7. Keyword alone (or role mention alone — the mention token is
+    //    stripped, leaving an empty question): answer from reply-chain
+    //    context only when the
     //    message references another message OR carries an image
     //    (issue #227: "gork look at this" + screenshot is a question);
     //    otherwise fully silent — no LLM call, no reply (decision 3).
@@ -2043,6 +2121,8 @@ async function runGorkFluxerEntry(supervisor, message) {
 
 module.exports = {
   matchKeyword,
+  matchRoleMention,
+  mentionedRoleIds,
   splitLongAnswer,
   capAnswerChars,
   buildUserContent,

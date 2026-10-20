@@ -346,6 +346,7 @@ describe("integration: gork interaction log", () => {
       // from migration 021/023: context_window 10, search 1, memory 0).
       assert.deepEqual(j(qa.settings), {
         gork_keyword: "gork",
+        gork_role_id: null,
         gork_context_window: 10,
         gork_cooldown_sec: 0,
         gork_search_enabled: 1,

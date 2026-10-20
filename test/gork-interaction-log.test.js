@@ -786,6 +786,7 @@ describe("interaction log recorder — buildSettingsSnapshot", () => {
       }),
       {
         gork_keyword: "@gork",
+        gork_role_id: null,
         gork_context_window: 7,
         gork_cooldown_sec: 12,
         gork_search_enabled: 1,
@@ -803,6 +804,7 @@ describe("interaction log recorder — buildSettingsSnapshot", () => {
     assert.equal(snap.gork_context_window, null);
     assert.deepEqual(buildSettingsSnapshot(null), {
       gork_keyword: null,
+      gork_role_id: null,
       gork_context_window: null,
       gork_cooldown_sec: null,
       gork_search_enabled: null,

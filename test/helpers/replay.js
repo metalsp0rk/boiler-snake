@@ -63,6 +63,10 @@ const IL_ENV_KEYS = Object.freeze([
 const SETTINGS_KEYS = new Set([
   "gork_enabled",
   "gork_keyword",
+  // issue #174: buildSettingsSnapshot now records the role trigger id too,
+  // so a recorded fixture carries it; applying it (default NULL) is a no-op
+  // for a keyword-path replay.
+  "gork_role_id",
   "gork_context_window",
   "gork_cooldown_sec",
   "audit_log_channel_id",
