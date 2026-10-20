@@ -26,7 +26,8 @@ const SELECT_COLUMNS = `
   is_live, last_stream_id, last_checked,
   notify_clips, notify_vods,
   last_clip_id, last_clip_created_at,
-  last_video_id, last_video_created_at
+  last_video_id, last_video_created_at,
+  notify_channel_id, notify_role_id
 `;
 
 function getTwitchChannels(communityId) {
@@ -250,6 +251,62 @@ function updateTwitchChannelVideoState(
 }
 
 /**
+ * Set / clear the per-subscription notification-target overrides (issue #177).
+ * Each argument independently:
+ *   undefined → leave unchanged
+ *   null      → clear (fall back to the guild-wide default)
+ *   non-blank string → set the override
+ * Blank/whitespace strings are coerced to clear (a picker never yields one,
+ * but the repo must not store an empty id). Returns the refreshed row, or
+ * null when the subscription is gone.
+ *
+ * @param {number} communityId
+ * @param {string} broadcasterId
+ * @param {{ channelId?: string|null, roleId?: string|null }} targets
+ */
+function setTwitchChannelNotifyTargets(communityId, broadcasterId, targets) {
+  assertCommunityId(communityId);
+  const current = db
+    .prepare(
+      `SELECT notify_channel_id, notify_role_id
+       FROM twitch_channels WHERE community_id=? AND broadcaster_id=?`,
+    )
+    .get(communityId, broadcasterId);
+  if (!current) return null;
+
+  const clean = (v) => {
+    if (v === undefined) return undefined; // leave
+    if (v === null) return null; // clear
+    const s = String(v).trim();
+    return s || null;
+  };
+
+  const channelId = clean(targets?.channelId);
+  const roleId = clean(targets?.roleId);
+  const sets = [];
+  const params = {};
+  if (channelId !== undefined) {
+    sets.push("notify_channel_id=@channel_id");
+    params.channel_id = channelId;
+  }
+  if (roleId !== undefined) {
+    sets.push("notify_role_id=@role_id");
+    params.role_id = roleId;
+  }
+  if (!sets.length) return getTwitchChannel(communityId, broadcasterId);
+
+  params.broadcaster_id = broadcasterId;
+  params.community_id = communityId;
+  params.updated_at = now();
+  db.prepare(`
+  UPDATE twitch_channels
+  SET ${sets.join(", ")}, updated_at=@updated_at
+  WHERE community_id=@community_id AND broadcaster_id=@broadcaster_id
+  `).run(params);
+  return getTwitchChannel(communityId, broadcasterId);
+}
+
+/**
  * Atomically claim an offline→live transition for a subscription. Reads the
  * prior stream id and writes the new live state in one synchronous section
  * (better-sqlite3 is sync + Node is single-threaded, so no other callback —
@@ -342,6 +399,7 @@ module.exports = {
   claimTwitchStream,
   claimTwitchOffline,
   setTwitchChannelMediaFlags,
+  setTwitchChannelNotifyTargets,
   updateTwitchChannelClipState,
   updateTwitchChannelVideoState,
 };

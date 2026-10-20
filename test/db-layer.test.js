@@ -122,7 +122,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 58);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 59);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {

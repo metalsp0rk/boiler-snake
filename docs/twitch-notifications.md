@@ -90,7 +90,7 @@ Unsubscribe (autocomplete over the guild's subscriptions).
 
 ### `/twitch list`
 
-List subscribed channels, which ones are currently **LIVE**, whether clips/VOD alerts are on, plus the notification channel and ping role.
+List subscribed channels, which ones are currently **LIVE**, whether clips/VOD alerts are on, plus the notification channel, ping role, and any per-channel `/twitch notify` overrides.
 
 ### `/twitch clips` / `/twitch vod`
 
@@ -103,8 +103,24 @@ Opt one of your subscriptions in to **new clip** / **new VOD** alerts (default *
 
 - Clips: announced when Helix lists a clip **created after** you enabled the toggle (older clips are never backfilled). Up to 5 clips per poll per channel.
 - VODs: **archive** broadcasts only (past broadcasts saved to your channel), newest-first, same flood cap. Highlights/uploads are not announced.
-- Clip/VOD alerts post to the same `/settwitch channel` but **never ping** the role.
+- Clip/VOD alerts post to the same notification target (see `/twitch notify` below) but **never ping** the role.
 - Helix has no push API for clips/VODs, so these ride the normal poll interval.
+
+### `/twitch notify`
+
+Route **one** subscription's notifications somewhere other than the guild-wide `/settwitch` pair (issue #177):
+
+```bash
+/twitch notify channel:SomeStreamer discord_channel:#partner-streams
+/twitch notify channel:SomeStreamer role:@PartnerAlerts
+/twitch notify channel:SomeStreamer discord_channel:#partner-streams role:@PartnerAlerts
+/twitch notify channel:SomeStreamer clear:True
+```
+
+- **`discord_channel`** — where this channel's notifications post (go-live **and** clip/VOD alerts). **`role`** — the role pinged on this channel's go-lives (media alerts never ping). Set either or both; each override wins only for that subscription.
+- **Precedence**: the per-channel override wins when set; otherwise the guild-wide `/settwitch channel` / `/settwitch role` pair applies. `clear:True` removes both overrides and restores the guild defaults — it cannot be combined with the pickers.
+- The Discord channel is validated at set time (the bot must be able to see it). If the channel is **deleted later**, sends fail loudly in the log (the failing channel id is named) and go-live claims release + retry per #447 — re-point with `/twitch notify` and the still-live stream is announced.
+- Overridden subscriptions show `[→ #channel, ping @role]` in `/twitch list`.
 
 ## Configuration Commands
 
@@ -145,7 +161,8 @@ Show current channel, ping role, interval, subscription count, and whether bot c
 
 - **Trigger**: offline → live transition for a **new** stream id
 - **Embed**: purple (`#9146FF`), stream title, game/category, viewer count, watch link, broadcaster thumbnail
-- **Mention**: the `/settwitch role` role only, via `allowedMentions`
+- **Mention**: the go-live ping role for that subscription — the `/twitch notify` role override when set, else the `/settwitch role` guild role — via `allowedMentions`
+- **Routing**: per subscription — the `/twitch notify` channel override wins when set, else the `/settwitch channel` guild default
 - **Dedup**: while the same stream id is live, no repeat alerts; a new stream session re-notifies
 - **Delivery**: a send failure (or no notify channel configured yet) **releases the claim** — the next tick retries while the stream is live, and configuring the channel mid-stream still delivers the ping (#447). A process crash in the claim→send window stays at-most-once (one miss, no double alert on restart).
 - **Offline**: state is cleared silently (no go-offline message in the MVP)
