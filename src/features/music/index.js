@@ -25,6 +25,8 @@ const {
   removeAt,
   seekTo,
   destroyPlayer,
+  clearLeaveTimers,
+  notePlayerActivity,
   onVoiceStateUpdate,
   onQueueEnd,
   errorMessage,
@@ -312,6 +314,10 @@ function wirePlayerEvents(client, manager) {
   manager._eventsWired = true;
 
   manager.on("trackStart", (player) => {
+    // #588: audio is playing again — a running queue-drain window is off.
+    // BEFORE the _fromCommand early-return so the signal cannot be skipped
+    // (the /play path also cancels at enqueue; this is the event-side sink).
+    notePlayerActivity(player);
     if (player?._fromCommand) {
       player._fromCommand = false;
       return;
@@ -529,6 +535,10 @@ function start(supervisor, ctx) {
       for (const player of players.values()) {
         if (player && typeof player.destroy === "function") {
           try {
+            // #588: this loop bypasses destroyPlayer, so disarm both leave
+            // windows explicitly — a dangling idle timer must not survive
+            // the drain or fire mid-shutdown against a dead client.
+            clearLeaveTimers(player.guildId);
             destroys.push(player.destroy("bot shutdown", true));
           } catch (err) {
             console.error(

@@ -298,6 +298,9 @@ async function pauseToggle(player) {
   if (player.paused) {
     if (typeof player.resume === "function") await player.resume();
     player.paused = false;
+    // #588: resumed audio IS activity — clears a racing queue-drain window
+    // (only when audio actually exists; see notePlayerActivity).
+    notePlayerActivity(player);
     return { ok: true, paused: false };
   }
   if (typeof player.pause === "function") await player.pause();
@@ -347,12 +350,14 @@ async function seekTo(player, ms) {
     return { ok: false, error: "seek_past_end" };
   }
   if (typeof player.seek === "function") await player.seek(ms);
+  // #588: seeking is playback activity on the current track — clears a
+  // racing queue-drain window (see notePlayerActivity).
+  notePlayerActivity(player);
   return { ok: true, ms };
 }
 
 async function destroyPlayer(manager, guildId, reason = "stopped") {
-  cancelEmptyLeave(guildId);
-  cancelIdleLeave(guildId);
+  clearLeaveTimers(guildId);
   const player = getPlayer(manager, guildId);
   if (!player) return { ok: true, destroyed: false };
   if (typeof player.destroy === "function") {
@@ -396,6 +401,32 @@ function cancelIdleLeave(guildId) {
     clearTimeout(t);
     idleLeaveTimers.delete(guildId);
   }
+}
+
+/**
+ * #588: disarm BOTH leave windows for a guild. destroyPlayer uses this; so
+ * does the shutdown drain in index.js, which destroys players directly (NOT
+ * via destroyPlayer) — a window that outlives shutdown is a dangling,
+ * non-unref'd timer carrying a stale "should we still be here" decision.
+ */
+function clearLeaveTimers(guildId) {
+  cancelEmptyLeave(guildId);
+  cancelIdleLeave(guildId);
+}
+
+/**
+ * #588: the ACTIVITY side of the ONE "should we still be here" decision
+ * (idleLeaveFire owns the fire-time half; onQueueEnd arms, these signals
+ * disarm). Audio is verifiably back on the player (resume / seek / a new
+ * trackStart), so a pending queue-drain window is off — but ONLY when the
+ * queue actually holds audio: cancelling on a silent resume would strand the
+ * bot with nothing left to re-arm the window.
+ * @param {object|null} player
+ */
+function notePlayerActivity(player) {
+  const guildId = player?.guildId;
+  if (!guildId) return;
+  if (queueDepth(player) > 0) cancelIdleLeave(guildId);
 }
 
 /**
@@ -512,8 +543,10 @@ module.exports = {
   destroyPlayer,
   countHumans,
   cancelEmptyLeave,
+  clearLeaveTimers,
   onVoiceStateUpdate,
   cancelIdleLeave,
+  notePlayerActivity,
   onQueueEnd,
   errorMessage,
   queuedSummary,
