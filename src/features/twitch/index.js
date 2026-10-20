@@ -9,6 +9,7 @@ const {
   normalizeTwitchLogin,
   setTwitchChannelMediaFlags,
   setTwitchChannelNotifyTargets,
+  setTwitchChannelOfflineFlag,
   getTwitchEventsubSubs,
 } = require("../../db");
 const { requireStaffFromContext } = require("../../core/permissions");
@@ -99,6 +100,28 @@ const commands = [
         opt
           .setName("enabled")
           .setDescription("Notify when new VODs are published")
+          .setRequired(true),
+      );
+      return sub;
+    })
+    .addSubcommand((sc) => {
+      // Issue #179: per-subscription go-offline announcements (default off).
+      const sub = sc
+        .setName("offline")
+        .setDescription(
+          "Toggle the go-offline announcement for a subscribed channel (staff).",
+        );
+      sub.addStringOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("Twitch channel")
+          .setRequired(true)
+          .setAutocomplete(true),
+      );
+      sub.addBooleanOption((opt) =>
+        opt
+          .setName("enabled")
+          .setDescription("Announce when this stream ends")
           .setRequired(true),
       );
       return sub;
@@ -337,6 +360,7 @@ async function handleTwitch(commandCtx, featureCtx) {
       const flags = [
         c.notify_clips ? "clips" : null,
         c.notify_vods ? "vods" : null,
+        c.notify_offline ? "offline" : null,
       ].filter(Boolean);
       const flagText = flags.length ? ` _(${flags.join(" + ")})_` : "";
       // Issue #177: per-subscription notification overrides surface right on
@@ -358,7 +382,7 @@ async function handleTwitch(commandCtx, featureCtx) {
       `Notification channel: ${notifyChannel}\n` +
       `Ping role: ${notifyRole}\n\n`;
     const footer =
-      "\n\n_Toggle clip/VOD alerts with `/twitch clips` / `/twitch vod`; " +
+      "\n\n_Toggle clip/VOD/offline alerts with `/twitch clips` / `/twitch vod` / `/twitch offline`; " +
       "route a single channel elsewhere with `/twitch notify`._";
     await commandCtx.reply({
       content:
@@ -425,6 +449,70 @@ async function handleTwitch(commandCtx, featureCtx) {
         : " — but no notification channel is set yet; run `/settwitch channel`.";
     } else {
       msg = `Stopped announcing new **${label}** from **${found.display_name}**.`;
+    }
+    await commandCtx.reply({ content: msg, sensitive: true });
+    return;
+  }
+
+  if (sub === "offline") {
+    // Per-subscription go-offline announcements (issue #179, default off).
+    // Enabling RE-SEEDS the announce watermark to the stream currently
+    // recorded for this sub — the clips-style no-backfill rule: a broadcast
+    // already live at opt-in never gets a goodnight, only later streams.
+    const raw = commandCtx.options.getString("channel", true);
+    const enabled = commandCtx.options.getBoolean("enabled", true);
+    const found = getTwitchChannel(communityId, raw);
+    if (!found) {
+      await commandCtx.reply({
+        content: "No matching subscription found.",
+        sensitive: true,
+      });
+      return;
+    }
+
+    const updated = setTwitchChannelOfflineFlag(
+      communityId,
+      found.broadcaster_id,
+      enabled,
+    );
+    if (!updated) {
+      await commandCtx.reply({
+        content: "No matching subscription found.",
+        sensitive: true,
+      });
+      return;
+    }
+
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "twitch.offline_toggle",
+      targetType: "twitch_channel",
+      targetId: found.broadcaster_id,
+      details: { login: found.login, enabled },
+    });
+    await logConfigChange(commandCtx.outbound, guildId, {
+      title: `Twitch go-offline announcements ${enabled ? "enabled" : "disabled"}`,
+      command: "/twitch offline",
+      actor: commandCtx.user,
+      changes: [
+        `Channel: **${found.display_name}**`,
+        `Go-offline announce: → **${enabled ? "on" : "off"}**`,
+      ],
+    }).catch(() => {});
+
+    const effective = resolveTwitchNotifyTargets(
+      updated,
+      getGuildSettings(communityId),
+    );
+    let msg;
+    if (enabled) {
+      msg = `I'll announce when **${found.display_name}** goes offline`;
+      msg += effective.channelId
+        ? ` to <#${effective.channelId}>. A stream that is ALREADY live is never announced — only streams that go live from now on.`
+        : " — but no notification channel is set yet; run `/settwitch channel` (or `/twitch notify`).";
+    } else {
+      msg = `Stopped announcing when **${found.display_name}** goes offline.`;
     }
     await commandCtx.reply({ content: msg, sensitive: true });
     return;

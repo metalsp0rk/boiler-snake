@@ -106,6 +106,20 @@ Opt one of your subscriptions in to **new clip** / **new VOD** alerts (default *
 - Clip/VOD alerts post to the same notification target (see `/twitch notify` below) but **never ping** the role.
 - Helix has no push API for clips/VODs, so these ride the normal poll interval.
 
+### `/twitch offline`
+
+Opt one subscription in to a **go-offline** announcement when its stream ends (issue #179, default **off**):
+
+```bash
+/twitch offline channel:SomeStreamer enabled:True
+/twitch offline channel:SomeStreamer enabled:False
+```
+
+- **Never announced retroactively**: enabling re-seeds the dedup watermark to the stream that is live **right now**, so a broadcast already running at opt-in never gets a goodnight — only streams that go live from that point on get one.
+- Announced **exactly once** per ended stream (the announced stream id becomes the watermark — restarts, EventSub/poller reconcile overlap, and replays stay silent).
+- Posts to the same notification target as go-live (the `/twitch notify` override wins when set) and **never pings a role**.
+- If the send fails (e.g. the routed channel was deleted), the transition is re-armed and retried on later ticks — fixing the route still delivers the goodnight for the ended stream; a NEW stream that started meanwhile supersedes it.
+
 ### `/twitch notify`
 
 Route **one** subscription's notifications somewhere other than the guild-wide `/settwitch` pair (issue #177):
@@ -163,6 +177,7 @@ Show current channel, ping role, interval, subscription count, and whether bot c
 - **Embed**: purple (`#9146FF`), stream title, game/category, viewer count, watch link, broadcaster thumbnail
 - **Mention**: the go-live ping role for that subscription — the `/twitch notify` role override when set, else the `/settwitch role` guild role — via `allowedMentions`
 - **Routing**: per subscription — the `/twitch notify` channel override wins when set, else the `/settwitch channel` guild default
+- **Go-offline** (`/twitch offline`, per-subscription opt-in, default **off**): a gray "went offline" announce when the stream ends — exactly once per stream, never for a broadcast that predates the opt-in, and never with a role ping
 - **Dedup**: while the same stream id is live, no repeat alerts; a new stream session re-notifies
 - **Delivery**: a send failure (or no notify channel configured yet) **releases the claim** — the next tick retries while the stream is live, and configuring the channel mid-stream still delivers the ping (#447). A process crash in the claim→send window stays at-most-once (one miss, no double alert on restart).
 - **Offline**: state is cleared silently (no go-offline message in the MVP)
