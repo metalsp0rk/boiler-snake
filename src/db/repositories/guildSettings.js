@@ -17,6 +17,10 @@ const GORK_MEMORY_CHARS_MAX = 64000;
 const GORK_DEFAULT_SUMMARIZE_INPUT_TOKENS = 80000;
 const GORK_SUMMARIZE_INPUT_TOKENS_MIN = 8000;
 const GORK_SUMMARIZE_INPUT_TOKENS_MAX = 200000;
+// Mirrors MAX_GOLIVE_TEMPLATE_LEN in src/features/twitch/templates.js
+// (the db layer keeps its constants local — same pattern as the gork caps).
+// Discord's hard message-content cap; a longer template could never send.
+const TWITCH_GOLIVE_TEMPLATE_MAX_LEN = 2000;
 
 /** Clamp to an integer range; null/non-finite input falls back to the default. */
 function clampInt(value, min, max, fallback) {
@@ -103,6 +107,24 @@ function clampGorkSummarizeInputTokens(value) {
 }
 
 /**
+ * Normalize the per-guild Twitch go-live message template (issue #178).
+ * - null / undefined-value → null (clear: the built-in default template)
+ * - empty / whitespace-only → null (empty restores the default by design)
+ * - 1–2000 chars (trimmed) → template text to store (2000 = Discord's
+ *   message-content cap; a template that can never send is never stored)
+ * - over 2000 chars → undefined (rejected; prior value is kept — same
+ *   tri-state as normalizeGorkKeyword; the /twitch template handler runs
+ *   the same validation first so the user always sees the cause)
+ */
+function normalizeTwitchGoLiveTemplate(value) {
+  if (value === null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  if (text.length > TWITCH_GOLIVE_TEMPLATE_MAX_LEN) return undefined;
+  return text;
+}
+
+/**
  * Ensure a settings row exists for a community — and ONLY that.
  *
  * #393 (DB-1): the previous `DO UPDATE SET updated_at=excluded.updated_at`
@@ -186,6 +208,7 @@ function updateGuildSettings(communityId, patch) {
     "twitch_notification_channel_id",
     "twitch_notify_role_id",
     "twitch_polling_interval_minutes",
+    "twitch_golive_template",
     "gork_keyword",
     "gork_role_id",
     "gork_context_window",
@@ -293,6 +316,11 @@ function updateGuildSettings(communityId, patch) {
   if (safePatch.gork_summarize_input_tokens !== undefined) {
     safePatch.gork_summarize_input_tokens = clampGorkSummarizeInputTokens(
       safePatch.gork_summarize_input_tokens
+    );
+  }
+  if (safePatch.twitch_golive_template !== undefined) {
+    safePatch.twitch_golive_template = normalizeTwitchGoLiveTemplate(
+      safePatch.twitch_golive_template
     );
   }
 
