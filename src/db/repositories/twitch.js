@@ -27,7 +27,8 @@ const SELECT_COLUMNS = `
   notify_clips, notify_vods,
   last_clip_id, last_clip_created_at,
   last_video_id, last_video_created_at,
-  notify_channel_id, notify_role_id
+  notify_channel_id, notify_role_id,
+  notify_offline, last_offline_stream_id, last_offline_at
 `;
 
 function getTwitchChannels(communityId) {
@@ -367,23 +368,113 @@ function releaseTwitchStreamClaim(
 /**
  * Atomically claim a live→offline transition. Always refreshes state;
  * returns whether the subscription was actually live before (so a caller can
- * log/announce the go-offline exactly once).
+ * log/announce the go-offline exactly once) together with the stream id the
+ * row carried, so the offline announce can watermark on a stable id (#179).
  * @param {number} communityId
- * @returns {boolean}
+ * @returns {{ wasLive: boolean, previousStreamId: string|null }}
  */
 function claimTwitchOffline(communityId, broadcasterId) {
   assertCommunityId(communityId);
   const t = now();
   const row = db
-    .prepare("SELECT is_live FROM twitch_channels WHERE community_id=? AND broadcaster_id=?")
+    .prepare(
+      "SELECT is_live, last_stream_id FROM twitch_channels WHERE community_id=? AND broadcaster_id=?",
+    )
     .get(communityId, broadcasterId);
   const wasLive = !!row && row.is_live === 1;
+  const previousStreamId = row?.last_stream_id ?? null;
   db.prepare(`
   UPDATE twitch_channels
   SET is_live=0, last_checked=?, updated_at=?
   WHERE community_id=? AND broadcaster_id=?
   `).run(t, t, communityId, broadcasterId);
-  return wasLive;
+  return { wasLive, previousStreamId };
+}
+
+/**
+ * Release a consumed live→offline transition after a FAILED go-offline
+ * send (#179, the #447 posture for the offline direction): flips `is_live`
+ * back to 1 so the next tick retries the goodnight while the broadcaster is
+ * still offline. Compare-and-revert on `last_stream_id` — if a NEWER stream
+ * claimed the row while the send was in flight, the old stream's offline
+ * announce is moot and nothing is reverted.
+ *
+ * @param {number} communityId
+ * @param {string} broadcasterId
+ * @param {string|null} endedStreamId the stream id the offline claim observed
+ * @returns {boolean} whether the transition was re-armed for retry
+ */
+function releaseTwitchOfflineClaim(communityId, broadcasterId, endedStreamId) {
+  assertCommunityId(communityId);
+  if (!endedStreamId) return false;
+  const info = db
+    .prepare(
+      `UPDATE twitch_channels
+          SET is_live=1, updated_at=?
+        WHERE community_id=? AND broadcaster_id=? AND is_live=0 AND last_stream_id=?`,
+    )
+    .run(now(), communityId, broadcasterId, endedStreamId);
+  return info.changes > 0;
+}
+
+/**
+ * Record a delivered go-offline announcement (#179): the stream id becomes
+ * the watermark so a replay of the same ended stream (restart, EventSub +
+ * poller reconcile overlap, retry after a lost result) stays silent.
+ *
+ * @param {number} communityId
+ * @param {string} broadcasterId
+ * @param {string|null} endedStreamId
+ */
+function recordTwitchOfflineAnnouncement(communityId, broadcasterId, endedStreamId) {
+  assertCommunityId(communityId);
+  const t = now();
+  db.prepare(`
+  UPDATE twitch_channels
+  SET last_offline_stream_id=?, last_offline_at=?, updated_at=?
+  WHERE community_id=? AND broadcaster_id=?
+  `).run(endedStreamId ?? null, t, t, communityId, broadcasterId);
+  return getTwitchChannel(communityId, broadcasterId);
+}
+
+/**
+ * Set the go-offline opt-in for one subscription (#179). ENABLE re-seeds
+ * the announce watermark to the sub's CURRENT last_stream_id — the
+ * clip-watermark "no backfill" rule for a single stream: a broadcast that
+ * was already live (or already ended) at opt-in time is never announced,
+ * only streams that go live AFTER the opt-in get a goodnight. DISABLE
+ * keeps the watermark (harmless; a re-enable re-seeds).
+ *
+ * @param {number} communityId
+ * @param {string} broadcasterId
+ * @param {boolean} notifyOffline
+ * @returns {object|null} refreshed row, or null when the sub is gone
+ */
+function setTwitchChannelOfflineFlag(communityId, broadcasterId, notifyOffline) {
+  assertCommunityId(communityId);
+  const current = db
+    .prepare(
+      `SELECT last_stream_id, last_offline_stream_id
+       FROM twitch_channels WHERE community_id=? AND broadcaster_id=?`,
+    )
+    .get(communityId, broadcasterId);
+  if (!current) return null;
+  const t = now();
+
+  if (notifyOffline) {
+    db.prepare(`
+    UPDATE twitch_channels
+    SET notify_offline=1, last_offline_stream_id=?, last_offline_at=?, updated_at=?
+    WHERE community_id=? AND broadcaster_id=?
+    `).run(current.last_stream_id ?? null, t, t, communityId, broadcasterId);
+  } else {
+    db.prepare(`
+    UPDATE twitch_channels
+    SET notify_offline=0, updated_at=?
+    WHERE community_id=? AND broadcaster_id=?
+    `).run(t, communityId, broadcasterId);
+  }
+  return getTwitchChannel(communityId, broadcasterId);
 }
 
 module.exports = {
@@ -398,6 +489,9 @@ module.exports = {
   updateTwitchChannelLiveState,
   claimTwitchStream,
   claimTwitchOffline,
+  releaseTwitchOfflineClaim,
+  recordTwitchOfflineAnnouncement,
+  setTwitchChannelOfflineFlag,
   setTwitchChannelMediaFlags,
   setTwitchChannelNotifyTargets,
   updateTwitchChannelClipState,

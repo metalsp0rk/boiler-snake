@@ -1257,3 +1257,341 @@ describe("integration: twitch per-subscription notification overrides (issue #17
     );
   });
 });
+
+// ---------- go-offline announcements (issue #179) ----------
+
+/**
+ * Per-subscription opt-in (default OFF). Watermark discipline mirrors the
+ * clip pattern: enabling re-seeds `last_offline_stream_id` to the in-flight
+ * stream so a pre-opt-in broadcast never gets a goodnight; recording the
+ * announced stream id keeps restart/reconcile replays silent. Every offline
+ * arm drives the REAL ticker (go-live tick → offline tick) with the one-
+ * minute re-check gate cleared between ticks via direct SQL.
+ */
+describe("integration: twitch go-offline announcements (issue #179)", () => {
+  /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
+  let env;
+  let runTwitchTick;
+
+  before(async () => {
+    env = await createIntegrationEnv({ guildId: uniqueId("guild-twitch-off") });
+    runTwitchTick = require("../../src/features/twitch/ticker").runTwitchTick;
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+      twitch_notify_role_id: IDS.roleExempt,
+      audit_log_channel_id: IDS.channelLog,
+      twitch_polling_interval_minutes: 1,
+    });
+    clearSends();
+  });
+
+  after(() => env?.cleanup());
+
+  function clearSends() {
+    for (const ch of Object.values(env.channels)) ch.sent.length = 0;
+  }
+
+  // Production gives every broadcast a NEW stream id; so must the mock —
+  // otherwise a "next stream" would be indistinguishable from a suppressed
+  // one and the watermark tests would lie.
+  let liveSeq = 0;
+
+  function tickWith(broadcasterId, login, live) {
+    const prevId = process.env.TWITCH_CLIENT_ID;
+    const prevSecret = process.env.TWITCH_CLIENT_SECRET;
+    process.env.TWITCH_CLIENT_ID = "test-id";
+    process.env.TWITCH_CLIENT_SECRET = "test-secret";
+    const streamId = `off-stream-${broadcasterId}-${++liveSeq}`;
+    return runTwitchTick(fakeSupervisor(env.client), {
+      resolveUser: async () => null,
+      fetchStreams: async (ids) =>
+        live && ids.includes(broadcasterId)
+          ? [
+              {
+                id: streamId,
+                user_id: broadcasterId,
+                user_login: login,
+                title: "Offline-cycle stream",
+                started_at: new Date().toISOString(),
+              },
+            ]
+          : [],
+    }).finally(() => {
+      if (prevId != null) process.env.TWITCH_CLIENT_ID = prevId;
+      else delete process.env.TWITCH_CLIENT_ID;
+      if (prevSecret != null) process.env.TWITCH_CLIENT_SECRET = prevSecret;
+      else delete process.env.TWITCH_CLIENT_SECRET;
+    });
+  }
+
+  /** Skip the ≥60s re-check gate between the go-live and offline ticks. */
+  function forceRecheck(broadcasterId) {
+    env.db.db
+      .prepare(
+        "UPDATE twitch_channels SET last_checked=NULL WHERE community_id=? AND broadcaster_id=?",
+      )
+      .run(env.communityId, broadcasterId);
+  }
+
+  /** Sent go-offline payloads on a channel (content-gated, embeds ignored). */
+  function offlineSends(channel) {
+    return (channel.sent || []).filter((p) =>
+      String(p?.content || "").includes("went offline"),
+    );
+  }
+
+  it("storage: flags default off; enabling seeds the watermark to the in-flight stream; disable keeps it", () => {
+    env.db.addTwitchChannel(env.communityId, "770000", "offseed", "OffSeed", null);
+    let sub = env.db.getTwitchChannel(env.communityId, "offseed");
+    assert.ok("notify_offline" in sub, "column exists after migration 060");
+    assert.equal(sub.notify_offline, 0);
+    assert.equal(sub.last_offline_stream_id, null);
+    assert.equal(sub.last_offline_at, null);
+
+    // Put a stream in flight (the go-live claim does this in production).
+    const claim = env.db.claimTwitchStream(env.communityId, "770000", "inflight-1");
+    assert.equal(claim.isNew, true);
+
+    // Opt-in mid-stream → the in-flight stream is suppressed forever.
+    sub = env.db.setTwitchChannelOfflineFlag(env.communityId, "770000", true);
+    assert.equal(sub.notify_offline, 1);
+    assert.equal(sub.last_offline_stream_id, "inflight-1", "seeded to the in-flight stream");
+    assert.ok(Number.isInteger(sub.last_offline_at) && sub.last_offline_at > 0);
+
+    // The stream ends (claim reports the ended id) but stays unannounced.
+    const off = env.db.claimTwitchOffline(env.communityId, "770000");
+    assert.deepEqual(off, { wasLive: true, previousStreamId: "inflight-1" });
+
+    // Disable keeps the watermark; re-enable with a NEWER stream in flight
+    // re-seeds to THAT stream.
+    env.db.setTwitchChannelOfflineFlag(env.communityId, "770000", false);
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "770000").last_offline_stream_id,
+      "inflight-1",
+      "watermark survives disable",
+    );
+    env.db.claimTwitchStream(env.communityId, "770000", "inflight-2");
+    sub = env.db.setTwitchChannelOfflineFlag(env.communityId, "770000", true);
+    assert.equal(sub.last_offline_stream_id, "inflight-2", "re-seed on re-enable");
+
+    // Unknown sub → null.
+    assert.equal(
+      env.db.setTwitchChannelOfflineFlag(env.communityId, "999999999", true),
+      null,
+    );
+  });
+
+  it("repo: the offline claim/release/record trio keeps the stream-id CAS honest", () => {
+    env.db.addTwitchChannel(env.communityId, "770001", "offcas", "OffCas", null);
+    env.db.claimTwitchStream(env.communityId, "770001", "cas-1");
+
+    // Release refuses while the row is still live.
+    assert.equal(env.db.releaseTwitchOfflineClaim(env.communityId, "770001", "cas-1"), false);
+
+    const off = env.db.claimTwitchOffline(env.communityId, "770001");
+    assert.deepEqual(off, { wasLive: true, previousStreamId: "cas-1" });
+    // Re-arm succeeds on the matching ended stream.
+    assert.equal(env.db.releaseTwitchOfflineClaim(env.communityId, "770001", "cas-1"), true);
+    assert.equal(env.db.getTwitchChannel(env.communityId, "offcas").is_live, 1);
+
+    // A newer stream supersedes the release…
+    env.db.claimTwitchStream(env.communityId, "770001", "cas-2");
+    env.db.claimTwitchOffline(env.communityId, "770001");
+    assert.equal(
+      env.db.releaseTwitchOfflineClaim(env.communityId, "770001", "cas-1"),
+      false,
+      "CAS on last_stream_id: old stream can't re-arm over the new one",
+    );
+    // …and a null ended id never releases.
+    assert.equal(env.db.releaseTwitchOfflineClaim(env.communityId, "770001", null), false);
+
+    // Record stamps the watermark + timestamp.
+    const rec = env.db.recordTwitchOfflineAnnouncement(env.communityId, "770001", "cas-2");
+    assert.equal(rec.last_offline_stream_id, "cas-2");
+    assert.ok(rec.last_offline_at > 0);
+  });
+
+  it("ticker: opt-in while offline → next stream's end announces exactly once; replays stay silent", async () => {
+    env.db.addTwitchChannel(env.communityId, "770100", "gocast", "GoCast", null);
+    env.db.setTwitchChannelOfflineFlag(env.communityId, "770100", true); // seeds NULL watermark (offline)
+
+    clearSends();
+    await tickWith("770100", "gocast", true); // go-live (announced, not under test)
+    forceRecheck("770100");
+    await tickWith("770100", "gocast", false); // stream ends → goodnight
+
+    const sent = offlineSends(env.channels.notify);
+    assert.equal(sent.length, 1, "exactly one goodnight");
+    assertPingsNobody({ ...sent[0], allowedMentions: sent[0].allowedMentions }, {
+      label: "twitch go-offline announce",
+    });
+    assert.ok(sent[0].content.includes("**GoCast** went offline"));
+
+    // Another offline tick (reconcile replay): wasLive is gone → silent.
+    forceRecheck("770100");
+    await tickWith("770100", "gocast", false);
+    assert.equal(offlineSends(env.channels.notify).length, 1, "no repeat");
+
+    // Stale-live replay with the SAME ended stream (simulated crash before
+    // the state flip landed): the recorded watermark suppresses it.
+    env.db.db
+      .prepare(
+        "UPDATE twitch_channels SET is_live=1, last_checked=NULL WHERE community_id=? AND broadcaster_id=?",
+      )
+      .run(env.communityId, "770100");
+    await tickWith("770100", "gocast", false);
+    assert.equal(
+      offlineSends(env.channels.notify).length,
+      1,
+      "watermarked stream id never double-posts",
+    );
+  });
+
+  it("ticker: a stream already live when the opt-in lands never gets a goodnight", async () => {
+    env.db.addTwitchChannel(env.communityId, "770200", "midcast", "MidCast", null);
+    clearSends();
+    await tickWith("770200", "midcast", true); // live BEFORE opt-in
+
+    env.db.setTwitchChannelOfflineFlag(env.communityId, "770200", true); // seeds in-flight id
+    forceRecheck("770200");
+    await tickWith("770200", "midcast", false); // that stream ends
+
+    assert.equal(offlineSends(env.channels.notify).length, 0, "pre-opt-in stream suppressed");
+    // The NEXT stream (started after the opt-in) does announce:
+    forceRecheck("770200");
+    await tickWith("770200", "midcast", true);
+    forceRecheck("770200");
+    await tickWith("770200", "midcast", false);
+    assert.equal(offlineSends(env.channels.notify).length, 1, "post-opt-in stream announced");
+  });
+
+  it("ticker: the default-off case stays fully silent (log-only go-offline)", async () => {
+    env.db.addTwitchChannel(env.communityId, "770300", "quiet", "Quiet", null);
+    clearSends();
+    await tickWith("770300", "quiet", true);
+    forceRecheck("770300");
+    await tickWith("770300", "quiet", false);
+    assert.equal(offlineSends(env.channels.notify).length, 0);
+    assert.equal(env.channels.notify.sent.length, 1, "only the go-live posted");
+    // State still flipped: the offline claim consumed cleanly.
+    assert.equal(env.db.getTwitchChannel(env.communityId, "quiet").is_live, 0);
+  });
+
+  it("ticker: the goodnight honors the /twitch notify channel override (#177 composition)", async () => {
+    env.db.addTwitchChannel(env.communityId, "770400", "routed", "Routed", null);
+    env.db.setTwitchChannelMediaFlags(env.communityId, "770400", {
+      notifyClips: false,
+      notifyVods: false,
+    });
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "770400", {
+      channelId: IDS.channelCmds,
+    });
+    env.db.setTwitchChannelOfflineFlag(env.communityId, "770400", true);
+
+    clearSends();
+    await tickWith("770400", "routed", true);
+    forceRecheck("770400");
+    await tickWith("770400", "routed", false);
+
+    assert.equal(offlineSends(env.channels.cmds).length, 1, "override channel got it");
+    assert.equal(offlineSends(env.channels.notify).length, 0, "guild channel stayed out");
+  });
+
+  it("ticker: a failed goodnight re-arms the transition and retries once the route is fixed", async () => {
+    env.db.addTwitchChannel(env.communityId, "770500", "broken", "Broken", null);
+    env.db.setTwitchChannelOfflineFlag(env.communityId, "770500", true);
+    clearSends();
+    await tickWith("770500", "broken", true); // live on the healthy guild route
+
+    // Route breaks mid-stream (channel deleted → unresolvable id).
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "770500", {
+      channelId: "990000000000000003",
+    });
+    forceRecheck("770500");
+    await tickWith("770500", "broken", false);
+
+    let sub = env.db.getTwitchChannel(env.communityId, "broken");
+    assert.equal(offlineSends(env.channels.notify).length, 0);
+    assert.equal(sub.is_live, 1, "transition re-armed for retry (#447 posture)");
+    assert.match(sub.last_stream_id, /^off-stream-770500-/, "stream id preserved");
+    assert.equal(sub.last_offline_stream_id, null, "watermark NOT recorded on failure");
+
+    // Fix the route: the still-ended stream announces on the next tick.
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "770500", {
+      channelId: IDS.channelCmds,
+    });
+    forceRecheck("770500");
+    await tickWith("770500", "broken", false);
+
+    assert.equal(offlineSends(env.channels.cmds).length, 1, "retried goodnight landed");
+    sub = env.db.getTwitchChannel(env.communityId, "broken");
+    assert.equal(sub.is_live, 0);
+    assert.equal(
+      sub.last_offline_stream_id,
+      sub.last_stream_id,
+      "the announced stream id became the watermark",
+    );
+  });
+
+  it("/twitch offline: toggles persist, surface in /twitch list, and audit; misuse refuses", async () => {
+    env.db.addTwitchChannel(env.communityId, "770600", "toggled", "Toggled", null);
+
+    const on = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "offline",
+      admin: true,
+      options: { channel: "toggled", enabled: true },
+    });
+    assertReplyContains(on, /goes offline/i);
+    assertReplyContains(on, /ALREADY live/i, );
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "770600").notify_offline,
+      1,
+    );
+
+    const listed = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "list",
+      admin: true,
+      options: {},
+    });
+    assertReplyContains(listed, /\(offline\)/);
+
+    const auditTitles = env.channels.log.sent
+      .map((p) => p?.embeds?.[0]?.toJSON?.()?.title || p?.embeds?.[0]?.title)
+      .filter(Boolean);
+    assert.ok(
+      auditTitles.includes("Twitch go-offline announcements enabled"),
+      JSON.stringify(auditTitles),
+    );
+
+    const off = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "offline",
+      admin: true,
+      options: { channel: "toggled", enabled: false },
+    });
+    assertReplyContains(off, /Stopped announcing/i);
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "770600").notify_offline,
+      0,
+    );
+
+    const ghost = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "offline",
+      admin: true,
+      options: { channel: "not-a-sub", enabled: true },
+    });
+    assertReplyContains(ghost, /No matching subscription/);
+
+    const nonStaff = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "offline",
+      admin: false,
+      user: env.users.memberUser,
+      options: { channel: "toggled", enabled: true },
+    });
+    assertEphemeralReply(nonStaff, /permission/i);
+  });
+});

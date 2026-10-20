@@ -622,6 +622,16 @@ Route one subscription's notifications elsewhere (issue #177): `discord_channel`
 /twitch notify channel:SomeStreamer clear:True
 ```
 
+#### Subcommand: `offline` - Go-Offline Announcements
+
+Opt one subscription in to a "went offline" announcement when its stream ends (issue #179, default **off**): announced exactly once per stream, never for a broadcast already live at opt-in time, never with a role ping. Follows the `/twitch notify` routing override.
+
+**Usage**:
+```bash
+/twitch offline channel:SomeStreamer enabled:True
+/twitch offline channel:SomeStreamer enabled:False
+```
+
 ### `/settwitch` - Twitch Configuration
 
 Configure Twitch notification settings.

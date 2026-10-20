@@ -10,6 +10,8 @@ const {
   claimTwitchStream,
   releaseTwitchStreamClaim,
   claimTwitchOffline,
+  releaseTwitchOfflineClaim,
+  recordTwitchOfflineAnnouncement,
   updateTwitchChannelClipState,
   updateTwitchChannelVideoState,
 } = require("../../db");
@@ -161,6 +163,79 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
 }
 
 /**
+ * Build the go-offline ("goodnight") embed for a subscription (#179).
+ * Stream metadata is gone by the time the offline transition lands (the
+ * Helix lookup returned nothing), so this stays deliberately minimal —
+ * who ended, where to find them next.
+ * @param {object} sub stored twitch_channels row
+ */
+function createGoOfflineEmbed(sub) {
+  const displayName = sub.display_name || sub.login;
+  return new EmbedBuilder()
+    .setColor(Color.muted)
+    .setAuthor({
+      name: `${displayName} went offline`,
+      url: `https://twitch.tv/${sub.login}`,
+      iconURL: sub.profile_image_url || undefined,
+    })
+    .setDescription(`[Watch next stream on Twitch](https://twitch.tv/${sub.login})`)
+    .setThumbnail(sub.profile_image_url || undefined)
+    .setTimestamp(new Date())
+    .setFooter({
+      text: "Twitch",
+      iconURL: "https://upload.wikimedia.org/wikipedia/commons/9/95/Twitch_logo.png",
+    });
+}
+
+/**
+ * Send the go-offline announcement for one subscription (#179).
+ * Deliberately role-less (the ping stays a go-live-only event) with
+ * allowedMentions parse-off. Routes through the same target resolution as
+ * go-live, so a `/twitch notify` channel override carries the goodnight
+ * too (#177 composition).
+ * @returns {Promise<"sent"|"failed"|"no-channel">}
+ */
+async function sendGoOfflineNotification(outbound, communityId, sub) {
+  const { channelId: notifyChannelId } = resolveTwitchNotifyTargets(
+    sub,
+    getGuildSettings(communityId),
+  );
+  if (!notifyChannelId) {
+    console.log(
+      `[twitch] No notification channel configured for community ${communityId}`,
+    );
+    return "no-channel";
+  }
+
+  const roleName = sub.display_name || sub.login;
+  try {
+    const result = await outbound.sendChannel(notifyChannelId, {
+      content: `**${roleName}** went offline.`,
+      embeds: [toPlainEmbed(createGoOfflineEmbed(sub))],
+      allowedMentions: { parse: [] },
+    });
+    if (!result || result.ok !== true) {
+      console.error(
+        `[twitch] Failed to send go-offline notification for ${sub.login} (channel ${notifyChannelId}): ${
+          result?.error || "no ready client"
+        }`,
+      );
+      return "failed";
+    }
+    console.log(
+      `[twitch] Sent go-offline notification for ${sub.login} in community ${communityId}`,
+    );
+    return "sent";
+  } catch (err) {
+    console.error(
+      `[twitch] Failed to send go-offline notification for ${sub.login} (channel ${notifyChannelId}):`,
+      err?.message || err,
+    );
+    return "failed";
+  }
+}
+
+/**
  * Process one subscription against a stream lookup.
  *
  * Claim-first: the watermark (last_stream_id / is_live) is read+written
@@ -211,9 +286,52 @@ async function processSubscription(supervisor, communityId, sub, stream) {
       }
     }
   } else {
-    const wasLive = claimTwitchOffline(communityId, sub.broadcaster_id);
-    if (wasLive) {
-      console.log(`[twitch] ${sub.login} went offline`);
+    const { wasLive, previousStreamId } = claimTwitchOffline(
+      communityId,
+      sub.broadcaster_id,
+    );
+    if (!wasLive) return;
+    console.log(`[twitch] ${sub.login} went offline`);
+
+    // Go-offline announcement (#179): per-subscription opt-in, default off.
+    if (Number(sub.notify_offline) !== 1) return;
+
+    // Watermark suppression: a stream id matching last_offline_stream_id
+    // was either already announced (restart/reconcile replay) or predates
+    // the opt-in (enabling re-seeds the watermark to the in-flight stream,
+    // the clips-style "no pre-opt-in content" rule).
+    if (previousStreamId && sub.last_offline_stream_id === previousStreamId) {
+      console.log(
+        `[twitch] go-offline for ${sub.login} (stream ${previousStreamId}) already announced/suppressed — staying silent`,
+      );
+      return;
+    }
+
+    const outcome = await sendGoOfflineNotification(outbound, communityId, sub);
+    if (outcome === "sent") {
+      recordTwitchOfflineAnnouncement(
+        communityId,
+        sub.broadcaster_id,
+        previousStreamId,
+      );
+    } else {
+      // #447 posture for the offline direction: never burn a goodnight on
+      // a transient failure — re-arm the transition so the next tick (or
+      // the reconcile) retries while the stream id is still current.
+      const rearmed = releaseTwitchOfflineClaim(
+        communityId,
+        sub.broadcaster_id,
+        previousStreamId,
+      );
+      console.log(
+        `[twitch] go-offline announce for ${sub.login} ${
+          outcome === "no-channel" ? "not sendable (no notify channel)" : "send failed"
+        } — ${
+          rearmed
+            ? "transition re-armed, will retry"
+            : "superseded by a newer stream (dropped)"
+        }`,
+      );
     }
   }
 }
@@ -706,6 +824,8 @@ module.exports = {
   processNewClips,
   processNewVods,
   sendGoLiveNotification,
+  sendGoOfflineNotification,
+  createGoOfflineEmbed,
   resolveTwitchNotifyTargets,
   createGoLiveEmbed,
   createClipEmbed,
