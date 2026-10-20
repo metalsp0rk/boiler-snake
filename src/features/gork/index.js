@@ -28,6 +28,7 @@ const { handleGorkMessage, gorkQueue } = require("./trigger");
 const { commands } = require("./commands");
 const {
   setKeyword,
+  setRole,
   setContext,
   setCooldown,
   setRules,
@@ -72,6 +73,8 @@ async function handleGork(commandCtx, featureCtx) {
   switch (sub) {
     case "keyword":
       return setKeyword(commandCtx);
+    case "role":
+      return setRole(commandCtx);
     case "context":
       return setContext(commandCtx);
     case "cooldown":

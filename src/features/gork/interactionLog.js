@@ -89,6 +89,8 @@ function buildSettingsSnapshot(settings) {
       : null;
   return {
     gork_keyword: settings?.gork_keyword ?? null,
+    // Issue #174: which role mention (if any) could have triggered this call.
+    gork_role_id: settings?.gork_role_id ?? null,
     gork_context_window: settings?.gork_context_window ?? null,
     gork_cooldown_sec: settings?.gork_cooldown_sec ?? null,
     gork_search_enabled: settings?.gork_search_enabled ?? null,

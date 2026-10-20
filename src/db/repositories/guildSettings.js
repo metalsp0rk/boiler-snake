@@ -46,6 +46,21 @@ function normalizeGorkKeyword(value) {
   return keyword;
 }
 
+/**
+ * Normalize the gork role-trigger id (issue #174).
+ * - null / undefined / empty / whitespace-only -> null (role path not configured)
+ * - 1-64 chars (trimmed) -> id to store (the trigger only ever compares it
+ *   as a literal string, so any non-empty id is storage-safe)
+ * - longer than 64 chars -> undefined (rejected; prior value is kept)
+ */
+function normalizeGorkRoleId(value) {
+  if (value === null || value === undefined) return null;
+  const id = String(value).trim();
+  if (!id) return null;
+  if (id.length > 64) return undefined;
+  return id;
+}
+
 /** Coerce a gork boolean toggle (search / community enable switch) to a 0/1 integer. */
 function normalizeGorkFlag(value) {
   if (value === false || value === 0 || value === "0" || value === "off") return 0;
@@ -172,6 +187,7 @@ function updateGuildSettings(communityId, patch) {
     "twitch_notify_role_id",
     "twitch_polling_interval_minutes",
     "gork_keyword",
+    "gork_role_id",
     "gork_context_window",
     "gork_extra_rules",
     "gork_search_enabled",
@@ -247,6 +263,9 @@ function updateGuildSettings(communityId, patch) {
   }
   if (safePatch.gork_keyword !== undefined) {
     safePatch.gork_keyword = normalizeGorkKeyword(safePatch.gork_keyword);
+  }
+  if (safePatch.gork_role_id !== undefined) {
+    safePatch.gork_role_id = normalizeGorkRoleId(safePatch.gork_role_id);
   }
   if (safePatch.gork_search_enabled !== undefined) {
     safePatch.gork_search_enabled = normalizeGorkFlag(safePatch.gork_search_enabled);

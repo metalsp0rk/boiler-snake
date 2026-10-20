@@ -225,7 +225,7 @@ CREATE TABLE "guild_settings" (
   youtube_upload_role_id TEXT,
 
   updated_at INTEGER NOT NULL
-, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT);
+, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT, gork_role_id TEXT);
 ```
 
 **Default Values**:
@@ -248,6 +248,7 @@ CREATE TABLE "guild_settings" (
 | `twitch_polling_interval_minutes` | 2 | Helix check frequency |
 | `gork_enabled` | 1 | Master gork switch (`0` = keyword triggers ignored, other settings kept) |
 | `gork_keyword` | @gork | Trigger keyword; `NULL` = gork trigger disabled |
+| `gork_role_id` | NULL | Role whose @mention also invokes gork (`/gork role`, issue #174); `NULL` = role path off (keyword is the master trigger switch) |
 | `gork_context_window` | 10 | Prior messages used as answer context (1–50) |
 | `gork_extra_rules` | (empty) | Extra staff rules appended to the answer prompt |
 | `gork_search_enabled` | 1 | Gork web-search tool toggle (also needs `SEARXNG_URL`) |
@@ -1476,6 +1477,7 @@ Concretely this means:
 | `055_gork_usage_day_index` | `idx_gork_usage_day` — day-lead index for the gork_usage lazy prune (issue #395) |
 | `056_admin_audit_created_at_index` | `idx_admin_audit_created_at` — retention-scan index for the yearly admin_audit prune (issue #468) |
 | `057_level_role_fk` | FK coverage for `role_drop_state` (→`communities` + composite →`level_roles` `ON DELETE CASCADE`, with an idempotent orphan pre-clean) and `guild_settings` (→`communities` on the PK) (issue #469) |
+| `058_gork_role_id` | `guild_settings.gork_role_id` — the role whose mention also invokes gork (`/gork role`, issue #174); `NULL` = role path off |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

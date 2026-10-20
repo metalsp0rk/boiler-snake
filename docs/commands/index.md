@@ -1139,6 +1139,8 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 ```bash
 /gork keyword @gork
 /gork keyword clear                # disables gork for the guild
+/gork role @GorkRole               # role mention also invokes gork (keyword stays master)
+/gork role clear:true
 /gork context 10
 /gork cooldown 180
 /gork rules Keep answers about this server
@@ -1162,6 +1164,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 | Subcommand | Description |
 |------------|-------------|
 | `keyword <text\|clear>` | Set the trigger keyword (1–50 chars); `clear` disables gork for the guild |
+| `role [<@role>\|clear:true]` | Set the role whose **mention** also invokes gork anywhere in a message (`clear:true` removes it). The keyword stays the master switch — a cleared keyword keeps gork fully silent |
 | `context <1-50>` | Prior-message context window (default 10) |
 | `cooldown <seconds>` | Per-user cooldown (0–3600; default **180**, 0 = disabled). Staff always bypass |
 | `rules <text\|clear>` | Additional staff prompt rules (≤500 chars); `clear` removes them |
