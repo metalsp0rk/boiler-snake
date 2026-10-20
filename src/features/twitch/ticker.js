@@ -27,6 +27,7 @@ const {
 const {
   resolveOutbound: coreResolveOutbound,
 } = require("../../core/outbound");
+const { goLiveTemplateContext, buildGoLiveContent } = require("./templates");
 
 function resolveOutbound(supervisor, communityId) {
   return coreResolveOutbound(supervisor, communityId, { label: "twitch" });
@@ -122,10 +123,16 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
     return "no-channel";
   }
 
-  const roleName = sub.display_name || sub.login;
-  const content = roleId
-    ? `<@&${roleId}> **${roleName}** is live!`
-    : `**${roleName}** is live!`;
+  // Issue #178: the content line renders the guild template when one is set
+  // (NULL → the built-in default, byte-identical to the pre-#178 copy). The
+  // resolved mention role is still prefixed before it — the template never
+  // replaces or reorders the ping. Rendering is total: a broken template or
+  // a stripped stream row can never crash the send path.
+  const content = buildGoLiveContent({
+    template: settings?.twitch_golive_template,
+    roleId,
+    ctx: goLiveTemplateContext(sub, stream),
+  });
 
   try {
     // OutboundClient.sendChannel replaces client.channels.fetch + channel.send.

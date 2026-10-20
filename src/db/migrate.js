@@ -68,6 +68,7 @@ const migrations = [
   require("./migrations/058_gork_role_id"),
   require("./migrations/059_twitch_sub_overrides"),
   require("./migrations/060_twitch_go_offline"),
+  require("./migrations/061_twitch_golive_template"),
 ];
 
 const helpers = {
