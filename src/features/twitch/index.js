@@ -8,6 +8,7 @@ const {
   removeTwitchChannel,
   normalizeTwitchLogin,
   setTwitchChannelMediaFlags,
+  setTwitchChannelNotifyTargets,
   getTwitchEventsubSubs,
 } = require("../../db");
 const { requireStaffFromContext } = require("../../core/permissions");
@@ -16,7 +17,7 @@ const { recordSlashAudit } = require("../../core/auditTrail");
 const { joinCapped } = require("../../core/text");
 const { discordCommunityId } = require("../../platform/community");
 const { resolveTwitchUser } = require("./helix");
-const { startTwitchTicker } = require("./ticker");
+const { resolveTwitchNotifyTargets, startTwitchTicker } = require("./ticker");
 const {
   startEventsub,
   getEventsubConfig,
@@ -99,6 +100,40 @@ const commands = [
           .setName("enabled")
           .setDescription("Notify when new VODs are published")
           .setRequired(true),
+      );
+      return sub;
+    })
+    .addSubcommand((sc) => {
+      // Issue #177: per-subscription notification-target overrides.
+      const sub = sc
+        .setName("notify")
+        .setDescription(
+          "Override where one Twitch channel's notifications post (staff).",
+        );
+      sub.addStringOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("Twitch channel")
+          .setRequired(true)
+          .setAutocomplete(true),
+      );
+      sub.addChannelOption((opt) =>
+        opt
+          .setName("discord_channel")
+          .setDescription("Post this sub's notifications here instead")
+          .setRequired(false),
+      );
+      sub.addRoleOption((opt) =>
+        opt
+          .setName("role")
+          .setDescription("Mention this role on this sub's go-lives instead")
+          .setRequired(false),
+      );
+      sub.addBooleanOption((opt) =>
+        opt
+          .setName("clear")
+          .setDescription("Remove the overrides (use the guild defaults again)")
+          .setRequired(false),
       );
       return sub;
     }),
@@ -304,7 +339,16 @@ async function handleTwitch(commandCtx, featureCtx) {
         c.notify_vods ? "vods" : null,
       ].filter(Boolean);
       const flagText = flags.length ? ` _(${flags.join(" + ")})_` : "";
-      return `• **${c.display_name}** (\`${c.login}\`)${live}${flagText}`;
+      // Issue #177: per-subscription notification overrides surface right on
+      // the row, so an admin can see where a sub's posts actually go.
+      const overrides = [
+        c.notify_channel_id ? `→ <#${c.notify_channel_id}>` : null,
+        c.notify_role_id ? `ping <@&${c.notify_role_id}>` : null,
+      ].filter(Boolean);
+      const overrideText = overrides.length
+        ? ` _[${overrides.join(", ")}]_`
+        : "";
+      return `• **${c.display_name}** (\`${c.login}\`)${live}${flagText}${overrideText}`;
     });
 
     // 2000-char message cap with an honest hidden count; the footer is
@@ -314,7 +358,8 @@ async function handleTwitch(commandCtx, featureCtx) {
       `Notification channel: ${notifyChannel}\n` +
       `Ping role: ${notifyRole}\n\n`;
     const footer =
-      "\n\n_Toggle clip/VOD alerts with `/twitch clips` / `/twitch vod`._";
+      "\n\n_Toggle clip/VOD alerts with `/twitch clips` / `/twitch vod`; " +
+      "route a single channel elsewhere with `/twitch notify`._";
     await commandCtx.reply({
       content:
         header + joinCapped(lines, 2000 - header.length - footer.length, "\n") + footer,
@@ -382,6 +427,172 @@ async function handleTwitch(commandCtx, featureCtx) {
       msg = `Stopped announcing new **${label}** from **${found.display_name}**.`;
     }
     await commandCtx.reply({ content: msg, sensitive: true });
+    return;
+  }
+
+  if (sub === "notify") {
+    // Per-subscription notification-target overrides (issue #177): the
+    // override wins when set; NULL falls back to the guild-wide pair set
+    // by /settwitch. Channel routing applies to every notification this sub
+    // posts (go-live, clips, VODs); the role override only affects go-live
+    // pings (media alerts never mention a role).
+    const raw = commandCtx.options.getString("channel", true);
+    const clear = commandCtx.options.getBoolean("clear") === true;
+    const ch = commandCtx.options.getChannel("discord_channel", false);
+    const role = commandCtx.options.getRole("role", false);
+    const found = getTwitchChannel(communityId, raw);
+    if (!found) {
+      await commandCtx.reply({
+        content: "No matching subscription found.",
+        sensitive: true,
+      });
+      return;
+    }
+
+    if (clear && (ch || role)) {
+      await commandCtx.reply({
+        content:
+          "`clear:true` removes the overrides on its own — drop `discord_channel`/`role` (or omit `clear`).",
+        sensitive: true,
+      });
+      return;
+    }
+    if (!clear && !ch && !role) {
+      await commandCtx.reply({
+        content:
+          "Provide a `discord_channel` and/or `role` to override for this channel, or `clear:true` to remove the overrides.",
+        sensitive: true,
+      });
+      return;
+    }
+
+    // Validate the picker against the guild before storing (PR 4 recipe 8,
+    // same as /setcommandchannel): an unresolvable channel would silently
+    // black-hole every notification for this sub.
+    if (ch) {
+      const channelHandle = await commandCtx.outbound.fetchChannel(
+        communityId,
+        ch.id,
+      );
+      if (!channelHandle) {
+        await commandCtx.reply({
+          content:
+            `I couldn't find <#${ch.id}> (\`${ch.id}\`) in this server — ` +
+            "pick a channel from the picker and make sure the bot can view it.",
+          sensitive: true,
+        });
+        return;
+      }
+    }
+
+    const targets = clear
+      ? { channelId: null, roleId: null }
+      : {
+          // undefined = leave that override untouched (repo contract)
+          channelId: ch ? ch.id : undefined,
+          roleId: role ? role.id : undefined,
+        };
+    const updated = setTwitchChannelNotifyTargets(
+      communityId,
+      found.broadcaster_id,
+      targets,
+    );
+    if (!updated) {
+      await commandCtx.reply({
+        content: "No matching subscription found.",
+        sensitive: true,
+      });
+      return;
+    }
+
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: clear ? "twitch.notify_override_clear" : "twitch.notify_override_set",
+      targetType: "twitch_channel",
+      targetId: found.broadcaster_id,
+      details: {
+        login: found.login,
+        channel_id: clear ? null : targets.channelId ?? null,
+        role_id: clear ? null : targets.roleId ?? null,
+        previous_channel_id: found.notify_channel_id ?? null,
+        previous_role_id: found.notify_role_id ?? null,
+      },
+    });
+
+    const label = (v, kind) =>
+      v ? (kind === "channel" ? `<#${v}>` : `<@&${v}>`) : "*guild default*";
+    const changes = [`Channel: **${found.display_name}**`];
+    if (clear) {
+      if (found.notify_channel_id) {
+        changes.push(
+          `Notify channel: ${label(found.notify_channel_id, "channel")} → *guild default*`,
+        );
+      }
+      if (found.notify_role_id) {
+        changes.push(
+          `Ping role: ${label(found.notify_role_id, "role")} → *guild default*`,
+        );
+      }
+      if (changes.length === 1) changes.push("Nothing was overridden (noop).");
+    } else {
+      if (targets.channelId !== undefined) {
+        changes.push(
+          `Notify channel: ${label(found.notify_channel_id, "channel")} → ${label(
+            updated.notify_channel_id,
+            "channel",
+          )}`,
+        );
+      }
+      if (targets.roleId !== undefined) {
+        changes.push(
+          `Ping role: ${label(found.notify_role_id, "role")} → ${label(
+            updated.notify_role_id,
+            "role",
+          )}`,
+        );
+      }
+    }
+    await logConfigChange(commandCtx.outbound, guildId, {
+      title: clear
+        ? "Twitch per-channel overrides cleared"
+        : "Twitch per-channel overrides updated",
+      command: "/twitch notify",
+      actor: commandCtx.user,
+      changes,
+    }).catch(() => {});
+
+    // Effective target of record (overrides resolved against guild defaults).
+    const effective = resolveTwitchNotifyTargets(
+      updated,
+      getGuildSettings(communityId),
+    );
+    const parts = [];
+    parts.push(
+      `Notify channel: ${
+        updated.notify_channel_id
+          ? `<#${updated.notify_channel_id}> _(this sub)_`
+          : `<#${effective.channelId}> _(guild default)_`
+      }`,
+    );
+    parts.push(
+      `Ping role (go-live): ${
+        updated.notify_role_id
+          ? `<@&${updated.notify_role_id}> _(this sub)_`
+          : effective.roleId
+            ? `<@&${effective.roleId}> _(guild default)_`
+            : "_none_"
+      }`,
+    );
+    await commandCtx.reply({
+      content:
+        (clear
+          ? `Overrides for **${found.display_name}** cleared — notifications use the guild defaults again.`
+          : `Notifications for **${found.display_name}**:`) +
+        "\n" +
+        parts.join("\n"),
+      sensitive: true,
+    });
     return;
   }
 }

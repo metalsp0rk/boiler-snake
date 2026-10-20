@@ -604,11 +604,22 @@ Remove a Twitch channel subscription (autocomplete over subscriptions).
 
 #### Subcommand: `list` - View Subscriptions
 
-Display all subscribed channels (with live status), the notification channel, and ping role.
+Display all subscribed channels (with live status), the notification channel, ping role, and any per-channel `/twitch notify` overrides.
 
 **Usage**:
 ```bash
 /twitch list
+```
+
+#### Subcommand: `notify` - Per-Channel Notification Overrides
+
+Route one subscription's notifications elsewhere (issue #177): `discord_channel` overrides where its go-live/clip/VOD posts land, `role` overrides the go-live ping. Unset fields fall back to the `/settwitch` guild pair; `clear:True` removes both overrides. The channel is validated at set time.
+
+**Usage**:
+```bash
+/twitch notify channel:SomeStreamer discord_channel:#partner-streams
+/twitch notify channel:SomeStreamer role:@PartnerAlerts
+/twitch notify channel:SomeStreamer clear:True
 ```
 
 ### `/settwitch` - Twitch Configuration

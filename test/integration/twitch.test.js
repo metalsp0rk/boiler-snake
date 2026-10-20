@@ -10,7 +10,7 @@ const {
   assertPingsRoleOnly,
   assertPingsNobody,
 } = require("../helpers/sendShape");
-const { IDS } = require("../helpers/fixtures");
+const { IDS, uniqueId } = require("../helpers/fixtures");
 
 /**
  * PR 7 fake supervisor: ticker entry points take a supervisor and resolve the
@@ -834,5 +834,426 @@ describe("integration: twitch", () => {
       user: env.users.memberUser,
     });
     assertEphemeralReply(interaction, /permission/i);
+  });
+});
+
+// ---------- per-subscription notification overrides (issue #177) ----------
+
+/**
+ * Isolated env (unique guild → unique community) so the guild-wide twitch
+ * settings the earlier suite pinned cannot leak into — or from — these
+ * override assertions. Ticker arms drive runTwitchTick through the deps
+ * seam with numeric broadcaster ids (the tick's numeric-id filter).
+ */
+describe("integration: twitch per-subscription notification overrides (issue #177)", () => {
+  /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
+  let env;
+  let runTwitchTick;
+  let processNewClips;
+  let resolveTwitchNotifyTargets;
+
+  const OV_ROLE = "role-override-700";
+
+  before(async () => {
+    env = await createIntegrationEnv({ guildId: uniqueId("guild-twitch-ov") });
+    const ticker = require("../../src/features/twitch/ticker");
+    runTwitchTick = ticker.runTwitchTick;
+    processNewClips = ticker.processNewClips;
+    resolveTwitchNotifyTargets = ticker.resolveTwitchNotifyTargets;
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+      twitch_notify_role_id: IDS.roleExempt,
+      audit_log_channel_id: IDS.channelLog,
+      twitch_polling_interval_minutes: 1,
+    });
+    for (const ch of Object.values(env.channels)) ch.sent.length = 0;
+  });
+
+  after(() => env?.cleanup());
+
+  function clearSends() {
+    for (const ch of Object.values(env.channels)) ch.sent.length = 0;
+  }
+
+  /** Drive one real ticker tick with the Helix lookup mocked at the seam. */
+  async function tickWith(broadcasterId, login, live) {
+    const prevId = process.env.TWITCH_CLIENT_ID;
+    const prevSecret = process.env.TWITCH_CLIENT_SECRET;
+    process.env.TWITCH_CLIENT_ID = "test-id";
+    process.env.TWITCH_CLIENT_SECRET = "test-secret";
+    try {
+      await runTwitchTick(fakeSupervisor(env.client), {
+        resolveUser: async () => null,
+        fetchStreams: async (ids) =>
+          live && ids.includes(broadcasterId)
+            ? [
+                {
+                  id: `ov-stream-${broadcasterId}`,
+                  user_id: broadcasterId,
+                  user_login: login,
+                  title: "Override stream",
+                  started_at: new Date().toISOString(),
+                },
+              ]
+            : [],
+      });
+    } finally {
+      if (prevId != null) process.env.TWITCH_CLIENT_ID = prevId;
+      else delete process.env.TWITCH_CLIENT_ID;
+      if (prevSecret != null) process.env.TWITCH_CLIENT_SECRET = prevSecret;
+      else delete process.env.TWITCH_CLIENT_SECRET;
+    }
+  }
+
+  /** Config-change embeds posted to the fake audit channel. */
+  function auditEmbeds() {
+    return env.channels.log.sent
+      .map((p) => {
+        const e = p && p.embeds && p.embeds[0];
+        return e ? (e.toJSON ? e.toJSON() : e) : null;
+      })
+      .filter(Boolean);
+  }
+
+  // ---------- storage + resolver ----------
+
+  it("storage: fresh subs carry NULL overrides; the setter sets/leaves/clears independently (migration 059)", () => {
+    env.db.addTwitchChannel(env.communityId, "660100", "ovcast", "OvCast", null);
+    let sub = env.db.getTwitchChannel(env.communityId, "ovcast");
+    assert.ok("notify_channel_id" in sub, "column exists after migration 059");
+    assert.equal(sub.notify_channel_id, null);
+    assert.equal(sub.notify_role_id, null);
+
+    sub = env.db.setTwitchChannelNotifyTargets(env.communityId, "660100", {
+      channelId: IDS.channelCmds,
+      roleId: OV_ROLE,
+    });
+    assert.equal(sub.notify_channel_id, IDS.channelCmds);
+    assert.equal(sub.notify_role_id, OV_ROLE);
+
+    // undefined LEAVES the other field untouched; null clears its own
+    sub = env.db.setTwitchChannelNotifyTargets(env.communityId, "660100", {
+      channelId: null,
+    });
+    assert.equal(sub.notify_channel_id, null, "channel cleared");
+    assert.equal(sub.notify_role_id, OV_ROLE, "role untouched");
+
+    // blank strings coerce to clear (repo never stores an empty id)
+    sub = env.db.setTwitchChannelNotifyTargets(env.communityId, "660100", {
+      roleId: "   ",
+    });
+    assert.equal(sub.notify_role_id, null);
+
+    // no keys → unchanged row returned
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "660100", {
+      channelId: IDS.channelCmds,
+    });
+    const same = env.db.setTwitchChannelNotifyTargets(env.communityId, "660100", {});
+    assert.equal(same.notify_channel_id, IDS.channelCmds);
+
+    // unknown subscription → null (command surfaces the same via "no match")
+    assert.equal(
+      env.db.setTwitchChannelNotifyTargets(env.communityId, "999999999", {
+        channelId: "x",
+      }),
+      null,
+    );
+
+    // leave ovcast clean for the command suite below
+    const reset = env.db.setTwitchChannelNotifyTargets(env.communityId, "660100", {
+      channelId: null,
+      roleId: null,
+    });
+    assert.equal(reset.notify_channel_id, null);
+    assert.equal(reset.notify_role_id, null);
+  });
+
+  it("resolver: the override wins when set; NULL/absent falls back to the guild pair", () => {
+    const settings = {
+      twitch_notification_channel_id: "GUILD_CH",
+      twitch_notify_role_id: "GUILD_ROLE",
+    };
+    assert.deepEqual(
+      resolveTwitchNotifyTargets(
+        { notify_channel_id: "SUB_CH", notify_role_id: "SUB_ROLE" },
+        settings,
+      ),
+      { channelId: "SUB_CH", roleId: "SUB_ROLE" },
+    );
+    assert.deepEqual(resolveTwitchNotifyTargets({}, settings), {
+      channelId: "GUILD_CH",
+      roleId: "GUILD_ROLE",
+    });
+    assert.deepEqual(
+      resolveTwitchNotifyTargets({ notify_channel_id: "SUB_CH" }, settings),
+      { channelId: "SUB_CH", roleId: "GUILD_ROLE" },
+    );
+    assert.deepEqual(resolveTwitchNotifyTargets(null, null), {
+      channelId: null,
+      roleId: null,
+    });
+  });
+
+  // ---------- /twitch notify command ----------
+
+  it("command surface: notify carries an autocomplete channel + optional picker/clear toggles", () => {
+    const { commands } = require("../../src/features/twitch/index.js");
+    const cmd = commands[0].toJSON();
+    const sub = cmd.options.find((o) => o.name === "notify");
+    assert.ok(sub, "notify subcommand registered");
+    const byName = Object.fromEntries(sub.options.map((o) => [o.name, o]));
+    assert.equal(byName.channel.type, 3);
+    assert.equal(byName.channel.required, true);
+    assert.equal(byName.channel.autocomplete, true);
+    assert.equal(byName.discord_channel.type, 7); // channel picker, optional
+    assert.equal(byName.discord_channel.required, false);
+    assert.equal(byName.role.type, 8); // role picker, optional
+    assert.equal(byName.role.required, false);
+    assert.equal(byName.clear.type, 5); // boolean, optional
+    assert.equal(byName.clear.required, false);
+  });
+
+  it("/twitch notify: sets the channel override, audits old→new, and marks /twitch list", async () => {
+    const interaction = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "notify",
+      admin: true,
+      options: { channel: "ovcast", discord_channel: env.channels.cmds },
+    });
+    assertReplyContains(interaction, /this sub/i);
+    let sub = env.db.getTwitchChannel(env.communityId, "ovcast");
+    assert.equal(sub.notify_channel_id, IDS.channelCmds);
+    assert.equal(sub.notify_role_id, null, "role override untouched");
+
+    const embed = auditEmbeds().find(
+      (e) => e.title === "Twitch per-channel overrides updated",
+    );
+    assert.ok(embed, "config-change embed lands in the audit channel");
+    assert.ok(
+      JSON.stringify(embed).includes("*guild default* → <#" + IDS.channelCmds + ">"),
+      JSON.stringify(embed),
+    );
+
+    const listed = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "list",
+      admin: true,
+      options: {},
+    });
+    assertReplyContains(listed, new RegExp(`→ <#${IDS.channelCmds}>`));
+  });
+
+  it("/twitch notify: clear:true XORs the pickers, empty calls guide, unknown subs refuse", async () => {
+    const both = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "notify",
+      admin: true,
+      options: { channel: "ovcast", discord_channel: env.channels.notify, clear: true },
+    });
+    assertReplyContains(both, /clear:true/);
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "ovcast").notify_channel_id,
+      IDS.channelCmds,
+      "nothing persisted on the XOR refusal",
+    );
+
+    const empty = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "notify",
+      admin: true,
+      options: { channel: "ovcast" },
+    });
+    assertReplyContains(empty, /Provide a .discord_channel/);
+
+    const ghost = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "notify",
+      admin: true,
+      options: { channel: "not-a-sub", discord_channel: env.channels.cmds },
+    });
+    assertReplyContains(ghost, /No matching subscription/);
+  });
+
+  it("/twitch notify: refuses an unresolvable Discord channel with the specific reason (nothing stored)", async () => {
+    const interaction = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "notify",
+      admin: true,
+      options: {
+        channel: "ovcast",
+        discord_channel: { id: "990000000000000001", toString: () => "<#990000000000000001>" },
+      },
+    });
+    assertReplyContains(interaction, /couldn.t find/);
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "ovcast").notify_channel_id,
+      IDS.channelCmds,
+      "prior override survives the refused write",
+    );
+  });
+
+  it("/twitch notify clear:true resets both overrides and reports the effective guild defaults", async () => {
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "660100", {
+      roleId: OV_ROLE,
+    });
+    const interaction = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "notify",
+      admin: true,
+      options: { channel: "ovcast", clear: true },
+    });
+    assertReplyContains(interaction, /cleared/i);
+    assertReplyContains(interaction, /guild default/);
+    const sub = env.db.getTwitchChannel(env.communityId, "ovcast");
+    assert.equal(sub.notify_channel_id, null);
+    assert.equal(sub.notify_role_id, null);
+    const cleared = auditEmbeds().find(
+      (e) => e.title === "Twitch per-channel overrides cleared",
+    );
+    assert.ok(cleared, "clear lands its own audit entry");
+
+    const listed = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "list",
+      admin: true,
+      options: {},
+    });
+    const reply = interactionReplyText(listed);
+    assert.ok(!reply.includes(`→ <#${IDS.channelCmds}>`), "list marker removed");
+  });
+
+  /** Plain text of an interaction's last reply (works for content replies). */
+  function interactionReplyText(interaction) {
+    const replies = interaction.replies || [];
+    const last = replies[replies.length - 1];
+    const payload = typeof last === "string" ? { content: last } : last || {};
+    if (typeof payload === "string") return payload;
+    return String(payload.content ?? "");
+  }
+
+  // ---------- ticker routing ----------
+
+  it("ticker: an overridden go-live lands ONLY in the override channel; the guild role still pings", async () => {
+    env.db.addTwitchChannel(env.communityId, "660200", "ovlive", "OvLive", null);
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "660200", {
+      channelId: IDS.channelCmds,
+    });
+    clearSends();
+    await tickWith("660200", "ovlive", true);
+
+    const payload = exactlyOneSend(env.channels.cmds.sent, "override go-live");
+    assertPingsRoleOnly(payload, IDS.roleExempt, {
+      label: "twitch override go-live (guild role fallback)",
+    });
+    assert.equal(env.channels.notify.sent.length, 0, "guild channel must stay empty");
+  });
+
+  it("ticker: the role override replaces the guild ping role for that sub only", async () => {
+    env.db.addTwitchChannel(env.communityId, "660300", "ovrole", "OvRole", null);
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "660300", {
+      channelId: IDS.channelCmds,
+      roleId: OV_ROLE,
+    });
+    clearSends();
+    await tickWith("660300", "ovrole", true);
+
+    const payload = exactlyOneSend(env.channels.cmds.sent, "role-override go-live");
+    assertPingsRoleOnly(payload, OV_ROLE, {
+      label: "twitch override go-live (override role)",
+    });
+    assert.ok(payload.content.includes(`<@&${OV_ROLE}>`));
+    assert.ok(!payload.content.includes(IDS.roleExempt), "guild role must not ride along");
+  });
+
+  it("ticker: an override alone (guild default unset) still delivers", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: null,
+      twitch_notify_role_id: null,
+    });
+    env.db.addTwitchChannel(env.communityId, "660400", "ovonly", "OvOnly", null);
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "660400", {
+      channelId: IDS.channelCmds,
+    });
+    clearSends();
+    await tickWith("660400", "ovonly", true);
+
+    const payload = exactlyOneSend(env.channels.cmds.sent, "override-only go-live");
+    assertPingsNobody(payload, { label: "twitch override-only go-live" });
+  });
+
+  it("ticker: a DELETED override channel fails honestly — claim releases, the fixed route retries", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+    });
+    env.db.addTwitchChannel(env.communityId, "660500", "ovdead", "OvDead", null);
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "660500", {
+      channelId: "990000000000000002", // not in the fake guild: unresolvable
+    });
+    clearSends();
+    await tickWith("660500", "ovdead", true);
+
+    assert.equal(env.channels.notify.sent.length, 0);
+    assert.equal(env.channels.cmds.sent.length, 0);
+    let sub = env.db.getTwitchChannel(env.communityId, "ovdead");
+    assert.equal(sub.last_stream_id, null, "#447 claim released after the failed send");
+
+    // Fix the route + bypass the one-minute re-check gate, tick again.
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "660500", {
+      channelId: IDS.channelCmds,
+    });
+    env.db.db
+      .prepare("UPDATE twitch_channels SET last_checked=NULL WHERE community_id=? AND broadcaster_id=?")
+      .run(env.communityId, "660500");
+    await tickWith("660500", "ovdead", true);
+
+    exactlyOneSend(env.channels.cmds.sent, "recovered go-live");
+    sub = env.db.getTwitchChannel(env.communityId, "ovdead");
+    assert.equal(sub.last_stream_id, "ov-stream-660500", "claim persisted after success");
+  });
+
+  it("ticker: clip alerts honor the channel override too (and still never ping)", async () => {
+    env.db.addTwitchChannel(env.communityId, "660600", "ovclips", "OvClips", null);
+    env.db.setTwitchChannelMediaFlags(env.communityId, "660600", {
+      notifyClips: true,
+      notifyVods: false,
+    });
+    env.db.setTwitchChannelNotifyTargets(env.communityId, "660600", {
+      channelId: IDS.channelCmds,
+    });
+    clearSends();
+    const sub = env.db.getTwitchChannel(env.communityId, "ovclips");
+    const wm = sub.last_clip_created_at;
+    assert.ok(wm > 0, "media flag seeds the clip watermark");
+
+    await processNewClips(fakeSupervisor(env.client), sub, {
+      fetchClips: async () => [
+        {
+          id: "cov1",
+          url: "https://twitch.tv/c/cov1",
+          title: "Override clip",
+          created_at: new Date(wm + 1000).toISOString(),
+          duration: 9,
+        },
+      ],
+    });
+
+    const payload = exactlyOneSend(env.channels.cmds.sent, "override clip alert");
+    assertPingsNobody(payload, { label: "twitch override clip alert" });
+    assert.equal(env.channels.notify.sent.length, 0, "guild channel stays out of it");
+  });
+
+  it("non-staff invokers cannot manage overrides", async () => {
+    const interaction = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "notify",
+      admin: false,
+      user: env.users.memberUser,
+      options: { channel: "ovcast", discord_channel: env.channels.cmds },
+    });
+    assertEphemeralReply(interaction, /permission/i);
+    assert.equal(
+      env.db.getTwitchChannel(env.communityId, "ovcast").notify_channel_id,
+      null,
+    );
   });
 });

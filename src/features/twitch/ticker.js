@@ -81,6 +81,25 @@ function createGoLiveEmbed(sub, stream) {
 }
 
 /**
+ * Resolve the effective notification target for one subscription (issue #177):
+ * the per-subscription override (`twitch_channels.notify_channel_id` /
+ * `notify_role_id`) when set, otherwise the guild-wide default pair
+ * (`guild_settings.twitch_notification_channel_id` / `twitch_notify_role_id`).
+ * Pure; NULL/blank override always means "fall back to the guild pair".
+ *
+ * @param {object} sub stored twitch_channels row
+ * @param {object} settings guild_settings row for sub.community_id
+ * @returns {{ channelId: string|null, roleId: string|null }}
+ */
+function resolveTwitchNotifyTargets(sub, settings) {
+  return {
+    channelId:
+      sub?.notify_channel_id || settings?.twitch_notification_channel_id || null,
+    roleId: sub?.notify_role_id || settings?.twitch_notify_role_id || null,
+  };
+}
+
+/**
  * Send the go-live notification for one subscription.
  * @param {object} outbound OutboundClient for the sub's community (spec 577)
  * @param {number} communityId internal community id (row's `community_id`)
@@ -89,7 +108,11 @@ function createGoLiveEmbed(sub, stream) {
  */
 async function sendGoLiveNotification(outbound, communityId, sub, stream) {
   const settings = getGuildSettings(communityId);
-  const notifyChannelId = settings.twitch_notification_channel_id;
+  // Issue #177: per-subscription override wins; guild pair is the default.
+  const { channelId: notifyChannelId, roleId } = resolveTwitchNotifyTargets(
+    sub,
+    settings,
+  );
   if (!notifyChannelId) {
     console.log(
       `[twitch] No notification channel configured for community ${communityId}`,
@@ -98,7 +121,6 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
   }
 
   const roleName = sub.display_name || sub.login;
-  const roleId = settings.twitch_notify_role_id;
   const content = roleId
     ? `<@&${roleId}> **${roleName}** is live!`
     : `**${roleName}** is live!`;
@@ -116,8 +138,10 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
       allowedMentions: roleId ? { roles: [roleId] } : { parse: [] },
     });
     if (!result || result.ok !== true) {
+      // Channel id rides the log (issue #177): a DELETED override channel
+      // must be identifiable from the log line alone.
       console.error(
-        `[twitch] Failed to send go-live notification for ${sub.login}: ${
+        `[twitch] Failed to send go-live notification for ${sub.login} (channel ${notifyChannelId}): ${
           result?.error || "no ready client"
         }`,
       );
@@ -129,7 +153,7 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
     return "sent";
   } catch (err) {
     console.error(
-      `[twitch] Failed to send go-live notification for ${sub.login}:`,
+      `[twitch] Failed to send go-live notification for ${sub.login} (channel ${notifyChannelId}):`,
       err?.message || err,
     );
     return "failed";
@@ -311,14 +335,17 @@ function createVodEmbed(sub, video) {
 }
 
 /**
- * Send a clips/VODs message to the guild's Twitch notify channel.
+ * Send a clips/VODs message to the subscription's notify channel (issue #177:
+ * the per-subscription override channel wins; the guild pair is the default).
  * NO role mention (the ping role is for go-live only) with
  * allowedMentions parse-off. Returns false (logged) when delivery failed.
  * @param {object} outbound OutboundClient for the sub's community
  */
 async function sendMediaNotification(outbound, communityId, sub, content, embed) {
-  const settings = getGuildSettings(communityId);
-  const notifyChannelId = settings.twitch_notification_channel_id;
+  const { channelId: notifyChannelId } = resolveTwitchNotifyTargets(
+    sub,
+    getGuildSettings(communityId),
+  );
   if (!notifyChannelId) return false;
 
   try {
@@ -329,7 +356,7 @@ async function sendMediaNotification(outbound, communityId, sub, content, embed)
     });
     if (!result || result.ok !== true) {
       console.error(
-        `[twitch] Failed to send ${content} for ${sub.login}: ${
+        `[twitch] Failed to send ${content} for ${sub.login} (channel ${notifyChannelId}): ${
           result?.error || "no ready client"
         }`,
       );
@@ -338,7 +365,7 @@ async function sendMediaNotification(outbound, communityId, sub, content, embed)
     return true;
   } catch (err) {
     console.error(
-      `[twitch] Failed to send ${content} for ${sub.login}:`,
+      `[twitch] Failed to send ${content} for ${sub.login} (channel ${notifyChannelId}):`,
       err?.message || err,
     );
     return false;
@@ -679,6 +706,7 @@ module.exports = {
   processNewClips,
   processNewVods,
   sendGoLiveNotification,
+  resolveTwitchNotifyTargets,
   createGoLiveEmbed,
   createClipEmbed,
   createVodEmbed,

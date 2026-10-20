@@ -469,7 +469,7 @@ CREATE TABLE "twitch_channels" (
     last_stream_id    TEXT,
     last_checked      INTEGER,
     created_at        INTEGER NOT NULL,
-    updated_at        INTEGER NOT NULL, notify_clips INTEGER NOT NULL DEFAULT 0, notify_vods INTEGER NOT NULL DEFAULT 0, last_clip_id TEXT, last_clip_created_at INTEGER, last_video_id TEXT, last_video_created_at INTEGER,
+    updated_at        INTEGER NOT NULL, notify_clips INTEGER NOT NULL DEFAULT 0, notify_vods INTEGER NOT NULL DEFAULT 0, last_clip_id TEXT, last_clip_created_at INTEGER, last_video_id TEXT, last_video_created_at INTEGER, notify_channel_id TEXT, notify_role_id TEXT,
     PRIMARY KEY (community_id, broadcaster_id),
     UNIQUE (community_id, login)
   );
@@ -1478,6 +1478,7 @@ Concretely this means:
 | `056_admin_audit_created_at_index` | `idx_admin_audit_created_at` — retention-scan index for the yearly admin_audit prune (issue #468) |
 | `057_level_role_fk` | FK coverage for `role_drop_state` (→`communities` + composite →`level_roles` `ON DELETE CASCADE`, with an idempotent orphan pre-clean) and `guild_settings` (→`communities` on the PK) (issue #469) |
 | `058_gork_role_id` | `guild_settings.gork_role_id` — the role whose mention also invokes gork (`/gork role`, issue #174); `NULL` = role path off |
+| `059_twitch_sub_overrides` | `twitch_channels.notify_channel_id` + `notify_role_id` — per-subscription notification routing/ping overrides (`/twitch notify`, issue #177); `NULL` = use the guild-wide pair |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
