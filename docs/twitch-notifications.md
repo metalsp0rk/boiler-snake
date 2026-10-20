@@ -136,6 +136,39 @@ Route **one** subscription's notifications somewhere other than the guild-wide `
 - The Discord channel is validated at set time (the bot must be able to see it). If the channel is **deleted later**, sends fail loudly in the log (the failing channel id is named) and go-live claims release + retry per #447 — re-point with `/twitch notify` and the still-live stream is announced.
 - Overridden subscriptions show `[→ #channel, ping @role]` in `/twitch list`.
 
+### `/twitch template`
+
+Customize the **go-live message text line** per guild (issue #178). The embed, the routing, and the role ping are untouched — the template only replaces the plain-text line in front of the embed.
+
+```bash
+/twitch template                                  # show the current template + placeholder help
+/twitch template text:🔴 {streamer} is live playing {game}! {title} — {url}
+/twitch template clear:True                       # restore the built-in default
+```
+
+- **Default** (unset / cleared): `**{streamer}** is live!` — the shipped copy, unchanged.
+- **Scope**: go-live announcements only. Go-offline (`/twitch offline`) and clip/VOD alerts keep their fixed copy; templates are **per guild**, not per subscription.
+
+**Supported placeholders** (case-insensitive):
+
+| Placeholder | Value | If the field is missing |
+|---|---|---|
+| `{streamer}` | Display name (falls back to login, then the stream's user name) | `a streamer` |
+| `{login}` | Lowercase Twitch login | `unknown` |
+| `{title}` | Stream title | `Untitled stream` |
+| `{game}` | Game/category name | `Unknown` |
+| `{url}` | `https://twitch.tv/<login>` | always computable |
+| `{viewers}` | Current viewer count | `0` |
+| `{uptime}` | How long the stream has been live (`45m`, `1h 23m`) | `just went live` |
+
+**Semantics**:
+
+- **Missing fields never render `undefined`/`null`** — every placeholder above always substitutes (the fallback column).
+- **Unknown placeholders stay literal**: `{nope}` sends as `{nope}`, so a typo stays visible instead of silently deleting half a sentence. Anything not shaped like `{token}` (spaces, punctuation) is plain text.
+- **Role mention composes around the template**: the resolved ping role (the `/twitch notify` override, else `/settwitch role`) is prefixed **before** the rendered line as `<@&role> ` exactly as with the default. The template can't drop, reorder, or add pings — sends pin `allowedMentions` to that one role (#272), so `@everyone` or role tokens smuggled into a template or a stream `{title}` stay inert text.
+- **Length**: the template is validated to ≤ **2000 characters** (Discord's message cap) at set time with a specific error. At send time the final line (mention + rendered text) is clamped to 2000 — a runaway `{title}` truncates with `…` rather than failing the alert.
+
+
 ## Configuration Commands
 
 ### `/settwitch channel`
@@ -169,11 +202,12 @@ The bot runs a minute-aligned poll loop; a subscription is skipped when it was c
 
 ### `/settwitch settings`
 
-Show current channel, ping role, interval, subscription count, and whether bot credentials are configured.
+Show current channel, ping role, whether a custom go-live template is in play (`/twitch template`), interval, subscription count, and whether bot credentials are configured.
 
 ## Notification Behavior
 
 - **Trigger**: offline → live transition for a **new** stream id
+- **Content line**: the guild `/twitch template` when set (rendered placeholders), else the default `**{streamer}** is live!` — always clamped to Discord's 2000-char content cap
 - **Embed**: purple (`#9146FF`), stream title, game/category, viewer count, watch link, broadcaster thumbnail
 - **Mention**: the go-live ping role for that subscription — the `/twitch notify` role override when set, else the `/settwitch role` guild role — via `allowedMentions`
 - **Routing**: per subscription — the `/twitch notify` channel override wins when set, else the `/settwitch channel` guild default
@@ -236,7 +270,7 @@ Auth is a cached app access token from `id.twitch.tv/oauth2/token` (Client Crede
 
 - `twitch_channels`: one row per guild + broadcaster (login, display name, avatar, `is_live`, `last_stream_id`, `last_checked`, media flags: `notify_clips`, `notify_vods`, `last_clip_id`, `last_clip_created_at`, `last_video_id`, `last_video_created_at`)
 - `twitch_eventsub_subs`: one row per subscription type + broadcaster (Twitch subscription id, status, last error) — the bot's view of its EventSub subscriptions
-- `guild_settings`: `twitch_notification_channel_id`, `twitch_notify_role_id`, `twitch_polling_interval_minutes`
+- `guild_settings`: `twitch_notification_channel_id`, `twitch_notify_role_id`, `twitch_polling_interval_minutes`, `twitch_golive_template` (nullable — NULL renders the default content line; migration 061)
 
 ### Poller
 

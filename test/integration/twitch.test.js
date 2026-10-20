@@ -1595,3 +1595,346 @@ describe("integration: twitch go-offline announcements (issue #179)", () => {
     assertEphemeralReply(nonStaff, /permission/i);
   });
 });
+
+// ---------- per-guild go-live message templates (issue #178) ----------
+
+/**
+ * Per-guild custom template for the go-live CONTENT LINE (migration 061,
+ * guild_settings.twitch_golive_template). Unset = the pre-#178 hardcoded
+ * copy (byte-identical). The role mention composes BEFORE the rendered
+ * template and never drops. Ticker arms drive the real runTwitchTick with
+ * the Helix lookup mocked at the deps seam; command arms run the real
+ * router/handler path.
+ */
+describe("integration: twitch go-live message templates (issue #178)", () => {
+  /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
+  let env;
+  let runTwitchTick;
+
+  const TPL = {
+    DEFAULT_GOLIVE_TEMPLATE:
+      require("../../src/features/twitch/templates").DEFAULT_GOLIVE_TEMPLATE,
+    MAX: require("../../src/features/twitch/templates").MAX_GOLIVE_TEMPLATE_LEN,
+  };
+
+  before(async () => {
+    env = await createIntegrationEnv({ guildId: uniqueId("guild-twitch-tpl") });
+    runTwitchTick = require("../../src/features/twitch/ticker").runTwitchTick;
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_notification_channel_id: IDS.channelNotify,
+      twitch_notify_role_id: null,
+      audit_log_channel_id: IDS.channelLog,
+      twitch_polling_interval_minutes: 1,
+    });
+    clearSends();
+  });
+
+  after(() => env?.cleanup());
+
+  function clearSends() {
+    for (const ch of Object.values(env.channels)) ch.sent.length = 0;
+  }
+
+  /** Config-change embed titles posted to the fake audit channel. */
+  function auditTitles() {
+    return env.channels.log.sent
+      .map((p) => p?.embeds?.[0]?.toJSON?.()?.title || p?.embeds?.[0]?.title)
+      .filter(Boolean);
+  }
+
+  /** Fresh subscription (never checked → eligible) at a numeric broadcaster id. */
+  function addSub(broadcasterId, login) {
+    env.db.addTwitchChannel(env.communityId, broadcasterId, login, `${login}Display`, "");
+  }
+
+  /** One real tick with the target broadcaster optionally live (custom shape ok). */
+  async function tickWith(broadcasterId, login, streamOrNull) {
+    const prevId = process.env.TWITCH_CLIENT_ID;
+    const prevSecret = process.env.TWITCH_CLIENT_SECRET;
+    process.env.TWITCH_CLIENT_ID = "test-id";
+    process.env.TWITCH_CLIENT_SECRET = "test-secret";
+    try {
+      await runTwitchTick(fakeSupervisor(env.client), {
+        resolveUser: async () => null,
+        fetchStreams: async (ids) =>
+          streamOrNull && ids.includes(broadcasterId)
+            ? [{ ...streamOrNull, user_id: broadcasterId }]
+            : [],
+      });
+    } finally {
+      if (prevId != null) process.env.TWITCH_CLIENT_ID = prevId;
+      else delete process.env.TWITCH_CLIENT_ID;
+      if (prevSecret != null) process.env.TWITCH_CLIENT_SECRET = prevSecret;
+      else delete process.env.TWITCH_CLIENT_SECRET;
+    }
+  }
+
+  // ---------- storage (migration 061 + settings repo) ----------
+
+  it("storage: twitch_golive_template round-trips — trim/blank→NULL, over-length keeps the prior value", () => {
+    const before = env.db.getGuildSettings(env.communityId);
+    assert.ok("twitch_golive_template" in before, "column exists after migration 061");
+    assert.equal(before.twitch_golive_template, null, "NULL = built-in default");
+
+    let s = env.db.updateGuildSettings(env.communityId, {
+      twitch_golive_template: "  hi {streamer}  ",
+    });
+    assert.equal(s.twitch_golive_template, "hi {streamer}", "stored trimmed");
+
+    s = env.db.updateGuildSettings(env.communityId, { twitch_golive_template: "   " });
+    assert.equal(s.twitch_golive_template, null, "blank restores the default (NULL)");
+
+    s = env.db.updateGuildSettings(env.communityId, {
+      twitch_golive_template: "x".repeat(TPL.MAX + 1),
+    });
+    assert.equal(s.twitch_golive_template, null, "over-length rejected, prior value kept");
+
+    env.db.updateGuildSettings(env.communityId, { twitch_golive_template: "keep me" });
+    s = env.db.updateGuildSettings(env.communityId, {
+      twitch_golive_template: "x".repeat(TPL.MAX + 1),
+    });
+    assert.equal(s.twitch_golive_template, "keep me", "prior value survives the refused write");
+
+    s = env.db.updateGuildSettings(env.communityId, { twitch_golive_template: null });
+    assert.equal(s.twitch_golive_template, null);
+  });
+
+  // ---------- /twitch template command surface ----------
+
+  it("command surface: template carries an optional text (max-length capped) + clear toggle", () => {
+    const { commands } = require("../../src/features/twitch/index.js");
+    const cmd = commands[0].toJSON();
+    const sub = cmd.options.find((o) => o.name === "template");
+    assert.ok(sub, "template subcommand registered");
+    const byName = Object.fromEntries(sub.options.map((o) => [o.name, o]));
+    assert.equal(byName.text.type, 3); // string
+    assert.equal(byName.text.required, false);
+    assert.equal(byName.text.max_length, TPL.MAX); // Discord-side cap = handler's cap
+    assert.match(byName.text.description, /\{streamer\}/);
+    assert.match(byName.text.description, /\{uptime\}/);
+    assert.equal(byName.clear.type, 5); // boolean
+    assert.equal(byName.clear.required, false);
+  });
+
+  it("/twitch template (no args): shows the default template + placeholder help", async () => {
+    const interaction = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: true,
+      options: {},
+    });
+    assertReplyContains(interaction, /\*\*Current template:\*\* \*default\*/);
+    assertReplyContains(interaction, new RegExp(
+      TPL.DEFAULT_GOLIVE_TEMPLATE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    ));
+    assertReplyContains(interaction, /\{streamer\} \{login\} \{title\} \{game\} \{url\} \{viewers\} \{uptime\}/);
+    assertReplyContains(interaction, /clear:true/);
+  });
+
+  it("/twitch template text: saves trimmed, marks settings custom, and audits default→custom", async () => {
+    const template = "🔴 {streamer} — {game} — {url}";
+    const interaction = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: true,
+      options: { text: `  ${template}  ` },
+    });
+    assertReplyContains(interaction, /\*\*Go-live template:\*\* saved/);
+    assert.equal(
+      env.db.getGuildSettings(env.communityId).twitch_golive_template,
+      template,
+      "trimmed on the way in",
+    );
+
+    const listed = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: true,
+      options: {},
+    });
+    assertReplyContains(listed, /🔴 \{streamer\}/);
+
+    const settings = await env.runCommand({
+      commandName: "settwitch",
+      subcommand: "settings",
+      admin: true,
+    });
+    assertReplyContains(settings, /Go-live template: custom/);
+
+    assert.ok(
+      auditTitles().includes("Twitch go-live template updated"),
+      JSON.stringify(auditTitles()),
+    );
+  });
+
+  it("/twitch template: over-length is refused with the cause named (nothing stored)", async () => {
+    const prior = env.db.getGuildSettings(env.communityId).twitch_golive_template;
+    const interaction = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: true,
+      options: { text: "x".repeat(TPL.MAX + 1) },
+    });
+    assertReplyContains(interaction, /Could not save the go-live template/);
+    assertReplyContains(interaction, new RegExp(`${TPL.MAX + 1} characters`));
+    assertReplyContains(interaction, /maximum is 2000/);
+    assert.equal(
+      env.db.getGuildSettings(env.communityId).twitch_golive_template,
+      prior,
+      "prior template survives the refused write",
+    );
+  });
+
+  it("/twitch template: blank text restores the default; clear:true XORs text; set→XOR→clear keeps the record honest", async () => {
+    const blanked = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: true,
+      options: { text: "   " },
+    });
+    assertReplyContains(blanked, /reset to the default/i);
+    assert.equal(env.db.getGuildSettings(env.communityId).twitch_golive_template, null);
+
+    await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: true,
+      options: { text: "keep me" },
+    });
+    const xor = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: true,
+      options: { text: "conflict", clear: true },
+    });
+    assertReplyContains(xor, /clear:true/);
+    assertReplyContains(xor, /drop `text`/);
+    assert.equal(env.db.getGuildSettings(env.communityId).twitch_golive_template, "keep me");
+
+    const cleared = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: true,
+      options: { clear: true },
+    });
+    assertReplyContains(cleared, /reset to the default/i);
+    assert.equal(env.db.getGuildSettings(env.communityId).twitch_golive_template, null);
+    assert.ok(
+      auditTitles().includes("Twitch go-live template reset to default"),
+      JSON.stringify(auditTitles()),
+    );
+  });
+
+  it("non-staff invokers cannot touch the template", async () => {
+    const interaction = await env.runCommand({
+      commandName: "twitch",
+      subcommand: "template",
+      admin: false,
+      user: env.users.memberUser,
+      options: { text: "not allowed" },
+    });
+    assertEphemeralReply(interaction, /permission/i);
+    assert.equal(env.db.getGuildSettings(env.communityId).twitch_golive_template, null);
+  });
+
+  // ---------- ticker content line ----------
+
+  it("ticker: unset template emits the EXACT pre-#178 content (with and without the ping role)", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_golive_template: null,
+      twitch_notify_role_id: null,
+    });
+    addSub("771100", "tpldef1");
+    clearSends();
+    await tickWith("771100", "tpldef1", {
+      id: "tpl-stream-1",
+      title: "Default copy",
+      started_at: new Date().toISOString(),
+    });
+    let payload = exactlyOneSend(env.channels.notify.sent, "default go-live (no role)");
+    assert.equal(payload.content, "**tpldef1Display** is live!", "byte-identical default");
+    assertPingsNobody(payload, { label: "default go-live (no role)" });
+
+    env.db.updateGuildSettings(env.communityId, { twitch_notify_role_id: IDS.roleExempt });
+    addSub("771101", "tpldef2");
+    clearSends();
+    await tickWith("771101", "tpldef2", {
+      id: "tpl-stream-2",
+      title: "Default copy",
+      started_at: new Date().toISOString(),
+    });
+    payload = exactlyOneSend(env.channels.notify.sent, "default go-live (role)");
+    assert.equal(
+      payload.content,
+      `<@&${IDS.roleExempt}> **tpldef2Display** is live!`,
+      "byte-identical default with the mention prefix",
+    );
+    assertPingsRoleOnly(payload, IDS.roleExempt, { label: "default go-live (role)" });
+  });
+
+  it("ticker: custom template renders every placeholder and composes after the role mention", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_golive_template: "🔴 {game}: {title} [{viewers}] {url}",
+      twitch_notify_role_id: IDS.roleExempt,
+    });
+    addSub("771200", "tplcast");
+    clearSends();
+    await tickWith("771200", "tplcast", {
+      id: "tpl-stream-3",
+      game_name: "Chess",
+      title: "Big Game",
+      viewer_count: 42,
+      started_at: new Date().toISOString(),
+    });
+
+    const payload = exactlyOneSend(env.channels.notify.sent, "custom-template go-live");
+    assert.equal(
+      payload.content,
+      `<@&${IDS.roleExempt}> 🔴 Chess: Big Game [42] https://twitch.tv/tplcast`,
+    );
+    assertPingsRoleOnly(payload, IDS.roleExempt, {
+      label: "custom-template go-live (rendered)",
+    });
+    assert.equal(payload.embeds.length, 1, "the embed is untouched by #178");
+    assert.equal(payload.embeds[0].title, "Big Game");
+  });
+
+  it("ticker: missing stream fields fall back; unknown placeholders stay literal; never undefined/null", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_golive_template: "{streamer} {title} {game} {viewers} {uptime} {url} {nope}",
+      twitch_notify_role_id: null,
+    });
+    addSub("771300", "tplsparse");
+    clearSends();
+    await tickWith("771300", "tplsparse", {
+      id: "tpl-stream-4", // EventSub-minimal shape: no title/game/viewers/started_at
+    });
+
+    const payload = exactlyOneSend(env.channels.notify.sent, "sparse-stream go-live");
+    assert.ok(payload.content.includes("Untitled stream"), payload.content);
+    assert.ok(payload.content.includes("Unknown"), payload.content);
+    assert.ok(payload.content.includes("just went live"), payload.content);
+    assert.ok(payload.content.includes("https://twitch.tv/tplsparse"), payload.content);
+    assert.ok(payload.content.includes("{nope}"), "unknown placeholder stays as typed");
+    assert.ok(!/undefined|null/i.test(payload.content), payload.content);
+  });
+
+  it("ticker: a runaway render clamps to 2000 chars and keeps the role mention", async () => {
+    env.db.updateGuildSettings(env.communityId, {
+      twitch_golive_template: `${"a".repeat(1950)} {title} {url}`,
+      twitch_notify_role_id: IDS.roleExempt,
+    });
+    addSub("771400", "tplclamp");
+    clearSends();
+    await tickWith("771400", "tplclamp", {
+      id: "tpl-stream-5",
+      title: "t".repeat(100), // Twitch's real title cap; embed limits stay respected
+      started_at: new Date().toISOString(),
+    });
+
+    const payload = exactlyOneSend(env.channels.notify.sent, "clamped go-live");
+    assert.ok(payload.content.length <= TPL.MAX, `content ${payload.content.length} > cap`);
+    assert.ok(payload.content.startsWith(`<@&${IDS.roleExempt}> `), "mention never truncated away");
+    assert.ok(payload.content.endsWith("…"), "truncation is visible");
+  });
+});

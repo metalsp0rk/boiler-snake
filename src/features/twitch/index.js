@@ -20,6 +20,12 @@ const { discordCommunityId } = require("../../platform/community");
 const { resolveTwitchUser } = require("./helix");
 const { resolveTwitchNotifyTargets, startTwitchTicker } = require("./ticker");
 const {
+  MAX_GOLIVE_TEMPLATE_LEN,
+  DEFAULT_GOLIVE_TEMPLATE,
+  GOLIVE_PLACEHOLDER_TOKENS,
+  setGoLiveTemplate,
+} = require("./templates");
+const {
   startEventsub,
   getEventsubConfig,
 } = require("./eventsub");
@@ -29,6 +35,18 @@ const {
 } = require("./eventsub/subscriptions");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
+
+/**
+ * Reply-safe display of a stored template: capped so the surrounding help
+ * copy keeps the whole reply under Discord's 2000-char limit, with backticks
+ * substituted so a template cannot break its own code span.
+ */
+function previewTemplate(template) {
+  const shown = String(template ?? "");
+  const capped =
+    shown.length > 1200 ? `${shown.slice(0, 1199)}…` : shown;
+  return `\`${capped.replaceAll("`", "ʼ")}\``;
+}
 
 const commands = [
   new SlashCommandBuilder()
@@ -156,6 +174,31 @@ const commands = [
         opt
           .setName("clear")
           .setDescription("Remove the overrides (use the guild defaults again)")
+          .setRequired(false),
+      );
+      return sub;
+    })
+    .addSubcommand((sc) => {
+      // Issue #178: per-guild go-live message template (content line only —
+      // the embed and the role mention composition are untouched).
+      const sub = sc
+        .setName("template")
+        .setDescription(
+          "Show or set the guild's custom go-live message template (staff).",
+        );
+      sub.addStringOption((opt) =>
+        opt
+          .setName("text")
+          .setDescription(
+            "Placeholders: {streamer} {login} {title} {game} {url} {viewers} {uptime}",
+          )
+          .setRequired(false)
+          .setMaxLength(MAX_GOLIVE_TEMPLATE_LEN),
+      );
+      sub.addBooleanOption((opt) =>
+        opt
+          .setName("clear")
+          .setDescription("Restore the built-in default template")
           .setRequired(false),
       );
       return sub;
@@ -683,6 +726,93 @@ async function handleTwitch(commandCtx, featureCtx) {
     });
     return;
   }
+
+  if (sub === "template") {
+    // Per-guild go-live message template (issue #178). Replaces the content
+    // LINE only ("**{streamer}** is live!" by default); the embed is intact
+    // and the resolved ping role (#177 pair) stays prefixed before the
+    // rendered text. NULL/blank = built-in default. The option's max length
+    // is Discord-enforced, but the handler re-validates (handlers are the
+    // security source of truth) and surfaces the specific cause.
+    const clear = commandCtx.options.getBoolean("clear") === true;
+    const rawText = commandCtx.options.getString("text", false);
+
+    if (clear && rawText != null) {
+      await commandCtx.reply({
+        content:
+          "`clear:true` restores the default template on its own — drop `text` (or omit `clear`).",
+        sensitive: true,
+      });
+      return;
+    }
+
+    const settings = getGuildSettings(communityId);
+    const previous = String(settings.twitch_golive_template ?? "").trim();
+
+    if (!clear && rawText == null) {
+      // Show: current template (or the default), placeholder help, semantics.
+      await commandCtx.reply({
+        content:
+          (previous
+            ? `**Current template:** ${previewTemplate(previous)}\n`
+            : `**Current template:** *default* — ${previewTemplate(DEFAULT_GOLIVE_TEMPLATE)}\n`) +
+          `**Placeholders:** ${GOLIVE_PLACEHOLDER_TOKENS.join(" ")}\n` +
+          "Unknown placeholders stay as typed; a missing stream field falls back " +
+          "(`Untitled stream`, `Unknown`, `0`, `just went live`) — never `undefined`. " +
+          "The configured ping role is always mentioned BEFORE the rendered line.\n" +
+          "Set: `/twitch template text:…` · Reset: `/twitch template clear:true`",
+        sensitive: true,
+      });
+      return;
+    }
+
+    const result = setGoLiveTemplate(communityId, {
+      template: rawText,
+      clear,
+    });
+    if (!result.ok) {
+      await commandCtx.reply({
+        content: `Could not save the go-live template: \`${result.error}\``,
+        sensitive: true,
+      });
+      return;
+    }
+
+    const now = result.template; // null = default restored
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action:
+        now === null
+          ? "twitch.golive_template_clear"
+          : "twitch.golive_template_set",
+      targetType: "guild",
+      targetId: guildId,
+      // Lengths only — a 2000-char template has no business in an audit row.
+      details: { previous_length: previous.length, template_length: now?.length ?? 0 },
+    });
+    const describe = (t) => (t ? `custom (${t.length} chars)` : "default");
+    await logConfigChange(commandCtx.outbound, guildId, {
+      title:
+        now === null
+          ? "Twitch go-live template reset to default"
+          : "Twitch go-live template updated",
+      command: "/twitch template",
+      actor: commandCtx.user,
+      changes: [`Template: ${describe(previous)} → ${describe(now)}`],
+    }).catch(() => {});
+
+    await commandCtx.reply({
+      content:
+        (now === null
+          ? `**Go-live template:** reset to the default — ${previewTemplate(DEFAULT_GOLIVE_TEMPLATE)}.`
+          : `**Go-live template:** saved — ${previewTemplate(now)}\n` +
+            "The ping role mention stays prefixed before it. " +
+            `Placeholders: ${GOLIVE_PLACEHOLDER_TOKENS.join(" ")}`),
+      sensitive: true,
+    });
+    return;
+  }
 }
 
 /**
@@ -808,6 +938,13 @@ async function handleSetTwitch(commandCtx, featureCtx) {
       // settings stays renderable even if the config resolver misbehaves
     }
 
+    // Issue #178: surface whether a custom go-live content line is in play.
+    const goLiveTemplate = String(
+      settings.twitch_golive_template ?? "",
+    ).trim()
+      ? "custom (`/twitch template`)"
+      : "default";
+
     await commandCtx.reply({
       content:
         `**Twitch notification settings**\n` +
@@ -815,6 +952,7 @@ async function handleSetTwitch(commandCtx, featureCtx) {
         eventsubLine +
         `Notification channel: ${notifyChannel}\n` +
         `Ping role: ${notifyRole}\n` +
+        `Go-live template: ${goLiveTemplate}\n` +
         `Polling interval: **${settings.twitch_polling_interval_minutes}** minute(s)\n` +
         `Subscriptions: **${getTwitchChannels(communityId).length}**`,
       sensitive: true,
