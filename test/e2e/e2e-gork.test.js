@@ -175,6 +175,8 @@ describe(
       assert.deepEqual(f, {
         Enabled: "on",
         Keyword: "`@gork`",
+        // #174: role-mention trigger row (unset on a fresh guild).
+        "Role trigger": "not set",
         "Context window": "10 messages",
         Cooldown: "180s per user (staff bypass)",
         Rules: "none",
