@@ -145,6 +145,7 @@ module.exports = {
   releaseTwitchStreamClaim: twitch.releaseTwitchStreamClaim,
   claimTwitchOffline: twitch.claimTwitchOffline,
   setTwitchChannelMediaFlags: twitch.setTwitchChannelMediaFlags,
+  setTwitchChannelNotifyTargets: twitch.setTwitchChannelNotifyTargets,
   updateTwitchChannelClipState: twitch.updateTwitchChannelClipState,
   updateTwitchChannelVideoState: twitch.updateTwitchChannelVideoState,
   // Twitch EventSub subscription state
