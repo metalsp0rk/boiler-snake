@@ -146,11 +146,53 @@ const commands = [
     .addSubcommand((sc) =>
       sc
         .setName("list")
-        .setDescription("List open tickets (staff).")
+        .setDescription("List tickets with filters (staff). Default: open tickets.")
+        .addStringOption((opt) =>
+          opt
+            .setName("status")
+            .setDescription("Which tickets to list (default: open)")
+            .addChoices(
+              { name: "open", value: "open" },
+              { name: "closed", value: "closed" },
+              { name: "all", value: "all" },
+            ),
+        )
         .addUserOption((opt) =>
           opt
             .setName("user")
-            .setDescription("Filter by member")
+            .setDescription("Filter by member (requester or added member)")
+            .setRequired(false),
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("staff")
+            .setDescription("Only tickets claimed by this staff member")
+            .setRequired(false),
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("unclaimed")
+            .setDescription("Only tickets nobody has claimed")
+            .setRequired(false),
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("sensitive")
+            .setDescription(
+              "true = only 🔒 sensitive, false = only non-sensitive (default: both)",
+            )
+            .setRequired(false),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("since")
+            .setDescription("Only tickets created on/after this date (YYYY-MM-DD, UTC)")
+            .setRequired(false),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("until")
+            .setDescription("Only tickets created on/before this date (YYYY-MM-DD, UTC)")
             .setRequired(false),
         ),
     )

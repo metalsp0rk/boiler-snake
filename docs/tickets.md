@@ -104,7 +104,7 @@ Without an API key, archives use a stats + close-reason fallback summary. The sa
 | `/ticket unsensitive` | Restore staff-role visibility |
 | `/ticket close [reason] [staff_note]` | Soft-close: remove non-staff; **keep** channel for staff. Optional private staff note on the requester; reply also has **Add staff note** → modal |
 | `/ticket archive` | After close: save transcript (if not sensitive), post summary, DM the requester the transcript link (non-sensitive), **delete** channel |
-| `/ticket list [user]` | Open tickets |
+| `/ticket list [status] [user] [staff] [unclaimed] [sensitive] [since] [until]` | List tickets with filters — status `open` (default) / `closed` / `all`, requester/member, claiming staff, unclaimed-only, sensitivity, UTC date window (`YYYY-MM-DD`) |
 | `/ticket info` | Detail for the current ticket channel (open or soft-closed) |
 | `/ticket summarize` | On-demand AI summary of the current ticket conversation (open or soft-closed, pre-archive). Without `AI_API_KEY` (or if the API is unreachable) it replies with a stats-only fallback and says so |
 

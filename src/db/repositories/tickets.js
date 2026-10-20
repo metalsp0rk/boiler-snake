@@ -553,6 +553,75 @@ function listOpenTickets(communityId, opts = {}) {
 }
 
 /**
+ * Richer ticket listing for /ticket list (issue #180). One parameterized
+ * builder for every filter; `listOpenTickets` stays the lean hot path for
+ * the web dashboards. Statuses: the MVP only stores 'open'/'closed', so
+ * 'closed' means "anything not open" (defensive against future states).
+ *
+ * @param {number} communityId
+ * @param {object} [opts]
+ * @param {"open"|"closed"|"all"} [opts.status] default "open"
+ * @param {string} [opts.userId] creator OR named ticket member (listOpenTickets semantics)
+ * @param {string} [opts.staffOwnerId] tickets claimed by this staff user
+ * @param {boolean} [opts.unclaimed] only tickets nobody has claimed
+ * @param {boolean} [opts.sensitive] true = only sensitive, false = only non-sensitive, other = all
+ * @param {number} [opts.sinceMs] created_at lower bound (epoch ms, inclusive)
+ * @param {number} [opts.untilMs] created_at upper bound (epoch ms, inclusive)
+ * @param {number} [opts.limit] 1..50, default 25
+ * @returns {object[]}
+ */
+function listTickets(communityId, opts = {}) {
+  assertCommunityId(communityId);
+  const limit = Math.min(Math.max(Number(opts.limit) || 25, 1), 50);
+  const status =
+    opts.status === "closed" || opts.status === "all" ? opts.status : "open";
+
+  const where = ["t.community_id=?"];
+  const params = [communityId];
+  if (status === "open") where.push("t.status='open'");
+  else if (status === "closed") where.push("t.status!='open'");
+  // "all" → no status predicate at all
+
+  if (opts.userId) {
+    where.push(
+      `(t.creator_user_id=? OR EXISTS (
+         SELECT 1 FROM ticket_members tm
+         WHERE tm.ticket_id = t.id AND tm.user_id=?
+       ))`,
+    );
+    params.push(opts.userId, opts.userId);
+  }
+  if (opts.staffOwnerId) {
+    where.push("t.staff_owner_id=?");
+    params.push(opts.staffOwnerId);
+  }
+  if (opts.unclaimed === true) where.push("t.staff_owner_id IS NULL");
+  if (typeof opts.sensitive === "boolean") {
+    where.push("t.is_sensitive=?");
+    params.push(opts.sensitive ? 1 : 0);
+  }
+  if (opts.sinceMs != null) {
+    where.push("t.created_at>=?");
+    params.push(opts.sinceMs);
+  }
+  if (opts.untilMs != null) {
+    where.push("t.created_at<=?");
+    params.push(opts.untilMs);
+  }
+
+  return db
+    .prepare(
+      `
+    SELECT t.* FROM tickets t
+    WHERE ${where.join(" AND ")}
+    ORDER BY t.ticket_number DESC
+    LIMIT ?
+  `,
+    )
+    .all(...params, limit);
+}
+
+/**
  * Soft-close: mark closed, keep channel for staff until /ticket archive.
  * Does not clear channel_id and does not set archived.
  * @param {number} ticketId
@@ -1321,6 +1390,7 @@ module.exports = {
   listTicketMembers,
   listTicketStaff,
   listOpenTickets,
+  listTickets,
   listArchivedTickets,
   countArchivedTickets,
   listArchivedTicketsForGuilds,

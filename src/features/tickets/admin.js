@@ -6,12 +6,13 @@ const {
   listTicketMessages,
   listTicketMembers,
   listTicketStaff,
-  listOpenTickets,
+  listTickets,
   updateGuildSettings,
   listStaffRoles,
   listSeniorStaffRoles,
   normalizeStaffLevel,
 } = require("../../db");
+const { joinCapped } = require("../../core/text");
 const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const {
@@ -38,19 +39,111 @@ const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
  * @param {import("../../platform/context").CommandContext} commandCtx
  */
 async function handleList(commandCtx) {
-  const filterUser = commandCtx.options.getUser("user");
-  // Repository key: integer community id, resolved by the context builder.
+  // Richer filters (issue #180): status beyond the open-only split, claimed
+  // staff, sensitivity, and a UTC date window. Defaults reproduce the old
+  // open-only listing exactly.
   const communityId = commandCtx.communityId;
-  const rows = listOpenTickets(communityId, {
+  const filterUser = commandCtx.options.getUser("user");
+  const staffUser = commandCtx.options.getUser("staff");
+  const unclaimed = commandCtx.options.getBoolean("unclaimed");
+  const sensitive = commandCtx.options.getBoolean("sensitive");
+  const statusRaw = String(
+    commandCtx.options.getString("status") || "open",
+  ).toLowerCase();
+  const sinceRaw = commandCtx.options.getString("since");
+  const untilRaw = commandCtx.options.getString("until");
+
+  if (!["open", "closed", "all"].includes(statusRaw)) {
+    await commandCtx.reply({
+      content: `\`status\` must be \`open\`, \`closed\`, or \`all\` (got \`${statusRaw}\`).`,
+      sensitive: true,
+    });
+    return;
+  }
+
+  // Strict calendar dates (YYYY-MM-DD, UTC): `since` is the start of that
+  // day, `until` the end of it (inclusive). Anything else is refused with
+  // the exact offending value — never silently ignored. The round-trip
+  // check rejects rollovers (V8 parses "2026-02-31" as Mar 3, not NaN).
+  const parseDay = (value, endOfDay) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!m) return null;
+    const ms = Date.parse(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`);
+    if (Number.isNaN(ms)) return null;
+    const d = new Date(ms);
+    if (
+      d.getUTCFullYear() !== Number(m[1]) ||
+      d.getUTCMonth() + 1 !== Number(m[2]) ||
+      d.getUTCDate() !== Number(m[3])
+    ) {
+      return null;
+    }
+    return ms;
+  };
+  let sinceMs = null;
+  let untilMs = null;
+  if (sinceRaw) {
+    sinceMs = parseDay(sinceRaw.trim(), false);
+    if (sinceMs === null) {
+      await commandCtx.reply({
+        content: `\`since\` must be a real UTC date as \`YYYY-MM-DD\` (got \`${sinceRaw}\`).`,
+        sensitive: true,
+      });
+      return;
+    }
+  }
+  if (untilRaw) {
+    untilMs = parseDay(untilRaw.trim(), true);
+    if (untilMs === null) {
+      await commandCtx.reply({
+        content: `\`until\` must be a real UTC date as \`YYYY-MM-DD\` (got \`${untilRaw}\`).`,
+        sensitive: true,
+      });
+      return;
+    }
+  }
+  if (sinceMs !== null && untilMs !== null && sinceMs > untilMs) {
+    await commandCtx.reply({
+      content: `\`since\` (${sinceRaw}) must not be after \`until\` (${untilRaw}).`,
+      sensitive: true,
+    });
+    return;
+  }
+
+  const rows = listTickets(communityId, {
+    status: statusRaw,
     userId: filterUser?.id,
+    staffOwnerId: staffUser?.id,
+    unclaimed: unclaimed === true,
+    sensitive: typeof sensitive === "boolean" ? sensitive : null,
+    sinceMs,
+    untilMs,
     limit: 25,
   });
 
+  const label =
+    statusRaw === "all"
+      ? "Tickets"
+      : statusRaw[0].toUpperCase() + statusRaw.slice(1) + " tickets";
+
+  // Filter echo — the reply states WHAT was filtered, so a short list is
+  // never mistaken for the full picture.
+  const filterBits = [];
+  if (filterUser) filterBits.push(`member <@${filterUser.id}>`);
+  if (staffUser) filterBits.push(`staff <@${staffUser.id}>`);
+  if (unclaimed === true) filterBits.push("unclaimed");
+  if (typeof sensitive === "boolean") {
+    filterBits.push(sensitive ? "🔒 sensitive only" : "non-sensitive only");
+  }
+  if (sinceRaw) filterBits.push(`since ${sinceRaw.trim()}`);
+  if (untilRaw) filterBits.push(`until ${untilRaw.trim()}`);
+
   if (!rows.length) {
     await commandCtx.reply({
-      content: filterUser
-        ? `No open tickets for <@${filterUser.id}>.`
-        : "No open tickets.",
+      content:
+        `No ${label.toLowerCase()}` +
+        (filterBits.length ? ` matching ${filterBits.join(", ")}` : "") +
+        ".",
       sensitive: true,
     });
     return;
@@ -60,17 +153,27 @@ async function handleList(commandCtx) {
     const sens = Number(t.is_sensitive) ? " 🔒" : "";
     const ch = t.channel_id ? `<#${t.channel_id}>` : "_no channel_";
     const owner = t.staff_owner_id ? `<@${t.staff_owner_id}>` : "_unclaimed_";
+    // Closed tickets carry their close date (UTC) so a closed/all view can
+    // answer "when" without a second /ticket info round-trip.
+    const closed =
+      t.status !== "open" && t.closed_at
+        ? ` · closed ${new Date(t.closed_at).toISOString().slice(0, 10)}`
+        : "";
     return (
       `**${formatTicketRef(t.ticket_number)}**${sens} · ${ch} · ` +
-      `requester <@${t.creator_user_id}> · owner ${owner}`
+      `requester <@${t.creator_user_id}> · owner ${owner}${closed}`
     );
   });
 
+  // Honest cap (#446 idiom): header is reserved out of the budget and the
+  // rows go through joinCapped — a real "(+N more)" instead of a silent
+  // mid-line slice. The repo caps rows at 50.
+  const header =
+    `**${label}** (${rows.length})` +
+    (filterBits.length ? `\n_Filters: ${filterBits.join(", ")}_` : "") +
+    "\n\n";
   await commandCtx.reply({
-    content: `**Open tickets** (${rows.length})\n\n${lines.join("\n")}`.slice(
-      0,
-      1900,
-    ),
+    content: header + joinCapped(lines, 1900 - header.length, "\n"),
     sensitive: true,
   });
 }
