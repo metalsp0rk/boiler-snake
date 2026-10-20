@@ -916,7 +916,7 @@ async function handleSettings(commandCtx, featureCtx) {
       `Active notes: **${active}**` +
       (deleted > 0 ? ` · soft-deleted: **${deleted}**` : "") +
       `\nMax content length: **${MAX_NOTE_CONTENT}** characters\n` +
-      `\n**Access:** staff gate — Manage Server, or a staff role chosen by a Manage Server holder (\`/staff\` is only shown to Manage Server holders).\n` +
+      `\n**Access:** staff gate — Manage Server, or a staff role chosen by a Manage Server holder (\`/staff\` is only shown to Manage Server holders; the staff-visible read view is \`/staffsettings\`).\n` +
       `\n**Commands:** \`/note add\` · \`list\` · \`edit\` · \`delete\` · \`info\`\n` +
       `Omit \`content\` on add/edit to open a **modal** for longer text.\n` +
       `After \`/ticket close\`, use **Add staff note** or the \`staff_note\` option.\n` +

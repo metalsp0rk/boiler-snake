@@ -1,8 +1,11 @@
 /**
  * Guild Staff Roles — admin gate configuration with junior | senior levels.
  *
- * Slash: /staff role add|remove|setlevel|list, /staff settings
- * Access: ManageGuild for mutations; staff gate (isStaff) for list/settings.
+ * Slash: /staff role add|remove|setlevel|list, /staff settings,
+ *        /staff syncpermissions; #599: /staffsettings roles|overview
+ * Access: ManageGuild for mutations; staff gate (isStaff) for the read views
+ *   on BOTH commands — /staffsettings is the staff-tier picker twin of
+ *   /staff role list + /staff settings, sharing one renderer per view.
  *
  * Levels:
  *   - junior: requireStaff + honeypot exempt; no automatic ticket channel view
@@ -122,6 +125,30 @@ const commands = [
             .setName("force_reauth")
             .setDescription("Always open a new authorize link")
             .setRequired(false),
+        ),
+    ),
+  // #599: staff-tier read-only twin of `/staff role list` + `/staff settings`.
+  // ManageGuild defaultMemberPermissions is the staff-tier POSTURE (same as
+  // every TIERS.staff command): staff_roles get allow overwrites on OAuth
+  // sync, so junior/senior staff without Manage Server can reach these views
+  // in the picker. Handlers keep the staff gate (requireStaff) as the
+  // security truth — nothing here mutates anything.
+  new SlashCommandBuilder()
+    .setName("staffsettings")
+    .setDescription(
+      "View staff roles and what they control (read-only).",
+    )
+    .setDefaultMemberPermissions(adminPerms)
+    .addSubcommand((sc) =>
+      sc
+        .setName("roles")
+        .setDescription("List trusted staff roles by level."),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("overview")
+        .setDescription(
+          "Show staff role configuration and what it controls.",
         ),
     ),
 ];
@@ -355,23 +382,20 @@ async function handleRoleSetLevel(commandCtx, featureCtx) {
 }
 
 /**
- * @param {import("../../platform/context").CommandContext} commandCtx
- * @param {object} featureCtx
+ * `/staff role list` and `/staffsettings roles` render from ONE builder
+ * (#599): the reply is byte-identical whichever command asked for it, and
+ * the parity is pinned by test/staff-settings-split.test.js. The caller
+ * owns the gate + reply; this is pure communityId → content.
+ * @param {number} communityId
+ * @returns {string}
  */
-async function handleRoleList(commandCtx, featureCtx) {
-  void featureCtx;
-  if (!(await requireStaffFromContext(commandCtx))) return;
-
-  const communityId = commandCtx.communityId;
+function roleListContent(communityId) {
   const rows = listStaffRoles(communityId);
   if (!rows.length) {
-    await commandCtx.reply({
-      content:
-        "No staff roles configured. Only Manage Server permission passes the admin gate.\n" +
-        "Use `/staff role add` to trust additional roles (`junior` or `senior`).",
-      sensitive: true,
-    });
-    return;
+    return (
+      "No staff roles configured. Only Manage Server permission passes the admin gate.\n" +
+      "Use `/staff role add` to trust additional roles (`junior` or `senior`)."
+    );
   }
 
   const seniors = rows.filter((r) => normalizeStaffLevel(r.level) === "senior");
@@ -390,12 +414,24 @@ async function handleRoleList(commandCtx, featureCtx) {
           .join("\n")
       : "_none_";
 
+  return (
+    `**Staff roles**\n` +
+    `**Senior** (staff gate + ticket visibility):\n${fmt(seniors)}\n\n` +
+    `**Junior** (staff gate only; no ticket channel overwrite):\n${fmt(juniors)}\n\n` +
+    `Both levels: staff commands + honeypot exempt.`
+  );
+}
+
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
+ */
+async function handleRoleList(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
+
   await commandCtx.reply({
-    content:
-      `**Staff roles**\n` +
-      `**Senior** (staff gate + ticket visibility):\n${fmt(seniors)}\n\n` +
-      `**Junior** (staff gate only; no ticket channel overwrite):\n${fmt(juniors)}\n\n` +
-      `Both levels: staff commands + honeypot exempt.`,
+    content: roleListContent(commandCtx.communityId),
     sensitive: true,
   });
 }
@@ -652,14 +688,12 @@ async function runSyncPermissionsViaCore(commandCtx, communityId, cfg) {
 }
 
 /**
- * @param {import("../../platform/context").CommandContext} commandCtx
- * @param {object} featureCtx
+ * `/staff settings` and `/staffsettings overview` render from ONE builder
+ * (#599) — byte-identical output contract, see roleListContent.
+ * @param {number} communityId
+ * @returns {string}
  */
-async function handleSettings(commandCtx, featureCtx) {
-  void featureCtx;
-  if (!(await requireStaffFromContext(commandCtx))) return;
-
-  const communityId = commandCtx.communityId;
+function settingsContent(communityId) {
   const rows = listStaffRoles(communityId);
   const seniors = rows.filter((r) => normalizeStaffLevel(r.level) === "senior");
   const juniors = rows.filter((r) => normalizeStaffLevel(r.level) === "junior");
@@ -672,17 +706,52 @@ async function handleSettings(commandCtx, featureCtx) {
       (oauth.last_sync_error ? ` · ⚠ last error recorded` : "")
     : `Command visibility sync: **not authorized** — admin: \`/staff syncpermissions\``;
 
+  return (
+    `**Staff roles settings**\n` +
+    `Total roles: **${rows.length}** · senior **${seniors.length}** · junior **${juniors.length}**\n` +
+    `Admin gate: Manage Server **or** any staff role (junior or senior)\n` +
+    `Honeypot exemption: any staff role (not bare Manage Server)\n` +
+    `Ticket channel visibility: **senior** roles only (+ named staff on a ticket)\n` +
+    `${syncLine}\n` +
+    `Only Manage Server can add/remove/setlevel staff roles.\n` +
+    `\n**Used by:** admin gate, honeypot exemption, tickets (senior overwrites), notes, warnings\n` +
+    `\n**Commands:** \`/staff role add\` · \`setlevel\` · \`remove\` · \`list\` · \`syncpermissions\``
+  );
+}
+
+/**
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
+ */
+async function handleSettings(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireStaffFromContext(commandCtx))) return;
+
   await commandCtx.reply({
-    content:
-      `**Staff roles settings**\n` +
-      `Total roles: **${rows.length}** · senior **${seniors.length}** · junior **${juniors.length}**\n` +
-      `Admin gate: Manage Server **or** any staff role (junior or senior)\n` +
-      `Honeypot exemption: any staff role (not bare Manage Server)\n` +
-      `Ticket channel visibility: **senior** roles only (+ named staff on a ticket)\n` +
-      `${syncLine}\n` +
-      `Only Manage Server can add/remove/setlevel staff roles.\n` +
-      `\n**Used by:** admin gate, honeypot exemption, tickets (senior overwrites), notes, warnings\n` +
-      `\n**Commands:** \`/staff role add\` · \`setlevel\` · \`remove\` · \`list\` · \`syncpermissions\``,
+    content: settingsContent(commandCtx.communityId),
+    sensitive: true,
+  });
+}
+
+/**
+ * #599 `/staffsettings` router — the staff-VISIBLE read-only twin of
+ * `/staff role list` + `/staff settings`. Registers at TIERS.staff, so the
+ * picker machinery (ManageGuild default + staff_roles allow overwrites after
+ * `/staff syncpermissions`) reaches junior AND senior staff without an admin
+ * telling them their own status. Both arms delegate to the SAME sub-handlers
+ * the `/staff` router uses — one renderer per view, gates stay requireStaff
+ * (never ManageGuild); this command mutates nothing.
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} featureCtx
+ */
+async function handleStaffSettings(commandCtx, featureCtx) {
+  const sub = commandCtx.subcommand;
+
+  if (sub === "roles") return handleRoleList(commandCtx, featureCtx);
+  if (sub === "overview") return handleSettings(commandCtx, featureCtx);
+
+  await commandCtx.reply({
+    content: `Unknown subcommand: \`/staffsettings ${sub || ""}\``,
     sensitive: true,
   });
 }
@@ -692,11 +761,13 @@ module.exports = {
   commands,
   handlers: {
     staff: handleStaff,
+    staffsettings: handleStaffSettings,
   },
   // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
-  // handler (and its sub-handlers) receive a CommandContext instead of a raw
-  // interaction. The OAuth sync internals stay Discord-only (PR 4 scope).
+  // handlers (and their sub-handlers) receive a CommandContext instead of a
+  // raw interaction. The OAuth sync internals stay Discord-only (PR 4 scope).
   handlerApi: {
     staff: "context",
+    staffsettings: "context",
   },
 };

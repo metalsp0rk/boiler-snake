@@ -725,7 +725,7 @@ Configure trusted staff roles for the admin/staff gate, honeypot exemption, and 
 
 **Permission**:
 - `role add` / `remove` / `setlevel` / `syncpermissions` — **ManageGuild** only
-- `role list` / `settings` — **Staff gate**
+- `role list` / `settings` — **Staff gate** in the handler, but the command itself is admin-tier in the picker; staff without Manage Server use **`/staffsettings`** (#599, see below)
 
 **`/staff syncpermissions`** — optional OAuth flow so staff roles can **see** staff-tier slash commands in Discord’s picker (handlers already enforce the staff gate). Requires operator setup (`CLIENT_SECRET`, public HTTP, OAuth redirect). See [Staff Roles](../staff-roles.md#command-visibility-sync-optional).
 
@@ -757,6 +757,22 @@ Configure trusted staff roles for the admin/staff gate, honeypot exemption, and 
 ```
 
 Shows counts, what each level controls, and that only Manage Server can mutate staff roles.
+
+### `/staffsettings` - Staff Roles, staff-visible read view
+
+Read-only twin of `/staff role list` and `/staff settings` (#599). `/staff` registers at the Manage Server picker tier (its mutations are admin-only), so junior/senior staff couldn't check their own status from Discord without an admin. `/staffsettings` registers at the **staff picker tier**: Manage Server default, plus allow overwrites for configured staff roles after `/staff syncpermissions` — the same views, reachable by staff. It mutates nothing; the `/staff` read subcommands keep working unchanged. See [Staff Roles](../staff-roles.md).
+
+**Permission**: **Staff gate** — Manage Server or any `staff_roles` role (junior or senior). Replies are ephemeral; the handler enforces the gate regardless of picker visibility.
+
+```bash
+/staffsettings roles     # same view as /staff role list
+/staffsettings overview  # same view as /staff settings
+```
+
+| Subcommand | Options | Description |
+|------------|---------|-------------|
+| `roles` | — | List senior and junior staff roles (includes `added by` provenance) |
+| `overview` | — | Counts, what each level controls, and command-visibility sync status |
 
 ### `/event` - Community Events (bot-owned events + RSVP)
 
@@ -1292,6 +1308,7 @@ role — the service re-checks on every call).
 | `/ticket for\|claim\|transfer\|adduser\|removeuser\|addstaff\|removestaff\|sensitive\|unsensitive\|close\|archive\|list\|info\|summarize` | Staff gate | Yes |
 | `/staff role list` | Staff gate | Yes |
 | `/staff settings` | Staff gate | Yes |
+| `/staffsettings roles\|overview` | Staff gate | Yes |
 | `/setwarn dm\|log\|expiry` | Staff gate | Yes |
 | `/activityconfig` | Staff gate | Yes |
 | `/grantxp` | ManageGuild | Yes |
@@ -1395,6 +1412,7 @@ STAFF GATE (Manage Server OR any staff role):
 /ticket panel create|list|edit|delete | setcategory|setarchive|setratelimit
 /bridge create|connect|disconnect|retry|status|list → Cross-platform channel bridge (staff)
 /staff role list | /staff settings
+/staffsettings roles|overview       → Staff-visible read view of the above (#599)
 /settings | /setxp | /setdecay | /setlog
 /leveltorole set|remove|list
 /youtube add|remove|list
