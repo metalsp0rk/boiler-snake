@@ -122,7 +122,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 57);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 58);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -272,6 +272,25 @@ describe("db layer", () => {
       expectSearch("0", 0);
       expectSearch(true, 1);
       expectSearch(false, 0);
+    });
+
+    // Issue #174 (role-mention trigger): storage contract of gork_role_id.
+    it("gork_role_id: NULL default, trimmed store, blank/null clear, over-length keeps prior", () => {
+      const g = communityKey("g-gork-role");
+      const fresh = api.getGuildSettings(g);
+      assert.ok("gork_role_id" in fresh, "column exists after migrations");
+      assert.equal(fresh.gork_role_id, null, "NULL = role path not configured");
+
+      const set = api.updateGuildSettings(g, { gork_role_id: " 412345678901234567 " });
+      assert.equal(set.gork_role_id, "412345678901234567", "trimmed on store");
+
+      assert.equal(api.updateGuildSettings(g, { gork_role_id: "  " }).gork_role_id, null, "blank clears");
+      const prior = api.updateGuildSettings(g, { gork_role_id: "412345678901234567" });
+      assert.equal(prior.gork_role_id, "412345678901234567");
+      const rejected = api.updateGuildSettings(g, { gork_role_id: "r".repeat(65) });
+      assert.equal(rejected.gork_role_id, "412345678901234567", "over-length rejected — prior kept");
+      const cleared = api.updateGuildSettings(g, { gork_role_id: null });
+      assert.equal(cleared.gork_role_id, null, "explicit null clears");
     });
 
     it("all five gork keys round-trip in one patch", () => {

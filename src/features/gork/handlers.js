@@ -145,6 +145,121 @@ async function setKeyword(commandCtx) {
 }
 
 /**
+ * /gork role [role] [clear]: configure the role whose @mention also invokes
+ * gork (issue #174). The role path is ADDITIVE — the keyword stays the
+ * master trigger-surface switch (blank keyword = gork fully disabled, role
+ * trigger included; locked in runGorkHook step 3) and `gork_enabled` gates
+ * both surfaces. Mentions trigger anywhere in the message; a bare mention
+ * behaves like the keyword-alone rule.
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function setRole(commandCtx) {
+  const guildId = commandCtx.externalGuildId;
+  const communityId = commandCtx.communityId;
+  const clear = commandCtx.options.getBoolean("clear") === true;
+  const role = commandCtx.options.getRole("role", false);
+  const beforeId = getGuildSettings(communityId).gork_role_id ?? null;
+
+  if (clear) {
+    if (role) {
+      return commandCtx.reply({
+        content:
+          "Provide either a `role` to set or `clear:true` to remove the role trigger — not both.",
+        sensitive: true,
+      });
+    }
+    if (beforeId === null) {
+      return commandCtx.reply({
+        content:
+          "No gork role trigger is configured — nothing to clear. (Mentions of any role stay inert; the keyword trigger is unaffected.)",
+        sensitive: true,
+      });
+    }
+    try {
+      updateGuildSettings(communityId, { gork_role_id: null });
+    } catch (err) {
+      // Surface the specific cause (AGENTS.md): never a bare generic failure.
+      return commandCtx.reply({
+        content: `Could not clear the gork role trigger: ${err?.message || err}`,
+        sensitive: true,
+      });
+    }
+    await logConfigChange(commandCtx.outbound, guildId, {
+      title: "Gork role trigger cleared",
+      command: "/gork role",
+      actor: commandCtx.user,
+      changes: [`Role trigger: <@&${beforeId}> → *not set*`],
+    }).catch(() => {});
+    recordSlashAudit({
+      communityId,
+      actorUserId: commandCtx.userId,
+      action: "gork.role_clear",
+      targetType: "guild",
+      targetId: guildId,
+      details: { previous_role_id: beforeId },
+    });
+    return commandCtx.reply({
+      content:
+        "Gork role trigger cleared — mentioning roles no longer invokes gork. The keyword trigger stays as-is.",
+      sensitive: true,
+    });
+  }
+
+  if (!role) {
+    return commandCtx.reply({
+      content:
+        "Provide a `role` whose mention should invoke gork, or set `clear:true` to remove the role trigger.",
+      sensitive: true,
+    });
+  }
+
+  // @everyone can never arrive as a `<@&id>` token in message content (its
+  // mention serializes as "@everyone"), so configuring it would silently do
+  // nothing — refuse with the reason instead.
+  if (guildId && String(role.id) === String(guildId)) {
+    return commandCtx.reply({
+      content:
+        "`@everyone` cannot be used as the gork role — a mention of it never reaches the role-mention trigger. Pick a real role instead.",
+      sensitive: true,
+    });
+  }
+
+  try {
+    updateGuildSettings(communityId, { gork_role_id: role.id });
+  } catch (err) {
+    return commandCtx.reply({
+      content: `Could not set the gork role trigger: ${err?.message || err}`,
+      sensitive: true,
+    });
+  }
+  recordSlashAudit({
+    communityId,
+    actorUserId: commandCtx.userId,
+    action: "gork.role_set",
+    targetType: "role",
+    targetId: String(role.id),
+    details: { previous_role_id: beforeId },
+  });
+  await logConfigChange(commandCtx.outbound, guildId, {
+    title: "Gork role trigger updated",
+    command: "/gork role",
+    actor: commandCtx.user,
+    changes: [
+      beforeId
+        ? `Role trigger: <@&${beforeId}> → <@&${role.id}>`
+        : `Role trigger: *not set* → <@&${role.id}>`,
+    ],
+  }).catch(() => {});
+  return commandCtx.reply({
+    content:
+      `Gork role trigger set to <@&${role.id}>. Mentioning it **anywhere** in a message asks gork ` +
+      `(mention alone = answer the message you're replying to). The keyword trigger stays active; ` +
+      `\`/gork keyword clear\` still disables gork entirely.`,
+    sensitive: true,
+  });
+}
+
+/**
  * /gork context: set the context window size (1-50).
  * @param {import("../../platform/context").CommandContext} commandCtx
  */
@@ -1186,6 +1301,14 @@ async function showStatus(commandCtx) {
     fields: [
       { name: "Enabled", value: enabled ? "on" : "**off** (server disabled)", inline: true },
       { name: "Keyword", value: keyword ? `\`${keyword}\`` : "disabled", inline: true },
+      {
+        // Issue #174: role-mention trigger surface (additive to the keyword).
+        name: "Role trigger",
+        value: settings.gork_role_id
+          ? `<@&${settings.gork_role_id}>`
+          : "not set",
+        inline: true,
+      },
       { name: "Context window", value: `${settings.gork_context_window} messages`, inline: true },
       {
         name: "Cooldown",
@@ -1833,6 +1956,7 @@ async function setSummarizeBudget(commandCtx) {
 
 module.exports = {
   setKeyword,
+  setRole,
   setContext,
   setCooldown,
   setRules,

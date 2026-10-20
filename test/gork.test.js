@@ -21,6 +21,7 @@ after(cleanupTempDb);
 
 const {
   matchKeyword,
+  matchRoleMention,
   splitLongAnswer,
   buildUserContent,
   gorkQueue,
@@ -151,6 +152,134 @@ describe("matchKeyword (trigger)", () => {
     assert.deepEqual(matchKeyword(null, "@gork"), { triggered: false, question: "" });
     assert.deepEqual(matchKeyword("@gork", null), { triggered: false, question: "" });
     assert.deepEqual(matchKeyword("@gork", ""), { triggered: false, question: "" });
+  });
+});
+
+// ---------- role-mention trigger matcher (issue #174) ----------
+
+const R1 = "412345678901234567";
+const R2 = "498765432109876543";
+const tok = (id) => `<@&${id}>`;
+
+describe("matchRoleMention (role-mention trigger, issue #174)", () => {
+  it("triggers when the configured role is mentioned first / middle / last", () => {
+    assert.deepEqual(
+      matchRoleMention(`${tok(R1)} why is the sky blue?`, [R1], R1),
+      { triggered: true, question: "why is the sky blue?" },
+    );
+    assert.deepEqual(
+      matchRoleMention(`hey ${tok(R1)} what about the moon?`, [R1], R1),
+      { triggered: true, question: "hey what about the moon?" },
+    );
+    assert.deepEqual(
+      matchRoleMention(`summon ${tok(R1)}`, [R1], R1),
+      { triggered: true, question: "summon" },
+    );
+  });
+
+  it("multiple mention tokens for the configured role are ALL stripped", () => {
+    const r = matchRoleMention(`${tok(R1)} explain ${tok(R1)} please`, [R1], R1);
+    assert.equal(r.triggered, true);
+    assert.equal(r.question, "explain please");
+  });
+
+  it("other roles keep their mention tokens; only the configured role is stripped", () => {
+    const r = matchRoleMention(`${tok(R2)} and ${tok(R1)} help`, [R2, R1], R1);
+    assert.equal(r.triggered, true);
+    assert.equal(r.question, `${tok(R2)} and help`);
+  });
+
+  it("strips one optional leading separator after the mention removal", () => {
+    assert.equal(
+      matchRoleMention(`${tok(R1)}: hello`, [R1], R1).question,
+      "hello",
+    );
+    assert.equal(
+      matchRoleMention(`${tok(R1)} - dash`, [R1], R1).question,
+      "dash",
+    );
+    // only ONE leading separator
+    assert.equal(
+      matchRoleMention(`${tok(R1)}:: x`, [R1], R1).question,
+      ": x",
+    );
+  });
+
+  it("mention alone triggers with an empty question (keyword-alone rule applies)", () => {
+    assert.deepEqual(matchRoleMention(tok(R1), [R1], R1), {
+      triggered: true,
+      question: "",
+    });
+  });
+
+  it("the configured role absent from the mention set never triggers", () => {
+    // A DELETED role cannot resolve into message.mentions.roles, so this is
+    // also the role-deleted case.
+    assert.deepEqual(matchRoleMention(`${tok(R1)} hello`, [R2], R1), {
+      triggered: false,
+      question: "",
+    });
+    assert.deepEqual(matchRoleMention(`${tok(R1)} hello`, [], R1), {
+      triggered: false,
+      question: "",
+    });
+    // text that merely LOOKS like a token does not trigger without a mention
+    assert.deepEqual(matchRoleMention(`<@&${R1}> hello`, [], R1), {
+      triggered: false,
+      question: "",
+    });
+  });
+
+  it("no configured role (null/blank/non-string) disables the path", () => {
+    for (const cfg of [null, undefined, "", "   ", 42, {}]) {
+      assert.deepEqual(
+        matchRoleMention(`${tok(R1)} hello`, [R1], cfg),
+        { triggered: false, question: "" },
+        `configuredRoleId ${JSON.stringify(String(cfg))}`,
+      );
+    }
+  });
+
+  it("accepts any iterable of ids (array, Map.keys()) and coerces non-strings", () => {
+    assert.equal(
+      matchRoleMention(`${tok(R1)} hi`, new Map([[R1, {}]]).keys(), R1).triggered,
+      true,
+    );
+    // BigInt role ids (gateway-mask shapes) coerce via String()
+    const big = 412345678901234567n;
+    assert.equal(
+      matchRoleMention(`${tok(R1)} hi`, [big], R1).triggered,
+      true,
+    );
+  });
+
+  it("garbage mentions / content degrade to no-trigger, never a throw", () => {
+    assert.deepEqual(matchRoleMention("hi", null, R1), {
+      triggered: false,
+      question: "",
+    });
+    assert.deepEqual(matchRoleMention("hi", undefined, R1), {
+      triggered: false,
+      question: "",
+    });
+    assert.deepEqual(matchRoleMention(null, [R1], R1), {
+      triggered: false,
+      question: "",
+    });
+  });
+
+  it("id-like regex characters in the configured id stay literal data", () => {
+    // Duck-typed/Fluxer-shaped role ids could carry regex metacharacters —
+    // the strip is a literal split, so a token still matches exactly once.
+    const weird = "a.*b";
+    const r = matchRoleMention(`${tok(weird)} hi`, [weird], weird);
+    assert.equal(r.triggered, true);
+    assert.equal(r.question, "hi");
+    // and a DIFFERENT id that would match the regex does NOT trigger
+    assert.deepEqual(matchRoleMention(`${tok("aXb")} hi`, ["aXb"], weird), {
+      triggered: false,
+      question: "",
+    });
   });
 });
 

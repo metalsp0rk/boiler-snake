@@ -50,6 +50,29 @@ const commands = [
     )
     .addSubcommand((sc) =>
       sc
+        .setName("role")
+        .setDescription(
+          "Set the role whose mention also invokes gork. Use `clear` to remove it.",
+        )
+        // Picker + clear toggle — same shape as `logchannel` (a role option
+        // cannot carry the literal string `clear`).
+        .addRoleOption((opt) =>
+          opt
+            .setName("role")
+            .setDescription(
+              "Role whose @mention triggers gork anywhere in the message",
+            )
+            .setRequired(false),
+        )
+        .addBooleanOption((opt) =>
+          opt
+            .setName("clear")
+            .setDescription("Remove the role trigger (keyword stays as-is)")
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
         .setName("context")
         .setDescription("Set the context window size (1-50 prior messages).")
         .addIntegerOption((opt) =>

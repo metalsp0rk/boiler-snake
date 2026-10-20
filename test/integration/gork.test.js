@@ -221,6 +221,14 @@ function makeGorkMessage(env, opts = {}) {
         member && member.permissions ? member.permissions.has(flag) : false,
     },
     reference: opts.reference || null,
+    // Real discord.js messages always carry `mentions`; role-mention trigger
+    // tests (issue #174) pass opts.mentionedRoleIds to seed the role set
+    // (the pipeline's normalizeDiscordMessage turns this into id strings).
+    mentions: {
+      roles: new Map(
+        (opts.mentionedRoleIds || []).map((id) => [id, { id }]),
+      ),
+    },
     fetchReference:
       opts.fetchReference ||
       (async () => {
@@ -3525,6 +3533,249 @@ describe("integration: gork vision (issue #227)", () => {
       restoreEnv(saved);
       fetchMock.restore();
       trigger.setVisionSeamsForTests(null);
+    }
+  });
+});
+
+// ---------- role-mention invocation (issue #174) ----------
+
+/**
+ * The role trigger is Discord-surface: `message.mentions.roles` membership
+ * (seeded via makeGorkMessage opts.mentionedRoleIds, turned into id strings
+ * by the pipeline's normalizeDiscordMessage) + `gork_role_id` configured.
+ * The keyword stays the master trigger-surface switch, so every positive
+ * case keeps `gork_keyword` set.
+ */
+describe("integration: gork role-mention trigger (issue #174)", () => {
+  const ROLE_ID = "912345678901234567";
+  const OTHER_ROLE_ID = "998877665544332211";
+  const roleTok = `<@&${ROLE_ID}>`;
+
+  function roleEnvSetup(env, extra = {}) {
+    env.db.updateGuildSettings(env.communityId, {
+      gork_keyword: "gork",
+      gork_role_id: ROLE_ID,
+      ...extra,
+    });
+  }
+
+  it("role mention with a question: answers with the mention token stripped", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-role-q") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([chatCompletionResponse("Rayleigh scattering.")]);
+    try {
+      enableAiKey();
+      roleEnvSetup(env);
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-role-1",
+        content: `${roleTok} why is the sky blue?`,
+        mentionedRoleIds: [ROLE_ID],
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.equal(replies.length, 1, "role mention must be answered");
+      assert.equal(replies[0].content, "Rayleigh scattering.");
+      assert.equal(fetchMock.calls.length, 1);
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.startsWith("[ASKER @member] why is the sky blue?"),
+        `question must carry the stripped text, got: ${userMsg.content.slice(0, 160)}`,
+      );
+      assert.ok(
+        !userMsg.content.includes(roleTok),
+        "the stripped mention token must not ride along in the prompt",
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("role mention alone replying to a message: decision-3 context answer", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-role-alone") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([chatCompletionResponse("Yes, the office was locked.")]);
+    try {
+      enableAiKey();
+      roleEnvSetup(env);
+      const ch = env.channels.general;
+      ch.addMessage({
+        id: "rA",
+        content: "Did you lock the office?",
+        author: { id: IDS.member2, username: "member2", tag: "member2#0000" },
+        createdTimestamp: Date.now() - 10000,
+      });
+      const target = {
+        id: "rA",
+        channelId: ch.id,
+        content: "Did you lock the office?",
+        author: { id: IDS.member2, username: "member2", tag: "member2#0000" },
+        reference: null,
+        fetchReference: async () => {
+          throw new Error("rA has no reference");
+        },
+      };
+      attachTyping(ch);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-role-2",
+        content: roleTok, // mention alone
+        mentionedRoleIds: [ROLE_ID],
+        reference: { messageId: "rA" },
+        fetchReference: async () => target,
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.equal(replies.length, 1, "mention-alone with a reply reference is answered");
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.startsWith(
+          "@member sent only the gork keyword (the trigger message itself is not part of the context below).",
+        ),
+        `mention-alone must ride the keyword-alone instruction, got: ${userMsg.content.slice(0, 160)}`,
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("bare role mention with no reference/vision stays fully silent", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-role-bare") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([]);
+    try {
+      enableAiKey();
+      roleEnvSetup(env);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-role-3",
+        content: roleTok,
+        mentionedRoleIds: [ROLE_ID],
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.equal(replies.length, 0, "no LLM call without context (decision 3)");
+      assert.equal(fetchMock.calls.length, 0);
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("silences: other-role mention, unconfigured role, keyword cleared, gork disabled", async () => {
+    const cases = [
+      {
+        name: "other-role",
+        settings: {},
+        content: `<@&${OTHER_ROLE_ID}> hello`,
+        mentionedRoleIds: [OTHER_ROLE_ID],
+      },
+      {
+        name: "role-unset",
+        settings: { gork_role_id: null },
+        content: `${roleTok} hello`,
+        mentionedRoleIds: [ROLE_ID],
+      },
+      {
+        // LOCKED (issue #174): the keyword is the master trigger-surface
+        // switch — clearing it keeps gork fully silent, role path included.
+        name: "keyword-cleared",
+        settings: { gork_keyword: null },
+        content: `${roleTok} hello`,
+        mentionedRoleIds: [ROLE_ID],
+      },
+      {
+        name: "gork-disabled",
+        settings: { gork_enabled: 0 },
+        content: `${roleTok} hello`,
+        mentionedRoleIds: [ROLE_ID],
+      },
+    ];
+    for (const c of cases) {
+      const env = await freshEnv({ guildId: uniqueId(`guild-role-silent-${c.name}`) });
+      const saved = saveEnv();
+      const fetchMock = mockFetch([]);
+      try {
+        enableAiKey();
+        roleEnvSetup(env, c.settings);
+        const { message, replies } = makeGorkMessage(env, {
+          id: `t-role-silent-${c.name}`,
+          content: c.content,
+          mentionedRoleIds: c.mentionedRoleIds,
+        });
+        await env.onMessageCreate(message);
+        await gorkIdle();
+        assert.equal(replies.length, 0, `${c.name}: must stay silent`);
+        assert.equal(fetchMock.calls.length, 0, `${c.name}: no LLM call`);
+      } finally {
+        restoreEnv(saved);
+        fetchMock.restore();
+      }
+    }
+  });
+
+  it("keyword + role mention in one message: the keyword path wins", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-role-both") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([chatCompletionResponse("Both, and it worked.")]);
+    try {
+      enableAiKey();
+      roleEnvSetup(env);
+      attachTyping(env.channels.general);
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-role-4",
+        content: `gork: hello ${roleTok}`,
+        mentionedRoleIds: [ROLE_ID],
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.equal(replies.length, 1);
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.startsWith(`[ASKER @member] hello ${roleTok}`),
+        `keyword question wins (token kept), got: ${userMsg.content.slice(0, 120)}`,
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("cooldown reacts with the clock on a second role-mention trigger (shared gate)", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-role-cd") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("First answer."),
+      chatCompletionResponse("Second answer."),
+    ]);
+    try {
+      enableAiKey();
+      roleEnvSetup(env, { gork_cooldown_sec: 600 });
+      attachTyping(env.channels.general);
+      const first = makeGorkMessage(env, {
+        id: "t-role-5a",
+        content: `${roleTok} first question`,
+        mentionedRoleIds: [ROLE_ID],
+      });
+      await env.onMessageCreate(first.message);
+      await gorkIdle();
+      assert.equal(first.replies.length, 1, "first trigger answers");
+      const second = makeGorkMessage(env, {
+        id: "t-role-5b",
+        content: `${roleTok} second question`,
+        mentionedRoleIds: [ROLE_ID],
+      });
+      await env.onMessageCreate(second.message);
+      await gorkIdle();
+      assert.equal(second.replies.length, 0, "cooldown suppresses the second answer");
+      assert.deepEqual(second.reacts, ["🕐"], "cooldown clock reaction lands on the trigger");
+      assert.equal(fetchMock.calls.length, 1, "no LLM call during cooldown");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
     }
   });
 });

@@ -37,10 +37,11 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
 
 | Rule | Detail |
 |------|--------|
-| Trigger | Message content (trimmed) **starts with** the guild's keyword, compared case-insensitively |
+| Trigger | Message content (trimmed) **starts with** the guild's keyword, compared case-insensitively — or the message **mentions the configured gork role** anywhere (see below) |
 | Default keyword | `@gork` (literal text, styled to look like a mention) |
 | Configurable | Per-guild; staff can set any 1–50 char keyword or clear it (clear = disabled) |
 | Question text | Content after the keyword, trimmed; one optional leading separator (`:`, `-`, `?`, `!`) + whitespace stripped |
+| Role mention trigger | `/gork role <@role>` (staff) additionally makes a **real role mention** of that role anywhere in the message a trigger. The question is the content with that role's mention tokens stripped (same separator rule). A **bare** mention follows the keyword-alone rule below. Off by default; the keyword stays the **master trigger switch** — `/gork keyword clear` silences gork entirely, role path included |
 | Works in | Guild text channels and threads (thread's own history). **Not** DMs |
 | Skipped | Bot messages, webhook messages, **open ticket channels** (silently) |
 
@@ -50,6 +51,8 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
 | `@gork` (alone), replying to a message | No explicit question — answer from the reply-chain context |
 | `@gork` (alone) + image attachment | No explicit question — answer from the [image](#vision-images) (plus context) |
 | `@gork` (alone), no reply reference, no image | No LLM call; **no reply at all** (fully silent) |
+| `@GorkRole what does the schedule look like?` (configured role mentioned anywhere) | Same as the keyword path: answer the question with context |
+| `@GorkRole` alone, replying to a message | Keyword-alone rule: answer from the reply-chain context |
 
 Gork is **disabled in open ticket channels**: if the channel has a [ticket](tickets.md) that is not yet archived, triggers are silently ignored — ticket conversations stay staff-focused (ticket content is already handled by the ticket AI on close).
 
@@ -158,6 +161,7 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | Command | Description |
 |---------|-------------|
 | `/gork keyword <text>` | Set the trigger keyword (1–50 chars). `/gork keyword clear` disables gork for the guild |
+| `/gork role <@role>` | Set the role whose **mention** also invokes gork anywhere in a message; `clear:true` removes it. `@everyone` is refused (its mention never reaches the trigger). The keyword remains the master switch — with the keyword cleared, gork stays fully silent |
 | `/gork context <1-50>` | Context window size (default 10) |
 | `/gork cooldown <seconds>` | Per-user cooldown in seconds (0–3600; default **180**, 0 = disabled). Staff always bypass |
 | `/gork rules <text>` | Set additional staff prompt rules (≤500 chars). `/gork rules clear` removes them |
@@ -173,9 +177,9 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork logchannel <#channel>` | Send the **Gork Q&A** audit embeds to a dedicated channel so they stop cluttering the [audit log](audit-log.md); `clear:true` puts them back (fallback: the audit log channel) |
 | `/gork summarize <mode>` | Conversation rundown of a message range — see [Conversation rundown](#conversation-rundown) |
 | `/gork summarize-budget <tokens>` | Set the per-guild **input token budget** for `/gork summarize` (8,000–200,000; default 80,000) |
-| `/gork status` | Ephemeral embed: enabled, keyword, window, rules, search state, ste state, memory state, budget default + rule count, summarize input token budget, Q&A log channel, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
+| `/gork status` | Ephemeral embed: enabled, keyword, role trigger, window, rules, search state, ste state, memory state, budget default + rule count, summarize input token budget, Q&A log channel, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
-`/settings` also shows a **Gork** field (enabled + keyword + window + search + ste + memory state + summarize input budget).
+`/settings` also shows a **Gork** field (enabled + keyword + role trigger + window + search + ste + memory state + summarize input budget).
 
 All values are stored per-guild in `guild_settings`:
 
@@ -183,6 +187,7 @@ All values are stored per-guild in `guild_settings`:
 |--------|---------|---------|
 | `gork_enabled` | Master server switch; `0` = every trigger silent | `1` (on) |
 | `gork_keyword` | Trigger keyword; `NULL` = disabled | `@gork` |
+| `gork_role_id` | Role whose mention also invokes gork (issue #174); `NULL` = role path off. The keyword stays the master switch | `NULL` |
 | `gork_context_window` | Prior-message context size | `10` |
 | `gork_extra_rules` | Staff prompt additions (≤500 chars) | *(empty)* |
 | `gork_search_enabled` | SearXNG `web_search` tool toggle | `1` (on) |
