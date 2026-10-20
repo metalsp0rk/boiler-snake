@@ -6,7 +6,7 @@ const {
   assertReplyContains,
   assertEphemeralReply,
 } = require("../helpers/assert");
-const { IDS } = require("../helpers/fixtures");
+const { IDS, uniqueId } = require("../helpers/fixtures");
 const {
   createMember,
   createUser,
@@ -2242,5 +2242,336 @@ describe("integration: tickets", () => {
     } finally {
       delete process.env.AI_API_KEY;
     }
+  });
+});
+
+
+// ---------- richer /ticket list filters (issue #180) ----------
+
+/**
+ * Isolated env: the repo filter matrix, the command surface (status /
+ * staff / unclaimed / sensitive / date window), the honest cap, and the
+ * misuse refusals. Tests run in order and share `fx`; rows are asserted
+ * through their per-ticket channel mention (unique, stable) because the
+ * list line carries no reason text. Seeds use member /ticket create —
+ * staff /ticket for PRE-CLAIMS the ticket to the creator.
+ */
+describe("integration: /ticket list filters (issue #180)", () => {
+  /** @type {Awaited<ReturnType<typeof createIntegrationEnv>>} */
+  let env;
+
+  /** Shared fixture rows (filled by the repo-matrix test). */
+  const fx = {};
+
+  const dayStart = (s) => Date.parse(`${s}T00:00:00.000Z`);
+  const dayEnd = (s) => Date.parse(`${s}T23:59:59.999Z`);
+
+  before(async () => {
+    env = await createIntegrationEnv({ guildId: uniqueId("guild-ticket-list") });
+    env.db.updateGuildSettings(env.communityId, {
+      ticket_rate_limit_minutes: 0,
+      ticket_archive_channel_id: IDS.channelLog,
+    });
+    // Real-close requester DMs resolve through client.users.
+    const userCache = new Map(
+      [
+        env.users.adminUser,
+        env.users.memberUser,
+        env.users.member2User,
+        env.users.botUser,
+      ].map((u) => [u.id, u]),
+    );
+    if (!env.client.users) {
+      env.client.users = {
+        cache: userCache,
+        fetch: async (id) => userCache.get(id) || null,
+      };
+    }
+  });
+
+  after(() => env?.cleanup());
+
+  async function openTicket(reason, user = env.users.memberUser) {
+    const res = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "create",
+      admin: false,
+      user,
+      options: { reason },
+    });
+    const row = env.db
+      .listOpenTickets(env.communityId, { limit: 50 })
+      .find((t) => t.reason === reason);
+    assert.ok(row, `openTicket("${reason}") replied: ${env.lastReplyContent(res)}`);
+    return row;
+  }
+
+  function patchTicket(id, patch) {
+    const keys = Object.keys(patch);
+    env.db.db
+      .prepare(
+        `UPDATE tickets SET ${keys.map((k) => `${k}=?`).join(", ")} WHERE id=?`,
+      )
+      .run(...keys.map((k) => patch[k]), id);
+  }
+
+  async function runList(options = {}) {
+    const res = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "list",
+      admin: true,
+      options,
+    });
+    assertEphemeralReply(res);
+    return env.lastReplyContent(res);
+  }
+
+  const reasons = (rows) => rows.map((t) => t.reason).sort();
+  /** Data rows of a rendered list reply (one per ticket). */
+  const dataRows = (text) => text.split("\n").filter((l) => l.startsWith("**#"));
+
+  it("repo listTickets: status/staff/unclaimed/sensitive/user/date filters + bounds", async () => {
+    fx.plain = await openTicket("f-plain");
+    fx.claimed = await openTicket("f-claimed");
+    fx.sensitive = await openTicket("f-sensitive");
+    fx.closed = await openTicket("f-closed");
+
+    patchTicket(fx.claimed.id, { staff_owner_id: IDS.admin });
+    patchTicket(fx.sensitive.id, { is_sensitive: 1 });
+    patchTicket(fx.closed.id, {
+      status: "closed",
+      closed_at: dayStart("2026-01-15") + 1000,
+      created_at: dayStart("2026-01-14"),
+    });
+    patchTicket(fx.plain.id, { created_at: dayStart("2026-03-10") });
+    patchTicket(fx.claimed.id, { created_at: dayStart("2026-03-20") + 5 });
+    patchTicket(fx.sensitive.id, { created_at: dayStart("2026-04-01") });
+    env.db.addTicketMember(fx.plain.id, IDS.member2, IDS.admin);
+
+    const list = (o) => env.db.listTickets(env.communityId, o);
+
+    // Default = open-only (pre-#180 behavior), newest first.
+    assert.deepEqual(reasons(list({})), ["f-claimed", "f-plain", "f-sensitive"]);
+    assert.deepEqual(
+      list({}).map((t) => t.reason),
+      ["f-sensitive", "f-claimed", "f-plain"],
+      "ticket_number DESC ordering",
+    );
+
+    // Status beyond the open-only split.
+    assert.deepEqual(list({ status: "closed" }).map((t) => t.reason), ["f-closed"]);
+    assert.deepEqual(reasons(list({ status: "all" })), [
+      "f-claimed",
+      "f-closed",
+      "f-plain",
+      "f-sensitive",
+    ]);
+
+    // Claimed staff + unclaimed.
+    assert.deepEqual(list({ staffOwnerId: IDS.admin }).map((t) => t.reason), [
+      "f-claimed",
+    ]);
+    assert.deepEqual(list({ staffOwnerId: IDS.member2 }), []);
+    assert.deepEqual(reasons(list({ unclaimed: true })), ["f-plain", "f-sensitive"]);
+    assert.deepEqual(reasons(list({ status: "all", unclaimed: true })), [
+      "f-closed",
+      "f-plain",
+      "f-sensitive",
+    ]);
+
+    // Sensitivity tri-state.
+    assert.deepEqual(list({ sensitive: true }).map((t) => t.reason), ["f-sensitive"]);
+    assert.deepEqual(reasons(list({ status: "all", sensitive: false })), [
+      "f-claimed",
+      "f-closed",
+      "f-plain",
+    ]);
+
+    // User filter: creator OR named member (listOpenTickets semantics).
+    assert.deepEqual(reasons(list({ userId: IDS.member })), [
+      "f-claimed",
+      "f-plain",
+      "f-sensitive",
+    ]);
+    assert.deepEqual(list({ userId: IDS.member2 }).map((t) => t.reason), [
+      "f-plain",
+    ]);
+
+    // Date window, inclusive on both ends (patched created_at).
+    assert.deepEqual(
+      list({ sinceMs: dayStart("2026-03-15"), untilMs: dayEnd("2026-03-31") }).map(
+        (t) => t.reason,
+      ),
+      ["f-claimed"],
+    );
+    assert.deepEqual(
+      list({ sinceMs: dayStart("2026-03-10") }).map((t) => t.reason).sort(),
+      ["f-claimed", "f-plain", "f-sensitive"],
+      "created_at exactly on `since` is included",
+    );
+    assert.deepEqual(
+      list({ untilMs: dayStart("2026-03-10") }).map((t) => t.reason),
+      ["f-plain"],
+      "created_at exactly at the `until` boundary is included",
+    );
+
+    // Combinations + limit.
+    assert.deepEqual(
+      list({ status: "all", staffOwnerId: IDS.admin, sensitive: false }).map(
+        (t) => t.reason,
+      ),
+      ["f-claimed"],
+    );
+    assert.equal(list({ limit: 2 }).length, 2);
+  });
+
+  it("default /ticket list keeps the old shape: open-only header, no Filters echo", async () => {
+    const text = await runList();
+    assert.match(text, /\*\*Open tickets\*\* \(3\)/);
+    assert.ok(!text.includes("_Filters:"), `unexpected filter echo: ${text}`);
+    assert.ok(
+      !text.includes(`<#${fx.closed.channel_id}>`),
+      "closed rows must not leak into the default view",
+    );
+    assert.equal(dataRows(text).length, 3);
+  });
+
+  it("status:closed lists the real-closed ticket with its close date; status:all shows both", async () => {
+    fx.realclosed = await openTicket("f-realclosed");
+    const close = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: fx.realclosed.channel_id,
+      options: { reason: "resolved" },
+    });
+    assert.match(env.lastReplyContent(close), /closed/i);
+
+    const todayUtc = new Date(Date.now()).toISOString().slice(0, 10);
+    const closedText = await runList({ status: "closed" });
+    assert.match(closedText, /\*\*Closed tickets\*\* \(2\)/);
+    assert.ok(closedText.includes(`<#${fx.realclosed.channel_id}>`), closedText);
+    assert.ok(
+      closedText.includes(`· closed ${todayUtc}`),
+      "real-close date (UTC) surfaces without a second /ticket info",
+    );
+    assert.ok(
+      closedText.includes("· closed 2026-01-15"),
+      "the SQL-patched close date renders too",
+    );
+
+    const allText = await runList({ status: "all" });
+    assert.match(allText, /\*\*Tickets\*\* \(5\)/);
+    assert.ok(
+      allText.includes(`<#${fx.realclosed.channel_id}>`) &&
+        allText.includes(`<#${fx.sensitive.channel_id}>`),
+      allText,
+    );
+  });
+
+  it("command filters: staff, unclaimed, sensitive echo their effect AND the applied filters", async () => {
+    const staffText = await runList({ staff: env.users.adminUser });
+    assert.match(staffText, /_Filters: staff <@/);
+    assert.ok(staffText.includes(`<#${fx.claimed.channel_id}>`), staffText);
+    assert.ok(
+      !staffText.includes(`<#${fx.plain.channel_id}>`),
+      "unclaimed row must not ride along",
+    );
+    assert.equal(dataRows(staffText).length, 1);
+
+    const unclaimedText = await runList({ unclaimed: true });
+    assert.match(unclaimedText, /_Filters: unclaimed_/);
+    assert.ok(unclaimedText.includes(`<#${fx.plain.channel_id}>`));
+    assert.ok(
+      !unclaimedText.includes(`<#${fx.claimed.channel_id}>`),
+      "claimed row excluded",
+    );
+    assert.equal(dataRows(unclaimedText).length, 2);
+
+    const sensText = await runList({ sensitive: true });
+    assert.match(sensText, /_Filters: 🔒 sensitive only_/);
+    assert.equal(dataRows(sensText).length, 1);
+    assert.ok(
+      dataRows(sensText)[0].includes(" 🔒") &&
+        dataRows(sensText)[0].includes(`<#${fx.sensitive.channel_id}>`),
+      `locked marker on the sensitive row: ${sensText}`,
+    );
+
+    const nonSensText = await runList({ status: "all", sensitive: false });
+    assert.match(nonSensText, /_Filters: non-sensitive only_/);
+    assert.equal(
+      sensRows(nonSensText).length,
+      0,
+      `no locked rows in non-sensitive view: ${JSON.stringify(dataRows(nonSensText))}`,
+    );
+    assert.equal(dataRows(nonSensText).length, 4);
+
+    function sensRows(text) {
+      return dataRows(text).filter((l) => l.includes("🔒"));
+    }
+  });
+
+  it("date filters: in-window works, out-of-window is honest, garbage is refused", async () => {
+    const wide = await runList({ since: "2000-01-01", until: "2100-01-01" });
+    assert.match(wide, /\*\*Open tickets\*\* \(3\)/);
+    assert.match(wide, /_Filters: since 2000-01-01, until 2100-01-01_/);
+
+    const future = await runList({ since: "2099-01-01" });
+    assert.match(future, /No open tickets matching since 2099-01-01\./);
+
+    const garbage = await runList({ since: "01/02/2026" });
+    assert.match(garbage, /real UTC date as `YYYY-MM-DD` \(got `01\/02\/2026`\)/);
+
+    const rollover = await runList({ since: "2026-02-31" });
+    assert.match(
+      rollover,
+      /real UTC date as `YYYY-MM-DD` \(got `2026-02-31`\)/,
+      "Feb 31 must NOT roll over to Mar 3 (V8 Date.parse would)",
+    );
+
+    const reversed = await runList({ since: "2026-05-01", until: "2026-04-01" });
+    assert.match(
+      reversed,
+      /`since` \(2026-05-01\) must not be after `until` \(2026-04-01\)/,
+    );
+  });
+
+  it("misuse + permissions: bogus status refused, members stay gated", async () => {
+    const bogus = await runList({ status: "shiny" });
+    assert.match(bogus, /must be `open`, `closed`, or `all` \(got `shiny`\)/);
+
+    const member = await env.runCommand({
+      commandName: "ticket",
+      subcommand: "list",
+      admin: false,
+      user: env.users.memberUser,
+      options: {},
+    });
+    assertEphemeralReply(member, /permission/i);
+  });
+
+  it("honest cap (#446): beyond budget the list says (+N more) instead of slicing", async () => {
+    // 26 no-channel tickets with long creator ids → 25 returned (repo cap),
+    // text budget exceeded → joinCapped surfaces the hidden count and the
+    // reply stays inside Discord's budget.
+    for (let i = 0; i < 26; i++) {
+      env.db.db
+        .prepare(
+          `INSERT INTO tickets
+             (community_id, ticket_number, creator_user_id, created_at)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(
+          env.communityId,
+          90000 + i,
+          "user-cap-probe-with-a-deliberately-long-creator-id-00000",
+          Date.now() + i,
+        );
+    }
+
+    const text = await runList();
+    assert.match(text, /\*\*Open tickets\*\* \(25\)/, "repo cap stated up front");
+    assert.match(text, /\(\+\d+ more\)$/, "hidden count is honest (terminal suffix)");
+    assert.ok(text.length <= 1900, `reply must stay under budget, got ${text.length}`);
   });
 });

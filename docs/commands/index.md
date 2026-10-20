@@ -200,6 +200,9 @@ See [Help Tickets](../tickets.md) for full behavior.
 /ticket archive
 /ticket list
 /ticket list user:@Member
+/ticket list status:closed
+/ticket list staff:@Mod unclaimed:True
+/ticket list sensitive:True since:2026-10-01 until:2026-10-19
 /ticket info
 /ticket summarize
 ```
@@ -207,6 +210,7 @@ See [Help Tickets](../tickets.md) for full behavior.
 - **`close`** — remove non-staff members; keep the channel for staff. Optional `reason` (shown to requester / archive) and `staff_note` (private note on the requester).  
 - **`archive`** — after close: save transcript (if not sensitive) and delete the channel.  
 - **`for`** — staff open a ticket on behalf of a member (no self-create rate limit).  
+- **`list`** — filters (issue #180): `status` `open` (default) / `closed` / `all`; `user` = requester **or** added member; `staff` = claiming staff owner; `unclaimed:True` = nobody has claimed; `sensitive:True`/`False` = only locked / only unlocked; `since`/`until` = created-date window (`YYYY-MM-DD`, UTC, inclusive; `until` covers the whole day). The reply echoes the applied filters, closed rows carry their close date, and an over-budget list says `(… more)` instead of truncating silently.
 - **`summarize`** — on-demand AI summary of the current ticket conversation (open or soft-closed, pre-archive). Uses `AI_API_KEY`/`AI_BASE_URL`/`AI_MODEL` when configured; otherwise replies with a stats-only fallback and labels it as such.  
 - **Ticket channel overwrites** (automatic staff-role view) use **senior** staff roles only; junior staff need named access (`addstaff`) or Manage Server.
 

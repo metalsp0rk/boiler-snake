@@ -323,6 +323,7 @@ module.exports = {
   listTicketMembers: tickets.listTicketMembers,
   listTicketStaff: tickets.listTicketStaff,
   listOpenTickets: tickets.listOpenTickets,
+  listTickets: tickets.listTickets,
   listArchivedTickets: tickets.listArchivedTickets,
   countArchivedTickets: tickets.countArchivedTickets,
   listArchivedTicketsForGuilds: tickets.listArchivedTicketsForGuilds,
