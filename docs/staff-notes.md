@@ -27,7 +27,7 @@ Staff adds a note on a user
 
 All subcommands require the **staff gate** (`Manage Server` or a role from `/staff role list`). Replies are always **ephemeral**.
 
-Note: `/staff` — where that role list lives — is **shown only to `Manage Server` holders** (#476). Staff without it pass the gate through their configured role; they simply won't see the command while checking.
+Note: `/staff` — where that role list lives — is **shown only to `Manage Server` holders** (#476). Staff without it pass the gate through their configured role; they simply won't see the command while checking. The staff-visible read view is `/staffsettings` (`roles` / `overview`) — staff-tier in the picker, same staff gate in the handler (#599). See [Staff roles](staff-roles.md).
 
 | Command | Description |
 |---------|-------------|

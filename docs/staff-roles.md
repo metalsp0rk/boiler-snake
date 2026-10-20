@@ -64,12 +64,16 @@ Changing a role between junior and senior does **not** instantly rewrite every o
 
 ### Read-only (staff gate)
 
-| Command | Description |
-|---------|-------------|
-| `/staff role list` | List trusted staff roles grouped by senior / junior |
-| `/staff settings` | Counts + what staff roles control (includes sync status) |
+| Command | Description | Picker visibility |
+|---------|-------------|-------------------|
+| `/staffsettings roles` | List trusted staff roles grouped by senior / junior | **Staff tier** — staff roles see it after `/staff syncpermissions` |
+| `/staffsettings overview` | Counts + what staff roles control (includes sync status) | **Staff tier** |
+| `/staff role list` | The same list `/staffsettings roles` shows | Manage Server only (admin picker) |
+| `/staff settings` | The same summary `/staffsettings overview` shows | Manage Server only (admin picker) |
 
-Replies are **ephemeral**.
+All replies are **ephemeral**, and all four views enforce the same **staff gate** in the handler (Manage Server **or** any staff role, junior or senior).
+
+**Why two doors (#599):** `/staff` registers at the Manage Server picker tier (its mutations are admin-only), so staff members **without** Manage Server can't see `/staff role list` / `/staff settings` in Discord's `/` menu even though the handler allows them. `/staffsettings` is the staff-tier read-only twin — the same views, reachable from the picker once `/staff syncpermissions` grants staff roles the overwrite (or directly, for anyone with Manage Server). It mutates nothing, and the `/staff` read subcommands keep working unchanged.
 
 ## Command visibility sync (optional)
 
@@ -81,6 +85,8 @@ Handlers always enforce the staff gate. Discord’s `/` picker is separate: staf
 3. The bot stores a refresh token (**AES-256-GCM encrypted at rest**; the authorize step refuses to run without `TOKEN_ENCRYPTION_KEY`) and sets per-command role **allow** overwrites for every role in `staff_roles`.
 4. Later `/staff role add|remove` re-syncs automatically when a token is stored. Use `force_reauth:true` if auth expired.
 
+Among the synced commands is **`/staffsettings`** — the read-only staff-role view built for exactly this audience, so staff can check their own status and the gate config without Manage Server.
+
 **Not synced (by design):** public commands (`/xp`, `/warn`, `/ticket`, …) and Manage Server–only commands (`/staff`, `/setcommandchannel`). Mixed commands stay fully visible; staff subcommands are still gated in code.
 
 Guild admins can still override visibility under **Server Settings → Integrations**.
@@ -91,7 +97,7 @@ Three gates appear across the bot:
 
 | Gate | Who passes | Typical use |
 |------|------------|-------------|
-| **Staff** (`requireStaff` / `isStaff`) | Manage Server **or** any `staff_roles` level | Notes, warnings (incl. `/setwarn`), ticket ops (incl. panel/set*), `/activityconfig`, honeypot channel/banrole, XP/YouTube/decay/logs/reaction-roles, `/userinfo` Overview/Notes/Warnings, `/staff role list` / `settings` |
+| **Staff** (`requireStaff` / `isStaff`) | Manage Server **or** any `staff_roles` level | Notes, warnings (incl. `/setwarn`), ticket ops (incl. panel/set*), `/activityconfig`, honeypot channel/banrole, XP/YouTube/decay/logs/reaction-roles, `/userinfo` Overview/Notes/Warnings, `/staffsettings roles` / `overview` (staff-visible twin of `/staff role list` / `settings`) |
 | **Senior** (`requireSeniorStaff` / `isSeniorStaff`) | Manage Server **or** a **senior** staff role | `/userinfo` → **Activity** tab (and related activity controls) |
 | **Manage Server** (`requireAdmin` / `isAdminOrMod`) | Manage Server only | Staff role add/remove/setlevel; **`/staff syncpermissions`**; **`/setcommandchannel`**; **`/honeypot exempt`** (alias for staff-role mutations) |
 
@@ -101,6 +107,7 @@ Three gates appear across the bot:
 |---------|--------|
 | [Staff notes](staff-notes.md) (`/note *`) | Staff |
 | [Warnings](warnings.md) staff ops (`/warn add\|list\|…`) | Staff |
+| Staff-role read view (`/staffsettings roles\|overview`) | Staff |
 | `/warn mine` | Any member (own history) |
 | `/setwarn *` | Staff |
 | [Tickets](tickets.md) staff ops (`claim`, `close`, `for`, …) | Staff |

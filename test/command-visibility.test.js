@@ -60,6 +60,9 @@ describe("commandVisibility", () => {
     assert.equal(visibilityTier("setxp"), TIERS.staff);
     assert.equal(visibilityTier("honeypot"), TIERS.staff);
     assert.equal(visibilityTier("bridge"), TIERS.staff);
+    // #599: /staffsettings is the staff-tier read path (role list + settings
+    // twin) — the whole point is that it rides the staff picker machinery.
+    assert.equal(visibilityTier("staffsettings"), TIERS.staff);
     assert.equal(visibilityTier("staff"), TIERS.admin);
     assert.equal(visibilityTier("setcommandchannel"), TIERS.admin);
   });
@@ -68,6 +71,8 @@ describe("commandVisibility", () => {
     const names = staffSyncCommandNames();
     assert.ok(names.includes("note"));
     assert.ok(names.includes("setxp"));
+    // #599: the read twin must receive staff_roles allow overwrites on sync.
+    assert.ok(names.includes("staffsettings"));
     assert.ok(!names.includes("xp"));
     assert.ok(!names.includes("staff"));
     assert.ok(!names.includes("setcommandchannel"));

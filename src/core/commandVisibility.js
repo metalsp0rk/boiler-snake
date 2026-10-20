@@ -42,13 +42,16 @@ const COMMAND_VISIBILITY = Object.freeze({
   // Manage Server only (picker + handler)
   grantxp: TIERS.admin,
   // #476 (F2-8): /staff's PICKER is admin-tier because most subcommands
-  // (role add/remove/setlevel, syncpermissions) are ManageGuild-gated;
-  // the staff-gated list/settings subcommands are therefore admin-visible
-  // ONLY — user-facing copy must not promise staff members a command
-  // Discord hides from them (test/staff-visibility-copy.test.js pins that
-  // alignment; handlers stay the security truth). Splitting list/settings
-  // into a staff-tier command needs live picker verification — filed as a
-  // follow-up, not paid here.
+  // (role add/remove/setlevel, syncpermissions) are ManageGuild-gated; the
+  // list/settings subcommands UNDER /staff are therefore admin-visible only
+  // — user-facing copy must not promise staff members a command Discord
+  // hides from them (test/staff-visibility-copy.test.js pins that
+  // alignment; handlers stay the security truth).
+  // #599 split the READ path out: `/staffsettings` (roles | overview) is a
+  // STAFF-tier twin of `/staff role list` + `/staff settings`, so the honest
+  // pointer for staff readers is that command — not anything under /staff.
+  // /staff itself stays admin (mutations remain ManageGuild-only); the live
+  // picker check of /staffsettings' overwrites is owed separately.
   staff: TIERS.admin,
   setcommandchannel: TIERS.admin,
 
@@ -72,6 +75,13 @@ const COMMAND_VISIBILITY = Object.freeze({
   activityconfig: TIERS.staff,
   gork: TIERS.staff,
   bridge: TIERS.staff,
+  // #599: read-only twin of `/staff role list` + `/staff settings` (roles |
+  // overview) so junior/senior staff can check their own staff-role status
+  // and the staff settings without Manage Server. Handler gate is the staff
+  // gate (requireStaff) — the picker tier here is what makes the command
+  // reachable: ManageGuild default + staff_roles allow overwrites after
+  // `/staff syncpermissions`.
+  staffsettings: TIERS.staff,
 });
 
 /**
