@@ -93,7 +93,7 @@ Queues are **in memory**. A bot restart empties them.
 
 - The voice channel has no humans (only the bot): leave after **60 seconds**.
 - Queue drained (last track finished, nothing enqueued): leave after
-  **5 minutes**. Playing anything (`/play`, `/music play`) cancels the window.
+  **5 minutes**. Playing anything (`/play`) cancels the window.
   (#588 — a timer is now implemented in code; the earlier #463 correction
   stood because the library-side config it replaced was unverified, could not
   be cancelled on enqueue, and left the channel inside an unlogged timer.)
