@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.36.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.35.0...v1.36.0) (2026-10-20)
+
+
+### Features
+
+* **gork:** invoke via bot role mention ([#174](https://github.com/metalsp0rk/boiler-snake/issues/174)) ([6a4a9df](https://github.com/metalsp0rk/boiler-snake/commit/6a4a9dfe68ec22f6373eb87431779c6c840c598e))
+* **music:** queue-drain idle-leave — drained queue leaves after 5 min ([#588](https://github.com/metalsp0rk/boiler-snake/issues/588)) ([3bce3f4](https://github.com/metalsp0rk/boiler-snake/commit/3bce3f4ab43d68e708f7c7085ef0734a752c5f5c))
+* **music:** queue-empty idle-leave window ([1b65e50](https://github.com/metalsp0rk/boiler-snake/commit/1b65e50f6588fb9ac027d2cb58b75cd649d54d76)), closes [#588](https://github.com/metalsp0rk/boiler-snake/issues/588)
+* **staff-roles:** staff-visible read command /staffsettings (roles | overview) ([76aa02c](https://github.com/metalsp0rk/boiler-snake/commit/76aa02c464cd9d8f3cdfdd473f050da6767df4a7)), closes [#599](https://github.com/metalsp0rk/boiler-snake/issues/599)
+* **tickets:** richer /ticket list filters ([#180](https://github.com/metalsp0rk/boiler-snake/issues/180)) ([0e85390](https://github.com/metalsp0rk/boiler-snake/commit/0e85390a4f0240d737a1901866304c7ab3a7ba14))
+* **twitch:** per-guild custom go-live message templates ([c8bc6ea](https://github.com/metalsp0rk/boiler-snake/commit/c8bc6eaddbad45725429984b2acfd263364bb6f3)), closes [#178](https://github.com/metalsp0rk/boiler-snake/issues/178)
+* **twitch:** per-subscription go-offline announcements ([#179](https://github.com/metalsp0rk/boiler-snake/issues/179)) ([eda4cca](https://github.com/metalsp0rk/boiler-snake/commit/eda4cca6c6f41c0ecd9ba639c06af4953634b32c))
+* **twitch:** per-subscription notification channel/role overrides ([#177](https://github.com/metalsp0rk/boiler-snake/issues/177)) ([4ff2c3f](https://github.com/metalsp0rk/boiler-snake/commit/4ff2c3f6cd4998beadfac53df432f3898b790ba5))
+* **web:** bridge relay backlog on the ticker-health page ([#217](https://github.com/metalsp0rk/boiler-snake/issues/217)) ([48f8a64](https://github.com/metalsp0rk/boiler-snake/commit/48f8a641b232cfc96e8826fbc73f63dc6905e400))
+
+
+### Bug Fixes
+
+* **web:** moderation pager prev steps back one real page ([#621](https://github.com/metalsp0rk/boiler-snake/issues/621)) ([d880054](https://github.com/metalsp0rk/boiler-snake/commit/d8800545848cf3c1a488a03ecd2bfe04446b47c1))
+
 ## [1.35.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.34.1...v1.35.0) (2026-10-19)
 
 
