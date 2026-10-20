@@ -19,9 +19,9 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 34 slash commands with unique names", () => {
+  it("exports 35 slash commands with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 34);
+    assert.equal(commands.length, 35);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -34,6 +34,8 @@ describe("command definitions via registry", () => {
     assert.ok(names.includes("link"));
     assert.ok(names.includes("note"));
     assert.ok(names.includes("staff"));
+    // #599: staff-visible read-only twin of /staff role list + /staff settings.
+    assert.ok(names.includes("staffsettings"));
     assert.ok(names.includes("warn"));
     assert.ok(names.includes("setwarn"));
     assert.ok(names.includes("userinfo"));
@@ -80,6 +82,8 @@ describe("buildDefaultRegistry", () => {
       "setwarn",
       "userinfo",
       "staff",
+      // #599: the staff-visible read twin rides the same CommandContext arm.
+      "staffsettings",
       "settings",
       "setcommandchannel",
       "setdecay",
