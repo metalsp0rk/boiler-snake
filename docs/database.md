@@ -63,6 +63,39 @@ boiler-snake/
 | `gork_budget_rules` | Gork per-channel/category daily-limit rules (tri-state) |
 | `gork_usage` | Gork daily usage counters (per user + winning scope + UTC day) |
 | `gork_interactions` | Gork interaction log: one captured request/response per agent call (replay fixtures) |
+| `bridges` | Channel-bridge relay row: `pending`/`active`/`broken` state machine, hashed connect code (§21) |
+| `bridge_ends` | The two channel ends (a/b) of a bridge incl. envelope-encrypted relay webhook token |
+| `bridge_outbox` | Durable outbound relay queue (create/edit/delete) with delivery state machine |
+| `bridge_message_links` | Source message → destination message id map, one row per relayed part |
+| `bridge_src_snapshots` | Last-relayed content hash per source message (edit-detection gate) |
+| `bridge_connect_attempts` | Failed connect-miss window counter per destination community (lockout) |
+| `user_links` | One Discord ↔ one Fluxer identity link with per-direction XP-mirror percentages (§22) |
+| `user_link_codes` | Single-use 15-minute link codes — only SHA-256 hashes stored |
+| `web_sessions` | Web admin console sessions + envelope-encrypted OAuth tokens (§23) |
+| `admin_audit` | Durable admin audit trail: one row per mutating web/slash/system action |
+| `guild_command_permission_oauth` | Per-community Discord OAuth grant for slash command permission sync (encrypted tokens) |
+| `fluxer_oauth_transactions` | Single-use Fluxer web sign-in state (PKCE verifier, ≤10-minute lifetime) |
+| `ticket_panels` | Posted ticket-panel messages managed via `/ticket panel` (§17) |
+| `ticket_create_reservations` | Atomic ticket self-create rate-limit slot (#420) |
+| `reaction_role_claims` | Per-emoji role-claim ledger — reaction removal can't strip a role another path granted (#433) |
+| `twitch_eventsub_subs` | EventSub subscription ledger per (type, broadcaster), shared across guilds (§8d) |
+| `applied_migrations` | Migration ledger: ordered id list of the last complete migration pass (§24) |
+| `sqlite_sequence` | SQLite-internal AUTOINCREMENT high-water counter (not bot data) |
+| `events` | Community events: title/status/times, post + retry bookkeeping, role gates (§20) |
+| `event_options` | Signup options per event (capacity, waitlist, role whitelist; `position` orders buttons) |
+| `event_signups` | One row per (event, option, user): `signed_up` / `waitlisted` |
+| `event_notifications` | Queued reminder deliveries with delivery state machine + backoff |
+| `event_mutes` | Per-user "don't ping me for this event" switch on the RSVP card |
+| `event_guild_settings` | Per-community events settings: time zone, role gates, digests, Google auto-sync |
+| `event_activity` | Append-only event action log backing the web calendar feed |
+| `event_series` | Recurrence rules (daily/weekly/monthly) with next-occurrence cursor |
+| `event_presets` | Saved signup-option groups per community (case-insensitive unique name) |
+| `event_preset_options` | Options inside a saved preset (mirrors `event_options` fields) |
+| `event_channels` | Marked event channels per community with optional purge opt-in |
+| `event_wizards` | DM creation-wizard drafts, one per (community, user) |
+| `event_google_links` | Per-user Google Calendar OAuth — envelope-encrypted tokens, never plaintext |
+| `event_crossposts` | Cross-community crosspost pairs (invite-code approval, per-destination settings) |
+| `event_crosspost_messages` | Destination message rows mapping crosspost copies to the source event |
 
 ---
 
@@ -202,12 +235,12 @@ Connected voice users are read live from the bot's voice-state cache
 
 ### 4. `guild_settings`
 
-One row per guild storing all configuration options. Base columns come from migration `001`; later migrations add columns via `addColumnIfMissing`. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`. The live DDL below is `sqlite_master` text as rebuilt by `034`: post-`001` columns were appended by later migrations, so SQLite records them after `updated_at` in ALTER order — that trailing comma is real, not a typo.
+One row per guild storing all configuration options. Base columns come from migration `001`; later migrations add columns via `addColumnIfMissing`. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`, and migration `057_level_role_fk` rebuilt it again to declare the PK foreign key `PRIMARY KEY REFERENCES communities(id)`; the newest column (`twitch_golive_template`) arrives with `061_twitch_golive_template`. Resolve snowflakes via `communities.external_guild_id`. The live DDL below is `sqlite_master` text as rebuilt by `057`: post-`001` columns were appended by later migrations, so SQLite records them after `updated_at` in ALTER order — that trailing comma is real, not a typo.
 
 ```sql
 -- Live DDL (migrated schema, from sqlite_master)
 CREATE TABLE "guild_settings" (
-  community_id INTEGER NOT NULL PRIMARY KEY,
+  community_id INTEGER NOT NULL PRIMARY KEY REFERENCES communities(id),
 
   msg_xp INTEGER NOT NULL DEFAULT 5,
   voice_xp_per_min INTEGER NOT NULL DEFAULT 1,
@@ -225,7 +258,7 @@ CREATE TABLE "guild_settings" (
   youtube_upload_role_id TEXT,
 
   updated_at INTEGER NOT NULL
-, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT, gork_role_id TEXT);
+, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT, gork_role_id TEXT, twitch_golive_template TEXT);
 ```
 
 **Default Values**:
@@ -246,6 +279,7 @@ CREATE TABLE "guild_settings" (
 | `twitch_notification_channel_id` | NULL | Channel for go-live alerts |
 | `twitch_notify_role_id` | NULL | Role mentioned on go-live (independent of YouTube) |
 | `twitch_polling_interval_minutes` | 2 | Helix check frequency |
+| `twitch_golive_template` | NULL | Per-guild custom Twitch go-live message template (`061`); `NULL` = built-in `**{streamer}** is live!` |
 | `gork_enabled` | 1 | Master gork switch (`0` = keyword triggers ignored, other settings kept) |
 | `gork_keyword` | @gork | Trigger keyword; `NULL` = gork trigger disabled |
 | `gork_role_id` | NULL | Role whose @mention also invokes gork (`/gork role`, issue #174); `NULL` = role path off (keyword is the master trigger switch) |
@@ -334,17 +368,19 @@ DELETE FROM level_roles WHERE community_id=? AND role_id=?
 
 ### 6. `role_drop_state`
 
-Tracks when users first dropped below a role's threshold (for grace period). Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id`.
+Tracks when users first dropped below a role's threshold (for grace period). Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`, and migration `057_level_role_fk` rebuilt it with FK coverage (issue #469): `community_id` references `communities(id)`, and a composite `(community_id, role_id)` FK references `level_roles` `ON DELETE CASCADE` — deleting a role mapping cleans its drop-state rows with it (after an idempotent orphan pre-clean).
 
 ```sql
 -- Live DDL (migrated schema, from sqlite_master)
 CREATE TABLE "role_drop_state" (
-  community_id INTEGER NOT NULL,
+  community_id INTEGER NOT NULL REFERENCES communities(id),
   user_id TEXT NOT NULL,
   role_id TEXT NOT NULL,
   below_since INTEGER, -- ms epoch, NULL when not below
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (community_id, user_id, role_id)
+  PRIMARY KEY (community_id, user_id, role_id),
+  FOREIGN KEY (community_id, role_id)
+    REFERENCES level_roles (community_id, role_id) ON DELETE CASCADE
 );
 ```
 
@@ -526,6 +562,30 @@ CREATE INDEX idx_github_watches_channel
 ```
 
 See [GitHub Release Notifications](github-releases.md).
+
+---
+
+### 8d. `twitch_eventsub_subs`
+
+EventSub webhook subscription ledger (migration `032_twitch_eventsub_media`): one row per **(subscription type, broadcaster)** — the EventSub uniqueness constraint — not per guild: one `stream.online` / `stream.offline` subscription per broadcaster serves every guild tracking that channel. Rows are reconciler bookkeeping: `subscription_id` is Twitch's UUID (`NULL` until created), `status` mirrors the Twitch/local state (`pending` / `enabled` / `verification_pending` / `revoked:<reason>` / `error`), `last_error` carries the last create/delete failure for triage. Primary writer: `src/db/repositories/twitchEventsub.js` (driven by the Twitch feature's EventSub reconciler).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE twitch_eventsub_subs (
+    type            TEXT NOT NULL,
+    broadcaster_id  TEXT NOT NULL,
+    subscription_id TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    last_error      TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY (type, broadcaster_id)
+  );
+CREATE INDEX idx_twitch_eventsub_subs_broadcaster
+    ON twitch_eventsub_subs(broadcaster_id);
+```
+
+See [Twitch Stream Notifications](twitch-notifications.md).
 
 ---
 
@@ -719,6 +779,28 @@ See [Reaction Roles](reaction-roles.md).
 
 ---
 
+### 13a. `reaction_role_claims`
+
+Per-emoji role-claim ledger (migration `051_reaction_role_claims`, issue #433): one row per (community, user, message, emoji) whose reaction actually granted the role. When a reaction is removed the handler drops the role only if no other live option still claims it — so stripping one reaction can't revoke a role another panel/emoji granted. Primary writer: `src/db/repositories/reactionRoles.js` (claim on accepted reaction, unclaim on removal, bulk-pruned when an option/panel dies).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE reaction_role_claims (
+  community_id INTEGER NOT NULL REFERENCES communities(id),
+  user_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  emoji_key TEXT NOT NULL,
+  claimed_at INTEGER NOT NULL,
+  PRIMARY KEY (community_id, user_id, message_id, emoji_key)
+);
+CREATE INDEX idx_rrc_user
+  ON reaction_role_claims(community_id, user_id);
+```
+
+See [Reaction Roles](reaction-roles.md).
+
+---
+
 ### 14. Event reminder tables
 
 Created by migration `006_event_reminders`. Also adds `guild_settings.event_reminder_channel_id`. Migration `034_communities` re-keyed `event_reminder_configs`, `event_reminder_optouts`, and `event_reminder_event_optouts` from `guild_id TEXT` to `community_id INTEGER`; resolve snowflakes via `communities.external_guild_id` (`event_reminder_offsets` hangs off `config_id` and has no community column of its own).
@@ -895,7 +977,7 @@ See [Warning System](warnings.md).
 
 ### 17. Ticket tables
 
-Created by migration `010_tickets`, which also adds `ticket_category_id`, `ticket_archive_channel_id`, and `ticket_rate_limit_minutes` on `guild_settings`.
+Created by migration `010_tickets`, which also adds `ticket_category_id`, `ticket_archive_channel_id`, and `ticket_rate_limit_minutes` on `guild_settings`. The panel registry (`019_ticket_panels`) and the self-create rate-limit slot (`052_ticket_create_reservations`, issue #420) join it below.
 
 #### `tickets`
 
@@ -1000,6 +1082,40 @@ CREATE TABLE ticket_messages (
 );
 CREATE INDEX idx_ticket_messages_ticket
   ON ticket_messages(ticket_id);
+```
+
+#### `ticket_panels`
+
+Registry of **posted ticket-panel messages** (migration `019_ticket_panels`): one row per panel message so `/ticket panel list|edit|delete` can find and manage them. Primary writer: `src/db/repositories/tickets.js` (`createTicketPanel` on post; update/delete handlers keep the row in step).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "ticket_panels" (
+  community_id INTEGER NOT NULL,
+  channel_id   TEXT NOT NULL,
+  message_id   TEXT NOT NULL,
+  title        TEXT,
+  description  TEXT,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY (community_id, message_id)
+);
+CREATE INDEX idx_ticket_panels_guild
+  ON ticket_panels(community_id);
+```
+
+#### `ticket_create_reservations`
+
+Atomic self-create rate-limit slot (migration `052_ticket_create_reservations`, issue #420): one row per (community, user) stamped `reserved_at` inside the create transaction — the INSERT itself is the reservation, so concurrent creates can't both pass the `ticket_rate_limit_minutes` gate. Primary writer: `src/db/repositories/tickets.js`.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE ticket_create_reservations (
+  community_id INTEGER NOT NULL REFERENCES communities(id),
+  user_id TEXT NOT NULL,
+  reserved_at INTEGER NOT NULL,
+  PRIMARY KEY (community_id, user_id)
+);
 ```
 
 See [Help Ticket System](tickets.md).
@@ -1245,6 +1361,8 @@ CREATE TABLE "gork_usage" (
     count      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (community_id, user_id, scope_kind, scope_id, day)
   );
+CREATE INDEX idx_gork_usage_day
+  ON gork_usage (day);
 ```
 
 **Query patterns**:
@@ -1312,6 +1430,7 @@ CREATE INDEX idx_gork_interactions_msg ON gork_interactions (community_id, messa
 CREATE INDEX idx_gork_interactions_kind ON gork_interactions (kind, created_at);
 CREATE INDEX idx_gork_interactions_uid ON gork_interactions (uid);
 CREATE INDEX idx_gork_interactions_created ON gork_interactions (created_at); -- retention-prune scan
+CREATE INDEX idx_gork_interactions_guild ON gork_interactions (community_id, created_at);
 ```
 
 | Column | Description |
@@ -1374,6 +1493,288 @@ The personal reminder opt-out is one row per user in feature 2's opt-outs table,
 
 ---
 
+### 21. Bridge relay tables
+
+The six tables behind the [channel bridge](bridge.md) (relay between a Discord channel and a Fluxer channel), created together by migration `035_bridges`. **`src/db/repositories/bridges.js` is the only module that reads or writes them** — bridge deletes are explicit child-then-parent cascades in one transaction (`deleteBridgeCascade()`), never FK-driven. The connect service (`src/features/bridge/service.js`) owns the `pending → active` compare-and-swap; the relay pipeline (`src/features/bridge/relay.js`) drives the queue through the repository.
+
+#### `bridges`
+
+One row per bridge: state machine `pending` / `active` / `broken`, one-way or both direction (`a` = the create side), and the hashed connect code. The plaintext connect code is never stored — only `code_hash` (SHA-256); `expires_at` is enforced by `connect` itself and a sweeper GCs expired `pending` rows. Primary writer: `src/db/repositories/bridges.js` (`/bridge create`).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE bridges (
+  id INTEGER PRIMARY KEY,
+  public_id TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'active', 'broken')),
+  direction TEXT NOT NULL DEFAULT 'both'
+    CHECK (direction IN ('both', 'a_to_b', 'b_to_a')),   -- a = create side (KD 19)
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,               -- connect enforces this itself; sweeper GCs pending rows
+  connected_at INTEGER,
+  code_hash BLOB,                   -- SHA-256(canonical code); kept on active rows until disconnect
+  created_by_user_id TEXT NOT NULL, -- external id, scoped by end A community; display-only
+  last_error TEXT,
+  broken_reason TEXT
+);
+```
+
+#### `bridge_ends`
+
+The two channel ends of a bridge (`position` `a`/`b`): which community channel participates, its posture flags (`nsfw`, `everyone_denied_view`), and the relay webhook pair each end posts through. `webhook_token_enc` holds **only** the AES-256-GCM `v1.` envelope of the webhook token (`src/features/bridge/tokenCrypto.js`, key `BRIDGE_TOKEN_KEY`) — never plaintext. `UNIQUE (community_id, channel_id)` pins a channel to at most one bridge. Primary writer: the connect flow in `src/features/bridge/service.js` (ends created by the repository).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE bridge_ends (
+  bridge_id INTEGER NOT NULL REFERENCES bridges(id),
+  position TEXT NOT NULL CHECK (position IN ('a', 'b')),
+  community_id INTEGER NOT NULL REFERENCES communities(id),
+  channel_id TEXT NOT NULL,
+  webhook_id TEXT,
+  webhook_token_enc TEXT,           -- AES-256-GCM envelope; never plaintext
+  upload_limit_bytes INTEGER,
+  nsfw INTEGER NOT NULL DEFAULT 0,
+  everyone_denied_view INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bridge_id, position),
+  UNIQUE (community_id, channel_id) -- a channel is in at most one bridge
+);
+```
+
+#### `bridge_outbox`
+
+The durable outbound relay queue: one row per pending operation (create / edit / delete of a source message, per direction) with a delivery state machine (`pending | sending | done | failed`), attempt counter, and `last_error`. `payload_json` carries only metadata + attachment descriptors — no CDN URLs, no tokens, no credentials. Survives restarts by design; the supervisor drains it through the repository. Primary writer: `src/db/repositories/bridges.js` (enqueue paths).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE bridge_outbox (
+  id INTEGER PRIMARY KEY,
+  bridge_id INTEGER NOT NULL REFERENCES bridges(id),
+  direction TEXT NOT NULL CHECK (direction IN ('a_to_b', 'b_to_a')),
+  kind TEXT NOT NULL DEFAULT 'create'
+    CHECK (kind IN ('create', 'edit', 'delete')),
+  src_message_id TEXT NOT NULL,
+  enqueued_at INTEGER NOT NULL,
+  state TEXT NOT NULL,              -- pending | sending | done | failed
+  attempts INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL,       -- metadata + attachment descriptors; no CDN URLs,
+                                    -- no tokens, no credential
+  dest_message_id TEXT,             -- first destination execute only; full set in links
+  last_error TEXT,
+  UNIQUE (bridge_id, direction, src_message_id, kind)
+);
+CREATE INDEX idx_bridge_outbox_queue
+  ON bridge_outbox (bridge_id, direction, state, enqueued_at);
+CREATE INDEX idx_bridge_outbox_settled
+  ON bridge_outbox (state, enqueued_at);
+```
+
+#### `bridge_message_links`
+
+Provenance map from a source message to every destination message copy: one row per relayed part (`part_index` is the 0-based chunk / overflow-file execute). Edits and deletes fan out by looking up all parts of the source message. Primary writer: `src/db/repositories/bridges.js` (called by the relay after a successful destination execute).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE bridge_message_links (
+  bridge_id INTEGER NOT NULL,
+  src_community_id INTEGER NOT NULL,
+  src_message_id TEXT NOT NULL,
+  part_index INTEGER NOT NULL,      -- 0-based chunk / overflow-file execute
+  dst_message_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (bridge_id, src_community_id, src_message_id, part_index)
+);
+CREATE INDEX idx_bridge_message_links_created
+  ON bridge_message_links (created_at);
+```
+
+#### `bridge_src_snapshots`
+
+Edit-detection gate: the SHA-256 `content_hash` of the **canonical relay payload** last relayed for a source message. The relay re-enqueues an edit only when the recomputed hash differs (pin/flag changes alone never re-relay). Primary writer: `src/db/repositories/bridges.js` (upsert from `src/features/bridge/relay.js`).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE bridge_src_snapshots (
+  bridge_id INTEGER NOT NULL,
+  src_message_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL,       -- SHA-256 of the canonical relay payload
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (bridge_id, src_message_id)
+);
+```
+
+#### `bridge_connect_attempts`
+
+Lockout counter for wrong-code connects: one row per **destination** community holding the current failure window (`window_started_at` + `failures`). The first miss starts a window, a repeated miss within the window escalates, and an elapsed window is replaced (the 10-minute reset); repeated misses lock the destination out of `connect`. Primary writer: `src/db/repositories/bridges.js` (`recordBridgeConnectMiss`).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE bridge_connect_attempts (
+  community_id INTEGER PRIMARY KEY,
+  window_started_at INTEGER NOT NULL,
+  failures INTEGER NOT NULL
+);
+```
+
+---
+
+### 22. Account linking tables
+
+Discord ↔ Fluxer account linking (migration `036_user_links`; feature guide: [Account Linking](account-linking.md)). Sole writer: `src/db/repositories/userLinks.js`.
+
+#### `user_links`
+
+One row binding exactly one Discord-side identity to one Fluxer-side identity — both sides are `UNIQUE`, so a user is in at most one link. `mirror_a_to_b_pct` / `mirror_b_to_a_pct` set the per-direction XP mirror percentage; `mirror_memory` toggles gork-memory mirroring.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE user_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  community_id_a INTEGER NOT NULL,          -- one side (e.g. Discord community)
+  user_id_a      TEXT NOT NULL,             -- external user id in that community's platform
+  community_id_b INTEGER NOT NULL,          -- other side (e.g. Fluxer community)
+  user_id_b      TEXT NOT NULL,
+  mirror_a_to_b_pct INTEGER NOT NULL DEFAULT 100,  -- XP earned in A → mirrored to B
+  mirror_b_to_a_pct INTEGER NOT NULL DEFAULT 100,
+  mirror_memory INTEGER NOT NULL DEFAULT 1,       -- gork memory mirroring on/off
+  created_at INTEGER NOT NULL,
+  UNIQUE (community_id_a, user_id_a),
+  UNIQUE (community_id_b, user_id_b)
+);
+CREATE INDEX idx_user_links_a_lookup
+  ON user_links (user_id_a, community_id_a);
+CREATE INDEX idx_user_links_b_lookup
+  ON user_links (user_id_b, community_id_b);
+```
+
+#### `user_link_codes`
+
+The handoff ticket for linking: the plaintext code is shown to its creator on a private surface only (ephemeral reply on Discord, DM on Fluxer) — the row stores just its SHA-256 `code_hash`, bound to the creating community + user, valid 15 minutes, `used_at` stamps the single redemption on the other side. Expired rows ride `idx_user_link_codes_expires_at` into cleanup.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE user_link_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code_hash TEXT NOT NULL UNIQUE,           -- SHA-256 of the plaintext code
+  community_id INTEGER NOT NULL,            -- community where the code was CREATED
+  user_id TEXT NOT NULL,                    -- external user id at creation side
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,              -- now + 15 min
+  used_at INTEGER                           -- NULL until redeemed (single use)
+);
+CREATE INDEX idx_user_link_codes_expires_at
+  ON user_link_codes (expires_at);
+```
+
+---
+
+### 23. Web console & OAuth state tables
+
+Server-side state for the [web admin console](web-admin.md) and the OAuth flows that gate it. Keys differ per table: the session id, its own append-only id, the `community_id` (command-permission grant), or the OAuth state nonce.
+
+#### `web_sessions`
+
+Session store for the web console: opaque random `id` (the cookie value), sliding `expires_at` with an absolute cap anchored at `created_at`, and `platform` + `instance_key` (migration `034`) so one table serves Discord and Fluxer sign-ins. The OAuth token columns (`030` + `034`) hold **AES-256-GCM `v1.` envelopes, never plaintext** — access/refresh tokens for the signed-in user, encrypted with the HKDF-derived key from `src/web/auth/tokens.js` (rooted at `SESSION_SECRET`); rotating the secret just forces re-login. Primary writer: `src/db/repositories/webSessions.js` (driven by `src/web/auth`).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE web_sessions (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  discord_tag  TEXT,
+  created_at   INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  expires_at   INTEGER NOT NULL
+, access_token_enc TEXT, token_expires_at INTEGER, scopes TEXT, guild_snapshot TEXT, platform TEXT NOT NULL DEFAULT 'discord', instance_key TEXT NOT NULL DEFAULT 'discord', refresh_token_enc TEXT, refresh_expires_at INTEGER);
+CREATE INDEX idx_web_sessions_expires_at
+  ON web_sessions(expires_at);
+CREATE INDEX idx_web_sessions_user
+  ON web_sessions(user_id);
+```
+
+#### `admin_audit`
+
+The durable admin audit trail (migration `029`): one row per mutating web / slash / system action — `origin` CHECK, actor, target, and a `details_json` payload whose credential-shaped keys are **masked** before insert (`src/core/auditTrail.js`). Staff browse it at `/g/:guildId/audit` in the web console; a yearly retention prune (indexed by `056`) bounds growth. Primary writers: `recordSlashAudit` / `recordSystemAudit` in `src/core/auditTrail.js` → `src/db/repositories/adminAudit.js`.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "admin_audit" (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  community_id INTEGER NOT NULL,
+  actor_user_id TEXT,
+  origin TEXT NOT NULL CHECK (origin IN ('web', 'slash', 'system')),
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_id TEXT,
+  details_json TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_admin_audit_guild_created
+  ON admin_audit(community_id, created_at);
+CREATE INDEX idx_admin_audit_created_at
+  ON admin_audit (created_at);
+```
+
+#### `guild_command_permission_oauth`
+
+The per-community Discord OAuth grant behind slash-command permission sync (`016_command_permission_oauth`): `refresh_token` / `access_token` are stored **envelope-encrypted** (`v1.…`, `TOKEN_ENCRYPTION_KEY` via `src/core/thirdPartyTokens.js`; migration `039` back-encrypts pre-encryption rows), plus sync bookkeeping (`last_sync_at` / `last_sync_error`). The grant is obtained by the `/staff syncpermissions` OAuth flow. Primary writer: `src/db/repositories/commandPermissionOauth.js`.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE "guild_command_permission_oauth" (
+      community_id INTEGER NOT NULL PRIMARY KEY,
+      refresh_token TEXT NOT NULL,
+      access_token TEXT,
+      access_expires_at INTEGER,
+      authorized_by_user_id TEXT,
+      last_sync_at INTEGER,
+      last_sync_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+```
+
+#### `fluxer_oauth_transactions`
+
+Single-use server-side state for a Fluxer web sign-in (created in `034`): the row ties the `nonce` already embedded in the signed OAuth `state` to its PKCE `code_verifier` and instance, expiring at `min(state exp, now + 10 minutes)`. Redemption is compare-and-delete, so a state can never be replayed; expired rows are pruned lazily and by the retention sweep. Primary writer: `src/db/repositories/fluxerOAuthTransactions.js`.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE fluxer_oauth_transactions (
+  nonce TEXT PRIMARY KEY,          -- the nonce already inside the signed state
+  code_verifier TEXT NOT NULL,
+  instance_key TEXT NOT NULL,
+  expires_at INTEGER NOT NULL      -- min(state exp, now + 10 minutes)
+);
+```
+
+---
+
+### 24. Migration ledger & SQLite internals
+
+#### `applied_migrations`
+
+Not feature data — the migration **ledger** audited in [Schema version tracking](#schema-version-tracking-pragma-user_version): the ordered `id` list of the last complete migration pass, rebuilt transactionally with the `user_version` stamp. The boot fast-skip requires `user_version` AND this ledger to agree with the registry; on disagreement the idempotent full replay runs and re-stamps both (audit #394). Writer: `src/db/migrate.js` only.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE applied_migrations (
+      seq INTEGER PRIMARY KEY,
+      id TEXT NOT NULL UNIQUE,
+      applied_at INTEGER NOT NULL
+    );
+```
+
+#### `sqlite_sequence`
+
+SQLite's own bookkeeping (auto-created by the first `AUTOINCREMENT` insert): one row per AUTOINCREMENT table with its high-water mark. Not bot data; never touched by application code.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE sqlite_sequence(name,seq);
+```
+
+---
+
 ## Database Migrations
 
 Migrations run **automatically** when the db module loads (`src/db/migrate.js` via `src/db/index.js` / the `src/db.js` facade). Steps live under `src/db/migrations/` and are written to be **idempotent** (`CREATE TABLE IF NOT EXISTS`, `addColumnIfMissing`, gated rebuilds, no-op cleanups).
@@ -1384,7 +1785,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`057` registered the version is `57`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`061` registered the version is `61`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size AND the `applied_migrations` ledger agrees (below), the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **The `applied_migrations` ledger records WHAT ran (audit #394).** A count can never record a set: a length-preserving registry change (reorder, or a swap that keeps the list the same size) leaves `user_version` identical and would fast-skip a replay the changed registry needs. The ledger (`seq`/`id`/`applied_at`) stores the ORDERED id list of the last complete pass and is rebuilt transactionally with the version stamp — a crashed pass leaves neither honest. The fast-skip requires both records to agree; on disagreement (including legacy DBs with no ledger yet) the idempotent replay runs once and re-stamps both.
@@ -1480,6 +1881,7 @@ Concretely this means:
 | `058_gork_role_id` | `guild_settings.gork_role_id` — the role whose mention also invokes gork (`/gork role`, issue #174); `NULL` = role path off |
 | `059_twitch_sub_overrides` | `twitch_channels.notify_channel_id` + `notify_role_id` — per-subscription notification routing/ping overrides (`/twitch notify`, issue #177); `NULL` = use the guild-wide pair |
 | `060_twitch_go_offline` | `twitch_channels.notify_offline` + `last_offline_stream_id` + `last_offline_at` — per-subscription go-offline announcements with their announce watermark (`/twitch offline`, issue #179); flag defaults **off** |
+| `061_twitch_golive_template` | `guild_settings.twitch_golive_template` — per-guild custom Twitch go-live message template (issue #178); `NULL` = built-in default copy `**{streamer}** is live!` |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
@@ -1569,7 +1971,27 @@ This reclaims space from deleted logs and optimizes file size.
 - SQLite database is local-only (no network exposure)
 - Contains Discord user IDs (not PII, but still sensitive)
 - Ticket transcripts and staff notes may hold message content — treat backups carefully
-- No passwords or API keys in database
+- **No passwords are stored** — the web console signs in through OAuth; there is
+  no local password table. The database **does** store third-party secrets,
+  always **envelope-encrypted at rest** (AES-256-GCM `v1.` envelope — never
+  plaintext):
+  - per-repo GitHub PATs — `github_watches.token`
+    (see [GitHub releases](github-releases.md))
+  - Discord command-permission OAuth tokens — `guild_command_permission_oauth.access_token` / `.refresh_token`
+  - web-console OAuth tokens for Discord **and** Fluxer sign-ins — `web_sessions.access_token_enc` / `.refresh_token_enc`
+  - Google Calendar tokens — `event_google_links.access_token_enc` / `.refresh_token_enc`
+  - bridge relay webhook tokens — `bridge_ends.webhook_token_enc`
+- Key domains: `TOKEN_ENCRYPTION_KEY` (32 bytes of base64, `.env` only) powers
+  the PAT / command-permission / Google-calendar envelopes via
+  `src/core/thirdPartyTokens.js`; bridge webhook tokens use the same envelope
+  scheme under a separate `BRIDGE_TOKEN_KEY`; web-console tokens use the
+  HKDF-derived key in `src/web/auth/tokens.js` (rooted at `SESSION_SECRET`).
+  Migration `039` back-encrypted legacy plaintext rows and boot **fails loudly**
+  when the key is missing while token rows exist — the bot never runs with
+  mixed plaintext/ciphertext columns
+- Ciphertext is still a secret: the same file-permission and backup care as the
+  rest of the DB applies (ticket `transcript_token` values are random
+  bearer-capability URLs — treat exports as sensitive)
 
 ### Backup Recommendations
 ```bash
