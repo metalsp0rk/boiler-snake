@@ -16,6 +16,7 @@ Boiler Snake can post rich embeds to independently configured channels:
 | **Audit log** | `audit_log_channel_id` | Bans, kicks, reaction-role changes, level→role grants/drops (including after XP decay), config changes |
 | **Message log** | `message_log_channel_id` | Single and bulk message deletes |
 | **Warning log** (optional) | `warn_log_channel_id` | Warning issue/void embeds; when unset, those events fall back to the **audit log** |
+| **Gork Q&A log** (optional) | `gork_log_channel_id` (`/gork logchannel`) | "Gork Q&A" embeds + failure one-liners; when unset, they fall back to the **audit log** |
 
 Raw XP gain/decay amounts are **not** logged. Only **role changes** caused by XP/level systems appear in the audit log.
 
@@ -120,6 +121,9 @@ npm run register
 - Batched per user per sync (all granted/removed roles in one embed)
 - Source field: `XP / level sync`, `XP decay (level→role)`, `XP decay (reaction role min level)`, or `Admin /grantxp`
 
+**Gork Q&A fallback**
+- The gork audit stream (`src/features/gork/audit.js`) posts a "Gork Q&A" embed per completed exchange (and a compact one-liner for failed/timed-out ones) to the dedicated gork log channel when `/gork logchannel` has set one — and to this **audit log channel** when it has not. So a guild with only `/setlog audit` configured sees every gork exchange here. See [Gork](gork.md).
+
 **Admin configuration changes** (purple embeds)
 - Who changed settings, which slash command, and a before→after (or action) summary
 - Covers successful mutations for:
@@ -128,14 +132,62 @@ npm run register
   - `/setcommandchannel` add/remove
   - `/youtube` add/remove, `/setyoutube` *
   - `/twitch` add/remove, `/settwitch` *
+  - `/github` watch/channel/role/remove/token (clear + set)
   - `/honeypot` channel/banrole/exempt add/del
   - `/reactionrole` panel create/edit/deploy/delete, option add/remove (when emoji is applied), sync
+  - `/gork *` config commands (keyword, role trigger, context, cooldown, rules, search, ste, enable, logchannel, memory, budget, summarize-budget, bans)
+  - `/staff role` add/remove/setlevel
+  - `/ticket settings` + panel create/edit/delete + `close` with a staff note
+  - `/eventreminder` channel/offsets/persistent/clear
+  - `/note settings`
+  - `/setwarn` dm/expiry/log
+  - `/activityconfig` ignore/backfill
 - **Not** logged: read-only commands (`/settings`, `list`/`show` subcommands, `/testnotification`, `/xp`, `/leaderboard`)
+
+## Durable audit trail (`admin_audit`)
+
+The Discord channel embeds above are **best-effort mirrors** — the durable
+record of every mutating action lives in the SQLite `admin_audit` table
+(migration `029_admin_audit`) regardless of what any channel is configured
+to do.
+
+- **Who writes it** — every mutating web, slash, and system action:
+  - Web mutations write inside the request pipeline and **fail closed** — a
+    failed audit insert aborts the response (`src/web/middleware/audit.js`);
+    an unaudited web mutation never silently succeeds.
+  - Slash handlers write `origin: 'slash'` rows via `recordSlashAudit`
+    (`src/core/auditTrail.js`); automated jobs (decay tick, warning expiry,
+    enforcement) write `origin: 'system'` via `recordSystemAudit`. These
+    bot-side writes are deliberately fail-safe: a trail hiccup is logged
+    and swallowed, never changing a command's reply (the mutation already
+    committed; handlers stay the security source of truth).
+  - Rows use the `feature.verb` action vocabulary (`warnings.add`,
+    `xp.grant`, `github.watch_add`, `logs.channel_set`, …) with
+    origin/actor/target columns and a redacted `details_json` (below).
+- **Who reads it** — the web console's audit viewer at
+  `/g/:guildId/audit` (admin-only, read-only, per-guild) — see
+  [Web admin console](web-admin.md).
+- **Retention** — pruned by the hourly retention sweep under
+  `RETENTION_ADMIN_AUDIT_DAYS` (default **365** days — a full annual audit
+  cycle; see [Configuration](configuration.md)).
+
+### Details redaction
+
+`details` objects are scanned before insert (`redactSensitive`, #368): a key
+whose **whole word components** hit the credential vocabulary (`token`,
+`secret`/`secrets`, `password`/`passwords`, `cookie`/`cookies` — so
+`bot_token`, `accessToken`, `clientSecret` all match) has its **value
+masked to `[redacted]`** while the **key stays** — the row shows something
+was hidden instead of nothing being recorded. Matching is word-component,
+not substring: count-sense plurals like `summarize_input_tokens` or
+`max_tokens` (a deliberate vocabulary omission) and words like `tokenizer`
+are legitimate payloads and survive intact. Nothing is ever dropped — the
+pre-#368 belt that deleted whole matching keys is gone.
 
 ## Privacy & retention
 
 - Message content is cached **in memory only** (capped size, ~1 hour TTL) to improve delete logs. It is **not** written to SQLite.
-- Audit/message history lives only in the Discord channels you configure (and Discord’s own retention).
+- The Discord channels you configure are the live feed (subject to Discord's own retention) — but every mutating action additionally lives in the durable `admin_audit` table described above, independent of any channel setting.
 - The existing `activity_log` table is for XP decay math only, not staff audit embeds.
 
 ## Troubleshooting
