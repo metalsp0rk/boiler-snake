@@ -38,7 +38,7 @@ The bot needs **Connect** and **Speak** (and **View Channel**) on voice channels
 
 **Local Node**: run [Lavalink 4.2+](https://github.com/lavalink-devs/Lavalink/releases) with the repo `application.yml`, then:
 
-```env
+```dotenv
 LAVALINK_HOST=127.0.0.1
 LAVALINK_PORT=2333
 LAVALINK_PASSWORD=YOUR_LAVALINK_PASSWORD
@@ -50,7 +50,7 @@ Sidecar notes and plugin-bump steps: [deploy/lavalink/README.md](https://github.
 
 Create an app at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard). Use **Client Credentials** only (no redirect URI, no user OAuth).
 
-```env
+```dotenv
 SPOTIFY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID
 SPOTIFY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET
 ```

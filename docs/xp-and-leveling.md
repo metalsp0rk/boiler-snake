@@ -1,6 +1,8 @@
 # XP and Leveling System
 
-The core feature of Boiler Snake is its customizable XP and leveling system, which奖励s participation across multiple activity types.
+The core feature of Boiler Snake is its customizable XP and leveling system, which rewards participation across multiple activity types.
+
+**On Fluxer:** XP accrual is identical on [Fluxer instances](fluxer.md) — messages and reactions there flow through the same community-scoped award pipeline (same XP math, cooldowns, and level curve), so a message earns `msg_xp` whether it lands on Discord or a Fluxer community. Two caveats: a line that parses as a **prefix command** (`!xp`, `!help`, …) still counts as message activity but earns no XP, and **voice XP has no Fluxer source** — normalized voice states carry no XP arm, so voice remains Discord-only (see [Voice XP](voice-xp.md)).
 
 ## XP Sources
 
@@ -69,7 +71,7 @@ Example with `level_xp_factor=50`:
 ## XP Safety Mechanisms
 
 ### Event-Level Capping
-- Maximum XP awarded per event: **1,000,000,000** (1 billion)
+- **Maximum XP awarded per event:** 1,000,000,000 (1 billion)
 - Prevents accidental or malicious inflation of XP values
 
 ### Database-Level Capping

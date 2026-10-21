@@ -109,7 +109,7 @@ Every webhook-side connect refusal leaves the code pending and says so: `No chan
 | `BRIDGE_ENABLED` | Kill switch for the whole process (not per community). **Unset = ON.** `0`, `false`, `off` = OFF: commands reject, nothing enqueues, the worker sends nothing. Read at command time, at enqueue, and every worker tick — flip it in `.env` and the next read obeys, no restart. Outbox rows queued before a pause send on re-enable; messages posted *while* paused are not copied |
 | `BRIDGE_TOKEN_KEY` | 32 bytes of base64, `.env` only: `openssl rand -base64 32`. Encrypts the relay webhook tokens at rest (AES-256-GCM). Required at **connect**, not at create: a missing key fails with `Set BRIDGE_TOKEN_KEY (32 bytes, base64) before connecting a bridge. Webhook tokens are not stored in plaintext.` and the code stays pending. No rotation in v1 — to change the key, disconnect and reconnect each bridge |
 
-```env
+```dotenv
 # Channel bridge (roadmap/bridge.md) — see docs/bridge.md
 # Kill switch: unset = on; 0 / false / off = paused (no restart needed)
 # BRIDGE_ENABLED=1
