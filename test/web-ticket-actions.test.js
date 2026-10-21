@@ -647,9 +647,20 @@ describe("B. GET actions page — senior-only forms + whitelisted-only flash", (
       }
       assert.ok(w.body.includes(csrfOf[key]), "embedded _csrf equals the session-derived token");
       assert.ok(w.body.includes(`value="${t.id}"`), "row id offered as the ticket_id control");
-      assert.ok(w.body.includes("<td>#1</td>"), "human #1 ticket ref (theme formatTicketRef) rendered alongside");
+      assert.ok(w.body.includes('<td data-label="Ticket">#1</td>'), "human #1 ticket ref (theme formatTicketRef) rendered alongside (#648 stack label)");
     }
     // junior form must not exist to be clicked — page itself is 403 (above).
+  });
+
+  it("#648: action rows carry fixed stack labels; the table opts into .table-stack", async () => {
+    purgeTickets();
+    mkTicket({ creator: USER_PLAIN, channelId: null, reason: "stack probe" });
+    const w = await harness.request(baseUrl, PAGE_PATH, { cookieId: sessionIdOf.senior });
+    assert.equal(w.status, 200);
+    assert.ok(w.body.includes("ticket-actions-table table-stack"), "phone stack opted in");
+    for (const label of ["ID", "Ticket", "Requester", "Staff owner", "Reason", "Actions"]) {
+      assert.ok(w.body.includes(`data-label="${label}"`), `stack label ${label}`);
+    }
   });
 
   it("PRG flash renders ONLY whitelisted slugs — hostile values never echo; foreign slugs invisible", async () => {

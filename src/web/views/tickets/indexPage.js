@@ -139,16 +139,16 @@ function renderTicketIndexContent({
         : userRef(t.community_id, String(t.staff_owner_id), names);
     return html`
       <tr>
-        <td><a href="${href}">#${String(t.ticket_number)}</a></td>
-        <td><code class="gid">${t.community_id}</code></td>
-        <td class="people">
+        <td data-label="Ticket"><a href="${href}">#${String(t.ticket_number)}</a></td>
+        <td data-label="Guild"><code class="gid">${t.community_id}</code></td>
+        <td class="people" data-label="People">
           <div class="who">${creator}</div>
           <div class="who sub">owner ${owner}</div>
         </td>
-        <td>${formatTs(t.closed_at)}</td>
-        <td class="reason">${snippet(t.reason, 100)}${summaryNote(t.ai_summary_json)}</td>
-        <td class="reason">${snippet(t.close_reason, 80)}</td>
-        <td><a href="${href}">View</a></td>
+        <td data-label="Closed">${formatTs(t.closed_at)}</td>
+        <td class="reason" data-label="Subject">${snippet(t.reason, 100)}${summaryNote(t.ai_summary_json)}</td>
+        <td class="reason" data-label="Close reason">${snippet(t.close_reason, 80)}</td>
+        <td data-label="Transcript"><a href="${href}">View</a></td>
       </tr>`;
   });
 
@@ -221,7 +221,7 @@ function renderTicketIndexContent({
   // wide archive rows scroll inside the div instead of forcing the whole
   // page sideways at 360–430px. Markup inside stays byte-untouched.
   const tableBlock = html`<div class="table-scroll">
-    <table>
+    <table class="table-stack">
       <thead>
         <tr>
           <th>Ticket</th>
