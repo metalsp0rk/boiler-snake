@@ -123,16 +123,16 @@ function staffRolesTable(roles, resolveName) {
       "No staff roles configured. Slash: /staff role add <role> junior|senior (server admin)."
     );
   }
-  return html`<table class="list-table staff-table">
+  return html`<table class="list-table staff-table table-stack">
     <thead>
       <tr><th scope="col">Role ID</th><th scope="col">Level</th><th scope="col">Added</th></tr>
     </thead>
     <tbody>
       ${roles.rows.map(
         (r) => html`<tr>
-          <td>${roleRef(r.roleId, resolveName)}</td>
-          <td>${levelPill(r.level)}</td>
-          <td>${formatWhen(r.addedAt)}</td>
+          <td data-label="Role ID">${roleRef(r.roleId, resolveName)}</td>
+          <td data-label="Level">${levelPill(r.level)}</td>
+          <td data-label="Added">${formatWhen(r.addedAt)}</td>
         </tr>`
       )}
     </tbody>
@@ -151,16 +151,16 @@ function levelRolesTable(levelRoles, resolveName) {
       "No level→role mappings configured. Slash: /leveltorole set <role> <level> <drop-days>."
     );
   }
-  return html`<table class="list-table staff-table level-roles-table">
+  return html`<table class="list-table staff-table level-roles-table table-stack">
     <thead>
       <tr><th scope="col">Role ID</th><th scope="col">Level required</th><th scope="col">Drop grace (days)</th></tr>
     </thead>
     <tbody>
       ${levelRoles.rows.map(
         (r) => html`<tr>
-          <td>${roleRef(r.roleId, resolveName)}</td>
-          <td>${r.levelRequired == null ? html`<em class="muted">—</em>` : r.levelRequired}</td>
-          <td>${r.dropGraceDays == null ? html`<em class="muted">—</em>` : r.dropGraceDays}</td>
+          <td data-label="Role ID">${roleRef(r.roleId, resolveName)}</td>
+          <td data-label="Level required">${r.levelRequired == null ? html`<em class="muted">—</em>` : r.levelRequired}</td>
+          <td data-label="Drop grace (days)">${r.dropGraceDays == null ? html`<em class="muted">—</em>` : r.dropGraceDays}</td>
         </tr>`
       )}
     </tbody>
@@ -215,11 +215,11 @@ function staffRoleForms({ guildId, csrfToken }) {
       </p>
       <form class="staff-mutate-form" method="post" action="${base}/add">
         ${csrfInput(csrfToken)} ${roleIdInput(guildId)} ${staffLevelSelect("level")}
-        <button type="submit" class="btn">Add / update staff role</button>
+        <button type="submit" class="btn btn-primary">Add / update staff role</button>
       </form>
       <form class="staff-mutate-form" method="post" action="${base}/setlevel">
         ${csrfInput(csrfToken)} ${roleIdInput(guildId)} ${staffLevelSelect("level")}
-        <button type="submit" class="btn">Change level</button>
+        <button type="submit" class="btn btn-primary">Change level</button>
       </form>
       <form class="staff-mutate-form" method="post" action="${base}/remove">
         ${csrfInput(csrfToken)} ${roleIdInput(guildId)}
@@ -251,7 +251,7 @@ function levelRoleForms({ guildId, csrfToken }) {
         <label>Drop grace (days)
           <input type="number" name="drop_days" min="0" step="1" required/>
         </label>
-        <button type="submit" class="btn">Set mapping</button>
+        <button type="submit" class="btn btn-primary">Set mapping</button>
       </form>
       <form class="staff-mutate-form" method="post" action="${base}/remove">
         ${csrfInput(csrfToken)} ${roleIdInput(guildId)}

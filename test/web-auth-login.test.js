@@ -436,6 +436,11 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
       assert.match(body, /staff access/i);
       // Landing content is fully static text — no nonce'd scripts needed.
       assert.doesNotMatch(body, /<script/);
+      // #653: the shell logo marks the card as the same product — the page
+      // stays shell-free and JS-free (signed out, zero identity data).
+      assert.match(body, /<img class="signin-logo" src="\/static\/logo\.png/, "logo in the card");
+      assert.doesNotMatch(body, /app\.js/, "the landing never references console JS");
+      assert.doesNotMatch(body, /shell-nav/, "no shell sidebar on the public page");
     });
 
     it("signedout=1 shows the signed-out banner; the flag never appears without it", async () => {

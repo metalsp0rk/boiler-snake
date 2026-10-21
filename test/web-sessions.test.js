@@ -1294,3 +1294,44 @@ describe("web session core (auth/sessions, middleware, config)", () => {
     });
   });
 });
+
+describe("#653 sessions view: button copy + one-POST posture (direct render)", () => {
+  const sessionsView = require("../src/web/views/sessions");
+  const session = (id) => ({
+    id,
+    userId: "900000000000000001",
+    discordTag: "staff#0001",
+    createdAt: 1700000000000,
+    lastSeenAt: 1700000001000,
+    expiresAt: 1700000600000,
+  });
+
+  it("current row says 'Sign out this browser', others 'Revoke session'; no confirm field; hooks stay", () => {
+    const selfBody = String(
+      sessionsView.renderYourSessionsBody({
+        guildId: 7,
+        sessions: [session("cur"), session("other")],
+        currentId: "cur",
+        csrfToken: "tok",
+        flash: null,
+      })
+    );
+    assert.ok(selfBody.includes("Sign out this browser"), "current row button copy");
+    assert.ok(selfBody.includes("Revoke session"), "other rows button copy");
+    assert.ok(!selfBody.includes('name="confirm"'), "revoke stays one POST — no confirm field");
+    assert.ok(selfBody.includes("sessions-panel"), "panel hook stays");
+
+    const sysBody = String(
+      sessionsView.renderSystemSessionsBody({
+        guildId: 7,
+        sessions: [session("s1")],
+        currentId: "s1",
+        csrfToken: "tok",
+        flash: null,
+      })
+    );
+    assert.ok(sysBody.includes("system-sessions-panel"), "system panel hook stays");
+    assert.ok(sysBody.includes("Sign out this browser"), "admin's own row signs out this browser");
+    assert.ok(!sysBody.includes('name="confirm"'), "no confirm field added to admin rows");
+  });
+});
