@@ -6,7 +6,7 @@ Feature design and locked decisions live in the repo roadmap ([`roadmap/web-admi
 
 ## Enabling it
 
-The console is **dark by default** — nothing listens unless you set `PUBLIC_HTTP_PORT`[^1] (see [Configuration](configuration.md)). Minimum setup:
+The console is **dark only** — one dark palette ships, and nothing listens unless you set `PUBLIC_HTTP_PORT`[^1] (see [Configuration](configuration.md)). Minimum setup:
 
 1. Set `PUBLIC_HTTP_PORT` and `PUBLIC_BASE_URL` in `.env` (production must be **https** — the bot warns on non-localhost `http://`; put TLS/reverse proxy in front).
 2. Set `SESSION_SECRET` (falls back to `CLIENT_SECRET` with a warning). **Fluxer-only installs** (no Discord `CLIENT_ID`/`CLIENT_SECRET`): set `SESSION_SECRET` **and** `OAUTH_STATE_SECRET` explicitly — both default to the Discord `CLIENT_SECRET`, which doesn't exist there, so a Fluxer login can't complete its OAuth state check (see [Fluxer](fluxer.md)).
@@ -66,13 +66,20 @@ Not in v1 by design: gork administration, music queue control, and **anonymous**
 
 ## Pages
 
-Every `/g/{guildId}` page carries a **sidebar** (Overview / Moderation / Configuration) to the
-different areas — items you don't have tier for are hidden. The path id is the bot's internal
+Every `/g/{guildId}` page carries a **sidebar** with the groups **Overview** (Dashboard,
+Voice), **People** (Users, Leaderboard, Grant XP — admin), **Moderation** (Warnings,
+Staff notes, Ticket actions — senior, Ticket archive), **Community** (Events),
+**Configuration** (Settings, Staff roles, Command visibility, Integrations),
+**Account** (Your sessions) and **Admin** (System, Web sessions, Audit trail) —
+items you don't have tier for are hidden. The Events children (Archive, Presets, Series,
+Scheduled posts) show only while the path is under `/events`. Settings and integrations
+options are **in-page anchors** within those two pages, not separate routes. On a phone
+the sidebar collapses behind the Menu button. The path id is the bot's internal
 **community id** (a small integer — Discord servers and Fluxer communities share the namespace),
 not a Discord snowflake; bookmarks from before the communities migration (`/g/<snowflake>`)
 return 404. Pages:
 - **`/`** — guild list: your staff guilds with tier badges, links into each console (transcripts live at `/t`)
-- **`/g/{guildId}`** — dashboard (bot status, XP/voice/ticket/gork summary cards, **activity & XP charts**, background jobs)
+- **`/g/{guildId}`** — dashboard (at-a-glance stat row, bot status, XP/voice/ticket/gork summary cards, **activity & XP charts**, background jobs)
 - **`/g/{guildId}/users`, `/leaderboard`** — member search, XP detail, leaderboard (same data as `/xp` / `/leaderboard`)
 - **`/g/{guildId}/warnings`** — warnings list + issue/void (the `/warn` twin, staff tier)
 - **`/g/{guildId}/notes`** — staff notes list + add (the `/note` twin, staff tier)
@@ -85,13 +92,13 @@ return 404. Pages:
 - **`/g/{guildId}/commands`** — **Command visibility**: read-only OAuth authorization + last permission-sync state for the staff-tier slash commands (staff tier; the admin trigger lives on the staff page)
 - **`/g/{guildId}/xp/grant`** — grant XP (the `/grantxp` twin, **admin**)
 - **`/g/{guildId}/integrations`** — YouTube / Twitch watches, reaction roles, event reminders, honeypot
-- **`/g/{guildId}/events`** — the **Community Events** calendar (staff): month grid of posted events + drafts/scheduled queues, a create form, and per-event detail with the full action set (publish / edit / duplicate / options / signups / reminders / archive / delete + Retry-sync). Siblings: `/events/archive` (kept history), `/events/scheduled` (due-queue + failures), `/events/series` (skip/stop), `/events/presets` (signup presets CRUD). Every mutation is audited (`events.*`, origin `web`); event visibility follows channel visibility where the bot can see it (fail-open otherwise). See [Community Events](community-events.md).
+- **`/g/{guildId}/events`** — the **Community Events** calendar (staff): month grid of posted events + drafts/scheduled queues (phones get an agenda list of the same data), a create form, and per-event detail with the full action set grouped Post / Signups / Edit / Danger (publish / edit / duplicate / options / signups / reminders / archive / delete + Retry-sync). Siblings: `/events/archive` (kept history), `/events/scheduled` (due-queue + failures), `/events/series` (skip/stop), `/events/presets` (signup presets CRUD — **removing a preset requires typing `DELETE`**, the same typed confirm as permanent event delete). Every mutation is audited (`events.*`, origin `web`); event visibility follows channel visibility where the bot can see it (fail-open otherwise). See [Community Events](community-events.md).
 - **`/g/{guildId}/voice`** — live voice state (read-only; no queue control)
-- **`/g/{guildId}/sessions`** — **Your sessions**: every live sign-in on *your own* account **on the current session's platform** (Discord sign-ins list Discord sessions; a Fluxer instance's sessions are visible only from that instance's sign-in — cross-platform id collisions can't leak), with browser, sign-in/last-seen/expiry times and revoke. Revoking the row marked *current* is a clean logout. You can never see or touch anyone else's sessions from here.
+- **`/g/{guildId}/sessions`** — **Your sessions**: every live sign-in on *your own* account **on the current session's platform** (Discord sign-ins list Discord sessions; a Fluxer instance's sessions are visible only from that instance's sign-in — cross-platform id collisions can't leak), with browser, sign-in/last-seen/expiry times and a **Revoke session** button per row (**Sign out this browser** on the row marked *current* — revoking it is a clean logout, and it's still one click). You can never see or touch anyone else's sessions from here.
 - **`/g/{guildId}/system`**, **`/g/{guildId}/audit`** — process/DB/queue health and the `admin_audit` trail, filtered by guild (both **admin-only**)
 - **`/g/{guildId}/system/sessions`** — **admin + global allow-list**: every live web session in the console (sessions are account-level, not per-guild — the page says so plainly), with revoke for any of them — kill a stale or stolen sign-in without restarting the bot. Because the surface has no guild axis, a **second, global key** guards it: your user id must be listed in **`WEB_GLOBAL_ADMIN_IDS`**. Unset (or missing you) ⇒ fail-closed — you hold admin yet get an actionable refusal naming the knob; your own sessions stay on the self-service Sessions page. Revokes are audited (`sessions.revoke`); session ids are never shown.
 
-**Dashboard charts** render client-side (vendored Chart.js — pinned file, no CDN) from small JSON endpoints at `/g/{guildId}/api/dashboard/…` (staff tier, unauthenticated callers get the same generic 404 as the pages). They are an **enhancement**: with JavaScript off — or if a fetch fails — the same numbers stay visible in the SSR tables, and a chart failure says so in its corner instead of breaking the page. These endpoints are the first slice of the console's long-term API surface.
+**Dashboard charts** render client-side (vendored Chart.js — pinned file, no CDN) from small JSON endpoints at `/g/{guildId}/api/dashboard/…` (staff tier, unauthenticated callers get the same generic 404 as the pages). **The signed-in console requires JavaScript**: the charts, name/channel typeahead, the archive find box, and the phone sidebar collapse are how the console behaves — they are not optional extras with a no-JS equivalent. The signed-out **sign-in landing stays a static page** (no scripts at all). A single chart failure still says so in its corner instead of breaking the page, and the same numbers always live in the page's tables. These endpoints are the first slice of the console's long-term API surface.
 
 **Background jobs** (dashboard) reflects real ticker state: registered scheduler jobs report honest `ok` / `stale` / `unknown` from their last completed tick — a stalled loop goes `stale`, cron-scheduled jobs never fake a status.
 
@@ -110,9 +117,11 @@ mentions, or raw IDs** — typing suggests real names from the bot's cache
 names fill in as the bot's cache warms (browsing people pages and granting
 XP speeds this up, and unknown IDs are looked up in the background
 automatically). Name search finds *tracked* members; IDs always find exact
-rows. Everything works with JavaScript disabled too — the suggestions are
-an enhancement, and the server accepts names, `<@…>` / `<@&…>` mentions,
-and plain IDs alike.
+rows. **Channel id fields** (settings log/post channels, event channels)
+get the same treatment: staff-only, cache-only name suggestions — type a
+channel name and pick it, or keep pasting raw ids, which always works.
+Typeahead rides the console's JavaScript; the server accepts names,
+`<@…>` / `<@&…>` mentions, and plain IDs regardless.
 
 ## People everywhere
 
