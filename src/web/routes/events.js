@@ -884,7 +884,15 @@ function registerEventsCalendarRoutes(app, options = {}) {
       const path = `/g/${cid}/events/presets`;
       try {
         const p = db.getEventPreset(Number(req.body?.preset_id));
+        // Order matters (#649): a missing/foreign preset fails the OWNERSHIP
+        // check first (same "No such preset here." redirect, nothing
+        // deleted); only an OWNED preset then requires the typed DELETE —
+        // the same comparison (and the same idiom) permanent event delete
+        // already uses. The confirm value is a POST body field, never a
+        // query parameter.
         if (!p || p.community_id !== cid) return bad(res, cid, path, "No such preset here.");
+        if (String(req.body?.confirm || "").trim() !== "DELETE")
+          return bad(res, cid, path, "Type DELETE to permanently delete.");
         db.deleteEventPreset(p.id);
         audit(req, "events.preset_delete", p, { via: "web", name: p.name });
         ok(res, cid, path, `Preset "${p.name}" deleted.`);

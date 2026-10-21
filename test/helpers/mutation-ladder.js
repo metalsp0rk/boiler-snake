@@ -1825,7 +1825,7 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       targetType: "event",
       targetId: "1", // the seeded preset (prepare re-mints it)
       mirror: false,
-      fields: { preset_id: "1" },
+      fields: { preset_id: "1", confirm: "DELETE" }, // #649: typed confirm (H2-15)
       prepare: () => {
         purgeEventSurface();
         seedPreset();

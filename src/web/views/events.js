@@ -556,7 +556,11 @@ function renderPresets({ cid, presets, csrfToken }) {
           action="/g/${cid}/events/presets/delete"
           class="inline"
         >
-          ${csrf(csrfToken)}${act(p.id, "delete", "preset_id")}<button class="btn btn--small btn--danger" type="submit">Delete</button>
+          ${csrf(csrfToken)}${act(p.id, "delete", "preset_id")}
+          ${/* #649: typed DELETE confirm (H2-15) — same idiom as the archive/permanent
+               delete forms above; the route compares the value verbatim. */ ""}
+          <label>confirm <input name="confirm" maxlength="10" autocomplete="off" placeholder="DELETE" /></label>
+          <button class="btn btn--small btn--danger" type="submit">Delete</button>
         </form>
       </td>
     </tr>`,
