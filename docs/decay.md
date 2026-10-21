@@ -32,9 +32,9 @@ expression (config sanity rule 4, audit #205 pattern).
 ### How Decay Works
 
 #### Step 1: Activity Check
-For each user in the guild, count messages sent in the last N days:
+For each user in the community, count messages **that earned XP** in the last N days — `activity_log` rows with `kind='message'`, written once per award. Messages inside the message cooldown or filtered by the command-channel / honeypot gates never earned XP and therefore do not count toward the threshold:
 ```javascript
-msgCount = countMessagesInWindow(guildId, userId, decay_window_days)
+msgCount = countMessagesInWindow(communityId, userId, decay_window_days)
 ```
 
 #### Step 2: Apply Decay (if needed)
@@ -108,6 +108,8 @@ For every user who **actually loses XP**, the bot re-evaluates roles at the new 
 
 Reaction-role removal on decay does **not** remove the user’s reaction on the panel message (they can re-react once they meet the level again).
 
+Platform caveat: the table above is the Discord arm. On **Fluxer** communities the `/leveltorole` re-sync runs only when the community row carries `elevated_permissions = 1` (the K8 gate — without it the decay still applies, roles stay untouched), and reaction-role removal stays **Discord-only** (it needs discord.js member objects). See [Fluxer](fluxer.md).
+
 ### Activity Log Integration
 
 Decay uses the `activity_log` table with `kind='message'` entries.
@@ -148,9 +150,10 @@ Each message XP award increments this counter automatically.
 
 ## View Current Decay Settings
 
-Use `/settings` command:
+Use `/settings` command — the **Decay** field of the settings embed shows:
+
 ```
-**Decay:** enabled=true, threshold=20 msgs / 7 days, percent=10%
+Enabled **true** · threshold **20** msgs / **7** days · **10%**
 ```
 
 ## Performance Considerations
@@ -163,14 +166,14 @@ Use `/settings` command:
   - Using database indexes on activity_log
 
 ### Database Load
-Decay query pattern:
+Decay query pattern (`src/db/repositories/activity.js`):
 ```sql
 SELECT COALESCE(SUM(amount), 0) 
 FROM activity_log 
-WHERE guild_id=? AND user_id=? AND kind='message' AND created_at >= ?
+WHERE community_id=? AND user_id=? AND kind='message' AND created_at >= ?
 ```
 
-Index in place: `idx_activity_recent (guild_id, user_id, kind, created_at)`
+Index in place: `idx_activity_recent (community_id, user_id, kind, created_at)` — both the counter and the index are keyed by the internal `communities.id` (`community_id INTEGER`) since migration `034_communities` re-keyed the guild-scoped tables (same treatment as [Warnings](warnings.md)).
 
 ## Edge Cases
 
