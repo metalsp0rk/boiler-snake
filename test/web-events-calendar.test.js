@@ -490,6 +490,94 @@ describe("web events calendar (routes/events.js)", () => {
     assert.ok(!api.listEventPresets(CID_A).some((x) => x.id === p.id));
   });
 
+  // ── #650: calendar chrome + flash escape ─────────────────────────────────
+
+  it("#650: month page ships the agenda twin, the in-page nav, and the Today label", async () => {
+    seedEvent({ title: "Agenda Twin Show" });
+    const page = await req(`/g/${CID_A}/events`, { cookie: cookieOf.staff });
+    assert.match(page.body, /<ol class="cal-agenda">/, "agenda list (same byDay, CSS-swapped under 719px)");
+    assert.match(page.body, /<nav class="cal-pages"/, "one-line in-page nav to the event sub-pages");
+    assert.match(page.body, /Agenda Twin Show/);
+    assert.match(page.body, /cal-today-tag/, "today gets a TEXT label, not color alone");
+    assert.match(page.body, /class="cal-grid"/, "the desktop grid still ships in the HTML");
+  });
+
+  it("#650: event pages render exactly one <h1> — the shell heading", async () => {
+    for (const path of ["", "archive", "presets", "series", "scheduled"]) {
+      const page = await req(`/g/${CID_A}/events${path ? `/${path}` : ""}`, {
+        cookie: cookieOf.staff,
+      });
+      const h1s = page.body.match(/<h1[ >]/g) || [];
+      assert.equal(
+        h1s.length,
+        1,
+        `/events${path ? `/${path}` : ""} must not render a second h1 (found ${h1s.length})`,
+      );
+    }
+  });
+
+  it("#650: a service error containing <script> renders as escaped TEXT in the flash", async () => {
+    // Publish runs the real service path; the channel rejects with a hostile
+    // message. The doctrine is decode-once-then-escape-ONCE: the payload must
+    // arrive as visible text — raw markup is XSS, double-escaping is the bug
+    // the single-escape pass (banner gets the decoded string once) prevents.
+    const fakeChannel = {
+      id: "710000000000000011",
+      guild: null,
+      send: async () => {
+        throw new Error("<script>alert(1)</script>");
+      },
+      permissionsFor: () => ({ has: () => true }),
+    };
+    const member = {
+      id: USER_STAFF,
+      roles: { cache: new Map([["@everyone", {}], [ROLE_JUNIOR, {}]]) },
+    };
+    const me = { id: "BOT", roles: { cache: new Map(), highest: { position: 9 } } };
+    const guild = {
+      id: GUILD_A,
+      members: {
+        cache: new Map([["BOT", me], [USER_STAFF, member]]),
+        me,
+        fetch: async (id) => guild.members.cache.get(id) ?? null,
+      },
+      channels: { cache: new Map([[fakeChannel.id, fakeChannel]]) },
+      roles: {
+        cache: new Map(),
+        fetch: async () => null,
+        create: async () => ({ id: "725000000000009999", name: "t", position: 3 }),
+      },
+    };
+    fakeChannel.guild = guild;
+    fakeClient = {
+      user: { id: "BOT" },
+      guilds: { cache: new Map([[GUILD_A, guild]]) },
+      channels: { cache: new Map([[fakeChannel.id, fakeChannel]]) },
+    };
+
+    const ev = seedEvent({ title: "Hostile Error Event", status: "draft" });
+    const pub = await post(`/g/${CID_A}/events/${ev.id}/publish`, "staff", {});
+    const q = qsOf(pub.location);
+    assert.ok(q.err, `expected err flash, got ${pub.location}`);
+
+    // Re-render the redirect TARGET (query included) — that is where the
+    // flash surfaces to the operator.
+    const page = await req(pub.location, { cookie: cookieOf.staff });
+    assert.ok(
+      page.body.includes("&lt;script&gt;alert(1)&lt;/script&gt;"),
+      "flash must contain the ESCAPED payload as visible text",
+    );
+    assert.ok(
+      !page.body.includes("<script>alert(1)</script>"),
+      "flash must never echo raw markup",
+    );
+    assert.ok(
+      !page.body.includes("&amp;lt;script&amp;gt;"),
+      "single escape only — a second escape would render mangled &amp;lt; text",
+    );
+    fakeClient = null;
+  });
+
   // ── series + scheduled pages ─────────────────────────────────────────────
 
   it("series page lists a seeded series; skip advances the cursor; stop ends it", async () => {
