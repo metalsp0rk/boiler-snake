@@ -148,17 +148,17 @@ function musicSection(music, resolveChannelName) {
     ${music.queue
       ? html`
           ${music.queue.rows.length
-            ? html`<table class="list-table settings-table voice-queue">
+            ? html`<table class="list-table settings-table voice-queue table-stack">
                 <thead>
                   <tr><th scope="col">#</th><th scope="col">Track</th><th scope="col">Duration</th><th scope="col">Requested by</th></tr>
                 </thead>
                 <tbody>
                   ${music.queue.rows.map(
                     (r) => html`<tr>
-                      <td class="voice-pos">${r.position}</td>
-                      <td>${r.title}<br/><span class="voice-meta">${r.author}</span></td>
-                      <td>${durationCell(r)}</td>
-                      <td>${r.requesterId ? html`<code>${r.requesterId}</code>` : html`<em class="muted">—</em>`}</td>
+                      <td class="voice-pos" data-label="#">${r.position}</td>
+                      <td data-label="Track">${r.title}<br/><span class="voice-meta">${r.author}</span></td>
+                      <td data-label="Duration">${durationCell(r)}</td>
+                      <td data-label="Requested by">${r.requesterId ? html`<code>${r.requesterId}</code>` : html`<em class="muted">—</em>`}</td>
                     </tr>`
                   )}
                 </tbody>
@@ -199,19 +199,19 @@ function liveSection(live, resolveChannelName) {
     );
   }
   const rows = live.channels.length
-    ? html`<table class="list-table settings-table">
+    ? html`<table class="list-table settings-table voice-live table-stack">
         <thead>
           <tr><th scope="col">Channel</th><th scope="col">Humans</th><th scope="col">AFK</th><th scope="col">Muted/deaf</th><th scope="col">Eligible</th><th scope="col">Earning XP</th></tr>
         </thead>
         <tbody>
           ${live.channels.map(
             (c) => html`<tr>
-              <td>${channelRef(c.channelId, resolveChannelName)}</td>
-              <td>${c.humans}</td>
-              <td>${c.afk}</td>
-              <td>${c.mutedOrDeaf}</td>
-              <td>${c.eligible}</td>
-              <td>${c.earning ? pill("playing", "yes") : pill("idle", "no")}</td>
+              <td data-label="Channel">${channelRef(c.channelId, resolveChannelName)}</td>
+              <td data-label="Humans">${c.humans}</td>
+              <td data-label="AFK">${c.afk}</td>
+              <td data-label="Muted/deaf">${c.mutedOrDeaf}</td>
+              <td data-label="Eligible">${c.eligible}</td>
+              <td data-label="Earning XP">${c.earning ? pill("playing", "yes") : pill("idle", "no")}</td>
             </tr>`
           )}
         </tbody>

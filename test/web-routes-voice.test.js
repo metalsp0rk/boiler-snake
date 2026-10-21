@@ -451,6 +451,9 @@ describe("web voice & music page (GET /g/:guildId/voice, staff tier, view-only)"
       assert.ok(body.includes("Second &lt;img src=x onerror=alert(1)&gt; Track"), "queue title escaped");
       assert.ok(!body.includes("<img src=x onerror="), "no live img probe");
       assert.ok(body.includes("Showing the first 10 of 12 queued tracks"), "truncation honesty");
+      // #653: the queue table stacks on phones with fixed cell labels.
+      assert.ok(body.includes("voice-queue table-stack"), "queue table uses the stack contract");
+      assert.ok(body.includes('data-label="Track"'), "queue cells labelled for stacked rows");
       assert.ok(body.includes("12 in queue"), "queue total");
       assert.ok(body.includes("volume 70%"), "volume line");
       assert.ok(body.includes("(Gym &lt;i&gt;live&lt;/i&gt;)"), "player channel (cache-only name)");

@@ -637,6 +637,24 @@ describe("web staff page + command-visibility panel (GET-only, staff tier)", () 
       assert.equal(body.match(/\son[a-z]+\s*=\s*["']/i), null, "no inline handlers");
     });
 
+    it("#653: remove stays one POST with the SAME fields (no confirm); tables stack with labels", async () => {
+      await mountApp();
+      const { res, body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.admin });
+      assert.equal(res.status, 200);
+      assert.ok(
+        !body.includes('name="confirm"'),
+        "staff-role / level-role remove gained NO confirm field (stays one POST)"
+      );
+      assert.match(
+        body,
+        /action="\/g\/\d+\/staff\/role\/remove"[\s\S]{0,600}?name="role_id"/,
+        "role-remove posts _csrf + role_id exactly as before"
+      );
+      assert.ok(body.includes("table-stack"), "staff tables adopt the shared stacking contract");
+      assert.ok(body.includes('data-label="Role ID"'), "stacked cell label present");
+      assert.ok(body.includes('id="level-roles"'), "settings anchor id survives the restyle");
+    });
+
     it("staff/senior viewers: NO admin-tier role forms; level-role forms DO render", async () => {
       await mountApp();
       for (const cookie of [cookieOf.staff, cookieOf.senior]) {

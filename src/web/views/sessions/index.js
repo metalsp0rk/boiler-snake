@@ -106,7 +106,9 @@ function renderSelfRow({ session, guildId, csrfToken, isCurrent }) {
         <form class="ticket-inline-form" method="post" action="/g/${gid}/sessions/revoke">
           <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>
           <input type="hidden" name="created_at" value="${session.createdAt}"/>
-          <button type="submit" class="btn btn-write btn-sm">Revoke</button>
+          <button type="submit" class="btn btn-danger btn-sm">
+            ${isCurrent ? "Sign out this browser" : "Revoke session"}
+          </button>
         </form>
       </td>
     </tr>`;
@@ -184,7 +186,9 @@ function renderSystemRow({ session, guildId, csrfToken, isCurrent, names }) {
           <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>
           <input type="hidden" name="target_user_id" value="${session.userId}"/>
           <input type="hidden" name="created_at" value="${session.createdAt}"/>
-          <button type="submit" class="btn btn-write btn-sm">Revoke</button>
+          <button type="submit" class="btn btn-danger btn-sm">
+            ${isCurrent ? "Sign out this browser" : "Revoke session"}
+          </button>
         </form>
       </td>
     </tr>`;
