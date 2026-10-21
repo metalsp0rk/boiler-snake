@@ -230,7 +230,13 @@ function renderDetailsCell(detailsJson) {
   const shown = truncated
     ? `${text.slice(0, AUDIT_DETAILS_DISPLAY_MAX)} …[truncated in display]`
     : text;
-  return html`<pre class="audit-details">${shown}</pre>`;
+  // #652: the JSON is ONE disclosure away, not a wide cell. Native
+  // <details>/<summary> — no client script. Still escaped plain text
+  // through `html`; never raw()-ed.
+  return html`<details class="audit-details-disclosure">
+    <summary>JSON · ${shown.length} chars${truncated ? " (display-truncated)" : ""}</summary>
+    <pre class="audit-details">${shown}</pre>
+  </details>`;
 }
 
 /** Target cell — "type:id" from row-carried columns only; never a link. */
@@ -283,22 +289,22 @@ function renderAuditBody(req, { page, names = null }) {
   const filterOrigin = page.origin || "all";
 
   const list = page.rows.length
-    ? html`<table class="list-table audit-table">
+    ? html`<table class="list-table audit-table table-stack">
         <thead>
           <tr><th scope="col">#</th><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Origin</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Details</th></tr>
         </thead>
         <tbody>
           ${page.rows.map(
             (row) => html`<tr class="row-audit">
-              <td class="audit-id">${row.id}</td>
-              <td>${formatWhen(row.created_at)}</td>
-              <td>${row.actor_user_id
+              <td data-label="ID" class="audit-id">${row.id}</td>
+              <td data-label="When">${formatWhen(row.created_at)}</td>
+              <td data-label="Actor">${row.actor_user_id
                 ? userRef(guildId, String(row.actor_user_id), names)
                 : html`<span class="muted">—</span>`}</td>
-              <td>${originBadge(row.origin)}</td>
-              <td><code class="audit-action">${row.action}</code></td>
-              <td>${targetCell(row)}</td>
-              <td class="audit-details-cell">${renderDetailsCell(row.details_json)}</td>
+              <td data-label="Origin">${originBadge(row.origin)}</td>
+              <td data-label="Action"><code class="audit-action">${row.action}</code></td>
+              <td data-label="Target">${targetCell(row)}</td>
+              <td class="audit-details-cell" data-label="Details">${renderDetailsCell(row.details_json)}</td>
             </tr>`
           )}
         </tbody>
