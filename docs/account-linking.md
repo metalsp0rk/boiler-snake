@@ -59,19 +59,20 @@ Every verb exists on both platforms — `/link …` on Discord, `!link …` on F
 | `/link create` · `!link create` | Mint a one-time link code for you. Shown once — ephemeral on Discord, by DM on Fluxer. Replaces any unspent code you minted earlier (one live code at a time, #426). |
 | `/link connect <code>` · `!link connect <code>` | Redeem a code from the other platform's side. |
 | `/link status` · `!link status` | Show your link: the peer account, the date it was created, mirror percentages, memory-mirror state. On Fluxer the pairing is delivered by DM; the channel only gets an ack. |
-| `/link config <direction> <pct>` | Set one mirror direction. Direction is from the **source** side's point of view: `discord-to-fluxer` or `fluxer-to-discord`. Integer 0–100. |
+| `/link config <direction> <pct>` · `!link config <direction> <pct>` | Set the XP mirror rate. `direction` choices: `to-fluxer`, `from-fluxer`, `to-discord`, `from-discord`, `both`, plus the raw storage keys `a_to_b` (Discord → Fluxer) / `b_to_a` (Fluxer → Discord) — resolved against the **caller's** platform: a Discord caller uses `to-fluxer` / `from-fluxer`, a Fluxer caller `to-discord` / `from-discord`. `pct` is an integer 0–100 and must accompany a direction. |
 | `/link config memory on\|off` | Turn gork memory mirroring on/off for the link. Off = no new mirrored writes and neither side's gork reads the other's memories (#425); already-mirrored rows stay until pruned. |
 | `/link remove` · `!link remove` | Delete your link. Mirrored data already written stays (see Limitations). Unspent link codes on both sides are voided (#426). |
 
-Fluxer uses named-style plain arguments (`!link connect LNK-…`, `!link config fluxer-to-discord 50`); the Discord slash command offers the same as options.
+Fluxer uses named-style plain arguments (`!link connect LNK-…`, `!link config to-discord 50`); the Discord slash command offers the same as options (`direction:`, `pct:`).
 
 **Mirror configuration examples** — rates are per direction and per link:
 
 ```
-/link config direction:discord-to-fluxer percent:50   → Discord XP flows to Fluxer at half rate
-!link config fluxer-to-discord 50                     → Fluxer XP flows to Discord at half rate
-!link config fluxer-to-discord 0                      → stop mirroring that direction
-!link config memory off                               → stop copying gork memories
+/link config direction:to-fluxer pct:50       → Discord XP flows to Fluxer at half rate
+/link config direction:both pct:100           → both directions at full rate
+!link config to-discord 50                    → Fluxer XP flows to Discord at half rate
+!link config to-discord 0                     → stop mirroring that direction
+/link config memory:off                       → stop copying gork memories
 ```
 
 ## How the XP mirror behaves

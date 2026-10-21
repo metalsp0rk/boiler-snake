@@ -42,12 +42,14 @@ Display top users by XP with a generated PNG leaderboard.
 ```bash
 /leaderboard
 /leaderboard limit:20
+/leaderboard page:3
 ```
 
 **Options**:
 - `limit`: Users per page (integer 1–20, default **10**).
+- `page`: Page number (integer 1–20, default **1**).
 
-**Response**: Public message with content like `**Leaderboard — ranks 1–10**` and PNG attachment `boiler-snake-leaderboard.png` (not ephemeral), plus a **◀ Prev / Next ▶** button row. Only the user who ran the command can page; each click re-queries current XP. Prev is disabled on page 1 and Next on the last page.
+**Response**: Public message with content like `**Leaderboard — ranks 1–10**` and PNG attachment `boiler-snake-leaderboard.png` (not ephemeral), plus a **◀ Prev / Next ▶** button row. Only the user who ran the command can page; each click re-queries current XP. Prev is disabled on page 1 and Next on the last page — with **page 20 as a hard ceiling** (`page:` clamps to 1–20 too), so browsable ranks stop at page 20 × page size regardless of guild size.
 
 ### `/warn mine` - View Your Warnings
 
@@ -98,7 +100,7 @@ Control your own event reminder pings. See [Scheduled Event Reminders](../event-
 /eventreminder status              # Guild opt-out, muted events, roles you hold
 ```
 
-Guild opt-out always wins over per-event unmute. Other `/eventreminder` subcommands require **Manage Guild** or being the scheduled event’s **creator** (see below).
+Guild opt-out always wins over per-event unmute. The config subcommands `edit`/`clear`/`sync` require **Manage Server** or being the scheduled event’s **creator** (see below); `create` is retired to a pointer reply.
 
 ### `/play` - Play a track
 
@@ -416,10 +418,10 @@ Grant a role when users reach a certain level, with optional drop grace period.
 /leveltorole set role:@Member level:5 dropdays:7
 ```
 
-**Parameters**:
+**Parameters** (all three required):
 - `role`: Role to grant (required)
-- `level`: Level threshold (≥ 0)
-- `dropdays`: Days to keep role after dropping below threshold
+- `level`: Level threshold (required, ≥ 0)
+- `dropdays`: Days to keep role after dropping below threshold (required, ≥ 0)
 
 **Example**:
 ```bash
@@ -632,6 +634,35 @@ Opt one subscription in to a "went offline" announcement when its stream ends (i
 /twitch offline channel:SomeStreamer enabled:False
 ```
 
+#### Subcommand: `clips` - New-Clip Alerts
+
+Toggle new-clip notifications for one subscribed channel (default **off**). Clips created **after** the toggle was enabled are announced (no backfill), up to 5 per poll; alerts follow the `/twitch notify` routing but never ping the role.
+
+**Usage**:
+```bash
+/twitch clips channel:SomeStreamer enabled:True
+```
+
+#### Subcommand: `vod` - New-VOD Alerts
+
+Toggle new-VOD (past-broadcast) notifications for one subscribed channel (default **off**). Archive broadcasts only, newest-first, same flood cap as clips; media alerts never ping the role.
+
+**Usage**:
+```bash
+/twitch vod channel:SomeStreamer enabled:True
+```
+
+#### Subcommand: `template` - Go-Live Message Template
+
+Show or set the guild's custom go-live content line. Placeholders: `{streamer}` `{login}` `{title}` `{game}` `{url}` `{viewers}` `{uptime}`. `clear:True` restores the built-in default on its own (drop `text`); with no options it shows the current template.
+
+**Usage**:
+```bash
+/twitch template
+/twitch template text:**{streamer}** is live playing {game} — {url}
+/twitch template clear:True
+```
+
 ### `/settwitch` - Twitch Configuration
 
 Configure Twitch notification settings.
@@ -681,10 +712,18 @@ Track GitHub repositories and post release notes when new releases are cut (chec
 
 ```bash
 /github watch repo:owner/name channel:#releases
-/github watch repo:https://github.com/owner/repo channel:#releases token:YOUR_TOKEN
+/github watch repo:https://github.com/owner/repo
 ```
 
-Accepts `owner/name`, GitHub URL, or SSH remote. Optional `token` for private repos / higher rate limits (stored locally, never displayed). Re-running updates channel/token without resetting release state.
+`repo` **required** (`owner/name`, GitHub URL, or SSH remote); `channel` optional. Re-running an existing watch updates the channel without resetting release state. There is **no `token:` option** — it was removed (audit INT-9): slash option values render publicly in channel, which leaked entered PATs. For a private repo, store the PAT with `/github token` below, then watch normally.
+
+#### Subcommand: `token` - Enter the Repo Token (private prompt)
+
+```bash
+/github token repo:owner/name
+```
+
+Opens a **private modal** to enter/clear the GitHub token for one repository — the only way to track **private** repos (creates the watch if new; modal submissions are visible only to the submitter). Refuses up front, before the prompt opens, when `TOKEN_ENCRYPTION_KEY` is unset (tokens are never stored unencrypted). Tokens are validated against GitHub first and stored envelope-encrypted; `/github list` only shows "token set". See [GitHub Release Notifications](../github-releases.md).
 
 #### Subcommand: `remove` - Stop Tracking
 
@@ -727,7 +766,7 @@ Configure trusted staff roles for the admin/staff gate, honeypot exemption, and 
 - `role add` / `remove` / `setlevel` / `syncpermissions` — **ManageGuild** only
 - `role list` / `settings` — **Staff gate** in the handler, but the command itself is admin-tier in the picker; staff without Manage Server use **`/staffsettings`** (#599, see below)
 
-**`/staff syncpermissions`** — optional OAuth flow so staff roles can **see** staff-tier slash commands in Discord’s picker (handlers already enforce the staff gate). Requires operator setup (`CLIENT_SECRET`, public HTTP, OAuth redirect). See [Staff Roles](../staff-roles.md#command-visibility-sync-optional).
+**`/staff syncpermissions [force_reauth]`** — optional OAuth flow so staff roles can **see** staff-tier slash commands in Discord’s picker (handlers already enforce the staff gate). `force_reauth:true` always opens a fresh authorize link instead of reusing a stored token. Requires operator setup (`CLIENT_SECRET`, public HTTP, OAuth redirect). See [Staff Roles](../staff-roles.md#command-visibility-sync-optional).
 
 **Levels**:
 - **junior** — passes staff gate + honeypot exempt; **no** automatic ticket channel view
@@ -778,9 +817,7 @@ Read-only twin of `/staff role list` and `/staff settings` (#599). `/staff` regi
 
 The **bot-owned** events system: create events the bot posts (no Discord "Scheduled Event" dependency), members RSVP with **buttons**, and signups drive an attendee role, reminders, and optional Google Calendar entries. The feature spans **four public-tier commands** — `/event` (lifecycle), `/eventsignup` (signups/options/presets), `/eventconfig` (settings/reminders/series/Google Calendar), `/eventchannels` (channels + cross-posting). Full guide: [Community Events](../community-events.md).
 
-**Permission**: all four commands register at the **public** picker tier; each group gates in the handler — `create`/`edit`/`post`/`delete`/`duplicate`/`adopt` and `list` are open to everyone by default (a configured `event_channels` **create-role** narrows creation), organizer/staff gates apply per event (`edit`, `response`, `options`, `series`, per-event `reminders add/remove/list`, `channel`, `crosspost`), and `/eventconfig settings …` is **Staff gate**.
-
-Slash visibility: staff-tier subcommands ride ManageGuild `defaultMemberPermissions` — same posture as the rest of the console (see [Staff Roles](../staff-roles.md)); handlers are the source of truth.
+**Permission**: all four commands register **without `defaultMemberPermissions`** — the slash picker is visible to everyone and every gate lives in the handlers (the source of truth). `create` and `list` are open to everyone by default (a configured `event_channels` **create-role** narrows creation), organizer/staff gates apply per event (`edit`, `post`, `duplicate`, `delete`, `response`, `options`, `series`, per-event `reminders add/remove/list`, `channel`, `crosspost`), **`/event adopt` is a plain Staff gate** (no organizer arm), and `/eventconfig settings …` is **Staff gate**.
 
 #### Subcommands
 
@@ -813,7 +850,7 @@ Organizer-side signup management, live option editing, and saved signup presets 
 
 Guild-wide Community Events settings, reminder preferences/offsets, recurring-series control, and Google Calendar sync. Full guide: [Community Events](../community-events.md).
 
-**Permission**: registers at the **public** picker tier; `reminders on|off|status|mute|unmute|default` are personal prefs (open to all), `reminders add/remove/list` and `series` gate to **Staff gate or event organizer**, and `settings …` plus `google autoset` are **Staff gate** (`google connect|status|disconnect` act on your own account).
+**Permission**: registers at the **public** picker tier; `reminders status|mute|unmute` are personal prefs (open to all), `reminders on|off|default` are **Staff gate** guild-default toggles for **new** events (a denial points members at `/eventreminder optout` for personal muting — #348), `reminders add/remove/list` and `series` gate to **Staff gate or event organizer**, and `settings …` plus `google autoset` are **Staff gate** (`google connect|status|disconnect` act on your own account).
 
 #### Subcommands
 
@@ -878,7 +915,7 @@ Bot needs **Manage Roles** (role above `event-*`), send access in the notify cha
 | `sync` | Re-fetch Interested users and reconcile role membership |
 | `setchannel` | Guild default notify channel (text/announcement); per-event modal can override |
 
-**Create/edit modal fields**: shortname → role `event-<shortname>` (create prefills a slug of the event title, with `-2`/`-3` on collision); offset multi-select (defaults 1d / 1h / 15m) + optional custom offsets (`2h, 10m`); optional channel override; optional **embed description** with placeholders `{event}`, `{location}`, `{starts_in}`, `{starts_at}`, `{url}`, `{description}`, `{offset}`, `{role}`. Delivery is always an embed + role mention in message content.
+**Edit modal fields** (`edit` only — the create modal is retired with `create`): shortname → role `event-<shortname>` (prefilled with the config’s current shortname; must stay unique); offset multi-select (defaults 1d / 1h / 15m) + optional custom offsets (`2h, 10m`); optional channel override; optional **embed description** with placeholders `{event}`, `{location}`, `{starts_in}`, `{starts_at}`, `{url}`, `{description}`, `{offset}`, `{role}`. Delivery is always an embed + role mention in message content.
 
 ### `/honeypot` - Honeypot Channel Management
 
@@ -887,10 +924,11 @@ Configure decoy channels that ban users who post, roles that ban on grant, and r
 **Permission**:
 - `channel` / `banrole` — **Staff gate**
 - `exempt` — **ManageGuild only** (mutates `staff_roles`, same as `/staff role`)
+- `safety resume` — **ManageGuild only** in the handler (staff-tier picker)
 
 Replies are ephemeral.
 
-**Exempt list** = shared `staff_roles` table (same as `/staff`). `/honeypot exempt add` adds a staff role at default **senior** if new.
+**Exempt list** = shared `staff_roles` table (same as `/staff`). `/honeypot exempt add` adds a staff role at default **junior** if new; existing rows keep their level (#438 — promote via `/staff role setlevel`).
 
 #### Subcommand group: `channel` - Manage Honeypot Channels
 
@@ -938,7 +976,7 @@ Alias for staff-role membership used by honeypot enforcement. Prefer `/staff rol
 /honeypot exempt add role:@Moderator
 ```
 
-Adds the role to `staff_roles` (default **senior** if new). Members with **any** staff role will not be banned for posting in honeypot channels or receiving honeypot ban roles. Configure exempt / staff roles **before** enabling honeypots.
+Adds the role to `staff_roles` (new roles join at **junior**; existing roles keep their level — #438). Members with **any** staff role will not be banned for posting in honeypot channels or receiving honeypot ban roles. Configure exempt / staff roles **before** enabling honeypots.
 
 ##### `exempt list` - List Exempt Roles
 
@@ -953,6 +991,14 @@ Adds the role to `staff_roles` (default **senior** if new). Members with **any**
 ```
 
 Removes the role from `staff_roles` entirely (also drops staff gate and ticket overwrites for that role).
+
+#### Subcommand group: `safety` - Mass-Ban Safety Valve
+
+```bash
+/honeypot safety resume
+```
+
+If the #440 mass-ban safety valve **paused** honeypot enforcement after a ban burst, `resume` clears the pause and re-arms banning (replies honestly when nothing is paused). **Manage Server only** in the handler — the picker itself is staff-tier. See [Honeypot](../honeypot.md).
 
 ### `/reactionrole` - Reaction Role Panels
 
@@ -1061,11 +1107,14 @@ After `/ticket close`, staff can also attach a note via `staff_note:` or the **A
 ```bash
 /note edit id:12 content:Updated context
 /note edit id:12                    # modal prefilled with current body
-/note delete id:12
+/note delete id:12                  # no confirm → preview only
+/note delete id:12 confirm:true     # actually deletes
 /note info id:12
 ```
 
 `id` is the per-guild note number (**N-12**), not an internal database id.
+
+`delete` is **confirm-once** (#471 H2-15): without `confirm:true` nothing is deleted — the reply previews the note (ref, subject, snippet) and names what will be lost; re-run with `confirm:true` to proceed. The body erase is irreversible (no restore command exists).
 
 #### Subcommand: `settings`
 
@@ -1191,7 +1240,9 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 /gork budget default 10
 /gork budget channel target:#general limit:3
 /gork budget list
-/gork log off
+/gork log enabled:false
+/gork logchannel #gork-qa
+/gork logchannel clear:true
 /gork summarize last:200 channel:#support
 /gork summarize from:https://discord.com/channels/…/…/… to:https://discord.com/channels/…/…/…
 /gork summarize-budget 80000
@@ -1213,7 +1264,8 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 | `bans` | List the users banned from gork in this server |
 | `memory <action>` | Curate the per-person community memory — see below |
 | `budget <action>` | Per-user daily usage budgets per channel/category/server (tri-state, off by default) — see below |
-| `log <on\|off>` | Toggle the gork [interaction log](../gork-logging.md) (every agent call stored for replay/debug) — **on** by default, per-guild |
+| `log enabled:<true\|false>` | Toggle the gork [interaction log](../gork-logging.md) (every agent call stored for replay/debug) via the **required boolean** `enabled` (True/False picker — not an on/off choice) — **on** by default, per-guild |
+| `logchannel [<channel>\|clear:true]` | Dedicated channel for Gork Q&A audit embeds; without it they fall back to the `/setlog audit` channel (`clear:true` restores the fallback) |
 | `summarize <mode>` | Conversation rundown embed for a message range (staff, shared 10-min guild cooldown) — see below |
 | `summarize-budget <tokens>` | Per-guild **input token budget** for `/gork summarize` (8,000–200,000; default 80,000) — see below |
 | `status` | Ephemeral status embed: enabled, keyword, window, cooldown, rules, search, ste, AI provider configured?, `SEARXNG_URL` set?, banned-user count, memory state, budget default + rule count, summarize input token budget |
@@ -1316,13 +1368,16 @@ role — the service re-checks on every call).
 | `/ticket setcategory\|setarchive\|setratelimit` | Staff gate | Yes |
 | `/honeypot channel\|banrole` | Staff gate | Yes |
 | `/honeypot exempt …` | ManageGuild | Yes |
+| `/honeypot safety resume` | ManageGuild (handler gate; staff-tier picker) | Yes |
 | `/eventreminder setchannel` | Staff gate | Yes |
 | `/eventreminder edit\|clear\|sync` | ManageGuild **or** event creator | Yes |
 | `/event create\|list\|wizard` | Public (create narrowed by `event_channels` create-role when set) | Yes |
-| `/event edit\|post\|duplicate\|delete\|adopt` | Staff gate **or** event organizer | Yes |
+| `/event edit\|post\|duplicate\|delete` | Staff gate **or** event organizer | Yes |
+| `/event adopt` | Staff gate (plain — no organizer arm) | Yes |
 | `/eventsignup response\|options` | Staff gate **or** event organizer | Yes |
 | `/eventsignup preset` | Staff gate | Yes |
-| `/eventconfig reminders on\|off\|status\|mute\|unmute\|default` | Public (own prefs) | Yes |
+| `/eventconfig reminders status\|mute\|unmute` | Public (own prefs) | Yes |
+| `/eventconfig reminders on\|off\|default` | Staff gate (guild default for **new** events; personal muting is `/eventreminder optout` — #348) | Yes |
 | `/eventconfig reminders add\|remove\|list` | Staff gate **or** event organizer | Yes |
 | `/eventconfig series` | Staff gate **or** event organizer | Yes |
 | `/eventconfig settings …` | Staff gate | Yes |
@@ -1338,10 +1393,11 @@ role — the service re-checks on every call).
 | `/youtube add\|remove\|list` | Staff gate | Yes |
 | `/setyoutube channel\|interval\|uploadrole` | Staff gate | Yes |
 | `/testnotification` | Staff gate | No |
-| `/twitch add\|remove\|list` | Staff gate | Yes |
+| `/twitch add\|remove\|list\|clips\|vod\|offline\|notify\|template` | Staff gate | Yes |
 | `/settwitch channel\|role\|interval\|settings` | Staff gate | Yes |
+| `/github watch\|token\|remove\|list\|channel\|role\|check` | Staff gate | Yes |
 | `/reactionrole panel\|option\|sync` | Staff gate | Yes |
-| `/gork keyword\|context\|cooldown\|rules\|search\|ste\|enable\|ban\|unban\|bans\|memory\|budget\|log\|status` | Staff gate | Yes |
+| `/gork keyword\|role\|context\|cooldown\|rules\|search\|ste\|enable\|ban\|unban\|bans\|memory\|budget\|log\|logchannel\|summarize-budget\|status` | Staff gate | Yes |
 | `/gork summarize` | Staff gate | No — rundown embed posts publicly (gate/error replies ephemeral) |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
@@ -1386,15 +1442,15 @@ UCxxxxxxxxxxx
 ```
 PUBLIC:
 /xp [user]                         → View XP & level
-/leaderboard [limit]               → Paginated PNG leaderboard (1-20/page)
+/leaderboard [limit] [page]          → Paginated PNG leaderboard (1-20/page, max page 20)
 /warn mine                         → Your own warnings
 /ticket create [reason]            → Open a support ticket
 /ticket settings                   → View ticket config
 /eventreminder optout|optin|mute|unmute|status → Reminder ping preferences
 /eventreminder list                → List active event reminders
-/event create|list|wizard          → Community events (edit/post/delete/adopt gated per event)
+/event create|list|wizard          → Community events (edit/post/delete per-event gated; adopt = staff gate)
 /eventsignup response|options|preset → Event signups/options/presets (staff/organizer gates)
-/eventconfig settings|reminders|google|series → Event settings (own reminder prefs public; settings = staff)
+/eventconfig settings|reminders|google|series → Event settings (reminder mute/unmute/status personal; reminders on/off/default + settings = staff)
 /eventchannels channel|crosspost   → Event channels + cross-posting (staff gate)
 /play query:                       → Play in your voice channel
 /music skip|pause|resume|stop|leave|queue|nowplaying|volume|shuffle|remove|seek
@@ -1404,7 +1460,7 @@ STAFF GATE (Manage Server OR any staff role):
 /note add|list|edit|delete|info|settings
 /warn add|list|info|void|count|export|settings
 /setwarn dm|log|expiry
-/userinfo [user]                   → Member card (Activity = senior)
+/userinfo user:                    → Member card (Activity = senior)
 /activityconfig ignore|status|backfill
 /ticket for|claim|transfer|list|info|summarize
 /ticket adduser|removeuser|addstaff|removestaff
@@ -1418,14 +1474,15 @@ STAFF GATE (Manage Server OR any staff role):
 /youtube add|remove|list
 /setyoutube channel|interval|uploadrole
 /testnotification
-/twitch add|remove|list
+/twitch add|remove|list|clips|vod|offline|notify|template
 /settwitch channel|role|interval|settings
+/github watch|token|remove|list|channel|role|check
 /reactionrole panel|option|sync
-/gork keyword|context|cooldown|rules|search|enable|ban|unban|bans|memory|budget|log|status
+/gork keyword|role|context|cooldown|rules|search|ste|enable|ban|unban|bans|memory|budget|log|logchannel|summarize-budget|status
 /gork summarize (from|to|last)       → conversation rundown (10-min guild cooldown)
 /honeypot channel|banrole
 /eventreminder setchannel
-/eventreminder create|edit|clear|sync  → creator OR Manage Server
+/eventreminder edit|clear|sync       → creator OR Manage Server (create retired → /event)
 
 MANAGE SERVER ONLY:
 /grantxp user amount [reason]      → Manually grant XP
@@ -1433,4 +1490,5 @@ MANAGE SERVER ONLY:
 /staff syncpermissions             → OAuth sync slash visibility for staff roles
 /setcommandchannel add|remove|list → Command channel allow-list
 /honeypot exempt …                 → Staff-role alias
+/honeypot safety resume            → Un-pause honeypot bans after the #440 safety valve
 ```
