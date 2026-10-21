@@ -1,6 +1,6 @@
 # Fluxer Instances
 
-Boiler Snake can serve Discord **and** any number of [Fluxer](https://fluxer.app) chat instances from one process: one bot, one SQLite database, one set of features. Fluxer runs the text-command surface (prefix commands, not slash), XP, reactions, notes, warnings, tickets, notification tickers, and web-admin login.
+Boiler Snake can serve Discord **and** any number of [Fluxer](https://fluxer.app) chat instances from one process: one bot, one SQLite database, one set of features. Fluxer runs the text-command surface (prefix commands, not slash), XP, reactions, notes, warnings, tickets, gork, notification tickers, and web-admin login.
 
 Feature design and locked decisions live in the repo roadmap ([`roadmap/fluxer.md`](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/fluxer.md) on `main`); this page is the operator guide.
 
@@ -9,12 +9,21 @@ Feature design and locked decisions live in the repo roadmap ([`roadmap/fluxer.m
 | Works on Fluxer | Not available on Fluxer |
 |-----------------|-------------------------|
 | Message & reaction XP, cooldowns, decay | Voice XP |
-| Text commands: `!help`, `!xp`, `!leaderboard`, notes, warnings, `!userinfo`, ticket text subcommands | Slash commands (Discord-side; Fluxer uses a text prefix) |
+| Text commands: every command whose surface works without components — permission-filtered `!help` is the authority (see Commands and the prefix) | Slash commands (Discord-side; Fluxer uses a text prefix) |
 | YouTube / Twitch / GitHub Releases notifications | Event reminders (Discord scheduled events — ticker no-ops) |
-| Reaction-role panels (real reactions) | Music (Lavalink is Discord-only) |
-| Web-admin sign-in with a Fluxer account | Buttons, selects, modals, `/ticket panel`, `/staff syncpermissions` (Discord-only) |
+| Reaction-role panels (real reactions; grants queue behind `elevated_permissions` — see Elevated permissions below) | Music (Lavalink is Discord-only) |
+| Gork AI Q&A: keyword + role-mention triggers, audits posting with platform-neutral jump links | Community Events (`/event`, `/eventsignup`, `/eventconfig`, `/eventchannels` — the events service is Discord-only) |
+| Web-admin sign-in with a Fluxer account | Buttons, selects, modals, `/ticket panel`, `/staff syncpermissions`, `/gork summarize` (Discord-only) |
 
-Role assignment (level→role), ticket **channel creation**, and honeypot **bans** are implemented behind a per-community `elevated_permissions` flag that **defaults to off**. Leave it off unless your instance is verified for bot role/channel/ban writes — everything in the left column works with it off.
+## Elevated permissions (advanced)
+
+Level→role sync, reaction-role grants, ticket **channel creation**, and honeypot **bans** are gated per community on the `communities.elevated_permissions` flag, which **defaults to 0 (off)**. The gate covers every role write (`addRole`/`removeRole`), every channel write (create, delete, rename, permission overwrites), and bans — with the flag off each returns a named refusal (`elevated Fluxer actions are disabled for community …`) instead of calling the instance. So the left column above is **not** entirely true with the flag off: a reaction-role panel claim does not complete — the claim is kept (the user's reaction and its durable row) and the grant is **deferred** until the flag flips and the boot sweep replays it.
+
+Nothing in the bot turns the flag on — there is **no command and no env variable** that writes it; it is a manual `communities`-row database change. Flipping it hands the bot real role/channel/ban capability on that community: apply the same caution the bot applies to its confirm-once destructive actions (#471 H2-15) — know exactly which communities you are enabling, and only do it on an instance verified for those writes. The procedure:
+
+1. **Stop the bot.** One writer on the SQLite file; make the change quiet (see [Snapshot & rollback](#snapshot-rollback)).
+2. **Flip the rows you mean**: `UPDATE communities SET elevated_permissions = 1 WHERE platform = 'fluxer' AND instance_key = '<instanceKey>' AND external_guild_id = '<guild id>';` — per community, not the whole table (dropping the `external_guild_id` filter elevates every community on that instance).
+3. **Restart.** At start the reactionRoles feature sweeps every elevated Fluxer community and replays deferred grants (log: `[reactionRoles] deferred-grant sweep community …: granted …`); role sync and channel/ban writes take the flag from the next read.
 
 ## Getting started with a Fluxer instance
 
@@ -54,12 +63,20 @@ Per-entry fields:
 
 A broken `FLUXER_INSTANCES` value (malformed JSON, missing `origin` or `token`, duplicate `instanceKey`, illegal URL scheme) **stops the bot at boot** with the specific reason — a half-configured Fluxer block is never silently ignored. An individual instance failing to log in later only degrades that instance (see Troubleshooting).
 
+### Discovery endpoints that matter
+
+Beyond `origin`, the bot takes everything from the instance's discovery document (`GET {origin}/.well-known/fluxer`). Two entries decide how loudly things work:
+
+- **`endpoints.api_public` is the only REST authority** — the bot never falls back to the instance origin for API calls (the API commonly lives on a different host). If discovery doesn't resolve it, boot warns (`… discovery did not resolve api_public — webhook URL construction will fail loudly for this instance`) and bridge webhook URL building fails loudly with a specific cause — relay copies are never silently dropped.
+- **`endpoints.webapp` is the base for every platform-neutral jump link** the bot posts (message jump URLs, gork rundown footers). An instance that omits it or advertises an unusable value gets those links omitted (`… discovery exposed an unusable endpoints.webapp — jump links will be omitted for this instance`); a *wrong* one gives links that go nowhere.
+
 ## Commands and the prefix
 
 - Fluxer has no slash-command picker. Commands run as **prefixed text**: `!help`, `!xp`, `!warn add user 123456789012345678 reason "spam"`.
+- **Breadth:** every command whose handler works without Discord components runs on the prefix dispatcher — XP and warnings, notes, userinfo, tickets (text arms), settings and the config verbs, `staff`, `link`, `bridge`, `gork`, and more. What stays Discord-only answers `That command is not available on Fluxer yet.`: `play`, `music`, `eventreminder`, and the Community Events commands (`event*`) are refused by the dispatcher and never listed in `!help`; component-bound arms (`ticket panel`, `gork summarize`, ticket-channel lifecycle subcommands) refuse with the same sentence in-handler.
 - The prefix is a literal, case-sensitive match (default `!`, set your own with `FLUXER_COMMAND_PREFIX`); command names are case-insensitive.
 - Options are **named, not positional**: `name value` pairs. Quote multi-word values (`reason "too many words"`).
-- `!help`, `!help warn`, `!help warn add` show what you may run; Discord-only commands print a "Discord only" line.
+- `!help`, `!help warn`, `!help warn add` show what you may run — the list is **permission-filtered** (staff and admin commands appear only for callers who may run them), so it is the authoritative inventory for you; Discord-only commands print a "Discord only" line.
 - A message that doesn't match the prefix is normal chat (XP-eligible). A prefix command never earns XP.
 - The server's command-channel allow-list applies here too: commands in an unlisted channel get `Commands aren't enabled in this channel.`
 
@@ -76,7 +93,7 @@ With the console enabled ([Web Admin Console](web-admin.md)), the sign-in page s
 - Fluxer login is a **second provider**: it sets its own cookie (`web_session_fx`) and never touches the Discord `web_session`. A Fluxer session sees only that instance's communities.
 - Scopes are `identify` + `guilds` only; the flow uses PKCE (S256).
 - **One Fluxer session per browser**: signing into a second Fluxer instance rotates the Fluxer session — it does not add a cookie.
-- Sessions last at most the instance's refresh-token horizon (**30 days** by default) and refresh transparently before the 7-day access token expires.
+- Sessions last at most the instance's refresh-token horizon — the token response's `refresh_expires_in`, or the **30-day** default when the instance declares none (`FLUXER_REFRESH_HORIZON_MS`). Access-token refresh is driven by the instance's own `expires_in`: rotation happens inside the final 24 h before that declared expiry. 7 days is the access lifetime Fluxer typically issues (also the fallback default when `expires_in` is omitted) — an instance-issued value, not a shipped guarantee.
 - An instance whose discovery fails shows "Login unavailable" behind its button until it's reachable.
 
 ## Snapshot & rollback
