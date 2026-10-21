@@ -17,7 +17,7 @@ Configure Boiler Snake for your server's needs using environment variables and i
 #### `DISCORD_TOKEN` (Required)
 Your Discord bot's token. Get this from [Discord Developer Portal](https://discord.com/developers/applications).
 
-```env
+```dotenv
 DISCORD_TOKEN=YOUR_BOT_TOKEN
 ```
 
@@ -39,7 +39,7 @@ Boot logs a `[config] WARN` naming exactly this when `DISCORD_TOKEN` is set and 
 #### `LAVALINK_HOST` (Optional — required for music)
 Hostname of a Lavalink **4.2+** node. Compose sets `lavalink`. Local: `127.0.0.1`. See [Music player](music.md). Setting `LAVALINK_HOST` **without** `LAVALINK_PASSWORD` **stops boot** (fail-fast — music would fail authorization at first play; see [Boot config sanity](#boot-config-sanity-audit-205)).
 
-```env
+```dotenv
 LAVALINK_HOST=127.0.0.1
 LAVALINK_PORT=2333
 LAVALINK_PASSWORD=YOUR_LAVALINK_PASSWORD
@@ -48,7 +48,7 @@ LAVALINK_PASSWORD=YOUR_LAVALINK_PASSWORD
 #### `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` (Optional)
 Spotify Web API **client credentials** for catalog search and playlist resolve. They do **not** stream Spotify audio. Required for Spotify URLs; YouTube/SoundCloud still work without them.
 
-```env
+```dotenv
 SPOTIFY_CLIENT_ID=YOUR_SPOTIFY_CLIENT_ID
 SPOTIFY_CLIENT_SECRET=YOUR_SPOTIFY_CLIENT_SECRET
 ```
@@ -62,7 +62,7 @@ Google Cloud API key for YouTube notifications. Required only if using `/youtube
 3. Create API Key
 4. Add to `.env`
 
-```env
+```dotenv
 YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY
 ```
 
@@ -74,7 +74,7 @@ Twitch app credentials (Client Credentials) for go-live notifications. Required 
 2. Create an application (no user OAuth needed)
 3. Copy the Client ID and Client Secret to `.env`
 
-```env
+```dotenv
 TWITCH_CLIENT_ID=YOUR_TWITCH_CLIENT_ID
 TWITCH_CLIENT_SECRET=YOUR_TWITCH_CLIENT_SECRET
 ```
@@ -84,7 +84,7 @@ See [Twitch Stream Notifications](twitch-notifications.md).
 #### `DEV_GUILD_ID` (Optional)
 Server ID for instant command registration during development.
 
-```env
+```dotenv
 DEV_GUILD_ID=YOUR_TEST_GUILD_ID
 ```
 
@@ -94,7 +94,7 @@ Registration is **per-guild** — the register CLI PUTs commands to every guild 
 
 Run the bot against [Fluxer](https://fluxer.app) chat instances in addition to (or instead of) Discord — one process, one database, env-only. Full operator guide: [Fluxer Instances](fluxer.md).
 
-```env
+```dotenv
 # JSON array, one object per instance. Unset = Discord-only (today's behavior).
 FLUXER_INSTANCES=
 # Text-command prefix on Fluxer (default "!", 1-8 chars, no whitespace):
@@ -173,7 +173,7 @@ Use placeholders in any committed file — real client secrets live only in
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `TZ` | host TZ (compose: **UTC**) | Timezone cron schedules evaluate in. Docker compose passes `TZ: ${TZ:-UTC}`, so decay (and every cron job) runs at the same UTC instant on every deploy, DST-free (audit #206). Node/libc consume `TZ` themselves; `src/` never reads it, which is why the parity guard doesn't pin it |
+| `TZ` | host TZ (**compose:** UTC) | Timezone cron schedules evaluate in. Docker compose passes `TZ: ${TZ:-UTC}`, so decay (and every cron job) runs at the same UTC instant on every deploy, DST-free (audit #206). Node/libc consume `TZ` themselves; `src/` never reads it, which is why the parity guard doesn't pin it |
 | `DECAY_CRON` | `0 4 * * *` | Schedule for the daily XP decay job, 5-field cron evaluated in `TZ` above (issue #282). Validated at boot with node-cron — a malformed value **stops boot** naming the bad expression. Unset keeps the historical hardcoded time (04:00) |
 
 #### Data retention sweeps (optional)

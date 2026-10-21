@@ -47,7 +47,7 @@ All of this is additive and env-only: keep `DISCORD_TOKEN` for the Discord bot, 
 
 ### `FLUXER_INSTANCES` format
 
-```env
+```dotenv
 FLUXER_INSTANCES=[{"instanceKey":"https://fluxer.app","origin":"https://fluxer.app","token":"YOUR_FLUXER_BOT_TOKEN","clientId":"YOUR_FLUXER_OAUTH_CLIENT_ID","clientSecret":"YOUR_FLUXER_OAUTH_CLIENT_SECRET","label":"Fluxer"}]
 ```
 

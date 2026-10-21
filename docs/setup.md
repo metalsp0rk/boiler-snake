@@ -57,7 +57,7 @@ nano .env  # or vim, code, etc.
 ```
 
 **Required Variables** (Discord deployment):
-```env
+```dotenv
 DISCORD_TOKEN=YOUR_BOT_TOKEN
 CLIENT_ID=YOUR_APP_CLIENT_ID
 ```
@@ -65,7 +65,7 @@ CLIENT_ID=YOUR_APP_CLIENT_ID
 `DISCORD_TOKEN` is required unless the bot runs Fluxer-only — the boot gate accepts at least one of `DISCORD_TOKEN` / `FLUXER_INSTANCES` (see [Fluxer](/fluxer)). `CLIENT_ID` is optional for login (boot logs a `[config]` WARN without it) but **both are required** for `npm run register` and Discord OAuth/web sign-in.
 
 **Optional Variables**:
-```env
+```dotenv
 YOUTUBE_API_KEY=YOUR_YOUTUBE_API_KEY
 DEV_GUILD_ID=YOUR_TEST_GUILD_ID  # For development
 

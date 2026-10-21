@@ -2,6 +2,8 @@
 
 Private per-server support tickets: members open a channel with staff, staff respond, then **non-sensitive** tickets are closed and **archived** (HTML transcript + summary in a staff channel). **Sensitive** tickets are never content-archived—closing deletes the channel and posts a metadata-only stub.
 
+**On Fluxer:** the ticket *text* subcommands run as prefix commands — `!ticket create reason "…"` works (on Fluxer `reason` is required inline; there is no modal surface), as do `!ticket list`, `!ticket settings`, and the staff config verbs (`setcategory`, `setarchive`, `setratelimit`). What stays Discord-only: the panel system, its buttons and modals, and the ticket-channel lifecycle arms (`for`, `close`, `archive`, `claim`, `transfer`, `adduser`/`removeuser`, `addstaff`/`removestaff`, `sensitive`/`unsensitive`, `info`, `summarize`) — those answer `That command is not available on Fluxer yet.` Opening a ticket channel is an elevated write: on Fluxer it is gated behind the community's `elevated_permissions` flag, and with the flag off the failure reply names the cause. See [Fluxer instances](fluxer.md).
+
 ## How it works
 
 ```

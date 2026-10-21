@@ -4,6 +4,8 @@ Private, staff-only notes about guild members. Informal institutional memory for
 
 Paired with the [Warning System](warnings.md): notes hold soft context; warnings are the permanent formal record.
 
+**On Fluxer:** note commands run as prefix commands on [Fluxer instances](fluxer.md) (`!note add user 123456789012345678 content "text"`). Fluxer has no modal surface, so `content` is **required inline** on `note add` / `note edit`. The staff gate is the same community-scoped `staff_roles` check as on Discord; the replies Discord renders ephemerally arrive as DMs to the caller.
+
 ## How it works
 
 ```
