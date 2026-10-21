@@ -974,6 +974,7 @@ const PAGES = [
   { path: "/g/:guildId/users/:userId/card", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/roles", tier: "staff", json: true },
+  { path: "/g/:guildId/lookups/channels", tier: "staff", json: true },
   // Phase 4 (subtask 03): dashboard CHART series endpoints (§8.7 progressive
   // enhancement). Staff-tier JSON, no-store, ≥30 s data cache underneath.
   { path: "/g/:guildId/api/dashboard/activity.json", tier: "staff", json: true },
