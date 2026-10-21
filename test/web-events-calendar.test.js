@@ -475,7 +475,17 @@ describe("web events calendar (routes/events.js)", () => {
     const page = await req(`/g/${CID_A}/events/presets`, { cookie: cookieOf.staff });
     assert.match(page.body, /Potluck/);
 
-    const del = await post(`/g/${CID_A}/events/presets/${p.id}/delete`, "staff", {});
+    // #649 (EV5 ladder twin): the destructive preset removal is typed-confirm.
+    // Without the exact DELETE token the route must refuse — redirect carries
+    // the err flash and the preset SURVIVES (zero writes, zero audit).
+    const noConfirm = await post(`/g/${CID_A}/events/presets/${p.id}/delete`, "staff", {});
+    assert.ok(qsOf(noConfirm.location).err, noConfirm.location);
+    assert.match(qsOf(noConfirm.location).err, /Type DELETE to permanently delete\./);
+    assert.ok(api.listEventPresets(CID_A).some((x) => x.id === p.id), "preset survives refusal");
+
+    const del = await post(`/g/${CID_A}/events/presets/${p.id}/delete`, "staff", {
+      confirm: "DELETE",
+    });
     assert.ok(qsOf(del.location).ok, del.location);
     assert.ok(!api.listEventPresets(CID_A).some((x) => x.id === p.id));
   });
