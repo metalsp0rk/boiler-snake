@@ -33,8 +33,8 @@ concurrency:
 # its own network namespace and container-local /tmp/opencode, so the fauxcord
 # mock (PORT 3100 + FAUXCORD_DATA_DIR) is per-instance — concurrent e2e runs
 # on different instances can never share a mock, and two jobs never share one
-# instance (one job per runner). The per-ref concurrency group above only
-# cancels stale runs of the SAME ref.
+# instance (one job per runner). The fixed concurrency group above serializes
+# EVERY e2e run (cancel is off, so queued runs wait instead of displacing).
 jobs:
   e2e:
     runs-on: [self-hosted, linux, X64]
