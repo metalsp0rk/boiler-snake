@@ -624,8 +624,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       fields: { message: "17" },
       prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { msg_xp: 11 }),
       details: D({ patch: { msg_xp: 17 } }),
-      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=xp`,
-      reject: { status: 302, location: `/g/${F.COMMUNITY_A}/settings?err=xp`, fields: {} },
+      // #643: the redirect carries the server-chosen section twice — the
+      // `at` query (the fragment never arrives on the following GET) and the
+      // fragment. S1 posts a non-blank XP field ⇒ #xp; the empty-body reject
+      // has no non-blank field of either cluster ⇒ #xp.
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=xp&at=xp#xp`,
+      reject: { status: 302, location: `/g/${F.COMMUNITY_A}/settings?err=xp&at=xp#xp`, fields: {} },
     },
     {
       no: "S2",
@@ -642,10 +646,10 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       fields: { percent: "25" },
       prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { decay_percent: 0.5 }),
       details: D({ patch: { decay_percent: 0.25 } }),
-      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=decay`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=decay&at=decay#decay`,
       reject: {
         status: 302,
-        location: `/g/${F.COMMUNITY_A}/settings?err=decay`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=decay&at=decay#decay`,
         fields: { percent: "900" },
       },
     },
@@ -664,10 +668,10 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       fields: { stream: "audit", channel: F.CH_AUDIT },
       prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { audit_log_channel_id: null }),
       details: D({ stream: "audit", previous_channel_id: null }),
-      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=logs`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=logs&at=logs#logs`,
       reject: {
         status: 302,
-        location: `/g/${F.COMMUNITY_A}/settings?err=logs`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=logs&at=logs#logs`,
         fields: { stream: "bogus", channel: F.CH_AUDIT },
       },
     },
@@ -686,10 +690,12 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       fields: { channel: F.CH_WARN },
       prepare: () => api.updateGuildSettings(F.COMMUNITY_A, { warn_log_channel_id: null }),
       details: D({ previous_channel_id: null, channel_id: F.CH_WARN }),
-      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=warn`,
+      // #643: the warn-log cluster lives INSIDE the #logs section — flash
+      // key stays `warn`, section is `logs`.
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=warn&at=logs#logs`,
       reject: {
         status: 302,
-        location: `/g/${F.COMMUNITY_A}/settings?err=warn`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=warn&at=logs#logs`,
         fields: { channel: "not-a-snowflake" },
       },
     },
@@ -708,10 +714,10 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       fields: { channel: F.CH_CMD },
       prepare: () => api.removeAllowedCommandChannel(F.COMMUNITY_A, F.CH_CMD),
       details: D({ channel_id: F.CH_CMD }),
-      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=channels`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=channels&at=command-channels#command-channels`,
       reject: {
         status: 302,
-        location: `/g/${F.COMMUNITY_A}/settings?err=channels`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=channels&at=command-channels#command-channels`,
         fields: { channel: "nope" },
       },
     },
@@ -730,10 +736,10 @@ function buildPhase2Rows({ api, purgeAutoincrement }) {
       fields: { channel: F.CH_CMD },
       prepare: () => api.addAllowedCommandChannel(F.COMMUNITY_A, F.CH_CMD),
       details: D({ channel_id: F.CH_CMD }),
-      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=channels`,
+      okLocation: `/g/${F.COMMUNITY_A}/settings?ok=channels&at=command-channels#command-channels`,
       reject: {
         status: 302,
-        location: `/g/${F.COMMUNITY_A}/settings?err=channels`,
+        location: `/g/${F.COMMUNITY_A}/settings?err=channels&at=command-channels#command-channels`,
         fields: { channel: "nope" },
       },
     },

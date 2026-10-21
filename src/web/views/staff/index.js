@@ -395,7 +395,7 @@ function renderStaffBody({ view, resolveRoleName, envConfig, guildId, tier, csrf
         ${counts} ${staffRolesTable(roles, resolveRoleName)} ${levelLegend()}
       </section>
       ${canMutate && tier === "admin" ? staffRoleForms({ guildId, csrfToken }) : html``}
-      <section class="panel level-roles-config-panel">
+      <section id="level-roles" class="panel level-roles-config-panel">
         <h2>Level→role mappings</h2>
         ${levelRolesTable(levelRoles, resolveRoleName)}
       </section>

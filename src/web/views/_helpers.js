@@ -11,7 +11,7 @@
  * frozen tables ever render — junk/hostile/foreign query values are dropped,
  * so no banner can ever echo submitted input.
  */
-const { html } = require("./escape");
+const { html, raw } = require("./escape");
 const { banner } = require("./components");
 
 /**
@@ -123,7 +123,9 @@ function channelRef(channelId, resolveName, missingHtml = null) {
  * page's own panel class to the shared "panel settings-panel" base.
  * `id` (#642) lands on the <section> ONLY when it passes the strict
  * slug whitelist — deep-link/section-nav anchors can never smuggle
- * markup or attributes.
+ * markup or attributes. `dataSection` (#643) adds the boolean
+ * `data-setting-section` hook the shell's [data-setting-filter] find box
+ * toggles `hidden` on — a static attribute, never derived from data.
  */
 const SECTION_ID_OK = /^[a-z0-9-]{1,40}$/;
 
@@ -132,8 +134,9 @@ function section(title, bodyHtml, opts = {}) {
     typeof opts.id === "string" && SECTION_ID_OK.test(opts.id)
       ? html` id="${opts.id}"`
       : html``;
+  const dataSection = opts.dataSection ? raw(" data-setting-section") : "";
   return html`
-    <section${idAttr} class="panel settings-panel${opts.cls ? ` ${opts.cls}` : ""}">
+    <section${idAttr}${dataSection} class="panel settings-panel${opts.cls ? ` ${opts.cls}` : ""}">
       <h2>${title}</h2>
       ${opts.hint ? html`<p class="setting-admin-hint">${opts.hint}</p>` : html``}
       ${opts.notice ? banner("warn", opts.notice) : html``}
