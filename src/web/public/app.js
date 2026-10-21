@@ -26,6 +26,71 @@
     return body ? body.getAttribute("data-csrf-token") || "" : "";
   }
 
+  // 0. SHELL NAV COLLAPSE (#642) — the phone Menu button + width contract.
+  //    The SERVER never renders body.nav-collapsed; applyWidth() adds it
+  //    under 720px on load and on every matchMedia change (so expanding the
+  //    list, widening past 720, then narrowing again re-collapses). The
+  //    click handler toggles the class itself and never calls applyWidth.
+  //    Escape, while focus sits inside an EXPANDED phone nav, collapses the
+  //    list and returns focus to the Menu button. No focus trap anywhere.
+  var NAV_PHONE_QUERY = "(max-width: 719px)";
+  var navMq = window.matchMedia ? window.matchMedia(NAV_PHONE_QUERY) : null;
+
+  function navToggleButton() {
+    return document.querySelector("[data-nav-toggle]");
+  }
+
+  function setNavExpanded(btn, expanded) {
+    if (btn) btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+  }
+
+  function applyWidth() {
+    if (!document.body) return;
+    var phone = navMq ? navMq.matches : false;
+    document.body.classList.toggle("nav-collapsed", phone);
+    // Expanded (visible) off-phone; collapsed by default on a phone.
+    setNavExpanded(navToggleButton(), !phone);
+  }
+
+  if (navMq) {
+    if (navMq.addEventListener) navMq.addEventListener("change", applyWidth);
+    else if (navMq.addListener) navMq.addListener(applyWidth);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", applyWidth);
+  } else {
+    applyWidth();
+  }
+
+  document.addEventListener("click", function (evt) {
+    var btn = evt.target && evt.target.closest ? evt.target.closest("[data-nav-toggle]") : null;
+    if (!btn) return;
+    var collapsed = document.body.classList.toggle("nav-collapsed");
+    setNavExpanded(btn, !collapsed); // toggles ONLY — never applyWidth()
+  });
+
+  document.addEventListener("keydown", function (evt) {
+    if (evt.key !== "Escape" || !document.body) return;
+    if (!navMq || !navMq.matches) return; // phone widths only
+    var nav = document.getElementById("shell-nav");
+    if (!nav) return;
+    if (document.body.classList.contains("nav-collapsed")) return; // already closed
+    if (!nav.contains(document.activeElement)) return; // only when focus is IN the nav
+    document.body.classList.add("nav-collapsed");
+    var btn = navToggleButton();
+    setNavExpanded(btn, false);
+    if (btn && btn.focus) btn.focus();
+  });
+
+  // 0b. SHELL FLASH FOCUS (#642) — a banner/flash carrying data-flash gets
+  //     programmatic focus (tabindex="-1" on the node from banner()) so
+  //     screen readers announce it after a PRG round-trip. preventScroll:
+  //     the page must not jump. No input is ever autofocused on a GET.
+  document.addEventListener("DOMContentLoaded", function () {
+    var flashEl = document.querySelector("[data-flash]");
+    if (flashEl && flashEl.focus) flashEl.focus({ preventScroll: true });
+  });
+
   // Guild switcher navigation (CSP-safe replacement for inline onchange).
   // #459 removed the dead htmx wiring above; csrfToken() stays as the
   // documented token source for any future scripted request (§ csrf.js).
@@ -51,6 +116,28 @@
   //    never markup; ids are held on the node, not in attributes.
   var LOOKUP_DEBOUNCE_MS = 150;
   var LOOKUP_MAX_SHOWN = 12;
+  var OPT_SEQ = 0;
+
+  /**
+   * Is this element a WIRED-UP lookup input? (#642 — the input/keydown/
+   * focusout listeners below all gate on this; before it existed every
+   * keystroke threw ReferenceError before fetch.)
+   *  - data-lookup="mixed" (archive search bars): active only with a
+   *    data-lookup-users or data-lookup-roles source;
+   *  - any other data-lookup kind: active only with data-lookup-url;
+   *  - anything else: the listeners return.
+   * The "channels" kind is issue #645 and deliberately NOT armed here.
+   */
+  function lookupInputActive(el) {
+    if (!el || !el.getAttribute) return false;
+    var mode = el.getAttribute("data-lookup");
+    if (!mode) return false;
+    if (mode === "mixed") {
+      return Boolean(el.getAttribute("data-lookup-users") || el.getAttribute("data-lookup-roles"));
+    }
+    if (mode === "channels") return false;
+    return Boolean(el.getAttribute("data-lookup-url"));
+  }
 
   function lookupItems(data, kind) {
     var arr = data && data[kind];
@@ -110,17 +197,22 @@
     }
     input._lookupActive = -1;
     input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
   }
 
   function showLookup(input, items, q) {
     var pop = ensureList(input);
     while (pop.firstChild) pop.removeChild(pop.firstChild);
     input._lookupActive = -1;
+    input.removeAttribute("aria-activedescendant");
     var shown = rankItems(items, q).slice(0, LOOKUP_MAX_SHOWN);
     shown.forEach(function (it) {
       var opt = document.createElement("div");
       opt.className = "lookup-opt";
       opt.setAttribute("role", "option");
+      // Stable per-option id so aria-activedescendant can point at the
+      // active row for screen readers (#642; textContent-only build).
+      opt.id = "lookup-opt-" + (++OPT_SEQ);
       var nm = document.createElement("span");
       nm.className = "lookup-name";
       nm.textContent = it.name || "(unknown name)";
@@ -157,10 +249,15 @@
     if (!pop || pop.hidden) return;
     var opts = pop.querySelectorAll(".lookup-opt");
     if (!opts.length) return;
-    if (input._lookupActive >= 0) opts[input._lookupActive].classList.remove("is-active");
+    if (input._lookupActive >= 0) {
+      opts[input._lookupActive].classList.remove("is-active");
+      opts[input._lookupActive].removeAttribute("aria-selected");
+    }
     input._lookupActive = (input._lookupActive + delta + opts.length) % opts.length;
     var el = opts[input._lookupActive];
     el.classList.add("is-active");
+    el.setAttribute("aria-selected", "true"); // #642: the active option is announced
+    input.setAttribute("aria-activedescendant", el.id);
     el.scrollIntoView({ block: "nearest" });
   }
 
@@ -231,6 +328,19 @@
     var input = evt.target;
     if (!lookupInputActive(input)) return;
     setTimeout(function () { closeLookup(input); }, 150); // let mousedown win
+  });
+
+  // 3b. FIND BOX (#642) — local-only section filter used by the settings and
+  //     integrations pages: [data-setting-filter] input lowercases the query
+  //     and toggles `hidden` on every [data-setting-section] whose text does
+  //     not contain it. Empty query shows all. NO network, no re-render.
+  document.addEventListener("input", function (evt) {
+    var box = evt.target;
+    if (!box || !box.matches || !box.matches("[data-setting-filter]")) return;
+    var q = String(box.value || "").toLowerCase();
+    document.querySelectorAll("[data-setting-section]").forEach(function (sec) {
+      sec.hidden = q !== "" && String(sec.textContent || "").toLowerCase().indexOf(q) === -1;
+    });
   });
 
   // 4. Lazy PROFILE CARDS on user-chip hover (§8.15 task 15.11) — any
@@ -362,6 +472,28 @@
   });
 
   document.addEventListener("mouseout", function (evt) {
+    var el = evt.target && evt.target.closest ? evt.target.closest("[data-user-card]") : null;
+    if (!el) return;
+    if (evt.relatedTarget && el.contains(evt.relatedTarget)) return;
+    if (cardShowTimer) { clearTimeout(cardShowTimer); cardShowTimer = null; }
+    hideCardSoon();
+  });
+
+  // Keyboard path (#642): focusing a chip opens its card with NO delay
+  // (the 300 ms intent delay stays for hover only) and leaving focus hides
+  // it; Escape hides it too. The chip stays a plain link — nothing is
+  // preventDefault-ed, no focus trap, the first tap is never stolen.
+  document.addEventListener("focusin", function (evt) {
+    var el = evt.target && evt.target.closest ? evt.target.closest("[data-user-card]") : null;
+    if (!el) return;
+    if (cardShowTimer) { clearTimeout(cardShowTimer); cardShowTimer = null; }
+    cardSeq++; // invalidate in-flight fetches for other chips
+    var c = ensureCard();
+    c._openFor = el;
+    openCard(el);
+  });
+
+  document.addEventListener("focusout", function (evt) {
     var el = evt.target && evt.target.closest ? evt.target.closest("[data-user-card]") : null;
     if (!el) return;
     if (evt.relatedTarget && el.contains(evt.relatedTarget)) return;

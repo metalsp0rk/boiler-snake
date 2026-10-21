@@ -409,5 +409,10 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
     assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
     assert.match(src, /data-lookup-url/); // wired to the endpoint
     assert.match(src, /textContent/); // suggestions are text-only
+    // #642: the guard the input/keydown/focusout listeners gate on must
+    // EXIST as a single-level function inside the IIFE (before it, every
+    // keystroke threw ReferenceError before fetch). The kind-arm eval for
+    // "channels" is issue #645's.
+    assert.match(src, /function lookupInputActive\b/, "lookupInputActive is defined");
   });
 });

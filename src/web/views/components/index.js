@@ -38,23 +38,42 @@ function degradedBanner(message = "Permission data may be stale — changes can 
 }
 
 /**
- * Empty-state placeholder for list pages (Phase 1 consumers).
+ * Empty-state placeholder for list pages (Phase 1 consumers). Stays callable
+ * with a single string (byte-identical to the Phase 1 output). Optional
+ * `detail` (second line) and `href` + `actionLabel` (one CTA link) render a
+ * composed block (#642). The class stays `empty-state` — later issues and the
+ * dashboard literal keep it.
+ *
  * @param {string} message
+ * @param {{detail?: string|null, href?: string|null, actionLabel?: string|null}} [opts]
  * @returns {import("../escape").SafeString}
  */
-function emptyState(message) {
-  return html`<p class="empty-state">${message}</p>`;
+function emptyState(message, opts = {}) {
+  const detail = opts?.detail ? html`<p class="empty-detail">${opts.detail}</p>` : html``;
+  const action =
+    opts?.href && opts?.actionLabel
+      ? html`<p class="empty-cta"><a class="btn" href="${opts.href}">${opts.actionLabel}</a></p>`
+      : html``;
+  if (!detail && !action) return html`<p class="empty-state">${message}</p>`;
+  return html`<div class="empty-state"><p>${message}</p>${detail}${action}</div>`;
 }
+
+/** ARIA live-role per banner kind (#642): problems interrupt, notices stay polite. */
+const BANNER_ROLES = Object.freeze({ info: "status", warn: "alert", error: "alert" });
 
 /**
  * Panel/notice banner (info | warn | error class suffix, message escaped).
+ * error/warn announce via role="alert", info via role="status" (#642). The
+ * node app.js focuses on page load carries data-flash + tabindex="-1" —
+ * the shell flash slot and page-level banners share this one focusable
+ * convention (first match wins; the slot renders before page content).
  * @param {"info"|"warn"|"error"} kind
  * @param {string} message
  * @returns {import("../escape").SafeString}
  */
 function banner(kind, message) {
-  const safeKind = ["info", "warn", "error"].includes(kind) ? kind : "info";
-  return html`<div class="banner banner-${safeKind}" role="status">${message}</div>`;
+  const safeKind = BANNER_ROLES[kind] ? kind : "info";
+  return html`<div class="banner banner-${safeKind}" role="${BANNER_ROLES[safeKind]}" data-flash tabindex="-1">${message}</div>`;
 }
 
 /** A platform user id as text: 5–20 digits (never free-form markup input). */
