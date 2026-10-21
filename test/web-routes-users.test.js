@@ -74,6 +74,9 @@ const KNOWN_MEMBER = "555000000000000088";
 const UNKNOWN_USER = "999999999999999999";
 /** Unrelated creator for ticket #2 (kept far from UNKNOWN_USER). */
 const OTHER_CREATOR = "555000000000000099";
+/** #647 probe: tracked XP row AND a cached display name — name rendering. */
+const NAMED = "555000000000000044";
+const NAMED_NAME = "Vera Cached";
 
 const CH_PUB = "770000000000000001";
 const CH_SEC = "770000000000000002";
@@ -128,6 +131,8 @@ before(async () => {
 
   // ---- subject data (guild A) ----------------------------------------------
   api.addXp(CID_A, SUBJECT, 1234); // level = floor(sqrt(1234/100)) = 3
+  // #647: tracked + cached-name probe (also matched by the 555 prefix seed).
+  api.addXp(CID_A, NAMED, 700);
   for (let i = 0; i < 12; i += 1) {
     api.createWarning({
       communityId: CID_A,
@@ -250,6 +255,11 @@ before(async () => {
       cache: new Map([
         [SUBJECT, { joinedTimestamp: Date.now() - 30 * 86400000 }],
         [KNOWN_MEMBER, { joinedTimestamp: null }],
+        // #647: the ONLY cached member with a name — drives the search-row
+        // and identity-card name pins (others stay raw-id fallbacks).
+        // id is REQUIRED: memberNameCandidates keys on m.id (a real
+        // discord.js GuildMember always carries it).
+        [NAMED, { id: NAMED, joinedTimestamp: null, displayName: NAMED_NAME }],
       ]),
     },
   };
@@ -398,6 +408,31 @@ describe("GET /g/:guildId/users/:userId — unified profile", () => {
     assert.ok(body.includes("showing 11–12 of 12"), "page 2 of 12 warnings");
     assert.equal(count(body, '<tr class="row-warn"'), 2);
   });
+
+  it("#647: junior staff sees Activity as a disabled SPAN with VISIBLE 'Senior only' (no href)", async () => {
+    const { res, body } = await hit(url, { key: "staff" });
+    assert.equal(res.status, 200);
+    const m = body.match(/<span class="tab tab-disabled"[^>]*>[\s\S]*?<\/span>/);
+    assert.ok(m, "the disabled tab renders as a span, not a link");
+    assert.match(m[0], /Senior only/, "visible text carries the gate (titles are invisible on touch)");
+    assert.ok(!m[0].includes("href="), "a span never navigates");
+    assert.ok(!body.includes(`<a class="tab" href="${url}/activity"`), "no senior deep-link for junior staff");
+  });
+
+  it("#647: senior staff keep the linked Activity tab (span never leaks upward)", async () => {
+    const { res, body } = await hit(url, { key: "senior" });
+    assert.equal(res.status, 200);
+    assert.ok(body.includes(`<a class="tab" href="${url}/activity">Activity</a>`), "senior tab unchanged");
+    assert.ok(!body.includes("Senior only"), "no disabled copy on the senior render");
+  });
+
+  it("#647: profile identity card labels the cached member by name (id rides the link/hover)", async () => {
+    const { res, body } = await hit(`/g/${CID_A}/users/${NAMED}`, { key: "staff" });
+    assert.equal(res.status, 200);
+    assert.ok(body.includes(NAMED_NAME), "cached displayName shown on the User ID row");
+    assert.ok(body.includes(`title="${NAMED}"`), "raw id stays reachable on hover");
+    assert.ok(body.includes(`href="/g/${CID_A}/users/${NAMED}"`), "profile link intact");
+  });
 });
 
 // ===========================================================================
@@ -505,9 +540,35 @@ describe("GET /g/:guildId/users?q= — search (staff+)", () => {
     assert.equal(rows, SEARCH_LIMIT, "cap reached exactly on a 60-match prefix");
   });
 
-  it("non-digit query short-circuits to no-results (no-scan guard)", async () => {
+  it("#647: a cached id query renders the NAME on the row (id stays the link target)", async () => {
+    const { res, body } = await hit(`${base}?q=${NAMED}`, { key: "staff" });
+    assert.equal(res.status, 200);
+    assert.equal(count(body, '<tr class="row-user"'), 1);
+    assert.ok(body.includes(NAMED_NAME), "row labeled with the cached display name");
+    assert.ok(body.includes(`href="${base}/${NAMED}"`), "row still links to the profile");
+    assert.ok(body.includes(`title="${NAMED}"`), "raw id rides the hover title");
+    assert.ok(body.includes(`data-user-card="${base}/${NAMED}/card"`), "lazy-card hook rides the row");
+  });
+
+  it("#647: a name query finds the cached tracked member by name", async () => {
+    const { res, body } = await hit(`${base}?q=${encodeURIComponent("vera")}`, { key: "staff" });
+    assert.equal(res.status, 200);
+    assert.equal(count(body, '<tr class="row-user"'), 1, "cache-ranked name match renders one row");
+    assert.ok(body.includes(NAMED_NAME), "row labeled with the cached display name");
+  });
+
+  it("non-digit query short-circuits to no-results with the TRUTHFUL name copy (#647)", async () => {
     const { body } = await hit(`${base}?q=nobody`, { key: "staff" });
-    assert.ok(body.includes("No tracked users match"));
+    assert.ok(body.includes("No cached members match"), "name-query copy names the member cache");
+    assert.ok(!body.includes("match that ID"), "a name query never claims an ID search");
+    assert.ok(body.includes("warms"), "copy says the cache warms as members are browsed");
+    assert.ok(body.includes("numeric user id"), "copy says ids always find tracked members");
+    assert.equal(count(body, '<tr class="row-user"'), 0);
+  });
+
+  it("#647: an id query with no matches keeps the ID-worded empty copy", async () => {
+    const { body } = await hit(`${base}?q=55500000000000004444`, { key: "staff" });
+    assert.ok(body.includes("No tracked users match that ID."), "id-query copy keeps its wording");
     assert.equal(count(body, '<tr class="row-user"'), 0);
   });
 });

@@ -180,6 +180,11 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
     tokens = require("../src/web/auth/tokens");
 
     api.addStaffRole(CID_A, ROLE_JUNIOR, "junior");
+    // #647: tracked XP rows for the cached (USER_KING) and uncached
+    // (USER_UNKNOWN) ids so the user-search route renders rows for both —
+    // the name-label vs raw-id-fallback pair.
+    api.addXp(CID_A, USER_KING, 4200);
+    api.addXp(CID_A, USER_UNKNOWN, 12);
     cookieOf.admin = mkSession(USER_ADMIN, { owner: true });
     cookieOf.staff = mkSession(USER_STAFF);
     cookieOf.plain = mkSession(USER_PLAIN, { perms: "0" });
@@ -363,5 +368,27 @@ describe("web profile cards + actor names + person search (§8.15-15.11)", () =>
     const out = String(userRef(CID_A, USER_KING, new Map([[USER_KING, "King Dead"]])));
     assert.ok(out.includes(`href="/g/${CID_A}/users/${USER_KING}"`), "profile link kept");
     assert.ok(out.includes(`data-user-card="/g/${CID_A}/users/${USER_KING}/card"`));
+  });
+
+  // ---- #647: search-row name labels + honest id fallback --------------------
+
+  it("user search rows: cached id renders the NAME; uncached id renders the raw id", async () => {
+    const cached = await req(`/g/${CID_A}/users?q=${USER_KING}`, cookieOf.staff);
+    assert.equal(cached.res.status, 200);
+    assert.ok(cached.body.includes("King Dead"), "row labeled with the cached displayName");
+    assert.ok(cached.body.includes(`title="${USER_KING}"`), "raw id rides the hover title");
+
+    const miss = await req(`/g/${CID_A}/users?q=${USER_UNKNOWN}`, cookieOf.staff);
+    assert.equal(miss.res.status, 200);
+    assert.ok(miss.body.includes(`>${USER_UNKNOWN}</a>`), "cache miss renders the raw id in the row link");
+    assert.ok(!miss.body.includes("King Dead"), "no name is fabricated for an uncached id");
+  });
+
+  it("userRef renders the raw id when the names map is absent (missing-client fallback)", () => {
+    const { userRef } = require("../src/web/views/components");
+    const out = String(userRef(CID_A, USER_UNKNOWN, null));
+    assert.ok(out.includes(`>${USER_UNKNOWN}</a>`), "id-only anchor — never an empty label");
+    assert.ok(out.includes(`data-user-card="/g/${CID_A}/users/${USER_UNKNOWN}/card"`), "card hook stays");
+    assert.ok(!out.includes("title="), "no hover title without a resolved name");
   });
 });

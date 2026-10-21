@@ -18,7 +18,8 @@
  *                    breadcrumb, footer.
  *   4. Components  — buttons (+aliases), banners, panels, forms, inputs,
  *                    tables (.table-stack/.table-scroll), badges, pills,
- *                    tabs, .kv, .stat, find box, section nav, popovers.
+ *                    tabs, .kv, .stat, find box, section nav, search form,
+ *                    popovers.
  *   5. Pages       — per-surface blocks (dashboard, settings, moderation,
  *                    leaderboard, integrations, staff, voice, system/audit,
  *                    tickets, archive, transcript, charts, landing).
@@ -685,6 +686,26 @@ th {
 }
 
 .section-nav a:hover { border-color: var(--link); }
+
+/* ---- search / filter form (#647) ------------------------------------------ */
+/* User-search layout shared by search forms: full width with a capped input,
+   same shape as #646's .moderation .filter-form search field. */
+.search-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+}
+
+.search-form label { font-size: 0.8rem; color: var(--fg-muted); }
+
+.search-form input[type="search"] {
+  width: 100%;
+  max-width: 24rem;
+  min-width: 0;
+  flex: 1 1 14rem;
+}
 
 /* ---- identifier type-ahead popover (§8.15-15.10) -------------------------------------- */
 /* Floating suggestion list anchored to the input's <label> (made
