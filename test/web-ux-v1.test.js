@@ -303,11 +303,26 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     }
   });
 
+  it("#642 staff shell HTML: Menu button, skip link, breadcrumb — no nav-collapsed", async () => {
+    const { res, body } = await req(`/g/${CID_A}/settings`, cookieOf.staff);
+    assert.equal(res.status, 200);
+    assert.ok(body.includes('class="skip-link" href="#content"'), "skip link first focusable");
+    assert.ok(body.includes("data-nav-toggle"), "Menu button rendered");
+    assert.ok(body.includes('aria-controls="shell-nav"'), "Menu wired to the nav id");
+    assert.ok(body.includes('id="shell-nav"'), "sidebar carries the aria-controls target id");
+    assert.ok(body.includes('class="breadcrumb"'), "breadcrumb in the content column");
+    assert.ok(body.includes('id="content"'), "main is the skip-link target");
+    assert.ok(!body.includes("nav-collapsed"), "server HTML never contains nav-collapsed");
+    assert.ok(!body.includes("<noscript"), "no <noscript> block (JS-is-on console, #642)");
+    assert.ok(!body.includes("noscript-hint"), "no .noscript-hint left");
+  });
+
   // -- mobile pass (Phase 4 §8.8, 360–430px) ---------------------------------
   // Render-assertion style like every suite above: pin the class/markup
   // hooks the phone CSS attaches to, plus the responsive Chart.js container
-  // contract as authored. The desktop assertions above stay untouched —
-  // everything added here is scoped inside max-width media queries.
+  // contract as authored. #642 rebuilt the phone shell: the nav COLLAPSES
+  // behind a Menu button at ≤719px (the old ≤880px horizontal strip is
+  // gone) and the shell grid queries are 719 / 720–1099 / 1100+.
 
   const STYLES_PATH = require("node:path").join(
     __dirname,
@@ -315,9 +330,29 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
   );
   const APP_PATH = require("node:path").join(__dirname, "../src/web/public/app.js");
 
+  /** Full text of every @media block whose prelude matches `re`. */
+  function mediaBlocks(css, re) {
+    const out = [];
+    const rx = /@media\s+([^{]+)\{/g;
+    let m;
+    while ((m = rx.exec(css)) !== null) {
+      if (!re.test(m[1])) continue;
+      let depth = 1;
+      let i = rx.lastIndex;
+      while (i < css.length && depth > 0) {
+        const c = css[i];
+        if (c === "{") depth += 1;
+        else if (c === "}") depth -= 1;
+        i += 1;
+      }
+      out.push(css.slice(rx.lastIndex, i));
+    }
+    return out;
+  }
+
   it("mobile nav strip: session pages are reachable for staff + admin", async () => {
-    // The collapsed ≤880px strip must carry the NEW Phase-4 destinations —
-    // otherwise a phone user cannot reach them at all.
+    // The collapsed phone nav must carry the NEW destinations — otherwise
+    // a phone user cannot reach them at all.
     const { body: staffBody } = await req(`/g/${CID_A}`, cookieOf.staff);
     assert.ok(staffBody.includes(`/g/${CID_A}/sessions"`), "Your sessions link (staff)");
     assert.ok(staffBody.includes("Your sessions"), "Your sessions label");
@@ -363,40 +398,97 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     assert.ok(body.includes('class="table-scroll"'), "archive table inside .table-scroll");
   });
 
-  it("mobile: styles.css carries the phone-pass rules (360–430px)", () => {
+  it("mobile: styles.css carries the phone-pass rules (#642 contract)", () => {
     const css = fsx.readFileSync(STYLES_PATH, "utf8");
-    // Collapsed nav strip (≤880) + the Phase-4 phone block (≤480) contents.
-    assert.match(css, /@media \(max-width: 880px\)/, "nav-strip breakpoint exists");
-    assert.match(
+
+    // #642 INVERTS the old ≤880px nav strip: the phone sidebar COLLAPSES
+    // behind the Menu button instead of turning into a horizontal strip.
+    // Nothing with flex-direction: row on .shell-nav may live inside any
+    // max-width: 880px query (and the query itself must be gone).
+    assert.doesNotMatch(
       css,
       /@media \(max-width: 880px\)[\s\S]*?\.shell-nav\s*\{[^}]*flex-direction:\s*row/,
-      "nav becomes a horizontal strip ≤880px"
+      "nav is not a horizontal strip ≤880px (block deleted, #642)"
     );
+    assert.equal(
+      mediaBlocks(css, /max-width:\s*880px/).filter((b) =>
+        /\.shell-nav[^{]*flex-direction:\s*row/.test(b)
+      ).length,
+      0,
+      "no .shell-nav flex-direction:row inside any max-width:880px query"
+    );
+
+    // Phone contract (max-width: 719px): Menu shows, one-column grid, the
+    // nav hides ONLY under body.nav-collapsed, and stays a column.
+    const phone = mediaBlocks(css, /max-width:\s*719px/).join("\n");
+    assert.match(phone, /\.nav-toggle\s*\{[^}]*display:\s*inline-flex/, "Menu button shown on phones");
+    assert.match(phone, /\.shell-body\s*\{[^}]*grid-template-columns:\s*1fr/, "one-column shell on phones");
     assert.match(
-      css,
-      /\.shell-nav-group h2\s*\{[^}]*flex:\s*1 0 100%/,
-      "nav group labels get their own line at phone width (no clipping)"
+      phone,
+      /body\.nav-collapsed\s+\.shell-nav\s*\{[^}]*display:\s*none/,
+      "CSS hides .shell-nav only under body.nav-collapsed"
     );
+    assert.match(phone, /\.shell-nav\s*\{[^}]*flex-direction:\s*column/, "phone nav is a column");
+    // .table-stack phone block: thead is CLIPPED (never display:none) and
+    // cells carry fixed-column titles via td::before content:attr(data-label).
     assert.match(
-      css,
-      /\.panel,\s*\.moderation,\s*\.table-scroll\s*\{[^}]*overflow-x:\s*auto/,
-      "tables scroll INSIDE their own box (the .dashboard-panel contract)"
+      phone,
+      /\.table-stack[^{]*thead\s*\{[^}]*(clip:|clip-path:)/,
+      "stacked tables clip the thead instead of display:none"
     );
+    assert.doesNotMatch(phone, /\.table-stack[^{]*thead\s*\{[^}]*display:\s*none/, "thead never display:none");
+    assert.match(
+      phone,
+      /\.table-stack[^{]*td::before\s*\{[^}]*content:\s*attr\(data-label\)/,
+      "stacked cells labelled by fixed data-label titles"
+    );
+
+    // The nav is never unconditionally hidden: every display:none rule
+    // targeting .shell-nav (at line start) must be body.nav-collapsed-gated.
+    assert.doesNotMatch(
+      css,
+      /(^|[,{}])\s*\.shell-nav\b[^{}\n]*\{[^}]*display:\s*none/,
+      ".shell-nav visible unless body.nav-collapsed"
+    );
+
+    // Tablet (720–1099): 13rem rail + sticky COLUMN.
+    const tablet = mediaBlocks(css, /max-width:\s*1099px/).join("\n");
+    assert.match(tablet, /\.shell-body\s*\{[^}]*grid-template-columns:\s*13rem/, "tablet rail is 13rem");
+    assert.match(tablet, /\.shell-nav\s*\{[^}]*flex-direction:\s*column/, "tablet nav is a sticky column");
+
+    // Desktop (1100+): 15.5rem rail.
+    const desktop = mediaBlocks(css, /min-width:\s*1100px/).join("\n");
+    assert.match(desktop, /\.shell-body\s*\{[^}]*grid-template-columns:\s*15\.5rem/, "desktop rail is 15.5rem");
+
+    // .table-scroll scrolls at ALL widths (outside every media query). The
+    // old ≤480 ".panel, .moderation, .table-scroll" scroller list is GONE:
+    // .panel is a card, not a scroller.
+    const topLevel = css.replace(/@media[^{]+\{(?:[^{}]|\{[^{}]*\})*\}/g, "");
+    assert.match(topLevel, /\.table-scroll\s*\{[^}]*overflow-x:\s*auto/, "table scroller at all widths");
+    assert.doesNotMatch(topLevel, /(^|[^-\w.])\.panel\s*\{[^}]*overflow-x/, ".panel is not a scroller");
+    assert.doesNotMatch(
+      css,
+      /\.panel,\s*\.moderation,\s*\.table-scroll\s*\{[^}]*overflow-x/,
+      "the old mobile scroller selector list is deleted"
+    );
+
+    // Table cells still wrap aggressively; pager bars still wrap.
     assert.match(
       css,
       /\.list-table th,\s*\.list-table td\s*\{[^}]*overflow-wrap:\s*anywhere/,
       "table cells wrap aggressively at phone width"
     );
-    assert.match(
-      css,
-      /\.leaderboard-pager\s*\{[^}]*flex-wrap:\s*wrap/,
-      "pager bars wrap on phones"
+    assert.match(css, /\.leaderboard-pager\s*\{[^}]*flex-wrap:\s*wrap/, "pager bars wrap on phones");
+
+    // PRG write forms (plus the shared .form-row) stack INSIDE the 719px
+    // query — spec moved them out of the old ≤480 block.
+    const stack = phone.match(
+      /\.settings-form,\s*\.staff-mutate-form,\s*\.integ-write-form,\s*\.integ-write-fields,\s*\.form-row\s*\{[^}]*\}/
     );
-    assert.match(
-      css,
-      /\.settings-form,\s*\.staff-mutate-form,\s*\.integ-write-form,\s*\.integ-write-fields\s*\{[^}]*flex-direction:\s*column/,
-      "write forms stack at phone width (every control reachable)"
-    );
+    assert.ok(stack, "write-form stack carries all migrated selectors");
+    assert.match(stack[0], /flex-direction:\s*column/, "write forms stack at phone width (every control reachable)");
+    const legacy480 = mediaBlocks(css, /max-width:\s*480px/).join("\n");
+    assert.doesNotMatch(legacy480, /flex-direction:\s*column/, "the form stack no longer lives in a ≤480px block");
   });
 
   it("mobile: styles.css keeps the Chart.js container contract (canvas unstyled)", () => {

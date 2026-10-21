@@ -1,60 +1,99 @@
 /*
- * Web admin console shell styles (roadmap/web-admin.md §8.2 public/).
- * No build step, no framework (§8.1-2): plain CSS, system-ui, served from
- * /static/styles.css. Visual language follows the ticket transcripts
- * (src/features/tickets/transcript.js): same
- * system-ui stack, same link blue, same quiet uppercase table headers —
- * the console and the transcripts are one product.
+ * Web admin console styles (roadmap/web-admin.md §8.2 public/; #642 shell
+ * rebuild). No build step, no framework (§8.1-2): plain CSS, system-ui,
+ * served from /static/styles.css. Visual language follows the ticket
+ * transcripts (src/features/tickets/transcript.js): same system-ui stack,
+ * same link blue, same quiet uppercase table headers — the console and the
+ * transcripts are one product.
  *
- * Dark is the DEFAULT palette (the console is a dark tool; §8.2 acceptance
- * "dark-by-default"); a light palette is provided via prefers-color-scheme
- * so the shell follows the OS when the user asks for light. All colors ride
- * the custom properties below — components never hardcode a color.
+ * DARK ONLY (#642): the signed-in console is one dark visual system.
+ * The old light-scheme media-query palette is DELETED — do not repair it.
+ * `color-scheme: dark` only. Components never hardcode a color; everything
+ * rides the tokens below.
+ *
+ * FILE INDEX (fixed section order):
+ *   1. Tokens      — every color/space/radius/type value lives here.
+ *   2. Base        — resets, body, focus ring, reduced motion.
+ *   3. Shell       — skip link, header, nav rail + Menu button, page grid,
+ *                    breadcrumb, footer.
+ *   4. Components  — buttons (+aliases), banners, panels, forms, inputs,
+ *                    tables (.table-stack/.table-scroll), badges, pills,
+ *                    tabs, .kv, .stat, find box, section nav, popovers.
+ *   5. Pages       — per-surface blocks (dashboard, settings, moderation,
+ *                    leaderboard, integrations, staff, voice, system/audit,
+ *                    tickets, archive, transcript, charts, landing).
+ *   6. Responsive  — ALL media queries: the 719 / 720–1099 / 1100+ shell
+ *                    grid contract, the phone nav collapse, the phone
+ *                    table/form stack, and legacy per-page tweaks.
  */
 
+/* ==========================================================================
+ * 1. TOKENS  (#642 — exact hexes; they clear 4.5:1 as normal text — do NOT
+ * "fix" them. The dark :root MUST stay before every media query; the layout
+ * test slices that range.)
+ * ========================================================================== */
+
 :root {
-  color-scheme: dark light;
+  color-scheme: dark;
 
   --bg: #191b1f;
   --bg-raised: #212429;
+  --bg-sunken: #121417;
+
   --fg: #e7e9ee;
   --fg-muted: #a3a9b5;
-  --line: #3a3e46;
+
   --link: #5b9dff;
-  --banner-warn-bg: #3a2f14;
-  --banner-warn-fg: #f0c96c;
-  --banner-info-bg: #16283c;
-  --banner-info-fg: #9cc6ff;
-  --banner-error-bg: #3c1a1a;
-  --banner-error-fg: #f2a0a0;
+  --focus: #5b9dff;
+  --accent: #3d6fbf; /* white label on this is ~5.0:1 → .btn-primary keeps font-size 1rem */
+
+  --danger: #e07b6b;
+  --danger-bg: #3c1a1a;
+  --warn: #f0c96c;
+  --warn-bg: #3a2f14;
+  --ok: #7fb069;
+  --info: #9cc6ff;
+  --info-bg: #16283c;
+
+  --chart-line: #5b9dff;
+  --chart-fill: rgba(91, 157, 255, 0.18);
+
+  --line: #3a3e46;
+  --line-strong: #4c525c;
+
+  --radius: 8px;
+  --header-h: 3.25rem;
+  --nav-w: 15.5rem;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  /* Type — system-ui stays (no webfont). */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+
+  /* Space — 4px base. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 2.5rem;
+
+  /* Legacy aliases (components may migrate off them; hexes already land in
+     the canonical tokens above). */
   --btn-bg: #2c313a;
   --btn-fg: var(--fg);
-  --tier-staff: #7fb069;
+  --tier-staff: var(--ok);
   --tier-senior: #d8b54c;
-  --tier-admin: #e07b6b;
+  --tier-admin: var(--danger);
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f4f5f7;
-    --bg-raised: #ffffff;
-    --fg: #1f2329;
-    --fg-muted: #5b6270;
-    --line: #d4d8de;
-    --link: #1f5cc4;
-    --banner-warn-bg: #fdf3d7;
-    --banner-warn-fg: #7a5b0d;
-    --banner-info-bg: #deebfb;
-    --banner-info-fg: #1f4e8a;
-    --banner-error-bg: #fbe3e3;
-    --banner-error-fg: #8a2626;
-    --btn-bg: #e6e9ee;
-    --btn-fg: #1f2329;
-    --tier-staff: #3d6f2e;
-    --tier-senior: #8a6d10;
-    --tier-admin: #a03a28;
-  }
-}
+/* ==========================================================================
+ * 2. BASE
+ * ========================================================================== */
 
 * { box-sizing: border-box; }
 
@@ -71,29 +110,104 @@ body {
 
 a { color: var(--link); }
 
+/* Focus ring rides --focus (#642). */
 :focus-visible {
-  outline: 2px solid var(--link);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
-/* ---- shell bar (header) ---------------------------------------------- */
+/* Programmatic focus (data-flash banners, tabindex="-1") must stay visible
+   even where :focus-visible heuristics skip programmatic focus. */
+.banner[data-flash]:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.muted { color: var(--fg-muted); }
+
+/* Reduced motion (#642): instant scroll, no transitions on the shell/nav
+   or the popovers. Chart.js keeps its own animation: false (app.js). */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .shell-nav,
+  .lookup-pop,
+  .user-card { transition: none; }
+}
+
+/* ==========================================================================
+ * 3. SHELL
+ * ========================================================================== */
+
+/* Skip link (#642): first focusable on every shell page; invisible until
+   focused. Target is <main id="content">. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+}
+
+.skip-link:focus {
+  left: var(--space-2);
+  top: var(--space-2);
+  padding: 0.5rem 0.9rem;
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--link);
+  border-radius: 6px;
+  text-decoration: none;
+}
+
+/* ---- header bar: logo lockup, switcher, tier badge, user box, Menu ------ */
 
 .shell-bar {
   display: flex;
   align-items: center;
   gap: 0.85rem;
-  flex-wrap: wrap;                 /* mobile: stack, desktop: single row */
+  flex-wrap: wrap;                 /* phone rows (see the 719 query) */
+  min-height: var(--header-h);
   padding: 0.6rem 1rem;
   background: var(--bg-raised);
   border-bottom: 1px solid var(--line);
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   font-weight: 700;
   text-decoration: none;
   color: var(--fg);
   margin-right: auto;
 }
+
+/* 28×28 lockup; alt="" — the "Boiler Snake" word stays visible at every
+   width, so the image is decoration (#642). */
+.brand-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: block;
+}
+
+/* Menu button (#642): base hidden; ONLY the phone query shows it
+   (display:inline-flex). It is never [hidden] — an author display rule
+   would override the UA [hidden] style, so the two never combine. */
+.nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;                /* touch target */
+  padding: 0.35rem 0.9rem;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.nav-toggle:hover { border-color: var(--link); }
 
 .guild-switcher {
   display: flex;
@@ -120,20 +234,6 @@ a { color: var(--link); }
   font: inherit;
 }
 
-.badge {
-  display: inline-block;
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-}
-
-.badge-tier-staff { color: var(--tier-staff); }
-.badge-tier-senior { color: var(--tier-senior); }
-.badge-tier-admin { color: var(--tier-admin); }
-
 .user-box {
   display: flex;
   align-items: center;
@@ -148,20 +248,130 @@ a { color: var(--link); }
 
 .logout-form { margin: 0; }
 
-.btn {
-  min-height: 44px;
-  padding: 0.35rem 0.9rem;
-  background: var(--btn-bg);
-  color: var(--btn-fg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  font: inherit;
-  cursor: pointer;
+/* ---- two-column console grid -------------------------------------------- */
+
+/* Nav rail + fluid content. max-width STAYS 1400px (#642 contract); the
+   grid queries in the Responsive section set the column widths. */
+.shell-body {
+  display: grid;
+  grid-template-columns: var(--nav-w) minmax(0, 1fr);
+  gap: 1.6rem;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1.1rem 1.25rem 2.5rem;
+  flex: 1 0 auto;
 }
 
-.btn:hover { border-color: var(--link); }
+/* Inside the shell the content column is the grid track — no second cap. */
+.shell-body .shell-main {
+  max-width: none;
+  margin: 0;
+  padding: 0 0 2rem;
+  min-width: 0;
+}
 
-/* ---- banners (degraded resolver, notices) ---------------------------- */
+/* Centered fallback for the non-shell lobby pages (root guild list, /t). */
+.shell-main {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 2.5rem;
+}
+
+.shell-main h1 { font-size: var(--text-lg); margin: 0.25rem 0; }
+
+/* #642: quiet text rides --fg-muted at opacity 1 — never opacity muting. */
+.subheading { color: var(--fg-muted); opacity: 1; font-size: 0.9rem; margin: 0 0 1rem; }
+
+/* Optional page actions row under the h1 (#642 renderLayout slot). */
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-4);
+}
+
+/* ---- sidebar nav (desktop default: sticky column) ------------------------ */
+
+.shell-nav {
+  align-self: start;
+  position: sticky;
+  top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.shell-nav-group h2 {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  margin: 0 0 0.35rem;
+}
+
+.shell-nav a {
+  display: block;
+  padding: 0.45rem 0.6rem 0.45rem calc(0.6rem - 3px); /* room for the inset bar */
+  min-height: 44px;                /* touch target */
+  box-sizing: border-box;
+  border-radius: 6px;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 0.95rem;
+}
+
+.shell-nav a:hover { background: var(--bg-raised); }
+
+/* Current page: inset bar + raised fill + weight — NOT color alone (#642). */
+.shell-nav a.active {
+  background: var(--bg-raised);
+  box-shadow: inset 3px 0 0 var(--link);
+  font-weight: 700;
+}
+
+/* ---- breadcrumb (first node inside <main>) -------------------------------- */
+
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  margin: 0 0 var(--space-3);
+}
+
+.breadcrumb a { color: var(--link); text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; }
+
+.breadcrumb > * + *::before {
+  content: "/";
+  margin-right: var(--space-2);
+  color: var(--line-strong);
+}
+
+/* ---- footer ---------------------------------------------------------------- */
+
+.shell-footer {
+  flex-shrink: 0;
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  opacity: 1;                      /* quiet by color, not opacity (#642) */
+  padding: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+/* ==========================================================================
+ * 4. COMPONENTS  (shared system later console issues compose on — land the
+ * classes ONCE so nobody invents a second system)
+ * ========================================================================== */
+
+/* ---- banners (degraded resolver, flash slot, notices) -------------------- */
 
 .banner {
   margin: 0.9rem auto 0;
@@ -172,31 +382,80 @@ a { color: var(--link); }
   font-size: 0.85rem;
 }
 
-.banner-degraded, .banner-warn { background: var(--banner-warn-bg); color: var(--banner-warn-fg); }
-.banner-info { background: var(--banner-info-bg); color: var(--banner-info-fg); }
-.banner-error { background: var(--banner-error-bg); color: var(--banner-error-fg); }
+/* Inside the shell grid a centered auto-margin banner would float — pages
+   keep their banners flush with the content column. */
+.shell-body .banner { margin-left: 0; }
 
-.noscript-hint {
-  max-width: 1100px;
-  margin: 0.75rem auto 0;
-  padding: 0 1rem;
-  font-size: 0.8rem;
-  color: var(--fg-muted);
+.banner-degraded,
+.banner-warn { background: var(--warn-bg); color: var(--warn); }
+.banner-info { background: var(--info-bg); color: var(--info); }
+.banner-error { background: var(--danger-bg); color: var(--danger); }
+
+/* ---- buttons + aliases (#642) --------------------------------------------- */
+/* Old markup keeps styling until later issues migrate callers; every alias
+   matches the .btn metrics and nothing shrinks below the 44px target. */
+
+.btn,
+.btn-small,
+.btn-sm,
+.btn--small {
+  min-height: 44px;
+  padding: 0.35rem 0.9rem;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
 }
 
-/* ---- main + footer ----------------------------------------------------- */
+.btn:hover,
+.btn-small:hover,
+.btn-sm:hover,
+.btn--small:hover { border-color: var(--link); }
 
-.shell-main {
-  flex: 1 0 auto;
-  width: 100%;
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 1.25rem 1rem 2.5rem;
+/* One primary submit per form: accent fill, white label, full 1rem text. */
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-size: var(--text-md);
 }
 
-.shell-main h1 { font-size: 1.4rem; margin: 0.25rem 0; }
+.btn-primary:hover { border-color: var(--link); }
 
-.subheading { opacity: 0.75; font-size: 0.9rem; margin: 0 0 1rem; }
+/* Danger family: OUTLINE treatment (--danger text + border), never filled. */
+.btn-danger,
+.btn--danger,
+.settings-submit-clear {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--btn-bg);
+}
+
+.btn--warn {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--btn-bg);
+}
+
+/* ---- panels (the shared card) ---------------------------------------------- */
+/* _helpers.section already emits class="panel". NOT a scroller (#642):
+   wide tables scroll via .table-scroll / stack via .table-stack instead.
+   Verified: voice/system/sessions/ticket pages carry ONE card per section
+   (section() emits the panel classes on the section itself — no nested
+   .dashboard-panel double padding). */
+.panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+  min-width: 0;
+}
 
 .error-body {
   border: 1px solid var(--line);
@@ -205,51 +464,295 @@ a { color: var(--link); }
   padding: 1rem 1.15rem;
 }
 
-.empty-state { text-align: center; opacity: 0.7; padding: 2rem 0; }
+/* ---- forms ------------------------------------------------------------------ */
+
+/* Field rows: one column below 720px, two columns from 720px (Responsive). */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+
+.form-help {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+/* Shared input: 44px tall, sunken well, token border. Numbers and ids cap
+   their measure (.input-narrow marks id/snowflake fields explicitly). */
+.input {
+  min-height: 44px;
+  background: var(--bg-sunken);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  max-width: 100%;
+}
+
+.input:focus { border-color: var(--link); }
+
+.input[type="number"],
+.input-narrow { max-width: 22rem; }
+
+/* Touch targets: <summary> (collapsible write forms) and pager links are at
+   least 44px everywhere (#642). */
+summary {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.pager a,
+.leaderboard-pager a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+/* ---- empty states ------------------------------------------------------------ */
+/* #642: muted by COLOR, opacity pinned to 1. The dashboard literal and the
+   /empty-state/ test stay as-is (the dashboard issue owns that markup). */
+.empty,
+.empty-state {
+  text-align: center;
+  color: var(--fg-muted);
+  opacity: 1;
+  padding: var(--space-6) 0;
+}
+
+.empty-state p { margin: 0; }
+.empty-detail { font-size: var(--text-sm); margin: var(--space-1) 0 0; }
+.empty-cta { margin: var(--space-3) 0 0; }
+
+/* ---- badges / pills ----------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+.badge-tier-staff { color: var(--tier-staff); }
+.badge-tier-senior { color: var(--tier-senior); }
+.badge-tier-admin { color: var(--tier-admin); }
+
+/* ---- tables --------------------------------------------------------------------- */
 
 /* Transcripts' table language, shared for Phase 1 lists. */
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+
 th, td {
   text-align: left;
   padding: 0.55rem 0.65rem;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
+
+/* Uppercase quiet headers — quiet by COLOR, not opacity (#642). */
 th {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  opacity: 0.8;
+  color: var(--fg-muted);
+  opacity: 1;
 }
 
-.shell-footer {
-  flex-shrink: 0;
-  text-align: center;
-  font-size: 0.75rem;
-  opacity: 0.6;
-  padding: 1rem;
-  border-top: 1px solid var(--line);
+/* Horizontal scroll at ALL widths (#642 replaces the old ≤480
+   `.panel, .moderation, .table-scroll` scroller list; .panel itself is NOT
+   a scroller anymore). */
+.table-scroll { overflow-x: auto; }
+
+/* .table-stack: desktop = a normal table inside .table-scroll; under 719px
+   each row becomes a card and each cell a two-column grid labelled via
+   td::before content attr(data-label). data-label values are FIXED column
+   titles (constants shipped by later issues), never user content. The
+   thead is CLIPPED (position+clip trick), not display:none — screen
+   readers keep the header names. Phone block lives in the Responsive
+   section. */
+
+/* ---- danger zone ----------------------------------------------------------------- */
+
+.danger-zone {
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: var(--space-4);
 }
 
-/* Narrow phones: the bar wraps to rows; nothing overflows at 375px. */
-@media (max-width: 480px) {
-  .shell-bar { padding: 0.5rem 0.6rem; }
-  .guild-switcher select { max-width: 60vw; }
+/* ---- tabs -------------------------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--line);
+  margin: 0 0 var(--space-4);
 }
 
-/* ---- dashboard (subtask 14, §8.6 row 1 — data tables, no charts) ------- */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;                /* touch target */
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--fg);
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab:hover { border-color: var(--link); }
+
+.tab.is-active,
+.tab[aria-current="page"] {
+  background: var(--bg-raised);
+  font-weight: 700;
+}
+
+.tab-disabled {
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+/* ---- definition lists / stat blocks ------------------------------------------------- */
+
+.kv {
+  display: grid;
+  grid-template-columns: minmax(8rem, auto) 1fr;
+  gap: 0.35rem 1.1rem;
+  margin: 0;
+  font-size: 0.9rem;
+}
+.kv dt { color: var(--fg-muted); }
+.kv dd { margin: 0; }
+
+.stat {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-4);
+}
+
+.stat-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  margin: 0;
+}
+
+.stat-value { font-size: var(--text-lg); margin: var(--space-1) 0 0; }
+
+/* ---- find box + in-page section nav (consumed by #643/#644) -------------------------- */
+
+.find-setting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+}
+
+.find-setting input { flex: 1 1 14rem; max-width: 26rem; }
+
+/* Sticky on desktop (query in the Responsive section, #642). */
+.section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+}
+
+.section-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: var(--text-sm);
+}
+
+.section-nav a:hover { border-color: var(--link); }
+
+/* ---- identifier type-ahead popover (§8.15-15.10) -------------------------------------- */
+/* Floating suggestion list anchored to the input's <label> (made
+   position:relative via .lookup-host by app.js). #642: the panel rides
+   --bg-raised / --line / --shadow — the old undefined-var hex fallbacks
+   (#1a1d24/#2c313c/#242a36) are gone. */
+.lookup-host { position: relative; display: block; }
+
+.lookup-pop {
+  position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 30;
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  max-height: 260px; overflow-y: auto; padding: 4px;
+}
+
+.lookup-opt {
+  display: flex; justify-content: space-between; gap: var(--space-3); align-items: baseline;
+  padding: 6px 10px; border-radius: 6px; cursor: pointer;
+}
+
+.lookup-opt:hover,
+.lookup-opt.is-active,
+.lookup-opt[aria-selected="true"] { background: var(--info-bg); }
+
+.lookup-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lookup-id { flex: 0 0 auto; font-size: 0.8em; color: var(--fg-muted); font-family: monospace; }
+.lookup-kind {
+  font-size: 0.7em; color: var(--fg-muted); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-left: var(--space-2);
+}
+
+/* ---- lazy profile cards (§8.15-15.11) --------------------------------------------------- */
+.user-card {
+  position: fixed; z-index: 60; background: var(--bg-raised);
+  border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow); padding: 10px 12px;
+  font-size: 0.9rem; line-height: 1.35;
+}
+.user-card-head { display: flex; gap: 10px; align-items: center; }
+.user-card-avatar { border-radius: 50%; flex: 0 0 auto; }
+.user-card-name { font-weight: 600; word-break: break-word; }
+.user-card-id { font-family: monospace; font-size: 0.8em; color: var(--fg-muted); }
+.user-card-roles { display: flex; flex-wrap: wrap; gap: 4px; margin-top: var(--space-2); }
+.user-card-role {
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 1px 8px; font-size: 0.78em;
+}
+.user-card-warm { margin-top: var(--space-2); font-size: 0.75em; color: var(--fg-muted); font-style: italic; }
+
+/* ==========================================================================
+ * 5. PAGES  (per-surface blocks — a page block may never restyle a sibling;
+ * page-specific media queries live in the Responsive section)
+ * ========================================================================== */
+
+/* ---- dashboard (subtask 14, §8.6 row 1 — data tables, no charts) ---------- */
 
 /* Auto-fit grid: two panels per row on desktop, one below ~700px, no
    media query needed; the stamp always spans the full row. */
 .dashboard {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
   grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
   align-items: start;
 }
 
 /* Each panel is a card; overflow-x keeps wide tables scrolling INSIDE the
-   panel instead of breaking the page at 375px. */
+   dashboard panel instead of breaking the page at 375px (the UX v1.1
+   dashboard contract — pages outside the dashboard use .table-scroll). */
 .dashboard-panel {
   background: var(--bg-raised);
   border: 1px solid var(--line);
@@ -259,15 +762,15 @@ th {
   overflow-x: auto;
 }
 
-.dashboard-panel h2 { font-size: 1rem; margin: 0 0 0.6rem; }
-.dashboard-panel h3 { font-size: 0.85rem; margin: 1rem 0 0.4rem; }
+.dashboard-panel h2 { font-size: var(--text-md); margin: 0 0 0.6rem; }
+.dashboard-panel h3 { font-size: 0.85rem; margin: var(--space-4) 0 0.4rem; }
 
 .dashboard-count { font-size: 1.1rem; margin: 0 0 0.75rem; }
 
 .dashboard-dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.3rem 1rem;
+  gap: 0.3rem var(--space-4);
   margin: 0;
   font-size: 0.9rem;
 }
@@ -277,7 +780,7 @@ th {
 .dashboard-leaders { margin: 0; padding-left: 1.4rem; font-size: 0.9rem; }
 .dashboard-leaders li { padding: 0.15rem 0; }
 
-.dashboard-nowplaying { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; }
+.dashboard-nowplaying { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); margin: 0; }
 
 /* Full-width freshness line under the grid. */
 .dashboard-stamp { grid-column: 1 / -1; margin: 0; }
@@ -288,12 +791,31 @@ th {
 .badge-ticker-down { color: var(--tier-admin); }
 .badge-ticker-unknown { color: var(--fg-muted); }
 
-/* settings */
-/* GET /g/:guildId/settings (Phase 1 read-only) — reuses shell tokens. */
+/* Full-width dashboard panels (tickets first) + readable tables */
+.dashboard-panel-wide { grid-column: 1 / -1; }
+
+.dashboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.dashboard-table th,
+.dashboard-table td {
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.dashboard-table td { overflow-wrap: anywhere; }
+.dashboard-table td code { overflow-wrap: anywhere; }
+
+/* ---- settings (GET /g/:guildId/settings — read surface + PRG writes) ------ */
+/* Reuses shell tokens; nothing here restyles sibling pages. */
 .settings-grid {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .settings-panel .setting-admin-hint {
@@ -310,7 +832,7 @@ th {
 .setting-row {
   display: grid;
   grid-template-columns: minmax(9rem, 1fr) minmax(6rem, 1fr) minmax(8rem, 1fr) minmax(10rem, 1.2fr);
-  gap: 0.4rem 1rem;
+  gap: 0.4rem var(--space-4);
   align-items: baseline;
   border-bottom: 1px dashed var(--line);
   padding-bottom: 0.35rem;
@@ -329,14 +851,51 @@ th {
 .settings-stamp { margin: 0; }
 .channel-name { color: var(--fg-muted); }
 
-@media (max-width: 640px) {
-  .setting-row { grid-template-columns: 1fr; gap: 0.15rem; }
+/* settings writes (Phase 2) — plain PRG forms under .settings-* only.
+   (.btn-small / .settings-submit-clear ride the shared button aliases.) */
+.settings-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+  margin: 0.6rem 0 0;
+  padding: 0.6rem 0 0;
+  border-top: 1px dashed var(--line);
 }
+.settings-form-inline {
+  display: inline-flex;
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+  gap: 0.35rem;
+  align-items: center;
+}
+.setting-field { display: grid; gap: 0.2rem; font-size: 0.8rem; }
+.setting-field-label { color: var(--fg-muted); }
+.setting-field-wide .setting-input-channel { min-width: 13rem; }
+.setting-input {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.setting-input-number { width: 8.5rem; }
+.settings-log-forms {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0.6rem 0 0;
+  border-top: 1px dashed var(--line);
+}
+.settings-log-forms .settings-form-inline { border-top: 0; }
+.settings-list-item { display: flex; align-items: center; gap: 0.6rem; margin: 0.25rem 0; }
 
-/* moderation */
-/* GET /g/:guildId/warnings + /g/:guildId/notes (Phase 1 read-only, subtask
-   17). Everything scoped under .moderation so this section can never restyle
-   sibling pages; rides the existing shell tokens (no new custom props). */
+/* ---- moderation (warnings + notes, §8.6 row 3) ----------------------------- */
+/* Everything scoped under .moderation so this section can never restyle
+   sibling pages; rides the existing shell tokens. */
 .moderation { display: flex; flex-direction: column; gap: 0.9rem; }
 
 .moderation .filter-form {
@@ -367,8 +926,10 @@ th {
 .moderation .pager a { margin-right: 0.5rem; }
 
 .moderation .moderation-table { font-size: 0.85rem; }
+/* Voided/deleted rows are quiet by COLOR, not opacity (#642); the state
+   pill below them stays fully readable (the row keeps its text pill). */
 .moderation .row-voided td,
-.moderation .row-deleted td { opacity: 0.65; }
+.moderation .row-deleted td { color: var(--fg-muted); opacity: 1; }
 
 /* State pills — whitelist classes only (views/moderation PILL_KINDS). */
 .moderation .state-pill {
@@ -376,7 +937,7 @@ th {
   padding: 0.05rem 0.45rem;
   border-radius: 999px;
   border: 1px solid var(--line);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   white-space: nowrap;
 }
 .moderation .state-pill-active { color: var(--tier-staff); }
@@ -395,17 +956,11 @@ th {
 }
 .moderation .warn-meta .void-meta,
 .moderation .warn-meta .void-reason { color: var(--tier-admin); }
-.moderation .hint { font-size: 0.8rem; opacity: 0.7; margin: 0; }
+.moderation .hint { font-size: 0.8rem; color: var(--fg-muted); opacity: 1; margin: 0; }
 
-@media (max-width: 480px) {
-  .moderation .filter-form input[type="search"] { min-width: 60vw; }
-}
-
-/* leaderboard */
-/* GET /g/:guildId/leaderboard + /leaderboard/user/:userId (Phase 1
-   read-only, subtask 16). All rules scoped under the lb-prefixed and
-   leaderboard-prefixed classes so this section can never restyle sibling
-   pages; rides the existing shell tokens (no new custom props). */
+/* ---- leaderboard (§8.6 row 2) -----------------------------------------------
+   All rules scoped under the lb-prefixed and leaderboard-prefixed classes so
+   this section can never restyle sibling pages. */
 .leaderboard-table td { vertical-align: middle; }
 .leaderboard-table .lb-rank { width: 3.5rem; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
 .leaderboard-table .lb-xp,
@@ -448,16 +1003,9 @@ th {
 
 .lb-history-note { font-size: 0.9rem; color: var(--fg-muted); margin: 0; }
 
-@media (max-width: 480px) {
-  .lb-user-xp .kv { grid-template-columns: 1fr; gap: 0.1rem; }
-  .lb-user-xp .kv dd { margin-bottom: 0.5rem; }
-}
-
-/* integrations */
-/* GET /g/:guildId/integrations (Phase 1 read-only, subtask 20). Panels reuse
-   the settings-page grid/rows classes; everything new is scoped under
-   .integrations-* / .integ-* so this section can never restyle sibling
-   pages; rides the existing shell tokens (no new custom props). */
+/* ---- integrations (GET /g/:guildId/integrations) -----------------------------
+   Panels reuse the settings-page grid/rows classes; everything new is scoped
+   under .integrations-* / .integ-*. */
 .integrations-panel .integ-sub { margin: 0.9rem 0 0.4rem; font-size: 0.95rem; }
 
 /* Env-gate / credential-state lines (names of missing vars only, §8.7). */
@@ -469,7 +1017,7 @@ th {
   padding: 0.05rem 0.45rem;
   border-radius: 999px;
   border: 1px solid var(--line);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   white-space: nowrap;
 }
 .integ-pill-live { color: var(--tier-staff); }
@@ -481,11 +1029,7 @@ th {
 /* URL cells stay escapable text (never <a href>) but must not blow layout. */
 .integ-url { word-break: break-all; font-size: 0.85rem; }
 
-@media (max-width: 640px) {
-  .integrations-panel .settings-table { font-size: 0.8rem; }
-}
-
-/* staff — GET /g/:guildId/staff + /commands (subtask 19, Phase 1 read-only) */
+/* ---- staff (GET /g/:guildId/staff + /commands) --------------------------------- */
 .staff-grid { display: grid; gap: 1.25rem; }
 
 .staff-roles-panel .counts { margin: 0 0 0.6rem; }
@@ -499,7 +1043,7 @@ th {
   padding: 0.05rem 0.5rem;
   border-radius: 999px;
   border: 1px solid var(--line);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   white-space: nowrap;
 }
 .staff-level-senior { color: var(--tier-senior, var(--tier-staff)); font-weight: 600; }
@@ -531,149 +1075,15 @@ th {
   padding: 0.05rem 0.5rem;
   border-radius: 999px;
   border: 1px solid var(--line);
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   white-space: nowrap;
 }
 .badge-state-ok { color: var(--tier-staff); }
 .badge-state-none { color: var(--fg-muted); }
 .badge-state-unknown { color: var(--tier-senior); }
 
-@media (max-width: 640px) {
-  .staff-table { font-size: 0.8rem; }
-}
-
-/* voice */
-/* GET /g/:guildId/voice (Phase 1 read-only, subtask 21). Panels reuse the
-   settings-page grid/rows classes; everything new is scoped under .voice-*
-   so this section can never restyle sibling pages; rides the existing shell
-   tokens (no new custom props). NO controls are styled because NO controls
-   exist (§8.9). */
-.voice-grid .voice-panel + .voice-panel { margin-top: 0; }
-
-/* Now-playing line: title dominates, metadata stays quiet. */
-.voice-now { margin: 0 0 0.6rem; }
-.voice-now-title { font-size: 1.05rem; }
-
-/* Secondary metadata runs (track author, position, queue footer, totals). */
-.voice-meta { font-size: 0.85rem; color: var(--fg-muted); }
-
-/* Queue position column stays narrow and aligned. */
-.voice-queue .voice-pos { width: 3rem; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
-.voice-minutes { font-variant-numeric: tabular-nums; }
-
-/* Whitelisted state pills (views/voice MUSIC_PILL kinds: live | idle | off). */
-.voice-pill {
-  display: inline-block;
-  padding: 0.05rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  font-size: 0.75rem;
-  white-space: nowrap;
-}
-.voice-pill-live { color: var(--tier-staff); }
-.voice-pill-idle { color: var(--tier-senior); }
-.voice-pill-off { color: var(--fg-muted); }
-
-@media (max-width: 640px) {
-  .voice-panel .settings-table { font-size: 0.8rem; }
-}
-
-/* system */
-/* GET /g/:guildId/system + /g/:guildId/audit (Phase 1 read-only, subtask 22,
-   Admin tier). Everything new is scoped under .system-* / .audit-* / .badge-
-   origin-* so this section can never restyle sibling pages; rides the
-   existing shell tokens. The audit page reuses .moderation's filter/pager
-   styles via the shared wrapper class — no mutations, no new controls. */
-.system-grid { display: grid; gap: 1rem; max-width: 72rem; }
-.system-grid .system-panel + .system-panel { margin-top: 0; }
-
-/* Definition-list health rows (mirrors .lb-user-xp .kv, scoped here). */
-.system-kv { display: grid; grid-template-columns: minmax(10rem, auto) 1fr; gap: 0.35rem 1.1rem; margin: 0; font-size: 0.9rem; }
-.system-kv dt { color: var(--fg-muted); }
-.system-kv dd { margin: 0; }
-
-/* Paths and URLs break instead of blowing out the layout. */
-.system-path code, code.system-path { word-break: break-all; }
-
-.system-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-
-.muted { color: var(--fg-muted); }
-.system-panel .hint { font-size: 0.8rem; opacity: 0.7; margin: 0.6rem 0 0; }
-
-/* Audit origin badges (whitelisted kinds only — views/system ORIGIN_KINDS). */
-.badge-origin-web { color: var(--tier-staff); }
-.badge-origin-slash { color: var(--tier-senior); }
-.badge-origin-system { color: var(--fg-muted); }
-
-/* Audit rows: dense table, details as escaped scrollable plain text. */
-.audit .audit-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.audit .audit-table th, .audit .audit-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-.audit .audit-id { width: 4rem; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
-.audit .audit-action, .audit .audit-target, .audit .user-id { word-break: break-all; }
-.audit .audit-details-cell { min-width: 16rem; }
-/* details_json pretty-print: escaped plain text, never links (§8.7); the
-   scroll box keeps one huge row from stretching the page. */
-.audit .audit-details { margin: 0; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 0.35rem; background: var(--bg); font-size: 0.75rem; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; max-height: 14rem; overflow: auto; }
-
-@media (max-width: 640px) {
-  .system-kv { grid-template-columns: 1fr; gap: 0.1rem; }
-  .system-kv dd { margin-bottom: 0.5rem; }
-}
-
-/* settings writes (Phase 2, subtask 24) */
-/* Plain PRG forms under .settings-* only — rides the existing shell tokens
-   and .btn/.banner classes; nothing here restyles sibling pages. */
-.settings-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.6rem;
-  margin: 0.6rem 0 0;
-  padding: 0.6rem 0 0;
-  border-top: 1px dashed var(--line);
-}
-.settings-form-inline {
-  display: inline-flex;
-  margin: 0;
-  padding: 0;
-  border-top: 0;
-  gap: 0.35rem;
-  align-items: center;
-}
-.setting-field { display: grid; gap: 0.2rem; font-size: 0.8rem; }
-.setting-field-label { color: var(--fg-muted); }
-.setting-field-wide .setting-input-channel { min-width: 13rem; }
-.setting-input {
-  padding: 0.3rem 0.45rem;
-  border: 1px solid var(--line);
-  border-radius: 0.35rem;
-  background: var(--bg);
-  color: inherit;
-  font: inherit;
-  font-size: 0.85rem;
-}
-.setting-input-number { width: 8.5rem; }
-.btn-small { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
-.settings-submit-clear { color: var(--banner-error-fg); border-color: var(--banner-error-fg); }
-.settings-log-forms {
-  display: grid;
-  gap: 0.5rem;
-  margin: 0.75rem 0 0;
-  padding: 0.6rem 0 0;
-  border-top: 1px dashed var(--line);
-}
-.settings-log-forms .settings-form-inline { border-top: 0; }
-.settings-list-item { display: flex; align-items: center; gap: 0.6rem; margin: 0.25rem 0; }
-
-@media (max-width: 640px) {
-  .setting-input-number { width: 6.5rem; }
-}
-
-/* staff */
-/* Phase 2 mutation forms on GET /g/:guildId/staff (subtask 25). Plain PRG
-   forms scoped under .staff-mutate-* / .level-role-panel / .level-roles-
-   table only — rides the existing shell tokens and .btn/.badge classes;
-   nothing here restyles sibling pages. */
+/* Phase 2 mutation forms on GET /g/:guildId/staff (scoped .staff-mutate-*).
+   (.btn-danger rides the shared danger alias above.) */
 .staff-mutate-panel { display: grid; gap: 0.5rem; }
 .staff-mutate-panel .subheading { margin: 0; font-size: 0.85rem; }
 
@@ -703,19 +1113,11 @@ th {
 }
 .staff-mutate-form input[name="role_id"] { min-width: 13rem; }
 .staff-mutate-form input[type="number"] { width: 7.5rem; }
-.btn-danger { color: var(--banner-error-fg); border-color: var(--banner-error-fg); }
 
 .level-roles-config-panel .level-roles-table { margin-top: 0.4rem; }
 
-@media (max-width: 640px) {
-  .staff-mutate-form { font-size: 0.8rem; }
-  .staff-mutate-form input[name="role_id"] { min-width: 9rem; }
-}
-
-/* integrations writes (Phase 2, subtask 26) */
-/* Collapsible PRG write forms on GET /g/:guildId/integrations. Scoped under
-   .integ-write* only — rides the existing shell tokens and .btn/.banner
-   classes; nothing here restyles sibling pages. */
+/* Collapsible PRG write forms on GET /g/:guildId/integrations (scoped
+   .integ-write*; .btn/.banner classes ride the shared components). */
 .integrations-panel .integ-write {
   margin: 0.7rem 0 0;
   padding: 0.5rem 0.65rem;
@@ -772,21 +1174,14 @@ th {
 .integ-write-form input[name="message_id"] { min-width: 13rem; }
 .integ-write-form input[type="number"] { width: 7.5rem; }
 
-@media (max-width: 640px) {
-  .integ-write-form { font-size: 0.8rem; }
-  .integ-write-form input[name$="role_id"],
-  .integ-write-form input[name="channel_id"],
-  .integ-write-form input[name="message_id"] { min-width: 9rem; }
-}
-
-/* --- Ticket actions (Phase 3, subtask 30) --------------------------------- */
-/* Inline claim/close controls inside the open-ticket table cells; the
-   close form's optional reason field stays compact so rows scan fast. */
+/* ---- ticket actions (Phase 3, §8.6) --------------------------------------------
+   Inline claim/close controls inside the open-ticket table cells; the close
+   form's optional reason field stays compact so rows scan fast. */
 .ticket-action-cells {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 .ticket-inline-form {
   display: inline-flex;
@@ -796,7 +1191,7 @@ th {
 .ticket-reason-label {
   display: grid;
   gap: 0.15rem;
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   color: var(--fg-muted);
 }
 .ticket-reason-label input {
@@ -812,10 +1207,8 @@ th {
 .ticket-reason-cell { max-width: 22rem; overflow-wrap: anywhere; }
 .ticket-actions-table code { font-size: 0.8rem; }
 
-/* --- Phase 3: command-visibility sync trigger (subtask 31, §8.6) --------- */
-/* Admin-only trigger form inside the sync panel (views/syncAction). Base
-   rules come from .staff-mutate-form; this only positions the button so the
-   panel's status blocks and the trigger stay visually distinct. */
+/* Command-visibility sync trigger (views/syncAction): base rules come from
+   .staff-mutate-form; this only positions the button. */
 .sync-trigger-form {
   margin-top: 0.85rem;
   display: grid;
@@ -826,69 +1219,43 @@ th {
   width: auto;
 }
 
+/* ---- system + audit (admin, §8.6 row 6) ------------------------------------------
+   Scoped under .system-* / .audit-*; audit reuses .moderation's filter/pager
+   styles via the shared wrapper class — no mutations, no new controls. */
+.system-grid { display: grid; gap: var(--space-4); max-width: 72rem; }
+.system-grid .system-panel + .system-panel { margin-top: 0; }
 
-/* ---- UX v1.1 (roadmap/web-admin.md §8.15): sidebar shell, guild list ---- */
+/* Definition-list health rows (mirrors .lb-user-xp .kv, scoped here). */
+.system-kv { display: grid; grid-template-columns: minmax(10rem, auto) 1fr; gap: 0.35rem 1.1rem; margin: 0; font-size: 0.9rem; }
+.system-kv dt { color: var(--fg-muted); }
+.system-kv dd { margin: 0; }
 
-/* Two-column console shell: fixed nav rail + fluid content. Replaces the
-   old centered max-width main for guild pages (lobby/root keeps center). */
-.shell-body {
-  display: grid;
-  grid-template-columns: 15.5rem minmax(0, 1fr);
-  gap: 1.6rem;
-  width: 100%;
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 1.1rem 1.25rem 2.5rem;
-  flex: 1 0 auto;
-}
+/* Paths and URLs break instead of blowing out the layout. */
+.system-path code, code.system-path { word-break: break-all; }
 
-.shell-body .shell-main {
-  max-width: none;
-  margin: 0;
-  padding: 0 0 2rem;
-  min-width: 0;
-}
+.system-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 
-.shell-nav {
-  align-self: start;
-  position: sticky;
-  top: 0.9rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.1rem;
-}
+.system-panel .hint { font-size: 0.8rem; color: var(--fg-muted); opacity: 1; margin: 0.6rem 0 0; }
 
-.shell-nav-group h2 {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-muted);
-  margin: 0 0 0.35rem;
-}
+/* Audit origin badges (whitelisted kinds only — views/system ORIGIN_KINDS). */
+.badge-origin-web { color: var(--tier-staff); }
+.badge-origin-slash { color: var(--tier-senior); }
+.badge-origin-system { color: var(--fg-muted); }
 
-.shell-nav a {
-  display: block;
-  padding: 0.45rem 0.6rem;
-  min-height: 44px;
-  box-sizing: border-box;
-  border-radius: 6px;
-  color: var(--fg);
-  text-decoration: none;
-  font-size: 0.92rem;
-}
+/* Audit rows: dense table, details as escaped scrollable plain text. */
+.audit .audit-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.audit .audit-table th, .audit .audit-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.audit .audit-id { width: 4rem; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
+.audit .audit-action, .audit .audit-target, .audit .user-id { word-break: break-all; }
+.audit .audit-details-cell { min-width: 16rem; }
+/* details_json pretty-print: escaped plain text, never links (§8.7); the
+   scroll box keeps one huge row from stretching the page. */
+.audit .audit-details { margin: 0; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 0.35rem; background: var(--bg); font-size: var(--text-xs); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; max-height: 14rem; overflow: auto; }
 
-.shell-nav a:hover { background: var(--bg-raised); }
-
-.shell-nav a.active {
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  font-weight: 600;
-}
-
-/* Root guild list */
+/* ---- root guild list (UX v1.1 lobby) ---------------------------------------------- */
 .guild-list {
   list-style: none;
-  margin: 0 0 1rem;
+  margin: 0 0 var(--space-4);
   padding: 0;
   display: grid;
   gap: 0.6rem;
@@ -914,72 +1281,22 @@ th {
 
 .guild-list-link:hover { text-decoration: underline; }
 
-/* Full-width dashboard panels (tickets first) + readable tables */
-.dashboard-panel-wide { grid-column: 1 / -1; }
-
-.dashboard-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: auto;
-}
-
-.dashboard-table th,
-.dashboard-table td {
-  padding: 0.35rem 0.55rem;
-  text-align: left;
-  vertical-align: top;
-}
-
-.dashboard-table td { overflow-wrap: anywhere; }
-.dashboard-table td code { overflow-wrap: anywhere; }
-
-/* Narrow screens: nav becomes a horizontal strip above the content. */
-@media (max-width: 880px) {
-  .shell-body {
-    grid-template-columns: 1fr;
-    gap: 0.9rem;
-    padding: 0.9rem 0.8rem 2rem;
-  }
-
-  .shell-nav {
-    position: static;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 0.25rem 1.1rem;
-  }
-
-  .shell-nav-group {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.15rem;
-  }
-
-  .shell-nav-group h2 { margin: 0 0.5rem 0 0; }
-
-  .shell-nav a {
-    padding: 0.4rem 0.65rem;
-    min-height: 40px;
-    font-size: 0.88rem;
-  }
-}
-
-/* --- Archive first-class (§8.15): search form, people cells, back links --- */
+/* ---- archive first-class (§8.15): search form, people cells, panel feet ----------- */
 .archive-search {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
-  margin: 0.75rem 0 1rem;
+  gap: var(--space-2);
+  margin: 0.75rem 0 var(--space-4);
 }
 .archive-search input[type="search"] {
   flex: 1 1 14rem;
   max-width: 26rem;
   padding: 0.4rem 0.6rem;
-  border: 1px solid var(--line, #2a2f3a);
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: var(--bg-raised, #14171e);
-  color: var(--fg, #d7dae0);
+  background: var(--bg-raised);
+  color: var(--fg);
 }
 .archive-search button {
   padding: 0.4rem 0.9rem;
@@ -993,7 +1310,7 @@ td.people .who {
 }
 td.people .who.sub {
   font-size: 0.85em;
-  color: var(--fg-muted, #8a919e);
+  color: var(--fg-muted);
 }
 .panel-foot {
   margin: 0.65rem 0 0;
@@ -1003,12 +1320,12 @@ p.panel-foot {
   margin-top: 0.75rem;
 }
 
-/* --- Transcript view (§8.15 amendment): themed rendering of the record --- */
+/* ---- transcript view (§8.15 amendment): themed rendering of the record ------------ */
 .transcript-header .subheading {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 .transcript-raw-link {
   font-size: 0.9em;
@@ -1026,27 +1343,27 @@ p.panel-foot {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  margin-top: 1rem;
+  margin-top: var(--space-4);
 }
 .tmsg {
-  border: 1px solid var(--line, #2a2f3a);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   padding: 0.7rem 0.95rem;
-  background: var(--bg-raised, #14171e);
+  background: var(--bg-raised);
 }
 .tmsg-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
   font-size: 0.8em;
-  color: var(--fg-muted, #8a919e);
+  color: var(--fg-muted);
   margin-bottom: 0.35rem;
 }
 .tmsg-author {
-  color: var(--fg, #d7dae0);
+  color: var(--fg);
 }
 .tmsg-id {
-  opacity: 0.7;
+  color: var(--fg-muted);
 }
 .tmsg-body {
   word-break: break-word;
@@ -1074,43 +1391,7 @@ p.panel-foot {
   word-break: break-all;
 }
 
-/* Identifier type-ahead (§8.15-15.10): floating suggestion list anchored to
-   the input's <label> (made position:relative via .lookup-host by app.js). */
-.lookup-host { position: relative; display: block; }
-.lookup-pop {
-  position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 30;
-  background: var(--panel, #1a1d24); border: 1px solid var(--border, #2c313c);
-  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.45);
-  max-height: 260px; overflow-y: auto; padding: 4px;
-}
-.lookup-opt {
-  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
-  padding: 6px 10px; border-radius: 6px; cursor: pointer;
-}
-.lookup-opt:hover, .lookup-opt.is-active { background: var(--hover, #242a36); }
-.lookup-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lookup-id { flex: 0 0 auto; font-size: .8em; opacity: .55; font-family: monospace; }
-
-/* Lazy profile cards on user-chip hover (§8.15-15.11) + suggestion kinds. */
-.user-card {
-  position: fixed; z-index: 60; background: var(--panel, #1a1d24);
-  border: 1px solid var(--border, #2c313c); border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0,0,0,.5); padding: 10px 12px;
-  font-size: .9rem; line-height: 1.35;
-}
-.user-card-head { display: flex; gap: 10px; align-items: center; }
-.user-card-avatar { border-radius: 50%; flex: 0 0 auto; }
-.user-card-name { font-weight: 600; word-break: break-word; }
-.user-card-id { font-family: monospace; font-size: .8em; opacity: .6; }
-.user-card-roles { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.user-card-role {
-  border: 1px solid var(--border, #2c313c); border-radius: 999px;
-  padding: 1px 8px; font-size: .78em; opacity: .9;
-}
-.user-card-warm { margin-top: 8px; font-size: .75em; opacity: .55; font-style: italic; }
-.lookup-kind { font-size: .7em; opacity: .5; text-transform: uppercase; letter-spacing: .05em; margin-left: 6px; }
-
-/* ---- dashboard charts (Phase 4, client-rendered enhancement) -------------
+/* ---- dashboard charts (Phase 4, client-rendered enhancement) ----------------
    Chart.js responsive contract (vendored 4.5.1 docs): the CONTAINER is
    position:relative with an explicit height and holds ONLY the canvas;
    the canvas itself stays UNSIZED/UNSTYLED — library-managed. The SSR
@@ -1138,60 +1419,197 @@ p.panel-foot {
   font-style: italic;
 }
 
-/* ---- mobile pass (Phase 4, §8.8): usable at 360–430px ----------------------
-   Every rule below lives INSIDE a max-width media query — the desktop rules
-   above are untouched, pixel-for-pixel. Fix vocabulary is the console's own
-   (UX v1.1 dashboard panels): wrap text first, let the control's OWN box
-   scroll second — never a page-level horizontal scrollbar. */
+/* ---- public sign-in landing (views/landing) ----------------------------------
+   Signed-out face of the console: centered card, no shell, no scripts. */
+
+.signin-body {
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-7) var(--space-4);
+}
+
+.signin-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-7);
+  max-width: 36rem;
+  width: 100%;
+}
+
+.signin-title { font-size: 1.4rem; margin: 0 0 var(--space-4); }
+
+.signin-lede { margin: 0 0 var(--space-4); }
+
+.signin-what { margin: 0 0 var(--space-4); }
+
+.signin-what h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  margin: 0 0 0.4rem;
+}
+
+.signin-what ul { margin: 0 0 var(--space-2); padding-left: 1.3rem; }
+
+.signin-what li { padding: 0.15rem 0; }
+
+.signin-what p { margin: 0.4rem 0 0; color: var(--fg-muted); font-size: 0.9rem; }
+
+.signin-card .banner { margin: 0 0 var(--space-4); }
+
+a.btn-signin {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.signin-footnote {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+}
+
+/* ==========================================================================
+ * 6. RESPONSIVE  (every @media lives here; the shell grid contract is
+ * 719 / 720–1099 / 1100+. The old ≤880px "nav becomes a horizontal strip"
+ * block is DELETED (#642): it forced .shell-nav { flex-direction: row } at
+ * 720–880px and a later 719px rule could never override it. The phone
+ * sidebar now COLLAPSES behind the Menu button instead.)
+ * ========================================================================== */
+
+/* ---- legacy per-page tweaks (unchanged breakpoints) ----------------------- */
+
+@media (max-width: 640px) {
+  .setting-row { grid-template-columns: 1fr; gap: 0.15rem; }
+}
+
+@media (max-width: 640px) {
+  .integrations-panel .settings-table { font-size: 0.8rem; }
+}
+
+@media (max-width: 640px) {
+  .staff-table { font-size: 0.8rem; }
+}
+
+@media (max-width: 640px) {
+  .voice-panel .settings-table { font-size: 0.8rem; }
+}
+
+@media (max-width: 640px) {
+  .system-kv { grid-template-columns: 1fr; gap: 0.1rem; }
+  .system-kv dd { margin-bottom: 0.5rem; }
+}
+
+@media (max-width: 640px) {
+  .setting-input-number { width: 6.5rem; }
+}
+
+@media (max-width: 640px) {
+  .staff-mutate-form { font-size: 0.8rem; }
+  .staff-mutate-form input[name="role_id"] { min-width: 9rem; }
+}
+
+@media (max-width: 640px) {
+  .integ-write-form { font-size: 0.8rem; }
+  .integ-write-form input[name$="role_id"],
+  .integ-write-form input[name="channel_id"],
+  .integ-write-form input[name="message_id"] { min-width: 9rem; }
+}
+
+/* ---- very narrow phones (kept from the Phase-4 pass) ------------------------ */
 
 @media (max-width: 480px) {
-  /* Shell bar rhythm: brand / switcher / tier badge / user-box stack into
-     short rows at 360px instead of clipping each other. */
-  .shell-bar { gap: 0.5rem 0.7rem; }
+  .shell-bar { padding: 0.5rem 0.6rem; gap: 0.5rem 0.7rem; }
+  .guild-switcher select { max-width: 60vw; }
   .user-box { flex-wrap: wrap; }
+  .lb-user-xp .kv { grid-template-columns: 1fr; gap: 0.1rem; }
+  .lb-user-xp .kv dd { margin-bottom: 0.5rem; }
+}
 
-  /* Collapsed sidebar strip (horizontal at ≤880px): every nav GROUP label
-     gets its own line, then the links wrap freely under it — every
-     destination, including the Phase-4 "Your sessions" / "Web sessions"
-     items, stays reachable without horizontal clipping. */
-  .shell-nav { gap: 0.2rem 0.6rem; }
-  .shell-nav-group h2 { flex: 1 0 100%; margin-right: 0; }
+/* ---- #642 phone shell contract (719px) — verbatim grid/menu rules ---------- */
 
-  /* Tables: aggressive wrapping first… */
-  .list-table th,
-  .list-table td { overflow-wrap: anywhere; }
+@media (max-width: 719px) {
+  .nav-toggle { display: inline-flex; }
+  .shell-body { grid-template-columns: 1fr; }
+  /* app.js adds/removes body.nav-collapsed; the SERVER never ships it. */
+  body.nav-collapsed .shell-nav { display: none; }
+  .shell-nav { flex-direction: column; position: static; }
+}
 
-  /* …then scroll the table's OWN box (the .dashboard-panel contract from
-     UX v1.1) for the sections that host multi-column tables: the unstyled
-     .panel wrapper used by every console page (settings, staff,
-     integrations, voice, system, users, sessions, ticket actions), the
-     .moderation page wrapper (warnings, notes, audit), and .table-scroll —
-     the wrapper div added where a table sits bare in the flow (the archive
-     index, the leaderboard board). */
-  .panel,
-  .moderation,
-  .table-scroll {
-    overflow-x: auto;
+/* Phone header rows: brand + tier badge + Menu on row 1, switcher full-width
+   on row 2, user box on row 3 (flex-wrap lines ordered explicitly). */
+@media (max-width: 719px) {
+  .shell-bar { row-gap: 0.5rem; }
+  .brand { margin-right: 0; }
+  .nav-toggle { margin-left: auto; }
+  .guild-switcher { order: 3; flex: 1 1 100%; }
+  .guild-switcher select { flex: 1 1 auto; min-width: 0; max-width: none; }
+  .user-box { order: 4; flex: 1 1 100%; }
+}
+
+/* ---- #642 .table-stack phone block --------------------------------------------
+   Rows become cards, cells become two-column grids; the thead is CLIPPED
+   (position+clip — NOT display:none) so assistive tech still gets headers.
+   td::before renders attr(data-label): FIXED column titles set by the pages
+   that adopt .table-stack (moderation/tickets/audit issues), never user
+   content. */
+@media (max-width: 719px) {
+  .table-stack > thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
 
-  /* Leaderboard keeps its numeric columns without eating the row. */
-  .leaderboard-table .lb-xp,
-  .leaderboard-table .lb-level { width: 5.5rem; }
+  .table-stack > tbody > tr {
+    display: block;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin-bottom: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+  }
 
-  /* Pager bars stack instead of forcing one unbreakable line. */
-  .leaderboard-pager { flex-wrap: wrap; }
+  .table-stack > tbody > tr > td {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, max-content) minmax(0, 1fr);
+    gap: var(--space-2);
+    border-bottom: 1px dashed var(--line);
+    padding: 0.35rem 0;
+  }
 
-  /* PRG write forms go single-column at phone width: every field, select,
-     textarea and submit button is reachable without sideways page scroll.
-     The inline chip variants (.settings-form-inline, .ticket-inline-form)
-     are explicitly restored to row layout — they are ONE control wide and
-     stack badly, not well. */
+  .table-stack > tbody > tr > td::before {
+    content: attr(data-label);
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+}
+
+/* ---- phone form/table stack (moved out of the old ≤480 pass into 719, #642) ----
+   Every field, select, textarea and submit is reachable without sideways page
+   scroll. Inline chip variants (.settings-form-inline, .ticket-inline-form)
+   are explicitly restored to row layout — they are ONE control wide and
+   stack badly, not well. */
+@media (max-width: 719px) {
   .settings-form,
   .staff-mutate-form,
   .integ-write-form,
-  .integ-write-fields {
+  .integ-write-fields,
+  .form-row {
     flex-direction: column;
     align-items: stretch;
+    grid-template-columns: 1fr;
   }
   .settings-form .btn,
   .staff-mutate-form .btn,
@@ -1214,57 +1632,45 @@ p.panel-foot {
   }
   .setting-input-number { width: 100%; }
   .moderation .filter-form input[type="search"] { min-width: 0; width: 100%; }
+
+  /* Tables: wrap aggressively first… */
+  .list-table th,
+  .list-table td { overflow-wrap: anywhere; }
+
+  /* Leaderboard keeps its numeric columns without eating the row. */
+  .leaderboard-table .lb-xp,
+  .leaderboard-table .lb-level { width: 5.5rem; }
+
+  /* Pager bars stack instead of forcing one unbreakable line. */
+  .leaderboard-pager { flex-wrap: wrap; }
 }
 
-/* ---- public sign-in landing (views/landing) -------------------------- */
-/* Signed-out face of the console: centered card, no shell, no scripts. */
+/* ---- ≥720px shared behavior ------------------------------------------------------ */
 
-.signin-body {
-  align-items: center;
-  justify-content: center;
-  padding: 2rem 1rem;
+@media (min-width: 720px) {
+  /* Two-column field rows from 720px up (one column below). */
+  .form-row { grid-template-columns: 1fr 1fr; }
+
+  /* In-page section nav sticks to the top on desktop (#642). */
+  .section-nav {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--bg);
+    padding: var(--space-2) 0;
+  }
 }
 
-.signin-card {
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 2rem;
-  max-width: 36rem;
-  width: 100%;
+/* ---- #642 shell grid: tablet column ------------------------------------------------ */
+
+@media (min-width: 720px) and (max-width: 1099px) {
+  .shell-body { grid-template-columns: 13rem minmax(0, 1fr); }
+  .shell-nav { position: sticky; flex-direction: column; }
 }
 
-.signin-title { font-size: 1.4rem; margin: 0 0 1rem; }
+/* ---- #642 shell grid: desktop column ------------------------------------------------ */
 
-.signin-lede { margin: 0 0 1rem; }
-
-.signin-what { margin: 0 0 1rem; }
-
-.signin-what h2 {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-muted);
-  margin: 0 0 0.4rem;
-}
-
-.signin-what ul { margin: 0 0 0.5rem; padding-left: 1.3rem; }
-
-.signin-what li { padding: 0.15rem 0; }
-
-.signin-what p { margin: 0.4rem 0 0; color: var(--fg-muted); font-size: 0.9rem; }
-
-.signin-card .banner { margin: 0 0 1rem; }
-
-a.btn-signin {
-  display: inline-flex;
-  align-items: center;
-  text-decoration: none;
-  font-weight: 600;
-}
-
-.signin-footnote {
-  margin: 0.75rem 0 0;
-  font-size: 0.85rem;
-  color: var(--fg-muted);
+@media (min-width: 1100px) {
+  .shell-body { grid-template-columns: 15.5rem minmax(0, 1fr); }
+  .shell-nav { position: sticky; flex-direction: column; }
 }

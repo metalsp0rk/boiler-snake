@@ -432,7 +432,9 @@ describe("leaderboard XP parity + escaping", () => {
     const { res, body } = await hit(BOARD, { key: "staff" });
     assert.equal(res.status, 200);
     assert.ok(body.includes("&lt;img"), "escaped echo present");
-    assert.ok(!body.includes("<img"), "raw markup never rendered");
+    // #642: the shell brand lockup legitimately ships a static <img>, so the
+    // negative pin targets the hostile payload verbatim, not any "<img".
+    assert.ok(!body.includes(XSS_NAME), "raw payload never rendered");
     assert.ok(!body.includes('"><svg'), "attribute breakout impossible");
     assert.ok(body.includes("&gt;nick"), "full name escaped");
   });
@@ -488,7 +490,9 @@ describe("GET /g/:guildId/leaderboard/user/:userId", () => {
     const { res, body } = await hit(userXp(LB_XSS), { key: "staff" });
     assert.equal(res.status, 200);
     assert.ok(body.includes("&lt;img"));
-    assert.ok(!body.includes("<img"));
+    // #642: negative pin targets the hostile payload (the shell brand <img>
+    // is static markup the escaping doctrine never claimed to forbid).
+    assert.ok(!body.includes(XSS_NAME), "raw payload never rendered");
   });
 
   it("valid snowflake with NO XP row → friendly in-shell 404", async () => {

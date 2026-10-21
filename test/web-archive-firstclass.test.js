@@ -292,10 +292,13 @@ describe("web archive first-class (§8.15)", () => {
     const { res, body } = await req(`/t?q=${q}`, cookieOf.staff);
     assert.equal(res.status, 200);
     assert.match(body, /No archived transcripts match that search/);
-    const xss = encodeURIComponent("<img src=x onerror=1>");
+    const xssPayload = "<img src=x onerror=1>";
+    const xss = encodeURIComponent(xssPayload);
     const r2 = await req(`/t?q=${xss}`, cookieOf.staff);
     assert.equal(r2.res.status, 200);
-    assert.ok(!r2.body.includes("<img"), "q is escaped, never live markup");
+    // #642: negative pin targets the hostile payload verbatim (the shell now
+    // ships a static <img> brand logo; "<img" alone is no longer diagnostic).
+    assert.ok(!r2.body.includes(xssPayload), "q is escaped, never live markup");
     assert.ok(r2.body.includes("&lt;img"));
   });
 
@@ -363,7 +366,7 @@ describe("web archive first-class (§8.15)", () => {
       `/g/${CID_A}/t?q=${encodeURIComponent("<img src=x onerror=1>")}`,
       cookieOf.staff
     );
-    assert.ok(!xss.body.includes("<img"), "escaped, never live markup");
+    assert.ok(!xss.body.includes("<img src=x onerror=1>"), "escaped, never live markup");
   });
 
   it("in-shell people cells: cached names with ids as hover text", async () => {

@@ -260,7 +260,9 @@ describe("layout (shell chrome)", () => {
       assert.ok(
         u.startsWith("/static/") || u.startsWith("/g/") || u === "/health" ||
           u.startsWith("/g/") || u === "/auth/logout" || u.startsWith("/auth/") ||
-          u === "/t" || u.startsWith("/t/") || u.startsWith("/t?"),
+          u === "/t" || u.startsWith("/t/") || u.startsWith("/t?") ||
+          // #642 skip link: an in-page fragment (never a cross-origin URL).
+          u === "#content",
         `unexpected external URL: ${u}`
       );
     }
@@ -281,6 +283,81 @@ describe("layout (shell chrome)", () => {
       )
     );
     assert.ok(doc.includes("banner-degraded"));
+  });
+
+  // --- #642 shell rebuild: structure + navigation contract -----------------
+
+  it("#642 shell: skip link, Menu button, breadcrumb, single active leaf", () => {
+    const doc = String(
+      renderShellPage(fakeReq(), {
+        title: "Console",
+        guilds: SHELL_GUILDS,
+        path: `/g/${CID_A}/settings`,
+      })
+    );
+    assert.ok(
+      doc.includes('<a class="skip-link" href="#content">Skip to content</a>'),
+      "skip link is the first focusable"
+    );
+    assert.ok(doc.indexOf('class="skip-link"') < doc.indexOf("<header"), "skip link precedes the header");
+    assert.ok(doc.includes('<main class="shell-main" id="content">'), "main is the skip target");
+    assert.ok(
+      doc.includes('class="nav-toggle" data-nav-toggle aria-controls="shell-nav"'),
+      "Menu button per #642 contract"
+    );
+    assert.ok(doc.includes('id="shell-nav"'), "nav carries the aria-controls target id");
+    assert.ok(doc.includes('class="breadcrumb"'), "breadcrumb rendered");
+    assert.ok(doc.indexOf('class="breadcrumb"') > doc.indexOf("<main"), "breadcrumb lives inside <main>");
+    assert.ok(
+      doc.includes(`href="/g/${CID_A}/settings" class="active" aria-current="page"`),
+      "longest-suffix leaf is current"
+    );
+    assert.equal((doc.match(/aria-current="page"/g) || []).length, 1, "exactly one current item");
+    assert.ok(!doc.includes("nav-collapsed"), "server HTML never contains nav-collapsed");
+  });
+
+  it("#642 shell: no <noscript> guild hint anywhere (JS-is-on doctrine)", () => {
+    const doc = String(
+      renderShellPage(fakeReq(), { title: "Console", guilds: SHELL_GUILDS })
+    );
+    assert.ok(!doc.includes("<noscript"), "no <noscript> block in the shell");
+    assert.ok(!doc.includes("noscript-hint"), "no .noscript-hint markup left");
+  });
+
+  it("#642 nav: longest-suffix match marks exactly one leaf", () => {
+    const { renderSideNav } = require("../src/web/views/layout");
+    const htmlOf = (path) => String(renderSideNav(CID_A, "admin", `/g/${CID_A}${path}`));
+
+    const archive = htmlOf("/events/archive");
+    assert.ok(
+      archive.includes(`href="/g/${CID_A}/events/archive" class="active" aria-current="page"`),
+      "Event archive leaf active"
+    );
+    assert.ok(!archive.includes(`href="/g/${CID_A}/events" class="active"`), "/events not co-marked");
+    assert.equal((archive.match(/aria-current="page"/g) || []).length, 1, "single current (/events/archive)");
+
+    const sys = htmlOf("/system/sessions");
+    assert.ok(sys.includes(`href="/g/${CID_A}/system/sessions" class="active"`), "Web sessions leaf active");
+    assert.ok(!sys.includes(`href="/g/${CID_A}/system" class="active"`), "/system not co-marked");
+    assert.equal((sys.match(/aria-current="page"/g) || []).length, 1, "single current (/system/sessions)");
+
+    const dash = htmlOf("");
+    assert.ok(dash.includes(`href="/g/${CID_A}" class="active" aria-current="page"`), "dashboard active at ''");
+    assert.equal((dash.match(/aria-current="page"/g) || []).length, 1, "single current (dashboard)");
+  });
+
+  it("#642 nav: Events children render only under /events", () => {
+    const { renderSideNav } = require("../src/web/views/layout");
+    const htmlOf = (path) => String(renderSideNav(CID_A, "staff", `/g/${CID_A}${path}`));
+    for (const p of ["", "/voice", "/settings"]) {
+      const out = htmlOf(p);
+      assert.ok(!out.includes(`/g/${CID_A}/events/archive"`), `archive child hidden on ${p}`);
+      assert.ok(!out.includes(`/g/${CID_A}/events/scheduled"`), `scheduled child hidden on ${p}`);
+    }
+    const onEvents = htmlOf("/events");
+    for (const child of ["/events/archive", "/events/scheduled", "/events/series", "/events/presets"]) {
+      assert.ok(onEvents.includes(`/g/${CID_A}${child}"`), `${child} listed under /events`);
+    }
   });
 
   it("renderLayout with no session data still renders (defense-in-depth)", () => {
@@ -850,12 +927,19 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
 
 
 
-  it("styles.css: dark-by-default palette + prefers-color-scheme light override", () => {
+  it("styles.css: dark-only palette + shell width contract (#642)", () => {
     const css = fs.readFileSync(path.join(PUBLIC_DIR, "styles.css"), "utf8");
-    // Base (:root) palette must be the DARK one; light comes ONLY via media query.
+    // Base (:root) palette must be the DARK one, sitting BEFORE the first
+    // media query — this slice IS that range assertion (#642 keeps it).
     const rootBlock = css.slice(css.indexOf(":root"), css.indexOf("@media"));
     assert.match(rootBlock, /--bg:\s*#191b1f/, "dark base background");
-    assert.match(css, /@media \(prefers-color-scheme: light\)/, "light override is opt-in");
+    // #642: dark ONLY. The light palette is deleted, not repaired — the
+    // stylesheet must not carry a light-scheme override anywhere.
+    assert.ok(
+      !css.includes("prefers-color-scheme: light"),
+      "no prefers-color-scheme light override (#642 dark-only)"
+    );
+    assert.match(css, /color-scheme:\s*dark/, "dark-only color-scheme declaration");
     assert.match(css, /font-family:\s*system-ui/, "system-ui (transcript language)");
     // Responsive shell: viewport meta (layout) + wrap/fluid rules (CSS).
     const doc = String(renderLayout({ title: "T", content: "", nonce: "" }));
@@ -864,7 +948,15 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
       /<meta name="viewport" content="width=device-width, initial-scale=1"\/>/
     );
     assert.match(css, /flex-wrap:\s*wrap/, "header wraps at narrow breakpoints");
-    assert.match(css, /max-width:\s*1100px/, "fluid container");
-    assert.match(css, /@media \(max-width: 480px\)/, "small-phone pass");
+    // #642 width contract: the shell grid owns max-width 1400px and the
+    // content column inside it is uncapped. (A bare max-width:1100px rule
+    // MAY remain on .shell-main for the non-shell lobby pages — it is not
+    // the shell contract and must not be pinned as one.)
+    assert.match(css, /\.shell-body\s*\{[^}]*max-width:\s*1400px/, "shell grid capped at 1400px");
+    assert.match(
+      css,
+      /\.shell-body \.shell-main\s*\{[^}]*max-width:\s*none/,
+      "content column uncapped inside the shell"
+    );
   });
 });
