@@ -1525,6 +1525,140 @@ a.btn-signin {
   color: var(--fg-muted);
 }
 
+/* ---- events calendar (#650): month grid + phone agenda ---------------------- */
+/* The grid is a real fixed-layout table (Monday-first stays); a busy day
+   scrolls INSIDE the cell (.cal-evs), never the page. The event link is the
+   touch target. `.cal-agenda` is the same byDay data as a list — CSS flips
+   grid/agenda at the shell's 719px breakpoint (Responsive section). */
+
+.cal-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+/* One-line in-page nav so the sub-pages stay reachable when the phone
+   sidebar is collapsed behind the Menu button. */
+.cal-pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.cal-grid {
+  table-layout: fixed;
+  width: 100%;
+  margin-bottom: var(--space-4);
+}
+
+.cal-grid th {
+  text-align: left;
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.cal-grid .cal-cell {
+  vertical-align: top;
+  border: 1px solid var(--line);
+  padding: 0.3rem 0.35rem;
+  height: 6rem;
+}
+
+.cal-grid .cal-empty { border: none; }
+
+/* Today: sunken surface PLUS the text label "Today" — never color alone. */
+.cal-grid .cal-today { background: var(--bg-sunken); }
+
+.cal-day { font-size: 0.85rem; font-weight: 600; }
+
+.cal-today-tag {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-left: 0.3rem;
+}
+
+.cal-evs {
+  max-height: 7.5rem;
+  overflow-y: auto;
+  margin-top: 0.25rem;
+}
+
+.cal-ev {
+  margin-bottom: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.cal-ev a {
+  display: inline-block;
+  padding: 0.2rem 0.15rem;
+  min-height: 32px;
+}
+
+.cal-agenda {
+  display: none;
+  list-style: none;
+  margin: 0 0 var(--space-4);
+  padding: 0;
+}
+
+.cal-agenda-day { margin-bottom: var(--space-3); }
+
+.cal-agenda-date {
+  font-weight: 600;
+  padding: 0.25rem 0.4rem;
+  border-radius: var(--radius);
+}
+
+.cal-agenda-date.cal-today { background: var(--bg-sunken); }
+
+.cal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cal-list li { margin-bottom: 0.35rem; }
+
+.cal-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-3);
+}
+
+.cal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Event list tables ride the shared stack (.list-table/.table-stack); this
+   only tightens the densest columns' type on phones (Responsive). */
+.events-table { font-size: 0.85rem; }
+
+/* Inline destructive row form (archive / preset delete): the typed-confirm
+   field gets the danger treatment without the block .danger-zone padding. */
+.events-danger-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.danger-zone-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.danger-zone-inline input { width: 9ch; }
+
 /* ==========================================================================
  * 6. RESPONSIVE  (every @media lives here; the shell grid contract is
  * 719 / 720–1099 / 1100+. The old ≤880px "nav becomes a horizontal strip"
@@ -1696,6 +1830,15 @@ a.btn-signin {
 
   /* Pager bars stack instead of forcing one unbreakable line. */
   .leaderboard-pager { flex-wrap: wrap; }
+}
+
+/* ---- #650 events calendar phone block --------------------------------------------
+   Under 719px the month grid swaps to the agenda list (same byDay data);
+   both ship in the HTML, CSS owns the flip. */
+
+@media (max-width: 719px) {
+  .cal-grid { display: none; }
+  .cal-agenda { display: block; }
 }
 
 /* ---- ≥720px shared behavior ------------------------------------------------------ */
