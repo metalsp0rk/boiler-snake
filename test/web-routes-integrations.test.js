@@ -312,6 +312,55 @@ describe("web integrations page (GET /g/:guildId/integrations, staff tier, read-
   });
 
   // -------------------------------------------------------------------------
+  // #644 SECTIONS: id'd data-setting-section panels + find box + anchor nav.
+  // Banner placement / open-disclosure pins for `at` live in
+  // test/web-integrations-writes.test.js (same route, PRG side).
+  // -------------------------------------------------------------------------
+
+  describe("sections (#644 GET chrome)", () => {
+    it("renders the find box, the anchor nav, and every id'd data-setting-section", async () => {
+      const { res, body } = await req(`/g/${CID_A}/integrations`, { cookie: cookieOf.staff });
+      assert.equal(res.status, 200);
+      assert.ok(body.includes("data-setting-filter"), "local find box present (#642 listener hook)");
+      assert.ok(body.includes('class="find-setting"'), "find box uses the shell chrome");
+      assert.ok(body.includes('class="section-nav"'), "anchor nav kept for hashes + at");
+      assert.ok(body.includes('href="#youtube"'), "nav anchors the youtube section id");
+      assert.ok(body.includes('href="#reaction-roles"'), "nav anchors the reaction-roles id");
+      assert.ok(body.includes('href="#reminders"'), "nav anchors the reminders id");
+      assert.ok(body.includes('href="#honeypot"'), "nav anchors the honeypot id");
+      for (const id of ["youtube", "twitch", "reaction-roles", "reminders", "honeypot"]) {
+        assert.match(
+          body,
+          new RegExp(`<section id="${id}" data-setting-section class="panel`),
+          `section#${id} carries the frozen id + find-box hook`
+        );
+      }
+      // Class strings stay stable where other tests/CSS pin them.
+      assert.ok(
+        body.includes('class="panel settings-panel integrations-panel"'),
+        "shared section chrome classes unchanged"
+      );
+      // Create/update fields stay BLANK with example placeholders (no prefill;
+      // the file-header secret contract: ids and numbers only, keys never).
+      assert.ok(body.includes('placeholder="123456789012345678"'), "channel-id placeholder example");
+      assert.ok(body.includes("@somechannel"), "youtube add placeholder is the example handle");
+    });
+
+    it("honeypot exempt forms render for admin viewers only (tier gate unchanged)", async () => {
+      const staff = await req(`/g/${CID_A}/integrations`, { cookie: cookieOf.staff });
+      assert.ok(
+        !staff.body.includes("Exempt roles (ADMIN"),
+        "staff must not see the admin-only exempt forms"
+      );
+      const admin = await req(`/g/${CID_A}/integrations`, { cookie: cookieOf.admin });
+      assert.ok(
+        admin.body.includes("Exempt roles (ADMIN"),
+        "admin sees the exempt add/del disclosures"
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Env-gated degradation (configured vs effective). Runs BEFORE seeding so
   // the reason lines are the only section content changes it depends on.
   // -------------------------------------------------------------------------

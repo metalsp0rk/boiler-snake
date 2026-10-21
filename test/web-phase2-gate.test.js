@@ -725,7 +725,9 @@ describe("D. KNOWN INTENTIONAL DELTAS vs slash (documented rows)", () => {
     const calls = stopWindow();
     if (saved !== undefined) process.env.YOUTUBE_API_KEY = saved;
     assert.equal(res.status, 302);
-    assert.equal(location, `/g/${CID_A}/integrations?error=youtube_not_configured`);
+    // #644: the youtube/add handler passes its section — the refusal carries
+    // the server-chosen at/fragment (full Location pinned, spec table).
+    assert.equal(location, `/g/${CID_A}/integrations?error=youtube_not_configured&at=youtube#youtube`);
     assert.deepEqual(
       writeCalls(calls),
       [],
