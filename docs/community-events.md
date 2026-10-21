@@ -28,7 +28,7 @@ Community Events ships as **four public-tier slash commands** (staff/organizer g
 | Command | What it does |
 |---|---|
 | `/event create` | Create + confirm. Time, duration, channel, description, location, image, color, announce roles, signup options/preset, capacity, cutoff, thread flags, attendee role, recurrence. |
-| `/event edit` | Edit any field through a modal (creator or staff). `in_dm:yes` runs the same flow as the DM wizard. |
+| `/event edit` | Edit via **slash options** — all fields (`title`, `description`, `channel`, `duration`, `location`, `roles`, `post_at`, `cutoff`, `multiple`, `thread`, `private_thread`, `image`, `color`, `attendee_role`, `role_mode`, `start`). The event message's **Edit button** opens a quick 4-field modal (title/start/description/location); `in_dm:yes` runs the one-field **DM wizard** instead. Creator or staff. |
 | `/event delete` | Delete with a confirm button; cleans role, reminders, thread. |
 | `/event list` | Upcoming events (embed, includes your drafts). |
 | `/event wizard` | Create through a step-by-step **DM conversation** (buttons + short answers). |
@@ -38,8 +38,8 @@ Community Events ships as **four public-tier slash commands** (staff/organizer g
 | `/eventsignup response add\|remove\|move` | Organizer-side signup management (bypasses cutoff/whitelist; see E5 in the design record). |
 | `/eventsignup options` | Manage signup options on a live event: `list`, `add`, `edit`, `remove`, `reorder`, `whitelist` (per-option role restriction). |
 | `/eventsignup preset` | Saved signup-option groups: `save`, `list`, `delete`. |
-| `/eventconfig settings` | `show`, `show-attendees`, `timezone`, `role` (create/edit/delete gates), `thread-reminders`, `reminder-channel`, `auto-archive`, `digest` (channel + daily/weekly/hour/weekday). |
-| `/eventconfig reminders` | `off` / `on` (personal, shared with `/eventreminder` opt-out), `mute`/`unmute` one event, `status`, `default <minutes>`, `add`/`remove`/`list` extra reminders (offset, custom message, ping role). |
+| `/eventconfig settings` | `show`, `show-attendees`, `timezone`, `role` (per-action role gate — choices: `create`, `edit`, `delete`, `event channels`, `signup options`), `thread-reminders`, `reminder-channel`, `auto-archive`, `digest` (channel + daily/weekly/hour/weekday). |
+| `/eventconfig reminders` | `off` / `on` / `default <minutes>` (**staff**: the guild default for **new** events — personal muting lives in `/eventreminder optout`, #348), `mute`/`unmute` one event (you only), `status`, `add`/`remove`/`list` extra reminders (offset, custom message, ping role). |
 | `/eventconfig series` | `list`, `skip` (drop the next occurrence), `stop`. |
 | `/eventconfig google` | Per-member Google Calendar connect + a guild auto-sync calendar: `connect`, `status`, `disconnect`, `autoset`. |
 | `/eventchannels channel` | Event channels: `mark`, `unmark`, `list`, `sort` (re-post event messages in start-time order), `purge` (opt-in cleanup of non-event, unpinned messages). |
@@ -49,11 +49,11 @@ Buttons on posted events: RSVP options, **Edit**/**Delete** for the creator and 
 
 ## Signups, options, waitlists
 
-- Default options are **Yes / No / Maybe**; replace them with `signup_options:"Pizza|Pasta|Salad"` or a preset. One choice per member unless `multiple:yes`.
+- Default options are **Yes / No / Maybe**; replace them with `signup_options:"Pizza,Pasta,Salad"` (comma-separated; give a per-option capacity with `Label|<n>`, e.g. `Pizza|10,Pasta`) or a preset. One choice per member unless `multiple:yes`.
 - **Capacity** is per option; overflow lands on a **waitlist** and is promoted automatically (with a note on the event message) when a spot opens.
-- **Whitelist** (`/eventsignup options whitelist` or create-time `role_whitelist`) restricts who may pick an option; staff and the creator bypass all restrictions.
+- **Whitelist** restricts who may sign up, and it is a post-create command surface: `/eventsignup options whitelist` gates the **whole event** to one role (`clear:true` opens it again), and `only_role:` on `/eventsignup options add|edit` gates a **single option** (`clear_role:true` clears it). There is no create-time whitelist option. Staff and the creator bypass all restrictions.
 - **Cutoff** closes signups N minutes before start (`cutoff:` at create, editable later).
-- Attendee **names** are shown on the embed up to the field cap ("and N more") — toggle with `/eventconfig settings show-attendees`.
+- Attendee **names** render in **inline per-option columns** on the embed (three options per row, 7c25792) — each column lists a slice of names with a **`+N`** overflow token (e.g. `+3`) for the rest. Toggle with `/eventconfig settings show-attendees`.
 
 ## Attendee role
 
@@ -95,9 +95,9 @@ Staff get the same data on the [Web Admin](web-admin.md) calendar: month view, d
 
 ## Limits & gotchas
 
-- Max 25 signup options per event; options need unique labels.
+- Max **10** signup options per event (every path enforces it: create spec, `options add`, presets).
 - Drafts that are never posted are cleaned up after 24 h — both abandoned `/event create` previews and duplicate/adopt/series drafts. A draft with a **post time set** is yours to keep; it is never swept. Posted events auto-archive (default 120 min after end, configurable, opt-in for the *auto* part).
-- Global slash-command propagation is slow — set `DEV_GUILD_ID` while testing.
+- Command registration is per-guild (`npm run register`) — re-run it after the bot joins this guild; set `DEV_GUILD_ID` while testing to touch only the dev guild.
 - Message edits use Discord timestamps; there is no per-viewer setting for 12/24 h — the client decides.
 
 ## Design & tracking

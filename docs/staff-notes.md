@@ -34,7 +34,7 @@ Note: `/staff` — where that role list lives — is **shown only to `Manage Ser
 | `/note add user:<member> [content:<text>]` | Create a staff note (max 2000 characters). **Omit `content`** to open a modal for longer text. |
 | `/note list [user] [page] [include_deleted]` | List notes for a member (newest first), or recent guild-wide notes if `user` is omitted |
 | `/note edit id:<note_number> [content:<text>]` | Replace note body; records `edited_at` / `edited_by`. **Omit `content`** to open a prefilled modal. |
-| `/note delete id:<note_number>` | Soft-delete (`deleted_at`) AND erase the body (#469 F2-11): the text is destroyed, the stub (number, author, timestamps, delete-by) stays for the audit chain and for warning links |
+| `/note delete id:<note_number> [confirm]` | Soft-delete (`deleted_at`) AND erase the body (#469 F2-11): the text is destroyed, the stub (number, author, timestamps, delete-by) stays for the audit chain and for warning links. **Confirm-once (#471 H2-15):** without `confirm:true` nothing is deleted — the reply previews the note (ref, subject, snippet) and says to re-run with `confirm: true`; there is **no restore command**, so the body erase is irreversible |
 | `/note info id:<note_number>` | Full note detail (author, timestamps, body) |
 | `/note settings` | Counts + access info |
 
@@ -50,6 +50,19 @@ Discord slash string options are awkward for multi-paragraph notes. Prefer:
 ```
 
 You can still pass `content:` inline for short notes.
+
+### Deleting a note
+
+`/note delete` is a **two-step confirm** (#471 H2-15): run without `confirm` and nothing is deleted — the reply previews the note (ref, subject, body snippet). Re-run with `confirm: true` to execute:
+
+```bash
+/note delete id:12
+# → preview only: "will be soft-deleted: <snippet>… Re-run with confirm: true to proceed."
+/note delete id:12 confirm:true
+# → deletes: soft-delete + body erase
+```
+
+The bot has **no restore command**, so the body erase is final — only the stub stays for the audit chain.
 
 ### From ticket close
 
