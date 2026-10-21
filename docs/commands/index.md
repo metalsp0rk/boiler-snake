@@ -275,7 +275,7 @@ Display current XP rates, decay settings, role mappings, and allowed command cha
 **Boiler Snake Settings**
 **XP:** msg=5, reaction=2, voice/min=1
 **Cooldowns:** msg=20s, reaction=10s
-**Decay:** enabled=true, threshold=20 msgs / 7 days, percent=10%
+**Decay:** Enabled **true** · threshold **20** msgs / **7** days · **10%**
 **Level curve factor:** 100 (Level L starts at L²×factor)
 **Logs:** audit=<#…>, message=<#…>
 **Commands allowed in:** <#123456789>, All channels (no restriction set)

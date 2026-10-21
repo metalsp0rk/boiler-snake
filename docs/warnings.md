@@ -2,6 +2,8 @@
 
 Formal, **permanent** disciplinary records for guild members. Complements [Staff Notes](staff-notes.md): notes are private working memory; warnings are countable, auditable strikes that staff and (optionally) the member can see.
 
+**On Fluxer:** warning commands run as prefix commands on [Fluxer instances](fluxer.md) (`!warn add user 123456789012345678 reason "spam"`). The warn-time member DM uses the instance's own DM API, so the DM-on-warn setting behaves the same as on Discord — when delivery fails (DMs closed/blocked), the staff confirmation names it. Replies that Discord renders ephemerally (issue, void, `warn mine`, exports) are **DM'd** to the caller on Fluxer, which has no ephemerals.
+
 ## How it works
 
 ```

@@ -2,6 +2,8 @@
 
 Bot-owned **panel messages** where members claim roles by reacting with configured emojis. Each option can require a minimum XP level and optionally remove the role when the reaction is removed.
 
+**On Fluxer:** panels post as embeds and **real reactions work** — a configured-emoji reaction records the durable claim exactly as on Discord. Role grants are elevated writes: while the community's `elevated_permissions` flag is off, the grant is **deferred** (the reaction and claim are kept, nothing is lost), and a boot sweep replays the backlog once the flag is on — a flag flipped at runtime takes effect on the next restart. See [Fluxer instances](fluxer.md).
+
 ## How It Works
 
 1. An admin creates a **panel** with `/reactionrole panel create` — the bot posts an embed.
