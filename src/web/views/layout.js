@@ -62,7 +62,7 @@ const { tierBadge, degradedBanner } = require("./components");
  * an old immutable copy pick up the rebuilt styles.css/app.js WITHOUT a
  * package version bump; later issues that touch these files bump the suffix.
  */
-const ASSET_VERSION = `${require("../../../package.json").version}-shell7`;
+const ASSET_VERSION = `${require("../../../package.json").version}-shell8`;
 
 /**
  * Vendored Chart.js UMD (Phase 4 charts, operator decision 2026-09-25) —
