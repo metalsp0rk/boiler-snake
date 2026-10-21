@@ -208,8 +208,16 @@ function flashBanner(flash) {
 // ---------------------------------------------------------------------------
 
 /** One label+input pair sized for the compact write forms. */
-function formField(label, name, { type = "text", placeholder = "", value = "" } = {}) {
-  return html`<label>${label}<input type="${type}" name="${name}" placeholder="${placeholder}" value="${value}"/></label>`;
+function formField(label, name, { type = "text", placeholder = "", value = "", lookupUrl = "" } = {}) {
+  // #645: channel id fields gain the CACHE-ONLY name typeahead (writes the
+  // numeric id; pasting still works, the write routes stay the authority).
+  const lookup = lookupUrl ? html` data-lookup="channels" data-lookup-url="${lookupUrl}"` : html``;
+  return html`<label>${label}<input type="${type}" name="${name}" placeholder="${placeholder}" value="${value}"${lookup}/></label>`;
+}
+
+/** #645: per-guild URL for the channel-name typeahead (route identity as-is). */
+function channelLookupUrl(guildId) {
+  return `/g/${encodeURIComponent(String(guildId || ""))}/lookups/channels`;
 }
 
 /**
@@ -422,7 +430,7 @@ function youtubeSection(yt, ctx, page = {}) {
     <details class="integ-write"${openAttr}>
       <summary>Settings (staff — API keys stay in the environment)</summary>
       ${writeForm(`${base}/channel`, csrfToken,
-        formField("Notify channel id", "channel_id", { placeholder: "123456789012345678" }),
+        formField("Notify channel id", "channel_id", { placeholder: "123456789012345678", lookupUrl: channelLookupUrl(guildId) }),
         "Set notify channel")}
       ${writeForm(`${base}/uploadrole`, csrfToken,
         formField("Upload ping role id (empty clears)", "role_id", { placeholder: "123456789012345678" }),
@@ -526,7 +534,7 @@ function twitchSection(tw, ctx, page = {}) {
     <details class="integ-write"${openAttr}>
       <summary>Settings (staff)</summary>
       ${writeForm(`${base}/channel`, csrfToken,
-        formField("Notify channel id", "channel_id", { placeholder: "123456789012345678" }),
+        formField("Notify channel id", "channel_id", { placeholder: "123456789012345678", lookupUrl: channelLookupUrl(guildId) }),
         "Set notify channel")}
       ${writeForm(`${base}/role`, csrfToken,
         formField("Go-live ping role id (empty clears)", "role_id", { placeholder: "123456789012345678" }),
@@ -601,7 +609,7 @@ function reactionRolesSection(rr, ctx, page = {}) {
     <details class="integ-write"${openAttr}>
       <summary>Panel (staff — create posts a live embed in the channel)</summary>
       ${writeForm(`${base}/panel/create`, csrfToken,
-        html`${formField("Channel id", "channel_id", { placeholder: "123456789012345678" })}
+        html`${formField("Channel id", "channel_id", { placeholder: "123456789012345678", lookupUrl: channelLookupUrl(guildId) })}
         ${formField("Title (optional)", "title", { placeholder: "Reaction Roles" })}
         ${formField("Description (optional)", "description", { placeholder: "React to get a role." })}`,
         "Create panel")}
@@ -681,7 +689,7 @@ function eventRemindersSection(er, ctx, page = {}) {
 
   const base = `/g/${encodeURIComponent(String(guildId || ""))}/integrations/event-reminders`;
   const forms = writeForm(`${base}/channel`, csrfToken,
-    formField("Default channel id (empty clears)", "channel_id", { placeholder: "123456789012345678" }),
+    formField("Default channel id (empty clears)", "channel_id", { placeholder: "123456789012345678", lookupUrl: channelLookupUrl(guildId) }),
     "Set default channel");
 
   return pageSection(
@@ -758,7 +766,7 @@ function honeypotSection(hp, ctx, page = {}) {
     <details class="integ-write"${openAttr}>
       <summary>Trap channels (staff — add posts a warning image, del removes it)</summary>
       ${writeForm(`${base}/channel/add`, csrfToken,
-        formField("Channel id", "channel_id", { placeholder: "123456789012345678" }),
+        formField("Channel id", "channel_id", { placeholder: "123456789012345678", lookupUrl: channelLookupUrl(guildId) }),
         "Add honeypot channel")}
       ${chans.rows.length
         ? writeForm(`${base}/channel/del`, csrfToken, chanSelect("channel_id"), "Remove honeypot channel")

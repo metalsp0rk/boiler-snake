@@ -200,9 +200,15 @@ function numberField(name, bounds = {}) {
 /**
  * Snowflake text control for a channel id (pattern = the route's gate).
  * The placeholder is a FORMAT EXAMPLE constant — never a snapshot value.
+ * #645: with a guild ctx the field gains the CACHE-ONLY channel-name
+ * typeahead (writes the numeric id; pasting an id still works — the
+ * server parsers are the authority, this is an enhancement).
  */
-function channelIdField(name = "channel") {
-  return html`<input class="input input-narrow" type="text" name="${name}"
+function channelIdField(name = "channel", ctx = null) {
+  const lookup = ctx
+    ? html` data-lookup="channels" data-lookup-url="${ctx.base}/lookups/channels"`
+    : html``;
+  return html`<input class="input input-narrow" type="text" name="${name}"${lookup}
     pattern="[0-9]{5,20}" inputmode="numeric" placeholder="123456789012345678"
     autocomplete="off" spellcheck="false"/>`;
 }
@@ -403,7 +409,7 @@ function logStreamCluster(ctx, { path, stream, label, fieldKey, currentHtml, def
   const setForm = postForm(
     ctx,
     path,
-    html`${hiddenStream}${formRow(`${label} channel id`, channelIdField("channel"))}`,
+    html`${hiddenStream}${formRow(`${label} channel id`, channelIdField("channel", ctx))}`,
     "Set"
   );
   const clearForm = postForm(ctx, path, hiddenStream, "Clear", {
@@ -498,7 +504,7 @@ function commandChannelsSection(clusters, ctx, bannerHtml) {
   const addForm = postForm(
     ctx,
     "/settings/command-channels/add",
-    formRow("Allow commands in channel id", channelIdField("channel")),
+    formRow("Allow commands in channel id", channelIdField("channel", ctx)),
     "Allow channel"
   );
   return pageSection(

@@ -395,6 +395,7 @@ const PAGES = [
   { path: "/g/:guildId/users/:userId/card", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/users", tier: "staff", json: true },
   { path: "/g/:guildId/lookups/roles", tier: "staff", json: true },
+  { path: "/g/:guildId/lookups/channels", tier: "staff", json: true },
   // Phase 4 (subtask 03): dashboard CHART series endpoints (§8.7 progressive
   // enhancement) — staff-tier JSON, no-store, one bounded ≤31-row read per
   // guild behind the ≥30 s dashboardData series cache.
@@ -474,6 +475,7 @@ const GATE_MEASURE = process.env.GATE_MEASURE === "1";
     "/g/:guildId/users/:userId/card": { req1: 2, req2: 2 },
     "/g/:guildId/lookups/users": { req1: 2, req2: 2 },
     "/g/:guildId/lookups/roles": { req1: 2, req2: 2 },
+    "/g/:guildId/lookups/channels": { req1: 2, req2: 2 },
     // Phase 4 chart series: auth+scope floor (2) + ONE bounded windowed read
     // cold (guildDailyMessageTotals / topUsers LIMIT ≤31); warm = cached ⇒
     // floor only. (MEASURED via GATE_MEASURE=1 on this fixture.)
