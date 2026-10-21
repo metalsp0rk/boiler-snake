@@ -347,6 +347,65 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
       );
       assert.ok(!body.includes(`<svg onload="`), "no live svg payload");
     });
+
+    it("#651: the stat row leads with snapshot counts (no new query)", async () => {
+      const { body } = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
+      assert.ok(body.includes('<div class="stat-row">'), "stat row ships");
+      assert.equal(
+        (body.match(/class="stat"/g) || []).length,
+        3,
+        "three .stat blocks: tickets / leaders / jobs",
+      );
+      assert.match(
+        body,
+        /Open tickets<\/p>\s*<p class="stat-value">3</,
+        "ticket count mirrors the section's snapshot count",
+      );
+      assert.match(
+        body,
+        /Leader rows<\/p>\s*<p class="stat-value">\d+/,
+        "leader count is numeric when the source reported",
+      );
+      assert.match(
+        body,
+        /Background jobs<\/p>\s*<p class="stat-value">unknown/,
+        "no job reports in this harness ⇒ unknown, never a fabricated count",
+      );
+      assert.ok(body.includes("Voice console →"), "now-playing links to the voice page");
+      const npPanel = /dashboard-nowplaying-panel[\s\S]*?<\/section>/.exec(body)?.[0] || "";
+      assert.ok(
+        !/<(form|button|input)\b/i.test(npPanel),
+        "now-playing is a status panel only — no controls",
+      );
+    });
+
+    it("#651 (unit): wired job state renders the ok tally in the stat row", () => {
+      const {
+        renderDashboardContent,
+      } = require("../src/web/views/dashboard/dashboardPage.js");
+      const out = String(
+        renderDashboardContent(
+          {
+            tickets: { available: true, openCount: 2, openCountSaturated: false, newest: [] },
+            activity: { xpLeaders: [{ userId: "1", xp: 5 }, { userId: "2", xp: 3 }] },
+            tickers: [
+              { name: "voice", status: "ok" },
+              { name: "decay", status: "stale" },
+            ],
+            nowPlaying: { status: "idle" },
+            freshness: null,
+          },
+          { guildId: "7" },
+        ),
+      );
+      assert.match(
+        out,
+        /Background jobs<\/p>\s*<p class="stat-value">2 \(1 ok\)</,
+        "count + ok tally from the snapshot's ticker rows",
+      );
+      assert.match(out, /Leader rows<\/p>\s*<p class="stat-value">2</, "leader row count");
+      assert.match(out, /Open tickets<\/p>\s*<p class="stat-value">2</, "open ticket count");
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -362,6 +421,12 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
       assert.ok(
         body.includes("No background jobs report in yet"),
         "tickers render 'unknown' until sources register"
+      );
+      // #651: unreported job state degrades the JOBS stat to "unknown" —
+      // an empty registry is never rendered as "0 jobs".
+      assert.ok(
+        body.includes('<p class="stat-value">unknown</p>'),
+        "unreported sources never render a fabricated zero",
       );
     });
 

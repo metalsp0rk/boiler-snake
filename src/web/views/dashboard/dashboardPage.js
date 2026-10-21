@@ -63,6 +63,48 @@ const JOB_LABELS = Object.freeze({
 // Sections
 // ---------------------------------------------------------------------------
 
+/**
+ * #651: at-a-glance stat row from counts ALREADY on the page snapshot —
+ * open tickets, leader rows, background-job counts. No new query, no new
+ * endpoint; a source that did not report renders "unknown", never a
+ * fabricated zero (same doctrine as the sections below).
+ */
+function renderStatRow(data) {
+  const d = data || {};
+  const tickets = d.tickets;
+  const ticketVal =
+    tickets && tickets.available === true
+      ? tickets.openCountSaturated
+        ? "50+"
+        : formatCount(tickets.openCount)
+      : UNKNOWN;
+  const leaders = Array.isArray(d.activity?.xpLeaders) ? d.activity.xpLeaders : null;
+  const leaderVal = leaders === null ? UNKNOWN : formatCount(leaders.length);
+  const tickers = Array.isArray(d.tickers) ? d.tickers : null;
+  // An EMPTY registry means "no feature reports in yet" (the section says
+  // exactly that) — an unknown count, not a fabricated zero.
+  const jobVal =
+    tickers && tickers.length
+      ? formatCount(tickers.length) +
+        ` (${tickers.filter((t) => t.status === "ok").length} ok)`
+      : UNKNOWN;
+  return html`
+    <div class="stat-row">
+      <div class="stat">
+        <p class="stat-label">Open tickets</p>
+        <p class="stat-value">${ticketVal}</p>
+      </div>
+      <div class="stat">
+        <p class="stat-label">Leader rows</p>
+        <p class="stat-value">${leaderVal}</p>
+      </div>
+      <div class="stat">
+        <p class="stat-label">Background jobs</p>
+        <p class="stat-value">${jobVal}</p>
+      </div>
+    </div>`;
+}
+
 function renderTicketsSection(tickets, ctx = {}) {
   const { guildId = "", names = null } = ctx;
   if (!tickets || tickets.available !== true) {
@@ -178,7 +220,8 @@ function renderJobsSection(tickers, ctx = {}) {
     </section>`;
 }
 
-function renderNowPlayingSection(nowPlaying) {
+function renderNowPlayingSection(nowPlaying, ctx = {}) {
+  const { guildId = "" } = ctx;
   const np = nowPlaying || { status: UNKNOWN };
   const status = np.status || UNKNOWN;
   let body;
@@ -203,6 +246,11 @@ function renderNowPlayingSection(nowPlaying) {
     <section class="dashboard-panel dashboard-nowplaying-panel">
       <h2>Music · now playing</h2>
       ${body}
+      ${guildId
+        ? html`<p class="panel-foot">
+            <a href="/g/${guildId}/voice">Voice console →</a>
+          </p>`
+        : html``}
     </section>`;
 }
 
@@ -271,9 +319,9 @@ function renderDashboardContent(data, opts = {}) {
 
   return html`
     <div class="dashboard">
-      ${renderTicketsSection(d.tickets, ctx)} ${renderActivitySection(d.activity, ctx)}
+      ${renderStatRow(d)} ${renderTicketsSection(d.tickets, ctx)} ${renderActivitySection(d.activity, ctx)}
       ${renderChartsSection(ctx)}
-      ${renderJobsSection(d.tickers, ctx)} ${renderNowPlayingSection(d.nowPlaying)}
+      ${renderJobsSection(d.tickers, ctx)} ${renderNowPlayingSection(d.nowPlaying, ctx)}
       <p class="subheading dashboard-stamp">Aggregates cached at least 30 s per guild (§8.6 query budget).${stamp}</p>
     </div>`;
 }

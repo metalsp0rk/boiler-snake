@@ -636,6 +636,15 @@ th {
 .kv dt { color: var(--fg-muted); }
 .kv dd { margin: 0; }
 
+/* Dashboard-at-a-glance row (#651): the .stat blocks ARE the cards — never
+   nest a .stat inside a padded .panel (double padding). */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+}
+
 .stat {
   background: var(--bg-raised);
   border: 1px solid var(--line);
@@ -651,7 +660,11 @@ th {
   margin: 0;
 }
 
-.stat-value { font-size: var(--text-lg); margin: var(--space-1) 0 0; }
+.stat-value {
+  font-size: var(--text-xl);
+  margin: var(--space-1) 0 0;
+  font-variant-numeric: tabular-nums; /* #651: digits align, no jitter on refresh */
+}
 
 /* ---- find box + in-page section nav (consumed by #643/#644) -------------------------- */
 

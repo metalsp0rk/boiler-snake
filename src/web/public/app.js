@@ -565,8 +565,18 @@
     return new ChartLib(canvas, config);
   }
 
-  // Dark/light readable strokes; the Colors plugin stays the fallback.
-  var LINE_COLOR = "#5b9dff"; // rides the --link token family
+  // #651: the line follows the --chart-line CSS token, read ONCE at mount
+  // (no light palette; getComputedStyle is the only bridge from CSS to JS).
+  // The literal stays as the fallback so a missing token never paints "undefined".
+  var LINE_COLOR = "#5b9dff";
+  try {
+    var token = getComputedStyle(document.documentElement)
+      .getPropertyValue("--chart-line")
+      .trim();
+    if (token) LINE_COLOR = token;
+  } catch (err) {
+    /* keep the fallback */
+  }
   var BAR_FILL = "rgba(91, 157, 255, 0.45)";
   var BAR_EDGE = "rgb(91, 157, 255)";
 
