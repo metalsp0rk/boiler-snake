@@ -166,7 +166,7 @@ function renderSyncTriggerForm({ guildId, csrfToken, returnTarget = "staff" }) {
     <form class="staff-mutate-form sync-trigger-form" method="post" action="${actionPath}">
       <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>
       <input type="hidden" name="return" value="${safeReturn}"/>
-      <button type="submit" class="btn">Sync command visibility now</button>
+      <button type="submit" class="btn btn-primary">Sync command visibility now</button>
     </form>
     <p class="subheading">
       Re-applies the current staff roles to the staff-tier slash commands —

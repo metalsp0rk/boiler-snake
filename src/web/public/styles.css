@@ -1512,6 +1512,10 @@ p.panel-foot {
 
 .signin-title { font-size: 1.4rem; margin: 0 0 var(--space-4); }
 
+/* #653: the shell logo marks the card as the same product — the page stays
+   static HTML (no shell, no sidebar, no app.js). */
+.signin-logo { display: block; margin: 0 0 var(--space-3); border-radius: 8px; }
+
 .signin-lede { margin: 0 0 var(--space-4); }
 
 .signin-what { margin: 0 0 var(--space-4); }

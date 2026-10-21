@@ -90,7 +90,7 @@ function renderGrantForm({ guildId, csrfToken, flash, maxAward }) {
           <label>Amount (XP)<input name="amount" type="number" min="1" max="${maxAward}" step="1"/></label>
           <label>Reason (optional)<input name="reason" type="text" maxlength="200" autocomplete="off" placeholder="shown in the audit trail"/></label>
         </div>
-        <button type="submit" class="btn btn-write">Grant XP</button>
+        <button type="submit" class="btn btn-primary">Grant XP</button>
       </form>
       <p class="hint">
         Limits mirror the slash command: amount 1–${Number(maxAward).toLocaleString(

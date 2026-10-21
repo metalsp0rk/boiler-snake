@@ -26,7 +26,7 @@
 
 const { html } = require("../escape");
 const { banner } = require("../components");
-const { STYLES_SRC } = require("../layout");
+const { STYLES_SRC, LOGO_SRC } = require("../layout");
 
 /** Whitelisted context flags (derived from validated params, never echoed). */
 const CONTEXTS = Object.freeze(["guild", "ticket"]);
@@ -134,6 +134,7 @@ function renderSignInPage({
 </head>
 <body class="signin-body">
 <main class="signin-card">
+  <img class="signin-logo" src="${LOGO_SRC}" alt="" width="44" height="44"/>
   <h1 class="signin-title">Boiler Snake web console</h1>
   ${noticeLine(NOTICES.includes(notice) ? notice : null)}
   <p class="signin-lede">Sign in with your Discord account to open the staff
