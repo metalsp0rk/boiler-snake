@@ -391,6 +391,27 @@ describe("GET /g/:guildId/warnings — filters + void/expiry states", () => {
     assert.ok(body.includes("expired (auto-void pending)"), "past expiry shown as pending auto-void");
   });
 
+  it("#646: warnings rows carry stack labels; the table opts into .table-stack", async () => {
+    const { body } = await hit(`${W}?u=${WARN_1}&state=all`, { key: "staff" });
+    assert.equal(count(body, 'class="row-warn'), 4);
+    assert.ok(body.includes("moderation-table table-stack"), "table opts into the phone stack");
+    assert.ok(body.includes('data-label="Reason"'), "reason column is labeled when stacked");
+    for (const label of ["Ref", "Subject", "Issuer", "Created", "State"]) {
+      assert.ok(body.includes(`data-label="${label}"`), `stack label ${label}`);
+    }
+  });
+
+  it("#646: filtered-empty state offers Clear filter back to the unfiltered URL", async () => {
+    const ghost = "992000000000000099"; // valid snowflake, no rows anywhere
+    const { body } = await hit(`${W}?u=${ghost}&state=all`, { key: "staff" });
+    assert.match(body, /No warnings match this filter/);
+    assert.ok(body.includes("empty-state"), "empty-state class stays");
+    assert.ok(
+      body.includes(`href="${W}"`) && body.includes("Clear filter"),
+      "Clear filter links to the unfiltered page"
+    );
+  });
+
   it("state=all reveals voided BADGED with full void metadata (voided_by + void_reason)", async () => {
     const { res, body } = await hit(`${W}?u=${WARN_1}&state=all`, { key: "staff" });
     assert.equal(res.status, 200);

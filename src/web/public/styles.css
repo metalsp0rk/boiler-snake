@@ -898,20 +898,31 @@ th {
    sibling pages; rides the existing shell tokens. */
 .moderation { display: flex; flex-direction: column; gap: 0.9rem; }
 
+/* #646 controls row: the filter and the issue-warning form share one .panel
+   (side by side from 720px); on a phone the grid is one column and the
+   DOM order puts the form above the table instead of below its fold. */
+.moderation .moderation-controls {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  padding: 0.9rem 1rem;
+}
+@media (min-width: 720px) {
+  .moderation .moderation-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 26rem);
+  }
+}
 .moderation .filter-form {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.5rem 0.75rem;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
 }
 .moderation .filter-form label { font-size: 0.8rem; color: var(--fg-muted); }
 .moderation .filter-form input,
 .moderation .filter-form select {
-  background: var(--bg);
+  background: var(--bg-sunken);
   color: var(--fg);
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -919,7 +930,9 @@ th {
   font: inherit;
   font-size: 0.9rem;
 }
-.moderation .filter-form input[type="search"] { min-width: 14rem; }
+/* #646: full-width on a phone (was min-width: 14rem, which forced the
+   whole page sideways at 360px). */
+.moderation .filter-form input[type="search"] { width: 100%; max-width: 24rem; min-width: 0; }
 
 .moderation .counts { margin: 0; font-size: 0.9rem; }
 .moderation .pager { margin: 0.25rem 0 0; font-size: 0.85rem; }
