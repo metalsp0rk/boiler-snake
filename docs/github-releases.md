@@ -55,6 +55,7 @@ If a ping role is configured, the message mentions that role only — never `@ev
 - **Pointer per watch**: the bot stores the newest announced release id. Releases are announced in publish order; if a message can't be delivered (deleted channel, missing permissions), the pointer does **not** advance and the bot retries on the next hourly tick.
 - **API failures never lose releases**: rate limits, outages, or a rejected token are logged and retried next hour — the pointer only moves after a successful lookup.
 - **`/github check`** reports specific problems per repository (e.g. missing channel, rate limit, invalid token) instead of failing silently.
+- **Every mutating action is audited durably (#443)**: `watch`, `channel`, `role`, `remove`, and `token` (set/clear) each write an `admin_audit` row (origin `slash`) — the staff-channel embed is only a mirror. Browse the trail in the web console's audit viewer (`/g/:guildId/audit`), retained `RETENTION_ADMIN_AUDIT_DAYS` (default 365 days); see the **Durable audit trail** section of [audit-log.md](audit-log.md).
 
 ## Tokens & privacy
 

@@ -10,6 +10,7 @@ Boiler Snake is a [Discord.js](https://discord.js.org/) v14 bot with a SQLite ba
 
 - **Unit** (`npm run test:unit`): pure math, cooldowns, registry, DB smoke — `test/*.test.js`
 - **Integration** (`npm run test:integration`): full stack offline with temp SQLite and mocked Discord I/O — `test/integration/*.test.js`
+- **E2E tier 4** (`npm run test:e2e`): the real bot booted against the pinned + patched fauxcord mock Discord — `test/e2e/*.test.js`, see [e2e.md](e2e.md)
 - **All** (`npm test`): unit + integration via `node --test`
 - Harness: `test/helpers/` (`createIntegrationEnv`). See `test/README.md`.
 - Pipeline handlers (`onMessageCreate`, etc.), `runVoiceTick`, and YouTube `processChannel`/`runYoutubeTick` are exported for direct invocation without gateway login.
@@ -43,7 +44,7 @@ src/
 │   └── awardXp.js           # Unified XP → activity → roles → audit
 ├── features/
 │   ├── load.js              # applyFeaturesToRegistry / start / registerEvents
-│   ├── index.js             # Ordered feature list (26 modules)
+│   ├── index.js             # Ordered feature list (27 modules)
 │   ├── settings/            # /settings
 │   ├── commandChannels/     # /setcommandchannel
 │   ├── xp/                  # /xp /leaderboard /setxp /grantxp + award helpers
@@ -52,7 +53,7 @@ src/
 │   ├── music/               # /play /music + Lavalink voice streaming
 │   ├── levelRoles/          # /leveltorole + syncMemberRoles
 │   ├── logs/                # /setlog + auditLog + delete/ban/kick
-│   ├── youtube/             # YouTube commands + RSS/API ticker
+│   ├── youtube/             # YouTube commands + Data API ticker
 │   ├── twitch/              # /twitch /settwitch + Helix go-live ticker
 │   ├── githubReleases/      # /github + hourly GitHub releases ticker
 │   ├── honeypot/            # /honeypot + ban/warn pipeline
@@ -72,9 +73,16 @@ src/
 │   ├── bridge/              # /bridge Discord↔Fluxer channel relay (webhooks + outbox)
 │   └── linking/             # !link Discord↔Fluxer account pairs + XP mirroring
 ├── commands/
-│   ├── registry.js          # name → handler map (from features)
-│   ├── router.js            # InteractionCreate dispatch
+│   ├── registry.js          # name → handler map (from features); api: "interaction" | "context"
+│   ├── router.js            # InteractionCreate dispatch (builds + asserts CommandContext)
 │   └── register.js          # CLI: register slash commands
+├── platform/
+│   ├── boot.js              # Supervisor boot: endpoints, feature gate, drain
+│   ├── context.js           # Platform-neutral CommandContext seam (#457 guard)
+│   ├── community.js         # ensureCommunity (guild snowflake → communities row)
+│   ├── normalizedMessageContract.js # adapter-boundary validators (Normalized* shapes)
+│   ├── discord/context.js   # Discord CommandContext builder (router side)
+│   └── fluxer/context.js    # Fluxer CommandContext builder
 ├── db.js                    # Facade re-export (stable require("./db"))
 ├── db/
 │   ├── connection.js
@@ -169,6 +177,7 @@ module.exports = {
   name: "example",
   commands: [/* SlashCommandBuilder */],
   handlers: { example: async (interaction, ctx) => {} },
+  handlerApi: { example: "context" }, // optional: opt this handler into CommandContext
   autocomplete: { example: async (interaction, ctx) => {} }, // optional
   modalHandlers: { "prefix:": async (interaction, ctx) => {} }, // optional
   buttonHandlers: { "prefix:": async (interaction, ctx) => {} }, // optional
@@ -178,11 +187,25 @@ module.exports = {
 };
 ```
 
+**Two handler calling conventions (`CommandContext` seam).** The registry
+stores every handler with an `api` (`registerHandler(name, fn, { api })`,
+default `"interaction"`; `load.js` passes each feature's `handlerApi` map
+through). On the **interaction** arm the handler receives the raw platform
+interaction; on the **context** arm it receives a platform-neutral
+`CommandContext` — the vocabulary lives in `src/platform/context.js` (pure,
+gateway-free), and each adapter builds its own (`src/platform/discord/context.js`,
+`src/platform/fluxer/context.js`). The router owns the seam: it builds the
+context and runs `assertCommandContext` (the #457 boundary guard) before
+dispatch, so a builder field rename or omission fails at the router as a
+named contract error — never as a `TypeError` deep inside a handler.
+Everything around the call (command-channel gate, logging, `safeErrorReply`)
+keeps operating on the raw interaction.
+
 ### Ordered pipelines (`bot/pipelines.js`)
 
 | Event | Order |
 |-------|--------|
-| **MessageCreate** | cache → pending RR emoji → honeypot → gork (detached) → user channel activity → message XP |
+| **MessageCreate** | bridge loop gate (relay copies / bot traffic / echoes stop here — honeypot bot-trap exception) → bridge command-line branch (dispatch once, stop) → cache → pending RR emoji → honeypot → prefix-command stop (activity record + dispatch, no gork/XP; Fluxer) → gork (detached) → bridge enqueue (never early-returns) → user channel activity → message XP |
 | **MessageReactionAdd** | partials → honeypot warning strip → RR panels → reaction XP |
 | **MessageReactionRemove** | reaction-role remove |
 
@@ -248,8 +271,27 @@ Migrations on load:
 | `043_events_series_presets` | `event_series` (recurrence cursor) + `event_presets` / `event_preset_options` (signup presets) |
 | `044_event_channels_wizards` | `event_channels` (per-channel event config incl. create-role narrowing) + `event_wizards` (DM create-wizard state) |
 | `045_event_integrations` | `event_google_links` (per-user gcal OAuth tokens, `v1.` envelope) + `event_crossposts` / `event_crosspost_messages` (cross-post pipeline) |
+| `046_youtube_live_pointer` | `youtube_channels.last_live_id` — dedicated live-alert pointer; live dedup no longer competes with upload bookkeeping (#378) |
+| `047_youtube_checked_at` | `youtube_channels.last_checked_at` — wall-clock sweep stamp gating per-community polling intervals (#379) |
+| `048_gork_log_channel` | `guild_settings.gork_log_channel_id` — dedicated gork Q&A log channel (NULL = fall back to the audit log) |
+| `049_honeypot_pause` | `honeypot_paused_at` / `honeypot_pause_reason` — persisted mass-ban breaker pause (#440, F2-4) |
+| `050_xp_cooldown_clamp` | pull legacy msg/reaction cooldown rows inside the 24 h clamp (#429, XE-2) |
+| `051_reaction_role_claims` | `reaction_role_claims` — per-panel claim refcounts so un-reacting one panel can't strip a role another panel's claim still holds (#433, E2-09) |
+| `052_ticket_create_reservations` | `ticket_create_reservations` — one-statement slot reservation makes the self-create rate limit atomic (#420, LT-3) |
+| `053_retention_sweep_indexes` | sweep-lead indexes for `bridge_outbox`, `bridge_message_links`, `event_activity`, `event_notifications` (#399, B2-7) |
+| `054_ucmd_day_index` | day-lead index on `user_channel_message_daily` for the global hourly daily-aggregate prune (#396, DB-4) |
+| `055_gork_usage_day_index` | day-lead index on `gork_usage` for the lazy prune that runs on every gork answer (#395, DB-3) |
+| `056_admin_audit_created_at_index` | global `created_at` index for the hourly `admin_audit` retention delete (#468, DB-5) |
+| `057_level_role_fk` | rebuild `role_drop_state` + `guild_settings` with FKs to `communities` + the composite `level_roles` FK (`ON DELETE CASCADE`) (#469, DB-9/DB-10) |
+| `058_gork_role_id` | `guild_settings.gork_role_id` — role-mention invocation for gork alongside the keyword (#174) |
+| `059_twitch_sub_overrides` | per-subscription `twitch_channels.notify_channel_id` / `notify_role_id` overrides (#177) |
+| `060_twitch_go_offline` | `notify_offline` opt-in + go-offline announce watermark (one post per stream) (#179) |
+| `061_twitch_golive_template` | `guild_settings.twitch_golive_template` — per-guild go-live message template (NULL = built-in default) (#178) |
 
-Current registry: **55** migrations (`PRAGMA user_version` = 55 on a current DB). The authoritative per-migration table with full column/DDL notes lives in [database.md](database.md).
+Current registry: **61** migrations (`PRAGMA user_version` = **61** on a
+current DB — the version is the registry size, `LATEST_VERSION` in
+`src/db/migrate.js`). The authoritative per-migration table with full
+column/DDL notes lives in [database.md](database.md).
 
 ### Core XP API
 
@@ -282,7 +324,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **decay** | Cron `0 4 * * *` (hardcoded const, evaluated in the **process timezone** — deployments pin `TZ=UTC`, see [decay.md](decay.md)); relative write against the live row (#191); re-syncs level + reaction roles; job `decay` |
 | **levelRoles** | Grace-period drop via `levelRoles/sync.js`; daily sweeper job `levelrole-drop` (cron `17 5 * * *`) fires expired timers even when XP is frozen (#428) |
 | **logs** | Audit + message log channels; in-memory delete cache |
-| **youtube** | RSS + optional Data API; guild notification channel |
+| **youtube** | Data API ticker (optional `YOUTUBE_API_KEY`); guild notification channel |
 | **twitch** | Helix poll (≤100 ids/req); go-live dedup by stream id; separate channel + role from YouTube |
 | **githubReleases** | Hourly GitHub releases poll; per-repo channel/token; one post per release via id pointer |
 | **honeypot** | Channel posts / ban-roles; warning PNG; exempt roles |
@@ -324,7 +366,7 @@ Router: `commands/router.js` → autocomplete / modal submit / button / chat inp
 
 | Gate | Meaning |
 |------|---------|
-| **Public** | No staff check: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` (and panel open), `/play`, `/music`. `/eventreminder` opt-out/status (and create for event creators). |
+| **Public** | No staff check: `/xp`, `/leaderboard`, `/warn mine`, `/ticket create` (and panel open), `/play`, `/music`, `/link` (account pairing). `/eventreminder` opt-out/status (and create for event creators). |
 | **Staff** (`requireStaff` / `isStaff`) | ManageGuild **or** any `staff_roles` role — notes, warnings, tickets (incl. panel/set*), activity config, honeypot channel/banrole, XP/YouTube/Twitch/decay/logs/reaction-roles, `/userinfo` (except Activity), most config |
 | **Senior staff** (`requireSeniorStaff` / `isSeniorStaff`) | ManageGuild **or** a **senior** `staff_roles` role — `/userinfo` Activity; senior roles also receive automatic ticket channel overwrites (junior = command gate only, no auto ticket view) |
 | **ManageGuild-only** (`requireAdmin` / `isAdminOrMod`) | **`/grantxp`**; staff-role add/remove/setlevel; **`/staff syncpermissions`**; **`/setcommandchannel`**; **`/honeypot exempt`** (staff-role alias) |
@@ -351,9 +393,10 @@ Router: `commands/router.js` → autocomplete / modal submit / button / chat inp
 npm test                 # unit + integration (node --test)
 npm run test:unit        # test/*.test.js
 npm run test:integration # test/integration/*.test.js
+npm run test:e2e         # tier-4: real bot vs pinned fauxcord mock Discord (mock must be started first)
 ```
 
-Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (commands × features — both counted, not hardcoded, in `test/registry.test.js`). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O.
+Unit coverage includes `core/xpMath`, cooldowns, scheduler, db layer (temp DB), event reminder helpers, tickets helpers, and command registry (commands × features — both counted, not hardcoded, in `test/registry.test.js`). Integration tests exercise pipelines and feature flows offline with real SQLite and mocked Discord I/O. The tier-4 E2E suite (`test/e2e/*.test.js`) boots the real bot against the fauxcord mock — `scripts/e2e/start-mock.sh` first; topology, CI queue, and per-suite coverage in [e2e.md](e2e.md).
 
 ---
 
@@ -392,7 +435,7 @@ Root files that re-export features (for older requires / external scripts):
 
 Prefer importing feature/canonical paths in new code.
 
-**Deprecation status (audit #206).** The ten shims above `db.js` have zero
+**Deprecation status (audit #206).** The twelve shims above `db.js` have zero
 importers in `src/` or `test/` — they exist only for external scripts. Deleting
 them needs a major release (the repo is 1.x), so each now logs a one-time
 `[deprecation] <file> is deprecated and will be removed in v2 — use <target>`
