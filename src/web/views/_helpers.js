@@ -121,10 +121,19 @@ function channelRef(channelId, resolveName, missingHtml = null) {
  * renders an EMPTY fragment there — exactly what its old private copy did —
  * so the unified engine cannot shift a single byte. `cls` appends the
  * page's own panel class to the shared "panel settings-panel" base.
+ * `id` (#642) lands on the <section> ONLY when it passes the strict
+ * slug whitelist — deep-link/section-nav anchors can never smuggle
+ * markup or attributes.
  */
+const SECTION_ID_OK = /^[a-z0-9-]{1,40}$/;
+
 function section(title, bodyHtml, opts = {}) {
+  const idAttr =
+    typeof opts.id === "string" && SECTION_ID_OK.test(opts.id)
+      ? html` id="${opts.id}"`
+      : html``;
   return html`
-    <section class="panel settings-panel${opts.cls ? ` ${opts.cls}` : ""}">
+    <section${idAttr} class="panel settings-panel${opts.cls ? ` ${opts.cls}` : ""}">
       <h2>${title}</h2>
       ${opts.hint ? html`<p class="setting-admin-hint">${opts.hint}</p>` : html``}
       ${opts.notice ? banner("warn", opts.notice) : html``}
