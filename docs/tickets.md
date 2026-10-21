@@ -110,6 +110,16 @@ Without an API key, archives use a stats + close-reason fallback summary. The sa
 
 Lifecycle commands work **inside the ticket channel** even if command-channel restrictions are set.
 
+`/ticket list` displays **at most 25 rows** — a display cap, not pagination. If the filters match more tickets, the rest are not shown; narrow the result with the filters (`status:` / `user:` / `staff:` / the date window). The header carries the shown-row count (e.g. `**Open tickets** (25)`), and if the 1900-character message budget runs out first, the row list ends with an honest `(+N more)` suffix.
+
+**Partial failure on lifecycle commands.** All eight lifecycle handlers (`claim`, `transfer`, `adduser`, `removeuser`, `addstaff`, `removestaff`, `sensitive`, `unsensitive`) commit the DB change first, then push channel permission overwrites. If the overwrite push fails the reply never claims full success — it appends:
+
+```
+⚠️ Recorded, but channel permissions could NOT be updated (cause) — visibility may not match the command yet. Re-run it, or check the bot's access to this ticket channel.
+```
+
+The same partial-failure convention as the `_Warnings:_` block on the close/archive replies.
+
 ### Config (staff gate)
 
 | Command | Description |
@@ -151,7 +161,11 @@ Requires a **closed** ticket channel.
 
 **Non-sensitive:**
 
-1. Fetch channel messages (oldest → newest).
+1. Fetch channel messages — walks the history newest-first up to a **5000-message cap**
+   (`TRANSCRIPT_MAX_MESSAGES`), rendered oldest → newest. A channel past the cap gets an honest
+   warning in the archive reply's `_Warnings:_` block: `Transcript capped at 5000 messages — the
+   older messages were NOT archived (the 5000 newest were kept).` A capped transcript is never
+   presented as complete (#423).
 2. Resolve display names (guild nickname → global name → username) for requester, staff owner, message authors, and `<@id>` mentions in content.
 3. **Download media** (attachments, embed images/thumbnails/videos, stickers) into  
    `{DATA_DIR}/ticket-transcripts/{guild_id}/{uuid}/assets/`, rewrite links to  

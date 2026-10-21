@@ -81,12 +81,16 @@ Example with `level_xp_factor=50`:
 
 In-memory cooldown tracking prevents spam farming:
 
-| Cooldown Type | Purpose | Default |
-|---------------|---------|---------|
-| `msg_cooldown_sec` | Delay between message XP awards | 20 seconds |
-| `reaction_cooldown_sec` | Delay between reaction XP awards | 10 seconds |
+| Cooldown Type | Purpose | Default | Max |
+|---------------|---------|---------|-----|
+| `msg_cooldown_sec` | Delay between message XP awards | 20 seconds | 86,400 s (24 h) |
+| `reaction_cooldown_sec` | Delay between reaction XP awards | 10 seconds | 86,400 s (24 h) |
 
-**Memory Management**: Cooldown entries are swept every 10 minutes, removing entries older than 6 hours to keep memory usage bounded.
+The two `/setxp` cooldown options (`msgcooldown`, `reactioncooldown`) are hard-capped at **86,400 seconds (24 h)** in the command itself — larger values are rejected by Discord's option validation. Legacy out-of-range rows were pulled inside the cap by migration `050_xp_cooldown_clamp`.
+
+**Window stamping**: the cooldown window is stamped only **after** an award actually succeeds ("no pay, no window"). An award that throws (e.g. a transient DB fault) leaves the window free, so the user's next event is not silently skipped.
+
+**Memory Management**: Cooldown entries are swept every 10 minutes, removing entries older than **25 hours** to keep memory usage bounded. The horizon is deliberately past the largest legitimate window (max configurable 24 h + 1 h slack, #429): an earlier 6 h horizon evicted entries *inside* configured windows above 6 h, silently re-arming awards early while the setting looked applied. The sweep age must always exceed the max configurable cooldown.
 
 ## Activity Tracking
 

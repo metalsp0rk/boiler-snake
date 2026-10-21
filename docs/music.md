@@ -91,13 +91,28 @@ Queues are **in memory**. A bot restart empties them.
 
 ## Idle leave
 
+Two windows, implemented in app code (#588 — the earlier #463 correction stood because the library-side config it replaced was unverified, could not be cancelled on enqueue, and left the channel inside an unlogged timer):
+
 - The voice channel has no humans (only the bot): leave after **60 seconds**.
 - Queue drained (last track finished, nothing enqueued): leave after
-  **5 minutes**. Playing anything (`/play`) cancels the window.
-  (#588 — a timer is now implemented in code; the earlier #463 correction
-  stood because the library-side config it replaced was unverified, could not
-  be cancelled on enqueue, and left the channel inside an unlogged timer.)
-- The bot only ever leaves via these timers, `/music stop`, or `/music leave`.
+  **5 minutes**. The window fires once per drain and re-checks at fire time —
+  a queue refilled in the meantime is not evicted.
+
+What clears the queue-drained window: `/play` (audio landing on the player),
+a new `trackStart`, and `/music resume` / `/music seek` — but **only when the
+queue still holds audio**. A silent resume keeps the window armed (cancelling
+without audio would strand the bot with nothing left to re-arm the window).
+
+- **A player that connected but never played arms NO timer.** `/play`
+  connects to the voice channel *before* searching, and a failed or
+  no-results search leaves the player alive with an empty queue —
+  `queueEnd` never fired, so with humans still in the channel the bot simply
+  sits there. It leaves when the humans leave (the 60-second rule), or via
+  `/music stop` / `/music leave`.
+- Leave paths: the two timers, the **Stop** button on the nowplaying message,
+  `/music stop`, `/music leave` — and an external Discord voice disconnect,
+  which tears the player down via the library (`destroyPlayer` on disconnect,
+  no auto-reconnect).
 
 Voice XP is unchanged: the ticker already ignores bots; humans still earn XP while music plays (two eligible humans in the channel).
 

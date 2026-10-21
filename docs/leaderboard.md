@@ -10,8 +10,8 @@ The leaderboard system generates professional-grade images using the `@napi-rs/c
 
 - **Paginated display**: 1–20 users per page with Prev/Next buttons (default page size 10)
 - **Dark theme**: Modern blue gradient background matching Boiler Snake branding
-- **Gradient bars**: Visual XP progression with cyan/green colors
-- **Trophy icons**: Gold/silver/bronze for top 3
+- **Gradient bars**: Progress within the current level toward the next (cyan → green)
+- **Trophy icons**: Vector-drawn gold/silver/bronze trophies for the top 3 (no emoji)
 - **Level integration**: Shows level alongside raw XP
 - **Unicode support**: Handles emoji and special characters via font stack
 
@@ -37,22 +37,38 @@ Shows the first 10 users (ranks 1–10) with:
 
 `limit` is the **page size**: integer 1–20, default **10**. The handler queries and renders that many rows per page.
 
+### Page option
+
+```bash
+/leaderboard limit:20 page:2
+```
+
+`page` is the page number: integer **1–20**, default **1**. Requested pages are clamped to the ceiling (`LB_PAGE_MAX = 20`) at parse time, so browsable ranks are hard-capped at `page × limit` regardless of guild size (default page size → rank ≤ 200).
+
 ### Pagination
 
-Every leaderboard message (except the empty-guild notice) has a **◀ Prev** / **Next ▶** button row:
+**Every** leaderboard payload — including the `No leaderboard data yet.` notice — carries the **◀ Prev** / **Next ▶** button row (Next disabled; Prev enabled when page > 1):
 
-- **Prev** is disabled on page 1; **Next** is disabled on the last page.
+- **Prev** is disabled on page 1.
+- **Next** is disabled on the last page — **and always at page 20**, the page ceiling, even when more rows exist. Past the ceiling every page renders the same last slice, so the button is honestly disabled instead of a live-clicking dead button.
 - Only the user who ran `/leaderboard` can press the buttons (others get an ephemeral notice).
 - Each click re-queries the leaderboard, so ranks/XP reflect current data.
+- Pressing a button from a pre-cap leaderboard message (an out-of-range page id) answers: `This leaderboard page is stale — run **/leaderboard** again.`
 - Message content shows the applied range, e.g. `**Leaderboard — ranks 11–20**`.
+
+### Fluxer
+
+On Fluxer the empty-leaderboard notice is answered **in-channel**: Fluxer has no ephemerals, and the DM-first (`sensitive: true`) reply made an empty leaderboard look like a dead bot. On Discord the same notice is `sensitive` (caller-only). The Prev/Next button arm is **Discord-only** — it re-queries through a Discord guild member fetch. See [Fluxer](fluxer.md).
 
 ## Image Specifications
 
 ### Dimensions
 - **Width**: 900 pixels
 - **Height**: Variable (base + rows × row step)
-- **Total height for 10 users**: ~856 pixels
-- **Total height for 20 users**: ~1556 pixels
+- **Total height for 10 users**: 916 pixels
+- **Total height for 20 users**: 1616 pixels
+
+(Both follow the layout formula below: `28 + 110 + 22 + rows × 70 + 56`.)
 
 ### Color Scheme
 
@@ -60,17 +76,20 @@ Every leaderboard message (except the empty-guild notice) has a **◀ Prev** / *
 |---------|-------|
 | Background (top) | `#070A12` |
 | Background (bottom) | `#0B1224` |
-| XP bar gradient start | Cyan-ish |
-| XP bar gradient end | Green-ish |
-| Rank text | White/silver |
-| Username | Cyan |
+| XP bar gradient start | `#00D8FF` (cyan) |
+| XP bar gradient end | `#57FF9A` (green) |
+| Trophy metals | gold `#F6C453` · silver `#C9D1D9` · bronze `#C67C4E` |
+| Rank text (ranks 4+) | `rgba(234, 242, 255, 0.65)` |
+| Username | `#EAF2FF` |
 
 ### Font Stack
 
 Fallback chain for maximum Unicode coverage:
 ```
-Noto Sans → DejaVu Sans → Segoe UI Symbol → 
-Apple Color Emoji → Noto Color Emoji → system-ui
+Noto Sans → Noto Sans Symbols2 → Noto Sans Symbols → Noto Sans Math →
+DejaVu Sans → Segoe UI Symbol → Apple Color Emoji → Noto Color Emoji →
+Twemoji Mozilla → system-ui → -apple-system → Segoe UI → Roboto →
+Arial → sans-serif
 ```
 
 Install at least one of these packages on your host:
@@ -97,20 +116,22 @@ Total Height = padding(28)
 ### Row Design
 
 Each user row includes:
-- **Rank**: Large, bold numbers (gold (#FFD700) for top 3)
-- **Username**: Display name with emoji support
-- **XP Bar**: Visual gradient representing XP amount
-- **Level**: Secondary information below bar
+- **Rank**: Top 3 get a vector-drawn trophy with the rank number painted on the cup; ranks 4+ show a plain `<n>.` in `rgba(234, 242, 255, 0.65)`
+- **Username**: Display name with emoji support (ellipsis-truncated to fit)
+- **XP Bar**: Progress **within the current level** toward the next level — `startXP = L² × factor` → `nextXP = (L+1)² × factor` — not the raw XP amount
+- **Level**: Secondary information below the XP total (right-aligned)
 
 ### Trophy Implementation
 
-```javascript
-// Top 3 get special treatment
-if (rank === 1) { trophy = "🏆" }  // Gold
-if (rank === 2) { trophy = "🥈" }  // Silver  
-if (rank === 3) { trophy = "🥉" }  // Bronze
+No emoji glyphs are used anywhere — the top 3 get a small vector trophy drawn with canvas paths (`drawTrophy()`), filled with the metal color, with a glow and the rank number painted onto the cup:
 
-// Others show rank number only
+```javascript
+// Top 3 get the vector trophy; the metal is the fill color
+// rank 1 → gold    #F6C453
+// rank 2 → silver  #C9D1D9
+// rank 3 → bronze  #C67C4E
+
+// Ranks 4+ show "<n>." text only
 ```
 
 ## Code Implementation
@@ -148,11 +169,13 @@ const top = entries.slice(0, 20);
 // For each entry on the page:
 { rank, name, xp, level } = {
   rank: global rank (page offset + idx + 1),
-  name: member?.displayName || username || "Unknown",
+  name: resolved display name || `User ${user_id}`,
   xp: XP total (raw number),
   level: Math.floor(Math.sqrt(xp / factor))
 }
 ```
+
+Unresolved members render as `User <user_id>`; a name that is empty after sanitization becomes the placeholder `—` in the renderer.
 
 ## Integration with Other Features
 
@@ -213,8 +236,9 @@ Check that `level_xp_factor` is correct (default 100).
 ### Input Sanitization
 
 Display names are sanitized to prevent rendering attacks:
+- NFC-normalized first
 - Removed control characters (`\u0000-\u001F`, `\u007F-\u009F`)
-- Removed bidirectional overrides (`\u200E`, `\u202A-\u202E`)
+- Removed bidirectional controls (`\u200E`, `\u200F`, `\u202A-\u202E`, `\u2066-\u2069`)
 - Collapsed multiple whitespace to single space
 - Fallback to "—" if empty after cleaning
 

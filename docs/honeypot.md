@@ -8,7 +8,7 @@ Catch spam accounts and raiders with decoy **channels** and/or **roles**. Non-ex
 
 A **honeypot channel** looks like a normal channel but is only meant to trap bots and malicious accounts that auto-join and post everywhere. Legitimate members are never told about these channels (or are blocked from seeing them via Discord permissions).
 
-When anyone posts in a honeypot channel, the bot **deletes** the message (if it can). Exempt roles are not banned; non-exempt users are — and a ban is never issued when the author's exemption state can't be verified (see [Enforcement Details](#enforcement-details)):
+When anyone posts in a honeypot channel, the bot **deletes** the message (if it can; on Fluxer nothing is ever deleted — see [Fluxer enforcement](#fluxer-enforcement-280)). Exempt roles are not banned; non-exempt users are — and a ban is never issued when the author's exemption state can't be verified (see [Enforcement Details](#enforcement-details)):
 
 1. **DMed** with the ban reason (if DMs are open)
 2. **Banned** from the guild
@@ -256,6 +256,18 @@ safe on the irreversible path).
 | 11th ban attempt within 5 minutes | No ban; the **mass-ban breaker trips**: enforcement paused (persisted) + staff alert + audit row; messages stay suppressed until an admin runs `/honeypot safety resume` |
 
 Ban audit reason: `Honeypot: Posted in a honeypot channel`.
+
+### Fluxer enforcement (#280)
+
+Channel honeypots run a Fluxer twin (ban roles stay Discord-only — no member-role events). Its posture differs from the Discord arm in two shipped ways:
+
+- **Nothing is deleted.** The Fluxer outbound surface has no message deletion, so a hit is **consumed** (no XP, no command dispatch, no Gork) while the message itself **stands**. Suppression semantics match the paused-breaker state.
+- **A ban requires KNOWN role state.** The exemption check may only run on roles the bot can trust, in strict order of authority:
+  1. `fetchMember` resolves a member carrying a role array → **authoritative** (overrides a stale event payload in both directions);
+  2. fetch returned no member but the event payload carried **non-empty** role ids → trusted-positive (real ids from a member the gateway actually carried);
+  3. fetch returned no member **and** the payload set is empty/absent → **UNKNOWN**: the hit is consumed, logged (author + community + channel + cause), and the bot **never bans** on unknown state. A ban is irreversible and the docs promise staff exemption — an accepted false negative during a transient Fluxer failure beats banning a moderator.
+
+When state is known and the author is non-exempt, the ban goes through the outbound client under the **K8 elevated-permissions gate**: `elevated_permissions = 0` answers `elevated_disabled` with the specific reason and makes no network call; `1` issues the real ban. While the mass-ban breaker is paused, the Fluxer twin suppresses bans the same way Discord does — the hit is still consumed.
 
 ### DM text (approx.)
 

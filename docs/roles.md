@@ -72,12 +72,34 @@ The grace timer is checked from three places:
 
 1. **On any XP award** — the unified award path re-syncs the member's roles.
 2. **On the daily decay tick** — for every user whose XP it rewrote that tick.
-3. **Daily grace-drop sweeper** (`levelRoles/dropSweeper.js`, ~05:17 UTC) —
-   re-runs the sync for every armed timer whose grace has expired, purely on
-   elapsed time. This is the safety net for users whose XP never changes again
-   (decayed to 0, or decay-exempt): without it the timer would never fire and
-   the role would be kept forever (#428). Actual revocation therefore lands on
-   the first sweep after the deadline — at most ~24h after the exact moment.
+3. **Daily grace-drop sweeper** (`levelRoles/dropSweeper.js`, cron
+   `17 5 * * *` on the **process** clock) — re-runs the sync for every armed
+   timer whose grace has expired, purely on elapsed time. Docker compose pins
+   `TZ: ${TZ:-UTC}`, so on container deploys it fires at 05:17 **UTC**; a bare
+   host runs it at its own local 05:17 (same caveat as decay's
+   `DECAY_CRON`). This is the safety net for users whose XP never changes
+   again (decayed to 0, or decay-exempt): without it the timer would never
+   fire and the role would be kept forever (#428). Actual revocation
+   therefore lands on the first sweep after the deadline — at most ~24h
+   after the exact moment.
+
+### When role ops fail
+
+Role adds/removes can fail — the classic cause is the bot’s highest role
+sitting **below** the role it tries to manage (or missing Manage Roles).
+Failed ops are **reported, not just logged** (#430, audit XE-3):
+
+- **`/grantxp`** — XP landed but a role may not have: the reply appends
+  `⚠️ **Role sync incomplete**: couldn't add role <@&role-id> (cause)`
+  naming each failed role and error.
+- **Level-role audit embed** — every failed op lands in a **Failed** field
+  (`⚠ add <@&role-id> (role-id): cause`) so staff see WHICH role and WHY
+  without grepping the console.
+- A sync where **everything** failed posts a loud **`Level role sync FAILED`**
+  embed instead of looking like a quiet no-op.
+- **Drop sweeper** — failures post through the same embed path and log with
+  user/community ids (bot-below-role is the named cause in `[roles]` console
+  lines).
 
 ## Best Practices
 
@@ -119,34 +141,42 @@ Lvl 100: Legend
 
 ## Database Schema
 
+Both tables were re-keyed from `guild_id TEXT` to `community_id INTEGER` by migration `034_communities` (the guild snowflake now lives in `communities.external_guild_id`).
+
 ### `level_roles` Table
 
 ```sql
+-- Live DDL (migrated schema)
 CREATE TABLE level_roles (
-  guild_id TEXT NOT NULL,
+  community_id INTEGER NOT NULL,   -- communities.id (re-keyed by 034_communities)
   role_id TEXT NOT NULL,
   level_required INTEGER NOT NULL,
   drop_grace_days INTEGER NOT NULL DEFAULT 3,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, role_id)
+  PRIMARY KEY (community_id, role_id)
 );
 ```
 
 ### `role_drop_state` Table
 
-Tracks when users first dropped below a role's threshold:
+Tracks when users first dropped below a role's threshold. Rebuilt by migration `057_level_role_fk` (#469 DB-9/DB-10), which added the foreign keys:
 
 ```sql
+-- Live DDL (rebuilt by 057_level_role_fk)
 CREATE TABLE role_drop_state (
-  guild_id TEXT NOT NULL,
+  community_id INTEGER NOT NULL REFERENCES communities(id),
   user_id TEXT NOT NULL,
   role_id TEXT NOT NULL,
-  below_since INTEGER,  -- ms epoch, NULL when not below
+  below_since INTEGER, -- ms epoch, NULL when not below
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (guild_id, user_id, role_id)
+  PRIMARY KEY (community_id, user_id, role_id),
+  FOREIGN KEY (community_id, role_id)
+    REFERENCES level_roles (community_id, role_id) ON DELETE CASCADE
 );
 ```
+
+The composite FK makes the repository's promise ("`deleteLevelRole` removes both rows") a database invariant: deleting a mapping cascades away its members' drop-timer rows, and orphaned drop-state rows can no longer exist (057 pre-cleaned the legacy ones with a named count).
 
 ## CommonPatterns
 
