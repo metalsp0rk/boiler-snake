@@ -10,8 +10,8 @@ Pre-event reminder pings for Discord **Guild Scheduled Events**. Only members wh
 
 ## How it works
 
-1. An authorized user runs `/eventreminder create` and picks a scheduled event.
-2. A modal configures shortname (auto-suggested from the event title, with a `-2`/`-3` suffix if taken), reminder offsets, optional channel override, and embed description.
+1. **A config that already exists rides this flow.** `/eventreminder create` is **retired (E13)**: it replies with a pointer to `/event create` / `/event adopt` and returns before the modal ever opens, so no *new* config can exist. Pre-retirement configs keep delivering until cleared or their scheduled event ends.
+2. The config carries a shortname (role `event-<shortname>`), reminder offsets, an optional channel override, and an embed description — `/eventreminder edit` re-opens the modal for an existing config.
 3. The bot creates role `event-<shortname>`, grants it to currently Interested users (minus guild opt-outs and per-event mutes), and keeps the role in sync as interest changes.
 4. At each offset before start, the bot posts **one message**: role mention in content + an **embed** with event details in the notify channel.
 5. When the event completes/cancels (or on `/eventreminder clear`), the bot deletes the role and config (and any mute rows for that event) so shortnames can be reused.
@@ -28,7 +28,7 @@ stateDiagram-v2
 
   [*] --> NoRole: Discord event created<br>(status: Scheduled)
 
-  NoRole --> RoleExists: /eventreminder create<br>create role event-shortname<br>grant Interested NE opt-out/mute
+  NoRole --> RoleExists: legacy config attached pre-E13<br>(create is now a pointer reply)<br>role event-shortname granted to<br>Interested NE opt-out/mute
 
   state RoleExists {
     [*] --> Syncing
@@ -60,7 +60,7 @@ sequenceDiagram
   Staff->>Discord: Create one-time scheduled event
   Note over Discord: status is Scheduled and no role yet
 
-  Staff->>Bot: eventreminder create plus modal
+  Staff->>Bot: legacy config attached pre-E13 (create plus modal is retired)
   Bot->>Role: Create role
   Bot->>Discord: Fetch Interested users
   Bot->>Role: Assign to Interested skip opt-outs and mutes
@@ -99,7 +99,7 @@ stateDiagram-v2
 
   SeriesExists --> OccN_NoRole: Occurrence N visible<br>(status: Scheduled)
 
-  OccN_NoRole --> OccN_Role: /eventreminder create<br>on this occurrence's id<br>create event-shortname
+  OccN_NoRole --> OccN_Role: legacy config on this<br>occurrence id (pre-E13)
 
   state OccN_Role {
     [*] --> Live
@@ -113,7 +113,7 @@ stateDiagram-v2
 
   OccN_Cleaned --> OccN1_NoRole: Discord surfaces next<br>occurrence (often new or<br>reset scheduled_event identity)
 
-  OccN1_NoRole --> OccN1_Role: Staff must run<br>/eventreminder create again<br>(new role for next cycle)
+  OccN1_NoRole --> OccN1_Role: Pre-E13 staff ran create again.<br>Now impossible (create retired E13) -<br>recurring events need /event
   OccN1_Role --> OccN1_Cleaned: Same cleanup path<br>as occurrence N
   OccN1_Cleaned --> OccN1_NoRole: Further occurrences…
 
@@ -132,7 +132,7 @@ sequenceDiagram
   Staff->>Discord: Create recurring scheduled event
   Note over Discord: Occurrence 1 Scheduled
 
-  Staff->>Bot: eventreminder create for Occ1 id
+  Staff->>Bot: eventreminder create for Occ1 id (pre-E13)
   Bot->>Role: Create role and sync Interested
   Note over Bot: SQLite config uses Occ1 event id
 
@@ -151,9 +151,9 @@ sequenceDiagram
   Note over Discord: Next occurrence may use new event id
   Note over Bot: No config for Occ2 yet
 
-  Staff->>Bot: eventreminder create for Occ2 id
+  Staff->>Bot: pre-E13 only: create for Occ2 id
   Bot->>Role: Create EventRole again
-  Note over Bot: Fresh config and offsets for Occ2
+  Note over Bot: Fresh config and offsets for Occ2 (not possible post-retirement)
 
   Discord->>Discord: Occ2 becomes Completed
   Bot->>Role: Delete role again
@@ -161,17 +161,18 @@ sequenceDiagram
 
 | | One-time | Recurring (current MVP) |
 |--|----------|-------------------------|
-| Role created | On `/eventreminder create` for that event id | Same, **per occurrence you configure** |
+| Role created | When the legacy config was attached (pre-E13; `create` is retired) | Same, **per occurrence configured** (pre-E13) |
 | Role while live | Synced to Interested ∩ ¬opt-out ∩ ¬mute | Same |
-| Reminder messages | Offsets before that start (embed + role ping) | Offsets before **that** occurrence’s start |
+| Reminder messages | Offsets before that start (embed + role ping) | Offsets before **that** occurrence's start |
 | Role deleted | Complete / cancel / delete / clear / safety | Same when **that** occurrence is terminal |
-| Next occurrence | N/A | **No automatic re-link** — run create again |
+| Next occurrence | N/A | **No automatic re-link** — and no way to attach a new legacy config (create retired E13): run the series through [`/event`](community-events.md) instead |
 
 ## Permissions
 
 | Action | Who |
 |--------|-----|
-| Create / edit / clear / sync for an event | **Manage Server** **or** that scheduled event’s **creator** |
+| Edit / clear / sync for an event | **Manage Server** **or** that scheduled event’s **creator** |
+| `/eventreminder create` | Retired pointer reply — no gate, nothing to configure |
 | Set default notify channel | **Staff gate** (Manage Server or any staff role) |
 | Opt out / opt in / mute / unmute / status | Everyone |
 
@@ -181,7 +182,7 @@ Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and abili
 
 | Command | Description |
 |---------|-------------|
-| `/eventreminder create event: [persistent]` | Open configure modal for a scheduled event. `persistent` (default no) keeps the role + config alive across recurring occurrences |
+| `/eventreminder create event: [persistent]` | **RETIRED (E13)** — no modal opens, `persistent` never acts. Replies ephemerally with the pointer: “📆 **New reminder configs are retired** — create the event with `/event create` (or `/event wizard`) instead…”, “`/event adopt scheduled_event:<id>` turns it into a draft bot event”, and notes that existing configs keep firing via `edit`/`list`/`clear`/`sync`/`setchannel` |
 | `/eventreminder edit event:` | Re-open modal for an existing config |
 | `/eventreminder list` | Active configs, offsets, next fire |
 | `/eventreminder clear event:` | Stop reminders, delete role + DB rows |
@@ -195,15 +196,17 @@ Bot needs: **Manage Roles** (role above `event-*`), **Send Messages** (and abili
 
 ## Modal fields
 
+Reachable only via `/eventreminder edit` on an existing config — the create modal retired with the command (E13).
+
 | Field | Purpose |
 |-------|---------|
-| Shortname | Role suffix → `event-<shortname>` (`[a-z0-9-]`). **Create** prefills a slug of the event title; if taken, suggests `title-2`, `title-3`, … |
+| Shortname | Role suffix → `event-<shortname>` (`[a-z0-9-]`). **Edit** prefills the config's current shortname; it must stay unique (the create-time slug suggestion `title-2`/`title-3` died with the retired command) |
 | Offsets (multi-select) | Presets: 1 week, 1 day, 1 hour, 30 min, 15 min, 5 min (defaults: 1d, 1h, 15m) |
 | Extra custom offsets | Freeform `2h, 10m` (`(\d+)(m\|h\|d)`) |
 | Channel override | Optional; empty uses guild default |
 | Custom embed description | Optional body for the reminder **embed**. Leave empty for the default (`Starts {starts_in}`) |
 
-**Recurring ("persistent")** is **not** a modal field (Discord caps modals at 5 fields). Set it with the `persistent` option on `/eventreminder create`, or toggle it anytime with the **♾️ Recurring: on/off** button on the create/edit confirmation. When **on**, the `event-*` role and config survive an occurrence completing and are only removed by `/eventreminder clear`. Edit submissions leave the current recurring state untouched.
+**Recurring ("persistent")** is **not** a modal field (Discord caps modals at 5 fields). Toggle it with the **♾️ Recurring: on/off** button on the **edit** confirmation — that button row also reflects the config's current state. (The `persistent` slash option only ever acted on the create modal, which is retired; setting it there does nothing.) When **on**, the `event-*` role and config survive an occurrence completing and are only removed by `/eventreminder clear`. Edit submissions leave the current recurring state untouched.
 
 ### Placeholders (embed description)
 
