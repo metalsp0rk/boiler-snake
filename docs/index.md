@@ -1,25 +1,30 @@
 # Boiler Snake Documentation
 
-A Discord bot for tracking user XP, levels, roles, and more with extensive per-guild configuration.
+A Discord & Fluxer bot for tracking user XP, levels, roles, and more with extensive per-community configuration.
 
 ## Overview
 
-Boiler Snake is a feature-rich Discord bot that helps you gamify your server with:
+Boiler Snake is a feature-rich community bot that helps you gamify your server with:
 
+- **Dual-platform**: one process serves Discord **and** any number of [Fluxer instances](fluxer.md) — bridges ([Channel bridges](bridge.md)) even link the two; boot needs `DISCORD_TOKEN` **or** `FLUXER_INSTANCES`
+- **Web admin console**: optional [staff console](web-admin.md) over Discord or Fluxer sign-in — dashboard, tickets, moderation, settings, audit viewer
 - **Multi-source XP tracking**: Messages, reactions, and voice channel activity
 - **Customizable leveling system**: Configurable XP formulas and thresholds
 - **Automatic role management**: Grant or revoke roles based on level with grace periods
 - **Reaction roles**: Self-serve emoji panels with min-level gates and optional removable roles
 - **Daily XP decay**: Incentivize active participation
 - **YouTube notifications**: Get alerted when subscribed channels go live or upload videos
+- **GitHub releases**: Watch repositories and announce new releases
 - **Music player**: `/play` in voice (Spotify catalog via Lavalink; YouTube/SoundCloud streams)
 - **Twitch stream notifications**: Get alerted when any number of subscribed streamers go live
 - **Honeypot channels**: Auto-ban users who post in decoy channels (with staff role exemptions)
-- **Scheduled event reminders**: Pre-event pings for Interested members via dedicated roles
+- **Community events & reminders**: Bot-owned `/event` signup flows plus scheduled-event pings for Discord events
+- **Gork**: the in-channel AI assistant with memory, search, and interaction logging
 - **Staff roles**: Junior/senior trusted roles for the staff command gate and ticket visibility
 - **Staff notes**: Private staff-only notes about members (never shown to the subject)
 - **Warnings**: Formal permanent disciplinary records (voidable; member self-view via `/warn mine`)
 - **Help tickets**: Private support channels with panel button→modal, sensitive mode, HTML transcripts, and staff archives
+- **Account linking**: Verified cross-platform identity links between Discord and Fluxer accounts
 - **Staff userinfo**: Unified member card with note/warning counts and drill-down buttons
 - **User activity summary**: Senior-staff channel/category post rankings on `/userinfo` Activity
 - **Audit & message logs**: Staff channels for bans/kicks/role changes and deleted messages
@@ -60,6 +65,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 
 ### Advanced Features
 - [YouTube Notifications](youtube-notifications.md) - Monitor channels for live streams and uploads
+- [GitHub Release Announcements](github-releases.md) - Watch repos and announce releases
 - [Music Player](music.md) - Voice playback with Spotify catalog + Lavalink
 - [Twitch Stream Notifications](twitch-notifications.md) - Go-live alerts for any number of subscribed streamers
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
@@ -74,9 +80,18 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [Leaderboard Rendering](leaderboard.md) - Beautiful PNG leaderboards with gradients
 - [Command Restrictions](command-restrictions.md) - Control where commands can be used
 
+### Platform: Fluxer, Bridges & Console
+- [Fluxer Instances](fluxer.md) - Run the bot against your own Fluxer instances (or Fluxer-only)
+- [Channel Bridges](bridge.md) - Pair a Discord channel with a Fluxer channel: messages, edits, deletes, files
+- [Account Linking](account-linking.md) - Verified cross-platform identity links
+- [Web Admin Console](web-admin.md) - Staff console: dashboard, tickets, moderation, settings, audit viewer
+- [Gork Assistant](gork.md) - In-channel AI assistant: memory, web search, summarize
+- [Gork Interaction Logging](gork-logging.md) - What gork logs and the privacy knobs
+
 ### Technical Documentation
 - [Database Schema](database.md) - Complete SQLite schema and queries
 - [Architecture Overview](architecture.md) - Code structure and data flow diagrams
+- [E2E Tests (fauxcord)](e2e.md) - Tier-4 end-to-end suite against the mock Discord
 - [FAQ](FAQ.md) - Common questions and troubleshooting tips
 
 ## Requirements

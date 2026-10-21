@@ -88,7 +88,7 @@ Server ID for instant command registration during development.
 DEV_GUILD_ID=YOUR_TEST_GUILD_ID
 ```
 
-Using this registers commands instantly to one guild instead of globally (which can take 1 hour).
+Registration is **per-guild** — the register CLI PUTs commands to every guild the bot is in (there is no global-registration path). With `DEV_GUILD_ID` only this one guild is touched, so commands appear instantly there while you iterate.
 
 #### Fluxer instances (optional)
 
@@ -182,7 +182,7 @@ Tables that only ever grow get pruned by one hourly sweep (plus one at boot),
 listed on the web job-health page as `retentionSweeps`. Every delete is a
 LIMIT-batched loop bounded at **500 rows × 40 batches per table per sweep**,
 so a huge backlog never blocks SQLite writes — it simply finishes on the next
-sweep. Each knob takes a number of days to keep; **`0` or `off` disables that
+sweep. Each knob takes a number of days to keep; **`0`, `off`, or `disabled` disables that
 table's sweep** (rows kept forever); an invalid value falls back to the
 default rather than silently disabling.
 
@@ -239,6 +239,8 @@ unless a port is set. Full console guide: [Web Admin Console](web-admin.md).
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `GORK_SUMMARIZE_TURN_TIMEOUT_MS` | `900000` | Deadline for the `/gork summarize` one-shot generation turn (15 minutes — a rundown is a long-running inference job); on timeout nothing posts and no budget is spent |
+| `GORK_MEMORY_TURN_TIMEOUT_MS` | `20000` | Deadline for each memory-extraction turn (small-model calls routinely need more than the 20 s default on slow providers) |
+| `GORK_DEBUG` | *(off)* | `1`/`true`/`yes`/`on` enables verbose per-phase gork tracing in the bot log; re-read per job |
 | `GORK_INTERACTION_LOG` | *(on)* | `0` = process-wide kill-switch for the gork [interaction log](gork-logging.md). ON by default — rows contain conversation content (privacy knob) |
 | `GORK_INTERACTION_LOG_RETENTION_DAYS` | `30` | Days to keep interaction-log rows; `0` keeps rows forever |
 | `GORK_INTERACTION_LOG_MAX_JSON_CHARS` | `200000` | Transcript JSON budget per row; oldest events drop first |
@@ -254,6 +256,7 @@ and the exact fix — a half-configured feature never silent-drops:
 | `DISCORD_TOKEN` set, `CLIENT_ID` missing | `[config] WARN` — login works; registration, command-permission OAuth and web Discord sign-in are inert until it is set |
 | `LAVALINK_HOST` set, `LAVALINK_PASSWORD` missing | **Fail fast** — boot exits with the fix (music would fail authorization at first play) |
 | `CLIENT_SECRET` set, `OAUTH_STATE_SECRET` missing | `[config] WARN` — OAuth state signing shares the Discord app secret; set a dedicated secret |
+| `DECAY_CRON` set but not a valid cron expression | **Fail fast** — boot exits with the fix (#282; a silent fallback would run decay on a schedule nobody chose) |
 
 Parity is pinned by `test/env-parity.test.js`: every variable `src/` reads
 must have an entry in [`.env.example`](https://github.com/metalsp0rk/boiler-snake/blob/main/.env.example)
@@ -287,9 +290,18 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `message_log_channel_id` | *(none)* | Channel for deleted-message embeds |
 | `warn_log_channel_id` | *(none)* | Dedicated warning issue/void log; falls back to audit log |
 | `warn_dm_members` | `1` | DM members on warn issue/void (`0` = off) |
+| `warn_expiry_days` | `0` | Days until issued warnings auto-void (`0` = never auto-void) |
 | `ticket_category_id` | *(none)* | Parent category for open tickets |
 | `ticket_archive_channel_id` | *(none)* | Staff channel for close summaries / transcripts |
 | `ticket_rate_limit_minutes` | 60 | Minutes between member self-creates (`0` = off) |
+| `youtube_notification_channel_id` | *(none)* | Channel for upload/live alerts (per-guild default) |
+| `youtube_upload_role_id` | *(none)* | Role pinged on upload alerts |
+| `event_reminder_channel_id` | *(none)* | Channel for event reminder announcements |
+| `twitch_golive_template` | *(none)* | Custom go-live message template (`NULL` = built-in `**{streamer}** is live!` — see [Twitch](twitch-notifications.md)) |
+| `honeypot_pause_reason` | *(none)* | Set while the mass-ban safety valve has enforcement paused (#440; clear via `/honeypot safety resume`) |
+| `gork_*` | various | The Gork assistant family (`gork_enabled`, `gork_keyword` `@gork`, `gork_role_id`, `gork_context_window` 10, `gork_cooldown_sec`, `gork_search_enabled`, `gork_ste_enabled`, `gork_memory_*`, `gork_daily_limit`, `gork_log_channel_id`, …) — inventoried on [Gork](gork.md) |
+
+The table above covers the knobs staff configure directly; `guild_settings` carries more columns (full live DDL: [Database](database.md#4-guild-settings-guild-settings)). Most have a configuring command documented on the owning feature page — `/settings` is the read-side view.
 
 See [Audit Log & Message Log](audit-log.md) for setup and event details.
 
@@ -303,16 +315,16 @@ See [Audit Log & Message Log](audit-log.md) for setup and event details.
 /settings
 ```
 
-**Output**:
+**Output** (embed):
 ```
-**Boiler Snake Settings**
-**XP:** msg=5, reaction=2, voice/min=1
-**Cooldowns:** msg=20s, reaction=10s
-**Decay:** enabled=true, threshold=20 msgs / 7 days, percent=10%
-**Level curve factor:** 100 (Level L starts at L²×factor)
-**Commands allowed in:** All channels (no restriction set)
-**Level→Role mappings:**
-- <@&123456789> @ Lvl 5 (drop after 3d)
+XP awards             Message **5** · Reaction **2** · Voice/min **1**
+Cooldowns             Message **20s** · Reaction **10s**
+Decay                 Enabled **true** · threshold **20** msgs / **7** days · **10%**
+Level curve           Factor **100** (level L starts at L²×factor)
+Logs                  Audit … · Message …
+Gork                  Keyword **@gork** · Role **not set** · Window **10** · Search … · …
+Commands allowed in   All channels (no restriction set)
+Level→Role mappings   (none or configured, e.g. <@&123456789> @ Lvl 5 — drop after 3d)
 ```
 
 ### Configure Staff Log Channels
@@ -734,19 +746,24 @@ Use command overrides to reset individual values:
 ```
 
 ### Complete Reset
-Reset to default settings for entire guild:
 
-**Option 1**: Use `/settings` UI (admin commands with no args)
-**Option 2**: Manual database update (advanced)
+There is **no reset command or UI** — `/settings` is a read-only view. To return a guild to defaults, either set each knob back with its configuring command:
+
+```bash
+/setxp message:5 reaction:2 voice:1 msgcooldown:20 reactioncooldown:10
+/setdecay enabled:true messages:20 days:7 percent:10
+```
+
+…or update the row directly (advanced — stop the bot first, keep a backup):
 
 ```sql
 UPDATE guild_settings SET 
   msg_xp=5,
   reaction_xp=2, 
   voice_xp_per_min=1,
-  msg_cooldown_sec=20,
+  msg_cooldown_sec=20, 
   decay_enabled=1,
-  decay_window_days=7,
+  decay_window_days=7, 
   decay_min_messages=20,
   decay_percent=0.10,
   level_xp_factor=100;

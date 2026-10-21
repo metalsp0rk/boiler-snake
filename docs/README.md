@@ -50,6 +50,10 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Subscribing to channels
   - Configuration commands
 
+- **[GitHub Release Announcements](github-releases.md)**
+  - Watch repositories and announce releases
+  - Public watches + private-repo tokens (encrypted)
+
 - **[Music Player](music.md)**
   - `/play` in voice via Lavalink
   - Spotify catalog (not Spotify audio streams)
@@ -109,6 +113,23 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Self-lockout prevention
   - Use cases and examples
 
+### Platform: Fluxer, Bridges & Console
+- **[Fluxer Instances](fluxer.md)**
+  - Run against your own Fluxer instances (or Fluxer-only)
+  - Capability matrix, prefix commands, web sign-in
+- **[Channel Bridges](bridge.md)**
+  - Pair a Discord channel with a Fluxer channel
+  - Messages, edits, deletes, files — with honest failure notices
+- **[Account Linking](account-linking.md)**
+  - Verified cross-platform identity links (codes, ratios, privacy)
+- **[Web Admin Console](web-admin.md)**
+  - Staff console: dashboard, tickets, moderation, settings, audit viewer
+  - Tier model, OAuth setup, session management
+- **[Gork Assistant](gork.md)**
+  - In-channel AI assistant: memory, web search, summarize, vision
+- **[Gork Interaction Logging](gork-logging.md)**
+  - What gork logs, retention, and the privacy knobs
+
 ### Technical Documentation
 - **[Commands Reference (commands/)](commands/index.md)**
   - All slash commands documented
@@ -127,6 +148,10 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Module responsibilities
   - Data flow diagrams (ASCII)
   - Security considerations
+
+- **[E2E Tests (fauxcord)](e2e.md)**
+  - Tier-4 end-to-end suite against the mock Discord
+  - Running locally and in CI
 
 ### Support
 - **[FAQ](FAQ.md)** - Common questions answered
@@ -160,9 +185,8 @@ Welcome to the comprehensive documentation for Boiler Snake.
 
 ## 📦 Project Information
 
-- **Version**: 1.11.0
 - **License**: MIT
-- **Framework**: Discord.js v14
+- **Framework**: Discord.js v14 + Fluxer SDK adapters (dual-platform)
 - **Database**: SQLite with WAL mode
 - **Author**: zombienerd
 
@@ -184,4 +208,4 @@ Everything you need is in this documentation:
 3. **Test** XP and leveling features
 4. **Customize** roles, decay, tickets, staff tools, YouTube alerts, honeypots as needed
 
-Good luck, and enjoy gamifying your Discord community! 🚀
+Good luck, and enjoy gamifying your Discord & Fluxer community! 🚀

@@ -146,7 +146,7 @@ Gork can **see images** (issue #227). When the triggering message and/or context
 | Accepted types | `image/png`, `image/jpeg`, `image/webp`, `image/gif` (first frame). Anything else (svg, tiff, video…) is skipped |
 | Downscale rule | Every image is fitted into a **1280×1280 box**, aspect ratio preserved, **never upscaled**; an image already inside the box rides unchanged (e.g. a 4032×3024 photo becomes 1280×960) |
 | Transport | Images are sent to the provider as **base64 data URLs**, never as Discord CDN links — the configured provider may be self-hosted and unable to fetch them, and links expire |
-| Bounds | Max **4 images per request** (`GORK_VISION_MAX_IMAGES`, `0` disables vision), 15 MiB per download, 12 MiB total per request — all env-tunable, re-read per job |
+| Bounds | Max **4 images per request** (`GORK_VISION_MAX_IMAGES`, `0` disables vision), 15 MiB per download (`GORK_VISION_MAX_IMAGE_BYTES`), 12 MiB total per request (`GORK_VISION_MAX_TOTAL_BYTES`), 10 s download timeout (`GORK_VISION_DOWNLOAD_TIMEOUT_MS`) — all env-tunable, re-read per job |
 | Download safety | https only; DNS-resolved loopback / link-local / RFC1918 hosts are **refused** before any fetch (same posture as `read_page`) |
 | Degradation | A failed download/decode/oversize skips **that image only**: it's logged (`[gork] vision image skipped …`), counted in the audit `Vision` field, and the reply carries a visible `(Image notes: …)` line — the answer never dies on a broken image |
 | Model | Requests that carry images use `AI_MODEL` as usual; set `GORK_VISION_MODEL` to route image requests to a vision-capable model while text-only turns keep a cheaper default |
