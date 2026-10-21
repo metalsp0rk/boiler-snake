@@ -316,44 +316,61 @@ function warnMeta(w) {
 function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds = {}, names = null }) {
   const guildId = req.guildAccess.communityId; // link identity = integer route id (PR 2)
   const base = `/g/${guildId}/warnings`;
-  const emptyMessage =
-    page.state === "active"
-      ? "No active warnings match this filter."
-      : "No warnings match this filter.";
+  // #646: a filter is "active" when anything narrows below the slash
+  // default (state≠active, a subject id, or an ignored invalid one).
+  const filterActive = page.userId != null || page.state !== "active" || page.invalidUser;
+  const empty = filterActive
+    ? emptyState(
+        page.state === "active"
+          ? "No active warnings match this filter."
+          : "No warnings match this filter.",
+        { detail: "The current filter narrowed every row out.", href: base, actionLabel: "Clear filter" }
+      )
+    : emptyState("No warnings yet — this guild has a clean sheet.", {
+        detail: "Issue the first one with the form on this page.",
+        href: "#",
+        actionLabel: "Issue a warning",
+      });
   const list = page.rows.length
-    ? html`<table class="list-table moderation-table">
+    ? html`<table class="list-table moderation-table table-stack">
         <thead>
           <tr><th>Ref</th><th>Subject</th><th>Issuer</th><th>Created</th><th>State</th><th>Reason</th></tr>
         </thead>
         <tbody>
           ${page.rows.map((w) => html`
             <tr class="row-warn${w.voided_at != null ? raw(" row-voided") : html``}">
-              <td>${formatWarnRef(w.warning_number)}</td>
-              <td>${userRef(guildId, w.user_id, names)}</td>
-              <td>${userRef(guildId, w.issuer_id, names)}</td>
-              <td>${formatWhen(w.created_at)}</td>
-              <td>${warnStatePill(w, Date.now())}</td>
-              <td class="reason-cell">${snippet(w.reason)}${warnMeta(w)}</td>
+              <td data-label="Ref">${formatWarnRef(w.warning_number)}</td>
+              <td data-label="Subject">${userRef(guildId, w.user_id, names)}</td>
+              <td data-label="Issuer">${userRef(guildId, w.issuer_id, names)}</td>
+              <td data-label="Created">${formatWhen(w.created_at)}</td>
+              <td data-label="State">${warnStatePill(w, Date.now())}</td>
+              <td class="reason-cell" data-label="Reason">${snippet(w.reason)}${warnMeta(w)}</td>
             </tr>`)}
         </tbody>
       </table>
       ${pager(base, page, { offset: page.offset, total: page.total, shown: page.rows.length })}`
-    : emptyState(emptyMessage);
+    : empty;
 
   return html`<div class="moderation">
     ${flashBanner(flash, { doneTable: WARN_FLASH_DONE, errorTable: WARN_FLASH_ERROR })}
     ${page.invalidUser
       ? banner("warn", "Invalid user filter ignored — the user filter needs a numeric Discord user id.")
       : html``}
-    ${filterForm(base, page, [
-      ["active", "Active (hide voided — slash default)"],
-      ["voided", "Voided only"],
-      ["all", "All (incl. voided)"],
-    ])}
+    <section class="panel moderation-controls">
+      <div class="moderation-filters">
+        ${filterForm(base, page, [
+          ["active", "Active (hide voided — slash default)"],
+          ["voided", "Voided only"],
+          ["all", "All (incl. voided)"],
+        ])}
+      </div>
+      <div class="moderation-issue">
+        ${renderWarnIssueForm({ guildId, csrfToken, maxReason: bounds.maxReason ?? 1000, maxEvidence: bounds.maxEvidence ?? 500, maxExpiryDays: bounds.maxExpiryDays ?? 3650 })}
+      </div>
+    </section>
     <p class="counts"><strong>${page.total}</strong> warning${page.total === 1 ? " matches" : "s match"} this filter${page.userId ? html` · subject ${page.userId}` : html` · guild-wide`}.</p>
     ${list}
     <p class="hint">Warnings are permanent — voids keep the paper trail (slash parity).</p>
-    ${renderWarnIssueForm({ guildId, csrfToken, maxReason: bounds.maxReason ?? 1000, maxEvidence: bounds.maxEvidence ?? 500, maxExpiryDays: bounds.maxExpiryDays ?? 3650 })}
     ${renderWarnVoidForm({ guildId, csrfToken, maxReason: bounds.maxReason ?? 1000 })}
   </div>`;
 }
@@ -372,26 +389,36 @@ function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds 
 function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {}, names = null }) {
   const guildId = req.guildAccess.communityId; // link identity = integer route id (PR 2)
   const base = `/g/${guildId}/notes`;
-  const emptyMessage =
-    page.state === "active"
-      ? "No active staff notes match this filter."
-      : "No staff notes match this filter.";
+  // #646: same filter-active rule as warnings (state default is "active").
+  const filterActive = page.userId != null || page.state !== "active" || page.invalidUser;
+  const empty = filterActive
+    ? emptyState(
+        page.state === "active"
+          ? "No active staff notes match this filter."
+          : "No staff notes match this filter.",
+        { detail: "The current filter narrowed every row out.", href: base, actionLabel: "Clear filter" }
+      )
+    : emptyState("No staff notes yet for this guild.", {
+        detail: "Add the first one with the form below the table.",
+        href: "#",
+        actionLabel: "Add a note",
+      });
   const list = page.rows.length
-    ? html`<table class="list-table moderation-table">
+    ? html`<table class="list-table moderation-table table-stack">
         <thead>
           <tr><th>Ref</th><th>Subject</th><th>Author</th><th>Created</th><th>State</th><th>Content</th></tr>
         </thead>
         <tbody>
           ${page.rows.map((n) => html`
             <tr class="row-note${n.deleted_at != null ? raw(" row-deleted") : html``}">
-              <td>${formatNoteRef(n.note_number)}</td>
-              <td>${userRef(guildId, n.user_id, names)}</td>
-              <td>${userRef(guildId, n.author_id, names)}</td>
-              <td>${formatWhen(n.created_at)}</td>
-              <td>${n.deleted_at != null
+              <td data-label="Ref">${formatNoteRef(n.note_number)}</td>
+              <td data-label="Subject">${userRef(guildId, n.user_id, names)}</td>
+              <td data-label="Author">${userRef(guildId, n.author_id, names)}</td>
+              <td data-label="Created">${formatWhen(n.created_at)}</td>
+              <td data-label="State">${n.deleted_at != null
                 ? pill("deleted", "deleted")
                 : pill("active", "active")}</td>
-              <td class="reason-cell">${snippet(n.content)}${n.deleted_at != null
+              <td class="reason-cell" data-label="Content">${snippet(n.content)}${n.deleted_at != null
                 ? html`<div class="warn-meta"><span class="void-meta">soft-deleted ${formatWhen(n.deleted_at)} by ${String(n.deleted_by ?? "?")}</span></div>`
                 : html``}${n.edited_at != null
                 ? html`<div class="warn-meta"><span class="void-meta">edited ${formatWhen(n.edited_at)} by ${String(n.edited_by ?? "?")}</span></div>`
@@ -400,7 +427,7 @@ function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {
         </tbody>
       </table>
       ${pager(base, page, { offset: page.offset, total: page.total, shown: page.rows.length })}`
-    : emptyState(emptyMessage);
+    : empty;
 
   return html`<div class="moderation">
     ${flashBanner(flash, { doneTable: NOTE_FLASH_DONE, errorTable: NOTE_FLASH_ERROR })}
