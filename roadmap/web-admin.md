@@ -264,6 +264,17 @@ Each phase ships dark-by-default: with `PUBLIC_HTTP_PORT` unset, boot behavior i
 > (MIT; `vendor/LICENSE.md` shipped; UMD dist auto-registers all controllers —
 > no `Chart.register` needed; loads as classic self-origin script, no CSP change).
 
+> **Amendment 2026-10-21 (decision 2 — htmx void confirmed, web-console refactor epic #641):**
+> Decision 2's "vendored htmx" phrase and the §8.7 pin of `htmx.org@2.0.10`
+> (`src/web/public/vendor/htmx.2.0.10.min.js`) are **void as of #459**, which
+> removed htmx from the stack. This epic's refactor (shell + visual tokens, settings
+> and integrations sections, calendar, dashboard, audit, restyles) confirms the void:
+> every mutation remains a full-page POST + redirect — no `fetch` mutations, no
+> partial HTML swaps, no command palette. The living client surface is
+> `src/web/public/app.js` and vendored **Chart.js 4.5.1** (still the sanctioned
+> exception per the 2026-09-25 amendment above) — and nothing else.
+> "No Alpine, no React, no build step" still holds.
+
 
 ---
 
