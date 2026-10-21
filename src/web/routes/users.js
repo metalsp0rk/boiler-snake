@@ -128,7 +128,24 @@ function registerUsersRoutes(app, options = {}) {
     }
     // Fluxer PR 2: data-layer reads key by the integer community id.
     const search = searchGuildUsers(req.guildAccess.communityId, q, { nameMatchIds });
-    const page = renderUserSearchPage(req, { search });
+    // #647: label the rows with cached display names — ONE batched,
+    // cache-only read of the ids this page already has (zero SQL: the
+    // Discord seam takes the EXTERNAL snowflake, never the integer
+    // communityId, so communityRowSafe never runs; a miss renders the raw
+    // id and warms off-path, exactly like routes/moderation.js).
+    const names = resolveMemberNames(
+      options.getClient,
+      // Discord seam: member cache keys by the EXTERNAL snowflake.
+      req.guildAccess.guildId,
+      search.results.map((r) => r.user_id)
+    );
+    // Which truth the empty copy tells (views/users renderUserSearchPage).
+    const queryKind = /^[0-9]{1,20}$/.test(trimmed)
+      ? "id"
+      : trimmed
+        ? "name"
+        : null;
+    const page = renderUserSearchPage(req, { search, names, queryKind });
     const document = renderShellPage(req, {
       title: "Users",
       heading: "Users",
@@ -178,11 +195,26 @@ function registerUsersRoutes(app, options = {}) {
       ? { visible: true, ...buildUserActivity(communityId, userId, { guild, joinedMs }) }
       : { visible: false };
 
+    // #647: label the identity card + warning issuer + note author cells
+    // with cached names — ONE batched cache-only read of the ids already
+    // on this page (deduped, empty-safe). The seam takes the EXTERNAL
+    // snowflake (guildId above), so communityRowSafe never runs and the
+    // 19/19 profile statement floor stays byte-identical; a miss renders
+    // the raw id.
+    const nameIds = [
+      ...new Set([
+        profile.userId,
+        ...profile.warnings.rows.map((w) => w.issuer_id),
+        ...profile.notes.rows.map((n) => n.author_id),
+      ]),
+    ].filter((id) => typeof id === "string" && /^[0-9]{5,20}$/.test(id));
+    const names = resolveMemberNames(options.getClient, guildId, nameIds);
+
     const document = renderShellPage(req, {
       title: `User ${userId}`,
       heading: "User profile",
       subheading: `Unified view · XP + warnings + notes + tickets · activity ${visible ? "visible (senior)" : "restricted"}`,
-      content: renderUserProfileBody(req, { profile, activity }),
+      content: renderUserProfileBody(req, { profile, activity, names }),
       guilds: await shellGuilds(resolver, req),
     });
     writeShellHtml(req, res, { status: 200, document });

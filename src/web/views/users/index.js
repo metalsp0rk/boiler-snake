@@ -17,7 +17,7 @@
  */
 
 const { html, raw } = require("../escape");
-const { emptyState } = require("../components");
+const { emptyState, userRef } = require("../components");
 const { formatNoteRef, formatWarnRef } = require("../../../core/theme");
 const { formatWeeklyRate } = require("../../../features/userActivity/service");
 
@@ -69,23 +69,24 @@ function pagerAppend(baseHref, param, { offset, total, shown }) {
   return html`<p class="pager">showing ${from}–${to}${total != null ? html` of ${total}` : html``}${next}</p>`;
 }
 
-/** Copyable-ish id display. */
-function userRef(userId) {
-  return html`<code class="user-id">${userId}</code>`;
-}
-
 /**
  * Identity + XP block: mirrors the slash overview card fields the web can
- * source locally (id, XP, level, tracked). Display names/join dates are
- * Discord-side data the DB does not store — flagged in the parity notes.
+ * source locally (id, XP, level, tracked). Display names are Discord-side
+ * data the DB does not store — #647 labels the User ID row with the cached
+ * display name when the member cache knows it (components.userRef; a cache
+ * miss renders the raw id, never a wait on Discord).
+ *
+ * @param {object} profile buildUserProfile() result
+ * @param {string|number} communityId integer route identity for /g/ links
+ * @param {Map<string,string|null>|null} [names] cached display names (#647)
  */
-function identityCard(profile) {
+function identityCard(profile, communityId, names = null) {
   return html`
     <section class="panel user-identity">
       <h2>Identity</h2>
       <dl class="kv">
         <dt>User ID</dt>
-        <dd>${userRef(profile.userId)}</dd>
+        <dd>${userRef(communityId, profile.userId, names)}</dd>
         <dt>XP</dt>
         <dd>${profile.xp}${profile.tracked ? html`` : html` <em class="muted">(no XP row yet)</em>`}</dd>
         <dt>Level</dt>
@@ -94,7 +95,7 @@ function identityCard(profile) {
     </section>`;
 }
 
-function warningsSection(profile, baseHref) {
+function warningsSection(profile, baseHref, communityId, names = null) {
   const { rows, offset, total } = profile.warnings;
   const { warnsActive, warnsTotal } = profile.counts;
   const list = rows.length
@@ -106,7 +107,7 @@ function warningsSection(profile, baseHref) {
           ${rows.map((w) => html`
             <tr class="row-warn">
               <td>${formatWarnRef(w.warning_number)}</td>
-              <td>${w.issuer_id}</td>
+              <td>${userRef(communityId, w.issuer_id, names)}</td>
               <td>${formatWhen(w.created_at)}</td>
               <td>${w.expires_at ? formatWhen(w.expires_at) : "never"}</td>
               <td>${w.voided_at != null ? raw("voided") : raw("active")}</td>
@@ -124,14 +125,14 @@ function warningsSection(profile, baseHref) {
     </section>`;
 }
 
-function notesSection(profile, baseHref) {
+function notesSection(profile, baseHref, communityId, names = null) {
   const { rows, offset, total } = profile.notes;
   const { notesActive, notesTotal } = profile.counts;
   const list = rows.length
     ? html`<ul class="note-list">
         ${rows.map((n) => html`
           <li class="row-note">
-            <strong>${formatNoteRef(n.note_number)}</strong> · by ${n.author_id} · ${formatWhen(n.created_at)}
+            <strong>${formatNoteRef(n.note_number)}</strong> · by ${userRef(communityId, n.author_id, names)} · ${formatWhen(n.created_at)}
             <blockquote class="note-content">${snippet(n.content)}</blockquote>
           </li>`)}
       </ul>
@@ -246,50 +247,66 @@ function rankingTable(ranking, page) {
 /**
  * GET /g/:guildId/users — search page (staff+). `q` is echoed through html``
  * only (attribute + text positions are both in the escaped set).
+ *
+ * #647: rows label users with CACHED display names via components.userRef
+ * (`names` = resolveMemberNames Map from the route — cache-only; a miss
+ * renders the raw id). `queryKind` ("id" | "name" | null) splits the empty
+ * copy so a name query never claims "match that ID".
  */
-function renderUserSearchPage(req, { guilds, search }) {
+function renderUserSearchPage(req, { guilds, search, names = null, queryKind = null }) {
   // Fluxer PR 2: /g/<id> links carry the INTEGER community id (route identity).
-  const base = `/g/${req.guildAccess.communityId}/users`;
+  const communityId = req.guildAccess.communityId;
+  const base = `/g/${communityId}/users`;
   const rows = search.results.map((r) => html`
     <tr class="row-user">
-      <td><a href="${base}/${r.user_id}">${r.user_id}</a></td>
+      <td>${userRef(communityId, r.user_id, names)}</td>
       <td>${r.xp}</td>
       <td>${r.level}</td>
     </tr>`);
+  const empty =
+    queryKind === "name"
+      ? emptyState(`No cached members match "${search.query}".`, {
+          detail:
+            "Name search reads the bot's member cache, which warms as members are browsed. Every tracked member is always found by their numeric user id.",
+        })
+      : emptyState("No tracked users match that ID.");
   const content = html`
     <form class="search-form" method="get" action="${base}">
       <label for="q">User</label>
-      <input id="q" type="search" name="q" value="${search.query}" placeholder="name or user ID…" maxlength="64" data-lookup="users" data-lookup-url="/g/${req.guildAccess.communityId}/lookups/users"/>
+      <input id="q" type="search" name="q" value="${search.query}" placeholder="name or user ID…" maxlength="64" data-lookup="users" data-lookup-url="/g/${communityId}/lookups/users"/>
       <button type="submit" class="btn">Search</button>
     </form>
     <p class="hint">ID search matches tracked users (exact or prefix). Name search matches members currently cached by the bot (it warms as you browse); tracked members are always found by ID. Results are capped at 50.</p>
     ${search.searched
       ? rows.length
         ? html`<table class="list-table">
-            <thead><tr><th>User ID</th><th>XP</th><th>Level</th></tr></thead>
+            <thead><tr><th>User</th><th>XP</th><th>Level</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>`
-        : emptyState("No tracked users match that ID.")
+        : empty
       : html``}`;
   return { title: "Users", content };
 }
 
 /** Profile page body (tab: profile). Caller wraps via renderShellPage. */
-function renderUserProfileBody(req, { profile, activity }) {
+function renderUserProfileBody(req, { profile, activity, names = null }) {
   // Fluxer PR 2: /g/<id> link prop = integer community id (route identity).
-  const base = `/g/${req.guildAccess.communityId}/users/${profile.userId}`;
+  const communityId = req.guildAccess.communityId;
+  const base = `/g/${communityId}/users/${profile.userId}`;
   const tabs = activity.visible
     ? html`<a class="tab active" href="${base}">Profile</a>
         <a class="tab" href="${base}/activity">Activity</a>`
-    : html`<a class="tab active" href="${base}">Profile</a>
-        <span class="tab tab-disabled" title="Senior staff only">Activity</span>`;
+    : // #647: the disabled tab keeps its tooltip but spells the reason out —
+      // a title attribute alone is invisible on touch screens.
+      html`<a class="tab active" href="${base}">Profile</a>
+        <span class="tab tab-disabled" title="Senior staff only">Activity · Senior only</span>`;
   return html`
     <nav class="tabs">${tabs}</nav>
-    ${identityCard(profile)}
-    ${warningsSection(profile, base)}
-    ${notesSection(profile, base)}
+    ${identityCard(profile, communityId, names)}
+    ${warningsSection(profile, base, communityId, names)}
+    ${notesSection(profile, base, communityId, names)}
     ${ticketsSection(profile, base)}
-    ${activityArea(profile, { ...activity, guildId: req.guildAccess.communityId })}`;
+    ${activityArea(profile, { ...activity, guildId: communityId })}`;
 }
 
 /** Activity tab page body (senior+ only route). */
