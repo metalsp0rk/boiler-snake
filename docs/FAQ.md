@@ -325,8 +325,8 @@ npm run register
 docker compose run --rm bot node src/commands/register.js
 ```
 
-- **Global** commands can take minutes to hours to appear
-- Set `DEV_GUILD_ID` for instant guild-scoped registration while developing
+- Registration is **per-guild**: the CLI PUTs commands to every guild the bot is in, and commands appear almost immediately — but **new guilds need another `npm run register`** (registration runs when you run it, not when the bot joins)
+- Set `DEV_GUILD_ID` to narrow registration to your dev guild while iterating
 - Then restart the bot process
 
 ---
@@ -417,10 +417,7 @@ crontab -e
    /setyoutube interval 30  # Check every 30 minutes instead of 5
    ```
 
-3. **Clean up old activity logs**:
-   ```sql
-   DELETE FROM activity_log WHERE created_at < (strftime('%s','now') - 86400*90) * 1000;
-   ```
+3. **Trim old activity rows** — an hourly retention sweep already prunes `activity_log` (default: 90 days). To keep more or less, set `RETENTION_ACTIVITY_DAYS` in `.env` (`0`/`off`/`disabled` keeps everything); see [Configuration](configuration.md#data-retention-sweeps-optional). Prefer the knob over hand-`DELETE`s against the live DB.
 
 ---
 
