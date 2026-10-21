@@ -66,6 +66,20 @@ function dayKey(ms, zone) {
   }
 }
 
+/** "Fri, Jun 6" from a yyyy-mm-dd bucket (agenda rows; k carries the zone). */
+function dayLabel(k) {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: "UTC",
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    }).format(new Date(`${k}T12:00:00Z`));
+  } catch {
+    return k;
+  }
+}
+
 const csrf = (token) => html`<input type="hidden" name="_csrf" value="${token || ""}" />`;
 
 /**
@@ -151,9 +165,13 @@ function renderEventsMonth({
           </div>
         </div>`;
       });
-      return html`<td class="${k === todayKey ? "cal-today" : ""}">
-        <div class="cal-day">${Number(k.slice(-2))}</div>
-        ${evs}
+      return html`<td class="${k === todayKey ? "cal-cell cal-today" : "cal-cell"}">
+        <div class="cal-day">
+          ${Number(k.slice(-2))}${k === todayKey
+            ? html` <span class="cal-today-tag">Today</span>`
+            : ""}
+        </div>
+        <div class="cal-evs">${evs}</div>
       </td>`;
     });
     gridRows.push(html`<tr>${week}</tr>`);
@@ -168,12 +186,32 @@ function renderEventsMonth({
 
   const lists = (rows, empty) =>
     rows.length
-      ? html`<ul class="plain-list">
+      ? html`<ul class="cal-list">
           ${rows.map(
             (ev) => html`<li>${link(ev)} ${badge(ev.status)} · ${fmtTime(ev.start_at, zone)}</li>`,
           )}
         </ul>`
       : html`<p class="muted">${empty}</p>`;
+
+  // #650: the agenda is the SAME byDay buckets as the grid — phone users get a
+  // list, desktop keeps the month grid; both ship in the HTML and CSS toggles
+  // them at the shell's 719px breakpoint. No second query.
+  const agendaDays = [];
+  for (const k of cells) {
+    if (!k) continue;
+    const evs = byDay.get(k);
+    if (!evs || !evs.length) continue;
+    agendaDays.push(html`<li class="cal-agenda-day">
+      <div class="cal-agenda-date${k === todayKey ? " cal-today" : ""}">
+        ${dayLabel(k)}${k === todayKey ? html` <span class="cal-today-tag">Today</span>` : ""}
+      </div>
+      <ul class="cal-list">
+        ${evs.map(
+          (ev) => html`<li>${link(ev)} ${badge(ev.status)} · ${fmtTime(ev.start_at, zone)}</li>`,
+        )}
+      </ul>
+    </li>`);
+  }
 
   return html`
     ${flash()}
@@ -181,6 +219,12 @@ function renderEventsMonth({
       ${nav(prev, "← prev")} · ${year}-${pad2(month)} · ${nav(next, "next →")}
       <span class="muted">(guild zone: ${zone})</span>
     </div>
+    <nav class="cal-pages" aria-label="Event pages">
+      <a href="/g/${cid}/events/archive">Archive</a>
+      <a href="/g/${cid}/events/presets">Signup presets</a>
+      <a href="/g/${cid}/events/series">Series</a>
+      <a href="/g/${cid}/events/scheduled">Scheduled posts</a>
+    </nav>
     <table class="cal-grid">
       <thead>
         <tr>
@@ -189,27 +233,23 @@ function renderEventsMonth({
       </thead>
       <tbody>${gridRows}</tbody>
     </table>
-    <div class="cols">
-      <section>
+    <ol class="cal-agenda">
+      ${agendaDays.length
+        ? agendaDays
+        : html`<li class="muted">Nothing scheduled this month.</li>`}
+    </ol>
+    <div class="cal-panels">
+      <section class="panel">
         <h2>Unposted drafts</h2>
         ${lists(drafts, "No drafts waiting.")}
       </section>
-      <section>
+      <section class="panel">
         <h2>Queued posts</h2>
         ${lists(scheduled, "Nothing queued to post.")}
       </section>
-      <section>
-        <h2>Pages</h2>
-        <ul class="plain-list">
-          <li><a href="/g/${cid}/events/archive">Archive</a></li>
-          <li><a href="/g/${cid}/events/presets">Signup presets</a></li>
-          <li><a href="/g/${cid}/events/series">Series</a></li>
-          <li><a href="/g/${cid}/events/scheduled">Scheduled-posts list</a></li>
-        </ul>
-      </section>
-      <section>
+      <section class="panel">
         <h2>New event (quick)</h2>
-        <form method="post" action="/g/${cid}/events" class="form">
+        <form method="post" action="/g/${cid}/events" class="form-row">
           ${csrf(csrfToken)}
           <label>Title <input name="title" maxlength="150" required /></label>
           <label
@@ -217,7 +257,7 @@ function renderEventsMonth({
             <input name="start" maxlength="60" required
           /></label>
           <label>Channel id <input name="channel_id" maxlength="20" /></label>
-          <button type="submit" class="btn">Save draft</button>
+          <button type="submit" class="btn btn-primary">Save draft</button>
         </form>
       </section>
     </div>
@@ -259,10 +299,10 @@ function renderEventDetail({
         >`
       : html`<span class="muted">hidden (show-attendees off)</span>`;
     return html`<tr>
-      <td>${o.label}${o.emoji ? ` ${o.emoji}` : ""}</td>
-      <td>${names.length} / ${cap}</td>
-      <td>${shown}</td>
-      <td>${o.waitlist_on ? `${(waitlist.get(o.id) || []).length} waiting` : "no waitlist"}</td>
+      <td data-label="Option">${o.label}${o.emoji ? ` ${o.emoji}` : ""}</td>
+      <td data-label="Signups">${names.length} / ${cap}</td>
+      <td data-label="Names">${shown}</td>
+      <td data-label="Waitlist">${o.waitlist_on ? `${(waitlist.get(o.id) || []).length} waiting` : "no waitlist"}</td>
       ${canManage
         ? html`<td>
             <form
@@ -272,7 +312,7 @@ function renderEventDetail({
             >
               ${csrf(csrfToken)}${act(ev.id, "option-remove")}
               <input type="hidden" name="option_id" value="${o.id}" />
-              <button class="btn btn--small" type="submit">Remove</button>
+              <button class="btn btn-sm" type="submit">Remove</button>
             </form>
           </td>`
         : ""}
@@ -291,10 +331,10 @@ function renderEventDetail({
 
   const reminderRows = reminders.map((r) =>
     html`<tr>
-      <td>${fmtTime(r.fire_at, zone)}</td>
-      <td>${r.state}${r.attempts ? ` (${r.attempts} tries)` : ""}</td>
-      <td>${r.role_id ? html`pings <code>${r.role_id}</code>` : "—"}</td>
-      <td>${r.body ? html`${String(r.body).slice(0, 60)}` : "default text"}</td>
+      <td data-label="Fires">${fmtTime(r.fire_at, zone)}</td>
+      <td data-label="State">${r.state}${r.attempts ? ` (${r.attempts} tries)` : ""}</td>
+      <td data-label="Role">${r.role_id ? html`pings <code>${r.role_id}</code>` : "—"}</td>
+      <td data-label="Body">${r.body ? html`${String(r.body).slice(0, 60)}` : "default text"}</td>
       ${canManage
         ? html`<td>
             <form
@@ -304,7 +344,7 @@ function renderEventDetail({
             >
               ${csrf(csrfToken)}${act(ev.id, "reminder-remove")}
               <input type="hidden" name="reminder_id" value="${r.id}" />
-              <button class="btn btn--small" type="submit">Remove</button>
+              <button class="btn btn-sm" type="submit">Remove</button>
             </form>
           </td>`
         : ""}
@@ -317,125 +357,141 @@ function renderEventDetail({
     return html`<li>${fmtTime(a.created_at, zone)} · ${a.action}${who}${det}</li>`;
   });
 
+  // #650: actions group into Post / Signups / Edit / Danger panels (shared
+  // .panel card; destructive delete rides .danger-zone). Every action name,
+  // field and CSRF posture is unchanged — this is chrome, not behavior.
   const manageForms = canManage
     ? html`
-        <h2>Add option</h2>
-        <form method="post" action="/g/${cid}/events/action" class="form">
-          ${csrf(csrfToken)}${act(ev.id, "option-add")}
-          <label>Label <input name="label" maxlength="80" required /></label>
-          <label
-            >Capacity <input name="capacity" type="number" min="0" max="100000"
-          /></label>
-          <label
-            ><input type="checkbox" name="waitlist" value="1" checked />
-            waitlist</label
-          >
-          <button class="btn" type="submit">Add</button>
-        </form>
+        <section class="panel">
+          <h2>Post</h2>
+          <div class="cal-actions">
+            <form method="post" action="/g/${cid}/events/action" class="inline">
+              ${csrf(csrfToken)}${act(ev.id, "publish")}<button class="btn btn-primary" type="submit">Publish / post now</button>
+            </form>
+            <form method="post" action="/g/${cid}/events/action" class="inline">
+              ${csrf(csrfToken)}${act(ev.id, "duplicate")}<button class="btn" type="submit">Duplicate</button>
+            </form>
+            <form method="post" action="/g/${cid}/events/action" class="inline">
+              ${csrf(csrfToken)}${act(ev.id, "retry-sync")}
+              <button class="btn btn--warn" type="submit">Retry Discord sync</button>
+            </form>
+            ${ev.status === "archived"
+              ? html`<form method="post" action="/g/${cid}/events/action" class="inline">
+                  ${csrf(csrfToken)}${act(ev.id, "unarchive")}<button class="btn" type="submit">Unarchive</button>
+                </form>`
+              : html`<form method="post" action="/g/${cid}/events/action" class="inline">
+                  ${csrf(csrfToken)}${act(ev.id, "archive")}<button class="btn" type="submit">Archive</button>
+                </form>`}
+          </div>
+        </section>
 
-        <h2>Manage a signup (organizer powers: bypass cutoff/whitelist)</h2>
-        <form method="post" action="/g/${cid}/events/action" class="form">
-          ${csrf(csrfToken)}${act(ev.id, "signup-add")}
-          <label>User id <input name="user_id" maxlength="20" required /></label>
-          <label
-            >Option
-            <select name="option_id"
-              >${options.map((o) => html`<option value="${o.id}">${o.label}</option>`)}</select
-            ></label
-          >
-          <button class="btn" type="submit">Add signup</button>
-        </form>
-        <form method="post" action="/g/${cid}/events/action" class="form">
-          ${csrf(csrfToken)}${act(ev.id, "signup-remove")}
-          <label>User id <input name="user_id" maxlength="20" required /></label>
-          <label
-            >From option
-            <select name="option_id"
-              >${options.map((o) => html`<option value="${o.id}">${o.label}</option>`)}</select
-            ></label
-          >
-          <button class="btn" type="submit">Remove signup</button>
-        </form>
-
-        <h2>Reminder</h2>
-        <form method="post" action="/g/${cid}/events/action" class="form">
-          ${csrf(csrfToken)}${act(ev.id, "reminder-add")}
-          <label
-            >Minutes before start
-            <input name="minutes" type="number" min="1" max="20160" required
-          /></label>
-          <label>Role to ping (optional) <input name="role_id" maxlength="20" /></label>
-          <label>Message (optional) <input name="body" maxlength="200" /></label>
-          <button class="btn" type="submit">Add reminder</button>
-        </form>
-
-        <h2>Edit fields (writes sync back to the Discord message)</h2>
-        <form method="post" action="/g/${cid}/events/action" class="form form--grid">
-          ${csrf(csrfToken)}${act(ev.id, "edit")}
-          <label>Title <input name="title" maxlength="150" value="${ev.title}" /></label>
-          <label>Start (guild zone, empty = keep) <input name="start" maxlength="60" /></label>
-          <label>End (guild zone) <input name="end" maxlength="60" /></label>
-          <label
-            >Description
-            <input name="description" maxlength="1000" value="${ev.description || ""}"
-          /></label>
-          <label
-            >Location <input name="location" maxlength="200" value="${ev.location || ""}"
-          /></label>
-          <label
-            >Image URL <input name="image_url" maxlength="400" value="${ev.image_url || ""}"
-          /></label>
-          <label
-            >Color <input name="color" maxlength="9" placeholder="#5865f2" value="${ev.color || ""}"
-          /></label>
-          <label
-            >Cutoff minutes before start (-1 clears)
-            <input name="cutoff_minutes" type="number" min="-1" max="20160"
-          /></label>
-          <label
-            >Attendee role id (existing-role mode; empty clears)
-            <input
-              name="attendee_role_id"
-              maxlength="20"
-              value="${ev.attendee_role_id || ""}"
-          /></label>
-          <label
-            >Attendee role is existing
-            <select name="attendee_role_existing"
-              ><option value="">keep mode</option>
-              <option value="1">yes — use the id above</option>
-              <option value="0">no — bot-managed temp role</option></select
-            ></label
-          >
-          <button class="btn" type="submit">Save</button>
-        </form>
-
-        <div class="cols cols--actions">
-          <form method="post" action="/g/${cid}/events/action" class="inline">
-            ${csrf(csrfToken)}${act(ev.id, "publish")}<button class="btn" type="submit">Publish / post now</button>
+        <section class="panel">
+          <h2>Signups</h2>
+          <h3>Add option</h3>
+          <form method="post" action="/g/${cid}/events/action" class="form-row">
+            ${csrf(csrfToken)}${act(ev.id, "option-add")}
+            <label>Label <input name="label" maxlength="80" required /></label>
+            <label
+              >Capacity <input name="capacity" type="number" min="0" max="100000"
+            /></label>
+            <label
+              ><input type="checkbox" name="waitlist" value="1" checked />
+              waitlist</label
+            >
+            <button class="btn" type="submit">Add</button>
           </form>
-          <form method="post" action="/g/${cid}/events/action" class="inline">
-            ${csrf(csrfToken)}${act(ev.id, "duplicate")}<button class="btn" type="submit">Duplicate</button>
+
+          <h3>Manage a signup (organizer powers: bypass cutoff/whitelist)</h3>
+          <form method="post" action="/g/${cid}/events/action" class="form-row">
+            ${csrf(csrfToken)}${act(ev.id, "signup-add")}
+            <label>User id <input name="user_id" maxlength="20" required /></label>
+            <label
+              >Option
+              <select name="option_id"
+                >${options.map((o) => html`<option value="${o.id}">${o.label}</option>`)}</select
+              ></label
+            >
+            <button class="btn" type="submit">Add signup</button>
           </form>
-          <form method="post" action="/g/${cid}/events/action" class="inline">
-            ${csrf(csrfToken)}${act(ev.id, "retry-sync")}
-            <button class="btn btn--warn" type="submit">Retry Discord sync</button>
+          <form method="post" action="/g/${cid}/events/action" class="form-row">
+            ${csrf(csrfToken)}${act(ev.id, "signup-remove")}
+            <label>User id <input name="user_id" maxlength="20" required /></label>
+            <label
+              >From option
+              <select name="option_id"
+                >${options.map((o) => html`<option value="${o.id}">${o.label}</option>`)}</select
+              ></label
+            >
+            <button class="btn" type="submit">Remove signup</button>
           </form>
-          ${ev.status === "archived"
-            ? html`<form method="post" action="/g/${cid}/events/action" class="inline">
-                ${csrf(csrfToken)}${act(ev.id, "unarchive")}<button class="btn" type="submit">Unarchive</button>
-              </form>`
-            : html`<form method="post" action="/g/${cid}/events/action" class="inline">
-                ${csrf(csrfToken)}${act(ev.id, "archive")}<button class="btn" type="submit">Archive</button>
-              </form>`}
+        </section>
+
+        <section class="panel">
+          <h2>Edit</h2>
+          <h3>Reminder</h3>
+          <form method="post" action="/g/${cid}/events/action" class="form-row">
+            ${csrf(csrfToken)}${act(ev.id, "reminder-add")}
+            <label
+              >Minutes before start
+              <input name="minutes" type="number" min="1" max="20160" required
+            /></label>
+            <label>Role to ping (optional) <input name="role_id" maxlength="20" /></label>
+            <label>Message (optional) <input name="body" maxlength="200" /></label>
+            <button class="btn" type="submit">Add reminder</button>
+          </form>
+
+          <h3>Edit fields (writes sync back to the Discord message)</h3>
+          <form method="post" action="/g/${cid}/events/action" class="form-row">
+            ${csrf(csrfToken)}${act(ev.id, "edit")}
+            <label>Title <input name="title" maxlength="150" value="${ev.title}" /></label>
+            <label>Start (guild zone, empty = keep) <input name="start" maxlength="60" /></label>
+            <label>End (guild zone) <input name="end" maxlength="60" /></label>
+            <label
+              >Description
+              <input name="description" maxlength="1000" value="${ev.description || ""}"
+            /></label>
+            <label
+              >Location <input name="location" maxlength="200" value="${ev.location || ""}"
+            /></label>
+            <label
+              >Image URL <input name="image_url" maxlength="400" value="${ev.image_url || ""}"
+            /></label>
+            <label
+              >Color <input name="color" maxlength="9" placeholder="#5865f2" value="${ev.color || ""}"
+            /></label>
+            <label
+              >Cutoff minutes before start (-1 clears)
+              <input name="cutoff_minutes" type="number" min="-1" max="20160"
+            /></label>
+            <label
+              >Attendee role id (existing-role mode; empty clears)
+              <input
+                name="attendee_role_id"
+                maxlength="20"
+                value="${ev.attendee_role_id || ""}"
+            /></label>
+            <label
+              >Attendee role is existing
+              <select name="attendee_role_existing"
+                ><option value="">keep mode</option>
+                <option value="1">yes — use the id above</option>
+                <option value="0">no — bot-managed temp role</option></select
+              ></label
+            >
+            <button class="btn btn-primary" type="submit">Save</button>
+          </form>
+        </section>
+
+        <div class="danger-zone">
+          <h3>Danger</h3>
           <form
             method="post"
             action="/g/${cid}/events/action"
-            class="inline inline--danger"
+            class="inline"
           >
             ${csrf(csrfToken)}${act(ev.id, "delete")}
             <label>Type <code>DELETE</code> <input name="confirm" maxlength="10" required /></label>
-            <button class="btn btn--danger" type="submit">Permanent delete</button>
+            <button class="btn btn-danger" type="submit">Permanent delete</button>
           </form>
         </div>
       `
@@ -467,7 +523,7 @@ function renderEventDetail({
       : ""}
 
     <h2>Options</h2>
-    <table class="tbl">
+    <table class="list-table events-table table-stack">
       <thead>
         <tr>
           <th>Option</th>
@@ -482,12 +538,12 @@ function renderEventDetail({
     <p class="muted">Attending total: ${counts.attending} · waiting: ${counts.waiting}</p>
     ${waitRows.length
       ? html`<h3>Waitlist</h3>
-          <ul class="plain-list">${waitRows}</ul>`
+          <ul class="cal-list">${waitRows}</ul>`
       : ""}
 
     <h2>Reminders</h2>
     ${reminders.length
-      ? html`<table class="tbl">
+      ? html`<table class="list-table events-table table-stack">
           <thead>
             <tr>
               <th>Fires</th>
@@ -505,7 +561,7 @@ function renderEventDetail({
 
     <h2>Activity</h2>
     ${activityRows.length
-      ? html`<ol class="plain-list">${activityRows}</ol>`
+      ? html`<ol class="cal-list">${activityRows}</ol>`
       : html`<p class="muted">No activity recorded.</p>`}
   `;
 }
@@ -515,29 +571,28 @@ function renderEventDetail({
 function renderArchive({ cid, rows, zone, csrfToken }) {
   const tr = rows.map((ev) =>
     html`<tr>
-      <td>${link(ev)} ${badge(ev.status)}</td>
-      <td>${fmtTime(ev.start_at, zone)}</td>
-      <td>
+      <td data-label="Event">${link(ev)} ${badge(ev.status)}</td>
+      <td data-label="Started">${fmtTime(ev.start_at, zone)}</td>
+      <td data-label="Actions">
         <form
           method="post"
           action="/g/${cid}/events/action"
-          class="inline inline--danger"
+          class="events-danger-inline"
         >
           ${csrf(csrfToken)}${act(ev.id, "delete")}
           <label>confirm <input name="confirm" maxlength="10" placeholder="DELETE" /></label>
-          <button class="btn btn--small btn--danger" type="submit">Delete forever</button>
+          <button class="btn btn-sm btn-danger" type="submit">Delete forever</button>
         </form>
       </td>
     </tr>`,
   );
   return html`
     ${flash()}
-    <h1>Archive</h1>
     <p class="muted">
       Everything this server ever ran — no history window. Permanent delete lives here.
     </p>
     ${rows.length
-      ? html`<table class="tbl">
+      ? html`<table class="list-table events-table table-stack">
           <thead><tr><th>Event</th><th>Started</th><th></th></tr></thead>
           <tbody>${tr}</tbody>
         </table>`
@@ -548,31 +603,31 @@ function renderArchive({ cid, rows, zone, csrfToken }) {
 function renderPresets({ cid, presets, csrfToken }) {
   const rows = presets.map((p) =>
     html`<tr>
-      <td><strong>${p.name}</strong></td>
-      <td>${(p.options || []).map((o) => o.label).join(" / ") || "—"}</td>
-      <td>
+      <td data-label="Name"><strong>${p.name}</strong></td>
+      <td data-label="Options">${(p.options || []).map((o) => o.label).join(" / ") || "—"}</td>
+      <td data-label="Actions">
         <form
           method="post"
           action="/g/${cid}/events/presets/delete"
-          class="inline"
+          class="events-danger-inline"
         >
           ${csrf(csrfToken)}${act(p.id, "delete", "preset_id")}
           ${/* #649: typed DELETE confirm (H2-15) — same idiom as the archive/permanent
-               delete forms above; the route compares the value verbatim. */ ""}
-          <label>confirm <input name="confirm" maxlength="10" autocomplete="off" placeholder="DELETE" /></label>
-          <button class="btn btn--small btn--danger" type="submit">Delete</button>
+               delete forms above; the route compares the value verbatim. Styled by
+               #650 as a danger-zone field. */ ""}
+          <label class="danger-zone danger-zone-inline">confirm <input name="confirm" maxlength="10" autocomplete="off" placeholder="DELETE" /></label>
+          <button class="btn btn-sm btn-danger" type="submit">Delete</button>
         </form>
       </td>
     </tr>`,
   );
   return html`
     ${flash()}
-    <h1>Signup presets</h1>
     <p class="muted">
       Saved option groups reusable at create time (twins <code>/eventsignup preset</code>
       in Discord).
     </p>
-    <form method="post" action="/g/${cid}/events/presets" class="form">
+    <form method="post" action="/g/${cid}/events/presets" class="form-row">
       ${csrf(csrfToken)}
       <label>Name <input name="name" maxlength="60" required /></label>
       <label
@@ -580,10 +635,10 @@ function renderPresets({ cid, presets, csrfToken }) {
         suffix)
         <input name="spec" maxlength="400" placeholder="Pizza|10, Salad, Cakes|2" required
       /></label>
-      <button class="btn" type="submit">Save preset</button>
+      <button class="btn btn-primary" type="submit">Save preset</button>
     </form>
     ${rows.length
-      ? html`<table class="tbl">
+      ? html`<table class="list-table events-table table-stack">
           <thead><tr><th>Name</th><th>Options</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>`
@@ -594,29 +649,29 @@ function renderPresets({ cid, presets, csrfToken }) {
 function renderSeries({ cid, series, zone, csrfToken }) {
   const rows = series.map((s) =>
     html`<tr>
-      <td>
+      <td data-label="Series">
         <a href="/g/${cid}/events/${s.template_event_id}">template #${s.template_event_id}</a>
       </td>
-      <td>
+      <td data-label="Rule">
         ${s.cadence}${s.weekdays?.length
           ? html` (${s.weekdays.join(",")})`
           : s.month_day
             ? html` day ${s.month_day}`
             : ""}
       </td>
-      <td>${s.status}</td>
-      <td>${s.next_occurrence_at != null ? fmtTime(s.next_occurrence_at, zone) : "—"}</td>
-      <td>${s.occurrences_created ?? 0}${s.end_count ? ` / ${s.end_count}` : ""}</td>
-      <td>
+      <td data-label="Status">${s.status}</td>
+      <td data-label="Next">${s.next_occurrence_at != null ? fmtTime(s.next_occurrence_at, zone) : "—"}</td>
+      <td data-label="Created">${s.occurrences_created ?? 0}${s.end_count ? ` / ${s.end_count}` : ""}</td>
+      <td data-label="Actions">
         ${s.status === "active"
           ? html`
               <form method="post" action="/g/${cid}/events/series" class="inline">
                 ${csrf(csrfToken)}${act(s.id, "skip", "series_id")}
-                <button class="btn btn--small" type="submit">Skip next</button>
+                <button class="btn btn-sm" type="submit">Skip next</button>
               </form>
               <form method="post" action="/g/${cid}/events/series" class="inline">
                 ${csrf(csrfToken)}${act(s.id, "stop", "series_id")}
-                <button class="btn btn--small btn--warn" type="submit">Stop</button>
+                <button class="btn btn-sm btn--warn" type="submit">Stop</button>
               </form>
             `
           : ""}
@@ -625,13 +680,12 @@ function renderSeries({ cid, series, zone, csrfToken }) {
   );
   return html`
     ${flash()}
-    <h1>Recurring series</h1>
     <p class="muted">
       Unposted occurrences draft themselves as their due time passes; skip drops
       the next one; stop keeps everything already posted.
     </p>
     ${rows.length
-      ? html`<table class="tbl">
+      ? html`<table class="list-table events-table table-stack">
           <thead>
             <tr>
               <th>Series</th><th>Rule</th><th>Status</th><th>Next</th><th>Created</th><th></th>
@@ -646,30 +700,29 @@ function renderSeries({ cid, series, zone, csrfToken }) {
 function renderScheduled({ cid, rows, zone, csrfToken }) {
   const tr = rows.map((ev) =>
     html`<tr>
-      <td>${link(ev)} ${badge(ev.status)}</td>
-      <td>${ev.post_at != null ? fmtTime(ev.post_at, zone) : "on approval"}</td>
-      <td>
+      <td data-label="Event">${link(ev)} ${badge(ev.status)}</td>
+      <td data-label="Posts">${ev.post_at != null ? fmtTime(ev.post_at, zone) : "on approval"}</td>
+      <td data-label="Last error">
         ${ev.status === "post_failed"
           ? html`<span class="flash--err"
               >${String(ev.last_post_error || "post failed").slice(0, 140)}</span
             >`
           : ""}
       </td>
-      <td>
+      <td data-label="Actions">
         <form method="post" action="/g/${cid}/events/action" class="inline">
-          ${csrf(csrfToken)}${act(ev.id, "publish")}<button class="btn btn--small" type="submit">Post now</button>
+          ${csrf(csrfToken)}${act(ev.id, "publish")}<button class="btn btn-sm" type="submit">Post now</button>
         </form>
       </td>
     </tr>`,
   );
   return html`
     ${flash()}
-    <h1>Scheduled posts</h1>
     <p class="muted">
       Queued and failed posts. "Post now" runs the same pipeline as the ticker.
     </p>
     ${rows.length
-      ? html`<table class="tbl">
+      ? html`<table class="list-table events-table table-stack">
           <thead><tr><th>Event</th><th>Posts</th><th>Last error</th><th></th></tr></thead>
           <tbody>${tr}</tbody>
         </table>`
