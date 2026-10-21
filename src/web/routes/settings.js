@@ -35,15 +35,21 @@
  *    fail-closed: a throw from req.audit becomes a generic 500;
  *  - cache: settingsData.invalidate(communityId) after every accepted write
  *    so the view (≥30 s cache) goes straight back to the source of truth;
- *  - response: 302 → /g/<communityId>/settings?ok|err=<cluster> — the keys
- *    are fixed constants (no user data ever reflected into the Location);
- *    the path carries the INTEGER route identity (PR 2), not the snowflake.
+ *  - response: 302 → /g/<communityId>/settings?ok|err=<cluster>&at=<section>#<section>
+ *    — flag, key and section are fixed constants computed SERVER-side
+ *    (section from field presence per #643's table — never from `_return`,
+ *    `next`, or a posted hash; user data is never reflected into the
+ *    Location); the path carries the INTEGER route identity (PR 2), not the
+ *    snowflake. The GET reads only `at` (whitelisted against the frozen
+ *    SECTION_IDS set) and renders the fixed banner inside that section, or
+ *    in the shell flash slot when `at` is missing/unknown.
  */
 
 const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { requireTier } = require("../middleware/requireTier");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
-const { renderSettingsBody } = require("../views/settings");
+const { renderSettingsBody, FLASH_MESSAGES, SECTION_IDS } = require("../views/settings");
+const { banner } = require("../views/components");
 const { createSettingsData } = require("../data/settingsData");
 const settingsWrite = require("../data/settingsWrite");
 const { diffConfigLines } = require("../../features/logs/auditLog");
@@ -56,19 +62,66 @@ const { makeCacheNameResolver } = require("./shared/discord-cache.js");
 const FLASH_KEYS = new Set(["xp", "decay", "logs", "warn", "channels"]);
 
 /**
- * 302 back to the settings page with a whitelisted result flag. Both the
- * flag and the key are code constants — nothing user-supplied is ever
- * reflected into the Location header (§8.7 generic bodies).
+ * Frozen section ids (#643) — one definition (views/settings) shared by the
+ * redirect writer, the GET `at` reader, and the view's banner placement.
+ */
+const SETTINGS_SECTIONS = new Set(SECTION_IDS);
+
+/** Fields whose presence (#643, "non-blank" = trim() ≠ ""; "0" IS non-blank
+ *  — cooldown 0 disables the cooldown and must land on #cooldowns) decides
+ *  whether a /settings/xp write belongs to the XP or the cooldowns section. */
+const XP_ONLY_FIELDS = Object.freeze(["message", "reaction", "voice", "factor"]);
+const COOLDOWN_FIELDS = Object.freeze(["msgcooldown", "reactioncooldown"]);
+
+function isNonBlank(fields, name) {
+  return String((fields && fields[name]) ?? "").trim() !== "";
+}
+
+/**
+ * Choose the section a redirect opens (#643). The handler decides — the
+ * posted hash, `_return` and `next` are NEVER read. Cooldowns ride the
+ * /settings/xp route with flash key `xp` (FLASH_MESSAGES.info.xp covers XP,
+ * cooldowns and the level curve); a cooldowns-only submission lands the
+ * banner on #cooldowns, anything else on #xp. Every other flash key maps to
+ * exactly one section (`warn` shares #logs).
+ * @param {string} key whitelisted flash key
+ * @param {Record<string,string>} fields drained form fields
+ */
+function chooseSection(key, fields) {
+  if (key === "xp") {
+    if (XP_ONLY_FIELDS.some((name) => isNonBlank(fields, name))) return "xp";
+    if (COOLDOWN_FIELDS.some((name) => isNonBlank(fields, name))) return "cooldowns";
+    return "xp";
+  }
+  if (key === "decay") return "decay";
+  if (key === "logs") return "logs";
+  if (key === "warn") return "logs";
+  if (key === "channels") return "command-channels";
+  return "xp"; // unreachable: `key` is whitelisted above
+}
+
+/**
+ * 302 back to the settings page with a whitelisted result flag and the
+ * server-chosen section (#643):
+ *   Location: /g/<id>/settings?<flag>=<key>&at=<section>#<section>
+ * Flag, key and section are all code constants — nothing user-supplied is
+ * ever reflected into the Location (§8.7 generic bodies). The section is
+ * re-checked against the frozen set immediately before writing. The fragment
+ * is not sent on the following GET — `at` carries it; the view reads ONLY
+ * `at` and accepts only this set.
  * @param {import("http").ServerResponse} res
  * @param {number} communityId server-derived route identity (PR 2: integer)
  * @param {"ok"|"err"} flag
  * @param {string} key one of FLASH_KEYS
+ * @param {Record<string,string>} [fields] drained form fields (section rule)
  */
-function redirectSettings(res, communityId, flag, key) {
+function redirectSettings(res, communityId, flag, key, fields) {
   if (flag !== "ok" && flag !== "err") flag = "err";
   if (!FLASH_KEYS.has(key)) key = "logs";
+  const chosen = chooseSection(key, fields);
+  const at = SETTINGS_SECTIONS.has(chosen) ? chosen : "xp";
   res.writeHead(302, {
-    Location: `/g/${communityId}/settings?${flag}=${key}`,
+    Location: `/g/${communityId}/settings?${flag}=${key}&at=${at}#${at}`,
     "Cache-Control": "no-store",
   });
   res.end();
@@ -96,7 +149,7 @@ function makeMutationHandler(spec, deps) {
       const outcome = spec.op(deps.db, communityId, fields);
       if (!outcome.ok) {
         // Validation rejection: nothing written, NOTHING audited (§8.6).
-        redirectSettings(res, communityId, "err", spec.key);
+        redirectSettings(res, communityId, "err", spec.key, fields);
         return;
       }
       // Accepted write: drop the cached snapshot FIRST so even a fail-closed
@@ -109,7 +162,7 @@ function makeMutationHandler(spec, deps) {
       deps.voiceData?.invalidate?.(guildId);
       // Fail-closed (§8.1-7): a throwing req.audit propagates → generic 500.
       req.audit(spec.auditOf(outcome, guildId));
-      redirectSettings(res, communityId, "ok", spec.key);
+      redirectSettings(res, communityId, "ok", spec.key, fields);
     } catch (err) {
       next(err); // → handleAppError: generic 500, nothing leaked
     }
@@ -339,6 +392,38 @@ function readFlashFlag(req) {
 }
 
 /**
+ * Read the SECTION the GET should open (#643). The redirect repeats the
+ * section as `?at=` because the URL FRAGMENT never arrives on the GET after
+ * a redirect — and even then only the frozen set is accepted; an unknown or
+ * missing `at` renders nothing section-scoped (banner falls back to the
+ * shell flash slot). The raw query value is NEVER interpolated into an id
+ * attribute: it is only ever tested for set membership.
+ * @param {import("http").IncomingMessage & { url?: string }} req
+ * @returns {string|null} validated section id
+ */
+function readSectionAt(req) {
+  try {
+    const search = new URL(String(req.url || "/"), "http://settings.local").searchParams;
+    const at = search.get("at");
+    return typeof at === "string" && SETTINGS_SECTIONS.has(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fixed-string flash banner for the SHELL flash slot (#643): used when the
+ * GET carries a flash but NO valid section `at` — the page body then renders
+ * no banner at all (layout contract: slot or in-content, never both).
+ * @param {{kind: "info"|"error", key: string}|null} flash
+ */
+function shellFlashBanner(flash) {
+  if (!flash || !FLASH_MESSAGES[flash.kind]) return null;
+  const message = FLASH_MESSAGES[flash.kind][flash.key];
+  return typeof message === "string" ? banner(flash.kind, message) : null;
+}
+
+/**
  * @param {import("express").Express} app
  * @param {object} [options]
  * @param {{resolve: Function, listGuilds: Function}} [options.guildAccess]
@@ -398,17 +483,25 @@ function registerSettingsRoutes(app, options = {}) {
     // One cached per-guild snapshot (§8.6 floor 30 s). Facade reads happen
     // inside the data module — never here.
     const snapshot = settingsData.getSettings(communityId);
+    // #643 flash placement: a VALID section `at` renders the banner as the
+    // first content node of that <section>; unknown/missing `at` uses the
+    // shell flash slot (layout `flash` option) and opens nothing. Exactly one
+    // banner ever renders.
+    const flash = readFlashFlag(req);
+    const at = readSectionAt(req);
     const document = renderShellPage(req, {
       title: "Settings",
       heading: "Settings",
       subheading:
         "Current guild configuration — values, defaults, and the slash command that owns each. Every form below mirrors one slash command at the same tier.",
+      flash: at ? null : shellFlashBanner(flash),
       content: renderSettingsBody({
         snapshot,
         resolveChannelName: makeCacheNameResolver(options.getClient, "channels"),
         csrfToken: req.csrfToken || null,
         guildId: communityId,
-        flash: readFlashFlag(req),
+        flash,
+        section: at,
       }),
       guilds: await shellGuilds(resolver, req),
     });

@@ -32,7 +32,14 @@
  *    (form + header), tier matrix (admin-only command channels),
  *    facade read-backs, exactly-one admin_audit row per success, zero
  *    writes/audits on validation rejects, PRG flash flags, cache
- *    invalidation after every accepted write, slash-patch parity.
+ *    invalidation after every accepted write, slash-patch parity;
+ *  - #643 SECTIONS: id'd data-setting-section panels + find box + anchor
+ *    nav; PRG Locations carry the server-chosen &at=<section>#<section>
+ *    (per-payload split on /settings/xp only); the GET reads ONLY `at`
+ *    against the frozen set — banner INSIDE the section for a valid at,
+ *    shell flash slot otherwise, raw query never echoed; write controls are
+ *    never prefilled; level→role mappings are a read pointer to
+ *    /staff#level-roles (the staff page carries the id).
  */
 
 const { describe, it, before, after } = require("node:test");
@@ -71,6 +78,18 @@ const SETTINGS_READS = [
   "listAllowedCommandChannels",
   "listLevelRoles",
 ];
+
+/**
+ * Slice the .form-help text for one field out of the rendered page (#643).
+ * The data-help-for value is a CODE CONSTANT the view stamps on each help
+ * paragraph — the read wall's four columns became help TEXT, so exact-value
+ * assertions slice by this seam instead of the deleted .setting-value spans.
+ */
+function fieldHelp(body, key) {
+  const m = String(body).match(new RegExp(`data-help-for="${key}"[^>]*>([\\s\\S]*?)</p>`));
+  if (!m) throw new Error(`no .form-help rendered for field "${key}"`);
+  return m[1];
+}
 
 describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", () => {
   /** @type {ReturnType<typeof loadDb>["api"]} */
@@ -319,10 +338,24 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       assert.equal(row.decay_min_messages, 20);
       assert.equal(row.decay_window_days, 7);
 
-      assert.ok(body.includes("default 20s"), "message cooldown default noted");
-      assert.ok(body.includes("default 10s"), "reaction cooldown default noted");
-      assert.ok(body.includes("default 7 days"), "decay window default noted");
-      assert.ok(body.includes("default 100"), "level factor default noted");
+      // #643: defaults are .form-help text now (the four-column read wall is
+      // gone) — asserted through the per-field data-help-for seam.
+      assert.ok(
+        fieldHelp(body, "msgcooldown").includes("<strong>Default:</strong> 20s"),
+        "message cooldown default noted"
+      );
+      assert.ok(
+        fieldHelp(body, "reactioncooldown").includes("<strong>Default:</strong> 10s"),
+        "reaction cooldown default noted"
+      );
+      assert.ok(
+        fieldHelp(body, "days").includes("<strong>Default:</strong> 7 days"),
+        "decay window default noted"
+      );
+      assert.ok(
+        fieldHelp(body, "factor").includes("<strong>Default:</strong> 100"),
+        "level factor default noted"
+      );
       assert.ok(body.includes("everywhere"), "empty allow-list ⇒ everywhere note");
       assert.ok(body.includes("allow-list is empty"));
       assert.ok(
@@ -392,20 +425,46 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       const row = api.getGuildSettings(CID_A); // the slash source of truth
       const { body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
 
-      const valueCell = (text) => `<span class="setting-value">${text}</span>`;
-      assert.ok(body.includes(valueCell(String(row.msg_xp))), "msg_xp exact");
-      assert.ok(body.includes(valueCell(String(row.reaction_xp))), "reaction_xp exact");
-      assert.ok(body.includes(valueCell(String(row.voice_xp_per_min))), "voice xp exact");
-      assert.ok(body.includes(valueCell(String(row.level_xp_factor))), "factor exact");
-      assert.ok(body.includes(valueCell(`${row.msg_cooldown_sec}s`)), "msg cooldown exact");
-      assert.ok(body.includes(valueCell(`${row.reaction_cooldown_sec}s`)), "reaction cooldown exact");
-      assert.ok(body.includes(valueCell(`${Math.round(row.decay_percent * 100)}%`)), "decay % exact");
-      assert.ok(body.includes(valueCell("off")), "decay disabled renders off");
-      assert.ok(body.includes(String(row.decay_min_messages)), "decay threshold exact");
-      assert.ok(body.includes(`700000000000000011`), "audit channel id rendered");
-      assert.ok(body.includes(`700000000000000012`), "message log channel id rendered");
+      // #643: each write field's .form-help carries the live snapshot ("**Current:**
+      // …") — the same row the slash commands read, asserted per field seam.
+      const current = (key) => fieldHelp(body, key);
+      assert.ok(current("message").includes(`<strong>Current:</strong> ${row.msg_xp}`), "msg_xp exact");
+      assert.ok(
+        current("reaction").includes(`<strong>Current:</strong> ${row.reaction_xp}`),
+        "reaction_xp exact"
+      );
+      assert.ok(
+        current("voice").includes(`<strong>Current:</strong> ${row.voice_xp_per_min}`),
+        "voice xp exact"
+      );
+      assert.ok(
+        current("factor").includes(`<strong>Current:</strong> ${row.level_xp_factor}`),
+        "factor exact"
+      );
+      assert.ok(
+        current("msgcooldown").includes(`<strong>Current:</strong> ${row.msg_cooldown_sec}s`),
+        "msg cooldown exact"
+      );
+      assert.ok(
+        current("reactioncooldown").includes(`<strong>Current:</strong> ${row.reaction_cooldown_sec}s`),
+        "reaction cooldown exact"
+      );
+      assert.ok(
+        current("percent").includes(`<strong>Current:</strong> ${Math.round(row.decay_percent * 100)}%`),
+        "decay % exact"
+      );
+      assert.ok(current("enabled").includes("<strong>Current:</strong> off"), "decay disabled renders off");
+      assert.ok(
+        current("messages").includes(`<strong>Current:</strong> ${row.decay_min_messages}`),
+        "decay threshold exact"
+      );
+      assert.ok(current("log-audit").includes(`700000000000000011`), "audit channel id rendered");
+      assert.ok(current("log-message").includes(`700000000000000012`), "message log channel id rendered");
       assert.ok(body.includes(`<code>6001</code>`), "level-role id rendered");
-      assert.ok(body.includes("default 20s"), "defaults still noted next to custom values");
+      assert.ok(
+        current("msgcooldown").includes("<strong>Default:</strong> 20s"),
+        "defaults still noted next to custom values"
+      );
       // Slash-command cross-references (§8.6 usefulness requirement).
       assert.ok(body.includes("/setxp"), "cooldowns/XP governed by /setxp");
       assert.ok(body.includes("/setdecay"), "decay governed by /setdecay");
@@ -416,7 +475,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       // custom 25% shown; DEFAULT line remains 10%.
       const { body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.admin });
       assert.ok(body.includes("25%"));
-      assert.ok(body.includes("default 10%"));
+      assert.ok(body.includes("<strong>Default:</strong> 10%"));
     });
   });
 
@@ -541,6 +600,101 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         assert.equal(res.status, 200);
         assert.ok(body.includes(`700000000000000011`), "id still rendered");
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #643 SECTIONS: chrome, no-prefill, `at`-validated banner placement,
+  // level-role read pointer (the write surface lives on /staff#level-roles)
+  // -------------------------------------------------------------------------
+
+  describe("sections (#643 GET chrome)", () => {
+    it("renders the find box, the anchor nav, and every id'd data-setting-section", async () => {
+      await mountApp();
+      const { res, body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
+      assert.equal(res.status, 200);
+      assert.ok(body.includes("data-setting-filter"), "local find box present (#642 listener hook)");
+      assert.ok(body.includes('class="find-setting"'), "find box uses the shell chrome");
+      assert.ok(body.includes('class="section-nav"'), "anchor nav kept for hashes + at");
+      assert.ok(body.includes('href="#logs"'), "nav anchors the logs section id");
+      for (const id of ["xp", "cooldowns", "decay", "logs", "command-channels"]) {
+        assert.match(
+          body,
+          new RegExp(`<section id="${id}" data-setting-section class="panel`),
+          `section#${id} carries the frozen id + find-box hook`
+        );
+      }
+      // Level-role block: a read pointer, not a second write surface.
+      assert.ok(
+        body.includes(`href="/g/${CID_A}/staff#level-roles"`),
+        "level-role block links to the staff write surface"
+      );
+      assert.ok(!body.includes("edited via slash for now"), "the slash-only dead end is gone");
+    });
+
+    it("write controls are NEVER prefilled (#643: blank = leave the column alone)", async () => {
+      await mountApp();
+      const { body } = await req(`/g/${CID_A}/settings`, { cookie: cookieOf.staff });
+      assert.equal(
+        body.match(/<input[^>]*type="number"[^>]*\svalue\s*=/i),
+        null,
+        "no number input carries a value attribute"
+      );
+      assert.equal(
+        body.match(/<input[^>]*type="text"[^>]*\svalue\s*=/i),
+        null,
+        "no visible text (channel-id/find) input carries a value attribute"
+      );
+      const select = body.match(/<select class="input" name="enabled">([\s\S]*?)<\/select>/);
+      assert.ok(select, "decay enabled select renders");
+      assert.ok(!/selected/.test(select[1]), "the empty 'keep' option stays UNSELECTED");
+    });
+
+    it("GET ?ok=xp&at=xp renders the fixed banner inside section#xp", async () => {
+      await mountApp();
+      const { res, body } = await req(`/g/${CID_A}/settings?ok=xp&at=xp`, {
+        cookie: cookieOf.staff,
+      });
+      assert.equal(res.status, 200);
+      const start = body.indexOf('<section id="xp" data-setting-section');
+      assert.ok(start >= 0, "xp section exists");
+      const sectionHtml = body.slice(start, body.indexOf("</section>", start));
+      assert.ok(sectionHtml.includes("banner banner-info"), "banner INSIDE the section");
+      assert.ok(sectionHtml.includes("XP, cooldown and level-curve settings saved."));
+      assert.ok(
+        sectionHtml.indexOf("banner banner-info") < sectionHtml.indexOf("<form"),
+        "banner is the first content node — above the section's form"
+      );
+      assert.ok(
+        body.indexOf("banner banner-info") === start + sectionHtml.indexOf("banner banner-info"),
+        "the shell flash slot stays empty (exactly one banner)"
+      );
+    });
+
+    it("unknown at opens nothing, is never echoed, and the banner falls back to the shell slot", async () => {
+      await mountApp();
+      const evil = encodeURIComponent('<script>alert(1)</script>');
+      const { res, body } = await req(`/g/${CID_A}/settings?ok=xp&at=${evil}`, {
+        cookie: cookieOf.staff,
+      });
+      assert.equal(res.status, 200);
+      assert.ok(!body.includes("<script>alert(1)"), "raw at value never reflected");
+      assert.ok(!body.includes(`id="${evil}"`), "raw at value never interpolated into an id");
+      assert.ok(body.includes("banner banner-info"), "the flash still renders — in the shell slot");
+      const start = body.indexOf('<section id="xp"');
+      const sectionHtml = body.slice(start, body.indexOf("</section>", start));
+      assert.ok(!sectionHtml.includes("banner"), "no banner inside any section");
+      assert.ok(
+        body.indexOf("banner banner-info") < start,
+        "banner rendered in the shell flash slot instead"
+      );
+    });
+
+    it("staff page carries the id the settings level-role pointer links to", async () => {
+      await mountApp();
+      const { res, body } = await req(`/g/${CID_A}/staff`, { cookie: cookieOf.staff });
+      assert.equal(res.status, 200);
+      assert.ok(body.includes('id="level-roles"'), "level-roles section anchor (#643)");
     });
   });
 
@@ -717,7 +871,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           headerToken: tokenFor("senior"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${CID_A}/settings?ok=decay`);
+        assert.equal(location, `/g/${CID_A}/settings?ok=decay&at=decay#decay`);
       });
 
       it("stranger (in guild, no staff role) with a VALID token ⇒ generic 404", async () => {
@@ -748,7 +902,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
             token: tokenFor(who),
           });
           assert.equal(res.status, 302, `${who} must be allowed (staff tier)`);
-          assert.equal(location, `/g/${CID_A}/settings?ok=decay`);
+          assert.equal(location, `/g/${CID_A}/settings?ok=decay&at=decay#decay`);
         }
       });
 
@@ -803,7 +957,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           token: tokenFor("staff"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${CID_A}/settings?ok=xp`);
+        assert.equal(location, `/g/${CID_A}/settings?ok=xp&at=xp#xp`);
 
         const row = api.getGuildSettings(CID_A); // facade read-back
         assert.equal(row.msg_xp, 8);
@@ -834,36 +988,69 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       });
 
       it("cooldown 0 is accepted (slash: 0 disables the cooldown)", async () => {
-        const { res } = await post(`/g/${CID_A}/settings/xp`, {
+        const { res, location } = await post(`/g/${CID_A}/settings/xp`, {
           cookie: cookieOf.admin,
           fields: { msgcooldown: "0" },
           token: tokenFor("admin"),
         });
         assert.equal(res.status, 302);
+        // #643: "0" is NON-BLANK — a cooldown-only save lands on #cooldowns.
+        assert.equal(location, `/g/${CID_A}/settings?ok=xp&at=cooldowns#cooldowns`);
         assert.equal(api.getGuildSettings(CID_A).msg_cooldown_sec, 0);
+      });
+
+      it("single-field POST leaves sibling columns out of details.patch (#643)", async () => {
+        // Blank inputs are NEVER submitted (the view renders no value
+        // attributes), so the audit patch holds ONLY the touched column —
+        // a prefill could never claim this.
+        const beforeCount = webAuditCount();
+        const { res, location } = await post(`/g/${CID_A}/settings/xp`, {
+          cookie: cookieOf.staff,
+          fields: { message: "23" },
+          token: tokenFor("staff"),
+        });
+        assert.equal(res.status, 302);
+        assert.equal(location, `/g/${CID_A}/settings?ok=xp&at=xp#xp`);
+        assert.equal(webAuditCount(), beforeCount + 1, "exactly one audit row");
+        const entry = webAudits()[0];
+        assert.equal(entry.action, "xp.settings_update");
+        const details = JSON.parse(entry.details_json);
+        assert.deepEqual(
+          details.patch,
+          { msg_xp: 23 },
+          "untouched siblings (reaction/voice/cooldowns/factor) are ABSENT from details.patch"
+        );
       });
 
       it("validation rejects: negatives, non-numbers, bounds — zero writes, zero audits", async () => {
         const beforeRow = xpColumns(api.getGuildSettings(CID_A));
         const beforeCount = webAuditCount();
+        // #643 per-payload Location split (POST /settings/xp ONLY): a payload
+        // whose ONLY non-blank fields are cooldowns lands on #cooldowns; the
+        // string "0" counts as non-blank. XP/curve fields and the empty body
+        // land on #xp.
         const bad = [
-          { message: "-5" },
-          { message: "abc" },
-          { message: "1000000001" }, // > MAX_XP_AWARD (1e9)
-          { reaction: "1.5" },
-          { msgcooldown: "-1" },
-          { factor: "99999" }, // slash bounds 1..10000
-          { factor: "0" },
-          {}, // empty patch ("No XP settings provided")
+          [{ message: "-5" }, "xp"],
+          [{ message: "abc" }, "xp"],
+          [{ message: "1000000001" }, "xp"], // > MAX_XP_AWARD (1e9)
+          [{ reaction: "1.5" }, "xp"],
+          [{ msgcooldown: "-1" }, "cooldowns"],
+          [{ factor: "99999" }, "xp"], // slash bounds 1..10000
+          [{ factor: "0" }, "xp"],
+          [{}, "xp"], // empty patch ("No XP settings provided")
         ];
-        for (const fields of bad) {
+        for (const [fields, sectionAt] of bad) {
           const { res, location } = await post(`/g/${CID_A}/settings/xp`, {
             cookie: cookieOf.staff,
             fields,
             token: tokenFor("staff"),
           });
           assert.equal(res.status, 302, `bad payload ${JSON.stringify(fields)} ⇒ PRG`);
-          assert.equal(location, `/g/${CID_A}/settings?err=xp`);
+          assert.equal(
+            location,
+            `/g/${CID_A}/settings?err=xp&at=${sectionAt}#${sectionAt}`,
+            JSON.stringify(fields)
+          );
         }
         assert.deepEqual(xpColumns(api.getGuildSettings(CID_A)), beforeRow);
         assert.equal(webAuditCount(), beforeCount, "rejected writes never audit");
@@ -876,6 +1063,17 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         assert.equal(res.status, 200);
         assert.ok(body.includes("banner banner-error"), "error banner rendered");
         assert.ok(body.includes("XP settings were NOT saved"));
+        // #643: with NO valid at the banner rides the shell flash slot — it
+        // renders BEFORE the sections open and nothing section-scoped shows.
+        assert.ok(
+          body.indexOf("banner banner-error") < body.indexOf('<section id="xp"'),
+          "banner sits in the shell slot, not inside a section"
+        );
+        assert.equal(
+          (body.match(/data-flash/g) || []).length,
+          1,
+          "exactly one flash banner renders (slot OR section, never both)"
+        );
       });
     });
 
@@ -896,7 +1094,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           token: tokenFor("staff"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${CID_A}/settings?ok=decay`);
+        assert.equal(location, `/g/${CID_A}/settings?ok=decay&at=decay#decay`);
 
         const row = api.getGuildSettings(CID_A);
         assert.equal(row.decay_enabled, 1);
@@ -937,7 +1135,13 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
             token: tokenFor("staff"),
           });
           assert.equal(res.status, 302);
-          assert.equal(location, `/g/${CID_A}/settings?err=decay`, `${JSON.stringify(fields)}`);
+          // #643: the decay loop is NOT split — every payload, valid shape or
+          // not, lands on decay.
+          assert.equal(
+            location,
+            `/g/${CID_A}/settings?err=decay&at=decay#decay`,
+            `${JSON.stringify(fields)}`
+          );
         }
         assert.deepEqual(decayColumns(api.getGuildSettings(CID_A)), beforeRow);
         assert.equal(webAuditCount(), beforeCount);
@@ -951,7 +1155,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
             token: tokenFor("admin"),
           });
           assert.equal(res.status, 302);
-          assert.equal(location, `/g/${CID_A}/settings?ok=decay`);
+          assert.equal(location, `/g/${CID_A}/settings?ok=decay&at=decay#decay`);
         }
         assert.equal(api.getGuildSettings(CID_A).decay_percent, 0.95);
       });
@@ -977,7 +1181,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           token: tokenFor("staff"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${CID_A}/settings?ok=logs`);
+        assert.equal(location, `/g/${CID_A}/settings?ok=logs&at=logs#logs`);
         assert.equal(api.getGuildSettings(CID_A).audit_log_channel_id, "700000000000000031");
 
         assert.equal(webAuditCount(), beforeCount + 1);
@@ -1061,7 +1265,11 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
             token: tokenFor("staff"),
           });
           assert.equal(res.status, 302);
-          assert.equal(location, `/g/${CID_A}/settings?err=logs`, `channel "${channel}"`);
+          assert.equal(
+            location,
+            `/g/${CID_A}/settings?err=logs&at=logs#logs`,
+            `channel "${channel}"`
+          );
         }
         assert.equal(api.getGuildSettings(CID_A).message_log_channel_id, beforeMsg);
         assert.equal(api.getGuildSettings(CID_A).warn_log_channel_id, beforeWarn);
@@ -1082,7 +1290,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
             token: tokenFor("staff"),
           });
           assert.equal(res.status, 302);
-          assert.equal(location, `/g/${CID_A}/settings?err=logs`);
+          assert.equal(location, `/g/${CID_A}/settings?err=logs&at=logs#logs`);
         }
         assert.equal(api.getGuildSettings(CID_A).audit_log_channel_id, before);
         assert.equal(webAuditCount(), beforeCount);
@@ -1111,7 +1319,10 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           token: tokenFor("admin"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${CID_A}/settings?ok=channels`);
+        assert.equal(
+          location,
+          `/g/${CID_A}/settings?ok=channels&at=command-channels#command-channels`
+        );
         assert.ok(
           api.listAllowedCommandChannels(CID_A).some((r) => r.channel_id === chan),
           "allow-list row exists (facade read-back)"
@@ -1148,7 +1359,10 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
           token: tokenFor("admin"),
         });
         assert.equal(res.status, 302);
-        assert.equal(location, `/g/${CID_A}/settings?err=channels`);
+        assert.equal(
+          location,
+          `/g/${CID_A}/settings?err=channels&at=command-channels#command-channels`
+        );
         assert.equal(webAuditCount(), beforeCount);
       });
     });
