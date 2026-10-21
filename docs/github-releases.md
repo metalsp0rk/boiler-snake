@@ -14,7 +14,7 @@ Track one or more GitHub repositories per server and post release notes to a con
 
 ## Commands (staff)
 
-All commands require **Manage Guild** (or a configured staff role).
+All commands require **Manage Server** (or a configured staff role).
 
 ### Track a repository
 

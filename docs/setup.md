@@ -56,11 +56,13 @@ cp .env.example .env
 nano .env  # or vim, code, etc.
 ```
 
-**Required Variables**:
+**Required Variables** (Discord deployment):
 ```env
 DISCORD_TOKEN=YOUR_BOT_TOKEN
 CLIENT_ID=YOUR_APP_CLIENT_ID
 ```
+
+`DISCORD_TOKEN` is required unless the bot runs Fluxer-only — the boot gate accepts at least one of `DISCORD_TOKEN` / `FLUXER_INSTANCES` (see [Fluxer](/fluxer)). `CLIENT_ID` is optional for login (boot logs a `[config]` WARN without it) but **both are required** for `npm run register` and Discord OAuth/web sign-in.
 
 **Optional Variables**:
 ```env
@@ -131,14 +133,14 @@ Click the generated URL and select your server.
 Register the bot's commands with Discord:
 
 ```bash
-# Production (global, takes time)
+# Production (multi-guild) — registers every guild the bot is a member of
 npm run register
 
 # Development (fast - use DEV_GUILD_ID from .env)
 npm run register
 ```
 
-**Note**: Global commands can take up to 1 hour to propagate. Using `DEV_GUILD_ID` registers instantly.
+**Note**: Registration is **per-guild only** (the CLI PUTs `applicationGuildCommands` per guild; there is no global-registration path). Commands appear immediately in each guild, but you must **re-run `npm run register` after the bot joins new guilds**. With `DEV_GUILD_ID` set, only that guild is touched.
 
 ### Docker alternative
 
@@ -197,7 +199,7 @@ Boiler Snake logged in as YourBot#1234
 
 Compose also starts a **Lavalink** sidecar for [music](music.md). Set `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` in `.env` if you want Spotify links and search. Without `LAVALINK_HOST` (bare `npm start` and no local node), `/play` replies that music is not configured.
 
-Compose pins the bot's clock with `TZ: ${TZ:-UTC}`: the daily decay cron is the hardcoded `0 4 * * *` evaluated in the **process timezone**, so UTC means decay fires at 04:00 UTC on every host (override with `TZ` in `.env` only if you really want local time — audit #206).
+Compose pins the bot's clock with `TZ: ${TZ:-UTC}`: the daily decay job runs on `DECAY_CRON` (**default `0 4 * * *`, evaluated in the process timezone**), so UTC means decay fires at 04:00 UTC on every host. Override the schedule with `DECAY_CRON` in `.env` (a malformed expression **fails fast at boot**, #282); override `TZ` only if you really want local time (audit #206).
 
 For a local Lavalink process instead of Compose, see [Music player](music.md#2-lavalink-node-required).
 
@@ -358,7 +360,7 @@ npm start
 
 ### Issue: "Permission denied on admin commands"
 
-Verify user or role has **Manage Guild** permission, **or** is on a trusted staff role (`/staff role list`):
+Verify user or role has **Manage Server** permission, **or** is on a trusted staff role (`/staff role list`):
 1. Right-click user/role → Edit
 2. Check "Administrator" or "Manage Server", or add the role via `/staff role add`
 3. Save changes
@@ -391,13 +393,16 @@ Test each feature:
 
 ### Expected Results
 
-**`/settings` should show**:
+**`/settings` should show** an embed with fields like:
 ```
-**XP:** msg=5, reaction=2, voice/min=1
-**Cooldowns:** msg=20s, reaction=10s
-**Decay:** enabled=true/false...
-**Level→Role mappings:** (none or configured)
-**Commands allowed in:** All channels...
+XP awards        Message **5** · Reaction **2** · Voice/min **1**
+Cooldowns        Message **20s** · Reaction **10s**
+Decay            Enabled **true** · threshold **20** msgs / **7** days · **10%**
+Level curve      Factor **100** (level L starts at L²×factor)
+Logs             Audit … · Message …
+Gork             Keyword **@gork** · Role **not set** · Window **10** · …
+Commands allowed in   All channels…
+Level→Role mappings   (none or configured)
 ```
 
 ## Next Steps

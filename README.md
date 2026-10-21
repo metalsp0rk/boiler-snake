@@ -54,7 +54,7 @@ npm run register       # slash commands (set DEV_GUILD_ID in .env for instant de
 npm start
 ```
 
-- **Production (multi-guild):** `npm run register` registers globally by default (global updates can take time to propagate).
+- **Production (multi-guild):** `npm run register` PUTs commands to **every guild the bot is in** (per-guild only — there is no global-registration path). Re-run it after the bot joins new guilds.
 - **Development:** set `DEV_GUILD_ID` in `.env` for instant single-guild registration.
 
 ### Option B: Docker Compose
@@ -130,6 +130,8 @@ cp xpbot.sqlite.backup xpbot.sqlite
 npm test              # unit + integration (offline: mocked Discord/Fluxer I/O, real SQLite)
 npm run test:unit     # unit only
 npm run test:integration
+npm run test:coverage # the CI coverage gate (88/76/87 over src/)
+npm run test:e2e      # tier-4 E2E vs the fauxcord mock Discord (see docs/e2e.md)
 ```
 
 ## Releases

@@ -4,7 +4,7 @@ import { defineConfig } from 'vitepress'
 // Use base: '/' if you later attach a custom domain.
 export default defineConfig({
   title: 'Boiler Snake',
-  description: 'Discord XP, leveling, roles, and server tools',
+  description: 'XP, leveling, roles, and server tools for Discord and Fluxer',
   base: '/boiler-snake/',
   cleanUrls: true,
   lastUpdated: true,
@@ -31,6 +31,7 @@ export default defineConfig({
           { text: 'Channel bridges', link: '/bridge' },
           { text: 'Account linking', link: '/account-linking' },
           { text: 'Warnings', link: '/warnings' },
+          { text: 'Community events', link: '/community-events' },
           { text: 'Event reminders', link: '/event-reminders' },
           { text: 'Gork', link: '/gork' },
           { text: 'Gork Logging', link: '/gork-logging' },
@@ -85,6 +86,7 @@ export default defineConfig({
           { text: 'GitHub releases', link: '/github-releases' },
           { text: 'Gork', link: '/gork' },
           { text: 'Gork Logging', link: '/gork-logging' },
+          { text: 'Community events', link: '/community-events' },
           { text: 'Event reminders', link: '/event-reminders' },
           { text: 'Command restrictions', link: '/command-restrictions' },
           { text: 'Fluxer instances', link: '/fluxer' },

@@ -130,7 +130,7 @@ Anyone granted that role is banned (same exempt list as channels — any `staff_
 
 ## Commands
 
-All honeypot commands require **Manage Guild** and reply **ephemerally**.
+All honeypot commands require **Manage Server** and reply **ephemerally**.
 
 ### `/honeypot banrole add`
 
@@ -208,7 +208,7 @@ Prefer `/staff role remove` when you only mean to change the admin gate, so the 
 
 ### `/honeypot safety resume`
 
-**Admin (Manage Guild) only.** Clears the mass-ban safety valve after it has
+**Admin (Manage Server) only.** Clears the mass-ban safety valve after it has
 paused enforcement, re-arming honeypot bans and resetting the rolling ban
 window. See [Mass-ban safety valve](#mass-ban-safety-valve-440).
 
