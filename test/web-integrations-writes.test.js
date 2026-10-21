@@ -465,7 +465,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         headerToken: tokenFor("staff"),
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `${INTEG_BASE()}?done=yt_interval_set`);
+      assert.equal(location, `${INTEG_BASE()}?done=yt_interval_set&at=youtube#youtube`);
       assert.equal(api.getGuildSettings(CID_A).youtube_polling_interval_minutes, 9);
     });
   });
@@ -499,7 +499,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         fields: { url: "https://www.youtube.com/@daily-uploads" },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `${INTEG_BASE()}?done=yt_added`);
+      assert.equal(location, `${INTEG_BASE()}?done=yt_added&at=youtube#youtube`);
       const row = api
         .getYoutubeChannels(CID_A)
         .find((c) => c.id === "UCytresolved00001");
@@ -520,7 +520,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       const { location } = await post(`${INTEG_BASE()}/youtube/add`, {
         fields: { url: "@otherchannel" },
       });
-      assert.equal(location, `${INTEG_BASE()}?error=youtube_not_configured`);
+      assert.equal(location, `${INTEG_BASE()}?error=youtube_not_configured&at=youtube#youtube`);
       assert.equal(api.getYoutubeChannels(CID_A).length, before);
       assert.equal(webAuditCount(), auditsBefore);
       process.env.YOUTUBE_API_KEY = SENTINEL_YT_KEY;
@@ -531,29 +531,29 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       const { location } = await post(`${INTEG_BASE()}/youtube/add`, {
         fields: { url: "not a channel at all" },
       });
-      assert.equal(location, `${INTEG_BASE()}?error=invalid_input`);
+      assert.equal(location, `${INTEG_BASE()}?error=invalid_input&at=youtube#youtube`);
       assert.equal(api.getYoutubeChannels(CID_A).length, before);
     });
 
     it("remove unknown ⇒ yt_not_found with no audit; remove stored ⇒ gone + audit", async () => {
       const auditsBefore = webAuditCount();
       let r = await post(`${INTEG_BASE()}/youtube/remove`, { fields: { channel_id: "UCnope" } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=yt_not_found`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=yt_not_found&at=youtube#youtube`);
       assert.equal(webAuditCount(), auditsBefore, "refusal never audits");
 
       r = await post(`${INTEG_BASE()}/youtube/remove`, {
         fields: { channel_id: "UCytresolved00001" },
       });
-      assert.equal(r.location, `${INTEG_BASE()}?done=yt_removed`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=yt_removed&at=youtube#youtube`);
       assert.ok(!api.getYoutubeChannels(CID_A).find((c) => c.id === "UCytresolved00001"));
       expectAudit("youtube.channel_remove");
     });
 
     it("channel: bad id ⇒ invalid_channel_id; UNCACHED id ⇒ channel_missing (picker parity)", async () => {
       let r = await post(`${INTEG_BASE()}/youtube/channel`, { fields: { channel_id: "abc" } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=invalid_channel_id`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=invalid_channel_id&at=youtube#youtube`);
       r = await post(`${INTEG_BASE()}/youtube/channel`, { fields: { channel_id: CH_UNCACHED } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=channel_missing`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=channel_missing&at=youtube#youtube`);
       assert.equal(api.getGuildSettings(CID_A).youtube_notification_channel_id ?? null, null);
     });
 
@@ -561,7 +561,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       const { location } = await post(`${INTEG_BASE()}/youtube/channel`, {
         fields: { channel_id: CH_MAIN },
       });
-      assert.equal(location, `${INTEG_BASE()}?done=yt_channel_set`);
+      assert.equal(location, `${INTEG_BASE()}?done=yt_channel_set&at=youtube#youtube`);
       assert.equal(api.getGuildSettings(CID_A).youtube_notification_channel_id, CH_MAIN);
       expectAudit("youtube.notify_channel_set", (a) => {
         assert.equal(a.target_id, CH_MAIN);
@@ -576,14 +576,14 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         });
         assert.equal(
           location,
-          `${INTEG_BASE()}?error=invalid_interval`,
+          `${INTEG_BASE()}?error=invalid_interval&at=youtube#youtube`,
           `minutes "${minutes}" rejected`
         );
       }
       const { location } = await post(`${INTEG_BASE()}/youtube/interval`, {
         fields: { minutes: "7" },
       });
-      assert.equal(location, `${INTEG_BASE()}?done=yt_interval_set`);
+      assert.equal(location, `${INTEG_BASE()}?done=yt_interval_set&at=youtube#youtube`);
       assert.equal(api.getGuildSettings(CID_A).youtube_polling_interval_minutes, 7);
       expectAudit("youtube.polling_interval_set");
     });
@@ -592,16 +592,16 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       let r = await post(`${INTEG_BASE()}/youtube/uploadrole`, {
         fields: { role_id: ROLE_UNCACHED },
       });
-      assert.equal(r.location, `${INTEG_BASE()}?error=role_missing`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=role_missing&at=youtube#youtube`);
       r = await post(`${INTEG_BASE()}/youtube/uploadrole`, { fields: { role_id: "bad!" } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=invalid_role_id`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=invalid_role_id&at=youtube#youtube`);
 
       r = await post(`${INTEG_BASE()}/youtube/uploadrole`, { fields: { role_id: ROLE_PLAIN } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=yt_upload_role_set`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=yt_upload_role_set&at=youtube#youtube`);
       assert.equal(api.getGuildSettings(CID_A).youtube_upload_role_id, ROLE_PLAIN);
 
       r = await post(`${INTEG_BASE()}/youtube/uploadrole`, { fields: { role_id: "" } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=yt_upload_role_cleared`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=yt_upload_role_cleared&at=youtube#youtube`);
       assert.equal(api.getGuildSettings(CID_A).youtube_upload_role_id, null);
       expectAudit("youtube.upload_role_set");
     });
@@ -630,7 +630,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
     it("add WITHOUT TWITCH env ⇒ refused before any network call (slash parity)", async () => {
       for (const key of ["TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET"]) delete process.env[key];
       const { location } = await post(`${INTEG_BASE()}/twitch/add`, { fields: { login: "cool" } });
-      assert.equal(location, `${INTEG_BASE()}?error=twitch_not_configured`);
+      assert.equal(location, `${INTEG_BASE()}?error=twitch_not_configured&at=twitch#twitch`);
       assert.equal(resolveCalls.length, 0, "never called the resolver");
       assert.equal(api.getTwitchChannels(CID_A).length, 0);
     });
@@ -641,7 +641,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       const { location } = await post(`${INTEG_BASE()}/twitch/add`, {
         fields: { login: "https://twitch.tv/CoolStreamer" },
       });
-      assert.equal(location, `${INTEG_BASE()}?done=tw_added`);
+      assert.equal(location, `${INTEG_BASE()}?done=tw_added&at=twitch#twitch`);
       const rows = api.getTwitchChannels(CID_A);
       const row = rows.find((r) => r.login === "coolstreamer");
       assert.ok(row, "normalized login stored");
@@ -649,44 +649,46 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       expectAudit("twitch.channel_add", (a) => assert.equal(a.target_id, "btw-1"));
 
       const dup = await post(`${INTEG_BASE()}/twitch/add`, { fields: { login: "coolstreamer" } });
-      assert.equal(dup.location, `${INTEG_BASE()}?error=tw_exists`);
+      assert.equal(dup.location, `${INTEG_BASE()}?error=tw_exists&at=twitch#twitch`);
       assert.equal(api.getTwitchChannels(CID_A).length, 1);
     });
 
     it("unresolvable login ⇒ tw_resolve_failed, no row", async () => {
       const { location } = await post(`${INTEG_BASE()}/twitch/add`, { fields: { login: "ghost" } });
-      assert.equal(location, `${INTEG_BASE()}?error=tw_resolve_failed`);
+      assert.equal(location, `${INTEG_BASE()}?error=tw_resolve_failed&at=twitch#twitch`);
       assert.equal(api.getTwitchChannels(CID_A).length, 1);
     });
 
     it("remove unknown ⇒ tw_not_found; remove by login goes + audits", async () => {
       const auditsBefore = webAuditCount();
       let r = await post(`${INTEG_BASE()}/twitch/remove`, { fields: { channel: "nobody" } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=tw_not_found`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=tw_not_found&at=twitch#twitch`);
       assert.equal(webAuditCount(), auditsBefore);
 
       r = await post(`${INTEG_BASE()}/twitch/remove`, { fields: { channel: "coolstreamer" } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=tw_removed`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=tw_removed&at=twitch#twitch`);
       assert.equal(api.getTwitchChannels(CID_A).length, 0);
       expectAudit("twitch.channel_remove");
     });
 
     it("channel/role/interval settings persist with slash actions", async () => {
       let r = await post(`${INTEG_BASE()}/twitch/channel`, { fields: { channel_id: CH_MAIN } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=tw_channel_set`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=tw_channel_set&at=twitch#twitch`);
       assert.equal(api.getGuildSettings(CID_A).twitch_notification_channel_id, CH_MAIN);
 
       r = await post(`${INTEG_BASE()}/twitch/role`, { fields: { role_id: ROLE_PLAIN } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=tw_role_set`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=tw_role_set&at=twitch#twitch`);
       assert.equal(api.getGuildSettings(CID_A).twitch_notify_role_id, ROLE_PLAIN);
       r = await post(`${INTEG_BASE()}/twitch/role`, { fields: { role_id: "" } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=tw_role_cleared`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=tw_role_cleared&at=twitch#twitch`);
       assert.equal(api.getGuildSettings(CID_A).twitch_notify_role_id, null);
 
       let bad = await post(`${INTEG_BASE()}/twitch/interval`, { fields: { minutes: "99" } });
-      assert.equal(bad.location, `${INTEG_BASE()}?error=invalid_interval`);
+      // Same slug as the YouTube interval reject — the ROUTE places the
+      // section (spec table): a Twitch field error must never carry at=youtube.
+      assert.equal(bad.location, `${INTEG_BASE()}?error=invalid_interval&at=twitch#twitch`);
       r = await post(`${INTEG_BASE()}/twitch/interval`, { fields: { minutes: "4" } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=tw_interval_set`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=tw_interval_set&at=twitch#twitch`);
       assert.equal(api.getGuildSettings(CID_A).twitch_polling_interval_minutes, 4);
 
       expectAudit("twitch.notify_channel_set");
@@ -720,7 +722,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       const { location } = await post(`${INTEG_BASE()}/reaction-roles/panel/create`, {
         fields: { channel_id: CH_MAIN },
       });
-      assert.equal(location, `${INTEG_BASE()}?error=rr_offline`);
+      assert.equal(location, `${INTEG_BASE()}?error=rr_offline&at=reaction-roles#reaction-roles`);
     });
 
     describe("with fake client", () => {
@@ -735,7 +737,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         const { location } = await post(`${INTEG_BASE()}/reaction-roles/panel/create`, {
           fields: { channel_id: CH_MAIN },
         });
-        assert.equal(location, `${INTEG_BASE()}?done=rr_panel_created`);
+        assert.equal(location, `${INTEG_BASE()}?done=rr_panel_created&at=reaction-roles#reaction-roles`);
         assert.equal(fake.sent.length, 1, "embed posted through the channel");
         const panel = api.listReactionRolePanels(CID_A).find((p) => p.message_id === MSG_SENT_ID);
         assert.ok(panel, "panel stored with the sent message id");
@@ -749,15 +751,15 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         let r = await post(`${INTEG_BASE()}/reaction-roles/panel/create`, {
           fields: { channel_id: CH_VOICE },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?error=rr_channel_unsendable`);
+        assert.equal(r.location, `${INTEG_BASE()}?error=rr_channel_unsendable&at=reaction-roles#reaction-roles`);
         r = await post(`${INTEG_BASE()}/reaction-roles/panel/create`, {
           fields: { channel_id: CH_UNCACHED },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?error=channel_missing`);
+        assert.equal(r.location, `${INTEG_BASE()}?error=channel_missing&at=reaction-roles#reaction-roles`);
         r = await post(`${INTEG_BASE()}/reaction-roles/panel/create`, {
           fields: { channel_id: CH_BADSEND },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?error=rr_post_failed`);
+        assert.equal(r.location, `${INTEG_BASE()}?error=rr_post_failed&at=reaction-roles#reaction-roles`);
         assert.equal(api.listReactionRolePanels(CID_A).length, before, "no half-stored panel");
         assert.equal(auditsFor("reaction_roles.panel_create").length, 1); // only the happy one
       });
@@ -780,7 +782,11 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         ];
         for (const [fields, slug] of cases) {
           const { location } = await post(`${INTEG_BASE()}/reaction-roles/option/add`, { fields });
-          assert.equal(location, `${INTEG_BASE()}?error=${slug}`, `case ${slug}`);
+          assert.equal(
+            location,
+            `${INTEG_BASE()}?error=${slug}&at=reaction-roles#reaction-roles`,
+            `case ${slug}`
+          );
         }
         assert.equal(webAuditCount(), auditsBefore, "refusals never audit");
       });
@@ -795,7 +801,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
             removable: "0",
           },
         });
-        assert.equal(location, `${INTEG_BASE()}?done=rr_option_added`);
+        assert.equal(location, `${INTEG_BASE()}?done=rr_option_added&at=reaction-roles#reaction-roles`);
         const opt = api.getReactionRoleOption(CID_A, PANEL_MSG, "🎉");
         assert.ok(opt, "option stored under the parsed emoji key");
         assert.equal(opt.role_id, ROLE_PLAIN);
@@ -811,7 +817,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         const { location } = await post(`${INTEG_BASE()}/reaction-roles/option/add`, {
           fields: { message_id: PANEL_MSG, role_id: ROLE_PLAIN, emoji: "<:hehe:497312345678901234>" },
         });
-        assert.equal(location, `${INTEG_BASE()}?done=rr_option_added`);
+        assert.equal(location, `${INTEG_BASE()}?done=rr_option_added&at=reaction-roles#reaction-roles`);
         const opt = api.getReactionRoleOption(CID_A, PANEL_MSG, EMOJI_ID);
         assert.ok(opt);
         assert.equal(opt.emoji_display, "<:hehe:497312345678901234>");
@@ -822,11 +828,11 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         let r = await post(`${INTEG_BASE()}/reaction-roles/option/add`, {
           fields: { message_id: PANEL_MSG2, role_id: ROLE_PLAIN, emoji: fresh },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?error=rr_option_limit`);
+        assert.equal(r.location, `${INTEG_BASE()}?error=rr_option_limit&at=reaction-roles#reaction-roles`);
         r = await post(`${INTEG_BASE()}/reaction-roles/option/add`, {
           fields: { message_id: PANEL_MSG2, role_id: ROLE_PLAIN, emoji: EMOJIS_20[3], level: "3" },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?done=rr_option_added`, "upsert exemption");
+        assert.equal(r.location, `${INTEG_BASE()}?done=rr_option_added&at=reaction-roles#reaction-roles`, "upsert exemption");
         assert.equal(Number(api.getReactionRoleOption(CID_A, PANEL_MSG2, EMOJIS_20[3]).min_level), 3);
       });
 
@@ -835,13 +841,13 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         let r = await post(`${INTEG_BASE()}/reaction-roles/option/remove`, {
           fields: { message_id: PANEL_MSG, emoji: "😴" },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?error=rr_option_not_found`);
+        assert.equal(r.location, `${INTEG_BASE()}?error=rr_option_not_found&at=reaction-roles#reaction-roles`);
         assert.equal(webAuditCount(), auditsBefore);
 
         r = await post(`${INTEG_BASE()}/reaction-roles/option/remove`, {
           fields: { message_id: PANEL_MSG, emoji: "👍" },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?done=rr_option_removed`);
+        assert.equal(r.location, `${INTEG_BASE()}?done=rr_option_removed&at=reaction-roles#reaction-roles`);
         assert.equal(api.getReactionRoleOption(CID_A, PANEL_MSG, "👍"), null);
         expectAudit("reaction_roles.option_remove");
       });
@@ -851,13 +857,13 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         let r = await post(`${INTEG_BASE()}/reaction-roles/panel/delete`, {
           fields: { message_id: "999999999999999999" },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?error=rr_panel_not_found`);
+        assert.equal(r.location, `${INTEG_BASE()}?error=rr_panel_not_found&at=reaction-roles#reaction-roles`);
         assert.equal(webAuditCount(), auditsBefore);
 
         r = await post(`${INTEG_BASE()}/reaction-roles/panel/delete`, {
           fields: { message_id: MSG_SENT_ID },
         });
-        assert.equal(r.location, `${INTEG_BASE()}?done=rr_panel_deleted`);
+        assert.equal(r.location, `${INTEG_BASE()}?done=rr_panel_deleted&at=reaction-roles#reaction-roles`);
         assert.ok(!api.getReactionRolePanel(CID_A, MSG_SENT_ID));
         assert.equal(api.countReactionRoleOptions(CID_A, MSG_SENT_ID), 0, "options cascaded");
         expectAudit("reaction_roles.panel_delete");
@@ -887,7 +893,11 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         const { location } = await post(`${INTEG_BASE()}/event-reminders/channel`, {
           fields: { channel_id },
         });
-        assert.equal(location, `${INTEG_BASE()}?error=${slug}`, `channel "${channel_id}"`);
+        assert.equal(
+          location,
+          `${INTEG_BASE()}?error=${slug}&at=reminders#reminders`,
+          `channel "${channel_id}"`
+        );
       }
       assert.equal(api.getGuildSettings(CID_A).event_reminder_channel_id ?? null, before);
       assert.equal(webAuditCount(), auditsBefore);
@@ -897,11 +907,11 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       let r = await post(`${INTEG_BASE()}/event-reminders/channel`, {
         fields: { channel_id: CH_MAIN },
       });
-      assert.equal(r.location, `${INTEG_BASE()}?done=er_channel_set`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=er_channel_set&at=reminders#reminders`);
       assert.equal(api.getGuildSettings(CID_A).event_reminder_channel_id, CH_MAIN);
 
       r = await post(`${INTEG_BASE()}/event-reminders/channel`, { fields: { channel_id: "" } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=er_channel_cleared`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=er_channel_cleared&at=reminders#reminders`);
       assert.equal(api.getGuildSettings(CID_A).event_reminder_channel_id, null);
       expectAudit("event_reminders.channel_set", (a) => {
         assert.ok(JSON.parse(a.details_json).channel_id === null);
@@ -941,10 +951,10 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
 
     it("channel add: uncached refused; stored row + warning post + audit", async () => {
       let r = await post(`${INTEG_BASE()}/honeypot/channel/add`, { fields: { channel_id: CH_UNCACHED } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=channel_missing`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=channel_missing&at=honeypot#honeypot`);
 
       r = await post(`${INTEG_BASE()}/honeypot/channel/add`, { fields: { channel_id: HP_CH } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=hp_channel_added`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=hp_channel_added&at=honeypot#honeypot`);
       assert.ok(api.isHoneypotChannel(CID_A, HP_CH), "stored");
       assert.deepEqual(warningCalls, [{ guildId: GUILD_A, channelId: HP_CH }], "feature ran");
       expectAudit("honeypot.channel_add", (a) => assert.equal(a.target_id, HP_CH));
@@ -955,49 +965,49 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       const { location } = await post(`${INTEG_BASE()}/honeypot/channel/add`, {
         fields: { channel_id: HP_CH },
       });
-      assert.equal(location, `${INTEG_BASE()}?error=hp_channel_exists`);
+      assert.equal(location, `${INTEG_BASE()}?error=hp_channel_exists&at=honeypot#honeypot`);
       assert.equal(auditsFor("honeypot.channel_add").length, auditsBefore);
     });
 
     it("channel del: unknown refused silently; stored removed + audits", async () => {
       const auditsBefore = webAuditCount();
       let r = await post(`${INTEG_BASE()}/honeypot/channel/del`, { fields: { channel_id: HP_CH } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=hp_channel_removed`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=hp_channel_removed&at=honeypot#honeypot`);
       assert.equal(api.isHoneypotChannel(CID_A, HP_CH), false);
       expectAudit("honeypot.channel_del");
 
       const after = webAuditCount();
       r = await post(`${INTEG_BASE()}/honeypot/channel/del`, { fields: { channel_id: HP_CH } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=hp_channel_not_found`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=hp_channel_not_found&at=honeypot#honeypot`);
       assert.equal(webAuditCount(), after, "second del did not audit");
     });
 
     it("banrole add: @everyone arithmetic, managed refusal, duplicate refusal, happy store", async () => {
       let r = await post(`${INTEG_BASE()}/honeypot/banrole/add`, { fields: { role_id: GUILD_A } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=hp_role_everyone`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=hp_role_everyone&at=honeypot#honeypot`);
       r = await post(`${INTEG_BASE()}/honeypot/banrole/add`, { fields: { role_id: ROLE_MANAGED } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=hp_role_managed`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=hp_role_managed&at=honeypot#honeypot`);
       r = await post(`${INTEG_BASE()}/honeypot/banrole/add`, { fields: { role_id: ROLE_UNCACHED } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=role_missing`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=role_missing&at=honeypot#honeypot`);
 
       r = await post(`${INTEG_BASE()}/honeypot/banrole/add`, { fields: { role_id: ROLE_PLAIN } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=hp_banrole_added`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=hp_banrole_added&at=honeypot#honeypot`);
       assert.ok(api.isHoneypotBanRole(CID_A, ROLE_PLAIN));
       expectAudit("honeypot.ban_role_add");
 
       r = await post(`${INTEG_BASE()}/honeypot/banrole/add`, { fields: { role_id: ROLE_PLAIN } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=hp_banrole_exists`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=hp_banrole_exists&at=honeypot#honeypot`);
       assert.equal(auditsFor("honeypot.ban_role_add").length, 1);
     });
 
     it("banrole del: unknown refused; stored removed + audits", async () => {
       const auditsBefore = webAuditCount();
       let r = await post(`${INTEG_BASE()}/honeypot/banrole/del`, { fields: { role_id: ROLE_EXEMPT } });
-      assert.equal(r.location, `${INTEG_BASE()}?error=hp_banrole_not_found`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=hp_banrole_not_found&at=honeypot#honeypot`);
       assert.equal(webAuditCount(), auditsBefore);
 
       r = await post(`${INTEG_BASE()}/honeypot/banrole/del`, { fields: { role_id: ROLE_PLAIN } });
-      assert.equal(r.location, `${INTEG_BASE()}?done=hp_banrole_removed`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=hp_banrole_removed&at=honeypot#honeypot`);
       assert.equal(api.isHoneypotBanRole(CID_A, ROLE_PLAIN), false);
       expectAudit("honeypot.ban_role_del");
     });
@@ -1018,7 +1028,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         fields: { role_id: ROLE_EXEMPT },
       });
       assert.equal(res.status, 302);
-      assert.equal(location, `${INTEG_BASE()}?done=hp_exempt_added`);
+      assert.equal(location, `${INTEG_BASE()}?done=hp_exempt_added&at=honeypot#honeypot`);
       const stored = api.listStaffRoles(CID_A).find((r) => r.role_id === ROLE_EXEMPT);
       assert.ok(stored, "staff_roles row written through the facade alias");
       assert.equal(stored.level, "senior", "slash exempt default level parity");
@@ -1034,12 +1044,12 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         who: "admin",
         fields: { role_id: GUILD_A },
       });
-      assert.equal(r.location, `${INTEG_BASE()}?error=hp_role_everyone`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=hp_role_everyone&at=honeypot#honeypot`);
       r = await post(`${INTEG_BASE()}/honeypot/exempt/add`, {
         who: "admin",
         fields: { role_id: ROLE_UNCACHED },
       });
-      assert.equal(r.location, `${INTEG_BASE()}?error=role_missing`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=role_missing&at=honeypot#honeypot`);
     });
 
     it("del: unknown refused without audit; stored role removed + audits staff.role_remove", async () => {
@@ -1048,14 +1058,14 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
         who: "admin",
         fields: { role_id: ROLE_UNCACHED },
       });
-      assert.equal(r.location, `${INTEG_BASE()}?error=hp_exempt_not_found`);
+      assert.equal(r.location, `${INTEG_BASE()}?error=hp_exempt_not_found&at=honeypot#honeypot`);
       assert.equal(webAuditCount(), auditsBefore);
 
       r = await post(`${INTEG_BASE()}/honeypot/exempt/del`, {
         who: "admin",
         fields: { role_id: ROLE_EXEMPT },
       });
-      assert.equal(r.location, `${INTEG_BASE()}?done=hp_exempt_removed`);
+      assert.equal(r.location, `${INTEG_BASE()}?done=hp_exempt_removed&at=honeypot#honeypot`);
       assert.ok(!api.listStaffRoles(CID_A).find((x) => x.role_id === ROLE_EXEMPT));
       expectAudit("staff.role_remove", (a) =>
         assert.equal(JSON.parse(a.details_json).via, "honeypot.exempt")
@@ -1077,7 +1087,10 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       const { location } = await post(`${INTEG_BASE()}/youtube/interval`, {
         fields: { minutes: evil },
       });
-      assert.equal(location, `${INTEG_BASE()}?error=invalid_interval`);
+      // YouTube interval route ⇒ the section argument places at=youtube
+      // (the same slug from the Twitch interval route carries at=twitch —
+      // pinned in the twitch block above; spec #644 table).
+      assert.equal(location, `${INTEG_BASE()}?error=invalid_interval&at=youtube#youtube`);
       assert.ok(!location.includes("script"), "location carries a slug, not the value");
     });
 
@@ -1102,6 +1115,80 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       assert.ok(err.body.match(/class="banner banner-warn/), "warn banner class");
     });
 
+    it("GET at=youtube renders the banner INSIDE section#youtube and opens its write details (#644)", async () => {
+      const { res, body } = await getPage("staff", "?done=yt_added&at=youtube");
+      assert.equal(res.status, 200);
+      const start = body.indexOf('<section id="youtube" data-setting-section');
+      assert.ok(start >= 0, "youtube section carries the frozen id + find-box hook");
+      const sectionHtml = body.slice(start, body.indexOf("</section>", start));
+      assert.ok(sectionHtml.includes("banner banner-info"), "banner INSIDE the section");
+      assert.ok(sectionHtml.includes("Subscribed to the YouTube channel."));
+      assert.ok(
+        sectionHtml.indexOf("banner banner-info") < sectionHtml.indexOf("<details"),
+        "banner first inside the section — above every disclosure"
+      );
+      assert.ok(
+        sectionHtml.includes('<details class="integ-write" open>'),
+        "the section's own write disclosures render open"
+      );
+      assert.equal(
+        (body.match(/class="banner banner-info"/g) || []).length,
+        1,
+        "exactly one info banner in the whole document — no page-top duplicate, no second copy"
+      );
+      // Other sections keep their disclosures closed:
+      const twStart = body.indexOf('<section id="twitch"');
+      assert.ok(twStart >= 0, "twitch section exists");
+      const twHtml = body.slice(twStart, body.indexOf("</section>", twStart));
+      assert.ok(
+        !twHtml.includes('<details class="integ-write" open>'),
+        "at=youtube never opens another section's details"
+      );
+    });
+
+    it("GET at=reminders places the banner inside section#reminders (#644)", async () => {
+      const { body } = await getPage("staff", "?done=er_channel_set&at=reminders");
+      const start = body.indexOf('<section id="reminders" data-setting-section');
+      assert.ok(start >= 0, "reminders section id is `reminders` (NOT event-reminders)");
+      const sectionHtml = body.slice(start, body.indexOf("</section>", start));
+      assert.ok(
+        sectionHtml.includes("Event reminder default channel updated."),
+        "banner renders first inside the reminders section"
+      );
+      const bannerIdx = sectionHtml.indexOf("banner banner-info");
+      const firstBlock = sectionHtml.indexOf('<div class="settings-rows"');
+      assert.ok(
+        bannerIdx >= 0 && firstBlock >= 0 && bannerIdx < firstBlock,
+        "banner is the section's FIRST content node (before every row block)"
+      );
+      assert.ok(
+        body.indexOf("banner banner-info") >= start,
+        "no page-top banner duplicate when at is valid"
+      );
+      assert.equal(
+        (body.match(/class="banner banner-info"/g) || []).length,
+        1,
+        "exactly one info banner in the whole document"
+      );
+    });
+
+    it("GET unknown at opens nothing, is never echoed, and the banner stays page-top (#644)", async () => {
+      const evil = encodeURIComponent('<script>alert(1)</script>');
+      const { res, body } = await getPage("staff", `?done=yt_added&at=${evil}`);
+      assert.equal(res.status, 200);
+      assert.ok(!body.includes("<script>alert(1)"), "raw at value never reflected");
+      assert.ok(!body.includes(`id="${evil}"`), "raw at value never interpolated into an id");
+      assert.equal(
+        body.match(/<details class="integ-write" open>/g),
+        null,
+        "unknown at opens NOTHING — no open attribute anywhere"
+      );
+      assert.ok(
+        body.match(/class="banner banner-info/),
+        "the flash still renders (page-top slot, historical placement)"
+      );
+    });
+
     it("successful mutation renders the stored value on the redirected page (cache invalidated)", async () => {
       await mountApp({
         lookupYoutubeChannel: async () => ({ id: "UCcachetest000001", name: "cache probe" }),
@@ -1111,7 +1198,7 @@ describe("web integrations writes (POST /g/:guildId/integrations/*)", () => {
       const { location } = await post(`${INTEG_BASE()}/youtube/add`, {
         fields: { url: "UCcachetest000001" },
       });
-      assert.equal(location, `${INTEG_BASE()}?done=yt_added`);
+      assert.equal(location, `${INTEG_BASE()}?done=yt_added&at=youtube#youtube`);
       const { body } = await getPage("staff", "?done=yt_added");
       assert.ok(body.includes("UCcachetest000001"), "write is visible immediately (no stale cache)");
       // cleanup so the audit-count tests above stay isolated if re-run:

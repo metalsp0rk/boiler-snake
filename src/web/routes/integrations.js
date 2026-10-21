@@ -69,6 +69,7 @@ const {
   flashFromQuery,
   FLASH_DONE,
   FLASH_ERROR,
+  SECTION_IDS,
 } = require("../views/integrations");
 const { createIntegrationsData } = require("../data/integrationsData");
 
@@ -162,13 +163,45 @@ function intInRange(value, min, max) {
  * minting Location (previously this surface interpolated the slug unchecked;
  * all 50 call sites pass table literals, so bytes are unchanged — this is
  * the §8.7 no-echo guarantee, not a behavior change).
+ *
+ * #644: this surface declares its frozen page sections (views/integrations
+ * SECTION_IDS), so a handler that passes an accepted section as the 5th
+ * argument redirects to
+ *   ?<flag>=<slug>&at=<section>#<section>
+ * The handler CHOOSES the section (never `_return`, `next`, or a posted
+ * hash); the shared core re-checks the value against sectionIds and writes
+ * nothing for an omitted/unknown one (historical bytes preserved).
  */
 const redirectIntegrations = makeFlashRedirect({
   pageOf: (guildId) => `/g/${encodeURIComponent(guildId)}/integrations`,
   doneTable: FLASH_DONE,
   errorTable: FLASH_ERROR,
   headers: { "X-Content-Type-Options": "nosniff" },
+  sectionIds: SECTION_IDS,
 });
+
+/**
+ * Frozen page-section ids (#644) — one definition (views/integrations)
+ * shared by the redirect writer (via sectionIds above), the GET `at` reader
+ * below, and the view's banner/open placement.
+ */
+const INTEG_SECTIONS = new Set(SECTION_IDS);
+
+/**
+ * Read the SECTION the GET should open (#644). The redirect repeats the
+ * section as `?at=` because the URL FRAGMENT never arrives on the GET after
+ * a redirect — and even then only the frozen set is accepted; an unknown or
+ * missing `at` opens nothing (banner stays at the top of the page). The raw
+ * query value is NEVER interpolated into an id attribute: it is only ever
+ * tested for set membership (routes/settings.js readSectionAt twin; this
+ * route already consumes the parsed query for the flash pair).
+ * @param {{at?: unknown}|undefined|null} query parsed req.query
+ * @returns {string|null} validated section id
+ */
+function readSectionAt(query) {
+  const at = query && typeof query === "object" ? query.at : undefined;
+  return typeof at === "string" && INTEG_SECTIONS.has(at) ? at : null;
+}
 
 /**
  * @param {import("express").Express} app
@@ -300,10 +333,15 @@ function registerIntegrationsRoutes(app, options = {}) {
    * = int range re-check). Facade order — read-before → update → audit →
    * invalidate → redirect — is the parity anchor with the slash handlers
    * these mirror; do not reorder.
+   *
+   * #644: one helper serves BOTH twins, so the flash slug cannot place the
+   * redirect section (invalid_interval fires from both the YouTube and the
+   * Twitch interval route). The mount passes `section` explicitly and it is
+   * forwarded on EVERY redirect inside the helper — no exception.
    */
   function mountSettingsField(
     path,
-    { kind, field, key = "channel_id", auditAction, detailsOf, done, doneCleared }
+    { kind, field, key = "channel_id", auditAction, detailsOf, done, doneCleared, section }
   ) {
     mountMutation(path, "staff", (req, res) => {
       const guildId = guildOf(req); // external: preflight caches + audit target
@@ -314,7 +352,7 @@ function registerIntegrationsRoutes(app, options = {}) {
       if (kind === "interval") {
         value = intInRange(bodyFields(req).minutes, POLL_MIN, POLL_MAX);
         if (value === null) {
-          return redirectIntegrations(res, communityId, "error", "invalid_interval");
+          return redirectIntegrations(res, communityId, "error", "invalid_interval", section);
         }
         targetId = guildId;
         targetType = "guild";
@@ -322,20 +360,20 @@ function registerIntegrationsRoutes(app, options = {}) {
         const parsed = snowflakeOrEmpty(bodyFields(req)[key]);
         if (kind === "channel") {
           if (!parsed.present || !parsed.ok) {
-            return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
+            return redirectIntegrations(res, communityId, "error", "invalid_channel_id", section);
           }
           const fail = preflightChannel(guildFromCache(guildId), parsed.value);
-          if (fail) return redirectIntegrations(res, communityId, "error", fail);
+          if (fail) return redirectIntegrations(res, communityId, "error", fail, section);
           value = parsed.value;
           targetId = parsed.value;
           targetType = "channel";
         } else {
           if (!parsed.ok) {
-            return redirectIntegrations(res, communityId, "error", "invalid_role_id");
+            return redirectIntegrations(res, communityId, "error", "invalid_role_id", section);
           }
           if (parsed.present) {
             const fail = preflightRole(guildFromCache(guildId), parsed.value);
-            if (fail) return redirectIntegrations(res, communityId, "error", fail);
+            if (fail) return redirectIntegrations(res, communityId, "error", fail, section);
           }
           value = parsed.value || null;
           targetId = parsed.value || guildId;
@@ -355,7 +393,8 @@ function registerIntegrationsRoutes(app, options = {}) {
         res,
         communityId,
         "done",
-        doneCleared !== undefined && value === null ? doneCleared : done
+        doneCleared !== undefined && value === null ? doneCleared : done,
+        section
       );
     });
   }
@@ -388,9 +427,9 @@ function registerIntegrationsRoutes(app, options = {}) {
     async (req, res) => {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const url = field(bodyFields(req), "url");
-      if (!url) return redirectIntegrations(res, communityId, "error", "missing_field");
+      if (!url) return redirectIntegrations(res, communityId, "error", "missing_field", "youtube");
       if (!(process.env.YOUTUBE_API_KEY || "").trim()) {
-        return redirectIntegrations(res, communityId, "error", "youtube_not_configured");
+        return redirectIntegrations(res, communityId, "error", "youtube_not_configured", "youtube");
       }
 
       let channelId = "";
@@ -426,7 +465,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         channelName = `Channel ID: ${url}`;
       }
       if (!channelId || !channelName) {
-        return redirectIntegrations(res, communityId, "error", "invalid_input");
+        return redirectIntegrations(res, communityId, "error", "invalid_input", "youtube");
       }
 
       const normalizedChannelName = normalizeYoutubeName(channelName);
@@ -446,7 +485,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         details: { channel_name: normalizedChannelName, url },
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "yt_added");
+      redirectIntegrations(res, communityId, "done", "yt_added", "youtube");
     }
   );
 
@@ -461,7 +500,7 @@ function registerIntegrationsRoutes(app, options = {}) {
     (req, res) => {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const wanted = field(bodyFields(req), "channel_id");
-      if (!wanted) return redirectIntegrations(res, communityId, "error", "missing_field");
+      if (!wanted) return redirectIntegrations(res, communityId, "error", "missing_field", "youtube");
 
       const channelsBefore = db.getYoutubeChannels(communityId);
       const found = channelsBefore.find(
@@ -469,7 +508,7 @@ function registerIntegrationsRoutes(app, options = {}) {
           normalizeYoutubeName(String(c.id)) === normalizeYoutubeName(wanted) &&
           c.community_id === communityId
       );
-      if (!found) return redirectIntegrations(res, communityId, "error", "yt_not_found");
+      if (!found) return redirectIntegrations(res, communityId, "error", "yt_not_found", "youtube");
 
       // #442 (audit INT-7): the repo return is honest now (res.changes > 0;
       // the old `SELECT changes()` probe yielded a column named "changes()"
@@ -477,7 +516,7 @@ function registerIntegrationsRoutes(app, options = {}) {
       // false means the row genuinely isn't there (e.g. removed concurrently).
       const removed = db.removeYoutubeChannel(communityId, found.id);
       if (!removed) {
-        return redirectIntegrations(res, communityId, "error", "yt_not_found");
+        return redirectIntegrations(res, communityId, "error", "yt_not_found", "youtube");
       }
       req.audit({
         action: "youtube.channel_remove",
@@ -486,7 +525,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         details: { channel_name: found.channel_name },
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "yt_removed");
+      redirectIntegrations(res, communityId, "done", "yt_removed", "youtube");
     }
   );
 
@@ -501,6 +540,7 @@ function registerIntegrationsRoutes(app, options = {}) {
     auditAction: "youtube.notify_channel_set",
     detailsOf: (v, before) => ({ previous_channel_id: before }),
     done: "yt_channel_set",
+    section: "youtube",
   });
 
   /** POST .../youtube/interval — /setyoutube interval (1-60 re-check twin). */
@@ -510,6 +550,7 @@ function registerIntegrationsRoutes(app, options = {}) {
     auditAction: "youtube.polling_interval_set",
     detailsOf: (v, before) => ({ previous_minutes: before, minutes: v }),
     done: "yt_interval_set",
+    section: "youtube",
   });
 
   /**
@@ -524,6 +565,7 @@ function registerIntegrationsRoutes(app, options = {}) {
     detailsOf: (v, before) => ({ role_id: v, previous_role_id: before }),
     done: "yt_upload_role_set",
     doneCleared: "yt_upload_role_cleared",
+    section: "youtube",
   });
 
   // ---------------------------------------------------------------------
@@ -541,19 +583,19 @@ function registerIntegrationsRoutes(app, options = {}) {
     async (req, res) => {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const raw = field(bodyFields(req), "login");
-      if (!raw) return redirectIntegrations(res, communityId, "error", "missing_field");
+      if (!raw) return redirectIntegrations(res, communityId, "error", "missing_field", "twitch");
 
       if (!process.env.TWITCH_CLIENT_ID || !process.env.TWITCH_CLIENT_SECRET) {
-        return redirectIntegrations(res, communityId, "error", "twitch_not_configured");
+        return redirectIntegrations(res, communityId, "error", "twitch_not_configured", "twitch");
       }
 
       const login = normalizeTwitchLogin(raw);
       const user = await resolveTwitch(login).catch(() => null);
       if (!user) {
-        return redirectIntegrations(res, communityId, "error", "tw_resolve_failed");
+        return redirectIntegrations(res, communityId, "error", "tw_resolve_failed", "twitch");
       }
       if (db.getTwitchChannel(communityId, user.login)) {
-        return redirectIntegrations(res, communityId, "error", "tw_exists");
+        return redirectIntegrations(res, communityId, "error", "tw_exists", "twitch");
       }
 
       db.addTwitchChannel(communityId, user.id, user.login, user.display_name, user.profile_image_url);
@@ -564,7 +606,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         details: { login: user.login, display_name: user.display_name },
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "tw_added");
+      redirectIntegrations(res, communityId, "done", "tw_added", "twitch");
     }
   );
 
@@ -575,10 +617,10 @@ function registerIntegrationsRoutes(app, options = {}) {
     (req, res) => {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const raw = field(bodyFields(req), "channel");
-      if (!raw) return redirectIntegrations(res, communityId, "error", "missing_field");
+      if (!raw) return redirectIntegrations(res, communityId, "error", "missing_field", "twitch");
 
       const found = db.getTwitchChannel(communityId, raw);
-      if (!found) return redirectIntegrations(res, communityId, "error", "tw_not_found");
+      if (!found) return redirectIntegrations(res, communityId, "error", "tw_not_found", "twitch");
 
       db.removeTwitchChannel(communityId, found.login);
       req.audit({
@@ -588,7 +630,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         details: { login: found.login, display_name: found.display_name },
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "tw_removed");
+      redirectIntegrations(res, communityId, "done", "tw_removed", "twitch");
     }
   );
 
@@ -603,6 +645,7 @@ function registerIntegrationsRoutes(app, options = {}) {
     auditAction: "twitch.notify_channel_set",
     detailsOf: (v, before) => ({ previous_channel_id: before }),
     done: "tw_channel_set",
+    section: "twitch",
   });
 
   /** POST .../twitch/role — /settwitch role; empty clears (parity). */
@@ -614,6 +657,7 @@ function registerIntegrationsRoutes(app, options = {}) {
     detailsOf: (v, before) => ({ role_id: v, previous_role_id: before }),
     done: "tw_role_set",
     doneCleared: "tw_role_cleared",
+    section: "twitch",
   });
 
   /** POST .../twitch/interval — /settwitch interval (picker min/max twin). */
@@ -623,6 +667,7 @@ function registerIntegrationsRoutes(app, options = {}) {
     auditAction: "twitch.polling_interval_set",
     detailsOf: (v, before) => ({ previous_minutes: before, minutes: v }),
     done: "tw_interval_set",
+    section: "twitch",
   });
 
   // ---------------------------------------------------------------------
@@ -646,25 +691,25 @@ function registerIntegrationsRoutes(app, options = {}) {
       const fields = bodyFields(req);
       const parsed = snowflakeOrEmpty(fields.channel_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_channel_id", "reaction-roles");
       }
       const title = field(fields, "title") || "Reaction Roles";
       const description =
         field(fields, "description") ||
         "React to get a role. Remove your reaction to drop it (if allowed).";
       if (title.length > 256 || description.length > 1000) {
-        return redirectIntegrations(res, communityId, "error", "missing_field");
+        return redirectIntegrations(res, communityId, "error", "missing_field", "reaction-roles");
       }
 
       const guild = guildFromCache(guildId);
-      if (!guild) return redirectIntegrations(res, communityId, "error", "rr_offline");
+      if (!guild) return redirectIntegrations(res, communityId, "error", "rr_offline", "reaction-roles");
       const ch = cachedChannel(guild, parsed.value);
-      if (!ch) return redirectIntegrations(res, communityId, "error", "channel_missing");
+      if (!ch) return redirectIntegrations(res, communityId, "error", "channel_missing", "reaction-roles");
       if (typeof ch.isTextBased === "function" && !ch.isTextBased()) {
-        return redirectIntegrations(res, communityId, "error", "rr_channel_unsendable");
+        return redirectIntegrations(res, communityId, "error", "rr_channel_unsendable", "reaction-roles");
       }
       if (typeof ch.send !== "function") {
-        return redirectIntegrations(res, communityId, "error", "rr_channel_unsendable");
+        return redirectIntegrations(res, communityId, "error", "rr_channel_unsendable", "reaction-roles");
       }
 
       const embed = reactionRolesService.buildPanelEmbed(
@@ -679,7 +724,7 @@ function registerIntegrationsRoutes(app, options = {}) {
           allowedMentions: reactionRolesService.NO_PING_MENTIONS,
         });
       } catch {
-        return redirectIntegrations(res, communityId, "error", "rr_post_failed");
+        return redirectIntegrations(res, communityId, "error", "rr_post_failed", "reaction-roles");
       }
 
       db.createReactionRolePanel(communityId, parsed.value, msg.id, title, description);
@@ -690,7 +735,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         details: { channel_id: parsed.value, title },
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "rr_panel_created");
+      redirectIntegrations(res, communityId, "done", "rr_panel_created", "reaction-roles");
     }
   );
 
@@ -709,12 +754,12 @@ function registerIntegrationsRoutes(app, options = {}) {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const messageId = field(bodyFields(req), "message_id");
       if (!messageId || messageId.length > MESSAGE_ID_MAX) {
-        return redirectIntegrations(res, communityId, "error", "invalid_message_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_message_id", "reaction-roles");
       }
 
       const { removed, channel_id: channelId } = db.deleteReactionRolePanel(communityId, messageId);
       if (!removed) {
-        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found");
+        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found", "reaction-roles");
       }
       req.audit({
         action: "reaction_roles.panel_delete",
@@ -734,7 +779,7 @@ function registerIntegrationsRoutes(app, options = {}) {
       } catch {
         /* the DB panel is gone; the orphan message mirrors slash's note path */
       }
-      redirectIntegrations(res, communityId, "done", "rr_panel_deleted");
+      redirectIntegrations(res, communityId, "done", "rr_panel_deleted", "reaction-roles");
     }
   );
 
@@ -758,39 +803,39 @@ function registerIntegrationsRoutes(app, options = {}) {
       const fields = bodyFields(req);
       const messageId = field(fields, "message_id");
       if (!messageId || messageId.length > MESSAGE_ID_MAX) {
-        return redirectIntegrations(res, communityId, "error", "invalid_message_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_message_id", "reaction-roles");
       }
       if (!db.getReactionRolePanel(communityId, messageId)) {
-        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found");
+        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found", "reaction-roles");
       }
       const parsedRole = snowflakeOrEmpty(fields.role_id);
       if (!parsedRole.present || !parsedRole.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id", "reaction-roles");
       }
       const level = field(fields, "level") === "" ? 0 : intInRange(fields.level, 0, 999999);
       if (level === null) {
-        return redirectIntegrations(res, communityId, "error", "invalid_level");
+        return redirectIntegrations(res, communityId, "error", "invalid_level", "reaction-roles");
       }
       const removable = parseBoolFlag(fields.removable, true);
 
       const guild = guildFromCache(guildId);
       if (guild) {
         const role = cachedRole(guild, parsedRole.value);
-        if (!role) return redirectIntegrations(res, communityId, "error", "role_missing");
+        if (!role) return redirectIntegrations(res, communityId, "error", "role_missing", "reaction-roles");
         if (role.managed) {
-          return redirectIntegrations(res, communityId, "error", "rr_role_managed");
+          return redirectIntegrations(res, communityId, "error", "rr_role_managed", "reaction-roles");
         }
       }
 
       const parsed = reactionRolesService.parseEmojiInput(fields.emoji);
-      if (!parsed) return redirectIntegrations(res, communityId, "error", "rr_emoji_invalid");
+      if (!parsed) return redirectIntegrations(res, communityId, "error", "rr_emoji_invalid", "reaction-roles");
       if (guild && reactionRolesService.validateEmojiForGuild(guild, parsed)) {
-        return redirectIntegrations(res, communityId, "error", "rr_emoji_unavailable");
+        return redirectIntegrations(res, communityId, "error", "rr_emoji_unavailable", "reaction-roles");
       }
 
       const existing = db.getReactionRoleOption(communityId, messageId, parsed.key);
       if (!existing && db.countReactionRoleOptions(communityId, messageId) >= reactionRolesService.MAX_OPTIONS_PER_PANEL) {
-        return redirectIntegrations(res, communityId, "error", "rr_option_limit");
+        return redirectIntegrations(res, communityId, "error", "rr_option_limit", "reaction-roles");
       }
 
       const enriched = enrichEmojiDisplay(guild, parsed);
@@ -828,7 +873,7 @@ function registerIntegrationsRoutes(app, options = {}) {
           )
           .catch(() => {});
       }
-      redirectIntegrations(res, communityId, "done", "rr_option_added");
+      redirectIntegrations(res, communityId, "done", "rr_option_added", "reaction-roles");
     }
   );
 
@@ -848,19 +893,19 @@ function registerIntegrationsRoutes(app, options = {}) {
       const fields = bodyFields(req);
       const messageId = field(fields, "message_id");
       if (!messageId || messageId.length > MESSAGE_ID_MAX) {
-        return redirectIntegrations(res, communityId, "error", "invalid_message_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_message_id", "reaction-roles");
       }
       if (!db.getReactionRolePanel(communityId, messageId)) {
-        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found");
+        return redirectIntegrations(res, communityId, "error", "rr_panel_not_found", "reaction-roles");
       }
       const parsed = reactionRolesService.parseEmojiInput(fields.emoji);
-      if (!parsed) return redirectIntegrations(res, communityId, "error", "rr_emoji_invalid");
+      if (!parsed) return redirectIntegrations(res, communityId, "error", "rr_emoji_invalid", "reaction-roles");
 
       const guild = guildFromCache(guildId);
       const enriched = enrichEmojiDisplay(guild, parsed);
       const removed = db.deleteReactionRoleOption(communityId, messageId, enriched.key);
       if (!removed) {
-        return redirectIntegrations(res, communityId, "error", "rr_option_not_found");
+        return redirectIntegrations(res, communityId, "error", "rr_option_not_found", "reaction-roles");
       }
       req.audit({
         action: "reaction_roles.option_remove",
@@ -880,7 +925,7 @@ function registerIntegrationsRoutes(app, options = {}) {
           )
           .catch(() => {});
       }
-      redirectIntegrations(res, communityId, "done", "rr_option_removed");
+      redirectIntegrations(res, communityId, "done", "rr_option_removed", "reaction-roles");
     }
   );
 
@@ -903,20 +948,20 @@ function registerIntegrationsRoutes(app, options = {}) {
       const communityId = communityOf(req); // settings repo + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).channel_id);
       if (!parsed.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_channel_id", "reminders");
       }
       const value = parsed.value || null;
       if (value) {
         const guild = guildFromCache(guildId);
         if (guild) {
           const ch = cachedChannel(guild, value);
-          if (!ch) return redirectIntegrations(res, communityId, "error", "channel_missing");
+          if (!ch) return redirectIntegrations(res, communityId, "error", "channel_missing", "reminders");
           if (
             typeof ch.type === "number" &&
             ch.type !== CHANNEL_TYPE_GUILD_TEXT &&
             ch.type !== CHANNEL_TYPE_GUILD_ANNOUNCEMENT
           ) {
-            return redirectIntegrations(res, communityId, "error", "er_channel_type");
+            return redirectIntegrations(res, communityId, "error", "er_channel_type", "reminders");
           }
         }
       }
@@ -929,7 +974,13 @@ function registerIntegrationsRoutes(app, options = {}) {
         details: { channel_id: value },
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", value ? "er_channel_set" : "er_channel_cleared");
+      redirectIntegrations(
+        res,
+        communityId,
+        "done",
+        value ? "er_channel_set" : "er_channel_cleared",
+        "reminders"
+      );
     }
   );
 
@@ -953,12 +1004,12 @@ function registerIntegrationsRoutes(app, options = {}) {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).channel_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_channel_id", "honeypot");
       }
       const fail = preflightChannel(guildFromCache(guildId), parsed.value);
-      if (fail) return redirectIntegrations(res, communityId, "error", fail);
+      if (fail) return redirectIntegrations(res, communityId, "error", fail, "honeypot");
       if (db.isHoneypotChannel(communityId, parsed.value)) {
-        return redirectIntegrations(res, communityId, "error", "hp_channel_exists");
+        return redirectIntegrations(res, communityId, "error", "hp_channel_exists", "honeypot");
       }
 
       db.addHoneypotChannel(communityId, parsed.value);
@@ -977,7 +1028,7 @@ function registerIntegrationsRoutes(app, options = {}) {
           /* warning post is best-effort, exactly like the slash's status note */
         }
       }
-      redirectIntegrations(res, communityId, "done", "hp_channel_added");
+      redirectIntegrations(res, communityId, "done", "hp_channel_added", "honeypot");
     }
   );
 
@@ -994,7 +1045,7 @@ function registerIntegrationsRoutes(app, options = {}) {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).channel_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_channel_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_channel_id", "honeypot");
       }
 
       const { removed, warning_message_id: warningMessageId } = db.removeHoneypotChannel(
@@ -1002,7 +1053,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         parsed.value
       );
       if (!removed) {
-        return redirectIntegrations(res, communityId, "error", "hp_channel_not_found");
+        return redirectIntegrations(res, communityId, "error", "hp_channel_not_found", "honeypot");
       }
       req.audit({
         action: "honeypot.channel_del",
@@ -1022,7 +1073,7 @@ function registerIntegrationsRoutes(app, options = {}) {
       } catch {
         /* slash removes it manually in that case — same posture here */
       }
-      redirectIntegrations(res, communityId, "done", "hp_channel_removed");
+      redirectIntegrations(res, communityId, "done", "hp_channel_removed", "honeypot");
     }
   );
 
@@ -1040,21 +1091,21 @@ function registerIntegrationsRoutes(app, options = {}) {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id", "honeypot");
       }
       if (parsed.value === guildId) {
-        return redirectIntegrations(res, communityId, "error", "hp_role_everyone");
+        return redirectIntegrations(res, communityId, "error", "hp_role_everyone", "honeypot");
       }
       const guild = guildFromCache(guildId);
       if (guild) {
         const role = cachedRole(guild, parsed.value);
-        if (!role) return redirectIntegrations(res, communityId, "error", "role_missing");
+        if (!role) return redirectIntegrations(res, communityId, "error", "role_missing", "honeypot");
         if (role.managed) {
-          return redirectIntegrations(res, communityId, "error", "hp_role_managed");
+          return redirectIntegrations(res, communityId, "error", "hp_role_managed", "honeypot");
         }
       }
       if (db.isHoneypotBanRole(communityId, parsed.value)) {
-        return redirectIntegrations(res, communityId, "error", "hp_banrole_exists");
+        return redirectIntegrations(res, communityId, "error", "hp_banrole_exists", "honeypot");
       }
 
       db.addHoneypotBanRole(communityId, parsed.value);
@@ -1064,7 +1115,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         targetId: parsed.value,
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "hp_banrole_added");
+      redirectIntegrations(res, communityId, "done", "hp_banrole_added", "honeypot");
     }
   );
 
@@ -1076,12 +1127,12 @@ function registerIntegrationsRoutes(app, options = {}) {
       const communityId = communityOf(req); // repos + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id", "honeypot");
       }
 
       const removed = db.removeHoneypotBanRole(communityId, parsed.value);
       if (!removed) {
-        return redirectIntegrations(res, communityId, "error", "hp_banrole_not_found");
+        return redirectIntegrations(res, communityId, "error", "hp_banrole_not_found", "honeypot");
       }
       req.audit({
         action: "honeypot.ban_role_del",
@@ -1089,7 +1140,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         targetId: parsed.value,
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "hp_banrole_removed");
+      redirectIntegrations(res, communityId, "done", "hp_banrole_removed", "honeypot");
     }
   );
 
@@ -1108,13 +1159,13 @@ function registerIntegrationsRoutes(app, options = {}) {
       const communityId = communityOf(req); // staffRoles repo + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id", "honeypot");
       }
       if (parsed.value === guildId) {
-        return redirectIntegrations(res, communityId, "error", "hp_role_everyone");
+        return redirectIntegrations(res, communityId, "error", "hp_role_everyone", "honeypot");
       }
       const fail = preflightRole(guildFromCache(guildId), parsed.value);
-      if (fail) return redirectIntegrations(res, communityId, "error", fail);
+      if (fail) return redirectIntegrations(res, communityId, "error", fail, "honeypot");
 
       db.addStaffRole(communityId, parsed.value);
       req.audit({
@@ -1124,7 +1175,7 @@ function registerIntegrationsRoutes(app, options = {}) {
         details: { via: "honeypot.exempt" },
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "hp_exempt_added");
+      redirectIntegrations(res, communityId, "done", "hp_exempt_added", "honeypot");
     }
   );
 
@@ -1139,12 +1190,12 @@ function registerIntegrationsRoutes(app, options = {}) {
       const communityId = communityOf(req); // staffRoles repo + PRG link (integer)
       const parsed = snowflakeOrEmpty(bodyFields(req).role_id);
       if (!parsed.present || !parsed.ok) {
-        return redirectIntegrations(res, communityId, "error", "invalid_role_id");
+        return redirectIntegrations(res, communityId, "error", "invalid_role_id", "honeypot");
       }
 
       const removed = db.removeStaffRole(communityId, parsed.value);
       if (!removed) {
-        return redirectIntegrations(res, communityId, "error", "hp_exempt_not_found");
+        return redirectIntegrations(res, communityId, "error", "hp_exempt_not_found", "honeypot");
       }
       req.audit({
         action: "staff.role_remove",
@@ -1153,13 +1204,16 @@ function registerIntegrationsRoutes(app, options = {}) {
         details: { via: "honeypot.exempt" },
       });
       invalidateCache(communityId);
-      redirectIntegrations(res, communityId, "done", "hp_exempt_removed");
+      redirectIntegrations(res, communityId, "done", "hp_exempt_removed", "honeypot");
     }
   );
 
   // ---------------------------------------------------------------------
   // GET (Phase 1, unchanged behavior) — now also renders the write forms +
-  // the PRG flash (whitelisted slugs only; the raw query value is dropped).
+  // the PRG flash (whitelisted slugs only; the raw query value is dropped)
+  // + the #644 section chrome: a whitelisted ?at= opens that section's
+  // disclosures and moves the banner inside it (unknown/missing opens
+  // nothing; the fragment never arrives, `at` carries the section).
   // ---------------------------------------------------------------------
   app.get(
     "/g/:guildId/integrations",
@@ -1182,6 +1236,7 @@ function registerIntegrationsRoutes(app, options = {}) {
           csrfToken: req.csrfToken || null,
           tier: req.guildAccess.tier || null,
           flash: flashFromQuery(req.query),
+          section: readSectionAt(req.query),
         }),
         guilds: await shellGuilds(resolver, req),
       });

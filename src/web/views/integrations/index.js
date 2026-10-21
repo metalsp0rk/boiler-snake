@@ -31,9 +31,24 @@
  * PRG flash (POST-REDIRECT-GET): ?done=<slug> / ?error=<slug> render a
  * banner ONLY when the slug exists in the frozen FLASH maps below — the raw
  * query value is never echoed, so a hostile redirect target is inert.
+ *
+ * #644 LAYOUT CONTRACT: one <section id="…" class="panel" data-setting-
+ * section> per cluster, in the frozen order youtube, twitch, reaction-roles,
+ * reminders, honeypot — the SAME ids routes/integrations.js writes as the
+ * redirect `at` and reads back on the GET (the URL fragment never arrives).
+ * A whitelisted at opens every <details class="integ-write"> inside that
+ * section (attr open — native fragment-opens-details is NOT the contract)
+ * and renders the flash banner as the section's first content node;
+ * unknown/missing at opens nothing, echoes nothing, and leaves the banner
+ * where it has always rendered (top of the page). The "Find an integration"
+ * box (data-setting-filter, deliberately NOT wrapped in a <form>) is the
+ * primary jump; the anchor list (<nav class="section-nav">) stays so hashes
+ * and the server at have an id. Raw query values are never interpolated
+ * into an id attribute — section() whitelists ids on its own, and the at is
+ * only ever tested for SECTION_IDS membership.
  */
 
-const { html } = require("../escape");
+const { html, raw } = require("../escape");
 // #470 (H1-8): the flash pair, num and formatAge moved to the shared view
 // micro-framework (views/_helpers.js); the page keeps only the BINDING of
 // its frozen tables and its exported one-arg shapes (routes + tests pin them).
@@ -56,6 +71,21 @@ const ADMIN_WRITE_HINT = "Changing this requires Manage Server (server admin).";
 
 /** Honest degradation line for a cluster whose read failed. */
 const READ_FAILED = "Unavailable — the integrations read failed for this section.";
+
+/**
+ * Frozen page-section ids (#644). SINGLE DEFINITION shared with
+ * routes/integrations.js: the flash-redirect `at` writer (sectionIds guard in
+ * shared/flash.js), the GET `at` reader, and the banner/open placement below
+ * all validate against this list. Raw query values are never interpolated
+ * into an id attribute — section() additionally whitelists ids on its own.
+ */
+const SECTION_IDS = Object.freeze([
+  "youtube",
+  "twitch",
+  "reaction-roles",
+  "reminders",
+  "honeypot",
+]);
 
 /**
  * Governing slash commands + §8.6 write tier (staff except the honeypot
@@ -261,6 +291,50 @@ function settingRow(label, valueHtml, defaultHtml, governsHtml) {
 const section = (title, bodyHtml, opts = {}) =>
   sharedSection(title, bodyHtml, { ...opts, cls: "integrations-panel" });
 
+/**
+ * #644 section chrome: every page panel carries its frozen id + the
+ * data-setting-section hook the shell's [data-setting-filter] find box
+ * toggles. Both are static view constants — section() re-whitelists the id.
+ */
+const pageSection = (id, title, bodyHtml, opts = {}) =>
+  section(title, bodyHtml, { ...opts, id, dataSection: true });
+
+/**
+ * #644 disclosure opener: a whitelisted `at` section opens its OWN
+ * <details class="integ-write"> blocks via the plain `open` attribute
+ * (native fragment-opens-ancestor-details is not the contract — the fragment
+ * never survives the redirect). Static attribute, never derived from data.
+ */
+const openDetailsAttr = (open) => (open ? raw(" open") : "");
+
+// ---------------------------------------------------------------------------
+// Page chrome (#644): local find box + section anchors (settings-page twin)
+// ---------------------------------------------------------------------------
+
+/**
+ * Local-only find box (#642 listener in app.js): filters [data-setting-section]
+ * panels client-side. Deliberately NOT wrapped in a <form> — it navigates
+ * nothing.
+ */
+function findBox() {
+  return html`<div class="find-setting">
+    <label for="find-an-integration">Find an integration</label>
+    <input id="find-an-integration" class="input" type="text" data-setting-filter
+      autocomplete="off" spellcheck="false" placeholder="filter the sections below"/>
+  </div>`;
+}
+
+/** Anchor list: keeps the ids that URL hashes and the server `at` use. */
+function sectionNav() {
+  return html`<nav class="section-nav" aria-label="Integrations sections">
+    <a href="#youtube">YouTube</a>
+    <a href="#twitch">Twitch</a>
+    <a href="#reaction-roles">Reaction roles</a>
+    <a href="#reminders">Event reminders</a>
+    <a href="#honeypot">Honeypot</a>
+  </nav>`;
+}
+
 /** Whitelisted state pill (live/off) — kind is a view constant. */
 function pill(kind, label) {
   const safe = kind === "live" || kind === "off" ? kind : "off";
@@ -279,9 +353,15 @@ function truncationNote(total, cap) {
 // YouTube section
 // ---------------------------------------------------------------------------
 
-function youtubeSection(yt, ctx) {
+function youtubeSection(yt, ctx, page = {}) {
+  const bannerHtml = page.bannerHtml || html``;
+  const openAttr = openDetailsAttr(Boolean(page.open));
   if (yt.available === false) {
-    return section("YouTube", emptyState(READ_FAILED));
+    return pageSection(
+      "youtube",
+      "YouTube",
+      html`${bannerHtml}${emptyState(READ_FAILED)}`
+    );
   }
   const { resolveChannelName, resolveRoleName, guildId, csrfToken } = ctx;
   const credLine = yt.enabled
@@ -325,7 +405,7 @@ function youtubeSection(yt, ctx) {
 
   const base = `/g/${encodeURIComponent(String(guildId || ""))}/integrations/youtube`;
   const forms = html`
-    <details class="integ-write">
+    <details class="integ-write"${openAttr}>
       <summary>Subscriptions (staff)</summary>
       ${writeForm(`${base}/add`, csrfToken,
         formField("Channel URL, @username or UC/HC id", "url", { placeholder: "https://www.youtube.com/@somechannel" }),
@@ -339,7 +419,7 @@ function youtubeSection(yt, ctx) {
             "Unsubscribe")
         : html``}
     </details>
-    <details class="integ-write">
+    <details class="integ-write"${openAttr}>
       <summary>Settings (staff — API keys stay in the environment)</summary>
       ${writeForm(`${base}/channel`, csrfToken,
         formField("Notify channel id", "channel_id", { placeholder: "123456789012345678" }),
@@ -352,9 +432,11 @@ function youtubeSection(yt, ctx) {
         "Set interval")}
     </details>`;
 
-  return section(
+  return pageSection(
+    "youtube",
     "YouTube",
     html`
+      ${bannerHtml}
       <p class="integ-cred">Ticker credentials: ${credLine}</p>
       <div class="settings-rows">${configRows}</div>
       ${rows}
@@ -369,9 +451,15 @@ function youtubeSection(yt, ctx) {
 // Twitch section
 // ---------------------------------------------------------------------------
 
-function twitchSection(tw, ctx) {
+function twitchSection(tw, ctx, page = {}) {
+  const bannerHtml = page.bannerHtml || html``;
+  const openAttr = openDetailsAttr(Boolean(page.open));
   if (tw.available === false) {
-    return section("Twitch", emptyState(READ_FAILED));
+    return pageSection(
+      "twitch",
+      "Twitch",
+      html`${bannerHtml}${emptyState(READ_FAILED)}`
+    );
   }
   const { resolveChannelName, resolveRoleName, guildId, csrfToken } = ctx;
   // Mirrors /settwitch settings ("Bot credentials: configured|not
@@ -422,7 +510,7 @@ function twitchSection(tw, ctx) {
 
   const base = `/g/${encodeURIComponent(String(guildId || ""))}/integrations/twitch`;
   const forms = html`
-    <details class="integ-write">
+    <details class="integ-write"${openAttr}>
       <summary>Subscriptions (staff — needs TWITCH_CLIENT_ID/SECRET configured)</summary>
       ${writeForm(`${base}/add`, csrfToken,
         formField("Twitch login or URL", "login", { placeholder: "coolstreamer" }),
@@ -435,7 +523,7 @@ function twitchSection(tw, ctx) {
             "Unsubscribe")
         : html``}
     </details>
-    <details class="integ-write">
+    <details class="integ-write"${openAttr}>
       <summary>Settings (staff)</summary>
       ${writeForm(`${base}/channel`, csrfToken,
         formField("Notify channel id", "channel_id", { placeholder: "123456789012345678" }),
@@ -448,9 +536,11 @@ function twitchSection(tw, ctx) {
         "Set interval")}
     </details>`;
 
-  return section(
+  return pageSection(
+    "twitch",
     "Twitch",
     html`
+      ${bannerHtml}
       <div class="settings-rows">${configRows}</div>
       ${rows}
       ${truncationNote(tw.total, LIST_CAP)}
@@ -464,9 +554,15 @@ function twitchSection(tw, ctx) {
 // Reaction roles section
 // ---------------------------------------------------------------------------
 
-function reactionRolesSection(rr, ctx) {
+function reactionRolesSection(rr, ctx, page = {}) {
+  const bannerHtml = page.bannerHtml || html``;
+  const openAttr = openDetailsAttr(Boolean(page.open));
   if (rr.available === false) {
-    return section("Reaction roles", emptyState(READ_FAILED));
+    return pageSection(
+      "reaction-roles",
+      "Reaction roles",
+      html`${bannerHtml}${emptyState(READ_FAILED)}`
+    );
   }
   const { resolveChannelName, guildId, csrfToken } = ctx;
   const rows = rr.panels.length
@@ -502,7 +598,7 @@ function reactionRolesSection(rr, ctx) {
       return title ? `${title} (${id})` : `panel (${id})`;
     }, null);
   const forms = html`
-    <details class="integ-write">
+    <details class="integ-write"${openAttr}>
       <summary>Panel (staff — create posts a live embed in the channel)</summary>
       ${writeForm(`${base}/panel/create`, csrfToken,
         html`${formField("Channel id", "channel_id", { placeholder: "123456789012345678" })}
@@ -513,7 +609,7 @@ function reactionRolesSection(rr, ctx) {
         ? writeForm(`${base}/panel/delete`, csrfToken, panelSelect("message_id"), "Delete panel")
         : html``}
     </details>
-    <details class="integ-write">
+    <details class="integ-write"${openAttr}>
       <summary>Options (staff — emoji maps to a role; the console collects
         directly what slash asks for as a follow-up emoji message)</summary>
       ${writeForm(`${base}/option/add`, csrfToken,
@@ -530,9 +626,12 @@ function reactionRolesSection(rr, ctx) {
         : html``}
     </details>`;
 
-  return section(
+  return pageSection(
+    "reaction-roles",
     "Reaction roles",
-    html`${rows}
+    html`
+      ${bannerHtml}
+      ${rows}
       ${truncationNote(rr.total, PANEL_CAP)}
       ${forms}
       <p class="subheading">${governsBadge("reactionRoles")} · options are stored per panel (emoji → role).</p>`
@@ -543,9 +642,14 @@ function reactionRolesSection(rr, ctx) {
 // Event reminders section
 // ---------------------------------------------------------------------------
 
-function eventRemindersSection(er, ctx) {
+function eventRemindersSection(er, ctx, page = {}) {
+  const bannerHtml = page.bannerHtml || html``;
   if (er.available === false) {
-    return section("Event reminders", emptyState(READ_FAILED));
+    return pageSection(
+      "reminders",
+      "Event reminders",
+      html`${bannerHtml}${emptyState(READ_FAILED)}`
+    );
   }
   const { resolveChannelName, resolveRoleName, guildId, csrfToken } = ctx;
   const configRows = html`
@@ -580,9 +684,11 @@ function eventRemindersSection(er, ctx) {
     formField("Default channel id (empty clears)", "channel_id", { placeholder: "123456789012345678" }),
     "Set default channel");
 
-  return section(
+  return pageSection(
+    "reminders",
     "Event reminders",
     html`
+      ${bannerHtml}
       <div class="settings-rows">${configRows}</div>
       ${rows}
       ${truncationNote(er.total, LIST_CAP)}
@@ -602,7 +708,9 @@ function eventRemindersSection(er, ctx) {
 // Honeypot section
 // ---------------------------------------------------------------------------
 
-function honeypotSection(hp, ctx) {
+function honeypotSection(hp, ctx, page = {}) {
+  const bannerHtml = page.bannerHtml || html``;
+  const openAttr = openDetailsAttr(Boolean(page.open));
   const { guildId, csrfToken, tier, resolveChannelName, resolveRoleName } = ctx;
   const chans = hp.channels || { available: false, rows: [] };
   const bans = hp.banRoles || { available: false, roleIds: [] };
@@ -647,7 +755,7 @@ function honeypotSection(hp, ctx) {
   const chanSelect = (name) =>
     idSelect(name, chans.rows.map((c) => c.channelId).filter(Boolean), null, null);
   const staffForms = html`
-    <details class="integ-write">
+    <details class="integ-write"${openAttr}>
       <summary>Trap channels (staff — add posts a warning image, del removes it)</summary>
       ${writeForm(`${base}/channel/add`, csrfToken,
         formField("Channel id", "channel_id", { placeholder: "123456789012345678" }),
@@ -656,7 +764,7 @@ function honeypotSection(hp, ctx) {
         ? writeForm(`${base}/channel/del`, csrfToken, chanSelect("channel_id"), "Remove honeypot channel")
         : html``}
     </details>
-    <details class="integ-write">
+    <details class="integ-write"${openAttr}>
       <summary>Ban roles (staff — granting a listed role bans the member)</summary>
       ${writeForm(`${base}/banrole/add`, csrfToken,
         formField("Role id", "role_id", { placeholder: "123456789012345678" }),
@@ -673,7 +781,7 @@ function honeypotSection(hp, ctx) {
   const isAdmin = tier === "admin";
   const exemptForms = isAdmin
     ? html`
-        <details class="integ-write">
+        <details class="integ-write"${openAttr}>
           <summary>Exempt roles (ADMIN — writes staff_roles)</summary>
           ${writeForm(`${base}/exempt/add`, csrfToken,
             formField("Role id to exempt", "role_id", { placeholder: "123456789012345678" }),
@@ -692,9 +800,11 @@ function honeypotSection(hp, ctx) {
         </details>`
     : html``;
 
-  return section(
+  return pageSection(
+    "honeypot",
     "Honeypot",
     html`
+      ${bannerHtml}
       <h3 class="integ-sub">Trap channels ${governsBadge("honeypotChannels")}</h3>
       ${chanBody}
       ${staffForms}
@@ -731,9 +841,24 @@ function honeypotSection(hp, ctx) {
  * @param {string|null} [input.csrfToken] req.csrfToken (forms embed it as _csrf)
  * @param {string|null} [input.tier] req.guildAccess.tier (admin-only forms gate)
  * @param {{done: string|null, error: string|null}|null} [input.flash] whitelisted PRG flash
+ * @param {string|null} [input.section] validated `at` section id (#644); the
+ *   route already whitelisted it, and this view re-checks against SECTION_IDS
+ *   (defense in depth — a raw query value never reaches an id attribute
+ *   through any path). When set, the flash banner becomes that section's
+ *   first content node and its <details class="integ-write"> render open;
+ *   when null, the banner renders where it always has (top of the page) and
+ *   nothing opens.
  * @returns {import("../escape").SafeString}
  */
-function renderIntegrationsBody({ snapshot, resolveChannelName, resolveRoleName, csrfToken, tier, flash }) {
+function renderIntegrationsBody({
+  snapshot,
+  resolveChannelName,
+  resolveRoleName,
+  csrfToken,
+  tier,
+  flash,
+  section: sectionAt,
+}) {
   const s = snapshot || {};
   const emptyCluster = { available: false };
   const yt = s.youtube || emptyCluster;
@@ -756,14 +881,27 @@ function renderIntegrationsBody({ snapshot, resolveChannelName, resolveRoleName,
     tier: tier || null,
   };
 
+  // #644: the route already whitelisted `at`; re-check here (defense in
+  // depth) so a caller bug can never open a section or place a banner by raw
+  // query. Unknown/missing `at` keeps the banner at the top of the page (the
+  // historical placement — this page never had a shell flash slot).
+  const at =
+    typeof sectionAt === "string" && SECTION_IDS.includes(sectionAt) ? sectionAt : null;
+  const topBanner = at ? html`` : flashBanner(flash);
+  const pageFor = (id) => ({
+    bannerHtml: at === id ? flashBanner(flash) : html``,
+    open: at === id,
+  });
+
   return html`
-    ${flashBanner(flash)}
+    ${topBanner}
     <div class="settings-grid integrations-grid">
-      ${youtubeSection(yt, ctx)}
-      ${twitchSection(tw, ctx)}
-      ${reactionRolesSection(rr, ctx)}
-      ${eventRemindersSection(er, ctx)}
-      ${honeypotSection(hp, ctx)}
+      ${findBox()} ${sectionNav()}
+      ${youtubeSection(yt, ctx, pageFor("youtube"))}
+      ${twitchSection(tw, ctx, pageFor("twitch"))}
+      ${reactionRolesSection(rr, ctx, pageFor("reaction-roles"))}
+      ${eventRemindersSection(er, ctx, pageFor("reminders"))}
+      ${honeypotSection(hp, ctx, pageFor("honeypot"))}
       <p class="subheading settings-stamp">
         Slash commands stay the security source of truth — these forms post the
         same service writes with CSRF + per-command tiers (§8.6). Values cached
@@ -779,6 +917,7 @@ module.exports = {
   ADMIN_WRITE_HINT,
   FLASH_DONE,
   FLASH_ERROR,
+  SECTION_IDS,
   flashFromQuery,
   flashBanner,
 };
