@@ -162,6 +162,26 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
                 [ROLE_DUP2, { id: ROLE_DUP2, name: "Duplicate" }],
               ]),
             },
+            // #645 channel-name suggestions: text (0) + announcement (5)
+            // suggest; voice (2), category (4) and thread (11) never do.
+            // CH_MIRROR* fill the list past the 15-cap.
+            channels: {
+              cache: new Map([
+                ["950000000000000001", { id: "950000000000000001", name: "general", type: 0 }],
+                ["950000000000000002", { id: "950000000000000002", name: "announcements", type: 5 }],
+                ["950000000000000003", { id: "950000000000000003", name: "general-voice", type: 2 }],
+                ["950000000000000004", { id: "950000000000000004", name: "Text Category", type: 4 }],
+                ["950000000000000005", { id: "950000000000000005", name: "general-help-thread", type: 11 }],
+                ...Array.from({ length: 16 }, (_, i) => [
+                  `9500000000000010${String(i).padStart(2, "0")}`,
+                  {
+                    id: `9500000000000010${String(i).padStart(2, "0")}`,
+                    name: `mirror-${i + 1}`,
+                    type: i % 2 === 0 ? 0 : 5,
+                  },
+                ]),
+              ]),
+            },
           },
         ],
       ]),
@@ -317,6 +337,112 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
 
     const cross = await req(`/g/${CID_CROSS}/lookups/roles?q=mod`, cookieOf.staff);
     assert.equal(cross.res.status, 404);
+  });
+
+  // ---- channels lookups (#645) ----------------------------------------------
+
+  it("channels lookup: text+announcement only, ranked, ≤15 cap", async () => {
+    const { res, json } = await getJson(`/g/${CID_A}/lookups/channels?q=general`, cookieOf.staff);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /application\/json/);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    // voice (2), category (4) and the thread (11) named "general-*" NEVER
+    // appear — only the guild-text "general".
+    assert.deepEqual(json.channels, [{ id: "950000000000000001", name: "general" }]);
+
+    const ann = await getJson(`/g/${CID_A}/lookups/channels?q=announce`, cookieOf.staff);
+    assert.deepEqual(ann.json.channels, [{ id: "950000000000000002", name: "announcements" }]);
+
+    const capped = await getJson(`/g/${CID_A}/lookups/channels?q=mirror`, cookieOf.staff);
+    assert.equal(capped.json.channels.length, 15); // 16 seeded, cap 15
+  });
+
+  it("channels lookup: empty q ⇒ empty list; gates anon 302 / plain 404 / cross 404", async () => {
+    const empty = await getJson(`/g/${CID_A}/lookups/channels`, cookieOf.staff);
+    assert.deepEqual(empty.json, { channels: [] });
+
+    const anon = await req(`/g/${CID_A}/lookups/channels?q=general`);
+    assert.equal(anon.res.status, 302);
+    assert.match(anon.res.headers.get("location") || "", /\/login/);
+
+    const plain = await req(`/g/${CID_A}/lookups/channels?q=general`, cookieOf.plain);
+    assert.equal(plain.res.status, 404);
+
+    const cross = await req(`/g/${CID_CROSS}/lookups/channels?q=general`, cookieOf.staff);
+    assert.equal(cross.res.status, 404);
+  });
+
+  it("channels lookup: missing guild cache ⇒ empty list, never a REST hop", async () => {
+    const guildCache = fakeClient.guilds.cache;
+    const origGet = guildCache.get.bind(guildCache);
+    guildCache.get = () => undefined; // as if the bot never saw the guild
+    try {
+      const { res, json } = await getJson(`/g/${CID_A}/lookups/channels?q=general`, cookieOf.staff);
+      assert.equal(res.status, 200);
+      assert.deepEqual(json, { channels: [] });
+    } finally {
+      delete guildCache.get; // restore the Map's own get
+      void origGet;
+    }
+  });
+
+  it("channels lookup failure: 500 JSON, logged with context — the query is NEVER logged", async () => {
+    const guildCache = fakeClient.guilds.cache;
+    guildCache.get = () => {
+      throw new Error("cache exploded");
+    };
+    const logs = [];
+    const origErr = console.error;
+    console.error = (...args) => logs.push(args.map(String).join(" "));
+    try {
+      const { res, json } = await getJson(
+        `/g/${CID_A}/lookups/channels?q=sneak-42-query`,
+        cookieOf.staff
+      );
+      assert.equal(res.status, 500);
+      assert.match(res.headers.get("content-type"), /application\/json/);
+      assert.deepEqual(json, { error: "lookup_failed" });
+      const joined = logs.join("\n");
+      assert.match(joined, /lookups\.channels failed/);
+      assert.ok(!joined.includes("sneak-42-query"), "the lookup query must never reach logs");
+    } finally {
+      console.error = origErr;
+      delete guildCache.get;
+    }
+  });
+
+  it("channel id fields carry the channels typeahead attrs (#645 views)", async () => {
+    const settings = await req(`/g/${CID_A}/settings`, cookieOf.staff);
+    assert.equal(settings.res.status, 200);
+    assert.ok(
+      settings.body.includes('data-lookup="channels" data-lookup-url="/g/' + CID_A + '/lookups/channels"'),
+      "settings channel fields are wired"
+    );
+    const integ = await req(`/g/${CID_A}/integrations`, cookieOf.staff);
+    assert.equal(integ.res.status, 200);
+    assert.ok(integ.body.includes('data-lookup="channels"'), "integrations channel fields are wired");
+  });
+
+  it("app.js kind arms: lookupKind + pickedValue (bodies sliced + evaled)", () => {
+    const src = require("node:fs").readFileSync(
+      require("node:path").join(__dirname, "../src/web/public/app.js"),
+      "utf8"
+    );
+    const grab = (name) => {
+      const m = src.match(new RegExp(`  function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}`));
+      assert.ok(m, `function ${name} is a single-level function in the IIFE`);
+      return new Function(`${m[0]}\nreturn ${name};`)();
+    };
+    const lookupKind = grab("lookupKind");
+    const pickedValue = grab("pickedValue");
+    assert.equal(lookupKind("roles"), "roles");
+    assert.equal(lookupKind("channels"), "channels");
+    assert.equal(lookupKind("mixed"), "users");
+    assert.equal(lookupKind("anything"), "users");
+    assert.equal(pickedValue({ id: 42, kind: "channels" }, "channels"), "42");
+    assert.equal(pickedValue({ id: 7, kind: "users" }, "users"), "7");
+    // mixed-role name exception (pre-#645 behavior, unchanged):
+    assert.equal(pickedValue({ id: 7, name: "Mod Sarah", kind: "roles" }, "mixed"), "Mod Sarah");
   });
 
   // ---- tolerant writes ------------------------------------------------------

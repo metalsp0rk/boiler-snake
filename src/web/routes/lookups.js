@@ -3,6 +3,7 @@
  *
  *   GET /g/:guildId/lookups/users?q=   → { users: [{id, name}] }
  *   GET /g/:guildId/lookups/roles?q=   → { roles: [{id, name}] }
+ *   GET /g/:guildId/lookups/channels?q= → { channels: [{id, name}] }  (#645)
  *
  * Purpose: power the type-ahead on user/role text fields so operators pick
  * real NAMES instead of pasting snowflakes. Pure READ surface — JSON only,
@@ -40,6 +41,16 @@ const { rawParams } = require("./shared/req.js");
 const SUGGEST_LIMIT = 15;
 /** Query clamp (matches the users search box maxlength). */
 const Q_MAX = 64;
+/**
+ * discord.js ChannelType numerics a console channel field may name (#645) —
+ * guild text + announcement only. Same numerics as
+ * routes/integrations.js's CHANNEL_TYPE_* pair; no threads, categories or
+ * voice. This list is a SUGGESTER, never a second authority: write routes
+ * still decide what they accept, and an id not in this list can still be
+ * pasted.
+ */
+const CHANNEL_TYPE_GUILD_TEXT = 0;
+const CHANNEL_TYPE_GUILD_ANNOUNCEMENT = 5;
 
 function json200(res, payload) {
   res.writeHead(200, {
@@ -123,6 +134,44 @@ function registerLookupRoutes(app, options = {}) {
       return json200(res, { roles });
     } catch (err) {
       console.error(`[web] lookups.roles failed (guild=${req.guildAccess?.guildId}):`, err?.message || err);
+      res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      res.end(JSON.stringify({ error: "lookup_failed" }));
+    }
+  });
+
+  // ---- channels (#645) -------------------------------------------------------
+  // Staff-only, CACHE-ONLY name suggestions for channel id fields. Source is
+  // THIS guild's channel cache (guild.channels.cache) — never the global
+  // client.channels.cache (it would suggest other guilds' channels), never a
+  // REST call, never SQL, never the integer community id. Missing guild ⇒
+  // empty list. The failure log NEVER includes the query.
+  app.get("/g/:guildId/lookups/channels", requireTier("staff"), (req, res) => {
+    try {
+      const guildId = req.guildAccess.guildId;
+      const q = qOf(req);
+      if (!q) return json200(res, { channels: [] });
+
+      const client = getClient ? getClient() : null;
+      const guild = client?.guilds?.cache?.get?.(guildId) ?? null;
+      if (!guild) return json200(res, { channels: [] });
+
+      const all = [];
+      try {
+        const cache = guild?.channels?.cache ?? null;
+        if (cache && typeof cache.values === "function") {
+          for (const ch of cache.values()) {
+            if (!ch?.id) continue;
+            if (ch.type !== CHANNEL_TYPE_GUILD_TEXT && ch.type !== CHANNEL_TYPE_GUILD_ANNOUNCEMENT) continue;
+            all.push({ id: String(ch.id), name: String(ch.name || "") });
+          }
+        }
+      } catch {
+        /* partial list fine */
+      }
+      const channels = rankSuggestions(all, q.toLowerCase()).slice(0, SUGGEST_LIMIT);
+      return json200(res, { channels });
+    } catch (err) {
+      console.error(`[web] lookups.channels failed (guild=${req.guildAccess?.guildId}):`, err?.message || err);
       res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       res.end(JSON.stringify({ error: "lookup_failed" }));
     }

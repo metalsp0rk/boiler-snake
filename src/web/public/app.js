@@ -124,9 +124,9 @@
    * keystroke threw ReferenceError before fetch.)
    *  - data-lookup="mixed" (archive search bars): active only with a
    *    data-lookup-users or data-lookup-roles source;
-   *  - any other data-lookup kind: active only with data-lookup-url;
+   *  - any other data-lookup kind (incl. #645's "channels"): active only
+   *    with data-lookup-url;
    *  - anything else: the listeners return.
-   * The "channels" kind is issue #645 and deliberately NOT armed here.
    */
   function lookupInputActive(el) {
     if (!el || !el.getAttribute) return false;
@@ -135,8 +135,30 @@
     if (mode === "mixed") {
       return Boolean(el.getAttribute("data-lookup-users") || el.getAttribute("data-lookup-roles"));
     }
-    if (mode === "channels") return false;
     return Boolean(el.getAttribute("data-lookup-url"));
+  }
+
+  /**
+   * Which payload list + badge a single-kind lookup field reads (#645).
+   * roles → roles, channels → channels, everything else → users. The
+   * "mixed" search bars never route through this (two sources at once).
+   */
+  function lookupKind(mode) {
+    if (mode === "roles") return "roles";
+    if (mode === "channels") return "channels";
+    return "users";
+  }
+
+  /**
+   * What picking a suggestion WRITES into the field (#645). Everything
+   * submits the numeric id as a string — including channels, so the
+   * pattern="[0-9]{5,20}" channel fields stay valid. The one exception is
+   * the pre-existing mixed-role search case, which filters rows by NAME.
+   */
+  function pickedValue(item, mode) {
+    var it = item || {};
+    if (it.kind === "roles" && mode === "mixed") return String(it.name || it.id);
+    return String(it.id);
   }
 
   function lookupItems(data, kind) {
@@ -223,18 +245,16 @@
       opt.appendChild(id);
       opt._lookupPick = function () {
         // A role picked in a SEARCH bar filters by name (rows carry text);
-        // everything else (form fields, people) submits the pure id.
-        input.value = it.kind === "roles" &&
-            input.getAttribute("data-lookup") === "mixed"
-          ? String(it.name || it.id)
-          : String(it.id);
+        // everything else (form fields, people, channels) submits the pure
+        // id — pickedValue owns the single exception (#645).
+        input.value = pickedValue(it, input.getAttribute("data-lookup"));
         closeLookup(input);
         input.dispatchEvent(new Event("input", { bubbles: true }));
       };
       if (it.kind) {
         var tag = document.createElement("span");
         tag.className = "lookup-kind";
-        tag.textContent = it.kind === "roles" ? "role" : "user";
+        tag.textContent = it.kind === "roles" ? "role" : it.kind === "channels" ? "channel" : "user";
         opt.appendChild(tag);
       }
       pop.appendChild(opt);
@@ -291,7 +311,8 @@
     if (input._lookupTimer) clearTimeout(input._lookupTimer);
     if (!q) return closeLookup(input);
     // mixed = search bars (archive): people AND roles at once. Single-kind
-    // = the old data-lookup-url fields (forms get one list).
+    // = the old data-lookup-url fields (forms get one list): roles → roles,
+    // channels (#645) → channels, anything else → users.
     var sources = mode === "mixed"
       ? [
           { url: input.getAttribute("data-lookup-users"), kind: "users" },
@@ -299,7 +320,7 @@
         ].filter(function (src) { return src.url; })
       : [{
           url: input.getAttribute("data-lookup-url"),
-          kind: mode === "roles" ? "roles" : "users",
+          kind: lookupKind(mode),
         }];
     if (!sources.length) return;
     input._lookupTimer = setTimeout(function () {
