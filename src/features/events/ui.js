@@ -254,7 +254,7 @@ function buildCommandEvent() {
     .addSubcommand((sc) =>
       sc
         .setName("adopt")
-        .setDescription("Copy a Discord scheduled event into a draft bot event (staff or its creator).")
+        .setDescription("Copy a Discord scheduled event into a draft bot event (staff).")
         .addStringOption((o) =>
           o
             .setName("scheduled_event")
