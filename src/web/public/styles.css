@@ -1313,7 +1313,14 @@ th {
 .audit .audit-table th, .audit .audit-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 .audit .audit-id { width: 4rem; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
 .audit .audit-action, .audit .audit-target, .audit .user-id { word-break: break-all; }
-.audit .audit-details-cell { min-width: 16rem; }
+.audit .audit-details-cell { min-width: 0; } /* #652: was 16rem — forced the phone page sideways */
+/* #652: details disclosure — the row stays the scan line, JSON one tap away. */
+.audit .audit-details-disclosure summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
 /* details_json pretty-print: escaped plain text, never links (§8.7); the
    scroll box keeps one huge row from stretching the page. */
 .audit .audit-details { margin: 0; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 0.35rem; background: var(--bg); font-size: var(--text-xs); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; max-height: 14rem; overflow: auto; }

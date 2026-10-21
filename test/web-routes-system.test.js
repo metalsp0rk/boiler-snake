@@ -827,6 +827,29 @@ describe("GET /g/:guildId/audit — newest-first viewer with origin filter + pag
     assert.ok(body.includes("audit-probe.example.invalid"), "the URL is still visible as text");
   });
 
+  it("#652: details are ONE native disclosure inside stacked, labelled rows", async () => {
+    const { res, body } = await hit(`${AUD}?origin=web&o=100`, { key: "admin" });
+    assert.equal(res.status, 200);
+    assert.ok(
+      body.includes('<table class="list-table audit-table table-stack">'),
+      "audit table adopts the shared phone-stack contract",
+    );
+    for (const label of ["When", "Actor", "Origin", "Action", "Target", "Details"]) {
+      assert.ok(body.includes(`data-label="${label}"`), `stacked cell label: ${label}`);
+    }
+    // Native disclosure — no client script:
+    assert.match(
+      body,
+      /<details class="audit-details-disclosure">\s*<summary>JSON · /,
+      "summary scan line opens the disclosure",
+    );
+    assert.ok(
+      /<details class="audit-details-disclosure"[\s\S]*?<pre class="audit-details">/.test(body),
+      "the escaped <pre> lives INSIDE the disclosure",
+    );
+    assert.ok(!/\sonclick=/i.test(body), "disclosure works without inline script");
+  });
+
   it("system-origin row renders an honest no-actor dash (no fabricated actor)", async () => {
     const { body } = await hit(`${AUD}?origin=system`, { key: "admin" });
     assert.ok(body.includes('<span class="muted">—</span>'), "null actor → muted dash");
