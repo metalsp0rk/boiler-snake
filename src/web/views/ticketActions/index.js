@@ -97,12 +97,12 @@ function renderTicketRow({ ticket, guildId, csrfToken, maxReason, names = null }
   const reasonSnippet = String(ticket.reason || "—").slice(0, 120);
   return html`
     <tr>
-      <td><code>${ticket.id}</code></td>
-      <td>${formatTicketRef(ticket.ticket_number)}</td>
-      <td>${userRef(guildId, ticket.creator_user_id, names)}</td>
-      <td>${ticket.staff_owner_id ? userRef(guildId, ticket.staff_owner_id, names) : html`—`}</td>
-      <td class="ticket-reason-cell">${reasonSnippet}</td>
-      <td class="ticket-action-cells">
+      <td data-label="ID"><code>${ticket.id}</code></td>
+      <td data-label="Ticket">${formatTicketRef(ticket.ticket_number)}</td>
+      <td data-label="Requester">${userRef(guildId, ticket.creator_user_id, names)}</td>
+      <td data-label="Staff owner">${ticket.staff_owner_id ? userRef(guildId, ticket.staff_owner_id, names) : html`—`}</td>
+      <td class="ticket-reason-cell" data-label="Reason">${reasonSnippet}</td>
+      <td class="ticket-action-cells" data-label="Actions">
         <form class="ticket-inline-form" method="post" action="/g/${gid}/tickets/claim">
           <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>
           <input type="hidden" name="ticket_id" value="${ticket.id}"/>
@@ -151,7 +151,7 @@ function renderTicketActionsBody({ guildId, tickets, csrfToken, flash, maxReason
       <h2>Open tickets</h2>
       <p class="panel-foot"><a href="/g/${gid}/t">Archived tickets →</a></p>
       ${tickets && tickets.length
-        ? html`<table class="list-table ticket-actions-table">
+        ? html`<table class="list-table ticket-actions-table table-stack">
             <thead>
               <tr>
                 <th>ID</th><th>Ticket</th><th>Requester</th><th>Staff owner</th>

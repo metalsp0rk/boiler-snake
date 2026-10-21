@@ -376,6 +376,15 @@ describe("web archive first-class (§8.15)", () => {
     assert.ok(body.includes(`title="${CREATOR_ID}"`));
   });
 
+  it("#648: archive rows carry stack labels; .table-scroll stays for unstacked columns", async () => {
+    const { body } = await req(`/g/${CID_A}/t?q=spoon`, cookieOf.staff);
+    assert.ok(body.includes('class="table-scroll"'), "table-scroll wrapper stays");
+    assert.ok(body.includes('<table class="table-stack">'), "archive opts into the phone stack");
+    for (const label of ["Ticket", "People", "Subject", "Close reason"]) {
+      assert.ok(body.includes(`data-label="${label}"`), `stack label ${label}`);
+    }
+  });
+
   it("in-shell pagination rides q (50/page)", async () => {
     const { body } = await req(`/g/${CID_A}/t?q=matchme`, cookieOf.staff);
     assert.ok(body.includes("q=matchme&page=2"));
