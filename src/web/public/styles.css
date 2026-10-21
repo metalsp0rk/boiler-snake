@@ -1236,10 +1236,29 @@ th {
   color: inherit;
   font: inherit;
   font-size: 0.8rem;
-  min-width: 11rem;
+  /* #648: fits the stacked card (was min-width: 11rem, which forced the
+     Actions cell wider than a 360px viewport). */
+  width: 100%;
+  max-width: 22rem;
+  min-width: 0;
 }
 .ticket-reason-cell { max-width: 22rem; overflow-wrap: anywhere; }
 .ticket-actions-table code { font-size: 0.8rem; }
+
+/* #648 ticket-actions stacked row: Claim and Close are full-width stacked
+   buttons and the close-reason input sits UNDER them (never beside them in
+   a six-column cell). Desktop keeps the inline form. */
+@media (max-width: 719px) {
+  .ticket-inline-form {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.4rem;
+  }
+  .ticket-inline-form .btn { width: 100%; }
+  .ticket-inline-form .ticket-reason-label { order: 3; }
+  .ticket-inline-form .btn-write { order: -1; }
+}
 
 /* Command-visibility sync trigger (views/syncAction): base rules come from
    .staff-mutate-form; this only positions the button. */
