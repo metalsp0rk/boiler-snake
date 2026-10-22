@@ -22,6 +22,8 @@ after(cleanupTempDb);
 const {
   matchKeyword,
   matchRoleMention,
+  matchBotMention,
+  mentionedUserIds,
   splitLongAnswer,
   buildUserContent,
   gorkQueue,
@@ -152,6 +154,49 @@ describe("matchKeyword (trigger)", () => {
     assert.deepEqual(matchKeyword(null, "@gork"), { triggered: false, question: "" });
     assert.deepEqual(matchKeyword("@gork", null), { triggered: false, question: "" });
     assert.deepEqual(matchKeyword("@gork", ""), { triggered: false, question: "" });
+  });
+});
+
+describe("bot mention trigger", () => {
+  const botId = "123456789012345678";
+  const token = `<@${botId}>`;
+  const nickToken = `<@!${botId}>`;
+
+  it("strips explicit bot mentions anywhere, including legacy nickname tokens", () => {
+    for (const [content, question] of [
+      [`${token}: hello`, "hello"],
+      [`hey ${nickToken} explain please`, "hey explain please"],
+      [`${token} explain ${nickToken} please`, "explain please"],
+      [`${token} <@999> help`, "<@999> help"],
+      [token, ""],
+    ]) {
+      assert.deepEqual(matchBotMention(content, [botId], botId), {
+        triggered: true, question,
+      });
+    }
+  });
+
+  it("requires the bot's parsed mention and an explicit token", () => {
+    for (const [content, users, id] of [
+      ["reply with an automatic notification", [botId], botId],
+      ["@Bot hello", [], botId],
+      ["<@999> hello", ["999"], botId],
+      [`${token} hello`, [], botId],
+      [`${token} hello`, undefined, botId],
+      [`${token} hello`, [botId], null],
+      [null, [botId], botId],
+    ]) {
+      assert.deepEqual(matchBotMention(content, users, id), {
+        triggered: false, question: "",
+      });
+    }
+  });
+
+  it("reads both raw Discord collections and normalized user arrays", () => {
+    for (const users of [new Map([[botId, {}]]), [botId]]) {
+      assert.deepEqual(mentionedUserIds({ mentions: { users } }), [botId]);
+    }
+    assert.deepEqual(mentionedUserIds({}), []);
   });
 });
 

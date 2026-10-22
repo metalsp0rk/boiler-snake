@@ -25,7 +25,7 @@
 - **Music player** — `/play` in voice via Lavalink (Spotify is catalog-only)
 
 **AI: gork**
-- `@gork <question>` — grounded LLM answers per community with tool use: **web search**, **`read_page`** (SSRF-guarded), **`read_discord`**, vision (downscaled image understanding), cross-chat **memory**, per-scope budgets
+- Mention the bot in Discord (select its name), or type `@gork <question>` — grounded LLM answers per community with tool use: **web search**, **`read_page`** (SSRF-guarded), **`read_discord`**, vision (downscaled image understanding), cross-chat **memory**, per-scope budgets
 
 **Multi-platform (Fluxer)**
 - Runs against Discord, Fluxer instances, or **both at once** (`FLUXER_INSTANCES`)

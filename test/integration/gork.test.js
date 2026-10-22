@@ -225,6 +225,7 @@ function makeGorkMessage(env, opts = {}) {
     // tests (issue #174) pass opts.mentionedRoleIds to seed the role set
     // (the pipeline's normalizeDiscordMessage turns this into id strings).
     mentions: {
+      users: new Map((opts.mentionedUserIds || []).map((id) => [id, { id }])),
       roles: new Map(
         (opts.mentionedRoleIds || []).map((id) => [id, { id }]),
       ),
@@ -3778,4 +3779,103 @@ describe("integration: gork role-mention trigger (issue #174)", () => {
       fetchMock.restore();
     }
   });
+});
+
+
+describe("integration: gork bot mention trigger", () => {
+  for (const nickname of [false, true]) {
+    it(`answers explicit ${nickname ? "nickname" : "standard"} mentions through the normalized pipeline`, async () => {
+      const env = await freshEnv({ guildId: uniqueId("guild-bot-mention") });
+      const saved = saveEnv();
+      const fetchMock = mockFetch([chatCompletionResponse("Hello there.")]);
+      try {
+        enableAiKey();
+        attachTyping(env.channels.general);
+        env.db.updateGuildSettings(env.communityId, { gork_keyword: "@gork", gork_cooldown_sec: 600 });
+        const botId = env.users.botUser.id;
+        const token = `<@${nickname ? "!" : ""}${botId}>`;
+        const { message, replies } = makeGorkMessage(env, {
+          content: `${token}: hello`, mentionedUserIds: [botId],
+        });
+        await env.onMessageCreate(message);
+        await gorkIdle();
+        assert.equal(replies.length, 1);
+        assert.equal(replies[0].content, "Hello there.");
+        const body = JSON.parse(fetchMock.calls[0].init.body);
+        const prompt = body.messages.find((m) => m.role === "user").content;
+        assert.ok(prompt.startsWith("[ASKER @member] hello"), prompt);
+        assert.ok(!prompt.includes(token));
+        // The mention path shares the existing keyword cooldown.
+        const second = makeGorkMessage(env, { content: "@gork another question" });
+        await env.onMessageCreate(second.message);
+        await gorkIdle();
+        assert.equal(fetchMock.calls.length, 1);
+        assert.ok(second.reacts.includes("🕐"));
+      } finally {
+        restoreEnv(saved);
+        fetchMock.restore();
+      }
+    });
+  }
+
+  it("answers a bare mention replying to a message using that context", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-bot-reply") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([chatCompletionResponse("Yes, it works.")]);
+    try {
+      enableAiKey();
+      attachTyping(env.channels.general);
+      const botId = env.users.botUser.id;
+      const { message, replies } = makeGorkMessage(env, {
+        content: `<@${botId}>`, mentionedUserIds: [botId],
+        reference: { messageId: "question" },
+        fetchReference: async () => ({
+          id: "question", channelId: env.channels.general.id,
+          content: "Does this work?", author: env.users.member2User,
+          reference: null,
+        }),
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.equal(replies.length, 1);
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      assert.ok(body.messages.some((m) => typeof m.content === "string" && m.content.includes("Does this work?")));
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  for (const mode of ["bare", "reply-ping", "other-user", "disabled", "cleared-keyword", "no-key"]) {
+    it(`stays silent for ${mode}`, async () => {
+      const env = await freshEnv({ guildId: uniqueId("guild-bot-silent") });
+      const saved = saveEnv();
+      const fetchMock = mockFetch([]);
+      try {
+        enableAiKey();
+        const botId = env.users.botUser.id;
+        const opts = { content: `<@${botId}> hello`, mentionedUserIds: [botId] };
+        if (mode === "bare") opts.content = `<@${botId}>`;
+        if (mode === "reply-ping") {
+          opts.content = "hello";
+          opts.reference = { messageId: "bot-answer" };
+        }
+        if (mode === "other-user") {
+          opts.content = `<@${env.users.member2User.id}> hello`;
+          opts.mentionedUserIds = [env.users.member2User.id];
+        }
+        if (mode === "disabled") env.db.updateGuildSettings(env.communityId, { gork_enabled: 0 });
+        if (mode === "cleared-keyword") env.db.updateGuildSettings(env.communityId, { gork_keyword: null });
+        if (mode === "no-key") clearAiKey();
+        const { message, replies } = makeGorkMessage(env, opts);
+        await env.onMessageCreate(message);
+        await gorkIdle();
+        assert.equal(replies.length, 0);
+        assert.equal(fetchMock.calls.length, 0);
+      } finally {
+        restoreEnv(saved);
+        fetchMock.restore();
+      }
+    });
+  }
 });

@@ -1,11 +1,11 @@
 /**
- * Gork trigger: keyword matching + the onMessageCreate pipeline hook
+ * Gork trigger: keyword/mention matching + the onMessageCreate pipeline hook
  * (roadmap/gork.md §7.1, §7.6; design decisions 2, 3, 11–13, 20).
  *
  * The pipeline hook runs only fast checks inline, in order:
  * guild + author + non-bot, text-based channel, guild enable switch +
  * keyword enabled, open-ticket channel skip, AI key present, keyword /
- * role-mention match (§7.1 + issue #174), keyword-alone rule, per-scope daily budget (§7.17: blocked or
+ * bot/role-mention match, keyword-alone rule, per-scope daily budget (§7.17: blocked or
  * over-budget bounces with a terse deduped reply, staff included),
  * per-user cooldown (staff bypass; a hit reacts to the trigger with a
  * clock emoji), guild ban list (banned users get the LLM-failure reply,
@@ -449,6 +449,39 @@ function matchRoleMention(content, mentionedRoleIds, configuredRoleId) {
 }
 
 /**
+ * Match an explicit Discord mention of this bot anywhere in the content.
+ * Require both parsed membership and a literal token: Discord reply pings
+ * can include the bot in mentions.users without addressing it in the text.
+ * IDs keep invocation working across username and guild nickname changes.
+ */
+function matchBotMention(content, userIds, botId) {
+  if (typeof content !== "string" || !botId) {
+    return { triggered: false, question: "" };
+  }
+  const id = String(botId);
+  if (!userIds?.includes(id)) return { triggered: false, question: "" };
+  const tokens = [`<@${id}>`, `<@!${id}>`];
+  if (!tokens.some((token) => content.includes(token))) {
+    return { triggered: false, question: "" };
+  }
+  let question = content;
+  for (const token of tokens) question = question.split(token).join(" ");
+  question = question.replace(/[ \t]+/g, " ").trim();
+  if (question && SEPARATORS.has(question[0])) {
+    question = question.slice(1).trim();
+  }
+  return { triggered: true, question };
+}
+
+/** User ids before or after Discord message normalization. */
+function mentionedUserIds(message) {
+  const users = message?.mentions?.users;
+  if (users == null) return [];
+  if (Array.isArray(users)) return users.map(String);
+  return [...(users.keys?.() ?? [])].map(String);
+}
+
+/**
  * Mentioned role ids of a message, tolerating BOTH shapes the Discord
  * surface legitimately carries: the discord.js Collection/Map BEFORE the
  * message normalizer ran (its keys are the ids), and the normalized
@@ -775,8 +808,7 @@ async function runGorkHook(client, message) {
     //    locks the disabled-state semantics for the role path here too:
     //    the keyword stays the master trigger-surface switch — a blank
     //    keyword keeps gork fully silent even with `gork_role_id` set.
-    //    (`/gork keyword clear` replies "Gork is now disabled"; the role
-    //    path following the same switch keeps that copy true.)
+    //    Bot mentions follow this same switch, preserving the disable command.
     const settings = getGuildSettings(communityId);
     if (Number(settings?.gork_enabled ?? 1) !== 1) return;
     const keyword = settings?.gork_keyword;
@@ -792,9 +824,9 @@ async function runGorkHook(client, message) {
 
     // 6. Trigger: keyword must be a prefix of the trimmed content
     //    (decision 1) OR the message must mention the guild's configured
-    //    gork role anywhere (issue #174; role path needs `gork_role_id`).
-    //    The keyword wins when both are present. Role-mention triggering is
-    //    Discord-surface only — the Fluxer path keeps its own grammar.
+    //    gork role or this bot anywhere. The keyword wins when multiple
+    //    triggers are present. Mentions are Discord-only; Fluxer keeps its
+    //    own keyword grammar.
     let { triggered, question } = matchKeyword(message.content, keyword);
     if (!triggered) {
       ({ triggered, question } = matchRoleMention(
@@ -803,9 +835,16 @@ async function runGorkHook(client, message) {
         settings?.gork_role_id,
       ));
     }
+    if (!triggered) {
+      ({ triggered, question } = matchBotMention(
+        message.content,
+        mentionedUserIds(message),
+        client?.user?.id,
+      ));
+    }
     if (!triggered) return;
 
-    // 7. Keyword alone (or role mention alone — the mention token is
+    // 7. Keyword alone (or bot/role mention alone — the mention token is
     //    stripped, leaving an empty question): answer from reply-chain
     //    context only when the
     //    message references another message OR carries an image
@@ -2122,6 +2161,8 @@ async function runGorkFluxerEntry(supervisor, message) {
 module.exports = {
   matchKeyword,
   matchRoleMention,
+  matchBotMention,
+  mentionedUserIds,
   mentionedRoleIds,
   splitLongAnswer,
   capAnswerChars,

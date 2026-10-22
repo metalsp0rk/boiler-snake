@@ -1216,7 +1216,7 @@ Optional: `silent`, `note` (N-n), `message` (Discord jump link), `evidence` (sta
 
 ### `/gork` - Gork AI Q&A (staff)
 
-Configure and moderate [Gork](../gork.md), the AI keyword Q&A bot. Q&A itself is triggered by typing the guild's keyword (`@gork` by default) in chat — `/gork` subcommands only configure and moderate it.
+Configure and moderate [Gork](../gork.md), the AI Q&A bot. In Discord, mention the bot by selecting its name from the mention picker anywhere in your message. The guild's keyword (`@gork` by default) and optional configured role mention also invoke it; Fluxer's keyword behavior is unchanged. Bot mentions follow renames and server nicknames, while a plain typed name or reply notification alone does not trigger an answer. `/gork` subcommands only configure and moderate it, and `/gork keyword clear` silences every trigger, including bot mentions.
 
 Gork's `read_discord` tool (reading a pasted message/channel link) is **always on** whenever gork is live — there is no command or setting for it.
 

@@ -1,11 +1,12 @@
 # Gork (AI Keyword Q&A)
 
-A goofy AI question-answering bot. When someone types the trigger keyword — a literal text string that *looks like* a mention, `@gork` by default — the bot answers using the surrounding conversation, optionally with live web search, in a sarcastic, always-safe-for-work voice. The misspelling of "grok" is intentional, and the trigger is **not** a Discord mention: no user or bot named "gork" needs to exist, and typing `@gork` pings nobody.
+A goofy AI question-answering bot. Mention the bot in Discord (select its name from the mention picker), or type the guild's trigger keyword (`@gork` by default), and it answers using the surrounding conversation, optionally with live web search, in a sarcastic, always-safe-for-work voice. The literal `@gork` keyword pings nobody; a real bot mention follows the bot's Discord identity even after a rename or server nickname change.
 
 ## Overview
 
 - **Literal keyword trigger**: message content (trimmed) starts with the guild's keyword (default `@gork`), compared case-insensitively
-- **Context-aware**: answers from the reply chain when the keyword message replies to something, otherwise from the N most recent messages (default 10, max 50)
+- **Discord bot mention trigger**: explicitly mention the bot anywhere in your message; no role or extra setting is needed
+- **Context-aware**: answers from the reply chain when the triggering message replies to something, otherwise from the N most recent messages (default 10, max 50)
 - **Optional web search**: the model can call a `web_search` tool the bot executes against a SearXNG instance's JSON API (up to 3 searches per question)
 - **Page reading**: the model can also open pages with `read_page` (1–3 URLs per call) — gork fetches them, extracts the main content to clean Markdown, and feeds it back into the same tool loop; **public web only** (internal/private addresses are refused by an SSRF guard). Each download is hard-capped at ~1 MB: oversized (including chunked) responses are cut off mid-stream, the transfer cancelled, not buffered whole (#435)
 - **Discord link reading**: `read_discord` is **always on** — paste a message link or channel mention next to the keyword and gork actually reads it (the linked message plus surrounding context, or the channel's latest 50), subject to the asker's own view permissions
@@ -18,9 +19,9 @@ A goofy AI question-answering bot. When someone types the trigger keyword — a 
 ## How it works
 
 ```
-User: "@gork how do I center a div"  (or "@gork" replying to a message)
+User: "@Boiler Snake how do I center a div" (real bot mention), or "@gork how do I center a div"
    → guild enable switch + keyword set? (either off → silent)
-   → keyword match (trimmed, case-insensitive prefix)
+   → keyword prefix, explicit Discord bot mention, or configured role mention matches
    → skipped silently: bot/webhook messages, DMs, open ticket channels
    → daily budget? (channel → category → guild default; blocked or over → terse deduped reply, staff included)
    → per-user cooldown? (default 180s; staff bypass; hit → 🕐 reaction, no reply)
@@ -29,7 +30,7 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
    → typing indicator (refreshed every 8s until the reply lands)
    → context window: reply chain (with backfill) or N prior messages
    → LLM (temperature 0.8, 90s total timeout; read_discord always on, web_search + read_page when enabled)
-   → plain-text reply to the keyword message (>2,000 chars → split)
+   → plain-text reply to the triggering message (>2,000 chars → split)
    → audit embed to the audit channel
 ```
 
@@ -37,10 +38,11 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
 
 | Rule | Detail |
 |------|--------|
-| Trigger | Message content (trimmed) **starts with** the guild's keyword, compared case-insensitively — or the message **mentions the configured gork role** anywhere (see below) |
+| Trigger | Message content (trimmed) **starts with** the guild's keyword, compared case-insensitively — or the message explicitly **mentions the Discord bot** or **the configured gork role** anywhere (see below) |
 | Default keyword | `@gork` (literal text, styled to look like a mention) |
 | Configurable | Per-guild; staff can set any 1–50 char keyword or clear it (clear = disabled) |
 | Question text | Content after the keyword, trimmed; one optional leading separator (`:`, `-`, `?`, `!`) + whitespace stripped |
+| Bot mention trigger (Discord) | Select the bot from Discord's mention picker anywhere in the message. The bot's mention tokens (`<@id>` and `<@!id>`) are stripped from the question, with the same separator rule. Matching uses the bot's ID, so renames and server nicknames work automatically. A plain typed name or a reply notification without an explicit mention in the content does not invoke gork. A **bare** mention follows the keyword-alone rule below. The keyword remains the **master trigger switch** — `/gork keyword clear` also disables bot mentions |
 | Role mention trigger | `/gork role <@role>` (staff) additionally makes a **real role mention** of that role anywhere in the message a trigger. The question is the content with that role's mention tokens stripped (same separator rule). A **bare** mention follows the keyword-alone rule below. Off by default; the keyword stays the **master trigger switch** — `/gork keyword clear` silences gork entirely, role path included |
 | Works in | Guild text channels and threads (thread's own history). **Not** DMs |
 | Skipped | Bot messages, webhook messages, **open ticket channels** (silently) |
@@ -51,8 +53,13 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
 | `@gork` (alone), replying to a message | No explicit question — answer from the reply-chain context |
 | `@gork` (alone) + image attachment | No explicit question — answer from the [image](#vision-images) (plus context) |
 | `@gork` (alone), no reply reference, no image | No LLM call; **no reply at all** (fully silent) |
+| `@Boiler Snake what does the schedule look like?` (real bot mention, anywhere) | Answer the question with context; use the bot's current name in the mention picker |
+| `@Boiler Snake` (real bot mention alone), replying to a message or attaching an image | Answer from the reply-chain context or image |
+| `@Boiler Snake` (real bot mention alone), no reply reference, no image | No LLM call; **no reply at all** (fully silent) |
 | `@GorkRole what does the schedule look like?` (configured role mentioned anywhere) | Same as the keyword path: answer the question with context |
 | `@GorkRole` alone, replying to a message | Keyword-alone rule: answer from the reply-chain context |
+
+**Fluxer:** the existing keyword trigger is unchanged. Automatic bot-user mention invocation described above is Discord-only.
 
 Gork is **disabled in open ticket channels**: if the channel has a [ticket](tickets.md) that is not yet archived, triggers are silently ignored — ticket conversations stay staff-focused (ticket content is already handled by the ticket AI on close).
 
@@ -64,11 +71,11 @@ Guild setting `gork_context_window` — how many prior messages feed the prompt 
 
 | Case | Collection |
 |------|------------|
-| Keyword message **replies** to a message | Walk the reply chain upward, collecting up to X messages (root included). If the chain is shorter than X, backfill with messages before the chain root in the same channel until X total |
-| No reply reference | The X messages immediately before the keyword message |
+| Triggering message **replies** to a message | Walk the reply chain upward, collecting up to X messages (root included). If the chain is shorter than X, backfill with messages before the chain root in the same channel until X total |
+| No reply reference | The X messages immediately before the triggering message |
 
 - **Included:** all readable messages — human **and** bot messages, including gork's own prior answers (often the useful context for follow-ups)
-- **Excluded:** the triggering keyword message itself; messages with empty content are skipped **unless they carry attachments** — an image-only message joins the context as `[username] [image attached]` and its images feed [vision](#vision-images)
+- **Excluded:** the triggering message itself; messages with empty content are skipped **unless they carry attachments** — an image-only message joins the context as `[username] [image attached]` and its images feed [vision](#vision-images)
 - **Broken chain links:** a deleted or unfetchable message in the chain is skipped; walking stops when the reference chain ends or X is reached
 - **Shape:** one line per message, `[<username>] <content>`, oldest → newest
 - **Caps:** 500 chars per message, 12,000 chars total context
@@ -379,7 +386,7 @@ Needs an AI provider configured — the **same env as gork Q&A** (`AI_API_KEY` e
 | Aspect | Detail |
 |--------|--------|
 | Typing | Typing indicator immediately on trigger — **including for queued requests while they wait** — refreshed every **8s** until the reply is sent |
-| Reply | **Plain text**, a reply **to** the keyword message. No embed, no trailing source list (the model may mention source facts or a URL inline) |
+| Reply | **Plain text**, a reply **to** the triggering message. No embed, no trailing source list (the model may mention source facts or a URL inline) |
 | Mentions & pings | Mention markup echoed in an answer (`<@id>`, `<@&role>`, `<#channel>`) is rewritten to a readable `@name` / `#channel`, and gork replies **never ping anyone** (mention parsing is disabled on every send) |
 | User roster | Each question includes a compact roster (id → handle → display name) of the people involved in the conversation, so gork can map names to people ("what did @alice say?") |
 | Channel awareness | Every answer sees *where* it was asked: the channel/thread name, its category (threads show their parent channel), and the channel topic — injected as untrusted **context only, never instructions**. Always on; nothing to configure |
