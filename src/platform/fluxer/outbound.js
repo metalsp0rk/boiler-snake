@@ -1187,6 +1187,23 @@ function createFluxerOutbound(handle, { fetch: fetchOverride } = {}) {
         });
         return { ok: true };
       } catch (err) {
+        // #214 (docs:5, Phase 0 live record): banning the guild OWNER is
+        // refused with 403 MISSING_PERMISSIONS (hierarchy rule; no ban
+        // applied) — higher-hierarchy members can be refused the same way.
+        // Translate to a terminal verdict instead of a generic failureText:
+        // a retry against this target can never succeed. The response is
+        // what drives this (not an owner guess), so hierarchy refusals
+        // beyond the owner still land in the right arm.
+        if (statusOf(err) === 403 && codeOf(err) === "MISSING_PERMISSIONS") {
+          return {
+            ok: false,
+            code: "ban_forbidden",
+            error:
+              `banMember: refusing to ban user ${userId} in community ${communityId}: ` +
+              `403 MISSING_PERMISSIONS — Fluxer forbids banning guild owners and ` +
+              `higher-hierarchy members (docs:5); retrying this target will not succeed.`,
+          };
+        }
         return {
           ok: false,
           error: failureText("banMember", `user ${userId} in community ${communityId}`, err),
