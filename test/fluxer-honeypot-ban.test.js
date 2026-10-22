@@ -196,6 +196,63 @@ describe("fluxer honeypot ban — K8 flag 1", () => {
     assert.equal(second, true, "the second message is still consumed as a hit");
     assert.equal(banHits(rest, "dupe-1").length, 1, "the 10s in-flight window dedupes the ban");
   });
+
+  it("#214 docs:5 — owner-ban 403 logs the specific terminal verdict, consumes the hit, hits the wire exactly once", async () => {
+    // Phase 0 live record (roadmap/fluxer.md): PUT /v1/guilds/{g}/bans/{owner}
+    // → 403 MISSING_PERMISSIONS (hierarchy rule). The ban leg must surface a
+    // SPECIFIC owner-adjacent verdict in log + audit — never a generic string
+    // — and issue exactly one PUT per hit (no retry loop; the #440 breaker
+    // stays the bound on repeated hits from a persistently hitting author).
+    dbApi.addHoneypotChannel(COMMUNITY_ID, HONEYPOT_CHANNEL);
+    setElevatedFlag(1);
+    const rest = makeFakeRest({
+      routes: {
+        ...memberRoute("owner-adj-1"),
+        [`PUT /v1/guilds/${GUILD}/bans/owner-adj-1`]: async () => {
+          const err = new Error("403 MISSING_PERMISSIONS: banning the guild owner is refused");
+          err.status = 403;
+          err.code = "MISSING_PERMISSIONS";
+          throw err;
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const { result, lines } = await withConsole(() =>
+      honeypot.handleHoneypotFluxerMessage(
+        outbound,
+        normalizedMessage({ authorId: "owner-adj-1", id: "m-docs5" }),
+      ),
+    );
+
+    assert.equal(result, true, "the refused ban still consumes the message as a honeypot hit");
+    assert.equal(banHits(rest, "owner-adj-1").length, 1, "exactly one PUT — no retry against a doomed target");
+    assert.ok(
+      lines.some(
+        (l) =>
+          l.includes("honeypot ban refused") &&
+          l.includes("owner-adj-1") &&
+          l.includes(`community ${COMMUNITY_ID}`) &&
+          l.includes("403 MISSING_PERMISSIONS") &&
+          l.includes("docs:5"),
+      ),
+      "the log names the docs:5 owner-adjacent verdict with the API code — not a generic string",
+    );
+    assert.ok(
+      !lines.some((l) => l.includes("honeypot ban failed") && l.includes("owner-adj-1")),
+      "the generic failure arm must NOT also fire for a translated verdict",
+    );
+
+    const row = dbApi.db
+      .prepare(
+        "SELECT details_json FROM admin_audit WHERE action='honeypot.enforce' AND target_id=? ORDER BY id DESC LIMIT 1",
+      )
+      .get("owner-adj-1");
+    assert.ok(row, "the refused ban is audited like every other enforce outcome");
+    const details = JSON.parse(row.details_json);
+    assert.equal(details.banned, 0);
+    assert.match(details.error, /MISSING_PERMISSIONS/, "the audit names the specific refusal cause");
+  });
 });
 
 describe("fluxer honeypot — gates unchanged", () => {

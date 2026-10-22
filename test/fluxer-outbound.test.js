@@ -28,7 +28,7 @@ const {
 } = require("../src/platform/fluxer/outbound");
 const { buildFluxerCommandContext } = require("../src/platform/fluxer/context");
 const { ensureCommunity } = require("../src/platform/community");
-const { makeFakeRest, makeFakeHandle } = require("./helpers/fluxer");
+const { makeFakeRest, makeFakeHandle, FluxerRestError } = require("./helpers/fluxer");
 
 after(cleanup);
 
@@ -455,6 +455,40 @@ describe("fluxer/outbound — send shapes", () => {
     const res = await outbound.sendDm("u1", { content: "x" });
     assert.equal(res.ok, false);
     assert.match(res.error, /no channel id/);
+  });
+
+  it("#214 docs:8 — ghost recipient: a 200 DM-open is NEVER recipient validation; the send-time code is the verdict", async () => {
+    // Phase 0 live record (roadmap/fluxer.md, docs:8 divergence): opening a
+    // DM with a NON-EXISTENT recipient returns 200 with a real channel.
+    // The adapter must therefore treat channel-create success as nothing
+    // more than a channel id — recipient validity is only provable at
+    // SEND time, and the send failure must surface with its code.
+    const rest = makeFakeRest({
+      routes: {
+        "POST /v1/users/@me/channels": { id: "dm-ghost", type: 1 },
+        "POST /v1/channels/dm-ghost/messages": async () => {
+          const err = new Error("400 CANNOT_SEND_TO_USER: cannot message user");
+          err.status = 400;
+          err.code = "CANNOT_SEND_TO_USER";
+          throw err;
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.sendDm("9999999999999", { content: "psst" });
+
+    assert.equal(res.ok, false, "a 200 channel-create must never turn the failed send into success");
+    assert.equal(res.code, "CANNOT_SEND_TO_USER", "the SEND-TIME code surfaces as the verdict (docs:8)");
+    assert.match(res.error, /CANNOT_SEND_TO_USER/, "the error names the specific send-time cause");
+    const opens = rest.calls.filter((c) => c.path === "/v1/users/@me/channels");
+    assert.equal(opens.length, 1, "exactly one DM open — the adapter never re-dials to 'validate' the recipient");
+    assert.deepEqual(opens[0].body, { recipient_id: "9999999999999" });
+    assert.deepEqual(
+      rest.calls.filter((c) => c.path.startsWith("/v1/channels/")).map((c) => c.path),
+      ["/v1/channels/dm-ghost/messages"],
+      "the only channel traffic is the one post to the ghost channel",
+    );
   });
 
   it("K2: a failing DM falls back to the channel with the ERROR ONLY — never the sensitive body", async () => {
@@ -1276,5 +1310,92 @@ describe("fluxer/outbound — presigned partial-failure honesty (#384)", () => {
       "the message references the real state: bytes moved, message never came",
     );
     assert.match(res.error, /CLAIM_REJECTED/, "the specific server cause still leads");
+  });
+});
+
+describe("fluxer/outbound — banMember owner-ban translation (#214, docs:5)", () => {
+  // Phase 0 live record (roadmap/fluxer.md): PUT /v1/guilds/{g}/bans/{owner}
+  // → 403 MISSING_PERMISSIONS — the hierarchy refuses banning the guild
+  // owner (no ban applied); higher-hierarchy members can be refused the
+  // same way. The adapter must translate that response into a TERMINAL,
+  // specifically-worded verdict so callers never grind retries against a
+  // target that can never succeed.
+  let cid;
+  beforeEach(() => {
+    cid = ensureCommunity({
+      platform: "fluxer",
+      instanceKey: INSTANCE,
+      externalGuildId: "owner-ban-guild",
+    });
+    setElevatedFlag(cid, 1);
+  });
+
+  it("403 MISSING_PERMISSIONS translates to the terminal ban_forbidden verdict", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "PUT /v1/guilds/owner-ban-guild/bans/u-owner": async () => {
+          throw new FluxerRestError("403 MISSING_PERMISSIONS: banning the guild owner is refused", {
+            status: 403,
+            code: "MISSING_PERMISSIONS",
+          });
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.banMember(cid, "u-owner", "Honeypot: trap");
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, "ban_forbidden", "stable semantic code for the owner/hierarchy refusal");
+    assert.match(res.error, /403 MISSING_PERMISSIONS/, "the wire verdict is named verbatim");
+    assert.match(res.error, /guild owners and \s*higher-hierarchy members/i, "the error names the hierarchy rule (docs:5)");
+    assert.match(res.error, /retrying this target will not succeed/i, "explicitly terminal wording");
+    assert.equal(
+      rest.calls.length,
+      1,
+      "exactly one PUT — the verdict rides the real 403, no owner pre-check GET, no re-PUT",
+    );
+  });
+
+  it("other 4xx/5xx ban failures keep the generic failureText and the raw code (no over-translation)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "PUT /v1/guilds/owner-ban-guild/bans/u500": async () => {
+          throw new FluxerRestError("500 INTERNAL_ERROR: boom", { status: 500, code: "INTERNAL_ERROR" });
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.banMember(cid, "u500", "r");
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, "INTERNAL_ERROR", "raw code passes through untouched");
+    assert.ok(!/ban_forbidden/.test(JSON.stringify(res)));
+    assert.ok(
+      !/guild owners/i.test(res.error),
+      "only 403+MISSING_PERMISSIONS gets the owner translation — a 500 must not claim a hierarchy refusal",
+    );
+    assert.match(res.error, /banMember: user u500 in community \d+ failed/);
+  });
+
+  it("a 403 WITHOUT the MISSING_PERMISSIONS code stays generic (translation is code-precise)", async () => {
+    const rest = makeFakeRest({
+      routes: {
+        "PUT /v1/guilds/owner-ban-guild/bans/u403": async () => {
+          throw new FluxerRestError("403 UNKNOWN_ENTITY: nope", { status: 403, code: "UNKNOWN_ENTITY" });
+        },
+      },
+    });
+    const { outbound } = makeFakeHandle({ rest });
+
+    const res = await outbound.banMember(cid, "u403", "r");
+
+    assert.equal(res.ok, false);
+    assert.equal(res.code, "UNKNOWN_ENTITY");
+    assert.ok(
+      !/guild owners/i.test(res.error),
+      "status alone must not trigger the owner translation — the recorded code is required",
+    );
   });
 });

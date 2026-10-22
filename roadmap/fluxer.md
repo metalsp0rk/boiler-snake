@@ -1210,8 +1210,18 @@ The normalizer and the outbound fake consume this object. A test that awards XP,
 4. **429 / slowmode response bodies** (docs:10).
 5. **Presigned multipart (chunked) plan** and the 25/50 MiB size-clamp boundaries (docs:11).
 6. **Live OAuth code exchange** (userinfo `sub` is schema-confirmed; the exchange needs a human consent click).
-7. **Docs:8 divergence recorded**: DM channel creation to a nonexistent recipient → 200. The adapter must not use `POST /users/@me/channels` for recipient validation.
-8. **Docs:5 owner-ban rule**: banning the guild owner is 403 MISSING_PERMISSIONS; honeypot/ban flows must expect it for owner-adjacent targets.
+7. **Docs:8 divergence recorded**: DM channel creation to a nonexistent recipient → 200. The adapter must not use `POST /users/@me/channels` for recipient validation. — **CLOSED 2026-10-22 (#214 audit below):** the adapter never used it for validation; call-site audit + pinned test recorded below.
+8. **Docs:5 owner-ban rule**: banning the guild owner is 403 MISSING_PERMISSIONS; honeypot/ban flows must expect it for owner-adjacent targets. — **CLOSED 2026-10-22 (#214 audit below):** `banMember` now translates the 403 into a terminal verdict; call-site audit + pinned tests recorded below. (The non-owner 204/`GUILD_BAN_ADD` capture stays open as item 2 / #209.)
+
+### #214 call-site audit — docs:8 (ghost-recipient DM 200) & docs:5 (owner-ban 403) (recorded 2026-10-22)
+
+Offline audit of every ban/DM-first call site against the two RECORDED divergences, plus the owner-ban translation and pinned tests for both. No live capture was required (both facts are already recorded above).
+
+**docs:8 — DM-open is never recipient proof. Verdict: compliant by construction.**
+Every outbound Fluxer DM funnels through the `sendFluxerMessage` DM arm (`POST /v1/users/@me/channels` → post to the returned id; `sendDm` is the wrapper) in `src/platform/fluxer/outbound.js` plus the sensitive-reply arm of `src/platform/fluxer/context.js` (`reply({sensitive}) → sendDm`). `/users/@me/channels` appears nowhere else in `src/`. No call site treats the 200 create as recipient validation — every DM-first flow surfaces the send-time code with the specific cause in-channel (K2): linking code/peer/refusal DMs (`src/features/linking/commands.js`), warn add/void/expiry/export DMs (`src/features/warnings/`), ticket create + `/ticket for` opener DMs (`src/features/tickets/create.js`), bridge credentials and DM-connect replies (`src/features/bridge/`), reaction-role grant DMs (`src/features/reactionRoles/service.js`). Discord-only DM legs (ticket close/archive, web-console moderation) never touch Fluxer outbound. The REST facade never retries (hard timeout only), and no flow re-dials a failed DM — a ghost recipient yields exactly one open + one failed post, then the surfaced cause. Pinned by `test/fluxer-outbound.test.js` ("ghost recipient: a 200 DM-open is NEVER recipient validation").
+
+**docs:5 — owner-ban 403 is expected. Verdict: translated terminal.**
+`banMember` call sites: ONLY the honeypot Fluxer message-hit leg (`handleHoneypotFluxerMessage`, `src/features/honeypot/index.js`) — there is no web-console ban route and `/gork ban` is a read-only list. `banMember` now translates a live `403 MISSING_PERMISSIONS` into a terminal verdict `{ok:false, code:"ban_forbidden"}` with explicit wording (the RESPONSE drives it, not an `owner_id` guess — hierarchy refusals beyond the owner land in the same arm; no `fetchGuild().ownerId` pre-check is issued). The honeypot leg logs the specific terminal refusal naming docs:5, audits it (`honeypot.enforce`, `banned:0`, the specific cause), consumes the message as a hit, and issues exactly one PUT per hit; repeated hits from a persistently hitting owner-adjacent author count the #440 breaker window and trip the recorded pause rather than grinding forever. Pinned by `test/fluxer-outbound.test.js` (terminal verdict + code precision: a 403 without `MISSING_PERMISSIONS`, or other statuses, stay generic) and `test/fluxer-honeypot-ban.test.js` (one PUT, specific log + audit rows, generic failure arm not fired).
 
 ## Live E2E verification (recorded 2026-10-02)
 

@@ -1068,6 +1068,17 @@ async function handleHoneypotFluxerMessage(outbound, message) {
       console.log(
         `[fluxer] honeypot ban suppressed: ${res.error} (user ${message.authorId})`,
       );
+    } else if (res.code === "ban_forbidden") {
+      // #214 (docs:5): Fluxer refuses owner/hierarchy bans with 403
+      // MISSING_PERMISSIONS — a TERMINAL verdict for this target. The hit is
+      // still consumed; the #440 breaker remains the bound on repeated hits
+      // (the doomed attempt is counted, so a persistently hitting
+      // owner-adjacent author trips the pause instead of grinding forever).
+      banError = res.error;
+      console.error(
+        `[fluxer] honeypot ban refused for user ${message.authorId} in community ${communityId}: ` +
+          `${res.error} — repeated hits from this author will keep being refused (docs:5)`,
+      );
     } else {
       banError = res.error;
       console.error(
