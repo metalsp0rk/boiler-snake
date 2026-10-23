@@ -8,7 +8,9 @@ const { loadDb, communityKey } = require("./helpers/env");
  * src/db/repositories/rss.js against a real migrated SQLite, plus the
  * guildSettings whitelist trio from migration 064. Feature-layer behavior
  * (SSRF validation, ticker gating, embed shapes) lives in the sibling test
- * files — this file is DB layer only.
+ * files; this file carries the DB layer plus — appended below — the PURE
+ * feed-state unit section for src/features/rss/feedState.js (subtask 04),
+ * which needs no DB at all.
  */
 describe("rss repository", () => {
   let api;
@@ -363,5 +365,416 @@ describe("rss repository", () => {
       assert.equal(row.rss_notification_channel_id, "500000000000000009");
       assert.equal("rss_bogus_column" in row, false, "unknown key never reaches the row");
     });
+  });
+});
+
+// ===========================================================================
+// Pure feed-state unit (issue #305, subtask 04): src/features/rss/feedState.js
+// — entry keys, seen-set partitioning + first-hour window, backoff math,
+// interval gate. NO DB involved: every rule takes plain injected values, so
+// this section needs no loadDb() contract. Requiring feedState at file-load
+// time is guard-safe (it pulls node:crypto and nothing else from src/).
+// ===========================================================================
+
+const feedState = require("../src/features/rss/feedState");
+
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const NOW = 1_761_200_000_000; // fixed clock — every window boundary below is exact
+// rss-parser hands back RFC strings; NOW and every offset below are whole
+// seconds, so the toUTCString round-trip is lossless (no ms drift at edges).
+const iso = (ms) => new Date(ms).toUTCString();
+
+describe("rss feedState — deriveEntryKey", () => {
+  it("prefers guid, falls back to Atom id, then the permalink link", () => {
+    assert.equal(
+      feedState.deriveEntryKey({
+        guid: "urn:uuid:abc",
+        id: "atom-id-1",
+        link: "https://example.com/post-1",
+      }),
+      "urn:uuid:abc",
+      "guid wins when every stable id is present",
+    );
+    assert.equal(
+      feedState.deriveEntryKey({ id: "atom-id-1", link: "https://example.com/post-1" }),
+      "atom-id-1",
+    );
+    assert.equal(
+      feedState.deriveEntryKey({ link: "https://example.com/post-1" }),
+      "https://example.com/post-1",
+      "permalink fallback for feeds with no stable ids",
+    );
+  });
+
+  it("trims key candidates and lets blank ids fall through", () => {
+    assert.equal(
+      feedState.deriveEntryKey({ guid: "  \t ", id: " real-id ", link: "https://x.example/" }),
+      "real-id",
+      "a whitespace-only guid is no id at all",
+    );
+  });
+
+  it("hashes very long keys to a stable sha256 digest; <= threshold stays verbatim", () => {
+    const base = "https://example.com/very/long/";
+    const atLimit = base + "x".repeat(feedState.RSS_LONG_KEY_LENGTH - base.length);
+    assert.equal(atLimit.length, feedState.RSS_LONG_KEY_LENGTH);
+    assert.equal(
+      feedState.deriveEntryKey({ link: atLimit }),
+      atLimit,
+      "keys at the threshold stay address-shaped",
+    );
+
+    const overLimit = atLimit + "y";
+    const key = feedState.deriveEntryKey({ link: overLimit });
+    assert.match(key, /^sha256:[0-9a-f]{64}$/, "over-long links digest");
+    assert.equal(key, feedState.deriveEntryKey({ link: overLimit }), "digest is deterministic");
+    assert.notEqual(
+      key,
+      feedState.deriveEntryKey({ link: overLimit + "z" }),
+      "different links hash apart",
+    );
+  });
+
+  it("keys are stable across missing pubDate and reordered/rebuilt entries", () => {
+    const entry = { guid: "g-1", link: "https://example.com/p", title: "A" };
+    const rebuilt = { title: "A", link: "https://example.com/p", guid: "g-1" }; // fields reshuffled, no pubDate
+    assert.equal(
+      feedState.deriveEntryKey(entry),
+      feedState.deriveEntryKey(rebuilt),
+      "field order never leaks into the key",
+    );
+    assert.equal(
+      feedState.deriveEntryKey({ ...entry, pubDate: iso(NOW) }),
+      "g-1",
+      "the key never depends on pubDate",
+    );
+  });
+
+  it("returns null for entries with no guid, no id and no link", () => {
+    assert.equal(feedState.deriveEntryKey({ title: "identity-less" }), null);
+    assert.equal(feedState.deriveEntryKey({ guid: "", id: null, link: undefined }), null);
+    assert.equal(feedState.deriveEntryKey(null), null);
+    assert.equal(feedState.deriveEntryKey(undefined), null);
+  });
+});
+
+describe("rss feedState — resolveEntryPublishedMs", () => {
+  it("pubDate wins; isoDate is the parser fallback", () => {
+    assert.equal(feedState.resolveEntryPublishedMs({ pubDate: iso(NOW - MIN) }, NOW), NOW - MIN);
+    assert.equal(
+      feedState.resolveEntryPublishedMs({ isoDate: new Date(NOW - 2 * MIN).toISOString() }, NOW),
+      NOW - 2 * MIN,
+    );
+    assert.equal(
+      feedState.resolveEntryPublishedMs({ pubDate: iso(NOW), isoDate: iso(NOW - 10 * MIN) }, NOW),
+      NOW,
+      "pubDate is checked first",
+    );
+  });
+
+  it("missing or unparseable dates fall back to the injected now (youtube Date.now() mirror)", () => {
+    assert.equal(feedState.resolveEntryPublishedMs({ title: "no dates" }, NOW), NOW);
+    assert.equal(feedState.resolveEntryPublishedMs({ pubDate: "not a date", isoDate: "nope" }, NOW), NOW);
+    assert.equal(feedState.resolveEntryPublishedMs(null, NOW), NOW);
+  });
+});
+
+describe("rss feedState — partitionEntries (first-poll window + seen-set)", () => {
+  const feedEntry = (guid, ageMinutes) => ({
+    guid,
+    link: `https://example.com/${guid}`,
+    pubDate: iso(NOW - ageMinutes * MIN),
+  });
+
+  it("first poll posts the last hour only: 59m posts, 60m and 61m seed silently", () => {
+    const result = feedState.partitionEntries({
+      entries: [feedEntry("fresh-59", 59), feedEntry("edge-60", 60), feedEntry("stale-61", 61)],
+      seenKeys: [],
+      lastChecked: null,
+      now: NOW,
+    });
+    assert.deepEqual(result.toPost.map((i) => i.key), ["fresh-59"]);
+    assert.deepEqual(
+      result.toSeed.map((i) => i.key),
+      ["stale-61", "edge-60"],
+      "youtube's `published <= oneHourAgo → skip` mirror: exactly-one-hour seeds silently, and seeds sort oldest-first",
+    );
+    assert.equal(result.skippedSeen, 0);
+    assert.equal(result.skippedUnkeyed, 0);
+  });
+
+  it("first poll: date-less entries count as fresh (mirrors youtube extractVideoInfo)", () => {
+    const result = feedState.partitionEntries({
+      entries: [{ guid: "no-date", link: "https://example.com/nd" }, feedEntry("stale-90", 90)],
+      seenKeys: [],
+      lastChecked: null,
+      now: NOW,
+    });
+    assert.deepEqual(
+      result.toPost.map((i) => i.key),
+      ["no-date"],
+      "SPEC CHOICE: a missing pubDate resolves to `now` (youtube fallback), so the entry posts once — the seen-set makes that safe",
+    );
+    assert.deepEqual(result.toSeed.map((i) => i.key), ["stale-90"]);
+  });
+
+  it("later polls gate on the watermark: newer posts, unseen-but-stale seeds", () => {
+    const result = feedState.partitionEntries({
+      entries: [
+        feedEntry("after-wm", 5), // published after last_checked → post
+        feedEntry("at-wm", 10), // published exactly AT last_checked → seed (`<=` mirror)
+        feedEntry("before-wm", 20), // older than the watermark → seed
+      ],
+      seenKeys: [],
+      lastChecked: NOW - 10 * MIN,
+      now: NOW,
+    });
+    assert.deepEqual(result.toPost.map((i) => i.key), ["after-wm"]);
+    assert.deepEqual(
+      result.toSeed.map((i) => i.key),
+      ["before-wm", "at-wm"],
+      "stale-unseen entries seed oldest-first instead of posting",
+    );
+  });
+
+  it("seen entries are never reposted, even when newer than the watermark", () => {
+    const result = feedState.partitionEntries({
+      entries: [feedEntry("already-announced", 2)],
+      seenKeys: ["already-announced"],
+      lastChecked: NOW - 30 * MIN,
+      now: NOW,
+    });
+    assert.deepEqual(result.toPost, []);
+    assert.deepEqual(result.toSeed, []);
+    assert.equal(result.skippedSeen, 1, "the seen-set outranks the watermark");
+  });
+
+  it("a reordered feed announces nothing on the next poll", () => {
+    const feed = [feedEntry("a-old", 90), feedEntry("b-new", 5), feedEntry("c-stale", 61)];
+    const first = feedState.partitionEntries({
+      entries: feed,
+      seenKeys: [],
+      lastChecked: null,
+      now: NOW,
+    });
+    assert.deepEqual(first.toPost.map((i) => i.key), ["b-new"], "first poll posts the in-window item only");
+    const seen = [...first.toPost, ...first.toSeed].map((i) => i.key);
+    assert.equal(seen.length, 3, "everything else seeded into the seen-set");
+
+    const shuffled = [feed[2], feed[0], feed[1]]; // same items, reordered
+    const second = feedState.partitionEntries({
+      entries: shuffled,
+      seenKeys: seen,
+      lastChecked: NOW,
+      now: NOW + MIN,
+    });
+    assert.deepEqual(second.toPost, [], "reordering alone never re-announces");
+    assert.deepEqual(second.toSeed, []);
+    assert.equal(second.skippedSeen, 3);
+  });
+
+  it("duplicate items inside one fetch announce exactly once", () => {
+    const result = feedState.partitionEntries({
+      entries: [feedEntry("dup", 5), feedEntry("dup", 5)],
+      seenKeys: [],
+      lastChecked: null,
+      now: NOW,
+    });
+    assert.equal(result.toPost.length, 1, "one post for two identical guids in one response");
+    assert.equal(result.toSeed.length, 0);
+  });
+
+  it("unkeyable entries are counted and never posted", () => {
+    const result = feedState.partitionEntries({
+      entries: [{ title: "no ids at all" }, feedEntry("ok", 5)],
+      seenKeys: [],
+      lastChecked: null,
+      now: NOW,
+    });
+    assert.equal(result.skippedUnkeyed, 1);
+    assert.deepEqual(result.toPost.map((i) => i.key), ["ok"]);
+  });
+
+  it("toPost is oldest-first so the ticker can flood-cap off the newest end", () => {
+    const result = feedState.partitionEntries({
+      entries: [feedEntry("newest", 1), feedEntry("oldest", 55), feedEntry("middle", 30)],
+      seenKeys: [],
+      lastChecked: null,
+      now: NOW,
+    });
+    assert.deepEqual(result.toPost.map((i) => i.key), ["oldest", "middle", "newest"]);
+  });
+
+  it("pruneNeeded signals the repository prune once the bounded set would overflow", () => {
+    const feed = [feedEntry("n1", 5), feedEntry("n2", 10)];
+
+    const overflowing = feedState.partitionEntries({
+      entries: feed,
+      seenKeys: ["s1", "s2"],
+      lastChecked: NOW,
+      now: NOW,
+      seenCap: 3,
+    });
+    assert.equal(overflowing.toPost.length + overflowing.toSeed.length, 2, "both seed (older than the watermark)");
+    assert.equal(overflowing.pruneNeeded, true, "2 seen + 2 new exceeds cap 3");
+
+    const fitting = feedState.partitionEntries({
+      entries: feed,
+      seenKeys: ["s1"],
+      lastChecked: NOW,
+      now: NOW,
+      seenCap: 3,
+    });
+    assert.equal(fitting.pruneNeeded, false, "1 seen + 2 new fits the cap");
+
+    const idle = feedState.partitionEntries({
+      entries: feed,
+      seenKeys: ["n1", "n2"],
+      lastChecked: NOW,
+      now: NOW,
+      seenCap: 100,
+    });
+    assert.equal(idle.pruneNeeded, false, "no new inserts → nothing to prune");
+  });
+
+  it("RSS_SEEN_CAP mirrors the repository bound (facade RSS_SEEN_CAP)", () => {
+    assert.equal(feedState.RSS_SEEN_CAP, 100, "the repository section above pins the db side to the same 100");
+    assert.equal(feedState.DEFAULT_RSS_POLL_INTERVAL_MINUTES, 15, "spec/schema default interval");
+  });
+});
+
+describe("rss feedState — backoff math", () => {
+  const back = (failureCount, opts = {}) =>
+    feedState.rssBackoffIntervalMs({ intervalMinutes: 15, failureCount, ...opts });
+
+  it("base × 2^failure_count, clamped at the 6h ceiling", () => {
+    const base = 15 * MIN;
+    assert.equal(back(0), base, "failure_count 0 (the success reset) is exactly one base interval");
+    assert.equal(back(1), 2 * base);
+    assert.equal(back(2), 4 * base);
+    assert.equal(back(4), 4 * HOUR, "15m × 16 = 4h stays under the cap");
+    assert.equal(back(5), 6 * HOUR, "15m × 32 = 8h clamps to 6h");
+    assert.equal(back(1000), 6 * HOUR, "huge counters digest to the cap, never Infinity");
+    assert.ok(Number.isFinite(back(100000)));
+  });
+
+  it("reset semantics ride the counter: the repo success path zeroes failure_count", () => {
+    assert.ok(back(3) > back(0), "failures grow the window");
+    assert.equal(
+      back(0),
+      feedState.rssBackoffIntervalMs({ intervalMinutes: 15 }),
+      "after recordRssFeedSuccess resets the counter the feed polls at the plain interval again",
+    );
+  });
+
+  it("garbage inputs degrade to base/15 instead of breaking the gate", () => {
+    assert.equal(back(NaN), 15 * MIN);
+    assert.equal(back(-3), 15 * MIN);
+    assert.equal(
+      feedState.rssBackoffIntervalMs({ failureCount: 1 }),
+      2 * 15 * MIN,
+      "missing interval → 15-minute default base",
+    );
+    assert.equal(feedState.rssBackoffIntervalMs({ intervalMinutes: "every minute pls", failureCount: 1 }), 30 * MIN);
+    assert.equal(
+      feedState.rssBackoffIntervalMs({ intervalMinutes: 0, failureCount: 1 }),
+      30 * MIN,
+      "0 is not a poll interval — the default base applies",
+    );
+  });
+
+  it("custom maxBackoffMs is honored; invalid caps fall back to 6h", () => {
+    assert.equal(back(5, { maxBackoffMs: HOUR }), HOUR);
+    assert.equal(back(2, { maxBackoffMs: HOUR }), HOUR, "growth clamps at a tiny custom cap too");
+    assert.equal(back(10, { maxBackoffMs: -1 }), 6 * HOUR, "garbage cap → spec default");
+  });
+
+  it("rssNextDueAtMs = last_checked + backoff window; never-checked is due now", () => {
+    assert.equal(
+      feedState.rssNextDueAtMs({ lastChecked: 1_000, intervalMinutes: 15, failureCount: 1, now: NOW }),
+      1_000 + 30 * MIN,
+    );
+    assert.equal(feedState.rssNextDueAtMs({ lastChecked: null, intervalMinutes: 15, now: NOW }), NOW);
+    assert.equal(
+      feedState.rssNextDueAtMs({ lastChecked: 0, intervalMinutes: 15, now: NOW }),
+      NOW,
+      "0 reads as never-checked (youtube truthiness of last_checked)",
+    );
+  });
+});
+
+describe("rss feedState — interval gate (isRssPollDue)", () => {
+  it("missing or unknown interval settings fall back to 15 minutes", () => {
+    const fourteenMinutesAgo = NOW - 14 * MIN;
+    assert.equal(feedState.isRssPollDue({ lastChecked: fourteenMinutesAgo, intervalMinutes: null, now: NOW }), false);
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: fourteenMinutesAgo, intervalMinutes: undefined, now: NOW }),
+      false,
+    );
+    assert.equal(feedState.isRssPollDue({ lastChecked: fourteenMinutesAgo, intervalMinutes: "?", now: NOW }), false);
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: NOW - 15 * MIN, intervalMinutes: null, now: NOW }),
+      true,
+      "unknown setting still gates on the 15-minute default",
+    );
+  });
+
+  it("due when last_checked + interval <= now — exactly-due ticks, one ms early does not", () => {
+    const interval = 15 * MIN;
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: NOW - interval + 1, intervalMinutes: 15, now: NOW }),
+      false,
+      "one millisecond early is NOT due",
+    );
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: NOW - interval, intervalMinutes: 15, now: NOW }),
+      true,
+      "exactly-due ticks post (youtube's strict `< interval` skip restated)",
+    );
+    assert.equal(feedState.isRssPollDue({ lastChecked: NOW - interval - 1, intervalMinutes: 15, now: NOW }), true);
+  });
+
+  it("explicit intervals are honored (30m), and a heavily skewed-past stamp is due", () => {
+    assert.equal(feedState.isRssPollDue({ lastChecked: NOW - 29 * MIN, intervalMinutes: 30, now: NOW }), false);
+    assert.equal(feedState.isRssPollDue({ lastChecked: NOW - 30 * MIN, intervalMinutes: 30, now: NOW }), true);
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: NOW - 7 * 24 * HOUR, intervalMinutes: 30, now: NOW }),
+      true,
+      "a row left unchecked for a week is past due",
+    );
+  });
+
+  it("never-checked rows (NULL / absent last_checked) are always due", () => {
+    assert.equal(feedState.isRssPollDue({ lastChecked: null, intervalMinutes: 60, now: NOW }), true);
+    assert.equal(feedState.isRssPollDue({ intervalMinutes: 60, now: NOW }), true);
+  });
+
+  it("failure_count folds the backoff into the same gate (ticker consumption shape)", () => {
+    const twentyMinutesAgo = NOW - 20 * MIN;
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: twentyMinutesAgo, intervalMinutes: 15, now: NOW }),
+      true,
+      "base gate: 20m >= 15m",
+    );
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: twentyMinutesAgo, intervalMinutes: 15, failureCount: 1, now: NOW }),
+      false,
+      "one failure doubles the wait: 20m < 30m",
+    );
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: NOW - 31 * MIN, intervalMinutes: 15, failureCount: 1, now: NOW }),
+      true,
+    );
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: NOW - 3 * HOUR, intervalMinutes: 15, failureCount: 4, now: NOW }),
+      false,
+      "4h backoff window (15m × 16) not elapsed at 3h",
+    );
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: NOW - 7 * HOUR, intervalMinutes: 15, failureCount: 40, now: NOW }),
+      true,
+      "the cap-bound 6h window is what elapses, not the raw counter",
+    );
   });
 });
