@@ -714,6 +714,47 @@ describe("scheduler bridge wiring — named job rows on /system (Task 15.6)", ()
       "registry back to the honest empty state"
     );
   });
+
+  it("#217: a job registered AFTER the bridge (web-first boot order) still gets a page row", async () => {
+    const timers = fakeTimers();
+    const scheduler = createScheduler({ now: () => Date.now(), ...timers });
+    // The production order (src/features/index.js): the bridge runs during
+    // WEB start, while gork/bridge/linking jobs are NOT yet registered.
+    const bridgeOff = registerSchedulerJobHealthSources(scheduler);
+    try {
+      let { body } = await hit(SYS, { key: "admin" });
+      assert.ok(
+        body.includes("No ticker health sources are registered"),
+        "empty scheduler at web boot ⇒ honest empty panel"
+      );
+
+      // Bridge/linking start hooks register their loops afterwards:
+      scheduler.registerJob({ name: "bridge-relay", intervalMs: 250, run: () => {} });
+      scheduler.registerJob({
+        name: "linking-code-expiry",
+        intervalMs: 60_000,
+        run: () => {},
+      });
+      await scheduler.runNow("bridge-relay");
+      await settleAsync();
+
+      ({ body } = await hit(SYS, { key: "admin" }));
+      assert.ok(
+        body.includes("<td>bridge-relay</td>"),
+        "#217: the relay worker row renders WITHOUT re-invoking the bridge"
+      );
+      assert.ok(
+        body.includes("<td>linking-code-expiry</td>"),
+        "late linking job gets a row too (same boot-order class)"
+      );
+      const start = body.indexOf("<td>bridge-relay</td>");
+      const slice = body.slice(start, body.indexOf("</tr>", start));
+      assert.ok(slice.includes("badge-ticker-ok"), "fresh stamp ⇒ ok badge");
+    } finally {
+      bridgeOff();
+      scheduler.stop();
+    }
+  });
 });
 
 // ===========================================================================
