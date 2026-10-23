@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.37.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.36.0...v1.37.0) (2026-10-23)
+
+
+### Features
+
+* **core:** v2 multi-key envelope + lazy re-encrypt so token keys can rotate ([#281](https://github.com/metalsp0rk/boiler-snake/issues/281)) ([4c3fcf7](https://github.com/metalsp0rk/boiler-snake/commit/4c3fcf77134e75e3cc83370459b6afb8fc852695))
+* suggest channel names on console channel fields ([62c0f93](https://github.com/metalsp0rk/boiler-snake/commit/62c0f93dbc336d19dd7e1c7fd499aad4b20573b4)), closes [#645](https://github.com/metalsp0rk/boiler-snake/issues/645)
+
+
+### Bug Fixes
+
+* bind test DB env at process start so load-time requires never open the repo DB ([#699](https://github.com/metalsp0rk/boiler-snake/issues/699)) ([aad05c8](https://github.com/metalsp0rk/boiler-snake/commit/aad05c81aa671e609293d71b85455e67b0cf1981))
+* **events:** /event adopt picker says staff-only — matching the handler ([#675](https://github.com/metalsp0rk/boiler-snake/issues/675)) ([51bd7ad](https://github.com/metalsp0rk/boiler-snake/commit/51bd7ade387ca8e5e5a5a7daf5f9a50766bce967))
+* require DELETE confirm before removing an event preset ([065174e](https://github.com/metalsp0rk/boiler-snake/commit/065174e0e9baf61545dddcaa8e4057bb82ad2416))
+* strip the auto reply-mention of gork so follow-up replies to its answers trigger ([#176](https://github.com/metalsp0rk/boiler-snake/issues/176)) ([059c423](https://github.com/metalsp0rk/boiler-snake/commit/059c42325df0ba89aa3e7fa6b2b83a4dba0637ce))
+* translate Fluxer owner-ban 403 and audit DM-first flows against docs:5/docs:8 ([#214](https://github.com/metalsp0rk/boiler-snake/issues/214)) ([14c8e75](https://github.com/metalsp0rk/boiler-snake/commit/14c8e7544fc2bda7a00e1eb912ee1c01686e650d))
+* **web:** make ticker-health rows follow the scheduler live so late-boot bridge/linking jobs render ([#217](https://github.com/metalsp0rk/boiler-snake/issues/217)) ([1432bce](https://github.com/metalsp0rk/boiler-snake/commit/1432bce2cb81a531735b360a16bf10f86ff53b92))
+
 ## [1.36.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.35.0...v1.36.0) (2026-10-20)
 
 
