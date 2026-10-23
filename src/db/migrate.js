@@ -72,6 +72,7 @@ const migrations = [
   require("./migrations/062_rss_feeds"),
   require("./migrations/063_rss_seen"),
   require("./migrations/064_rss_guild_settings"),
+  require("./migrations/065_gork_max_tool_rounds"),
 ];
 
 const helpers = {

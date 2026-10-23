@@ -36,6 +36,13 @@
 const { PermissionFlagsBits } = require("discord.js");
 const { envPositiveInt } = require("../../core/env"); // #470 (H1-7): shared copy
 const {
+  positiveIntIn,
+  TOOL_ROUNDS_DEFAULT,
+  TOOL_TIMEOUT_BASE_MS,
+  resolveMaxToolRounds,
+  deriveToolTimeoutMs,
+} = require("./constants"); // #705: rounds budget + derived loop deadline
+const {
   getGuildSettings,
   getTicketByChannel,
   gorkMemoryTouch,
@@ -175,12 +182,21 @@ const LLM_TEMPERATURE = 0.8;
  */
 const DEFAULT_LLM_MAX_TOKENS = 6000;
 /**
- * Total LLM deadline. 4,000 reasoning tokens on local models routinely
- * exceed 60s, so the whole loop gets 90s by default; override with
- * GORK_LLM_TIMEOUT_MS.
+ * BASE of the derived whole-loop deadline (#705): with no explicit
+ * GORK_LLM_TIMEOUT_MS the effective timeout is
+ * `min(BASE + PER_ROUND × rounds, CAP)` — 4,000 reasoning tokens on local
+ * models routinely exceed 60s, so one full round's worth (90s) is the
+ * floor. Explicit GORK_LLM_TIMEOUT_MS still overrides the derivation
+ * wholesale (escape hatch, meaning unchanged).
  */
-const DEFAULT_LLM_TIMEOUT_MS = 90_000;
-const DEFAULT_LLM_MAX_TOOL_ROUNDS = 3;
+const DEFAULT_LLM_TIMEOUT_MS = TOOL_TIMEOUT_BASE_MS;
+/**
+ * Fallback when neither the guild (`gork_max_tool_rounds`) nor
+ * GORK_LLM_MAX_TOOL_ROUNDS is set. #705 lifted the historical 3 to 50:
+ * the per-guild knob sizes ambition, PER_ROUND sizes model physics, and
+ * the 45-min deadline CAP + cooldown + daily budget bound the burn.
+ */
+const DEFAULT_LLM_MAX_TOOL_ROUNDS = TOOL_ROUNDS_DEFAULT;
 
 /**
  * Visible-answer char cap default. 0 = off, which keeps the LOCKED
@@ -197,24 +213,35 @@ const ANSWER_TRUNCATE_MARKER = "…[truncated]";
  * Per-call LLM parameters, re-read every job so env overrides apply to
  * queued requests without a restart.
  *
+ * #705: `settings` (the guild's row, when the caller has one) makes the
+ * tool-round budget per-guild — `gork_max_tool_rounds` clamped 5–300
+ * wins; NULL falls back to GORK_LLM_MAX_TOOL_ROUNDS, then 50. The
+ * deadline DERIVES from that rounds budget
+ * (`min(90s + 40s×rounds, 45 min)` via constants.deriveToolTimeoutMs;
+ * an explicit GORK_LLM_TIMEOUT_MS overrides the whole derivation).
+ *
  * `thinkingTokenBudget` (GORK_LLM_THINKING_TOKEN_BUDGET) is the hidden
  * reasoning cap passed through to the provider as thinking_token_budget.
  * 0 = "do not send" (strict-provider safety: unknown params are rejected
  * by e.g. api.openai.com; the cap only does anything on servers that
  * enforce it, e.g. vLLM with --reasoning-parser).
  *
+ * @param {{ gork_max_tool_rounds?: unknown }|null} [settings] guild settings row (null = env-only)
+ * @param {Record<string,string|undefined>} [env] test seam
  * @returns {{ temperature: number, maxTokens: number, timeoutMs: number, maxToolRounds: number, thinkingTokenBudget: number }}
  */
-function llmParams() {
+function llmParams(settings = null, env = process.env) {
+  const maxToolRounds = resolveMaxToolRounds(settings?.gork_max_tool_rounds, env);
   return {
     temperature: LLM_TEMPERATURE,
-    maxTokens: envPositiveInt("GORK_LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS),
-    timeoutMs: envPositiveInt("GORK_LLM_TIMEOUT_MS", DEFAULT_LLM_TIMEOUT_MS),
-    maxToolRounds: envPositiveInt(
-      "GORK_LLM_MAX_TOOL_ROUNDS",
-      DEFAULT_LLM_MAX_TOOL_ROUNDS,
+    maxTokens: positiveIntIn(env, "GORK_LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS),
+    timeoutMs: deriveToolTimeoutMs(maxToolRounds, env),
+    maxToolRounds,
+    thinkingTokenBudget: positiveIntIn(
+      env,
+      "GORK_LLM_THINKING_TOKEN_BUDGET",
+      0,
     ),
-    thinkingTokenBudget: envPositiveInt("GORK_LLM_THINKING_TOKEN_BUDGET", 0),
   };
 }
 
@@ -1310,7 +1337,7 @@ async function runGorkJob(deps) {
         // Snapshot of the sampling params actually spread into llmOpts
         // (re-read per job like every other knob); the interaction log
         // records exactly these.
-        const llmParamsUsed = llmParams();
+        const llmParamsUsed = llmParams(settings);
         const llmOpts = {
           messages: [
             { role: "system", content: system },

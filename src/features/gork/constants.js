@@ -164,6 +164,80 @@ const GORK_STE_CARD = [
   "Keep the sarcasm. Drop the padding.",
 ].join("\n");
 
+// ---------------------------------------------------------------------------
+// Tool-round budget + derived loop deadline (issue #705)
+// ---------------------------------------------------------------------------
+
+/** Per-guild `/gork toolrounds`: tool rounds one answer may spend. */
+const TOOL_ROUNDS_MIN = 5;
+const TOOL_ROUNDS_MAX = 300;
+/**
+ * Effective default when neither the guild column nor the env knob is set.
+ * #705 lifts the historical global default (3) to 50: the guild knob sizes
+ * ambition, PER_ROUND sizes model physics, and the HARD_CAP + cooldown +
+ * daily budget bound what a guild can actually burn.
+ */
+const TOOL_ROUNDS_DEFAULT = 50;
+/** Base of the derived whole-loop deadline: one full final-answer round. */
+const TOOL_TIMEOUT_BASE_MS = 90_000;
+/** Operator model-speed knob: the average round cost the derivation assumes. */
+const TOOL_TIMEOUT_PER_ROUND_MS = 40_000;
+/** Hard ceiling of the derived deadline — bounds the worst case a serialized
+ * per-guild queue job can hold its slot (queue headroom, #705). */
+const TOOL_TIMEOUT_CAP_MS = 45 * 60_000;
+
+/** envPositiveInt with an injectable env (test seam; same semantics). */
+function positiveIntIn(env, name, fallback) {
+  const raw = env?.[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/**
+ * Effective tool rounds for one community (read-side clamp, the
+ * `gork_context_window` clamp-and-disclose twin). A guild-set value clamps
+ * to 5–300; NULL / garbage means NEVER SET and falls back to the legacy
+ * global knob `GORK_LLM_MAX_TOOL_ROUNDS` (explicit deployments keep their
+ * number), whose own fallback is the 50 default.
+ *
+ * @param {unknown} guildValue raw `gork_max_tool_rounds` (nullable column)
+ * @param {Record<string,string|undefined>} [env]
+ * @returns {number}
+ */
+function resolveMaxToolRounds(guildValue, env = process.env) {
+  if (guildValue !== null && guildValue !== undefined && guildValue !== "") {
+    const n = Number(guildValue);
+    if (Number.isFinite(n)) {
+      return Math.min(TOOL_ROUNDS_MAX, Math.max(TOOL_ROUNDS_MIN, Math.trunc(n)));
+    }
+  }
+  return positiveIntIn(env, "GORK_LLM_MAX_TOOL_ROUNDS", TOOL_ROUNDS_DEFAULT);
+}
+
+/**
+ * Derived whole-loop deadline: `min(BASE + PER_ROUND × rounds, CAP)`.
+ * An explicitly set, valid `GORK_LLM_TIMEOUT_MS` OVERRIDES the whole
+ * derivation (escape hatch, meaning unchanged from the fixed deadline).
+ *
+ * @param {number} rounds effective tool rounds for this job
+ * @param {Record<string,string|undefined>} [env]
+ * @returns {number} deadline ms for the whole chatWithTools loop
+ */
+function deriveToolTimeoutMs(rounds, env = process.env) {
+  const explicit = positiveIntIn(env, "GORK_LLM_TIMEOUT_MS", 0);
+  if (explicit > 0) return explicit;
+  const perRound = positiveIntIn(
+    env,
+    "GORK_LLM_TIMEOUT_PER_ROUND_MS",
+    TOOL_TIMEOUT_PER_ROUND_MS,
+  );
+  const cap = positiveIntIn(env, "GORK_LLM_TIMEOUT_CAP_MS", TOOL_TIMEOUT_CAP_MS);
+  const safeRounds = Math.max(0, Math.trunc(Number(rounds) || 0));
+  const grown = TOOL_TIMEOUT_BASE_MS + perRound * safeRounds;
+  return Number.isFinite(grown) ? Math.min(grown, cap) : cap;
+}
+
 module.exports = {
   KEYWORD_MAX,
   CONTEXT_MIN,
@@ -192,6 +266,15 @@ module.exports = {
   GORK_TOKEN_CHAR_RATIO,
   GORK_SUMMARIZE_PROMPT_RESERVE_CHARS,
   GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR,
+  positiveIntIn,
+  resolveMaxToolRounds,
+  deriveToolTimeoutMs,
+  TOOL_ROUNDS_MIN,
+  TOOL_ROUNDS_MAX,
+  TOOL_ROUNDS_DEFAULT,
+  TOOL_TIMEOUT_BASE_MS,
+  TOOL_TIMEOUT_PER_ROUND_MS,
+  TOOL_TIMEOUT_CAP_MS,
   clampSummarizeInputTokens,
   summarizeInputTokenCapChars,
   GORK_SUMMARIZE_OUTPUT_MAX,
