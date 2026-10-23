@@ -2,6 +2,13 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
+// #699: bind DB_PATH/DATA_DIR to a per-process temp dir BEFORE this file's
+// callers require anything under src/ — connection.js opens at require time,
+// and a load-time require with unbound env lands on the repo-root DB
+// (SQLITE_CANTOPEN races under --test process isolation). Env pre-set by the
+// shell is left alone. See the guard's header for the full story.
+require("./test-env-guard");
+
 /**
  * Clear Node require cache for all project `src/` modules so DB_PATH and
  * feature singletons rebind cleanly for integration tests.
