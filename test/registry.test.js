@@ -19,9 +19,9 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 35 slash commands with unique names", () => {
+  it("exports 37 slash commands with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 35);
+    assert.equal(commands.length, 37);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -48,6 +48,9 @@ describe("command definitions via registry", () => {
     assert.ok(names.includes("settwitch"));
     assert.ok(names.includes("gork"));
     assert.ok(names.includes("github"));
+    // #305: RSS feed notifications.
+    assert.ok(names.includes("rss"));
+    assert.ok(names.includes("setrss"));
   });
 });
 
@@ -153,10 +156,11 @@ describe("buildDefaultRegistry", () => {
       "web",
       "bridge",
       "linking",
+      "rss",
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 27);
+    assert.equal(features.length, 28);
   });
 
   it("registers userinfo button handler", () => {
