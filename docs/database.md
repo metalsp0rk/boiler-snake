@@ -37,6 +37,8 @@ boiler-snake/
 | `youtube_channels` | YouTube subscriptions and metadata |
 | `twitch_channels` | Twitch broadcaster subscriptions + live/stream dedup state |
 | `github_watches` | GitHub repos watched for releases + announcement routing/state |
+| `rss_feeds` | RSS feed subscriptions per community + poll/dedup/backoff state (§8e) |
+| `rss_seen` | Bounded per-feed announced-entry seen-sets for RSS dedup (§8f) |
 | `honeypot_channels` | Channels that ban non-exempt users who post |
 | `staff_roles` | Guild staff roles (admin gate + honeypot exemption); `level` junior\|senior |
 | `honeypot_ban_roles` | Roles that ban a member when granted |
@@ -235,7 +237,7 @@ Connected voice users are read live from the bot's voice-state cache
 
 ### 4. `guild_settings`
 
-One row per guild storing all configuration options. Base columns come from migration `001`; later migrations add columns via `addColumnIfMissing`. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`, and migration `057_level_role_fk` rebuilt it again to declare the PK foreign key `PRIMARY KEY REFERENCES communities(id)`; the newest column (`twitch_golive_template`) arrives with `061_twitch_golive_template`. Resolve snowflakes via `communities.external_guild_id`. The live DDL below is `sqlite_master` text as rebuilt by `057`: post-`001` columns were appended by later migrations, so SQLite records them after `updated_at` in ALTER order — that trailing comma is real, not a typo.
+One row per guild storing all configuration options. Base columns come from migration `001`; later migrations add columns via `addColumnIfMissing`. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`, and migration `057_level_role_fk` rebuilt it again to declare the PK foreign key `PRIMARY KEY REFERENCES communities(id)`; the newest columns (`rss_notification_channel_id`, `rss_notify_role_id`, `rss_polling_interval_minutes`) arrive with `064_rss_guild_settings`. Resolve snowflakes via `communities.external_guild_id`. The live DDL below is `sqlite_master` text as rebuilt by `057`: post-`001` columns were appended by later migrations, so SQLite records them after `updated_at` in ALTER order — that trailing comma is real, not a typo.
 
 ```sql
 -- Live DDL (migrated schema, from sqlite_master)
@@ -258,7 +260,7 @@ CREATE TABLE "guild_settings" (
   youtube_upload_role_id TEXT,
 
   updated_at INTEGER NOT NULL
-, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT, gork_role_id TEXT, twitch_golive_template TEXT);
+, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT, gork_role_id TEXT, twitch_golive_template TEXT, rss_notification_channel_id TEXT, rss_notify_role_id TEXT, rss_polling_interval_minutes INTEGER NOT NULL DEFAULT 15);
 ```
 
 **Default Values**:
@@ -280,6 +282,9 @@ CREATE TABLE "guild_settings" (
 | `twitch_notify_role_id` | NULL | Role mentioned on go-live (independent of YouTube) |
 | `twitch_polling_interval_minutes` | 2 | Helix check frequency |
 | `twitch_golive_template` | NULL | Per-guild custom Twitch go-live message template (`061`); `NULL` = built-in `**{streamer}** is live!` |
+| `rss_notification_channel_id` | NULL | Channel for RSS new-entry alerts (`064`); NULL = the feature idles for the guild |
+| `rss_notify_role_id` | NULL | Role mentioned on RSS new-entry posts (`064`); NULL = no mention (never an `@everyone` fallback) |
+| `rss_polling_interval_minutes` | 15 | Per-community RSS poll interval, minutes 1–60 (`064`) |
 | `gork_enabled` | 1 | Master gork switch (`0` = keyword triggers ignored, other settings kept) |
 | `gork_keyword` | @gork | Trigger keyword; `NULL` = gork trigger disabled |
 | `gork_role_id` | NULL | Role whose @mention also invokes gork (`/gork role`, issue #174); `NULL` = role path off (keyword is the master trigger switch) |
@@ -586,6 +591,55 @@ CREATE INDEX idx_twitch_eventsub_subs_broadcaster
 ```
 
 See [Twitch Stream Notifications](twitch-notifications.md).
+
+---
+
+### 8e. `rss_feeds`
+
+Per-community RSS/Atom feed subscriptions (migration `062_rss_feeds`, issue #305): one row per **(community, feed URL)** — the same URL in two communities is two independent rows, which is why the PK is `(community_id, url)` and not the URL alone. The row carries the subscription labels (`display_name`, resolved `feed_title`/`feed_link`), the conditional-GET validators (`etag`, `last_modified`), the watermark pair (`last_entry_key`, `last_checked`), and `failure_count` — the driver of the per-feed exponential backoff (NOT NULL DEFAULT 0: the backoff math multiplies off it every poll). Real `REFERENCES communities(id) ON DELETE CASCADE` (unlike 035/042's documentation-only references): a community's subscriptions are meaningless without it. `up` refuses to run before `034_communities`. Primary writer: `src/db/repositories/rss.js`.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE rss_feeds (
+  community_id   INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+  url            TEXT    NOT NULL,
+  display_name   TEXT,
+  feed_title     TEXT,
+  feed_link      TEXT,
+  etag           TEXT,
+  last_modified  TEXT,
+  last_entry_key TEXT,
+  last_checked   INTEGER,
+  failure_count  INTEGER NOT NULL DEFAULT 0,
+  added_by       TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  PRIMARY KEY (community_id, url)
+);
+```
+
+See [RSS Feed Notifications](rss-notifications.md).
+
+---
+
+### 8f. `rss_seen`
+
+Bounded per-feed seen-set for RSS entry dedup (migration `063_rss_seen`, issue #305): one row per **(community, feed, entry key)** already announced. The entry key is the item's guid/id when present, else its permalink link (a `sha256:` digest past 2048 chars) — so the column is plain TEXT: the schema guarantees uniqueness of whatever key the poller derived, nothing more. The PRIMARY KEY *is* the set semantics: `INSERT OR IGNORE` membership makes the poller's claim-before-send one-row race (ticker vs `/rss check`) announce exactly once. Bounded by contract: the repository prunes each feed's group to ~100 rows oldest-first after every poll; `idx_rss_seen_feed_prune` is exactly that access path. `ON DELETE CASCADE` matches `rss_feeds`; feed removal itself is an explicit repository delete (child-then-parent).
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE rss_seen (
+  community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+  feed_url     TEXT    NOT NULL,
+  entry_key    TEXT    NOT NULL,
+  seen_at      INTEGER NOT NULL,
+  PRIMARY KEY (community_id, feed_url, entry_key)
+);
+CREATE INDEX idx_rss_seen_feed_prune
+  ON rss_seen (community_id, feed_url, seen_at);
+```
+
+See [RSS Feed Notifications](rss-notifications.md).
 
 ---
 
@@ -1785,7 +1839,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`061` registered the version is `61`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`064` registered the version is `64`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size AND the `applied_migrations` ledger agrees (below), the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **The `applied_migrations` ledger records WHAT ran (audit #394).** A count can never record a set: a length-preserving registry change (reorder, or a swap that keeps the list the same size) leaves `user_version` identical and would fast-skip a replay the changed registry needs. The ledger (`seq`/`id`/`applied_at`) stores the ORDERED id list of the last complete pass and is rebuilt transactionally with the version stamp — a crashed pass leaves neither honest. The fast-skip requires both records to agree; on disagreement (including legacy DBs with no ledger yet) the idempotent replay runs once and re-stamps both.
@@ -1882,6 +1936,9 @@ Concretely this means:
 | `059_twitch_sub_overrides` | `twitch_channels.notify_channel_id` + `notify_role_id` — per-subscription notification routing/ping overrides (`/twitch notify`, issue #177); `NULL` = use the guild-wide pair |
 | `060_twitch_go_offline` | `twitch_channels.notify_offline` + `last_offline_stream_id` + `last_offline_at` — per-subscription go-offline announcements with their announce watermark (`/twitch offline`, issue #179); flag defaults **off** |
 | `061_twitch_golive_template` | `guild_settings.twitch_golive_template` — per-guild custom Twitch go-live message template (issue #178); `NULL` = built-in default copy `**{streamer}** is live!` |
+| `062_rss_feeds` | `rss_feeds` — per-community RSS feed subscriptions with poll state: conditional-GET validators (`etag`/`last_modified`), watermark pair (`last_entry_key`/`last_checked`), `failure_count` backoff driver; real `ON DELETE CASCADE` FK to `communities` (issue #305) |
+| `063_rss_seen` | `rss_seen` — bounded per-feed seen-set `(community_id, feed_url, entry_key)` for RSS entry dedup (~100 rows/feed, pruned oldest-first via `idx_rss_seen_feed_prune`); the PK doubles as the poller's claim-before-send race guard (#305) |
+| `064_rss_guild_settings` | `guild_settings.rss_notification_channel_id` + `rss_notify_role_id` + `rss_polling_interval_minutes` (default 15) — the RSS notification settings trio behind `/setrss` (#305); NULL channel = the feature idles, NULL role = no mention |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

@@ -64,6 +64,12 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Subscribing to channels
   - Configuration commands
 
+- **[RSS Feed Notifications](rss-notifications.md)**
+  - New-entry announcements from RSS/Atom feeds (no API keys)
+  - Per-community channel / role / interval
+  - Poll behavior, flood caps, backoff, SSRF posture
+  - `/rss` and `/setrss` commands
+
 - **[Honeypot Channels](honeypot.md)**
   - Decoy channels that ban anyone who posts
   - Exempt roles for staff

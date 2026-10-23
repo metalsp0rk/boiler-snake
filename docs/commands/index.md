@@ -704,6 +704,91 @@ Set how often the bot checks Twitch (1–60 minutes, default 2).
 
 Shows credentials status, notification channel, ping role, interval, and subscription count.
 
+### `/rss` - RSS Feed Notifications
+
+Manage RSS/Atom feed subscriptions whose **new entries** post to the community notify channel. No API keys needed. See [RSS Feed Notifications](../rss-notifications.md).
+
+**Permission**: **Staff gate** (staff-tier picker: Manage Guild hides the command from members until staff roles are synced via `/staff syncpermissions`; the handler enforces the gate either way). All replies are ephemeral.
+
+#### Subcommand: `add` - Subscribe to a Feed
+
+Validates the URL now (scheme, SSRF guard, parses, ≥1 item) and stores the resolved feed title.
+
+```bash
+/rss add url:https://feeds.example.com/blog.xml
+/rss add url:https://example.com/news/feed name:Example News
+```
+
+**Options**: `url` (required), `name` (optional display label). The notify channel must be set first (`/setrss channel`); the per-community cap is 20 by default (`RSS_MAX_FEEDS_PER_COMMUNITY`). Refusals embed the specific cause.
+
+#### Subcommand: `remove` - Unsubscribe
+
+```bash
+/rss remove feed:https://example.com/news/feed
+```
+
+`feed:` has **autocomplete** over the community's subscriptions (inserts the stored URL).
+
+#### Subcommand: `list` - View Subscriptions
+
+Feeds plus the notify channel / role / interval status block and the count against the cap.
+
+#### Subcommand: `test` - Dry-Run Notification
+
+Fetch now and post the latest entry to the notify channel — **side-effect-free** (no seen-set claim, no watermark move). Defaults to the most recent subscription.
+
+```bash
+/rss test
+/rss test feed:https://example.com/news/feed   # autocomplete
+```
+
+#### Subcommand: `check` - Force a Poll Now
+
+Live-verification aid: runs a **real** poll (skips only the interval/backoff clock gate) for one feed or, with no `feed:`, every subscription — replying per-feed with **Polled / Posted / Not modified** and named failures.
+
+```bash
+/rss check
+/rss check feed:https://example.com/news/feed
+```
+
+### `/setrss` - RSS Configuration
+
+Configure RSS notification settings (staff gate; replies ephemeral).
+
+#### Subcommand: `channel` - Set Notification Location
+
+```bash
+/setrss channel channel:#feed-alerts
+```
+
+Independent of the YouTube/Twitch channels.
+
+#### Subcommand: `role` - Mention Role on New Entries
+
+```bash
+/setrss role role:@NewsAlerts
+/setrss role
+# omit role → disable mentions
+```
+
+Only the configured role is ever mentioned (strict `allowedMentions`); no `@everyone` fallback, ever.
+
+#### Subcommand: `interval` - Configure Polling Frequency
+
+Set how often this community's feeds are checked (1–60 minutes, default **15**).
+
+```bash
+/setrss interval minutes:15
+```
+
+#### Subcommand: `settings` - Show Current Configuration
+
+```bash
+/setrss settings
+```
+
+Shows notify channel, ping role, interval, and the subscription count against the cap.
+
 ### `/github` - GitHub Release Notifications
 
 Track GitHub repositories and post release notes when new releases are cut (checked hourly). Multiple repositories per server, each with its own channel and ping role. See [GitHub Release Notifications](../github-releases.md).
@@ -1395,6 +1480,8 @@ role — the service re-checks on every call).
 | `/testnotification` | Staff gate | No |
 | `/twitch add\|remove\|list\|clips\|vod\|offline\|notify\|template` | Staff gate | Yes |
 | `/settwitch channel\|role\|interval\|settings` | Staff gate | Yes |
+| `/rss add\|remove\|list\|test\|check` | Staff gate | Yes |
+| `/setrss channel\|role\|interval\|settings` | Staff gate | Yes |
 | `/github watch\|token\|remove\|list\|channel\|role\|check` | Staff gate | Yes |
 | `/reactionrole panel\|option\|sync` | Staff gate | Yes |
 | `/gork keyword\|role\|context\|cooldown\|rules\|search\|ste\|enable\|ban\|unban\|bans\|memory\|budget\|log\|logchannel\|summarize-budget\|status` | Staff gate | Yes |
@@ -1476,6 +1563,8 @@ STAFF GATE (Manage Server OR any staff role):
 /testnotification
 /twitch add|remove|list|clips|vod|offline|notify|template
 /settwitch channel|role|interval|settings
+/rss add|remove|list|test|check
+/setrss channel|role|interval|settings
 /github watch|token|remove|list|channel|role|check
 /reactionrole panel|option|sync
 /gork keyword|role|context|cooldown|rules|search|ste|enable|ban|unban|bans|memory|budget|log|logchannel|summarize-budget|status
